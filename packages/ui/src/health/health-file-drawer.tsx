@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { ExternalLink, X } from "lucide-react";
 import { biomarkerLabel, biomarkerInfo, CATEGORY_LABEL } from "./biomarker-glossary";
 import { BiomarkerDetails, type BiomarkerDetailsRecord } from "./biomarker-details";
@@ -55,7 +55,18 @@ export interface HealthFileDrawerProps {
   permalinkHref?: string;
   onPartnerSelect?: ((path: string) => void) | undefined;
   onPartnerHref?: ((path: string) => string) | undefined;
+  /** Triage callback — PATCH the finding status. Buttons hide when absent. */
+  onFindingStatusChange?:
+    | ((findingId: string, status: string) => Promise<void> | void)
+    | undefined;
 }
+
+const TRIAGE_STATUSES: { value: string; label: string }[] = [
+  { value: "open", label: "Open" },
+  { value: "acknowledged", label: "Acknowledged" },
+  { value: "resolved", label: "Resolved" },
+  { value: "false_positive", label: "False positive" },
+];
 
 export function HealthFileDrawer({
   open,
@@ -70,7 +81,20 @@ export function HealthFileDrawer({
   permalinkHref,
   onPartnerSelect,
   onPartnerHref,
+  onFindingStatusChange,
 }: HealthFileDrawerProps) {
+  const [statusOverride, setStatusOverride] = useState<Record<string, string>>({});
+  const [savingId, setSavingId] = useState<string | null>(null);
+  const setStatus = async (id: string, status: string) => {
+    if (!onFindingStatusChange) return;
+    setSavingId(id);
+    try {
+      await onFindingStatusChange(id, status);
+      setStatusOverride((m) => ({ ...m, [id]: status }));
+    } finally {
+      setSavingId(null);
+    }
+  };
   // ESC to close
   useEffect(() => {
     if (!open) return;
@@ -233,6 +257,28 @@ export function HealthFileDrawer({
                             <p className="text-xs text-[var(--color-text-tertiary)] italic">
                               {suggestions[f.biomarker_type]}
                             </p>
+                          ) : null}
+                          {onFindingStatusChange ? (
+                            <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                              {TRIAGE_STATUSES.map((opt) => {
+                                const current = statusOverride[f.id] ?? f.status ?? "open";
+                                return (
+                                  <button
+                                    key={opt.value}
+                                    type="button"
+                                    disabled={savingId === f.id || current === opt.value}
+                                    onClick={() => setStatus(f.id, opt.value)}
+                                    className={`rounded border px-1.5 py-0.5 text-[10px] transition-colors ${
+                                      current === opt.value
+                                        ? "border-[var(--color-accent-primary)] text-[var(--color-accent-primary)]"
+                                        : "border-[var(--color-border-default)] text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] hover:border-[var(--color-border-strong)]"
+                                    }`}
+                                  >
+                                    {opt.label}
+                                  </button>
+                                );
+                              })}
+                            </div>
                           ) : null}
                         </li>
                       );

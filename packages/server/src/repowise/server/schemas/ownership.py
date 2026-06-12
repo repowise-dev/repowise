@@ -132,12 +132,20 @@ class ModuleHealthSummary(BaseModel):
     health_score: float
 
 
+class GoverningDecisionRef(BaseModel):
+    """Slim decision reference so lists can render titles, not UUIDs."""
+
+    id: str
+    title: str
+    status: str
+
+
 class ModuleHealthDetail(ModuleHealthSummary):
     """Single-module deep view with breakdowns."""
 
     owners: list[ModuleHealthOwner]
     top_hotspots: list[str]
-    governing_decisions: list[str]  # decision ids
+    governing_decisions: list[GoverningDecisionRef]
     contributor_count: int
 
 

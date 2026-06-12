@@ -1,6 +1,7 @@
 "use client";
 
 import { GraphDocPanel as GraphDocPanelShell } from "@repowise-dev/ui/graph/graph-doc-panel";
+import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
 import { usePage } from "@/lib/hooks/use-page";
 import type { DocPage } from "@repowise-dev/types/docs";
 
@@ -20,9 +21,7 @@ export function GraphDocPanel({ repoId, nodeId, onClose }: GraphDocPanelWrapperP
       page={page as DocPage | null | undefined}
       isLoading={isLoading}
       error={error}
-      fullPageHref={
-        page ? `/repos/${repoId}/wiki/${encodeURIComponent(page.id)}` : undefined
-      }
+      fullPageHref={page ? fileEntityPath(`/repos/${repoId}`, nodeId) : undefined}
       browseDocsHref={`/repos/${repoId}/docs`}
       onClose={onClose}
     />

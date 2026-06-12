@@ -5,6 +5,7 @@ import useSWR from "swr";
 import Link from "next/link";
 import { ArrowLeft, Users } from "lucide-react";
 import { OwnerProfileView } from "@repowise-dev/ui/owners/owner-profile";
+import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 import { EmptyState } from "@repowise-dev/ui/shared/empty-state";
 import { getOwnerProfile } from "@/lib/api/owners";
@@ -55,9 +56,7 @@ export default function OwnerProfilePage() {
       {data && (
         <OwnerProfileView
           owner={data}
-          onSelectFile={(path) =>
-            router.push(`/repos/${id}/wiki/${encodeURIComponent(path)}`)
-          }
+          onSelectFile={(path) => router.push(fileEntityPath(`/repos/${id}`, path))}
           onSelectModule={(mod) => router.push(`/repos/${id}/modules/${encodeURIComponent(mod)}`)}
           onSelectCoAuthor={(c) => {
             const k = c.email ?? `name:${c.name}`;

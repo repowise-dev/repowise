@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { BlastRadiusResponse } from "@repowise-dev/types/blast-radius";
 import { RiskScoreCard } from "./risk-score-card";
 import { BlastRadiusSummary } from "./blast-radius-summary";
@@ -10,10 +11,13 @@ import { TestGapsList } from "./test-gaps-list";
 
 interface BlastRadiusResultsProps {
   result: BlastRadiusResponse;
+  /** Rich reviewer panel (e.g. `ReviewerSuggestions` fed by the
+   *  reviewer-suggestions endpoint). Replaces the thin email table. */
+  reviewersSlot?: ReactNode | undefined;
 }
 
 /** Composes the full results stack — score gauge, summary, all five tables. */
-export function BlastRadiusResults({ result }: BlastRadiusResultsProps) {
+export function BlastRadiusResults({ result, reviewersSlot }: BlastRadiusResultsProps) {
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-4">
@@ -39,12 +43,14 @@ export function BlastRadiusResults({ result }: BlastRadiusResultsProps) {
         <CochangeTable rows={result.cochange_warnings} />
       </TableSection>
 
-      <TableSection
-        title="Recommended Reviewers"
-        empty={result.recommended_reviewers.length === 0}
-      >
-        <ReviewersTable rows={result.recommended_reviewers} />
-      </TableSection>
+      {reviewersSlot ?? (
+        <TableSection
+          title="Recommended Reviewers"
+          empty={result.recommended_reviewers.length === 0}
+        >
+          <ReviewersTable rows={result.recommended_reviewers} />
+        </TableSection>
+      )}
 
       <TableSection title="Test Gaps" empty={result.test_gaps.length === 0}>
         <TestGapsList gaps={result.test_gaps} />

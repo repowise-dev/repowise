@@ -1,8 +1,10 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import useSWR from "swr";
 import { toast } from "sonner";
+import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
 import { Button } from "@repowise-dev/ui/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui/card";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
@@ -15,6 +17,7 @@ import { getDeadCodeSummary, listDeadCode, analyzeDeadCode } from "@/lib/api/dea
 import type { DeadCodeFindingResponse, DeadCodeSummaryResponse } from "@/lib/api/types";
 
 export function DeadCodeTab({ repoId }: { repoId: string }) {
+  const router = useRouter();
   const [analyzing, setAnalyzing] = useState(false);
 
   const { data: summary, isLoading: loadingSummary, error: summaryError, mutate: mutateSummary } =
@@ -34,6 +37,41 @@ export function DeadCodeTab({ repoId }: { repoId: string }) {
 
   const findingsList = findings ?? [];
   const safeFindings = findingsList.filter((f) => f.safe_to_delete);
+
+  // "Propose cleanup" builds an agent-ready brief from the safe pile and
+  // copies it — the cheapest path from finding to action until a server-side
+  // cleanup-PR flow exists.
+  const handlePropose = async (findingIds: string[]) => {
+    const selected = safeFindings.filter((f) => findingIds.includes(f.id));
+    const byFile = new Map<string, typeof selected>();
+    for (const f of selected) {
+      byFile.set(f.file_path, [...(byFile.get(f.file_path) ?? []), f]);
+    }
+    const lines = [...byFile.entries()].map(([path, fs]) => {
+      const symbols = fs
+        .map((f) => f.symbol_name)
+        .filter(Boolean)
+        .join(", ");
+      return `- ${path}${symbols ? ` (${symbols})` : ""} — ${fs
+        .map((f) => f.reason)
+        .filter(Boolean)
+        .slice(0, 1)
+        .join("")}`;
+    });
+    const brief = [
+      "Remove the following dead code. Each entry was flagged high-confidence",
+      "safe-to-delete by repowise's dead-code analysis. Verify with a project",
+      "search before deleting, then run the test suite.",
+      "",
+      ...lines,
+    ].join("\n");
+    try {
+      await navigator.clipboard.writeText(brief);
+      toast.success(`Cleanup brief for ${byFile.size} files copied — paste it to your agent`);
+    } catch {
+      toast.error("Couldn't copy to clipboard");
+    }
+  };
 
   const handleAnalyze = async () => {
     setAnalyzing(true);
@@ -75,7 +113,12 @@ export function DeadCodeTab({ repoId }: { repoId: string }) {
       ) : null}
 
       {findings && safeFindings.length > 0 && (
-        <SafeToDeletePile findings={safeFindings} reclaimableLines={summary?.deletable_lines} />
+        <SafeToDeletePile
+          findings={safeFindings}
+          reclaimableLines={summary?.deletable_lines}
+          onPropose={handlePropose}
+          onSelect={(f) => router.push(fileEntityPath(`/repos/${repoId}`, f.file_path))}
+        />
       )}
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">

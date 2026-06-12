@@ -5,6 +5,7 @@ import useSWR from "swr";
 import Link from "next/link";
 import { ArrowLeft, Folder } from "lucide-react";
 import { ModuleHealthDetailView } from "@repowise-dev/ui/modules/module-health-detail";
+import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 import { EmptyState } from "@repowise-dev/ui/shared/empty-state";
 import { getModuleHealth } from "@/lib/api/modules";
@@ -57,9 +58,7 @@ export default function ModuleHealthPage() {
             const key = o.email ?? `name:${o.name}`;
             router.push(`/repos/${id}/owners/${encodeURIComponent(key)}`);
           }}
-          onSelectFile={(p) =>
-            router.push(`/repos/${id}/wiki/${encodeURIComponent(p)}`)
-          }
+          onSelectFile={(p) => router.push(fileEntityPath(`/repos/${id}`, p))}
           onSelectDecision={(decisionId) =>
             router.push(`/repos/${id}/decisions/${encodeURIComponent(decisionId)}`)
           }

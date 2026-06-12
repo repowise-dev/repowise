@@ -7,6 +7,7 @@ import { Badge } from "../ui/badge";
 import { ScrollArea } from "../ui/scroll-area";
 import { Skeleton } from "../ui/skeleton";
 import { truncatePath } from "../lib/format";
+import { fileEntityPath } from "../shared/entity/routes";
 import { cn } from "../lib/cn";
 import type {
   CommunityDetail,
@@ -32,9 +33,11 @@ interface DetailPanelProps {
   detail: CommunityDetail | null;
   isLoading: boolean;
   onClose: () => void;
+  /** Build a member href — defaults to the canonical file page. */
+  memberHref?: ((path: string) => string) | undefined;
 }
 
-function DetailPanel({ detail, isLoading, onClose }: DetailPanelProps) {
+function DetailPanel({ detail, isLoading, onClose, memberHref }: DetailPanelProps) {
   if (isLoading) {
     return (
       <div className="p-4 space-y-2">
@@ -69,12 +72,22 @@ function DetailPanel({ detail, isLoading, onClose }: DetailPanelProps) {
             <div className="space-y-1">
               {detail.members.slice(0, 20).map((m) => (
                 <div key={m.path} className="flex items-center justify-between gap-2 py-0.5">
-                  <span
-                    className="text-[11px] font-mono text-[var(--color-text-secondary)] truncate"
-                    title={m.path}
-                  >
-                    {truncatePath(m.path)}
-                  </span>
+                  {memberHref ? (
+                    <a
+                      href={memberHref(m.path)}
+                      className="text-[11px] font-mono text-[var(--color-text-secondary)] truncate hover:text-[var(--color-accent-primary)] hover:underline"
+                      title={m.path}
+                    >
+                      {truncatePath(m.path)}
+                    </a>
+                  ) : (
+                    <span
+                      className="text-[11px] font-mono text-[var(--color-text-secondary)] truncate"
+                      title={m.path}
+                    >
+                      {truncatePath(m.path)}
+                    </span>
+                  )}
                   <div className="flex items-center gap-1 shrink-0">
                     {m.is_entry_point && (
                       <Badge variant="accent" className="text-[8px] h-3.5">
@@ -210,6 +223,7 @@ export function CommunitySummaryGrid({
                     detail={details[c.community_id] ?? null}
                     isLoading={loadingDetailId === c.community_id && !details[c.community_id]}
                     onClose={() => setExpandedId(null)}
+                    memberHref={prefix ? (path) => fileEntityPath(prefix, path) : undefined}
                   />
                 )}
               </div>

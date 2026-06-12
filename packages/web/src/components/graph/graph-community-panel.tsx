@@ -1,6 +1,7 @@
 "use client";
 
 import { GraphCommunityPanel as GraphCommunityPanelShell } from "@repowise-dev/ui/graph/graph-community-panel";
+import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
 import { useCommunityDetail } from "@/lib/hooks/use-graph";
 import type { CommunityDetail } from "@repowise-dev/types/graph";
 
@@ -26,6 +27,7 @@ export function GraphCommunityPanel({
       isLoading={isLoading}
       onClose={onClose}
       onExpandOnCanvas={onExpandOnCanvas}
+      memberHref={(path) => fileEntityPath(`/repos/${repoId}`, path)}
     />
   );
 }

@@ -19,6 +19,8 @@ export interface GraphCommunityPanelProps {
    *  "Expand on canvas" affordance is shown (the constellation single-click now
    *  opens this panel instead of expanding, so the panel offers the expand). */
   onExpandOnCanvas?: (() => void) | undefined;
+  /** Build a member href (typically the canonical file page). */
+  memberHref?: ((path: string) => string) | undefined;
 }
 
 export function GraphCommunityPanel({
@@ -27,6 +29,7 @@ export function GraphCommunityPanel({
   isLoading,
   onClose,
   onExpandOnCanvas,
+  memberHref,
 }: GraphCommunityPanelProps) {
   return (
     <div className="absolute right-0 top-0 bottom-0 w-full sm:w-[360px] border-l border-[var(--color-border-default)] bg-[var(--color-bg-surface)] z-20 flex flex-col shadow-lg shadow-black/20">
@@ -90,9 +93,19 @@ export function GraphCommunityPanel({
                       className="flex items-center gap-2 py-1 px-1.5 rounded hover:bg-[var(--color-bg-elevated)] transition-colors"
                     >
                       <div className="min-w-0 flex-1">
-                        <p className="text-[11px] font-mono text-[var(--color-text-primary)] truncate" title={m.path}>
-                          {truncatePath(m.path)}
-                        </p>
+                        {memberHref ? (
+                          <a
+                            href={memberHref(m.path)}
+                            className="block text-[11px] font-mono text-[var(--color-text-primary)] truncate hover:text-[var(--color-accent-primary)] hover:underline"
+                            title={m.path}
+                          >
+                            {truncatePath(m.path)}
+                          </a>
+                        ) : (
+                          <p className="text-[11px] font-mono text-[var(--color-text-primary)] truncate" title={m.path}>
+                            {truncatePath(m.path)}
+                          </p>
+                        )}
                       </div>
                       {/* PageRank bar */}
                       <div className="w-16 h-1.5 rounded-full bg-[var(--color-bg-elevated)] overflow-hidden shrink-0">

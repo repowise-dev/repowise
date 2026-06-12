@@ -1,5 +1,4 @@
 export * from "./graph-context-menu";
-export * from "./graph-ego-sidebar";
 export * from "./graph-legend";
 export * from "./graph-toolbar";
 export * from "./graph-doc-panel";

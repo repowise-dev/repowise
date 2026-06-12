@@ -38,7 +38,9 @@ export interface GraphInspectionPanelProps {
   onClose: () => void;
   onNavigateToNode: (nodeId: string) => void;
   onViewDocs?: () => void;
-  onViewSymbols?: () => void;
+  onViewSymbols?: (() => void) | undefined;
+  /** Canonical file-page href — renders the primary "Open file page" action. */
+  filePageHref?: string | undefined;
   onFindPath?: (() => void) | undefined;
   onShowEgoGraph?: (() => void) | undefined;
   onExpandModule?: (() => void) | undefined;
@@ -71,6 +73,7 @@ export const GraphInspectionPanel = memo(function GraphInspectionPanel({
   onNavigateToNode,
   onViewDocs,
   onViewSymbols,
+  filePageHref,
   onFindPath,
   onShowEgoGraph,
   onExpandModule,
@@ -239,6 +242,14 @@ export const GraphInspectionPanel = memo(function GraphInspectionPanel({
 
       {/* Actions */}
       <div className="border-t border-[var(--color-border-default)] p-3 grid grid-cols-2 gap-2">
+        {!isMod && filePageHref && (
+          <a
+            href={filePageHref}
+            className="flex items-center justify-center gap-1.5 rounded-lg bg-[var(--color-accent-graph)]/10 hover:bg-[var(--color-accent-graph)]/20 border border-[var(--color-accent-graph)]/30 px-2 py-1.5 text-[10px] font-medium text-[var(--color-accent-graph)] transition-colors col-span-2"
+          >
+            <FileText className="w-3 h-3" /> Open file page
+          </a>
+        )}
         {isMod && onExpandModule && (
           <button
             onClick={onExpandModule}

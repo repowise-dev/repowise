@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 import { ChatInterface as ChatInterfaceShell } from "@repowise-dev/ui/chat/chat-interface";
 import { useChat } from "@/lib/hooks/use-chat";
+import { pageHref } from "@/lib/utils/page-href";
 import { ModelSelector } from "./model-selector";
 import { ConversationHistory } from "./conversation-history";
 
@@ -42,6 +43,7 @@ export function ChatInterface({ repoId, repoName, initialQuestion }: ChatInterfa
       error={error}
       onSend={(text) => sendMessage(text)}
       onCancel={reset}
+      buildCitationHref={(s) => pageHref(repoId, s.pageId)}
       modelSelectorSlot={<ModelSelector repoId={repoId} />}
       historySlot={
         <ConversationHistory

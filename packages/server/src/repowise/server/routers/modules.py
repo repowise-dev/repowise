@@ -8,11 +8,14 @@ from __future__ import annotations
 
 from urllib.parse import unquote
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from repowise.core.persistence.models import DecisionRecord
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.schemas import (
+    GoverningDecisionRef,
     ModuleHealthDetail,
     ModuleHealthOwner,
     ModuleHealthSummary,
@@ -38,7 +41,9 @@ router = APIRouter(
 )
 async def list_module_health(
     repo_id: str,
-    sort: str = Query("health_score", description="health_score | hotspot_count | dead_code_lines | file_count"),
+    sort: str = Query(
+        "health_score", description="health_score | hotspot_count | dead_code_lines | file_count"
+    ),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
     session: AsyncSession = Depends(get_db_session),  # noqa: B008
@@ -67,6 +72,38 @@ async def list_module_health(
     )
 
 
+async def _decision_refs(
+    session: AsyncSession, repo_id: str, decision_ids: list[str]
+) -> list[GoverningDecisionRef]:
+    """Hydrate decision ids into title-bearing refs (UUIDs are unreadable)."""
+    if not decision_ids:
+        return []
+    rows = (
+        (
+            await session.execute(
+                select(DecisionRecord).where(
+                    DecisionRecord.repository_id == repo_id,
+                    DecisionRecord.id.in_(decision_ids),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    by_id = {d.id: d for d in rows}
+    refs: list[GoverningDecisionRef] = []
+    for did in decision_ids:
+        d = by_id.get(did)
+        refs.append(
+            GoverningDecisionRef(
+                id=did,
+                title=d.title if d else did,
+                status=d.status if d else "unknown",
+            )
+        )
+    return refs
+
+
 @router.get(
     "/{repo_id}/modules/health/{module_path:path}",
     response_model=ModuleHealthDetail,
@@ -90,7 +127,9 @@ async def get_module_health(
             **base,
             owners=[ModuleHealthOwner(**o) for o in extras["owners"]],
             top_hotspots=extras["top_hotspots"],
-            governing_decisions=extras["governing_decisions"],
+            governing_decisions=await _decision_refs(
+                session, repo_id, extras["governing_decisions"]
+            ),
             contributor_count=extras["contributor_count"],
         )
 
@@ -105,7 +144,7 @@ async def get_module_health(
             **single,
             owners=[ModuleHealthOwner(**o) for o in owners],
             top_hotspots=top_hotspots,
-            governing_decisions=governing_decisions,
+            governing_decisions=await _decision_refs(session, repo_id, governing_decisions),
             contributor_count=contributor_count,
         )
 
@@ -118,7 +157,9 @@ async def get_module_health(
             **base,
             owners=[ModuleHealthOwner(**o) for o in extras["owners"]],
             top_hotspots=extras["top_hotspots"],
-            governing_decisions=extras["governing_decisions"],
+            governing_decisions=await _decision_refs(
+                session, repo_id, extras["governing_decisions"]
+            ),
             contributor_count=extras["contributor_count"],
         )
 

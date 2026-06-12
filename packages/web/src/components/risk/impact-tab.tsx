@@ -7,9 +7,11 @@ import { Button } from "@repowise-dev/ui/ui/button";
 import { Card, CardHeader, CardTitle, CardContent } from "@repowise-dev/ui/ui/card";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 import { BlastRadiusResults } from "@repowise-dev/ui/blast-radius";
+import { ReviewerSuggestions } from "@repowise-dev/ui/git/reviewer-suggestions";
 import type { BlastRadiusResponse } from "@repowise-dev/types/blast-radius";
+import type { ReviewerSuggestion } from "@repowise-dev/types/modules";
 import { analyzeBlastRadius } from "@/lib/api/blast-radius";
-import { getHotspots } from "@/lib/api/git";
+import { getHotspots, getReviewerSuggestions } from "@/lib/api/git";
 
 export function ImpactTab({ repoId }: { repoId: string }) {
   const [files, setFiles] = useState("");
@@ -17,6 +19,7 @@ export function ImpactTab({ repoId }: { repoId: string }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<BlastRadiusResponse | null>(null);
+  const [reviewers, setReviewers] = useState<ReviewerSuggestion[] | null>(null);
 
   const { data: hotspotSuggestions, isLoading: hotspotSuggestionsLoading } = useSWR(
     repoId ? ["blast-radius-suggestions", repoId] : null,
@@ -45,9 +48,14 @@ export function ImpactTab({ repoId }: { repoId: string }) {
     setLoading(true);
     setError(null);
     setResult(null);
+    setReviewers(null);
     try {
-      const data = await analyzeBlastRadius(repoId, { changed_files: changed, max_depth: maxDepth });
+      const [data, suggestions] = await Promise.all([
+        analyzeBlastRadius(repoId, { changed_files: changed, max_depth: maxDepth }),
+        getReviewerSuggestions(repoId, changed, 8).catch(() => null),
+      ]);
       setResult(data);
+      setReviewers(suggestions?.suggestions ?? null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Analysis failed.");
     } finally {
@@ -144,7 +152,21 @@ export function ImpactTab({ repoId }: { repoId: string }) {
         </CardContent>
       </Card>
 
-      {result && <BlastRadiusResults result={result} />}
+      {result && (
+        <BlastRadiusResults
+          result={result}
+          reviewersSlot={
+            reviewers && reviewers.length > 0 ? (
+              <ReviewerSuggestions
+                suggestions={reviewers}
+                subtitle={`Based on authorship and co-change history for ${
+                  files.split("\n").filter((l) => l.trim()).length
+                } changed paths`}
+              />
+            ) : undefined
+          }
+        />
+      )}
     </div>
   );
 }

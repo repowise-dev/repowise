@@ -3,6 +3,9 @@ export { EntityHoverCard } from "./entity-hover-card";
 export {
   resolveEntityHref,
   defaultEntityLabel,
+  encodeFilePath,
+  fileEntityPath,
+  symbolEntityPath,
   ENTITY_KIND_LABEL,
 } from "./routes";
 export type {

@@ -3,6 +3,7 @@ import { Badge } from "@repowise-dev/ui/ui/badge";
 import { truncatePath } from "@repowise-dev/ui/lib/format";
 import { getPageTypeLabel } from "@repowise-dev/ui/lib/page-types";
 import { cn } from "@/lib/utils/cn";
+import { pageHref } from "@/lib/utils/page-href";
 import type { SearchResultResponse } from "@/lib/api/types";
 
 interface SearchResultCardProps {
@@ -30,7 +31,7 @@ function highlightSnippet(snippet: string, query: string): React.ReactNode {
 }
 
 export function SearchResultCard({ result, query, repoId }: SearchResultCardProps) {
-  const href = `/repos/${repoId}/wiki/${encodeURIComponent(result.page_id)}`;
+  const href = pageHref(repoId, result.page_id);
 
   return (
     <Link

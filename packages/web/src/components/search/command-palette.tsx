@@ -7,6 +7,7 @@ import { Search, LayoutDashboard, Settings, BookOpen, Layers, Link2, GitMerge, M
 import { useSearch } from "@/lib/hooks/use-search";
 import { truncatePath } from "@repowise-dev/ui/lib/format";
 import { repoNavItems } from "@/components/layout/nav-items";
+import { pageHref } from "@/lib/utils/page-href";
 import type { RepoResponse, WorkspaceResponse } from "@/lib/api/types";
 
 interface CommandPaletteProps {
@@ -216,10 +217,11 @@ export function CommandPalette({ repos, workspace }: CommandPaletteProps) {
                   key={r.page_id}
                   value={`page-${r.title}`}
                   onSelect={() => {
-                    // Use first available repo as context for the wiki route.
-                    // The repo ID is only used for supplemental data (git panel, breadcrumb).
-                    const fallbackRepoId = repos[0]?.id ?? "";
-                    navigate(`/repos/${fallbackRepoId}/wiki/${encodeURIComponent(r.page_id)}`);
+                    // Prefer the active repo for context; fall back to the
+                    // first one. File pages open their canonical entity page,
+                    // everything else opens inside the docs SPA.
+                    const repoId = activeRepo?.id ?? repos[0]?.id ?? "";
+                    navigate(pageHref(repoId, r.page_id));
                   }}
                   className="flex flex-col items-start rounded-md px-3 py-2 text-sm cursor-pointer hover:bg-[var(--color-bg-elevated)] data-[selected=true]:bg-[var(--color-bg-elevated)]"
                 >

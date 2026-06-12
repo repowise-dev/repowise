@@ -100,6 +100,12 @@ export interface GraphFlowProps {
   onExpandedModulesChange?: (expanded: Set<string>) => void;
   onNodeClick?: (nodeId: string, nodeType: string) => void | Promise<void>;
   onNodeViewDocs?: (nodeId: string) => void;
+  /** "Symbols" action in the inspection panel — jump to the symbols view
+   *  filtered to the selected file. */
+  onNodeViewSymbols?: (nodeId: string) => void;
+  /** Canonical file-page href for a file node — renders an "Open file page"
+   *  action in the inspection panel. */
+  fileHrefFor?: (nodeId: string) => string;
   renderPathFinder?: (props: {
     initialFrom: string;
     initialTo: string;
@@ -144,6 +150,8 @@ export function GraphFlow(props: GraphFlowProps) {
     onExpandedModulesChange,
     onNodeClick,
     onNodeViewDocs,
+    onNodeViewSymbols,
+    fileHrefFor,
     renderPathFinder,
     renderCommunityPanel,
     onCommunityPanelOpen,
@@ -1190,6 +1198,12 @@ export function GraphFlow(props: GraphFlowProps) {
               onClose={() => { setSelectedNodeId(null); }}
               onNavigateToNode={handleInspectNavigate}
               onViewDocs={() => { onNodeViewDocs?.(selectedNodeId); }}
+              onViewSymbols={
+                fileNd && onNodeViewSymbols
+                  ? () => { onNodeViewSymbols(selectedNodeId); }
+                  : undefined
+              }
+              filePageHref={fileNd ? fileHrefFor?.(selectedNodeId) : undefined}
               onFindPath={handleInspectFindPath}
               onExpandModule={modNd ? handleInspectExpandModule : undefined}
               egoDepth={egoDepth}

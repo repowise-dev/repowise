@@ -1,6 +1,8 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
+import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
 import {
   GraphFlow as GraphFlowShell,
   type GraphFlowProps as GraphFlowShellProps,
@@ -59,6 +61,7 @@ export function GraphFlow({
   onCommunityPanelOpen,
   onViewModeChange,
 }: GraphFlowProps) {
+  const router = useRouter();
   // Constellation (Knowledge Graph) is the default scope.
   const [viewMode, setViewMode] = useState<ViewMode>(initialViewMode ?? "architecture");
   const [modulePath, setModulePath] = useState<string[]>([]);
@@ -136,6 +139,12 @@ export function GraphFlow({
       onExpandedModulesChange={(expanded) => setHasExpandedModules(expanded.size > 0)}
       onNodeClick={onNodeClick}
       onNodeViewDocs={onNodeViewDocs}
+      onNodeViewSymbols={(nodeId) =>
+        router.push(
+          `/repos/${repoId}/architecture?view=symbols&file=${encodeURIComponent(nodeId)}`,
+        )
+      }
+      fileHrefFor={(nodeId) => fileEntityPath(`/repos/${repoId}`, nodeId)}
       onCommunityPanelOpen={onCommunityPanelOpen}
       renderPathFinder={(props) => (
         <PathFinderPanel

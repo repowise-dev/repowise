@@ -7,6 +7,7 @@
  */
 
 import { useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import useSWR from "swr";
 import { HeartPulse, RotateCw, Search } from "lucide-react";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
@@ -39,6 +40,7 @@ import { HealthFileDrawerHost } from "@/components/health/health-file-drawer-hos
 const PAGE_SIZE = 50;
 
 export function TriageTab({ repoId: id }: { repoId: string }) {
+  const router = useRouter();
   const { data: overview, isLoading, error, mutate } = useSWR<HealthOverviewResponse>(
     `code-health-overview:${id}`,
     () => getHealthOverview(id, 25),
@@ -298,7 +300,12 @@ export function TriageTab({ repoId: id }: { repoId: string }) {
               <h2 className="text-sm font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
                 By module
               </h2>
-              <ModuleRollupList modules={overview.modules} />
+              <ModuleRollupList
+                modules={overview.modules}
+                onSelect={(row) =>
+                  router.push(`/repos/${id}/modules/${encodeURIComponent(row.module)}`)
+                }
+              />
             </div>
           ) : null}
         </>

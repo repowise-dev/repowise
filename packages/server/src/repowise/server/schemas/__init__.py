@@ -102,6 +102,7 @@ from .intelligence import (
     SymbolNodeSummary,
 )
 from .ownership import (
+    GoverningDecisionRef,
     KnowledgeMapOwner,
     KnowledgeMapResponse,
     KnowledgeMapSilo,
@@ -238,6 +239,7 @@ __all__ = [
     "KnowledgeMapTarget",
     "ModuleEdgeResponse",
     "ModuleGraphResponse",
+    "GoverningDecisionRef",
     "ModuleHealthDetail",
     "ModuleHealthOwner",
     "ModuleHealthSummary",

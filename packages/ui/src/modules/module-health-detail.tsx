@@ -210,15 +210,20 @@ export function ModuleHealthDetailView({
                 </CardTitle>
               </CardHeader>
               <CardContent className="pt-0 space-y-1">
-                {module.governing_decisions.map((id) => (
-                  <button
-                    key={id}
-                    onClick={() => onSelectDecision?.(id)}
-                    className="block w-full truncate rounded px-2 py-1 text-left text-[11px] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]"
-                  >
-                    {id.slice(0, 16)}…
-                  </button>
-                ))}
+                {module.governing_decisions.map((d) => {
+                  const id = typeof d === "string" ? d : d.id;
+                  const label = typeof d === "string" ? `${d.slice(0, 16)}…` : d.title;
+                  return (
+                    <button
+                      key={id}
+                      onClick={() => onSelectDecision?.(id)}
+                      title={typeof d === "string" ? undefined : `${d.title} (${d.status})`}
+                      className="block w-full truncate rounded px-2 py-1 text-left text-[11px] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]"
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
               </CardContent>
             </Card>
           )}

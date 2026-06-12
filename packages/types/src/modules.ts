@@ -31,10 +31,17 @@ export interface ModuleHealthSummary {
   health_score: number;
 }
 
+export interface ModuleGoverningDecision {
+  id: string;
+  title: string;
+  status: string;
+}
+
 export interface ModuleHealthDetail extends ModuleHealthSummary {
   owners: ModuleHealthOwner[];
   top_hotspots: string[];
-  governing_decisions: string[];
+  /** Title-bearing refs from current backends; bare ids from older ones. */
+  governing_decisions: (ModuleGoverningDecision | string)[];
   contributor_count: number;
 }
 
