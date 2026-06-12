@@ -7,5 +7,5 @@ export default async function LegacyRedirect({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  redirect(`/repos/${id}/code-health/refactoring-targets`);
+  redirect(`/repos/${id}/code-health`);
 }

@@ -15,7 +15,7 @@ import {
 import { StatCard } from "@repowise-dev/ui/shared/stat-card";
 import { Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui/card";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@repowise-dev/ui/ui/tabs";
+import { Tabs, ScrollableTabsList, TabsTrigger, TabsContent } from "@repowise-dev/ui/ui/tabs";
 import {
   CacheHitRatioCard,
   CostHeatmap,
@@ -79,13 +79,13 @@ export default function CostsPage() {
       <DistillSavingsCard data={distillSavings} />
 
       <Tabs value={tab} onValueChange={setTab} className="w-full">
-        <TabsList>
+        <ScrollableTabsList>
           <TabsTrigger value="operations">Spend by operation</TabsTrigger>
           <TabsTrigger value="daily">Daily</TabsTrigger>
           <TabsTrigger value="providers">Providers</TabsTrigger>
           <TabsTrigger value="hotspots">Hotspots</TabsTrigger>
           <TabsTrigger value="cache">Cache</TabsTrigger>
-        </TabsList>
+        </ScrollableTabsList>
 
         <TabsContent value="daily" className="mt-4">
           <Card>

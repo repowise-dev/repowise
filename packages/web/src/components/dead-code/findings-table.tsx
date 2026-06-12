@@ -192,7 +192,7 @@ export function FindingsTable({ repoId }: FindingsTableProps) {
               />
             ) : (
               <div className="rounded-lg border border-[var(--color-border-default)] overflow-x-auto mt-2">
-                <table className="w-full text-sm">
+                <table className="w-full min-w-[640px] text-sm">
                   <caption className="sr-only">Dead code findings</caption>
                   <thead className="sticky top-0 z-10 bg-[var(--color-bg-elevated)]">
                     <tr className="border-b border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]">

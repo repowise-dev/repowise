@@ -1,13 +1,17 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import useSWR from "swr";
+import { RotateCw } from "lucide-react";
+import { toast } from "sonner";
 import { SeverityDistribution } from "@repowise-dev/ui/security/severity-distribution";
 import { SecurityFindingsTable } from "@repowise-dev/ui/security/findings-table";
 import { FindingsByDirectory } from "@repowise-dev/ui/security/findings-by-directory";
+import { Button } from "@repowise-dev/ui/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui/card";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 import { listSecurityFindings, type SecurityFinding } from "@/lib/api/security";
+import { syncRepo } from "@/lib/api/repos";
 import { useFileCardHost } from "@/components/shared/file-card-host";
 import type { FileCardData } from "@repowise-dev/ui/shared/file-card";
 
@@ -17,6 +21,19 @@ export function SecurityTab({ repoId }: { repoId: string }) {
     () => listSecurityFindings(repoId, { limit: 500 }),
     { revalidateOnFocus: false },
   );
+  const [rescanning, setRescanning] = useState(false);
+
+  const handleRescan = async () => {
+    setRescanning(true);
+    try {
+      await syncRepo(repoId);
+      toast.success("Sync started — findings refresh when it completes");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Couldn't start a sync");
+    } finally {
+      setRescanning(false);
+    }
+  };
 
   const { showFile, dialog } = useFileCardHost(repoId);
 
@@ -44,9 +61,16 @@ export function SecurityTab({ repoId }: { repoId: string }) {
 
   return (
     <div className="space-y-6">
-      <p className="text-sm text-[var(--color-text-secondary)]">
-        Findings detected during ingestion — secrets, dangerous patterns, and policy hits.
-      </p>
+      <div className="flex flex-wrap items-center gap-2">
+        <p className="text-sm text-[var(--color-text-secondary)] mr-auto">
+          Secrets, dangerous patterns, and policy hits detected while indexing.
+          Findings refresh on every sync.
+        </p>
+        <Button size="sm" variant="outline" onClick={handleRescan} disabled={rescanning}>
+          <RotateCw className={`h-3.5 w-3.5 mr-1.5 ${rescanning ? "animate-spin" : ""}`} />
+          Re-scan
+        </Button>
+      </div>
 
       {isLoading ? (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

@@ -8,6 +8,7 @@ import { SymbolDrawerWrapper } from "@/components/symbols/symbol-drawer-wrapper"
 import type { HotspotResponse as HotspotRowType, Paginated, SymbolResponse } from "@/lib/api/types";
 import type { FileCardData } from "@repowise-dev/ui/shared/file-card";
 import { HotspotTable } from "@repowise-dev/ui/git/hotspot-table";
+import { HotspotTrendStrip } from "@repowise-dev/ui/git/hotspot-trend-strip";
 import { ChurnHistogram } from "@repowise-dev/ui/git/churn-histogram";
 import { CommitCategoryDonut } from "@repowise-dev/ui/git/commit-category-donut";
 import { RiskDistributionChart } from "@repowise-dev/ui/git/risk-distribution-chart";
@@ -136,7 +137,21 @@ export function HotspotsTab({ repoId }: { repoId: string }) {
         </div>
       )}
 
-      {/* Top contributors lives on the Heatmap tab; not duplicated here. */}
+      {list.length > 0 && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">Hotspot trend</CardTitle>
+            <p className="text-xs text-[var(--color-text-tertiary)]">
+              Top files by churn. Heating arrows mark files where the last 30 days are
+              outpacing the 90-day baseline.
+            </p>
+          </CardHeader>
+          <CardContent className="pt-0">
+            <HotspotTrendStrip hotspots={list} />
+          </CardContent>
+        </Card>
+      )}
+
       <HotspotTable
         hotspots={list}
         repoId={repoId}

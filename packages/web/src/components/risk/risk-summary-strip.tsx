@@ -58,7 +58,7 @@ export function RiskSummaryStrip({ repoId }: { repoId: string }) {
         value={formatNumber(siloCount)}
         description="single-owner modules"
         icon={<Users className="h-4 w-4 text-amber-400" />}
-        href={`${RISK_BASE(repoId)}?tab=heatmap`}
+        href={`/repos/${repoId}/owners`}
       />
       <StatCard
         label="Reclaimable"
@@ -83,7 +83,7 @@ export function RiskSummaryStrip({ repoId }: { repoId: string }) {
             : "scan not run"
         }
         icon={<ShieldAlert className="h-4 w-4 text-red-400" />}
-        href={`/repos/${repoId}/security`}
+        href={`${RISK_BASE(repoId)}?tab=security`}
       />
     </div>
   );
