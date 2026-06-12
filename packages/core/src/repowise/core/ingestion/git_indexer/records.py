@@ -131,7 +131,7 @@ class GitIndexSummary:
     commit_rows: list[dict] = field(default_factory=list)
 
 
-_RENAME_RE = re.compile(r"\{(.+?) => (.+?)\}")
+_RENAME_RE = re.compile(r"\{(.*?) => (.*?)\}")
 
 
 def _extract_rename_paths(stat_path: str, known_paths: set[str]) -> tuple[str | None, str | None]:
@@ -141,17 +141,22 @@ def _extract_rename_paths(stat_path: str, known_paths: set[str]) -> tuple[str | 
 
         10\t5\t{old => new}/shared_suffix
         10\t5\told_dir/{old_name => new_name}.py
+        10\t5\tsrc/{ => newdir}/shared_suffix
 
-    This helper parses both forms, adds both expanded paths to *known_paths*,
-    and returns ``(old_path, new_path)`` so the caller can attribute churn to
-    the correct file.  Returns ``(None, None)`` if the pattern is not found.
+    The third form has an EMPTY side: a directory inserted into (or removed
+    from) the middle of a path. Expanding the empty side leaves a doubled
+    slash at the splice point, which is collapsed so the result matches the
+    tracked path. This helper parses all forms, adds both expanded paths to
+    *known_paths*, and returns ``(old_path, new_path)`` so the caller can
+    attribute churn to the correct file. Returns ``(None, None)`` if the
+    pattern is not found.
     """
     m = _RENAME_RE.search(stat_path)
     if m:
         prefix = stat_path[: m.start()]
         suffix = stat_path[m.end() :]
-        old_path = prefix + m.group(1) + suffix
-        new_path = prefix + m.group(2) + suffix
+        old_path = (prefix + m.group(1) + suffix).replace("//", "/")
+        new_path = (prefix + m.group(2) + suffix).replace("//", "/")
         known_paths.add(old_path)
         known_paths.add(new_path)
         return old_path, new_path
