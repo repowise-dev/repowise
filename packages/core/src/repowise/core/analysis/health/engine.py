@@ -319,8 +319,9 @@ class HealthAnalyzer:
         # Duplication runs once, up-front, so each file biomarker can see
         # its clone list. Cheap when the repo is small; when disabled
         # explicitly we skip the work entirely. Even for incremental
-        # runs we keep the full-repo scan: a changed file's clone partners
-        # may be unchanged files we still need to compare against.
+        # runs the result stays repo-wide: a changed file's clone partners
+        # may be unchanged files — passing changed_files lets the detector
+        # splice its persisted pair index instead of recomputing it all.
         if "dry_violation" in disabled:
             dup_report = DuplicationReport()
         else:
@@ -329,6 +330,7 @@ class HealthAnalyzer:
                     self.parsed_files,
                     self.git_meta_map,
                     cache_dir=self.duplication_cache_dir,
+                    changed_files=changed_set,
                 )
                 _log_duplication_diagnostics(dup_report)
             except Exception as exc:
@@ -449,6 +451,7 @@ class HealthAnalyzer:
                     self.parsed_files,
                     self.git_meta_map,
                     cache_dir=self.duplication_cache_dir,
+                    changed_files=changed_set,
                 )
             )
 

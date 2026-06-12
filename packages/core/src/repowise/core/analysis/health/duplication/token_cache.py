@@ -101,6 +101,30 @@ class DuplicationTokenCache:
         self._fresh[content_hash] = entry
         return entry
 
+    def entry(
+        self, content_hash: str
+    ) -> tuple[list[str], int, list[tuple[int, int, int, int]]] | None:
+        """Read an entry without touching hit/miss stats or freshness.
+
+        The incremental pair-splice path reads unchanged files' cached
+        tuples through this so its lookups don't skew the cache-hit
+        telemetry that ``get`` feeds.
+        """
+        return self._entries.get(content_hash)
+
+    def retain(self, content_hash: str) -> bool:
+        """Mark an entry as live so ``save`` keeps it.
+
+        ``save`` rewrites the cache with only the entries touched this
+        run; an incremental run that never reads unchanged files would
+        otherwise evict them. Returns False when the hash is unknown.
+        """
+        entry = self._entries.get(content_hash)
+        if entry is None:
+            return False
+        self._fresh[content_hash] = entry
+        return True
+
     def put(
         self,
         content_hash: str,
