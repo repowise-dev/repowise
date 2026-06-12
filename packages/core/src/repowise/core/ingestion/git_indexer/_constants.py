@@ -63,6 +63,21 @@ _MIN_MESSAGE_LEN = 12
 # Default per-file commit history depth.
 _DEFAULT_COMMIT_LIMIT: int = 500
 
+# Depth of the second, deeper repo-wide log walk that serves files absent
+# from the recent-window commit index. On repos whose history is much
+# deeper than _DEFAULT_COMMIT_LIMIT, most tracked files miss the window
+# and previously each took a per-file ``git log`` subprocess (3,295
+# spawns on a 9k-commit WinUI monorepo). One --skip walk this deep
+# replaces them. Files older than window+deep still take the per-file
+# path, so behaviour degrades gracefully on very deep histories.
+_DEEP_WALK_COMMIT_LIMIT: int = 20_000
+
+# Minimum number of window-index misses before the deep walk pays for
+# itself. Below this, the handful of per-file ``git log`` fallbacks is
+# cheaper than walking the full history again (small repos typically
+# have zero misses and skip the deep walk entirely).
+_DEEP_WALK_MIN_FALLBACK: int = 100
+
 # Per-file persisted contributor / commit fan-out. Previously hard-coded
 # to 5 / 10 inline, which silently hid co-owners and meaningful history on
 # multi-team modules. 50 is generous enough that any realistic UI surface

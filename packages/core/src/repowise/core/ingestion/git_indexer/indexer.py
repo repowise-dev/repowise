@@ -21,6 +21,8 @@ from typing import Any
 import structlog
 
 from ._constants import (
+    _DEEP_WALK_COMMIT_LIMIT,
+    _DEEP_WALK_MIN_FALLBACK,
     _DEFAULT_CO_CHANGE_COMMIT_LIMIT,
     _DEFAULT_CO_CHANGE_MIN_COUNT,
     _DEFAULT_COMMIT_LIMIT,
@@ -122,8 +124,9 @@ class GitIndexer:
         commit_index: dict[str, list[_CommitRec]] = {}
         commit_sink: list[dict] = []
         prov_clf = self._provenance_classifier()
+        deep_index: dict[str, list[_CommitRec]] = {}
         if not self.follow_renames:
-            from ..git_commit_index import load_commit_index
+            from ..git_commit_index import load_commit_index, load_deep_commit_index
 
             commit_index = load_commit_index(
                 repo,
@@ -132,6 +135,21 @@ class GitIndexer:
                 commit_sink=commit_sink,
                 provenance_classifier=prov_clf,
             )
+
+            # Files the recent window never saw would each spawn a per-file
+            # ``git log`` fallback below. When there are many (deep-history
+            # repos), one --skip walk over the older region replaces them;
+            # files it still misses keep the per-file path.
+            missed = {fp for fp in indexable_files if fp not in commit_index}
+            if len(missed) >= _DEEP_WALK_MIN_FALLBACK:
+                deep_index = load_deep_commit_index(
+                    repo,
+                    self.commit_limit,
+                    missed,
+                    skip=self.commit_limit,
+                    deep_limit=_DEEP_WALK_COMMIT_LIMIT,
+                    provenance_classifier=prov_clf,
+                )
 
         include_blame = self.tier.includes_blame
         as_of_ts = self._resolve_as_of_ts(repo, commit_index)
@@ -148,6 +166,8 @@ class GitIndexer:
             try:
                 thread_repo = get_thread_repo()
                 precomputed = commit_index.get(file_path) if commit_index else None
+                if precomputed is None:
+                    precomputed = deep_index.get(file_path)
                 return index_file(
                     thread_repo,
                     file_path,

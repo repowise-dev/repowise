@@ -212,3 +212,146 @@ def load_commit_index(
         indexable_files=len(indexable_files),
     )
     return bucket
+
+
+def load_deep_commit_index(
+    repo: object,
+    per_file_limit: int,
+    wanted_files: set[str],
+    *,
+    skip: int,
+    deep_limit: int,
+    provenance_classifier: object | None = None,
+) -> dict[str, list[_CommitRec]]:
+    """Bucket commits OLDER than the recent window for *wanted_files* only.
+
+    Walks ``git log --skip=<skip> -<deep_limit>`` — the region strictly
+    beyond what :func:`load_commit_index` parsed (``--skip`` counts after
+    ``--no-merges`` filtering, exactly like the window walk's ``-N`` cap,
+    so the two regions partition the history with no gap or overlap).
+
+    *wanted_files* is the set of indexable paths the window index missed;
+    only their commits are retained, newest first, capped at
+    *per_file_limit* per file — mirroring the per-file fallback's
+    ``git log -<limit> -- <file>`` cap. One subprocess replaces one
+    fallback spawn per missed file, which dominates the git phase on
+    repos whose history is much deeper than the window (a 9k-commit
+    monorepo left 3,295 of 4,857 files to the fallback).
+
+    The records differ from the per-file fallback in one documented way:
+    churn comes from the repo-wide diff (rename rows attribute edit churn
+    through the rename) rather than the pathspec-limited diff (which
+    shows a rename as a whole-file addition), and simplification-rare
+    merge commits never appear (``--no-merges``, like the window walk).
+    That makes deep-bucketed files CONSISTENT with window-indexed files,
+    which always had repo-walk semantics. Files absent from this bucket
+    (pre-rename names the marker parser cannot resolve, or history deeper
+    than *deep_limit*) keep the per-file fallback path.
+
+    Failures return an empty dict; every missed file then falls back to
+    the per-file path exactly as before.
+    """
+    from .git_indexer import (
+        _LOG_FORMAT,
+        _RECORD_SEP,
+        _CommitRec,
+        _extract_rename_paths,
+        _parse_commit_record,
+    )
+    from .git_indexer.agent_provenance import AgentProvenanceClassifier
+
+    if not wanted_files:
+        return {}
+    if provenance_classifier is None:
+        provenance_classifier = AgentProvenanceClassifier()
+
+    try:
+        raw = repo.git.log(  # type: ignore[attr-defined]
+            f"--skip={skip}",
+            f"-{deep_limit}",
+            "--numstat",
+            "--no-merges",
+            f"--format={_LOG_FORMAT}",
+        )
+    except Exception as exc:
+        logger.warning("deep_commit_index_failed", error=str(exc))
+        return {}
+
+    if not raw:
+        return {}
+
+    bucket: dict[str, list[_CommitRec]] = {}
+    commits_parsed = 0
+
+    for record in raw.split(_RECORD_SEP):
+        if not record.strip():
+            continue
+        parsed = _parse_commit_record(record)
+        if parsed is None:
+            continue
+        header, numstat_lines = parsed
+        commits_parsed += 1
+
+        # Classified lazily — only commits that actually touch a wanted
+        # file pay the provenance regexes (the window walk classifies
+        # every commit because the commit sink needs the labels).
+        prov = None
+
+        for line in numstat_lines:
+            cols = line.split("\t")
+            if len(cols) < 3:
+                continue
+            stat_path = cols[2]
+            if "=>" in stat_path:
+                seen: set[str] = set()
+                _old_path, new_path = _extract_rename_paths(stat_path, seen)
+                target = new_path or stat_path
+            else:
+                target = stat_path
+
+            if target not in wanted_files:
+                continue
+            records = bucket.setdefault(target, [])
+            if len(records) >= per_file_limit:
+                continue
+
+            try:
+                added = int(cols[0]) if cols[0] != "-" else 0
+                deleted = int(cols[1]) if cols[1] != "-" else 0
+            except ValueError:
+                added = 0
+                deleted = 0
+
+            if prov is None:
+                prov = provenance_classifier.classify(  # type: ignore[attr-defined]
+                    header["author_name"],
+                    header["author_email"],
+                    header["committer_name"],
+                    header["committer_email"],
+                    f"{header['subject']}\n{header['body']}",
+                )
+
+            records.append(
+                _CommitRec(
+                    sha=header["sha"],
+                    author_name=header["author_name"],
+                    author_email=header["author_email"],
+                    ts=header["ts"],
+                    is_merge=header["is_merge"],
+                    subject=header["subject"],
+                    body=header["body"],
+                    added=added,
+                    deleted=deleted,
+                    agent=prov.agent,
+                    agent_tier=prov.autonomy_tier,
+                )
+            )
+
+    logger.debug(
+        "deep_commit_index_built",
+        commits_parsed=commits_parsed,
+        files_bucketed=len(bucket),
+        wanted_files=len(wanted_files),
+        skip=skip,
+    )
+    return bucket
