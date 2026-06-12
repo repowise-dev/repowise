@@ -128,7 +128,7 @@ the items that matter most to you can be prioritized.
 | SBOM generation (CycloneDX) + VEX export + diffs | — | ✅ *(GA on hosted)* |
 | Compliance reporting (PCI-DSS / SOC 2) | — | ✅ *(GA on hosted — Teams)* |
 | Audit trail (in-product + JSON / CSV export + webhook stream) | — | ✅ *(GA on hosted — security surface)* |
-| Jira / Confluence integration | — | ✅ *(rolling out)* |
+| Jira / Confluence integration | — | ✅ *(GA on hosted — Teams)* |
 | GitHub Enterprise / Azure DevOps / GitLab / Bitbucket | — | ✅ *(rolling out)* |
 | Slack / Teams security alerting (signed webhooks) | — | ✅ *(GA on hosted — Teams)* |
 | SAML / OIDC SSO + SCIM | — | ✅ *(rolling out)* |
@@ -219,11 +219,17 @@ The plumbing these sit on — audit trail, RBAC, the commercial event bus — is
 development. The connectors themselves are sequenced by customer demand; additional
 integrations beyond this list are available on request.
 
-- **Jira** — bi-directional linking between architectural decisions / risk findings
-  and Jira issues; `get_why` surfaces the originating ticket; PR-impact reports
-  auto-comment on the linked issue.
-- **Confluence** — scheduled publication of the Repowise wiki to nominated spaces,
-  with link-backs preserved and freshness banners on stale pages.
+- **Jira** *(available on the hosted platform, Teams+)* — architectural decisions
+  linked to the Jira issues that motivated them: links are mined from decision
+  evidence commits (validated against the site's real project keys) or added
+  manually by key, with live-ish status on the decision pages and in `get_why`,
+  so AI agents see the originating ticket next to the rationale. Risk-finding
+  links and PR-impact auto-comments on linked issues are on the roadmap.
+- **Confluence** *(available on the hosted platform, Teams+)* — scheduled (weekly
+  or on-demand) publication of the Repowise wiki to a nominated space and parent
+  page, updated in place and never duplicated; every page carries a link-back and
+  a freshness banner stating the exact source commit, with an explicit stale
+  warning when the snapshot trails the repository head.
 - **GitHub Enterprise / Azure DevOps / GitLab / Bitbucket** — managed webhooks, a
   PR-comment bot that posts blast-radius and reviewer suggestions, and a
   branch-protection check that blocks merges touching hotspots without a reviewer
