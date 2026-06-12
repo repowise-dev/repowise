@@ -1,3 +1,4 @@
+import type { SymbolDetailResponse } from "@repowise-dev/types/symbols";
 import { apiGet } from "./client";
 import type { Paginated, SymbolResponse } from "./types";
 
@@ -46,4 +47,15 @@ export async function lookupSymbolByName(
 
 export async function getSymbolById(symbolDbId: string): Promise<SymbolResponse> {
   return apiGet<SymbolResponse>(`/api/symbols/${encodeURIComponent(symbolDbId)}`);
+}
+
+/** Symbol entity-page aggregate: row + blame + callers/callees + decisions. */
+export async function getSymbolDetail(
+  repoId: string,
+  symbolId: string,
+): Promise<SymbolDetailResponse> {
+  return apiGet<SymbolDetailResponse>("/api/symbols/detail", {
+    repo_id: repoId,
+    symbol_id: symbolId,
+  });
 }

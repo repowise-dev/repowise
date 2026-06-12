@@ -22,7 +22,9 @@
     "./settings": "./src/settings.ts",
     "./security": "./src/security.ts",
     "./owners": "./src/owners.ts",
-    "./modules": "./src/modules.ts"
+    "./modules": "./src/modules.ts",
+    "./overview": "./src/overview.ts",
+    "./files": "./src/files.ts"
   },
   "publishConfig": {
     "registry": "https://npm.pkg.github.com",

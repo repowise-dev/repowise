@@ -42,6 +42,13 @@ class SymbolResponse(BaseModel):
     is_entry_point: bool | None = None
     file_churn_percentile: float | None = None
     file_is_hotspot: bool | None = None
+    # Function-blame join (populated by the list endpoint from
+    # git_function_blame when a row exists for the symbol; null otherwise).
+    blame_mod_count: int | None = None
+    blame_recent_mod_count: int | None = None
+    blame_median_author_time: int | None = None
+    blame_owner_name: str | None = None
+    blame_owner_line_pct: float | None = None
 
     @classmethod
     def from_orm(cls, obj: object) -> SymbolResponse:

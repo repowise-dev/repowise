@@ -60,6 +60,50 @@ export interface CodeSymbol {
   is_entry_point?: boolean | null;
   file_churn_percentile?: number | null;
   file_is_hotspot?: boolean | null;
+  /** Function-blame join — populated by the list/detail endpoints when a
+   *  git_function_blame row exists for the symbol. */
+  blame_mod_count?: number | null;
+  blame_recent_mod_count?: number | null;
+  blame_median_author_time?: number | null;
+  blame_owner_name?: string | null;
+  blame_owner_line_pct?: number | null;
+}
+
+// ---------------------------------------------------------------------------
+// Symbol detail (the symbol entity page aggregate)
+// ---------------------------------------------------------------------------
+
+export interface SymbolCallEntry {
+  symbol_id: string;
+  name: string;
+  kind: string;
+  file: string;
+  start_line: number | null;
+  edge_type: string;
+  confidence: number;
+}
+
+export interface SymbolDetailGraph {
+  pagerank: number;
+  in_degree: number;
+  out_degree: number;
+  callers: SymbolCallEntry[];
+  callees: SymbolCallEntry[];
+}
+
+export interface SymbolFileContext {
+  file_path: string;
+  health_score: number | null;
+  is_hotspot: boolean | null;
+  primary_owner: string | null;
+  language: string;
+}
+
+export interface SymbolDetailResponse {
+  symbol: CodeSymbol;
+  graph: SymbolDetailGraph;
+  governing_decisions: { id: string; title: string; status: string }[];
+  file_context: SymbolFileContext;
 }
 
 export interface SymbolList {

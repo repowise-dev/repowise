@@ -4,11 +4,18 @@ from __future__ import annotations
 
 from typing import Literal
 
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from repowise.core.persistence.models import GitMetadata, GraphNode, WikiSymbol
+from repowise.core.persistence import crud
+from repowise.core.persistence.decision_graph import get_governing_decisions
+from repowise.core.persistence.models import (
+    GitFunctionBlame,
+    GitMetadata,
+    GraphNode,
+    WikiSymbol,
+)
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.schemas import Paginated, SymbolImportanceComponents, SymbolResponse
 from repowise.server.services.symbol_ranking import (
@@ -51,6 +58,32 @@ def _attach_signals(
     return response
 
 
+async def _attach_blame(
+    session: AsyncSession, repo_id: str, items: list[SymbolResponse]
+) -> list[SymbolResponse]:
+    """Join the page's symbols against git_function_blame in one query."""
+    ids = [s.symbol_id for s in items]
+    if not ids:
+        return items
+    rows = await session.execute(
+        select(GitFunctionBlame).where(
+            GitFunctionBlame.repository_id == repo_id,
+            GitFunctionBlame.symbol_id.in_(ids),
+        )
+    )
+    by_id = {b.symbol_id: b for b in rows.scalars().all()}
+    for s in items:
+        b = by_id.get(s.symbol_id)
+        if b is None:
+            continue
+        s.blame_mod_count = b.mod_count
+        s.blame_recent_mod_count = b.recent_mod_count
+        s.blame_median_author_time = b.median_author_time
+        s.blame_owner_name = b.owner_name
+        s.blame_owner_line_pct = b.owner_line_pct
+    return items
+
+
 async def _file_signals(
     session: AsyncSession, repo_id: str, paths: set[str]
 ) -> tuple[dict[str, tuple[float, bool]], dict[str, tuple[float | None, bool | None]]]:
@@ -68,8 +101,7 @@ async def _file_signals(
         )
     )
     pagerank_map: dict[str, tuple[float, bool]] = {
-        row.node_id: (float(row.pagerank or 0.0), bool(row.is_entry_point))
-        for row in pagerank_rows
+        row.node_id: (float(row.pagerank or 0.0), bool(row.is_entry_point)) for row in pagerank_rows
     }
 
     churn_rows = await session.execute(
@@ -187,9 +219,7 @@ async def search_symbols(
             base = base.order_by(WikiSymbol.complexity_estimate.desc(), WikiSymbol.name)
         elif sort == "kind":
             base = base.order_by(WikiSymbol.kind, WikiSymbol.name)
-        rows = (
-            await session.execute(base.limit(limit).offset(offset))
-        ).scalars().all()
+        rows = (await session.execute(base.limit(limit).offset(offset))).scalars().all()
         paths = {s.file_path for s in rows}
         pagerank_map, churn_map = await _file_signals(session, repo_id, paths)
         items = []
@@ -216,6 +246,7 @@ async def search_symbols(
                 )
             )
 
+    items = await _attach_blame(session, repo_id, items)
     next_offset = offset + limit if offset + limit < total else None
     return Paginated[SymbolResponse](
         items=items,
@@ -223,6 +254,118 @@ async def search_symbols(
         has_more=next_offset is not None,
         next_offset=next_offset,
     )
+
+
+@router.get("/detail")
+async def symbol_detail(
+    repo_id: str = Query(..., description="Repository ID"),
+    symbol_id: str = Query(..., description="Symbol ID ({path}::{name})"),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+) -> dict:
+    """Everything the symbol entity page renders, in one call.
+
+    Symbol row + function blame + callers/callees + graph metrics +
+    governing decisions + parent-file context.
+    """
+    result = await session.execute(
+        select(WikiSymbol).where(
+            WikiSymbol.repository_id == repo_id,
+            WikiSymbol.symbol_id == symbol_id,
+        )
+    )
+    sym = result.scalar_one_or_none()
+    if sym is None:
+        raise HTTPException(status_code=404, detail=f"Symbol not found: {symbol_id}")
+
+    symbol = SymbolResponse.from_orm(sym)
+    pagerank_map, churn_map = await _file_signals(session, repo_id, {sym.file_path})
+    pr, ep = pagerank_map.get(sym.file_path, (0.0, False))
+    components = compute_components(
+        file_pagerank=pr,
+        visibility=sym.visibility,
+        complexity=sym.complexity_estimate,
+        kind=sym.kind,
+        is_entry_point=ep,
+    )
+    churn, hot = churn_map.get(sym.file_path, (None, None))
+    symbol = _attach_signals(
+        symbol,
+        pagerank=pr,
+        is_entry_point=ep,
+        churn_percentile=churn,
+        is_hotspot=hot,
+        components=components,
+        score=components.score(),
+    )
+    [symbol] = await _attach_blame(session, repo_id, [symbol])
+
+    # Callers/callees from the symbol graph (call + heritage edges).
+    callers: list[dict] = []
+    callees: list[dict] = []
+    node = await crud.get_graph_node(session, repo_id, symbol_id)
+    if node is not None:
+        edges = await crud.get_graph_edges_for_node(
+            session, repo_id, symbol_id, direction="both", limit=40
+        )
+        other_ids = {
+            e.source_node_id if e.source_node_id != symbol_id else e.target_node_id for e in edges
+        }
+        node_map = await crud.get_graph_nodes_by_ids(session, repo_id, list(other_ids))
+        for e in edges:
+            inbound = e.target_node_id == symbol_id
+            other_id = e.source_node_id if inbound else e.target_node_id
+            other = node_map.get(other_id)
+            entry = {
+                "symbol_id": other_id,
+                "name": other.name
+                if other and other.name
+                else (other_id.split("::")[-1] if "::" in other_id else other_id),
+                "kind": other.kind if other else "unknown",
+                "file": other.file_path
+                if other and other.file_path
+                else (other_id.split("::")[0] if "::" in other_id else other_id),
+                "start_line": other.start_line if other else None,
+                "edge_type": e.edge_type or "calls",
+                "confidence": round(e.confidence or 0.0, 3),
+            }
+            (callers if inbound else callees).append(entry)
+        callers.sort(key=lambda x: (-x["confidence"], x["name"]))
+        callees.sort(key=lambda x: (-x["confidence"], x["name"]))
+
+    degrees = (
+        await crud.get_node_degree_counts(session, repo_id, symbol_id)
+        if node is not None
+        else {"in_degree": 0, "out_degree": 0}
+    )
+
+    governing = [
+        {"id": d.id, "title": d.title, "status": d.status}
+        for d in await get_governing_decisions(session, repo_id, symbol_id)
+    ]
+
+    # Parent-file context for the "open file page" affordance.
+    file_metrics = await crud.get_health_metrics(session, repo_id, file_paths=[sym.file_path])
+    git_meta = await crud.get_git_metadata(session, repo_id, sym.file_path)
+    file_context = {
+        "file_path": sym.file_path,
+        "health_score": round(file_metrics[0].score, 2) if file_metrics else None,
+        "is_hotspot": bool(git_meta.is_hotspot) if git_meta else None,
+        "primary_owner": git_meta.primary_owner_name if git_meta else None,
+        "language": sym.language,
+    }
+
+    return {
+        "symbol": symbol.model_dump(mode="json"),
+        "graph": {
+            "pagerank": round((node.pagerank if node else 0.0) or 0.0, 6),
+            "in_degree": degrees["in_degree"],
+            "out_degree": degrees["out_degree"],
+            "callers": callers,
+            "callees": callees,
+        },
+        "governing_decisions": governing,
+        "file_context": file_context,
+    }
 
 
 @router.get("/by-name/{name}", response_model=list[SymbolResponse])
