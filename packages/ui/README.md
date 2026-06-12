@@ -18,6 +18,7 @@ src/
   dead-code/     summary-bar, findings shells
   decisions/     decisions-table, evidence drawer, verification badge
   docs/          docs-tree, doc-nav, reader-persona
+  files/         file entity page (doc/health/history/coverage/graph tabs)
   git/           hotspot-table, ownership-table/treemap, churn viz, …
   graph/         graph-flow (Sigma), toolbar, legend, panels (+ sigma/)
   graph-primitives/
@@ -32,7 +33,7 @@ src/
   shared/        primitives: responsive-table, adaptive-panel, toast,
                  error-boundary, empty-state, api-error, stat-card,
                  entity links/hover cards, context-drawer, owl-loader
-  symbols/       symbol-table, symbol-drawer, graph/git panels
+  symbols/       symbol-table, symbol-drawer, symbol-page, graph/git panels
   ui/            Radix-CVA primitives
   wiki/          wiki-markdown, code-block, ToC, git-history, backlinks
   workspace/     multi-repo tables + summary

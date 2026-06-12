@@ -599,19 +599,6 @@ Collapsible legend that picks a key per `colorMode`. Imports the
 | `viewMode` | `ViewMode` | yes |
 | `communityLabels` | `Map<number, string>` | no |
 
-### `graph/graph-ego-sidebar` â€” `GraphEgoSidebar`
-
-Right-edge sidebar showing the centre node's neighborhood â€” inbound
-/ outbound counts, git metadata (owner, last commit, 30d commits),
-and a list of neighbour nodes. Consumes the canonical `EgoGraph`
-type, which now optionally carries `center_git_meta: GitMetadata`.
-
-| Prop | Type | Required |
-|------|------|----------|
-| `graph` | `EgoGraph` (`@repowise-dev/types/graph`) | yes |
-| `onClose` | `() => void` | yes |
-| `onNavigateToNode` | `(nodeId: string) => void` | no |
-
 ---
 
 ## `workspace/*` â€” Multi-repo workspace views
@@ -680,6 +667,29 @@ Presentational tiles that consume canonical engine artifacts. The
 formerly data-coupled trio (`active-job-banner`, `quick-actions`,
 `community-summary-grid`) now lives here as shells (documented under
 "Phase 2C" below); their SWR wrappers live in `packages/web`.
+
+UX-overhaul additions: `dashboard/health-score-badge`
+(`HealthScoreBadge` — compact header twin of `HealthScoreRing`: score
+chip + code-health trend sparkline + click-toggled breakdown),
+`dashboard/where-to-start` (`WhereToStartCard` — onboarding targets,
+rows link to the canonical file pages), and `dashboard/commits-mini`
+(`CommitsMini` — recent-commits feed for the Overview Pulse tab; rows
+link to `/commits?commit=`). `SavingsMini` accepts the structural
+`SavingsMiniData` slice (the overview-summary savings headline fits);
+`DecisionsTimeline` accepts the structural `DecisionsTimelineItem`.
+
+## `files/*` — File entity page
+
+The canonical "everything about this file" page used by
+`/repos/[id]/files/<path>`. `FilePage` (client) assembles the header
+(path, health badge, signal chips, governing decisions) plus Doc /
+Health / History / Coverage / Graph tabs; per-tab components are
+exported individually. Data arrives as one `FileDetailResponse`
+(`@repowise-dev/types/files`); the host supplies `docSlot` (rendered
+markdown), `coverageCodeHtml` (shiki output whose `.line` nodes carry
+`data-covered` attributes), and `onFindingStatusChange` for triage.
+`symbols/symbol-page` (`SymbolPage`) is the symbol-page sibling fed by
+`SymbolDetailResponse`.
 
 ### `dashboard/attention-panel` â€” `AttentionPanel`
 
