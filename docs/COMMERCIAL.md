@@ -119,18 +119,18 @@ the items that matter most to you can be prioritized.
 | Local dashboard (incl. local security pattern scan) | ✅ | ✅ |
 | Auto-sync (hooks, watcher, webhooks) | ✅ | ✅ |
 | Auto-generated CLAUDE.md | ✅ | ✅ |
-| Graph-aware enhanced security scanning | — | ✅ *(dev)* |
+| Graph-aware enhanced security scanning | — | ✅ *(GA on hosted)* |
 | Language-specific security rulesets | — | ✅ *(dev)* |
 | CVE-aware dependency analysis (KEV / EPSS / priority-scored) | — | ✅ *(GA on hosted)* |
 | Usage-aware CVE triage (imports × dead code) | — | ✅ *(GA on hosted)* |
-| Function-level reachability triage | — | ✅ *(planned)* |
+| Function-level reachability triage | — | ✅ *(GA on hosted — per-language coverage)* |
 | Secret detection across full git history | — | ✅ *(GA on hosted)* |
-| SBOM generation (CycloneDX) + diffs | — | ✅ *(GA on hosted)* |
-| Compliance reporting (PCI-DSS / SOC 2) | — | ✅ *(planned)* |
-| Audit trail (in-product + JSON / CSV export) | — | ✅ *(GA on hosted — security surface)* |
+| SBOM generation (CycloneDX) + VEX export + diffs | — | ✅ *(GA on hosted)* |
+| Compliance reporting (PCI-DSS / SOC 2) | — | ✅ *(GA on hosted — Teams)* |
+| Audit trail (in-product + JSON / CSV export + webhook stream) | — | ✅ *(GA on hosted — security surface)* |
 | Jira / Confluence integration | — | ✅ *(rolling out)* |
 | GitHub Enterprise / Azure DevOps / GitLab / Bitbucket | — | ✅ *(rolling out)* |
-| Slack / Teams alerting | — | ✅ *(rolling out)* |
+| Slack / Teams security alerting (signed webhooks) | — | ✅ *(GA on hosted — Teams)* |
 | SAML / OIDC SSO + SCIM | — | ✅ *(rolling out)* |
 | RBAC + multi-tenant | — | ✅ *(planned)* |
 | Air-gapped install bundle | — | ✅ *(planned)* |
@@ -146,13 +146,15 @@ the items that matter most to you can be prioritized.
 
 ### 5.1 Security & Compliance
 
-- **Security scanning layer** *(GA: local pattern scan; dev: graph-aware
-  enrichment)* — pattern-based detection for dangerous APIs (`eval`/`exec`,
-  `pickle.loads`, `shell=True`, `os.system`, hardcoded secrets, concat / f-string
-  SQL, `verify=False`, weak hashes) runs locally today in the dashboard's Security
-  view. Graph-aware enrichment — linking findings to graph nodes and surfacing them
-  through `get_risk` so AI agents see security context before modifying a file — is
-  in development.
+- **Security scanning layer** *(GA: local pattern scan; GA on hosted:
+  graph-aware enrichment)* — pattern-based detection for dangerous APIs
+  (`eval`/`exec`, `pickle.loads`, `shell=True`, `os.system`, hardcoded secrets,
+  concat / f-string SQL, `verify=False`, weak hashes) runs locally today in the
+  dashboard's Security view. On the hosted platform, findings are graph-aware:
+  every vulnerable import site carries hotspot and centrality context from the
+  code graph (feeding a bounded priority bump), and AI agents see security
+  state before modifying a file through the hosted `get_security` MCP tool and
+  the security section `get_risk` attaches.
 - **Language-specific security rulesets** *(dev)* — rulesets built on top of the
   per-language dynamic-hint extractors and framework edges. For .NET, planned checks
   include `[Authorize]` coverage on controllers and Minimal API endpoints,
@@ -172,24 +174,39 @@ the items that matter most to you can be prioritized.
   sites as clickable evidence), cross-referencing the existing parse and
   dead-code layers. Unmappable packages are labeled `unknown` honestly — never
   guessed.
-- **Function-level reachability triage** *(planned)* — the next precision step:
-  classifying CVEs by whether the vulnerable *function* is reachable through the
-  resolved call graph. Precision is language- and pattern-dependent; we report it
-  honestly per language rather than quoting one global number.
-- **SBOM generation** *(available on the hosted platform, Pro+)* — CycloneDX 1.6
-  output per snapshot with per-dependency license detection and license-risk
-  classification, downloadable in-product, plus dependency diffs between any two
-  snapshots. SPDX and cross-format conversion on the extended roadmap.
-- **Compliance reporting** *(planned)* — framework-mapping reports tying findings
-  back to specific files, owners, and decisions. Initial scope: **PCI-DSS** and
-  **SOC 2** control coverage. ISO 27001 Annex A and GDPR / data-residency mappings on
-  the extended roadmap — we'd rather ship two solid mappings than four shallow ones.
+- **Function-level reachability triage** *(available on the hosted platform,
+  Pro+)* — classifies CVEs by whether the advisory's affected packages or
+  symbols are actually imported, crossing OSV symbol data with the per-import
+  names the indexer captures. Coverage is per-ecosystem and reported honestly
+  in-product: Go is import-path-reliable (the Go vulndb lists affected
+  packages per advisory), PyPI / npm / cargo are assessed only when both the
+  advisory and the code name symbols, and other ecosystems stay at
+  package-level triage. Provably-unreachable findings are discounted, never
+  hidden; nothing is ever claimed without evidence on both sides.
+- **SBOM generation + VEX export** *(available on the hosted platform, Pro+)* —
+  CycloneDX 1.6 SBOM per snapshot with per-dependency license detection and
+  license-risk classification, downloadable in-product, plus dependency diffs
+  between any two snapshots — and a CycloneDX 1.6 **VEX** document that maps
+  the platform's triage, reachability, and human status decisions onto the
+  standard impact-analysis states, generated fresh at download so it always
+  reflects current triage. SPDX and cross-format conversion on the extended
+  roadmap.
+- **Compliance reporting** *(available on the hosted platform, Teams+)* —
+  **PCI-DSS 4.0** and **SOC 2** control-coverage reports derived from the live
+  security findings, with per-control evidence drill-ins and JSON / Markdown
+  export. Framed honestly in-product and in every export: coverage signals,
+  not an audit or certification — controls automated findings cannot evidence
+  are marked for manual attestation rather than silently passed. ISO 27001
+  Annex A and GDPR / data-residency mappings on the extended roadmap — we'd
+  rather ship two solid mappings than four shallow ones.
 - **Audit trail** *(available on the hosted platform for the security surface,
   Teams+)* — security reads and actions (scans triggered, vulnerability and
-  secret views, SBOM exports, finding-status changes) logged insert-only with
-  user, IP, and timestamp, queryable in-product and exportable to JSON / CSV.
-  Coverage beyond the security surface (decisions, overrides) is in development;
-  streaming export to SIEM (Splunk / Datadog / Elastic / syslog) on the roadmap.
+  secret views, SBOM / VEX exports, compliance views, finding-status changes,
+  and MCP reads by AI agents) logged insert-only with user, IP, and timestamp,
+  queryable in-product and exportable to JSON / CSV — plus an opt-in
+  SIEM-lite stream that forwards audit events to any HTTPS endpoint as signed
+  webhooks. Coverage beyond the security surface (decisions, overrides) is in
+  development; native Splunk / Datadog / Elastic connectors on the roadmap.
 - **Secret-in-code detection** *(available on the hosted platform, Pro+)* —
   scanning across full git history (not just `HEAD`), with live-at-`HEAD`
   flagging and incremental re-scans. Only a fingerprint and a redacted preview
@@ -211,8 +228,13 @@ integrations beyond this list are available on request.
   PR-comment bot that posts blast-radius and reviewer suggestions, and a
   branch-protection check that blocks merges touching hotspots without a reviewer
   from the ownership list.
-- **Slack & Microsoft Teams** — alerts on hotspot drift, bus-factor warnings,
-  decision staleness, and security findings, routed by ownership.
+- **Slack & Microsoft Teams** — security alerting is available today on the
+  hosted platform (Teams+) as HMAC-signed webhooks with a Slack-compatible
+  format (works with Slack, Microsoft Teams, and Mattermost inbound
+  webhooks): new critical CVEs, live secrets, failed scans, and
+  rotation-overdue reminders, plus the opt-in audit-event stream. Alerts on
+  hotspot drift, bus-factor warnings, and decision staleness are rolling out
+  on the same plumbing, routed by ownership.
 - **SAML / OIDC SSO** — Okta, Entra ID, Auth0, Google Workspace, generic SAML 2.0.
 - **SCIM provisioning** — automatic user / group lifecycle.
 
