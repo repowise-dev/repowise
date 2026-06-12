@@ -15,6 +15,8 @@ interface GraphKeyboardShortcutOptions {
    *  the default clear. Used to dismiss the top UI layer first: clear an open
    *  selection/panel, else collapse the most recent constellation hub. */
   onEscape?: (() => boolean) | undefined;
+  /** `?` toggles the shortcut help overlay. */
+  onToggleHelp?: (() => void) | undefined;
 }
 
 /**
@@ -32,6 +34,7 @@ export function useGraphKeyboardShortcuts(opts: GraphKeyboardShortcutOptions): v
     setCommunityPanelId,
     setColorMode,
     onEscape,
+    onToggleHelp,
   } = opts;
 
   useEffect(() => {
@@ -73,6 +76,10 @@ export function useGraphKeyboardShortcuts(opts: GraphKeyboardShortcutOptions): v
             .querySelector<HTMLInputElement>('[aria-label="Search graph nodes"]')
             ?.focus();
           break;
+        case "?":
+          e.preventDefault();
+          onToggleHelp?.();
+          break;
       }
 
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
@@ -95,5 +102,6 @@ export function useGraphKeyboardShortcuts(opts: GraphKeyboardShortcutOptions): v
     setCommunityPanelId,
     setColorMode,
     onEscape,
+    onToggleHelp,
   ]);
 }

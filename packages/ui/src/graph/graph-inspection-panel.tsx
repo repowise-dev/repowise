@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, memo } from "react";
+import { useMemo, useRef, memo } from "react";
 import {
   X,
   FileText,
@@ -82,6 +82,7 @@ export const GraphInspectionPanel = memo(function GraphInspectionPanel({
   egoVisibleCount,
 }: GraphInspectionPanelProps) {
   const communityFamily = useCommunityFamilies();
+  const touchStartY = useRef<number | null>(null);
   const neighbors = useMemo(() => {
     if (!graph || !graph.hasNode(nodeId)) return [];
     const result: NeighborInfo[] = [];
@@ -135,8 +136,23 @@ export const GraphInspectionPanel = memo(function GraphInspectionPanel({
 
   return (
     <div
-      className="absolute right-0 top-0 bottom-0 w-full sm:w-[300px] border-l border-[var(--color-border-default)] bg-[var(--color-bg-surface)] z-20 flex flex-col shadow-xl shadow-black/20 animate-in slide-in-from-right duration-200"
+      // Right panel on sm+; bottom sheet (drag handle + swipe-dismiss) below.
+      className="absolute inset-x-0 bottom-0 top-auto max-h-[70%] rounded-t-xl border-t border-[var(--color-border-default)] bg-[var(--color-bg-surface)] z-20 flex flex-col shadow-xl shadow-black/20 animate-in slide-in-from-bottom sm:slide-in-from-bottom-0 sm:slide-in-from-right duration-200 sm:inset-x-auto sm:right-0 sm:top-0 sm:bottom-0 sm:left-auto sm:w-[300px] sm:max-h-none sm:rounded-none sm:border-t-0 sm:border-l"
+      onTouchStart={(e) => {
+        touchStartY.current = e.touches[0]?.clientY ?? null;
+      }}
+      onTouchEnd={(e) => {
+        const start = touchStartY.current;
+        touchStartY.current = null;
+        if (start == null || window.innerWidth >= 640) return;
+        const end = e.changedTouches[0]?.clientY ?? start;
+        if (end - start > 80) onClose();
+      }}
     >
+      {/* Drag handle (mobile sheet only) */}
+      <div className="flex justify-center py-1.5 sm:hidden" aria-hidden>
+        <span className="h-1 w-9 rounded-full bg-[var(--color-border-default)]" />
+      </div>
       {/* Header */}
       <div className="flex items-start gap-2 px-4 py-3 border-b border-[var(--color-border-default)]">
         {headerIcon}

@@ -66,6 +66,8 @@
     "./c4": "./src/c4/index.ts",
     "./c4/export": "./src/c4/export/index.ts",
     "./c4/*": "./src/c4/*.tsx",
+    "./dependencies": "./src/dependencies/index.ts",
+    "./dependencies/*": "./src/dependencies/*.tsx",
     "./costs": "./src/costs/index.ts",
     "./costs/*": "./src/costs/*.tsx",
     "./security": "./src/security/index.ts",

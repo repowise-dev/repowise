@@ -45,8 +45,10 @@ describe("PathFinderModal", () => {
     });
     render(<PathFinderModal />);
     expect(screen.getByText("Path Finder")).toBeTruthy();
-    const selects = screen.getAllByRole("combobox");
-    expect(selects).toHaveLength(2);
+    // Node pickers are typeahead inputs now (the old <select> over every
+    // node didn't scale past small repos).
+    expect(screen.getByLabelText("From node")).toBeTruthy();
+    expect(screen.getByLabelText("To node")).toBeTruthy();
   });
 
   it("closes when close button is clicked", () => {

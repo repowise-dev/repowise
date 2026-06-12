@@ -48,6 +48,8 @@ export interface GraphFlowProps {
    *  track the current scope so it can conditionally fetch the capped full
    *  graph (and gate the truncation banner) only for scopes that render it. */
   onViewModeChange?: (mode: ViewMode) => void;
+  /** Fired when the node color mode changes so the page can sync the URL. */
+  onColorModeChange?: GraphFlowShellProps["onColorModeChange"];
 }
 
 export function GraphFlow({
@@ -60,6 +62,7 @@ export function GraphFlow({
   onNodeViewDocs,
   onCommunityPanelOpen,
   onViewModeChange,
+  onColorModeChange,
 }: GraphFlowProps) {
   const router = useRouter();
   // Constellation (Knowledge Graph) is the default scope.
@@ -135,6 +138,7 @@ export function GraphFlow({
         setViewMode(mode);
         onViewModeChange?.(mode);
       }}
+      onColorModeChange={onColorModeChange}
       onModulePathChange={setModulePath}
       onExpandedModulesChange={(expanded) => setHasExpandedModules(expanded.size > 0)}
       onNodeClick={onNodeClick}

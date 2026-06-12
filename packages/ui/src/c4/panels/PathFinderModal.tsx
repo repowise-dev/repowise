@@ -1,10 +1,127 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useArchitectureStore } from "../store/use-architecture-store";
 import { findShortestPath } from "../utils/graph-algorithms";
 import { getTone } from "../../graph-primitives/tone-styles";
 import { Badge } from "./panel-atoms";
+import type { ArchNode } from "../types";
+
+/** Typeahead node picker — replaces the unscalable <select> over all nodes. */
+function NodeCombobox({
+  label,
+  nodes,
+  value,
+  onSelect,
+}: {
+  label: string;
+  nodes: ArchNode[];
+  value: string;
+  onSelect: (nodeId: string) => void;
+}) {
+  const selected = useMemo(
+    () => nodes.find((n) => n.id === value) ?? null,
+    [nodes, value],
+  );
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+
+  const matches = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return nodes.slice(0, 20);
+    return nodes
+      .filter(
+        (n) =>
+          n.name.toLowerCase().includes(q) || n.id.toLowerCase().includes(q),
+      )
+      .slice(0, 20);
+  }, [nodes, query]);
+
+  return (
+    <div style={{ marginBottom: 12, position: "relative" }}>
+      <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 4 }}>{label}</div>
+      <input
+        type="text"
+        value={open ? query : (selected?.name ?? "")}
+        placeholder="Type to search nodes…"
+        aria-label={`${label} node`}
+        onFocus={() => {
+          setOpen(true);
+          setQuery("");
+        }}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        onChange={(e) => setQuery(e.target.value)}
+        style={{
+          width: "100%",
+          padding: "8px 12px",
+          background: "var(--color-bg-surface)",
+          color: "var(--color-text-primary)",
+          border: "1px solid var(--color-border-default)",
+          borderRadius: 6,
+          fontSize: 13,
+          outline: "none",
+        }}
+      />
+      {open && (
+        <div
+          style={{
+            position: "absolute",
+            top: "100%",
+            left: 0,
+            right: 0,
+            marginTop: 4,
+            maxHeight: 200,
+            overflowY: "auto",
+            background: "var(--color-bg-elevated)",
+            border: "1px solid var(--color-border-default)",
+            borderRadius: 6,
+            zIndex: 10,
+            boxShadow: "0 8px 24px rgba(0,0,0,0.25)",
+          }}
+        >
+          {matches.length === 0 ? (
+            <div style={{ padding: "8px 12px", fontSize: 12, opacity: 0.6 }}>
+              No matching nodes
+            </div>
+          ) : (
+            matches.map((n) => {
+              const tone = getTone(n.node_type);
+              return (
+                <button
+                  key={n.id}
+                  type="button"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    onSelect(n.id);
+                    setOpen(false);
+                  }}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    width: "100%",
+                    textAlign: "left",
+                    padding: "7px 12px",
+                    background: "none",
+                    border: "none",
+                    cursor: "pointer",
+                    color: "var(--color-text-primary)",
+                    fontSize: 13,
+                  }}
+                >
+                  <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {n.name}
+                  </span>
+                  <Badge label={n.node_type} color={tone.text} bg={tone.bg} />
+                </button>
+              );
+            })
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export function PathFinderModal() {
   const view = useArchitectureStore((s) => s.view);
@@ -35,16 +152,6 @@ export function PathFinderModal() {
   const handleNodeClick = (nodeId: string) => {
     selectNode(nodeId);
     setPathFinderOpen(false);
-  };
-
-  const selectStyle: React.CSSProperties = {
-    width: "100%",
-    padding: "8px 12px",
-    background: "var(--color-bg-surface)",
-    color: "var(--color-text-primary)",
-    border: "1px solid var(--color-border-default)",
-    borderRadius: 6,
-    fontSize: 13,
   };
 
   return (
@@ -100,43 +207,24 @@ export function PathFinderModal() {
           </button>
         </div>
 
-        <div style={{ marginBottom: 12 }}>
-          <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 4 }}>From</div>
-          <select
-            value={fromId}
-            onChange={(e) => {
-              setFromId(e.target.value);
-              setResult(undefined);
-            }}
-            style={selectStyle}
-          >
-            <option value="">Select a node...</option>
-            {nodes.map((n) => (
-              <option key={n.id} value={n.id}>
-                {n.name}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div style={{ marginBottom: 16 }}>
-          <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 4 }}>To</div>
-          <select
-            value={toId}
-            onChange={(e) => {
-              setToId(e.target.value);
-              setResult(undefined);
-            }}
-            style={selectStyle}
-          >
-            <option value="">Select a node...</option>
-            {nodes.map((n) => (
-              <option key={n.id} value={n.id}>
-                {n.name}
-              </option>
-            ))}
-          </select>
-        </div>
+        <NodeCombobox
+          label="From"
+          nodes={nodes}
+          value={fromId}
+          onSelect={(id) => {
+            setFromId(id);
+            setResult(undefined);
+          }}
+        />
+        <NodeCombobox
+          label="To"
+          nodes={nodes}
+          value={toId}
+          onSelect={(id) => {
+            setToId(id);
+            setResult(undefined);
+          }}
+        />
 
         <button
           type="button"

@@ -19,8 +19,10 @@ import {
   Waypoints,
   Sun,
   Moon,
+  SlidersHorizontal,
+  HelpCircle,
 } from "lucide-react";
-import { memo } from "react";
+import { memo, useState } from "react";
 import { Button } from "../ui/button";
 
 export type ColorMode = "language" | "community" | "risk";
@@ -89,6 +91,8 @@ interface GraphToolbarProps {
   onLayoutModeChange: (mode: LayoutMode) => void;
   graphTheme: GraphTheme;
   onGraphThemeChange: (theme: GraphTheme) => void;
+  /** Opens the keyboard-shortcut help overlay (also bound to `?`). */
+  onToggleHelp?: () => void;
 }
 
 // Scope = which subset of nodes are drawn. Mutually exclusive.
@@ -144,7 +148,12 @@ export const GraphToolbar = memo(function GraphToolbar({
   onLayoutModeChange,
   graphTheme,
   onGraphThemeChange,
+  onToggleHelp,
 }: GraphToolbarProps) {
+  // Below sm the full control cluster is too much chrome over the canvas —
+  // collapse it behind a single toggle, keeping search always reachable.
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const clusterVisibility = mobileOpen ? "flex" : "hidden sm:flex";
   // Derive scope + overlays from the legacy ViewMode so this component remains
   // the single source of truth — callers can continue to round-trip the
   // wire-format ``viewMode`` value through query params without translation.
@@ -168,8 +177,23 @@ export const GraphToolbar = memo(function GraphToolbar({
 
   return (
     <div className="flex flex-col gap-1.5 items-end">
+      {/* Mobile: single toggle for the control cluster */}
+      <button
+        onClick={() => setMobileOpen((s) => !s)}
+        className={`flex items-center gap-1.5 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm px-2 py-1.5 text-[10px] font-medium shadow-lg shadow-black/20 sm:hidden ${
+          mobileOpen
+            ? "text-[var(--color-accent-primary)]"
+            : "text-[var(--color-text-secondary)]"
+        }`}
+        aria-expanded={mobileOpen}
+        aria-label="Graph controls"
+      >
+        <SlidersHorizontal className="w-3 h-3" />
+        Controls
+      </button>
+
       {/* Scope (mutually exclusive) */}
-      <div className="flex gap-0.5 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm p-1 shadow-lg shadow-black/20">
+      <div className={`${clusterVisibility} gap-0.5 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm p-1 shadow-lg shadow-black/20`}>
         {SCOPES.map((m) => {
           const Icon = m.icon;
           const isActive = activeScope === m.id;
@@ -195,7 +219,7 @@ export const GraphToolbar = memo(function GraphToolbar({
 
       {/* Overlays (additive signal chips) — not applicable in the constellation */}
       {!isConstellation && (
-      <div className="flex gap-0.5 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm p-1 shadow-lg shadow-black/20">
+      <div className={`${clusterVisibility} gap-0.5 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm p-1 shadow-lg shadow-black/20`}>
         {OVERLAYS.map((o) => {
           const Icon = o.icon;
           const isActive = activeOverlays.has(o.id);
@@ -220,7 +244,7 @@ export const GraphToolbar = memo(function GraphToolbar({
       </div>
       )}
 
-      <div className="flex gap-1.5 items-center">
+      <div className={`${clusterVisibility} gap-1.5 items-center`}>
         <div className="flex gap-0.5 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm p-1 shadow-lg shadow-black/20">
           {isConstellation ? (
             // Constellation is locked to the radial layout; show a single
@@ -345,6 +369,18 @@ export const GraphToolbar = memo(function GraphToolbar({
           >
             <Maximize className="w-3.5 h-3.5" />
           </Button>
+          {onToggleHelp && (
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={onToggleHelp}
+              className="h-7 w-7 p-0 text-[var(--color-text-tertiary)]"
+              title="Keyboard shortcuts (?)"
+              aria-label="Keyboard shortcuts"
+            >
+              <HelpCircle className="w-3.5 h-3.5" />
+            </Button>
+          )}
         </div>
       </div>
 

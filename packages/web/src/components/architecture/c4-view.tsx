@@ -11,7 +11,7 @@
  * refresh + share preserve the view state.
  */
 
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useQueryState, parseAsInteger, parseAsString, parseAsStringLiteral } from "nuqs";
 import {
   C4Diagram,
@@ -51,7 +51,10 @@ import { C4DetailPanelHost } from "@/components/c4/c4-detail-panel-host";
 import { ArchDetailPanelHost } from "@/components/c4/arch-detail-panel-host";
 import { EmptyState } from "@repowise-dev/ui/shared/empty-state";
 import { OwlLoader } from "@repowise-dev/ui/shared/owl-loader";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, Compass } from "lucide-react";
+
+// First-visit discoverability flag for the guided tour.
+const TOUR_SEEN_KEY = "repowise:arch-tour-seen";
 
 const MODE_VALUES = ["c4", "architecture"] as const;
 const VIEW_VALUES = ["overview", "groups", "detail"] as const;
@@ -65,17 +68,20 @@ function clampLevel(n: number | null): C4Level {
   return n === 1 ? 1 : n === 3 ? 3 : 2;
 }
 
-export function C4View({ repoId }: { repoId: string }) {
+export function C4View({ repoId, legacy }: { repoId: string; legacy?: boolean }) {
   const { repo } = useRepo(repoId);
 
+  // The hosting Architecture page decides Layers vs legacy C4 via `?view=`;
+  // `?mode=c4` is honored as a legacy deep-link fallback.
   const [mode] = useQueryState(
     "mode",
     parseAsStringLiteral(MODE_VALUES).withDefault("architecture"),
   );
+  const showLegacy = legacy ?? mode === "c4";
 
   return (
     <div className="flex flex-col h-full">
-      {mode === "c4" ? (
+      {showLegacy ? (
         <LegacyC4View repoId={repoId} repoName={repo?.name ?? "System"} />
       ) : (
         <ArchitectureViewPage repoId={repoId} repoName={repo?.name ?? "System"} />
@@ -126,6 +132,19 @@ function ArchitectureViewInner({ repoId, repoName }: { repoId: string; repoName:
   const setPersona = useArchitectureStore((s) => s.setPersona);
   const setReactFlowInstance = useArchitectureStore((s) => s.setReactFlowInstance);
   const pathFinderOpen = useArchitectureStore((s) => s.pathFinderOpen);
+  const tourActive = useArchitectureStore((s) => s.tourActive);
+  const startTour = useArchitectureStore((s) => s.startTour);
+
+  // "Take the tour" is highlighted until first taken (localStorage flag).
+  const [tourSeen, setTourSeen] = useState(true);
+  useEffect(() => {
+    setTourSeen(localStorage.getItem(TOUR_SEEN_KEY) === "1");
+  }, []);
+  const handleStartTour = useCallback(() => {
+    localStorage.setItem(TOUR_SEEN_KEY, "1");
+    setTourSeen(true);
+    startTour();
+  }, [startTour]);
 
   useEffect(() => {
     if (view) setView(view);
@@ -276,13 +295,26 @@ function ArchitectureViewInner({ repoId, repoName }: { repoId: string; repoName:
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-lg font-semibold text-[var(--color-text-primary)]">
-              Knowledge Graph
+              Layers
             </h1>
             <p className="text-xs text-[var(--color-text-secondary)] mt-0.5">
-              {repoName} — layers, nodes, and relationships.
+              {repoName} — curated layered view of the system.
             </p>
           </div>
           <div className="flex items-center gap-3">
+            {view && view.tour.length > 0 && !tourActive && (
+              <button
+                onClick={handleStartTour}
+                className={`flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+                  tourSeen
+                    ? "border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-elevated)]"
+                    : "border-[var(--color-accent-primary)]/50 bg-[var(--color-accent-primary)]/10 text-[var(--color-accent-primary)] hover:bg-[var(--color-accent-primary)]/20"
+                }`}
+              >
+                <Compass className="h-3.5 w-3.5" />
+                Take the tour
+              </button>
+            )}
             <PersonaSelector />
             <NodeTypeCategoryFilters />
           </div>
@@ -451,7 +483,7 @@ function LegacyC4View({ repoId, repoName }: { repoId: string; repoName: string }
           </div>
           {/* Legacy mode is frozen (locked decision 4) — point at the new view. */}
           <a
-            href="?mode=architecture"
+            href="?view=layers"
             className="shrink-0 rounded-full border border-[var(--color-accent-primary,#f59520)]/50 bg-[var(--color-accent-primary,#f59520)]/10 px-3 py-1 text-xs text-[var(--color-accent-primary,#f59520)] hover:bg-[var(--color-accent-primary,#f59520)]/20"
           >
             Try the new architecture view →

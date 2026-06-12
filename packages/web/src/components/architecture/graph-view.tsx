@@ -30,7 +30,18 @@ const VALID_VIEW_MODES = new Set<ViewMode>([
 // fetch the full graph — nor show its truncation banner — for these scopes.
 const SCOPES_WITHOUT_FULL_GRAPH = new Set<ViewMode>(["architecture", "module"]);
 
-export function GraphView({ repoId }: { repoId: string }) {
+export function GraphView({
+  repoId,
+  scope = "map",
+  onScopeViewChange,
+}: {
+  repoId: string;
+  /** Which top-level Architecture mode hosts the canvas: Map = constellation,
+   *  Explore = file/module graphs. One mounted component serves both. */
+  scope?: "map" | "explore";
+  /** Scope switches inside the canvas (toolbar) re-sync `?view=` upstream. */
+  onScopeViewChange?: (view: "map" | "explore") => void;
+}) {
   const searchParams = useSearchParams();
 
   const viewModeParam = searchParams.get("viewMode");
@@ -45,17 +56,25 @@ export function GraphView({ repoId }: { repoId: string }) {
     : undefined;
 
   const [, setSelectedNode] = useQueryState("node");
+  const [, setColorModeParam] = useQueryState("colorMode");
+  const [, setViewModeParam] = useQueryState("viewMode");
   const [docNodeId, setDocNodeId] = useState<string | null>(null);
   const [graphLimit, setGraphLimit] = useState<number | undefined>(undefined);
 
-  // Track the live scope so we only fetch the capped full graph (and render its
-  // truncation banner) for scopes that actually use it. Constellation
-  // ("architecture") is the default, and — like "module" — fetches its own
-  // endpoint inside GraphFlow, so the page must stay off /api/graph there.
-  // A pinned node forces the "full" scope (see initialViewMode below).
-  const [viewMode, setViewMode] = useState<ViewMode>(
-    initialNode ? "full" : initialViewMode ?? "architecture",
-  );
+  // The scope the canvas mounts into: a pinned node forces "full"; an explicit
+  // ?viewMode= wins; otherwise the hosting mode decides (Map → constellation,
+  // Explore → full graph).
+  const mountViewMode: ViewMode = initialNode
+    ? "full"
+    : initialViewMode ?? (scope === "explore" ? "full" : "architecture");
+
+  // Track the live scope so we only fetch the capped full graph (and render
+  // its truncation banner) for scopes that actually use it. Remount the canvas
+  // (flowKey) when the truncation banner jumps to the constellation — that is
+  // a host-initiated scope change, which GraphFlow only reads at mount.
+  const [viewMode, setViewMode] = useState<ViewMode>(mountViewMode);
+  const [flowKey, setFlowKey] = useState(0);
+  const [forcedViewMode, setForcedViewMode] = useState<ViewMode | null>(null);
   const usesFullGraph = !SCOPES_WITHOUT_FULL_GRAPH.has(viewMode);
 
   const { data: graphData } = useSWR<GraphExportResponse>(
@@ -92,15 +111,47 @@ export function GraphView({ repoId }: { repoId: string }) {
     setDocNodeId(null);
   }, []);
 
+  // In-canvas scope switches keep the URL honest: `?viewMode=` mirrors the
+  // graph scope and `?view=` flips between Map and Explore.
+  const handleViewModeChange = useCallback(
+    (mode: ViewMode) => {
+      setViewMode(mode);
+      void setViewModeParam(mode === "architecture" ? null : mode);
+      onScopeViewChange?.(mode === "architecture" ? "map" : "explore");
+    },
+    [onScopeViewChange, setViewModeParam],
+  );
+
+  // Color-mode changes (toolbar or 1/2/3 keys) sync to the URL so shared
+  // links restore the same coloring.
+  const handleColorModeChange = useCallback(
+    (mode: ColorMode) => {
+      void setColorModeParam(mode);
+    },
+    [setColorModeParam],
+  );
+
+  // "Switch to the Knowledge Graph" from the truncation banner: remount the
+  // canvas in the constellation scope. No page reload.
+  const handleSwitchToArchitecture = useCallback(() => {
+    setForcedViewMode("architecture");
+    setFlowKey((k) => k + 1);
+    handleViewModeChange("architecture");
+  }, [handleViewModeChange]);
+
+  const isMap = scope === "map" && !initialNode;
+
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
       <div className="shrink-0 px-4 sm:px-6 py-3 border-b border-[var(--color-border-default)]">
         <h1 className="text-lg font-semibold text-[var(--color-text-primary)]">
-          Dependency Graph
+          {isMap ? "Architecture Map" : "Dependency Explorer"}
         </h1>
         <p className="text-xs text-[var(--color-text-secondary)] mt-0.5">
-          Explore dependencies and trace paths between files
+          {isMap
+            ? "Detected communities and how they connect — double-click a hub to blossom it"
+            : "Explore dependencies, overlays and trace paths between files"}
         </p>
       </div>
 
@@ -114,12 +165,7 @@ export function GraphView({ repoId }: { repoId: string }) {
             total={graphData.total_node_count}
             limit={graphLimit ?? graphData.nodes.length}
             onLoadMore={(nextLimit) => setGraphLimit(nextLimit)}
-            onSwitchToArchitecture={() => {
-              const url = new URL(window.location.href);
-              url.searchParams.set("viewMode", "architecture");
-              window.history.replaceState({}, "", url.toString());
-              window.location.reload();
-            }}
+            onSwitchToArchitecture={handleSwitchToArchitecture}
           />
         </div>
       )}
@@ -128,14 +174,16 @@ export function GraphView({ repoId }: { repoId: string }) {
       <div className="flex-1 overflow-hidden p-3">
         <div className="h-full w-full rounded-lg border border-[var(--color-border-default)] overflow-hidden relative">
           <GraphFlow
+            key={flowKey}
             repoId={repoId}
-            initialViewMode={initialNode ? "full" : initialViewMode}
+            initialViewMode={forcedViewMode ?? mountViewMode}
             initialColorMode={initialColorMode}
             initialSelectedNode={initialNode}
             onNodeClick={handleNodeClick}
             onNodeViewDocs={handleNodeViewDocs}
             onCommunityPanelOpen={handleCommunityPanelOpen}
-            onViewModeChange={setViewMode}
+            onViewModeChange={handleViewModeChange}
+            onColorModeChange={handleColorModeChange}
           />
 
           {/* Doc panel — shows on file click. Single right-rail surface. */}

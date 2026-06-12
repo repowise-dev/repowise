@@ -23,6 +23,16 @@ const HUB_FOCUS_RATIO = 0.45;
 // Below this node count file graphs build synchronously; at or above it we
 // build in chunks off the critical path (see sigmaGraph below).
 const ASYNC_BUILD_THRESHOLD = 1000;
+
+/** Deterministic 0–1 value from a string (FNV-1a) — stable layout jitter. */
+function hashUnit(s: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0) / 0xffffffff;
+}
 import { useExpandedModules } from "./use-expanded-modules";
 import { useExpandedHubs } from "./use-expanded-hubs";
 import { traceToEdgeKeys } from "./graph-flow-helpers";
@@ -34,6 +44,7 @@ import { GraphToolbar, type ColorMode, type ViewMode, type LayoutMode, type Grap
 import { GraphLegend } from "./graph-legend";
 import { GraphContextMenu } from "./graph-context-menu";
 import { GraphInspectionPanel } from "./graph-inspection-panel";
+import { GraphShortcutHelp } from "./graph-shortcut-help";
 import type {
   GraphExport,
   ModuleGraph,
@@ -96,6 +107,9 @@ export interface GraphFlowProps {
   initialColorMode?: ColorMode;
   initialSelectedNode?: string | null;
   onViewModeChange?: (mode: ViewMode) => void;
+  /** Fired when the node color mode changes (toolbar or 1/2/3 shortcut) so
+   *  hosts can sync it to the URL. */
+  onColorModeChange?: (mode: ColorMode) => void;
   onModulePathChange?: (path: string[]) => void;
   onExpandedModulesChange?: (expanded: Set<string>) => void;
   onNodeClick?: (nodeId: string, nodeType: string) => void | Promise<void>;
@@ -146,6 +160,7 @@ export function GraphFlow(props: GraphFlowProps) {
     initialColorMode,
     initialSelectedNode,
     onViewModeChange,
+    onColorModeChange,
     onModulePathChange,
     onExpandedModulesChange,
     onNodeClick,
@@ -167,6 +182,7 @@ export function GraphFlow(props: GraphFlowProps) {
   const [highlightedPath, setHighlightedPath] = useState<Set<string>>(new Set());
   const [highlightedEdges, setHighlightedEdges] = useState<Set<string>>(new Set());
   const [showPathFinder, setShowPathFinder] = useState(false);
+  const [showShortcutHelp, setShowShortcutHelp] = useState(false);
   // Constellation is the default scope → its fixed radial layout.
   const [layoutMode, setLayoutMode] = useState<LayoutMode>(
     (initialViewMode ?? "architecture") === "architecture" ? "radial" : "force",
@@ -469,8 +485,10 @@ export function GraphFlow(props: GraphFlowProps) {
           const color = sigmaLanguageColor(node.language);
 
           graph.addNode(node.node_id, {
-            x: modX + (Math.random() - 0.5) * jitter,
-            y: modY + (Math.random() - 0.5) * jitter,
+            // Deterministic per-node jitter (id hash) so expanding a module
+            // always blossoms its files into the same positions.
+            x: modX + (hashUnit(node.node_id) - 0.5) * jitter,
+            y: modY + (hashUnit(node.node_id + "y") - 0.5) * jitter,
             size,
             color,
             label: node.node_id.split("/").pop() ?? node.node_id,
@@ -804,6 +822,10 @@ export function GraphFlow(props: GraphFlowProps) {
   //   2. else any hub expanded → collapse the most recent
   //   3. else → fall through to the default clear (search, ctx menu, …)
   const handleEscapeCollapse = useCallback((): boolean => {
+    if (showShortcutHelp) {
+      setShowShortcutHelp(false);
+      return true;
+    }
     if (selectedNodeId !== null || communityPanelId !== null) {
       setSelectedNodeId(null);
       setCommunityPanelId(null);
@@ -815,9 +837,13 @@ export function GraphFlow(props: GraphFlowProps) {
       return true;
     }
     return false;
-  }, [selectedNodeId, communityPanelId, isConstellation, expandedHubs.length, collapseLast]);
+  }, [showShortcutHelp, selectedNodeId, communityPanelId, isConstellation, expandedHubs.length, collapseLast]);
 
-  // Global keyboard shortcuts (f/Escape/1-3//, cmd+k)
+  const handleToggleShortcutHelp = useCallback(() => {
+    setShowShortcutHelp((s) => !s);
+  }, []);
+
+  // Global keyboard shortcuts (f/Escape/1-3//, cmd+k, ?)
   useGraphKeyboardShortcuts({
     sigmaRef,
     setSelectedNodeId,
@@ -827,7 +853,20 @@ export function GraphFlow(props: GraphFlowProps) {
     setCommunityPanelId,
     setColorMode,
     onEscape: handleEscapeCollapse,
+    onToggleHelp: handleToggleShortcutHelp,
   });
+
+  // Surface color-mode changes (toolbar or 1/2/3 shortcut) to the host so it
+  // can sync the URL. Skip the mount-time report — only real changes count.
+  const colorModeReported = useRef(false);
+  useEffect(() => {
+    if (!colorModeReported.current) {
+      colorModeReported.current = true;
+      return;
+    }
+    onColorModeChange?.(colorMode);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [colorMode]);
 
   const handlePathFound = useCallback(
     (pathNodes: string[]) => {
@@ -918,6 +957,8 @@ export function GraphFlow(props: GraphFlowProps) {
     if (selectedNodeId) {
       setPathFrom(selectedNodeId);
       setShowPathFinder(true);
+      setShowFlows(false);
+      setActiveFlowIdx(null);
     }
   }, [selectedNodeId]);
 
@@ -954,12 +995,22 @@ export function GraphFlow(props: GraphFlowProps) {
   }, [ctxMenu, isModuleView, onNodeClick, setCtxMenu]);
 
   const handleCtxPathFrom = useCallback(() => {
-    if (ctxMenu) { setPathFrom(ctxMenu.nodeId); setShowPathFinder(true); }
+    if (ctxMenu) {
+      setPathFrom(ctxMenu.nodeId);
+      setShowPathFinder(true);
+      setShowFlows(false);
+      setActiveFlowIdx(null);
+    }
     setCtxMenu(null);
   }, [ctxMenu, setCtxMenu]);
 
   const handleCtxPathTo = useCallback(() => {
-    if (ctxMenu) { setPathTo(ctxMenu.nodeId); setShowPathFinder(true); }
+    if (ctxMenu) {
+      setPathTo(ctxMenu.nodeId);
+      setShowPathFinder(true);
+      setShowFlows(false);
+      setActiveFlowIdx(null);
+    }
     setCtxMenu(null);
   }, [ctxMenu, setCtxMenu]);
 
@@ -1074,9 +1125,19 @@ export function GraphFlow(props: GraphFlowProps) {
             }}
             onFitView={handleFitView}
             showPathFinder={showPathFinder}
-            onTogglePathFinder={() => setShowPathFinder((s) => !s)}
+            onTogglePathFinder={() => {
+              // Path finder and flows share the same overlay slot — opening
+              // one always closes the other.
+              setShowPathFinder((s) => !s);
+              setShowFlows(false);
+              setActiveFlowIdx(null);
+            }}
             showFlows={showFlows}
-            onToggleFlows={() => { setShowFlows((s) => !s); setActiveFlowIdx(null); }}
+            onToggleFlows={() => {
+              setShowFlows((s) => !s);
+              setActiveFlowIdx(null);
+              setShowPathFinder(false);
+            }}
             searchQuery={searchQuery}
             onSearchChange={setSearchQuery}
             searchMatchCount={searchResults.length}
@@ -1086,6 +1147,7 @@ export function GraphFlow(props: GraphFlowProps) {
             onLayoutModeChange={handleLayoutModeChange}
             graphTheme={graphTheme}
             onGraphThemeChange={handleGraphThemeChange}
+            onToggleHelp={handleToggleShortcutHelp}
           />
         </div>
 
@@ -1159,6 +1221,11 @@ export function GraphFlow(props: GraphFlowProps) {
             onConstellationHubClick={handleConstellationHubClick}
           />
         </div>
+
+        {/* Keyboard shortcut help (toggled with ?) */}
+        {showShortcutHelp && (
+          <GraphShortcutHelp onClose={() => setShowShortcutHelp(false)} />
+        )}
 
         {/* Context menu */}
         {ctxMenu && (
