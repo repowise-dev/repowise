@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { Bug, Search } from "lucide-react";
+import { AgentBadge, NewContributorBadge } from "./agent-badge";
 import { PriorityBadge } from "./priority-badge";
 import { ChurnBar } from "../git/churn-bar";
 import { Input } from "../ui/input";
@@ -12,12 +13,20 @@ import { cn } from "../lib/cn";
 import type { Commit, ReviewPriority } from "@repowise-dev/types/git";
 
 export type CommitSort = "risk" | "date";
+export type CommitAuthorship = "all" | "human" | "agent";
+
+/** Below this many prior commits the author gets a "new contributor" badge. */
+const NEW_CONTRIBUTOR_THRESHOLD = 3;
 
 export interface CommitTableProps {
   commits: Commit[];
   /** Server-driven ordering. `risk` = review-priority order, `date` = recency. */
   sort: CommitSort;
   onSortChange?: (sort: CommitSort) => void;
+  /** Server-driven authorship filter (agent provenance). Control omitted when
+   *  no handler is provided. */
+  authorship?: CommitAuthorship;
+  onAuthorshipChange?: (authorship: CommitAuthorship) => void;
   onSelect?: (commit: Commit) => void;
   total?: number;
   hasMore?: boolean;
@@ -37,6 +46,8 @@ export function CommitTable({
   commits,
   sort,
   onSortChange,
+  authorship = "all",
+  onAuthorshipChange,
   onSelect,
   total,
   hasMore,
@@ -62,7 +73,7 @@ export function CommitTable({
     return items;
   }, [commits, search, filter]);
 
-  if (commits.length === 0) {
+  if (commits.length === 0 && authorship === "all") {
     return (
       <EmptyState
         title="No commits indexed"
@@ -115,6 +126,31 @@ export function CommitTable({
             </button>
           ))}
         </div>
+        {onAuthorshipChange && (
+          <div className="flex rounded-md border border-[var(--color-border-default)] overflow-hidden text-xs">
+            {(
+              [
+                { key: "all", label: "Everyone" },
+                { key: "human", label: "Humans" },
+                { key: "agent", label: "Agents" },
+              ] as { key: CommitAuthorship; label: string }[]
+            ).map((a) => (
+              <button
+                key={a.key}
+                onClick={() => onAuthorshipChange(a.key)}
+                aria-pressed={authorship === a.key}
+                className={cn(
+                  "px-2.5 py-1.5 font-medium transition-colors",
+                  authorship === a.key
+                    ? "bg-[var(--color-bg-elevated)] text-[var(--color-text-primary)]"
+                    : "bg-transparent text-[var(--color-text-tertiary)] hover:bg-[var(--color-bg-elevated)]",
+                )}
+              >
+                {a.label}
+              </button>
+            ))}
+          </div>
+        )}
         <div className="ml-auto flex rounded-md border border-[var(--color-border-default)] overflow-hidden text-xs">
           {sorts.map((s) => (
             <button
@@ -159,6 +195,9 @@ export function CommitTable({
                 <th className="px-3 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-40">
                   Risk
                 </th>
+                <th className="px-3 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider hidden xl:table-cell">
+                  Top driver
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -188,8 +227,18 @@ export function CommitTable({
                       </span>
                     </div>
                   </td>
-                  <td className="px-3 py-2.5 text-xs text-[var(--color-text-secondary)] hidden md:table-cell truncate max-w-[140px]">
-                    {c.author_name || "—"}
+                  <td className="px-3 py-2.5 text-xs text-[var(--color-text-secondary)] hidden md:table-cell max-w-[220px]">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <span className="truncate">{c.author_name || "—"}</span>
+                      {c.agent_name && (
+                        <AgentBadge agentName={c.agent_name} tier={c.agent_autonomy_tier} />
+                      )}
+                      {!c.agent_name &&
+                        c.author_experience != null &&
+                        c.author_experience < NEW_CONTRIBUTOR_THRESHOLD && (
+                          <NewContributorBadge experience={c.author_experience} />
+                        )}
+                    </div>
                   </td>
                   <td className="px-3 py-2.5 text-xs text-[var(--color-text-tertiary)] tabular-nums hidden lg:table-cell">
                     {c.committed_at ? formatRelativeTime(c.committed_at) : "—"}
@@ -206,6 +255,12 @@ export function CommitTable({
                       </span>
                       <PriorityBadge priority={c.review_priority as ReviewPriority} />
                     </div>
+                  </td>
+                  <td
+                    className="px-3 py-2.5 text-[11px] text-[var(--color-text-tertiary)] hidden xl:table-cell max-w-[220px] truncate"
+                    title={c.top_driver ?? undefined}
+                  >
+                    {c.top_driver ?? "—"}
                   </td>
                 </tr>
               ))}

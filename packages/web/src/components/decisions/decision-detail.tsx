@@ -6,7 +6,7 @@ import remarkGfm from "remark-gfm";
 import useSWR from "swr";
 import { toast } from "sonner";
 import Link from "next/link";
-import { ChevronLeft, FileSearch } from "lucide-react";
+import { ChevronLeft, ChevronRight, FileSearch, Flame, GitCommitHorizontal } from "lucide-react";
 import { Badge } from "@repowise-dev/ui/ui/badge";
 import { stripMarkdown } from "@repowise-dev/ui/lib/format";
 import { ConfirmDialog } from "@repowise-dev/ui/ui/confirm-dialog";
@@ -17,6 +17,7 @@ import { DecisionLineage } from "@repowise-dev/ui/decisions/decision-lineage";
 import {
   getDecisionEvidence,
   getDecisionLineage,
+  listDecisions,
   patchDecision,
 } from "@/lib/api/decisions";
 import { listModuleHealth } from "@/lib/api/modules";
@@ -75,6 +76,21 @@ export function DecisionDetail({ decision, repoId }: DecisionDetailProps) {
     () => getDecisionEvidence(repoId, decision.id),
     { revalidateOnFocus: false },
   );
+
+  // Sibling list for prev/next navigation — same ordering as the list page.
+  const { data: siblings } = useSWR(
+    `decisions-siblings:${repoId}`,
+    () => listDecisions(repoId, { include_proposed: true, limit: 100 }),
+    { revalidateOnFocus: false },
+  );
+  const { prevId, nextId } = React.useMemo(() => {
+    const ids = (siblings ?? []).map((d) => d.id);
+    const idx = ids.indexOf(decision.id);
+    return {
+      prevId: idx > 0 ? ids[idx - 1] : null,
+      nextId: idx >= 0 && idx < ids.length - 1 ? ids[idx + 1] : null,
+    };
+  }, [siblings, decision.id]);
 
   // Suggestions for the module autocomplete — top-level modules indexed for
   // this repo. Loaded once; cheap to cache.
@@ -176,13 +192,29 @@ export function DecisionDetail({ decision, repoId }: DecisionDetailProps) {
 
   return (
     <div className="space-y-6">
-      <Link
-        href={`/repos/${repoId}/decisions`}
-        className="inline-flex items-center gap-1 text-xs text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]"
-      >
-        <ChevronLeft className="h-3.5 w-3.5" />
-        All decisions
-      </Link>
+      <div className="flex items-center justify-between gap-2">
+        <Link
+          href={`/repos/${repoId}/decisions`}
+          className="inline-flex items-center gap-1 text-xs text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]"
+        >
+          <ChevronLeft className="h-3.5 w-3.5" />
+          All decisions
+        </Link>
+        <div className="flex items-center gap-1">
+          <PrevNextLink
+            href={prevId ? `/repos/${repoId}/decisions/${prevId}` : null}
+            label="Previous decision"
+          >
+            <ChevronLeft className="h-3.5 w-3.5" /> Prev
+          </PrevNextLink>
+          <PrevNextLink
+            href={nextId ? `/repos/${repoId}/decisions/${nextId}` : null}
+            label="Next decision"
+          >
+            Next <ChevronRight className="h-3.5 w-3.5" />
+          </PrevNextLink>
+        </div>
+      </div>
       {/* Header */}
       <div className="space-y-2">
         <div className="flex flex-wrap items-center gap-3">
@@ -255,18 +287,50 @@ export function DecisionDetail({ decision, repoId }: DecisionDetailProps) {
           onSave={saveLinkage}
         />
 
+        {/* The full evidence rows live in the drawer (Evidence button); this
+            card answers "what happened to the governed code since?". */}
         <div className="rounded-lg border border-[var(--color-border-default)] p-4">
-          <h3 className="mb-2 text-sm font-medium text-[var(--color-text-secondary)]">Evidence</h3>
-          <div className="space-y-1 text-sm text-[var(--color-text-tertiary)]">
-            <div>Source: {decision.source}</div>
-            {decision.evidence_file && (
-              <div className="font-mono text-xs">
-                {decision.evidence_file}
-                {decision.evidence_line && `:${decision.evidence_line}`}
-              </div>
+          <h3 className="mb-2 text-sm font-medium text-[var(--color-text-secondary)]">
+            Since this decision
+          </h3>
+          <div className="space-y-2 text-sm">
+            {decision.last_code_change && (
+              <p className="text-xs text-[var(--color-text-tertiary)]">
+                Affected files last changed{" "}
+                {new Date(decision.last_code_change).toLocaleDateString()}.
+              </p>
             )}
+            <div className="flex flex-col gap-1.5">
+              <Link
+                href={`/repos/${repoId}/commits?sort=date`}
+                className="inline-flex items-center gap-1.5 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-accent-primary)] hover:underline"
+              >
+                <GitCommitHorizontal className="h-3.5 w-3.5" />
+                Recent commits to this repo
+              </Link>
+              <Link
+                href={`/repos/${repoId}/code-health?tab=hotspots`}
+                className="inline-flex items-center gap-1.5 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-accent-primary)] hover:underline"
+              >
+                <Flame className="h-3.5 w-3.5" />
+                Hotspots &amp; churn in affected areas
+              </Link>
+            </div>
             {decision.evidence_commits.length > 0 && (
-              <div>Commits: {decision.evidence_commits.map((c) => c.slice(0, 8)).join(", ")}</div>
+              <p className="text-xs text-[var(--color-text-tertiary)]">
+                Evidence commits:{" "}
+                {decision.evidence_commits.slice(0, 4).map((c, i) => (
+                  <React.Fragment key={c}>
+                    {i > 0 && ", "}
+                    <Link
+                      href={`/repos/${repoId}/commits?commit=${c}`}
+                      className="font-mono hover:text-[var(--color-accent-primary)] hover:underline"
+                    >
+                      {c.slice(0, 8)}
+                    </Link>
+                  </React.Fragment>
+                ))}
+              </p>
             )}
           </div>
         </div>
@@ -338,6 +402,33 @@ export function DecisionDetail({ decision, repoId }: DecisionDetailProps) {
         decisionTitle={decision.title}
       />
     </div>
+  );
+}
+
+function PrevNextLink({
+  href,
+  label,
+  children,
+}: {
+  href: string | null;
+  label: string;
+  children: React.ReactNode;
+}) {
+  if (!href) {
+    return (
+      <span className="inline-flex items-center gap-0.5 rounded-md border border-[var(--color-border-default)] px-2 py-1 text-xs text-[var(--color-text-tertiary)] opacity-50">
+        {children}
+      </span>
+    );
+  }
+  return (
+    <Link
+      href={href}
+      aria-label={label}
+      className="inline-flex items-center gap-0.5 rounded-md border border-[var(--color-border-default)] px-2 py-1 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]"
+    >
+      {children}
+    </Link>
   );
 }
 

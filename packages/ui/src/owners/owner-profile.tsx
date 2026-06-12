@@ -10,6 +10,7 @@ import {
   Users,
   Folder,
   TrendingUp,
+  Bot,
 } from "lucide-react";
 import type {
   OwnerProfile,
@@ -105,8 +106,13 @@ export function OwnerProfileView({
           <div className="flex flex-wrap items-start gap-5">
             <OwnerAvatar name={owner.name} email={owner.email} size="lg" />
             <div className="flex-1 min-w-0">
-              <h1 className="text-2xl font-bold text-[var(--color-text-primary)]">
+              <h1 className="flex flex-wrap items-center gap-2 text-2xl font-bold text-[var(--color-text-primary)]">
                 {owner.name}
+                {tenureDays !== null && tenureDays < 90 && (
+                  <Badge variant="outline" className="text-[10px] font-medium">
+                    new to this repo
+                  </Badge>
+                )}
               </h1>
               {owner.email && (
                 <a
@@ -198,6 +204,11 @@ export function OwnerProfileView({
               {owner.modules.slice(0, 12).map((m) => (
                 <ModuleRow key={m.module_path} mod={m} onClick={() => onSelectModule?.(m.module_path)} />
               ))}
+              {owner.modules.length > 12 && (
+                <p className="px-2 pt-1 text-[10px] text-[var(--color-text-tertiary)]">
+                  +{owner.modules.length - 12} more modules not shown
+                </p>
+              )}
               {owner.modules.length === 0 && (
                 <EmptyState
                   className="p-6"
@@ -219,6 +230,12 @@ export function OwnerProfileView({
             </CardHeader>
             <CardContent className="pt-0">
               <FileTable files={owner.top_files} onSelectFile={onSelectFile} />
+              {(owner.files_touched_total ?? 0) > Math.min(owner.top_files.length, 20) && (
+                <p className="pt-2 text-[10px] text-[var(--color-text-tertiary)]">
+                  +{(owner.files_touched_total ?? 0) - Math.min(owner.top_files.length, 20)}{" "}
+                  more files touched, not shown
+                </p>
+              )}
             </CardContent>
           </Card>
         </div>
@@ -232,6 +249,16 @@ export function OwnerProfileView({
               <p className="text-xs text-[var(--color-text-tertiary)]">
                 People who edit the same files. Strong overlap = natural reviewer.
               </p>
+              {owner.co_authors.filter((c) => c.co_change_strength >= 0.3).length > 0 && (
+                <p className="text-[10px] text-[var(--color-text-secondary)]">
+                  Would review well for this person&apos;s changes:{" "}
+                  {owner.co_authors
+                    .filter((c) => c.co_change_strength >= 0.3)
+                    .slice(0, 2)
+                    .map((c) => c.name)
+                    .join(", ")}
+                </p>
+              )}
             </CardHeader>
             <CardContent className="pt-0 space-y-1.5">
               {owner.co_authors.slice(0, 10).map((c) => (
@@ -258,6 +285,15 @@ export function OwnerProfileView({
                   </div>
                 </button>
               ))}
+              {(owner.co_authors_total ?? owner.co_authors.length) >
+                Math.min(owner.co_authors.length, 10) && (
+                <p className="px-2 pt-1 text-[10px] text-[var(--color-text-tertiary)]">
+                  +
+                  {(owner.co_authors_total ?? owner.co_authors.length) -
+                    Math.min(owner.co_authors.length, 10)}{" "}
+                  more co-authors not shown
+                </p>
+              )}
               {owner.co_authors.length === 0 && (
                 <EmptyState
                   className="p-6"
@@ -267,6 +303,55 @@ export function OwnerProfileView({
               )}
             </CardContent>
           </Card>
+
+          {owner.agent_collab && owner.agent_collab.agent_commit_count > 0 && (
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm flex items-center gap-1.5">
+                  <Bot className="h-4 w-4" /> Agent collaboration
+                </CardTitle>
+                <p className="text-xs text-[var(--color-text-tertiary)]">
+                  Coding-agent activity on the files this person owns.
+                </p>
+              </CardHeader>
+              <CardContent className="pt-0 space-y-2 text-xs">
+                <div className="flex items-center justify-between">
+                  <span className="text-[var(--color-text-secondary)]">
+                    Agent-attributed commits
+                  </span>
+                  <span className="tabular-nums font-medium text-[var(--color-text-primary)]">
+                    {owner.agent_collab.agent_commit_count}
+                    {owner.agent_collab.agent_share_pct != null &&
+                      ` (${Math.round(owner.agent_collab.agent_share_pct)}%)`}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-[var(--color-text-secondary)]">
+                    Owned files with agent commits
+                  </span>
+                  <span className="tabular-nums font-medium text-[var(--color-text-primary)]">
+                    {owner.agent_collab.files_with_agent_commits}
+                  </span>
+                </div>
+                {Object.keys(owner.agent_collab.tier_counts).length > 0 && (
+                  <div className="flex flex-wrap gap-1.5 pt-1">
+                    {Object.entries(owner.agent_collab.tier_counts)
+                      .sort(([a], [b]) => a.localeCompare(b))
+                      .map(([tier, n]) => (
+                        <Badge key={tier} variant="outline" className="text-[10px]">
+                          {tier === "1"
+                            ? "autonomous"
+                            : tier === "2"
+                              ? "agent"
+                              : "assisted"}
+                          : {n}
+                        </Badge>
+                      ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          )}
 
           <Card>
             <CardHeader className="pb-2">

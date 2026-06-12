@@ -34,8 +34,10 @@ export default async function DecisionsPage({ params }: Props) {
           Why the codebase is built the way it is — constraints, tradeoffs, and rejected alternatives.
         </p>
       </div>
-      <DecisionGraphWrapper repoId={repoId} />
+      {/* The table is the workhorse; the relationship graph is secondary and
+          collapsed below it. */}
       <DecisionsTableWrapper repoId={repoId} initialData={decisions} />
+      <DecisionGraphWrapper repoId={repoId} />
     </div>
   );
 }

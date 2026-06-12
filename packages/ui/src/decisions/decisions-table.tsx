@@ -78,13 +78,36 @@ export function DecisionsTable({
       priority: 1,
       cellClassName: "min-w-[200px] max-w-[520px]",
       render: (d) => (
-        <Link
-          href={`${prefix}/decisions/${d.id}`}
-          className="font-medium text-[var(--color-text-primary)] hover:text-[var(--color-accent-primary)] hover:underline block truncate"
-          title={stripMarkdown(d.title)}
-        >
-          {stripMarkdown(d.title)}
-        </Link>
+        <div className="min-w-0">
+          <Link
+            href={`${prefix}/decisions/${d.id}`}
+            className="font-medium text-[var(--color-text-primary)] hover:text-[var(--color-accent-primary)] hover:underline block truncate"
+            title={stripMarkdown(d.title)}
+          >
+            {stripMarkdown(d.title)}
+          </Link>
+          {d.evidence_preview?.source_quote && (
+            <p
+              className="mt-0.5 truncate text-[11px] italic text-[var(--color-text-tertiary)]"
+              title={`${d.evidence_preview.source_quote}${
+                d.evidence_preview.evidence_file
+                  ? ` — ${d.evidence_preview.evidence_file}${
+                      d.evidence_preview.evidence_line != null
+                        ? `:${d.evidence_preview.evidence_line}`
+                        : ""
+                    }`
+                  : ""
+              }`}
+            >
+              “{d.evidence_preview.source_quote}”
+              {(d.evidence_count ?? 0) > 1 && (
+                <span className="ml-1 not-italic">
+                  +{(d.evidence_count ?? 0) - 1} more
+                </span>
+              )}
+            </p>
+          )}
+        </div>
       ),
     },
     {

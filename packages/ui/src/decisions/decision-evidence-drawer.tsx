@@ -91,8 +91,8 @@ export function DecisionEvidenceDrawer({
             )}
             {!isLoading && !error && sorted && sorted.length > 0 && (
               <ul className="space-y-3">
-                {sorted.map((row) => (
-                  <EvidenceRow key={row.id} row={row} />
+                {sorted.map((row, i) => (
+                  <EvidenceRow key={row.id} row={row} isPrimary={i === 0} />
                 ))}
               </ul>
             )}
@@ -103,7 +103,7 @@ export function DecisionEvidenceDrawer({
   );
 }
 
-function EvidenceRow({ row }: { row: DecisionEvidence }) {
+function EvidenceRow({ row, isPrimary }: { row: DecisionEvidence; isPrimary?: boolean }) {
   return (
     <li className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/40 p-3">
       <div className="mb-2 flex flex-wrap items-center gap-2">
@@ -111,9 +111,21 @@ function EvidenceRow({ row }: { row: DecisionEvidence }) {
         <span className="text-xs text-[var(--color-text-secondary)]">
           {SOURCE_LABEL[row.source] ?? row.source}
         </span>
-        <span className="text-[10px] text-[var(--color-text-tertiary)]">
-          rank {row.source_rank}
-        </span>
+        {isPrimary ? (
+          <span
+            className="rounded bg-[var(--color-accent-muted)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--color-accent-primary)]"
+            title="The most-trusted source backing this decision — its quote provides the headline fields. Higher rank = more trusted source type."
+          >
+            primary source
+          </span>
+        ) : (
+          <span
+            className="text-[10px] text-[var(--color-text-tertiary)]"
+            title="Source-type trust rank. Higher ranks are more trusted; the top-ranked row is the primary source."
+          >
+            rank {row.source_rank}
+          </span>
+        )}
         <span className="ml-auto text-[10px] tabular-nums text-[var(--color-text-tertiary)]">
           {Math.round(row.confidence * 100)}% confidence
         </span>

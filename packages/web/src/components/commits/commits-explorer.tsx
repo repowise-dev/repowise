@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import useSWR from "swr";
+import { useQueryState } from "nuqs";
 import { AlertTriangle, Bug, GitCommitHorizontal } from "lucide-react";
 import { StatCard } from "@repowise-dev/ui/shared/stat-card";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
@@ -11,23 +12,37 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@repowise-dev/ui/ui/sheet";
-import { CommitTable, type CommitSort } from "@repowise-dev/ui/commits/commit-table";
+import {
+  CommitTable,
+  type CommitAuthorship,
+  type CommitSort,
+} from "@repowise-dev/ui/commits/commit-table";
 import { CommitDetailCard } from "@repowise-dev/ui/commits/commit-detail-card";
 import { CredibilityStrip } from "@repowise-dev/ui/commits/credibility-strip";
-import { getCommit, getCommitsPage } from "@/lib/api/git";
+import { AgentTrendStrip } from "@repowise-dev/ui/commits/agent-trend-strip";
+import { getAgentTrend, getCommit, getCommitsPage } from "@/lib/api/git";
 import type { CommitResponse, Paginated } from "@/lib/api/types";
 
 const PAGE_SIZE = 50;
 
 export function CommitsExplorer({ repoId }: { repoId: string }) {
   const [sort, setSort] = useState<CommitSort>("risk");
+  const [authorship, setAuthorship] = useState<CommitAuthorship>("all");
   const [limit, setLimit] = useState(PAGE_SIZE);
-  const [selectedSha, setSelectedSha] = useState<string | null>(null);
+  // ?commit= deep link — entity links from Overview/file pages land here with
+  // the detail sheet already open, and the sheet state survives refresh.
+  const [selectedSha, setSelectedSha] = useQueryState("commit");
 
   const { data, isLoading, isValidating, error } = useSWR<Paginated<CommitResponse>>(
-    `commits:${repoId}:${sort}:${limit}`,
-    () => getCommitsPage(repoId, { sort, limit }),
+    `commits:${repoId}:${sort}:${authorship}:${limit}`,
+    () => getCommitsPage(repoId, { sort, authorship, limit }),
     { revalidateOnFocus: false, keepPreviousData: true },
+  );
+
+  const { data: trend } = useSWR(
+    `agent-trend:${repoId}`,
+    () => getAgentTrend(repoId),
+    { revalidateOnFocus: false },
   );
 
   const { data: detail, isLoading: detailLoading } = useSWR(
@@ -69,6 +84,8 @@ export function CommitsExplorer({ repoId }: { repoId: string }) {
     <div className="space-y-6">
       <CredibilityStrip />
 
+      {trend && <AgentTrendStrip trend={trend} />}
+
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <StatCard
           label="Commits"
@@ -80,13 +97,13 @@ export function CommitsExplorer({ repoId }: { repoId: string }) {
           label="High priority"
           value={highCount}
           description="top tercile (loaded)"
-          icon={<AlertTriangle className="h-4 w-4 text-red-400" />}
+          icon={<AlertTriangle className="h-4 w-4 text-[var(--color-error)]" />}
         />
         <StatCard
           label="Fix commits"
           value={fixCount}
           description="bug-fix subjects"
-          icon={<Bug className="h-4 w-4 text-orange-400" />}
+          icon={<Bug className="h-4 w-4 text-[var(--color-warning)]" />}
         />
         <StatCard
           label="Avg entropy"
@@ -102,14 +119,22 @@ export function CommitsExplorer({ repoId }: { repoId: string }) {
           setSort(s);
           setLimit(PAGE_SIZE);
         }}
-        onSelect={(c) => setSelectedSha(c.sha)}
+        authorship={authorship}
+        onAuthorshipChange={(a) => {
+          setAuthorship(a);
+          setLimit(PAGE_SIZE);
+        }}
+        onSelect={(c) => void setSelectedSha(c.sha)}
         total={total}
         hasMore={hasMore}
         loadingMore={isValidating && !isLoading}
         onLoadMore={() => setLimit((n) => Math.min(n + PAGE_SIZE, 200))}
       />
 
-      <Sheet open={selectedSha !== null} onOpenChange={(open) => !open && setSelectedSha(null)}>
+      <Sheet
+        open={selectedSha !== null}
+        onOpenChange={(open) => !open && void setSelectedSha(null)}
+      >
         <SheetContent side="right" className="w-[440px] max-w-[92vw] sm:w-[560px]">
           <SheetHeader>
             <SheetTitle>Commit change-risk</SheetTitle>

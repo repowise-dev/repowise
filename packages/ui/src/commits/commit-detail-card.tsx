@@ -1,4 +1,5 @@
 import { Bug, GitCommitHorizontal, User } from "lucide-react";
+import { AgentBadge, NewContributorBadge } from "./agent-badge";
 import { PriorityBadge } from "./priority-badge";
 import { RiskDriverBreakdown } from "./risk-driver-breakdown";
 import { formatDateTime, formatLOC } from "../lib/format";
@@ -45,13 +46,29 @@ export function CommitDetailCard({ commit, className }: CommitDetailCardProps) {
         <p className="text-sm font-medium text-[var(--color-text-primary)] break-words">
           {c.subject || "(no subject)"}
         </p>
-        <div className="flex items-center gap-3 text-xs text-[var(--color-text-tertiary)]">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[var(--color-text-tertiary)]">
           <span className="inline-flex items-center gap-1">
             <User className="h-3 w-3" />
             {c.author_name || "unknown"}
           </span>
+          {c.agent_name && (
+            <AgentBadge
+              agentName={c.agent_name}
+              tier={c.agent_autonomy_tier}
+              confidence={c.agent_confidence}
+            />
+          )}
+          {!c.agent_name && c.author_experience != null && c.author_experience < 3 && (
+            <NewContributorBadge experience={c.author_experience} />
+          )}
           {c.committed_at && <span>{formatDateTime(c.committed_at)}</span>}
         </div>
+        {c.agent_name && c.agent_channel && (
+          <p className="text-[10px] text-[var(--color-text-tertiary)]">
+            Attribution channel: {c.agent_channel}
+            {c.agent_confidence ? ` · ${c.agent_confidence} confidence` : ""}
+          </p>
+        )}
       </div>
 
       {/* Risk summary */}
