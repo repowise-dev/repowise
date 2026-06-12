@@ -1,14 +1,9 @@
+import { coverageColor as color } from "./tokens";
+
 export interface CoverageBarProps {
   value: number | null | undefined;
   label?: string;
   size?: "sm" | "md";
-}
-
-function color(pct: number): string {
-  if (pct < 30) return "bg-red-500";
-  if (pct < 60) return "bg-amber-500";
-  if (pct < 80) return "bg-yellow-400";
-  return "bg-emerald-500";
 }
 
 export function CoverageBar({ value, label, size = "md" }: CoverageBarProps) {

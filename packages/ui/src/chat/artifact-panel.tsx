@@ -1,8 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { X } from "lucide-react";
 import { cn } from "../lib/cn";
+import { AdaptivePanel } from "../shared/adaptive-panel";
 import { ChatMarkdown } from "./chat-markdown";
 import {
   ContextRenderer,
@@ -42,59 +42,42 @@ interface ArtifactPanelProps {
 export function ArtifactPanel({ artifacts, open, onClose }: ArtifactPanelProps) {
   const [activeIdx, setActiveIdx] = useState(0);
 
-  if (!open || artifacts.length === 0) return null;
+  if (artifacts.length === 0) return null;
 
   const active = artifacts[Math.min(activeIdx, artifacts.length - 1)];
   if (!active) return null;
 
   return (
-    <>
-      <div className="fixed inset-0 z-[var(--z-modal)] bg-black/50 lg:hidden" onClick={onClose} />
-
-      <div
-        className={cn(
-          "fixed right-0 top-0 z-[var(--z-modal)] h-full bg-[var(--color-bg-surface)] border-l border-[var(--color-border-default)] flex flex-col",
-          "w-full sm:w-[480px] lg:w-[420px]",
-          "transition-transform duration-300",
-          open ? "translate-x-0" : "translate-x-full",
-        )}
-      >
-        <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--color-border-default)] shrink-0">
-          <span className="text-xs font-medium text-[var(--color-text-primary)]">
-            Artifacts
-          </span>
-          <button
-            onClick={onClose}
-            className="p-1 rounded hover:bg-[var(--color-bg-elevated)] text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] transition-colors"
-          >
-            <X className="h-4 w-4" />
-          </button>
+    <AdaptivePanel
+      open={open}
+      onOpenChange={(o) => (!o ? onClose() : undefined)}
+      title="Artifacts"
+      widthClassName="md:max-w-[480px] lg:max-w-[420px]"
+      modal={false}
+    >
+      {artifacts.length > 1 && (
+        <div className="flex gap-0 border-b border-[var(--color-border-default)] shrink-0 overflow-x-auto px-2">
+          {artifacts.map((art, idx) => (
+            <button
+              key={idx}
+              onClick={() => setActiveIdx(idx)}
+              className={cn(
+                "px-3 py-2 text-xs whitespace-nowrap border-b-2 transition-colors",
+                idx === activeIdx
+                  ? "border-[var(--color-accent-primary)] text-[var(--color-accent-primary)]"
+                  : "border-transparent text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)]",
+              )}
+            >
+              {art.title || art.type}
+            </button>
+          ))}
         </div>
+      )}
 
-        {artifacts.length > 1 && (
-          <div className="flex gap-0 border-b border-[var(--color-border-default)] shrink-0 overflow-x-auto px-2">
-            {artifacts.map((art, idx) => (
-              <button
-                key={idx}
-                onClick={() => setActiveIdx(idx)}
-                className={cn(
-                  "px-3 py-2 text-xs whitespace-nowrap border-b-2 transition-colors",
-                  idx === activeIdx
-                    ? "border-[var(--color-accent-primary)] text-[var(--color-accent-primary)]"
-                    : "border-transparent text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)]",
-                )}
-              >
-                {art.title || art.type}
-              </button>
-            ))}
-          </div>
-        )}
-
-        <div className="flex-1 overflow-y-auto p-4">
-          <ArtifactRenderer artifact={active} />
-        </div>
+      <div className="flex-1 overflow-y-auto p-4">
+        <ArtifactRenderer artifact={active} />
       </div>
-    </>
+    </AdaptivePanel>
   );
 }
 

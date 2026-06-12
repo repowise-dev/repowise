@@ -29,15 +29,80 @@ component definition.
 
 ---
 
-## `shared/api-error` â€” `ApiError`
+## `shared/api-error` — `ApiError`
 
 Renders an inline error card with retry affordance.
 
 | Prop | Type | Required | Notes |
 |------|------|----------|-------|
-| `error` | `Error \| null \| undefined` | yes | Surfaced in the card; `null` / `undefined` renders nothing. |
+| `title` | `string` | no | Defaults to "Failed to load". |
+| `message` | `string` | no | Defaults to a generic fetch-error line. |
 | `onRetry` | `() => void` | no | When provided, a "Retry" button is rendered. |
-| `className` | `string` | no | Forwarded to the outer container. |
+
+---
+
+## `shared/responsive-table` — `ResponsiveTable<T>`
+
+The shared table primitive with a column-priority API. Priority 1
+columns are always visible, priority 2 hide below `md`, priority 3
+hide below `lg`; the wrapper always provides `overflow-x-auto`, and
+`stacked` additionally collapses to a card list below `sm`/`md`.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `columns` | `ResponsiveColumn<T>[]` | yes | `{ key, header, render, priority?, align?, sortable?, mobileLabel?, mobileRender?, hideInCard?, headerClassName?, cellClassName? }`. |
+| `rows` | `T[]` | yes | |
+| `rowKey` | `(row: T) => string` | yes | |
+| `onRowClick` | `(row: T) => void` | no | Rows get pointer affordance when set. |
+| `selectedKey` | `string \| null` | no | Highlights the matching row. |
+| `sortField` / `sortOrder` / `onSort` | `string` / `"asc" \| "desc"` / `(key) => void` | no | Controlled sorting; header arrows render on the active column. |
+| `empty` | `ReactNode` | no | Rendered instead of the table when `rows` is empty (pass `EmptyState`). |
+| `stacked` | `"sm" \| "md"` | no | Collapse to stacked cards below the breakpoint. |
+| `bare` | `boolean` | no | Omit the rounded border + surface background (for card-embedded tables). |
+
+---
+
+## `shared/adaptive-panel` — `AdaptivePanel`
+
+One overlay surface: right-side slide-in panel on `md+`, bottom sheet
+with drag-handle swipe-dismiss on mobile. Radix Dialog under the hood.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `open` / `onOpenChange` | `boolean` / `(open) => void` | yes | Controlled. |
+| `title` | `ReactNode` | yes | Accessible name; rendered in the header unless `hideHeader`. |
+| `eyebrow` | `ReactNode` | no | Small uppercase label above the title. |
+| `widthClassName` | `string` | no | Desktop width; default `md:max-w-[520px]`. |
+| `sheetHeightClassName` | `string` | no | Mobile max height; default `max-h-[85dvh]`. |
+| `hideHeader` | `boolean` | no | Title goes `sr-only`; render your own header. |
+| `modal` | `boolean` | no | Default `true`. `false` keeps the page interactive behind the panel on desktop (chat artifact panel). |
+
+---
+
+## `shared/toast` — `Toaster`, `toast`
+
+Token-themed sonner toaster (`--z-toast`, surface/border/text tokens).
+Mount `Toaster` once at the app shell; fire toasts via the re-exported
+`toast`. Framework-neutral: the host passes the resolved theme.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `theme` | `"light" \| "dark"` | no | Default `dark`. |
+| `position` | sonner position union | no | Default `bottom-right`. |
+
+---
+
+## `shared/error-boundary` — `ErrorBoundary`
+
+Class-component boundary; default fallback renders `ApiError` with a
+retry that re-mounts the subtree.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `children` | `ReactNode` | yes | |
+| `fallback` | `(error, reset) => ReactNode` | no | Replaces the default ApiError fallback. |
+| `title` | `string` | no | Forwarded to the default fallback. |
+| `onError` | `(error, info) => void` | no | Reporting hook. |
 
 ---
 
@@ -67,7 +132,7 @@ Single-stat display tile.
 | `trend` | `{ value: string; positive: boolean }` | no | Renders an up/down arrow next to the value. |
 | `icon` | `React.ReactNode` | no | Right-aligned glyph. |
 | `className` | `string` | no | Forwarded to the outer Card. |
-| `href` | `string` | no | Reserved for a follow-up routing prop; currently inert. |
+| `href` | `string` | no | Wraps the card in an `<a>`; hover affordance follows. |
 
 ---
 
@@ -107,6 +172,8 @@ Filterable table of `DecisionRecord` rows with status + source dropdowns.
 | `filters` | `DecisionsTableFilters` | yes | Controlled. Caller mirrors these into fetch keys so filter changes drive a re-fetch. |
 | `onFiltersChange` | `(filters: DecisionsTableFilters) => void` | yes | Fires on every dropdown change. |
 | `repoId` | `string` | yes | Used to build the `/repos/{repoId}/decisions/{id}` link target for each row. |
+| `linkPrefix` | `string` | no | Overrides the `/repos/{repoId}` URL prefix. |
+| `LinkComponent` | `ElementType<{ href; className?; children }>` | no | Plug a router `<Link>`; defaults to `<a>`. |
 | `error` | `unknown` | no | Truthy on a failed fetch; renders an inline retry message. |
 | `isLoading` | `boolean` | no | Suppresses the "no decisions found" empty-state during the first fetch. |
 | `onRetry` | `() => void` | no | Wired to the inline retry button when `error` is truthy. |
@@ -388,7 +455,20 @@ with `staleSince`, wraps in a tooltip exposing the date and confidence.
 | `staleSince` | `string \| null` | no |
 | `className` | `string` | no |
 
-## `wiki/git-history-panel` â€” `GitHistoryPanel`
+## `wiki/backlinks-panel` — `BacklinksPanel`
+
+Sidebar panel listing pages that link into the current page. Renders
+nothing when the backlink list is empty.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `backlinks` | `Backlink[]` (`wiki/wiki-links-types`) | yes | From `page.metadata.backlinks`. |
+| `repoId` | `string` | yes | |
+| `limit` | `number` | no | Default 6; remainder collapses to "+N more". |
+| `buildHref` | `(repoId, pageId) => string` | no | Default `/repos/{id}/wiki/{pageId}`. |
+| `renderLink` | `({ href, className, title, children }) => ReactNode` | no | Plug a router link; defaults to `<a>`. |
+
+## `wiki/git-history-panel` — `GitHistoryPanel`
 
 Sidebar panel summarising file lifecycle, commit categories, top
 authors with bars, co-change partners, and recent commits.
@@ -425,10 +505,12 @@ floating `GraphTooltip`. The `GraphContext` provider also lives here
 so node/edge components can be consumed independently of the
 `graph-flow` data-fetching host.
 
-`graph-flow` itself, plus the data-coupled panels (`graph-doc-panel`,
-`graph-community-panel`, `path-finder-panel`), still live in
-`packages/web` because they orchestrate `useGraph*` SWR hooks. They
-will move under a wrapper-pattern refactor in a follow-up.
+`graph-flow` and the panels (`graph-doc-panel`, `graph-community-panel`,
+`path-finder-panel`) live HERE as presentational shells; `packages/web`
+hosts thin wrappers that orchestrate the `useGraph*` SWR hooks and pass
+the datasets in. The canvas renders via Sigma (`graph/sigma/`), not
+`@xyflow/react` (the xyflow node/edge components remain for the module
+browser and embedded views).
 
 ### `graph/context` — `GraphContext`, `GraphProvider`, `useGraphContext`, `GraphContextValue`
 
@@ -592,11 +674,12 @@ deps, contract links, and contract count.
 
 ---
 
-## `dashboard/*` â€” Repo overview tiles
+## `dashboard/*` — Repo overview tiles
 
-Nine presentational tiles that consume canonical engine artifacts.
-The data-coupled trio (`active-job-banner`, `quick-actions`,
-`community-summary-grid`) stays in `packages/web` for now.
+Presentational tiles that consume canonical engine artifacts. The
+formerly data-coupled trio (`active-job-banner`, `quick-actions`,
+`community-summary-grid`) now lives here as shells (documented under
+"Phase 2C" below); their SWR wrappers live in `packages/web`.
 
 ### `dashboard/attention-panel` â€” `AttentionPanel`
 
@@ -1071,11 +1154,14 @@ the `useDebounce` presentational hook for autocomplete.
 
 ## `graph/graph-flow` — `GraphFlow`
 
-The full graph canvas. Presentational shell over `@xyflow/react` that
-handles view-mode, drill-down, search, hover/selection, context menu,
-execution-flow highlighting, and ELK layout. The consumer supplies
-every dataset (one per view mode) and renders the data-coupled child
-panels (path-finder, community-panel) via slot render props.
+The full graph canvas. Presentational shell over Sigma that handles
+view-mode, drill-down, search, hover/selection, context menu,
+execution-flow highlighting, constellation hubs, and layout. The
+consumer supplies every dataset (one per view mode) and renders the
+data-coupled child panels (path-finder, community-panel) via slot
+render props. The component does NOT read `window.location` — initial
+URL-derived state arrives via `initialViewMode` / `initialColorMode` /
+`initialSelectedNode`.
 
 | Prop | Type | Required | Notes |
 |------|------|----------|-------|
@@ -1091,6 +1177,10 @@ panels (path-finder, community-panel) via slot render props.
 | `isLoadingHotFilesGraph` | `boolean` | yes | |
 | `communities` | `CommunitySummaryItem[]` | no | Used for the legend's community labels. |
 | `executionFlows` | `ExecutionFlows` | no | Backs the flows side panel + trace highlighting. |
+| `constellationGraph` / `constellationSlices` / `onExpandedHubsChange` | see types | no | Radial Knowledge-Graph scope: community super-graph, expanded-hub member slices, and the fetch trigger. |
+| `initialViewMode` | `ViewMode` | no | Initial scope (incl. `dead` / `hotfiles` / `unified`, which seed the signal overlays). |
+| `initialColorMode` | `ColorMode` | no | Initial node color mode; hosts derive it from their URL state. |
+| `initialSelectedNode` | `string \| null` | no | Pre-selected node (e.g. `?node=`). |
 | `onViewModeChange` | `(mode: ViewMode) => void` | no | Fires when the user changes view; consumer uses this to toggle data fetches. |
 | `onModulePathChange` | `(path: string[]) => void` | no | Fires on drill-down navigation. |
 | `onNodeClick` | `(nodeId, nodeType) => void \| Promise<void>` | no | File click handler. |

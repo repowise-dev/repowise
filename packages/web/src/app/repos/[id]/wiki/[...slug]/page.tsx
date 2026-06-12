@@ -256,6 +256,11 @@ export default async function WikiPageRoute({ params }: Props) {
           <BacklinksPanel
             backlinks={getBacklinks(page.metadata)}
             repoId={id}
+            renderLink={({ href, className, title, children }) => (
+              <Link href={href} className={className} title={title}>
+                {children}
+              </Link>
+            )}
           />
 
           {/* Security findings panel */}

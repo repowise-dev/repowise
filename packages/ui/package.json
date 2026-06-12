@@ -74,6 +74,7 @@
     "./settings/*": "./src/settings/*.tsx",
     "./shared": "./src/shared/index.ts",
     "./shared/entity": "./src/shared/entity/index.ts",
+    "./shared/responsive-table": "./src/shared/responsive-table/index.ts",
     "./shared/context-drawer": "./src/shared/context-drawer/index.ts",
     "./shared/file-card": "./src/shared/file-card/index.ts",
     "./shared/related": "./src/shared/related/index.ts",
@@ -130,6 +131,7 @@
     "remark-gfm": "^4.0.1",
     "shiki": "^4.0.0",
     "sigma": "^3.0.3",
+    "sonner": "^2.0.7",
     "tailwind-merge": "^3.5.0",
     "zustand": "^4.4.0"
   },

@@ -40,7 +40,7 @@ export function HealthTabs({ repoId, active, basePath, renderLink }: HealthTabsP
           const baseCls =
             "inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium border-b-2 transition-colors";
           const activeCls = isActive
-            ? "border-emerald-500 text-[var(--color-text-primary)]"
+            ? "border-[var(--color-accent-primary)] text-[var(--color-text-primary)]"
             : "border-transparent text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:border-[var(--color-border-default)]";
           const icon = <t.Icon className="h-4 w-4" />;
           if (renderLink) {

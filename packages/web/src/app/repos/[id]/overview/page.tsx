@@ -13,6 +13,7 @@ import { listJobs } from "@/lib/api/jobs";
 import { getKnowledgeMap } from "@/lib/api/knowledge-map";
 import { Badge } from "@repowise-dev/ui/ui/badge";
 import { StatCard } from "@repowise-dev/ui/shared/stat-card";
+import { EmptyState } from "@repowise-dev/ui/shared";
 import { DefectAccuracyCard } from "@repowise-dev/ui/health";
 import { HealthScoreRing } from "@repowise-dev/ui/dashboard/health-score-ring";
 import { AttentionPanel } from "@repowise-dev/ui/dashboard/attention-panel";
@@ -277,7 +278,10 @@ export default async function OverviewPage({ params }: Props) {
               repoId={id}
             />
           ) : (
-            <p className="text-sm text-[var(--color-text-tertiary)]">No module graph available.</p>
+            <EmptyState
+              title="No module graph yet"
+              description="Module structure appears once indexing completes. Run repowise update to refresh."
+            />
           )}
         </TabsContent>
 
@@ -297,7 +301,10 @@ export default async function OverviewPage({ params }: Props) {
             )}
           </div>
           {!(communities && communities.length > 0) && !(executionFlows && executionFlows.flows.length > 0) && (
-            <p className="text-sm text-[var(--color-text-tertiary)]">No graph intelligence available.</p>
+            <EmptyState
+              title="No graph intelligence yet"
+              description="Communities and execution flows appear after the analysis pass of indexing."
+            />
           )}
         </TabsContent>
 

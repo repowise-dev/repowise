@@ -80,7 +80,7 @@ export function AiPromptModal({
       <DialogContent className="max-w-3xl">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <Sparkles className="h-4 w-4 text-emerald-500" />
+            <Sparkles className="h-4 w-4 text-[var(--color-accent-primary)]" />
             {title}
             {filePath ? (
               <span className="ml-2 text-xs font-mono font-normal text-[var(--color-text-tertiary)] truncate max-w-[260px]">
@@ -107,13 +107,13 @@ export function AiPromptModal({
                     className={
                       "rounded-md border px-3 py-2 text-left transition-colors " +
                       (active
-                        ? "border-emerald-500 bg-emerald-500/10"
+                        ? "border-[var(--color-accent-primary)] bg-[var(--color-accent-muted)]"
                         : "border-[var(--color-border-default)] hover:border-[var(--color-border-strong)] hover:bg-[var(--color-bg-elevated)]")
                     }
                     title={f.hint}
                   >
                     <div className="flex items-center gap-1.5">
-                      <f.Icon className={`h-3.5 w-3.5 ${active ? "text-emerald-500" : "text-[var(--color-text-tertiary)]"}`} />
+                      <f.Icon className={`h-3.5 w-3.5 ${active ? "text-[var(--color-accent-primary)]" : "text-[var(--color-text-tertiary)]"}`} />
                       <span className="text-xs font-semibold text-[var(--color-text-primary)]">
                         {f.label}
                       </span>
@@ -145,7 +145,7 @@ export function AiPromptModal({
               className={
                 "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition-colors " +
                 (copied
-                  ? "bg-emerald-500 text-white"
+                  ? "bg-[var(--color-success)] text-[var(--color-text-inverse)]"
                   : "bg-[var(--color-accent-primary)] text-[var(--color-bg-surface)] hover:opacity-90")
               }
             >

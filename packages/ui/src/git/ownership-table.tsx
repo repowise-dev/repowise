@@ -6,6 +6,10 @@ import { Badge } from "../ui/badge";
 import { Input } from "../ui/input";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 import { EmptyState } from "../shared/empty-state";
+import {
+  ResponsiveTable,
+  type ResponsiveColumn,
+} from "../shared/responsive-table";
 import { RowActions } from "../shared/row-actions";
 import { cn } from "../lib/cn";
 import type { OwnershipEntry } from "@repowise-dev/types/git";
@@ -53,6 +57,91 @@ export function OwnershipTable({ entries, repoId, linkPrefix }: OwnershipTablePr
 
   const siloCount = entries.filter((e) => e.is_silo).length;
 
+  const columns: ResponsiveColumn<OwnershipEntry>[] = [
+    {
+      key: "module_path",
+      header: "Module / File",
+      priority: 1,
+      cellClassName: "font-mono text-xs text-[var(--color-text-primary)] min-w-[160px] max-w-[480px]",
+      render: (entry) => (
+        <span className="block truncate" title={entry.module_path}>
+          {entry.module_path}
+        </span>
+      ),
+    },
+    {
+      key: "owner",
+      header: "Owner",
+      priority: 2,
+      cellClassName: "text-xs text-[var(--color-text-secondary)] max-w-[200px]",
+      render: (entry) => (
+        <span className="block truncate" title={entry.primary_owner ?? undefined}>
+          {entry.primary_owner ?? "—"}
+        </span>
+      ),
+    },
+    {
+      key: "ownership",
+      header: "Ownership",
+      priority: 2,
+      headerClassName: "w-36",
+      render: (entry) =>
+        entry.owner_pct !== null ? (
+          <div className="flex items-center gap-2 min-w-[100px]">
+            <div className="h-1.5 flex-1 rounded-full bg-[var(--color-bg-elevated)]">
+              <div
+                className="h-1.5 rounded-full bg-[var(--color-accent-primary)]"
+                style={{ width: `${Math.min(100, entry.owner_pct * 100)}%` }}
+              />
+            </div>
+            <span className="text-xs text-[var(--color-text-tertiary)] tabular-nums w-8">
+              {Math.round(entry.owner_pct * 100)}%
+            </span>
+          </div>
+        ) : (
+          <span className="text-[var(--color-text-tertiary)]">—</span>
+        ),
+      mobileRender: (entry) =>
+        entry.owner_pct !== null ? `${Math.round(entry.owner_pct * 100)}%` : null,
+    },
+    {
+      key: "files",
+      header: "Files",
+      priority: 3,
+      cellClassName: "text-xs text-[var(--color-text-tertiary)] tabular-nums",
+      render: (entry) => entry.file_count,
+    },
+    {
+      key: "actions",
+      header: "",
+      priority: 1,
+      headerClassName: "w-20",
+      render: (entry) => (
+        <div className="flex items-center gap-1">
+          {entry.is_silo && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span>
+                  <Badge variant="stale">Silo</Badge>
+                </span>
+              </TooltipTrigger>
+              <TooltipContent>Bus factor risk</TooltipContent>
+            </Tooltip>
+          )}
+          {prefix && (
+            <RowActions
+              actions={[
+                { icon: GitBranch, label: "Graph", href: `${prefix}/graph?node=${encodeURIComponent(entry.module_path)}` },
+                { icon: Flame, label: "Hotspots", href: `${prefix}/code-health?tab=hotspots` },
+              ]}
+            />
+          )}
+        </div>
+      ),
+      mobileRender: (entry) => (entry.is_silo ? <Badge variant="stale">Silo</Badge> : null),
+    },
+  ];
+
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
@@ -95,90 +184,12 @@ export function OwnershipTable({ entries, repoId, linkPrefix }: OwnershipTablePr
         </span>
       </div>
 
-      {filtered.length === 0 ? (
-        <EmptyState title="No matches" description="Try adjusting your search or filters." />
-      ) : (
-        <div className="rounded-lg border border-[var(--color-border-default)] overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="sticky top-0 z-10 bg-[var(--color-bg-elevated)]">
-              <tr className="border-b border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]">
-                <th className="px-4 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
-                  Module / File
-                </th>
-                <th className="px-4 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
-                  Owner
-                </th>
-                <th className="px-4 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-36">
-                  Ownership
-                </th>
-                <th className="px-4 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-16">
-                  Files
-                </th>
-                <th className="px-4 py-2.5 w-20" />
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((entry) => (
-                <tr
-                  key={entry.module_path}
-                  className="border-b border-[var(--color-border-default)] hover:bg-[var(--color-bg-elevated)] transition-colors last:border-0"
-                >
-                  <td className="px-4 py-2.5 font-mono text-xs text-[var(--color-text-primary)] min-w-[200px] max-w-[480px]">
-                    <span className="block truncate" title={entry.module_path}>{entry.module_path}</span>
-                  </td>
-                  <td className="px-4 py-2.5 text-xs text-[var(--color-text-secondary)] max-w-[200px]">
-                    <span className="block truncate" title={entry.primary_owner ?? undefined}>
-                      {entry.primary_owner ?? "—"}
-                    </span>
-                  </td>
-                  <td className="px-4 py-2.5">
-                    {entry.owner_pct !== null ? (
-                      <div className="flex items-center gap-2">
-                        <div className="h-1.5 flex-1 rounded-full bg-[var(--color-bg-elevated)]">
-                          <div
-                            className="h-1.5 rounded-full bg-[var(--color-accent-primary)]"
-                            style={{ width: `${Math.min(100, entry.owner_pct * 100)}%` }}
-                          />
-                        </div>
-                        <span className="text-xs text-[var(--color-text-tertiary)] tabular-nums w-8">
-                          {Math.round(entry.owner_pct * 100)}%
-                        </span>
-                      </div>
-                    ) : (
-                      <span className="text-[var(--color-text-tertiary)]">—</span>
-                    )}
-                  </td>
-                  <td className="px-4 py-2.5 text-xs text-[var(--color-text-tertiary)] tabular-nums">
-                    {entry.file_count}
-                  </td>
-                  <td className="px-4 py-2.5">
-                    <div className="flex items-center gap-1">
-                      {entry.is_silo && (
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <span>
-                              <Badge variant="stale">Silo</Badge>
-                            </span>
-                          </TooltipTrigger>
-                          <TooltipContent>Bus factor risk</TooltipContent>
-                        </Tooltip>
-                      )}
-                      {prefix && (
-                        <RowActions
-                          actions={[
-                            { icon: GitBranch, label: "Graph", href: `${prefix}/graph?node=${encodeURIComponent(entry.module_path)}` },
-                            { icon: Flame, label: "Hotspots", href: `${prefix}/hotspots` },
-                          ]}
-                        />
-                      )}
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+      <ResponsiveTable
+        columns={columns}
+        rows={filtered}
+        rowKey={(entry) => entry.module_path}
+        empty={<EmptyState title="No matches" description="Try adjusting your search or filters." />}
+      />
     </div>
   );
 }

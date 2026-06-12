@@ -2,6 +2,12 @@
 
 import * as React from "react";
 import { Badge } from "../ui/badge";
+import { ApiError } from "../shared/api-error";
+import { EmptyState } from "../shared/empty-state";
+import {
+  ResponsiveTable,
+  type ResponsiveColumn,
+} from "../shared/responsive-table";
 import { VerificationBadge } from "./verification-badge";
 import { stripMarkdown } from "../lib/format";
 import type {
@@ -64,6 +70,115 @@ export function DecisionsTable({
 }: DecisionsTableProps) {
   const prefix = linkPrefix ?? `/repos/${repoId}`;
   const Link = LinkComponent;
+
+  const columns: ResponsiveColumn<DecisionRecord>[] = [
+    {
+      key: "title",
+      header: "Title",
+      priority: 1,
+      cellClassName: "min-w-[200px] max-w-[520px]",
+      render: (d) => (
+        <Link
+          href={`${prefix}/decisions/${d.id}`}
+          className="font-medium text-[var(--color-text-primary)] hover:text-[var(--color-accent-primary)] hover:underline block truncate"
+          title={stripMarkdown(d.title)}
+        >
+          {stripMarkdown(d.title)}
+        </Link>
+      ),
+    },
+    {
+      key: "status",
+      header: "Status",
+      priority: 1,
+      render: (d) => <Badge variant={STATUS_VARIANT[d.status] ?? "outline"}>{d.status}</Badge>,
+    },
+    {
+      key: "source",
+      header: "Source",
+      priority: 3,
+      cellClassName: "text-[var(--color-text-secondary)]",
+      render: (d) => SOURCE_LABEL[d.source] ?? d.source,
+    },
+    {
+      key: "trust",
+      header: "Trust",
+      priority: 3,
+      render: (d) =>
+        d.verification ? (
+          <VerificationBadge verification={d.verification} iconOnly />
+        ) : (
+          <span className="text-[var(--color-text-tertiary)]">—</span>
+        ),
+    },
+    {
+      key: "confidence",
+      header: "Confidence",
+      mobileLabel: "Conf",
+      align: "right",
+      priority: 2,
+      cellClassName: "tabular-nums text-[var(--color-text-secondary)]",
+      render: (d) => `${Math.round(d.confidence * 100)}%`,
+    },
+    {
+      key: "tags",
+      header: "Tags",
+      priority: 3,
+      render: (d) => (
+        <div className="flex flex-wrap gap-1">
+          {d.tags.slice(0, 3).map((tag) => (
+            <span
+              key={tag}
+              className="inline-block rounded bg-[var(--color-bg-elevated)] px-1.5 py-0.5 text-xs text-[var(--color-text-tertiary)]"
+            >
+              {tag}
+            </span>
+          ))}
+          {d.tags.length > 3 && (
+            <span
+              className="inline-block rounded bg-[var(--color-bg-elevated)] px-1.5 py-0.5 text-xs text-[var(--color-text-tertiary)]"
+              title={d.tags.slice(3).join(", ")}
+            >
+              +{d.tags.length - 3}
+            </span>
+          )}
+        </div>
+      ),
+    },
+    {
+      key: "staleness",
+      header: "Staleness",
+      mobileLabel: "Stale",
+      align: "right",
+      priority: 2,
+      render: (d) => (
+        <span className="tabular-nums" title="0 = fresh, 1 = fully stale">
+          {d.staleness_score > 0.5 ? (
+            <span className="text-[var(--color-error)]">{Math.round(d.staleness_score * 100)}%</span>
+          ) : d.staleness_score > 0 ? (
+            <span className="text-[var(--color-text-tertiary)]">{Math.round(d.staleness_score * 100)}%</span>
+          ) : (
+            <span className="text-[var(--color-text-tertiary)]">—</span>
+          )}
+        </span>
+      ),
+    },
+  ];
+
+  const empty =
+    isLoading ? undefined : error ? (
+      <ApiError
+        title="Couldn't load decisions"
+        message="An error occurred while fetching decisions."
+        {...(onRetry ? { onRetry } : {})}
+      />
+    ) : (
+      <EmptyState
+        title="No decisions found"
+        description="No architectural decisions match the current filters."
+      />
+    );
+
   return (
     <div className="space-y-4">
       {/* Filters */}
@@ -98,108 +213,12 @@ export function DecisionsTable({
         </select>
       </div>
 
-      {/* Table */}
-      <div className="overflow-x-auto rounded-lg border border-[var(--color-border-default)]">
-        <table className="w-full text-sm">
-          <caption className="sr-only">Architectural decisions</caption>
-          <thead className="sticky top-0 z-10 bg-[var(--color-bg-elevated)]">
-            <tr className="border-b border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]">
-              <th scope="col" className="px-4 py-2.5 text-left font-medium text-[var(--color-text-secondary)]">Title</th>
-              <th scope="col" className="px-4 py-2.5 text-left font-medium text-[var(--color-text-secondary)]">Status</th>
-              <th scope="col" className="px-4 py-2.5 text-left font-medium text-[var(--color-text-secondary)]">Source</th>
-              <th scope="col" className="px-4 py-2.5 text-left font-medium text-[var(--color-text-secondary)]">Trust</th>
-              <th scope="col" className="px-4 py-2.5 text-right font-medium text-[var(--color-text-secondary)]">Confidence</th>
-              <th scope="col" className="px-4 py-2.5 text-left font-medium text-[var(--color-text-secondary)]">Tags</th>
-              <th scope="col" className="px-4 py-2.5 text-right font-medium text-[var(--color-text-secondary)]">Staleness</th>
-            </tr>
-          </thead>
-          <tbody>
-            {decisions?.map((d) => (
-              <tr
-                key={d.id}
-                className="border-b border-[var(--color-border-default)] transition-colors hover:bg-[var(--color-bg-elevated)]"
-              >
-                <td className="px-4 py-2.5 min-w-[240px] max-w-[520px]">
-                  <Link
-                    href={`${prefix}/decisions/${d.id}`}
-                    className="font-medium text-[var(--color-text-primary)] hover:text-[var(--color-accent-primary)] hover:underline block truncate"
-                    title={stripMarkdown(d.title)}
-                  >
-                    {stripMarkdown(d.title)}
-                  </Link>
-                </td>
-                <td className="px-4 py-2.5">
-                  <Badge variant={STATUS_VARIANT[d.status] ?? "outline"}>{d.status}</Badge>
-                </td>
-                <td className="px-4 py-2.5 text-[var(--color-text-secondary)]">
-                  {SOURCE_LABEL[d.source] ?? d.source}
-                </td>
-                <td className="px-4 py-2.5">
-                  {d.verification ? (
-                    <VerificationBadge verification={d.verification} iconOnly />
-                  ) : (
-                    <span className="text-[var(--color-text-tertiary)]">—</span>
-                  )}
-                </td>
-                <td className="px-4 py-2.5 text-right tabular-nums text-[var(--color-text-secondary)]">
-                  {Math.round(d.confidence * 100)}%
-                </td>
-                <td className="px-4 py-2.5">
-                  <div className="flex flex-wrap gap-1">
-                    {d.tags.slice(0, 3).map((tag) => (
-                      <span
-                        key={tag}
-                        className="inline-block rounded bg-[var(--color-bg-elevated)] px-1.5 py-0.5 text-xs text-[var(--color-text-tertiary)]"
-                      >
-                        {tag}
-                      </span>
-                    ))}
-                    {d.tags.length > 3 && (
-                      <span
-                        className="inline-block rounded bg-[var(--color-bg-elevated)] px-1.5 py-0.5 text-xs text-[var(--color-text-tertiary)]"
-                        title={d.tags.slice(3).join(", ")}
-                      >
-                        +{d.tags.length - 3}
-                      </span>
-                    )}
-                  </div>
-                </td>
-                <td className="px-4 py-2.5 text-right tabular-nums" title="0 = fresh, 1 = fully stale">
-                  {d.staleness_score > 0.5 ? (
-                    <span className="text-red-500">{Math.round(d.staleness_score * 100)}%</span>
-                  ) : d.staleness_score > 0 ? (
-                    <span className="text-[var(--color-text-tertiary)]">{Math.round(d.staleness_score * 100)}%</span>
-                  ) : (
-                    <span className="text-[var(--color-text-tertiary)]">—</span>
-                  )}
-                </td>
-              </tr>
-            ))}
-            {!decisions?.length && Boolean(error) && !isLoading && (
-              <tr>
-                <td colSpan={7} className="px-4 py-8 text-center text-[var(--color-outdated)]">
-                  Couldn&apos;t load decisions.{" "}
-                  {onRetry && (
-                    <button
-                      onClick={onRetry}
-                      className="underline text-[var(--color-accent-primary)] hover:text-[var(--color-text-primary)]"
-                    >
-                      Retry
-                    </button>
-                  )}
-                </td>
-              </tr>
-            )}
-            {!decisions?.length && !error && !isLoading && (
-              <tr>
-                <td colSpan={7} className="px-4 py-8 text-center text-[var(--color-text-tertiary)]">
-                  No decisions found
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+      <ResponsiveTable
+        columns={columns}
+        rows={decisions ?? []}
+        rowKey={(d) => d.id}
+        empty={empty}
+      />
     </div>
   );
 }

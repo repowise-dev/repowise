@@ -6,7 +6,7 @@
  * (graceful fallback for pages generated before interlinking shipped).
  */
 
-import Link from "next/link";
+import * as React from "react";
 import { getPageTypeIcon, getPageTypeLabel } from "../lib/page-types";
 import type { Backlink } from "./wiki-links-types";
 
@@ -19,6 +19,17 @@ export interface BacklinksPanelProps {
   limit?: number;
   /** Optional URL builder; defaults to ``/repos/{repoId}/wiki/{pageId}``. */
   buildHref?: (repoId: string, pageId: string) => string;
+  /**
+   * Render-prop for the link element so the host can plug Next's `<Link>`
+   * (or any router link) without dragging a framework dep into ui/.
+   * Defaults to a plain `<a>`.
+   */
+  renderLink?: (props: {
+    href: string;
+    className: string;
+    title: string;
+    children: React.ReactNode;
+  }) => React.ReactNode;
 }
 
 const DEFAULT_LIMIT = 6;
@@ -29,11 +40,15 @@ function defaultHref(repoId: string, pageId: string): string {
   return `/repos/${repoId}/wiki/${encodeURIComponent(pageId)}`;
 }
 
+const LINK_CLASS =
+  "flex items-start gap-1.5 text-[var(--color-text-secondary)] hover:text-[var(--color-accent-primary)] transition-colors";
+
 export function BacklinksPanel({
   backlinks,
   repoId,
   limit = DEFAULT_LIMIT,
   buildHref = defaultHref,
+  renderLink,
 }: BacklinksPanelProps) {
   if (!backlinks || backlinks.length === 0) {
     return null;
@@ -50,18 +65,25 @@ export function BacklinksPanel({
       <ul className="space-y-1.5">
         {visible.map((bl) => {
           const Icon = getPageTypeIcon(bl.source_page_type);
+          const href = buildHref(repoId, bl.source_page_id);
+          const title = getPageTypeLabel(bl.source_page_type);
+          const children = (
+            <>
+              <Icon className="h-3 w-3 mt-0.5 shrink-0 text-[var(--color-text-tertiary)]" />
+              <span className="truncate" title={bl.source_title}>
+                {bl.source_title}
+              </span>
+            </>
+          );
           return (
             <li key={bl.source_page_id} className="text-xs">
-              <Link
-                href={buildHref(repoId, bl.source_page_id)}
-                className="flex items-start gap-1.5 text-[var(--color-text-secondary)] hover:text-[var(--color-accent-primary)] transition-colors"
-                title={getPageTypeLabel(bl.source_page_type)}
-              >
-                <Icon className="h-3 w-3 mt-0.5 shrink-0 text-[var(--color-text-tertiary)]" />
-                <span className="truncate" title={bl.source_title}>
-                  {bl.source_title}
-                </span>
-              </Link>
+              {renderLink ? (
+                renderLink({ href, className: LINK_CLASS, title, children })
+              ) : (
+                <a href={href} className={LINK_CLASS} title={title}>
+                  {children}
+                </a>
+              )}
             </li>
           );
         })}

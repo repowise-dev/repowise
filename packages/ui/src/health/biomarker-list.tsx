@@ -202,7 +202,7 @@ function FindingRow({
             {biomarkerLabel(f.biomarker_type)}
           </span>
         ) : null}
-        <span className="ml-auto text-xs tabular-nums text-red-500">
+        <span className="ml-auto text-xs tabular-nums text-[var(--color-error)]">
           −{f.health_impact.toFixed(2)}
         </span>
       </div>

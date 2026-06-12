@@ -34,6 +34,7 @@ export interface GraphFlowProps {
   repoId: string;
   repoName?: string;
   initialViewMode?: ViewMode;
+  initialColorMode?: GraphFlowShellProps["initialColorMode"];
   initialSelectedNode?: string | null;
   onNodeClick?: GraphFlowShellProps["onNodeClick"];
   onNodeViewDocs?: GraphFlowShellProps["onNodeViewDocs"];
@@ -51,6 +52,7 @@ export function GraphFlow({
   repoId,
   repoName,
   initialViewMode,
+  initialColorMode,
   initialSelectedNode,
   onNodeClick,
   onNodeViewDocs,
@@ -124,6 +126,7 @@ export function GraphFlow({
       communities={communities as CommunitySummaryItem[] | undefined}
       executionFlows={executionFlowsData as ExecutionFlows | undefined}
       initialViewMode={initialViewMode}
+      initialColorMode={initialColorMode}
       initialSelectedNode={initialSelectedNode}
       onViewModeChange={(mode) => {
         setViewMode(mode);

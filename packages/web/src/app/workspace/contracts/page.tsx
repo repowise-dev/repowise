@@ -8,6 +8,7 @@ import { ContractLinksTable } from "@repowise-dev/ui/workspace/contract-links-ta
 import { ContractTypeBadge, RoleBadge } from "@repowise-dev/ui/workspace/contract-type-badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui/card";
 import { StatCard } from "@repowise-dev/ui/shared/stat-card";
+import { EmptyState } from "@repowise-dev/ui/shared";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 
 const TYPE_OPTIONS = [
@@ -178,9 +179,11 @@ export default function ContractsPage() {
               ))}
             </div>
           ) : (data?.contracts ?? []).length === 0 ? (
-            <p className="text-sm text-[var(--color-text-tertiary)] py-4 text-center">
-              No contracts detected.
-            </p>
+            <EmptyState
+              className="p-6"
+              title="No contracts detected"
+              description="API contracts are detected during workspace indexing when providers and consumers share schemas."
+            />
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">

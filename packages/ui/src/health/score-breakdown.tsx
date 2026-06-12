@@ -79,12 +79,12 @@ export function ScoreBreakdown({
                 </span>
                 <span className="tabular-nums text-[var(--color-text-tertiary)]">
                   −{c.applied_deduction.toFixed(2)} / cap −{cap.toFixed(1)}
-                  {c.capped ? <span className="ml-1 text-amber-500" title="Capped">(capped)</span> : null}
+                  {c.capped ? <span className="ml-1 text-[var(--color-warning)]" title="Capped">(capped)</span> : null}
                 </span>
               </div>
               <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-[var(--color-bg-muted)]">
                 <div
-                  className="h-full bg-red-500/70"
+                  className="h-full bg-[var(--color-error)]/70"
                   style={{ width: `${pct}%` }}
                 />
               </div>
@@ -108,7 +108,7 @@ export function ScoreBreakdown({
                           {f.function_name}
                         </span>
                       ) : null}
-                      <span className="ml-auto tabular-nums text-red-500">
+                      <span className="ml-auto tabular-nums text-[var(--color-error)]">
                         −{f.applied_impact.toFixed(2)}
                       </span>
                     </li>

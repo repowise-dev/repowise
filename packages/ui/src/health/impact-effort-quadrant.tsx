@@ -71,10 +71,10 @@ export function ImpactEffortQuadrant({
       </div>
       <div className="relative">
         <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} role="img" aria-label="Impact vs effort scatter plot">
-          <rect x={padL} y={padT} width={midX - padL} height={midY - padT} fill="currentColor" className="text-emerald-500/8" />
-          <rect x={midX} y={padT} width={W - padR - midX} height={midY - padT} fill="currentColor" className="text-amber-500/5" />
-          <rect x={padL} y={midY} width={midX - padL} height={H - padB - midY} fill="currentColor" className="text-yellow-500/5" />
-          <rect x={midX} y={midY} width={W - padR - midX} height={H - padB - midY} fill="currentColor" className="text-red-500/5" />
+          <rect x={padL} y={padT} width={midX - padL} height={midY - padT} fill="currentColor" className="text-[var(--color-success)]/8" />
+          <rect x={midX} y={padT} width={W - padR - midX} height={midY - padT} fill="currentColor" className="text-[var(--color-warning)]/5" />
+          <rect x={padL} y={midY} width={midX - padL} height={H - padB - midY} fill="currentColor" className="text-[var(--color-caution)]/5" />
+          <rect x={midX} y={midY} width={W - padR - midX} height={H - padB - midY} fill="currentColor" className="text-[var(--color-error)]/5" />
 
           <line x1={padL} y1={padT} x2={padL} y2={H - padB} stroke="currentColor" strokeOpacity={0.2} />
           <line x1={padL} y1={H - padB} x2={W - padR} y2={H - padB} stroke="currentColor" strokeOpacity={0.2} />
@@ -103,7 +103,14 @@ export function ImpactEffortQuadrant({
             const cx = baseX + jitter(p.file_path);
             const cy = yScale(p.total_impact);
             const isHovered = hovered?.file_path === p.file_path;
-            const fillCls = p.score < 4 ? "fill-red-500" : p.score < 7 ? "fill-amber-500" : "fill-emerald-500";
+            const fillCls =
+              p.score < 4
+                ? "fill-[var(--color-error)]"
+                : p.score < 6
+                  ? "fill-[var(--color-warning)]"
+                  : p.score < 8
+                    ? "fill-[var(--color-caution)]"
+                    : "fill-[var(--color-success)]";
             return (
               <circle
                 key={p.file_path}

@@ -14,9 +14,18 @@ import type {
 } from "@repowise-dev/types/graph";
 
 const COMMUNITY_COLORS = [
-  "bg-indigo-400", "bg-pink-400", "bg-emerald-400", "bg-amber-400",
-  "bg-blue-400", "bg-purple-400", "bg-rose-400", "bg-teal-400",
-  "bg-orange-400", "bg-cyan-400",
+  "bg-[var(--color-community-1)]",
+  "bg-[var(--color-community-2)]",
+  "bg-[var(--color-community-3)]",
+  "bg-[var(--color-community-4)]",
+  "bg-[var(--color-community-5)]",
+  "bg-[var(--color-community-6)]",
+  "bg-[var(--color-community-7)]",
+  "bg-[var(--color-community-8)]",
+  "bg-[var(--color-community-9)]",
+  "bg-[var(--color-community-10)]",
+  "bg-[var(--color-community-11)]",
+  "bg-[var(--color-community-12)]",
 ];
 
 interface DetailPanelProps {

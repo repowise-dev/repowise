@@ -220,7 +220,7 @@ export function HealthFileDrawer({
                                 </span>
                               );
                             })() : null}
-                            <span className="ml-auto text-xs tabular-nums text-red-500">−{f.health_impact.toFixed(2)}</span>
+                            <span className="ml-auto text-xs tabular-nums text-[var(--color-error)]">−{f.health_impact.toFixed(2)}</span>
                           </div>
                           <p className="text-xs text-[var(--color-text-secondary)]">{f.reason}</p>
                           <BiomarkerDetails

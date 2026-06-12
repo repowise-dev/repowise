@@ -11,6 +11,9 @@ import { getGraph } from "@/lib/api/graph";
 import type { GraphExportResponse } from "@/lib/api/types";
 
 type ViewMode = "module" | "full" | "architecture" | "dead" | "hotfiles" | "unified";
+type ColorMode = "language" | "community" | "risk";
+
+const VALID_COLOR_MODES = new Set<ColorMode>(["language", "community", "risk"]);
 
 const VALID_VIEW_MODES = new Set<ViewMode>([
   "module",
@@ -40,6 +43,11 @@ export default function GraphPage({
     ? (viewModeParam as ViewMode)
     : undefined;
   const initialNode = searchParams.get("node");
+
+  const colorModeParam = searchParams.get("colorMode");
+  const initialColorMode = VALID_COLOR_MODES.has((colorModeParam ?? "") as ColorMode)
+    ? (colorModeParam as ColorMode)
+    : undefined;
 
   const [, setSelectedNode] = useQueryState("node");
   const [docNodeId, setDocNodeId] = useState<string | null>(null);
@@ -127,6 +135,7 @@ export default function GraphPage({
           <GraphFlow
             repoId={repoId}
             initialViewMode={initialNode ? "full" : initialViewMode}
+            initialColorMode={initialColorMode}
             initialSelectedNode={initialNode}
             onNodeClick={handleNodeClick}
             onNodeViewDocs={handleNodeViewDocs}

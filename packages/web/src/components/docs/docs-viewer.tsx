@@ -726,6 +726,11 @@ function DocsViewerBody({
               buildHref={(rid, pid) =>
                 `/repos/${rid}/docs?page=${encodeURIComponent(pid)}`
               }
+              renderLink={({ href, className, title, children }) => (
+                <Link href={href} className={className} title={title}>
+                  {children}
+                </Link>
+              )}
             />
             {hasTargetPath && <DocsSidebar repoId={repoId} targetPath={page.target_path} />}
           </div>

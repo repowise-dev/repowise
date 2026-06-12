@@ -90,7 +90,7 @@ export function HotFunctionsPanel({
   return (
     <section className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)]">
       <header className="flex items-center gap-2 px-4 py-3 border-b border-[var(--color-border-default)]">
-        <Flame className="h-4 w-4 text-amber-500" aria-hidden="true" />
+        <Flame className="h-4 w-4 text-[var(--color-warning)]" aria-hidden="true" />
         <h2 className="text-sm font-medium text-[var(--color-text-primary)]">
           Hot functions
         </h2>
@@ -123,7 +123,7 @@ export function HotFunctionsPanel({
                   {row.file_path}
                 </span>
                 <span className="ml-auto inline-flex items-center gap-2">
-                  <span className="text-xs tabular-nums text-red-500">
+                  <span className="text-xs tabular-nums text-[var(--color-error)]">
                     −{row.total_impact.toFixed(2)}
                   </span>
                   {interactive ? (

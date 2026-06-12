@@ -91,6 +91,9 @@ export interface GraphFlowProps {
   communities?: CommunitySummaryItem[];
   executionFlows?: ExecutionFlows;
   initialViewMode?: ViewMode;
+  /** Initial node color mode. Hosts derive this from their URL state instead
+   *  of the component reading window.location. */
+  initialColorMode?: ColorMode;
   initialSelectedNode?: string | null;
   onViewModeChange?: (mode: ViewMode) => void;
   onModulePathChange?: (path: string[]) => void;
@@ -134,6 +137,7 @@ export function GraphFlow(props: GraphFlowProps) {
     communities,
     executionFlows,
     initialViewMode,
+    initialColorMode,
     initialSelectedNode,
     onViewModeChange,
     onModulePathChange,
@@ -151,14 +155,7 @@ export function GraphFlow(props: GraphFlowProps) {
   // ---- Core state ----
   // Default scope is the constellation (radial Knowledge Graph).
   const [viewMode, setViewMode] = useState<ViewMode>(initialViewMode ?? "architecture");
-  const [colorMode, setColorMode] = useState<ColorMode>(() => {
-    if (typeof window !== "undefined") {
-      const params = new URLSearchParams(window.location.search);
-      const cm = params.get("colorMode");
-      if (cm === "community" || cm === "language" || cm === "risk") return cm;
-    }
-    return "community";
-  });
+  const [colorMode, setColorMode] = useState<ColorMode>(initialColorMode ?? "community");
   const [highlightedPath, setHighlightedPath] = useState<Set<string>>(new Set());
   const [highlightedEdges, setHighlightedEdges] = useState<Set<string>>(new Set());
   const [showPathFinder, setShowPathFinder] = useState(false);
@@ -179,15 +176,12 @@ export function GraphFlow(props: GraphFlowProps) {
     () => new Set(["import", "crossCommunity"]),
   );
 
-  // Signal overlays (replaces separate view modes for dead/hot/arch)
+  // Signal overlays (replaces separate view modes for dead/hot/arch).
+  // Derived from the host-provided initial view mode — no URL reads here.
   const [activeSignals, setActiveSignals] = useState<Set<Signal>>(() => {
-    if (typeof window !== "undefined") {
-      const params = new URLSearchParams(window.location.search);
-      const vm = params.get("viewMode");
-      if (vm === "dead") return new Set<Signal>(["dead"]);
-      if (vm === "hotfiles") return new Set<Signal>(["hot"]);
-      if (vm === "unified") return new Set<Signal>(["dead", "hot"]);
-    }
+    if (initialViewMode === "dead") return new Set<Signal>(["dead"]);
+    if (initialViewMode === "hotfiles") return new Set<Signal>(["hot"]);
+    if (initialViewMode === "unified") return new Set<Signal>(["dead", "hot"]);
     return new Set<Signal>();
   });
   const hideTests = activeSignals.has("hideTests");

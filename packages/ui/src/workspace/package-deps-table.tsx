@@ -1,53 +1,71 @@
 import { Badge } from "../ui/badge";
+import { EmptyState } from "../shared/empty-state";
+import {
+  ResponsiveTable,
+  type ResponsiveColumn,
+} from "../shared/responsive-table";
 import type { WorkspacePackageDepEntry } from "@repowise-dev/types/workspace";
 
 interface PackageDepsTableProps {
   deps: WorkspacePackageDepEntry[];
 }
 
-export function PackageDepsTable({ deps }: PackageDepsTableProps) {
-  if (deps.length === 0) {
-    return (
-      <p className="text-sm text-[var(--color-text-tertiary)] py-4 text-center">
-        No cross-repo package dependencies detected.
-      </p>
-    );
-  }
+const COLUMNS: ResponsiveColumn<WorkspacePackageDepEntry>[] = [
+  {
+    key: "source",
+    header: "Source",
+    priority: 1,
+    render: (d) => (
+      <Badge variant="default" className="text-[11px]">
+        {d.source_repo}
+      </Badge>
+    ),
+  },
+  {
+    key: "target",
+    header: "Target",
+    priority: 1,
+    render: (d) => (
+      <Badge variant="default" className="text-[11px]">
+        {d.target_repo}
+      </Badge>
+    ),
+  },
+  {
+    key: "manifest",
+    header: "Manifest",
+    priority: 2,
+    cellClassName: "font-mono text-xs text-[var(--color-text-secondary)] max-w-[280px]",
+    render: (d) => (
+      <span className="block truncate" title={d.source_manifest}>
+        {d.source_manifest}
+      </span>
+    ),
+  },
+  {
+    key: "kind",
+    header: "Kind",
+    priority: 2,
+    cellClassName: "text-xs text-[var(--color-text-secondary)]",
+    render: (d) => d.kind,
+  },
+];
 
+export function PackageDepsTable({ deps }: PackageDepsTableProps) {
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="border-b border-[var(--color-border-default)] text-left text-xs text-[var(--color-text-tertiary)]">
-            <th className="pb-2 pr-4 font-medium">Source</th>
-            <th className="pb-2 pr-4 font-medium">Target</th>
-            <th className="pb-2 pr-4 font-medium">Manifest</th>
-            <th className="pb-2 font-medium">Kind</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-[var(--color-border-default)]">
-          {deps.map((d, i) => (
-            <tr
-              key={`${d.source_repo}|${d.target_repo}|${d.source_manifest}|${i}`}
-              className="hover:bg-[var(--color-bg-elevated)] transition-colors"
-            >
-              <td className="py-2 pr-4">
-                <Badge variant="default" className="text-[11px]">{d.source_repo}</Badge>
-              </td>
-              <td className="py-2 pr-4">
-                <Badge variant="default" className="text-[11px]">{d.target_repo}</Badge>
-              </td>
-              <td
-                className="py-2 pr-4 font-mono text-xs text-[var(--color-text-secondary)] truncate max-w-[280px]"
-                title={d.source_manifest}
-              >
-                {d.source_manifest}
-              </td>
-              <td className="py-2 text-xs text-[var(--color-text-secondary)]">{d.kind}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+    <ResponsiveTable
+      columns={COLUMNS}
+      rows={deps}
+      rowKey={(d) =>
+        `${d.source_repo}|${d.target_repo}|${d.source_manifest}|${d.kind}`
+      }
+      bare
+      empty={
+        <EmptyState
+          title="No cross-repo package dependencies"
+          description="No manifest in this workspace depends on a sibling repo's package."
+        />
+      }
+    />
   );
 }

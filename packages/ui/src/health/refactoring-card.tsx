@@ -60,10 +60,10 @@ const effortLabel: Record<EffortBucket, string> = {
 };
 
 const effortColor: Record<EffortBucket, string> = {
-  S: "bg-emerald-500/15 text-emerald-500",
-  M: "bg-yellow-500/15 text-yellow-600",
-  L: "bg-amber-500/15 text-amber-500",
-  XL: "bg-red-500/15 text-red-500",
+  S: "bg-[var(--color-success)]/15 text-[var(--color-success)]",
+  M: "bg-[var(--color-caution)]/15 text-[var(--color-caution)]",
+  L: "bg-[var(--color-warning)]/15 text-[var(--color-warning)]",
+  XL: "bg-[var(--color-error)]/15 text-[var(--color-error)]",
 };
 
 export function RefactoringCard({
@@ -97,7 +97,7 @@ export function RefactoringCard({
           >
             {target.effort_bucket}
           </span>
-          <span className="ml-auto text-xs tabular-nums text-red-500" title="Total health impact across this file's findings">
+          <span className="ml-auto text-xs tabular-nums text-[var(--color-error)]" title="Total health impact across this file's findings">
             −{target.total_impact.toFixed(2)}
           </span>
         </div>
@@ -142,7 +142,7 @@ export function RefactoringCard({
                 e.stopPropagation();
                 onGeneratePrompt(target);
               }}
-              className="group/ai inline-flex items-center gap-1.5 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold text-emerald-600 hover:bg-emerald-500/20 hover:border-emerald-500/60 transition-colors"
+              className="group/ai inline-flex items-center gap-1.5 rounded-md border border-[var(--color-success)]/40 bg-[var(--color-success)]/10 px-2.5 py-1 text-xs font-semibold text-[var(--color-success)] hover:bg-[var(--color-success)]/20 hover:border-[var(--color-success)]/60 transition-colors"
               title="Generate a ready-to-paste prompt for an AI coding agent"
             >
               <Sparkles className="h-3.5 w-3.5 transition-transform group-hover/ai:rotate-12" />
@@ -177,7 +177,7 @@ export function RefactoringCard({
                     {f.function_name ? (
                       <span className="text-xs font-mono text-[var(--color-text-tertiary)]">{f.function_name}</span>
                     ) : null}
-                    <span className="ml-auto text-[11px] tabular-nums text-red-500">
+                    <span className="ml-auto text-[11px] tabular-nums text-[var(--color-error)]">
                       −{f.health_impact.toFixed(2)}
                     </span>
                   </div>

@@ -53,9 +53,9 @@ export function TrendChart({ history, height = 220 }: TrendChartProps) {
           KPI trend
         </h3>
         <div className="flex items-center gap-3 text-[11px] text-[var(--color-text-tertiary)]">
-          <Legend dot="bg-emerald-500" label="Average" />
-          <Legend dot="bg-amber-500" label="Hotspot" />
-          <Legend dot="bg-red-500" label="Worst" />
+          <Legend dot="bg-[var(--color-success)]" label="Average" />
+          <Legend dot="bg-[var(--color-warning)]" label="Hotspot" />
+          <Legend dot="bg-[var(--color-error)]" label="Worst" />
         </div>
       </div>
       <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} role="img" aria-label="Health KPI trend">

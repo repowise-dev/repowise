@@ -14,8 +14,8 @@ export function ApiError({
 }: ApiErrorProps) {
   return (
     <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
-      <div className="flex h-10 w-10 items-center justify-center rounded-full bg-red-500/10">
-        <AlertTriangle className="h-5 w-5 text-red-500" />
+      <div className="flex h-10 w-10 items-center justify-center rounded-full bg-[var(--color-error)]/10">
+        <AlertTriangle className="h-5 w-5 text-[var(--color-error)]" />
       </div>
       <div>
         <p className="text-sm font-medium text-[var(--color-text-primary)]">{title}</p>

@@ -3,6 +3,8 @@
  *
  * Single source of truth so the score pill on a file row, the severity
  * chip on a finding card, and the KPI card text colors all agree.
+ * All colors come from the semantic CSS tokens (--color-error/warning/
+ * caution/success) so the surface themes correctly in both modes.
  */
 
 export type Severity = "critical" | "high" | "medium" | "low";
@@ -22,42 +24,89 @@ export const SEVERITY_LABEL: Record<Severity, string> = {
 };
 
 export const SEVERITY_CHIP: Record<Severity, string> = {
-  critical: "bg-red-500/15 text-red-500 border border-red-500/30",
-  high: "bg-amber-500/15 text-amber-500 border border-amber-500/30",
-  medium: "bg-yellow-500/15 text-yellow-600 border border-yellow-500/30",
-  low: "bg-zinc-500/15 text-zinc-500 border border-zinc-500/30",
+  critical:
+    "bg-[var(--color-error)]/15 text-[var(--color-error)] border border-[var(--color-error)]/30",
+  high: "bg-[var(--color-warning)]/15 text-[var(--color-warning)] border border-[var(--color-warning)]/30",
+  medium:
+    "bg-[var(--color-caution)]/15 text-[var(--color-caution)] border border-[var(--color-caution)]/30",
+  low: "bg-[var(--color-text-tertiary)]/15 text-[var(--color-text-tertiary)] border border-[var(--color-text-tertiary)]/30",
 };
 
 export const SEVERITY_BAR: Record<Severity, string> = {
-  critical: "bg-red-500",
-  high: "bg-amber-500",
-  medium: "bg-yellow-500",
-  low: "bg-zinc-500",
+  critical: "bg-[var(--color-error)]",
+  high: "bg-[var(--color-warning)]",
+  medium: "bg-[var(--color-caution)]",
+  low: "bg-[var(--color-text-tertiary)]",
+};
+
+/**
+ * The ONE score→band mapping. Every score color in the app derives from
+ * this: <4 critical, <6 poor, <8 fair, >=8 good.
+ */
+export type ScoreBand = "critical" | "poor" | "fair" | "good";
+
+export function scoreBand(score: number): ScoreBand {
+  if (score < 4) return "critical";
+  if (score < 6) return "poor";
+  if (score < 8) return "fair";
+  return "good";
+}
+
+export const SCORE_BAND_LABEL: Record<ScoreBand, string> = {
+  critical: "Critical",
+  poor: "Poor",
+  fair: "Fair",
+  good: "Good",
+};
+
+/* Literal class strings per band so Tailwind's static scanner sees them. */
+const BAND_TEXT: Record<ScoreBand, string> = {
+  critical: "text-[var(--color-error)]",
+  poor: "text-[var(--color-warning)]",
+  fair: "text-[var(--color-caution)]",
+  good: "text-[var(--color-success)]",
+};
+
+const BAND_BADGE: Record<ScoreBand, string> = {
+  critical:
+    "bg-[var(--color-error)]/15 text-[var(--color-error)] border border-[var(--color-error)]/30",
+  poor: "bg-[var(--color-warning)]/15 text-[var(--color-warning)] border border-[var(--color-warning)]/30",
+  fair: "bg-[var(--color-caution)]/15 text-[var(--color-caution)] border border-[var(--color-caution)]/30",
+  good: "bg-[var(--color-success)]/15 text-[var(--color-success)] border border-[var(--color-success)]/30",
+};
+
+const BAND_BADGE_SOFT: Record<ScoreBand, string> = {
+  critical: "bg-[var(--color-error)]/15 text-[var(--color-error)]",
+  poor: "bg-[var(--color-warning)]/15 text-[var(--color-warning)]",
+  fair: "bg-[var(--color-caution)]/15 text-[var(--color-caution)]",
+  good: "bg-[var(--color-success)]/15 text-[var(--color-success)]",
 };
 
 export function scoreTextColor(score: number | null | undefined): string {
   if (score == null) return "text-[var(--color-text-primary)]";
-  if (score < 4) return "text-red-500";
-  if (score < 7) return "text-amber-500";
-  return "text-emerald-500";
+  return BAND_TEXT[scoreBand(score)];
 }
 
+/** Bordered score pill (file table, KPI badges). */
 export function scoreBadgeClass(score: number): string {
-  if (score < 4) return "bg-red-500/15 text-red-500 border border-red-500/30";
-  if (score < 7) return "bg-amber-500/15 text-amber-500 border border-amber-500/30";
-  return "bg-emerald-500/15 text-emerald-500 border border-emerald-500/30";
+  return BAND_BADGE[scoreBand(score)];
+}
+
+/** Borderless compact variant (inline HealthBadge next to file paths). */
+export function scoreSoftBadgeClass(score: number): string {
+  return BAND_BADGE_SOFT[scoreBand(score)];
 }
 
 export function coverageColor(pct: number): string {
-  if (pct < 30) return "bg-red-500";
-  if (pct < 60) return "bg-amber-500";
-  if (pct < 80) return "bg-yellow-400";
-  return "bg-emerald-500";
+  if (pct < 30) return "bg-[var(--color-error)]";
+  if (pct < 60) return "bg-[var(--color-warning)]";
+  if (pct < 80) return "bg-[var(--color-caution)]";
+  return "bg-[var(--color-success)]";
 }
 
 export function deltaColor(delta: number | null | undefined): string {
   if (delta == null || delta === 0) return "text-[var(--color-text-tertiary)]";
-  return delta > 0 ? "text-emerald-500" : "text-red-500";
+  return delta > 0 ? "text-[var(--color-success)]" : "text-[var(--color-error)]";
 }
 
 export function formatDelta(delta: number | null | undefined): string {
