@@ -130,12 +130,12 @@ the items that matter most to you can be prioritized.
 | Audit trail (in-product + JSON / CSV export + webhook stream) | — | ✅ *(GA on hosted — security surface)* |
 | Jira / Confluence integration | — | ✅ *(rolling out)* |
 | GitHub Enterprise / Azure DevOps / GitLab / Bitbucket | — | ✅ *(rolling out)* |
-| Slack / Teams security alerting (signed webhooks) | — | ✅ *(GA on hosted — Teams)* |
+| Slack / Teams alerting (security + engineering signals, signed webhooks) | — | ✅ *(GA on hosted — Teams)* |
 | SAML / OIDC SSO + SCIM | — | ✅ *(rolling out)* |
 | RBAC + multi-tenant | — | ✅ *(planned)* |
 | Air-gapped install bundle | — | ✅ *(planned)* |
 | Reference HA topology | — | ✅ *(GA on customer infra)* |
-| Engineering leader dashboard | — | ✅ *(rolling out)* |
+| Engineering leader dashboard | — | ✅ *(GA on hosted — Teams)* |
 | Custom language / framework extensions | — | ✅ *(GA)* |
 | Priority support & SLA | — | ✅ *(GA)* |
 | IP indemnification + defensive patent grant | — | ✅ *(GA)* |
@@ -228,13 +228,16 @@ integrations beyond this list are available on request.
   PR-comment bot that posts blast-radius and reviewer suggestions, and a
   branch-protection check that blocks merges touching hotspots without a reviewer
   from the ownership list.
-- **Slack & Microsoft Teams** — security alerting is available today on the
-  hosted platform (Teams+) as HMAC-signed webhooks with a Slack-compatible
-  format (works with Slack, Microsoft Teams, and Mattermost inbound
-  webhooks): new critical CVEs, live secrets, failed scans, and
-  rotation-overdue reminders, plus the opt-in audit-event stream. Alerts on
-  hotspot drift, bus-factor warnings, and decision staleness are rolling out
-  on the same plumbing, routed by ownership.
+- **Slack & Microsoft Teams** — alerting is available today on the hosted
+  platform (Teams+) as HMAC-signed webhooks with a Slack-compatible format
+  (works with Slack, Microsoft Teams, and Mattermost inbound webhooks).
+  Security events: new critical CVEs, live secrets, failed scans, and
+  rotation-overdue reminders, plus the opt-in audit-event stream.
+  Engineering signals, detected nightly against each repo's previous
+  observation so alerts fire on threshold crossings rather than levels:
+  hotspot drift, bus-factor risk, health decline, and decision staleness —
+  each also delivered as an in-product notification and an opt-out email
+  with the owning contributors named in the payload.
 - **SAML / OIDC SSO** — Okta, Entra ID, Auth0, Google Workspace, generic SAML 2.0.
 - **SCIM provisioning** — automatic user / group lifecycle.
 
@@ -242,11 +245,15 @@ integrations beyond this list are available on request.
 
 The underlying signals (ownership, bus factor, hotspot trends, decision staleness)
 are already computed and queryable today via the OSS dashboard; the leadership-facing
-presentation and policy layer is what's rolling out commercially.
+presentation and policy layer is what ships commercially.
 
-- **Engineering leader dashboard** *(rolling out)* — bus-factor trends, hotspot
-  evolution over time, cross-repo dead code, ownership drift, decision-staleness
-  curves, scheduled email digests (weekly / sprint / monthly / executive).
+- **Engineering leader dashboard** *(GA on hosted — Teams)* — a portfolio view
+  over the nightly signal observations: per-repo hotspot counts, bus-factor
+  risk, stale decisions, and health trends with a recent-alerts stream that
+  deep-links into each repo's hotspots / ownership / decisions / health
+  pages, plus a weekly email digest (opt-in) for team owners and admins.
+  Sprint / monthly / executive digest cadences and cross-repo dead-code
+  rollups are planned extensions.
 - **Session intelligence harvesting** *(planned)* — architectural decisions surfaced
   from AI coding sessions and proposed to the team knowledge base, so tribal
   knowledge generated *during* AI-assisted work doesn't evaporate when the session
