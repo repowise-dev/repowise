@@ -15,6 +15,8 @@ export interface HotFunctionFinding {
   health_impact: number;
   reason: string;
   details?: BiomarkerDetailsRecord | null;
+  /** Matching symbol id (server join); enables the symbol-page link. */
+  symbol_id?: string | null;
 }
 
 export interface HotFunctionsPanelProps {
@@ -23,6 +25,8 @@ export interface HotFunctionsPanelProps {
   limit?: number;
   /** Click → open file drawer (and ideally scroll to the function). */
   onSelect?: ((f: HotFunctionFinding) => void) | undefined;
+  /** Href for the function name → canonical symbol page. */
+  symbolHrefFor?: ((f: HotFunctionFinding) => string | undefined) | undefined;
 }
 
 const HOT_FUNCTION_BIOMARKERS = new Set([
@@ -83,6 +87,7 @@ export function HotFunctionsPanel({
   findings,
   limit = 15,
   onSelect,
+  symbolHrefFor,
 }: HotFunctionsPanelProps) {
   const rows = aggregate(findings).slice(0, limit);
   if (rows.length === 0) return null;
@@ -116,9 +121,25 @@ export function HotFunctionsPanel({
                 >
                   {SEVERITY_LABEL[row.worst_severity]}
                 </span>
-                <span className="text-xs font-mono text-[var(--color-text-primary)]">
-                  {row.function_name}
-                </span>
+                {(() => {
+                  const href = symbolHrefFor
+                    ? symbolHrefFor(row.representative)
+                    : undefined;
+                  return href ? (
+                    <a
+                      href={href}
+                      onClick={(e) => e.stopPropagation()}
+                      className="text-xs font-mono text-[var(--color-accent-primary)] hover:underline"
+                      title="Open symbol page"
+                    >
+                      {row.function_name}
+                    </a>
+                  ) : (
+                    <span className="text-xs font-mono text-[var(--color-text-primary)]">
+                      {row.function_name}
+                    </span>
+                  );
+                })()}
                 <span className="text-[11px] font-mono text-[var(--color-text-tertiary)] truncate">
                   {row.file_path}
                 </span>

@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
+import { InfoTip } from "../shared/info-tip";
 import { biomarkerLabel, biomarkerInfo, CATEGORY_LABEL } from "./biomarker-glossary";
 import { BiomarkerDetails, type BiomarkerDetailsRecord } from "./biomarker-details";
 import { SEVERITY_CHIP, SEVERITY_LABEL, SEVERITY_ORDER, type Severity } from "./tokens";
@@ -130,6 +131,9 @@ function BiomarkerGroup({
         <span className="text-sm font-medium text-[var(--color-text-primary)]">
           {info.label}
         </span>
+        {info.description ? (
+          <InfoTip content={info.description} label={`About ${info.label}`} />
+        ) : null}
         <span className="text-xs text-[var(--color-text-tertiary)]">
           {CATEGORY_LABEL[info.category]}
         </span>
@@ -198,8 +202,14 @@ function FindingRow({
           {SEVERITY_LABEL[f.severity]}
         </span>
         {!hideBiomarker ? (
-          <span className="text-xs font-medium text-[var(--color-text-primary)]">
+          <span className="inline-flex items-center gap-1 text-xs font-medium text-[var(--color-text-primary)]">
             {biomarkerLabel(f.biomarker_type)}
+            {biomarkerInfo(f.biomarker_type).description ? (
+              <InfoTip
+                content={biomarkerInfo(f.biomarker_type).description}
+                label={`About ${biomarkerLabel(f.biomarker_type)}`}
+              />
+            ) : null}
           </span>
         ) : null}
         <span className="ml-auto text-xs tabular-nums text-[var(--color-error)]">

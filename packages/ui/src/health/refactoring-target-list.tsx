@@ -6,6 +6,8 @@ export interface RefactoringTargetListProps {
   onStatusChange?: ((findingId: string, status: FindingStatus) => void) | undefined;
   onGeneratePrompt?: ((target: RefactoringTarget) => void) | undefined;
   emptyMessage?: string;
+  /** File path of the card to flash-highlight (quadrant click). */
+  highlightedPath?: string | null | undefined;
 }
 
 export function RefactoringTargetList({
@@ -14,6 +16,7 @@ export function RefactoringTargetList({
   onStatusChange,
   onGeneratePrompt,
   emptyMessage = "No refactoring targets match the current filters.",
+  highlightedPath,
 }: RefactoringTargetListProps) {
   if (targets.length === 0) {
     return (
@@ -31,6 +34,7 @@ export function RefactoringTargetList({
           onSelect={onSelect}
           onStatusChange={onStatusChange}
           onGeneratePrompt={onGeneratePrompt}
+          highlighted={highlightedPath === t.file_path}
         />
       ))}
     </div>

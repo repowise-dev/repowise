@@ -42,6 +42,21 @@ const FLAVORS: {
   { value: "cursor", label: "Cursor", Icon: Code2, hint: "Uses @file context, Cursor editing conventions." },
 ];
 
+const FLAVOR_STORAGE_KEY = "repowise:ai-prompt-flavor";
+
+function loadStoredFlavor(): AiPromptFlavor {
+  if (typeof window === "undefined") return "generic";
+  try {
+    const stored = window.localStorage.getItem(FLAVOR_STORAGE_KEY);
+    if (stored && FLAVORS.some((f) => f.value === stored)) {
+      return stored as AiPromptFlavor;
+    }
+  } catch {
+    /* storage blocked */
+  }
+  return "generic";
+}
+
 export function AiPromptModal({
   open,
   onOpenChange,
@@ -50,8 +65,17 @@ export function AiPromptModal({
   title = "AI fix prompt",
   description = "A ready-to-paste prompt that gives your AI coding agent every detail needed to make this change in one focused pass.",
 }: AiPromptModalProps) {
-  const [flavor, setFlavor] = useState<AiPromptFlavor>("generic");
+  const [flavor, setFlavorState] = useState<AiPromptFlavor>(loadStoredFlavor);
   const [copied, setCopied] = useState(false);
+
+  const setFlavor = (next: AiPromptFlavor) => {
+    setFlavorState(next);
+    try {
+      window.localStorage.setItem(FLAVOR_STORAGE_KEY, next);
+    } catch {
+      /* storage blocked */
+    }
+  };
 
   const prompt = useMemo(
     () => (getPrompt ? getPrompt(flavor) : ""),
@@ -59,10 +83,7 @@ export function AiPromptModal({
   );
 
   useEffect(() => {
-    if (!open) {
-      setCopied(false);
-      setFlavor("generic");
-    }
+    if (!open) setCopied(false);
   }, [open]);
 
   const handleCopy = async () => {

@@ -14,6 +14,7 @@ export {
 export { Toaster, toast, type ToasterProps } from "./toast";
 export * from "./breadcrumb";
 export * from "./empty-state";
+export { InfoTip, type InfoTipProps } from "./info-tip";
 export { OwlLoader, type OwlLoaderProps } from "./owl-loader";
 export * from "./stat-card";
 export * from "./results-footer";

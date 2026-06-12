@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Check, Minus, Target, HelpCircle } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Minus, Target, HelpCircle } from "lucide-react";
 import { Card } from "../ui/card";
 
 export interface DefectAccuracyFile {
@@ -44,8 +44,16 @@ export interface DefectAccuracy {
  * lacks enough files or defect history to be honest, in which case the
  * caller should render nothing.
  */
-export function DefectAccuracyCard({ data }: { data: DefectAccuracy }) {
+export function DefectAccuracyCard({
+  data,
+  collapsible = false,
+}: {
+  data: DefectAccuracy;
+  /** Start as a one-line "can you trust this score?" row that expands on click. */
+  collapsible?: boolean;
+}) {
   const [open, setOpen] = useState(false);
+  const [expanded, setExpanded] = useState(!collapsible);
 
   const months = Math.max(1, Math.round(data.window_days / 30));
   const windowLabel = months === 1 ? "month" : `${months} months`;
@@ -54,13 +62,47 @@ export function DefectAccuracyCard({ data }: { data: DefectAccuracy }) {
   const concPct = Math.round(data.concentration_defect_share * 100);
   const concFilePct = Math.round(data.concentration_file_fraction * 100);
 
+  if (!expanded) {
+    return (
+      <Card className="p-0">
+        <button
+          type="button"
+          onClick={() => setExpanded(true)}
+          aria-expanded={false}
+          className="flex w-full flex-wrap items-center gap-2 px-4 py-3 text-left hover:bg-[var(--color-bg-elevated)] transition-colors rounded-lg"
+        >
+          <ChevronRight className="h-4 w-4 shrink-0 text-[var(--color-text-tertiary)]" aria-hidden />
+          <Target className="h-4 w-4 shrink-0 text-[var(--color-accent-primary)]" aria-hidden />
+          <span className="text-sm font-medium text-[var(--color-text-primary)]">
+            Can you trust this score?
+          </span>
+          <span className="text-xs text-[var(--color-text-secondary)]">
+            {data.hits}/{data.k} lowest-health files were bug-fixed in the last {windowLabel}
+            {data.lift != null ? ` — ${data.lift}× the ${basePct}% baseline` : ""}
+          </span>
+        </button>
+      </Card>
+    );
+  }
+
   return (
     <Card className="p-4">
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-center gap-2">
+          {collapsible ? (
+            <button
+              type="button"
+              onClick={() => setExpanded(false)}
+              aria-label="Collapse"
+              aria-expanded
+              className="text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]"
+            >
+              <ChevronDown className="h-4 w-4" aria-hidden />
+            </button>
+          ) : null}
           <Target className="h-4 w-4 text-[var(--color-accent-primary)]" aria-hidden />
           <h3 className="text-sm font-medium text-[var(--color-text-primary)]">
-            Does the health score find the bugs?
+            {collapsible ? "Can you trust this score?" : "Does the health score find the bugs?"}
           </h3>
         </div>
         <button

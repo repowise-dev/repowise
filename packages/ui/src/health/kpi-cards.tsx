@@ -1,4 +1,5 @@
 import { formatNumber } from "../lib/format";
+import { InfoTip } from "../shared/info-tip";
 import { scoreTextColor, formatDelta, deltaColor } from "./tokens";
 import { Sparkline } from "./sparkline";
 import { SeverityDistribution, type SeverityBreakdown } from "./severity-distribution";
@@ -50,7 +51,7 @@ export function HealthKpiCards({
         label="Hotspot Health"
         sparkline={hotspotHistory}
         delta={hotspotDelta}
-        hint="NLOC-weighted score over the repo's high-churn files."
+        hint="The health score averaged over the repo's churn hotspots only (NLOC-weighted). Not a hotspot count — it answers “how healthy is the code you touch most?”"
       >
         <p
           className={`text-2xl font-bold tabular-nums ${scoreTextColor(summary.hotspot_health ?? null)}`}
@@ -103,13 +104,11 @@ function Card({
   hint?: string | undefined;
 }) {
   return (
-    <div
-      className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-4"
-      title={hint}
-    >
+    <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-4">
       <div className="flex items-start justify-between gap-2 mb-1">
-        <p className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
+        <p className="inline-flex items-center gap-1 text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
           {label}
+          {hint ? <InfoTip content={hint} label={`About ${label}`} /> : null}
         </p>
         {sparkline && sparkline.length > 0 ? (
           <div className="text-[var(--color-text-tertiary)]">

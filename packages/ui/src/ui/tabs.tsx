@@ -36,6 +36,25 @@ const TabsTrigger = React.forwardRef<
 ));
 TabsTrigger.displayName = TabsPrimitive.Trigger.displayName;
 
+/**
+ * A TabsList that scrolls horizontally instead of wrapping when the triggers
+ * overflow — the shared small-width pattern for sections with many tabs.
+ * Drop-in replacement for ``TabsList``.
+ */
+const ScrollableTabsList = React.forwardRef<
+  React.ElementRef<typeof TabsPrimitive.List>,
+  React.ComponentPropsWithoutRef<typeof TabsPrimitive.List>
+>(({ className, ...props }, ref) => (
+  <div className="overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden -mx-1 px-1">
+    <TabsList
+      ref={ref}
+      className={cn("w-max min-w-full justify-start", className)}
+      {...props}
+    />
+  </div>
+));
+ScrollableTabsList.displayName = "ScrollableTabsList";
+
 const TabsContent = React.forwardRef<
   React.ElementRef<typeof TabsPrimitive.Content>,
   React.ComponentPropsWithoutRef<typeof TabsPrimitive.Content>
@@ -51,4 +70,4 @@ const TabsContent = React.forwardRef<
 ));
 TabsContent.displayName = TabsPrimitive.Content.displayName;
 
-export { Tabs, TabsList, TabsTrigger, TabsContent };
+export { Tabs, TabsList, ScrollableTabsList, TabsTrigger, TabsContent };

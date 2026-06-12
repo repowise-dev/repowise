@@ -13,6 +13,8 @@ export type BiomarkerCategory =
   | "duplication"
   | "test_coverage"
   | "test_coverage_gradient"
+  | "test_quality"
+  | "error_handling"
   | "organizational";
 
 export interface BiomarkerInfo {
@@ -27,6 +29,8 @@ export const CATEGORY_LABEL: Record<BiomarkerCategory, string> = {
   duplication: "Duplication",
   test_coverage: "Test coverage",
   test_coverage_gradient: "Coverage gradient",
+  test_quality: "Test quality",
+  error_handling: "Error handling",
   organizational: "Organizational",
 };
 
@@ -37,6 +41,8 @@ export const CATEGORY_CAP: Record<BiomarkerCategory, number> = {
   test_coverage_gradient: 2.0,
   size_and_complexity: 1.5,
   duplication: 1.0,
+  test_quality: 0.5,
+  error_handling: 0.5,
 };
 
 export const BIOMARKER_GLOSSARY: Record<string, BiomarkerInfo> = {
@@ -135,6 +141,84 @@ export const BIOMARKER_GLOSSARY: Record<string, BiomarkerInfo> = {
     category: "organizational",
     description:
       "A long-stable function (median line age ≥ 1 year) that has suddenly started moving again. This edit profile is one of the strongest empirical predictors of regressions.",
+  },
+  low_cohesion: {
+    label: "Low cohesion",
+    category: "structural_complexity",
+    description:
+      "A class whose methods split into multiple disconnected groups (LCOM4 > 1). The groups share a namespace but not a responsibility — usually two classes living in one.",
+  },
+  god_class: {
+    label: "God class",
+    category: "structural_complexity",
+    description:
+      "A very large class with many methods including at least one brain method. It accumulates responsibilities until every change routes through it.",
+  },
+  ownership_risk: {
+    label: "Ownership risk",
+    category: "organizational",
+    description:
+      "Many minor contributors with no dominant owner. Fragmented ownership is a calibrated defect predictor — nobody holds the full picture of the file.",
+  },
+  churn_risk: {
+    label: "Churn risk",
+    category: "organizational",
+    description:
+      "Lines added and deleted at a rate far above the repo norm for the file's size. Relative churn is a classic defect-density predictor.",
+  },
+  change_entropy: {
+    label: "Change entropy",
+    category: "organizational",
+    description:
+      "Changes scattered across many unrelated commits rather than focused work. High entropy in the change history is a strong history-based fault predictor.",
+  },
+  co_change_scatter: {
+    label: "Co-change scatter",
+    category: "organizational",
+    description:
+      "Editing this file tends to ripple across many other files in the same commits (shotgun surgery). The strongest calibrated predictor in the score.",
+  },
+  prior_defect: {
+    label: "Prior defects",
+    category: "organizational",
+    description:
+      "Bug-fix commits touched this file repeatedly in the recent window. Recent defect history is the most cost-effective predictor of further defects.",
+  },
+  large_assertion_block: {
+    label: "Large assertion block",
+    category: "test_quality",
+    description:
+      "A test function running a long unbroken run of assertions. When one fails, the rest never execute — split into focused cases.",
+  },
+  duplicated_assertion_block: {
+    label: "Duplicated assertions",
+    category: "test_quality",
+    description:
+      "An assertion block copy-pasted across test files. Behaviour changes now require synchronized edits, and drift produces misleading green runs.",
+  },
+  error_handling: {
+    label: "Error handling",
+    category: "error_handling",
+    description:
+      "Swallowed exceptions, bare excepts, unsafe unwraps, or discarded error returns. An advisory maintainability flag — failures here vanish silently.",
+  },
+  ungoverned_hotspot: {
+    label: "Ungoverned hotspot",
+    category: "organizational",
+    description:
+      "A churn hotspot with no governing architectural decision on record. High-traffic code evolving without documented intent.",
+  },
+  stale_governance: {
+    label: "Stale governance",
+    category: "organizational",
+    description:
+      "The architectural decision governing this file has gone stale — the code has moved on since the decision was last confirmed.",
+  },
+  contradictory_decision: {
+    label: "Contradictory decision",
+    category: "organizational",
+    description:
+      "Two governing decisions on record contradict each other. The file is caught between conflicting documented intents.",
   },
 };
 

@@ -1,7 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { ExternalLink, X } from "lucide-react";
+import { useState } from "react";
+import { ExternalLink } from "lucide-react";
+import { AdaptivePanel } from "../shared/adaptive-panel";
+import { InfoTip } from "../shared/info-tip";
 import { biomarkerLabel, biomarkerInfo, CATEGORY_LABEL } from "./biomarker-glossary";
 import { BiomarkerDetails, type BiomarkerDetailsRecord } from "./biomarker-details";
 import { ScoreBreakdown, type ScoreBreakdownCategory } from "./score-breakdown";
@@ -95,56 +97,27 @@ export function HealthFileDrawer({
       setSavingId(null);
     }
   };
-  // ESC to close
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [open, onClose]);
-
-  if (!open) return null;
   return (
-    <div className="fixed inset-0 z-50 flex" role="dialog" aria-modal="true">
-      <button
-        type="button"
-        aria-label="Close drawer"
-        onClick={onClose}
-        className="flex-1 bg-black/50 backdrop-blur-[1px]"
-      />
-      <aside className="w-full max-w-[640px] bg-[var(--color-bg-surface)] border-l border-[var(--color-border-default)] overflow-y-auto shadow-xl">
-        <header className="sticky top-0 z-10 flex items-start justify-between gap-3 border-b border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-4 py-3">
-          <div className="min-w-0 flex-1">
-            <p className="text-xs uppercase tracking-wider text-[var(--color-text-tertiary)]">File health</p>
-            <p className="font-mono text-sm text-[var(--color-text-primary)] truncate" title={metric?.file_path}>
-              {metric?.file_path ?? "Loading…"}
-            </p>
-          </div>
-          <div className="flex items-center gap-2 shrink-0">
-            {permalinkHref ? (
-              <a
-                href={permalinkHref}
-                className="text-xs text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] inline-flex items-center gap-1"
-                title="Open as a shareable page"
-              >
-                <ExternalLink className="h-3.5 w-3.5" />
-                Permalink
-              </a>
-            ) : null}
-            <button
-              type="button"
-              onClick={onClose}
-              aria-label="Close"
-              className="rounded p-1 text-[var(--color-text-tertiary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]"
-            >
-              <X className="h-4 w-4" />
-            </button>
-          </div>
-        </header>
-
+    <AdaptivePanel
+      open={open}
+      onOpenChange={(next) => {
+        if (!next) onClose();
+      }}
+      eyebrow="File health"
+      title={metric?.file_path ?? "Loading…"}
+      widthClassName="md:max-w-[640px]"
+    >
         <div className="px-4 py-4 space-y-5">
+          {permalinkHref ? (
+            <a
+              href={permalinkHref}
+              className="inline-flex items-center gap-1 text-xs text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]"
+              title="Open as a shareable page"
+            >
+              <ExternalLink className="h-3.5 w-3.5" />
+              Open full page
+            </a>
+          ) : null}
           {loading ? (
             <div className="text-sm text-[var(--color-text-tertiary)]">Loading…</div>
           ) : !metric ? (
@@ -217,8 +190,14 @@ export function HealthFileDrawer({
                             <span className={`inline-block rounded px-1.5 py-px text-[10px] uppercase font-semibold ${SEVERITY_CHIP[f.severity]}`}>
                               {SEVERITY_LABEL[f.severity]}
                             </span>
-                            <span className="text-xs font-semibold text-[var(--color-text-primary)]">
+                            <span className="inline-flex items-center gap-1 text-xs font-semibold text-[var(--color-text-primary)]">
                               {biomarkerLabel(f.biomarker_type)}
+                              {info.description ? (
+                                <InfoTip
+                                  content={info.description}
+                                  label={`About ${biomarkerLabel(f.biomarker_type)}`}
+                                />
+                              ) : null}
                             </span>
                             <span className="text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)]">
                               {CATEGORY_LABEL[info.category]}
@@ -289,8 +268,7 @@ export function HealthFileDrawer({
             </>
           )}
         </div>
-      </aside>
-    </div>
+    </AdaptivePanel>
   );
 }
 

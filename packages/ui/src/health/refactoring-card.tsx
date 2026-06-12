@@ -2,7 +2,8 @@
 
 import { useState } from "react";
 import { ArrowUpRight, ChevronDown, ChevronRight, Sparkles } from "lucide-react";
-import { biomarkerLabel } from "./biomarker-glossary";
+import { InfoTip } from "../shared/info-tip";
+import { biomarkerInfo, biomarkerLabel } from "./biomarker-glossary";
 import type { BiomarkerDetailsRecord } from "./biomarker-details";
 import { SEVERITY_CHIP, SEVERITY_LABEL, type Severity } from "./tokens";
 
@@ -50,6 +51,8 @@ export interface RefactoringCardProps {
   onStatusChange?: ((findingId: string, status: FindingStatus) => void) | undefined;
   onGeneratePrompt?: ((target: RefactoringTarget) => void) | undefined;
   expandable?: boolean;
+  /** Flash-highlight the card (e.g. after a quadrant dot click scrolled to it). */
+  highlighted?: boolean;
 }
 
 const effortLabel: Record<EffortBucket, string> = {
@@ -72,10 +75,18 @@ export function RefactoringCard({
   onStatusChange,
   onGeneratePrompt,
   expandable = true,
+  highlighted = false,
 }: RefactoringCardProps) {
   const [expanded, setExpanded] = useState(false);
   return (
-    <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] overflow-hidden">
+    <div
+      data-refactoring-card={target.file_path}
+      className={`rounded-lg border bg-[var(--color-bg-surface)] overflow-hidden transition-colors ${
+        highlighted
+          ? "border-[var(--color-accent-primary)] ring-1 ring-[var(--color-accent-primary)]/40"
+          : "border-[var(--color-border-default)]"
+      }`}
+    >
       <div className="p-4 space-y-2">
         <div className="flex items-center gap-2 flex-wrap">
           <span
@@ -83,8 +94,14 @@ export function RefactoringCard({
           >
             {SEVERITY_LABEL[target.primary_severity]}
           </span>
-          <span className="text-xs font-semibold text-[var(--color-text-primary)]">
+          <span className="inline-flex items-center gap-1 text-xs font-semibold text-[var(--color-text-primary)]">
             {biomarkerLabel(target.primary_biomarker)}
+            {biomarkerInfo(target.primary_biomarker).description ? (
+              <InfoTip
+                content={biomarkerInfo(target.primary_biomarker).description}
+                label={`About ${biomarkerLabel(target.primary_biomarker)}`}
+              />
+            ) : null}
           </span>
           {target.module ? (
             <span className="text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)] rounded px-1.5 py-0.5 border border-[var(--color-border-default)]">
