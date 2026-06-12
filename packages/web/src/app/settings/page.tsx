@@ -20,6 +20,11 @@ export default function SettingsPage() {
       <ProviderSection />
       <WebhookSection />
       <McpSection />
+
+      <p className="text-xs text-[var(--color-text-tertiary)]">
+        Per-repository options (sync, exclude patterns, deletion) live on each
+        repo&apos;s own Settings page, reachable from its sidebar.
+      </p>
     </div>
   );
 }

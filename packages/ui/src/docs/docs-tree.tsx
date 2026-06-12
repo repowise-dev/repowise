@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useEffect, useState, useMemo } from "react";
 import {
   ChevronDown,
   ChevronRight,
@@ -32,6 +32,9 @@ import type { DocPage } from "@repowise-dev/types/docs";
 // real target_path (which never starts with "@") so directory lookups don't
 // collide with module paths.
 const ONBOARDING_DIR_KEY = "@onboarding";
+// Tree expansion survives reloads (per-browser, not per-repo — paths rarely
+// collide across repos and the fallback is just the default expansion).
+const EXPANDED_DIRS_KEY = "repowise:docs-tree-expanded";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -780,8 +783,17 @@ export function DocsTree({ pages, selectedPageId, onSelectPage, className }: Doc
   // first, filesystem second. The folder view is a toggle for power users.
   const [viewMode, setViewMode] = useState<ViewMode>("domain");
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(() => {
-    // Auto-expand first two levels, the Onboarding folder, and every domain
-    // section so both views open in a useful state.
+    // Restore the user's last expansion state; otherwise auto-expand first
+    // two levels, the Onboarding folder, and every domain section so both
+    // views open in a useful state.
+    if (typeof window !== "undefined") {
+      try {
+        const saved = window.localStorage.getItem(EXPANDED_DIRS_KEY);
+        if (saved) return new Set<string>(JSON.parse(saved) as string[]);
+      } catch {
+        // Corrupt state — fall through to the defaults.
+      }
+    }
     const dirs = new Set<string>(DOMAIN_SECTION_KEYS);
     dirs.add(ONBOARDING_DIR_KEY);
     for (const page of pages) {
@@ -790,6 +802,16 @@ export function DocsTree({ pages, selectedPageId, onSelectPage, className }: Doc
     }
     return dirs;
   });
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        EXPANDED_DIRS_KEY,
+        JSON.stringify([...expandedDirs]),
+      );
+    } catch {
+      // Quota/SSR — persistence is best-effort.
+    }
+  }, [expandedDirs]);
   // Filters are a power-user affordance — start hidden so the panel opens
   // calm; the funnel button shows a count when any filter is active.
   const [showFilters, setShowFilters] = useState(false);
@@ -916,13 +938,26 @@ export function DocsTree({ pages, selectedPageId, onSelectPage, className }: Doc
           </div>
         )}
 
-        {/* Stats line — quiet when everything is fresh */}
+        {/* Stats line — quiet when everything is fresh; dots get a legend the
+            moment any are shown. */}
         <div className="text-[10px] text-[var(--color-text-tertiary)]">
           {totalPages} pages
           {needAttention === 0 ? (
             <span> · all fresh</span>
           ) : (
             <span className="text-[var(--color-warning)]"> · {needAttention} need attention</span>
+          )}
+          {needAttention > 0 && (
+            <span className="ml-2 inline-flex items-center gap-2">
+              <span className="inline-flex items-center gap-1">
+                <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-warning)]" />
+                stale
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-error)]" />
+                outdated
+              </span>
+            </span>
           )}
         </div>
       </div>

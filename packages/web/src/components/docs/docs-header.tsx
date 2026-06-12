@@ -5,9 +5,11 @@ import { useParams, usePathname } from "next/navigation";
 import { BookOpen, BarChart3 } from "lucide-react";
 import { cn } from "@/lib/utils/cn";
 
+// "Doc freshness", not "Coverage" — coverage means test coverage everywhere
+// else in the app; this tab is about documentation staleness.
 const TABS = [
   { label: "Explorer", segment: "", icon: BookOpen },
-  { label: "Coverage", segment: "/coverage", icon: BarChart3 },
+  { label: "Doc freshness", segment: "/coverage", icon: BarChart3 },
 ] as const;
 
 /**

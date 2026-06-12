@@ -16,10 +16,15 @@ const STATUS_BADGE: Record<CoordinatorHealth["status"], string> = {
   critical: "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400",
 };
 
-function StatRow({ label, value }: { label: string; value: string }) {
+function StatRow({ label, value, help }: { label: string; value: string; help?: string }) {
   return (
     <div className="flex items-center justify-between py-1.5 border-b border-[var(--color-border)] last:border-0">
-      <span className="text-xs text-[var(--color-text-secondary)]">{label}</span>
+      <span
+        className={`text-xs text-[var(--color-text-secondary)] ${help ? "cursor-help underline decoration-dotted decoration-[var(--color-border-default)] underline-offset-2" : ""}`}
+        title={help}
+      >
+        {label}
+      </span>
       <span className="text-xs font-medium text-[var(--color-text-primary)]">{value}</span>
     </div>
   );
@@ -61,7 +66,11 @@ export function CoordinatorHealthPanel({ repoId, initial }: Props) {
           <StatRow label="SQL Pages" value={fmt(data.sql_pages)} />
           <StatRow label="Vector Count" value={fmt(data.vector_count)} />
           <StatRow label="Graph Nodes" value={fmt(data.graph_nodes)} />
-          <StatRow label="Drift" value={fmtPct(data.drift_pct)} />
+          <StatRow
+            label="Drift"
+            value={fmtPct(data.drift_pct)}
+            help="How far the SQL, vector and graph stores disagree about what's indexed. 0% means all three are in sync; high drift usually means an interrupted index — run a sync to reconcile."
+          />
         </>
       ) : (
         <p className="text-xs text-[var(--color-text-secondary)]">

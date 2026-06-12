@@ -80,6 +80,13 @@ export interface ChatInterfaceProps {
   emptyStateLogoSrc?: string;
   /** Override default suggestion chips. */
   suggestions?: string[];
+  /** Orientation line under the empty-state subtitle — index status, page
+   *  counts, last sync. Keeps the blank page honest about what's loaded. */
+  statusSlot?: ReactNode;
+  /** Disables the composer (e.g. no chat provider configured). */
+  sendDisabled?: boolean;
+  /** Banner shown above the composer when sending is disabled. */
+  sendDisabledReason?: ReactNode;
 }
 
 export function ChatInterface({
@@ -97,6 +104,9 @@ export function ChatInterface({
   linkPrefix,
   emptyStateLogoSrc = "/repowise-logo.png",
   suggestions = DEFAULT_SUGGESTIONS,
+  statusSlot,
+  sendDisabled = false,
+  sendDisabledReason,
 }: ChatInterfaceProps) {
   const [input, setInput] = useState("");
   const [artifactPanelOpen, setArtifactPanelOpen] = useState(false);
@@ -134,9 +144,28 @@ export function ChatInterface({
     [],
   );
 
+  // Pulse the artifact-panel button when a new artifact lands while the
+  // panel is closed, so streamed diagrams don't arrive silently.
+  const prevArtifactCount = useRef(0);
+  const [artifactPulse, setArtifactPulse] = useState(false);
+  const totalArtifactCount = messages.reduce(
+    (count, m) => count + m.toolCalls.filter((tc) => tc.artifact).length,
+    0,
+  );
+  useEffect(() => {
+    if (totalArtifactCount > prevArtifactCount.current && !artifactPanelOpen) {
+      setArtifactPulse(true);
+      const t = setTimeout(() => setArtifactPulse(false), 2500);
+      prevArtifactCount.current = totalArtifactCount;
+      return () => clearTimeout(t);
+    }
+    prevArtifactCount.current = totalArtifactCount;
+    return undefined;
+  }, [totalArtifactCount, artifactPanelOpen]);
+
   async function handleSubmit() {
     const text = input.trim();
-    if (!text || isStreaming) return;
+    if (!text || isStreaming || sendDisabled) return;
     setInput("");
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
@@ -149,11 +178,6 @@ export function ChatInterface({
     textareaRef.current?.focus();
   }
 
-  const totalArtifactCount = messages.reduce(
-    (count, m) => count + m.toolCalls.filter((tc) => tc.artifact).length,
-    0,
-  );
-
   return (
     <div className="flex h-full flex-col min-h-0">
       {/* Header bar (active conversation) */}
@@ -165,7 +189,11 @@ export function ChatInterface({
               <Button
                 variant="ghost"
                 size="sm"
-                className="h-8 text-xs gap-1.5"
+                className={cn(
+                  "h-8 text-xs gap-1.5",
+                  artifactPulse &&
+                    "animate-pulse text-[var(--color-accent-primary)]",
+                )}
                 onClick={() => setArtifactPanelOpen(true)}
               >
                 <PanelRight className="h-4 w-4" />
@@ -196,6 +224,11 @@ export function ChatInterface({
                 Explore architecture, assess risk, search code, trace
                 dependencies, and understand decisions.
               </p>
+              {statusSlot && (
+                <div className="text-xs text-[var(--color-text-tertiary)]">
+                  {statusSlot}
+                </div>
+              )}
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 max-w-xl w-full">
@@ -253,10 +286,16 @@ export function ChatInterface({
         )}
       >
         <div className="max-w-3xl mx-auto">
+          {sendDisabled && sendDisabledReason && (
+            <div className="mb-2 rounded-lg border border-[var(--color-warning)]/40 bg-[var(--color-warning)]/10 px-3 py-2 text-xs text-[var(--color-text-secondary)]">
+              {sendDisabledReason}
+            </div>
+          )}
           <div
             className={cn(
               "flex items-end gap-2 rounded-2xl border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-4 py-3",
               isEmpty && "shadow-lg shadow-black/20",
+              sendDisabled && "opacity-60",
             )}
           >
             <textarea
@@ -271,6 +310,7 @@ export function ChatInterface({
               }}
               placeholder="Ask anything about this codebase..."
               aria-label="Chat message"
+              disabled={sendDisabled}
               rows={1}
               className="flex-1 resize-none bg-transparent text-sm text-[var(--color-text-primary)] placeholder:text-[var(--color-text-tertiary)] outline-none leading-6 max-h-36 overflow-y-auto"
               style={{ scrollbarWidth: "none" }}
@@ -279,7 +319,7 @@ export function ChatInterface({
               size="icon"
               className="h-8 w-8 shrink-0 rounded-xl"
               onClick={isStreaming ? onCancel : () => void handleSubmit()}
-              disabled={!input.trim() && !isStreaming}
+              disabled={(!input.trim() && !isStreaming) || sendDisabled}
               aria-label={isStreaming ? "Stop generation" : "Send message"}
               title={isStreaming ? "Stop generation" : "Send message"}
             >

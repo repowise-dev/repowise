@@ -21,7 +21,10 @@ import { Badge } from "@repowise-dev/ui/ui/badge";
 import { Separator } from "@repowise-dev/ui/ui/separator";
 import { formatRelativeTime, formatTokens } from "@repowise-dev/ui/lib/format";
 import { CoChangeList } from "@repowise-dev/ui/git/co-change-list";
-import { Hash, Cpu, StickyNote, Network } from "lucide-react";
+import { Hash, Cpu, FileCode2 } from "lucide-react";
+import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
+import { HumanNotes } from "@/components/wiki/human-notes";
+import { VersionHistoryWrapper } from "@/components/wiki/version-history";
 import type { GraphMetricsResponse } from "@/lib/api/types";
 
 interface Props {
@@ -106,6 +109,17 @@ export default async function WikiPageRoute({ params }: Props) {
             </Badge>
           )}
 
+          {/* Canonical file page — everything about this file in one place. */}
+          {page.page_type === "file_page" && page.target_path && (
+            <Link
+              href={fileEntityPath(`/repos/${id}`, page.target_path)}
+              className="hidden sm:inline-flex shrink-0 items-center gap-1 rounded-md border border-[var(--color-border-default)] px-2 py-0.5 text-xs text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]"
+            >
+              <FileCode2 className="h-3 w-3" />
+              File page
+            </Link>
+          )}
+
           {/* Regenerate */}
           <RegenerateButtonWrapper pageId={page.id} repoId={id} />
         </div>
@@ -116,19 +130,17 @@ export default async function WikiPageRoute({ params }: Props) {
             {page.title}
           </h1>
 
-          {page.human_notes && (
-            <div className="mb-5 rounded-lg border border-[var(--color-border-accent)] bg-[var(--color-accent-blue)]/5 px-4 py-3">
-              <div className="flex items-center gap-1.5 mb-1.5">
-                <StickyNote className="h-3.5 w-3.5 text-[var(--color-accent-blue)]" />
-                <span className="text-xs font-medium text-[var(--color-accent-blue)] uppercase tracking-wider">
-                  Human Notes
-                </span>
-              </div>
-              <p className="text-sm text-[var(--color-text-secondary)] whitespace-pre-wrap leading-relaxed">
-                {page.human_notes}
-              </p>
+          <HumanNotes pageId={page.id} initialNotes={page.human_notes ?? null} />
+
+          {/* Inline collapsible ToC for viewports without the right sidebar. */}
+          <details className="xl:hidden mb-5 rounded-lg border border-[var(--color-border-default)] px-4 py-2.5">
+            <summary className="cursor-pointer text-xs font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
+              On this page
+            </summary>
+            <div className="pt-2">
+              <TableOfContents content={page.content} />
             </div>
-          )}
+          </details>
 
           <article className="prose prose-invert max-w-none leading-relaxed overflow-hidden">
             <WikiRenderer
@@ -154,6 +166,20 @@ export default async function WikiPageRoute({ params }: Props) {
             </div>
           )}
         </div>
+
+        {/* Version changelog — full content history with diffs */}
+        {versionList.length > 0 && (
+          <div className="px-4 sm:px-6 pb-6 max-w-[768px] mx-auto">
+            <p className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider mb-2">
+              Version history
+            </p>
+            <VersionHistoryWrapper
+              pageId={page.id}
+              currentVersion={page.version}
+              currentContent={page.content}
+            />
+          </div>
+        )}
 
         {/* Bottom bar */}
         <div className="border-t border-[var(--color-border-default)] px-4 sm:px-6 py-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-[var(--color-text-tertiary)]">

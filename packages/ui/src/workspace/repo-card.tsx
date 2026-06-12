@@ -1,8 +1,18 @@
 import { FileText, Flame, BarChart3, ChevronRight } from "lucide-react";
 import { Card, CardContent } from "../ui/card";
 import { Badge } from "../ui/badge";
-import type { RepoStats } from "@repowise-dev/types/workspace";
-import type { GitSummary } from "@repowise-dev/types/git";
+
+// Structural subsets of RepoStats / GitSummary — the card only renders these
+// three numbers, so callers without the full payloads (workspace mode) don't
+// have to fabricate zero-filled fields.
+interface RepoCardStats {
+  file_count: number;
+  doc_coverage_pct: number;
+}
+
+interface RepoCardGitSummary {
+  hotspot_count: number;
+}
 
 interface RepoCardProps {
   repoId: string;
@@ -11,8 +21,8 @@ interface RepoCardProps {
   name: string;
   path: string;
   isPrimary: boolean;
-  stats: RepoStats | null;
-  gitSummary: GitSummary | null;
+  stats: RepoCardStats | null;
+  gitSummary: RepoCardGitSummary | null;
   /** Workspace status — undefined in single-repo mode. */
   status?: "indexed" | "needs_index" | "missing_dir" | null;
   /** Reason docs were skipped (cost gate, no provider, index-only, etc.). */

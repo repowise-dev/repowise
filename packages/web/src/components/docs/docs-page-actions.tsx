@@ -43,7 +43,7 @@ export function DocsPageActions({
       <ConfidenceBadge score={page.confidence} status={page.freshness_status} />
       {personaHasEffect && (
         <div
-          className="hidden md:inline-flex items-center rounded-md border border-[var(--color-border-default)] p-0.5 shrink-0"
+          className="inline-flex items-center rounded-md border border-[var(--color-border-default)] p-0.5 shrink-0"
           role="group"
           aria-label="Reader level"
         >

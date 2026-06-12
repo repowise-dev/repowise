@@ -9,7 +9,7 @@ import { StatCard } from "@repowise-dev/ui/shared/stat-card";
 import { listPages } from "@/lib/api/pages";
 import { formatNumber } from "@repowise-dev/ui/lib/format";
 
-export const metadata: Metadata = { title: "Coverage" };
+export const metadata: Metadata = { title: "Doc freshness" };
 
 export default async function CoveragePage({
   params,

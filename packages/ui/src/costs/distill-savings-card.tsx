@@ -143,9 +143,12 @@ export function DistillSavingsCard({ data }: DistillSavingsCardProps) {
               {detected ? (
                 <span className="text-[var(--color-text-tertiary)]"> · {data.pricing_source}</span>
               ) : (
-                <span className="text-[var(--color-text-tertiary)]">
+                <span
+                  className="text-[var(--color-text-tertiary)]"
+                  title="No agent session was detected, so savings are valued at the standard published rate for this model."
+                >
                   {" "}
-                  · no agent session detected, default rate
+                  · estimated at the standard model rate
                 </span>
               )}
             </p>

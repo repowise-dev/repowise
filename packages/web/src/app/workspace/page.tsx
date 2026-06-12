@@ -57,6 +57,32 @@ export default async function WorkspaceDashboardPage() {
   }
   const avgCoverage = reposWithStats > 0 ? Math.round(totalCoveragePctSum / reposWithStats) : 0;
 
+  // "Needs attention" rollup across the whole workspace (not a page slice).
+  const needsIndex = wsRepos.filter(
+    (r) => (r.status ?? (r.repo_id ? "indexed" : "needs_index")) === "needs_index",
+  );
+  const missingDirs = wsRepos.filter((r) => r.status === "missing_dir");
+  const docsSkipped = wsRepos.filter((r) => r.docs_skip_reason);
+  const attentionItems: string[] = [];
+  if (needsIndex.length > 0)
+    attentionItems.push(
+      `${needsIndex.length} repo${needsIndex.length === 1 ? "" : "s"} not indexed yet (${needsIndex
+        .slice(0, 3)
+        .map((r) => r.alias)
+        .join(", ")}${needsIndex.length > 3 ? ", …" : ""})`,
+    );
+  if (missingDirs.length > 0)
+    attentionItems.push(
+      `${missingDirs.length} repo director${missingDirs.length === 1 ? "y is" : "ies are"} missing on disk (${missingDirs
+        .slice(0, 3)
+        .map((r) => r.alias)
+        .join(", ")}${missingDirs.length > 3 ? ", …" : ""})`,
+    );
+  if (docsSkipped.length > 0)
+    attentionItems.push(
+      `docs skipped for ${docsSkipped.length} repo${docsSkipped.length === 1 ? "" : "s"}`,
+    );
+
   return (
     <div className="p-5 sm:p-8 space-y-8 max-w-[1200px]">
       {/* Header */}
@@ -84,6 +110,20 @@ export default async function WorkspaceDashboardPage() {
           <SyncButton variant="primary" label="Sync workspace" />
         )}
       </div>
+
+      {/* Needs attention */}
+      {attentionItems.length > 0 && (
+        <div className="rounded-lg border border-[var(--color-warning)]/40 bg-[var(--color-warning)]/5 px-4 py-3">
+          <p className="text-xs font-medium uppercase tracking-wider text-[var(--color-warning)]">
+            Needs attention
+          </p>
+          <ul className="mt-1.5 list-disc space-y-0.5 pl-4 text-xs text-[var(--color-text-secondary)]">
+            {attentionItems.map((item) => (
+              <li key={item}>{item}</li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {/* Aggregate Stats */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
@@ -135,18 +175,10 @@ export default async function WorkspaceDashboardPage() {
                 docsSkipReason={wsRepo.docs_skip_reason ?? null}
                 stats={wsRepo.file_count > 0 ? {
                   file_count: wsRepo.file_count,
-                  symbol_count: wsRepo.symbol_count,
                   doc_coverage_pct: wsRepo.doc_coverage_pct,
-                  entry_point_count: 0,
-                  freshness_score: 0,
-                  dead_export_count: 0,
                 } : null}
                 gitSummary={wsRepo.file_count > 0 ? {
-                  total_files: wsRepo.file_count,
                   hotspot_count: wsRepo.hotspot_count,
-                  stable_count: 0,
-                  average_churn_percentile: 0,
-                  top_owners: [],
                 } : null}
                 actions={
                   status !== "missing_dir" ? (

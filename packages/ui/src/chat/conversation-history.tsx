@@ -7,8 +7,8 @@
  * select / delete / new intents via callbacks.
  */
 
-import { useState } from "react";
-import { History, Plus, Trash2 } from "lucide-react";
+import { useMemo, useState } from "react";
+import { History, Plus, Search, Trash2 } from "lucide-react";
 import { cn } from "../lib/cn";
 import { formatRelativeTime } from "../lib/format";
 import type { Conversation } from "@repowise-dev/types/chat";
@@ -34,6 +34,13 @@ export function ConversationHistory({
   className,
 }: ConversationHistoryProps) {
   const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return conversations;
+    return conversations?.filter((c) => c.title.toLowerCase().includes(q));
+  }, [conversations, query]);
 
   return (
     <div className={cn("relative", className)}>
@@ -67,6 +74,19 @@ export function ConversationHistory({
               New conversation
             </button>
 
+            {(conversations?.length ?? 0) > 5 && (
+              <div className="flex items-center gap-1.5 border-b border-[var(--color-border-default)] px-3 py-1.5">
+                <Search className="h-3 w-3 shrink-0 text-[var(--color-text-tertiary)]" />
+                <input
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="Search conversations…"
+                  aria-label="Search conversations"
+                  className="w-full bg-transparent text-xs text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-tertiary)]"
+                />
+              </div>
+            )}
+
             <div className="max-h-64 overflow-y-auto">
               {isLoading && !conversations && (
                 <div className="px-3 py-4 text-xs text-[var(--color-text-tertiary)] text-center">
@@ -78,7 +98,12 @@ export function ConversationHistory({
                   No conversations yet
                 </div>
               )}
-              {conversations?.map((conv) => (
+              {(conversations?.length ?? 0) > 0 && filtered?.length === 0 && (
+                <div className="px-3 py-4 text-xs text-[var(--color-text-tertiary)] text-center">
+                  No conversations match
+                </div>
+              )}
+              {filtered?.map((conv) => (
                 <div
                   key={conv.id}
                   className={cn(

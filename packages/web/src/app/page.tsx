@@ -18,11 +18,10 @@ import type { RepoStatsResponse, GitSummaryResponse } from "@/lib/api/types";
 import { StatCard } from "@repowise-dev/ui/shared/stat-card";
 import { Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui/card";
 import { Badge } from "@repowise-dev/ui/ui/badge";
-import { ConfidenceBadge } from "@repowise-dev/ui/wiki/confidence-badge";
 import { EmptyState } from "@repowise-dev/ui/shared/empty-state";
 import { formatRelativeTime, formatNumber } from "@repowise-dev/ui/lib/format";
-import { scoreToStatus } from "@repowise-dev/ui/lib/confidence";
 import { DeleteRepoButton } from "@/components/repos/delete-repo-button";
+import { LiveJobProgress } from "@/components/jobs/live-job-progress";
 
 export const metadata: Metadata = { title: "Dashboard" };
 
@@ -123,63 +122,86 @@ export default async function DashboardPage() {
           </CardHeader>
           <CardContent className="p-0">
             {repoList.length === 0 ? (
-              <div className="px-6 pb-6">
+              <div className="px-6 pb-6 space-y-2">
                 <EmptyState
                   title="No repositories yet"
                   description="Run repowise init on a repository to get started."
                   icon={<FileText className="h-8 w-8" />}
                 />
+                <p className="text-center text-xs text-[var(--color-text-tertiary)]">
+                  New here? See the{" "}
+                  <a
+                    href="https://github.com/repowise-dev/repowise#quick-start"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-[var(--color-accent-primary)] hover:underline"
+                  >
+                    setup guide
+                  </a>
+                  .
+                </p>
               </div>
             ) : (
               <ul className="divide-y divide-[var(--color-border-default)]">
-                {repoList.map((repo) => (
-                  <li key={repo.id} className="group">
-                    <div className="flex items-start gap-3 px-6 py-3.5 transition-colors hover:bg-[var(--color-bg-elevated)]">
-                      <Link
-                        href={`/repos/${repo.id}`}
-                        className="flex items-start gap-3 flex-1 min-w-0"
-                      >
-                        <div className="mt-0.5 h-2 w-2 rounded-full bg-[var(--color-accent-primary)] shrink-0" />
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2">
-                            <p className="text-sm font-medium text-[var(--color-text-primary)] truncate group-hover:text-[var(--color-accent-primary)] transition-colors">
-                              {repo.name}
-                            </p>
-                          </div>
-                          <div className="flex items-center gap-2 mt-0.5">
-                            <p className="text-xs text-[var(--color-text-tertiary)] font-mono truncate" title={repo.local_path}>
-                              {repo.local_path}
-                            </p>
-                          </div>
-                          <div className="flex items-center gap-2 mt-1 flex-wrap">
-                            {repo.head_commit && (
-                              <span className="text-xs font-mono text-[var(--color-text-tertiary)]">
-                                {repo.head_commit.slice(0, 7)}
+                {repoList.map((repo) => {
+                  const activeJob = jobList.find(
+                    (j) =>
+                      j.repository_id === repo.id &&
+                      (j.status === "running" || j.status === "pending"),
+                  );
+                  const g = gitMap.get(repo.id);
+                  return (
+                    <li key={repo.id} className="group">
+                      <div className="flex items-start gap-3 px-6 py-3.5 transition-colors hover:bg-[var(--color-bg-elevated)]">
+                        <Link
+                          href={`/repos/${repo.id}`}
+                          className="flex items-start gap-3 flex-1 min-w-0"
+                        >
+                          <div className="mt-0.5 h-2 w-2 rounded-full bg-[var(--color-accent-primary)] shrink-0" />
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <p
+                                className="text-sm font-medium text-[var(--color-text-primary)] truncate group-hover:text-[var(--color-accent-primary)] transition-colors"
+                                title={repo.head_commit ? `at ${repo.head_commit.slice(0, 7)}` : undefined}
+                              >
+                                {repo.name}
+                              </p>
+                              {/* Health signals lead; raw SHA demoted to the title tooltip. */}
+                              {g && g.hotspot_count > 0 && (
+                                <Badge variant="outdated">
+                                  {g.hotspot_count} hotspot{g.hotspot_count !== 1 ? "s" : ""}
+                                </Badge>
+                              )}
+                              {g && g.stable_count > 0 && (
+                                <Badge variant="fresh">{g.stable_count} stable</Badge>
+                              )}
+                              {activeJob && (
+                                <span className="text-xs">
+                                  <LiveJobProgress
+                                    jobId={activeJob.id}
+                                    initialCompleted={activeJob.completed_pages}
+                                    initialTotal={activeJob.total_pages}
+                                  />
+                                </span>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-2 mt-0.5">
+                              <p className="text-xs text-[var(--color-text-tertiary)] font-mono truncate" title={repo.local_path}>
+                                {repo.local_path}
+                              </p>
+                            </div>
+                            <div className="flex items-center gap-2 mt-1 flex-wrap">
+                              <span className="text-xs text-[var(--color-text-tertiary)]">
+                                Updated {formatRelativeTime(repo.updated_at)}
                               </span>
-                            )}
-                            <span className="text-xs text-[var(--color-text-tertiary)]">
-                              Updated {formatRelativeTime(repo.updated_at)}
-                            </span>
-                            {gitMap.has(repo.id) && (() => {
-                              const g = gitMap.get(repo.id)!;
-                              return (
-                                <>
-                                  {g.hotspot_count > 0 && (
-                                    <Badge variant="outdated">{g.hotspot_count} hotspot{g.hotspot_count !== 1 ? "s" : ""}</Badge>
-                                  )}
-                                  {g.stable_count > 0 && (
-                                    <Badge variant="fresh">{g.stable_count} stable</Badge>
-                                  )}
-                                </>
-                              );
-                            })()}
+                            </div>
                           </div>
-                        </div>
-                      </Link>
-                      <DeleteRepoButton repoId={repo.id} repoName={repo.name} />
-                    </div>
-                  </li>
-                ))}
+                        </Link>
+                        <DeleteRepoButton repoId={repo.id} repoName={repo.name} />
+                      </div>
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </CardContent>
@@ -211,10 +233,12 @@ export default async function DashboardPage() {
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
                         <span className="text-xs font-mono text-[var(--color-text-secondary)]">
-                          {job.status === "running" ? (
-                            <span className="text-[var(--color-accent-primary)]">
-                              {job.completed_pages}/{job.total_pages} pages
-                            </span>
+                          {job.status === "running" || job.status === "pending" ? (
+                            <LiveJobProgress
+                              jobId={job.id}
+                              initialCompleted={job.completed_pages}
+                              initialTotal={job.total_pages}
+                            />
                           ) : (
                             `${job.total_pages} pages`
                           )}

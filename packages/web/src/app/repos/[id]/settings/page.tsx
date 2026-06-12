@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Settings } from "lucide-react";
+import { WebhookSection } from "@/components/settings/webhook-section";
 import { getRepo } from "@/lib/api/repos";
 import { getCoordinatorHealth } from "@/lib/api/health";
 import { RepoSettingsFormWrapper as RepoSettingsForm } from "@/components/repos/repo-settings-form-wrapper";
@@ -80,32 +82,30 @@ export default async function RepoSettingsPage({ params }: Props) {
 
       <Separator />
 
-      <div>
-        <h2 className="text-sm font-medium text-[var(--color-text-primary)] mb-1">Webhook URLs</h2>
-        <p className="text-xs text-[var(--color-text-tertiary)] mb-3">
-          Configure your repository host to call these endpoints on push events.
-        </p>
-        <div className="space-y-2">
-          {(["github", "gitlab"] as const).map((host) => (
-            <div key={host} className="rounded-md bg-[var(--color-bg-inset)] px-3 py-2">
-              <p className="text-xs font-medium text-[var(--color-text-tertiary)] mb-0.5 capitalize">
-                {host}
-              </p>
-              <p className="text-xs font-mono text-[var(--color-text-secondary)] break-all">
-                {`[your-server]/api/webhooks/${host}`}
-              </p>
-            </div>
-          ))}
-        </div>
-      </div>
+      {/* Shared with global settings — interpolates the real server URL. */}
+      <WebhookSection />
+
+      <p className="text-xs text-[var(--color-text-tertiary)]">
+        Connection, provider and MCP configuration live in{" "}
+        <Link
+          href="/settings"
+          className="text-[var(--color-accent-primary)] hover:underline"
+        >
+          global settings
+        </Link>
+        .
+      </p>
 
       <Separator />
 
-      <Card className="border-red-900/30">
+      <Card className="border-[var(--color-error)]/40 bg-[var(--color-error)]/5">
         <CardHeader>
-          <CardTitle className="text-sm font-medium text-red-400">Danger Zone</CardTitle>
+          <CardTitle className="text-sm font-medium text-[var(--color-error)]">
+            Danger Zone
+          </CardTitle>
           <CardDescription>
             Permanently delete this repository and all its generated pages, symbols, and history.
+            This cannot be undone.
           </CardDescription>
         </CardHeader>
         <CardContent>
