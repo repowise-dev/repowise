@@ -148,6 +148,12 @@ class GenerationConfig:
     jobs_dir: str = ".repowise/jobs"
     large_file_source_pct: float = 0.4  # use structural summary when source tokens > budget * this
     language: str = "en"
+    # Wiki documentation style (voice/density). Resolved to a StyleSpec by
+    # ``generation.styles.resolve_style``. "comprehensive" (default) is inert and
+    # reproduces the pre-style-feature output exactly. A style change folds into
+    # each page's source_hash, so `repowise update` regenerates affected pages in
+    # the new style. See generation/styles/ and WIKI_STYLES_PLAN.md.
+    wiki_style: str = "comprehensive"
     # ---- Tiered doc generation (large-repo scale) ---------------------
     # Caps the number of file pages that receive full LLM generation.
     # The top ``tier1_top_n`` selected file pages by PageRank are
