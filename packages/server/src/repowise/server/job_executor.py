@@ -96,7 +96,7 @@ def _repo_wiki_style(repo: Any, repo_path: str) -> str:
         except Exception:
             logger.debug("repo_config_yaml_unreadable", repo_path=repo_path)
 
-    return resolve_style(style).name
+    return resolve_style(style, repo_path=repo_path).name
 
 
 # Phase → numeric level mapping for job.current_level
@@ -573,13 +573,17 @@ async def _incremental_page_regen(
         from repowise.core.reasoning import resolve_reasoning
         from repowise.core.repo_config import load_repo_config
 
-        effective_style = resolve_style(job_config.get("style") or repo_wiki_style).name
+        effective_style = resolve_style(
+            job_config.get("style") or repo_wiki_style, repo_path=repo_path
+        ).name
         generation_config = GenerationConfig(
             reasoning=resolve_reasoning(config=load_repo_config(repo_path)),
             wiki_style=effective_style,
         )
         assembler = ContextAssembler(generation_config)
-        generator = PageGenerator(llm_client, assembler, generation_config)
+        generator = PageGenerator(
+            llm_client, assembler, generation_config, repo_path=repo_path
+        )
 
         pages = await generator.generate_all(
             affected_parsed,

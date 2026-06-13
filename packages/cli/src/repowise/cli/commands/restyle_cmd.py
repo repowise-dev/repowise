@@ -40,10 +40,10 @@ from repowise.core.generation.styles import (
 )
 
 
-def _print_styles(current: str | None = None) -> None:
+def _print_styles(current: str | None = None, repo_path: Path | str | None = None) -> None:
     """Render the available styles, marking the default and (optionally) current."""
     console.print("[bold]Available wiki styles[/bold]")
-    for spec in list_styles():
+    for spec in list_styles(repo_path):
         tags = []
         if spec.name == DEFAULT_STYLE:
             tags.append("default")
@@ -168,18 +168,18 @@ def restyle_command(
     load_dotenv(repo_path)
     state = load_state(repo_path)
     cfg = load_config(repo_path)
-    current = resolve_style(cfg.get("wiki_style")).name
+    current = resolve_style(cfg.get("wiki_style"), repo_path=repo_path).name
 
     # No style given → show current + options and exit.
     if style is None:
         console.print(f"Current wiki style: [cyan]{current}[/cyan]\n")
-        _print_styles(current=current)
+        _print_styles(current=current, repo_path=repo_path)
         console.print("\nRun [bold]repowise restyle <style>[/bold] to switch and regenerate.")
         return
 
     style = style.strip().lower()
-    if not is_known_style(style):
-        valid = ", ".join(s.name for s in list_styles())
+    if not is_known_style(style, repo_path):
+        valid = ", ".join(s.name for s in list_styles(repo_path))
         raise click.ClickException(f"Unknown style '{style}'. Choose one of: {valid}.")
 
     # Restyle only makes sense for a full index (one that has generated docs).
@@ -275,11 +275,12 @@ def _remove_config_key(repo_path: Path, key: str) -> None:
 def wiki_styles_command(path: str | None) -> None:
     """List the available wiki documentation styles (and the repo's current one)."""
     current = None
+    repo_path: Path | str | None = None
     try:
         repo_path = resolve_repo_path(path)
         cfg = load_config(repo_path)
-        current = resolve_style(cfg.get("wiki_style")).name
+        current = resolve_style(cfg.get("wiki_style"), repo_path=repo_path).name
     except Exception:
-        pass  # not in a repo — just list the catalogue
-    _print_styles(current=current)
+        repo_path = None  # not in a repo — just list the catalogue
+    _print_styles(current=current, repo_path=repo_path)
     console.print("\nSwitch with [bold]repowise restyle <style>[/bold].")

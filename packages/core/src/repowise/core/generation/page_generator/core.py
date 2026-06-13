@@ -133,6 +133,7 @@ class PageGenerator(PerTypeGenerationMixin):
         vector_store: Any | None = None,
         language: str = "en",
         prior_pages: dict[str, PriorPage] | None = None,
+        repo_path: Path | str | None = None,
     ) -> None:
         self._provider = provider
         self._assembler = assembler
@@ -140,9 +141,9 @@ class PageGenerator(PerTypeGenerationMixin):
         self._vector_store = vector_store
         self._language = language
         # Resolve the wiki style once. "comprehensive" (default) is inert, so this
-        # is a no-op for repos that never opt in. Custom styles (Phase 5) will pass
-        # repo_path through here.
-        self._style = resolve_style(getattr(config, "wiki_style", None))
+        # is a no-op for repos that never opt in. ``repo_path`` lets a user-defined
+        # ``.repowise/styles/<name>`` style resolve (Phase 5).
+        self._style = resolve_style(getattr(config, "wiki_style", None), repo_path=repo_path)
         self._cache: dict[str, GeneratedResponse] = {}
         # Map of page_id → PriorPage from previous generation runs. When the
         # rendered prompt's source_hash matches the prior page's hash AND the
@@ -154,7 +155,18 @@ class PageGenerator(PerTypeGenerationMixin):
 
         if jinja_env is None:
             templates_dir = Path(__file__).parent.parent / "templates"
-            loader = jinja2.FileSystemLoader(str(templates_dir))
+            # A custom style may ship its own templates/ dir (Layer 2). Resolve it
+            # first via ChoiceLoader, falling back to the built-in templates for any
+            # page type the style does not override.
+            if self._style.template_dir is not None:
+                loader: jinja2.BaseLoader = jinja2.ChoiceLoader(
+                    [
+                        jinja2.FileSystemLoader(str(self._style.template_dir)),
+                        jinja2.FileSystemLoader(str(templates_dir)),
+                    ]
+                )
+            else:
+                loader = jinja2.FileSystemLoader(str(templates_dir))
             jinja_env = jinja2.Environment(
                 loader=loader,
                 undefined=jinja2.StrictUndefined,

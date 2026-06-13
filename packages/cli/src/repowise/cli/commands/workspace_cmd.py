@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -25,7 +26,7 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 
-def _require_workspace(start: Path | None = None) -> tuple[Path, "WorkspaceConfig"]:  # type: ignore[name-defined]
+def _require_workspace(start: Path | None = None) -> tuple[Path, WorkspaceConfig]:  # type: ignore[name-defined]
     """Load the workspace config or abort with a helpful message.
 
     Returns ``(ws_root, ws_config)``.
@@ -190,12 +191,12 @@ def _format_relative_time(iso_timestamp: str | None) -> str:
     if not iso_timestamp:
         return "-"
     try:
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         dt = datetime.fromisoformat(iso_timestamp)
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        now = datetime.now(timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
+        now = datetime.now(UTC)
         delta = now - dt
         seconds = int(delta.total_seconds())
         if seconds < 60:
@@ -334,7 +335,7 @@ def _resolve_docs_flag(
     run_docs: bool | None,
     provider_name: str | None,
     ws_root: Path,
-    ws_config: "WorkspaceConfig",  # type: ignore[name-defined]
+    ws_config: WorkspaceConfig,  # type: ignore[name-defined]
 ) -> tuple[bool, str | None]:
     """Decide whether ``workspace add`` should generate docs by default.
 
@@ -448,7 +449,7 @@ def _run_index_for_repo(
     repo_path: Path,
     alias: str,
     ws_root: Path,
-    ws_config: "WorkspaceConfig",  # type: ignore[name-defined]
+    ws_config: WorkspaceConfig,  # type: ignore[name-defined]
     *,
     generate_docs: bool = False,
     provider_name: str | None = None,
@@ -463,7 +464,7 @@ def _run_index_for_repo(
     base commit), saves provider/model into ``config.yaml`` when docs ran,
     and re-runs cross-repo hooks so contracts/co-changes are fresh.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from repowise.cli.helpers import (
         ensure_repowise_dir,
@@ -614,7 +615,7 @@ def _run_index_for_repo(
     # Update workspace config entry
     entry = ws_config.get_repo(alias)
     if entry is not None:
-        entry.indexed_at = datetime.now(timezone.utc).isoformat()
+        entry.indexed_at = datetime.now(UTC).isoformat()
         entry.last_commit_at_index = head
     ws_config.save(ws_root)
 
@@ -694,12 +695,17 @@ def _generate_docs_for_added_repo(
             continue
     graph_builder.build()
 
+    from repowise.core.repo_config import load_repo_config
+
     config = GenerationConfig(
         max_concurrency=concurrency,
         reasoning=reasoning,
+        wiki_style=load_repo_config(repo_path).get("wiki_style", "comprehensive"),
     )
     assembler = ContextAssembler(config)
-    generator = PageGenerator(provider, assembler, config, language=config.language)
+    generator = PageGenerator(
+        provider, assembler, config, language=config.language, repo_path=repo_path
+    )
 
     async def _do() -> int:
         pages = await generator.generate_all(

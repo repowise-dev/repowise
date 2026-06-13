@@ -9,6 +9,8 @@ no matter what else passes (see WIKI_STYLES_PLAN.md §2).
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from repowise.core.generation.context_assembler import ContextAssembler
@@ -269,3 +271,109 @@ async def test_onboarding_page_type_constant_matches_system_prompts():
     from repowise.core.generation.page_generator import SYSTEM_PROMPTS
 
     assert ONBOARDING_PAGE_TYPE in SYSTEM_PROMPTS
+
+
+# ---------------------------------------------------------------------------
+# Custom styles (Phase 5)
+# ---------------------------------------------------------------------------
+
+
+def _write_custom_style(repo: Path, name: str, body: str) -> None:
+    d = repo / ".repowise" / "styles" / name
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "style.yaml").write_text(body, encoding="utf-8")
+
+
+def test_custom_style_resolves(tmp_path):
+    _write_custom_style(
+        tmp_path,
+        "terse",
+        "description: My terse style\nuser_directive: Be very terse.\n"
+        "onboarding_condenses: true\n",
+    )
+    spec = resolve_style("terse", repo_path=tmp_path)
+    assert spec.name == "terse"
+    assert spec.is_builtin is False
+    assert spec.is_active is True
+    assert spec.onboarding_condenses is True
+    assert "Be very terse." in spec.user_prompt_prefix(is_onboarding=False)
+
+
+def test_custom_style_listed_and_known(tmp_path):
+    _write_custom_style(tmp_path, "terse", "system_note: Be terse.\n")
+    assert is_known_style("terse", tmp_path)
+    names = {s.name for s in list_styles(tmp_path)}
+    assert "terse" in names
+    assert {"comprehensive", "caveman", "reference", "tutorial"} <= names
+
+
+def test_custom_style_unknown_without_repo_path(tmp_path):
+    """Custom styles require repo_path; without it they don't resolve."""
+    _write_custom_style(tmp_path, "terse", "user_directive: Terse.\n")
+    assert resolve_style("terse").name == DEFAULT_STYLE
+    assert not is_known_style("terse")
+
+
+def test_custom_style_empty_is_rejected(tmp_path):
+    """A style with neither directive nor note is inert → not a usable style."""
+    _write_custom_style(tmp_path, "empty", "description: nothing here\n")
+    assert not is_known_style("empty", tmp_path)
+    assert resolve_style("empty", repo_path=tmp_path).name == DEFAULT_STYLE
+
+
+def test_custom_style_name_traversal_rejected(tmp_path):
+    """Unsafe names never touch the filesystem."""
+    assert resolve_style("../evil", repo_path=tmp_path).name == DEFAULT_STYLE
+    assert not is_known_style("../evil", tmp_path)
+    assert not is_known_style("a/b", tmp_path)
+
+
+def test_custom_style_directive_is_length_bounded(tmp_path):
+    from repowise.core.generation.styles.registry import _MAX_DIRECTIVE_CHARS
+
+    huge = "x" * (_MAX_DIRECTIVE_CHARS + 5000)
+    _write_custom_style(tmp_path, "big", f"user_directive: {huge}\n")
+    spec = resolve_style("big", repo_path=tmp_path)
+    assert len(spec.user_directive) == _MAX_DIRECTIVE_CHARS
+
+
+def test_custom_style_template_dir_detected(tmp_path):
+    _write_custom_style(tmp_path, "tpl", "user_directive: Terse.\n")
+    (tmp_path / ".repowise" / "styles" / "tpl" / "templates").mkdir()
+    spec = resolve_style("tpl", repo_path=tmp_path)
+    assert spec.template_dir is not None
+    assert spec.template_dir.name == "templates"
+
+
+def test_builtin_takes_precedence_over_custom(tmp_path):
+    """A custom dir named like a built-in must not shadow the built-in."""
+    _write_custom_style(tmp_path, "caveman", "user_directive: hijack\n")
+    spec = resolve_style("caveman", repo_path=tmp_path)
+    assert spec.is_builtin is True
+    assert "hijack" not in spec.user_directive
+
+
+async def test_custom_style_reaches_rendered_prompt(
+    tmp_path, sample_parsed_file, sample_graph, graph_metrics, sample_source_bytes
+):
+    """PageGenerator(repo_path=...) resolves a custom style and injects its voice."""
+    from repowise.core.providers.llm.mock import MockProvider
+
+    _write_custom_style(
+        tmp_path, "terse", "user_directive: TERSE_MARKER be brief.\n"
+    )
+    config = GenerationConfig(wiki_style="terse")
+    gen = PageGenerator(
+        MockProvider(), ContextAssembler(config), config, repo_path=tmp_path
+    )
+    assert gen._style.name == "terse"
+    ctx = gen._assembler.assemble_file_page(
+        sample_parsed_file,
+        sample_graph,
+        graph_metrics["pagerank"],
+        graph_metrics["betweenness"],
+        graph_metrics["community"],
+        sample_source_bytes,
+    )
+    rendered = gen._render("file_page.j2", ctx=ctx)
+    assert "TERSE_MARKER" in rendered

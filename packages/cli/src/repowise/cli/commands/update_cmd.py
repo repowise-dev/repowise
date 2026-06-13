@@ -1181,6 +1181,7 @@ def update_command(
         vector_store=decision_vector_store,
         language=config.language,
         prior_pages=prior_pages,
+        repo_path=repo_path,
     )
     repo_name = repo_path.name
 

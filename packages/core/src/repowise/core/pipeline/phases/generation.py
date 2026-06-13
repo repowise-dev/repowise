@@ -120,6 +120,7 @@ async def run_generation(
         vector_store=vector_store,
         language=config.language,
         prior_pages=prior_pages or {},
+        repo_path=repo_path,
     )
 
     generated_pages = await generator.generate_all(
