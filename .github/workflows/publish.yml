@@ -116,7 +116,9 @@ jobs:
   # ---------------------------------------------------------------------------
   publish:
     name: Publish to PyPI
-    needs: build-python
+    # Gate PyPI publish on BOTH builds so a web-build failure can never leave a
+    # half-shipped release (wheel on PyPI but no GitHub release / web tarball).
+    needs: [build-web, build-python]
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
