@@ -11,8 +11,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+---
+
+## [0.19.0] — 2026-06-13
+
 ### Added
-- **OpenCode CLI provider.** A new local OpenCode LLM provider runs documentation generation through the local OpenCode CLI via `opencode run --format json`. Uses `asyncio.create_subprocess_exec` (no shell), parses JSONL output, validates model names against a safe character set, and treats `opencode/*` cost as `$0.00`. No API keys are stored — OpenCode manages its own auth and model selection through its provider system. Interactive selection detects the OpenCode CLI on `PATH` and shows helpful install/setup instructions when it's missing.
+- **Wiki styles: selectable documentation voice.** Generated pages can now be produced in one of four styles: `comprehensive` (the default, unchanged), `caveman` (token-condensed, AI-first), `reference` (API-manual), or `tutorial` (beginner-friendly), plus user-defined custom styles. Styles change only the prose voice and density, not the document structure: headings, sections, table of contents, search, and cross-links are unaffected. (#468)
+- **OpenCode CLI provider.** A new local OpenCode LLM provider runs documentation generation through the local OpenCode CLI via `opencode run --format json`. Uses `asyncio.create_subprocess_exec` (no shell), parses JSONL output, validates model names against a safe character set, and treats `opencode/*` cost as `$0.00`. No API keys are stored; OpenCode manages its own auth and model selection through its provider system. Interactive selection detects the OpenCode CLI on `PATH` and shows helpful install/setup instructions when it's missing. (#436)
+- **Health score self-validation.** The code-health surface now validates the score against each repo's own bug history: it ranks files by health, takes the 20 lowest, and reports how many were touched by a `fix:` commit in the trailing ~6 months versus the repo-wide baseline rate (the lift), e.g. "16/20 lowest-health files had a bug fix in the last 6 months, 3.3x the 24% baseline". Stays silent when there is too little history to be honest. (#438)
+- **Error-handling maintainability biomarker.** A new biomarker surfaces swallowed-exception and unsafe-unwrap anti-patterns as a bounded maintainability finding: empty or trivial `catch`/`except` bodies across Python, JS/TS, Java, Kotlin, C#, and C++, plus Python catch-all `except:` / `except Exception:` / `except BaseException:`. (#453)
+- **MCP streamable HTTP transport.** The MCP server can now serve over a streamable HTTP transport in addition to stdio. (#444)
+- **`REPOWISE_PORT` env var.** `repowise serve` now honours the `REPOWISE_PORT` environment variable for the server port. (#455)
+
+### Changed
+- **Web dashboard UX overhaul.** End-to-end rework of the web UI: a slimmer six-group sidebar (Overview, Docs, Architecture, Code Health, People and History, Chat) shared across desktop and mobile, Overview as the repo landing page, canonical entity pages, a single unified architecture destination, and surfacing of git/agent provenance data that was already persisted but previously invisible. Theme unchanged; design tokens were only added, never renamed. Retired pages (hotspots, ownership, dead-code, blast-radius) and stub routes redirect into their new homes, so every old URL still resolves. (#466)
+- **Hybrid MCP improvements.** A batch of MCP server improvements centered on making a tool response trustworthy enough that the agent never re-reads the source it just paid for: a verified trust contract, an honest savings ledger, indexing of module-level constants, and trimmed per-call token overhead. Net additive to the tool surface, with no breaking changes to existing tool contracts. (#467)
+- **Change-risk clarity.** Change-risk now prioritises repo-relative signals and uses honest driver labels instead of misleading absolute framing. (#465, #469)
+- **Dead-code framing.** Findings are now framed as cleanup candidates rather than safe-to-delete, reflecting that static reachability can't prove a symbol is unused. (#433)
+
+### Fixed
+- **Co-change strength display.** Co-change strength now shows the raw score instead of a misleading percentage. (#439)
+- **Health scoring of module-level JS callbacks.** Module-level JavaScript callbacks are now scored correctly. (#456)
+- **Health trend wording.** Clarified how health-trend score changes are presented in the web UI. (#457)
+- **CLI model selection.** The CLI now honours the `config.yaml` model when a provider is set via env var or flag. (#442)
+- **Chat config inheritance.** Chat now inherits the per-repo provider, model, and key from the init config. (#434)
+
+### Performance
+- **XL-repo indexing pass.** Faster indexing on very large repos via cpp hint regex tuning, git deep-walk improvements, and XAML index reuse. (#459)
+- **Large-repo indexing pass.** Indexing and update-path improvements covering type references, health, dynamic hints, and dead-code analysis. (#450)
+- **Incremental duplication splice.** Update runs now splice duplication pairs incrementally instead of recomputing them wholesale. (#460)
+
+### Documentation
+- Plugin: version bump to 0.19.0 (no command/skill/hook/MCP-surface changes).
 
 ---
 
