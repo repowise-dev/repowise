@@ -42,4 +42,45 @@ describe("GeneralForm", () => {
     // Add-pattern input is suppressed in read-only mode.
     expect(screen.queryByLabelText("New excluded pattern")).not.toBeInTheDocument();
   });
+
+  it("defaults the style to comprehensive and submits it", async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    render(<GeneralForm value={baseValue} onSubmit={onSubmit} />);
+    // The comprehensive option is selected by default.
+    const comprehensive = screen.getByRole("radio", { name: /Comprehensive/i });
+    expect(comprehensive).toHaveAttribute("aria-checked", "true");
+
+    fireEvent.change(screen.getByLabelText("Repository name"), {
+      target: { value: "renamed" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Save changes/i }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0]![0]).toMatchObject({ wiki_style: "comprehensive" });
+  });
+
+  it("selecting a different style enables save and submits the new style", async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    render(<GeneralForm value={baseValue} onSubmit={onSubmit} />);
+    const save = screen.getByRole("button", { name: /Save changes/i });
+    expect(save).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("radio", { name: /Caveman/i }));
+    expect(save).toBeEnabled();
+    fireEvent.click(save);
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0]![0]).toMatchObject({ wiki_style: "caveman" });
+  });
+
+  it("reflects a preset wiki_style from the value", () => {
+    render(
+      <GeneralForm
+        value={{ ...baseValue, wiki_style: "reference" }}
+        onSubmit={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("radio", { name: /Reference/i })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+  });
 });

@@ -12,7 +12,8 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "../ui/tooltip";
-import type { RepoSettingsValue } from "@repowise-dev/types/settings";
+import { DEFAULT_WIKI_STYLE, WIKI_STYLES } from "@repowise-dev/types";
+import type { RepoSettingsValue, WikiStyle } from "@repowise-dev/types/settings";
 
 const SUGGESTIONS = [
   "vendor/",
@@ -57,13 +58,17 @@ export function GeneralForm({
   const [branch, setBranch] = useState(value.default_branch);
   const [patterns, setPatterns] = useState<string[]>(value.exclude_patterns);
   const [newPattern, setNewPattern] = useState("");
+  const [wikiStyle, setWikiStyle] = useState<WikiStyle>(
+    value.wiki_style ?? DEFAULT_WIKI_STYLE,
+  );
   const [saving, setSaving] = useState(false);
 
   const readOnly = onSubmit === undefined;
   const hasChanges =
     name !== value.name ||
     branch !== value.default_branch ||
-    !arraysEqual(patterns, value.exclude_patterns);
+    !arraysEqual(patterns, value.exclude_patterns) ||
+    wikiStyle !== (value.wiki_style ?? DEFAULT_WIKI_STYLE);
 
   function addPattern(pattern: string) {
     const trimmed = pattern.trim();
@@ -84,6 +89,7 @@ export function GeneralForm({
         name,
         default_branch: branch,
         exclude_patterns: patterns,
+        wiki_style: wikiStyle,
       });
     } finally {
       setSaving(false);
@@ -230,6 +236,56 @@ export function GeneralForm({
             </div>
           </>
         )}
+      </div>
+
+      <div className="space-y-3 border-t border-[var(--color-border-default)] pt-5">
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-medium">Documentation style</span>
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Info className="h-3.5 w-3.5 text-[var(--color-text-tertiary)] cursor-help" />
+              </TooltipTrigger>
+              <TooltipContent>
+                <p>
+                  Controls the voice and density of generated wiki pages. Changing
+                  it regenerates the wiki in the new style.
+                </p>
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        </div>
+        <div
+          role="radiogroup"
+          aria-label="Documentation style"
+          className="grid gap-2 sm:grid-cols-2 max-w-2xl"
+        >
+          {WIKI_STYLES.map((style) => {
+            const selected = wikiStyle === style.id;
+            return (
+              <button
+                key={style.id}
+                type="button"
+                role="radio"
+                aria-checked={selected}
+                disabled={readOnly}
+                onClick={() => setWikiStyle(style.id)}
+                className={`text-left rounded-md border px-3 py-2 transition-colors disabled:opacity-60 disabled:cursor-not-allowed ${
+                  selected
+                    ? "border-[var(--color-border-accent)] bg-[var(--color-bg-inset)]"
+                    : "border-[var(--color-border-default)] hover:bg-[var(--color-bg-inset)]"
+                }`}
+              >
+                <span className="block text-sm font-medium text-[var(--color-text-primary)]">
+                  {style.label}
+                </span>
+                <span className="block text-xs text-[var(--color-text-secondary)]">
+                  {style.description}
+                </span>
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       <div className="space-y-1.5">

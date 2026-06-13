@@ -54,7 +54,16 @@ export async function updatePageNotes(
   );
 }
 
-/** Force-regenerate a page by ID */
-export async function regeneratePage(pageId: string): Promise<{ job_id: string }> {
-  return apiPost<{ job_id: string }>("/api/pages/lookup/regenerate", undefined, undefined, { page_id: pageId });
+/**
+ * Force-regenerate a page by ID. Pass `style` to regenerate this page in a
+ * specific wiki style (per-page override); omit it to use the repo's style.
+ */
+export async function regeneratePage(
+  pageId: string,
+  style?: string,
+): Promise<{ job_id: string }> {
+  return apiPost<{ job_id: string }>("/api/pages/lookup/regenerate", undefined, undefined, {
+    page_id: pageId,
+    ...(style ? { style } : {}),
+  });
 }
