@@ -13,6 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.19.1] — 2026-06-13
+
+### Fixed
+- **`repowise serve` web UI failed to build for the release tarball.** The bundled web dashboard could not be compiled once a workspace-package barrel entry was imported as a value (introduced by the wiki-styles constants), because Webpack could not resolve the ESM `.js` re-export specifiers in `@repowise-dev/types` / `@repowise-dev/ui` back to their `.ts` sources. Added an extension alias to the Next.js build so `.js` specifiers map to `.ts`/`.tsx`. This affected only the published `repowise-web.tar.gz`; the Python wheel was unaffected. (#471)
+
+---
+
 ## [0.19.0] — 2026-06-13
 
 ### Added
