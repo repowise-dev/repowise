@@ -28,13 +28,14 @@ should not be committed — it's a local cache, not a source of truth.
 ## `config.yaml`
 
 The main configuration file. Created after first `init`, updated when you pass
-`--commit-limit` or `--follow-renames` flags.
+flags like `--commit-limit`, `--follow-renames`, or `--wiki-style`.
 
 ```yaml
 provider: anthropic                  # LLM provider
 model: claude-sonnet-4-6             # Model identifier
 embedder: gemini                     # Embedding provider
 reasoning: auto                      # auto | off | minimal
+wiki_style: comprehensive            # comprehensive | caveman | reference | tutorial
 exclude_patterns:                    # Gitignore-style patterns
   - vendor/
   - "*.generated.*"
@@ -54,6 +55,13 @@ for OpenAI-compatible vLLM/SGLang endpoints (sends
 requests OpenAI's lowest supported reasoning effort for supported OpenAI
 reasoning models and maps to OpenRouter's `reasoning.effort=minimal`. Providers
 or models that cannot translate an explicit mode fail before making an API call.
+
+`wiki_style` controls the voice and density of generated wiki pages. Set it with
+`init --wiki-style` or switch later with `repowise restyle <style>` (which also
+regenerates the wiki). Power users can define their own style under
+`.repowise/styles/<name>/style.yaml`. Full guide: [WIKI_STYLES.md](WIKI_STYLES.md).
+Note: hand-editing `wiki_style` here and running `update` does not regenerate
+existing pages — use `restyle`.
 
 > **Code-health rules** are configured separately in
 > `.repowise/health-rules.json` (per-file biomarker overrides) — see

@@ -183,6 +183,7 @@ repowise init [PATH]
 | `--model` | Model name override (e.g., `claude-sonnet-4-6`, `gpt-5.4-nano`) |
 | `--embedder` | Embedder for semantic search: `gemini`, `openai`, `mock`. Auto-detected from env vars. |
 | `--index-only` | Skip LLM generation entirely. Only parse, build graph, and index git. Free. |
+| `--wiki-style` | Documentation voice: `comprehensive` (default), `caveman` (token-condensed), `reference` (API-manual), `tutorial`. Saved to config; switch later with `repowise restyle`. See [WIKI_STYLES.md](WIKI_STYLES.md). |
 | `--dry-run` | Show generation plan and cost estimate without running anything. |
 | `--test-run` | Generate docs for only the top 10 files (by PageRank) — quick validation. |
 | `--skip-tests` | Exclude test files from documentation generation. |

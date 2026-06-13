@@ -55,6 +55,7 @@ In workspace mode, adds: repo scanning, per-repo indexing, cross-repo analysis (
 | `--embedder` | Embedder for semantic search: `gemini`, `openai`, `mock` |
 | `--index-only` | Skip LLM generation. Only parse, build graph, and index git. Free. |
 | `--mode` | Pipeline depth: `standard` (default) or `fast` (graph + essential-git only — no per-file blame/co-change, no LLM — for very large repos; upgrade later with `update --full`). |
+| `--wiki-style` | Documentation voice/density: `comprehensive` (default), `caveman` (token-condensed, AI-first), `reference` (API-manual), `tutorial` (beginner-friendly). Interactive full runs prompt when omitted. Saved to config so `update` keeps the style. See [WIKI_STYLES.md](WIKI_STYLES.md). |
 | `--dry-run` | Show generation plan and cost estimate without running. |
 | `--test-run` | Generate docs for only the top 10 files (by PageRank). |
 | `--skip-tests` | Exclude test files from doc generation. |
@@ -129,6 +130,41 @@ repowise update --workspace            # all workspace repos (incl. first-time i
 repowise update --repo backend         # specific workspace repo
 repowise update --no-workspace         # force single-repo mode in a workspace root
 repowise update --full --provider anthropic   # upgrade a fast index to full
+```
+
+---
+
+### `repowise restyle [STYLE] [PATH]`
+
+Switch a repo's wiki **style** and regenerate every page in the new voice. Reuses
+the existing index — the dependency graph and git metadata are rehydrated from
+SQL (no re-resolution, no re-blame), so only the per-file parse + LLM generation
+run. Requires a full (docs-enabled) index and a provider.
+
+With no `STYLE`, prints the current style and the available choices.
+
+Styles only differ in voice and density; the markdown structure (headings,
+sections) stays the same, so search, the table of contents, and cross-links keep
+working. See [WIKI_STYLES.md](WIKI_STYLES.md).
+
+```bash
+repowise restyle                       # show current style + options
+repowise restyle caveman               # condensed, AI-first
+repowise restyle reference --yes       # API-manual, skip the confirm
+```
+
+> Editing `wiki_style` in `config.yaml` by hand and running `update` does **not**
+> regenerate existing pages (that path only re-scores health). Use `restyle`.
+
+---
+
+### `repowise wiki-styles [PATH]`
+
+List the available wiki styles (built-ins plus any custom styles defined under
+`.repowise/styles/`) and the repo's current one.
+
+```bash
+repowise wiki-styles
 ```
 
 ---
