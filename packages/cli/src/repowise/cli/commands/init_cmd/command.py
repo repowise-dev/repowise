@@ -474,6 +474,9 @@ def init_command(
             onboarding=onboarding,
             coverage_pct=coverage_pct,
             harvest_decisions=harvest_decisions,
+            # Apply the chosen style uniformly across the workspace's repos
+            # (no per-repo interactive prompt in the multi-repo flow).
+            wiki_style=resolve_style(wiki_style).name,
             run_mode=run_mode,
         )
         return

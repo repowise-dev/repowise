@@ -39,6 +39,7 @@ from repowise.cli.helpers import (
     resolve_reasoning,
     run_async,
     save_config,
+    save_config_partial,
     save_state,
 )
 from repowise.cli.providers import resolve_embedder
@@ -57,6 +58,7 @@ from repowise.cli.ui import (
     load_dotenv,
     print_banner,
 )
+from repowise.core.generation.styles import DEFAULT_STYLE
 
 from ._interactive import offer_distill_rewrite_hook, offer_hook_install
 from .generation import (
@@ -86,6 +88,7 @@ def _run_workspace_generation(
     onboarding: bool = True,
     coverage_pct: float | None = None,
     harvest_decisions: bool = True,
+    wiki_style: str = DEFAULT_STYLE,
 ) -> list[Any]:
     """Run LLM generation for a single repo in the workspace init flow.
 
@@ -101,6 +104,7 @@ def _run_workspace_generation(
         reasoning=resolve_reasoning(reasoning),
         enable_onboarding=onboarding,
         harvest_decisions=harvest_decisions,
+        wiki_style=wiki_style,
     )
     chosen_pct, _plans, est, gen_config = select_coverage(
         result=result,
@@ -179,6 +183,7 @@ class _WorkspaceCtx:
     onboarding: bool
     coverage_pct: float | None
     harvest_decisions: bool
+    wiki_style: str
     resolved_reasoning: str
     embedder_name_resolved: str
     resolved_commit_limit: int
@@ -288,6 +293,7 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
                     onboarding=ctx.onboarding,
                     coverage_pct=ctx.coverage_pct,
                     harvest_decisions=ctx.harvest_decisions,
+                    wiki_style=ctx.wiki_style,
                 )
                 result.generated_pages = generated_pages
                 # (result.vector_store is set inside _run_workspace_generation
@@ -361,6 +367,10 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
             commit_limit=ctx.resolved_commit_limit,
             reasoning=ctx.resolved_reasoning,
         )
+        # Persist the wiki style per repo so update/restyle honor it. Default
+        # omitted to keep config tidy — only an override is recorded.
+        if ctx.wiki_style != DEFAULT_STYLE:
+            save_config_partial(repo.path, wiki_style=ctx.wiki_style)
 
     return _RepoOutcome(
         file_count=result.file_count,
@@ -413,6 +423,7 @@ def _workspace_init(
     onboarding: bool = True,
     coverage_pct: float | None = None,
     harvest_decisions: bool = True,
+    wiki_style: str = DEFAULT_STYLE,
     run_mode: str = "standard",
 ) -> None:
     """Multi-repo workspace initialization.
@@ -569,6 +580,7 @@ def _workspace_init(
         onboarding=onboarding,
         coverage_pct=coverage_pct,
         harvest_decisions=harvest_decisions,
+        wiki_style=wiki_style,
         resolved_reasoning=resolved_reasoning,
         embedder_name_resolved=embedder_name_resolved,
         resolved_commit_limit=resolved_commit_limit,
