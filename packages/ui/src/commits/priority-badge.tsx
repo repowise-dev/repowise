@@ -1,16 +1,23 @@
 import { cn } from "../lib/cn";
 import type { ReviewPriority } from "@repowise-dev/types/git";
 
+// Colours track review attention, not absolute danger: "Below typical" and
+// "Typical" are calm (this commit is not unusual for the repo); only "Elevated"
+// — the top third of the repo's own distribution — draws the eye.
 const STYLES: Record<ReviewPriority, string> = {
-  high: "bg-red-500/15 text-red-400 border-red-500/25",
-  moderate: "bg-yellow-500/15 text-yellow-400 border-yellow-500/25",
+  high: "bg-amber-500/15 text-amber-400 border-amber-500/25",
+  moderate:
+    "bg-[var(--color-bg-elevated)] text-[var(--color-text-secondary)] border-[var(--color-border-default)]",
   low: "bg-green-500/15 text-green-400 border-green-500/25",
 };
 
+// Repo-relative tercile wording — where the commit sits in *its own repo's*
+// risk distribution, so a 44th-percentile commit reads "Typical", never the
+// absolute-sounding "Moderate".
 const LABELS: Record<ReviewPriority, string> = {
-  high: "High",
-  moderate: "Moderate",
-  low: "Low",
+  high: "Elevated",
+  moderate: "Typical",
+  low: "Below typical",
 };
 
 /**

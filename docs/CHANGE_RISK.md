@@ -36,6 +36,34 @@ log-compressed features — `logit = intercept + Σ coefᵢ·zᵢ` — so every 
 push on the risk is exact and reported as an attributable driver (the same
 linear / per-finding-attributable contract the file health score holds).
 
+## How to read the result
+
+The headline signal is **repo-relative**. The raw 0–10 logistic probability is
+anchored to the offline calibration corpus, so on a repo whose typical commit is
+large the diff-size term dominates and the absolute band skews high — two-thirds
+of commits can read "high" while ranking perfectly normally for *that* repo. The
+*ranking* is sound; the absolute band is not portable.
+
+So the surfaces lead with where the change sits in its **own repo's**
+distribution:
+
+- **Review priority** — `Below typical` / `Typical` / `Elevated` (terciles of
+  the repo's own commit-risk distribution). This is the signal to triage on.
+- **Percentile** — "riskier than N% of this repo's commits".
+- **Raw model score** (0–10) — kept for transparency but shown as a secondary,
+  clearly corpus-anchored number, not the thing to act on.
+
+Each **driver** is reported relative to *the model's baseline commit* (the
+calibration-corpus mean), not this repo — so a `+19 / −1` change can legitimately
+read "more lines added than baseline" while still ranking `Below typical` for a
+repo of large commits. The signed contribution and colour (red raised the raw
+score, green lowered it) carry the direction; the label only states the
+feature's standing, never an absolute verdict.
+
+The `repowise risk` CLI samples the repo's recent commits live (`--baseline`,
+default 200) to compute this percentile; in the web UI it is precomputed from the
+indexed commit history.
+
 ## Calibration & accuracy
 
 Constants are learned offline against the defect corpus (AG-SZZ bug-inducing

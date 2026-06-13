@@ -308,9 +308,16 @@ repowise dead-code resolve <id>          # mark resolved / false positive
 ### `repowise risk [REVSPEC]`
 
 Just-in-time change-risk scoring for a commit or diff range. Scores the defect
-risk of a change (0–10) from the same calibrated signals the code-health layer
-uses — no LLM calls. `REVSPEC` defaults to `HEAD`; pass a `base..head` range to
-score a whole branch / PR as one change.
+risk of a change from the same calibrated signals the code-health layer uses —
+no LLM calls. `REVSPEC` defaults to `HEAD`; pass a `base..head` range to score a
+whole branch / PR as one change.
+
+The headline is **repo-relative**: the change's percentile and review priority
+(`Below typical` / `Typical` / `Elevated`) within the repo's own recent commits,
+sampled live. The raw 0–10 model score is still shown, but as a secondary,
+corpus-anchored number (it skews high on repos whose typical commit is large, so
+the percentile is the signal to act on). Each risk driver is reported relative
+to the model's baseline commit, not this repo.
 
 **Options:**
 
@@ -318,6 +325,7 @@ score a whole branch / PR as one change.
 |------|-------------|
 | `--path` | Path to the git repository (default: current directory) |
 | `--ext` | Comma-separated file suffixes to count (e.g. `.py` or `.ts,.tsx`) |
+| `--baseline` | Recent commits to sample for the repo-relative percentile (default 200; `0` shows only the absolute calibrated band) |
 | `--format` | Output format: `table` (default) or `json` |
 
 ```bash

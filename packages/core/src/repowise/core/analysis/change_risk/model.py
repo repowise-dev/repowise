@@ -42,18 +42,22 @@ _CONSTANTS: dict[str, object] = {
 }
 
 # Human-readable driver labels, keyed by whether the feature is ABOVE its
-# typical value — (above-typical phrase, below-typical phrase). The label
-# describes the change's shape (a fact); the signed contribution + colour convey
-# whether that pushed risk up or down, so a collinear coefficient sign never
-# mislabels the feature itself.
+# baseline value — (above-baseline phrase, below-baseline phrase). Each label
+# compares the feature to *the model's baseline commit* (the calibration-corpus
+# mean), NOT to this repo — so the wording is deliberately neutral and relative
+# ("more / fewer ... than baseline"), never an absolute verdict like "large".
+# The signed contribution + colour carry the risk direction, so a collinear
+# coefficient sign never makes a risk-lowering feature read like a warning. The
+# shared anchor phrase ("than the model's baseline commit") is stated once by the
+# surface that renders these, so it is omitted from every individual label.
 _FEATURE_LABELS: dict[str, tuple[str, str]] = {
-    "la": ("large diff (many lines added)", "small diff"),
-    "ld": ("many lines deleted", "few deletions"),
-    "nf": ("touches many files", "narrow file footprint"),
-    "nd": ("spread across many directories", "localized to few directories"),
-    "ns": ("spans multiple subsystems", "single subsystem"),
-    "entropy": ("scattered, high-entropy change", "focused change"),
-    "exp": ("experienced author", "low author familiarity with the code"),
+    "la": ("more lines added than baseline", "fewer lines added than baseline"),
+    "ld": ("more lines deleted than baseline", "fewer lines deleted than baseline"),
+    "nf": ("more files than baseline", "fewer files than baseline"),
+    "nd": ("more directories than baseline", "fewer directories than baseline"),
+    "ns": ("more subsystems than baseline", "fewer subsystems than baseline"),
+    "entropy": ("more scattered than baseline", "more focused than baseline"),
+    "exp": ("more experienced author than baseline", "less familiar author than baseline"),
 }
 
 
