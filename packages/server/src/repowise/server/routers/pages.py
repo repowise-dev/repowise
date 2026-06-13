@@ -7,10 +7,10 @@ parameter greedily matches the suffix as part of the page_id.
 
 from __future__ import annotations
 
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from fastapi import APIRouter, Depends, HTTPException, Query
 from repowise.core.persistence import crud
 from repowise.core.persistence.models import _now_utc
 from repowise.server.deps import get_db_session, verify_api_key
@@ -102,18 +102,39 @@ async def update_page_notes(
 @router.post("/lookup/regenerate", status_code=202)
 async def regenerate_page_by_query(
     page_id: str = Query(..., description="Page ID"),
+    style: str | None = Query(
+        None,
+        description="Optional wiki style to regenerate this page in (per-page override).",
+    ),
     session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> dict:
-    """Force-regenerate a single wiki page (page_id as query param)."""
+    """Force-regenerate a single wiki page (page_id as query param).
+
+    An optional ``style`` overrides the repo's default style for this page only
+    (D10). It is validated here and carried in the job config; the executor
+    resolves it when regenerating.
+    """
     page = await crud.get_page(session, page_id)
     if page is None:
         raise HTTPException(status_code=404, detail="Page not found")
+
+    job_config: dict = {"mode": "single_page", "page_id": page_id}
+    if style is not None:
+        from repowise.core.generation.styles import is_known_style, list_styles
+
+        if not is_known_style(style):
+            valid = ", ".join(s.name for s in list_styles())
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown style '{style}'. Valid styles: {valid}.",
+            )
+        job_config["style"] = style
 
     job = await crud.upsert_generation_job(
         session,
         repository_id=page.repository_id,
         status="pending",
-        config={"mode": "single_page", "page_id": page_id},
+        config=job_config,
     )
     return {"job_id": job.id, "status": "accepted"}
 

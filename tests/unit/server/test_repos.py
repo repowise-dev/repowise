@@ -77,6 +77,28 @@ async def test_update_repo(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_update_repo_accepts_known_wiki_style(client: AsyncClient) -> None:
+    repo = await create_test_repo(client)
+    resp = await client.patch(
+        f"/api/repos/{repo['id']}",
+        json={"settings": {"wiki_style": "caveman"}},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["settings"]["wiki_style"] == "caveman"
+
+
+@pytest.mark.asyncio
+async def test_update_repo_rejects_unknown_wiki_style(client: AsyncClient) -> None:
+    repo = await create_test_repo(client)
+    resp = await client.patch(
+        f"/api/repos/{repo['id']}",
+        json={"settings": {"wiki_style": "bogus"}},
+    )
+    assert resp.status_code == 400
+    assert "wiki_style" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
 async def test_sync_repo_returns_202(client: AsyncClient) -> None:
     repo = await create_test_repo(client)
     with patch("repowise.server.routers.repos.execute_job", new_callable=AsyncMock):

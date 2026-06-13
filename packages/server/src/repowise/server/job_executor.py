@@ -67,6 +67,38 @@ def _repo_exclude_patterns(repo: Any, repo_path: str) -> list[str]:
     return patterns
 
 
+def _repo_wiki_style(repo: Any, repo_path: str) -> str:
+    """Resolve a server job's effective wiki style from both config sources.
+
+    Web-managed repos store the style in ``Repository.settings_json`` (set via the
+    PATCH endpoint); CLI/``repowise init`` write it to ``.repowise/config.yaml``.
+    Settings take precedence (the web UI is the more deliberate, recent signal),
+    then config.yaml, then the default. Unknown values resolve to the default
+    rather than failing the job.
+    """
+    from repowise.core.generation.styles import resolve_style
+
+    style: str | None = None
+    try:
+        settings = json.loads(getattr(repo, "settings_json", "") or "{}")
+        if isinstance(settings, dict):
+            style = settings.get("wiki_style")
+    except (TypeError, ValueError):
+        logger.debug("repo_settings_json_unparsable", repo_path=repo_path)
+
+    if not style:
+        try:
+            from repowise.core.repo_config import load_repo_config
+
+            cfg = load_repo_config(Path(repo_path))
+            if isinstance(cfg, dict):
+                style = cfg.get("wiki_style")
+        except Exception:
+            logger.debug("repo_config_yaml_unreadable", repo_path=repo_path)
+
+    return resolve_style(style).name
+
+
 # Phase → numeric level mapping for job.current_level
 _PHASE_LEVELS = {
     "traverse": 0,
@@ -260,6 +292,8 @@ async def execute_job(
             # Resolve excludes while ``repo`` is still session-attached. Every
             # job entry point flows through here, so this covers them all.
             exclude_patterns = _repo_exclude_patterns(repo, repo_path)
+            # Resolve the wiki style while ``repo`` is still session-attached.
+            wiki_style = _repo_wiki_style(repo, repo_path)
             config = json.loads(job.config_json) if job.config_json else {}
             is_full_resync = config.get("mode") == "full_resync"
 
@@ -296,6 +330,7 @@ async def execute_job(
             vector_store=vector_store,
             progress=progress,
             exclude_patterns=exclude_patterns or None,
+            wiki_style=wiki_style,
         )
 
         # ---- Incremental page regeneration for sync mode ------------------
@@ -310,6 +345,7 @@ async def execute_job(
                 llm_client,
                 config,
                 progress,
+                repo_wiki_style=wiki_style,
             )
 
         # ---- Persist results -----------------------------------------------
@@ -456,6 +492,7 @@ async def _incremental_page_regen(
     llm_client: Any,
     job_config: dict,
     progress: Any | None,
+    repo_wiki_style: str = "comprehensive",
 ) -> list:
     """Regenerate only wiki pages affected by recent changes.
 
@@ -529,11 +566,17 @@ async def _incremental_page_regen(
         affected_source = {p: s for p, s in result.source_map.items() if p in regen_set}
 
         from repowise.core.generation import ContextAssembler, GenerationConfig, PageGenerator
+
+        # Effective style: a per-page override carried in the job config (set by
+        # the regenerate endpoint, D10) wins over the repo's default style.
+        from repowise.core.generation.styles import resolve_style
         from repowise.core.reasoning import resolve_reasoning
         from repowise.core.repo_config import load_repo_config
 
+        effective_style = resolve_style(job_config.get("style") or repo_wiki_style).name
         generation_config = GenerationConfig(
-            reasoning=resolve_reasoning(config=load_repo_config(repo_path))
+            reasoning=resolve_reasoning(config=load_repo_config(repo_path)),
+            wiki_style=effective_style,
         )
         assembler = ContextAssembler(generation_config)
         generator = PageGenerator(llm_client, assembler, generation_config)

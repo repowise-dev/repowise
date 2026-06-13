@@ -8,11 +8,11 @@ import logging
 import zipfile
 from pathlib import Path, PurePosixPath
 
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import PlainTextResponse, StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import PlainTextResponse, StreamingResponse
 from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import (
@@ -99,8 +99,8 @@ async def list_repos(
     if ws_config is None or ws_root is None:
         return responses
 
-    from pathlib import Path as _P
     import json as _json
+    from pathlib import Path as _P
 
     ws_root_path = _P(ws_root)
     # Map local_path → alias entry for quick attach on indexed rows.
@@ -131,7 +131,8 @@ async def list_repos(
                 pass
 
     # Synthesize entries for repos in the workspace that aren't indexed yet.
-    from datetime import datetime, UTC as _UTC
+    from datetime import UTC as _UTC
+    from datetime import datetime
 
     now = datetime.now(_UTC)
     for entry in ws_config.repos:
@@ -199,6 +200,17 @@ async def update_repo(
     if body.settings is not None:
         import json
 
+        from repowise.core.generation.styles import is_known_style, list_styles
+
+        # Validate a wiki_style setting up front so a typo surfaces as a 400 here
+        # rather than silently falling back to the default during generation.
+        style = body.settings.get("wiki_style")
+        if style is not None and not is_known_style(style):
+            valid = ", ".join(s.name for s in list_styles())
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown wiki_style '{style}'. Valid styles: {valid}.",
+            )
         repo.settings_json = json.dumps(body.settings)
     await session.flush()
     return RepoResponse.from_orm(repo)
@@ -322,7 +334,9 @@ async def sync_repo(
         .limit(1)
     )
     if active.scalar_one_or_none() is not None:
-        raise HTTPException(status_code=409, detail="A sync job is already in progress for this repository")
+        raise HTTPException(
+            status_code=409, detail="A sync job is already in progress for this repository"
+        )
 
     job = await crud.upsert_generation_job(
         session,
@@ -360,7 +374,9 @@ async def full_resync(
         .limit(1)
     )
     if active.scalar_one_or_none() is not None:
-        raise HTTPException(status_code=409, detail="A sync job is already in progress for this repository")
+        raise HTTPException(
+            status_code=409, detail="A sync job is already in progress for this repository"
+        )
 
     job = await crud.upsert_generation_job(
         session,
@@ -382,7 +398,7 @@ def _resolve_repo_session_factory(app_state, repo_id: str):
     ``resolve_session_factory`` (or its request-scoped sibling
     ``resolve_request_session_factory``) directly.
     """
-    from repowise.server.deps import resolve_session_factory  # noqa: PLC0415
+    from repowise.server.deps import resolve_session_factory
 
     return resolve_session_factory(app_state, repo_id)
 
@@ -460,7 +476,9 @@ async def export_wiki(
     if repo is None:
         raise HTTPException(status_code=404, detail="Repository not found")
 
-    pages = (await session.execute(select(Page).where(Page.repository_id == repo_id))).scalars().all()
+    pages = (
+        (await session.execute(select(Page).where(Page.repository_id == repo_id))).scalars().all()
+    )
     if not pages:
         raise HTTPException(status_code=404, detail="No pages to export")
 
@@ -468,11 +486,7 @@ async def export_wiki(
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for page in pages:
             target = page.target_path or page.id
-            safe = (
-                target.replace("::", "/")
-                .replace("->", "--")
-                .replace("\\", "/")
-            )
+            safe = target.replace("::", "/").replace("->", "--").replace("\\", "/")
             path = PurePosixPath("wiki") / page.page_type / safe
             if path.suffix != ".md":
                 path = path.with_suffix(path.suffix + ".md")
@@ -492,7 +506,7 @@ async def export_wiki(
 @router.get("/{repo_id}/file-content")
 async def get_file_content(
     repo_id: str,
-    file_path: str = Query(...),  # noqa: B008
+    file_path: str = Query(...),
     session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> PlainTextResponse:
     """Return raw file content from the repository's local checkout."""

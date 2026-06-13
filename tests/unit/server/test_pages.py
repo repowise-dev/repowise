@@ -131,3 +131,25 @@ async def test_regenerate_page_not_found(client: AsyncClient) -> None:
         params={"page_id": "file_page:nonexistent.py"},
     )
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_regenerate_page_with_known_style_accepted(client: AsyncClient, app) -> None:
+    _, page_id = await _create_page(client, app.state.session_factory)
+    resp = await client.post(
+        "/api/pages/lookup/regenerate",
+        params={"page_id": page_id, "style": "caveman"},
+    )
+    assert resp.status_code == 202
+    assert "job_id" in resp.json()
+
+
+@pytest.mark.asyncio
+async def test_regenerate_page_rejects_unknown_style(client: AsyncClient, app) -> None:
+    _, page_id = await _create_page(client, app.state.session_factory)
+    resp = await client.post(
+        "/api/pages/lookup/regenerate",
+        params={"page_id": page_id, "style": "bogus"},
+    )
+    assert resp.status_code == 400
+    assert "style" in resp.json()["detail"].lower()

@@ -174,6 +174,7 @@ async def run_pipeline(
     progress: ProgressCallback | None = None,
     cost_tracker: Any | None = None,
     generation_config: Any | None = None,
+    wiki_style: str | None = None,
     existing_kg_fingerprint: str | None = None,
     on_page_ready: Any | None = None,
     resume_controller: ResumeController | None = None,
@@ -595,9 +596,14 @@ async def run_pipeline(
             from repowise.core.reasoning import resolve_reasoning
             from repowise.core.repo_config import load_repo_config
 
+            _cfg = load_repo_config(repo_path)
+            # Wiki style precedence: explicit param (server passes the DB-settings
+            # value) > repo-local config.yaml (CLI/init) > default.
+            _style = wiki_style or _cfg.get("wiki_style", "comprehensive")
             resolved_generation_config = GenerationConfig(
                 max_concurrency=concurrency,
-                reasoning=resolve_reasoning(config=load_repo_config(repo_path)),
+                reasoning=resolve_reasoning(config=_cfg),
+                wiki_style=_style,
             )
 
         # Phase 2 enrichment: flag framework-defined HTTP surfaces (FastAPI,

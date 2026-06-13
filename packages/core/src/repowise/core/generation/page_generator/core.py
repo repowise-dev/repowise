@@ -467,7 +467,7 @@ class PageGenerator(PerTypeGenerationMixin):
     ) -> GeneratedPage:
         """Wrap a GeneratedResponse in a GeneratedPage."""
         now = _now_iso()
-        return GeneratedPage(
+        page = GeneratedPage(
             page_id=compute_page_id(page_type, target_path),
             page_type=page_type,
             title=title,
@@ -484,6 +484,11 @@ class PageGenerator(PerTypeGenerationMixin):
             created_at=now,
             updated_at=now,
         )
+        # Record the effective style as page provenance (D10). Only for active
+        # styles, so default ("comprehensive") pages keep byte-identical metadata.
+        if self._style.is_active:
+            page.metadata["style"] = self._style.name
+        return page
 
     def _render(self, template_name: str, *, style_prefix: bool = True, **kwargs: Any) -> str:
         """Render a Jinja2 template with the given kwargs.

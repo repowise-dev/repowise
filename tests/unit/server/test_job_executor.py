@@ -132,6 +132,73 @@ def test_repo_exclude_patterns_ignores_malformed_sources(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_execute_job_passes_wiki_style_from_settings(session_factory, tmp_path):
+    """The repo's settings wiki_style must reach run_pipeline."""
+    job_id = await _seed_repo_and_job(
+        session_factory,
+        tmp_path,
+        settings={"wiki_style": "caveman"},
+    )
+
+    app_state = SimpleNamespace(session_factory=session_factory, fts=None, vector_store=None)
+
+    run_pipeline_mock = AsyncMock(return_value=_fake_result())
+    with (
+        patch("repowise.server.job_executor.run_pipeline", run_pipeline_mock),
+        patch("repowise.server.job_executor.persist_pipeline_result", AsyncMock()),
+        patch(
+            "repowise.server.provider_config.get_chat_provider_instance",
+            side_effect=RuntimeError("no provider"),
+        ),
+    ):
+        await execute_job(job_id, app_state)
+
+    run_pipeline_mock.assert_awaited_once()
+    assert run_pipeline_mock.await_args.kwargs["wiki_style"] == "caveman"
+
+
+def test_repo_wiki_style_settings_precedence(tmp_path):
+    """DB settings (web) win over .repowise/config.yaml (CLI) for wiki_style."""
+    import json
+
+    from repowise.server.job_executor import _repo_wiki_style
+
+    config_dir = tmp_path / ".repowise"
+    config_dir.mkdir()
+    (config_dir / "config.yaml").write_text("wiki_style: reference\n", encoding="utf-8")
+
+    repo = SimpleNamespace(settings_json=json.dumps({"wiki_style": "caveman"}))
+    assert _repo_wiki_style(repo, str(tmp_path)) == "caveman"
+
+
+def test_repo_wiki_style_falls_back_to_config(tmp_path):
+    """With no DB setting, the config.yaml style is used."""
+    from repowise.server.job_executor import _repo_wiki_style
+
+    config_dir = tmp_path / ".repowise"
+    config_dir.mkdir()
+    (config_dir / "config.yaml").write_text("wiki_style: tutorial\n", encoding="utf-8")
+
+    repo = SimpleNamespace(settings_json="{}")
+    assert _repo_wiki_style(repo, str(tmp_path)) == "tutorial"
+
+
+def test_repo_wiki_style_defaults_and_tolerates_bad_input(tmp_path):
+    """Unknown / missing / malformed style resolves to the comprehensive default."""
+    from repowise.server.job_executor import _repo_wiki_style
+
+    assert _repo_wiki_style(SimpleNamespace(settings_json="{}"), str(tmp_path)) == "comprehensive"
+    assert (
+        _repo_wiki_style(SimpleNamespace(settings_json='{"wiki_style": "nope"}'), str(tmp_path))
+        == "comprehensive"
+    )
+    assert (
+        _repo_wiki_style(SimpleNamespace(settings_json="{bad json"), str(tmp_path))
+        == "comprehensive"
+    )
+
+
+@pytest.mark.asyncio
 async def test_execute_job_merges_config_yaml_excludes(session_factory, tmp_path):
     """End-to-end regression: the real user case (tools/ excluded).
 
@@ -172,9 +239,7 @@ async def test_incremental_page_regen_passes_repo_path(tmp_path):
     repo_path = tmp_path
     repowise_dir = repo_path / ".repowise"
     repowise_dir.mkdir()
-    (repowise_dir / "state.json").write_text(
-        '{"last_sync_commit": "base-sha"}', encoding="utf-8"
-    )
+    (repowise_dir / "state.json").write_text('{"last_sync_commit": "base-sha"}', encoding="utf-8")
 
     result = SimpleNamespace(
         file_count=10,
