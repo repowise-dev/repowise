@@ -63,6 +63,7 @@ from repowise.cli.ui import (
     quick_repo_scan,
     should_offer_fast_mode,
 )
+from repowise.core.generation.styles import DEFAULT_STYLE, list_styles, resolve_style
 from repowise.core.reasoning import REASONING_MODES
 
 from ._interactive import offer_distill_rewrite_hook, offer_hook_install
@@ -78,6 +79,27 @@ from .reporting import show_analysis_summary, show_completion
 from .workspace import _workspace_init
 
 
+def _prompt_wiki_style(console: Any) -> str:
+    """Interactive picker for the wiki documentation style (full-mode init only).
+
+    Returns the chosen style name. Defaults to the comprehensive baseline so a
+    bare Enter keeps today's behaviour.
+    """
+    styles = list_styles()
+    console.print("\n[bold]Documentation style[/bold]")
+    for idx, spec in enumerate(styles, 1):
+        marker = " [dim](default)[/dim]" if spec.name == DEFAULT_STYLE else ""
+        console.print(f"  {idx}. [cyan]{spec.name}[/cyan]{marker} — {spec.description}")
+    default_idx = next((i for i, s in enumerate(styles, 1) if s.name == DEFAULT_STYLE), 1)
+    choice = click.prompt(
+        "  Choose a style",
+        type=click.IntRange(1, len(styles)),
+        default=default_idx,
+        show_default=True,
+    )
+    return styles[choice - 1].name
+
+
 def _run_generation_phase(
     *,
     repo_path: Path,
@@ -90,6 +112,7 @@ def _run_generation_phase(
     onboarding: bool,
     tier1_top_n: int | None,
     harvest_decisions: bool,
+    wiki_style: str,
     coverage_pct: float | None,
     yes: bool,
     dry_run: bool,
@@ -122,6 +145,7 @@ def _run_generation_phase(
         enable_onboarding=onboarding,
         tier1_top_n=tier1_top_n,
         harvest_decisions=harvest_decisions,
+        wiki_style=wiki_style,
     )
     chosen_pct, _plans, est, gen_config = select_coverage(
         result=result,
@@ -357,6 +381,18 @@ def _run_generation_phase(
         "hit, so the token cost lands only on files that carry one. Default: on."
     ),
 )
+@click.option(
+    "--wiki-style",
+    "wiki_style",
+    type=click.Choice([s.name for s in list_styles()]),
+    default=None,
+    help=(
+        "Documentation voice/density for generated pages: "
+        "comprehensive (default), caveman (token-condensed, AI-first), "
+        "reference (API-manual), tutorial (beginner-friendly). When omitted in "
+        "an interactive full run you'll be prompted; otherwise comprehensive."
+    ),
+)
 def init_command(
     path: str | None,
     provider_name: str | None,
@@ -385,6 +421,7 @@ def init_command(
     onboarding: bool,
     coverage_pct: float | None,
     harvest_decisions: bool,
+    wiki_style: str | None,
 ) -> None:
     """Generate wiki documentation for a codebase.
 
@@ -535,6 +572,15 @@ def init_command(
             ):
                 run_mode = "fast"
                 index_only = True
+
+        # Wiki style: prompt in interactive full-mode runs when not set via flag.
+        # Index-only runs generate no pages, so the question is skipped (D7).
+        if wiki_style is None and not index_only:
+            wiki_style = _prompt_wiki_style(console)
+
+    # Resolve the effective style (CLI flag > interactive prompt > default) and
+    # canonicalize it. Used by generation and persisted so update/restyle honor it.
+    wiki_style = resolve_style(wiki_style).name
 
     editor_options = resolve_editor_setup_options(
         console,
@@ -752,6 +798,7 @@ def init_command(
             onboarding=onboarding,
             tier1_top_n=tier1_top_n,
             harvest_decisions=harvest_decisions,
+            wiki_style=wiki_style,
             coverage_pct=coverage_pct,
             yes=yes,
             dry_run=dry_run,
@@ -783,6 +830,13 @@ def init_command(
     # config files tidy — only the override is recorded.
     if not onboarding:
         save_config_partial(repo_path, enable_onboarding=False)
+
+    # Persist the wiki style so `repowise update` / `restyle` honor it without
+    # re-passing the flag. Written before any config_fingerprint is computed
+    # below so the first update doesn't false-positive on a config change. The
+    # default is omitted to keep config files tidy — only an override is recorded.
+    if wiki_style != DEFAULT_STYLE:
+        save_config_partial(repo_path, wiki_style=wiki_style)
 
     # ---- Post-run: config, state, MCP, editor project files ----
     if commit_limit is not None:

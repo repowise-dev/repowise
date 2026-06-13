@@ -1014,6 +1014,9 @@ def update_command(
         language=language,
         reasoning=resolve_reasoning(reasoning, cfg),
         enable_onboarding=enable_onboarding_cfg,
+        # Honor the wiki style chosen at init (or via `repowise restyle`) so pages
+        # regenerated for changed files match the rest of the wiki's voice.
+        wiki_style=cfg.get("wiki_style", "comprehensive"),
     )
 
     provider = resolve_provider(provider_name, model, repo_path=repo_path)

@@ -21,6 +21,7 @@ from repowise.cli.commands.hook_cmd import hook_group
 from repowise.cli.commands.init_cmd import init_command
 from repowise.cli.commands.mcp_cmd import mcp_command
 from repowise.cli.commands.reindex_cmd import reindex_command
+from repowise.cli.commands.restyle_cmd import restyle_command, wiki_styles_command
 from repowise.cli.commands.risk_cmd import risk_command
 from repowise.cli.commands.saved_cmd import saved_command
 from repowise.cli.commands.search_cmd import search_command
@@ -77,6 +78,8 @@ register_command(watch_command)
 register_command(serve_command)
 register_command(mcp_command)
 register_command(reindex_command)
+register_command(restyle_command)
+register_command(wiki_styles_command)
 register_command(workspace_group)
 
 cli_registry.apply(cli)
