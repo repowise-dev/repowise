@@ -88,6 +88,18 @@ class TestUngroundedNumbers:
     def test_no_numbers_in_answer_is_grounded(self) -> None:
         assert _ungrounded_numbers("It reads the tuning constant from config.", self.HITS) == []
 
+    def test_underscore_separated_constant_is_grounded(self) -> None:
+        # Source ``MAX = 100_000`` and an answer that says "100000" are the
+        # same value — the digit-separator strip must keep this grounded.
+        hits = [{"symbols": [{"name": "MAX", "signature": "MAX = 100_000", "docstring": ""}]}]
+        assert _ungrounded_numbers("The cap is 100000 tokens.", hits) == []
+
+    def test_comma_grouped_answer_is_grounded(self) -> None:
+        # Prose commas (``100,000``) must not split into 100 and 000 and read
+        # as ungrounded against ``100_000`` in source.
+        hits = [{"symbols": [{"name": "MAX", "signature": "MAX = 100_000", "docstring": ""}]}]
+        assert _ungrounded_numbers("The cap is 100,000 tokens.", hits) == []
+
 
 # ---------------------------------------------------------------------------
 # End-to-end gate behaviour through get_answer

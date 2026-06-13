@@ -67,6 +67,16 @@ async def mark_tombstone_pages(
         marked += 1
     if marked:
         logger.info("pages_tombstoned", repo_id=repo_id, count=marked)
+    elif candidates:
+        # Candidates existed but no page matched — the id scheme drifted from
+        # ``file_page:{path}`` or the paths don't line up. Silent success here
+        # would let stale pages keep serving, so surface it.
+        logger.debug(
+            "tombstone_no_match",
+            repo_id=repo_id,
+            candidate_count=len(candidates),
+            sample=[p for p, _ in candidates[:3]],
+        )
     return marked
 
 

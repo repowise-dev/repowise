@@ -199,11 +199,16 @@ async def _resolve_range_read(
 
     if end < start:
         start, end = end, start
-    range_truncated = (end - start + 1) > _MAX_RANGE_LINES
-    if range_truncated:
+    requested_truncated = (end - start + 1) > _MAX_RANGE_LINES
+    if requested_truncated:
         end = start + _MAX_RANGE_LINES - 1
 
-    source, s, e, total = _slice_text(text, start, end, context_lines)
+    # Cap the served span at _MAX_RANGE_LINES *including* context expansion —
+    # the docstring promises ≤200 lines, so context_lines must not push past
+    # it. Truncated reflects either an oversized request or a context-clipped
+    # span.
+    source, s, e, total = _slice_text(text, start, end, context_lines, max_lines=_MAX_RANGE_LINES)
+    range_truncated = requested_truncated or (e - s + 1) >= _MAX_RANGE_LINES
 
     response = {
         "symbol_id": symbol_id,
@@ -442,14 +447,19 @@ def _read_file_text(repo_path: Path, file_path: str) -> str | None:
 
 
 def _slice_text(
-    text: str, start_line: int, end_line: int, context_lines: int
+    text: str,
+    start_line: int,
+    end_line: int,
+    context_lines: int,
+    max_lines: int = _MAX_SOURCE_LINES,
 ) -> tuple[str, int, int, int]:
     """Slice ``text`` to (source, actual_start, actual_end, total_lines).
 
     Lines are 1-indexed inclusive to match WikiSymbol storage; the range is
-    expanded by ``context_lines`` on both sides and capped at
-    _MAX_SOURCE_LINES (truncating from the tail — the head carries the
-    signature, which is what the agent needs to ground itself).
+    expanded by ``context_lines`` on both sides and capped at ``max_lines``
+    (truncating from the tail — the head carries the signature, which is what
+    the agent needs to ground itself). The cap is applied AFTER context
+    expansion so the returned span never exceeds it.
     """
     lines = text.splitlines()
     total = len(lines)
@@ -460,8 +470,8 @@ def _slice_text(
         s = max(1, s - context_lines)
         e = min(total, e + context_lines)
 
-    if (e - s + 1) > _MAX_SOURCE_LINES:
-        e = s + _MAX_SOURCE_LINES - 1
+    if (e - s + 1) > max_lines:
+        e = s + max_lines - 1
 
     return "\n".join(lines[s - 1 : e]), s, e, total
 

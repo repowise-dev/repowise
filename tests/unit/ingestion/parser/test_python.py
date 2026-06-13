@@ -300,3 +300,15 @@ class TestPythonModuleConstants:
     def test_class_attribute_not_extracted(self, parser: ASTParser) -> None:
         syms = self._symbols(parser)
         assert not any(s.name == "class_attr" for s in syms)
+
+    def test_no_letter_names_are_variables_not_constants(self, parser: ASTParser) -> None:
+        # ``__all__`` and ``_`` have no cased letters; ``name == name.upper()``
+        # would mislabel them constants. ``str.isupper()`` correctly yields
+        # variable.
+        src = b'__all__ = ["a"]\n_ = compute()\nDunder = 1\n'
+        fi = _make_file_info("pkg/dunder.py", "python")
+        syms = parser.parse_file(fi, src).symbols
+        assert next(s for s in syms if s.name == "__all__").kind == "variable"
+        assert next(s for s in syms if s.name == "_").kind == "variable"
+        # Mixed-case still resolves to variable (only SCREAMING_CASE is const).
+        assert next(s for s in syms if s.name == "Dunder").kind == "variable"

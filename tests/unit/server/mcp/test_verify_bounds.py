@@ -12,6 +12,7 @@ import pytest
 from repowise.core.persistence.models import WikiSymbol, _new_uuid
 from repowise.server.mcp_server._verify import (
     check_symbol_bounds,
+    end_anchor_holds,
     heal_symbol_row,
     name_at_line,
     relocate_symbol,
@@ -22,6 +23,23 @@ FRESH_SOURCE = '''"""Module."""
 
 def alpha(x):
     return x + 1
+
+
+class Service:
+    def handle(self, req):
+        return req
+'''
+
+# alpha's body grew by two lines but its definition line is unchanged — the
+# stored end (5) now truncates the body (real end is 7). The start gate alone
+# would pass and serve a short slice marked verified.
+GROWN_SOURCE = '''"""Module."""
+
+
+def alpha(x):
+    y = x + 1
+    z = y + 1
+    return z
 
 
 class Service:
@@ -117,6 +135,42 @@ class TestCheckSymbolBounds:
         assert check.verified
         assert check.corrected
         assert "def handle" in SHIFTED_SOURCE.splitlines()[check.start_line - 1]
+
+    def test_interior_body_growth_forces_correction(self) -> None:
+        # Definition line unchanged, but the body grew — the start gate passes
+        # yet the stored end (5) truncates the symbol. The end anchor must
+        # catch it and re-parse to the true end (7), not serve a short slice.
+        check = check_symbol_bounds(_row(), GROWN_SOURCE)
+        assert check.verified
+        assert check.corrected
+        assert (check.start_line, check.end_line) == (4, 7)
+
+    def test_short_name_skips_cheap_gate(self) -> None:
+        # "db" is a substring of "dbquery()" but isn't this symbol. A 1-2 char
+        # name must not be rubber-stamped by substring containment; with no
+        # real symbol to relocate, the result is approximate, not verified.
+        src = "result = self.dbquery()\n"
+        row = _row(
+            name="db", symbol_id="pkg/mod.py::db", qualified_name="db", start_line=1, end_line=1
+        )
+        check = check_symbol_bounds(row, src)
+        assert not check.verified
+        assert check.approximate
+
+
+class TestEndAnchor:
+    def test_eof_after_symbol_holds(self) -> None:
+        assert end_anchor_holds(FRESH_SOURCE.splitlines(), 8, 10)
+
+    def test_blank_line_after_symbol_holds(self) -> None:
+        assert end_anchor_holds(FRESH_SOURCE.splitlines(), 4, 5)
+
+    def test_deeper_indent_after_stored_end_fails(self) -> None:
+        # Line 6 ("    z = y + 1") is still body — stored end of 5 is wrong.
+        assert not end_anchor_holds(GROWN_SOURCE.splitlines(), 4, 5)
+
+    def test_out_of_range_end_fails(self) -> None:
+        assert not end_anchor_holds(FRESH_SOURCE.splitlines(), 4, 0)
 
 
 class TestRelocateSymbol:

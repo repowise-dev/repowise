@@ -43,6 +43,18 @@ _FILE_LINE_REF_RE = re.compile(r"[\w./-]+:\d+(?:-\d+)?")
 # matching sentence-final numbers ("the default is 3.").
 _NUMBER_RE = re.compile(r"(?<![\w.])-?\d+(?:\.\d+)?(?!\w)(?!\.\d)")
 
+# Digit-grouping separators: ``100_000`` (source) and ``100,000`` (prose) are
+# the same value as ``100000``. Strip them on both sides before comparing, or
+# a correct constant like ``MAX = 100_000`` reads as ungrounded against an
+# answer that says "100000" — a false downgrade on the exact value-shaped
+# constants this gate exists to protect.
+_THOUSANDS_SEP_RE = re.compile(r"(?<=\d)[,_](?=\d)")
+
+
+def _numbers_in(text: str) -> set[str]:
+    """Standalone numbers in *text*, with digit-grouping separators removed."""
+    return set(_NUMBER_RE.findall(_THOUSANDS_SEP_RE.sub("", text or "")))
+
 
 def _is_value_question(question: str) -> bool:
     """True when the question asks for a concrete value."""
@@ -59,7 +71,7 @@ def _ungrounded_numbers(answer_text: str, hits: list[dict]) -> list[str]:
     and hydrated symbols (signatures, docstrings, source excerpts).
     """
     text = _FILE_LINE_REF_RE.sub(" ", answer_text or "")
-    asserted = set(_NUMBER_RE.findall(text))
+    asserted = _numbers_in(text)
     if not asserted:
         return []
 
@@ -74,5 +86,5 @@ def _ungrounded_numbers(answer_text: str, hits: list[dict]) -> list[str]:
                 v = s.get(key)
                 if v:
                     corpus_parts.append(str(v))
-    grounded = set(_NUMBER_RE.findall("\n".join(corpus_parts)))
+    grounded = _numbers_in("\n".join(corpus_parts))
     return sorted(asserted - grounded)

@@ -393,8 +393,11 @@ class ASTParser:
             # Refine module-level assignments: SCREAMING_CASE names are
             # constants by convention; the rest are module variables
             # (singletons like ``app = FastAPI()``, registries, caches).
+            # ``str.isupper()`` requires at least one cased char, so names
+            # with no letters (``_``, ``__all__``) fall to "variable" rather
+            # than being mislabelled constants by ``name == name.upper()``.
             if node_type in _MODULE_ANCHORED_NODE_TYPES:
-                kind = "constant" if name == name.upper() else "variable"
+                kind = "constant" if name.isupper() else "variable"
 
             # Params signature text
             params_text = _node_text(params_nodes[0], src) if params_nodes else ""

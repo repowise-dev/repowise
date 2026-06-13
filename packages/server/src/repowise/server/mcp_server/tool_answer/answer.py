@@ -111,7 +111,9 @@ def _json_default(obj):
     suppress. The cache never stored a single post-hybrid-pipeline answer.
     """
     if isinstance(obj, (set, frozenset)):
-        return sorted(obj)
+        # str-key the sort: a serializer whose whole job is "never fail the
+        # cache write" must not raise TypeError on a mixed-type set.
+        return sorted(obj, key=str)
     return str(obj)
 
 
@@ -522,7 +524,10 @@ async def get_answer(
     for h in hits[:_ENRICH_TOP_N_HITS]:
         for s in h.get("symbols") or []:
             name = s.get("name")
-            if not name or name not in answer_text:
+            # Require a name long enough that substring containment is
+            # meaningful — a 1-2 char constant (``T``, ``e``) would "appear"
+            # in almost any answer and attach an irrelevant quote.
+            if not name or len(name) < 3 or name not in answer_text:
                 continue
             src = s.get("source_excerpt") or s.get("signature") or ""
             if not src:

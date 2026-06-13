@@ -63,6 +63,18 @@ async def test_range_read_caps_at_200_lines(setup_mcp, repo_on_disk):
 
 
 @pytest.mark.asyncio
+async def test_range_read_context_does_not_exceed_cap(setup_mcp, repo_on_disk):
+    from repowise.server.mcp_server import get_symbol
+
+    # 161-line request + 50 lines of context each side would be 261 lines —
+    # the ≤200 contract must hold after context expansion, not just before.
+    result = await get_symbol("pkg/big.py:100-260", context_lines=50)
+    assert result["verified"] is True
+    assert result["end_line"] - result["start_line"] + 1 <= 200
+    assert result["truncated"] is True
+
+
+@pytest.mark.asyncio
 async def test_range_read_swaps_reversed_bounds(setup_mcp, repo_on_disk):
     from repowise.server.mcp_server import get_symbol
 
