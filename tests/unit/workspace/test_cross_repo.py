@@ -17,6 +17,7 @@ from repowise.core.workspace.cross_repo import (
     CrossRepoOverlay,
     CrossRepoPackageDep,
     _GitCommit,
+    _is_noise_path,
     _parse_git_log,
     detect_cross_repo_co_changes,
     detect_package_dependencies,
@@ -194,6 +195,128 @@ class TestCrossRepoCoChanges:
         }, min_score=0.0)
         # 2 × 3 = 6 unique file pairs
         assert len(results) == 6
+
+
+# ---------------------------------------------------------------------------
+# Noise-file filtering
+# ---------------------------------------------------------------------------
+
+
+class TestIsNoisePath:
+    @pytest.mark.parametrize("path", [
+        ".github/workflows/deploy.yml",
+        "sub/.github/workflows/build.yaml",
+        "package-lock.json",
+        "frontend/yarn.lock",
+        "Cargo.lock",
+        "go.sum",
+        "poetry.lock",
+        "uv.lock",
+        "app/static/bundle.min.js",
+        "styles/site.min.css",
+        "dist/index.js",
+        "node_modules/left-pad/index.js",
+        "src/generated/client.ts",
+        "Assets/Localization/en.json",
+        "web/locales/de.json",
+        "i18n/messages.fr.json",
+        "Assets/UI/Panels/InventoryPanel.prefab",
+        "api/proto/service.pb.go",
+        "svc/pb/thing_pb2.py",
+        "messages.po",
+    ])
+    def test_noise_paths_detected(self, path: str) -> None:
+        assert _is_noise_path(path) is True
+
+    @pytest.mark.parametrize("path", [
+        "src/api.py",
+        "src/client.ts",
+        "backend/src/domain/manager.rs",
+        "config.json",
+        "README.md",
+        "packages/core/index.ts",
+    ])
+    def test_signal_paths_kept(self, path: str) -> None:
+        assert _is_noise_path(path) is False
+
+    def test_windows_separators_normalized(self) -> None:
+        assert _is_noise_path("frontend\\dist\\app.js") is True
+
+
+class TestCrossRepoNoiseFiltering:
+    def _detect_with_mocked_logs(
+        self, repo_commits: dict[str, list[_GitCommit]], **kwargs
+    ) -> list[CrossRepoCoChange]:
+        repo_paths = {alias: Path(f"/fake/{alias}") for alias in repo_commits}
+
+        def fake_parse(repo_path, commit_limit=500):
+            for alias, path in repo_paths.items():
+                if str(repo_path) == str(path):
+                    return repo_commits[alias]
+            return []
+
+        with patch("repowise.core.workspace.cross_repo._parse_git_log", side_effect=fake_parse):
+            return detect_cross_repo_co_changes(repo_paths, **kwargs)
+
+    def test_noise_files_excluded_from_pairs(self) -> None:
+        """Workflow/lockfile noise never appears in co-change results."""
+        now = int(time.time())
+        results = self._detect_with_mocked_logs({
+            "backend": _make_commits("backend", [
+                ("alice@co.com", now - 3600, ["src/api.py", ".github/workflows/deploy.yml"]),
+            ]),
+            "frontend": _make_commits("frontend", [
+                ("alice@co.com", now - 7200, ["src/client.ts", "yarn.lock"]),
+            ]),
+        }, min_score=0.0)
+        # Only the real src/api.py <-> src/client.ts pair survives.
+        assert len(results) == 1
+        files = {results[0].source_file, results[0].target_file}
+        assert files == {"src/api.py", "src/client.ts"}
+
+    def test_commit_with_only_noise_dropped(self) -> None:
+        """A commit left empty after filtering produces no edges."""
+        now = int(time.time())
+        results = self._detect_with_mocked_logs({
+            "backend": _make_commits("backend", [
+                ("alice@co.com", now - 3600, [".github/workflows/deploy.yml"]),
+            ]),
+            "frontend": _make_commits("frontend", [
+                ("alice@co.com", now - 7200, ["src/client.ts"]),
+            ]),
+        }, min_score=0.0)
+        assert results == []
+
+    def test_large_commit_does_not_dominate(self) -> None:
+        """A focused 1x1 cross-repo pair outranks pairs born from a wide commit.
+
+        Same author, same recency: a small focused commit pairing should score
+        higher per-pair than pairs spun off a sprawling release commit.
+        """
+        now = int(time.time())
+        focused_files = [f"focused_b{n}.py" for n in range(1)]
+        wide_files = [f"wide_b{n}.py" for n in range(40)]
+        results = self._detect_with_mocked_logs({
+            "a": _make_commits("a", [
+                ("x@co.com", now - 100, ["focused_a.py"]),
+                ("x@co.com", now - 50, ["wide_a.py"]),
+            ]),
+            "b": _make_commits("b", [
+                ("x@co.com", now - 120, focused_files),
+                ("x@co.com", now - 60, wide_files),
+            ]),
+        }, min_score=0.0)
+        by_pair = {(r.source_file, r.target_file): r.strength for r in results}
+        # The focused pair must outrank any pair generated from the wide commit.
+        focused_strength = max(
+            s for (sf, tf), s in by_pair.items()
+            if "focused" in sf or "focused" in tf
+        )
+        wide_strength = max(
+            s for (sf, tf), s in by_pair.items()
+            if "wide" in sf and "wide" in tf
+        )
+        assert focused_strength > wide_strength
 
 
 # ---------------------------------------------------------------------------

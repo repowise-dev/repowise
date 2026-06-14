@@ -9,6 +9,7 @@ No new DB tables — all cross-repo data lives in
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import logging
 import math
@@ -17,7 +18,7 @@ import time
 from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .config import WorkspaceConfig, ensure_workspace_data_dir
@@ -35,8 +36,92 @@ _CO_CHANGE_DECAY_TAU: float = 180.0
 
 _DEFAULT_TIME_WINDOW_HOURS: int = 24
 _DEFAULT_COMMIT_LIMIT: int = 500
-_MIN_CROSS_REPO_SCORE: float = 1.0
+# Threshold lowered from 1.0 when commit-size normalization was added: dividing
+# each pair's weight by sqrt(files_a * files_b) shrinks raw scores, so the old
+# 1.0 floor would have silently dropped legitimate (slightly aged) co-changes.
+_MIN_CROSS_REPO_SCORE: float = 0.5
 _MAX_EDGES: int = 200
+
+
+# ---------------------------------------------------------------------------
+# Noise-file filtering
+#
+# Cross-repo co-change is a purely temporal, same-author signal. Files that are
+# touched as a side effect of unrelated work (CI configs, lockfiles, generated
+# code, localization blobs, binary/asset metadata) pollute the top results with
+# pairs that have no real relationship. Unlike intra-repo co-change, this path
+# runs on raw ``git log --name-only`` output, so we filter these out explicitly
+# before pairing. See issue #475.
+# ---------------------------------------------------------------------------
+
+# Glob patterns matched against the basename, or (when they contain "/") against
+# the full posix path and any "*/"-suffixed subpath.
+_NOISE_FILE_PATTERNS: tuple[str, ...] = (
+    # CI / workflow
+    ".github/workflows/*",
+    ".gitlab-ci.yml",
+    ".circleci/*",
+    "azure-pipelines.yml",
+    "Jenkinsfile",
+    # Lockfiles
+    "package-lock.json",
+    "npm-shrinkwrap.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    "poetry.lock",
+    "Pipfile.lock",
+    "uv.lock",
+    "Cargo.lock",
+    "go.sum",
+    "composer.lock",
+    "Gemfile.lock",
+    # Generated / minified / build output
+    "*.min.js",
+    "*.min.css",
+    "*.map",
+    "*.pb.go",
+    "*_pb2.py",
+    "*_pb2_grpc.py",
+    # Localization resource files
+    "*.po",
+    "*.mo",
+    # Binary / asset metadata (Unity and similar engines)
+    "*.prefab",
+    "*.meta",
+    "*.asset",
+)
+
+# Path segments (case-insensitive) that mark a file as generated/vendored/noise
+# wherever they appear in the path.
+_NOISE_DIR_SEGMENTS: frozenset[str] = frozenset({
+    "node_modules",
+    "dist",
+    "build",
+    "vendor",
+    "generated",
+    "__generated__",
+    "locales",
+    "locale",
+    "localization",
+    "i18n",
+    "translations",
+})
+
+
+def _is_noise_path(path: str) -> bool:
+    """Return True if *path* is a non-signal file that should not be paired."""
+    p = PurePosixPath(path.replace("\\", "/"))
+    if {seg.lower() for seg in p.parts} & _NOISE_DIR_SEGMENTS:
+        return True
+    posix = p.as_posix()
+    name = p.name
+    for pat in _NOISE_FILE_PATTERNS:
+        if "/" in pat:
+            if fnmatch.fnmatch(posix, pat) or fnmatch.fnmatch(posix, "*/" + pat):
+                return True
+        elif fnmatch.fnmatch(name, pat):
+            return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -186,11 +271,14 @@ def detect_cross_repo_co_changes(
 
     Algorithm:
     1. Parse git logs for all repos
-    2. Group commits by author email
-    3. For same author, find commit pairs from different repos within window
-    4. All files from correlated commits are cross-repo co-change partners
-    5. Apply temporal decay (same as intra-repo)
-    6. Filter by min_score, cap at MAX_EDGES
+    2. Drop noise files (CI, lockfiles, generated, localization, assets)
+    3. Group commits by author email
+    4. For same author, find commit pairs from different repos within window
+    5. All (signal) files from correlated commits are co-change partners,
+       with each pair's weight divided by sqrt(files_a * files_b) so large
+       release/CI commits cannot dominate the ranking
+    6. Apply temporal decay (same as intra-repo)
+    7. Filter by min_score, cap at MAX_EDGES
     """
     if len(repo_paths) < 2:
         return []
@@ -205,16 +293,28 @@ def detect_cross_repo_co_changes(
         if commits:
             repo_commits[alias] = commits
 
+    # Step 2: Drop noise files, then commits that are left with nothing
+    filtered: dict[str, list[_GitCommit]] = {}
+    for alias, commits in repo_commits.items():
+        kept: list[_GitCommit] = []
+        for c in commits:
+            c.files = [f for f in c.files if not _is_noise_path(f)]
+            if c.files:
+                kept.append(c)
+        if kept:
+            filtered[alias] = kept
+    repo_commits = filtered
+
     if len(repo_commits) < 2:
         return []
 
-    # Step 2: Group all commits by author, tagged with repo alias
+    # Step 3: Group all commits by author, tagged with repo alias
     author_commits: dict[str, list[tuple[str, _GitCommit]]] = defaultdict(list)
     for alias, commits in repo_commits.items():
         for c in commits:
             author_commits[c.author_email].append((alias, c))
 
-    # Step 3: For each author, find temporally-correlated cross-repo pairs
+    # Step 4: For each author, find temporally-correlated cross-repo pairs
     # Accumulate (src_repo, src_file, tgt_repo, tgt_file) -> (score, frequency, last_ts)
     pair_scores: dict[tuple[str, str, str, str], float] = defaultdict(float)
     pair_freq: dict[tuple[str, str, str, str], int] = defaultdict(int)
@@ -243,7 +343,15 @@ def detect_cross_repo_co_changes(
 
                 # Cross-repo match found
                 age_days = max((now_ts - commit_b.timestamp) / 86400.0, 0.0)
-                weight = math.exp(-age_days / _CO_CHANGE_DECAY_TAU)
+                decay = math.exp(-age_days / _CO_CHANGE_DECAY_TAU)
+
+                # Down-weight by commit breadth (tf-idf style): a focused
+                # 2-file commit carries far more signal per pair than a sprawling
+                # release commit, so divide by sqrt(files_a * files_b). A
+                # single-file/single-file pair keeps the full decay weight.
+                na = len(commit_a.files)
+                nb = len(commit_b.files)
+                weight = decay / math.sqrt(na * nb)
 
                 # Create file pairs (limit to avoid O(N*M) explosion on huge commits)
                 files_a = commit_a.files[:20]
@@ -262,7 +370,7 @@ def detect_cross_repo_co_changes(
                         if key not in pair_last_ts or ts > pair_last_ts[key]:
                             pair_last_ts[key] = ts
 
-    # Step 4: Filter and build results
+    # Step 7: Filter and build results
     results: list[CrossRepoCoChange] = []
     for (src_repo, src_file, tgt_repo, tgt_file), score in pair_scores.items():
         if score < min_score:
