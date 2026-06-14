@@ -37,7 +37,7 @@ most:
 | Test quality           | −0.5  | large_assertion_block, duplicated_assertion_block |
 | Error handling         | −0.5  | error_handling |
 
-Twenty-six biomarkers across the categories above. `function_hotspot` and
+Twenty-five biomarkers across the categories above. `function_hotspot` and
 `code_age_volatility` are blame-based and sit in the organizational bucket —
 both are tier-aware and stay silent on ESSENTIAL-tier repos until the per-line
 blame index is built.
@@ -351,7 +351,7 @@ Health: 7.4 (avg) · 6.2 (hotspots) · 2.1 (worst: payments/processor.ts)
 
 | Feature                          | Repowise | CodeScene | DeepSource | Sourcery |
 |----------------------------------|:--:|:--:|:--:|:--:|
-| Code health score (1–10)         | ✅ 26 biomarkers | ✅ 25–30 | ❌ | ❌ |
+| Code health score (1–10)         | ✅ 25 biomarkers | ✅ 25–30 | ❌ | ❌ |
 | Brain Method detection           | ✅ | ✅ | ❌ | ❌ |
 | Low cohesion (LCOM4) / god class  | ✅ | ✅ | ❌ | ❌ |
 | Test coverage intelligence       | ✅ LCOV/Cobertura/Clover/JSON | ❌ | ❌ | ❌ |

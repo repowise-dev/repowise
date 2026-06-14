@@ -4,7 +4,7 @@
 
 <a href="https://www.repowise.dev"><img src=".github/assets/banner.png" alt="repowise — the codebase intelligence layer for your AI coding agent" width="100%" /></a>
 
-<p align="center"><em>The intelligence layer that gives your AI agent context, ownership, decisions — and a code-health score proven to predict real bugs.</em></p>
+<p align="center"><em>The codebase intelligence layer for the AI era. Context your AI agent can use, and the health, risk, and ownership signals your team can trust.</em></p>
 
 <p align="center"><strong>Five intelligence layers · Nine MCP tools · 15 languages · Multi-repo workspaces · One <code>pip install</code></strong></p>
 
@@ -58,6 +58,13 @@ auth work this way?"* instead of *"here is what `auth.ts` contains"* — with
 **fewer tool calls, fewer file reads, and lower cost per query, at comparable
 answer quality** ([benchmarks ↓](#benchmarks)).
 
+That is one half of the job. AI now writes a large and growing share of the code,
+and the humans accountable for it need to trust what ships. So the same index
+also powers a **defect-validated code-health score**, **change-risk scoring** on
+every PR, and **agent provenance** that shows how much of your code an AI wrote
+and whether it is healthy. One index: context your agent can use, signals your
+team can trust.
+
 ---
 
 ## The five layers
@@ -69,7 +76,7 @@ Each layer is queryable from the CLI, the MCP tools, and the local dashboard.
 |---|---|---|
 | **◈ Graph** | tree-sitter dependency graph across 15 languages · two-tier file + symbol nodes · 3-tier call resolution · Leiden communities · PageRank / centrality / execution flows · framework-aware route→handler edges | A real graph most tools never build |
 | **◈ Git** | hotspots (churn × complexity) · ownership % · co-change pairs (hidden coupling) · bus factor · contributor profiles · module health · reviewer suggestions | Behavioral signals static analysis can't see |
-| **◈ Docs** | LLM-generated wiki per module/file · incremental on every commit · freshness + confidence scoring · hybrid RAG search (FTS + vector via RRF) | Stays current — rebuilt every commit |
+| **◈ Docs** | LLM-generated wiki per module/file · incremental on every commit · freshness + confidence scoring · hybrid RAG search (FTS + vector via RRF) · selectable wiki styles (comprehensive / reference / tutorial / caveman) | Stays current — rebuilt every commit |
 | **◈ Decisions** | architectural decisions mined from **8 sources**, evidence-backed (verified / fuzzy / unverified), linked to graph nodes, connected by `supersedes`/`refines`/`conflicts_with` edges, tracked for staleness | **★ Captured nowhere else** |
 | **★ Code Health** | **25 deterministic biomarkers**, 1–10 score per file · defect-calibrated weights · coverage ingestion · trend alerts · refactoring targets · **zero LLM, <30s** | **★ Defect-validated — our edge ↓** |
 
@@ -124,6 +131,26 @@ budget** (Popt Δ +0.144, recall Δ +0.098, density Δ p = 0.003 — all paired,
 significant). [Full methodology & CIs →](https://github.com/repowise-dev/repowise-bench/blob/master/health-defect/COMPARISON_REPORT.md)
 
 User guide & per-biomarker reference: **[docs/CODE_HEALTH.md](docs/CODE_HEALTH.md)**
+
+---
+
+## Change risk & agent provenance
+
+Two more deterministic signals, built on the same graph and git history, for the
+people who have to trust what ships:
+
+- **★ Change risk:** score any commit or `base..HEAD` range **0–10** for defect
+  risk from the shape of the diff (Kamei-style just-in-time metrics), with
+  PR-mode directives (`will_break`, `missing_cochanges`, `missing_tests`). One
+  command: `repowise risk main..HEAD`. Reference: **[docs/CHANGE_RISK.md](docs/CHANGE_RISK.md)**.
+- **★ Agent provenance:** attribute commits to the AI agents that wrote them,
+  straight from git history, so you can see how much of your codebase an agent
+  produced and which of that code is a low-health hotspot owned by a single
+  person. Risk management for AI-era codebases, not developer surveillance.
+
+Both are zero-LLM and reproducible. Deep dives on the hosted site:
+[change risk →](https://www.repowise.dev/features/change-risk) ·
+[agent provenance →](https://www.repowise.dev/features/agent-provenance).
 
 ---
 
@@ -262,9 +289,11 @@ the contributor recipe: **[docs/LANGUAGE_SUPPORT.md →](docs/LANGUAGE_SUPPORT.m
 
 | | Start here |
 |---|---|
-| **Individual developers** | `pip install repowise` → `repowise init` → query from Claude Code in minutes. 100% local, BYO API key, free under AGPL-3.0. |
-| **Teams** | [**repowise.dev**](https://www.repowise.dev) hosted — zero ops, hosted MCP endpoint, auto re-index on every commit, plus the free [**Repowise PR Bot**](https://github.com/apps/repowise-bot) that comments on hotspots, hidden coupling, and declining health per PR. |
-| **Enterprises** | On-prem topology, SSO/SCIM, RBAC, CVE-aware security layer, workflow integrations, and commercial licensing (no AGPL obligation) — see [**docs/COMMERCIAL.md**](docs/COMMERCIAL.md). |
+| **Individual developers** | `pip install repowise` → `repowise init` → query from Claude Code, Cursor, or any MCP agent. 100% local, BYO API key, free under AGPL-3.0. [For developers →](https://www.repowise.dev/for/developers) |
+| **Team leads** | Know which PRs to worry about before you merge: change-risk scoring plus the free [**Repowise PR Bot**](https://github.com/apps/repowise-bot) that posts one deterministic comment per PR (hotspots, hidden coupling, declining health), zero LLM. [For team leads →](https://www.repowise.dev/for/teams) |
+| **Engineering leaders** | See how much of your code AI wrote and whether it is healthy: agent provenance, code-health trends, and bus factor, from git history. [For engineering leaders →](https://www.repowise.dev/for/engineering-leaders) |
+| **Security & compliance** | Reachability-aware CVE triage, secret detection across full git history, and SBOM, on your real dependency graph. [For security →](https://www.repowise.dev/for/security) |
+| **Enterprises** | On-prem / air-gapped, SSO/SCIM, commercial licensing (no AGPL obligation), and IP indemnification. [For enterprise →](https://www.repowise.dev/for/enterprise) · [docs/COMMERCIAL.md](docs/COMMERCIAL.md) |
 
 ---
 
@@ -380,7 +409,8 @@ Worked example (*"Add rate limiting to all API endpoints"* in 5 calls instead of
 **repowise is the intersection:** behavioral git intelligence + a defect-validated
 code-health score + auto-generated docs + agent-native MCP + architectural
 decisions + multi-repo workspace intelligence — self-hostable and open source.
-Detailed breakdown: [docs/COMPETITIVE_ANALYSIS.md](docs/COMPETITIVE_ANALYSIS.md).
+Full side-by-side comparisons (CodeScene, DeepWiki, Sourcegraph, Cursor, GitClear):
+**[repowise.dev/compare →](https://www.repowise.dev/compare)**.
 
 ---
 
