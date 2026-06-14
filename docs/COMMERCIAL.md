@@ -19,7 +19,7 @@ models. Specific pricing figures are provided in a separate proposal.
 ## 1. Who the commercial license is for
 
 The open-source distribution covers the full developer-experience surface — the five
-intelligence layers, the nine MCP tools, multi-repo workspaces, the local dashboard,
+intelligence layers, the 18 MCP tools, multi-repo workspaces, the local dashboard,
 auto-sync, and auto-generated `CLAUDE.md`. That is everything an engineer or a team
 needs to make their AI coding agents codebase-aware.
 
@@ -113,7 +113,7 @@ the items that matter most to you can be prioritized.
 | Capability | Open Source (AGPL) | Commercial License |
 |------------|:------------------:|:------------------:|
 | Five intelligence layers | ✅ | ✅ |
-| Nine MCP tools | ✅ | ✅ |
+| 18 MCP tools | ✅ | ✅ |
 | Multi-repo workspaces | ✅ | ✅ |
 | Full-tier language support (incl. C# / .NET) | ✅ | ✅ |
 | Local dashboard (incl. local security pattern scan) | ✅ | ✅ |

@@ -1,4 +1,4 @@
-"""repowise MCP Server — 17 tools for AI coding assistants.
+"""repowise MCP Server — 18 tools for AI coding assistants.
 
 Exposes the full repowise wiki as queryable tools via the MCP protocol.
 Supports stdio transport (Claude Code, Cursor, Cline), streamable HTTP, and
@@ -37,10 +37,18 @@ from repowise.server.mcp_server._server import (
     mcp,
     run_mcp,
 )
+from repowise.server.mcp_server.tool_annotate import annotate_file
 from repowise.server.mcp_server.tool_answer import get_answer
+from repowise.server.mcp_server.tool_callers import get_callers_callees
+from repowise.server.mcp_server.tool_community import get_community
 from repowise.server.mcp_server.tool_context import get_context
 from repowise.server.mcp_server.tool_dead_code import get_dead_code
+from repowise.server.mcp_server.tool_decision_records import update_decision_records
+from repowise.server.mcp_server.tool_dependency import get_dependency_path
+from repowise.server.mcp_server.tool_diagram import get_architecture_diagram
+from repowise.server.mcp_server.tool_flows import get_execution_flows
 from repowise.server.mcp_server.tool_health import get_health
+from repowise.server.mcp_server.tool_metrics import get_graph_metrics
 from repowise.server.mcp_server.tool_overview import get_overview
 from repowise.server.mcp_server.tool_repos import list_repos
 from repowise.server.mcp_server.tool_risk import get_risk
@@ -106,10 +114,17 @@ __all__ = [
     "_compute_alignment",
     "_get_repo",
     "_is_path",
+    "annotate_file",
     "create_mcp_server",
     "get_answer",
+    "get_architecture_diagram",
+    "get_callers_callees",
+    "get_community",
     "get_context",
     "get_dead_code",
+    "get_dependency_path",
+    "get_execution_flows",
+    "get_graph_metrics",
     "get_health",
     "get_overview",
     "get_risk",
@@ -119,4 +134,5 @@ __all__ = [
     "mcp",
     "run_mcp",
     "search_codebase",
+    "update_decision_records",
 ]

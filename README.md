@@ -6,7 +6,7 @@
 
 <p align="center"><em>The codebase intelligence layer for the AI era. Context your AI agent can use, and the health, risk, and ownership signals your team can trust.</em></p>
 
-<p align="center"><strong>Five intelligence layers · Nine MCP tools · 15 languages · Multi-repo workspaces · One <code>pip install</code></strong></p>
+<p align="center"><strong>Five intelligence layers · 18 MCP tools · 15 languages · Multi-repo workspaces · One <code>pip install</code></strong></p>
 
 <p align="center">
   <a href="https://www.repowise.dev"><img src="https://img.shields.io/badge/LIVE_DEMO-repowise.dev-F59520?style=for-the-badge&labelColor=0A0A0A" alt="Live demo — repowise.dev" /></a>
@@ -34,7 +34,7 @@
   <a href="#benchmarks">Benchmarks</a> ·
   <a href="#supported-languages">Languages</a> ·
   <a href="#quickstart">Quickstart</a> ·
-  <a href="#nine-mcp-tools">MCP tools</a> ·
+  <a href="#18-mcp-tools">MCP tools</a> ·
   <a href="#how-it-compares">Comparison</a> ·
   <a href="#for-teams--enterprises">Hosted</a>
 </sub></p>
@@ -54,7 +54,7 @@ source code and no memory of how the codebase got there.
 repowise fixes that. It indexes your codebase into **five intelligence layers** —
 dependency graph, git history, auto-generated docs, architectural decisions, and
 code health — and exposes them to Claude Code, Codex, and any MCP-compatible agent
-through **nine task-shaped tools**. The result: your agent answers *"why does
+through **18 task-shaped tools**. The result: your agent answers *"why does
 auth work this way?"* instead of *"here is what `auth.ts` contains"* — with
 **fewer tool calls, fewer file reads, and lower cost per query, at comparable
 answer quality** ([benchmarks ↓](#benchmarks)).
@@ -358,7 +358,7 @@ To add the MCP server to another editor manually:
 
 ---
 
-## Nine MCP tools
+## 18 MCP tools
 
 Most tools are designed around data entities — one module, one file, one symbol —
 forcing agents into long chains of sequential calls. repowise tools are designed
@@ -373,11 +373,20 @@ diverges from live `.git/HEAD`.
 | `get_answer(question)` | Hybrid retrieval (FTS + vector via RRF) + PageRank bias + 1-hop graph expansion → a cited answer with calibrated `retrieval_quality`. Returns structured `best_guesses` on low confidence. Collapses search → read → reason into one round-trip. |
 | `get_context(targets, include?)` | Triage card for files / modules / symbols: title, summary, signatures, `hotspot` bit, `governing_decisions`, and `symbol_id`s. `include` opens callers/callees, ownership, metrics, decisions, full_doc. Batch many targets. |
 | `get_symbol("file.py::Name")` | Raw source bytes for one indexed symbol with exact line bounds — cheaper and safer than `Read` + offset math. |
+| `get_callers_callees(symbol_id)` | Direct caller/callee and class-hierarchy neighborhood for a symbol. |
+| `get_graph_metrics(target)` | PageRank, centrality, community, entry-point score, and percentile context for a file or symbol. |
+| `get_community(target)` | Community membership, cohesion, neighboring communities, and important members. |
+| `get_execution_flows(...)` | Top entry points and call-path traces through the dependency graph. |
 | `search_codebase(query, kind?)` | Semantic search over the wiki, filterable by `kind` (implementation / test / config / doc), tagging each result's `search_method`. |
 | `get_risk(targets, changed_files?)` | Hotspot scores, dependents, co-change partners, ownership, test gaps, security signals. Pass `changed_files` for PR mode → a `directive` block (`will_break`, `missing_cochanges`, `missing_tests`, `governance_risk`). |
 | `get_why(query?, targets?)` | Architectural decision records, status, evidence spans, and the supersession **lineage chain**. Falls back to git archaeology when no ADRs exist. |
+| `update_decision_records(action, ...)` | Create, update, list, get, delete, and change status for architectural decision records. |
+| `get_dependency_path(source, target)` | Shortest dependency path or bridge context between two files/modules/symbols. |
+| `get_architecture_diagram(...)` | Mermaid architecture diagram for the repo, module, or file scope. |
 | `get_dead_code(...)` | Unreachable code by confidence tier with cleanup-impact estimates; cross-repo consumer detection in workspace mode. |
 | `get_health(targets?, include?)` | 25-biomarker scores per file. Dashboard mode → KPIs + lowest-scoring files + module rollup; targeted mode → per-file findings. `include`: coverage, refactoring, trend. |
+| `annotate_file(target, notes)` | Persistent human notes on a wiki page that survive regeneration. |
+| `list_repos()` | Workspace repository aliases and default repo metadata. |
 
 Worked example (*"Add rate limiting to all API endpoints"* in 5 calls instead of
 ~30 greps+reads) and the full reference: **[docs/MCP_TOOLS.md →](docs/MCP_TOOLS.md)**

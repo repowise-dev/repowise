@@ -376,7 +376,7 @@ This is how you connect repowise to Claude Code, Cursor, Cline, Windsurf, and ot
 | `--transport` | Protocol: `stdio` (default, for editors), `streamable-http` (for HTTP clients), or `sse` (legacy) |
 | `--port` | Port for HTTP/SSE transports (default: 7338) |
 
-**MCP tools exposed (9 tools):**
+**MCP tools exposed (18 tools):**
 
 | Tool | What it does |
 |------|-------------|
@@ -384,11 +384,20 @@ This is how you connect repowise to Claude Code, Cursor, Cline, Windsurf, and ot
 | `get_answer` | One-call RAG: confidence-gated synthesis over the wiki, with cited 2–5 sentence answers and a per-repository question cache |
 | `get_context` | Complete context for files/modules/symbols — docs, ownership, decisions, freshness, community membership. Defaults to `compact=True`; pass `compact=False` for the full structure block and importer list. In workspace mode, accepts `repo` parameter. |
 | `get_symbol` | Raw source bytes for one indexed symbol with exact line bounds (cheaper/safer than `Read` + offset math) |
+| `get_callers_callees` | Direct caller/callee and class-hierarchy neighborhood for a symbol |
+| `get_graph_metrics` | PageRank, centrality, community, entry-point score, and percentile context for a file or symbol |
+| `get_community` | Architectural community details, members, cohesion, and neighboring communities |
+| `get_execution_flows` | Top entry points and call-path traces through the dependency graph |
 | `search_codebase` | Semantic search over wiki with git freshness boosting. In workspace mode, searches across all repos. |
 | `get_risk` | Modification risk assessment — hotspot score, dependents, co-change partners, bus factor, blast radius, test gaps, 0–10 risk score |
 | `get_why` | Why code is structured the way it is — architectural decisions, git archaeology. Three modes: NL search, path-based, health dashboard. |
+| `update_decision_records` | Create, update, list, get, delete, and change status for architectural decision records |
+| `get_dependency_path` | Dependency path or bridge context between two files, modules, or symbols |
+| `get_architecture_diagram` | Mermaid architecture diagram for repository, module, or file scope |
 | `get_dead_code` | Tiered dead code report grouped by confidence with cleanup impact estimates |
 | `get_health` | 25-biomarker code-health scores — dashboard KPIs + lowest-scoring files, or per-file findings; `include` for refactoring suggestions and trend alerts |
+| `annotate_file` | Persistent human notes on a wiki page that survive regeneration |
+| `list_repos` | Workspace repository aliases and default repo metadata |
 
 In workspace mode, tools are workspace-aware — pass `repo="backend"` to target a specific repo or `repo="all"` to query across the entire workspace. The default repo is used when `repo` is omitted.
 

@@ -16,7 +16,7 @@ For per-package detail (installation, full API reference, all CLI flags, file ma
 |---------|--------|----------------|
 | `packages/core` | [`packages/core/README.md`](../packages/core/README.md) | Ingestion, generation, persistence, providers — all key classes with code examples |
 | `packages/cli` | [`packages/cli/README.md`](../packages/cli/README.md) | All 10 CLI commands with every flag documented |
-| `packages/server` | [`packages/server/README.md`](../packages/server/README.md) | All REST API endpoints, 11 MCP tools, webhook setup, scheduler jobs |
+| `packages/server` | [`packages/server/README.md`](../packages/server/README.md) | All REST API endpoints, 18 MCP tools, webhook setup, scheduler jobs |
 | `packages/web` | [`packages/web/README.md`](../packages/web/README.md) | Every frontend file with purpose — API client, hooks, components, pages |
 
 ---
@@ -1048,12 +1048,16 @@ and supports two transports:
 - **stdio** — for Claude Code, Cursor, Cline (add to their MCP config)
 - **SSE** — for web-based MCP clients (served on port 7338)
 
-### Tools (11 total)
+### Tools (18 total)
 
 | Tool | What it answers | When to call |
 |------|----------------|-------------|
 | `get_overview` | Architecture summary, module map, entry points. | First call when exploring an unfamiliar codebase. |
 | `get_context(targets, include?)` | Docs, ownership, history, decisions, freshness for files/modules/symbols. Pass multiple targets in one call. | When you need to understand specific code before reading or modifying it. |
+| `get_callers_callees(symbol_id)` | Direct caller/callee and class-hierarchy neighborhood for a symbol. | When tracing symbol-level impact. |
+| `get_graph_metrics(target)` | PageRank, centrality, community, entry-point score, and percentiles. | When judging graph importance. |
+| `get_community(target)` | Community membership, cohesion, important members, and neighboring clusters. | When exploring module boundaries. |
+| `get_execution_flows(...)` | Entry-point traces through call edges. | When following runtime paths. |
 | `get_risk(targets)` | Hotspot score, dependents, co-change partners, risk summary per target. Also returns top 5 global hotspots. | Before modifying files — assess what could break. |
 | `get_why(query?)` | Three modes: NL search over decisions, path-based decisions for a file, no-arg health dashboard. | Before making architectural changes — understand existing intent. |
 | `update_decision_records(action, ...)` | Full CRUD on decision records: create, update, update_status, delete, list, get. | After every coding task — record new decisions and keep existing ones current. |
@@ -1064,6 +1068,8 @@ and supports two transports:
 | `get_answer` | One-call RAG: confidence-gated synthesis with cited answers and question cache. | First call on any code question — collapses search → read → reason. |
 | `get_symbol` | Resolve a qualified symbol id to source body, signature, and docstring. | When the question names a specific class, function, or method. |
 | `annotate_file` | Attach human-authored notes to a wiki page — survives re-indexing. | Adding rationale, known issues, or context the LLM shouldn't overwrite. |
+| `get_health` | Code-health biomarker scores and dashboard rollups. | Before refactoring or prioritizing cleanup. |
+| `list_repos` | Workspace repository aliases and default repo metadata. | When selecting a repo alias in workspace mode. |
 
 ### Auto-generated Config
 
@@ -1155,7 +1161,7 @@ file, tokens used, estimated cost, estimated time remaining).
 repowise includes an interactive chat interface that lets users ask questions about
 their codebase and receive answers grounded in the wiki, dependency graph, git
 history, and architectural decisions. The chat agent uses whichever LLM provider
-the user has configured and has access to all 11 MCP tools.
+the user has configured and has access to all 18 MCP tools.
 
 See [`docs/CHAT.md`](CHAT.md) for the full technical reference covering the
 backend agentic loop, SSE streaming protocol, provider abstraction extensions,
@@ -1166,7 +1172,7 @@ database schema, frontend component architecture, and artifact rendering system.
 - **Provider-agnostic** — the chat agent goes through the same provider abstraction
   as documentation generation. A `ChatProvider` protocol extends `BaseProvider` with
   `stream_chat()` for streaming + tool use without breaking existing callers.
-- **Tool reuse** — the 11 MCP tools are called directly as Python functions (no
+- **Tool reuse** — the 18 MCP tools are called directly as Python functions (no
   subprocess round-trip). Tool schemas are defined once in `chat_tools.py` and
   fed to both the LLM and the executor.
 - **SSE streaming** — `POST /api/repos/{repo_id}/chat/messages` runs the agentic

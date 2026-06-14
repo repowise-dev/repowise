@@ -2,7 +2,7 @@
 
 The codebase chat feature lets users have an interactive conversation with their
 codebase. The agent uses whichever LLM provider the user has configured, has
-access to all 10 MCP tools, and streams responses back to the browser in real time
+access to all 18 MCP tools, and streams responses back to the browser in real time
 showing tool calls as they happen and rendering results in an artifact panel.
 
 ---

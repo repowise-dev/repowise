@@ -1,6 +1,6 @@
 # MCP Tools Reference
 
-repowise exposes 9 tools via the [Model Context Protocol](https://modelcontextprotocol.io) (MCP). These tools give AI coding assistants (Claude Code, Codex, Cursor, Cline, Windsurf) structured access to your codebase intelligence — dependency graph, git history, documentation, and architectural decisions.
+repowise exposes 18 tools via the [Model Context Protocol](https://modelcontextprotocol.io) (MCP). These tools give AI coding assistants (Claude Code, Codex, Cursor, Cline, Windsurf) structured access to your codebase intelligence — dependency graph, git history, documentation, and architectural decisions.
 
 **Start the MCP server:**
 
@@ -22,11 +22,20 @@ repowise mcp --transport sse --port 7338 # legacy SSE transport
 | `get_answer` | One-call RAG Q&A | First call on any code question |
 | `get_context` | Rich context for targets | Before reading or modifying code |
 | `get_symbol` | Raw source bytes for one symbol | When you need one function/class body |
+| `get_callers_callees` | Direct symbol neighborhood | When tracing who calls what |
+| `get_graph_metrics` | Centrality and community metrics | When judging importance or risk |
+| `get_community` | Architectural cluster details | When exploring module boundaries |
+| `get_execution_flows` | Entry-point call traces | When following runtime paths |
 | `search_codebase` | Semantic search | Discovering code by topic |
 | `get_risk` | Modification risk | Before changing hotspot files |
 | `get_why` | Architectural decisions | Before structural changes |
+| `update_decision_records` | Decision-record CRUD | After making architectural decisions |
+| `get_dependency_path` | Graph path between targets | When connecting two modules/files |
+| `get_architecture_diagram` | Mermaid diagram output | When a visual map helps |
 | `get_dead_code` | Unreachable code | Cleanup tasks |
 | `get_health` | Code-health biomarker scores | Before refactoring — find the worst files |
+| `annotate_file` | Persistent human notes | When preserving context across regeneration |
+| `list_repos` | Workspace repo list | When choosing a repo alias |
 
 ---
 
@@ -50,8 +59,8 @@ envelope lists how to get it back:
 Truncated skeleton blocks are replaced in place by a `[repowise#<ref>: ...]`
 marker; everything else is captured into one combined document per response.
 Resolve refs with `repowise expand <ref>` from a shell, or
-`get_symbol("repowise#<ref>")` from any MCP client — the tool count stays at
-nine. See [DISTILL.md](DISTILL.md) for the full reversibility model.
+`get_symbol("repowise#<ref>")` from any MCP client. See [DISTILL.md](DISTILL.md)
+for the full reversibility model.
 
 ---
 
@@ -172,6 +181,80 @@ get_symbol(symbol_id="repowise#a1b2c3d4e5f6", query="FAILED")
 
 ---
 
+## `get_callers_callees`
+
+Find who calls a symbol and what it calls. Also works for class-hierarchy
+queries with `edge_types=["extends", "implements"]`.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `symbol_id` | string | Yes | Canonical symbol ID, usually from `get_context` |
+| `direction` | string | No | `"callers"`, `"callees"`, or `"both"` |
+| `edge_types` | list[string] | No | Edge types to include; defaults to `["calls"]` |
+| `limit` | int | No | Max results per direction |
+| `repo` | string | No | *(workspace only)* Target repo alias |
+
+**When to use:** When a change depends on direct call relationships or class
+hierarchy rather than broad file-level context.
+
+---
+
+## `get_graph_metrics`
+
+Return PageRank, betweenness, community, entry-point score, degree counts, and
+percentile context for a file or symbol.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `target` | string | Yes | File path or symbol ID |
+| `repo` | string | No | *(workspace only)* Target repo alias |
+
+**When to use:** When deciding whether a target is central, peripheral, or a
+high-leverage entry point.
+
+---
+
+## `get_community`
+
+Show the architectural community/cluster a file belongs to, including cohesion,
+members, and neighboring communities.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `target` | string | Yes | File path or community ID |
+| `include_members` | boolean | No | Include member files; default true |
+| `member_limit` | int | No | Max members to return |
+| `repo` | string | No | *(workspace only)* Target repo alias |
+
+**When to use:** When exploring module boundaries or planning refactors that
+could cross architectural clusters.
+
+---
+
+## `get_execution_flows`
+
+Show top entry points and BFS call-path traces through the dependency graph.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `top_n` | int | No | Number of entry points to trace |
+| `max_depth` | int | No | Max trace depth per flow |
+| `entry_point` | string | No | Specific symbol to trace from |
+| `repo` | string | No | *(workspace only)* Target repo alias |
+
+**When to use:** When following runtime paths from route handlers, commands, or
+other entry points.
+
+---
+
 ## `search_codebase`
 
 Semantic search over the full wiki. Natural language queries.
@@ -253,6 +336,66 @@ get_why()
 
 ---
 
+## `update_decision_records`
+
+Create, update, list, get, delete, or change status for architectural decision
+records.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `action` | string | Yes | `create`, `update`, `update_status`, `delete`, `list`, or `get` |
+| `decision_id` | string | Action-dependent | Required for update/get/delete/status changes |
+| `title` | string | No | Decision title for create/update |
+| `status` | string | No | Decision status, such as `proposed`, `accepted`, or `superseded` |
+| `context`, `decision`, `rationale` | string | No | Decision content fields |
+| `affected_files`, `affected_modules`, `tags` | list[string] | No | Scope and classification metadata |
+| `repo` | string | No | *(workspace only)* Target repo alias |
+
+**When to use:** After architectural changes, or when maintaining decision
+records that guide future work.
+
+---
+
+## `get_dependency_path`
+
+Find how two files, modules, or symbols are connected in the dependency graph.
+If no direct path exists, returns bridge context such as shared neighbors and
+community analysis.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `source` | string | Yes | Source file, module, or symbol |
+| `target` | string | Yes | Target file, module, or symbol |
+| `repo` | string | No | *(workspace only)* Target repo alias |
+
+**When to use:** When you need to understand why two areas are coupled or how a
+change could flow through the graph.
+
+---
+
+## `get_architecture_diagram`
+
+Return a Mermaid diagram for the repository or a specific module/file scope.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `scope` | string | No | `"repo"`, `"module"`, or `"file"` |
+| `path` | string | Scope-dependent | Module or file path for scoped diagrams |
+| `diagram_type` | string | No | `"auto"`, `"flowchart"`, `"class"`, or `"sequence"` |
+| `show_heat` | boolean | No | Annotate nodes with churn heat colors |
+| `repo` | string | No | *(workspace only)* Target repo alias |
+
+**When to use:** When a visual map is useful for documentation, review, or
+explaining structure.
+
+---
+
 ## `get_dead_code`
 
 Unreachable code sorted by confidence tier with cleanup impact estimates.
@@ -311,9 +454,38 @@ get_health(targets=["module:src.api"], include=["trend"])
 
 ---
 
+## `annotate_file`
+
+Attach human-authored notes to a file or module wiki page. Notes survive
+LLM-driven regeneration and are returned with context.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `target` | string | Yes | File or module path |
+| `notes` | string | Yes | Note text; pass an empty string to clear notes |
+| `repo` | string | No | *(workspace only)* Target repo alias |
+
+**When to use:** When preserving rationale, known issues, or local context that
+generated docs should not overwrite.
+
+---
+
+## `list_repos`
+
+List repositories known to the current workspace and identify the default repo.
+
+**Parameters:** None.
+
+**When to use:** In workspace mode, before passing a `repo` alias to other MCP
+tools.
+
+---
+
 ## Workspace Mode
 
-In workspace mode (initialized with `repowise init .`), all tools accept an optional `repo` parameter:
+In workspace mode (initialized with `repowise init .`), repo-scoped tools accept an optional `repo` parameter:
 
 - **Omit `repo`** — queries the default (primary) repo
 - **`repo="backend"`** — targets a specific repo by alias
@@ -328,7 +500,7 @@ The MCP server automatically enriches responses with cross-repo intelligence:
 
 ## Proactive Hooks (Complementary)
 
-In addition to the 9 MCP tools, `repowise init` installs AI-agent hooks (Claude Code and Codex) that provide **passive, automatic** context enrichment:
+In addition to the 18 MCP tools, `repowise init` installs AI-agent hooks (Claude Code and Codex) that provide **passive, automatic** context enrichment:
 
 - **Claude Code PostToolUse** — broad or zero-result `Grep`/`Glob` calls can be enriched with graph context, and git operations can trigger stale-wiki notices.
 - **Codex SessionStart/UserPromptSubmit** — Codex receives concise Repowise MCP workflow guidance when a session or prompt starts.
