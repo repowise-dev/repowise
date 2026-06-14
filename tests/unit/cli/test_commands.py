@@ -221,7 +221,9 @@ class TestRescoreFailureFingerprint:
             coro.close()  # avoid 'coroutine never awaited' warning
             raise RuntimeError("db down")
 
-        monkeypatch.setattr(update_cmd, "run_async", _boom)
+        # _run_full_health_rescore now lives in update_cmd.persistence, which
+        # is where it looks up run_async — patch the name there.
+        monkeypatch.setattr(update_cmd.persistence, "run_async", _boom)
         (tmp_path / "f.py").write_text("x = 1\n", encoding="utf-8")
 
         update_cmd._run_full_health_rescore(
@@ -260,7 +262,9 @@ class TestBuildRepoGraph:
             def print(self, *args, **kwargs):
                 printed.append(" ".join(str(a) for a in args))
 
-        monkeypatch.setattr(update_cmd, "console", _FakeConsole())
+        # _build_repo_graph now lives in update_cmd.incremental, which is where
+        # it looks up console — patch the name there.
+        monkeypatch.setattr(update_cmd.incremental, "console", _FakeConsole())
 
         parsed_files, _src, _gb, _struct, _count = update_cmd._build_repo_graph(tmp_path, [])
 
