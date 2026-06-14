@@ -73,7 +73,10 @@ export default async function RepoSettingsPage({ params }: Props) {
       <Card>
         <CardHeader>
           <CardTitle className="text-sm font-medium">System Health</CardTitle>
-          <CardDescription>Coordinator drift across SQL, vector, and graph stores</CardDescription>
+          <CardDescription>
+            Per-population drift: wiki pages vs page vectors, and decision records vs decision
+            vectors
+          </CardDescription>
         </CardHeader>
         <CardContent className="pt-0">
           <CoordinatorHealthPanel repoId={id} initial={coordinatorHealth} />

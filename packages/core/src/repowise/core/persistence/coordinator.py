@@ -145,14 +145,44 @@ class AtomicStorageCoordinator:
                 raise
 
     async def health_check(self) -> dict:
-        """Compare counts across stores. Returns drift report."""
+        """Compare counts across stores, *per population*. Returns a drift report.
+
+        The page vector store is shared: it holds wiki-page vectors **and**
+        decision-record vectors (under the ``decision:<id>`` namespace). A naive
+        ``wiki_pages`` vs *total vector count* comparison therefore compares
+        unlike populations — a store with only decision vectors reads as 100%
+        page drift even though nothing is wrong with the pages (issue #374).
+
+        This compares like with like:
+          * ``wiki_pages``        <-> page vectors  -> ``page_drift``
+          * ``decision_records``  <-> decision vectors -> ``decision_drift``
+
+        ``drift`` is kept as an alias of ``page_drift`` for backwards
+        compatibility. ``vector_count`` remains the total (page + decision) so
+        existing callers that only display it are unaffected.
+        """
         from sqlalchemy import text
-        report: dict = {"sql_pages": None, "vector_count": None, "graph_nodes": None, "drift": None}
+        report: dict = {
+            "sql_pages": None,
+            "sql_decisions": None,
+            "vector_count": None,
+            "vector_page_count": None,
+            "vector_decision_count": None,
+            "graph_nodes": None,
+            "drift": None,
+            "page_drift": None,
+            "decision_drift": None,
+        }
         try:
             res = await self._session.execute(text("SELECT COUNT(*) FROM wiki_pages"))
             report["sql_pages"] = int(res.scalar() or 0)
         except Exception as e:
             report["sql_pages_error"] = str(e)
+        try:
+            res = await self._session.execute(text("SELECT COUNT(*) FROM decision_records"))
+            report["sql_decisions"] = int(res.scalar() or 0)
+        except Exception as e:
+            report["sql_decisions_error"] = str(e)
         if self._graph_builder is not None:
             g = getattr(self._graph_builder, "_graph", None)
             if g is not None:
@@ -165,13 +195,25 @@ class AtomicStorageCoordinator:
                 report["graph_nodes_error"] = str(e)
         if self._vector_store is not None:
             try:
-                report["vector_count"] = await _vector_count(self._vector_store)
+                breakdown = await _vector_breakdown(self._vector_store)
+                report["vector_count"] = breakdown["total"]
+                report["vector_page_count"] = breakdown["page_count"]
+                report["vector_decision_count"] = breakdown["decision_count"]
             except Exception as e:
                 report["vector_count_error"] = str(e)
-        # Compute drift between SQL and vector if both available
-        if report["sql_pages"] is not None and report["vector_count"] is not None:
+
+        # Page drift: wiki_pages vs page vectors (like with like).
+        if report["sql_pages"] is not None and report["vector_page_count"] is not None:
             denom = max(report["sql_pages"], 1)
-            report["drift"] = abs(report["sql_pages"] - report["vector_count"]) / denom
+            report["page_drift"] = abs(report["sql_pages"] - report["vector_page_count"]) / denom
+        # Decision drift: decision_records vs decision vectors.
+        if report["sql_decisions"] is not None and report["vector_decision_count"] is not None:
+            denom = max(report["sql_decisions"], 1)
+            report["decision_drift"] = (
+                abs(report["sql_decisions"] - report["vector_decision_count"]) / denom
+            )
+        # Backwards-compatible alias.
+        report["drift"] = report["page_drift"]
         return report
 
 
@@ -221,3 +263,39 @@ async def _vector_count(store) -> int:
         ids = await list_ids()
         return len(ids)
     return -1
+
+
+async def _vector_breakdown(store) -> dict:
+    """Split the store's vectors into page vs decision populations.
+
+    The page vector store co-locates wiki-page vectors and decision-record
+    vectors (the latter under the ``decision:<id>`` namespace). Health checks
+    must compare each population against its own SQL table, so this enumerates
+    the stored ids and buckets them by namespace.
+
+    Returns ``{"total", "page_count", "decision_count"}``. When the store can't
+    enumerate ids (only a total count is available) the population counts are
+    ``None`` and ``total`` falls back to :func:`_vector_count` (which may be -1
+    for unsupported stores).
+    """
+    from repowise.core.analysis.decisions.semantic_match import DECISION_VECTOR_PREFIX
+
+    list_ids = getattr(store, "list_page_ids", None)
+    if list_ids is not None:
+        ids = await list_ids()
+        if ids:
+            decision = sum(1 for i in ids if i.startswith(DECISION_VECTOR_PREFIX))
+            return {
+                "total": len(ids),
+                "page_count": len(ids) - decision,
+                "decision_count": decision,
+            }
+        # An empty id set is ambiguous: the store may genuinely be empty, or it
+        # may not implement id enumeration. Cross-check against the count.
+        total = await _vector_count(store)
+        if total <= 0:
+            return {"total": max(total, 0), "page_count": 0, "decision_count": 0}
+        return {"total": total, "page_count": None, "decision_count": None}
+
+    total = await _vector_count(store)
+    return {"total": total, "page_count": None, "decision_count": None}

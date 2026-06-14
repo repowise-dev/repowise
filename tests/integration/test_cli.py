@@ -296,7 +296,7 @@ class TestUpdateIndexOnly:
             cli, ["update", str(git_work_repo), "--index-only"], catch_exceptions=False
         )
         assert r1.exit_code == 0, r1.output
-        assert "Index-only update complete" in r1.output
+        assert "index-only update complete" in r1.output
 
         state1 = json.loads(
             (git_work_repo / ".repowise" / "state.json").read_text(encoding="utf-8")

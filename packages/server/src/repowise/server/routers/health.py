@@ -5,11 +5,11 @@ These endpoints are NOT protected by API key auth.
 
 from __future__ import annotations
 
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import text
 
-from fastapi import APIRouter, Depends, Request
 from repowise.core.persistence.coordinator import AtomicStorageCoordinator
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GenerationJob, Page
@@ -93,33 +93,104 @@ async def coordinator_health(
     result = await coord.health_check()
 
     sql_pages: int | None = result.get("sql_pages")
+    sql_decisions: int | None = result.get("sql_decisions")
     vector_count: int | None = result.get("vector_count")
+    vector_page_count: int | None = result.get("vector_page_count")
+    vector_decision_count: int | None = result.get("vector_decision_count")
     graph_nodes: int | None = result.get("graph_nodes")
-    drift: float | None = result.get("drift")
+    page_drift: float | None = result.get("page_drift")
+    decision_drift: float | None = result.get("decision_drift")
 
-    # Normalise vector_count: -1 means unsupported (return None)
+    # Normalise vector counts: -1 means the store can't be counted (return None).
     if vector_count == -1:
         vector_count = None
 
-    # Drift percentage (0–100)
-    drift_pct: float | None = round(drift * 100, 2) if drift is not None else None
+    # Drift percentages (0-100), compared like-with-like per population.
+    page_drift_pct = round(page_drift * 100, 2) if page_drift is not None else None
+    decision_drift_pct = round(decision_drift * 100, 2) if decision_drift is not None else None
 
-    if drift_pct is None:
-        status = "ok"
-    elif drift_pct <= 1.0:
-        status = "ok"
-    elif drift_pct <= 5.0:
-        status = "warning"
-    else:
-        status = "critical"
+    page_status = _classify_drift(page_drift_pct)
+    decision_status = _classify_drift(decision_drift_pct)
+    status = _worst_status(page_status, decision_status)
+    detail = _build_detail(
+        page_drift_pct=page_drift_pct,
+        decision_drift_pct=decision_drift_pct,
+        sql_pages=sql_pages,
+        vector_page_count=vector_page_count,
+        sql_decisions=sql_decisions,
+        vector_decision_count=vector_decision_count,
+    )
 
     return CoordinatorHealthResponse(
         sql_pages=sql_pages,
+        sql_decisions=sql_decisions,
         vector_count=vector_count,
+        vector_page_count=vector_page_count,
+        vector_decision_count=vector_decision_count,
         graph_nodes=graph_nodes,
-        drift_pct=drift_pct,
+        drift_pct=page_drift_pct,  # alias of page_drift_pct (backwards compat)
+        page_drift_pct=page_drift_pct,
+        decision_drift_pct=decision_drift_pct,
         status=status,
+        detail=detail,
     )
+
+
+_STATUS_RANK = {"ok": 0, "warning": 1, "critical": 2}
+
+
+def _classify_drift(drift_pct: float | None) -> str:
+    """Map a drift percentage to an ok/warning/critical status."""
+    if drift_pct is None:
+        return "ok"  # population not comparable (e.g. store can't enumerate ids)
+    if drift_pct <= 1.0:
+        return "ok"
+    if drift_pct <= 5.0:
+        return "warning"
+    return "critical"
+
+
+def _worst_status(*statuses: str) -> str:
+    """Return the most severe of the given statuses."""
+    return max(statuses, key=lambda s: _STATUS_RANK.get(s, 0))
+
+
+def _build_detail(
+    *,
+    page_drift_pct: float | None,
+    decision_drift_pct: float | None,
+    sql_pages: int | None,
+    vector_page_count: int | None,
+    sql_decisions: int | None,
+    vector_decision_count: int | None,
+) -> str | None:
+    """Compose a human-readable explanation, reporting each population separately."""
+    parts: list[str] = []
+
+    # Pages
+    if sql_pages and vector_page_count == 0:
+        parts.append(f"No page vectors for {sql_pages} wiki pages; run a sync to embed pages.")
+    elif page_drift_pct is not None and page_drift_pct > 1.0:
+        parts.append(
+            f"Page drift {page_drift_pct:.1f}% "
+            f"({sql_pages} pages vs {vector_page_count} page vectors)."
+        )
+
+    # Decisions
+    if sql_decisions and vector_decision_count == 0:
+        parts.append(
+            f"No decision vectors for {sql_decisions} decision records; "
+            f"run a sync to embed decisions."
+        )
+    elif decision_drift_pct is not None and decision_drift_pct > 1.0:
+        parts.append(
+            f"Decision drift {decision_drift_pct:.1f}% "
+            f"({sql_decisions} decisions vs {vector_decision_count} decision vectors)."
+        )
+
+    if not parts:
+        return "All populations in sync." if page_drift_pct is not None else None
+    return " ".join(parts)
 
 
 # Merge repo-scoped routes into the main router so they are registered together.

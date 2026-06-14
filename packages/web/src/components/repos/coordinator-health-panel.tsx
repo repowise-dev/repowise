@@ -63,14 +63,30 @@ export function CoordinatorHealthPanel({ repoId, initial }: Props) {
               {data.status}
             </span>
           </div>
-          <StatRow label="SQL Pages" value={fmt(data.sql_pages)} />
-          <StatRow label="Vector Count" value={fmt(data.vector_count)} />
-          <StatRow label="Graph Nodes" value={fmt(data.graph_nodes)} />
           <StatRow
-            label="Drift"
-            value={fmtPct(data.drift_pct)}
-            help="How far the SQL, vector and graph stores disagree about what's indexed. 0% means all three are in sync; high drift usually means an interrupted index — run a sync to reconcile."
+            label="Wiki Pages"
+            value={`${fmt(data.sql_pages)} SQL / ${fmt(data.vector_page_count)} vectors`}
+            help="Generated wiki pages in SQL vs the matching page vectors in the vector store."
           />
+          <StatRow
+            label="Page Drift"
+            value={fmtPct(data.page_drift_pct)}
+            help="How far the wiki-page count disagrees with the page-vector count. 0% means every page is embedded; high drift usually means an interrupted index — run a sync to reconcile."
+          />
+          <StatRow
+            label="Decisions"
+            value={`${fmt(data.sql_decisions)} SQL / ${fmt(data.vector_decision_count)} vectors`}
+            help="Decision records in SQL vs the matching decision vectors. Decision vectors are counted separately from page vectors."
+          />
+          <StatRow
+            label="Decision Drift"
+            value={fmtPct(data.decision_drift_pct)}
+            help="How far the decision-record count disagrees with the decision-vector count."
+          />
+          <StatRow label="Graph Nodes" value={fmt(data.graph_nodes)} />
+          {data.detail && (
+            <p className="text-xs text-[var(--color-text-secondary)] pt-1.5">{data.detail}</p>
+          )}
         </>
       ) : (
         <p className="text-xs text-[var(--color-text-secondary)]">
