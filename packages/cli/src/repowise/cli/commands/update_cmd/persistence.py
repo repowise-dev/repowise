@@ -77,9 +77,14 @@ def _persist_index_only_update(
         {**state, "last_sync_commit": head, "config_fingerprint": config_fingerprint(repo_path)},
     )
     elapsed = time.monotonic() - start
-    console.print(
-        f"[green]Index-only update complete[/green] in {elapsed:.1f}s — "
-        "graph + git + dead-code refreshed; LLM pages unchanged."
+    from .reporting import show_index_only_completion
+
+    show_index_only_completion(
+        graph_builder=graph_builder,
+        dead_code_report=dead_code_report,
+        changed_count=len(changed_paths),
+        git_files=len(git_meta_map or {}),
+        elapsed=elapsed,
     )
 
 

@@ -48,7 +48,13 @@ from .persistence import (
     _persist_partial_health,
     _run_full_health_rescore,
 )
-from .reporting import _render_update_report
+from .reporting import (
+    _render_update_report,
+    make_generation_progress,
+    render_changed_files,
+    render_header,
+    show_full_completion,
+)
 from .workspace import _workspace_update
 
 
@@ -147,6 +153,17 @@ from .workspace import _workspace_update
     default=None,
     help="Generate managed AGENTS.md after update (default: config or enabled).",
 )
+@click.option(
+    "--verbose",
+    "-v",
+    is_flag=True,
+    default=False,
+    help=(
+        "Show the full changed-file list and per-phase internals (adaptive "
+        "cascade budget, decision-marker/evolution counts, best-effort skip "
+        "warnings, and the detailed generation report)."
+    ),
+)
 def update_command(
     path: str | None,
     provider_name: str | None,
@@ -164,6 +181,7 @@ def update_command(
     agents_md: bool | None = None,
     concurrency: int = 10,
     no_cost_tracking: bool = False,
+    verbose: bool = False,
 ) -> None:
     """Incrementally update wiki pages for files changed since last sync.
 
@@ -188,7 +206,7 @@ def update_command(
                 "--full is single-repo only. Run it inside a specific repo "
                 "(or pass --no-workspace / --repo <alias>)."
             )
-        _workspace_update(target, dry_run=dry_run, agents_md=agents_md)
+        _workspace_update(target, dry_run=dry_run, agents_md=agents_md, verbose=verbose)
         return
 
     # --- Single-repo path from here on. ---
@@ -325,8 +343,7 @@ def update_command(
     atexit.register(release_update_lock, repo_path)
     atexit.register(clear_update_queued, repo_path)
 
-    console.print(f"[bold]repowise update[/bold] — {repo_path}")
-    console.print(f"Diffing [cyan]{base_ref[:8]}..{(head or 'HEAD')[:8]}[/cyan]")
+    render_header(repo_path, base_ref, head)
 
     from repowise.core.ingestion import ChangeDetector
 
@@ -353,13 +370,7 @@ def update_command(
         _run_full_health_rescore(repo_path, exclude_patterns, state, head, curr_config_fp)
         return
 
-    console.print(f"Changed files: [yellow]{len(file_diffs)}[/yellow]")
-
-    # Show changed files
-    for fd in file_diffs:
-        status_color = {"added": "green", "deleted": "red", "modified": "yellow", "renamed": "blue"}
-        color = status_color.get(fd.status, "white")
-        console.print(f"  [{color}]{fd.status:>10}[/{color}]  {fd.path}")
+    render_changed_files(file_diffs, verbose=verbose)
 
     # Re-parse changed files and rebuild graph for affected pages
     cfg = load_config(repo_path)
@@ -384,7 +395,8 @@ def update_command(
         from repowise.core.ingestion.change_detector import compute_adaptive_budget
 
         cascade_budget = compute_adaptive_budget(file_diffs, file_count)
-        console.print(f"Adaptive cascade budget: [cyan]{cascade_budget}[/cyan]")
+        if verbose:
+            console.print(f"Adaptive cascade budget: [cyan]{cascade_budget}[/cyan]")
     affected = detector.get_affected_pages(file_diffs, graph_builder.graph(), cascade_budget)
 
     console.print(f"Pages to regenerate: [cyan]{len(affected.regenerate)}[/cyan]")
@@ -471,12 +483,16 @@ def update_command(
             new_decision_markers = run_async(
                 extractor.scan_inline_markers(restrict_to_files=changed_paths)
             )
-            if new_decision_markers:
+            if new_decision_markers and verbose:
                 console.print(
                     f"New decision markers found: [green]{len(new_decision_markers)}[/green]"
                 )
     except Exception as exc:
-        console.print(f"[yellow]Decision re-scan skipped: {exc}[/yellow]")
+        if verbose:
+            console.print(f"[yellow]Decision re-scan skipped: {exc}[/yellow]")
+
+    # Count of decision records touched by evolution, surfaced in the panel.
+    decisions_evolved = 0
 
     # Build the shared vector store once: reused by the supersession detector
     # below and by the decision upsert in _persist (semantic dedup + search).
@@ -543,6 +559,9 @@ def update_command(
                 return res
 
             evo = run_async(_run_evolution())
+            decisions_evolved = (
+                evo.get("superseded", 0) + evo.get("amended", 0) + evo.get("reaffirmed", 0)
+            )
             evo_regen = evo.get("regen_files") or set()
             if evo_regen:
                 # page_id == file path for file pages, so adding the governed
@@ -550,14 +569,16 @@ def update_command(
                 affected.regenerate = list(
                     dict.fromkeys([*affected.regenerate, *sorted(evo_regen)])
                 )
-                console.print(
-                    f"Decision evolution: [cyan]{evo.get('superseded', 0)} superseded[/cyan], "
-                    f"[cyan]{evo.get('amended', 0)} amended[/cyan], "
-                    f"[green]{evo.get('reaffirmed', 0)} reaffirmed[/green]; "
-                    f"+{len(evo_regen)} governed page(s) queued for regen."
-                )
+                if verbose:
+                    console.print(
+                        f"Decision evolution: [cyan]{evo.get('superseded', 0)} superseded[/cyan], "
+                        f"[cyan]{evo.get('amended', 0)} amended[/cyan], "
+                        f"[green]{evo.get('reaffirmed', 0)} reaffirmed[/green]; "
+                        f"+{len(evo_regen)} governed page(s) queued for regen."
+                    )
     except Exception as exc:
-        console.print(f"[yellow]Decision evolution skipped: {exc}[/yellow]")
+        if verbose:
+            console.print(f"[yellow]Decision evolution skipped: {exc}[/yellow]")
 
     # Filter to only affected files
     regen_set = set(affected.regenerate)
@@ -605,17 +626,31 @@ def update_command(
     )
     repo_name = repo_path.name
 
-    generated_pages = run_async(
-        generator.generate_all(
-            affected_parsed,
-            affected_source,
-            graph_builder,
-            repo_structure,
-            repo_name,
-            git_meta_map=git_meta_map,
-            repo_path=repo_path,
+    # Drive a live progress bar (owl spinner + running cost) off generate_all's
+    # page callbacks, matching init's generation phase. Cost is read from the
+    # tracker as each page lands so the readout ticks up in real time.
+    with make_generation_progress() as gen_progress:
+        gen_task = gen_progress.add_task("Generating pages...", total=None, cost=0.0)
+
+        def _on_total_known(total: int) -> None:
+            gen_progress.update(gen_task, total=total)
+
+        def _on_page_done(_page_id: str) -> None:
+            gen_progress.update(gen_task, advance=1, cost=cost_tracker.session_cost)
+
+        generated_pages = run_async(
+            generator.generate_all(
+                affected_parsed,
+                affected_source,
+                graph_builder,
+                repo_structure,
+                repo_name,
+                on_page_done=_on_page_done,
+                on_total_known=_on_total_known,
+                git_meta_map=git_meta_map,
+                repo_path=repo_path,
+            )
         )
-    )
 
     # Flush the buffered LLM cost rows now that generation is done — a single
     # transaction outside the contended generation window (issue #326).
@@ -656,7 +691,8 @@ def update_command(
 
                 await mark_tombstone_pages(session, repo_id, tombstone_candidates(file_diffs))
             except Exception as exc:
-                console.print(f"[yellow]Tombstone marking skipped: {exc}[/yellow]")
+                if verbose:
+                    console.print(f"[yellow]Tombstone marking skipped: {exc}[/yellow]")
 
         # Persist updated git metadata + recompute percentiles
         if git_meta_map:
@@ -883,4 +919,14 @@ def update_command(
         pass  # cross-repo hooks must never fail the update
 
     elapsed = time.monotonic() - start
-    _render_update_report(generated_pages, affected, new_decision_markers, elapsed)
+    show_full_completion(
+        generated_pages=generated_pages,
+        decay_count=len(affected.decay_only),
+        decisions_changed=len(new_decision_markers) + decisions_evolved,
+        provider=provider,
+        cost=cost_tracker.session_cost,
+        tokens=cost_tracker.session_tokens,
+        elapsed=elapsed,
+    )
+    if verbose:
+        _render_update_report(generated_pages, affected, new_decision_markers, elapsed)

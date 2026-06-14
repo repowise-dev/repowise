@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
 from click.testing import CliRunner
 
 from repowise.cli.commands.status_cmd import status_command
@@ -52,7 +51,7 @@ def test_update_from_workspace_root_does_not_create_stray_repowise(
     # spawn a real pipeline, so we intercept _workspace_update.
     called = {}
 
-    def _fake_workspace_update(target, *, dry_run, agents_md=None):
+    def _fake_workspace_update(target, *, dry_run, agents_md=None, verbose=False):
         called["target"] = target
         called["dry_run"] = dry_run
         called["agents_md"] = agents_md

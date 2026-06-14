@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,7 @@ def _workspace_update(
     *,
     dry_run: bool = False,
     agents_md: bool | None = None,
+    verbose: bool = False,
 ) -> None:
     """Update stale repos in a workspace.
 
@@ -23,6 +25,7 @@ def _workspace_update(
     """
     from repowise.core.workspace import check_repo_staleness, update_workspace
 
+    start = time.monotonic()
     ws_root = target.ws_root
     ws_config = target.ws_config
     repo_alias = target.repo_filter
@@ -36,20 +39,32 @@ def _workspace_update(
     console.print()
 
     stale_count = 0
+    up_to_date_count = 0
     for entry in ws_config.repos:
         if repo_alias and entry.alias != repo_alias:
             continue
         abs_path = (ws_root / entry.path).resolve()
         stored = entry.last_commit_at_index
-        is_stale, head, behind = check_repo_staleness(abs_path, stored)
-        status = (
-            f"[yellow]{behind} new commit(s)[/yellow]" if is_stale else "[green]up to date[/green]"
-        )
-        if not (abs_path / ".repowise").is_dir():
+        is_stale, _head, behind = check_repo_staleness(abs_path, stored)
+        indexed = (abs_path / ".repowise").is_dir()
+        if not indexed:
             status = "[dim]not indexed[/dim]"
-        console.print(f"  {entry.alias:<20} {status}")
+        elif is_stale:
+            status = f"[yellow]{behind} new commit(s)[/yellow]"
+        else:
+            status = "[green]up to date[/green]"
+        # Default to a focused list (stale + not-indexed); up-to-date repos
+        # collapse into a single count line unless -v lists everything.
         if is_stale:
             stale_count += 1
+        if indexed and not is_stale:
+            up_to_date_count += 1
+            if not verbose:
+                continue
+        console.print(f"  {entry.alias:<20} {status}")
+
+    if up_to_date_count and not verbose:
+        console.print(f"  [dim]{up_to_date_count} repo(s) up to date[/dim]")
 
     console.print()
 
@@ -116,16 +131,26 @@ def _workspace_update(
     updated = sum(1 for r in results if r.updated)
     errors = sum(1 for r in results if r.error)
     skipped = sum(1 for r in results if r.skipped_reason)
-    console.print()
-    console.print(
-        f"[bold]Done:[/bold] {updated} updated, {skipped} skipped"
-        + (f", {errors} errors" if errors else "")
-    )
+    total_files = sum(r.file_count for r in results if r.updated)
+    total_symbols = sum(r.symbol_count for r in results if r.updated)
+
     _refresh_workspace_editor_project_files(
         ws_root=ws_root,
         ws_config=ws_config,
         repo_filter=repo_alias,
         agents_md=agents_md,
+    )
+
+    from .reporting import show_workspace_completion
+
+    show_workspace_completion(
+        ws_name=ws_root.name,
+        updated=updated,
+        skipped=skipped,
+        errors=errors,
+        total_files=total_files,
+        total_symbols=total_symbols,
+        elapsed=time.monotonic() - start,
     )
 
 

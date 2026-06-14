@@ -114,6 +114,7 @@ Incrementally update wiki pages for files changed since the last sync.
 | `--repo` | Update a specific workspace repo by alias |
 | `--full` | Upgrade a fast (`--mode fast`) index to a full one — see below. Single-repo only. |
 | `--agents / --no-agents` | Generate or skip managed `AGENTS.md` after update. Persists the preference. |
+| `-v`, `--verbose` | Show the full changed-file list and per-phase internals (cascade budget, decision-marker/evolution counts, best-effort skip warnings, detailed generation report). Off by default for a compact summary. |
 
 **First-time indexing:** as of v0.8, `update --workspace` now runs full first-time indexing for workspace entries that have no `.repowise/` dir yet (previously skipped with `"not_indexed"`). The pipeline runs index-only — no LLM cost — and writes a state.json marker so `repowise update --repo <alias> --docs` later picks up doc generation cleanly.
 
@@ -129,6 +130,7 @@ repowise update --reasoning off        # one-off supported-provider thinking-off
 repowise update --workspace            # all workspace repos (incl. first-time indexing)
 repowise update --repo backend         # specific workspace repo
 repowise update --no-workspace         # force single-repo mode in a workspace root
+repowise update -v                     # verbose: full file list + per-phase internals
 repowise update --full --provider anthropic   # upgrade a fast index to full
 ```
 
