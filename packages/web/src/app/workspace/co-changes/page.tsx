@@ -33,7 +33,10 @@ export default function CoChangesPage() {
           </h1>
         </div>
         <p className="text-sm text-[var(--color-text-secondary)]">
-          Files across repositories that frequently change together — implicit coupling detected from git history.
+          Files the same author committed across repositories within a short time
+          window. This is a temporal work-pattern hint from git history, not a
+          verified technical dependency, so treat it as a starting point for
+          inspection rather than proof of coupling.
         </p>
       </div>
 
@@ -61,11 +64,11 @@ export default function CoChangesPage() {
           label="Avg Strength"
           value={
             data?.co_changes && data.co_changes.length > 0
-              ? `${Math.round(
+              ? Math.round(
                   (data.co_changes.reduce((sum, cc) => sum + cc.strength, 0) /
                     data.co_changes.length) *
-                    100,
-                )}%`
+                    10,
+                ) / 10
               : "—"
           }
           icon={<GitMerge className="h-4 w-4 text-orange-400" />}

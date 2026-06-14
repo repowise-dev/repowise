@@ -45,7 +45,15 @@ export function CoChangeTable({ coChanges, compact }: CoChangeTableProps) {
     },
     {
       key: "strength",
-      header: "Strength",
+      header: (
+        <span
+          title="Relative, recency-weighted frequency of same-author commits across these repos. Higher means more or more-recent shared activity. It is not a percentage or a verified dependency."
+          className="cursor-help underline decoration-dotted underline-offset-2"
+        >
+          Strength
+        </span>
+      ),
+      mobileLabel: "Strength",
       priority: 2,
       headerClassName: "w-32",
       render: (cc) => (
