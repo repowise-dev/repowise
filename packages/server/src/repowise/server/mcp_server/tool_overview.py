@@ -10,6 +10,12 @@ from typing import Any
 from sqlalchemy import func as sa_func
 from sqlalchemy import select
 
+from repowise.core.analysis.health.grading import (
+    band_for,
+)
+from repowise.core.analysis.health.grading import (
+    distribution as health_distribution,
+)
 from repowise.core.generation.onboarding.slots import (
     ONBOARDING_ORDER,
     PROMOTED_SLOTS,
@@ -557,11 +563,13 @@ async def get_overview(repo: str | None = None) -> dict:
                 hotspot_avg = sum(m.score * max(m.nloc, 1) for m in top_q) / tot if tot else 10.0
                 code_health = {
                     "average_health": health_summary["average_health"],
+                    "band": band_for(float(health_summary["average_health"])),
                     "hotspot_health": round(hotspot_avg, 2),
                     "worst_performer_path": health_summary["worst_performer_path"],
                     "worst_performer_score": health_summary["worst_performer_score"],
                     "open_findings": health_summary["open_findings"],
                     "file_count": health_summary["file_count"],
+                    "distribution": health_distribution(metrics_rows),
                 }
         except Exception:
             code_health = {}

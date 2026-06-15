@@ -7,6 +7,8 @@
  * caution/success) so the surface themes correctly in both modes.
  */
 
+import type { HealthBand } from "@repowise-dev/types/health";
+
 export type Severity = "critical" | "high" | "medium" | "low";
 
 export const SEVERITY_ORDER: Record<Severity, number> = {
@@ -40,8 +42,12 @@ export const SEVERITY_BAR: Record<Severity, string> = {
 };
 
 /**
- * The ONE score→band mapping. Every score color in the app derives from
- * this: <4 critical, <6 poor, <8 fair, >=8 good.
+ * Internal 4-step COLOR RAMP for score pills. This is presentation granularity
+ * only — NOT a labeling scheme. The canonical, defect-backed health *buckets*
+ * are the 3 `HealthBand` values (Healthy/Warning/Alert) defined once in
+ * `@repowise-dev/types/health` (mirroring core `grading.py`); use those for any
+ * surfaced band label or count. `scoreBand` keeps an extra step (poor vs fair
+ * inside the Warning band) purely so the file-table pills read on a finer ramp.
  */
 export type ScoreBand = "critical" | "poor" | "fair" | "good";
 
@@ -52,12 +58,29 @@ export function scoreBand(score: number): ScoreBand {
   return "good";
 }
 
-export const SCORE_BAND_LABEL: Record<ScoreBand, string> = {
-  critical: "Critical",
-  poor: "Poor",
-  fair: "Fair",
-  good: "Good",
+/* Color classes for the 3 canonical health bands (Alert/Warning/Healthy).
+ * Literal strings so Tailwind's static scanner keeps them. */
+const HEALTH_BAND_TEXT: Record<HealthBand, string> = {
+  alert: "text-[var(--color-error)]",
+  warning: "text-[var(--color-caution)]",
+  healthy: "text-[var(--color-success)]",
 };
+
+const HEALTH_BAND_BADGE_SOFT: Record<HealthBand, string> = {
+  alert: "bg-[var(--color-error)]/15 text-[var(--color-error)]",
+  warning: "bg-[var(--color-caution)]/15 text-[var(--color-caution)]",
+  healthy: "bg-[var(--color-success)]/15 text-[var(--color-success)]",
+};
+
+/** Band → soft badge class. Pass the API-provided band where available; falls
+ * back to deriving it from a score via the shared `bandForScore` mirror. */
+export function healthBandSoftBadgeClass(band: HealthBand): string {
+  return HEALTH_BAND_BADGE_SOFT[band];
+}
+
+export function healthBandTextColor(band: HealthBand): string {
+  return HEALTH_BAND_TEXT[band];
+}
 
 /* Literal class strings per band so Tailwind's static scanner sees them. */
 const BAND_TEXT: Record<ScoreBand, string> = {

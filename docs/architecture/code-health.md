@@ -63,6 +63,8 @@ analysis/health/
 ├── __init__.py                     # public API: HealthAnalyzer, HealthReport
 ├── engine.py                       # orchestrator: walker → biomarkers → scorer
 ├── scoring.py                      # weighted aggregation, category caps, KPIs
+├── grading.py                      # 3 defect-backed bands + NLOC-weighted distribution
+├── defect_accuracy.py              # "does the score find the bugs?" self-validation
 ├── trends.py                       # snapshot diff, Declining/Predicted alerts
 ├── suggestions.py                  # deterministic refactoring text per biomarker
 ├── config.py                       # HealthConfig + .repowise/health-rules.json
@@ -173,7 +175,8 @@ packages/ui/src/health/             # shared React components (used by web + fut
 ├── untested-hotspot-warning.tsx
 ├── refactoring-card.tsx
 ├── refactoring-target-list.tsx
-├── health-badge.tsx
+├── health-badge.tsx               # score pill, colored by the 3 health bands
+├── health-distribution-bar.tsx    # NLOC-weighted Alert/Warning/Healthy split
 └── module-rollup-list.tsx
 
 packages/web/src/app/repos/[id]/health/
@@ -657,7 +660,8 @@ silently re-scored for changed files only.
 
 Defined in `tool_health.py`. Modes:
 
-- **Dashboard mode** (`targets=None`) — returns repo-level KPIs +
+- **Dashboard mode** (`targets=None`) — returns repo-level KPIs (with the
+  repo `band`) + the NLOC-weighted `distribution` across the 3 bands +
   `worst_files` (top N lowest-scoring) + `top_findings` + a per-module
   `modules` rollup.
 - **Targeted mode** (`targets=[...]`) — returns full `metrics` +
@@ -680,8 +684,8 @@ Defined in `tool_health.py`. Modes:
 - `get_context(targets, include=["health"])` — per-file `score`,
   `max_ccn`, `max_nesting`, `nloc`, `module`, `duplication_pct`, top
   2 biomarkers (each with a `suggestion` string), and coverage block.
-- `get_overview()` — adds a `code_health` block: avg, hotspot, worst
-  performer, open finding count.
+- `get_overview()` — adds a `code_health` block: avg, repo `band`, hotspot,
+  worst performer, open finding count, and the NLOC-weighted `distribution`.
 
 Every response carries the standard `_meta` envelope via `build_meta()`.
 
@@ -694,7 +698,9 @@ Every response carries the standard `_meta` envelope via `build_meta()`.
 
 | Route | Returns |
 |---|---|
-| `GET /overview` | summary + lowest-scoring files + top findings + module rollup |
+| `GET /overview` | summary (with repo `band`) + `distribution` + lowest-scoring files + top findings + module rollup |
+| `GET /badge.svg` | self-rendered flat SVG health badge (color + `N.N/10`, no letter) |
+| `GET /badge.json` | Shields.io endpoint-badge payload (`schemaVersion`/`label`/`message`/`color`/`band`) |
 | `GET /files` | per-file metrics |
 | `GET /findings` | findings list (filterable by biomarker_type, severity, file_path) |
 | `GET /coverage` | coverage summary + per-file rows |
@@ -872,6 +878,13 @@ phases may revisit; the constraints kept v1 shippable.
   shipped surface: the `analysis/change_risk/` package behind
   `repowise risk` scores a commit or base..head range with a calibrated
   logistic model.)
+- **No letter grade.** The 1–10 score is the single number. The only
+  categorical layer is the 3 defect-backed bands (Healthy/Warning/Alert,
+  `grading.py`); a letter on top would be a third overlapping scale with
+  arbitrary cliffs. The legacy 4-step `scoreBand` in `ui/health/tokens.ts`
+  is retained only as a finer color ramp for file-table pills, not a
+  labeling scheme — surfaced band labels and the distribution use the 3
+  bands.
 
 ---
 

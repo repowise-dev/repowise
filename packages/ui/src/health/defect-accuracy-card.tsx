@@ -2,33 +2,16 @@
 
 import { useState } from "react";
 import { Check, ChevronDown, ChevronRight, Minus, Target, HelpCircle } from "lucide-react";
+import type {
+  DefectAccuracy,
+  DefectAccuracyFile,
+  DefectAccuracyPoint,
+} from "@repowise-dev/types/health";
 import { Card } from "../ui/card";
 
-export interface DefectAccuracyFile {
-  file_path: string;
-  score: number;
-  recent_fixes: number;
-}
-
-export interface DefectAccuracyPoint {
-  k: number;
-  hits: number;
-}
-
-export interface DefectAccuracy {
-  k: number;
-  hits: number;
-  precision: number;
-  base_rate: number;
-  lift: number | null;
-  window_days: number;
-  scored_files: number;
-  defect_files: number;
-  concentration_file_fraction: number;
-  concentration_defect_share: number;
-  precision_table: DefectAccuracyPoint[];
-  flagged_files: DefectAccuracyFile[];
-}
+// Canonical definitions now live in @repowise-dev/types; re-exported here so
+// existing `@repowise-dev/ui/health` consumers keep working unchanged.
+export type { DefectAccuracy, DefectAccuracyFile, DefectAccuracyPoint };
 
 /**
  * "Does the score actually find the buggy files?" card.

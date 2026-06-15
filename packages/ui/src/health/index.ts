@@ -13,6 +13,7 @@ export * from "./refactoring-target-list";
 export * from "./health-badge";
 export * from "./module-rollup-list";
 export * from "./severity-distribution";
+export * from "./health-distribution-bar";
 export * from "./score-breakdown";
 export * from "./sparkline";
 export * from "./health-tabs";

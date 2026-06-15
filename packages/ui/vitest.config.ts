@@ -24,6 +24,7 @@ export default defineConfig({
       "@repowise-dev/types/blast-radius": path.resolve(__dirname, "../types/src/blast-radius.ts"),
       "@repowise-dev/types/jobs": path.resolve(__dirname, "../types/src/jobs.ts"),
       "@repowise-dev/types/settings": path.resolve(__dirname, "../types/src/settings.ts"),
+      "@repowise-dev/types/health": path.resolve(__dirname, "../types/src/health.ts"),
     },
   },
 });

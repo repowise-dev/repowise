@@ -1,8 +1,11 @@
+import type { HealthBand, HealthDistribution } from "@repowise-dev/types/health";
+import { bandForScore, HEALTH_BAND_LABEL } from "@repowise-dev/types";
 import { formatNumber } from "../lib/format";
 import { InfoTip } from "../shared/info-tip";
-import { scoreTextColor, formatDelta, deltaColor } from "./tokens";
+import { scoreTextColor, healthBandTextColor, formatDelta, deltaColor } from "./tokens";
 import { Sparkline } from "./sparkline";
 import { SeverityDistribution, type SeverityBreakdown } from "./severity-distribution";
+import { HealthDistributionBar } from "./health-distribution-bar";
 
 export interface HealthSummary {
   file_count: number;
@@ -12,10 +15,14 @@ export interface HealthSummary {
   worst_performer_score: number | null;
   open_findings: number;
   severity_breakdown?: SeverityBreakdown;
+  /** Repo-level band from the API; derived from average_health when absent. */
+  band?: HealthBand;
 }
 
 export interface HealthKpiCardsProps {
   summary: HealthSummary;
+  /** NLOC-weighted file distribution across the 3 bands. */
+  distribution?: HealthDistribution | null;
   /** Optional series for sparklines, newest-last. */
   averageHistory?: number[];
   hotspotHistory?: number[];
@@ -26,12 +33,14 @@ export interface HealthKpiCardsProps {
 
 export function HealthKpiCards({
   summary,
+  distribution,
   averageHistory,
   hotspotHistory,
   worstHistory,
   averageDelta,
   hotspotDelta,
 }: HealthKpiCardsProps) {
+  const band = summary.band ?? bandForScore(summary.average_health);
   return (
     <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
       <Card label="Files Analyzed">
@@ -41,11 +50,21 @@ export function HealthKpiCards({
       </Card>
       <Card label="Average Health" sparkline={averageHistory} delta={averageDelta}>
         <p
-          className={`text-2xl font-bold tabular-nums ${scoreTextColor(summary.average_health)}`}
+          className={`flex items-baseline gap-2 text-2xl font-bold tabular-nums ${scoreTextColor(summary.average_health)}`}
         >
-          {summary.average_health.toFixed(1)}
-          <span className="text-base font-normal text-[var(--color-text-secondary)]">/10</span>
+          <span>
+            {summary.average_health.toFixed(1)}
+            <span className="text-base font-normal text-[var(--color-text-secondary)]">/10</span>
+          </span>
+          <span className={`text-xs font-semibold uppercase tracking-wide ${healthBandTextColor(band)}`}>
+            {HEALTH_BAND_LABEL[band]}
+          </span>
         </p>
+        {distribution ? (
+          <div className="mt-2">
+            <HealthDistributionBar distribution={distribution} showCounts={false} height="sm" />
+          </div>
+        ) : null}
       </Card>
       <Card
         label="Hotspot Health"

@@ -256,6 +256,7 @@ export function TriageTab({ repoId: id }: { repoId: string }) {
           <RecalibrationBanner repoId={id} />
           <HealthKpiCards
             summary={overview.summary}
+            distribution={overview.distribution}
             averageHistory={avgSeries}
             hotspotHistory={hotspotSeries}
             worstHistory={worstSeries}
