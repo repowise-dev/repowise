@@ -14,7 +14,7 @@
 
 <p align="center">
   <a href="https://pypi.org/project/repowise/"><img src="https://img.shields.io/pypi/v/repowise?style=for-the-badge&color=1E293B&labelColor=0A0A0A&logo=pypi&logoColor=white" alt="PyPI version" /></a>
-  <a href="docs/CODE_HEALTH.md"><img src="https://img.shields.io/badge/code_health-7.6%2F10-F59520?style=for-the-badge&labelColor=0A0A0A" alt="Code health 7.6/10" /></a>
+  <a href="https://www.repowise.dev"><img src="https://img.shields.io/badge/code_health-tracked-1E293B?style=for-the-badge&labelColor=0A0A0A" alt="Code health tracked on repowise.dev" /></a>
   <a href="https://www.gnu.org/licenses/agpl-3.0"><img src="https://img.shields.io/badge/License-AGPL--v3-059669?style=for-the-badge&labelColor=0A0A0A" alt="License: AGPL v3" /></a>
   <a href="https://pypi.org/project/repowise/"><img src="https://img.shields.io/badge/Python-3.11%2B-1E293B?style=for-the-badge&labelColor=0A0A0A&logo=python&logoColor=white" alt="Python 3.11+" /></a>
   <a href="https://modelcontextprotocol.io"><img src="https://img.shields.io/badge/MCP-compatible-1E293B?style=for-the-badge&labelColor=0A0A0A" alt="MCP compatible" /></a>
