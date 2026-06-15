@@ -7,6 +7,7 @@ import { useJob } from "@/lib/hooks/use-job";
 import { cancelJob } from "@/lib/api/jobs";
 import { formatNumber } from "@repowise-dev/ui/lib/format";
 import type { JobProgressEvent } from "@/lib/api/types";
+import { computeElapsedMs } from "@/lib/jobs/progress";
 
 interface Props {
   jobId: string;
@@ -22,13 +23,14 @@ export function GenerationProgressWrapper({ jobId, repoName, onDone }: Props) {
   const [elapsed, setElapsed] = useState(0);
   const [actualCost, setActualCost] = useState<number | null>(null);
   const [cancelling, setCancelling] = useState(false);
-  const startRef = useRef(Date.now());
   const notifiedRef = useRef(false);
 
   useEffect(() => {
-    const id = setInterval(() => setElapsed(Date.now() - startRef.current), 1000);
+    const updateElapsed = () => setElapsed(computeElapsedMs(job));
+    updateElapsed();
+    const id = setInterval(updateElapsed, 1000);
     return () => clearInterval(id);
-  }, []);
+  }, [job]);
 
   useEffect(() => {
     if (!sse.data) return;
@@ -95,3 +97,4 @@ export function GenerationProgressWrapper({ jobId, repoName, onDone }: Props) {
     />
   );
 }
+
