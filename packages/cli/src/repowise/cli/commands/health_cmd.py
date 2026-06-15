@@ -91,6 +91,13 @@ from repowise.cli.helpers import (
     default=False,
     help="Print the last 10 health snapshots from the SQLite history.",
 )
+@click.option(
+    "--badge",
+    "badge_view",
+    is_flag=True,
+    default=False,
+    help="Print a ready-to-paste health badge (Markdown) for this repo's README.",
+)
 def health_command(
     path: str | None,
     file_filter: str | None,
@@ -103,6 +110,7 @@ def health_command(
     refactoring_targets: bool,
     module_filter: str | None,
     trend_view: bool,
+    badge_view: bool,
 ) -> None:
     """Compute code-health scores from biomarkers (CCN, nesting, brain-method).
 
@@ -281,6 +289,10 @@ def health_command(
         _render_refactoring_targets(metrics_sorted, findings, fmt=fmt)
         return
 
+    if badge_view:
+        _render_badge(report.kpis.get("average_health"))
+        return
+
     if fmt == "json":
         click.echo(
             json.dumps(
@@ -331,13 +343,28 @@ def health_command(
         return
 
     # Table format
+    from repowise.core.analysis.health.grading import (
+        BAND_LABEL,
+        band_for,
+    )
+    from repowise.core.analysis.health.grading import (
+        distribution as health_distribution,
+    )
+
     kpis = report.kpis
+    avg = kpis.get("average_health")
+    band_str = ""
+    if isinstance(avg, (int, float)):
+        band = band_for(float(avg))
+        band_color = {"healthy": "green", "warning": "yellow", "alert": "red"}[band]
+        band_str = f" [[{band_color}]{BAND_LABEL[band]}[/{band_color}]]"
     console.print(
         f"\nHotspot: [bold]{kpis.get('hotspot_health', '?')}[/bold]/10 · "
-        f"Average: [bold]{kpis.get('average_health', '?')}[/bold]/10 · "
+        f"Average: [bold]{avg if avg is not None else '?'}[/bold]/10{band_str} · "
         f"Worst: [bold]{kpis.get('worst_performer_score', '?')}[/bold]/10 "
-        f"({kpis.get('worst_performer_path', 'n/a')})\n"
+        f"({kpis.get('worst_performer_path', 'n/a')})"
     )
+    _render_distribution_line(health_distribution(report.metrics))
 
     _render_defect_accuracy_line(report)
 
@@ -377,6 +404,45 @@ def health_command(
                 f"-{f.health_impact:.2f}",
             )
         console.print(f_table)
+
+
+def _render_distribution_line(dist: dict) -> None:
+    """One compact line: the NLOC-weighted file split across the 3 bands."""
+    bands = dist.get("bands") or {}
+    if not dist.get("total_files"):
+        return
+    parts = []
+    for band, color in (("healthy", "green"), ("warning", "yellow"), ("alert", "red")):
+        share = bands.get(band) or {}
+        parts.append(
+            f"[{color}]{share.get('pct', 0)}%[/{color}] {band} "
+            f"([dim]{share.get('files', 0)} files[/dim])"
+        )
+    console.print("[dim]Distribution (by code volume):[/dim] " + " · ".join(parts) + "\n")
+
+
+def _render_badge(average_health: object) -> None:
+    """Print ready-to-paste health-badge Markdown for a README.
+
+    Emits a static shields badge for the current score (immediately usable) and
+    documents the live endpoint form for a running Repowise server / hosted repo.
+    """
+    from repowise.core.analysis.health.grading import band_for
+
+    if not isinstance(average_health, (int, float)):
+        console.print("[yellow]No health score yet — run `repowise health` first.[/yellow]")
+        return
+    band = band_for(float(average_health))
+    color = {"healthy": "brightgreen", "warning": "yellow", "alert": "red"}[band]
+    msg = f"{float(average_health):.1f}/10"
+    static = f"https://img.shields.io/badge/health-{msg.replace('/', '%2F')}-{color}"
+    console.print("[bold]Static badge (current score):[/bold]")
+    console.print(f"  ![code health]({static})")
+    console.print("\n[bold]Live badge[/bold] [dim](running Repowise server or hosted repo):[/dim]")
+    console.print(
+        "  ![code health](https://img.shields.io/endpoint?url="
+        "<SERVER>/api/repos/<REPO_ID>/health/badge.json)"
+    )
 
 
 def _render_defect_accuracy_line(report: Any) -> None:

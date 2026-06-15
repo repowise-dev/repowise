@@ -25,7 +25,8 @@
     "./modules": "./src/modules.ts",
     "./overview": "./src/overview.ts",
     "./files": "./src/files.ts",
-    "./external-systems": "./src/external-systems.ts"
+    "./external-systems": "./src/external-systems.ts",
+    "./health": "./src/health.ts"
   },
   "publishConfig": {
     "registry": "https://npm.pkg.github.com",

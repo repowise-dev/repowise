@@ -7,6 +7,8 @@ from typing import Any
 
 from sqlalchemy import select
 
+from repowise.core.analysis.health.grading import band_for
+from repowise.core.analysis.health.grading import distribution as health_distribution
 from repowise.core.analysis.health.suggestions import suggestion_for
 from repowise.core.analysis.health.trends import diff_snapshots, recent_kpis
 from repowise.core.persistence.crud import (
@@ -16,6 +18,7 @@ from repowise.core.persistence.crud import (
 )
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import HealthFileMetric, HealthFinding
+from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
     _get_repo,
@@ -23,7 +26,6 @@ from repowise.server.mcp_server._helpers import (
     filter_rows_by_attr,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
-from repowise.core.registry import mcp_tool_registry as mcp
 
 
 def _serialize_finding(f: HealthFinding) -> dict[str, Any]:
@@ -123,6 +125,7 @@ def _compute_kpis(metrics: list[HealthFileMetric]) -> dict[str, Any]:
     return {
         "file_count": len(metrics),
         "average_health": round(avg, 2),
+        "band": band_for(round(avg, 2)),
         "worst_performer_path": worst.file_path,
         "worst_performer_score": round(worst.score, 2),
     }
@@ -245,6 +248,7 @@ async def get_health(
         result = {
             "mode": "dashboard",
             "kpis": kpis,
+            "distribution": health_distribution(all_metrics),
             "worst_files": [_serialize_metric(m) for m in metric_rows[:limit]],
             "top_findings": [_serialize_finding(f) for f in finding_rows[:limit]],
             "modules": _module_rollups(all_metrics),

@@ -69,6 +69,51 @@ The final score is clamped to `[1.0, 10.0]`. The three repo-level KPIs:
 - **Average Health** — NLOC-weighted average over all files.
 - **Worst Performer** — single lowest-scoring file.
 
+## Bands and distribution
+
+On top of the 1–10 number, every score falls into one of three **bands**. These
+are the single categorical scheme repowise surfaces (there is deliberately no
+letter grade — a letter on top of the number would be a third overlapping scale
+with arbitrary cliffs):
+
+| Band | Score | Meaning |
+|------|-------|---------|
+| **Healthy** | `≥ 8.0` | Low-risk, maintainable. |
+| **Warning** | `4.0 – 8.0` | Worth watching; rising complexity or process risk. |
+| **Alert** | `< 4.0` | High-risk; concentrates defects. |
+
+The cutoffs are not arbitrary. On our calibration corpus, **Alert files carry
+roughly 17× the per-file defect rate of Healthy files**, so the band boundaries
+are empirically defensible. They are defined once in core
+(`analysis/health/grading.py`) and mirrored in `@repowise-dev/types` for the UI;
+a parity test on each side locks the values.
+
+The **health distribution** is the NLOC-weighted split of the repo across the
+three bands — what share of your code (by volume, not file count) is Healthy vs
+Warning vs Alert. `repowise health` prints it as a one-line summary; the
+dashboard renders it as a bar.
+
+```text
+Distribution (by code volume): 8% alert (12 files) · 21% warning (88 files) · 71% healthy (410 files)
+```
+
+## Badge
+
+`repowise health --badge` prints ready-to-paste Markdown for a README health
+badge (a Shields-style **color + `N.N/10`** badge — no letter). A running
+Repowise server (or the hosted app) also serves the badge directly:
+
+```text
+GET /api/repos/{repo_id}/health/badge.svg    # self-rendered flat SVG
+GET /api/repos/{repo_id}/health/badge.json   # Shields endpoint payload
+```
+
+Embed the dynamic form via Shields:
+
+```markdown
+![code health](https://img.shields.io/endpoint?url=<SERVER>/api/repos/<REPO_ID>/health/badge.json)
+```
+
 ## Does the score find the bugs?
 
 The score is only worth anything if the files it flags are the files that

@@ -90,6 +90,11 @@ expose NLOC-weighted module aggregates and accept `module:foo` targets.
   Protocol from `biomarkers/base.py`. Twenty-six registered (see
   `biomarkers/registry.py` and `biomarkers/README.md` for the full list),
   plus three governance findings written by a separate additive pass.
+- `grading.py` — the presentation "currency" layer over the score: the 3
+  defect-backed bands (`band_for` — Alert `<4` / Warning `4–8` / Healthy `≥8`)
+  and the NLOC-weighted `distribution`. Single source of truth for the cutoffs
+  (mirrored in `@repowise-dev/types/health`). No letter grade — see
+  `docs/architecture/code-health.md` §20.
 
 Each sub-package has its own `README.md` covering inputs, outputs, and
 extension points.
