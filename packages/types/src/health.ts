@@ -426,3 +426,28 @@ export interface RefactoringQuery {
   max_effort?: string;
   sort?: "impact_per_effort" | "total_impact" | "score" | "finding_count";
 }
+
+/* ------------------------------------------------------------------ *
+ * Churn x complexity quadrant (the "hotspot anatomy" view)
+ * ------------------------------------------------------------------ */
+
+/**
+ * One file in the churn x complexity plane. `commit_count_90d` is the churn
+ * (x) axis, `max_ccn` the complexity (y) axis, `nloc` encodes dot size, and
+ * `score` drives dot color via the health band. `churn_percentile` (0-100) is
+ * repo-relative tooltip context so a raw count reads sensibly across repos of
+ * any size. Only files with recent churn (`commit_count_90d > 0`) are plotted.
+ */
+export interface ChurnComplexityPoint {
+  file_path: string;
+  commit_count_90d: number;
+  max_ccn: number;
+  nloc: number;
+  score: number;
+  churn_percentile: number;
+}
+
+export interface ChurnComplexityResponse {
+  points: ChurnComplexityPoint[];
+  total: number;
+}

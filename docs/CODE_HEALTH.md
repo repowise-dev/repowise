@@ -416,6 +416,39 @@ GET /api/repos/{repo_id}/health/files/breakdown?file_path=path/to/file.py
 get_context(targets=["path/to/file.py"], include=["health"])
 ```
 
+## Hotspot anatomy
+
+Two views dissect *where* risk concentrates, both plotted from data already on
+disk (churn from the git indexer, complexity from the walker, blame at function
+granularity).
+
+### Churn × complexity
+
+One dot per recently-changed file: the x-axis is its 90-day commit count
+(churn), the y-axis is its max cyclomatic complexity, dot size is NLOC, and dot
+color is the health band. Dashed guides sit at the repo's median churn and
+median complexity, so the tinted top-right corner reads "busier **and** more
+complex than a typical file here" — the refactor zone, where volatility and
+tangle collide and defects concentrate. It lives on the **Hotspots & churn**
+dashboard tab, toggleable with the churn × bus-factor view.
+
+```bash
+# REST — repo-level point list (one point per churned file)
+GET /api/repos/{repo_id}/health/churn-complexity
+```
+
+Files with no recent churn are omitted (they have nothing to say on the churn
+axis); complexity is never used to filter, so a high-churn, low-complexity file
+still shows in the bottom-right ("changes constantly but stays simple").
+
+### Functions by churn
+
+The file's Health tab lists its functions ranked by modification count, with
+the 90-day recent-mod count, median age, and blame owner per function — the
+same `git_function_blame` rollup the symbol page uses. It promotes per-function
+ownership and volatility out of the buried biomarker cards into a first-class
+table, so "which function in this file is the actual hotspot" is one glance away.
+
 ## Configuration
 
 Per-file overrides live in `.repowise/health-rules.json`:

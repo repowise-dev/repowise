@@ -92,6 +92,24 @@ Mirrored as `FileSignals` in `@repowise-dev/types/health`; surfaced in the
 dashboard drawer, the file-page Health tab, the `/health/files/breakdown` +
 `files/{path}` endpoints, and the MCP `get_context(include=["health"])` block.
 
+## Churn × complexity
+
+`churn_complexity.py` is the same pure, state-free join in service of the
+"hotspot anatomy" scatter:
+
+- `churn_complexity_points(metrics, git_meta_by_path)` returns one
+  `ChurnComplexityPoint` per recently-changed file — `commit_count_90d` (churn
+  axis), `max_ccn` (complexity axis), `nloc` (dot size), `score` (dot color via
+  band), `churn_percentile` (tooltip context) — sorted by the churn × complexity
+  "danger product" so a capped caller keeps the worst offenders.
+- Honesty rule: a file is omitted when it has no recent churn (nothing to plot
+  on the x-axis); complexity is **never** a filter, so a high-churn, simple file
+  is kept as a valid bottom-right signal.
+
+Mirrored as `ChurnComplexityPoint` in `@repowise-dev/types/health`; served by
+`GET /health/churn-complexity` and rendered by `ChurnComplexityQuadrant` on the
+Hotspots & churn dashboard tab.
+
 ## Refactoring suggestions
 
 `suggestions.suggestion_for(biomarker_type)` returns the canonical, static

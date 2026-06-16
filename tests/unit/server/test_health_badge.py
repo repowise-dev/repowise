@@ -3,10 +3,12 @@ per-file trend serializer's wire shape."""
 
 from __future__ import annotations
 
+from repowise.core.analysis.health.churn_complexity import ChurnComplexityPoint
 from repowise.core.analysis.health.signals import file_signals
 from repowise.core.analysis.health.trends import FileTrend, FileTrendPoint
 from repowise.server.routers.code_health import (
     _badge_fields,
+    _churn_complexity_to_dict,
     _file_signals_to_dict,
     _file_trend_to_dict,
     _render_badge_svg,
@@ -126,3 +128,23 @@ def test_file_signals_to_dict_populated_and_normalized() -> None:
     assert d["primary_owner_name"] == "Ada"
     assert d["in_degree"] == 9
     assert d["out_degree"] == 4
+
+
+def test_churn_complexity_to_dict_wire_shape() -> None:
+    p = ChurnComplexityPoint(
+        file_path="a.py",
+        commit_count_90d=14,
+        max_ccn=22,
+        nloc=420,
+        score=3.4,
+        churn_percentile=92.0,
+    )
+    d = _churn_complexity_to_dict(p)
+    assert d == {
+        "file_path": "a.py",
+        "commit_count_90d": 14,
+        "max_ccn": 22,
+        "nloc": 420,
+        "score": 3.4,
+        "churn_percentile": 92.0,
+    }

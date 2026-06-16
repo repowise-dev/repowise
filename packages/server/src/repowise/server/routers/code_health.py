@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.health.churn_complexity import churn_complexity_points
 from repowise.core.analysis.health.defect_accuracy import compute_defect_accuracy
 from repowise.core.analysis.health.grading import band_for
 from repowise.core.analysis.health.grading import distribution as health_distribution
@@ -930,3 +931,40 @@ async def refactoring_targets(
     }
     targets.sort(key=sort_key_map[sort])
     return {"targets": targets[:limit], "total": len(targets)}
+
+
+def _churn_complexity_to_dict(p: Any) -> dict:
+    return {
+        "file_path": p.file_path,
+        "commit_count_90d": p.commit_count_90d,
+        "max_ccn": p.max_ccn,
+        "nloc": p.nloc,
+        "score": p.score,
+        "churn_percentile": p.churn_percentile,
+    }
+
+
+@router.get("/api/repos/{repo_id}/health/churn-complexity")
+async def churn_complexity(
+    repo_id: str,
+    limit: int = Query(300, ge=1, le=1000),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+) -> dict:
+    """Churn x complexity scatter points -- the "hotspot anatomy" danger-zone view.
+
+    One point per recently-changed file: x = 90-day commit count (churn),
+    y = max cyclomatic complexity, dot size = NLOC, color = health band. The
+    top-right corner is where churn and complexity collide -- the highest-value
+    refactoring targets, plotted instead of listed.
+    """
+    repo = await crud.get_repository(session, repo_id)
+    if repo is None:
+        raise HTTPException(status_code=404, detail="Repository not found")
+
+    metrics = await crud.get_health_metrics(session, repo_id)
+    git_meta = await crud.get_all_git_metadata(session, repo_id)
+    points = churn_complexity_points(metrics, git_meta)
+    return {
+        "points": [_churn_complexity_to_dict(p) for p in points[:limit]],
+        "total": len(points),
+    }

@@ -5,6 +5,7 @@
  * them for back-compat and keeps only the fetch functions.
  */
 import type {
+  ChurnComplexityResponse,
   HealthFilesQuery,
   HealthFilesResponse,
   HealthFinding,
@@ -19,6 +20,8 @@ import { apiGet, apiPatch } from "./client";
 
 export type {
   BiomarkerBreakdownRow,
+  ChurnComplexityPoint,
+  ChurnComplexityResponse,
   CoverageFileRow,
   CoverageSummary,
   DefectAccuracy,
@@ -115,5 +118,15 @@ export async function getRefactoringTargets(
   return apiGet<RefactoringTargetsResponse>(
     `/api/repos/${repoId}/health/refactoring-targets`,
     opts as Record<string, string | number | boolean | undefined>,
+  );
+}
+
+export async function getChurnComplexity(
+  repoId: string,
+  opts?: { limit?: number },
+): Promise<ChurnComplexityResponse> {
+  return apiGet<ChurnComplexityResponse>(
+    `/api/repos/${repoId}/health/churn-complexity`,
+    opts,
   );
 }

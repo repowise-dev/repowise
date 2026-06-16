@@ -67,6 +67,7 @@ analysis/health/
 ├── defect_accuracy.py              # "does the score find the bugs?" self-validation
 ├── trends.py                       # snapshot diff, Declining/Predicted alerts, per-file score series
 ├── signals.py                      # per-file process/people/topology join (surfacing-only)
+├── churn_complexity.py             # churn × complexity scatter points (surfacing-only)
 ├── suggestions.py                  # deterministic refactoring text per biomarker
 ├── config.py                       # HealthConfig + .repowise/health-rules.json
 ├── models.py                       # HealthFindingData, HealthFileMetricData, HealthReport
@@ -209,6 +210,7 @@ tests/unit/health/                  # 99+ tests
 ├── test_health_config.py           # .repowise/health-rules.json
 ├── test_trends.py                  # diff_snapshots, declining/predicted alerts
 ├── test_signals.py                 # file_signals join + no-signal/normalization
+├── test_churn_complexity.py        # churn × complexity point shaping + sort + filtering
 └── test_suggestions.py
 
 tests/integration/
@@ -756,6 +758,7 @@ Every response carries the standard `_meta` envelope via `build_meta()`.
 | `GET /coverage` | coverage summary + per-file rows |
 | `POST /coverage` | ingest a coverage report (used by some CI integrations) |
 | `GET /refactoring-targets` | ranked by `total_impact / effort_bucket` |
+| `GET /churn-complexity` | churn × complexity scatter points (one per churned file: `commit_count_90d`, `max_ccn`, `nloc`, `score`, `churn_percentile`) |
 | `GET /modules` | NLOC-weighted module rollup table |
 
 Auth is the standard `verify_api_key` dependency from
@@ -775,7 +778,10 @@ Three routes under `/repos/[id]/health/`:
 
 Plus a sidecar `HealthRisksPanel` on the Hotspots, Ownership, and Graph
 pages — surfaces the lowest-scoring files inline without touching the
-shared table/graph components.
+shared table/graph components. The **Hotspots & churn** tab carries the
+`ChurnComplexityQuadrant` (fed by `GET /churn-complexity`), toggleable in
+place with the existing churn × bus-factor scatter; the file Health tab
+carries the per-function "Functions by churn" blame table.
 
 All visual primitives live in `packages/ui/src/health/` so the hosted
 `frontend/` repo (separate git checkout) can reuse them — port is mostly
@@ -865,6 +871,7 @@ Other perf notes:
 | `tests/unit/health/test_scoring_snapshot.py` | **Stability guard** — caps, severity table, biomarker→category mapping, two known fixture scores |
 | `tests/unit/health/test_trends.py` | Declining + predicted alerts, ordering, per-file series + `file_trend` |
 | `tests/unit/health/test_signals.py` | `file_signals` join — no-signal vs real-zero, entropy 0-1→0-100, owner handoff |
+| `tests/unit/health/test_churn_complexity.py` | `churn_complexity_points` — no-churn omission, complexity never filters, danger-product sort, percentile scaling |
 | `tests/unit/health/test_suggestions.py` | Suggestion strings keyed correctly |
 | `tests/unit/health/test_health_config.py` | `.repowise/health-rules.json` parsing + glob matching |
 | `tests/integration/test_health_coverage_integration.py` | End-to-end LCOV → analyzer → coverage_gap fires |
