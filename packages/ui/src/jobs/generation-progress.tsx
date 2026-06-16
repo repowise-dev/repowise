@@ -33,6 +33,12 @@ export interface GenerationProgressProps {
   onCancel: () => void;
 }
 
+const PHASE_LABELS: Record<number, string> = {
+  0: "Indexing",
+  1: "Analysing",
+  2: "Generating docs",
+};
+
 export function GenerationProgress({
   job,
   log,
@@ -54,6 +60,10 @@ export function GenerationProgress({
   const isInflight = isPending || isRunning;
   const isDone = job?.status === "completed";
   const isFailed = job?.status === "failed";
+  const phaseLabel =
+    job?.current_level == null
+      ? "Processing"
+      : PHASE_LABELS[job.current_level] ?? `Processing phase ${job.current_level}`;
 
   return (
     <div className="space-y-3">
@@ -64,7 +74,7 @@ export function GenerationProgress({
 
         <span className="text-sm font-medium text-[var(--color-text-primary)]">
           {isPending && "Queued — waiting for worker…"}
-          {isRunning && `Generating level ${job?.current_level ?? "?"}…`}
+          {isRunning && `${phaseLabel}…`}
           {isDone && "Generation complete"}
           {isFailed && "Generation failed"}
         </span>

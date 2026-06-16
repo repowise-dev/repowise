@@ -1,9 +1,11 @@
 "use client";
 
+import { useEffect, useMemo } from "react";
 import useSWR from "swr";
 import { getJob, getJobStreamUrl } from "@/lib/api/jobs";
 import { useSSE } from "./use-sse";
 import type { JobResponse, JobProgressEvent } from "@/lib/api/types";
+import { mergeJobProgress } from "@/lib/jobs/progress";
 
 /**
  * Combines polling (SWR) for job metadata with SSE for live progress events.
@@ -25,10 +27,17 @@ export function useJob(jobId: string | null) {
 
   const sse = useSSE<JobProgressEvent>(streamUrl, { enabled: !!streamUrl });
 
-  // When SSE marks done, trigger a final SWR revalidation
-  if (sse.isDone && isActive) {
-    mutate();
-  }
+  // When SSE marks done, trigger a final SWR revalidation.
+  useEffect(() => {
+    if (sse.isDone && isActive) {
+      void mutate();
+    }
+  }, [isActive, mutate, sse.isDone]);
 
-  return { job, sse, isActive };
+  const liveJob = useMemo(() => {
+    const ev = sse.data as JobProgressEvent | null;
+    return mergeJobProgress(job, ev);
+  }, [job, sse.data]);
+
+  return { job: liveJob, sse, isActive };
 }

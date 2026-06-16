@@ -42,4 +42,26 @@ describe("GenerationProgress", () => {
     );
     expect(screen.getByText(/Job hasn't started/)).toBeTruthy();
   });
+
+  it("renders backend phase labels instead of generation level numbers", () => {
+    render(
+      <GenerationProgress
+        job={{
+          id: "j1",
+          status: "running",
+          total_pages: 10,
+          completed_pages: 3,
+          current_level: 1,
+        }}
+        log={[]}
+        elapsed={10_000}
+        actualCost={null}
+        stuckPending={false}
+        cancelling={false}
+        onCancel={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("Analysing…")).toBeTruthy();
+    expect(screen.queryByText(/Generating level/)).toBeNull();
+  });
 });

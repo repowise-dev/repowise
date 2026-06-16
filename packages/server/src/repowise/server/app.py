@@ -10,11 +10,13 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
+from datetime import UTC, datetime
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from sqlalchemy import update as sa_update
 
 from repowise.core.persistence.database import (
     create_engine,
@@ -23,6 +25,7 @@ from repowise.core.persistence.database import (
     init_db,
     resolve_db_url,
 )
+from repowise.core.persistence.models import GenerationJob
 from repowise.core.persistence.search import FullTextSearch
 from repowise.core.persistence.vector_store import InMemoryVectorStore
 from repowise.core.providers.embedding.base import MockEmbedder
@@ -58,6 +61,24 @@ from repowise.server.routers import (
 from repowise.server.scheduler import setup_scheduler
 
 logger = logging.getLogger(__name__)
+
+
+async def reset_workspace_stale_jobs(app_state) -> int:
+    """Mark interrupted pending/running jobs failed across workspace repo DBs."""
+    reset_count = 0
+    for ws_factory in getattr(app_state, "workspace_sessions", {}).values():
+        async with get_session(ws_factory) as session:
+            stale_result = await session.execute(
+                sa_update(GenerationJob)
+                .where(GenerationJob.status.in_(["running", "pending"]))
+                .values(
+                    status="failed",
+                    error_message="Server restarted; job interrupted",
+                    finished_at=datetime.now(UTC),
+                )
+            )
+            reset_count += stale_result.rowcount or 0
+    return reset_count
 
 
 def _build_embedder():
@@ -272,6 +293,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                     extra={"count": len(app.state.workspace_sessions)},
                 )
 
+            # Reset stale jobs in non-primary workspace DBs too. The primary
+            # DB was handled before workspace detection, but each secondary
+            # repo has its own generation_jobs table and stale running rows
+            # there would keep the UI showing an in-progress sync forever.
+            try:
+                reset_count = await reset_workspace_stale_jobs(app.state)
+                if reset_count:
+                    logger.warning(
+                        "reset_workspace_stale_jobs",
+                        extra={"count": reset_count},
+                    )
+            except Exception as exc:
+                logger.warning("workspace_stale_job_reset_failed", extra={"error": str(exc)})
+
             from repowise.core.workspace.contracts import CONTRACTS_FILENAME
             from repowise.server.mcp_server._enrichment import CrossRepoEnricher
 
@@ -308,10 +343,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.debug("workspace_vector_store_close_failed", exc_info=True)
     # Dispose workspace repo engines first
     for ws_engine in getattr(app.state, "workspace_engines", []):
-        try:
+        with suppress(Exception):
             await ws_engine.dispose()
-        except Exception:
-            pass
     await engine.dispose()
     logger.info("repowise_server_stopped")
 
