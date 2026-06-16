@@ -243,6 +243,39 @@ export interface HealthFileBreakdownResponse {
   suggestions: Record<string, string>;
   /** Per-file score trajectory (silent when history is thin). */
   trend?: FileHealthTrend | null;
+  /** Process / people / topology signals (null fields read "no signal"). */
+  signals?: FileSignals | null;
+}
+
+/* ------------------------------------------------------------------ *
+ * Per-file signals (process / people / topology)
+ * ------------------------------------------------------------------ */
+
+/**
+ * The per-file signals we already compute and persist, consolidated into one
+ * captioned contract. Every field is `null` when its source row is absent so
+ * consumers render an honest "no signal" rather than a misleading zero — a
+ * git-tracked file with no bug-fixes reports `prior_defect_count: 0`, whereas
+ * a file with no git history reports `null` for the whole process/people group.
+ * `change_entropy_pct` is on a 0-100 scale (the stored column is 0-1).
+ * Topology degree is `null` when the file is not a graph node.
+ */
+export interface FileSignals {
+  // Process — how the file changes over time.
+  prior_defect_count: number | null;
+  change_entropy_pct: number | null;
+  lines_added_90d: number | null;
+  lines_deleted_90d: number | null;
+  commit_count_90d: number | null;
+  age_days: number | null;
+  // People — who owns it recently vs over its whole life.
+  primary_owner_name: string | null;
+  primary_owner_commit_pct: number | null;
+  recent_owner_name: string | null;
+  recent_owner_commit_pct: number | null;
+  // Topology — how connected it is in the dependency graph.
+  in_degree: number | null;
+  out_degree: number | null;
 }
 
 /* ------------------------------------------------------------------ *

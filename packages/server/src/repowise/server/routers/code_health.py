@@ -26,6 +26,7 @@ from repowise.core.analysis.health.scoring import (
     biomarker_weight,
     severity_deduction,
 )
+from repowise.core.analysis.health.signals import FileSignals, file_signals
 from repowise.core.analysis.health.suggestions import suggestion_for as _suggestion_for
 from repowise.core.analysis.health.trends import (
     FileTrend,
@@ -98,6 +99,43 @@ def _file_trend_to_dict(t: FileTrend) -> dict:
         "declining": t.declining,
         "snapshot_count": t.snapshot_count,
     }
+
+
+def _file_signals_to_dict(s: FileSignals) -> dict:
+    """Wire shape for ``FileSignals`` (types/health.ts). Each value is null
+    when its source row is absent so the UI shows "no signal", never a
+    misleading zero. ``change_entropy_pct`` is 0-100 (the column is 0-1)."""
+    return {
+        "prior_defect_count": s.prior_defect_count,
+        "change_entropy_pct": s.change_entropy_pct,
+        "lines_added_90d": s.lines_added_90d,
+        "lines_deleted_90d": s.lines_deleted_90d,
+        "commit_count_90d": s.commit_count_90d,
+        "age_days": s.age_days,
+        "primary_owner_name": s.primary_owner_name,
+        "primary_owner_commit_pct": s.primary_owner_commit_pct,
+        "recent_owner_name": s.recent_owner_name,
+        "recent_owner_commit_pct": s.recent_owner_commit_pct,
+        "in_degree": s.in_degree,
+        "out_degree": s.out_degree,
+    }
+
+
+async def _load_file_signals(session: AsyncSession, repo_id: str, file_path: str) -> FileSignals:
+    """Join git metadata + graph degree for one file (read-only, no recompute).
+
+    Degree is read only when the file is a graph node so topology stays "no
+    signal" for files absent from the graph, rather than reporting a spurious
+    zero. Shared by the drawer breakdown and the file-detail aggregate.
+    """
+    git_meta = await crud.get_git_metadata(session, repo_id, file_path)
+    node = await crud.get_graph_node(session, repo_id, file_path)
+    degrees = (
+        await crud.get_node_degree_counts(session, repo_id, file_path)
+        if node is not None
+        else None
+    )
+    return file_signals(git_meta, degrees)
 
 
 async def _attach_symbol_ids(
@@ -608,6 +646,7 @@ async def file_score_breakdown(
         "findings": finding_dicts,
         "suggestions": {b: _suggestion_for(b) for b in {f.biomarker_type for f in findings}},
         "trend": _file_trend_to_dict(file_trend(snapshots, file_path)),
+        "signals": _file_signals_to_dict(await _load_file_signals(session, repo_id, file_path)),
     }
 
 

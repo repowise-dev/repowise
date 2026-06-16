@@ -8,6 +8,7 @@ import { BiomarkerDetails, type BiomarkerDetailsRecord } from "../health/biomark
 import { biomarkerInfo, biomarkerLabel, CATEGORY_LABEL } from "../health/biomarker-glossary";
 import { SEVERITY_CHIP, SEVERITY_LABEL, scoreBadgeClass, type Severity } from "../health/tokens";
 import { FileTrendChart } from "../health/file-trend-chart";
+import { FileSignalsPanel } from "../health/file-signals-panel";
 import type { FileDetailHealth, FunctionBlameRow } from "@repowise-dev/types/files";
 
 export type FindingStatus = "open" | "acknowledged" | "resolved" | "false_positive";
@@ -46,7 +47,7 @@ export function FileHealthTab({
 }: FileHealthTabProps) {
   const [statusOverride, setStatusOverride] = useState<Record<string, FindingStatus>>({});
   const [savingId, setSavingId] = useState<string | null>(null);
-  const { metric, breakdown, findings, trend } = health;
+  const { metric, breakdown, findings, trend, signals } = health;
 
   if (!metric && findings.length === 0) {
     return (
@@ -109,6 +110,8 @@ export function FileHealthTab({
       )}
 
       {trend && trend.points.length >= 2 && <FileTrendChart trend={trend} />}
+
+      <FileSignalsPanel signals={signals} />
 
       {breakdown && (
         <section className="space-y-2">

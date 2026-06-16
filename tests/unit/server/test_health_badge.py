@@ -3,9 +3,11 @@ per-file trend serializer's wire shape."""
 
 from __future__ import annotations
 
+from repowise.core.analysis.health.signals import file_signals
 from repowise.core.analysis.health.trends import FileTrend, FileTrendPoint
 from repowise.server.routers.code_health import (
     _badge_fields,
+    _file_signals_to_dict,
     _file_trend_to_dict,
     _render_badge_svg,
 )
@@ -76,3 +78,51 @@ def test_file_trend_to_dict_serializes_points() -> None:
     assert d["points"][1]["taken_at"] is None
     assert d["delta"] == -1.5
     assert d["declining"] is True
+
+
+class _Git:
+    """Stub git-metadata row for the signals serializer."""
+
+    def __init__(self, **kw: object) -> None:
+        defaults = dict(
+            prior_defect_count=0,
+            change_entropy_pct=0.0,
+            lines_added_90d=0,
+            lines_deleted_90d=0,
+            commit_count_90d=0,
+            age_days=0,
+            primary_owner_name=None,
+            primary_owner_commit_pct=None,
+            recent_owner_name=None,
+            recent_owner_commit_pct=None,
+        )
+        defaults.update(kw)
+        self.__dict__.update(defaults)
+
+
+def test_file_signals_to_dict_no_data_all_null() -> None:
+    d = _file_signals_to_dict(file_signals(None, None))
+    assert d == {
+        "prior_defect_count": None,
+        "change_entropy_pct": None,
+        "lines_added_90d": None,
+        "lines_deleted_90d": None,
+        "commit_count_90d": None,
+        "age_days": None,
+        "primary_owner_name": None,
+        "primary_owner_commit_pct": None,
+        "recent_owner_name": None,
+        "recent_owner_commit_pct": None,
+        "in_degree": None,
+        "out_degree": None,
+    }
+
+
+def test_file_signals_to_dict_populated_and_normalized() -> None:
+    git = _Git(prior_defect_count=2, change_entropy_pct=0.5, primary_owner_name="Ada")
+    d = _file_signals_to_dict(file_signals(git, {"in_degree": 9, "out_degree": 4}))
+    assert d["prior_defect_count"] == 2
+    assert d["change_entropy_pct"] == 50.0  # 0-1 column → 0-100 wire
+    assert d["primary_owner_name"] == "Ada"
+    assert d["in_degree"] == 9
+    assert d["out_degree"] == 4

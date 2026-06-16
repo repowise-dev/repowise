@@ -384,6 +384,38 @@ GET /api/repos/{repo_id}/health/files/trend?file_path=path/to/file.py
 get_health(targets=["path/to/file.py"])
 ```
 
+## File signals
+
+Every file carries process, people, and topology signals we already compute
+during indexing. They answer "should I worry about this file?" with context
+the score alone can't, and they surface together on the file's Health tab and
+in the health drawer — grouped, captioned, and **silent ("no signal") when the
+underlying data is absent** rather than imputed.
+
+| Group | Signal | Means |
+|-------|--------|-------|
+| Process | Prior defects | Bug-fix commits touching this file in the last ~6 months. `0` is a real, reassuring signal. |
+| Process | Change scatter | `change_entropy_pct` (0-100) — how spread out its edits are across commits. High = chaotic change. |
+| Process | 90-day churn | Commits and lines added/deleted in the trailing 90 days. |
+| Process | Age | How long the file has existed in git history. |
+| People | Primary owner | The all-time top committer and their commit share. |
+| People | Recent owner | The top committer in the last 90 days. A different name from the primary owner flags a knowledge handoff. |
+| Topology | Dependents | How many files depend on this one (graph in-degree). |
+| Topology | Dependencies | How many files this one depends on (graph out-degree). |
+
+These are pure surfacing — no new measurement, no scoring. Fetch them directly:
+
+```bash
+# REST — embedded in the file-detail aggregate and the drawer breakdown
+GET /api/repos/{repo_id}/files/{path}                 # data.health.signals
+GET /api/repos/{repo_id}/health/files/breakdown?file_path=path/to/file.py
+```
+
+```python
+# MCP — attached to the get_context health block (null fields dropped)
+get_context(targets=["path/to/file.py"], include=["health"])
+```
+
 ## Configuration
 
 Per-file overrides live in `.repowise/health-rules.json`:

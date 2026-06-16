@@ -72,6 +72,26 @@ Per-file trajectory (same snapshots, the `{path: score}` map):
 - `file_trend(history, path)` — wraps the series with `current` / `previous`
   / `delta` and a `declining` flag (per-file mirror of the alerts above).
 
+## Per-file signals
+
+`signals.py` is the same kind of pure, state-free join: it consolidates the
+per-file signals we *already* compute and persist (git history + graph
+topology) into one captioned contract — no recompute, no new measurement.
+
+- `file_signals(git_meta, degrees)` returns a `FileSignals` grouped as
+  **Process** (`prior_defect_count`, `change_entropy_pct`, 90-day line churn,
+  `age_days`), **People** (recent vs all-time owner + commit share), and
+  **Topology** (`in_degree` / `out_degree`).
+- Honesty rule: a field is `None` ("no signal") only when its *source row* is
+  absent — never imputed. A git-tracked file with zero bug-fixes reports `0`
+  (a real, reassuring signal); a file with no git history reports `None` for
+  the whole process/people group. `change_entropy_pct` is normalized 0-1 → 0-100
+  to match the hotspot API contract.
+
+Mirrored as `FileSignals` in `@repowise-dev/types/health`; surfaced in the
+dashboard drawer, the file-page Health tab, the `/health/files/breakdown` +
+`files/{path}` endpoints, and the MCP `get_context(include=["health"])` block.
+
 ## Refactoring suggestions
 
 `suggestions.suggestion_for(biomarker_type)` returns the canonical, static

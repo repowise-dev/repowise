@@ -7,6 +7,7 @@ import { InfoTip } from "../shared/info-tip";
 import { biomarkerLabel, biomarkerInfo, CATEGORY_LABEL } from "./biomarker-glossary";
 import { BiomarkerDetails, type BiomarkerDetailsRecord } from "./biomarker-details";
 import { ScoreBreakdown, type ScoreBreakdownCategory } from "./score-breakdown";
+import { FileSignalsPanel } from "./file-signals-panel";
 import { Sparkline } from "./sparkline";
 import {
   SEVERITY_CHIP,
@@ -16,7 +17,7 @@ import {
   scoreBadgeClass,
   type Severity,
 } from "./tokens";
-import type { FileHealthTrend } from "@repowise-dev/types/health";
+import type { FileHealthTrend, FileSignals } from "@repowise-dev/types/health";
 
 export interface HealthDrawerFinding {
   id: string;
@@ -57,6 +58,8 @@ export interface HealthFileDrawerProps {
   suggestions?: Record<string, string>;
   /** Per-file score trajectory; renders a compact sparkline when populated. */
   trend?: FileHealthTrend | null;
+  /** Process / people / topology signals; the panel is silent when absent. */
+  signals?: FileSignals | null;
   fileViewHref?: string;
   /** Build a per-line deep-link from the drawer's function:line span. */
   fileViewHrefFor?: ((lineStart: number) => string) | undefined;
@@ -85,6 +88,7 @@ export function HealthFileDrawer({
   findings = [],
   suggestions = {},
   trend,
+  signals,
   fileViewHref,
   fileViewHrefFor,
   permalinkHref,
@@ -181,6 +185,8 @@ export function HealthFileDrawer({
                   ) : null}
                 </div>
               ) : null}
+
+              <FileSignalsPanel signals={signals} />
 
               {fileViewHref ? (
                 <a

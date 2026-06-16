@@ -66,6 +66,7 @@ analysis/health/
 ├── grading.py                      # 3 defect-backed bands + NLOC-weighted distribution
 ├── defect_accuracy.py              # "does the score find the bugs?" self-validation
 ├── trends.py                       # snapshot diff, Declining/Predicted alerts, per-file score series
+├── signals.py                      # per-file process/people/topology join (surfacing-only)
 ├── suggestions.py                  # deterministic refactoring text per biomarker
 ├── config.py                       # HealthConfig + .repowise/health-rules.json
 ├── models.py                       # HealthFindingData, HealthFileMetricData, HealthReport
@@ -207,6 +208,7 @@ tests/unit/health/                  # 99+ tests
 ├── test_scoring_snapshot.py        # stability snapshot — locks caps + deductions
 ├── test_health_config.py           # .repowise/health-rules.json
 ├── test_trends.py                  # diff_snapshots, declining/predicted alerts
+├── test_signals.py                 # file_signals join + no-signal/normalization
 └── test_suggestions.py
 
 tests/integration/
@@ -560,6 +562,25 @@ Both are state-free; the server serialises `FileTrend` via
 `_file_trend_to_dict` and embeds it in the file-detail health block, the
 health-breakdown response, and the standalone trend route (§13).
 
+### Per-file signals (`signals.py`)
+
+The same state-free pattern, applied to the git-layer + topology fields we
+already persist but only buried inside biomarker detail cards (or omitted
+entirely). `file_signals(git_meta, degrees)` joins one `GitMetadata` row with
+the file's graph degree into a `FileSignals` grouped as **Process**
+(`prior_defect_count`, `change_entropy_pct` normalized 0-100, 90-day line
+churn, `age_days`), **People** (recent vs all-time owner + commit share), and
+**Topology** (`in_degree` / `out_degree`). No recompute — pure surfacing.
+
+The honesty rule mirrors the trend: a field is `None` only when its *source
+row* is absent (no git history → process/people silent; not a graph node →
+topology silent), never imputed; a genuine `prior_defect_count` of `0` is kept
+as a real signal. The server serialises it via `_file_signals_to_dict` and
+embeds it in the file-detail health block and the breakdown response (§13); MCP
+attaches a null-dropped copy to the `get_context` health block (§12). Mirrored
+as `FileSignals` in `@repowise-dev/types/health`; rendered by the shared
+`file-signals-panel.tsx` in both the drawer and the file-page Health tab.
+
 ---
 
 ## 9. Incremental analysis — the `repowise update` path
@@ -708,7 +729,8 @@ Defined in `tool_health.py`. Modes:
   `top_biomarkers`, `coverage_pct`, `branch_coverage_pct`.
 - `get_context(targets, include=["health"])` — per-file `score`,
   `max_ccn`, `max_nesting`, `nloc`, `module`, `duplication_pct`, top
-  2 biomarkers (each with a `suggestion` string), and coverage block.
+  2 biomarkers (each with a `suggestion` string), a coverage block, and a
+  null-dropped `signals` block (process/people/topology — see §8).
 - `get_overview()` — adds a `code_health` block: avg, repo `band`, hotspot,
   worst performer, open finding count, and the NLOC-weighted `distribution`.
 
@@ -727,7 +749,7 @@ Every response carries the standard `_meta` envelope via `build_meta()`.
 | `GET /badge.svg` | self-rendered flat SVG health badge (color + `N.N/10`, no letter) |
 | `GET /badge.json` | Shields.io endpoint-badge payload (`schemaVersion`/`label`/`message`/`color`/`band`) |
 | `GET /files` | per-file metrics |
-| `GET /files/breakdown` | one file's metric + score breakdown + findings + suggestions + per-file `trend` |
+| `GET /files/breakdown` | one file's metric + score breakdown + findings + suggestions + per-file `trend` + `signals` |
 | `GET /files/trend` | one file's score-over-time series + current delta + `declining` flag (`?file_path=`) |
 | `GET /trend` | repo KPI history + alerts + last-two-snapshot per-file deltas |
 | `GET /findings` | findings list (filterable by biomarker_type, severity, file_path) |
@@ -842,6 +864,7 @@ Other perf notes:
 | `tests/unit/health/test_scoring.py` | Deduction caps, clamping, KPI math |
 | `tests/unit/health/test_scoring_snapshot.py` | **Stability guard** — caps, severity table, biomarker→category mapping, two known fixture scores |
 | `tests/unit/health/test_trends.py` | Declining + predicted alerts, ordering, per-file series + `file_trend` |
+| `tests/unit/health/test_signals.py` | `file_signals` join — no-signal vs real-zero, entropy 0-1→0-100, owner handoff |
 | `tests/unit/health/test_suggestions.py` | Suggestion strings keyed correctly |
 | `tests/unit/health/test_health_config.py` | `.repowise/health-rules.json` parsing + glob matching |
 | `tests/integration/test_health_coverage_integration.py` | End-to-end LCOV → analyzer → coverage_gap fires |

@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.health.signals import file_signals
 from repowise.core.analysis.health.trends import file_trend
 from repowise.core.persistence import crud
 from repowise.core.persistence.decision_graph import get_governing_decisions
@@ -24,6 +25,7 @@ from repowise.core.persistence.models import DeadCodeFinding, Page, WikiSymbol
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.mcp_server._graph_utils import parse_community_meta, percentile_rank
 from repowise.server.routers.code_health import (
+    _file_signals_to_dict,
     _file_trend_to_dict,
     _finding_to_dict,
     _metric_to_dict,
@@ -91,6 +93,13 @@ async def file_detail(
     git_meta = await crud.get_git_metadata(session, repo_id, file_path)
     metrics = await crud.get_health_metrics(session, repo_id, file_paths=[file_path])
     metric = metrics[0] if metrics else None
+    # Degree is read once (graph node only) and shared by the health-signals
+    # block below and the graph-context block further down.
+    degrees = (
+        await crud.get_node_degree_counts(session, repo_id, file_path)
+        if node is not None
+        else None
+    )
 
     if node is None and git_meta is None and metric is None:
         raise HTTPException(status_code=404, detail=f"File not indexed: {file_path}")
@@ -128,6 +137,7 @@ async def file_detail(
         "breakdown": _score_breakdown_from_findings(findings) if findings else None,
         "findings": [_finding_to_dict(f) for f in findings],
         "trend": _file_trend_to_dict(file_trend(snapshots, file_path)),
+        "signals": _file_signals_to_dict(file_signals(git_meta, degrees)),
     }
 
     # --- Git history ------------------------------------------------------
@@ -165,7 +175,7 @@ async def file_detail(
     graph: dict | None = None
     if node is not None:
         all_files = await crud.get_all_file_metrics(session, repo_id)
-        degrees = await crud.get_node_degree_counts(session, repo_id, file_path)
+        assert degrees is not None  # node is not None here, so degrees was loaded
         meta = parse_community_meta(node)
         edges = await crud.get_graph_edges_for_node(
             session, repo_id, file_path, direction="both", limit=40

@@ -9,15 +9,18 @@ dispatch rather than one long body.
 from __future__ import annotations
 
 import json
+from dataclasses import asdict
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.health.signals import file_signals
 from repowise.core.persistence.crud import (
     get_all_file_metrics,
     get_community_members,
     get_cross_community_edges,
+    get_git_metadata,
     get_graph_edges_for_node,
     get_graph_node,
     get_graph_nodes_by_ids,
@@ -421,6 +424,20 @@ async def _resolve_health(
             "line_coverage_pct": metric.line_coverage_pct,
             "branch_coverage_pct": metric.branch_coverage_pct,
         }
+
+    # Process / people / topology signals — the "should I touch this file"
+    # context an agent can't get from the score alone. Null fields are dropped
+    # so the block stays compact; absent entirely when the file has neither git
+    # history nor a graph node.
+    git_meta = await get_git_metadata(session, repo_id, file_path)
+    node = await get_graph_node(session, repo_id, file_path)
+    degrees = (
+        await get_node_degree_counts(session, repo_id, file_path) if node is not None else None
+    )
+    signals = {k: v for k, v in asdict(file_signals(git_meta, degrees)).items() if v is not None}
+    if signals:
+        health["signals"] = signals
+
     result_data["health"] = health
 
 

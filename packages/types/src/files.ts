@@ -5,7 +5,7 @@
  */
 
 import type { CoChangePartner, FileAuthor, Hotspot, SignificantCommit } from "./git.js";
-import type { FileHealthTrend } from "./health.js";
+import type { FileHealthTrend, FileSignals } from "./health.js";
 
 export interface FileWikiPageRef {
   id: string;
@@ -76,6 +76,8 @@ export interface FileDetailHealth {
   findings: FileHealthFinding[];
   /** Per-file score trajectory; `points` empty when history is thin. */
   trend: FileHealthTrend | null;
+  /** Process / people / topology signals; null fields read "no signal". */
+  signals: FileSignals | null;
 }
 
 export interface FileAgentProvenance {

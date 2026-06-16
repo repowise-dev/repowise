@@ -20,6 +20,7 @@ export * from "./health-tabs";
 export * from "./page-chrome";
 export * from "./trend-chart";
 export * from "./file-trend-chart";
+export * from "./file-signals-panel";
 export * from "./risk-coverage-scatter";
 export * from "./impact-effort-quadrant";
 export * from "./health-file-drawer";
