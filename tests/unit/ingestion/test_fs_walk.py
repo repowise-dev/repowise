@@ -131,8 +131,12 @@ class TestPruning:
         at ``build/go.mod`` must stay discoverable."""
         _write(tmp_path, "coverage/__init__.py")
         _write(tmp_path, "build/go.mod")
+        _write(tmp_path, "Library/app.py")
+        _write(tmp_path, "Logs/worker.py")
         assert list(iter_glob(tmp_path, "__init__.py")) == [tmp_path / "coverage" / "__init__.py"]
         assert list(iter_glob(tmp_path, "go.mod")) == [tmp_path / "build" / "go.mod"]
+        assert list(iter_glob(tmp_path, "app.py")) == [tmp_path / "Library" / "app.py"]
+        assert list(iter_glob(tmp_path, "worker.py")) == [tmp_path / "Logs" / "worker.py"]
 
     def test_derived_set_prunes_output_dirs(self, tmp_path: Path) -> None:
         """PRUNED_DIRS_DERIVED (dynamic hints) prunes derived-output names."""
@@ -145,6 +149,8 @@ class TestPruning:
         """Canary: the dirs behind past incidents stay pruned."""
         for d in ("node_modules", ".venv", "__pycache__", ".git", ".repowise", ".next"):
             assert d in PRUNED_DIRS
+        for d in ("Library", "Temp", "Logs", "UserSettings", "MemoryCaptures"):
+            assert d not in PRUNED_DIRS
         for d in ("dist", "build", "out", "coverage"):
             assert d not in PRUNED_DIRS  # possible source dirs — derived set only
             assert d in PRUNED_DIRS_DERIVED

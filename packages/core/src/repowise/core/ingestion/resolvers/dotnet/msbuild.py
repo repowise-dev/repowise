@@ -19,6 +19,30 @@ from repowise.core.fs_walk import iter_glob
 log = structlog.get_logger(__name__)
 
 
+# Directory basenames the .NET / Unity resolver should never scan for
+# projects or source. These are intentionally scoped to the dotnet path,
+# not shared global fs_walk pruning, because names like Library/ or Logs/
+# can be legitimate source trees in non-Unity repos.
+DOTNET_SCAN_SKIP_DIRS: frozenset[str] = frozenset(
+    {
+        "bin",
+        "obj",
+        ".vs",
+        "node_modules",
+        ".git",
+        "packages",
+        "TestResults",
+        "Library",
+        "Temp",
+        "Logs",
+        "UserSettings",
+        "MemoryCaptures",
+        "Builds",
+    }
+)
+_DOTNET_SCAN_SKIP_DIRS_CASEFOLDED = frozenset(part.casefold() for part in DOTNET_SCAN_SKIP_DIRS)
+
+
 @dataclass
 class MSBuildProject:
     """Parsed MSBuild project file."""
@@ -91,13 +115,21 @@ def parse_csproj(csproj_path: Path) -> MSBuildProject | None:
 
 def find_csproj_files(repo_path: Path, *, prune_nested_git: bool = True) -> list[Path]:
     """Return all .csproj files under *repo_path*, skipping bin/obj output."""
-    skip = {"bin", "obj", ".vs", "node_modules", ".git", "packages", "TestResults"}
     out: list[Path] = []
     for csproj in iter_glob(repo_path, "*.csproj", prune_nested_git=prune_nested_git):
-        if any(part in skip for part in csproj.parts):
+        if path_has_dotnet_scan_skip_dir(csproj, repo_path):
             continue
         out.append(csproj)
     return out
+
+
+def path_has_dotnet_scan_skip_dir(path: Path, repo_root: Path) -> bool:
+    """Return True when *path* lives under a dotnet-skip directory in *repo_root*."""
+    try:
+        parts = path.relative_to(repo_root).parts
+    except ValueError:
+        parts = path.parts
+    return any(part.casefold() in _DOTNET_SCAN_SKIP_DIRS_CASEFOLDED for part in parts)
 
 
 def find_directory_build_props(start: Path, repo_root: Path) -> list[Path]:

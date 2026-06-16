@@ -11,7 +11,12 @@ import structlog
 from repowise.core.fs_walk import iter_glob
 
 from .global_usings import collect_project_global_usings
-from .msbuild import MSBuildProject, find_csproj_files, find_directory_build_props, parse_csproj
+from .msbuild import (
+    MSBuildProject,
+    find_csproj_files,
+    parse_csproj,
+    path_has_dotnet_scan_skip_dir,
+)
 from .namespace_map import build_namespace_map
 from .solution import find_sln_files, parse_sln
 
@@ -151,9 +156,6 @@ class DotNetProjectIndex:
         return package_id in self.package_refs.get(csproj, set())
 
 
-_CS_WALK_SKIP_DIRS = frozenset({"bin", "obj", ".vs", "node_modules", ".git", "packages"})
-
-
 def _walk_repo_cs_files(repo_path: Path, *, prune_nested_git: bool = True) -> list[Path]:
     """Single repo-wide rglob for ``*.cs`` files, dedup by resolved path.
 
@@ -164,7 +166,7 @@ def _walk_repo_cs_files(repo_path: Path, *, prune_nested_git: bool = True) -> li
     seen: set[Path] = set()
     out: list[Path] = []
     for cs in iter_glob(repo_path, "*.cs", prune_nested_git=prune_nested_git):
-        if any(part in _CS_WALK_SKIP_DIRS for part in cs.parts):
+        if path_has_dotnet_scan_skip_dir(cs, repo_path):
             continue
         try:
             resolved = cs.resolve()
@@ -317,7 +319,7 @@ def build_index(repo_path: Path, *, prune_nested_git: bool = True) -> DotNetProj
 _INDEX_KEY = "_dotnet_index"
 
 
-def get_or_build_index(ctx: "ResolverContext") -> DotNetProjectIndex | None:
+def get_or_build_index(ctx: ResolverContext) -> DotNetProjectIndex | None:
     """Return the cached DotNetProjectIndex, building it on first access."""
     if not ctx.repo_path:
         return None

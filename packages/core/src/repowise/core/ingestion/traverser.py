@@ -92,6 +92,13 @@ _BLOCKED_DIRS: frozenset[str] = frozenset(
         ".eggs",
         "site-packages",
         ".cache",
+        # Unity generated state / editor data
+        "Library",
+        "Temp",
+        "Logs",
+        "UserSettings",
+        "MemoryCaptures",
+        "Builds",
         ".idea",
         ".vscode",
         # NOTE: test/tests/spec/specs/__tests__ are intentionally NOT
@@ -117,7 +124,27 @@ _BLOCKED_DIRS: frozenset[str] = frozenset(
 )
 
 _BLOCKED_EXTENSIONS: frozenset[str] = frozenset(
-    {".pyc", ".pyo", ".pyd", ".so", ".dll", ".dylib", ".exe", ".o", ".a", ".wasm"}
+    {
+        ".pyc",
+        ".pyo",
+        ".pyd",
+        ".so",
+        ".dll",
+        ".dylib",
+        ".exe",
+        ".o",
+        ".a",
+        ".wasm",
+        # Unity non-code assets. These are large, numerous, and currently
+        # provide no parser/graph value, so skip them before binary sniffing.
+        ".meta",
+        ".prefab",
+        ".unity",
+        ".asset",
+        ".mat",
+        ".anim",
+        ".controller",
+    }
 )
 
 _BLOCKED_FILENAME_PATTERNS: list[str] = [

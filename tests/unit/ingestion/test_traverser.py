@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from repowise.core.ingestion import traverser as traverser_mod
 from repowise.core.ingestion.traverser import FileTraverser, _detect_language
 
 # ---------------------------------------------------------------------------
@@ -101,6 +102,40 @@ class TestFileTraverser:
         traverser = FileTraverser(simple_repo)
         paths = [f.path for f in traverser.traverse()]
         assert not any("__pycache__" in p for p in paths)
+
+    def test_skips_unity_generated_dirs(self, tmp_path: Path) -> None:
+        (tmp_path / "Assets" / "Scripts").mkdir(parents=True)
+        (tmp_path / "Assets" / "Scripts" / "Game.cs").write_text("class Game {}")
+        (tmp_path / "Library" / "PackageCache").mkdir(parents=True)
+        (tmp_path / "Library" / "PackageCache" / "Fake.cs").write_text("class Fake {}")
+        (tmp_path / "Temp" / "StagingArea").mkdir(parents=True)
+        (tmp_path / "Temp" / "StagingArea" / "Temp.cs").write_text("class TempFile {}")
+        traverser = FileTraverser(tmp_path)
+        paths = [f.path for f in traverser.traverse()]
+        assert "Assets/Scripts/Game.cs" in paths
+        assert not any(p.startswith("Library/") for p in paths)
+        assert not any(p.startswith("Temp/") for p in paths)
+
+    def test_skips_unity_asset_extensions_before_binary_detection(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        (tmp_path / "Assets").mkdir()
+        (tmp_path / "Assets" / "Scene.unity").write_text("%YAML 1.1\n")
+        (tmp_path / "Assets" / "Main.cs").write_text("class Main {}")
+
+        def _fail_binary(_path: Path) -> bool:
+            raise AssertionError("Unity asset hit binary detection")
+
+        def _fail_shebang(_path: Path) -> str:
+            raise AssertionError("Unity asset hit shebang detection")
+
+        monkeypatch.setattr(traverser_mod, "_is_binary", _fail_binary)
+        monkeypatch.setattr(traverser_mod, "_detect_by_shebang", _fail_shebang)
+
+        traverser = FileTraverser(tmp_path)
+        paths = [f.path for f in traverser.traverse()]
+        assert "Assets/Main.cs" in paths
+        assert "Assets/Scene.unity" not in paths
 
     def test_skips_binary_files(self, tmp_path: Path) -> None:
         binary = tmp_path / "binary.so"
