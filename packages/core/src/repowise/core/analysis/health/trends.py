@@ -24,6 +24,7 @@ or a session.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Protocol
@@ -41,6 +42,7 @@ class SnapshotLike(Protocol):
     average_health: float
     worst_performer_path: str | None
     worst_performer_score: float | None
+    per_file_scores_json: str
 
 
 @dataclass
@@ -197,3 +199,147 @@ def recent_kpis(history: list[Any], limit: int = 10) -> list[dict[str, Any]]:
             }
         )
     return rows
+
+
+# --------------------------------------------------------------------------- #
+# Per-file trajectory
+#
+# The snapshot writer stores a compact ``{path: score}`` map per snapshot
+# (``HealthSnapshot.per_file_scores_json``). These helpers turn that rolling
+# window into a single file's score-over-time series — CodeScene's signature
+# view. Like the repo-level helpers above they are intentionally state-free:
+# callers pass the snapshot history (oldest → newest) and get plain data back,
+# so the logic stays unit-testable without a DB and is reused verbatim by the
+# PR bot's in-comment sparkline.
+# --------------------------------------------------------------------------- #
+
+
+@dataclass
+class FileTrendPoint:
+    """One file's score at one snapshot."""
+
+    taken_at: datetime | None
+    score: float
+
+
+@dataclass
+class FileTrend:
+    """A file's score trajectory + the deltas worth surfacing.
+
+    ``points`` is oldest-first and **empty when fewer than two snapshots
+    carry the file** — a per-file trend is silent on thin history rather than
+    drawing a misleading single dot (plan §2: "silent when < 2 real
+    snapshots"). ``current`` / ``previous`` / ``delta`` and ``declining``
+    are all ``None`` / ``False`` in that case.
+    """
+
+    file_path: str
+    points: list[FileTrendPoint]
+    current: float | None
+    previous: float | None
+    delta: float | None
+    declining: bool
+    snapshot_count: int
+
+
+def _score_in_snapshot(snap: Any, file_path: str) -> float | None:
+    """Read ``file_path``'s score from a snapshot's compact JSON map.
+
+    Returns ``None`` when the file is absent from that snapshot (it may have
+    been added later, renamed, or filtered out of that run) or when the map
+    can't be parsed — the series simply skips that snapshot.
+    """
+    raw = getattr(snap, "per_file_scores_json", None)
+    if not raw:
+        return None
+    try:
+        scores = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    val = scores.get(file_path) if isinstance(scores, dict) else None
+    if val is None:
+        return None
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return None
+
+
+def file_score_series(history: list[Any], file_path: str) -> list[FileTrendPoint]:
+    """A file's oldest-first score series across the snapshot window.
+
+    Snapshots missing the file are skipped (gaps don't break the line).
+    Returns ``[]`` when fewer than two points are available so consumers can
+    render a "no history yet" state instead of a single misleading dot.
+
+    *history* is expected oldest-first (the natural ``list_health_snapshots``
+    order). This is the exact function the PR bot reuses for its in-comment
+    sparkline, so it stays free of any persistence or presentation concern.
+    """
+    points: list[FileTrendPoint] = []
+    for snap in history:
+        score = _score_in_snapshot(snap, file_path)
+        if score is None:
+            continue
+        points.append(FileTrendPoint(taken_at=getattr(snap, "taken_at", None), score=score))
+    if len(points) < 2:
+        return []
+    return points
+
+
+def _file_declining(points: list[FileTrendPoint]) -> bool:
+    """A sustained-decline heuristic for a single file's series.
+
+    Mirrors the repo-level signals: fire when either the latest score is
+    ``DECLINE_THRESHOLD`` below the point ``DECLINE_LOOKBACK`` back, or the
+    tail is ``PREDICTED_DECLINE_CONSECUTIVE`` strict drops in a row. Single
+    snapshot-to-snapshot noise is deliberately not enough.
+    """
+    if len(points) <= 1:
+        return False
+    scores = [p.score for p in points]
+
+    if (
+        len(scores) > DECLINE_LOOKBACK
+        and scores[-1] <= scores[-1 - DECLINE_LOOKBACK] - DECLINE_THRESHOLD
+    ):
+        return True
+
+    needed = PREDICTED_DECLINE_CONSECUTIVE + 1
+    if len(scores) >= needed:
+        tail = scores[-needed:]
+        if all(tail[i + 1] < tail[i] for i in range(len(tail) - 1)):
+            return True
+    return False
+
+
+def file_trend(history: list[Any], file_path: str) -> FileTrend:
+    """Assemble a file's :class:`FileTrend` from the snapshot history.
+
+    Wraps :func:`file_score_series` with the current value, the prior value,
+    their delta, and the declining flag. ``snapshot_count`` is the size of
+    the whole repo window (not just the points carrying this file) so the UI
+    can distinguish "young repo" from "file not in older snapshots".
+    """
+    points = file_score_series(history, file_path)
+    if not points:
+        return FileTrend(
+            file_path=file_path,
+            points=[],
+            current=None,
+            previous=None,
+            delta=None,
+            declining=False,
+            snapshot_count=len(history),
+        )
+    current = round(points[-1].score, 2)
+    previous = round(points[-2].score, 2)
+    return FileTrend(
+        file_path=file_path,
+        points=points,
+        current=current,
+        previous=previous,
+        delta=round(current - previous, 2),
+        declining=_file_declining(points),
+        snapshot_count=len(history),
+    )

@@ -64,6 +64,14 @@ unchanged files keep their findings across incremental runs.
 Use `diff_snapshots(history)` for a `TrendSummary`, or `recent_kpis(history,
 limit=10)` for the CLI / dashboard table.
 
+Per-file trajectory (same snapshots, the `{path: score}` map):
+
+- `file_score_series(history, path)` — oldest-first `FileTrendPoint`s,
+  skipping snapshots missing the file; `[]` below two points (silent on thin
+  history). Reused verbatim by the PR bot's in-comment sparkline.
+- `file_trend(history, path)` — wraps the series with `current` / `previous`
+  / `delta` and a `declining` flag (per-file mirror of the alerts above).
+
 ## Refactoring suggestions
 
 `suggestions.suggestion_for(biomarker_type)` returns the canonical, static

@@ -7,12 +7,16 @@ import { InfoTip } from "../shared/info-tip";
 import { biomarkerLabel, biomarkerInfo, CATEGORY_LABEL } from "./biomarker-glossary";
 import { BiomarkerDetails, type BiomarkerDetailsRecord } from "./biomarker-details";
 import { ScoreBreakdown, type ScoreBreakdownCategory } from "./score-breakdown";
+import { Sparkline } from "./sparkline";
 import {
   SEVERITY_CHIP,
   SEVERITY_LABEL,
+  deltaColor,
+  formatDelta,
   scoreBadgeClass,
   type Severity,
 } from "./tokens";
+import type { FileHealthTrend } from "@repowise-dev/types/health";
 
 export interface HealthDrawerFinding {
   id: string;
@@ -51,6 +55,8 @@ export interface HealthFileDrawerProps {
   } | null;
   findings?: HealthDrawerFinding[];
   suggestions?: Record<string, string>;
+  /** Per-file score trajectory; renders a compact sparkline when populated. */
+  trend?: FileHealthTrend | null;
   fileViewHref?: string;
   /** Build a per-line deep-link from the drawer's function:line span. */
   fileViewHrefFor?: ((lineStart: number) => string) | undefined;
@@ -78,6 +84,7 @@ export function HealthFileDrawer({
   breakdown,
   findings = [],
   suggestions = {},
+  trend,
   fileViewHref,
   fileViewHrefFor,
   permalinkHref,
@@ -149,6 +156,31 @@ export function HealthFileDrawer({
                   </span>
                 } />
               </div>
+
+              {trend && trend.points.length >= 2 ? (
+                <div className="flex items-center gap-3 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-3 py-2">
+                  <span className="text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)]">
+                    Trend
+                  </span>
+                  <Sparkline
+                    values={trend.points.map((p) => p.score)}
+                    domain={[0, 10]}
+                    width={120}
+                    height={28}
+                    stroke="var(--color-accent-primary)"
+                  />
+                  {trend.delta != null && trend.delta !== 0 ? (
+                    <span className={`text-xs font-semibold tabular-nums ${deltaColor(trend.delta)}`}>
+                      {formatDelta(trend.delta)}
+                    </span>
+                  ) : null}
+                  {trend.declining ? (
+                    <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-error)]">
+                      Declining
+                    </span>
+                  ) : null}
+                </div>
+              ) : null}
 
               {fileViewHref ? (
                 <a

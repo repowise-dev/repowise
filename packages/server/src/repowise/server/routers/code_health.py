@@ -27,7 +27,12 @@ from repowise.core.analysis.health.scoring import (
     severity_deduction,
 )
 from repowise.core.analysis.health.suggestions import suggestion_for as _suggestion_for
-from repowise.core.analysis.health.trends import diff_snapshots, recent_kpis
+from repowise.core.analysis.health.trends import (
+    FileTrend,
+    diff_snapshots,
+    file_trend,
+    recent_kpis,
+)
 from repowise.core.persistence import crud
 from repowise.core.persistence.models import WikiSymbol
 from repowise.server.deps import get_db_session, verify_api_key
@@ -75,6 +80,26 @@ def _metric_to_dict(m: Any) -> dict:
     }
 
 
+def _file_trend_to_dict(t: FileTrend) -> dict:
+    """Wire shape for ``FileHealthTrend`` (types/health.ts). ``points`` is
+    empty on thin history so the UI shows a "no history yet" state."""
+    return {
+        "file_path": t.file_path,
+        "points": [
+            {
+                "taken_at": p.taken_at.isoformat() if p.taken_at else None,
+                "score": round(p.score, 2),
+            }
+            for p in t.points
+        ],
+        "current": t.current,
+        "previous": t.previous,
+        "delta": t.delta,
+        "declining": t.declining,
+        "snapshot_count": t.snapshot_count,
+    }
+
+
 async def _attach_symbol_ids(
     session: AsyncSession, repo_id: str, finding_dicts: list[dict]
 ) -> list[dict]:
@@ -90,22 +115,19 @@ async def _attach_symbol_ids(
     if not paths:
         return finding_dicts
     rows = (
-        (
-            await session.execute(
-                select(
-                    WikiSymbol.symbol_id,
-                    WikiSymbol.file_path,
-                    WikiSymbol.name,
-                    WikiSymbol.start_line,
-                    WikiSymbol.end_line,
-                ).where(
-                    WikiSymbol.repository_id == repo_id,
-                    WikiSymbol.file_path.in_(paths),
-                )
+        await session.execute(
+            select(
+                WikiSymbol.symbol_id,
+                WikiSymbol.file_path,
+                WikiSymbol.name,
+                WikiSymbol.start_line,
+                WikiSymbol.end_line,
+            ).where(
+                WikiSymbol.repository_id == repo_id,
+                WikiSymbol.file_path.in_(paths),
             )
         )
-        .all()
-    )
+    ).all()
     by_name: dict[tuple[str, str], str] = {}
     by_file: dict[str, list[tuple[int, int, str]]] = {}
     for symbol_id, file_path, name, start_line, end_line in rows:
@@ -394,7 +416,9 @@ async def list_health_findings(
         file_path=file_path,
         min_severity=min_severity,
     )
-    return await _attach_symbol_ids(session, repo_id, [_finding_to_dict(f) for f in findings[:limit]])
+    return await _attach_symbol_ids(
+        session, repo_id, [_finding_to_dict(f) for f in findings[:limit]]
+    )
 
 
 _SORT_FIELDS = {
@@ -576,13 +600,32 @@ async def file_score_breakdown(
     finding_dicts = await _attach_symbol_ids(
         session, repo_id, [_finding_to_dict(f) for f in findings]
     )
+    snapshots = await crud.list_health_snapshots(session, repo_id)
     return {
         "file_path": file_path,
         "metric": _metric_to_dict(metric) if metric else None,
         "breakdown": breakdown,
         "findings": finding_dicts,
         "suggestions": {b: _suggestion_for(b) for b in {f.biomarker_type for f in findings}},
+        "trend": _file_trend_to_dict(file_trend(snapshots, file_path)),
     }
+
+
+@router.get("/api/repos/{repo_id}/health/files/trend")
+async def file_health_trend(
+    repo_id: str,
+    file_path: str = Query(..., description="File path to chart over time"),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+) -> dict:
+    """A single file's score-over-time series from the snapshot history.
+
+    Silent (empty ``points``) when fewer than two snapshots carry the file.
+    """
+    repo = await crud.get_repository(session, repo_id)
+    if repo is None:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    snapshots = await crud.list_health_snapshots(session, repo_id)
+    return _file_trend_to_dict(file_trend(snapshots, file_path))
 
 
 @router.get("/api/repos/{repo_id}/health/trend")

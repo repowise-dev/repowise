@@ -65,7 +65,7 @@ analysis/health/
 ├── scoring.py                      # weighted aggregation, category caps, KPIs
 ├── grading.py                      # 3 defect-backed bands + NLOC-weighted distribution
 ├── defect_accuracy.py              # "does the score find the bugs?" self-validation
-├── trends.py                       # snapshot diff, Declining/Predicted alerts
+├── trends.py                       # snapshot diff, Declining/Predicted alerts, per-file score series
 ├── suggestions.py                  # deterministic refactoring text per biomarker
 ├── config.py                       # HealthConfig + .repowise/health-rules.json
 ├── models.py                       # HealthFindingData, HealthFileMetricData, HealthReport
@@ -177,6 +177,9 @@ packages/ui/src/health/             # shared React components (used by web + fut
 ├── refactoring-target-list.tsx
 ├── health-badge.tsx               # score pill, colored by the 3 health bands
 ├── health-distribution-bar.tsx    # NLOC-weighted Alert/Warning/Healthy split
+├── trend-chart.tsx                # repo KPI history (3 series)
+├── file-trend-chart.tsx           # single file's score-over-time + delta + declining flag
+├── sparkline.tsx                  # compact inline series (drawer trend)
 └── module-rollup-list.tsx
 
 packages/web/src/app/repos/[id]/health/
@@ -537,6 +540,26 @@ alerts:
 `recent_kpis(history, limit=10)` returns a newest-first serialised view
 for the CLI table and MCP `get_health(include=["trend"])` response.
 
+### Per-file trajectory
+
+Snapshots also store a compact `{path: score}` map (`per_file_scores_json`),
+so the same window yields a single file's score-over-time series:
+
+- `file_score_series(history, path)` — oldest-first `FileTrendPoint`s,
+  skipping snapshots that don't carry the file. Returns `[]` below two
+  points (silent on thin history). This is the exact function the PR bot
+  reuses for its in-comment sparkline.
+- `file_trend(history, path)` — wraps the series with `current` / `previous`
+  / `delta` and a `declining` flag (the per-file mirror of the alerts above:
+  ≥ `DECLINE_THRESHOLD` below the lookback point, or
+  `PREDICTED_DECLINE_CONSECUTIVE` consecutive drops). `snapshot_count` is the
+  full window size so a young repo is distinguishable from a file missing in
+  older snapshots.
+
+Both are state-free; the server serialises `FileTrend` via
+`_file_trend_to_dict` and embeds it in the file-detail health block, the
+health-breakdown response, and the standalone trend route (§13).
+
 ---
 
 ## 9. Incremental analysis — the `repowise update` path
@@ -665,8 +688,10 @@ Defined in `tool_health.py`. Modes:
   `worst_files` (top N lowest-scoring) + `top_findings` + a per-module
   `modules` rollup.
 - **Targeted mode** (`targets=[...]`) — returns full `metrics` +
-  `findings` for the listed paths. Targets prefixed `module:foo` expand
-  to the file set in that module.
+  `findings` for the listed paths, plus a per-file `trends` block (compact
+  score series + `current` + `delta` + `declining`) for any target with at
+  least two snapshots of history. Targets prefixed `module:foo` expand to
+  the file set in that module.
 
 `include` flags layer richer data:
 
@@ -702,6 +727,9 @@ Every response carries the standard `_meta` envelope via `build_meta()`.
 | `GET /badge.svg` | self-rendered flat SVG health badge (color + `N.N/10`, no letter) |
 | `GET /badge.json` | Shields.io endpoint-badge payload (`schemaVersion`/`label`/`message`/`color`/`band`) |
 | `GET /files` | per-file metrics |
+| `GET /files/breakdown` | one file's metric + score breakdown + findings + suggestions + per-file `trend` |
+| `GET /files/trend` | one file's score-over-time series + current delta + `declining` flag (`?file_path=`) |
+| `GET /trend` | repo KPI history + alerts + last-two-snapshot per-file deltas |
 | `GET /findings` | findings list (filterable by biomarker_type, severity, file_path) |
 | `GET /coverage` | coverage summary + per-file rows |
 | `POST /coverage` | ingest a coverage report (used by some CI integrations) |
@@ -813,7 +841,7 @@ Other perf notes:
 | `tests/unit/health/test_coverage_parsers.py` | LCOV / Cobertura / Clover / repowise-JSON happy paths + edge cases |
 | `tests/unit/health/test_scoring.py` | Deduction caps, clamping, KPI math |
 | `tests/unit/health/test_scoring_snapshot.py` | **Stability guard** — caps, severity table, biomarker→category mapping, two known fixture scores |
-| `tests/unit/health/test_trends.py` | Declining + predicted alerts, ordering |
+| `tests/unit/health/test_trends.py` | Declining + predicted alerts, ordering, per-file series + `file_trend` |
 | `tests/unit/health/test_suggestions.py` | Suggestion strings keyed correctly |
 | `tests/unit/health/test_health_config.py` | `.repowise/health-rules.json` parsing + glob matching |
 | `tests/integration/test_health_coverage_integration.py` | End-to-end LCOV → analyzer → coverage_gap fires |

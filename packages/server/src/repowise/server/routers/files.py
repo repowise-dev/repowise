@@ -17,12 +17,14 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.health.trends import file_trend
 from repowise.core.persistence import crud
 from repowise.core.persistence.decision_graph import get_governing_decisions
 from repowise.core.persistence.models import DeadCodeFinding, Page, WikiSymbol
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.mcp_server._graph_utils import parse_community_meta, percentile_rank
 from repowise.server.routers.code_health import (
+    _file_trend_to_dict,
     _finding_to_dict,
     _metric_to_dict,
     _score_breakdown_from_findings,
@@ -120,10 +122,12 @@ async def file_detail(
 
     # --- Health -----------------------------------------------------------
     findings = await crud.get_health_findings(session, repo_id, file_path=file_path)
+    snapshots = await crud.list_health_snapshots(session, repo_id)
     health = {
         "metric": _metric_to_dict(metric) if metric else None,
         "breakdown": _score_breakdown_from_findings(findings) if findings else None,
         "findings": [_finding_to_dict(f) for f in findings],
+        "trend": _file_trend_to_dict(file_trend(snapshots, file_path)),
     }
 
     # --- Git history ------------------------------------------------------

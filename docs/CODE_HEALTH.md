@@ -337,7 +337,10 @@ get_health(targets=["module:src.api"])        # everything in a module
 ## Trends
 
 Every health run writes a `HealthSnapshot` row (rolling 50 entries per repo).
-Two alerts run over the history:
+Each snapshot stores the repo KPIs **and** a compact `{path: score}` map, so
+the history doubles as a per-file record.
+
+Two repo-level alerts run over the history:
 
 - **Declining Health** — current `hotspot_health` is ≥ 0.5 below the
   snapshot 5 runs ago.
@@ -354,6 +357,31 @@ Or from MCP:
 
 ```python
 get_health(include=["trend"])
+```
+
+### Per-file score over time
+
+The same snapshots power a per-file trajectory — a file's score plotted
+across runs (CodeScene's signature view). It surfaces on the file's Health
+tab and in the health drawer as a sparkline, with a delta vs. the previous
+run and a **Declining** flag (the per-file version of the alerts above:
+≥ 0.5 below the run 5 snapshots back, or three consecutive drops).
+
+A trend is **silent on thin history** — it needs at least two snapshots that
+both carry the file, otherwise the UI shows "no score history yet" rather
+than a misleading single dot. Gaps (a file absent from some snapshots) are
+skipped, not zero-filled.
+
+Fetch it directly:
+
+```bash
+# REST — one file's series + current delta + declining flag
+GET /api/repos/{repo_id}/health/files/trend?file_path=path/to/file.py
+```
+
+```python
+# MCP — targeted mode attaches a per-file `trends` block
+get_health(targets=["path/to/file.py"])
 ```
 
 ## Configuration

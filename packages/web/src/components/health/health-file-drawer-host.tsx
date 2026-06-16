@@ -36,6 +36,7 @@ export function HealthFileDrawerHost({
       }
       findings={data?.findings ?? []}
       suggestions={data?.suggestions ?? {}}
+      trend={data?.trend ?? null}
       permalinkHref={filePageHref ? `${filePageHref}?tab=health` : undefined}
       fileViewHref={filePageHref}
       fileViewHrefFor={

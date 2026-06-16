@@ -241,6 +241,36 @@ export interface HealthFileBreakdownResponse {
   };
   findings: HealthFinding[];
   suggestions: Record<string, string>;
+  /** Per-file score trajectory (silent when history is thin). */
+  trend?: FileHealthTrend | null;
+}
+
+/* ------------------------------------------------------------------ *
+ * Per-file trajectory
+ * ------------------------------------------------------------------ */
+
+/** One file's score at one snapshot. */
+export interface FileTrendPoint {
+  taken_at: string | null;
+  score: number;
+}
+
+/**
+ * A single file's score-over-time series plus the deltas worth surfacing.
+ * `points` is oldest-first and **empty when fewer than two snapshots carry
+ * the file** — consumers render a "no history yet" state rather than a
+ * misleading single dot. `current`/`previous`/`delta`/`declining` are null/
+ * false in that case. `snapshot_count` is the whole repo window size, so a
+ * young repo is distinguishable from a file absent in older snapshots.
+ */
+export interface FileHealthTrend {
+  file_path: string;
+  points: FileTrendPoint[];
+  current: number | null;
+  previous: number | null;
+  delta: number | null;
+  declining: boolean;
+  snapshot_count: number;
 }
 
 /* ------------------------------------------------------------------ *

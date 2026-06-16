@@ -1,4 +1,4 @@
-﻿"""MCP tool: get_health — code-health biomarkers and per-file scores."""
+"""MCP tool: get_health — code-health biomarkers and per-file scores."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from sqlalchemy import select
 from repowise.core.analysis.health.grading import band_for
 from repowise.core.analysis.health.grading import distribution as health_distribution
 from repowise.core.analysis.health.suggestions import suggestion_for
-from repowise.core.analysis.health.trends import diff_snapshots, recent_kpis
+from repowise.core.analysis.health.trends import diff_snapshots, file_trend, recent_kpis
 from repowise.core.persistence.crud import (
     get_coverage_summary,
     list_health_snapshots,
@@ -225,8 +225,11 @@ async def get_health(
             # here; the per-file rows above are exclude-filtered.
             coverage_summary = await get_coverage_summary(session, repository.id)
 
+        # Load the snapshot window for the repo-level trend block and/or the
+        # per-file trajectory we attach in targeted mode ("should I touch this
+        # file" context for agents).
         snapshots: list[Any] = []
-        if "trend" in include_set:
+        if "trend" in include_set or effective_targets:
             snapshots = await list_health_snapshots(session, repository.id, limit=20)
 
     kpis = _compute_kpis(metric_rows if effective_targets else all_metrics)
@@ -238,6 +241,24 @@ async def get_health(
             "metrics": [_serialize_metric(m) for m in metric_rows],
             "findings": [_serialize_finding(f) for f in finding_rows],
         }
+        # Per-file score trajectory for each target — silent (omitted) when a
+        # file has < 2 snapshots of history rather than a misleading flat line.
+        trends = []
+        for m in metric_rows:
+            t = file_trend(snapshots, m.file_path)
+            if not t.points:
+                continue
+            trends.append(
+                {
+                    "file_path": t.file_path,
+                    "series": [round(p.score, 2) for p in t.points],
+                    "current": t.current,
+                    "delta": t.delta,
+                    "declining": t.declining,
+                }
+            )
+        if trends:
+            result["trends"] = trends
         if module_targets:
             scoped = [m for m in all_metrics if m.module in set(module_targets)]
             result["modules"] = _module_rollups(scoped)
