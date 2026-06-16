@@ -323,7 +323,7 @@ export function Sidebar({ repos = [], activeRepoId, workspace }: SidebarProps) {
         <div className="flex flex-col gap-3 border-t border-[var(--color-border-default)] px-4 py-3">
           <ThemeToggle className="w-full justify-between" />
           <p className="text-xs text-[var(--color-text-tertiary)]">
-            repowise v0.19.1
+            repowise v0.20.0
           </p>
         </div>
       )}

@@ -2,6 +2,11 @@
 
 All notable changes to the Repowise Claude Code plugin are documented here.
 
+## 0.20.0
+
+Version bump to track the repowise 0.20.0 release. No changes to the plugin's
+commands, skills, hooks, or MCP tool surface this cycle.
+
 ## 0.19.1
 
 Version bump to track the repowise 0.19.1 release. No changes to the plugin's

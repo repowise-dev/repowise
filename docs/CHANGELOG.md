@@ -13,6 +13,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.20.0] — 2026-06-16
+
+### Added
+- **Churn x complexity quadrant on the hotspots tab.** The hotspots view now plots files on a churn-versus-complexity quadrant, making it easy to spot the high-churn, high-complexity files that warrant attention first. (#491)
+- **Per-file process, people, and topology signals.** The file page now surfaces per-file process signals (how the file changes over time), people signals (ownership and contributor spread), and topology signals (how connected the file is), each already computed during indexing. (#490)
+- **Per-file health score over time.** The file page, the file drawer, and the MCP `get_health` surface now show a file's health score history, so you can see whether a file is trending better or worse. (#489)
+- **Health bands, repo distribution, and a README badge.** Code health is now bucketed into named bands with a repo-wide distribution view, and a health badge can be embedded in your README. (#485)
+
+### Changed
+- **Quieter, polished `update` CLI UX.** `repowise update` now uses the same calm, panel-based progress output as `init`, with a `-v` flag for verbose detail. The previously monolithic update command was also split into a package for maintainability. (#476, #477)
+- **Co-change page reframed as a temporal hint.** The cross-repo co-change page now presents its data as a temporal hint rather than an authoritative dependency, and the average-strength figure is displayed correctly. (#481)
+
+### Fixed
+- **Workspace job progress stays accurate.** In multi-repo workspace mode, job listing and progress now read from the correct per-repo database, stale jobs left running after a server restart are reset, and the progress timer and phase labels reflect persisted state instead of component mount time. (#487)
+- **Co-change noise filtering and cross-repo strength normalization.** Noise files are filtered out of co-change analysis and cross-repo co-change strength is normalized so the signal is comparable across repos. (#480)
+- **Like-with-like population comparison in coordinator health.** Coordinator health now compares files against like-sized populations rather than mixing dissimilar groups. (#479)
+
+### Documentation
+- **README dual-audience positioning.** The README was reworked for a dual-audience frame and now surfaces change-risk, agent provenance, and wiki styles. (#478)
+- Plugin: version bump to 0.20.0 (no command/skill/hook/MCP-surface changes).
+
+### Dependencies
+- Bumped `pyjwt` from 2.12.1 to 2.13.0, a security release bundling five advisory fixes. (#488)
+
+---
+
 ## [0.19.1] — 2026-06-13
 
 ### Fixed

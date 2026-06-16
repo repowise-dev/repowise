@@ -16,4 +16,4 @@ from repowise.cli._stdio import _ensure_utf8_stdio
 # is already UTF-8.
 _ensure_utf8_stdio()
 
-__version__ = "0.19.1"
+__version__ = "0.20.0"
