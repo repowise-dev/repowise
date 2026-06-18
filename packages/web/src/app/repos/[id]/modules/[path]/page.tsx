@@ -3,8 +3,11 @@
 import { useParams, useRouter } from "next/navigation";
 import useSWR from "swr";
 import Link from "next/link";
-import { ArrowLeft, Folder } from "lucide-react";
-import { ModuleHealthDetailView } from "@repowise-dev/ui/modules/module-health-detail";
+import { Folder } from "lucide-react";
+import {
+  ModuleHealthDetailView,
+  ModuleDetailShell,
+} from "@repowise-dev/ui/modules";
 import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 import { EmptyState } from "@repowise-dev/ui/shared/empty-state";
@@ -23,16 +26,10 @@ export default function ModuleHealthPage() {
   );
 
   return (
-    <div className="p-4 sm:p-6 space-y-4 max-w-[1600px]">
-      <div className="flex items-center justify-between">
-        <Link
-          href={`/repos/${id}/code-health?tab=modules`}
-          className="inline-flex items-center gap-1 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
-        >
-          <ArrowLeft className="h-3 w-3" /> All modules
-        </Link>
-      </div>
-
+    <ModuleDetailShell
+      backHref={`/repos/${id}/code-health?tab=modules`}
+      LinkComponent={Link}
+    >
       {isLoading && (
         <div className="space-y-4">
           <Skeleton className="h-40 w-full" />
@@ -54,6 +51,11 @@ export default function ModuleHealthPage() {
       {data && (
         <ModuleHealthDetailView
           module={data}
+          breadcrumb={[
+            { label: "Modules", href: `/repos/${id}/code-health?tab=modules` },
+            { label: modulePath.split("/").pop() || modulePath },
+          ]}
+          LinkComponent={Link}
           onSelectOwner={(o) => {
             const key = o.email ?? `name:${o.name}`;
             router.push(`/repos/${id}/owners/${encodeURIComponent(key)}`);
@@ -64,6 +66,6 @@ export default function ModuleHealthPage() {
           }
         />
       )}
-    </div>
+    </ModuleDetailShell>
   );
 }

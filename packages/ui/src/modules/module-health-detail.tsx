@@ -1,7 +1,6 @@
 "use client";
 
 import {
-  Folder,
   Flame,
   Trash2,
   BookOpen,
@@ -19,109 +18,101 @@ import { Badge } from "../ui/badge";
 import { cn } from "../lib/cn";
 import { truncatePath } from "../lib/format";
 import { OwnerAvatar } from "../owners/owner-avatar";
-
-function scoreCls(score: number): string {
-  if (score >= 70) return "text-emerald-300 bg-emerald-500/10 border-emerald-500/40";
-  if (score >= 40) return "text-amber-300 bg-amber-500/10 border-amber-500/40";
-  return "text-red-300 bg-red-500/10 border-red-500/40";
-}
+import { EntityHeader } from "../shared/entity";
+import type { BreadcrumbSegment } from "../shared/breadcrumb";
+import { HealthChip, MetricTile, ModuleIdentity } from "./module-helpers";
 
 export interface ModuleHealthDetailViewProps {
   module: ModuleHealthDetailModel;
+  /** Breadcrumb back to repo › modules. Built by the web route. */
+  breadcrumb?: BreadcrumbSegment[];
+  LinkComponent?: React.ElementType<{
+    href: string;
+    className?: string;
+    children: React.ReactNode;
+  }>;
   onSelectOwner?: (owner: ModuleHealthOwner) => void;
   onSelectFile?: (filePath: string) => void;
   onSelectDecision?: (decisionId: string) => void;
 }
 
 /**
- * Single-module deep view: composite health score, owner mix, hotspots,
- * decisions, and headline metrics. Mirrors {@link OwnerProfileView} in
- * tone — fast to scan, all numbers linked.
+ * Single-module deep view: a standardized entity header (eyebrow, breadcrumb,
+ * identity, one-line summary, primary health signal) over the owner mix,
+ * hotspots, decisions, and headline metric tiles.
  */
 export function ModuleHealthDetailView({
   module,
+  breadcrumb,
+  LinkComponent,
   onSelectOwner,
   onSelectFile,
   onSelectDecision,
 }: ModuleHealthDetailViewProps) {
-  const score = Math.round(module.health_score);
+  const summary = moduleSummary(module);
 
   return (
     <div className="space-y-6">
-      {/* ── Header ── */}
-      <Card>
-        <CardContent className="p-5">
-          <div className="flex flex-wrap items-start gap-5">
-            <div
-              className={cn(
-                "flex flex-col items-center justify-center rounded-lg border px-4 py-3 text-center min-w-[88px]",
-                scoreCls(module.health_score),
-              )}
-            >
-              <span className="text-3xl font-bold tabular-nums">{score}</span>
-              <span className="text-[10px] uppercase tracking-wider opacity-70">
-                health
-              </span>
-            </div>
-            <div className="flex-1 min-w-0">
-              <h1 className="flex items-center gap-2 text-2xl font-bold text-[var(--color-text-primary)]">
-                <Folder className="h-5 w-5 text-[var(--color-text-tertiary)]" />
-                {module.module_path}
-              </h1>
-              <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">
-                {module.file_count} files · {module.symbol_count} symbols ·{" "}
-                {module.contributor_count} contributors
-              </p>
-              <div className="mt-2 flex flex-wrap items-center gap-2">
-                {module.is_silo && <Badge variant="outdated">silo</Badge>}
-                {module.min_bus_factor <= 1 && (
-                  <Badge variant="outdated">bus ≤ 1</Badge>
-                )}
-                {module.decision_count > 0 && (
-                  <Badge variant="accent">
-                    {module.decision_count} decisions
-                  </Badge>
-                )}
-              </div>
-            </div>
-          </div>
+      <EntityHeader
+        eyebrow="MODULE"
+        breadcrumb={breadcrumb ?? []}
+        identity={
+          <ModuleIdentity
+            modulePath={module.module_path}
+            fileCount={module.file_count}
+            symbolCount={module.symbol_count}
+            contributorCount={module.contributor_count}
+          />
+        }
+        summary={summary}
+        primarySignal={<HealthChip score={module.health_score} size="lg" />}
+        metaBadges={
+          <>
+            {module.is_silo && <Badge variant="outdated">silo</Badge>}
+            {module.min_bus_factor <= 1 && <Badge variant="outdated">bus ≤ 1</Badge>}
+            {module.decision_count > 0 && (
+              <Badge variant="accent">{module.decision_count} decisions</Badge>
+            )}
+          </>
+        }
+        {...(LinkComponent ? { LinkComponent } : {})}
+      />
 
-          <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-            <Headline
-              label="Hotspots"
-              value={module.hotspot_count}
-              icon={<Flame className="h-3.5 w-3.5 text-orange-400" />}
-              tone={module.hotspot_count > 0 ? "warn" : undefined}
-            />
-            <Headline
-              label="Dead lines"
-              value={module.dead_code_lines}
-              icon={<Trash2 className="h-3.5 w-3.5 text-rose-400" />}
-              tone={module.dead_code_lines > 0 ? "warn" : undefined}
-            />
-            <Headline
-              label="Doc coverage"
-              value={`${Math.round(module.doc_coverage_pct)}%`}
-              icon={<BookOpen className="h-3.5 w-3.5 text-sky-400" />}
-            />
-            <Headline
-              label="Bus med"
-              value={module.median_bus_factor.toFixed(1)}
-              icon={<Users className="h-3.5 w-3.5 text-violet-400" />}
-            />
-            <Headline
-              label="Bus min"
-              value={module.min_bus_factor}
-              icon={<ShieldAlert className="h-3.5 w-3.5 text-red-400" />}
-              tone={module.min_bus_factor <= 1 ? "danger" : undefined}
-            />
-            <Headline
-              label="Avg churn"
-              value={`${Math.round(module.avg_churn_percentile)}`}
-            />
-          </div>
-        </CardContent>
-      </Card>
+      {/* ── Headline metric tiles ── */}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+        <MetricTile
+          label="Hotspots"
+          value={module.hotspot_count}
+          icon={<Flame className="h-3.5 w-3.5 text-[var(--color-warning)]" />}
+          {...(module.hotspot_count > 0 ? { tone: "warn" as const } : {})}
+        />
+        <MetricTile
+          label="Dead lines"
+          value={module.dead_code_lines}
+          icon={<Trash2 className="h-3.5 w-3.5 text-[var(--color-error)]" />}
+          {...(module.dead_code_lines > 0 ? { tone: "warn" as const } : {})}
+        />
+        <MetricTile
+          label="Doc coverage"
+          value={`${Math.round(module.doc_coverage_pct)}%`}
+          icon={<BookOpen className="h-3.5 w-3.5 text-[var(--color-info)]" />}
+        />
+        <MetricTile
+          label="Bus med"
+          value={module.median_bus_factor.toFixed(1)}
+          icon={<Users className="h-3.5 w-3.5 text-[var(--color-accent-primary)]" />}
+        />
+        <MetricTile
+          label="Bus min"
+          value={module.min_bus_factor}
+          icon={<ShieldAlert className="h-3.5 w-3.5 text-[var(--color-error)]" />}
+          {...(module.min_bus_factor <= 1 ? { tone: "danger" as const } : {})}
+        />
+        <MetricTile
+          label="Avg churn"
+          value={`${Math.round(module.avg_churn_percentile)}`}
+        />
+      </div>
 
       {/* ── Body ── */}
       <div className="grid gap-4 lg:grid-cols-3">
@@ -134,7 +125,7 @@ export function ModuleHealthDetailView({
               People who primarily own files in this module.
             </p>
           </CardHeader>
-          <CardContent className="pt-0 space-y-1.5">
+          <CardContent className="pt-0 space-y-2">
             {module.owners.length === 0 && (
               <p className="py-4 text-center text-xs text-[var(--color-text-tertiary)]">
                 No ownership signal.
@@ -161,7 +152,9 @@ export function ModuleHealthDetailView({
                     <div
                       className={cn(
                         "h-full",
-                        pct > 80 ? "bg-amber-500" : "bg-[var(--color-accent-primary)]",
+                        pct > 80
+                          ? "bg-[var(--color-warning)]"
+                          : "bg-[var(--color-accent-primary)]",
                       )}
                       style={{ width: `${pct}%` }}
                     />
@@ -179,7 +172,7 @@ export function ModuleHealthDetailView({
           <Card>
             <CardHeader className="pb-2">
               <CardTitle className="text-sm flex items-center gap-1.5">
-                <FileWarning className="h-4 w-4 text-orange-400" /> Top hotspots
+                <FileWarning className="h-4 w-4 text-[var(--color-warning)]" /> Top hotspots
               </CardTitle>
             </CardHeader>
             <CardContent className="pt-0 space-y-1">
@@ -206,7 +199,7 @@ export function ModuleHealthDetailView({
             <Card>
               <CardHeader className="pb-2">
                 <CardTitle className="text-sm flex items-center gap-1.5">
-                  <Lightbulb className="h-4 w-4 text-yellow-400" /> Governing decisions
+                  <Lightbulb className="h-4 w-4 text-[var(--color-caution)]" /> Governing decisions
                 </CardTitle>
               </CardHeader>
               <CardContent className="pt-0 space-y-1">
@@ -233,30 +226,23 @@ export function ModuleHealthDetailView({
   );
 }
 
-function Headline({
-  label,
-  value,
-  icon,
-  tone,
-}: {
-  label: string;
-  value: string | number;
-  icon?: React.ReactNode | undefined;
-  tone?: "warn" | "danger" | undefined;
-}) {
-  const color =
-    tone === "danger"
-      ? "text-red-400"
-      : tone === "warn"
-        ? "text-orange-300"
-        : "text-[var(--color-text-primary)]";
-  return (
-    <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-3 py-2">
-      <div className="flex items-center gap-1 text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)]">
-        {icon}
-        {label}
-      </div>
-      <div className={`mt-1 text-xl font-bold tabular-nums ${color}`}>{value}</div>
-    </div>
-  );
+/**
+ * Synthesised one-line "what is this" for a module — the missing summary.
+ * Leads with the dominant health signal (the reason the score is what it is)
+ * so the reader instantly knows where to look.
+ */
+function moduleSummary(m: ModuleHealthDetailModel): string {
+  const lead = m.module_path.split("/").pop() || m.module_path;
+  const parts: string[] = [];
+  if (m.hotspot_count > 0) {
+    parts.push(`${m.hotspot_count} hotspot${m.hotspot_count === 1 ? "" : "s"}`);
+  }
+  if (m.min_bus_factor <= 1) parts.push("bus-factor risk");
+  if (m.dead_code_lines > 0) parts.push(`${m.dead_code_lines} dead lines`);
+  if (parts.length === 0) {
+    parts.push(`${Math.round(m.doc_coverage_pct)}% documented`);
+  }
+  return `The ${lead} module — ${m.file_count} files owned by ${
+    m.primary_owner ?? "no clear owner"
+  }. Leading signals: ${parts.join(", ")}.`;
 }

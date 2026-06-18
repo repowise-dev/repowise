@@ -1,6 +1,7 @@
 import { Network } from "lucide-react";
 import { EmptyState } from "../shared/empty-state";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
+import { StatGrid, StatTile } from "../shared/stat-grid";
 import { truncatePath } from "../lib/format";
 import type { FileDetailGraph, FileGraphNeighbor } from "@repowise-dev/types/files";
 
@@ -88,16 +89,16 @@ export function FileGraphTab({ graph, filePath, linkPrefix, fileHref, symbolHref
 
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <Stat
+      <StatGrid columns={4}>
+        <StatTile
           label="PageRank"
           value={`${Math.round(graph.pagerank_percentile)}th pct`}
           hint={graph.pagerank.toFixed(6)}
         />
-        <Stat label="Dependents (in)" value={String(graph.in_degree)} />
-        <Stat label="Dependencies (out)" value={String(graph.out_degree)} />
-        <Stat label="Community" value={graph.community_label ?? `#${graph.community_id}`} />
-      </div>
+        <StatTile label="Dependents (in)" value={String(graph.in_degree)} />
+        <StatTile label="Dependencies (out)" value={String(graph.out_degree)} />
+        <StatTile label="Community" value={graph.community_label ?? `#${graph.community_id}`} />
+      </StatGrid>
       <div className="flex flex-wrap gap-2 text-[11px]">
         <a
           href={`${linkPrefix}/architecture?view=graph&node=${encodeURIComponent(filePath)}`}
@@ -126,19 +127,6 @@ export function FileGraphTab({ graph, filePath, linkPrefix, fileHref, symbolHref
           symbolHref={symbolHref}
         />
       </div>
-    </div>
-  );
-}
-
-function Stat({ label, value, hint }: { label: string; value: string; hint?: string }) {
-  return (
-    <div className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] p-2.5">
-      <p className="text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)] mb-0.5">
-        {label}
-      </p>
-      <p className="text-sm font-semibold text-[var(--color-text-primary)]" title={hint}>
-        {value}
-      </p>
     </div>
   );
 }

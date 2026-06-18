@@ -27,6 +27,7 @@ import { ViewTabs } from "@repowise-dev/ui/shared/view-tabs";
 import { GraphView } from "@/components/architecture/graph-view";
 import { DependenciesView } from "@/components/architecture/dependencies-view";
 import { SymbolTableWrapper as SymbolTable } from "@/components/symbols/symbol-table-wrapper";
+import { SymbolIndexHeader } from "@repowise-dev/ui/symbols";
 import { COUPLING_DISCLAIMER } from "@repowise-dev/ui/coupling";
 import { CouplingTab } from "@/components/coupling/coupling-tab";
 
@@ -139,15 +140,7 @@ export default function ArchitecturePage({
         {activeTab === "deps" && <DependenciesView repoId={repoId} />}
         {activeTab === "symbols" && (
           <div className="max-w-[1600px] space-y-6 p-4 sm:p-6">
-            <div>
-              <h1 className="mb-1 flex items-center gap-2 text-xl font-semibold text-[var(--color-text-primary)]">
-                <Code2 className="h-5 w-5 text-[var(--color-accent-primary)]" />
-                Symbol Index
-              </h1>
-              <p className="text-sm text-[var(--color-text-secondary)]">
-                Searchable index of all functions, classes, and exports.
-              </p>
-            </div>
+            <SymbolIndexHeader />
             <SymbolTable repoId={repoId} />
           </div>
         )}

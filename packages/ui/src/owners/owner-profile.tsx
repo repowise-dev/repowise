@@ -26,7 +26,7 @@ import {
   type ResponsiveColumn,
 } from "../shared/responsive-table";
 import { cn } from "../lib/cn";
-import { truncatePath } from "../lib/format";
+import { truncatePath, formatRelativeTimeOrNull } from "../lib/format";
 import { OwnerAvatar } from "./owner-avatar";
 
 const dateFormatter = new Intl.DateTimeFormat(undefined, {
@@ -47,15 +47,7 @@ function fmtCompact(n: number): string {
   return n.toLocaleString();
 }
 
-function timeAgo(iso: string | null): string {
-  if (!iso) return "never";
-  const d = Math.floor((Date.now() - new Date(iso).getTime()) / 86_400_000);
-  if (Number.isNaN(d) || d < 0) return "never";
-  if (d < 1) return "today";
-  if (d < 30) return `${d}d ago`;
-  if (d < 365) return `${Math.floor(d / 30)}mo ago`;
-  return `${Math.floor(d / 365)}y ago`;
-}
+const timeAgo = (iso: string | null) => formatRelativeTimeOrNull(iso, "never");
 
 export interface OwnerProfileViewProps {
   owner: OwnerProfile;

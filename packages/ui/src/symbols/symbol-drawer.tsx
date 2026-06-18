@@ -1,6 +1,6 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { Flame } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -11,90 +11,83 @@ import {
 import { Badge } from "../ui/badge";
 import { ScrollArea } from "../ui/scroll-area";
 import { Separator } from "../ui/separator";
-import type { CodeSymbol } from "@repowise-dev/types/symbols";
+import type { SymbolDetailData } from "@repowise-dev/types/symbols";
+import { SymbolDetailBody } from "./symbol-detail-body";
 
 interface SymbolDrawerProps {
-  symbol: CodeSymbol | null;
+  /** Normalized symbol body data — null hides the modal. */
+  data: SymbolDetailData | null;
   onClose: () => void;
-  /**
-   * Right-column graph intelligence slot. Wrappers pass a data-coupled
-   * `<SymbolGraphPanelWrapper>` here; pass `null` to hide the column.
-   */
-  graphPanel?: ReactNode;
-  /**
-   * Additional right-column slot for file-level git context (owner, bus
-   * factor, co-changes, overlapping dead code). Rendered below the graph
-   * panel when both are present.
-   */
-  gitPanel?: ReactNode;
+  /** The optional graph/git feeds are streamed in by the wrapper. */
+  metricsLoading?: boolean;
+  /** Build an href to a sibling symbol page. */
+  symbolHref?: (symbolId: string) => string;
+  /** Build an href to the parent file page. */
+  fileHref?: (filePath: string) => string;
+  onOpenBlastRadius?: () => void;
 }
 
-export function SymbolDrawer({ symbol, onClose, graphPanel, gitPanel }: SymbolDrawerProps) {
+/**
+ * The modal symbol surface. Renders the SAME `SymbolDetailBody` as the routed
+ * `SymbolPage`, so the drawer and the page expose identical capabilities
+ * (graph metrics, call graph, git context, co-changes, dead code, blast radius).
+ */
+export function SymbolDrawer({
+  data,
+  onClose,
+  metricsLoading,
+  symbolHref,
+  fileHref,
+  onOpenBlastRadius,
+}: SymbolDrawerProps) {
   return (
-    <Dialog open={symbol !== null} onOpenChange={(open) => !open && onClose()}>
+    <Dialog open={data !== null} onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="max-w-[95vw] w-[1000px] max-h-[88vh] overflow-hidden p-0">
-        {symbol && (
+        {data && (
           <>
             <div className="px-6 pt-6 pb-3">
               <DialogHeader>
-                <DialogTitle className="font-mono text-base">{symbol.name}</DialogTitle>
-                <DialogDescription className="font-mono text-xs text-[var(--color-text-tertiary)] break-all">
-                  {symbol.file_path}:{symbol.start_line}
+                <DialogTitle className="font-mono text-base">
+                  {data.identity.name}
+                </DialogTitle>
+                <DialogDescription className="break-all font-mono text-xs text-[var(--color-text-tertiary)]">
+                  {data.identity.file_path}:{data.identity.start_line}
                 </DialogDescription>
               </DialogHeader>
-              <div className="flex flex-wrap gap-1.5 mt-2">
-                <Badge variant="accent">{symbol.kind}</Badge>
-                <Badge variant="outline">{symbol.language}</Badge>
-                {symbol.visibility && symbol.visibility !== "public" && (
-                  <Badge variant="default">{symbol.visibility}</Badge>
+              <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                <Badge variant="accent">{data.identity.kind}</Badge>
+                {data.identity.language && (
+                  <Badge variant="outline">{data.identity.language}</Badge>
                 )}
-                {symbol.is_async && <Badge variant="default">async</Badge>}
-                {symbol.complexity_estimate > 10 && (
-                  <Badge variant="stale">complexity {symbol.complexity_estimate}</Badge>
+                {data.identity.visibility &&
+                  data.identity.visibility !== "public" && (
+                    <Badge variant="default">{data.identity.visibility}</Badge>
+                  )}
+                {data.identity.is_async && <Badge variant="default">async</Badge>}
+                {data.identity.file_is_hotspot && (
+                  <Badge
+                    variant="outline"
+                    className="text-[var(--color-error)] border-[var(--color-error)]/30"
+                  >
+                    <Flame className="h-2.5 w-2.5" /> hot file
+                  </Badge>
                 )}
               </div>
             </div>
 
             <Separator />
 
-            <div className="flex min-h-0 flex-1 overflow-hidden" style={{ maxHeight: "calc(85vh - 120px)" }}>
-              <ScrollArea className="flex-1 min-w-0">
-                <div className="px-6 py-4 space-y-3">
-                  <div className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]">
-                    <pre className="p-4 text-xs font-mono text-[var(--color-text-primary)] whitespace-pre-wrap break-all">
-                      <code>{symbol.signature || symbol.name}</code>
-                    </pre>
-                  </div>
-
-                  {symbol.docstring && (
-                    <div className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-3">
-                      <p className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider mb-1.5">
-                        Docstring
-                      </p>
-                      <p className="text-sm text-[var(--color-text-secondary)] whitespace-pre-wrap">
-                        {symbol.docstring}
-                      </p>
-                    </div>
-                  )}
-
-                  {symbol.parent_name && (
-                    <p className="text-xs text-[var(--color-text-tertiary)]">
-                      Parent: <span className="font-mono text-[var(--color-text-secondary)]">{symbol.parent_name}</span>
-                    </p>
-                  )}
-                </div>
-              </ScrollArea>
-
-              {(graphPanel || gitPanel) && (
-                <div className="hidden md:flex flex-col border-l border-[var(--color-border-default)] bg-[var(--color-bg-surface)] w-[340px] shrink-0 overflow-hidden">
-                  <ScrollArea className="flex-1 min-h-0">
-                    {graphPanel}
-                    {graphPanel && gitPanel && <Separator />}
-                    {gitPanel}
-                  </ScrollArea>
-                </div>
-              )}
-            </div>
+            <ScrollArea className="max-h-[calc(85vh-120px)]">
+              <div className="px-6 py-4">
+                <SymbolDetailBody
+                  data={data}
+                  {...(metricsLoading != null ? { metricsLoading } : {})}
+                  {...(symbolHref ? { symbolHref } : {})}
+                  {...(fileHref ? { fileHref } : {})}
+                  {...(onOpenBlastRadius ? { onOpenBlastRadius } : {})}
+                />
+              </div>
+            </ScrollArea>
           </>
         )}
       </DialogContent>

@@ -1,6 +1,7 @@
 "use client";
 
 import type { ReactNode } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { FilePage, type FilePageTab, type FindingStatus } from "@repowise-dev/ui/files";
@@ -30,7 +31,7 @@ export function FilePageHost({
 
   const onTabChange = (tab: FilePageTab) => {
     const sp = new URLSearchParams(window.location.search);
-    if (tab === "doc") sp.delete("tab");
+    if (tab === "overview") sp.delete("tab");
     else sp.set("tab", tab);
     const qs = sp.toString();
     router.replace(qs ? `?${qs}` : window.location.pathname, { scroll: false });
@@ -46,10 +47,18 @@ export function FilePageHost({
     }
   };
 
+  const fileName = data.file_path.split("/").pop() || data.file_path;
+  const dir = data.file_path.slice(0, data.file_path.length - fileName.length).replace(/\/$/, "");
+
   return (
     <FilePage
       data={data}
       repoId={repoId}
+      LinkComponent={Link}
+      breadcrumb={[
+        ...(dir ? [{ label: dir }] : []),
+        { label: fileName },
+      ]}
       docSlot={docSlot}
       coverageCodeHtml={coverageCodeHtml}
       wikiHref={wikiHref}

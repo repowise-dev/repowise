@@ -47,6 +47,18 @@ export function formatRelativeTime(date: string | Date): string {
   return `${Math.floor(months / 12)}y ago`;
 }
 
+/** Relative time that tolerates null/invalid input, returning `fallback`
+ *  (default "—"). The single null-safe wrapper used by the owner surfaces. */
+export function formatRelativeTimeOrNull(
+  iso: string | null | undefined,
+  fallback = "—",
+): string {
+  if (!iso) return fallback;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime()) || d.getTime() > Date.now()) return fallback;
+  return formatRelativeTime(d);
+}
+
 /** Format a datetime to an absolute string: "Mar 19, 2026" */
 export function formatDate(date: string | Date): string {
   const d = typeof date === "string" ? new Date(date) : date;

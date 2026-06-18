@@ -5,23 +5,13 @@ import type { OwnerListEntry } from "@repowise-dev/types/owners";
 import { Card } from "../ui/card";
 import { Badge } from "../ui/badge";
 import { cn } from "../lib/cn";
+import { formatRelativeTimeOrNull } from "../lib/format";
 import { OwnerAvatar } from "./owner-avatar";
 
 interface OwnerCardProps {
   owner: OwnerListEntry;
   onSelect?: (owner: OwnerListEntry) => void;
   highlight?: boolean;
-}
-
-function timeAgo(iso: string | null): string {
-  if (!iso) return "—";
-  const ms = Date.now() - new Date(iso).getTime();
-  if (Number.isNaN(ms) || ms < 0) return "—";
-  const d = Math.floor(ms / 86_400_000);
-  if (d < 1) return "today";
-  if (d < 30) return `${d}d ago`;
-  if (d < 365) return `${Math.floor(d / 30)}mo ago`;
-  return `${Math.floor(d / 365)}y ago`;
 }
 
 /**
@@ -82,7 +72,7 @@ export function OwnerCard({ owner, onSelect, highlight }: OwnerCardProps) {
               <GitCommit className="h-3 w-3" />
               {owner.commit_count_90d} commits / 90d
             </span>
-            <span>last touched {timeAgo(owner.last_commit_at)}</span>
+            <span>last touched {formatRelativeTimeOrNull(owner.last_commit_at)}</span>
           </div>
         </div>
       </div>
