@@ -26,6 +26,15 @@ export interface SymbolPageProps {
  * Pure mapping of the route's `SymbolDetailResponse` onto the unified
  * `SymbolDetailData`. The drawer surface normalizes its `CodeSymbol` + graph
  * APIs into the same shape (in its web wrapper), so both render one body.
+ *
+ * The route populates every field its endpoint actually returns — symbol,
+ * graph (callers/callees + degrees), function-blame, governing decisions, and
+ * file_context. It deliberately leaves file-level git intelligence (git,
+ * co_changes, dead_code) and the graph-percentile / entry-point / heritage
+ * feeds undefined: `SymbolDetailResponse` does not carry them, so the body's
+ * presence-guards hide those blocks rather than the mapping fabricating data.
+ * Governing decisions are passed through and rendered inside `SymbolDetailBody`
+ * (not the header) so they appear exactly once on both surfaces.
  */
 export function normalizeSymbolDetailResponse(
   data: SymbolDetailResponse,
@@ -136,24 +145,6 @@ export function SymbolPage({
               {s.file_path}:{s.start_line}
             </a>
           </>
-        }
-        decisions={
-          data.governing_decisions.length > 0 ? (
-            <div className="flex flex-wrap items-center gap-1.5">
-              <span className="text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)]">
-                Governed by
-              </span>
-              {data.governing_decisions.map((d) => (
-                <a
-                  key={d.id}
-                  href={`${prefix}/decisions/${d.id}`}
-                  className="rounded border border-[var(--color-border-default)] px-1.5 py-0.5 text-xs text-[var(--color-text-secondary)] transition-colors hover:border-[var(--color-accent-primary)] hover:text-[var(--color-accent-primary)]"
-                >
-                  {d.title}
-                </a>
-              ))}
-            </div>
-          ) : undefined
         }
         {...(LinkComponent ? { LinkComponent } : {})}
       />

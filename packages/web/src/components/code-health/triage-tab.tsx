@@ -75,6 +75,7 @@ export function TriageTab({
   overlay = "health",
   onOverlayChange,
   mapFiles,
+  overlayLoading,
 }: {
   repoId: string;
   /** Trend fetched once at the page level — feeds the KPI sparklines. */
@@ -84,6 +85,8 @@ export function TriageTab({
   onOverlayChange?: (overlay: CodeHealthOverlay) => void;
   /** Map files fetched once at the page level (shared across overlays). */
   mapFiles?: HealthFilesResponse;
+  /** The active lens's per-file signal is still loading (e.g. churn). */
+  overlayLoading?: boolean;
 }) {
   const { data: overview, isLoading, error, mutate } = useSWR<HealthOverviewResponse>(
     `code-health-overview:${id}`,
@@ -298,6 +301,7 @@ export function TriageTab({
                   minHeight={664}
                   overlay={overlay}
                   onOverlayChange={onOverlayChange}
+                  overlayLoading={overlayLoading}
                 />
               )}
             </div>

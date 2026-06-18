@@ -117,10 +117,11 @@ export function ModuleIdentity({
 }: ModuleIdentityProps) {
   return (
     <div className="min-w-0">
-      <h1 className="flex items-center gap-2 text-2xl font-bold text-[var(--color-text-primary)]">
+      {/* Heading semantics live on EntityHeader's <h1>; this is the styled identity. */}
+      <div className="flex items-center gap-2 text-2xl font-bold text-[var(--color-text-primary)]">
         <Folder className="h-5 w-5 text-[var(--color-text-tertiary)] shrink-0" />
         <span className="truncate font-mono">{modulePath}</span>
-      </h1>
+      </div>
       <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">
         {fileCount} files · {symbolCount} symbols
         {contributorCount != null && ` · ${contributorCount} contributors`}

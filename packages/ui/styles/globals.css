@@ -103,7 +103,7 @@
   --color-success: #1d8155;
   --color-warning: #9a6614;
   --color-error: #b23a2e;
-  --color-info: #58436c;
+  --color-info: #3f6ea5; /* muted blue — distinct from the plum accent-secondary */
   --color-caution: #a8821f; /* between warning and success; medium severity / fair score band */
 
   /* Aliases — short names used in component class strings. Keep in sync. */
@@ -323,7 +323,7 @@
   --color-success: #34d399;
   --color-warning: #f2a03d;
   --color-error: #e06a5a;
-  --color-info: #a98fc4;
+  --color-info: #7da7d9; /* muted blue — distinct from the plum accent-secondary */
   --color-caution: #d9b04a;
 
   --color-node-undocumented: #6f6678;

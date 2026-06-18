@@ -44,13 +44,19 @@ export function ImpactEffortQuadrant({
   const plotW = W - padL - padR;
   const plotH = H - padT - padB;
   const maxImpact = Math.max(...data.map((d) => d.total_impact), 1);
+  const minImpact = Math.min(...data.map((d) => d.total_impact));
+  // When every impact is identical (or zero) the (max−impact)/max ratio would
+  // collapse every dot onto the top edge and degenerate the midline. Center the
+  // dots vertically instead so the plot stays readable.
+  const flatImpact = maxImpact === minImpact || maxImpact === 0;
 
   const xScale = (pct: number) => padL + (pct / 100) * plotW;
-  const yScale = (impact: number) => padT + ((maxImpact - impact) / maxImpact) * plotH;
+  const yScale = (impact: number) =>
+    flatImpact ? padT + plotH / 2 : padT + ((maxImpact - impact) / maxImpact) * plotH;
 
   // Quadrant midpoints — between M (38) and L (62), and at half impact.
   const midX = xScale(50);
-  const midY = yScale(maxImpact / 2);
+  const midY = flatImpact ? padT + plotH / 2 : yScale(maxImpact / 2);
 
   // Jitter helper so dots within the same effort bucket don't perfectly stack.
   const jitter = (s: string) => {

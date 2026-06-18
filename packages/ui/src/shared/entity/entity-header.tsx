@@ -9,6 +9,11 @@ export interface EntityHeaderProps {
   breadcrumb: BreadcrumbSegment[];
   /** Mono filename / kind-aware identity line. */
   identity: React.ReactNode;
+  /**
+   * Heading tag for the identity line. Defaults to `h1` (these are top-level
+   * detail-page headers); pass `h2` for a header nested under an existing `h1`.
+   */
+  identityAs?: "h1" | "h2";
   /** One-line "what is this" — wiki summary or signature fallback. */
   summary?: string;
   /** The single most important fact (health gauge / hotspot), aligned right. */
@@ -40,6 +45,7 @@ export function EntityHeader({
   eyebrow,
   breadcrumb,
   identity,
+  identityAs: IdentityTag = "h1",
   summary,
   primarySignal,
   metaBadges,
@@ -64,9 +70,9 @@ export function EntityHeader({
       )}
 
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0 text-lg font-semibold text-[var(--color-text-primary)]">
+        <IdentityTag className="min-w-0 text-lg font-semibold text-[var(--color-text-primary)]">
           {identity}
-        </div>
+        </IdentityTag>
         {primarySignal && <div className="shrink-0">{primarySignal}</div>}
       </div>
 

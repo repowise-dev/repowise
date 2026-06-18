@@ -10,8 +10,7 @@
  *   - deps     — the third-party dependency registry
  *
  * The curated layered view ("Knowledge Graph") is a separate top-level route
- * (`/knowledge-graph`); the legacy `?view=layers` / `?view=c4` aliases redirect
- * there.
+ * (`/knowledge-graph`); the legacy `?view=layers` alias redirects there.
  *
  * Communities and Explore are the SAME `GraphFlow` canvas differing only by
  * scope: Communities locks it to the constellation (radial) scope, Explore
@@ -31,12 +30,11 @@ import { SymbolIndexHeader } from "@repowise-dev/ui/symbols";
 import { COUPLING_DISCLAIMER } from "@repowise-dev/ui/coupling";
 import { CouplingTab } from "@/components/coupling/coupling-tab";
 
-// The curated layered view (and the frozen legacy C4 diagram) now live under
-// the dedicated Knowledge Graph route.
-const KNOWLEDGE_GRAPH_VIEWS = new Set(["layers", "c4"]);
+// The curated layered view now lives under the dedicated Knowledge Graph route.
+const KNOWLEDGE_GRAPH_VIEWS = new Set(["layers"]);
 
-// Accepted `?view=` values. "graph" and "c4"/"layers" are legacy aliases that
-// are normalized / redirected below; only the canonical tabs render a tab.
+// Accepted `?view=` values. "graph" and "layers" are legacy aliases that are
+// normalized / redirected below; only the canonical tabs render a tab.
 const VIEWS = [
   "map",
   "explore",
@@ -44,7 +42,6 @@ const VIEWS = [
   "symbols",
   "coupling",
   "graph",
-  "c4",
   "layers",
 ] as const;
 type ArchView = (typeof VIEWS)[number];
@@ -78,8 +75,8 @@ export default function ArchitecturePage({
   );
   const [viewModeParam] = useQueryState("viewMode");
 
-  // The curated layers view now lives at /knowledge-graph. `?view=layers` and
-  // `?view=c4` redirect there so shared links keep working.
+  // The curated layers view now lives at /knowledge-graph. `?view=layers`
+  // redirects there so shared links keep working.
   const redirectsToKnowledgeGraph = KNOWLEDGE_GRAPH_VIEWS.has(rawView);
   useEffect(() => {
     if (redirectsToKnowledgeGraph) {

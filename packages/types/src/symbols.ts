@@ -190,6 +190,8 @@ export interface SymbolDetailData {
   blame_owner_name?: string | null;
   blame_owner_line_pct?: number | null;
   graph?: SymbolBodyGraph | null;
+  /** Heritage relations (extends/implements + extended-by). Renders when present. */
+  heritage?: SymbolHeritage | null;
   git?: SymbolBodyGit | null;
   co_changes?: SymbolBodyCoChange[];
   dead_code?: SymbolBodyDeadFinding[];

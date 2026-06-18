@@ -15,6 +15,7 @@ import { FindingsBreakdownGrid } from "@repowise-dev/ui/dead-code/findings-break
 import { FindingsTable } from "@repowise-dev/ui/dead-code/findings-table";
 import { getDeadCodeSummary, listDeadCode, analyzeDeadCode, patchDeadCodeFinding } from "@/lib/api/dead-code";
 import type { DeadCodeFindingResponse, DeadCodeSummaryResponse } from "@/lib/api/types";
+import type { DeadCodeStatus } from "@repowise-dev/types/dead-code";
 
 export function DeadCodeTab({ repoId }: { repoId: string }) {
   const router = useRouter();
@@ -88,9 +89,9 @@ export function DeadCodeTab({ repoId }: { repoId: string }) {
   };
 
   // Row-level patch with optimistic undo toast; injected into the ui table.
-  const handlePatch = async (id: string, patch: { status: string }) => {
+  const handlePatch = async (id: string, patch: { status: DeadCodeStatus }) => {
     const finding = findingsList.find((f) => f.id === id);
-    const previousStatus = finding?.status ?? "open";
+    const previousStatus: DeadCodeStatus = finding?.status ?? "open";
     const updated = await patchDeadCodeFinding(id, patch);
     toast.success(`Finding ${patch.status.replace(/_/g, " ")}`, {
       action: {
@@ -109,15 +110,16 @@ export function DeadCodeTab({ repoId }: { repoId: string }) {
   };
 
   const handleBulkResolve = async (ids: string[]) => {
-    let succeeded = 0;
+    const succeededIds: string[] = [];
     for (const id of ids) {
       try {
         await patchDeadCodeFinding(id, { status: "resolved" });
-        succeeded += 1;
+        succeededIds.push(id);
       } catch {
         // continue; report partial below
       }
     }
+    const succeeded = succeededIds.length;
     if (succeeded === ids.length) {
       toast.success(`Resolved ${succeeded} finding${succeeded === 1 ? "" : "s"}`);
     } else if (succeeded > 0) {
@@ -125,7 +127,7 @@ export function DeadCodeTab({ repoId }: { repoId: string }) {
     } else {
       toast.error("Couldn't resolve findings");
     }
-    return succeeded;
+    return succeededIds;
   };
 
   return (

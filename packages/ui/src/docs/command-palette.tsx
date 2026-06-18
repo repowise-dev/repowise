@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Search, CornerDownLeft } from "lucide-react";
 import { cn } from "../lib/cn";
 import { getPageTypeIcon, getPageTypeLabel } from "../lib/page-types";
@@ -73,6 +73,10 @@ export function DocsCommandPalette({
   const [active, setActive] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const debounced = useDebounce(query, 120);
+  // Stable id base so the input's aria-activedescendant can point at the
+  // active option row (rows are keyed by page id, which is unique per hit).
+  const listboxId = useId();
+  const optionId = (pageId: string) => `${listboxId}-opt-${pageId}`;
 
   // Global ⌘K / Ctrl-K toggle.
   useEffect(() => {
@@ -203,6 +207,11 @@ export function DocsCommandPalette({
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={onInputKey}
             placeholder="Search pages by title, path, or content…"
+            role="combobox"
+            aria-expanded
+            aria-controls={listboxId}
+            aria-autocomplete="list"
+            aria-activedescendant={hits[active] ? optionId(hits[active].page.id) : undefined}
             className="flex-1 bg-transparent text-sm text-[var(--color-text-primary)] placeholder:text-[var(--color-text-tertiary)] outline-none"
           />
           <kbd className="rounded border border-[var(--color-border-default)] px-1.5 py-0.5 text-[10px] text-[var(--color-text-tertiary)]">
@@ -211,7 +220,12 @@ export function DocsCommandPalette({
         </div>
 
         {/* Results */}
-        <div className="max-h-[50vh] overflow-y-auto p-1.5">
+        <div
+          id={listboxId}
+          role="listbox"
+          aria-label="Search results"
+          className="max-h-[50vh] overflow-y-auto p-1.5"
+        >
           {debounced.trim().length < 2 ? (
             <p className="px-3 py-6 text-center text-xs text-[var(--color-text-tertiary)]">
               Type to search {pages.length} pages
@@ -226,6 +240,9 @@ export function DocsCommandPalette({
               return (
                 <button
                   key={hit.page.id}
+                  id={optionId(hit.page.id)}
+                  role="option"
+                  aria-selected={i === active}
                   onMouseEnter={() => setActive(i)}
                   onClick={() => choose(hit.page)}
                   className={cn(

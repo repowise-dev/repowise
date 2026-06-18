@@ -24,8 +24,8 @@ export interface FindingsTableProps {
   repoId: string;
   /** Injected mutation — host owns the API call, optimistic toast + undo. */
   onPatch: (id: string, patch: { status: DeadCodeStatus }) => Promise<DeadCodeFinding>;
-  /** Injected bulk resolve — host owns the toast/partial-failure messaging. Returns succeeded count. */
-  onBulkResolve?: (ids: string[]) => Promise<number>;
+  /** Injected bulk resolve — host owns the toast/partial-failure messaging. Returns the ids that actually resolved. */
+  onBulkResolve?: (ids: string[]) => Promise<string[]>;
   isLoading?: boolean;
 }
 
@@ -95,9 +95,9 @@ export function FindingsTable({ findings, repoId, onPatch, onBulkResolve, isLoad
     const ids = Array.from(selected);
     setBulkPending(true);
     try {
-      const succeeded = await onBulkResolve(ids);
-      // Reflect the resolved rows locally.
-      const resolvedIds = new Set(ids.slice(0, succeeded));
+      const succeededIds = await onBulkResolve(ids);
+      // Reflect only the rows that actually resolved — never a positional guess.
+      const resolvedIds = new Set(succeededIds);
       setOverrides((prev) => {
         const next = { ...prev };
         for (const f of merged) {
@@ -164,7 +164,15 @@ export function FindingsTable({ findings, repoId, onPatch, onBulkResolve, isLoad
         onConfirm={resolveSelected}
       />
 
-      <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as Kind)}>
+      <Tabs
+        value={activeTab}
+        onValueChange={(v) => {
+          setActiveTab(v as Kind);
+          // Selection is per-kind; clearing on tab change keeps "Resolve N
+          // selected" and the select-all checkbox scoped to the visible rows.
+          setSelected(new Set());
+        }}
+      >
         <TabsList>
           {TABS.map((t) => (
             <TabsTrigger key={t.value} value={t.value}>

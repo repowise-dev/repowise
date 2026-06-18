@@ -4,6 +4,8 @@ import {
   AlertTriangle,
   Flame,
   GitBranch,
+  Lightbulb,
+  Network,
   Radius,
   Skull,
   Users,
@@ -38,9 +40,19 @@ function ageDays(t: number | null | undefined): number | null {
 /**
  * The single symbol-detail body rendered by BOTH the drawer (modal) and the
  * routed page. Purely presentational — no routing, no data fetching. Every
- * intelligence block (graph metrics, call graph, git, co-changes, dead code,
- * decisions) renders when present and degrades silently when absent, so the
- * route no longer loses capabilities the drawer had.
+ * intelligence block (graph metrics, entry-point score, call graph, heritage,
+ * git/owner context, co-changes, dead code, governing decisions) is data-driven:
+ * it renders only when its feed is present and degrades silently when absent.
+ *
+ * The two surfaces differ in what they CAN supply, not in what the body can
+ * render. The drawer's web wrapper streams file-level git intelligence
+ * (git/co-changes/dead-code/entry-point/recent-owner/churn) from dedicated
+ * endpoints, so those blocks light up there. The routed endpoint
+ * (`SymbolDetailResponse`) omits file-level git intelligence by design — it
+ * carries symbol, graph (callers/callees), function-blame, governing decisions,
+ * and file_context — so the body simply hides the git/co-change/dead-code blocks
+ * on the route rather than fabricating them. Governing decisions render here for
+ * both surfaces so each fact appears exactly once.
  */
 export function SymbolDetailBody({
   data,
@@ -57,6 +69,10 @@ export function SymbolDetailBody({
   const fileTo = fileHref ? fileHref(id.file_path) : undefined;
   const coChanges = (data.co_changes ?? []).slice(0, 6);
   const deadCode = data.dead_code ?? [];
+  const heritage = data.heritage;
+  const heritageParents = heritage?.parents ?? [];
+  const heritageChildren = heritage?.children ?? [];
+  const governingDecisions = data.governing_decisions ?? [];
 
   return (
     <div className={cn("space-y-4", className)}>
@@ -104,7 +120,8 @@ export function SymbolDetailBody({
       {graph &&
         (graph.pagerank_percentile != null ||
           graph.betweenness_percentile != null ||
-          graph.community_label != null) && (
+          graph.community_label != null ||
+          (graph.entry_point_score != null && graph.entry_point_score > 0)) && (
           <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-3">
             <p className="mb-2 text-[10px] font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
               Graph metrics
@@ -121,6 +138,22 @@ export function SymbolDetailBody({
                 <Metric label="Community" value={graph.community_label} />
               )}
             </div>
+            {graph.entry_point_score != null && graph.entry_point_score > 0 && (
+              <div className="mt-2.5 flex items-center justify-between gap-2 text-xs">
+                <span className="text-[var(--color-text-tertiary)]">Entry point</span>
+                <div className="flex items-center gap-1.5">
+                  <div className="h-1.5 w-12 overflow-hidden rounded-full bg-[var(--color-bg-elevated)]">
+                    <div
+                      className="h-full rounded-full bg-[var(--color-accent-primary)]"
+                      style={{ width: `${Math.round(graph.entry_point_score * 100)}%` }}
+                    />
+                  </div>
+                  <span className="font-mono tabular-nums text-[var(--color-text-secondary)]">
+                    {(graph.entry_point_score * 100).toFixed(0)}%
+                  </span>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -136,6 +169,45 @@ export function SymbolDetailBody({
               callees={graph.callees}
               {...(symbolHref ? { symbolHref } : {})}
             />
+          )}
+        </div>
+      )}
+
+      {/* ── Heritage (extends / implements / extended-by) ── */}
+      {(heritageParents.length > 0 || heritageChildren.length > 0) && (
+        <div className="space-y-2 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-3">
+          <p className="flex items-center gap-1 text-[10px] font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
+            <Network className="h-3 w-3" /> Heritage
+          </p>
+          {heritageParents.length > 0 && (
+            <div className="space-y-1">
+              <p className="text-[10px] text-[var(--color-text-tertiary)]">Extends / implements</p>
+              {heritageParents.map((r) => (
+                <p
+                  key={`${r.kind}:${r.parent_id ?? r.parent_name}:${r.line}`}
+                  className="truncate pl-2 font-mono text-xs text-[var(--color-text-primary)]"
+                  title={r.parent_id ?? r.parent_name}
+                >
+                  {r.parent_name}
+                  <span className="ml-1 text-[var(--color-text-tertiary)]">({r.kind})</span>
+                </p>
+              ))}
+            </div>
+          )}
+          {heritageChildren.length > 0 && (
+            <div className="space-y-1">
+              <p className="text-[10px] text-[var(--color-text-tertiary)]">Extended / implemented by</p>
+              {heritageChildren.map((r) => (
+                <p
+                  key={`${r.kind}:${r.child_id ?? r.child_name}:${r.line}`}
+                  className="truncate pl-2 font-mono text-xs text-[var(--color-text-primary)]"
+                  title={r.child_id ?? r.child_name}
+                >
+                  {r.child_name}
+                  <span className="ml-1 text-[var(--color-text-tertiary)]">({r.kind})</span>
+                </p>
+              ))}
+            </div>
           )}
         </div>
       )}
@@ -180,12 +252,21 @@ export function SymbolDetailBody({
             )}
             {git.contributor_count != null && <span>{git.contributor_count} contributors</span>}
             {git.commit_count_90d != null && <span>{git.commit_count_90d} commits / 90d</span>}
+            {git.churn_percentile != null && (
+              <span>churn top {100 - Math.round(git.churn_percentile)}%</span>
+            )}
             {git.is_hotspot && (
               <span className="inline-flex items-center gap-0.5 rounded bg-[var(--color-error)]/15 px-1.5 py-0.5 text-[var(--color-error)]">
                 <Flame className="h-3 w-3" /> hotspot
               </span>
             )}
           </div>
+          {git.recent_owner_name && git.recent_owner_name !== git.primary_owner_name && (
+            <p className="text-[var(--color-text-tertiary)]">
+              Recent owner (90d):{" "}
+              <span className="text-[var(--color-text-secondary)]">{git.recent_owner_name}</span>
+            </p>
+          )}
         </div>
       )}
 
@@ -233,6 +314,30 @@ export function SymbolDetailBody({
                   <span className="text-[var(--color-text-tertiary)]">
                     — {f.reason} ({f.lines} lines)
                   </span>
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* ── Governing decisions (rendered here so BOTH surfaces show them once) ── */}
+      {governingDecisions.length > 0 && (
+        <div className="space-y-1.5">
+          <p className="flex items-center gap-1 text-[10px] font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
+            <Lightbulb className="h-3 w-3" /> Governing decisions
+          </p>
+          <ul className="space-y-1">
+            {governingDecisions.slice(0, 5).map((d) => (
+              <li
+                key={d.id}
+                className="flex items-center justify-between gap-2 text-xs text-[var(--color-text-secondary)]"
+              >
+                <span className="truncate" title={d.title}>
+                  {d.title}
+                </span>
+                <span className="shrink-0 text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)]">
+                  {d.status}
                 </span>
               </li>
             ))}

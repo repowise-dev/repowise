@@ -5,8 +5,12 @@ import { Card, CardContent } from "../ui/card";
 export interface MetricCardProps {
   label: string;
   value: React.ReactNode;
-  /** Signed change indicator. `positive` drives success/error colouring. */
-  delta?: { value: string; positive: boolean };
+  /**
+   * Signed change indicator. `positive` is a good-vs-bad flag (drives
+   * success/error colouring), not up-vs-down. Set `neutral` to render the
+   * change uncolored for metrics where growth carries no value judgement.
+   */
+  delta?: { value: string; positive: boolean; neutral?: boolean };
   /** Optional inline sparkline node, rendered beneath the value. */
   sparkline?: React.ReactNode;
   /** Optional distribution bar node, rendered beneath the value. */
@@ -60,12 +64,14 @@ export function MetricCard({
                 <span
                   className={cn(
                     "text-xs font-medium tabular-nums",
-                    delta.positive
-                      ? "text-[var(--color-success)]"
-                      : "text-[var(--color-error)]",
+                    delta.neutral
+                      ? "text-[var(--color-text-tertiary)]"
+                      : delta.positive
+                        ? "text-[var(--color-success)]"
+                        : "text-[var(--color-error)]",
                   )}
                 >
-                  {delta.positive ? "↑" : "↓"} {delta.value}
+                  {(delta.neutral ? "" : delta.positive ? "↑ " : "↓ ") + delta.value}
                 </span>
               )}
             </div>

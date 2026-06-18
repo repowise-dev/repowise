@@ -2,6 +2,8 @@
 // Dead Code
 // ---------------------------------------------------------------------------
 
+import type { DeadCodeStatus } from "@repowise-dev/types/dead-code";
+
 export interface DeadCodeFindingResponse {
   id: string;
   kind: string;
@@ -18,12 +20,12 @@ export interface DeadCodeFindingResponse {
   /** Human-readable signals behind the finding (no-importers, age, risk). */
   evidence: string[];
   primary_owner: string | null;
-  status: string;
+  status: DeadCodeStatus;
   note: string | null;
 }
 
 export interface DeadCodePatchRequest {
-  status: string;
+  status: DeadCodeStatus;
   note?: string;
 }
 

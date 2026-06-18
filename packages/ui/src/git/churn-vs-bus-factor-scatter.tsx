@@ -138,7 +138,7 @@ export function ChurnVsBusFactorScatter({
           y={padding.top}
           width={innerW * 0.5}
           height={innerH * 0.5}
-          fill="rgba(244, 63, 94, 0.06)"
+          fill="color-mix(in srgb, var(--color-error) 6%, transparent)"
         />
 
         {/* Axes */}
@@ -214,8 +214,8 @@ export function ChurnVsBusFactorScatter({
           const cx = padding.left + (p._x / 100) * innerW;
           const cy = padding.top + innerH - (p._y / 100) * innerH;
           const fill = p._danger
-            ? "rgba(244,63,94,0.7)"
-            : "rgba(245,158,11,0.45)";
+            ? "color-mix(in srgb, var(--color-error) 70%, transparent)"
+            : "color-mix(in srgb, var(--color-warning) 45%, transparent)";
           return (
             <g key={p.file_path}>
               <circle
@@ -223,7 +223,11 @@ export function ChurnVsBusFactorScatter({
                 cy={cy}
                 r={p._r}
                 fill={fill}
-                stroke={p._danger ? "rgba(244,63,94,0.9)" : "rgba(0,0,0,0.2)"}
+                stroke={
+                  p._danger
+                    ? "color-mix(in srgb, var(--color-error) 90%, transparent)"
+                    : "var(--color-border-default)"
+                }
                 strokeWidth={p._danger ? 1 : 0.5}
                 onClick={onSelect ? () => onSelect(p.file_path) : undefined}
                 style={{ cursor: onSelect ? "pointer" : "default" }}

@@ -48,7 +48,8 @@ export default async function OverviewPage({ params }: Props) {
       label: "Files",
       value: formatNumber(stats.file_count),
       href: `/repos/${id}/architecture?view=graph`,
-      delta: kpiDelta(stats.deltas.file_count),
+      // File-count growth is neutral, not "good" — render the delta uncolored.
+      delta: kpiDelta(stats.deltas.file_count, true),
     },
     {
       label: "Symbols",
@@ -82,6 +83,7 @@ export default async function OverviewPage({ params }: Props) {
     title: a.title,
     description: a.description,
     severity: a.severity,
+    target_id: a.target_id,
   }));
 
   const lastActivityAt = sync.last_sync_at ?? sync.last_resync_at ?? health.last_indexed_at;

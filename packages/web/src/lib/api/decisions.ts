@@ -4,7 +4,6 @@ import type {
   DecisionEvidence,
   DecisionEvidenceResponse,
   DecisionGraph,
-  DecisionHealthResponse,
   DecisionLineageEntry,
   DecisionLineageResponse,
   DecisionRecordResponse,
@@ -49,14 +48,6 @@ export async function patchDecision(
   return apiPatch<DecisionRecordResponse>(
     `/api/repos/${repoId}/decisions/${decisionId}`,
     data,
-  );
-}
-
-export async function getDecisionHealth(
-  repoId: string,
-): Promise<DecisionHealthResponse> {
-  return apiGet<DecisionHealthResponse>(
-    `/api/repos/${repoId}/decisions/health`,
   );
 }
 

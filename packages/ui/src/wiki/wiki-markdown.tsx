@@ -168,7 +168,7 @@ function buildComponents(
       const trimmed = code.replace(/\n$/, "");
 
       if (lang === "mermaid") {
-        return <MermaidDiagram chart={trimmed} />;
+        return <MermaidDiagram chart={trimmed} securityLevel="loose" />;
       }
 
       return <ClientCodeBlock code={trimmed} language={lang} />;

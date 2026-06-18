@@ -11,6 +11,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Badge } from "../ui/badge";
 import { stripMarkdown } from "../lib/format";
+import { fileEntityPath } from "../shared/entity/routes";
 
 export type AttentionItemType =
   | "stale_decision"
@@ -25,6 +26,9 @@ export interface AttentionItem {
   title: string;
   description: string;
   severity: "high" | "medium" | "low";
+  /** What the item points at — a decision id, file path, owner, … Used to
+   *  deep-link straight to the offending entity. */
+  target_id?: string;
   href?: string;
 }
 
@@ -59,14 +63,23 @@ interface AttentionPanelProps {
 }
 
 function getDefaultHref(item: AttentionItem, prefix: string): string {
+  const target = item.target_id;
   switch (item.type) {
     case "stale_decision":
     case "proposed_decision":
-      return `${prefix}/decisions`;
+      // Deep-link to the specific decision when we know which one.
+      return target
+        ? `${prefix}/decisions/${encodeURIComponent(target)}`
+        : `${prefix}/decisions`;
     case "knowledge_silo":
-      return `${prefix}/owners`;
+      // The silo target is the owning module/path — surface it on the owners
+      // view so the offending area is preselected.
+      return target
+        ? `${prefix}/owners?path=${encodeURIComponent(target)}`
+        : `${prefix}/owners`;
     case "ungoverned_hotspot":
-      return `${prefix}/code-health?tab=hotspots`;
+      // Target is the hotspot's file path → open its file entity page.
+      return target ? fileEntityPath(prefix, target) : `${prefix}/code-health?tab=hotspots`;
     case "dead_code":
       return `${prefix}/code-health?tab=dead-code`;
     default:

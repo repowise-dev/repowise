@@ -4,7 +4,7 @@ import { getRepoBreadcrumbSegmentLabel } from "./repo-breadcrumb-label";
 describe("getRepoBreadcrumbSegmentLabel", () => {
   it("keeps configured route segment labels", () => {
     expect(getRepoBreadcrumbSegmentLabel("dead-code")).toBe("Dead Code");
-    expect(getRepoBreadcrumbSegmentLabel("c4")).toBe("Knowledge Graph");
+    expect(getRepoBreadcrumbSegmentLabel("knowledge-graph")).toBe("Knowledge Graph");
   });
 
   it("decodes dynamic path segments for display", () => {

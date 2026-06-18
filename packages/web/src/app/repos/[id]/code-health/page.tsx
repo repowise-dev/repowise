@@ -116,11 +116,17 @@ export default function CodeHealthPage() {
   // Churn percentiles for the churn lens. Shares the SWR key the Hotspots tab
   // already uses (`health-churn-complexity:`), so the two surfaces dedupe onto
   // one request rather than double-fetching.
-  const { data: churn } = useSWR<ChurnComplexityResponse>(
+  const { data: churn, isLoading: churnLoading } = useSWR<ChurnComplexityResponse>(
     `health-churn-complexity:${repoId}`,
     () => getChurnComplexity(repoId),
     { revalidateOnFocus: false },
   );
+
+  // The churn lens recolors by `churn_percentile`, which arrives from a separate
+  // request. Until it resolves every node falls back to NEUTRAL_FILL — visually
+  // identical to "no data". Flag the in-flight state so the map shows a loading
+  // legend instead of a misleading empty one.
+  const overlayLoading = overlay === "churn" && churnLoading && !churn;
 
   // Merge churn_percentile onto each map file (join by path) so the churn lens
   // colors real data. Re-runs only when either source changes.
@@ -194,6 +200,7 @@ export default function CodeHealthPage() {
               overlay={overlay}
               onOverlayChange={setOverlay}
               mapFiles={mapFilesWithChurn}
+              overlayLoading={overlayLoading}
             />
             <CollapsibleSection title="Health trend" defaultOpen={false}>
               <TrendSection data={trend} isLoading={trendLoading} error={trendError} />

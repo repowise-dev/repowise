@@ -7,7 +7,7 @@
  * optional so consumer adapters don't lose information when normalising.
  */
 
-export type DeadCodeStatus = "open" | "wont_fix" | "deleted" | (string & {});
+export type DeadCodeStatus = "open" | "acknowledged" | "resolved" | "false_positive";
 
 export interface DeadCodeFinding {
   id: string;

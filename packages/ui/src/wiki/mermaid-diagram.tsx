@@ -4,8 +4,17 @@ import { useEffect, useRef, useState } from "react";
 import { Maximize2, X, ZoomIn, ZoomOut, RotateCcw } from "lucide-react";
 import { resolveToken, useThemeVersion } from "../shared/use-theme-tokens";
 
+type MermaidSecurityLevel = "strict" | "loose";
+
 interface MermaidDiagramProps {
   chart: string;
+  /**
+   * Mermaid's HTML/script sandbox level. Defaults to "strict" (the safe
+   * choice) so untrusted, LLM-authored content — e.g. rendered inline in
+   * chat — can't inject markup. The wiki renderer opts into "loose" for
+   * richer HTML labels in trusted, pipeline-generated diagrams.
+   */
+  securityLevel?: MermaidSecurityLevel;
 }
 
 /**
@@ -81,10 +90,12 @@ function mermaidThemeConfig() {
 
 let mermaidSignature = "";
 
-async function ensureMermaid() {
+async function ensureMermaid(securityLevel: MermaidSecurityLevel) {
   const { default: mermaid } = await import("mermaid");
   const config = mermaidThemeConfig();
-  const signature = JSON.stringify([config.themeVariables, config.themeCSS]);
+  // mermaid.initialize is global/singleton, so the security level is folded
+  // into the signature: a strict→loose (or palette) change reconfigures it.
+  const signature = JSON.stringify([config.themeVariables, config.themeCSS, securityLevel]);
   // Re-initialize when the resolved palette changes (i.e. on theme switch);
   // mermaid.initialize is global, so a new signature reconfigures it in place.
   if (signature !== mermaidSignature) {
@@ -108,14 +119,18 @@ async function ensureMermaid() {
       state: { useMaxWidth: false },
       class: { useMaxWidth: false },
       er: { useMaxWidth: false },
-      securityLevel: "loose",
+      securityLevel,
     });
     mermaidSignature = signature;
   }
   return mermaid;
 }
 
-function useMermaidRender(chart: string, target: HTMLDivElement | null) {
+function useMermaidRender(
+  chart: string,
+  target: HTMLDivElement | null,
+  securityLevel: MermaidSecurityLevel,
+) {
   const [error, setError] = useState<string | null>(null);
   // Bumped after every successful render so consumers (fit-to-viewport in the
   // dialog) can react once the SVG actually exists.
@@ -126,7 +141,7 @@ function useMermaidRender(chart: string, target: HTMLDivElement | null) {
     if (!target) return;
     let cancelled = false;
     setError(null);
-    ensureMermaid().then((mermaid) => {
+    ensureMermaid(securityLevel).then((mermaid) => {
       const id = `mermaid-${Math.random().toString(36).slice(2)}`;
       mermaid
         .render(id, chart)
@@ -149,7 +164,7 @@ function useMermaidRender(chart: string, target: HTMLDivElement | null) {
     return () => {
       cancelled = true;
     };
-  }, [chart, target, themeVersion]);
+  }, [chart, target, themeVersion, securityLevel]);
 
   return { error, renderTick };
 }
@@ -173,13 +188,21 @@ const GRID_BACKGROUND: React.CSSProperties = {
   backgroundSize: "24px 24px",
 };
 
-function MaximizedDialog({ chart, onClose }: { chart: string; onClose: () => void }) {
+function MaximizedDialog({
+  chart,
+  securityLevel,
+  onClose,
+}: {
+  chart: string;
+  securityLevel: MermaidSecurityLevel;
+  onClose: () => void;
+}) {
   const [container, setContainer] = useState<HTMLDivElement | null>(null);
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<{ startX: number; startY: number; panX: number; panY: number } | null>(null);
-  const { error, renderTick } = useMermaidRender(chart, container);
+  const { error, renderTick } = useMermaidRender(chart, container, securityLevel);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -327,10 +350,10 @@ function MaximizedDialog({ chart, onClose }: { chart: string; onClose: () => voi
   );
 }
 
-export function MermaidDiagram({ chart }: MermaidDiagramProps) {
+export function MermaidDiagram({ chart, securityLevel = "strict" }: MermaidDiagramProps) {
   const [container, setContainer] = useState<HTMLDivElement | null>(null);
   const [maximized, setMaximized] = useState(false);
-  const { error } = useMermaidRender(chart, container);
+  const { error } = useMermaidRender(chart, container, securityLevel);
 
   if (error) {
     return (
@@ -364,7 +387,13 @@ export function MermaidDiagram({ chart }: MermaidDiagramProps) {
         </div>
       </figure>
 
-      {maximized && <MaximizedDialog chart={chart} onClose={() => setMaximized(false)} />}
+      {maximized && (
+        <MaximizedDialog
+          chart={chart}
+          securityLevel={securityLevel}
+          onClose={() => setMaximized(false)}
+        />
+      )}
     </>
   );
 }

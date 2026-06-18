@@ -120,16 +120,3 @@ export interface DecisionStatusUpdate {
   affected_modules?: string[];
   affected_files?: string[];
 }
-
-export interface DecisionHealthResponse {
-  summary: {
-    active: number;
-    proposed: number;
-    deprecated: number;
-    superseded: number;
-    stale: number;
-  };
-  stale_decisions: DecisionRecordResponse[];
-  proposed_awaiting_review: DecisionRecordResponse[];
-  ungoverned_hotspots: string[];
-}

@@ -5,15 +5,33 @@ export interface KpiItem {
   label: string;
   value: string;
   href: string;
-  delta?: { value: string; positive: boolean };
+  /**
+   * `positive` is a *good-vs-bad* flag (green/up vs red/down), NOT up-vs-down:
+   * a metric can grow while still being neutral or bad. Set `neutral` to render
+   * the delta uncolored for metrics where a change carries no value judgement
+   * (e.g. file-count growth).
+   */
+  delta?: { value: string; positive: boolean; neutral?: boolean };
   /** 0–100 fill for a mini gauge bar beneath the value (e.g. coverage %). */
   gauge?: number;
 }
 
-/** Builds a signed delta descriptor from a raw numeric change. */
-export function kpiDelta(delta: number | null | undefined): KpiItem["delta"] {
+/**
+ * Builds a signed delta descriptor from a raw numeric change.
+ *
+ * `neutral` renders the delta uncolored — use it when a positive change is not
+ * inherently "good" (the color semantics are good-vs-bad, not up-vs-down).
+ */
+export function kpiDelta(
+  delta: number | null | undefined,
+  neutral = false,
+): KpiItem["delta"] {
   if (delta == null || delta === 0) return undefined;
-  return { value: `${delta > 0 ? "+" : ""}${delta}`, positive: delta > 0 };
+  return {
+    value: `${delta > 0 ? "+" : ""}${delta}`,
+    positive: delta > 0,
+    ...(neutral ? { neutral: true } : {}),
+  };
 }
 
 function Gauge({ value }: { value: number }) {

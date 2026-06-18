@@ -47,6 +47,12 @@ export interface CodeHealthMapProps {
   overlay?: CodeHealthOverlay;
   /** When provided, an on-canvas lens switcher is rendered. */
   onOverlayChange?: (overlay: CodeHealthOverlay) => void;
+  /**
+   * The active overlay's per-file signal is still loading. When true the legend
+   * shows a "loading…" note instead of its bands, so an all-neutral field reads
+   * as "fetching data" rather than "no data".
+   */
+  overlayLoading?: boolean;
 }
 
 /* Band → SVG fill var(). Same ramp as every score pill on the surface:
@@ -243,6 +249,7 @@ export function CodeHealthMap({
   minHeight = 640,
   overlay = "health",
   onOverlayChange,
+  overlayLoading = false,
 }: CodeHealthMapProps) {
   const overlaySpec = OVERLAY_SPECS[overlay] ?? OVERLAY_SPECS.health;
   const containerRef = useRef<HTMLDivElement>(null);
@@ -368,7 +375,7 @@ export function CodeHealthMap({
         width={dims.width}
         height={dims.height}
         role="img"
-        aria-label="Code universe: modules as galaxies, files radiating from each hub, sized by lines of code and colored by health"
+        aria-label={`Code universe: modules as galaxies, files radiating from each hub, sized by lines of code and colored by ${overlaySpec.label.toLowerCase()}`}
         className="block"
       >
         <defs>
@@ -559,17 +566,24 @@ export function CodeHealthMap({
         <div className="mb-1.5 font-medium text-[var(--color-text-secondary)]">
           {overlaySpec.label}
         </div>
-        <div className="flex flex-col gap-1">
-          {overlaySpec.legend.map((row) => (
-            <span
-              key={row.label}
-              className="flex items-center gap-1.5 text-[var(--color-text-tertiary)]"
-            >
-              <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: row.fill }} />
-              {row.label}
-            </span>
-          ))}
-        </div>
+        {overlayLoading ? (
+          <div className="flex items-center gap-1.5 text-[var(--color-text-tertiary)]">
+            <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-[var(--color-text-tertiary)]" />
+            loading {overlaySpec.label.toLowerCase()}…
+          </div>
+        ) : (
+          <div className="flex flex-col gap-1">
+            {overlaySpec.legend.map((row) => (
+              <span
+                key={row.label}
+                className="flex items-center gap-1.5 text-[var(--color-text-tertiary)]"
+              >
+                <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: row.fill }} />
+                {row.label}
+              </span>
+            ))}
+          </div>
+        )}
         <div className="mt-2 border-t border-[var(--color-border-default)] pt-1.5 text-[var(--color-text-tertiary)]">
           {overlaySpec.caption}
           <br />

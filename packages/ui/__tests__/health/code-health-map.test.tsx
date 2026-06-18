@@ -96,4 +96,26 @@ describe("CodeHealthMap", () => {
     expect(getByText("Health")).toBeInTheDocument();
     expect(getByText(/galaxy = module/i)).toBeInTheDocument();
   });
+
+  it("renders the coverage legend under the coverage lens", () => {
+    const { getByText } = render(
+      <CodeHealthMap files={[f("a.py", 30, "core")]} overlay="coverage" />,
+    );
+    // Coverage caption + a coverage-specific legend band identify the lens.
+    expect(getByText(/line coverage/i)).toBeInTheDocument();
+    expect(getByText("≥80%")).toBeInTheDocument();
+  });
+
+  it("fires onOverlayChange when a lens-switch button is clicked", () => {
+    const onOverlayChange = vi.fn();
+    const { getByRole } = render(
+      <CodeHealthMap
+        files={[f("a.py", 30, "core")]}
+        onOverlayChange={onOverlayChange}
+      />,
+    );
+    // The lens switcher renders one toggle button per lens; click "Churn".
+    fireEvent.click(getByRole("button", { name: "Churn" }));
+    expect(onOverlayChange).toHaveBeenCalledWith("churn");
+  });
 });
