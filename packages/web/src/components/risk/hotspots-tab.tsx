@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import useSWR from "swr";
 import { useFileCardHost } from "@/components/shared/file-card-host";
 import { HotspotTopSymbolsHost } from "@/components/symbols/hotspot-top-symbols-host";
@@ -13,15 +13,16 @@ import { ChurnHistogram } from "@repowise-dev/ui/git/churn-histogram";
 import { CommitCategoryDonut } from "@repowise-dev/ui/git/commit-category-donut";
 import { RiskDistributionChart } from "@repowise-dev/ui/git/risk-distribution-chart";
 import { ChurnVsBusFactorScatter } from "@repowise-dev/ui/git/churn-vs-bus-factor-scatter";
-import { ChurnComplexityQuadrant } from "@repowise-dev/ui/health/churn-complexity-quadrant";
+import {
+  CodeHealthMap,
+  type CodeHealthOverlay,
+} from "@repowise-dev/ui/health/code-health-map";
 import { Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui/card";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 import { getHotspotsPage } from "@/lib/api/git";
-import { getChurnComplexity } from "@/lib/api/code-health";
-import type { ChurnComplexityResponse } from "@/lib/api/code-health";
+import { getChurnComplexity, listHealthFiles } from "@/lib/api/code-health";
+import type { ChurnComplexityResponse, HealthFilesResponse } from "@/lib/api/code-health";
 import type { HotspotResponse } from "@/lib/api/types";
-
-type ChurnView = "complexity" | "bus-factor";
 
 const PAGE_SIZE = 100;
 
@@ -29,14 +30,46 @@ export function HotspotsTab({ repoId }: { repoId: string }) {
   const { showFile, dialog } = useFileCardHost(repoId);
   const [pageLimit, setPageLimit] = useState(PAGE_SIZE);
   const [drawerSymbol, setDrawerSymbol] = useState<SymbolResponse | null>(null);
-  // Default to churn x complexity: complexity is more universally legible than
-  // bus factor, so it makes the friendlier first read of the danger zone.
-  const [churnView, setChurnView] = useState<ChurnView>("complexity");
-  const { data: churnComplexity } = useSWR<ChurnComplexityResponse>(
-    `health-churn-complexity:${repoId}`,
-    () => getChurnComplexity(repoId),
-    { revalidateOnFocus: false, keepPreviousData: true },
+  // The galaxy map opens on the churn lens here — this is the hotspots surface,
+  // so "what changes most" is the first read; the switcher still offers
+  // health/coverage for cross-reference.
+  const [overlay, setOverlay] = useState<CodeHealthOverlay>("churn");
+  const { data: churnComplexity, isLoading: loadingChurn } =
+    useSWR<ChurnComplexityResponse>(
+      `health-churn-complexity:${repoId}`,
+      () => getChurnComplexity(repoId),
+      { revalidateOnFocus: false, keepPreviousData: true },
+    );
+
+  // Same payload + SWR key the triage page uses for its galaxy map, so the two
+  // surfaces dedupe onto one request instead of double-fetching.
+  const { data: mapFiles } = useSWR<HealthFilesResponse>(
+    `code-health-map-files:${repoId}`,
+    () => listHealthFiles(repoId, { limit: 2000, sort: "nloc", order: "desc" }),
+    { revalidateOnFocus: false },
   );
+
+  // The churn lens recolors by `churn_percentile`, which rides on the separate
+  // churn request. Until it lands every node is neutral — flag that so the map
+  // reads as "loading" rather than "no data".
+  const overlayLoading = overlay === "churn" && loadingChurn && !churnComplexity;
+
+  // Join churn percentiles onto the map files (by path) so the churn lens colors
+  // real data; recomputes only when either source changes.
+  const mapFilesWithChurn: HealthFilesResponse | undefined = useMemo(() => {
+    if (!mapFiles) return undefined;
+    if (!churnComplexity) return mapFiles;
+    const byPath = new Map(
+      churnComplexity.points.map((p) => [p.file_path, p.churn_percentile]),
+    );
+    return {
+      ...mapFiles,
+      files: mapFiles.files.map((file) => ({
+        ...file,
+        churn_percentile: byPath.get(file.file_path) ?? null,
+      })),
+    };
+  }, [mapFiles, churnComplexity]);
   const {
     data: hotspotsPage,
     isLoading: loadingHotspots,
@@ -100,6 +133,37 @@ export function HotspotsTab({ repoId }: { repoId: string }) {
       )}
 
       {list.length > 0 && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">Code health map</CardTitle>
+            <p className="text-xs text-[var(--color-text-tertiary)]">
+              Files clustered into module galaxies — dot size is NLOC, color is the
+              chosen lens. On churn, the brightest nodes are your hottest files;
+              switch lenses to cross-reference health or coverage. Click a file to
+              inspect it.
+            </p>
+          </CardHeader>
+          <CardContent className="pt-0">
+            {!mapFilesWithChurn ? (
+              <Skeleton className="h-[420px] w-full" />
+            ) : (
+              <CodeHealthMap
+                files={mapFilesWithChurn.files}
+                overlay={overlay}
+                onOverlayChange={setOverlay}
+                overlayLoading={overlayLoading}
+                minHeight={420}
+                onSelectFile={(path) => {
+                  const hit = list.find((h) => h.file_path === path);
+                  showFile(hit ? hotspotToFileCard(hit) : { file_path: path });
+                }}
+              />
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {list.length > 0 && (
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
           <Card>
             <CardHeader className="pb-2">
@@ -115,62 +179,20 @@ export function HotspotsTab({ repoId }: { repoId: string }) {
 
           <Card>
             <CardHeader className="pb-2">
-              <div className="flex items-center justify-between gap-2">
-                <CardTitle className="text-sm">
-                  {churnView === "complexity" ? "Churn × complexity" : "Churn × bus factor"}
-                </CardTitle>
-                <div
-                  className="inline-flex shrink-0 rounded-md border border-[var(--color-border-default)] p-0.5 text-xs"
-                  role="tablist"
-                  aria-label="Churn scatter view"
-                >
-                  {(
-                    [
-                      ["complexity", "Complexity"],
-                      ["bus-factor", "Bus factor"],
-                    ] as [ChurnView, string][]
-                  ).map(([value, label]) => (
-                    <button
-                      key={value}
-                      type="button"
-                      role="tab"
-                      aria-selected={churnView === value}
-                      onClick={() => setChurnView(value)}
-                      className={`rounded px-2 py-0.5 transition-colors ${
-                        churnView === value
-                          ? "bg-[var(--color-bg-elevated)] text-[var(--color-text-primary)]"
-                          : "text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]"
-                      }`}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
-              </div>
+              <CardTitle className="text-sm">Churn × bus factor</CardTitle>
               <p className="text-xs text-[var(--color-text-tertiary)]">
-                {churnView === "complexity"
-                  ? "Top-right is the refactor zone: files that change often AND are complex. Dot size is NLOC, color is health."
-                  : "Top-right is the danger zone: high churn and a single owner. Bubble size reflects 90-day commit count."}
+                Top-right is the danger zone: high churn and a single owner. Bubble
+                size reflects 90-day commit count.
               </p>
             </CardHeader>
             <CardContent className="pt-0">
-              {churnView === "complexity" ? (
-                <ChurnComplexityQuadrant
-                  points={churnComplexity?.points ?? []}
-                  onSelect={(p) => {
-                    const hit = list.find((h) => h.file_path === p.file_path);
-                    showFile(hit ? hotspotToFileCard(hit) : { file_path: p.file_path });
-                  }}
-                />
-              ) : (
-                <ChurnVsBusFactorScatter
-                  hotspots={list}
-                  onSelect={(path) => {
-                    const hit = list.find((h) => h.file_path === path);
-                    if (hit) showFile(hotspotToFileCard(hit));
-                  }}
-                />
-              )}
+              <ChurnVsBusFactorScatter
+                hotspots={list}
+                onSelect={(path) => {
+                  const hit = list.find((h) => h.file_path === path);
+                  if (hit) showFile(hotspotToFileCard(hit));
+                }}
+              />
             </CardContent>
           </Card>
         </div>
