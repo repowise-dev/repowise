@@ -26,3 +26,4 @@ export * from "./overview.js";
 export * from "./files.js";
 export * from "./external-systems.js";
 export * from "./health.js";
+export * from "./coupling.js";

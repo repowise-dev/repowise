@@ -354,6 +354,47 @@ files list.
 
 ---
 
+## `coupling/*` — Change-coupling visualisation
+
+Renders the repo-wide change-coupling graph (files that change together).
+Pure presentation over `@repowise-dev/types/coupling`; fetching belongs to
+the caller. Co-change is a temporal hint, not a verified dependency, and
+`strength` is a decay-weighted count (never a percentage or a trend).
+
+### `coupling/coupling-graph` — `CouplingGraph`
+
+Hierarchical edge-bundling diagram (`d3-hierarchy` radial cluster +
+`d3-shape` `curveBundle`). Files sit on a ring grouped by their directory
+hierarchy; bundled arcs link files that change together. Dots are colored by
+health band and sized by lines + coupling degree. Hovering a file lifts its
+couplings (colored by the partner's health band) and dims the rest. Focus is
+controllable (`focusedPath`/`onFocusChange`) for cross-highlight with a table,
+or falls back to internal hover state.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `nodes` | `CouplingNode[]` (`@repowise-dev/types/coupling`) | yes |
+| `edges` | `CouplingEdge[]` (`@repowise-dev/types/coupling`) | yes |
+| `totalEdges` | `number` (pre-cap count, for the "showing N of M" line) | no |
+| `focusedPath` | `string \| null` (controlled focus) | no |
+| `onFocusChange` | `(path: string \| null) => void` | no |
+| `size` | `number` (square viewBox edge, default 760) | no |
+
+### `coupling/coupling-table` — `CouplingTable`
+
+The precise, ranked companion to the diagram: one row per coupling
+(strongest first) with a strength bar and last-shared-commit date. Clicking a
+row toggles focus on that file; rows incident to the focused file are
+emphasised. Uses `shared/responsive-table`.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `edges` | `CouplingEdge[]` (`@repowise-dev/types/coupling`) | yes |
+| `focusedPath` | `string \| null` | no |
+| `onFocusChange` | `(path: string \| null) => void` | no |
+
+---
+
 ## `jobs/job-log` — `JobLog`
 
 Auto-scrolling fixed-height log viewer for streaming job progress

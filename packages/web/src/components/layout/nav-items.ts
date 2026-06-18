@@ -21,6 +21,7 @@ import {
   MessageSquare,
   Settings,
   Users,
+  Waypoints,
 } from "lucide-react";
 
 export interface NavItem {
@@ -56,6 +57,7 @@ export function repoNavGroups(repoId: string): NavGroup[] {
         { label: "Docs", href: `${base}/docs`, icon: BookOpen },
         { label: "Architecture", href: `${base}/architecture`, icon: Boxes },
         { label: "Code Health", href: `${base}/code-health`, icon: HeartPulse },
+        { label: "Coupling", href: `${base}/coupling`, icon: Waypoints },
       ],
     },
     {
