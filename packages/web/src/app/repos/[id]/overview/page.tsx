@@ -4,18 +4,18 @@ import { Hash } from "lucide-react";
 import { getOverviewSummary } from "@/lib/api/overview";
 import { getProviders } from "@/lib/api/providers";
 import { Badge } from "@repowise-dev/ui/ui/badge";
-import { StatCard } from "@repowise-dev/ui/shared/stat-card";
+import { Card } from "@repowise-dev/ui/ui/card";
 import { EmptyState } from "@repowise-dev/ui/shared";
 import { HealthScoreBadge } from "@repowise-dev/ui/dashboard/health-score-badge";
-import { AttentionPanel } from "@repowise-dev/ui/dashboard/attention-panel";
+import { HealthOverviewCard } from "@repowise-dev/ui/dashboard/health-overview-card";
 import { WhereToStartCard } from "@repowise-dev/ui/dashboard/where-to-start";
 import { SavingsMini } from "@repowise-dev/ui/dashboard/savings-mini";
 import { LanguageDonut } from "@repowise-dev/ui/dashboard/language-donut";
 import { QuickActionsWrapper as QuickActions } from "@/components/dashboard/quick-actions-wrapper";
 import { OverviewTabs } from "@/components/overview/overview-tabs";
+import { ContributorsStripCard } from "@/components/overview/contributors-strip-card";
 import { computeHealthScore } from "@/lib/utils/health-score";
 import { formatNumber, formatRelativeTime } from "@repowise-dev/ui/lib/format";
-import type { AttentionItem } from "@repowise-dev/ui/dashboard/attention-panel";
 
 export const metadata: Metadata = { title: "Overview" };
 
@@ -31,12 +31,54 @@ async function safeFetch<T>(fn: () => Promise<T>): Promise<T | null> {
   }
 }
 
-function trendFor(delta: number | null | undefined, suffix = "") {
+interface Kpi {
+  label: string;
+  value: string;
+  href: string;
+  delta?: { value: string; positive: boolean };
+}
+
+function kpiDelta(delta: number | null | undefined): Kpi["delta"] {
   if (delta == null || delta === 0) return undefined;
-  return {
-    value: `${delta > 0 ? "+" : ""}${delta}${suffix}`,
-    positive: delta > 0,
-  };
+  return { value: `${delta > 0 ? "+" : ""}${delta}`, positive: delta > 0 };
+}
+
+/** Aligned enterprise-style KPI bar — one card, evenly divided cells. */
+function KpiStrip({ items }: { items: Kpi[] }) {
+  return (
+    <Card className="overflow-hidden shadow-sm">
+      <div className="grid grid-cols-2 divide-x divide-y divide-[var(--color-border-default)] sm:grid-cols-3 sm:divide-y-0 lg:grid-cols-5">
+        {items.map((kpi) => (
+          <a
+            key={kpi.label}
+            href={kpi.href}
+            className="group flex flex-col gap-1 px-4 py-3.5 transition-colors hover:bg-[var(--color-bg-elevated)]"
+          >
+            <span className="text-[11px] font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
+              {kpi.label}
+            </span>
+            <span className="flex items-baseline gap-1.5">
+              <span className="text-2xl font-bold tabular-nums leading-none text-[var(--color-text-primary)] group-hover:text-[var(--color-accent-primary)] transition-colors">
+                {kpi.value}
+              </span>
+              {kpi.delta && (
+                <span
+                  className="text-xs font-medium tabular-nums"
+                  style={{
+                    color: kpi.delta.positive
+                      ? "var(--color-success)"
+                      : "var(--color-error)",
+                  }}
+                >
+                  {kpi.delta.positive ? "↑" : "↓"} {kpi.delta.value}
+                </span>
+              )}
+            </span>
+          </a>
+        ))}
+      </div>
+    </Card>
+  );
 }
 
 export default async function OverviewPage({ params }: Props) {
@@ -48,7 +90,7 @@ export default async function OverviewPage({ params }: Props) {
   ]);
   if (!summary) notFound();
 
-  const { repo, stats, health, attention, sync } = summary;
+  const { repo, stats, health, sync } = summary;
   const isFresh = stats.file_count === 0;
 
   const healthScore = computeHealthScore({
@@ -62,17 +104,34 @@ export default async function OverviewPage({ params }: Props) {
     totalModules: stats.module_count || 1,
   });
 
-  const attentionItems: AttentionItem[] = attention.map((a) => ({
-    id: a.id,
-    type: a.type,
-    title: a.title,
-    description: a.description,
-    severity: a.severity,
-    href:
-      a.type === "stale_decision" || a.type === "proposed_decision"
-        ? `/repos/${id}/decisions/${a.target_id}`
-        : undefined,
-  }));
+  const kpis: Kpi[] = [
+    {
+      label: "Files",
+      value: formatNumber(stats.file_count),
+      href: `/repos/${id}/architecture?view=graph`,
+      delta: kpiDelta(stats.deltas.file_count),
+    },
+    {
+      label: "Symbols",
+      value: formatNumber(stats.symbol_count),
+      href: `/repos/${id}/architecture?view=symbols`,
+    },
+    {
+      label: "Doc Coverage",
+      value: `${Math.round(stats.doc_coverage_pct)}%`,
+      href: `/repos/${id}/docs/coverage`,
+    },
+    {
+      label: "Dead Exports",
+      value: formatNumber(stats.dead_export_count),
+      href: `/repos/${id}/code-health?tab=dead-code`,
+    },
+    {
+      label: "Hotspots",
+      value: formatNumber(stats.hotspot_count),
+      href: `/repos/${id}/code-health?tab=hotspots`,
+    },
+  ];
 
   const langDistribution: Record<string, number> = {};
   for (const l of summary.languages) langDistribution[l.language] = l.file_count;
@@ -137,50 +196,24 @@ export default async function OverviewPage({ params }: Props) {
         />
       ) : (
         <>
-          {/* ── Attention strip leads ── */}
+          {/* ── KPI bar leads ── */}
+          <KpiStrip items={kpis} />
+
+          {/* ── Code Health (our moat) leads, with onboarding + savings rail ── */}
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-            <div className="lg:col-span-2">
-              <AttentionPanel items={attentionItems} repoId={id} />
+            <div className="space-y-4 lg:col-span-2">
+              <HealthOverviewCard
+                data={health}
+                repoId={id}
+                averageDelta={stats.deltas.average_health}
+                hotspotDelta={stats.deltas.hotspot_health}
+              />
+              <ContributorsStripCard repoId={id} />
             </div>
             <div className="space-y-4">
               <WhereToStartCard targets={summary.onboarding_targets} repoId={id} />
               <SavingsMini data={summary.savings} repoId={id} />
             </div>
-          </div>
-
-          {/* ── Stat strip with deltas ── */}
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
-            <StatCard
-              label="Files"
-              value={formatNumber(stats.file_count)}
-              trend={trendFor(stats.deltas.file_count)}
-              href={`/repos/${id}/architecture?view=graph`}
-              dense
-            />
-            <StatCard
-              label="Symbols"
-              value={formatNumber(stats.symbol_count)}
-              href={`/repos/${id}/architecture?view=symbols`}
-              dense
-            />
-            <StatCard
-              label="Doc Coverage"
-              value={`${Math.round(stats.doc_coverage_pct)}%`}
-              href={`/repos/${id}/docs/coverage`}
-              dense
-            />
-            <StatCard
-              label="Dead Exports"
-              value={formatNumber(stats.dead_export_count)}
-              href={`/repos/${id}/code-health?tab=dead-code`}
-              dense
-            />
-            <StatCard
-              label="Hotspots"
-              value={formatNumber(stats.hotspot_count)}
-              href={`/repos/${id}/code-health?tab=hotspots`}
-              dense
-            />
           </div>
 
           {/* ── Pulse / Structure ── */}

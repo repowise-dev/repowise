@@ -66,7 +66,7 @@ export function SavingsMini({ data, repoId, langDistribution, langHref }: Saving
   if (langOther > 0) langShown.push({ name: "other", value: langOther });
 
   return (
-    <Card className="h-full">
+    <Card>
       <CardHeader className="pb-2">
         <CardTitle className="text-sm flex items-center justify-between">
           <span className="flex items-center gap-2">
@@ -118,19 +118,23 @@ export function SavingsMini({ data, repoId, langDistribution, langHref }: Saving
                 />
               )}
             </div>
-            <div className="flex items-center justify-between text-[11px]">
-              <span className="flex items-center gap-1.5 text-[var(--color-text-secondary)]">
-                <span className="h-2 w-2 rounded-full bg-cyan-500" /> Distill
-                <span className="tabular-nums text-[var(--color-text-tertiary)]">
+            <div className="space-y-1 text-[11px]">
+              <div className="flex items-center justify-between gap-2">
+                <span className="flex items-center gap-1.5 text-[var(--color-text-secondary)] whitespace-nowrap">
+                  <span className="h-2 w-2 rounded-full bg-cyan-500 shrink-0" /> Distill
+                </span>
+                <span className="tabular-nums text-[var(--color-text-tertiary)] shrink-0">
                   {formatTokens(distillSaved)}
                 </span>
-              </span>
-              <span className="flex items-center gap-1.5 text-[var(--color-text-secondary)]">
-                <span className="h-2 w-2 rounded-full bg-violet-500" /> MCP
-                <span className="tabular-nums text-[var(--color-text-tertiary)]">
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <span className="flex items-center gap-1.5 text-[var(--color-text-secondary)] whitespace-nowrap">
+                  <span className="h-2 w-2 rounded-full bg-violet-500 shrink-0" /> MCP tools
+                </span>
+                <span className="tabular-nums text-[var(--color-text-tertiary)] shrink-0">
                   {formatTokens(mcpSaved)}
                 </span>
-              </span>
+              </div>
             </div>
           </div>
         ) : (

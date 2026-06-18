@@ -6,6 +6,7 @@ export * from "./co-change-list";
 export * from "./commit-category-donut";
 export * from "./commit-category-sparkline";
 export * from "./contributor-bar";
+export * from "./contributors-strip";
 export * from "./contributor-network";
 export * from "./hotspot-table";
 export * from "./ownership-table";

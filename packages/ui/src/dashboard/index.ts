@@ -2,6 +2,7 @@ export * from "./attention-panel";
 export * from "./commits-mini";
 export * from "./decisions-timeline";
 export * from "./health-score-badge";
+export * from "./health-overview-card";
 export * from "./savings-mini";
 export * from "./where-to-start";
 export * from "./dependency-heatmap";

@@ -1,7 +1,6 @@
 "use client";
 
 import useSWR from "swr";
-import { DependencyHeatmap } from "@repowise-dev/ui/dashboard/dependency-heatmap";
 import { ModuleOverviewGrid } from "@repowise-dev/ui/dashboard/module-overview-grid";
 import { OwnershipTreemap } from "@repowise-dev/ui/dashboard/ownership-treemap";
 import { ExecutionFlowsPanel } from "@repowise-dev/ui/dashboard/execution-flows-panel";
@@ -67,25 +66,11 @@ export function StructureTab({ repoId }: StructureTabProps) {
         />
       )}
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        {modulesLoading ? (
-          <PanelSkeleton />
-        ) : hasModules ? (
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium">Module Dependencies</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <DependencyHeatmap moduleGraph={moduleGraph} />
-            </CardContent>
-          </Card>
-        ) : null}
-        {communitiesLoading ? (
-          <PanelSkeleton />
-        ) : communities && communities.length > 0 ? (
-          <CommunitySummaryGridWrapper communities={communities} repoId={repoId} />
-        ) : null}
-      </div>
+      {communitiesLoading ? (
+        <PanelSkeleton />
+      ) : communities && communities.length > 0 ? (
+        <CommunitySummaryGridWrapper communities={communities} repoId={repoId} />
+      ) : null}
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         {flowsLoading ? (
