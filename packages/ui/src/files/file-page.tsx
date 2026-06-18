@@ -117,7 +117,7 @@ export function FilePage({
           owner ? (
             <a
               href={`${prefix}/owners/${encodeURIComponent(owner)}`}
-              className="inline-flex items-center gap-1 text-[11px] text-[var(--color-text-secondary)] hover:text-[var(--color-accent-primary)] hover:underline"
+              className="inline-flex items-center gap-1 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-accent-primary)] hover:underline"
             >
               <Users className="h-3.5 w-3.5 text-[var(--color-text-tertiary)]" />
               owned by <span className="font-medium">{owner}</span>
@@ -136,7 +136,7 @@ export function FilePage({
                 <a
                   key={d.id}
                   href={`${prefix}/decisions/${d.id}`}
-                  className="rounded border border-[var(--color-border-default)] px-1.5 py-0.5 text-[11px] text-[var(--color-text-secondary)] transition-colors hover:border-[var(--color-accent-primary)] hover:text-[var(--color-accent-primary)]"
+                  className="rounded border border-[var(--color-border-default)] px-1.5 py-0.5 text-xs text-[var(--color-text-secondary)] transition-colors hover:border-[var(--color-accent-primary)] hover:text-[var(--color-accent-primary)]"
                 >
                   {d.title}
                 </a>

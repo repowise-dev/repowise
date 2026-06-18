@@ -40,7 +40,7 @@ function AuthorAvatar({ name }: { name: string }) {
 
   return (
     <div
-      className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[9px] font-semibold text-white ${color}`}
+      className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-semibold text-white ${color}`}
       aria-label={name}
       title={name}
     >

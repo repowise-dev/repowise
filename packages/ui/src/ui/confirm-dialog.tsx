@@ -56,7 +56,7 @@ export function ConfirmDialog({
             disabled={loading}
             className={
               destructive
-                ? "bg-red-600 text-white hover:bg-red-700"
+                ? "bg-[var(--color-error)] text-white hover:bg-[var(--color-error)]/90"
                 : undefined
             }
           >

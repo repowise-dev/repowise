@@ -213,17 +213,17 @@ export function OwnershipTreemap({ entries, busFactorByModule, onSelect }: Owner
             <p
               className={
                 tooltip.busFactor <= 1
-                  ? "text-red-400 font-medium mt-0.5"
+                  ? "text-[var(--color-error)] font-medium mt-0.5"
                   : tooltip.busFactor === 2
-                    ? "text-amber-300 font-medium mt-0.5"
-                    : "text-emerald-300 mt-0.5"
+                    ? "text-[var(--color-warning)] font-medium mt-0.5"
+                    : "text-[var(--color-success)] mt-0.5"
               }
             >
               Bus factor: {tooltip.busFactor}
             </p>
           )}
           {tooltip.isSilo && (
-            <p className="text-yellow-400 font-medium mt-0.5">Silo risk</p>
+            <p className="text-[var(--color-warning)] font-medium mt-0.5">Silo risk</p>
           )}
         </div>
       )}

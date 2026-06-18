@@ -40,7 +40,7 @@ function NeighborList({
         {neighbors.length === 0 ? (
           <p className="text-xs text-[var(--color-text-tertiary)]">None in the indexed graph.</p>
         ) : (
-          <ul className="space-y-1">
+          <ul className="space-y-2">
             {neighbors.map((n) => {
               const isSymbol = n.node_type === "symbol" || n.node_id.includes("::");
               const href = isSymbol ? symbolHref(n.node_id) : fileHref(n.node_id);
@@ -48,9 +48,9 @@ function NeighborList({
                 <li key={`${n.node_id}-${n.edge_type}`}>
                   <a
                     href={href}
-                    className="flex items-center gap-2 -mx-2 px-2 py-0.5 rounded hover:bg-[var(--color-bg-elevated)] transition-colors"
+                    className="flex items-center gap-2 -mx-2 px-2 py-1 rounded hover:bg-[var(--color-bg-elevated)] transition-colors"
                   >
-                    <span className="text-[11px] font-mono text-[var(--color-text-primary)] truncate flex-1 min-w-0">
+                    <span className="font-mono text-xs text-[var(--color-text-primary)] truncate flex-1 min-w-0" title={n.node_id}>
                       {truncatePath(n.node_id, 48)}
                     </span>
                     <span className="text-[10px] text-[var(--color-text-tertiary)] shrink-0">
@@ -99,7 +99,7 @@ export function FileGraphTab({ graph, filePath, linkPrefix, fileHref, symbolHref
         <StatTile label="Dependencies (out)" value={String(graph.out_degree)} />
         <StatTile label="Community" value={graph.community_label ?? `#${graph.community_id}`} />
       </StatGrid>
-      <div className="flex flex-wrap gap-2 text-[11px]">
+      <div className="flex flex-wrap gap-3 text-xs">
         <a
           href={`${linkPrefix}/architecture?view=graph&node=${encodeURIComponent(filePath)}`}
           className="text-[var(--color-accent-primary)] hover:underline"

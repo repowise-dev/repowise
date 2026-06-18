@@ -62,7 +62,7 @@ export function SavingsMini({ data, repoId }: SavingsMiniProps) {
                 {formatCost(data!.estimated_usd_saved ?? 0)}
               </span>
             </div>
-            <p className="text-[11px] text-[var(--color-text-secondary)] -mt-1">
+            <p className="text-xs text-[var(--color-text-secondary)] -mt-1">
               tokens saved for your agent
               {data!.pricing_model ? (
                 <span className="text-[var(--color-text-tertiary)]">
@@ -88,7 +88,7 @@ export function SavingsMini({ data, repoId }: SavingsMiniProps) {
                 />
               )}
             </div>
-            <div className="space-y-1 text-[11px]">
+            <div className="space-y-1 text-xs">
               <div className="flex items-center justify-between gap-2">
                 <span className="flex items-center gap-1.5 text-[var(--color-text-secondary)] whitespace-nowrap">
                   <span
@@ -123,7 +123,7 @@ export function SavingsMini({ data, repoId }: SavingsMiniProps) {
             </p>
             <a
               href={costsHref}
-              className="inline-block text-[11px] text-[var(--color-accent-primary)] hover:underline"
+              className="inline-block text-xs text-[var(--color-accent-primary)] hover:underline"
             >
               Open the Costs page →
             </a>

@@ -116,7 +116,7 @@ export function HealthScoreRing({ score, size = 160, components, note }: HealthS
             Score = weighted average of {components.length} components
           </p>
           {note && (
-            <p className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2 py-1.5 text-[11px] leading-snug text-[var(--color-text-secondary)]">
+            <p className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2 py-1.5 text-xs leading-snug text-[var(--color-text-secondary)]">
               {note}
             </p>
           )}

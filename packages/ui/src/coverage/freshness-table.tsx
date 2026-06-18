@@ -139,10 +139,10 @@ export function FreshnessTable({ pages, onRegenerate }: FreshnessTableProps) {
                       <span
                         className={cn(
                           page.confidence >= 0.8
-                            ? "text-green-500"
+                            ? "text-[var(--color-success)]"
                             : page.confidence >= 0.6
-                              ? "text-yellow-500"
-                              : "text-red-500",
+                              ? "text-[var(--color-warning)]"
+                              : "text-[var(--color-error)]",
                         )}
                       >
                         {formatConfidence(page.confidence)}

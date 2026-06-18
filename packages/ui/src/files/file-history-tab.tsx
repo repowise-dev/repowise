@@ -1,6 +1,9 @@
 import { GitBranch, Bot } from "lucide-react";
 import { EmptyState } from "../shared/empty-state";
 import { CommitCategorySparkline } from "../git/commit-category-sparkline";
+import { AgentTierBar } from "../git/agent-tier-bar";
+import { OwnershipDonut } from "../git/ownership-donut";
+import { StatGrid, StatTile } from "../shared/stat-grid";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { formatRelativeTime, truncatePath } from "../lib/format";
 import type { FileDetailGit } from "@repowise-dev/types/files";
@@ -11,12 +14,6 @@ interface FileHistoryTabProps {
   /** Build a file-page href for a co-change partner. */
   partnerHref: (path: string) => string;
 }
-
-const TIER_LABELS: Record<string, string> = {
-  "1": "near-autonomous",
-  "2": "human-driven",
-  "3": "assisted",
-};
 
 export function FileHistoryTab({ git, linkPrefix, partnerHref }: FileHistoryTabProps) {
   if (!git) {
@@ -35,12 +32,12 @@ export function FileHistoryTab({ git, linkPrefix, partnerHref }: FileHistoryTabP
 
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <Stat label="Commits (total)" value={git.commit_count_total ?? 0} />
-        <Stat label="Commits (90d)" value={git.commit_count_90d} />
-        <Stat label="Contributors" value={git.contributor_count} />
-        <Stat label="Bus factor" value={git.bus_factor} />
-      </div>
+      <StatGrid columns={4}>
+        <StatTile label="Commits (total)" value={git.commit_count_total ?? 0} />
+        <StatTile label="Commits (90d)" value={git.commit_count_90d} />
+        <StatTile label="Contributors" value={git.contributor_count} />
+        <StatTile label="Bus factor" value={git.bus_factor} />
+      </StatGrid>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <Card>
@@ -60,7 +57,7 @@ export function FileHistoryTab({ git, linkPrefix, partnerHref }: FileHistoryTabP
                       href={`${linkPrefix}/commits?commit=${c.sha}`}
                       className="flex items-center gap-2 -mx-2 px-2 py-1 rounded hover:bg-[var(--color-bg-elevated)] transition-colors"
                     >
-                      <span className="text-[11px] font-mono text-[var(--color-text-tertiary)] shrink-0">
+                      <span className="text-xs font-mono text-[var(--color-text-tertiary)] shrink-0">
                         {c.sha.slice(0, 8)}
                       </span>
                       <span className="text-xs text-[var(--color-text-primary)] truncate flex-1">
@@ -110,16 +107,7 @@ export function FileHistoryTab({ git, linkPrefix, partnerHref }: FileHistoryTabP
                     {agentPct != null && ` · ${agentPct}% of indexed history`}
                   </p>
                   {Object.keys(git.agent.tier_counts).length > 0 && (
-                    <div className="flex flex-wrap gap-1.5">
-                      {Object.entries(git.agent.tier_counts).map(([tier, count]) => (
-                        <span
-                          key={tier}
-                          className="rounded border border-[var(--color-border-default)] px-1.5 py-0.5 text-[10px] text-[var(--color-text-secondary)]"
-                        >
-                          {TIER_LABELS[tier] ?? `tier ${tier}`}: {count}
-                        </span>
-                      ))}
-                    </div>
+                    <AgentTierBar tierCounts={git.agent.tier_counts} />
                   )}
                 </div>
               )}
@@ -137,21 +125,12 @@ export function FileHistoryTab({ git, linkPrefix, partnerHref }: FileHistoryTabP
             {git.top_authors.length === 0 ? (
               <p className="text-xs text-[var(--color-text-tertiary)]">No author data.</p>
             ) : (
-              <ul className="space-y-1">
-                {git.top_authors.slice(0, 6).map((a) => (
-                  <li key={a.name} className="flex items-center justify-between gap-2">
-                    <a
-                      href={`${linkPrefix}/owners/${encodeURIComponent(a.name)}`}
-                      className="text-xs text-[var(--color-text-primary)] hover:text-[var(--color-accent-primary)] hover:underline truncate"
-                    >
-                      {a.name}
-                    </a>
-                    <span className="text-[10px] tabular-nums text-[var(--color-text-tertiary)] shrink-0">
-                      {a.commit_count} commits
-                    </span>
-                  </li>
-                ))}
-              </ul>
+              <OwnershipDonut
+                slices={git.top_authors.map((a) => ({
+                  name: a.name,
+                  value: a.commit_count,
+                }))}
+              />
             )}
           </CardContent>
         </Card>
@@ -166,17 +145,17 @@ export function FileHistoryTab({ git, linkPrefix, partnerHref }: FileHistoryTabP
                 No co-change partners detected.
               </p>
             ) : (
-              <ul className="space-y-1">
+              <ul className="space-y-2">
                 {git.co_change_partners.slice(0, 8).map((p) => (
                   <li key={p.file_path}>
                     <a
                       href={partnerHref(p.file_path)}
-                      className="flex items-center justify-between gap-2 -mx-2 px-2 py-0.5 rounded hover:bg-[var(--color-bg-elevated)] transition-colors"
+                      className="flex items-center justify-between gap-2 -mx-2 px-2 py-1 rounded hover:bg-[var(--color-bg-elevated)] transition-colors"
                     >
-                      <span className="text-[11px] font-mono text-[var(--color-text-primary)] truncate">
+                      <span className="font-mono text-xs text-[var(--color-text-primary)] truncate" title={p.file_path}>
                         {truncatePath(p.file_path, 44)}
                       </span>
-                      <span className="text-[10px] tabular-nums text-[var(--color-text-tertiary)] shrink-0">
+                      <span className="text-xs tabular-nums text-[var(--color-text-tertiary)] shrink-0">
                         ×{p.co_change_count}
                       </span>
                     </a>
@@ -187,19 +166,6 @@ export function FileHistoryTab({ git, linkPrefix, partnerHref }: FileHistoryTabP
           </CardContent>
         </Card>
       </div>
-    </div>
-  );
-}
-
-function Stat({ label, value }: { label: string; value: number }) {
-  return (
-    <div className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] p-2.5">
-      <p className="text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)] mb-0.5">
-        {label}
-      </p>
-      <p className="text-base font-semibold tabular-nums text-[var(--color-text-primary)]">
-        {value}
-      </p>
     </div>
   );
 }

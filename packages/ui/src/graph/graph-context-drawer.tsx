@@ -164,7 +164,7 @@ export function GraphContextDrawer({
               key={tab.id}
               value={tab.id}
               disabled={tab.disabled}
-              className="rounded-md px-2 py-1 text-[11px] font-medium data-[state=active]:bg-[var(--color-bg-inset)] data-[state=active]:text-[var(--color-text-primary)]"
+              className="rounded-md px-2 py-1 text-xs font-medium data-[state=active]:bg-[var(--color-bg-inset)] data-[state=active]:text-[var(--color-text-primary)]"
             >
               {tab.label}
             </TabsTrigger>
@@ -208,7 +208,7 @@ export interface GraphDrawerActionsProps {
 export function GraphDrawerActions({ actions }: GraphDrawerActionsProps) {
   if (actions.length === 0) {
     return (
-      <p className="text-[11px] text-[var(--color-text-tertiary)]">
+      <p className="text-xs text-[var(--color-text-tertiary)]">
         No actions available for this node.
       </p>
     );
@@ -224,7 +224,7 @@ export function GraphDrawerActions({ actions }: GraphDrawerActionsProps) {
                 {a.label}
               </span>
               {a.description && (
-                <span className="block text-[11px] text-[var(--color-text-tertiary)]">
+                <span className="block text-xs text-[var(--color-text-tertiary)]">
                   {a.description}
                 </span>
               )}

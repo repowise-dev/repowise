@@ -48,7 +48,7 @@ export function TopSymbolsRow({
   if (loading && (!symbols || symbols.length === 0)) {
     return (
       <div className={cn("space-y-2", className)}>
-        <div className="text-[11px] font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
+        <div className="text-xs font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
           Top symbols
         </div>
         <div className="grid gap-1.5 sm:grid-cols-2 lg:grid-cols-3">
@@ -68,7 +68,7 @@ export function TopSymbolsRow({
           className,
         )}
       >
-        <AlertCircle className="h-3.5 w-3.5 text-red-400" />
+        <AlertCircle className="h-3.5 w-3.5 text-[var(--color-error)]" />
         Couldn&apos;t load symbols: {error}
       </div>
     );
@@ -85,13 +85,13 @@ export function TopSymbolsRow({
   return (
     <div className={cn("space-y-2", className)}>
       <div className="flex items-center justify-between">
-        <div className="text-[11px] font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
+        <div className="text-xs font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
           Top symbols ({symbols.length})
         </div>
         {seeAllHref && (
           <a
             href={seeAllHref}
-            className="inline-flex items-center gap-0.5 text-[11px] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
+            className="inline-flex items-center gap-0.5 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
           >
             See all
             <ChevronRight className="h-3 w-3" />

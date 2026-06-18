@@ -26,20 +26,20 @@ function PercentileBar({ value, label }: { value: number; label: string }) {
   const pct = 100 - value;
   return (
     <div className="flex items-center justify-between gap-2">
-      <span className="text-[11px] text-[var(--color-text-tertiary)] shrink-0">{label}</span>
+      <span className="text-xs text-[var(--color-text-tertiary)] shrink-0">{label}</span>
       <div className="flex items-center gap-1.5">
         <div className="w-16 h-1.5 rounded-full bg-[var(--color-bg-elevated)] overflow-hidden">
           <div
             className={cn(
               "h-full rounded-full",
-              value >= 75 ? "bg-green-400" : value >= 50 ? "bg-yellow-400" : "bg-[var(--color-text-tertiary)]",
+              value >= 75 ? "bg-[var(--color-success)]" : value >= 50 ? "bg-[var(--color-warning)]" : "bg-[var(--color-text-tertiary)]",
             )}
             style={{ width: `${value}%` }}
           />
         </div>
         <span className={cn(
           "text-[10px] font-mono tabular-nums w-10 text-right",
-          value >= 75 ? "text-green-400" : value >= 50 ? "text-yellow-400" : "text-[var(--color-text-tertiary)]",
+          value >= 75 ? "text-[var(--color-success)]" : value >= 50 ? "text-[var(--color-warning)]" : "text-[var(--color-text-tertiary)]",
         )}>
           Top {pct}%
         </span>
@@ -74,7 +74,7 @@ function DocsSidebar({ repoId, targetPath }: { repoId: string; targetPath: strin
       <div>
         <div className="flex items-center gap-1.5 mb-2">
           <Activity className="h-3 w-3 text-[var(--color-text-tertiary)]" />
-          <span className="text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
+          <span className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
             Importance
           </span>
         </div>
@@ -82,8 +82,8 @@ function DocsSidebar({ repoId, targetPath }: { repoId: string; targetPath: strin
           <PercentileBar value={metrics.pagerank_percentile} label="PageRank" />
           <PercentileBar value={metrics.betweenness_percentile} label="Centrality" />
           <div className="flex items-center justify-between">
-            <span className="text-[11px] text-[var(--color-text-tertiary)]">Degree</span>
-            <span className="text-[11px] font-mono text-[var(--color-text-secondary)]">
+            <span className="text-xs text-[var(--color-text-tertiary)]">Degree</span>
+            <span className="text-xs font-mono text-[var(--color-text-secondary)]">
               {metrics.in_degree} in &middot; {metrics.out_degree} out
             </span>
           </div>
@@ -98,13 +98,13 @@ function DocsSidebar({ repoId, targetPath }: { repoId: string; targetPath: strin
         <div>
           <div className="flex items-center gap-1.5 mb-2">
             <Network className="h-3 w-3 text-[var(--color-text-tertiary)]" />
-            <span className="text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
+            <span className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
               Community
             </span>
           </div>
           <Link
             href={`/repos/${repoId}/architecture?view=graph&colorMode=community`}
-            className="inline-flex items-center gap-1 text-[11px] text-[var(--color-accent)] hover:underline"
+            className="inline-flex items-center gap-1 text-xs text-[var(--color-accent)] hover:underline"
           >
             {metrics.community_label}
             <ArrowRight className="h-2.5 w-2.5" />
@@ -117,7 +117,7 @@ function DocsSidebar({ repoId, targetPath }: { repoId: string; targetPath: strin
         <div>
           <div className="flex items-center gap-1.5 mb-2">
             <GitBranch className="h-3 w-3 text-[var(--color-text-tertiary)]" />
-            <span className="text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
+            <span className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
               Call Graph
             </span>
           </div>
@@ -125,7 +125,7 @@ function DocsSidebar({ repoId, targetPath }: { repoId: string; targetPath: strin
             <div className="mb-2">
               <p className="text-[10px] text-[var(--color-text-tertiary)] mb-1">Called by ({callData.caller_count})</p>
               {callData.callers.slice(0, 5).map((c) => (
-                <p key={c.symbol_id} className="text-[11px] font-mono text-[var(--color-text-secondary)] truncate pl-2" title={c.symbol_id}>
+                <p key={c.symbol_id} className="text-xs font-mono text-[var(--color-text-secondary)] truncate pl-2" title={c.symbol_id}>
                   {c.name}
                 </p>
               ))}
@@ -135,7 +135,7 @@ function DocsSidebar({ repoId, targetPath }: { repoId: string; targetPath: strin
             <div>
               <p className="text-[10px] text-[var(--color-text-tertiary)] mb-1">Calls ({callData.callee_count})</p>
               {callData.callees.slice(0, 5).map((c) => (
-                <p key={c.symbol_id} className="text-[11px] font-mono text-[var(--color-text-secondary)] truncate pl-2" title={c.symbol_id}>
+                <p key={c.symbol_id} className="text-xs font-mono text-[var(--color-text-secondary)] truncate pl-2" title={c.symbol_id}>
                   {c.name}
                 </p>
               ))}
@@ -171,7 +171,7 @@ function AtAGlance({ repoId, targetPath }: { repoId: string; targetPath: string 
     <div>
       <div className="flex items-center gap-1.5 mb-2">
         <Flame className="h-3 w-3 text-[var(--color-text-tertiary)]" />
-        <span className="text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
+        <span className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
           At a glance
         </span>
       </div>
@@ -191,7 +191,7 @@ function AtAGlance({ repoId, targetPath }: { repoId: string; targetPath: string 
           </Badge>
         )}
       </div>
-      <div className="mt-2 space-y-1 text-[11px] text-[var(--color-text-secondary)]">
+      <div className="mt-2 space-y-1 text-xs text-[var(--color-text-secondary)]">
         {data.primary_owner_name && (
           <div className="flex items-center justify-between gap-2">
             <span className="text-[var(--color-text-tertiary)]">Owner</span>
@@ -302,7 +302,7 @@ export function DocsViewer({
             <DocsSidebar repoId={repoId} targetPath={targetPath} />
             {isFilePath && (
               <div>
-                <p className="text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider mb-2">
+                <p className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider mb-2">
                   Security signals
                 </p>
                 <SecurityPanelWrapper repoId={repoId} filePath={targetPath} />

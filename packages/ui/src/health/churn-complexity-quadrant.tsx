@@ -161,7 +161,7 @@ export function ChurnComplexityQuadrant({
           })}
         </svg>
         {hovered ? (
-          <div className="pointer-events-none absolute bottom-2 left-2 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2 py-1 text-[11px] shadow-md">
+          <div className="pointer-events-none absolute bottom-2 left-2 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2 py-1 text-xs shadow-md">
             <span className="font-mono text-[var(--color-text-primary)]">{hovered.file_path}</span>
             <span className="ml-2 text-[var(--color-text-tertiary)]">
               {hovered.commit_count_90d} commits · CCN {hovered.max_ccn} · {hovered.score.toFixed(1)}

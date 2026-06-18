@@ -351,7 +351,7 @@ export function CouplingGraph({
       </svg>
 
       {/* Legend */}
-      <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-[var(--color-text-tertiary)]">
+      <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-[var(--color-text-tertiary)]">
         <span className="inline-flex items-center gap-1.5">
           <span className="h-2 w-2 rounded-full bg-[var(--color-success)]" /> healthy
         </span>

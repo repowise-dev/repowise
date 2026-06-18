@@ -76,12 +76,12 @@ export function SyncButton({
         {state.kind === "running" ? "Syncing…" : buttonText}
       </button>
       {state.kind === "ok" && (
-        <span className="text-[11px] text-[var(--color-text-tertiary)]">
+        <span className="text-xs text-[var(--color-text-tertiary)]">
           {summarizeResults(state.results)}
         </span>
       )}
       {state.kind === "error" && (
-        <span className="text-[11px] text-[var(--color-outdated)]">
+        <span className="text-xs text-[var(--color-outdated)]">
           {state.message}
         </span>
       )}

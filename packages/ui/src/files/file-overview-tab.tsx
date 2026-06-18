@@ -65,7 +65,7 @@ export function FileOverviewTab({ data, symbolHref, fileHref }: FileOverviewTabP
               <a
                 key={s.symbol_id}
                 href={symbolHref(s.symbol_id)}
-                className="inline-flex items-center gap-1 rounded border border-[var(--color-border-default)] px-2 py-0.5 font-mono text-[11px] text-[var(--color-text-secondary)] transition-colors hover:border-[var(--color-accent-primary)] hover:text-[var(--color-accent-primary)]"
+                className="inline-flex items-center gap-1 rounded border border-[var(--color-border-default)] px-2 py-0.5 font-mono text-xs text-[var(--color-text-secondary)] transition-colors hover:border-[var(--color-accent-primary)] hover:text-[var(--color-accent-primary)]"
               >
                 {s.name}
                 <span className="text-[10px] text-[var(--color-text-tertiary)]">{s.kind}</span>
@@ -92,7 +92,7 @@ export function FileOverviewTab({ data, symbolHref, fileHref }: FileOverviewTabP
                 <a
                   key={`in-${n.node_id}`}
                   href={fileHref(n.node_id)}
-                  className="block truncate font-mono text-[11px] text-[var(--color-text-secondary)] hover:text-[var(--color-accent-primary)]"
+                  className="block truncate font-mono text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-accent-primary)]"
                   title={n.node_id}
                 >
                   {truncatePath(n.node_id, 30)}
@@ -110,7 +110,7 @@ export function FileOverviewTab({ data, symbolHref, fileHref }: FileOverviewTabP
                   <a
                     key={`out-${n.node_id}`}
                     href={isSymbol ? symbolHref(n.node_id) : fileHref(n.node_id)}
-                    className="block truncate font-mono text-[11px] text-[var(--color-text-secondary)] hover:text-[var(--color-accent-primary)]"
+                    className="block truncate font-mono text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-accent-primary)]"
                     title={n.node_id}
                   >
                     {truncatePath(n.node_id, 30)}

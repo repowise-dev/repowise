@@ -60,13 +60,13 @@ export function ChangeHistoryCard({
         {priorDefectCount != null && (
           <div className="flex items-center gap-1.5 text-xs">
             <Bug
-              className={`h-3 w-3 ${hasDefects ? "text-red-400" : "text-[var(--color-text-tertiary)]"}`}
+              className={`h-3 w-3 ${hasDefects ? "text-[var(--color-error)]" : "text-[var(--color-text-tertiary)]"}`}
             />
             <span className="flex-1 text-[var(--color-text-tertiary)]">
               Bug-fix history
             </span>
             <span
-              className={`tabular-nums ${hasDefects ? "text-red-400" : "text-[var(--color-text-secondary)]"}`}
+              className={`tabular-nums ${hasDefects ? "text-[var(--color-error)]" : "text-[var(--color-text-secondary)]"}`}
               title="Bug-fix commits that touched this file in the trailing defect window."
             >
               {priorDefectCount} {priorDefectCount === 1 ? "fix" : "fixes"}

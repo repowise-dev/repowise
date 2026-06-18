@@ -136,7 +136,7 @@ function EvidenceRow({ row, isPrimary }: { row: DecisionEvidence; isPrimary?: bo
       </blockquote>
 
       {(row.evidence_file || row.evidence_commit) && (
-        <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-[var(--color-text-tertiary)]">
+        <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-[var(--color-text-tertiary)]">
           {row.evidence_file && (
             <span className="inline-flex items-center gap-1 font-mono">
               <FileText className="h-3 w-3" aria-hidden />

@@ -40,7 +40,7 @@ export function WhereToStartCard({
         </CardTitle>
       </CardHeader>
       <CardContent className="pt-0">
-        <p className="text-[11px] text-[var(--color-text-tertiary)] mb-2">
+        <p className="text-xs text-[var(--color-text-tertiary)] mb-2">
           Central files with the least documentation — high-leverage reading.
         </p>
         <ul className="space-y-1">
@@ -50,7 +50,7 @@ export function WhereToStartCard({
                 href={fileEntityPath(prefix, t.path)}
                 className="block -mx-2 px-2 py-1 rounded hover:bg-[var(--color-bg-elevated)] transition-colors"
               >
-                <p className="text-[11px] font-mono text-[var(--color-text-primary)] truncate">
+                <p className="text-xs font-mono text-[var(--color-text-primary)] truncate">
                   {truncatePath(t.path, 44)}
                 </p>
                 <p className="text-[10px] text-[var(--color-text-tertiary)]">

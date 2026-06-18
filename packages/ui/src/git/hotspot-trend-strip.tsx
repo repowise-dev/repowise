@@ -83,7 +83,7 @@ export function HotspotTrendStrip({
             >
               <TrendBadge trend={trend} />
               <span
-                className="flex-1 truncate font-mono text-[11px] text-[var(--color-text-primary)]"
+                className="flex-1 truncate font-mono text-xs text-[var(--color-text-primary)]"
                 title={h.file_path}
               >
                 {h.file_path}
@@ -92,7 +92,7 @@ export function HotspotTrendStrip({
                 {Math.round(h.churn_percentile)}th %ile
               </span>
               {h.bus_factor <= 1 && (
-                <span className="shrink-0 rounded-full border border-red-500/40 bg-red-500/10 px-1.5 py-0.5 text-[10px] font-medium text-red-300">
+                <span className="shrink-0 rounded-full border border-[var(--color-error)]/40 bg-[var(--color-error)]/10 px-1.5 py-0.5 text-[10px] font-medium text-[var(--color-error)]">
                   bus×1
                 </span>
               )}
@@ -107,14 +107,14 @@ export function HotspotTrendStrip({
 function TrendBadge({ trend }: { trend: Trend }) {
   if (trend === "heating") {
     return (
-      <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-rose-500/15 text-rose-400">
+      <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[var(--color-error)]/15 text-[var(--color-error)]">
         <TrendingUp className="h-3 w-3" />
       </span>
     );
   }
   if (trend === "cooling") {
     return (
-      <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-emerald-500/15 text-emerald-400">
+      <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[var(--color-success)]/15 text-[var(--color-success)]">
         <TrendingDown className="h-3 w-3" />
       </span>
     );

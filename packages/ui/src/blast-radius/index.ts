@@ -1,4 +1,5 @@
 export * from "./risk-score-card";
+export * from "./impact-graph";
 export * from "./table-section";
 export * from "./direct-risks-table";
 export * from "./transitive-table";

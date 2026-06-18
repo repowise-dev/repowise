@@ -106,19 +106,21 @@ describe("BlastRadiusSummary", () => {
 });
 
 describe("BlastRadiusResults", () => {
-  it("composes the full results stack", () => {
-    render(<BlastRadiusResults result={fixture} />);
+  it("composes the risk gauge, summary, impact map, and collapsible sections", () => {
+    render(<BlastRadiusResults result={fixture} changedFiles={["src/auth/login.py"]} />);
     expect(screen.getByText("High Risk")).toBeTruthy();
-    // "Direct Risks" / "Co-change Warnings" / "Test Gaps" appear twice
-    // (summary stat label + TableSection title) — use getAllByText.
-    expect(screen.getAllByText("Direct Risks").length).toBe(2);
-    expect(screen.getByText("Transitive Affected Files")).toBeTruthy();
-    expect(screen.getAllByText("Co-change Warnings").length).toBe(2);
-    expect(screen.getByText("Recommended Reviewers")).toBeTruthy();
-    expect(screen.getAllByText("Test Gaps").length).toBe(2);
+    // Summary stat label (capitalized) is distinct from the collapsible toggle
+    // title (sentence case), so each appears once.
+    expect(screen.getByText("Direct Risks")).toBeTruthy();
+    expect(screen.getByText("Direct risks")).toBeTruthy();
+    expect(screen.getByText("Transitive affected files")).toBeTruthy();
+    expect(screen.getByText("Co-change warnings")).toBeTruthy();
+    expect(screen.getByText("Recommended reviewers")).toBeTruthy();
+    expect(screen.getByText("Test gaps")).toBeTruthy();
+    expect(screen.getByText("Impact map")).toBeTruthy();
   });
 
-  it("shows 'None' for empty sections", () => {
+  it("shows an empty impact map when nothing is affected", () => {
     const empty: BlastRadiusResponse = {
       direct_risks: [],
       transitive_affected: [],
@@ -128,7 +130,7 @@ describe("BlastRadiusResults", () => {
       overall_risk_score: 1.5,
     };
     render(<BlastRadiusResults result={empty} />);
-    expect(screen.getAllByText("None").length).toBe(5);
+    expect(screen.getByText("No downstream impact found")).toBeTruthy();
     expect(screen.getByText("Low Risk")).toBeTruthy();
   });
 });

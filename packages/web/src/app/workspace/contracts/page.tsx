@@ -74,13 +74,13 @@ export default function ContractsPage() {
         <StatCard
           label="Matched Links"
           value={data?.total_links ?? "—"}
-          icon={<Link2 className="h-4 w-4 text-green-400" />}
+          icon={<Link2 className="h-4 w-4 text-[var(--color-success)]" />}
         />
         <StatCard
           label="Unmatched"
           value={isLoading ? "—" : unmatchedCount}
           description="No matching provider or consumer"
-          icon={<Link2 className="h-4 w-4 text-yellow-400" />}
+          icon={<Link2 className="h-4 w-4 text-[var(--color-warning)]" />}
         />
         <StatCard
           label="By Type"
@@ -96,7 +96,7 @@ export default function ContractsPage() {
                   .join(", ")
               : undefined
           }
-          icon={<Filter className="h-4 w-4 text-purple-400" />}
+          icon={<Filter className="h-4 w-4 text-[var(--color-accent-secondary)]" />}
         />
       </div>
 

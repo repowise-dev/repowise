@@ -170,7 +170,7 @@ export function HotFunctionsPanel({
                     </span>
                   );
                 })()}
-                <span className="text-[11px] font-mono text-[var(--color-text-tertiary)] truncate">
+                <span className="text-xs font-mono text-[var(--color-text-tertiary)] truncate">
                   {row.file_path}
                 </span>
                 <span className="ml-auto inline-flex items-center gap-2">

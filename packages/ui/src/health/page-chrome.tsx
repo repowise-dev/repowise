@@ -59,7 +59,7 @@ export function HealthPageChrome({
             <p className="text-sm text-[var(--color-text-secondary)]">{subtitle}</p>
           ) : null}
           {meta ? (
-            <p className="mt-1 text-[11px] text-[var(--color-text-tertiary)]">
+            <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">
               Indexed {formatIndexedAt(meta.last_indexed_at)}
               {meta.head_commit ? (
                 <>

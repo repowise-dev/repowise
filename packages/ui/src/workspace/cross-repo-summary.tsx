@@ -29,18 +29,18 @@ export function CrossRepoSummary({ crossRepo, contracts }: CrossRepoSummaryProps
       <StatCard
         label="Package Deps"
         value={crossRepo?.package_dep_count ?? 0}
-        icon={<Package className="h-4 w-4 text-purple-400" />}
+        icon={<Package className="h-4 w-4 text-[var(--color-accent-secondary)]" />}
       />
       <StatCard
         label="Contract Links"
         value={contracts?.total_links ?? 0}
-        icon={<Link2 className="h-4 w-4 text-blue-400" />}
+        icon={<Link2 className="h-4 w-4 text-[var(--color-info)]" />}
       />
       <StatCard
         label="Contracts Detected"
         value={contracts?.total_contracts ?? 0}
         {...(byTypeDescription ? { description: byTypeDescription } : {})}
-        icon={<Link2 className="h-4 w-4 text-orange-400" />}
+        icon={<Link2 className="h-4 w-4 text-[var(--color-warning)]" />}
       />
     </div>
   );

@@ -67,7 +67,7 @@ export function DeleteRepoButton({
             e.stopPropagation();
             setOpen(true);
           }}
-          className="opacity-0 group-hover:opacity-100 p-1 text-[var(--color-text-tertiary)] hover:text-red-400 transition-all"
+          className="opacity-0 group-hover:opacity-100 p-1 text-[var(--color-text-tertiary)] hover:text-[var(--color-error)] transition-all"
           title="Delete repository"
         >
           <Trash2 className="h-3.5 w-3.5" />

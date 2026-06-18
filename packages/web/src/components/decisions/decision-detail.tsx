@@ -238,7 +238,7 @@ export function DecisionDetail({ decision, repoId }: DecisionDetailProps) {
           <span>Source: {decision.source}</span>
           <span>Confidence: {Math.round(decision.confidence * 100)}%</span>
           {decision.staleness_score > 0 && (
-            <span className={decision.staleness_score > 0.5 ? "text-red-500" : ""}>
+            <span className={decision.staleness_score > 0.5 ? "text-[var(--color-error)]" : ""}>
               Staleness: {decision.staleness_score.toFixed(2)}
             </span>
           )}
@@ -248,7 +248,7 @@ export function DecisionDetail({ decision, repoId }: DecisionDetailProps) {
 
       {/* Stale warning */}
       {decision.staleness_score > 0.5 && (
-        <div className="rounded-md border border-amber-400/30 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:bg-amber-900/20 dark:text-amber-200">
+        <div className="rounded-md border border-[var(--color-warning)]/30 bg-[var(--color-warning)]/10 px-4 py-3 text-sm text-[var(--color-warning)]">
           This decision may be stale — affected files have changed significantly since it was recorded.
         </div>
       )}
@@ -374,7 +374,7 @@ export function DecisionDetail({ decision, repoId }: DecisionDetailProps) {
           <button
             onClick={() => handleStatusChange("deprecated")}
             disabled={loading}
-            className="rounded-md border border-red-300 px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-900/20 disabled:opacity-50"
+            className="rounded-md border border-[var(--color-error)]/40 px-3 py-1.5 text-sm text-[var(--color-error)] hover:bg-[var(--color-error)]/10 disabled:opacity-50"
           >
             Deprecate
           </button>

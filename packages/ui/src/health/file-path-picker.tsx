@@ -110,7 +110,7 @@ export function FilePathPicker({ selected, onAdd, onRemove, onSearch }: FilePath
         {selected.map((p) => (
           <span
             key={p}
-            className="inline-flex items-center gap-1 rounded border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-1.5 py-0.5 text-[11px] font-mono text-[var(--color-text-primary)]"
+            className="inline-flex items-center gap-1 rounded border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-1.5 py-0.5 text-xs font-mono text-[var(--color-text-primary)]"
             title={p}
           >
             <span className="truncate max-w-[280px]">{p}</span>

@@ -37,7 +37,7 @@ export function RiskDriverBreakdown({ drivers, className }: RiskDriverBreakdownP
               <div
                 className={cn(
                   "absolute inset-y-0 rounded",
-                  raises ? "bg-red-500/60" : "bg-green-500/60",
+                  raises ? "bg-[var(--color-error)]/60" : "bg-[var(--color-success)]/60",
                 )}
                 style={
                   raises
@@ -49,7 +49,7 @@ export function RiskDriverBreakdown({ drivers, className }: RiskDriverBreakdownP
             <span
               className={cn(
                 "w-12 shrink-0 text-right tabular-nums",
-                raises ? "text-red-400" : "text-green-400",
+                raises ? "text-[var(--color-error)]" : "text-[var(--color-success)]",
               )}
             >
               {raises ? "+" : ""}

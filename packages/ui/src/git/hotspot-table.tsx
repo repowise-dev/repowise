@@ -280,9 +280,9 @@ export function HotspotTable({
                           {h.commit_count_90d}
                         </span>
                         {accelerating ? (
-                          <TrendingUp className="h-3 w-3 text-red-500" />
+                          <TrendingUp className="h-3 w-3 text-[var(--color-error)]" />
                         ) : (
-                          <TrendingDown className="h-3 w-3 text-green-500" />
+                          <TrendingDown className="h-3 w-3 text-[var(--color-success)]" />
                         )}
                       </span>
                     </td>
@@ -298,7 +298,7 @@ export function HotspotTable({
                       <span className="inline-flex items-center justify-end gap-1">
                         {trendScore != null ? (
                           <>
-                            <Flame className={cn("h-3 w-3 shrink-0", trendScore >= 5 ? "text-red-500" : trendScore >= 2 ? "text-orange-400" : "text-[var(--color-text-tertiary)]")} />
+                            <Flame className={cn("h-3 w-3 shrink-0", trendScore >= 5 ? "text-[var(--color-error)]" : trendScore >= 2 ? "text-[var(--color-warning)]" : "text-[var(--color-text-tertiary)]")} />
                             <span className="text-[var(--color-text-secondary)]">
                               {trendScore.toFixed(2)}
                             </span>
@@ -312,19 +312,19 @@ export function HotspotTable({
                       <span
                         className={`inline-flex items-center justify-center rounded px-1.5 py-0.5 text-xs font-medium tabular-nums ${
                           h.bus_factor <= 1
-                            ? "bg-red-500/15 text-red-400"
+                            ? "bg-[var(--color-error)]/15 text-[var(--color-error)]"
                             : h.bus_factor === 2
-                              ? "bg-yellow-500/15 text-yellow-400"
-                              : "bg-green-500/15 text-green-400"
+                              ? "bg-[var(--color-warning)]/15 text-[var(--color-warning)]"
+                              : "bg-[var(--color-success)]/15 text-[var(--color-success)]"
                         }`}
                       >
                         {h.bus_factor}
                       </span>
                     </td>
                     <td className="px-3 py-2.5 text-xs tabular-nums hidden lg:table-cell">
-                      <span className="text-green-400">+{formatLOC(h.lines_added_90d)}</span>
+                      <span className="text-[var(--color-success)]">+{formatLOC(h.lines_added_90d)}</span>
                       {" "}
-                      <span className="text-red-400">-{formatLOC(h.lines_deleted_90d)}</span>
+                      <span className="text-[var(--color-error)]">-{formatLOC(h.lines_deleted_90d)}</span>
                     </td>
                     <td className="px-3 py-2.5 text-xs text-[var(--color-text-secondary)] hidden md:table-cell">
                       {h.primary_owner ?? "—"}

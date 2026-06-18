@@ -109,7 +109,7 @@ export function SymbolDetailBody({
             <p className="mb-2 text-[10px] font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
               Graph metrics
             </p>
-            <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-[11px] sm:grid-cols-4">
+            <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs sm:grid-cols-4">
               {graph.pagerank_percentile != null && (
                 <Metric label="PageRank" value={`Top ${100 - graph.pagerank_percentile}%`} />
               )}
@@ -128,7 +128,7 @@ export function SymbolDetailBody({
       {graph && (
         <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-3">
           {metricsLoading ? (
-            <p className="text-[11px] text-[var(--color-text-tertiary)]">Loading call graph…</p>
+            <p className="text-xs text-[var(--color-text-tertiary)]">Loading call graph…</p>
           ) : (
             <SymbolCallGraph
               centerName={id.name}
@@ -199,7 +199,7 @@ export function SymbolDetailBody({
             {coChanges.map((p) => (
               <li
                 key={p.file_path}
-                className="flex items-center justify-between gap-2 font-mono text-[11px]"
+                className="flex items-center justify-between gap-2 font-mono text-xs"
               >
                 <span className="truncate text-[var(--color-text-secondary)]" title={p.file_path}>
                   {truncatePath(p.file_path, 40)}
@@ -221,7 +221,7 @@ export function SymbolDetailBody({
           </p>
           <ul className="space-y-1">
             {deadCode.map((f) => (
-              <li key={f.id} className="flex items-start gap-2 text-[11px]">
+              <li key={f.id} className="flex items-start gap-2 text-xs">
                 <AlertTriangle
                   className={cn(
                     "mt-0.5 h-3 w-3 shrink-0",
@@ -257,7 +257,7 @@ export function SymbolDetailBody({
               className={`inline-flex items-baseline rounded px-1.5 py-0.5 text-xs font-bold tabular-nums ${scoreBadgeClass(data.file_context.health_score)}`}
             >
               {data.file_context.health_score.toFixed(1)}
-              <span className="ml-0.5 text-[9px] font-normal opacity-70">/10</span>
+              <span className="ml-0.5 text-[10px] font-normal opacity-70">/10</span>
             </span>
           )}
           {(data.file_context?.language || id.language) && (

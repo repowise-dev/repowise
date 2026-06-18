@@ -130,7 +130,8 @@ export function SymbolPage({
             )}
             <a
               href={fileEntityPath(prefix, s.file_path)}
-              className="font-mono text-[11px] text-[var(--color-text-secondary)] hover:text-[var(--color-accent-primary)] hover:underline break-all"
+              title={`${s.file_path}:${s.start_line}`}
+              className="block max-w-full truncate font-mono text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-accent-primary)] hover:underline"
             >
               {s.file_path}:{s.start_line}
             </a>
@@ -146,7 +147,7 @@ export function SymbolPage({
                 <a
                   key={d.id}
                   href={`${prefix}/decisions/${d.id}`}
-                  className="rounded border border-[var(--color-border-default)] px-1.5 py-0.5 text-[11px] text-[var(--color-text-secondary)] transition-colors hover:border-[var(--color-accent-primary)] hover:text-[var(--color-accent-primary)]"
+                  className="rounded border border-[var(--color-border-default)] px-1.5 py-0.5 text-xs text-[var(--color-text-secondary)] transition-colors hover:border-[var(--color-accent-primary)] hover:text-[var(--color-accent-primary)]"
                 >
                   {d.title}
                 </a>

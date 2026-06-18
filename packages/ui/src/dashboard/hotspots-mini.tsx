@@ -93,7 +93,7 @@ export function HotspotsMini({
                 </div>
               </div>
               <div className="min-w-0 flex-1">
-                <p className="text-[11px] font-mono text-[var(--color-text-primary)] truncate">
+                <p className="text-xs font-mono text-[var(--color-text-primary)] truncate">
                   {truncatePath(h.file_path, 40)}
                 </p>
               </div>

@@ -171,13 +171,13 @@ export function SourceCitations({
             href={buildHref ? buildHref(source) : defaultBuildHref(source, prefix)}
             className="group inline-flex items-center gap-1.5 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2 py-1 text-[10px] text-[var(--color-text-secondary)] hover:border-[var(--color-accent-primary)] hover:text-[var(--color-accent-primary)] hover:bg-[var(--color-accent-muted)] transition-all"
           >
-            <span className="flex items-center justify-center h-3.5 w-3.5 rounded-sm bg-[var(--color-bg-overlay)] text-[9px] font-bold text-[var(--color-text-tertiary)] group-hover:bg-[var(--color-accent-primary)] group-hover:text-white shrink-0 transition-colors">
+            <span className="flex items-center justify-center h-3.5 w-3.5 rounded-sm bg-[var(--color-bg-overlay)] text-[10px] font-bold text-[var(--color-text-tertiary)] group-hover:bg-[var(--color-accent-primary)] group-hover:text-white shrink-0 transition-colors">
               {idx + 1}
             </span>
             <SourceIcon pageType={source.pageType} className="h-3 w-3 shrink-0 opacity-60" />
             <span className="truncate max-w-[160px] font-medium">{source.title}</span>
             {source.score != null && (
-              <span className="text-[9px] text-[var(--color-text-tertiary)] tabular-nums">
+              <span className="text-[10px] text-[var(--color-text-tertiary)] tabular-nums">
                 {(source.score * 100).toFixed(0)}%
               </span>
             )}

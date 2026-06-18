@@ -145,7 +145,7 @@ export default async function WorkspaceDashboardPage() {
         <StatCard
           label="Hotspots"
           value={totalHotspots}
-          icon={<Flame className="h-4 w-4 text-orange-400" />}
+          icon={<Flame className="h-4 w-4 text-[var(--color-warning)]" />}
         />
         <StatCard
           label="Pages"

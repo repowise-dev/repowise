@@ -98,7 +98,7 @@ export function CommitDetailCard({ commit, className }: CommitDetailCardProps) {
             {c.short_sha}
           </span>
           {c.is_fix && (
-            <span className="inline-flex items-center gap-1 text-xs text-red-400">
+            <span className="inline-flex items-center gap-1 text-xs text-[var(--color-error)]">
               <Bug className="h-3 w-3" />
               fix
             </span>
@@ -127,7 +127,7 @@ export function CommitDetailCard({ commit, className }: CommitDetailCardProps) {
           {c.committed_at && <span>{formatDateTime(c.committed_at)}</span>}
         </div>
         {c.agent_name && c.agent_channel && (
-          <p className="text-[10px] text-[var(--color-text-tertiary)]">
+          <p className="text-xs text-[var(--color-text-tertiary)]">
             Attribution channel: {c.agent_channel}
             {c.agent_confidence ? ` · ${c.agent_confidence} confidence` : ""}
           </p>
@@ -205,7 +205,7 @@ export function CommitDetailCard({ commit, className }: CommitDetailCardProps) {
         <p className="mb-1 text-xs font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
           Why this score
         </p>
-        <p className="mb-2 text-[10px] text-[var(--color-text-tertiary)]">
+        <p className="mb-2 text-xs text-[var(--color-text-tertiary)]">
           Each driver compares this change to the model&apos;s baseline commit.
           Red raised the raw score; green lowered it.
         </p>

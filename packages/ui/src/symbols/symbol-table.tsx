@@ -65,7 +65,7 @@ function ImportanceBar({ score }: { score: number | null | undefined }) {
     pct >= 70
       ? "bg-[var(--color-accent-primary)]"
       : pct >= 40
-        ? "bg-yellow-500"
+        ? "bg-[var(--color-warning)]"
         : "bg-[var(--color-text-tertiary)]";
   return (
     <div className="flex items-center gap-1.5">
@@ -91,10 +91,10 @@ function SignalChips({ sym }: { sym: CodeSymbol }) {
         className={cn(
           "inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] font-medium",
           isPublic
-            ? "bg-emerald-500/15 text-emerald-400"
+            ? "bg-[var(--color-success)]/15 text-[var(--color-success)]"
             : isPrivate
-              ? "bg-slate-500/15 text-slate-400"
-              : "bg-amber-500/15 text-amber-400",
+              ? "bg-[var(--color-bg-inset)] text-[var(--color-text-tertiary)]"
+              : "bg-[var(--color-warning)]/15 text-[var(--color-warning)]",
         )}
         title={`Visibility: ${sym.visibility}`}
       >
@@ -103,7 +103,7 @@ function SignalChips({ sym }: { sym: CodeSymbol }) {
       </span>
       {sym.is_entry_point && (
         <span
-          className="inline-flex items-center gap-0.5 rounded bg-blue-500/15 px-1 py-0.5 text-[10px] font-medium text-blue-400"
+          className="inline-flex items-center gap-0.5 rounded bg-[var(--color-info)]/15 px-1 py-0.5 text-[10px] font-medium text-[var(--color-info)]"
           title="Lives in an entry-point file"
         >
           <Rocket className="h-2.5 w-2.5" />
@@ -112,7 +112,7 @@ function SignalChips({ sym }: { sym: CodeSymbol }) {
       )}
       {sym.file_is_hotspot && (
         <span
-          className="inline-flex items-center gap-0.5 rounded bg-red-500/15 px-1 py-0.5 text-[10px] font-medium text-red-400"
+          className="inline-flex items-center gap-0.5 rounded bg-[var(--color-error)]/15 px-1 py-0.5 text-[10px] font-medium text-[var(--color-error)]"
           title="File is a churn hotspot"
         >
           <Flame className="h-2.5 w-2.5" />
@@ -121,7 +121,7 @@ function SignalChips({ sym }: { sym: CodeSymbol }) {
       )}
       {complex && (
         <span
-          className="inline-flex items-center gap-0.5 rounded bg-yellow-500/15 px-1 py-0.5 text-[10px] font-medium text-yellow-400"
+          className="inline-flex items-center gap-0.5 rounded bg-[var(--color-caution)]/15 px-1 py-0.5 text-[10px] font-medium text-[var(--color-caution)]"
           title="High complexity"
         >
           <Sparkles className="h-2.5 w-2.5" />
@@ -343,9 +343,9 @@ export function SymbolTable({
                       <span
                         className={cn(
                           sym.complexity_estimate > 15
-                            ? "text-red-500"
+                            ? "text-[var(--color-error)]"
                             : sym.complexity_estimate > 8
-                              ? "text-yellow-500"
+                              ? "text-[var(--color-warning)]"
                               : "",
                         )}
                       >

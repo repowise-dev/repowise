@@ -98,13 +98,13 @@ export default async function DashboardPage() {
           label="Fresh Pages"
           value={formatNumber(freshPages)}
           description="Confidence ≥ 80%"
-          icon={<CheckCircle2 className="h-4 w-4 text-green-500" />}
+          icon={<CheckCircle2 className="h-4 w-4 text-[var(--color-success)]" />}
         />
         <StatCard
           label="Stale Pages"
           value={formatNumber(stalePages)}
           description="Need regeneration"
-          icon={<AlertCircle className="h-4 w-4 text-yellow-500" />}
+          icon={<AlertCircle className="h-4 w-4 text-[var(--color-warning)]" />}
         />
         <StatCard
           label="Dead Code"
@@ -280,10 +280,10 @@ function JobStatusIcon({ status }: { status: string }) {
     );
   }
   if (status === "completed") {
-    return <CheckCircle2 className="h-4 w-4 shrink-0 text-green-500" />;
+    return <CheckCircle2 className="h-4 w-4 shrink-0 text-[var(--color-success)]" />;
   }
   if (status === "failed") {
-    return <AlertCircle className="h-4 w-4 shrink-0 text-red-500" />;
+    return <AlertCircle className="h-4 w-4 shrink-0 text-[var(--color-error)]" />;
   }
   return <Clock className="h-4 w-4 shrink-0 text-[var(--color-text-tertiary)]" />;
 }

@@ -180,8 +180,9 @@ export function ChatInterface({
 
   return (
     <div className="flex h-full flex-col min-h-0">
-      {/* Header bar (active conversation) */}
-      {!isEmpty && (
+      {/* Header bar — the single home for model + history (both empty and
+          active states), so the controls don't render twice. */}
+      {(historySlot || modelSelectorSlot) && (
         <div className="flex items-center justify-between px-4 py-2.5 border-b border-[var(--color-border-default)] shrink-0 bg-[var(--color-bg-surface)]/95 backdrop-blur-sm">
           <div className="flex items-center gap-2">{historySlot}</div>
           <div className="flex items-center gap-2">
@@ -214,7 +215,7 @@ export function ChatInterface({
                 <BrandMark
                   darkSrc={emptyStateLogoSrc}
                   size={48}
-                  className="drop-shadow-[0_0_12px_rgba(245,149,32,0.35)]"
+                  className="drop-shadow-[0_0_8px_rgba(245,149,32,0.18)]"
                 />
               </div>
               <h2 className="text-xl font-semibold text-[var(--color-text-primary)]">
@@ -242,16 +243,6 @@ export function ChatInterface({
                 </button>
               ))}
             </div>
-
-            <div className="flex items-center gap-3">
-              {modelSelectorSlot && (
-                <span className="text-xs text-[var(--color-text-tertiary)]">
-                  Using:
-                </span>
-              )}
-              {modelSelectorSlot}
-              {historySlot}
-            </div>
           </div>
         ) : (
           <ScrollArea className="h-full">
@@ -268,7 +259,7 @@ export function ChatInterface({
                 />
               ))}
               {error && (
-                <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-2.5 text-sm text-red-400">
+                <div className="rounded-lg border border-[var(--color-error)]/30 bg-[var(--color-error)]/10 px-4 py-2.5 text-sm text-[var(--color-error)]">
                   {error}
                 </div>
               )}
@@ -294,7 +285,6 @@ export function ChatInterface({
           <div
             className={cn(
               "flex items-end gap-2 rounded-2xl border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-4 py-3",
-              isEmpty && "shadow-lg shadow-black/20",
               sendDisabled && "opacity-60",
             )}
           >
@@ -331,7 +321,7 @@ export function ChatInterface({
             </Button>
           </div>
           {isEmpty && (
-            <p className="text-center text-[11px] text-[var(--color-text-tertiary)] mt-2.5">
+            <p className="text-center text-xs text-[var(--color-text-tertiary)] mt-2.5">
               Shift+Enter for newline · Enter to send
             </p>
           )}

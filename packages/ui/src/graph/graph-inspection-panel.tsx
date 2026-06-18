@@ -191,7 +191,7 @@ export const GraphInspectionPanel = memo(function GraphInspectionPanel({
           {/* Neighbors */}
           {neighbors.length > 0 && (
             <div className="border-t border-[var(--color-border-default)] pt-3">
-              <p className="text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider mb-2">
+              <p className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider mb-2">
                 {isMod ? "Connected Modules" : "Neighbors"} ({neighbors.length})
               </p>
               <div className="space-y-0.5 max-h-48 overflow-y-auto">
@@ -206,11 +206,11 @@ export const GraphInspectionPanel = memo(function GraphInspectionPanel({
                       style={{ background: communityFamily(n.communityId).hub }}
                     />
                     <div className="min-w-0 flex-1">
-                      <p className="text-[11px] font-mono text-[var(--color-text-secondary)] group-hover:text-[var(--color-text-primary)] truncate">
+                      <p className="text-xs font-mono text-[var(--color-text-secondary)] group-hover:text-[var(--color-text-primary)] truncate">
                         {n.label}
                       </p>
                     </div>
-                    <span className="text-[9px] text-[var(--color-text-tertiary)] shrink-0">
+                    <span className="text-[10px] text-[var(--color-text-tertiary)] shrink-0">
                       {n.direction === "importer" ? "imports this" : "imported"}
                     </span>
                   </button>
@@ -228,13 +228,13 @@ export const GraphInspectionPanel = memo(function GraphInspectionPanel({
               Ego Graph
             </span>
             {egoDepth != null && egoDepth > 0 && egoVisibleCount != null && (
-              <span className="text-[9px] text-[var(--color-text-tertiary)] tabular-nums">
+              <span className="text-[10px] text-[var(--color-text-tertiary)] tabular-nums">
                 {egoVisibleCount} nodes
               </span>
             )}
           </div>
           <div className="flex items-center gap-2">
-            <span className="text-[9px] text-[var(--color-text-tertiary)] w-4 text-right tabular-nums">
+            <span className="text-[10px] text-[var(--color-text-tertiary)] w-4 text-right tabular-nums">
               {egoDepth ?? 0}
             </span>
             <input
@@ -246,9 +246,9 @@ export const GraphInspectionPanel = memo(function GraphInspectionPanel({
               className="flex-1 h-1 accent-[var(--color-accent-graph)] cursor-pointer"
               aria-label="Ego graph depth"
             />
-            <span className="text-[9px] text-[var(--color-text-tertiary)]">5</span>
+            <span className="text-[10px] text-[var(--color-text-tertiary)]">5</span>
           </div>
-          <p className="text-[9px] text-[var(--color-text-tertiary)] mt-1">
+          <p className="text-[10px] text-[var(--color-text-tertiary)] mt-1">
             {(egoDepth ?? 0) === 0
               ? "Slide to filter by hop distance"
               : `Showing nodes within ${egoDepth} hop${egoDepth === 1 ? "" : "s"}`}
@@ -391,16 +391,16 @@ function FileMetadata({
           </span>
         )}
         {data.isTest && (
-          <span className="inline-flex items-center gap-1 rounded-md bg-purple-500/10 text-purple-400 px-1.5 py-0.5 text-[10px] font-medium">
+          <span className="inline-flex items-center gap-1 rounded-md bg-[var(--color-accent-secondary)]/10 text-[var(--color-accent-secondary)] px-1.5 py-0.5 text-[10px] font-medium">
             <FlaskConical className="w-2.5 h-2.5" /> Test
           </span>
         )}
         {data.hasDoc ? (
-          <span className="inline-flex items-center gap-1 rounded-md bg-green-500/10 text-green-400 px-1.5 py-0.5 text-[10px] font-medium">
+          <span className="inline-flex items-center gap-1 rounded-md bg-[var(--color-success)]/10 text-[var(--color-success)] px-1.5 py-0.5 text-[10px] font-medium">
             <BookOpen className="w-2.5 h-2.5" /> Documented
           </span>
         ) : (
-          <span className="inline-flex items-center gap-1 rounded-md bg-slate-500/10 text-slate-400 px-1.5 py-0.5 text-[10px] font-medium">
+          <span className="inline-flex items-center gap-1 rounded-md bg-[var(--color-bg-inset)] text-[var(--color-text-tertiary)] px-1.5 py-0.5 text-[10px] font-medium">
             <BookOpen className="w-2.5 h-2.5" /> No docs
           </span>
         )}

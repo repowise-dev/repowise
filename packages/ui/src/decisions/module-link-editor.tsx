@@ -96,7 +96,7 @@ export function ModuleLinkEditor({
         <h3 className="text-sm font-medium text-[var(--color-text-secondary)]">
           Governance scope
         </h3>
-        <p className="text-[11px] text-[var(--color-text-tertiary)]">
+        <p className="text-xs text-[var(--color-text-tertiary)]">
           Link this decision to the modules and files it governs.
         </p>
       </div>
@@ -187,7 +187,7 @@ export function ModuleLinkEditor({
 
       {/* Footer actions */}
       <div className="flex items-center justify-between gap-2 border-t border-[var(--color-border-default)] pt-3">
-        <p className="text-[11px] text-[var(--color-text-tertiary)]">
+        <p className="text-xs text-[var(--color-text-tertiary)]">
           {dirty ? "Unsaved changes" : "All linkage saved."}
         </p>
         <div className="flex gap-2">
@@ -238,7 +238,7 @@ function Field({ icon, label, chips, onRemove, disabled, children }: FieldProps)
           {chips.map((c) => (
             <span
               key={c}
-              className="inline-flex items-center gap-1 rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2 py-0.5 font-mono text-[11px] text-[var(--color-text-primary)]"
+              className="inline-flex items-center gap-1 rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2 py-0.5 font-mono text-xs text-[var(--color-text-primary)]"
             >
               <span className="max-w-[260px] truncate" title={c}>
                 {c}

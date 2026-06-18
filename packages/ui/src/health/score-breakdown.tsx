@@ -93,10 +93,10 @@ export function ScoreBreakdown({
                   {c.findings.slice(0, 6).map((f) => (
                     <li
                       key={f.id}
-                      className="flex flex-wrap items-baseline gap-x-2 text-[11px]"
+                      className="flex flex-wrap items-baseline gap-x-2 text-xs"
                     >
                       <span
-                        className={`inline-block rounded px-1.5 py-px text-[9px] uppercase font-semibold ${SEVERITY_CHIP[f.severity]}`}
+                        className={`inline-block rounded px-1.5 py-px text-[10px] uppercase font-semibold ${SEVERITY_CHIP[f.severity]}`}
                       >
                         {SEVERITY_LABEL[f.severity]}
                       </span>
@@ -114,7 +114,7 @@ export function ScoreBreakdown({
                     </li>
                   ))}
                   {c.findings.length > 6 ? (
-                    <li className="text-[11px] text-[var(--color-text-tertiary)]">
+                    <li className="text-xs text-[var(--color-text-tertiary)]">
                       + {c.findings.length - 6} more
                     </li>
                   ) : null}

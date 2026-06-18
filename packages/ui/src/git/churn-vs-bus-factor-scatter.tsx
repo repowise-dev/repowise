@@ -109,7 +109,7 @@ export function ChurnVsBusFactorScatter({
 
   return (
     <div className={cn("w-full space-y-2", className)}>
-      <div className="flex items-center justify-between text-[11px] text-[var(--color-text-tertiary)]">
+      <div className="flex items-center justify-between text-xs text-[var(--color-text-tertiary)]">
         <span>
           {points.length} files plotted
         </span>
@@ -117,8 +117,8 @@ export function ChurnVsBusFactorScatter({
           className={cn(
             "inline-flex items-center gap-1 rounded px-1.5 py-0.5 tabular-nums",
             dangerCount > 0
-              ? "bg-red-500/15 text-red-400"
-              : "bg-green-500/15 text-green-400",
+              ? "bg-[var(--color-error)]/15 text-[var(--color-error)]"
+              : "bg-[var(--color-success)]/15 text-[var(--color-success)]",
           )}
         >
           <span className="font-medium">{dangerCount}</span>
@@ -244,7 +244,7 @@ export function ChurnVsBusFactorScatter({
             same quadrant. */}
       </svg>
       {dangerPoints.length > 0 && (
-        <ul className="space-y-0.5 text-[11px]">
+        <ul className="space-y-0.5 text-xs">
           {dangerPoints.map((p) => (
             <li
               key={`legend-${p.file_path}`}

@@ -5,10 +5,10 @@ import type { ReviewPriority } from "@repowise-dev/types/git";
 // "Typical" are calm (this commit is not unusual for the repo); only "Elevated"
 // — the top third of the repo's own distribution — draws the eye.
 const STYLES: Record<ReviewPriority, string> = {
-  high: "bg-amber-500/15 text-amber-400 border-amber-500/25",
+  high: "bg-[var(--color-warning)]/15 text-[var(--color-warning)] border-[var(--color-warning)]/25",
   moderate:
     "bg-[var(--color-bg-elevated)] text-[var(--color-text-secondary)] border-[var(--color-border-default)]",
-  low: "bg-green-500/15 text-green-400 border-green-500/25",
+  low: "bg-[var(--color-success)]/15 text-[var(--color-success)] border-[var(--color-success)]/25",
 };
 
 // Repo-relative tercile wording — where the commit sits in *its own repo's*

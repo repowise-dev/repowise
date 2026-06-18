@@ -102,7 +102,7 @@ export function RepoCard({
         </div>
 
         {docsSkipReason && (
-          <p className="mt-3 text-[11px] text-[var(--color-text-tertiary)] leading-snug">
+          <p className="mt-3 text-xs text-[var(--color-text-tertiary)] leading-snug">
             <span className="font-medium">Docs skipped:</span> {docsSkipReason}
           </p>
         )}

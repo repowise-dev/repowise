@@ -16,7 +16,7 @@ const COLUMNS: ResponsiveColumn<WorkspacePackageDepEntry>[] = [
     header: "Source",
     priority: 1,
     render: (d) => (
-      <Badge variant="default" className="text-[11px]">
+      <Badge variant="default" className="text-xs">
         {d.source_repo}
       </Badge>
     ),
@@ -26,7 +26,7 @@ const COLUMNS: ResponsiveColumn<WorkspacePackageDepEntry>[] = [
     header: "Target",
     priority: 1,
     render: (d) => (
-      <Badge variant="default" className="text-[11px]">
+      <Badge variant="default" className="text-xs">
         {d.target_repo}
       </Badge>
     ),

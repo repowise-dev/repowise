@@ -34,7 +34,7 @@ function CallNode({
                 : "bg-[var(--color-text-tertiary)]",
           )}
         />
-        <span className="truncate font-mono text-[11px] text-[var(--color-text-primary)]">
+        <span className="truncate font-mono text-xs text-[var(--color-text-primary)]">
           {entry.name}
         </span>
       </div>
@@ -73,7 +73,7 @@ export function SymbolCallGraph({
           Called by ({callers.length})
         </p>
         {callersShown.length === 0 ? (
-          <p className="text-[11px] italic text-[var(--color-text-tertiary)]">None</p>
+          <p className="text-xs italic text-[var(--color-text-tertiary)]">None</p>
         ) : (
           callersShown.map((c) => (
             <CallNode key={`${c.symbol_id}-${c.edge_type}`} entry={c} {...(symbolHref ? { symbolHref } : {})} />
@@ -99,7 +99,7 @@ export function SymbolCallGraph({
           Calls ({callees.length})
         </p>
         {calleesShown.length === 0 ? (
-          <p className="text-[11px] italic text-[var(--color-text-tertiary)]">None</p>
+          <p className="text-xs italic text-[var(--color-text-tertiary)]">None</p>
         ) : (
           calleesShown.map((c) => (
             <CallNode key={`${c.symbol_id}-${c.edge_type}`} entry={c} {...(symbolHref ? { symbolHref } : {})} />

@@ -705,7 +705,7 @@ function TreeItem({
               (node.path === ONBOARDING_DIR_KEY || node.path.startsWith("@section:")) &&
                 "text-[var(--color-text-primary)]",
               node.path.startsWith("@section:") &&
-                "text-[11px] uppercase tracking-wider",
+                "text-xs uppercase tracking-wider",
             )}
           >
             {node.name}
@@ -864,7 +864,7 @@ export function DocsTree({ pages, selectedPageId, onSelectPage, className }: Doc
               key={mode}
               onClick={() => setViewMode(mode)}
               className={cn(
-                "flex flex-1 items-center justify-center gap-1.5 rounded px-2 py-1 text-[11px] font-medium transition-colors",
+                "flex flex-1 items-center justify-center gap-1.5 rounded px-2 py-1 text-xs font-medium transition-colors",
                 viewMode === mode
                   ? "bg-[var(--color-bg-surface)] text-[var(--color-text-primary)] shadow-sm"
                   : "text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)]",
@@ -899,7 +899,7 @@ export function DocsTree({ pages, selectedPageId, onSelectPage, className }: Doc
           >
             <Filter className="h-3.5 w-3.5" />
             {activeFilterCount > 0 && (
-              <span className="absolute -top-1 -right-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-[var(--color-accent-fill)] text-[9px] font-semibold text-[var(--color-text-on-accent)]">
+              <span className="absolute -top-1 -right-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-[var(--color-accent-fill)] text-[10px] font-semibold text-[var(--color-text-on-accent)]">
                 {activeFilterCount}
               </span>
             )}

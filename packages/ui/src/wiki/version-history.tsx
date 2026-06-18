@@ -155,8 +155,8 @@ function DiffView({ oldContent, newContent }: { oldContent: string; newContent: 
           key={i}
           className={cn(
             "px-2 py-0.5 whitespace-pre-wrap break-all",
-            line.type === "added" && "bg-green-500/10 text-green-400",
-            line.type === "removed" && "bg-red-500/10 text-red-400",
+            line.type === "added" && "bg-[var(--color-success)]/10 text-[var(--color-success)]",
+            line.type === "removed" && "bg-[var(--color-error)]/10 text-[var(--color-error)]",
             line.type === "unchanged" && "text-[var(--color-text-tertiary)]",
           )}
         >

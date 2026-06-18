@@ -185,7 +185,7 @@ export function ModuleHealthDetailView({
                   <button
                     key={p}
                     onClick={() => onSelectFile?.(p)}
-                    className="block w-full truncate rounded px-2 py-1 text-left font-mono text-[11px] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]"
+                    className="block w-full truncate rounded px-2 py-1 text-left font-mono text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]"
                     title={p}
                   >
                     {truncatePath(p, 40)}
@@ -211,7 +211,7 @@ export function ModuleHealthDetailView({
                       key={id}
                       onClick={() => onSelectDecision?.(id)}
                       title={typeof d === "string" ? undefined : `${d.title} (${d.status})`}
-                      className="block w-full truncate rounded px-2 py-1 text-left text-[11px] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]"
+                      className="block w-full truncate rounded px-2 py-1 text-left text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]"
                     >
                       {label}
                     </button>

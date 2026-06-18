@@ -41,7 +41,7 @@ export function FileDocTab({ wikiPage, docSlot, wikiHref }: FileDocTabProps) {
         </Badge>
         {wikiPage.updated_at && (
           <span
-            className="text-[11px] text-[var(--color-text-tertiary)]"
+            className="text-xs text-[var(--color-text-tertiary)]"
             title={new Date(wikiPage.updated_at).toLocaleString()}
           >
             updated {formatRelativeTime(wikiPage.updated_at)}
@@ -50,7 +50,7 @@ export function FileDocTab({ wikiPage, docSlot, wikiHref }: FileDocTabProps) {
         {wikiHref && (
           <a
             href={wikiHref}
-            className="ml-auto text-[11px] text-[var(--color-accent-primary)] hover:underline"
+            className="ml-auto text-xs text-[var(--color-accent-primary)] hover:underline"
           >
             Open in Docs →
           </a>

@@ -76,7 +76,7 @@ export function CommitsMini({ commits, repoId, linkPrefix, previewCount = 8 }: C
                 }`}
                 title={c.change_risk_level ? `${c.change_risk_level} change risk` : undefined}
               />
-              <span className="text-[11px] font-mono text-[var(--color-text-tertiary)] shrink-0">
+              <span className="text-xs font-mono text-[var(--color-text-tertiary)] shrink-0">
                 {c.short_sha}
               </span>
               <span className="text-xs text-[var(--color-text-primary)] truncate flex-1 min-w-0">

@@ -58,7 +58,7 @@ export default function CoChangesPage() {
                 ).size
               : "—"
           }
-          icon={<GitMerge className="h-4 w-4 text-purple-400" />}
+          icon={<GitMerge className="h-4 w-4 text-[var(--color-accent-secondary)]" />}
         />
         <StatCard
           label="Avg Strength"
@@ -71,7 +71,7 @@ export default function CoChangesPage() {
                 ) / 10
               : "—"
           }
-          icon={<GitMerge className="h-4 w-4 text-orange-400" />}
+          icon={<GitMerge className="h-4 w-4 text-[var(--color-accent-primary)]" />}
         />
       </div>
 

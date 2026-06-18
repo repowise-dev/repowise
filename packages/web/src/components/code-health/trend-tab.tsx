@@ -61,7 +61,7 @@ export function TrendSection({
           label="Snapshots"
           value={data.snapshot_count}
           distBar={
-            <span className="text-[11px] text-[var(--color-text-tertiary)]">
+            <span className="text-xs text-[var(--color-text-tertiary)]">
               rolling window: 50 max
             </span>
           }
@@ -151,7 +151,7 @@ function DeltaMetric({
         </>
       }
       distBar={
-        <span className={`text-[11px] tabular-nums ${deltaColor(delta)}`}>
+        <span className={`text-xs tabular-nums ${deltaColor(delta)}`}>
           {delta == null
             ? "no prior snapshot"
             : `${formatDelta(delta)} vs. ${previous?.toFixed(1) ?? "—"}`}

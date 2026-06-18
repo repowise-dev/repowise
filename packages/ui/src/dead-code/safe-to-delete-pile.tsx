@@ -132,7 +132,7 @@ export function SafeToDeletePile({
                   )}
                 >
                   <span
-                    className="font-mono text-[11px] text-[var(--color-text-secondary)] truncate"
+                    className="font-mono text-xs text-[var(--color-text-secondary)] truncate"
                     title={g.file_path}
                   >
                     {g.file_path}
@@ -151,7 +151,7 @@ export function SafeToDeletePile({
             );
           })}
           {moreFiles > 0 && (
-            <li className="px-2 pt-0.5 text-[11px] text-[var(--color-text-tertiary)]">
+            <li className="px-2 pt-0.5 text-xs text-[var(--color-text-tertiary)]">
               +{moreFiles.toLocaleString()} more file{moreFiles === 1 ? "" : "s"} —
               {" "}see findings table below.
             </li>

@@ -215,10 +215,10 @@ export function CommitTable({
                   </td>
                   <td className="px-3 py-2.5 min-w-[200px] max-w-[460px]">
                     <div className="flex items-center gap-2">
-                      <span className="font-mono text-[11px] text-[var(--color-text-tertiary)] shrink-0">
+                      <span className="font-mono text-xs text-[var(--color-text-tertiary)] shrink-0">
                         {c.short_sha}
                       </span>
-                      {c.is_fix && <Bug className="h-3 w-3 shrink-0 text-red-400" />}
+                      {c.is_fix && <Bug className="h-3 w-3 shrink-0 text-[var(--color-error)]" />}
                       <span
                         className="truncate text-xs text-[var(--color-text-primary)]"
                         title={c.subject}
@@ -244,8 +244,8 @@ export function CommitTable({
                     {c.committed_at ? formatRelativeTime(c.committed_at) : "—"}
                   </td>
                   <td className="px-3 py-2.5 text-xs tabular-nums hidden lg:table-cell">
-                    <span className="text-green-400">+{formatLOC(c.lines_added)}</span>{" "}
-                    <span className="text-red-400">-{formatLOC(c.lines_deleted)}</span>
+                    <span className="text-[var(--color-success)]">+{formatLOC(c.lines_added)}</span>{" "}
+                    <span className="text-[var(--color-error)]">-{formatLOC(c.lines_deleted)}</span>
                   </td>
                   <td className="px-3 py-2.5">
                     <div className="flex items-center gap-2">
@@ -257,7 +257,7 @@ export function CommitTable({
                     </div>
                   </td>
                   <td
-                    className="px-3 py-2.5 text-[11px] text-[var(--color-text-tertiary)] hidden xl:table-cell max-w-[220px] truncate"
+                    className="px-3 py-2.5 text-xs text-[var(--color-text-tertiary)] hidden xl:table-cell max-w-[220px] truncate"
                     title={c.top_driver ?? undefined}
                   >
                     {c.top_driver ?? "—"}

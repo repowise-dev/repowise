@@ -66,7 +66,7 @@ export function GraphTruncationBanner({
             size="sm"
             variant="ghost"
             onClick={onSwitchToArchitecture}
-            className="h-7 px-2 text-[11px] font-medium text-[var(--color-warning)] hover:bg-[var(--color-warning)]/15 hover:text-[var(--color-warning)]"
+            className="h-7 px-2 text-xs font-medium text-[var(--color-warning)] hover:bg-[var(--color-warning)]/15 hover:text-[var(--color-warning)]"
           >
             Switch to Architecture
           </Button>
@@ -76,7 +76,7 @@ export function GraphTruncationBanner({
             size="sm"
             variant="ghost"
             onClick={() => onLoadMore(nextLimit)}
-            className="h-7 px-2 text-[11px] font-medium text-[var(--color-warning)] hover:bg-[var(--color-warning)]/15 hover:text-[var(--color-warning)]"
+            className="h-7 px-2 text-xs font-medium text-[var(--color-warning)] hover:bg-[var(--color-warning)]/15 hover:text-[var(--color-warning)]"
           >
             Load {formatNumber(Math.min(LOAD_MORE_STEP, nextLimit - limit))} more
           </Button>

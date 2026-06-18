@@ -76,7 +76,7 @@ export function NodeBadges({ signals, only, size = "xs", className }: NodeBadges
   if (active.length === 0) return null;
 
   const sizeClass =
-    size === "sm" ? "text-[11px] px-2 py-0.5" : "text-[10px] px-1.5 py-0.5";
+    size === "sm" ? "text-xs px-2 py-0.5" : "text-[10px] px-1.5 py-0.5";
   const iconSize = size === "sm" ? "w-3 h-3" : "w-2.5 h-2.5";
 
   return (

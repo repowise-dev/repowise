@@ -144,7 +144,7 @@ export function RefactoringCard({
             {target.primary_suggestion}
           </p>
         ) : null}
-        <div className="flex items-center gap-3 pt-1 text-[11px] text-[var(--color-text-tertiary)] flex-wrap">
+        <div className="flex items-center gap-3 pt-1 text-xs text-[var(--color-text-tertiary)] flex-wrap">
           <span>Score {target.score.toFixed(1)}/10</span>
           <span>· {target.nloc} NLOC</span>
           <span>· {effortLabel[target.effort_bucket]} effort</span>
@@ -194,11 +194,11 @@ export function RefactoringCard({
                     {f.function_name ? (
                       <span className="text-xs font-mono text-[var(--color-text-tertiary)]">{f.function_name}</span>
                     ) : null}
-                    <span className="ml-auto text-[11px] tabular-nums text-[var(--color-error)]">
+                    <span className="ml-auto text-xs tabular-nums text-[var(--color-error)]">
                       −{f.health_impact.toFixed(2)}
                     </span>
                   </div>
-                  <p className="text-[11px] text-[var(--color-text-tertiary)] line-clamp-2">{f.reason}</p>
+                  <p className="text-xs text-[var(--color-text-tertiary)] line-clamp-2">{f.reason}</p>
                   {onStatusChange ? (
                     <div className="flex flex-wrap gap-1 pt-1">
                       <StatusButton current={f.status} value="acknowledged" onClick={() => onStatusChange(f.id, "acknowledged")} label="Acknowledge" />

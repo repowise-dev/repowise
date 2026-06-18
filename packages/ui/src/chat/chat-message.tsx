@@ -3,7 +3,7 @@
 import { User } from "lucide-react";
 import { cn } from "../lib/cn";
 import { BrandMark } from "../shared/brand-mark";
-import { ToolCallBlock } from "./tool-call-block";
+import { ToolCallGroup } from "./tool-call-group";
 import { ChatMarkdown } from "./chat-markdown";
 import { SourceCitations, type SourceReference } from "./source-citations";
 import type { ChatUIMessage } from "@repowise-dev/types/chat";
@@ -46,7 +46,7 @@ export function ChatMessage({
           <BrandMark
             darkSrc={assistantAvatarSrc}
             size={22}
-            className="drop-shadow-[0_0_4px_rgba(245,149,32,0.25)]"
+            className="drop-shadow-[0_0_3px_rgba(245,149,32,0.15)]"
           />
         )}
       </div>
@@ -66,22 +66,10 @@ export function ChatMessage({
         {!isUser && (
           <div className="max-w-full space-y-1.5">
             {message.toolCalls.length > 0 && (
-              <div className="space-y-1">
-                {message.toolCalls.map((tc) => {
-                  const artifact = tc.artifact;
-                  const handler =
-                    artifact && onViewArtifact
-                      ? () => onViewArtifact(artifact)
-                      : undefined;
-                  return (
-                    <ToolCallBlock
-                      key={tc.id}
-                      toolCall={tc}
-                      {...(handler ? { onViewArtifact: handler } : {})}
-                    />
-                  );
-                })}
-              </div>
+              <ToolCallGroup
+                toolCalls={message.toolCalls}
+                {...(onViewArtifact ? { onViewArtifact } : {})}
+              />
             )}
 
             {message.text && (

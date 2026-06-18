@@ -127,12 +127,12 @@ export function FileSpotlight({
         </span>
       </div>
       <div
-        className="truncate font-mono text-[11px] text-[var(--color-text-tertiary)]"
+        className="truncate font-mono text-xs text-[var(--color-text-tertiary)]"
         title={file.file_path}
       >
         {file.file_path}
       </div>
-      <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-[var(--color-text-secondary)]">
+      <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-[var(--color-text-secondary)]">
         <span>{file.nloc.toLocaleString()} NLOC</span>
         {file.line_coverage_pct != null ? (
           <span>{Math.round(file.line_coverage_pct)}% coverage</span>

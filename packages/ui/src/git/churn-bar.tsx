@@ -8,10 +8,10 @@ interface ChurnBarProps {
 export function ChurnBar({ percentile, className }: ChurnBarProps) {
   const color =
     percentile >= 75
-      ? "bg-red-500"
+      ? "bg-[var(--color-error)]"
       : percentile >= 50
-        ? "bg-yellow-500"
-        : "bg-green-500";
+        ? "bg-[var(--color-warning)]"
+        : "bg-[var(--color-success)]";
 
   return (
     <div className={cn("h-1.5 w-full rounded-full bg-[var(--color-bg-elevated)]", className)}>

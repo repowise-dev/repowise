@@ -114,7 +114,7 @@ export function ModuleOverviewGrid({ nodes, edges, repoId, linkPrefix, initialVi
           <button
             type="button"
             onClick={() => setExpanded((v) => !v)}
-            className="mt-2 w-full flex items-center justify-center gap-1 rounded-md border border-[var(--color-border-default)] py-1.5 text-[11px] text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-elevated)] transition-colors"
+            className="mt-2 w-full flex items-center justify-center gap-1 rounded-md border border-[var(--color-border-default)] py-1.5 text-xs text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-elevated)] transition-colors"
           >
             {expanded ? (
               <>

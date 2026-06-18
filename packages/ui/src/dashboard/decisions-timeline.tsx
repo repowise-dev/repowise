@@ -89,7 +89,7 @@ export function DecisionsTimeline({ decisions, repoId, linkPrefix }: DecisionsTi
                     </span>
                     <Badge
                       variant="outline"
-                      className={`text-[9px] h-4 shrink-0 ${STATUS_BADGE_VARIANT[d.status] ?? ""}`}
+                      className={`text-[10px] h-4 shrink-0 ${STATUS_BADGE_VARIANT[d.status] ?? ""}`}
                     >
                       {d.status}
                     </Badge>

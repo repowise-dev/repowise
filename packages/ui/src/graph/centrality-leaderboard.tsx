@@ -60,7 +60,7 @@ export function CentralityLeaderboard({
       <div className="flex items-center justify-between gap-2 border-b border-[var(--color-border-default)] px-2 py-2">
         {!collapsed && (
           <div className="flex items-center gap-1.5 min-w-0">
-            <Crown className="h-3.5 w-3.5 text-yellow-500 shrink-0" />
+            <Crown className="h-3.5 w-3.5 text-[var(--color-warning)] shrink-0" />
             <span className="text-xs font-medium text-[var(--color-text-primary)] truncate">
               Centrality
             </span>
@@ -116,7 +116,7 @@ export function CentralityLeaderboard({
                       {i + 1}
                     </span>
                     <div className="min-w-0 flex-1">
-                      <p className="text-[11px] font-mono text-[var(--color-text-primary)] truncate">
+                      <p className="text-xs font-mono text-[var(--color-text-primary)] truncate">
                         {n.label ?? n.node_id}
                       </p>
                       <div className="mt-0.5 h-1 rounded-full bg-[var(--color-bg-inset)] overflow-hidden">
@@ -134,7 +134,7 @@ export function CentralityLeaderboard({
               );
             })}
             {ranked.length === 0 && (
-              <li className="px-3 py-4 text-[11px] text-[var(--color-text-tertiary)] text-center">
+              <li className="px-3 py-4 text-xs text-[var(--color-text-tertiary)] text-center">
                 No graph metrics yet.
               </li>
             )}

@@ -110,7 +110,7 @@ export function HiddenCouplingList({
           <ChevronRight className="h-4 w-4 text-[var(--color-text-tertiary)]" aria-hidden="true" />
         )
       ) : null}
-      <ArrowLeftRight className="h-4 w-4 text-violet-500" aria-hidden="true" />
+      <ArrowLeftRight className="h-4 w-4 text-[var(--color-accent-secondary)]" aria-hidden="true" />
       <h2 className="text-sm font-medium text-[var(--color-text-primary)]">Hidden coupling pairs</h2>
       <span className="text-xs text-[var(--color-text-tertiary)]">
         Files that co-change without an import edge
@@ -153,7 +153,7 @@ export function HiddenCouplingList({
                 <span>· {row.co_change_count} co-commits</span>
               </span>
             </div>
-            <div className="grid grid-cols-1 gap-1 text-[11px] font-mono">
+            <div className="grid grid-cols-1 gap-1 text-xs font-mono">
               <PairLink path={row.a} onSelect={onSelect} hrefFor={hrefFor} />
               <span className="text-[var(--color-text-tertiary)] inline-flex items-center gap-1">
                 <ArrowLeftRight className="h-3 w-3" aria-hidden="true" />

@@ -52,7 +52,7 @@ function LinkButton({ href, icon: Icon, label }: { href: string; icon: React.Com
   return (
     <a
       href={href}
-      className="inline-flex items-center gap-1 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2 py-1 text-[11px] text-[var(--color-text-secondary)] hover:border-[var(--color-accent-primary)] hover:text-[var(--color-text-primary)] transition-colors"
+      className="inline-flex items-center gap-1 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2 py-1 text-xs text-[var(--color-text-secondary)] hover:border-[var(--color-accent-primary)] hover:text-[var(--color-text-primary)] transition-colors"
     >
       <Icon className="h-3 w-3" />
       <span>{label}</span>
@@ -83,7 +83,7 @@ export function FileCard({ data, links, hideHeader = false, className }: FileCar
               </Badge>
             )}
             {busFactor !== undefined && busFactor <= 1 && (
-              <Badge variant="outline" className="gap-1 text-red-400 border-red-400/30">
+              <Badge variant="outline" className="gap-1 text-[var(--color-error)] border-[var(--color-error)]/30">
                 <Users className="h-3 w-3" /> bus×{busFactor}
               </Badge>
             )}
@@ -110,8 +110,8 @@ export function FileCard({ data, links, hideHeader = false, className }: FileCar
                 label="Lines"
                 value={
                   <>
-                    <span className="text-green-400">+{formatLOC(git.lines_added_90d ?? 0)}</span>{" "}
-                    <span className="text-red-400">-{formatLOC(git.lines_deleted_90d ?? 0)}</span>
+                    <span className="text-[var(--color-success)]">+{formatLOC(git.lines_added_90d ?? 0)}</span>{" "}
+                    <span className="text-[var(--color-error)]">-{formatLOC(git.lines_deleted_90d ?? 0)}</span>
                   </>
                 }
               />
@@ -125,9 +125,9 @@ export function FileCard({ data, links, hideHeader = false, className }: FileCar
                 value={git.temporal_hotspot_score.toFixed(2)}
                 accent={
                   git.temporal_hotspot_score >= 5
-                    ? "text-red-400"
+                    ? "text-[var(--color-error)]"
                     : git.temporal_hotspot_score >= 2
-                      ? "text-orange-400"
+                      ? "text-[var(--color-warning)]"
                       : "text-[var(--color-text-secondary)]"
                 }
               />
@@ -141,7 +141,7 @@ export function FileCard({ data, links, hideHeader = false, className }: FileCar
               <>
                 <Stat
                   label="Status"
-                  value={<span className="text-green-400">Indexed</span>}
+                  value={<span className="text-[var(--color-success)]">Indexed</span>}
                 />
                 {docs.freshness_pct !== undefined && (
                   <Stat label="Freshness" value={`${Math.round(docs.freshness_pct)}%`} />
@@ -152,14 +152,14 @@ export function FileCard({ data, links, hideHeader = false, className }: FileCar
                 {docs.doc_url && (
                   <a
                     href={docs.doc_url}
-                    className="inline-flex items-center gap-1 mt-1 text-[var(--color-accent-primary)] hover:underline text-[11px]"
+                    className="inline-flex items-center gap-1 mt-1 text-[var(--color-accent-primary)] hover:underline text-xs"
                   >
                     Open doc <ExternalLink className="h-3 w-3" />
                   </a>
                 )}
               </>
             ) : (
-              <p className="text-[var(--color-text-tertiary)] italic text-[11px]">
+              <p className="text-[var(--color-text-tertiary)] italic text-xs">
                 No doc generated for this file yet.
               </p>
             )}
@@ -170,13 +170,13 @@ export function FileCard({ data, links, hideHeader = false, className }: FileCar
           <Section title={`Symbols (${symbols.total})`} icon={Code2}>
             {symbols.top && symbols.top.length > 0 ? (
               symbols.top.slice(0, 5).map((s) => (
-                <div key={s.id} className="flex items-baseline justify-between gap-2 text-[11px]">
+                <div key={s.id} className="flex items-baseline justify-between gap-2 text-xs">
                   <span className="font-mono text-[var(--color-text-primary)] truncate">{s.name}</span>
                   {s.kind && <span className="text-[var(--color-text-tertiary)] shrink-0">{s.kind}</span>}
                 </div>
               ))
             ) : (
-              <p className="text-[var(--color-text-tertiary)] italic text-[11px]">No symbols indexed.</p>
+              <p className="text-[var(--color-text-tertiary)] italic text-xs">No symbols indexed.</p>
             )}
           </Section>
         )}
@@ -185,12 +185,12 @@ export function FileCard({ data, links, hideHeader = false, className }: FileCar
           <Section title={`Decisions (${decisions.count})`} icon={BookOpen}>
             {decisions.titles && decisions.titles.length > 0 ? (
               decisions.titles.slice(0, 4).map((t, i) => (
-                <p key={i} className="text-[11px] text-[var(--color-text-primary)] truncate">
+                <p key={i} className="text-xs text-[var(--color-text-primary)] truncate">
                   · {t}
                 </p>
               ))
             ) : (
-              <p className="text-[11px] text-[var(--color-text-tertiary)]">
+              <p className="text-xs text-[var(--color-text-tertiary)]">
                 {decisions.count} decision{decisions.count === 1 ? "" : "s"} reference this file.
               </p>
             )}
@@ -199,12 +199,12 @@ export function FileCard({ data, links, hideHeader = false, className }: FileCar
 
         {deadCode && deadCode.findings_count > 0 && (
           <Section title="Dead code" icon={Trash2}>
-            <Stat label="Findings" value={deadCode.findings_count} accent="text-red-400" />
+            <Stat label="Findings" value={deadCode.findings_count} accent="text-[var(--color-error)]" />
             {deadCode.reclaimable_lines !== undefined && (
               <Stat
                 label="Lines reclaimable"
                 value={formatLOC(deadCode.reclaimable_lines)}
-                accent="text-red-400"
+                accent="text-[var(--color-error)]"
               />
             )}
           </Section>
@@ -212,12 +212,12 @@ export function FileCard({ data, links, hideHeader = false, className }: FileCar
 
         {security && security.findings_count > 0 && (
           <Section title="Security" icon={ShieldAlert}>
-            <Stat label="Findings" value={security.findings_count} accent="text-red-400" />
+            <Stat label="Findings" value={security.findings_count} accent="text-[var(--color-error)]" />
             {security.critical_count !== undefined && security.critical_count > 0 && (
               <Stat
                 label="Critical"
                 value={security.critical_count}
-                accent="text-red-400"
+                accent="text-[var(--color-error)]"
               />
             )}
           </Section>

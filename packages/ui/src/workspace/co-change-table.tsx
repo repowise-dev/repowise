@@ -22,7 +22,7 @@ export function CoChangeTable({ coChanges, compact }: CoChangeTableProps) {
       cellClassName: "min-w-[160px] max-w-[280px]",
       render: (cc) => (
         <div className="flex flex-col gap-0.5">
-          <Badge variant="default" className="w-fit text-[11px]">{cc.source_repo}</Badge>
+          <Badge variant="default" className="w-fit text-xs">{cc.source_repo}</Badge>
           <span className="text-xs font-mono text-[var(--color-text-secondary)] truncate block" title={cc.source_file}>
             {cc.source_file}
           </span>
@@ -36,7 +36,7 @@ export function CoChangeTable({ coChanges, compact }: CoChangeTableProps) {
       cellClassName: "min-w-[160px] max-w-[280px]",
       render: (cc) => (
         <div className="flex flex-col gap-0.5">
-          <Badge variant="default" className="w-fit text-[11px]">{cc.target_repo}</Badge>
+          <Badge variant="default" className="w-fit text-xs">{cc.target_repo}</Badge>
           <span className="text-xs font-mono text-[var(--color-text-secondary)] truncate block" title={cc.target_file}>
             {cc.target_file}
           </span>

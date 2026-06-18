@@ -59,7 +59,7 @@ export default function CostsPage() {
   return (
     <PageShell
       maxWidth="wide"
-      icon={<DollarSign className="h-5 w-5 text-green-500" />}
+      icon={<DollarSign className="h-5 w-5 text-[var(--color-success)]" />}
       title="Cost Tracking"
       description="What repowise saved your coding agent — and what generating the docs cost."
     >
@@ -184,7 +184,7 @@ export default function CostsPage() {
               label="Indexing cost"
               value={formatCost(summary.total_cost_usd)}
               description="across all generation runs"
-              icon={<DollarSign className="h-4 w-4 text-green-500" />}
+              icon={<DollarSign className="h-4 w-4 text-[var(--color-success)]" />}
             />
             <StatCard
               label="Total Calls"

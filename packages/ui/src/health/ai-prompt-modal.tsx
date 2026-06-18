@@ -114,7 +114,7 @@ export function AiPromptModal({
 
         <div className="space-y-3">
           <div>
-            <p className="text-[11px] uppercase tracking-wider text-[var(--color-text-tertiary)] mb-1.5">
+            <p className="text-xs uppercase tracking-wider text-[var(--color-text-tertiary)] mb-1.5">
               Target agent
             </p>
             <div className="grid grid-cols-3 gap-2">
@@ -139,7 +139,7 @@ export function AiPromptModal({
                         {f.label}
                       </span>
                     </div>
-                    <p className="mt-0.5 text-[11px] text-[var(--color-text-tertiary)] leading-snug">
+                    <p className="mt-0.5 text-xs text-[var(--color-text-tertiary)] leading-snug">
                       {f.hint}
                     </p>
                   </button>
@@ -154,7 +154,7 @@ export function AiPromptModal({
             </pre>
           </div>
 
-          <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-[var(--color-text-tertiary)]">
+          <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--color-text-tertiary)]">
             <span>
               {prompt.length.toLocaleString()} chars · approx{" "}
               {Math.round(prompt.length / 4).toLocaleString()} tokens

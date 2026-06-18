@@ -65,7 +65,7 @@ export function HealthDistributionBar({
         })}
       </div>
       {showCounts && (
-        <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-[var(--color-text-tertiary)]">
+        <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-[var(--color-text-tertiary)]">
           {ORDER.map((b) => (
             <span key={b} className="inline-flex items-center gap-1 tabular-nums">
               <span className={`inline-block h-1.5 w-1.5 rounded-full ${BAND_DOT[b]}`} />

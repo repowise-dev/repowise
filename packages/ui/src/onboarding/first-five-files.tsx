@@ -91,8 +91,8 @@ export function FirstFiveFiles({
             return (
               <li key={f.file_path}>
                 <Wrapper>
-                  <span className="text-[11px] tabular-nums text-[var(--color-text-tertiary)]">{i + 1}</span>
-                  <p className="font-mono text-[11px] text-[var(--color-text-primary)] truncate min-w-0 flex-1">
+                  <span className="text-xs tabular-nums text-[var(--color-text-tertiary)]">{i + 1}</span>
+                  <p className="font-mono text-xs text-[var(--color-text-primary)] truncate min-w-0 flex-1">
                     {f.file_path}
                   </p>
                   {f.is_entry_point && <Badge variant="accent" className="h-4 text-[10px] shrink-0">entry</Badge>}

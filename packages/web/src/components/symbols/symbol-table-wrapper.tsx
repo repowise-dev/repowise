@@ -80,7 +80,7 @@ export function SymbolTableWrapper({ repoId }: Props) {
     <div className="space-y-6">
       {fileFilter && (
         <div className="flex items-center gap-2">
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--color-accent-primary)]/40 bg-[var(--color-accent-muted)] px-2.5 py-1 text-[11px] font-mono text-[var(--color-accent-primary)]">
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--color-accent-primary)]/40 bg-[var(--color-accent-muted)] px-2.5 py-1 text-xs font-mono text-[var(--color-accent-primary)]">
             {fileFilter}
             <button
               type="button"
@@ -91,7 +91,7 @@ export function SymbolTableWrapper({ repoId }: Props) {
               <X className="h-3 w-3" />
             </button>
           </span>
-          <span className="text-[11px] text-[var(--color-text-tertiary)]">
+          <span className="text-xs text-[var(--color-text-tertiary)]">
             showing symbols in this file only
           </span>
         </div>

@@ -108,7 +108,7 @@ export function TrendSlopeChart({ points, height = 320, max = 18 }: TrendSlopeCh
         })}
       </svg>
       {hovered ? (
-        <div className="pointer-events-none absolute left-2 top-2 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2 py-1 text-[11px] shadow-md">
+        <div className="pointer-events-none absolute left-2 top-2 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2 py-1 text-xs shadow-md">
           <span className="font-mono text-[var(--color-text-primary)]">{hovered.file_path}</span>
           <span className="ml-2 tabular-nums text-[var(--color-text-tertiary)]">
             {hovered.before.toFixed(1)} → {hovered.after.toFixed(1)} ({hovered.delta >= 0 ? "+" : ""}

@@ -137,7 +137,7 @@ function BiomarkerGroup({
         <span className="text-xs text-[var(--color-text-tertiary)]">
           {CATEGORY_LABEL[info.category]}
         </span>
-        <span className="ml-auto inline-flex items-center gap-1.5 text-[11px] tabular-nums">
+        <span className="ml-auto inline-flex items-center gap-1.5 text-xs tabular-nums">
           {(Object.keys(sevCounts) as Severity[]).map((s) =>
             sevCounts[s] > 0 ? (
               <span

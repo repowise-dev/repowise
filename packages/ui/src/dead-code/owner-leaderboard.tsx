@@ -87,7 +87,7 @@ export function OwnerLeaderboard({
               </div>
               <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-[var(--color-bg-elevated)]">
                 <div
-                  className="h-full rounded-full bg-rose-400/60 transition-[width] duration-300"
+                  className="h-full rounded-full bg-[var(--color-error)]/60 transition-[width] duration-300"
                   style={{ width: `${widthPct}%` }}
                 />
               </div>

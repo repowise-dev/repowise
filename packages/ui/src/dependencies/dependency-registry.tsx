@@ -119,7 +119,7 @@ export function DependencyRegistry({
               key={f}
               onClick={() => setDepFilter(f)}
               className={cn(
-                "rounded px-2 py-1 text-[11px] font-medium transition-colors",
+                "rounded px-2 py-1 text-xs font-medium transition-colors",
                 depFilter === f
                   ? "bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)]"
                   : "text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]",
@@ -136,7 +136,7 @@ export function DependencyRegistry({
             value={ecosystem ?? ""}
             onChange={(e) => setEcosystem(e.target.value || null)}
             aria-label="Filter by ecosystem"
-            className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2 py-1.5 text-[11px] text-[var(--color-text-primary)] outline-none"
+            className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2 py-1.5 text-xs text-[var(--color-text-primary)] outline-none"
           >
             <option value="">All ecosystems</option>
             {data.ecosystems.map((eco) => (
@@ -152,7 +152,7 @@ export function DependencyRegistry({
             value={manifest ?? ""}
             onChange={(e) => setManifest(e.target.value || null)}
             aria-label="Filter by manifest"
-            className="max-w-[260px] rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2 py-1.5 text-[11px] text-[var(--color-text-primary)] outline-none"
+            className="max-w-[260px] rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2 py-1.5 text-xs text-[var(--color-text-primary)] outline-none"
           >
             <option value="">All manifests</option>
             {data.manifests.map((m) => (
@@ -196,16 +196,16 @@ export function DependencyRegistry({
                       </p>
                       <div className="flex shrink-0 items-center gap-1">
                         {e.is_dev_dep && (
-                          <Badge variant="outline" className="text-[9px]">
+                          <Badge variant="outline" className="text-[10px]">
                             dev
                           </Badge>
                         )}
-                        <Badge variant="outline" className="text-[9px]">
+                        <Badge variant="outline" className="text-[10px]">
                           {e.ecosystem}
                         </Badge>
                       </div>
                     </div>
-                    <div className="mt-1.5 flex items-center justify-between gap-2 text-[11px] text-[var(--color-text-tertiary)]">
+                    <div className="mt-1.5 flex items-center justify-between gap-2 text-xs text-[var(--color-text-tertiary)]">
                       <span className="min-w-0 truncate font-mono" title={e.declared_in}>
                         {renderManifestLink
                           ? renderManifestLink(e.declared_in, e.declared_in)

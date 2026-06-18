@@ -41,9 +41,9 @@ export function ConfidenceBadge({
       <span
         className={cn(
           "h-1.5 w-1.5 rounded-full",
-          status === "fresh" && "bg-green-500",
-          status === "stale" && "animate-pulse bg-yellow-500",
-          status === "outdated" && "bg-red-500",
+          status === "fresh" && "bg-[var(--color-success)]",
+          status === "stale" && "animate-pulse bg-[var(--color-warning)]",
+          status === "outdated" && "bg-[var(--color-error)]",
         )}
       />
       {label}

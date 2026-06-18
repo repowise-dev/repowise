@@ -130,7 +130,7 @@ export function ConversationHistory({
                       e.stopPropagation();
                       void onDelete(conv.id);
                     }}
-                    className="opacity-0 group-hover:opacity-100 p-1 text-[var(--color-text-tertiary)] hover:text-red-400 transition-all"
+                    className="opacity-0 group-hover:opacity-100 p-1 text-[var(--color-text-tertiary)] hover:text-[var(--color-error)] transition-all"
                     aria-label="Delete conversation"
                   >
                     <Trash2 className="h-3 w-3" />

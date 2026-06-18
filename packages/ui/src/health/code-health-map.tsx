@@ -610,7 +610,7 @@ export function CodeHealthMap({
 function HoverCard({ file }: { file: CodeHealthMapFile }) {
   const cov = file.line_coverage_pct;
   return (
-    <div className="pointer-events-none absolute bottom-3 left-3 max-w-[75%] rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2.5 py-1.5 text-[11px] shadow-md">
+    <div className="pointer-events-none absolute bottom-3 left-3 max-w-[75%] rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2.5 py-1.5 text-xs shadow-md">
       <div className="truncate font-mono text-[var(--color-text-primary)]">{file.file_path}</div>
       <div className="text-[var(--color-text-tertiary)]">
         score {file.score.toFixed(1)} · {file.nloc.toLocaleString()} NLOC

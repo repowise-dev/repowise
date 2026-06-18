@@ -11,9 +11,9 @@ interface Props {
 }
 
 const STATUS_BADGE: Record<CoordinatorHealth["status"], string> = {
-  ok: "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400",
-  warning: "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400",
-  critical: "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400",
+  ok: "bg-[var(--color-success)]/10 text-[var(--color-success)]",
+  warning: "bg-[var(--color-warning)]/10 text-[var(--color-warning)]",
+  critical: "bg-[var(--color-error)]/10 text-[var(--color-error)]",
 };
 
 function StatRow({ label, value, help }: { label: string; value: string; help?: string }) {
@@ -94,7 +94,7 @@ export function CoordinatorHealthPanel({ repoId, initial }: Props) {
         </p>
       )}
       {error && (
-        <p className="text-xs text-red-500">{error}</p>
+        <p className="text-xs text-[var(--color-error)]">{error}</p>
       )}
       <Button
         variant="outline"

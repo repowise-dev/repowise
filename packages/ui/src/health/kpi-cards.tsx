@@ -137,7 +137,7 @@ function Card({
       </div>
       {children}
       {delta != null ? (
-        <p className={`mt-1 text-[11px] tabular-nums ${deltaColor(delta)}`}>
+        <p className={`mt-1 text-xs tabular-nums ${deltaColor(delta)}`}>
           {formatDelta(delta)} vs. prior
         </p>
       ) : null}

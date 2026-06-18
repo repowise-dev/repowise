@@ -131,7 +131,7 @@ export function AttentionPanel({
                       {TYPE_LABELS[item.type]}
                     </span>
                   </div>
-                  <p className="text-[11px] text-[var(--color-text-tertiary)] truncate">
+                  <p className="text-xs text-[var(--color-text-tertiary)] truncate">
                     {item.description}
                   </p>
                 </div>
@@ -142,7 +142,7 @@ export function AttentionPanel({
             <button
               type="button"
               onClick={() => setExpanded((v) => !v)}
-              className="block w-full text-[11px] text-[var(--color-accent-primary)] hover:underline text-center pt-1"
+              className="block w-full text-xs text-[var(--color-accent-primary)] hover:underline text-center pt-1"
             >
               {expanded
                 ? "Show fewer"

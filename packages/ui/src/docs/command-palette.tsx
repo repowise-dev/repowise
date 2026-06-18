@@ -246,12 +246,12 @@ export function DocsCommandPalette({
                       </span>
                     </span>
                     {hit.page.target_path && (
-                      <span className="block truncate font-mono text-[11px] text-[var(--color-text-tertiary)]">
+                      <span className="block truncate font-mono text-xs text-[var(--color-text-tertiary)]">
                         {hit.page.target_path}
                       </span>
                     )}
                     {hit.snippet && (
-                      <span className="mt-0.5 block truncate text-[11px] text-[var(--color-text-secondary)]">
+                      <span className="mt-0.5 block truncate text-xs text-[var(--color-text-secondary)]">
                         {hit.snippet}
                       </span>
                     )}

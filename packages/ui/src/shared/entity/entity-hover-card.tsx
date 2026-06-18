@@ -48,7 +48,7 @@ function HoverCardBody({ entity, meta }: { entity: EntityRef; meta?: EntityMeta 
           {ENTITY_KIND_LABEL[entity.kind]}
         </span>
       </div>
-      <p className="font-mono text-[11px] leading-snug text-[var(--color-text-primary)] break-all">
+      <p className="font-mono text-xs leading-snug text-[var(--color-text-primary)] break-all">
         {entity.id}
       </p>
       {meta && meta.kind === entity.kind && <MetaSection meta={meta} />}
@@ -86,7 +86,7 @@ function FileMeta({ data }: { data?: import("./types").FileEntityMeta | undefine
   return (
     <div className="space-y-1">
       {data.summary && (
-        <p className="text-[11px] leading-snug text-[var(--color-text-secondary)] line-clamp-3">
+        <p className="text-xs leading-snug text-[var(--color-text-secondary)] line-clamp-3">
           {data.summary}
         </p>
       )}
@@ -192,7 +192,7 @@ function CommitMeta({ data }: { data?: import("./types").CommitEntityMeta | unde
       <Row label="Author" value={data.author ?? null} />
       <Row label="Date" value={data.date ?? null} />
       {data.message && (
-        <p className="text-[11px] text-[var(--color-text-secondary)] line-clamp-2">
+        <p className="text-xs text-[var(--color-text-secondary)] line-clamp-2">
           {data.message}
         </p>
       )}

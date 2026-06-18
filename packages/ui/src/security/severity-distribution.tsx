@@ -27,7 +27,7 @@ export function SeverityDistribution({ counts }: SeverityDistributionProps) {
     <Card>
       <CardHeader className="pb-2">
         <CardTitle className="text-sm flex items-center gap-2">
-          <ShieldAlert className="h-4 w-4 text-red-400" />
+          <ShieldAlert className="h-4 w-4 text-[var(--color-error)]" />
           Severity distribution
         </CardTitle>
       </CardHeader>

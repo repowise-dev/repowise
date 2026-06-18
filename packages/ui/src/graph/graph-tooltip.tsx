@@ -81,7 +81,7 @@ export function GraphTooltip({
           )}
         </div>
         <div className="min-w-0 flex-1">
-          <p className="font-mono font-semibold text-[var(--color-text-primary)] text-[11px] leading-tight break-all">
+          <p className="font-mono font-semibold text-[var(--color-text-primary)] text-xs leading-tight break-all">
             {nodeId.split("/").pop()}
           </p>
           <p className="text-[10px] text-[var(--color-text-tertiary)] mt-0.5 truncate">
@@ -229,7 +229,7 @@ export function GraphTooltip({
       <div className="flex items-center gap-2 p-3 pt-0">
         <button
           onClick={onViewDocs}
-          className="flex-1 flex items-center justify-center gap-1.5 rounded-lg bg-[var(--color-bg-inset)] hover:bg-[var(--color-bg-surface)] border border-[var(--color-border-default)] px-2.5 py-1.5 text-[11px] font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors"
+          className="flex-1 flex items-center justify-center gap-1.5 rounded-lg bg-[var(--color-bg-inset)] hover:bg-[var(--color-bg-surface)] border border-[var(--color-border-default)] px-2.5 py-1.5 text-xs font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors"
         >
           <BookOpen className="w-3 h-3" />
           View Docs
@@ -237,7 +237,7 @@ export function GraphTooltip({
         {isFile && onViewSymbol && (
           <button
             onClick={onViewSymbol}
-            className="flex-1 flex items-center justify-center gap-1.5 rounded-lg bg-[var(--color-bg-inset)] hover:bg-[var(--color-bg-surface)] border border-[var(--color-border-default)] px-2.5 py-1.5 text-[11px] font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors"
+            className="flex-1 flex items-center justify-center gap-1.5 rounded-lg bg-[var(--color-bg-inset)] hover:bg-[var(--color-bg-surface)] border border-[var(--color-border-default)] px-2.5 py-1.5 text-xs font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors"
           >
             <Code2 className="w-3 h-3" />
             View Symbol
@@ -246,7 +246,7 @@ export function GraphTooltip({
         {onExplore && (
           <button
             onClick={onExplore}
-            className="flex-1 flex items-center justify-center gap-1.5 rounded-lg bg-[var(--color-accent-graph)]/10 hover:bg-[var(--color-accent-graph)]/20 border border-[var(--color-accent-graph)]/30 px-2.5 py-1.5 text-[11px] font-medium text-[var(--color-accent-graph)] transition-colors"
+            className="flex-1 flex items-center justify-center gap-1.5 rounded-lg bg-[var(--color-accent-graph)]/10 hover:bg-[var(--color-accent-graph)]/20 border border-[var(--color-accent-graph)]/30 px-2.5 py-1.5 text-xs font-medium text-[var(--color-accent-graph)] transition-colors"
           >
             <ArrowRight className="w-3 h-3" />
             Explore

@@ -17,8 +17,8 @@ export default function GlobalError({
 
   return (
     <div className="flex h-full min-h-[400px] flex-col items-center justify-center gap-4 p-6 text-center">
-      <div className="flex h-12 w-12 items-center justify-center rounded-full bg-red-500/10">
-        <AlertTriangle className="h-6 w-6 text-red-500" />
+      <div className="flex h-12 w-12 items-center justify-center rounded-full bg-[var(--color-error)]/10">
+        <AlertTriangle className="h-6 w-6 text-[var(--color-error)]" />
       </div>
       <div>
         <h2 className="text-base font-semibold text-[var(--color-text-primary)]">

@@ -72,13 +72,13 @@ export function ContributorsStrip({
           <span className="flex items-center gap-2">
             <Users className="h-4 w-4 text-[var(--color-accent-secondary)]" />
             Contributors
-            <span className="text-[11px] font-normal text-[var(--color-text-tertiary)] tabular-nums">
+            <span className="text-xs font-normal text-[var(--color-text-tertiary)] tabular-nums">
               {count}
             </span>
           </span>
           <a
             href={ownersHref}
-            className="inline-flex items-center gap-1 text-[11px] font-normal text-[var(--color-accent-primary)] hover:underline"
+            className="inline-flex items-center gap-1 text-xs font-normal text-[var(--color-accent-primary)] hover:underline"
           >
             View owners <ArrowRight className="h-3 w-3" />
           </a>
@@ -103,7 +103,7 @@ export function ContributorsStrip({
           {top.slice(0, 4).map((o, i) => (
             <span
               key={o.email ?? o.name}
-              className="flex items-center gap-1.5 text-[11px] text-[var(--color-text-secondary)] min-w-0"
+              className="flex items-center gap-1.5 text-xs text-[var(--color-text-secondary)] min-w-0"
             >
               <span
                 className="h-2 w-2 rounded-full shrink-0"
@@ -116,7 +116,7 @@ export function ContributorsStrip({
             </span>
           ))}
           {owners.length > 4 && (
-            <span className="text-[11px] text-[var(--color-text-tertiary)]">
+            <span className="text-xs text-[var(--color-text-tertiary)]">
               +{owners.length - 4} more
             </span>
           )}
@@ -125,13 +125,13 @@ export function ContributorsStrip({
         {hasProvenance && (
           <div className="mt-1 border-t border-[var(--color-border-default)] pt-2.5 space-y-2">
             <div className="flex items-center justify-between gap-2">
-              <span className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
+              <span className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
                 <Bot className="h-3 w-3" />
                 Authorship
               </span>
               <a
                 href={commitsHref}
-                className="text-[11px] tabular-nums text-[var(--color-text-secondary)] hover:text-[var(--color-accent-primary)] transition-colors"
+                className="text-xs tabular-nums text-[var(--color-text-secondary)] hover:text-[var(--color-accent-primary)] transition-colors"
               >
                 <span className="font-semibold text-[var(--color-accent-primary)]">
                   {Math.round(provenance!.agentPct)}%
@@ -151,7 +151,7 @@ export function ContributorsStrip({
                 title={`Agents — ${Math.round(provenance!.agentPct)}%`}
               />
             </div>
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-[var(--color-text-secondary)]">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[var(--color-text-secondary)]">
               <span className="flex items-center gap-1.5">
                 <span className="h-2 w-2 rounded-full bg-[var(--color-text-tertiary)]" />
                 Human

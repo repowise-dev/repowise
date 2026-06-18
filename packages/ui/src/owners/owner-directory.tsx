@@ -140,7 +140,7 @@ function Headline({
   tone?: "warn" | "danger";
 }) {
   const color =
-    tone === "danger" ? "text-red-400" : tone === "warn" ? "text-orange-300" : "text-[var(--color-text-primary)]";
+    tone === "danger" ? "text-[var(--color-error)]" : tone === "warn" ? "text-[var(--color-warning)]" : "text-[var(--color-text-primary)]";
   return (
     <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] p-3">
       <div className="text-[10px] font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">

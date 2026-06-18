@@ -85,7 +85,7 @@ export function DecisionLineage({
                     </Link>
                     <Badge
                       variant="outline"
-                      className={`h-4 shrink-0 text-[9px] ${STATUS_BADGE_VARIANT[entry.status] ?? ""}`}
+                      className={`h-4 shrink-0 text-[10px] ${STATUS_BADGE_VARIANT[entry.status] ?? ""}`}
                     >
                       {entry.status}
                     </Badge>
@@ -98,7 +98,7 @@ export function DecisionLineage({
                 </div>
               </div>
               {!isLast && (
-                <div className="ml-[5px] flex items-center gap-2 border-l border-[var(--color-border-default)] py-1.5 pl-[18px] text-[11px] text-[var(--color-text-tertiary)]">
+                <div className="ml-[5px] flex items-center gap-2 border-l border-[var(--color-border-default)] py-1.5 pl-[18px] text-xs text-[var(--color-text-tertiary)]">
                   <ArrowDown className="h-3 w-3" aria-hidden />
                   {relationLabel && <span>{relationLabel}</span>}
                 </div>

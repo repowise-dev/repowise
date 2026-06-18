@@ -48,9 +48,9 @@ export function SearchResultCard({ result, query, repoId }: SearchResultCardProp
             className={cn(
               "inline-flex items-center rounded border px-2 py-0.5 text-xs font-medium tabular-nums",
               result.score >= 0.8
-                ? "border-green-500/20 bg-green-500/10 text-green-500"
+                ? "border-[var(--color-success)]/20 bg-[var(--color-success)]/10 text-[var(--color-success)]"
                 : result.score >= 0.5
-                  ? "border-yellow-500/20 bg-yellow-500/10 text-yellow-500"
+                  ? "border-[var(--color-warning)]/20 bg-[var(--color-warning)]/10 text-[var(--color-warning)]"
                   : "border-[var(--color-border-default)] bg-transparent text-[var(--color-text-tertiary)]",
             )}
           >

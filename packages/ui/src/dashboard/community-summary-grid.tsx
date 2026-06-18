@@ -75,14 +75,14 @@ function DetailPanel({ detail, isLoading, onClose, memberHref }: DetailPanelProp
                   {memberHref ? (
                     <a
                       href={memberHref(m.path)}
-                      className="text-[11px] font-mono text-[var(--color-text-secondary)] truncate hover:text-[var(--color-accent-primary)] hover:underline"
+                      className="text-xs font-mono text-[var(--color-text-secondary)] truncate hover:text-[var(--color-accent-primary)] hover:underline"
                       title={m.path}
                     >
                       {truncatePath(m.path)}
                     </a>
                   ) : (
                     <span
-                      className="text-[11px] font-mono text-[var(--color-text-secondary)] truncate"
+                      className="text-xs font-mono text-[var(--color-text-secondary)] truncate"
                       title={m.path}
                     >
                       {truncatePath(m.path)}
@@ -94,7 +94,7 @@ function DetailPanel({ detail, isLoading, onClose, memberHref }: DetailPanelProp
                         EP
                       </Badge>
                     )}
-                    <span className="text-[9px] font-mono text-[var(--color-text-tertiary)] tabular-nums">
+                    <span className="text-[10px] font-mono text-[var(--color-text-tertiary)] tabular-nums">
                       {m.pagerank.toFixed(4)}
                     </span>
                   </div>
@@ -119,11 +119,11 @@ function DetailPanel({ detail, isLoading, onClose, memberHref }: DetailPanelProp
                 <div key={n.community_id} className="flex items-center justify-between gap-2">
                   <div className="flex items-center gap-1.5 min-w-0">
                     <ArrowRight className="h-2.5 w-2.5 shrink-0 text-[var(--color-text-tertiary)]" />
-                    <span className="text-[11px] text-[var(--color-text-secondary)] truncate">
+                    <span className="text-xs text-[var(--color-text-secondary)] truncate">
                       {n.label}
                     </span>
                   </div>
-                  <Badge variant="outline" className="text-[9px] h-4 shrink-0">
+                  <Badge variant="outline" className="text-[10px] h-4 shrink-0">
                     {n.cross_edge_count} edges
                   </Badge>
                 </div>

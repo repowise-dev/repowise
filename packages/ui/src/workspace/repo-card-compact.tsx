@@ -61,7 +61,7 @@ export function RepoCardCompact({
                   onRemove();
                 }}
                 disabled={removing}
-                className="p-1.5 rounded-md text-[var(--color-text-tertiary)] hover:text-red-400 hover:bg-red-500/10 transition disabled:opacity-50"
+                className="p-1.5 rounded-md text-[var(--color-text-tertiary)] hover:text-[var(--color-error)] hover:bg-[var(--color-error)]/10 transition disabled:opacity-50"
               >
                 <Trash2 className="h-3.5 w-3.5" />
               </button>

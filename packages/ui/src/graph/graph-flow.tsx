@@ -1084,7 +1084,7 @@ export function GraphFlow(props: GraphFlowProps) {
             <div className="flex items-center gap-1 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm px-2.5 py-1.5 shadow-lg shadow-black/20">
               <button
                 onClick={() => handleBreadcrumbClick(-1)}
-                className="flex items-center gap-1 text-[11px] text-[var(--color-text-tertiary)] hover:text-[var(--color-accent-graph)] transition-colors"
+                className="flex items-center gap-1 text-xs text-[var(--color-text-tertiary)] hover:text-[var(--color-accent-graph)] transition-colors"
               >
                 <Home className="w-3 h-3" />
                 <span>Root</span>
@@ -1098,7 +1098,7 @@ export function GraphFlow(props: GraphFlowProps) {
                     <ChevronRight className="w-3 h-3 text-[var(--color-text-tertiary)]" />
                     <button
                       onClick={() => !isLast && handleBreadcrumbClick(i)}
-                      className={`text-[11px] font-mono transition-colors ${
+                      className={`text-xs font-mono transition-colors ${
                         isLast
                           ? "text-[var(--color-text-primary)] font-medium cursor-default"
                           : "text-[var(--color-text-tertiary)] hover:text-[var(--color-accent-graph)]"
@@ -1175,7 +1175,7 @@ export function GraphFlow(props: GraphFlowProps) {
           <div className="absolute top-14 right-3 z-10 w-[min(16rem,calc(100vw-1.5rem))]">
             <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/95 backdrop-blur-sm shadow-lg shadow-black/20 p-3">
               <div className="flex items-center justify-between mb-2">
-                <span className="text-[11px] font-medium text-[var(--color-text-primary)]">
+                <span className="text-xs font-medium text-[var(--color-text-primary)]">
                   Execution Flows
                 </span>
                 <span className="text-[10px] text-[var(--color-text-tertiary)]">
@@ -1187,7 +1187,7 @@ export function GraphFlow(props: GraphFlowProps) {
                   <button
                     key={flow.entry_point}
                     onClick={() => setActiveFlowIdx(activeFlowIdx === idx ? null : idx)}
-                    className={`w-full text-left px-2 py-1.5 rounded-md text-[11px] transition-colors ${
+                    className={`w-full text-left px-2 py-1.5 rounded-md text-xs transition-colors ${
                       activeFlowIdx === idx
                         ? "bg-[var(--color-accent-primary)]/15 text-[var(--color-accent-primary)]"
                         : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-overlay)] hover:text-[var(--color-text-primary)]"

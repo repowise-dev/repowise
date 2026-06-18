@@ -32,14 +32,14 @@ export function SourceCitation({
   const inner = (
     <>
       {typeof index === "number" && (
-        <span className="flex items-center justify-center h-3.5 w-3.5 rounded-sm bg-[var(--color-bg-overlay)] text-[9px] font-bold text-[var(--color-text-tertiary)] shrink-0">
+        <span className="flex items-center justify-center h-3.5 w-3.5 rounded-sm bg-[var(--color-bg-overlay)] text-[10px] font-bold text-[var(--color-text-tertiary)] shrink-0">
           {index}
         </span>
       )}
       <FileCode className="h-3 w-3 shrink-0 opacity-60" />
       <span className="truncate max-w-[220px] font-mono">{label}</span>
       {citation.start_line != null && (
-        <span className="text-[9px] tabular-nums text-[var(--color-text-tertiary)] shrink-0">
+        <span className="text-[10px] tabular-nums text-[var(--color-text-tertiary)] shrink-0">
           L{citation.start_line}
           {citation.end_line != null && citation.end_line !== citation.start_line
             ? `-${citation.end_line}`

@@ -164,7 +164,7 @@ export function DependencyHeatmap({ moduleGraph }: DependencyHeatmapProps) {
                 {/* Row label */}
                 <div className="flex items-center justify-end pr-2.5 min-w-[60px]">
                   <span
-                    className="text-[11px] text-[var(--color-text-tertiary)] font-mono truncate max-w-[110px]"
+                    className="text-xs text-[var(--color-text-tertiary)] font-mono truncate max-w-[110px]"
                     title={rowMod}
                   >
                     {displayLabel(rowMod)}

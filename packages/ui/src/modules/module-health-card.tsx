@@ -33,7 +33,7 @@ export function ModuleHealthCard({ module, onClick, compact }: ModuleHealthCardP
               <Folder className="h-4 w-4 text-[var(--color-text-tertiary)]" />
               <span className="truncate">{module.module_path}</span>
             </div>
-            <p className="mt-0.5 text-[10px] text-[var(--color-text-tertiary)]">
+            <p className="mt-0.5 text-xs text-[var(--color-text-tertiary)]">
               {module.file_count} files · {module.symbol_count} symbols
             </p>
           </div>
@@ -49,7 +49,7 @@ export function ModuleHealthCard({ module, onClick, compact }: ModuleHealthCardP
           <MetricTile size="sm" icon={<Lightbulb className="h-3 w-3 text-[var(--color-caution)]" />} label="Decisions" value={module.decision_count} />
         </div>
 
-        <div className="mt-3 flex items-center justify-between text-[11px]">
+        <div className="mt-3 flex items-center justify-between text-xs">
           <span className="truncate text-[var(--color-text-secondary)]">
             {module.primary_owner ?? "—"}
             {module.primary_owner && (

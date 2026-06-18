@@ -38,7 +38,7 @@ export function ToolCallBlock({ toolCall, onViewArtifact }: ToolCallBlockProps) 
           {isRunning ? (
             <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--color-accent-primary)] shrink-0" />
           ) : (
-            <CheckCircle2 className="h-3.5 w-3.5 text-green-400 shrink-0" />
+            <CheckCircle2 className="h-3.5 w-3.5 text-[var(--color-success)] shrink-0" />
           )}
           <span className="font-medium text-[var(--color-text-secondary)]">{label}</span>
           {toolCall.summary && !isRunning && (

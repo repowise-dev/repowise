@@ -58,7 +58,7 @@ export function GraphCommunityPanel({
         <div className="px-4 py-2 border-b border-[var(--color-border-default)]">
           <button
             onClick={onExpandOnCanvas}
-            className="flex w-full items-center justify-center gap-1.5 rounded-md border border-[var(--color-border-default)] px-2 py-1.5 text-[11px] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] transition-colors"
+            className="flex w-full items-center justify-center gap-1.5 rounded-md border border-[var(--color-border-default)] px-2 py-1.5 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] transition-colors"
           >
             <Sparkles className="h-3 w-3" />
             Expand on canvas
@@ -79,7 +79,7 @@ export function GraphCommunityPanel({
           <div className="p-4 space-y-4">
             {/* Members */}
             <div>
-              <p className="text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider mb-2">
+              <p className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider mb-2">
                 Members ({community.member_count})
               </p>
               <div className="space-y-1">
@@ -96,13 +96,13 @@ export function GraphCommunityPanel({
                         {memberHref ? (
                           <a
                             href={memberHref(m.path)}
-                            className="block text-[11px] font-mono text-[var(--color-text-primary)] truncate hover:text-[var(--color-accent-primary)] hover:underline"
+                            className="block text-xs font-mono text-[var(--color-text-primary)] truncate hover:text-[var(--color-accent-primary)] hover:underline"
                             title={m.path}
                           >
                             {truncatePath(m.path)}
                           </a>
                         ) : (
-                          <p className="text-[11px] font-mono text-[var(--color-text-primary)] truncate" title={m.path}>
+                          <p className="text-xs font-mono text-[var(--color-text-primary)] truncate" title={m.path}>
                             {truncatePath(m.path)}
                           </p>
                         )}
@@ -133,7 +133,7 @@ export function GraphCommunityPanel({
             {/* Neighboring Communities */}
             {community.neighboring_communities.length > 0 && (
               <div>
-                <p className="text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider mb-2">
+                <p className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider mb-2">
                   Neighboring Communities
                 </p>
                 <div className="space-y-1">
@@ -144,11 +144,11 @@ export function GraphCommunityPanel({
                     >
                       <div className="flex items-center gap-1.5 min-w-0">
                         <ArrowRight className="h-3 w-3 shrink-0 text-[var(--color-text-tertiary)]" />
-                        <span className="text-[11px] text-[var(--color-text-primary)] truncate">
+                        <span className="text-xs text-[var(--color-text-primary)] truncate">
                           {n.label}
                         </span>
                       </div>
-                      <Badge variant="outline" className="text-[9px] shrink-0 h-4">
+                      <Badge variant="outline" className="text-[10px] shrink-0 h-4">
                         {n.cross_edge_count} edges
                       </Badge>
                     </div>

@@ -63,7 +63,7 @@ function FlowRow({ flow }: { flow: ExecutionFlowEntry }) {
         </span>
 
         {flow.crosses_community && (
-          <Badge variant="outline" className="text-[9px] shrink-0 h-4">
+          <Badge variant="outline" className="text-[10px] shrink-0 h-4">
             cross-community
           </Badge>
         )}

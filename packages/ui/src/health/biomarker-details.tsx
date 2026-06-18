@@ -35,7 +35,7 @@ function joinStats(...parts: Array<string | null | undefined>): string | null {
 
 function StatLine({ children }: { children: React.ReactNode }) {
   return (
-    <div className="text-[11px] text-[var(--color-text-tertiary)] tabular-nums">
+    <div className="text-xs text-[var(--color-text-tertiary)] tabular-nums">
       {children}
     </div>
   );
@@ -118,7 +118,7 @@ export function BiomarkerDetails({
     const corrPct = pct(num(details.correlation));
     const coChanges = num(details.co_change_count);
     return (
-      <div className="text-[11px] text-[var(--color-text-tertiary)]">
+      <div className="text-xs text-[var(--color-text-tertiary)]">
         <PartnerLink
           path={partner}
           onPartnerSelect={onPartnerSelect}
@@ -151,7 +151,7 @@ export function BiomarkerDetails({
     );
     if (!partner && !stats) return null;
     return (
-      <div className="text-[11px] text-[var(--color-text-tertiary)]">
+      <div className="text-xs text-[var(--color-text-tertiary)]">
         {stats ? <span className="tabular-nums">{stats}</span> : null}
         {partner ? (
           <div>
@@ -172,7 +172,7 @@ export function BiomarkerDetails({
       ? (details.assertion_lines as unknown[]).map(num).filter((v) => v != null)
       : [];
     return (
-      <div className="text-[11px] text-[var(--color-text-tertiary)]">
+      <div className="text-xs text-[var(--color-text-tertiary)]">
         {lines.length === 2 ? (
           <span className="tabular-nums">lines {lines[0]}–{lines[1]}</span>
         ) : null}

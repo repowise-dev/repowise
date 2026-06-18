@@ -65,7 +65,7 @@ function TrendChip({ delta }: { delta: number | null | undefined }) {
   const Icon = up ? TrendingUp : TrendingDown;
   return (
     <span
-      className="inline-flex items-center gap-0.5 text-[11px] font-medium tabular-nums"
+      className="inline-flex items-center gap-0.5 text-xs font-medium tabular-nums"
       style={{ color: up ? "var(--color-success)" : "var(--color-error)" }}
       title={`${up ? "+" : ""}${delta.toFixed(2)} vs previous snapshot`}
     >
@@ -164,7 +164,7 @@ function SeverityDonut({
         <span className="text-lg font-bold tabular-nums leading-none text-[var(--color-text-primary)]">
           {count.toLocaleString()}
         </span>
-        <span className="text-[9px] uppercase tracking-wider text-[var(--color-text-tertiary)]">
+        <span className="text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)]">
           findings
         </span>
       </div>
@@ -189,7 +189,7 @@ function MetricTile({
 }) {
   return (
     <div className="flex flex-col gap-1.5 px-4 py-3.5">
-      <div className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
+      <div className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
         {icon}
         {label}
       </div>
@@ -207,7 +207,7 @@ function MetricTile({
           <div className="flex items-center justify-between gap-2">
             {b && (
               <span
-                className="text-[11px] font-medium uppercase tracking-wide"
+                className="text-xs font-medium uppercase tracking-wide"
                 style={{ color: b.color }}
               >
                 {b.label}
@@ -260,7 +260,7 @@ export function HealthOverviewCard({
           </span>
           <a
             href={reportHref}
-            className="inline-flex items-center gap-1 text-[11px] font-normal text-[var(--color-accent-primary)] hover:underline"
+            className="inline-flex items-center gap-1 text-xs font-normal text-[var(--color-accent-primary)] hover:underline"
           >
             View report <ArrowRight className="h-3 w-3" />
           </a>
@@ -298,7 +298,7 @@ export function HealthOverviewCard({
             <div className="px-4 py-3.5 space-y-3">
               <a
                 href={`${reportHref}?tab=triage`}
-                className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider text-[var(--color-text-tertiary)] hover:text-[var(--color-accent-primary)] transition-colors"
+                className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wider text-[var(--color-text-tertiary)] hover:text-[var(--color-accent-primary)] transition-colors"
               >
                 <ShieldAlert className="h-3 w-3" />
                 Open findings
@@ -315,7 +315,7 @@ export function HealthOverviewCard({
                     {severities.map((s) => (
                       <span
                         key={s.key}
-                        className="flex items-center gap-1.5 text-[11px] text-[var(--color-text-secondary)] capitalize"
+                        className="flex items-center gap-1.5 text-xs text-[var(--color-text-secondary)] capitalize"
                       >
                         <span className="h-2 w-2 rounded-full" style={{ background: s.color }} />
                         {s.key}
@@ -325,7 +325,7 @@ export function HealthOverviewCard({
                   </div>
                 </div>
               ) : (
-                <p className="text-[11px] text-[var(--color-success)]">No open findings — clean bill of health.</p>
+                <p className="text-xs text-[var(--color-success)]">No open findings — clean bill of health.</p>
               )}
 
               {data.worst_performer_path && data.worst_performer_score != null && (
@@ -338,12 +338,12 @@ export function HealthOverviewCard({
                     <span className="text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)] shrink-0">
                       Worst file
                     </span>
-                    <span className="truncate font-mono text-[11px] text-[var(--color-text-secondary)] group-hover:text-[var(--color-accent-primary)] transition-colors">
+                    <span className="truncate font-mono text-xs text-[var(--color-text-secondary)] group-hover:text-[var(--color-accent-primary)] transition-colors">
                       {truncatePath(data.worst_performer_path, 40)}
                     </span>
                   </span>
                   <span
-                    className="shrink-0 text-[11px] font-bold tabular-nums"
+                    className="shrink-0 text-xs font-bold tabular-nums"
                     style={{ color: band(data.worst_performer_score).color }}
                   >
                     {data.worst_performer_score.toFixed(1)}/10

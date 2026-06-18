@@ -99,7 +99,7 @@ export default async function OverviewPage({ params }: Props) {
       </Badge>
       {lastActivityAt && (
         <span
-          className="text-[11px] text-[var(--color-text-tertiary)]"
+          className="text-xs text-[var(--color-text-tertiary)]"
           title={new Date(lastActivityAt).toLocaleString()}
         >
           synced {formatRelativeTime(lastActivityAt)}

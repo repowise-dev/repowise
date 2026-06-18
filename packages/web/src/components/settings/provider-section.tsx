@@ -219,10 +219,10 @@ export function ProviderSection() {
               {testStatus === "testing" ? "Testing…" : "Test connection"}
             </button>
             {testStatus === "ok" && (
-              <span className="text-sm text-green-600 dark:text-green-400">✓ Server healthy</span>
+              <span className="text-sm text-[var(--color-success)]">✓ Server healthy</span>
             )}
             {testStatus === "error" && (
-              <span className="text-sm text-red-600 dark:text-red-400">
+              <span className="text-sm text-[var(--color-error)]">
                 ✗ {testError || "Connection failed"}
               </span>
             )}

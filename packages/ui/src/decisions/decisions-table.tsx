@@ -88,7 +88,7 @@ export function DecisionsTable({
           </Link>
           {d.evidence_preview?.source_quote && (
             <p
-              className="mt-0.5 truncate text-[11px] italic text-[var(--color-text-tertiary)]"
+              className="mt-0.5 truncate text-xs italic text-[var(--color-text-tertiary)]"
               title={`${d.evidence_preview.source_quote}${
                 d.evidence_preview.evidence_file
                   ? ` — ${d.evidence_preview.evidence_file}${

@@ -108,7 +108,7 @@ export function ImpactTab({ repoId }: { repoId: string }) {
                   key={h.file_path}
                   type="button"
                   onClick={() => addPaths([h.file_path])}
-                  className="inline-flex items-center gap-1 rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2.5 py-1 text-[11px] font-mono text-[var(--color-text-secondary)] hover:border-[var(--color-accent-primary)] hover:text-[var(--color-text-primary)] transition-colors"
+                  className="inline-flex items-center gap-1 rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2.5 py-1 text-xs font-mono text-[var(--color-text-secondary)] hover:border-[var(--color-accent-primary)] hover:text-[var(--color-text-primary)] transition-colors"
                   title={h.file_path}
                   aria-label={`Add ${h.file_path} to changed files`}
                 >
@@ -159,6 +159,7 @@ export function ImpactTab({ repoId }: { repoId: string }) {
       {result && (
         <BlastRadiusResults
           result={result}
+          changedFiles={selected}
           reviewersSlot={
             reviewers && reviewers.length > 0 ? (
               <ReviewerSuggestions

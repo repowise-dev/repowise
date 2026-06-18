@@ -88,7 +88,7 @@ export function SigmaControls({
         </Button>
       )}
       {isLayoutRunning && (
-        <div className="text-[9px] text-center text-[var(--color-accent-graph)] animate-pulse whitespace-nowrap">
+        <div className="text-[10px] text-center text-[var(--color-accent-graph)] animate-pulse whitespace-nowrap">
           Layout optimizing...
         </div>
       )}

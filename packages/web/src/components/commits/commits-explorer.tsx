@@ -20,7 +20,8 @@ import {
 import { CommitDetailCard } from "@repowise-dev/ui/commits/commit-detail-card";
 import { CredibilityStrip } from "@repowise-dev/ui/commits/credibility-strip";
 import { AgentTrendStrip } from "@repowise-dev/ui/commits/agent-trend-strip";
-import { getAgentTrend, getCommit, getCommitsPage } from "@/lib/api/git";
+import { RiskDistributionChart } from "@repowise-dev/ui/git/risk-distribution-chart";
+import { getAgentTrend, getCommit, getCommitsPage, getHotspots } from "@/lib/api/git";
 import type { CommitResponse, Paginated } from "@/lib/api/types";
 
 const PAGE_SIZE = 50;
@@ -42,6 +43,14 @@ export function CommitsExplorer({ repoId }: { repoId: string }) {
   const { data: trend } = useSWR(
     `agent-trend:${repoId}`,
     () => getAgentTrend(repoId),
+    { revalidateOnFocus: false },
+  );
+
+  // Repo-relative risk distribution — turns the credibility strip's
+  // "relative to this repo" claim into a picture.
+  const { data: hotspots } = useSWR(
+    `commits-risk-dist:${repoId}`,
+    () => getHotspots(repoId, 25),
     { revalidateOnFocus: false },
   );
 
@@ -83,6 +92,15 @@ export function CommitsExplorer({ repoId }: { repoId: string }) {
   return (
     <div className="space-y-6">
       <CredibilityStrip />
+
+      {hotspots && hotspots.length > 0 && (
+        <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-4">
+          <p className="mb-2 text-xs font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
+            Risk distribution across the riskiest files
+          </p>
+          <RiskDistributionChart hotspots={hotspots} maxBars={25} />
+        </div>
+      )}
 
       {trend && <AgentTrendStrip trend={trend} />}
 

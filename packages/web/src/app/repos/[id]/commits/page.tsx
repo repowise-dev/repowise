@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { GitCommitHorizontal } from "lucide-react";
+import { PageShell } from "@repowise-dev/ui/shared/page-shell";
 import { CommitsExplorer } from "@/components/commits/commits-explorer";
 
 export const metadata: Metadata = { title: "Commits" };
@@ -12,19 +13,13 @@ export default async function CommitsPage({
   const { id } = await params;
 
   return (
-    <div className="p-4 sm:p-6 space-y-6 max-w-[1600px]">
-      <div>
-        <h1 className="text-xl font-semibold text-[var(--color-text-primary)] mb-1 flex items-center gap-2">
-          <GitCommitHorizontal className="h-5 w-5 text-[var(--color-accent-primary)]" />
-          Commits
-        </h1>
-        <p className="text-sm text-[var(--color-text-secondary)]">
-          A review-priority queue — every indexed commit scored for change-risk and ranked
-          relative to this repo&apos;s own history. Open a commit for its per-feature breakdown.
-        </p>
-      </div>
-
+    <PageShell
+      maxWidth="wide"
+      icon={<GitCommitHorizontal className="h-5 w-5 text-[var(--color-accent-primary)]" />}
+      title="Commits"
+      description="A review-priority queue — every indexed commit scored for change-risk and ranked relative to this repo's own history. Open a commit for its per-feature breakdown."
+    >
       <CommitsExplorer repoId={id} />
-    </div>
+    </PageShell>
   );
 }

@@ -436,13 +436,13 @@ function DocsReaderBody({
               <div>
                 <div className="flex items-center gap-1.5 mb-2">
                   <FileInput className="h-3 w-3 text-[var(--color-text-tertiary)]" />
-                  <span className="text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
+                  <span className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
                     Built from
                   </span>
                 </div>
                 <ul className="space-y-1">
                   {sources.slice(0, 5).map((s) => (
-                    <li key={s.path} className="text-[11px]">
+                    <li key={s.path} className="text-xs">
                       {s.pageId ? (
                         <button
                           onClick={() => goToPageId(s.pageId!)}
@@ -471,7 +471,7 @@ function DocsReaderBody({
             )}
             {relatedLinks.length > 0 && (
               <div>
-                <p className="text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider mb-2">
+                <p className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider mb-2">
                   Related
                 </p>
                 <ul className="space-y-1.5">

@@ -169,7 +169,7 @@ export function DefectAccuracyCard({
                       ) : (
                         <Minus className="h-3 w-3 shrink-0 text-[var(--color-text-tertiary)]" aria-label="no recent fix" />
                       )}
-                      <span className="truncate font-mono text-[11px] text-[var(--color-text-secondary)]">
+                      <span className="truncate font-mono text-xs text-[var(--color-text-secondary)]">
                         {f.file_path}
                       </span>
                     </span>

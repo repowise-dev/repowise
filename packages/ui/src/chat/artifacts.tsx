@@ -192,7 +192,7 @@ export function RiskReportRenderer({ data }: { data: RiskReportArtifactData }) {
                   {t.file_path}
                 </span>
                 {t.is_hotspot && (
-                  <span className="inline-flex items-center gap-1 rounded bg-amber-500/10 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-amber-400">
+                  <span className="inline-flex items-center gap-1 rounded bg-[var(--color-warning)]/10 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-[var(--color-warning)]">
                     <AlertTriangle className="h-2.5 w-2.5" /> hotspot
                   </span>
                 )}
@@ -300,7 +300,7 @@ export function GraphPathRenderer({ data }: { data: GraphPathArtifactData }) {
                 key={`${node}:${i}`}
                 className="flex items-center gap-2 text-xs"
               >
-                <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] text-[9px] font-mono tabular-nums text-[var(--color-text-tertiary)]">
+                <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] text-[10px] font-mono tabular-nums text-[var(--color-text-tertiary)]">
                   {i + 1}
                 </span>
                 <span className="font-mono text-[var(--color-text-secondary)] truncate">
@@ -399,7 +399,7 @@ export function DecisionsRenderer({ data }: { data: DecisionsArtifactData }) {
             {r.decision}
           </p>
           {r.rationale && (
-            <p className="text-[11px] text-[var(--color-text-tertiary)] leading-relaxed">
+            <p className="text-xs text-[var(--color-text-tertiary)] leading-relaxed">
               {r.rationale}
             </p>
           )}
@@ -491,7 +491,7 @@ function DeadCodeRow({
         )}
         {finding.safe_to_delete && <> · cleanup-ready</>}
       </div>
-      <p className="text-[11px] text-[var(--color-text-secondary)] mt-1 line-clamp-2">
+      <p className="text-xs text-[var(--color-text-secondary)] mt-1 line-clamp-2">
         {finding.reason}
       </p>
     </div>

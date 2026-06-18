@@ -52,7 +52,7 @@ export function TrendChart({ history, height = 220 }: TrendChartProps) {
         <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">
           KPI trend
         </h3>
-        <div className="flex items-center gap-3 text-[11px] text-[var(--color-text-tertiary)]">
+        <div className="flex items-center gap-3 text-xs text-[var(--color-text-tertiary)]">
           <Legend dot="bg-[var(--color-success)]" label="Average" />
           <Legend dot="bg-[var(--color-warning)]" label="Hotspot" />
           <Legend dot="bg-[var(--color-error)]" label="Worst" />

@@ -27,6 +27,7 @@ import {
 } from "../shared/responsive-table";
 import { cn } from "../lib/cn";
 import { truncatePath, formatRelativeTimeOrNull } from "../lib/format";
+import { AgentTierBar } from "../git/agent-tier-bar";
 import { OwnerAvatar } from "./owner-avatar";
 
 const dateFormatter = new Intl.DateTimeFormat(undefined, {
@@ -151,28 +152,28 @@ export function OwnerProfileView({
       {/* ---------- Risk strip ---------- */}
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <RiskTile
-          icon={<Users className="h-4 w-4 text-amber-400" />}
+          icon={<Users className="h-4 w-4 text-[var(--color-warning)]" />}
           label="Silo modules"
           value={owner.silo_modules}
           help="modules where this person owns >80% of files"
           tone={owner.silo_modules > 0 ? "warn" : "ok"}
         />
         <RiskTile
-          icon={<ShieldAlert className="h-4 w-4 text-red-400" />}
+          icon={<ShieldAlert className="h-4 w-4 text-[var(--color-error)]" />}
           label="Bus-factor risk"
           value={owner.bus_factor_risk_files}
           help="files with bus_factor ≤ 1 that they own"
           tone={owner.bus_factor_risk_files > 0 ? "danger" : "ok"}
         />
         <RiskTile
-          icon={<Flame className="h-4 w-4 text-orange-400" />}
+          icon={<Flame className="h-4 w-4 text-[var(--color-warning)]" />}
           label="Hotspots owned"
           value={owner.hotspots_owned}
           help="high-churn files where they are primary owner"
           tone={owner.hotspots_owned > 0 ? "warn" : "ok"}
         />
         <RiskTile
-          icon={<Trash2 className="h-4 w-4 text-rose-400" />}
+          icon={<Trash2 className="h-4 w-4 text-[var(--color-text-tertiary)]" />}
           label="Dead-code burden"
           value={`${owner.dead_code_files_owned} files · ${fmtCompact(owner.dead_code_lines_owned)} lines`}
           help="dead code findings whose primary owner is this person"
@@ -326,19 +327,8 @@ export function OwnerProfileView({
                   </span>
                 </div>
                 {Object.keys(owner.agent_collab.tier_counts).length > 0 && (
-                  <div className="flex flex-wrap gap-1.5 pt-1">
-                    {Object.entries(owner.agent_collab.tier_counts)
-                      .sort(([a], [b]) => a.localeCompare(b))
-                      .map(([tier, n]) => (
-                        <Badge key={tier} variant="outline" className="text-[10px]">
-                          {tier === "1"
-                            ? "autonomous"
-                            : tier === "2"
-                              ? "agent"
-                              : "assisted"}
-                          : {n}
-                        </Badge>
-                      ))}
+                  <div className="pt-1">
+                    <AgentTierBar tierCounts={owner.agent_collab.tier_counts} />
                   </div>
                 )}
               </CardContent>
@@ -408,9 +398,9 @@ function Headline({
 }) {
   const color =
     tone === "add"
-      ? "text-emerald-300"
+      ? "text-[var(--color-success)]"
       : tone === "del"
-        ? "text-rose-300"
+        ? "text-[var(--color-error)]"
         : "text-[var(--color-text-primary)]";
   return (
     <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-3 py-2">
@@ -438,15 +428,15 @@ function RiskTile({
 }) {
   const border =
     tone === "danger"
-      ? "border-red-500/40 bg-red-500/5"
+      ? "border-[var(--color-error)]/40 bg-[var(--color-error)]/5"
       : tone === "warn"
-        ? "border-amber-500/40 bg-amber-500/5"
+        ? "border-[var(--color-warning)]/40 bg-[var(--color-warning)]/5"
         : tone === "muted"
-          ? "border-rose-500/30 bg-rose-500/5"
+          ? "border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]"
           : "border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]";
   return (
     <div className={cn("rounded-lg border p-3", border)}>
-      <div className="flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-[var(--color-text-tertiary)]">
+      <div className="flex items-center gap-1.5 text-xs uppercase tracking-wider text-[var(--color-text-tertiary)]">
         {icon}
         {label}
       </div>
@@ -506,7 +496,7 @@ const FILE_COLUMNS: ResponsiveColumn<OwnerFileEntry>[] = [
     priority: 1,
     cellClassName: "max-w-[320px]",
     render: (f) => (
-      <span className="flex items-center gap-1.5 truncate font-mono text-[11px] text-[var(--color-text-primary)]">
+      <span className="flex items-center gap-1.5 truncate font-mono text-xs text-[var(--color-text-primary)]">
         {f.is_hotspot && <Flame className="h-3 w-3 shrink-0 text-[var(--color-warning)]" />}
         {truncatePath(f.file_path, 48)}
       </span>
@@ -589,19 +579,23 @@ function ChurnPill({ value }: { value: number }) {
 
 function BusBadge({ bf }: { bf: number }) {
   const color =
-    bf <= 1 ? "text-red-400" : bf === 2 ? "text-amber-300" : "text-emerald-300";
+    bf <= 1
+      ? "text-[var(--color-error)]"
+      : bf === 2
+        ? "text-[var(--color-warning)]"
+        : "text-[var(--color-success)]";
   return <span className={cn("font-semibold", color)}>{bf}</span>;
 }
 
 function categoryColor(category: string): string {
   const map: Record<string, string> = {
-    feat: "bg-emerald-400",
-    fix: "bg-rose-400",
-    refactor: "bg-sky-400",
-    docs: "bg-indigo-400",
-    test: "bg-violet-400",
-    chore: "bg-zinc-400",
-    perf: "bg-amber-400",
+    feat: "bg-[var(--color-success)]",
+    fix: "bg-[var(--color-error)]",
+    refactor: "bg-[var(--color-accent-secondary)]",
+    docs: "bg-[var(--color-info)]",
+    test: "bg-[var(--color-accent-primary)]",
+    chore: "bg-[var(--color-text-tertiary)]",
+    perf: "bg-[var(--color-warning)]",
   };
   return map[category] ?? "bg-[var(--color-accent-primary)]";
 }

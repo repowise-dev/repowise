@@ -18,9 +18,9 @@ export function DriftBanner({ pages, threshold = 0 }: DriftBannerProps) {
   return (
     <div
       role="status"
-      className="flex items-start gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3"
+      className="flex items-start gap-3 rounded-lg border border-[var(--color-warning)]/40 bg-[var(--color-warning)]/10 px-4 py-3"
     >
-      <AlertTriangle className="h-5 w-5 text-amber-400 shrink-0 mt-0.5" />
+      <AlertTriangle className="h-5 w-5 text-[var(--color-warning)] shrink-0 mt-0.5" />
       <div className="text-sm text-[var(--color-text-primary)]">
         <p className="font-medium">
           {drift} outdated · {stale} stale

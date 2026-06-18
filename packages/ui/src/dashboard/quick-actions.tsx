@@ -200,13 +200,13 @@ export function QuickActions({
           })}
         </div>
         <div className="flex flex-wrap gap-x-4 gap-y-0.5">
-          <span className="text-[11px] text-[var(--color-text-tertiary)]">
+          <span className="text-xs text-[var(--color-text-tertiary)]">
             Last synced{" "}
             <span className="text-[var(--color-text-secondary)]">
               {lastSyncAt ? formatRelativeTime(lastSyncAt) : "never"}
             </span>
           </span>
-          <span className="text-[11px] text-[var(--color-text-tertiary)]">
+          <span className="text-xs text-[var(--color-text-tertiary)]">
             Last re-indexed{" "}
             <span className="text-[var(--color-text-secondary)]">
               {lastResyncAt ? formatRelativeTime(lastResyncAt) : "never"}
