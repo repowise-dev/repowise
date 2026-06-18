@@ -40,7 +40,7 @@ import { useGraphContextMenu } from "./use-graph-context-menu";
 import { useGraphSearch } from "./use-graph-search";
 import { useCommunityFilter } from "./use-community-filter";
 import { useGraphKeyboardShortcuts } from "./use-graph-keyboard-shortcuts";
-import { GraphToolbar, type ColorMode, type ViewMode, type LayoutMode, type GraphTheme } from "./graph-toolbar";
+import { GraphToolbar, type ColorMode, type ViewMode, type LayoutMode, type GraphTheme, type Scope } from "./graph-toolbar";
 import { GraphLegend } from "./graph-legend";
 import { GraphContextMenu } from "./graph-context-menu";
 import { GraphInspectionPanel } from "./graph-inspection-panel";
@@ -137,6 +137,10 @@ export interface GraphFlowProps {
    *  hosting page dismiss any competing right-rail panel (doc panel etc.)
    *  so the right side is a single sidebar. */
   onCommunityPanelOpen?: (communityId: number) => void;
+  /** Restricts the toolbar's scope cluster. Explore passes `["modules","full"]`
+   *  so the constellation scope (now the Knowledge Graph view's Communities
+   *  lens) is not reachable from here. Defaults to all scopes. */
+  availableScopes?: Scope[];
 }
 
 export function GraphFlow(props: GraphFlowProps) {
@@ -170,6 +174,7 @@ export function GraphFlow(props: GraphFlowProps) {
     renderPathFinder,
     renderCommunityPanel,
     onCommunityPanelOpen,
+    availableScopes,
   } = props;
 
   const sigmaRef = useRef<SigmaCanvasHandle>(null);
@@ -1148,6 +1153,7 @@ export function GraphFlow(props: GraphFlowProps) {
             graphTheme={graphTheme}
             onGraphThemeChange={handleGraphThemeChange}
             onToggleHelp={handleToggleShortcutHelp}
+            availableScopes={availableScopes}
           />
         </div>
 

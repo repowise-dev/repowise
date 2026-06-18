@@ -3,7 +3,8 @@
  * the mobile nav consume these — the two surfaces must never diverge again.
  *
  * Repo IA (6 groups + Settings pinned last):
- *   Overview · Docs · Architecture · Code Health · People & History · Chat
+ *   Overview · Docs · Architecture · Knowledge Graph · Code Health ·
+ *   People & History · Chat
  */
 
 import {
@@ -56,8 +57,8 @@ export function repoNavGroups(repoId: string): NavGroup[] {
         { label: "Overview", href: `${base}/overview`, icon: Activity },
         { label: "Docs", href: `${base}/docs`, icon: BookOpen },
         { label: "Architecture", href: `${base}/architecture`, icon: Boxes },
+        { label: "Knowledge Graph", href: `${base}/knowledge-graph`, icon: Waypoints },
         { label: "Code Health", href: `${base}/code-health`, icon: HeartPulse },
-        { label: "Coupling", href: `${base}/coupling`, icon: Waypoints },
       ],
     },
     {

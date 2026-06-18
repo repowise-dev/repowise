@@ -9,6 +9,7 @@ export * from "./centrality-leaderboard";
 export * from "./node-badges";
 export * from "./graph-context-drawer";
 export * from "./graph-truncation-banner";
+export * from "./graph-canvas-shell";
 export * from "./graph-flow";
 export * from "./context";
 export * from "./elk-layout";

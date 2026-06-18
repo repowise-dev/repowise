@@ -6,6 +6,7 @@ import { useQueryState } from "nuqs";
 import { useSearchParams } from "next/navigation";
 import { GraphFlow } from "@/components/graph/graph-flow";
 import { GraphDocPanel } from "@/components/graph/graph-doc-panel";
+import { GraphCanvasShell } from "@repowise-dev/ui/graph/graph-canvas-shell";
 import { GraphTruncationBanner } from "@repowise-dev/ui/graph/graph-truncation-banner";
 import { getGraph } from "@/lib/api/graph";
 import type { GraphExportResponse } from "@/lib/api/types";
@@ -142,24 +143,18 @@ export function GraphView({
   const isMap = scope === "map" && !initialNode;
 
   return (
-    <div className="flex flex-col h-full">
-      {/* Header */}
-      <div className="shrink-0 px-4 sm:px-6 py-3 border-b border-[var(--color-border-default)]">
-        <h1 className="text-lg font-semibold text-[var(--color-text-primary)]">
-          {isMap ? "Architecture Map" : "Dependency Explorer"}
-        </h1>
-        <p className="text-xs text-[var(--color-text-secondary)] mt-0.5">
-          {isMap
-            ? "Detected communities and how they connect — double-click a hub to blossom it"
-            : "Explore dependencies, overlays and trace paths between files"}
-        </p>
-      </div>
-
-      {/* Truncation banner — shown only when the current scope renders the
-          capped full graph and the server actually capped it. Constellation /
-          module scopes use their own endpoints, so the banner stays hidden. */}
-      {usesFullGraph && graphData?.truncated && graphData.total_node_count != null && (
-        <div className="shrink-0 px-4 sm:px-6 pt-3">
+    <GraphCanvasShell
+      title={isMap ? "Communities" : "Dependency Explorer"}
+      description={
+        isMap
+          ? "Detected communities and how they connect — double-click a hub to blossom it"
+          : "Explore dependencies, overlays and trace paths between files"
+      }
+      banner={
+        // Shown only when the current scope renders the capped full graph and
+        // the server actually capped it. Constellation / module scopes use
+        // their own endpoints, so the banner stays hidden.
+        usesFullGraph && graphData?.truncated && graphData.total_node_count != null ? (
           <GraphTruncationBanner
             shown={graphData.nodes.length}
             total={graphData.total_node_count}
@@ -167,35 +162,35 @@ export function GraphView({
             onLoadMore={(nextLimit) => setGraphLimit(nextLimit)}
             onSwitchToArchitecture={handleSwitchToArchitecture}
           />
-        </div>
-      )}
-
-      {/* Graph area */}
-      <div className="flex-1 overflow-hidden p-3">
-        <div className="h-full w-full rounded-lg border border-[var(--color-border-default)] overflow-hidden relative">
-          <GraphFlow
-            key={flowKey}
+        ) : undefined
+      }
+      overlay={
+        // Doc panel — shows on file click. Single right-rail surface.
+        docNodeId ? (
+          <GraphDocPanel
             repoId={repoId}
-            initialViewMode={forcedViewMode ?? mountViewMode}
-            initialColorMode={initialColorMode}
-            initialSelectedNode={initialNode}
-            onNodeClick={handleNodeClick}
-            onNodeViewDocs={handleNodeViewDocs}
-            onCommunityPanelOpen={handleCommunityPanelOpen}
-            onViewModeChange={handleViewModeChange}
-            onColorModeChange={handleColorModeChange}
+            nodeId={docNodeId}
+            onClose={() => setDocNodeId(null)}
           />
-
-          {/* Doc panel — shows on file click. Single right-rail surface. */}
-          {docNodeId && (
-            <GraphDocPanel
-              repoId={repoId}
-              nodeId={docNodeId}
-              onClose={() => setDocNodeId(null)}
-            />
-          )}
-        </div>
-      </div>
-    </div>
+        ) : undefined
+      }
+    >
+      <GraphFlow
+        key={flowKey}
+        repoId={repoId}
+        initialViewMode={forcedViewMode ?? mountViewMode}
+        initialColorMode={initialColorMode}
+        initialSelectedNode={initialNode}
+        // Communities locks to the constellation; Explore drops the
+        // constellation scope (it lives in the Knowledge Graph view) so the
+        // toolbar offers only Modules / Full.
+        availableScopes={scope === "explore" ? ["modules", "full"] : undefined}
+        onNodeClick={handleNodeClick}
+        onNodeViewDocs={handleNodeViewDocs}
+        onCommunityPanelOpen={handleCommunityPanelOpen}
+        onViewModeChange={handleViewModeChange}
+        onColorModeChange={handleColorModeChange}
+      />
+    </GraphCanvasShell>
   );
 }

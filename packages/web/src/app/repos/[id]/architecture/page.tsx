@@ -3,56 +3,61 @@
 /**
  * Architecture — `/repos/[id]/architecture`.
  *
- * One destination for "how is this built", with five modes behind `?view=`:
- *   - map     — the constellation Knowledge Graph (community super-graph)
- *   - layers  — the curated layered architecture view (tour, personas)
- *   - explore — the full / module dependency graph with dead/hot overlays
- *   - symbols — the searchable symbol index
- *   - deps    — the third-party dependency registry
- * The legacy C4 diagram stays reachable behind `?view=c4` until the layered
- * view reaches full parity.
+ * The "how the code is wired" destination, with tabs behind `?view=`:
+ *   - map      — the constellation, surfaced as the "Communities" tab
+ *   - explore  — the full / module dependency graph with dead/hot overlays
+ *   - symbols  — the searchable symbol index
+ *   - deps     — the third-party dependency registry
  *
- * Map and Explore share one canvas component (GraphFlow) and therefore one
- * search, one path finder, one legend and one inspector; switching scope
- * inside the canvas keeps `?view=` in sync without remounting.
+ * The curated layered view ("Knowledge Graph") is a separate top-level route
+ * (`/knowledge-graph`); the legacy `?view=layers` / `?view=c4` aliases redirect
+ * there.
+ *
+ * Communities and Explore are the SAME `GraphFlow` canvas differing only by
+ * scope: Communities locks it to the constellation (radial) scope, Explore
+ * mounts it at full/module scope. Switching scope inside Explore keeps `?view=`
+ * in sync without remounting.
  */
 
-import { use, useCallback } from "react";
+import { use, useCallback, useEffect } from "react";
+import { useRouter } from "next/navigation";
 import { useQueryState, parseAsStringLiteral } from "nuqs";
 import { Code2 } from "lucide-react";
-import { cn } from "@/lib/utils/cn";
+import { ViewTabs } from "@repowise-dev/ui/shared/view-tabs";
 import { GraphView } from "@/components/architecture/graph-view";
-import { C4View } from "@/components/architecture/c4-view";
 import { DependenciesView } from "@/components/architecture/dependencies-view";
 import { SymbolTableWrapper as SymbolTable } from "@/components/symbols/symbol-table-wrapper";
 
-// "graph" and "c4" are accepted as legacy aliases from pre-merge URLs and
-// normalized below; only the five canonical views render switcher buttons.
-const VIEWS = ["map", "layers", "explore", "symbols", "deps", "graph", "c4"] as const;
+// The curated layered view (and the frozen legacy C4 diagram) now live under
+// the dedicated Knowledge Graph route.
+const KNOWLEDGE_GRAPH_VIEWS = new Set(["layers", "c4"]);
+
+// Accepted `?view=` values. "graph" and "c4"/"layers" are legacy aliases that
+// are normalized / redirected below; only the canonical tabs render a tab.
+const VIEWS = [
+  "map",
+  "explore",
+  "symbols",
+  "deps",
+  "graph",
+  "c4",
+  "layers",
+] as const;
 type ArchView = (typeof VIEWS)[number];
 
-const CANONICAL_VIEWS: ArchView[] = ["map", "layers", "explore", "symbols", "deps"];
-
-const VIEW_LABELS: Record<ArchView, string> = {
-  map: "Map",
-  layers: "Layers",
-  explore: "Explore",
-  symbols: "Symbols",
-  deps: "Dependencies",
-  graph: "Map",
-  c4: "C4 (legacy)",
-};
-
-const VIEW_HINTS: Record<string, string> = {
-  map: "Constellation of detected communities",
-  layers: "Curated layered view with a guided tour",
-  explore: "Full dependency graph with dead/hot overlays",
-  symbols: "Every function, class and export",
-  deps: "Declared third-party dependencies",
-};
+// IA-as-data. Communities first (today's `map`), then the wiring surfaces.
+// Coupling is added here in a later phase — the structure is kept easy to
+// extend (append a `{ id: "coupling", ... }` row + a panel branch).
+const CANONICAL_VIEWS: { id: Extract<ArchView, "map" | "explore" | "deps" | "symbols">; label: string; hint: string }[] = [
+  { id: "map", label: "Communities", hint: "Constellation of detected communities" },
+  { id: "explore", label: "Explore", hint: "Full dependency graph with dead/hot overlays" },
+  { id: "deps", label: "Dependencies", hint: "Declared third-party dependencies" },
+  { id: "symbols", label: "Symbols", hint: "Every function, class and export" },
+];
 
 // Legacy ?view=graph deep links carried the graph scope in ?viewMode=. Scopes
-// that render file-level graphs map to Explore; the constellation maps to Map.
+// that render file-level graphs map to Explore; the constellation maps to the
+// Communities tab.
 const EXPLORE_VIEW_MODES = new Set(["module", "full", "dead", "hotfiles", "unified"]);
 
 export default function ArchitecturePage({
@@ -61,21 +66,27 @@ export default function ArchitecturePage({
   params: Promise<{ id: string }>;
 }) {
   const { id: repoId } = use(params);
+  const router = useRouter();
   const [rawView, setView] = useQueryState(
     "view",
     parseAsStringLiteral(VIEWS).withDefault("map"),
   );
   const [viewModeParam] = useQueryState("viewMode");
-  const [modeParam] = useQueryState("mode");
 
-  // Normalize legacy aliases without a URL rewrite (cheap, shareable links
-  // keep working): graph → map/explore by scope; c4 + mode=architecture was
-  // the curated view (now Layers); c4 + mode=c4 stays the frozen legacy mode.
+  // The curated layers view now lives at /knowledge-graph. `?view=layers` and
+  // `?view=c4` redirect there so shared links keep working.
+  const redirectsToKnowledgeGraph = KNOWLEDGE_GRAPH_VIEWS.has(rawView);
+  useEffect(() => {
+    if (redirectsToKnowledgeGraph) {
+      router.replace(`/repos/${repoId}/knowledge-graph`);
+    }
+  }, [redirectsToKnowledgeGraph, repoId, router]);
+
+  // Normalize the remaining legacy alias without a URL rewrite: ?view=graph →
+  // map/explore by scope.
   let view: ArchView = rawView;
   if (rawView === "graph") {
     view = EXPLORE_VIEW_MODES.has(viewModeParam ?? "") ? "explore" : "map";
-  } else if (rawView === "c4" && modeParam !== "c4") {
-    view = "layers";
   }
 
   const handleScopeViewChange = useCallback(
@@ -85,47 +96,42 @@ export default function ArchitecturePage({
     [setView],
   );
 
-  const isGraphCanvas = view === "map" || view === "explore";
+  // The active canonical tab. Map/Explore are the only graph-canvas tabs;
+  // everything else resolves to its own panel.
+  const activeTab: (typeof CANONICAL_VIEWS)[number]["id"] =
+    view === "explore" || view === "deps" || view === "symbols" ? view : "map";
+
+  if (redirectsToKnowledgeGraph) {
+    return null;
+  }
 
   return (
     <div className="flex h-full flex-col">
-      {/* View switcher */}
-      <div className="flex shrink-0 items-center gap-1 border-b border-[var(--color-border-default)] px-4 py-2 sm:px-6 overflow-x-auto">
-        {CANONICAL_VIEWS.map((v) => (
-          <button
-            key={v}
-            onClick={() => void setView(v)}
-            title={VIEW_HINTS[v]}
-            className={cn(
-              "rounded-md px-3 py-1.5 text-xs font-medium whitespace-nowrap transition-colors",
-              view === v
-                ? "bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)]"
-                : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]",
-            )}
-          >
-            {VIEW_LABELS[v]}
-          </button>
-        ))}
-        {view === "c4" && (
-          <span className="rounded-md bg-[var(--color-accent-muted)] px-3 py-1.5 text-xs font-medium text-[var(--color-accent-primary)] whitespace-nowrap">
-            C4 (legacy)
-          </span>
-        )}
+      <div className="shrink-0 px-4 pt-3 sm:px-6">
+        <ViewTabs
+          tabs={CANONICAL_VIEWS.map((v) => ({ id: v.id, label: v.label }))}
+          value={activeTab}
+          onValueChange={(id) => void setView(id as ArchView)}
+        />
       </div>
 
       <div className="min-h-0 flex-1 overflow-auto">
-        {isGraphCanvas && (
+        {activeTab === "map" && (
           <GraphView
             repoId={repoId}
-            scope={view as "map" | "explore"}
+            scope="map"
             onScopeViewChange={handleScopeViewChange}
           />
         )}
-        {(view === "layers" || view === "c4") && (
-          <C4View repoId={repoId} legacy={view === "c4"} />
+        {activeTab === "explore" && (
+          <GraphView
+            repoId={repoId}
+            scope="explore"
+            onScopeViewChange={handleScopeViewChange}
+          />
         )}
-        {view === "deps" && <DependenciesView repoId={repoId} />}
-        {view === "symbols" && (
+        {activeTab === "deps" && <DependenciesView repoId={repoId} />}
+        {activeTab === "symbols" && (
           <div className="max-w-[1600px] space-y-6 p-4 sm:p-6">
             <div>
               <h1 className="mb-1 flex items-center gap-2 text-xl font-semibold text-[var(--color-text-primary)]">

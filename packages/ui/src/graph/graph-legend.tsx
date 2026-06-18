@@ -65,7 +65,7 @@ export const GraphLegend = memo(function GraphLegend({
     const entries = allEntries.slice(0, 12);
     const overflow = allEntries.length - entries.length;
     return (
-      <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-overlay)]/80 backdrop-blur-sm text-xs shadow-lg shadow-black/20 min-w-[160px] max-w-[220px]">
+      <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-overlay)]/80 backdrop-blur-sm text-xs shadow-sm min-w-[160px] max-w-[220px]">
         <button
           onClick={() => setExpanded((s) => !s)}
           className="flex items-center justify-between w-full px-2.5 py-2 text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors"
@@ -81,8 +81,8 @@ export const GraphLegend = memo(function GraphLegend({
         </button>
         {expanded && (
           <div className="px-2.5 pb-2.5 space-y-1 border-t border-[var(--color-border-default)] pt-2">
-            <p className="text-[9px] text-[var(--color-text-tertiary)] uppercase tracking-wider font-medium">
-              Knowledge Graph
+            <p className="text-[10px] text-[var(--color-text-tertiary)] uppercase tracking-wider font-medium">
+              Communities
             </p>
             {entries.length === 0 && (
               <p className="text-[10px] text-[var(--color-text-tertiary)]">
@@ -102,7 +102,7 @@ export const GraphLegend = memo(function GraphLegend({
                     style={{ background: color }}
                   />
                   <span className="truncate flex-1">{e.label}</span>
-                  <span className="tabular-nums text-[9px] shrink-0">{e.memberCount}</span>
+                  <span className="tabular-nums text-[10px] shrink-0">{e.memberCount}</span>
                 </button>
               );
             })}
@@ -112,7 +112,7 @@ export const GraphLegend = memo(function GraphLegend({
                 listed
               </p>
             )}
-            <p className="text-[9px] text-[var(--color-text-tertiary)] pt-1.5 border-t border-[var(--color-border-default)]">
+            <p className="text-[10px] text-[var(--color-text-tertiary)] pt-1.5 border-t border-[var(--color-border-default)]">
               Inner ring = entry surface
             </p>
           </div>
@@ -122,7 +122,7 @@ export const GraphLegend = memo(function GraphLegend({
   }
 
   return (
-    <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-overlay)]/80 backdrop-blur-sm text-xs shadow-lg shadow-black/20 min-w-[120px] max-w-[150px]">
+    <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-overlay)]/80 backdrop-blur-sm text-xs shadow-sm min-w-[120px] max-w-[150px]">
       <button
         onClick={() => setExpanded((s) => !s)}
         className="flex items-center justify-between w-full px-2.5 py-2 text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors"
@@ -139,7 +139,7 @@ export const GraphLegend = memo(function GraphLegend({
 
       {expanded && (
         <div className="px-2.5 pb-2.5 space-y-1.5 border-t border-[var(--color-border-default)] pt-2">
-          <p className="text-[9px] text-[var(--color-text-tertiary)] uppercase tracking-wider font-medium">
+          <p className="text-[10px] text-[var(--color-text-tertiary)] uppercase tracking-wider font-medium">
             {colorMode === "language" ? "Language" : colorMode === "community" ? "Community" : "Risk"}
           </p>
 
@@ -166,7 +166,7 @@ export const GraphLegend = memo(function GraphLegend({
                 {onToggleAllCommunities && entries && (
                   <button
                     onClick={() => onToggleAllCommunities(!allSelected)}
-                    className="text-[9px] text-[var(--color-accent-graph)] hover:underline mb-0.5"
+                    className="text-[10px] text-[var(--color-accent-graph)] hover:underline mb-0.5"
                   >
                     {allSelected ? "Deselect All" : "Select All"}
                   </button>
@@ -242,7 +242,7 @@ export const GraphLegend = memo(function GraphLegend({
 
           {onEdgeTypeToggle && visibleEdgeTypes && (
             <>
-              <p className="text-[9px] text-[var(--color-text-tertiary)] uppercase tracking-wider font-medium pt-1.5 border-t border-[var(--color-border-default)] mt-1.5">
+              <p className="text-[10px] text-[var(--color-text-tertiary)] uppercase tracking-wider font-medium pt-1.5 border-t border-[var(--color-border-default)] mt-1.5">
                 Edges
               </p>
               {([
@@ -274,7 +274,7 @@ export const GraphLegend = memo(function GraphLegend({
           )}
 
           {viewMode !== "module" && viewMode !== "full" && (
-            <p className="text-[9px] text-[var(--color-text-tertiary)] pt-1 border-t border-[var(--color-border-default)]">
+            <p className="text-[10px] text-[var(--color-text-tertiary)] pt-1 border-t border-[var(--color-border-default)]">
               {viewMode === "dead" && "Showing unreachable files"}
               {viewMode === "hotfiles" && "Most-committed files (30d)"}
               {viewMode === "unified" && "Unified: community + risk signals"}

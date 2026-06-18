@@ -9,6 +9,9 @@
 export { C4Diagram } from "./C4Diagram";
 export type { C4DiagramProps } from "./C4Diagram";
 
+export { ArchCanvas } from "./ArchCanvas";
+export type { ArchCanvasProps } from "./ArchCanvas";
+
 export { useC4Store } from "./store/use-c4-store";
 export type { C4Store, C4StoreState, UseC4StoreOptions } from "./store/use-c4-store";
 

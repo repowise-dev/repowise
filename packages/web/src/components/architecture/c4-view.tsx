@@ -16,32 +16,20 @@ import { useQueryState, parseAsInteger, parseAsString, parseAsStringLiteral } fr
 import {
   C4Diagram,
   type C4Level,
+  ArchCanvas,
   useArchitectureStore,
   useArchitectureLayout,
   useArchitectureNavigation,
-  archNodeTypes,
-  archEdgeTypes,
   SearchBar,
   ArchBreadcrumb,
-  ArchLegend,
   PersonaSelector,
   NodeTypeCategoryFilters,
   FilterPanel,
   CodeViewer,
   PathFinderModal,
   type Persona,
-  KEYFRAMES,
 } from "@repowise-dev/ui/c4";
-import {
-  Background,
-  BackgroundVariant,
-  Controls,
-  MiniMap,
-  ReactFlow,
-  ReactFlowProvider,
-  useReactFlow,
-} from "@xyflow/react";
-import "@xyflow/react/dist/style.css";
+import { ReactFlowProvider, useReactFlow, type Node } from "@xyflow/react";
 import { useC4L1, useC4L2, useC4L3 } from "@/lib/hooks/use-c4";
 import { useArchitectureView } from "@/lib/hooks/use-architecture";
 import { useC4DocsPathSet } from "@/lib/hooks/use-c4-context";
@@ -49,9 +37,7 @@ import { useRepo } from "@/lib/hooks/use-repo";
 import { getC4Mermaid } from "@/lib/api/c4";
 import { C4DetailPanelHost } from "@/components/c4/c4-detail-panel-host";
 import { ArchDetailPanelHost } from "@/components/c4/arch-detail-panel-host";
-import { EmptyState } from "@repowise-dev/ui/shared/empty-state";
-import { OwlLoader } from "@repowise-dev/ui/shared/owl-loader";
-import { AlertTriangle, Compass } from "lucide-react";
+import { Compass } from "lucide-react";
 
 // First-visit discoverability flag for the guided tour.
 const TOUR_SEEN_KEY = "repowise:arch-tour-seen";
@@ -102,7 +88,36 @@ function ArchitectureViewPage({ repoId, repoName }: { repoId: string; repoName: 
   );
 }
 
-function ArchitectureViewInner({ repoId, repoName }: { repoId: string; repoName: string }) {
+/**
+ * The curated layered architecture view, ready to mount client-side. The
+ * Knowledge Graph route renders this inside a `PageShell` (passing
+ * `embedded` so the inner title band is suppressed and the page owns the
+ * heading). Must be a client component because it drives a Zustand store and
+ * `useReactFlow`.
+ */
+export function KnowledgeGraphView({
+  repoId,
+  repoName,
+}: {
+  repoId: string;
+  repoName: string;
+}) {
+  return (
+    <ReactFlowProvider>
+      <ArchitectureViewInner repoId={repoId} repoName={repoName} embedded />
+    </ReactFlowProvider>
+  );
+}
+
+function ArchitectureViewInner({
+  repoId,
+  repoName,
+  embedded,
+}: {
+  repoId: string;
+  repoName: string;
+  embedded?: boolean;
+}) {
   const { view, error, isLoading } = useArchitectureView(repoId);
   const { fitView } = useReactFlow();
 
@@ -238,7 +253,7 @@ function ArchitectureViewInner({ repoId, repoName }: { repoId: string; repoName:
   }, [selectedNodeId, nodes, fitView]);
 
   const handleNodeClick = useCallback(
-    (_: React.MouseEvent, node: { id: string; type?: string }) => {
+    (_: React.MouseEvent, node: Node) => {
       if (SYNTHETIC_NODE_TYPES.has(node.type ?? "")) return;
       selectNode(node.id);
     },
@@ -248,7 +263,7 @@ function ArchitectureViewInner({ repoId, repoName }: { repoId: string; repoName:
   // Double click = drill (grammar): layer → groups/detail, group → detail,
   // folder → expand/collapse. (Drilling clears selection in the store.)
   const handleNodeDoubleClick = useCallback(
-    (_: React.MouseEvent, node: { id: string; type?: string }) => {
+    (_: React.MouseEvent, node: Node) => {
       if (node.type === "layerCluster") {
         drillIntoLayer(node.id);
       } else if (node.type === "subGroupCluster") {
@@ -293,14 +308,18 @@ function ArchitectureViewInner({ repoId, repoName }: { repoId: string; repoName:
     <>
       <div className="shrink-0 px-4 sm:px-6 py-3 border-b border-[var(--color-border-default)]">
         <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-lg font-semibold text-[var(--color-text-primary)]">
-              Layers
-            </h1>
-            <p className="text-xs text-[var(--color-text-secondary)] mt-0.5">
-              {repoName} — curated layered view of the system.
-            </p>
-          </div>
+          {!embedded ? (
+            <div>
+              <h1 className="text-lg font-semibold text-[var(--color-text-primary)]">
+                Layers
+              </h1>
+              <p className="text-xs text-[var(--color-text-secondary)] mt-0.5">
+                {repoName} — curated layered view of the system.
+              </p>
+            </div>
+          ) : (
+            <span aria-hidden />
+          )}
           <div className="flex items-center gap-3">
             {view && view.tour.length > 0 && !tourActive && (
               <button
@@ -325,86 +344,29 @@ function ArchitectureViewInner({ repoId, repoName }: { repoId: string; repoName:
         </div>
       </div>
 
-      <style>{KEYFRAMES.accentPulse}{KEYFRAMES.edgeFlow}{`
-        /* Zoom-into-tier feel: nodes glide to their next slot (plan D). */
-        @media (prefers-reduced-motion: no-preference) {
-          .react-flow__node { transition: transform 180ms ease; }
-        }
-      `}</style>
-      <div className="flex-1 min-h-0 relative bg-[var(--color-bg-canvas)]">
-        {error && (
-          <div className="absolute inset-0 flex items-center justify-center z-10">
-            <EmptyState
-              icon={<AlertTriangle className="h-5 w-5" aria-hidden />}
-              title="Couldn't load the knowledge graph"
-              description={error.message}
-              className="max-w-md p-8"
-            />
-          </div>
-        )}
-        {anyLoading && nodes.length === 0 && !error && (
-          <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
-            <OwlLoader size={120} label="Loading knowledge graph…" className="min-h-0" />
-          </div>
-        )}
-        {/* Re-layout feedback (B6): ELK stage-2 on big layers used to freeze
-            silently — a small owl chip says the canvas is thinking. */}
-        {anyLoading && nodes.length > 0 && !error && (
-          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-10 pointer-events-none rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/95 px-3 py-1 shadow-sm">
-            <OwlLoader size={28} label="Laying out…" className="min-h-0 flex-row gap-2 text-[10px]" />
-          </div>
-        )}
-
-        <ReactFlow
+      <div className="flex-1 min-h-0 relative">
+        {/* The layered canvas chrome (ReactFlow host, controls, minimap, owl
+            chips, weaker-link chip, legend) now lives in `ui/c4` so it upgrades
+            via a package bump. Web keeps store/data wiring and the panel hosts. */}
+        <ArchCanvas
           nodes={nodes}
           edges={edges}
-          nodeTypes={archNodeTypes}
-          edgeTypes={archEdgeTypes}
+          loading={anyLoading}
+          error={error}
+          hiddenEdgeCount={hiddenEdgeCount}
+          onInit={setReactFlowInstance}
           onNodeClick={handleNodeClick}
           onNodeDoubleClick={handleNodeDoubleClick}
           onPaneClick={handlePaneClick}
-          onInit={setReactFlowInstance}
-          fitView
-          fitViewOptions={{ padding: 0.2 }}
-          minZoom={0.1}
-          maxZoom={3}
-          proOptions={{ hideAttribution: true }}
-          nodesDraggable={false}
-          nodesConnectable={false}
+          errorTitle="Couldn't load the architecture layers"
+          loadingLabel="Loading layers…"
         >
-          {/* Blueprint graph paper: 24px line grid on the warm canvas, matching
-              the mermaid container (kg-ux plan §2.1). */}
-          <Background variant={BackgroundVariant.Lines} gap={24} size={1} color="var(--color-diagram-grid)" />
-          <Controls showInteractive={false} />
-          {/* maskColor comes from --xy-minimap-mask-background (theme-aware). */}
-          <MiniMap pannable zoomable />
-        </ReactFlow>
-
-        {/* Orientation (plan C-1) and the tour player (C-2) render in the
-            right Sidebar only — the floating left asides duplicated them
-            (user feedback 2026-06-05: one place). */}
-
-        {hiddenEdgeCount > 0 && (
-          <div
-            className="absolute bottom-4 left-14 z-10 rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)]/90 px-3 py-1 text-xs text-[var(--color-text-secondary)]"
-            title="Weakest aggregated connections are hidden to keep the view legible. Drill in to see them."
-          >
-            +{hiddenEdgeCount} weaker link{hiddenEdgeCount === 1 ? "" : "s"} hidden
-          </div>
-        )}
-
-        {/* Decoder ring — collapsible, every tier (B6). */}
-        <div className="absolute bottom-4 right-[224px] z-10">
-          <ArchLegend />
-        </div>
-
-        <ArchDetailPanelHost repoId={repoId} />
-
-        <FilterPanel />
-
-        <CodeViewer fetchContent={fetchContent} />
-
-        {pathFinderOpen && <PathFinderModal />}
+          {/* Orientation and the tour player render in the right Sidebar only. */}
+          <ArchDetailPanelHost repoId={repoId} />
+          <FilterPanel />
+          <CodeViewer fetchContent={fetchContent} />
+          {pathFinderOpen && <PathFinderModal />}
+        </ArchCanvas>
       </div>
     </>
   );
@@ -475,7 +437,7 @@ function LegacyC4View({ repoId, repoName }: { repoId: string; repoName: string }
         <div className="flex items-center justify-between gap-4">
           <div>
             <h1 className="text-lg font-semibold text-[var(--color-text-primary)]">
-              Knowledge Graph
+              C4 layers (legacy)
             </h1>
             <p className="text-xs text-[var(--color-text-secondary)] mt-0.5">
               System context, containers, and components — drill in to navigate.

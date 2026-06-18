@@ -93,11 +93,15 @@ interface GraphToolbarProps {
   onGraphThemeChange: (theme: GraphTheme) => void;
   /** Opens the keyboard-shortcut help overlay (also bound to `?`). */
   onToggleHelp?: () => void;
+  /** Which scopes the scope cluster offers. Defaults to all three; the Explore
+   *  surface omits the constellation scope (it lives in the Knowledge Graph
+   *  view) so there is no cross-view jump back through the toolbar. */
+  availableScopes?: Scope[] | undefined;
 }
 
 // Scope = which subset of nodes are drawn. Mutually exclusive.
 const SCOPES: { id: Scope; icon: typeof Boxes; label: string; hint: string }[] = [
-  { id: "architecture", icon: GitFork, label: "Knowledge Graph", hint: "Detected communities" },
+  { id: "architecture", icon: GitFork, label: "Communities", hint: "Detected communities" },
   { id: "modules", icon: Boxes, label: "Modules", hint: "Folder / package rollup" },
   { id: "full", icon: LayoutGrid, label: "Full", hint: "All files and symbols" },
 ];
@@ -149,7 +153,11 @@ export const GraphToolbar = memo(function GraphToolbar({
   graphTheme,
   onGraphThemeChange,
   onToggleHelp,
+  availableScopes,
 }: GraphToolbarProps) {
+  const scopes = availableScopes
+    ? SCOPES.filter((s) => availableScopes.includes(s.id))
+    : SCOPES;
   // Below sm the full control cluster is too much chrome over the canvas —
   // collapse it behind a single toggle, keeping search always reachable.
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -180,7 +188,7 @@ export const GraphToolbar = memo(function GraphToolbar({
       {/* Mobile: single toggle for the control cluster */}
       <button
         onClick={() => setMobileOpen((s) => !s)}
-        className={`flex items-center gap-1.5 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm px-2 py-1.5 text-[10px] font-medium shadow-lg shadow-black/20 sm:hidden ${
+        className={`flex items-center gap-1.5 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm px-2 py-1.5 text-[10px] font-medium shadow-sm sm:hidden ${
           mobileOpen
             ? "text-[var(--color-accent-primary)]"
             : "text-[var(--color-text-secondary)]"
@@ -192,9 +200,11 @@ export const GraphToolbar = memo(function GraphToolbar({
         Controls
       </button>
 
-      {/* Scope (mutually exclusive) */}
-      <div className={`${clusterVisibility} gap-0.5 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm p-1 shadow-lg shadow-black/20`}>
-        {SCOPES.map((m) => {
+      {/* Scope (mutually exclusive). Hidden when only one scope is offered —
+          the surface is locked (e.g. the Communities lens). */}
+      {scopes.length > 1 && (
+      <div className={`${clusterVisibility} gap-0.5 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm p-1 shadow-sm`}>
+        {scopes.map((m) => {
           const Icon = m.icon;
           const isActive = activeScope === m.id;
           return (
@@ -216,10 +226,11 @@ export const GraphToolbar = memo(function GraphToolbar({
           );
         })}
       </div>
+      )}
 
       {/* Overlays (additive signal chips) — not applicable in the constellation */}
       {!isConstellation && (
-      <div className={`${clusterVisibility} gap-0.5 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm p-1 shadow-lg shadow-black/20`}>
+      <div className={`${clusterVisibility} gap-0.5 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm p-1 shadow-sm`}>
         {OVERLAYS.map((o) => {
           const Icon = o.icon;
           const isActive = activeOverlays.has(o.id);
@@ -244,8 +255,10 @@ export const GraphToolbar = memo(function GraphToolbar({
       </div>
       )}
 
-      <div className={`${clusterVisibility} gap-1.5 items-center`}>
-        <div className="flex gap-0.5 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm p-1 shadow-lg shadow-black/20">
+      {/* Layout · color · actions collapse into one floating group so the
+          canvas isn't fenced in by a row of separate shadowed pills. */}
+      <div className={`${clusterVisibility} items-center gap-1 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm p-1 shadow-sm`}>
+        <div className="flex gap-0.5">
           {isConstellation ? (
             // Constellation is locked to the radial layout; show a single
             // active indicator instead of the Force/Hierarchical toggle.
@@ -253,7 +266,7 @@ export const GraphToolbar = memo(function GraphToolbar({
               key={RADIAL_LAYOUT.id}
               disabled
               className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium bg-[var(--color-accent-graph)]/15 text-[var(--color-accent-graph)] cursor-default"
-              title={`${RADIAL_LAYOUT.label} (fixed for Knowledge Graph)`}
+              title={`${RADIAL_LAYOUT.label} (fixed for Communities)`}
               aria-label={RADIAL_LAYOUT.label}
               aria-pressed
             >
@@ -283,7 +296,7 @@ export const GraphToolbar = memo(function GraphToolbar({
           )}
         </div>
 
-        <div className="flex gap-0.5 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm p-1 shadow-lg shadow-black/20">
+        <div className="flex gap-0.5 border-l border-[var(--color-border-default)] pl-1">
           {COLOR_MODES.map((m) => {
             const Icon = m.icon;
             const isActive = colorMode === m.id;
@@ -306,7 +319,7 @@ export const GraphToolbar = memo(function GraphToolbar({
           })}
         </div>
 
-        <div className="flex gap-0.5 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm p-1 shadow-lg shadow-black/20">
+        <div className="flex gap-0.5 border-l border-[var(--color-border-default)] pl-1">
           <Button
             size="sm"
             variant="ghost"
@@ -385,7 +398,7 @@ export const GraphToolbar = memo(function GraphToolbar({
       </div>
 
       <div className="relative">
-        <div className="flex items-center gap-1 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm px-2 py-1 shadow-lg shadow-black/20">
+        <div className="flex items-center gap-1 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm px-2 py-1 shadow-sm">
           <Search className="w-3 h-3 text-[var(--color-text-tertiary)] shrink-0" />
           <input
             type="text"
