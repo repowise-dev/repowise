@@ -2,6 +2,7 @@ export * from "./backlinks-panel";
 export * from "./code-block";
 export * from "./confidence-badge";
 export * from "./git-history-panel";
+export * from "./human-notes";
 export * from "./mermaid-diagram";
 export * from "./regenerate-button";
 export * from "./security-panel";

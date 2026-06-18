@@ -1,8 +1,16 @@
 "use client";
 
+import { lazy, Suspense } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Components } from "react-markdown";
+
+// Mermaid pulls a heavy renderer that is strictly client-side. Lazy-load it so
+// it never enters the chat bundle (or SSR pass) unless a reply actually contains
+// an inline ```mermaid block — parity with the wiki/docs reader.
+const MermaidDiagram = lazy(() =>
+  import("../wiki/mermaid-diagram").then((m) => ({ default: m.MermaidDiagram })),
+);
 
 const components: Components = {
   h1: ({ children }) => (
@@ -39,6 +47,23 @@ const components: Components = {
   code: ({ className, children, ...props }) => {
     const isBlock = className?.includes("language-");
     if (isBlock) {
+      const isMermaid = className?.includes("language-mermaid");
+      if (isMermaid) {
+        const chart = String(children ?? "").replace(/\n$/, "");
+        return (
+          <Suspense
+            fallback={
+              <pre className="my-2 rounded-md bg-[var(--color-bg-inset)] border border-[var(--color-border-default)] p-3 overflow-x-auto">
+                <code className="text-xs font-mono text-[var(--color-text-primary)]">
+                  {chart}
+                </code>
+              </pre>
+            }
+          >
+            <MermaidDiagram chart={chart} />
+          </Suspense>
+        );
+      }
       return (
         <pre className="my-2 rounded-md bg-[var(--color-bg-inset)] border border-[var(--color-border-default)] p-3 overflow-x-auto">
           <code

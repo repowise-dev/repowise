@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { codeToHtml } from "shiki";
 import { getFileContent, getFileDetail } from "@/lib/api/files";
-import { WikiRenderer } from "@/components/wiki/wiki-renderer";
+import { WikiMarkdown } from "@repowise-dev/ui/wiki/wiki-markdown";
 import { FilePageHost } from "@/components/files/file-page-host";
 import { FILE_PAGE_TABS, type FilePageTab } from "@repowise-dev/ui/files";
 import type { FileDetailResponse } from "@repowise-dev/types/files";
@@ -81,10 +81,10 @@ export default async function FileEntityPage({ params, searchParams }: Props) {
       : undefined;
 
   const docSlot = detail.wiki_page ? (
-    <WikiRenderer content={detail.wiki_page.content} repoId={id} />
+    <WikiMarkdown content={detail.wiki_page.content} />
   ) : undefined;
   const wikiHref = detail.wiki_page
-    ? `/repos/${id}/wiki/${encodeURIComponent(detail.wiki_page.id)}`
+    ? `/repos/${id}/docs?page=${encodeURIComponent(detail.wiki_page.id)}`
     : undefined;
 
   return (
