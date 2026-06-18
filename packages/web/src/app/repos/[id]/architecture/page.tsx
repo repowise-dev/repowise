@@ -27,6 +27,8 @@ import { ViewTabs } from "@repowise-dev/ui/shared/view-tabs";
 import { GraphView } from "@/components/architecture/graph-view";
 import { DependenciesView } from "@/components/architecture/dependencies-view";
 import { SymbolTableWrapper as SymbolTable } from "@/components/symbols/symbol-table-wrapper";
+import { COUPLING_DISCLAIMER } from "@repowise-dev/ui/coupling";
+import { CouplingTab } from "@/components/coupling/coupling-tab";
 
 // The curated layered view (and the frozen legacy C4 diagram) now live under
 // the dedicated Knowledge Graph route.
@@ -37,8 +39,9 @@ const KNOWLEDGE_GRAPH_VIEWS = new Set(["layers", "c4"]);
 const VIEWS = [
   "map",
   "explore",
-  "symbols",
   "deps",
+  "symbols",
+  "coupling",
   "graph",
   "c4",
   "layers",
@@ -48,11 +51,12 @@ type ArchView = (typeof VIEWS)[number];
 // IA-as-data. Communities first (today's `map`), then the wiring surfaces.
 // Coupling is added here in a later phase — the structure is kept easy to
 // extend (append a `{ id: "coupling", ... }` row + a panel branch).
-const CANONICAL_VIEWS: { id: Extract<ArchView, "map" | "explore" | "deps" | "symbols">; label: string; hint: string }[] = [
+const CANONICAL_VIEWS: { id: Extract<ArchView, "map" | "explore" | "deps" | "symbols" | "coupling">; label: string; hint: string }[] = [
   { id: "map", label: "Communities", hint: "Constellation of detected communities" },
   { id: "explore", label: "Explore", hint: "Full dependency graph with dead/hot overlays" },
   { id: "deps", label: "Dependencies", hint: "Declared third-party dependencies" },
   { id: "symbols", label: "Symbols", hint: "Every function, class and export" },
+  { id: "coupling", label: "Coupling", hint: "Files that tend to change together" },
 ];
 
 // Legacy ?view=graph deep links carried the graph scope in ?viewMode=. Scopes
@@ -99,7 +103,9 @@ export default function ArchitecturePage({
   // The active canonical tab. Map/Explore are the only graph-canvas tabs;
   // everything else resolves to its own panel.
   const activeTab: (typeof CANONICAL_VIEWS)[number]["id"] =
-    view === "explore" || view === "deps" || view === "symbols" ? view : "map";
+    view === "explore" || view === "deps" || view === "symbols" || view === "coupling"
+      ? view
+      : "map";
 
   if (redirectsToKnowledgeGraph) {
     return null;
@@ -143,6 +149,20 @@ export default function ArchitecturePage({
               </p>
             </div>
             <SymbolTable repoId={repoId} />
+          </div>
+        )}
+        {activeTab === "coupling" && (
+          <div className="mx-auto max-w-[1100px] p-4 sm:p-6">
+            <div className="mb-2">
+              <h1 className="mb-1 flex items-center gap-2 text-xl font-semibold text-[var(--color-text-primary)]">
+                <Code2 className="h-5 w-5 text-[var(--color-accent-primary)]" />
+                Change coupling
+              </h1>
+              <p className="text-sm text-[var(--color-text-secondary)]">
+                {COUPLING_DISCLAIMER}
+              </p>
+            </div>
+            <CouplingTab repoId={repoId} />
           </div>
         )}
       </div>

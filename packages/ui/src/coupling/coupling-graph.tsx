@@ -175,7 +175,7 @@ export function CouplingGraph({
   if (!layout) {
     return (
       <div
-        className="flex items-center justify-center rounded-xl border border-dashed border-[var(--color-border-default)] bg-[var(--color-bg-surface)] text-center text-sm text-[var(--color-text-tertiary)]"
+        className="flex items-center justify-center rounded-xl border border-dashed border-[var(--color-border-default)] text-center text-sm text-[var(--color-text-tertiary)]"
         style={{ minHeight: size * 0.6 }}
       >
         Not enough shared git history to map coupling yet. Files need to have
@@ -186,6 +186,33 @@ export function CouplingGraph({
 
   const { radius, leaves, drawn, degree, maxNloc, maxStrength, groups } = layout;
   const c = size / 2;
+
+  // Top-degree hubs are always labelled; the rest reveal on hover. This replaces
+  // the all-or-nothing 36-node gate with a curated set that stays legible even
+  // on a dense ring.
+  const TOP_HUB_LABELS = 14;
+  const hubPaths = new Set(
+    [...degree.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, TOP_HUB_LABELS)
+      .map(([path]) => path),
+  );
+
+  // Disambiguate basename collisions: when two files share a basename, prepend
+  // the immediate parent dir so the ring labels stay distinct.
+  const basenameCounts = new Map<string, number>();
+  for (const n of nodes) {
+    const base = n.file_path.split("/").pop() ?? n.file_path;
+    basenameCounts.set(base, (basenameCounts.get(base) ?? 0) + 1);
+  }
+  const labelFor = (full: string) => {
+    const segs = full.split("/");
+    const base = segs.at(-1) ?? full;
+    if ((basenameCounts.get(base) ?? 0) > 1 && segs.length > 1) {
+      return `${segs.at(-2)}/${base}`;
+    }
+    return base;
+  };
 
   // Neighbors of the focused file (for dimming + dot emphasis).
   const neighbors = new Set<string>();
@@ -199,25 +226,8 @@ export function CouplingGraph({
   const dotR = (n: CouplingNode) =>
     2 + Math.sqrt(n.nloc / maxNloc) * 2.4 + Math.min((degree.get(n.file_path) ?? 0) / 6, 2.6);
 
-  const labelFor = (full: string) => full.split("/").pop() ?? full;
-
   return (
-    <div className="rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-4">
-      <div className="mb-1 flex items-baseline justify-between gap-3">
-        <h3 className="text-sm font-semibold tracking-tight text-[var(--color-text-primary)]">
-          Change coupling
-        </h3>
-        <span className="text-xs text-[var(--color-text-tertiary)]">
-          {totalEdges && totalEdges > drawn.length
-            ? `showing ${drawn.length} of ${totalEdges} couplings`
-            : `${drawn.length} couplings`}
-        </span>
-      </div>
-      <p className="mb-2 text-xs text-[var(--color-text-tertiary)]">
-        Files that tend to change in the same commit. A temporal hint, not a
-        verified dependency.
-      </p>
-
+    <div>
       <svg
         viewBox={`0 0 ${size} ${size}`}
         width="100%"
@@ -230,8 +240,6 @@ export function CouplingGraph({
           {[...groups.entries()].map(([name, g]) => {
             const mid = (g.a0 + g.a1) / 2;
             const [lx, ly] = project(mid, radius + 30);
-            const deg = (mid * 180) / Math.PI - 90;
-            const flip = mid > Math.PI;
             const [x0, y0] = project(g.a0 - 0.012, radius + 12);
             const [x1, y1] = project(g.a1 + 0.012, radius + 12);
             const large = g.a1 - g.a0 > Math.PI ? 1 : 0;
@@ -249,11 +257,10 @@ export function CouplingGraph({
                 <text
                   x={lx}
                   y={ly}
-                  fontSize={10}
+                  fontSize={12}
                   textAnchor="middle"
                   dominantBaseline="middle"
-                  transform={`rotate(${flip ? deg + 180 : deg} ${lx} ${ly})`}
-                  className="fill-[var(--color-text-tertiary)] font-medium uppercase tracking-wider"
+                  className="fill-[var(--color-text-secondary)] font-medium uppercase tracking-wider"
                 >
                   {name}
                 </text>
@@ -294,10 +301,14 @@ export function CouplingGraph({
             const isFocus = focus === n.file_path;
             const isNeighbor = neighbors.has(n.file_path);
             const dim = focus != null && !isFocus && !isNeighbor;
-            const showLabel = isFocus || isNeighbor || (focus == null && leaves.length <= 36);
-            const deg = (leaf.x! * 180) / Math.PI - 90;
-            const flip = leaf.x! > Math.PI;
-            const [lx, ly] = project(leaf.x!, leaf.y! + 8);
+            const isHub = hubPaths.has(n.file_path);
+            // Always label the top hubs; reveal the rest on hover (focus +
+            // neighbors). No more all-or-nothing 36-node gate.
+            const showLabel = isFocus || isNeighbor || (focus == null && isHub);
+            // Labels stay horizontal (upright), flip-anchored on the left half
+            // so they read left-to-right and grow away from the ring.
+            const onLeft = leaf.x! > Math.PI;
+            const [lx, ly] = project(leaf.x!, leaf.y! + (onLeft ? -8 : 8));
             return (
               <g
                 key={n.file_path}
@@ -320,12 +331,11 @@ export function CouplingGraph({
                   <text
                     x={lx}
                     y={ly}
-                    fontSize={9}
-                    textAnchor={flip ? "end" : "start"}
+                    fontSize={11.5}
+                    textAnchor={onLeft ? "end" : "start"}
                     dominantBaseline="middle"
-                    transform={`rotate(${flip ? deg + 180 : deg} ${lx} ${ly})`}
                     className={
-                      isFocus
+                      isFocus || isHub
                         ? "fill-[var(--color-text-primary)] font-medium"
                         : "fill-[var(--color-text-secondary)]"
                     }
@@ -351,7 +361,12 @@ export function CouplingGraph({
         <span className="inline-flex items-center gap-1.5">
           <span className="h-2 w-2 rounded-full bg-[var(--color-error)]" /> alert
         </span>
-        <span className="ml-auto">dot size = lines + couplings · line opacity = strength</span>
+        <span className="ml-auto">
+          {totalEdges && totalEdges > drawn.length
+            ? `showing ${drawn.length} of ${totalEdges} couplings · `
+            : `${drawn.length} couplings · `}
+          dot size = lines + couplings · line opacity = strength
+        </span>
       </div>
     </div>
   );
