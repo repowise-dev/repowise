@@ -13,6 +13,7 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import { StatCard } from "@repowise-dev/ui/shared/stat-card";
+import { PageShell } from "@repowise-dev/ui/shared/page-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui/card";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 import { Tabs, ScrollableTabsList, TabsTrigger, TabsContent } from "@repowise-dev/ui/ui/tabs";
@@ -62,17 +63,12 @@ export default function CostsPage() {
   );
 
   return (
-    <div className="p-4 sm:p-6 space-y-6 max-w-[1600px]">
-      <div>
-        <h1 className="text-xl font-semibold text-[var(--color-text-primary)] mb-1 flex items-center gap-2">
-          <DollarSign className="h-5 w-5 text-green-500" />
-          Cost Tracking
-        </h1>
-        <p className="text-sm text-[var(--color-text-secondary)]">
-          What repowise saved your coding agent — and what generating the docs cost.
-        </p>
-      </div>
-
+    <PageShell
+      maxWidth="wide"
+      icon={<DollarSign className="h-5 w-5 text-green-500" />}
+      title="Cost Tracking"
+      description="What repowise saved your coding agent — and what generating the docs cost."
+    >
       {/* Hero: the honest results surface — all tokens & dollars saved for the
           coding agent, across distill (CLI + hook) and MCP tool responses. */}
       <DistillSavingsCard data={distillSavings} />
@@ -261,6 +257,6 @@ export default function CostsPage() {
           </div>
         ) : null}
       </div>
-    </div>
+    </PageShell>
   );
 }

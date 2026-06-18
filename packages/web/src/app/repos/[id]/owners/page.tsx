@@ -8,6 +8,7 @@ import {
   OwnerDirectory,
   type OwnerDirectoryFilters,
 } from "@repowise-dev/ui/owners/owner-directory";
+import { PageShell } from "@repowise-dev/ui/shared/page-shell";
 import { useDebounce } from "@/lib/hooks/use-debounce";
 import { listOwnersPage } from "@/lib/api/owners";
 import type { OwnerListEntry, Paginated } from "@/lib/api/types";
@@ -53,18 +54,12 @@ export default function OwnersDirectoryPage() {
   const hasMore = data ? data[data.length - 1].has_more : false;
 
   return (
-    <div className="p-4 sm:p-6 space-y-6 max-w-[1600px]">
-      <div>
-        <h1 className="text-xl font-semibold text-[var(--color-text-primary)] mb-1 flex items-center gap-2">
-          <Users className="h-5 w-5 text-[var(--color-accent-primary)]" />
-          Contributors
-        </h1>
-        <p className="text-sm text-[var(--color-text-secondary)]">
-          Who is doing what — ownership, hotspots, dead-code burden, and bus-factor risk
-          per person. Click any card to open the full profile.
-        </p>
-      </div>
-
+    <PageShell
+      maxWidth="wide"
+      icon={<Users className="h-5 w-5 text-[var(--color-accent-primary)]" />}
+      title="Contributors"
+      description="Who is doing what — ownership, hotspots, dead-code burden, and bus-factor risk per person. Click any card to open the full profile."
+    >
       <OwnerDirectory
         owners={items}
         isLoading={isLoading}
@@ -78,6 +73,6 @@ export default function OwnersDirectoryPage() {
           router.push(`/repos/${id}/owners/${encodeURIComponent(o.key)}`)
         }
       />
-    </div>
+    </PageShell>
   );
 }

@@ -10,6 +10,7 @@ import { CoordinatorHealthPanel } from "@/components/repos/coordinator-health-pa
 import { DeleteRepoButton } from "@/components/repos/delete-repo-button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@repowise-dev/ui/ui/card";
 import { Separator } from "@repowise-dev/ui/ui/separator";
+import { PageShell } from "@repowise-dev/ui/shared/page-shell";
 import { OperationsPanel } from "@/components/repos/operations-panel";
 
 interface Props {
@@ -39,17 +40,12 @@ export default async function RepoSettingsPage({ params }: Props) {
   const coordinatorHealth = await getCoordinatorHealth(id).catch(() => null);
 
   return (
-    <div className="p-4 sm:p-6 space-y-6 max-w-2xl">
-      <div>
-        <h1 className="text-xl font-semibold text-[var(--color-text-primary)] flex items-center gap-2">
-          <Settings className="h-5 w-5 text-[var(--color-accent-primary)]" />
-          Repository Settings
-        </h1>
-        <p className="text-sm text-[var(--color-text-secondary)] mt-0.5">
-          Manage {repo.name}
-        </p>
-      </div>
-
+    <PageShell
+      className="max-w-2xl"
+      icon={<Settings className="h-5 w-5 text-[var(--color-accent-primary)]" />}
+      title="Repository Settings"
+      description={`Manage ${repo.name}`}
+    >
       <Card>
         <CardHeader>
           <CardTitle className="text-sm font-medium">General</CardTitle>
@@ -115,6 +111,6 @@ export default async function RepoSettingsPage({ params }: Props) {
           <DeleteRepoButton repoId={id} repoName={repo.name} variant="button" redirectTo="/" />
         </CardContent>
       </Card>
-    </div>
+    </PageShell>
   );
 }
