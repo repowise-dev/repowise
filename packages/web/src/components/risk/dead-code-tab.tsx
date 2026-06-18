@@ -6,14 +6,14 @@ import useSWR from "swr";
 import { toast } from "sonner";
 import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
 import { Button } from "@repowise-dev/ui/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui/card";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
+import { CollapsibleSection } from "@repowise-dev/ui/shared/collapsible-section";
 import { SummaryBar } from "@repowise-dev/ui/dead-code/summary-bar";
 import { SafeToDeletePile } from "@repowise-dev/ui/dead-code/safe-to-delete-pile";
 import { OwnerLeaderboard } from "@repowise-dev/ui/dead-code/owner-leaderboard";
 import { FindingsBreakdownGrid } from "@repowise-dev/ui/dead-code/findings-breakdown-grid";
-import { FindingsTable } from "@/components/dead-code/findings-table";
-import { getDeadCodeSummary, listDeadCode, analyzeDeadCode } from "@/lib/api/dead-code";
+import { FindingsTable } from "@repowise-dev/ui/dead-code/findings-table";
+import { getDeadCodeSummary, listDeadCode, analyzeDeadCode, patchDeadCodeFinding } from "@/lib/api/dead-code";
 import type { DeadCodeFindingResponse, DeadCodeSummaryResponse } from "@/lib/api/types";
 
 export function DeadCodeTab({ repoId }: { repoId: string }) {
@@ -27,10 +27,10 @@ export function DeadCodeTab({ repoId }: { repoId: string }) {
       { revalidateOnFocus: false },
     );
 
-  const { data: findings } = useSWR<DeadCodeFindingResponse[]>(
+  // Single findings fetch feeds the pile, the cluster views, AND the drill-down
+  // table (which filters this slice client-side) — no second fetch.
+  const { data: findings, isLoading: loadingFindings } = useSWR<DeadCodeFindingResponse[]>(
     `dead-code-findings:${repoId}:all`,
-    // Pull a wide slice so the leaderboard / pile / matrix have enough data
-    // to be representative without paging.
     () => listDeadCode(repoId, { limit: 500 }),
     { revalidateOnFocus: false },
   );
@@ -87,6 +87,47 @@ export function DeadCodeTab({ repoId }: { repoId: string }) {
     }
   };
 
+  // Row-level patch with optimistic undo toast; injected into the ui table.
+  const handlePatch = async (id: string, patch: { status: string }) => {
+    const finding = findingsList.find((f) => f.id === id);
+    const previousStatus = finding?.status ?? "open";
+    const updated = await patchDeadCodeFinding(id, patch);
+    toast.success(`Finding ${patch.status.replace(/_/g, " ")}`, {
+      action: {
+        label: "Undo",
+        onClick: async () => {
+          try {
+            await patchDeadCodeFinding(id, { status: previousStatus });
+          } catch (err) {
+            toast.error(err instanceof Error ? `Couldn't undo: ${err.message}` : "Couldn't undo");
+          }
+        },
+      },
+      duration: 6000,
+    });
+    return updated;
+  };
+
+  const handleBulkResolve = async (ids: string[]) => {
+    let succeeded = 0;
+    for (const id of ids) {
+      try {
+        await patchDeadCodeFinding(id, { status: "resolved" });
+        succeeded += 1;
+      } catch {
+        // continue; report partial below
+      }
+    }
+    if (succeeded === ids.length) {
+      toast.success(`Resolved ${succeeded} finding${succeeded === 1 ? "" : "s"}`);
+    } else if (succeeded > 0) {
+      toast.warning(`Resolved ${succeeded} of ${ids.length}; some failed`);
+    } else {
+      toast.error("Couldn't resolve findings");
+    }
+    return succeeded;
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-end">
@@ -96,7 +137,7 @@ export function DeadCodeTab({ repoId }: { repoId: string }) {
       </div>
 
       {loadingSummary ? (
-        <div className="grid grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           {Array.from({ length: 4 }).map((_, i) => (
             <Skeleton key={i} className="h-24 w-full rounded-lg" />
           ))}
@@ -112,6 +153,7 @@ export function DeadCodeTab({ repoId }: { repoId: string }) {
         </div>
       ) : null}
 
+      {/* Act now: the single "what do I delete" surface. */}
       {findings && safeFindings.length > 0 && (
         <SafeToDeletePile
           findings={safeFindings}
@@ -121,33 +163,45 @@ export function DeadCodeTab({ repoId }: { repoId: string }) {
         />
       )}
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm">Owner leaderboard</CardTitle>
-            <p className="text-xs text-[var(--color-text-tertiary)]">
-              Reclaimable lines per primary contributor — who has the most cleanup leverage.
-            </p>
-          </CardHeader>
-          <CardContent className="pt-0">
-            <OwnerLeaderboard findings={findingsList} safeOnly />
-          </CardContent>
-        </Card>
+      {/* Where it clusters — optional rollups, collapsed by default so the spine
+          stays pile → drill-down. */}
+      {findingsList.length > 0 && (
+        <CollapsibleSection
+          title="Where it clusters"
+          hint="By owner and confidence × kind"
+          defaultOpen={false}
+        >
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+            <div>
+              <p className="mb-2 text-xs text-[var(--color-text-tertiary)]">
+                Reclaimable lines per primary contributor — who has the most cleanup leverage.
+              </p>
+              <OwnerLeaderboard findings={findingsList} safeOnly />
+            </div>
+            <div>
+              <p className="mb-2 text-xs text-[var(--color-text-tertiary)]">
+                Where findings concentrate — start with high-confidence cells.
+              </p>
+              <FindingsBreakdownGrid findings={findingsList} />
+            </div>
+          </div>
+        </CollapsibleSection>
+      )}
 
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm">Confidence × kind</CardTitle>
-            <p className="text-xs text-[var(--color-text-tertiary)]">
-              Where the findings cluster — start with high-confidence cells.
-            </p>
-          </CardHeader>
-          <CardContent className="pt-0">
-            <FindingsBreakdownGrid findings={findingsList} />
-          </CardContent>
-        </Card>
-      </div>
-
-      <FindingsTable repoId={repoId} />
+      {/* Drill-down: the full interactive table, the single confidence control. */}
+      <CollapsibleSection
+        title="All findings"
+        hint={`${findingsList.length} findings`}
+        defaultOpen={false}
+      >
+        <FindingsTable
+          findings={findingsList}
+          repoId={repoId}
+          onPatch={handlePatch}
+          onBulkResolve={handleBulkResolve}
+          isLoading={loadingFindings}
+        />
+      </CollapsibleSection>
     </div>
   );
 }

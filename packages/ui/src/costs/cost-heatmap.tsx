@@ -58,12 +58,14 @@ export function CostHeatmap({ groups, title = "Cost concentration", emptyHint }:
                   flexBasis: basis,
                   flexGrow: 1,
                   height,
-                  backgroundColor: `rgba(244, 63, 94, ${intensity.toFixed(3)})`,
+                  backgroundColor: `color-mix(in srgb, var(--color-error) ${Math.round(
+                    intensity * 100,
+                  )}%, transparent)`,
                 }}
                 title={`${g.group} — ${formatCost(g.cost_usd)} (${g.calls} calls)`}
               >
-                <span className="text-[10px] font-mono text-white/90 truncate">{g.group}</span>
-                <span className="text-[10px] text-white/80 tabular-nums">{formatCost(g.cost_usd)}</span>
+                <span className="text-[10px] font-mono text-[var(--color-text-primary)] truncate">{g.group}</span>
+                <span className="text-[10px] text-[var(--color-text-secondary)] tabular-nums">{formatCost(g.cost_usd)}</span>
               </div>
             );
           })}

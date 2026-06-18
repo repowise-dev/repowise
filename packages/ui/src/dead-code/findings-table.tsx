@@ -1,16 +1,13 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import useSWR from "swr";
-import { toast } from "sonner";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@repowise-dev/ui/ui/tabs";
-import { Button } from "@repowise-dev/ui/ui/button";
-import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
-import { ConfirmDialog } from "@repowise-dev/ui/ui/confirm-dialog";
-import { EmptyState } from "@repowise-dev/ui/shared/empty-state";
+import { useMemo, useState } from "react";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "../ui/tabs";
+import { Button } from "../ui/button";
+import { Skeleton } from "../ui/skeleton";
+import { ConfirmDialog } from "../ui/confirm-dialog";
+import { EmptyState } from "../shared/empty-state";
 import { FindingRow } from "./finding-row";
-import { listDeadCode, patchDeadCodeFinding } from "@/lib/api/dead-code";
-import type { DeadCodeFindingResponse } from "@/lib/api/types";
+import type { DeadCodeFinding, DeadCodeStatus } from "@repowise-dev/types/dead-code";
 
 type Kind = "unreachable_file" | "unused_export" | "zombie_package";
 
@@ -20,47 +17,60 @@ const TABS: Array<{ value: Kind; label: string }> = [
   { value: "zombie_package", label: "Zombie Packages" },
 ];
 
-interface FindingsTableProps {
+export interface FindingsTableProps {
+  /** Full open-findings slice; the table filters by kind / confidence / safety client-side. */
+  findings: DeadCodeFinding[];
+  /** Repo base path used to build row action links. */
   repoId: string;
+  /** Injected mutation — host owns the API call, optimistic toast + undo. */
+  onPatch: (id: string, patch: { status: DeadCodeStatus }) => Promise<DeadCodeFinding>;
+  /** Injected bulk resolve — host owns the toast/partial-failure messaging. Returns succeeded count. */
+  onBulkResolve?: (ids: string[]) => Promise<number>;
+  isLoading?: boolean;
 }
 
-export function FindingsTable({ repoId }: FindingsTableProps) {
+/**
+ * Canonical interactive dead-code table: kind tabs, a confidence slider (the
+ * single confidence control for the spine), cleanup-ready filter, bulk resolve,
+ * and per-row status actions. Pure presentation — the host injects the data
+ * slice and the patch/bulk mutations, so this propagates via the package.
+ */
+export function FindingsTable({ findings, repoId, onPatch, onBulkResolve, isLoading }: FindingsTableProps) {
   const [activeTab, setActiveTab] = useState<Kind>("unreachable_file");
   const [minConfidence, setMinConfidence] = useState(0.4);
   const [safeOnly, setSafeOnly] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [items, setItems] = useState<Record<Kind, DeadCodeFindingResponse[]>>({
-    unreachable_file: [],
-    unused_export: [],
-    zombie_package: [],
-  });
+  const [overrides, setOverrides] = useState<Record<string, DeadCodeFinding>>({});
   const [bulkPending, setBulkPending] = useState(false);
   const [bulkConfirmOpen, setBulkConfirmOpen] = useState(false);
 
-  const { data, isLoading } = useSWR(
-    `dead-code:${repoId}:${activeTab}:${minConfidence}:${safeOnly}`,
-    () =>
-      listDeadCode(repoId, {
-        kind: activeTab,
-        min_confidence: minConfidence,
-        safe_only: safeOnly || undefined,
-        status: "open",
-        limit: 200,
-      }),
-    { revalidateOnFocus: false },
+  // Apply local optimistic overrides over the host-supplied slice so a resolved
+  // row updates without a refetch.
+  const merged = useMemo(
+    () => findings.map((f) => overrides[f.id] ?? f),
+    [findings, overrides],
   );
 
-  useEffect(() => {
-    if (!data) return;
-    setItems((prev) => ({ ...prev, [activeTab]: data }));
-    setSelected(new Set());
-  }, [data, activeTab]);
+  const byKind = useMemo(() => {
+    const buckets: Record<Kind, DeadCodeFinding[]> = {
+      unreachable_file: [],
+      unused_export: [],
+      zombie_package: [],
+    };
+    for (const f of merged) {
+      if (f.status !== "open") continue;
+      if (f.confidence < minConfidence) continue;
+      if (safeOnly && !f.safe_to_delete) continue;
+      const kind = f.kind as Kind;
+      if (kind in buckets) buckets[kind].push(f);
+    }
+    return buckets;
+  }, [merged, minConfidence, safeOnly]);
 
-  const handleUpdate = (updated: DeadCodeFindingResponse) => {
-    setItems((prev) => ({
-      ...prev,
-      [activeTab]: prev[activeTab].map((f) => (f.id === updated.id ? updated : f)),
-    }));
+  const current = byKind[activeTab];
+
+  const handleUpdate = (updated: DeadCodeFinding) => {
+    setOverrides((prev) => ({ ...prev, [updated.id]: updated }));
   };
 
   const toggleSelect = (id: string) => {
@@ -73,7 +83,6 @@ export function FindingsTable({ repoId }: FindingsTableProps) {
   };
 
   const toggleSelectAll = () => {
-    const current = items[activeTab];
     if (selected.size === current.length) {
       setSelected(new Set());
     } else {
@@ -82,38 +91,30 @@ export function FindingsTable({ repoId }: FindingsTableProps) {
   };
 
   const resolveSelected = async () => {
+    if (!onBulkResolve) return;
     const ids = Array.from(selected);
     setBulkPending(true);
-    let succeeded = 0;
     try {
-      for (const id of ids) {
-        try {
-          const updated = await patchDeadCodeFinding(id, { status: "resolved" });
-          handleUpdate(updated);
-          succeeded += 1;
-        } catch {
-          // continue; we'll report partial below
+      const succeeded = await onBulkResolve(ids);
+      // Reflect the resolved rows locally.
+      const resolvedIds = new Set(ids.slice(0, succeeded));
+      setOverrides((prev) => {
+        const next = { ...prev };
+        for (const f of merged) {
+          if (resolvedIds.has(f.id)) next[f.id] = { ...f, status: "resolved" as DeadCodeStatus };
         }
-      }
+        return next;
+      });
       setSelected(new Set());
       setBulkConfirmOpen(false);
-      if (succeeded === ids.length) {
-        toast.success(`Resolved ${succeeded} finding${succeeded === 1 ? "" : "s"}`);
-      } else if (succeeded > 0) {
-        toast.warning(`Resolved ${succeeded} of ${ids.length}; some failed`);
-      } else {
-        toast.error("Couldn't resolve findings");
-      }
     } finally {
       setBulkPending(false);
     }
   };
 
-  const current = items[activeTab];
-
   return (
     <div className="space-y-4">
-      {/* Controls */}
+      {/* Controls — the confidence slider is the only confidence axis. */}
       <div className="flex flex-wrap items-center gap-4">
         <div className="flex items-center gap-2">
           <label htmlFor="min-confidence" className="text-xs text-[var(--color-text-secondary)]">
@@ -141,13 +142,13 @@ export function FindingsTable({ repoId }: FindingsTableProps) {
           Cleanup-ready only
         </label>
 
-        {selected.size > 0 && (
+        {onBulkResolve && selected.size > 0 && (
           <Button
             size="sm"
             variant="outline"
             disabled={bulkPending}
             onClick={() => setBulkConfirmOpen(true)}
-            className="text-green-500 border-green-500/30 hover:bg-green-500/10"
+            className="text-[var(--color-success)] border-[var(--color-success)]/30 hover:bg-[var(--color-success)]/10"
           >
             {bulkPending ? "Resolving…" : `Resolve ${selected.size} selected`}
           </Button>
@@ -168,9 +169,9 @@ export function FindingsTable({ repoId }: FindingsTableProps) {
           {TABS.map((t) => (
             <TabsTrigger key={t.value} value={t.value}>
               {t.label}
-              {items[t.value].length > 0 && (
+              {byKind[t.value].length > 0 && (
                 <span className="ml-1.5 text-xs text-[var(--color-text-tertiary)]">
-                  {items[t.value].length}
+                  {byKind[t.value].length}
                 </span>
               )}
             </TabsTrigger>
@@ -192,7 +193,7 @@ export function FindingsTable({ repoId }: FindingsTableProps) {
               />
             ) : (
               <div className="rounded-lg border border-[var(--color-border-default)] overflow-x-auto mt-2">
-                <table className="w-full min-w-[640px] text-sm">
+                <table className="w-full text-sm">
                   <caption className="sr-only">Dead code findings</caption>
                   <thead className="sticky top-0 z-10 bg-[var(--color-bg-elevated)]">
                     <tr className="border-b border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]">
@@ -236,6 +237,7 @@ export function FindingsTable({ repoId }: FindingsTableProps) {
                         repoId={repoId}
                         selected={selected.has(f.id)}
                         onToggle={toggleSelect}
+                        onPatch={onPatch}
                         onUpdate={handleUpdate}
                       />
                     ))}

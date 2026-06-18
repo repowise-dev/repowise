@@ -189,6 +189,12 @@
   --color-viz-diff-changed: var(--color-error);
   --color-viz-diff-affected: var(--color-warning);
 
+  /* Savings surfaces — two categorical hues distinguishing the distill ledger
+     from MCP-tool answers in the Costs savings card. Plum + brand-orange so the
+     split reads in both themes without a third brand color. */
+  --color-savings-distill: var(--color-accent-fill);
+  --color-savings-mcp: var(--color-accent-secondary);
+
   /* ================================================================== */
   /* Signature gradients (theme-independent)                            */
   /* ================================================================== */

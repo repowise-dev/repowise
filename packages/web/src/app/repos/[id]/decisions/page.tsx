@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 import { listDecisions } from "@/lib/api/decisions";
 import { ApiClientError } from "@/lib/api/client";
+import { CollapsibleSection } from "@repowise-dev/ui/shared/collapsible-section";
 import { DecisionsTableWrapper } from "@/components/decisions/decisions-table-wrapper";
 import { DecisionGraphWrapper } from "@/components/decisions/decision-graph-wrapper";
 
@@ -34,10 +35,12 @@ export default async function DecisionsPage({ params }: Props) {
           Why the codebase is built the way it is — constraints, tradeoffs, and rejected alternatives.
         </p>
       </div>
-      {/* The table is the workhorse; the relationship graph is secondary and
-          collapsed below it. */}
-      <DecisionsTableWrapper repoId={repoId} initialData={decisions} />
-      <DecisionGraphWrapper repoId={repoId} />
+      {/* Graph-first: the relationship / supersession / conflict map is the
+          primary surface; the row-by-row table is the drill-down below it. */}
+      <DecisionGraphWrapper repoId={repoId} primary />
+      <CollapsibleSection title="All decisions" hint="Filterable table" defaultOpen={false}>
+        <DecisionsTableWrapper repoId={repoId} initialData={decisions} />
+      </CollapsibleSection>
     </div>
   );
 }

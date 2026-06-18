@@ -4,21 +4,15 @@ import { useState } from "react";
 import useSWR from "swr";
 import { useParams } from "next/navigation";
 import { DollarSign } from "lucide-react";
-import {
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  Tooltip,
-  ResponsiveContainer,
-} from "recharts";
 import { StatCard } from "@repowise-dev/ui/shared/stat-card";
+import { MetricCard } from "@repowise-dev/ui/shared/metric-card";
 import { PageShell } from "@repowise-dev/ui/shared/page-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui/card";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 import { Tabs, ScrollableTabsList, TabsTrigger, TabsContent } from "@repowise-dev/ui/ui/tabs";
 import {
   CostHeatmap,
+  DailySpendChart,
   DistillSavingsCard,
   ProviderComparison,
   OperationBreakdown,
@@ -90,97 +84,50 @@ export default function CostsPage() {
             <CardContent className="pt-0">
               {loadingDay ? (
                 <Skeleton className="h-48 w-full" />
-              ) : dayGroups && dayGroups.length > 0 ? (
-                <ResponsiveContainer width="100%" height={220}>
-                  <BarChart
-                    data={[...dayGroups].sort((a, b) => a.group.localeCompare(b.group))}
-                    margin={{ top: 8, right: 8, bottom: 0, left: 0 }}
-                  >
-                    <XAxis
-                      dataKey="group"
-                      tick={{ fill: "var(--color-text-tertiary)", fontSize: 11 }}
-                      axisLine={false}
-                      tickLine={false}
-                      interval="preserveStartEnd"
-                      minTickGap={24}
-                      tickFormatter={(v: string) => {
-                        const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v);
-                        return m ? `${Number(m[2])}/${Number(m[3])}` : v;
-                      }}
-                    />
-                    <YAxis
-                      tick={{ fill: "var(--color-text-tertiary)", fontSize: 10 }}
-                      axisLine={false}
-                      tickLine={false}
-                      tickFormatter={(v: number) => `$${v.toFixed(3)}`}
-                    />
-                    <Tooltip
-                      cursor={{ fill: "var(--color-bg-elevated)" }}
-                      contentStyle={{
-                        background: "var(--color-bg-overlay)",
-                        border: "1px solid var(--color-border-default)",
-                        borderRadius: "6px",
-                        fontSize: "12px",
-                        color: "var(--color-text-primary)",
-                      }}
-                      formatter={(value: number) => [formatCost(value), "Cost"]}
-                      labelFormatter={(label: string) => `Date: ${label}`}
-                    />
-                    <Bar dataKey="cost_usd" fill="var(--color-accent-primary)" radius={[4, 4, 0, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
               ) : (
-                <p className="text-sm text-[var(--color-text-secondary)] py-8 text-center">
-                  No cost data available.
-                </p>
+                <DailySpendChart groups={dayGroups ?? []} />
               )}
             </CardContent>
           </Card>
         </TabsContent>
 
-        {/* Cache analytics aren't wired to real data yet — the placeholder
-            CacheHitRatioCard is cut rather than shown empty; the tab keeps
-            the real per-call efficiency numbers. */}
+        {/* Cache analytics aren't wired to real data yet; the tab shows the
+            real per-call efficiency numbers as a compact stat strip. */}
         <TabsContent value="efficiency" className="mt-4">
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm">Token efficiency</CardTitle>
-              </CardHeader>
-              <CardContent className="pt-0">
-                {summary ? (
-                  <div className="space-y-2 text-xs text-[var(--color-text-secondary)]">
-                    <div className="flex justify-between">
-                      <span>Avg input tokens / call</span>
-                      <span className="tabular-nums text-[var(--color-text-primary)]">
-                        {summary.total_calls > 0
-                          ? Math.round(summary.total_input_tokens / summary.total_calls).toLocaleString()
-                          : "—"}
-                      </span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span>Avg output tokens / call</span>
-                      <span className="tabular-nums text-[var(--color-text-primary)]">
-                        {summary.total_calls > 0
-                          ? Math.round(summary.total_output_tokens / summary.total_calls).toLocaleString()
-                          : "—"}
-                      </span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span>Avg cost / call</span>
-                      <span className="tabular-nums text-[var(--color-text-primary)]">
-                        {summary.total_calls > 0
-                          ? formatCost(summary.total_cost_usd / summary.total_calls)
-                          : "—"}
-                      </span>
-                    </div>
-                  </div>
-                ) : (
-                  <Skeleton className="h-24 w-full" />
-                )}
-              </CardContent>
-            </Card>
-          </div>
+          {summary ? (
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <MetricCard
+                label="Avg input / call"
+                value={
+                  summary.total_calls > 0
+                    ? Math.round(summary.total_input_tokens / summary.total_calls).toLocaleString()
+                    : "—"
+                }
+              />
+              <MetricCard
+                label="Avg output / call"
+                value={
+                  summary.total_calls > 0
+                    ? Math.round(summary.total_output_tokens / summary.total_calls).toLocaleString()
+                    : "—"
+                }
+              />
+              <MetricCard
+                label="Avg cost / call"
+                value={
+                  summary.total_calls > 0
+                    ? formatCost(summary.total_cost_usd / summary.total_calls)
+                    : "—"
+                }
+              />
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              {Array.from({ length: 3 }).map((_, i) => (
+                <Skeleton key={i} className="h-24 w-full rounded-lg" />
+              ))}
+            </div>
+          )}
         </TabsContent>
 
         <TabsContent value="hotspots" className="mt-4">

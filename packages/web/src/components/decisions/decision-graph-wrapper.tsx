@@ -9,22 +9,39 @@ import { getDecisionGraph } from "@/lib/api/decisions";
 
 interface DecisionGraphWrapperProps {
   repoId: string;
+  /**
+   * Graph-first: render the canvas as the primary surface (fetched immediately,
+   * no collapse chrome). When false the graph stays a collapsible drill-down.
+   */
+  primary?: boolean;
 }
 
 /**
- * Collapsible decision-graph section for the decisions list page. SWR-fetches
- * the graph only once expanded, then renders the shared DecisionGraphView.
+ * Decision-graph section. As the primary surface it fetches on mount and fills
+ * a tall canvas; otherwise it is a collapsible that fetches once expanded.
  * Clicking a node navigates to that decision's detail page.
  */
-export function DecisionGraphWrapper({ repoId }: DecisionGraphWrapperProps) {
+export function DecisionGraphWrapper({ repoId, primary = false }: DecisionGraphWrapperProps) {
   const router = useRouter();
-  const [open, setOpen] = React.useState(false);
+  const [open, setOpen] = React.useState(primary);
 
   const { data, isLoading } = useSWR(
     open ? `decision-graph:${repoId}` : null,
     () => getDecisionGraph(repoId),
     { revalidateOnFocus: false },
   );
+
+  if (primary) {
+    return (
+      <div className="h-[560px] rounded-lg border border-[var(--color-border-default)]">
+        <DecisionGraphView
+          graph={data}
+          isLoading={isLoading}
+          onSelectDecision={(id) => router.push(`/repos/${repoId}/decisions/${id}`)}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="rounded-lg border border-[var(--color-border-default)]">

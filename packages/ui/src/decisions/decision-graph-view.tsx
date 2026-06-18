@@ -197,7 +197,7 @@ const DecisionEdge = memo(function DecisionEdge(props: EdgeProps) {
             color: isConflict ? "white" : "var(--color-text-primary)",
             padding: "1px 6px",
             borderRadius: 4,
-            fontSize: 9,
+            fontSize: 11,
             fontWeight: 600,
             pointerEvents: "none",
             border: `1px solid ${isConflict ? "var(--color-error)" : "var(--color-border-default)"}`,

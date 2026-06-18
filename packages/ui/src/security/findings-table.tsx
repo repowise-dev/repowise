@@ -90,7 +90,7 @@ export function SecurityFindingsTable({ findings, onSelect }: SecurityFindingsTa
       </div>
 
       <div className="rounded-lg border border-[var(--color-border-default)] overflow-x-auto">
-        <table className="w-full min-w-[720px] text-sm">
+        <table className="w-full min-w-[560px] text-sm">
           <thead className="sticky top-0 z-10 bg-[var(--color-bg-elevated)]">
             <tr className="border-b border-[var(--color-border-default)]">
               <th className="px-3 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-20">
