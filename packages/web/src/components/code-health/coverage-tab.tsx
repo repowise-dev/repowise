@@ -25,6 +25,8 @@ import {
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 import { EmptyState } from "@repowise-dev/ui/shared/empty-state";
 import { ResponsiveTable, type ResponsiveColumn } from "@repowise-dev/ui/shared";
+import { MetricCard } from "@repowise-dev/ui/shared/metric-card";
+import { CollapsibleSection } from "@repowise-dev/ui/shared/collapsible-section";
 import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
 
 import {
@@ -258,37 +260,42 @@ function CoverageView({
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
-        <SummaryCard label="Files">
-          <span className="text-2xl font-bold tabular-nums text-[var(--color-text-primary)]">
-            {summary.file_count.toLocaleString()}
-          </span>
-        </SummaryCard>
-        <SummaryCard label="Line coverage">
-          <span className="text-2xl font-bold tabular-nums text-[var(--color-text-primary)]">
-            {summary.line_coverage_pct == null
+        <MetricCard label="Files" value={summary.file_count.toLocaleString()} />
+        <MetricCard
+          label="Line coverage"
+          value={
+            summary.line_coverage_pct == null
               ? "—"
-              : `${summary.line_coverage_pct.toFixed(1)}%`}
-          </span>
-          <p className="text-xs text-[var(--color-text-tertiary)] mt-1 tabular-nums">
-            {summary.covered_lines.toLocaleString()} /{" "}
-            {summary.total_lines.toLocaleString()} lines
-          </p>
-        </SummaryCard>
-        <SummaryCard label="Branch coverage">
-          <span className="text-2xl font-bold tabular-nums text-[var(--color-text-primary)]">
-            {summary.branch_coverage_pct == null
+              : `${summary.line_coverage_pct.toFixed(1)}%`
+          }
+          distBar={
+            <span className="text-xs tabular-nums text-[var(--color-text-tertiary)]">
+              {summary.covered_lines.toLocaleString()} /{" "}
+              {summary.total_lines.toLocaleString()} lines
+            </span>
+          }
+        />
+        <MetricCard
+          label="Branch coverage"
+          value={
+            summary.branch_coverage_pct == null
               ? "—"
-              : `${summary.branch_coverage_pct.toFixed(1)}%`}
-          </span>
-        </SummaryCard>
-        <SummaryCard label="Source">
-          <span className="text-lg font-semibold text-[var(--color-text-primary)] uppercase">
-            {summary.source_format ?? "—"}
-          </span>
-          <p className="text-xs text-[var(--color-text-tertiary)] mt-1">
-            {summary.ingested_at ? new Date(summary.ingested_at).toLocaleString() : "never"}
-          </p>
-        </SummaryCard>
+              : `${summary.branch_coverage_pct.toFixed(1)}%`
+          }
+        />
+        <MetricCard
+          label="Source"
+          value={
+            <span className="text-lg uppercase">{summary.source_format ?? "—"}</span>
+          }
+          distBar={
+            <span className="text-xs text-[var(--color-text-tertiary)]">
+              {summary.ingested_at
+                ? new Date(summary.ingested_at).toLocaleString()
+                : "never"}
+            </span>
+          }
+        />
       </div>
 
       <RiskCoverageScatter points={scatterPoints} onSelect={(p) => onOpenFile(p.file_path)} />
@@ -302,11 +309,14 @@ function CoverageView({
         <ModuleCoverageList modules={modules} />
       </section>
 
-      <section className="space-y-2">
+      <CollapsibleSection
+        title={`Files (${filteredFiles.length.toLocaleString()})`}
+        defaultOpen={false}
+      >
         <div className="flex items-center gap-2">
-          <h2 className="text-sm font-semibold text-[var(--color-text-primary)] mr-auto">
-            Files ({filteredFiles.length.toLocaleString()})
-          </h2>
+          <span className="mr-auto text-xs text-[var(--color-text-tertiary)]">
+            Per-file coverage — click a row for the line-level heatmap.
+          </span>
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
@@ -327,24 +337,7 @@ function CoverageView({
             />
           }
         />
-      </section>
-    </div>
-  );
-}
-
-function SummaryCard({
-  label,
-  children,
-}: {
-  label: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-4">
-      <p className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider mb-1">
-        {label}
-      </p>
-      {children}
+      </CollapsibleSection>
     </div>
   );
 }

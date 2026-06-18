@@ -54,6 +54,38 @@ export interface FileCardData {
   };
 }
 
+/** Structural subset of a hotspot row needed to build a FileCardData. */
+export interface HotspotLike {
+  file_path: string;
+  churn_percentile?: number;
+  commit_count_90d?: number;
+  lines_added_90d?: number;
+  lines_deleted_90d?: number;
+  bus_factor?: number;
+  primary_owner?: string | null;
+  is_hotspot?: boolean;
+  temporal_hotspot_score?: number | null;
+}
+
+/**
+ * Map a hotspot row to the universal file-card shape (git section only).
+ * Undefined fields are dropped so the result satisfies
+ * `exactOptionalPropertyTypes`.
+ */
+export function hotspotToFileCard(h: HotspotLike): FileCardData {
+  const git: NonNullable<FileCardData["git"]> = {};
+  if (h.churn_percentile !== undefined) git.churn_percentile = h.churn_percentile;
+  if (h.commit_count_90d !== undefined) git.commit_count_90d = h.commit_count_90d;
+  if (h.lines_added_90d !== undefined) git.lines_added_90d = h.lines_added_90d;
+  if (h.lines_deleted_90d !== undefined) git.lines_deleted_90d = h.lines_deleted_90d;
+  if (h.bus_factor !== undefined) git.bus_factor = h.bus_factor;
+  if (h.primary_owner !== undefined) git.primary_owner = h.primary_owner;
+  if (h.is_hotspot !== undefined) git.is_hotspot = h.is_hotspot;
+  if (h.temporal_hotspot_score !== undefined)
+    git.temporal_hotspot_score = h.temporal_hotspot_score;
+  return { file_path: h.file_path, git };
+}
+
 export interface FileCardLinks {
   graph?: string;
   docs?: string;

@@ -1,33 +1,35 @@
 "use client";
 
 /**
- * Trend tab — KPI history over recent indexes. Handles the single-snapshot
- * case explicitly (no misleading flat chart) and renders per-file deltas on
- * a ResponsiveTable.
+ * Trend section — KPI history over recent indexes. Handles the single-snapshot
+ * case explicitly (no misleading flat chart) and renders per-file score
+ * movement as a slope chart. Trend data is fetched once on the page and passed
+ * in, so it isn't double-fetched alongside the KPI sparklines.
  */
 
-import { AlertTriangle, TrendingDown, TrendingUp } from "lucide-react";
-import useSWR from "swr";
+import { AlertTriangle, TrendingUp } from "lucide-react";
 
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
-import { TrendChart, deltaColor, formatDelta } from "@repowise-dev/ui/health";
-import { EmptyState } from "@repowise-dev/ui/shared/empty-state";
-import { ResponsiveTable, type ResponsiveColumn } from "@repowise-dev/ui/shared";
-
 import {
-  getHealthTrend,
-  type HealthTrendResponse,
-} from "@/lib/api/code-health";
+  TrendChart,
+  TrendSlopeChart,
+  deltaColor,
+  formatDelta,
+} from "@repowise-dev/ui/health";
+import { MetricCard } from "@repowise-dev/ui/shared/metric-card";
+import { EmptyState } from "@repowise-dev/ui/shared/empty-state";
 
-type FileDelta = HealthTrendResponse["file_deltas"][number];
+import { type HealthTrendResponse } from "@/lib/api/code-health";
 
-export function TrendTab({ repoId: id }: { repoId: string }) {
-  const { data, isLoading, error } = useSWR<HealthTrendResponse>(
-    `code-health-trend:${id}`,
-    () => getHealthTrend(id, 20),
-    { revalidateOnFocus: false },
-  );
-
+export function TrendSection({
+  data,
+  isLoading,
+  error,
+}: {
+  data: HealthTrendResponse | undefined;
+  isLoading: boolean;
+  error: unknown;
+}) {
   if (isLoading) return <Skeleton className="h-64 w-full rounded-lg" />;
   if (error || !data) {
     return (
@@ -40,82 +42,30 @@ export function TrendTab({ repoId: id }: { repoId: string }) {
 
   const singleSnapshot = data.snapshot_count <= 1;
 
-  const deltaColumns: ResponsiveColumn<FileDelta>[] = [
-    {
-      key: "file_path",
-      header: "File",
-      priority: 1,
-      render: (d) => (
-        <span
-          className="font-mono text-xs text-[var(--color-text-primary)] truncate max-w-[420px] inline-block"
-          title={d.file_path}
-        >
-          {d.file_path}
-        </span>
-      ),
-    },
-    {
-      key: "before",
-      header: "Before",
-      priority: 2,
-      align: "right",
-      render: (d) => (
-        <span className="tabular-nums text-[var(--color-text-secondary)]">
-          {d.before.toFixed(1)}
-        </span>
-      ),
-    },
-    {
-      key: "after",
-      header: "After",
-      priority: 2,
-      align: "right",
-      render: (d) => (
-        <span className="tabular-nums text-[var(--color-text-secondary)]">
-          {d.after.toFixed(1)}
-        </span>
-      ),
-    },
-    {
-      key: "delta",
-      header: "Δ",
-      priority: 1,
-      align: "right",
-      render: (d) => (
-        <span className={`tabular-nums inline-flex items-center gap-1 ${deltaColor(d.delta)}`}>
-          {d.delta < 0 ? <TrendingDown className="h-3 w-3" /> : null}
-          {formatDelta(d.delta)}
-        </span>
-      ),
-    },
-  ];
-
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-        <DeltaCard
+        <DeltaMetric
           label="Average health"
           current={data.summary.current_average_health}
           previous={data.summary.previous_average_health}
           delta={data.summary.average_delta}
         />
-        <DeltaCard
+        <DeltaMetric
           label="Hotspot health"
           current={data.summary.current_hotspot_health}
           previous={data.summary.previous_hotspot_health}
           delta={data.summary.hotspot_delta}
         />
-        <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-4">
-          <p className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
-            Snapshots
-          </p>
-          <p className="mt-1 text-2xl font-bold text-[var(--color-text-primary)] tabular-nums">
-            {data.snapshot_count}
-          </p>
-          <p className="text-[11px] text-[var(--color-text-tertiary)] mt-1">
-            rolling window: 50 max
-          </p>
-        </div>
+        <MetricCard
+          label="Snapshots"
+          value={data.snapshot_count}
+          distBar={
+            <span className="text-[11px] text-[var(--color-text-tertiary)]">
+              rolling window: 50 max
+            </span>
+          }
+        />
       </div>
 
       {data.alerts.length > 0 ? (
@@ -171,19 +121,14 @@ export function TrendTab({ repoId: id }: { repoId: string }) {
             }
           />
         ) : (
-          <ResponsiveTable
-            columns={deltaColumns}
-            rows={data.file_deltas}
-            rowKey={(d) => d.file_path}
-            stacked="sm"
-          />
+          <TrendSlopeChart points={data.file_deltas} />
         )}
       </section>
     </div>
   );
 }
 
-function DeltaCard({
+function DeltaMetric({
   label,
   current,
   previous,
@@ -195,19 +140,23 @@ function DeltaCard({
   delta: number | null;
 }) {
   return (
-    <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-4">
-      <p className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
-        {label}
-      </p>
-      <p className="mt-1 text-2xl font-bold text-[var(--color-text-primary)] tabular-nums">
-        {current.toFixed(1)}
-        <span className="text-base font-normal text-[var(--color-text-secondary)]">/10</span>
-      </p>
-      <p className={`text-[11px] tabular-nums mt-0.5 ${deltaColor(delta)}`}>
-        {delta == null
-          ? "no prior snapshot"
-          : `${formatDelta(delta)} vs. ${previous?.toFixed(1) ?? "—"}`}
-      </p>
-    </div>
+    <MetricCard
+      label={label}
+      value={
+        <>
+          {current.toFixed(1)}
+          <span className="text-base font-normal text-[var(--color-text-secondary)]">
+            /10
+          </span>
+        </>
+      }
+      distBar={
+        <span className={`text-[11px] tabular-nums ${deltaColor(delta)}`}>
+          {delta == null
+            ? "no prior snapshot"
+            : `${formatDelta(delta)} vs. ${previous?.toFixed(1) ?? "—"}`}
+        </span>
+      }
+    />
   );
 }

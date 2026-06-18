@@ -21,6 +21,10 @@ export { PageShell, type PageShellProps } from "./page-shell";
 export { ViewTabs, type ViewTab, type ViewTabsProps } from "./view-tabs";
 export { MetricCard, type MetricCardProps } from "./metric-card";
 export {
+  CollapsibleSection,
+  type CollapsibleSectionProps,
+} from "./collapsible-section";
+export {
   StatGrid,
   StatTile,
   type StatGridProps,

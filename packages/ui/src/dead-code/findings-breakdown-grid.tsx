@@ -96,14 +96,24 @@ export function FindingsBreakdownGrid({ findings, className }: FindingsBreakdown
               {kinds.map((k) => {
                 const c = counts[tier.id]?.[k] ?? 0;
                 const intensity = max > 0 ? c / max : 0;
+                // Heat scales the fill alpha; the hue comes from the token for
+                // each tier (error → warning → muted) via color-mix.
+                const tierToken =
+                  tier.id === "high"
+                    ? "var(--color-error)"
+                    : tier.id === "med"
+                      ? "var(--color-warning)"
+                      : "var(--color-text-tertiary)";
+                const alphaPct =
+                  tier.id === "high"
+                    ? Math.round((0.12 + intensity * 0.55) * 100)
+                    : tier.id === "med"
+                      ? Math.round((0.1 + intensity * 0.5) * 100)
+                      : Math.round((0.08 + intensity * 0.4) * 100);
                 const bg =
                   c === 0
                     ? "transparent"
-                    : tier.id === "high"
-                      ? `rgba(244,63,94,${0.12 + intensity * 0.55})`
-                      : tier.id === "med"
-                        ? `rgba(245,158,11,${0.10 + intensity * 0.5})`
-                        : `rgba(148,163,184,${0.08 + intensity * 0.4})`;
+                    : `color-mix(in srgb, ${tierToken} ${alphaPct}%, transparent)`;
                 return (
                   <td
                     key={k}

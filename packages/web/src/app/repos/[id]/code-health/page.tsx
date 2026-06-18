@@ -3,56 +3,73 @@
 /**
  * Code Health — `/repos/[id]/code-health`.
  *
- * One "what do I fix next" section: Triage (the ranked fix-next queue),
- * Hotspots & Churn (the only place called "hotspots"), Modules, Coverage,
- * Dead code, Impact, Security, and Trend — one chrome, one tab row,
- * URL-synced via `?tab=`.
+ * One living map + a thin drill-down. The galaxy map is the page spine; a lens
+ * switcher recolors the same field (health / coverage / churn — the three lenses
+ * backed by per-file map data) so the cross-tab redundancy collapses. Dead-code
+ * and security have no per-file map signal and stay on their own tabs. Surviving
+ * tabs — Triage
+ * (the map spine), Hotspots, Coverage, Dead code, Impact, Security — are
+ * URL-synced via `?tab=`; the active lens via `?lens=`. Modules folded into the
+ * map's hub layer and Trend into a compact section.
  */
 
 import { useParams, useRouter, useSearchParams } from "next/navigation";
-import { useCallback } from "react";
+import { useCallback, useMemo } from "react";
 import useSWR from "swr";
 import { HeartPulse, RotateCw } from "lucide-react";
-import {
-  Tabs,
-  TabsContent,
-  ScrollableTabsList,
-  TabsTrigger,
-} from "@repowise-dev/ui/ui/tabs";
+import { PageShell } from "@repowise-dev/ui/shared/page-shell";
+import { ViewTabs } from "@repowise-dev/ui/shared/view-tabs";
+import { CollapsibleSection } from "@repowise-dev/ui/shared/collapsible-section";
 import { Button } from "@repowise-dev/ui/ui/button";
+import type { CodeHealthOverlay } from "@repowise-dev/ui/health";
 import { TriageTab } from "@/components/code-health/triage-tab";
 import { CoverageTab } from "@/components/code-health/coverage-tab";
-import { TrendTab } from "@/components/code-health/trend-tab";
+import { TrendSection } from "@/components/code-health/trend-tab";
 import { HotspotsTab } from "@/components/risk/hotspots-tab";
 import { DeadCodeTab } from "@/components/risk/dead-code-tab";
 import { ImpactTab } from "@/components/risk/impact-tab";
-import { ModulesTab } from "@/components/risk/modules-tab";
 import { SecurityTab } from "@/components/risk/security-tab";
-import { RiskSummaryStrip } from "@/components/risk/risk-summary-strip";
 import {
+  getChurnComplexity,
   getHealthOverview,
+  getHealthTrend,
+  listHealthFiles,
+  type ChurnComplexityResponse,
   type HealthOverviewResponse,
+  type HealthTrendResponse,
+  type HealthFilesResponse,
 } from "@/lib/api/code-health";
 
-const TABS = [
-  "triage",
-  "hotspots",
-  "modules",
-  "coverage",
-  "dead-code",
-  "impact",
-  "security",
-  "trend",
-] as const;
+const TABS = ["triage", "hotspots", "coverage", "dead-code", "impact", "security"] as const;
 type TabId = (typeof TABS)[number];
 
-/** Legacy tab ids from the old /risk page → their new home. */
-const TAB_ALIASES: Record<string, TabId> = {
-  heatmap: "hotspots",
+const TAB_LABELS: Record<TabId, string> = {
+  triage: "Triage",
+  hotspots: "Hotspots",
+  coverage: "Coverage",
+  "dead-code": "Dead code",
+  impact: "Impact",
+  security: "Security",
 };
 
-/** Tabs that came from the Risk page and share the summary strip. */
-const STRIP_TABS = new Set<TabId>(["hotspots", "modules", "dead-code", "impact", "security"]);
+/**
+ * Legacy tab ids → their new home. `heatmap` was the old churn tab; `modules`
+ * folded into the map's hub layer; `trend` folded into the compact section that
+ * lives under Triage.
+ */
+const TAB_ALIASES: Record<string, TabId> = {
+  heatmap: "hotspots",
+  modules: "triage",
+  trend: "triage",
+};
+
+/**
+ * Lenses selectable on the map. Only the three backed by per-file map data are
+ * offered; an unrecognized `?lens=` (including the retired `dead-code`/
+ * `security` values, which now live solely on their own tabs) falls back to
+ * `health` so a stale URL never renders an all-grey map.
+ */
+const OVERLAYS: CodeHealthOverlay[] = ["health", "coverage", "churn"];
 
 export default function CodeHealthPage() {
   const params = useParams<{ id: string }>();
@@ -66,6 +83,11 @@ export default function CodeHealthPage() {
     aliased ??
     (rawTab && (TABS as readonly string[]).includes(rawTab) ? (rawTab as TabId) : "triage");
 
+  const rawLens = searchParams.get("lens");
+  const overlay: CodeHealthOverlay = (OVERLAYS as readonly string[]).includes(rawLens ?? "")
+    ? (rawLens as CodeHealthOverlay)
+    : "health";
+
   // Shares the SWR key with TriageTab — the meta line costs no extra request.
   const { data: overview, mutate } = useSWR<HealthOverviewResponse>(
     `code-health-overview:${repoId}`,
@@ -73,6 +95,47 @@ export default function CodeHealthPage() {
     { revalidateOnFocus: false },
   );
   const meta = overview?.meta;
+
+  // Trend fetched ONCE here, fed to both the KPI sparklines (Triage) and the
+  // folded Trend section — no second fetch, no second SWR key.
+  const { data: trend, isLoading: trendLoading, error: trendError } =
+    useSWR<HealthTrendResponse>(
+      `code-health-trend:${repoId}`,
+      () => getHealthTrend(repoId, 20),
+      { revalidateOnFocus: false },
+    );
+
+  // Every file (NLOC-first) for the circle-packing map — one big pull, shared
+  // across overlays so switching the lens never refetches.
+  const { data: mapFiles } = useSWR<HealthFilesResponse>(
+    `code-health-map-files:${repoId}`,
+    () => listHealthFiles(repoId, { limit: 2000, sort: "nloc", order: "desc" }),
+    { revalidateOnFocus: false },
+  );
+
+  // Churn percentiles for the churn lens. Shares the SWR key the Hotspots tab
+  // already uses (`health-churn-complexity:`), so the two surfaces dedupe onto
+  // one request rather than double-fetching.
+  const { data: churn } = useSWR<ChurnComplexityResponse>(
+    `health-churn-complexity:${repoId}`,
+    () => getChurnComplexity(repoId),
+    { revalidateOnFocus: false },
+  );
+
+  // Merge churn_percentile onto each map file (join by path) so the churn lens
+  // colors real data. Re-runs only when either source changes.
+  const mapFilesWithChurn: HealthFilesResponse | undefined = useMemo(() => {
+    if (!mapFiles) return undefined;
+    if (!churn) return mapFiles;
+    const byPath = new Map(churn.points.map((p) => [p.file_path, p.churn_percentile]));
+    return {
+      ...mapFiles,
+      files: mapFiles.files.map((file) => ({
+        ...file,
+        churn_percentile: byPath.get(file.file_path) ?? null,
+      })),
+    };
+  }, [mapFiles, churn]);
 
   const setTab = useCallback(
     (next: string) => {
@@ -85,72 +148,64 @@ export default function CodeHealthPage() {
     [router, searchParams],
   );
 
+  const setOverlay = useCallback(
+    (next: CodeHealthOverlay) => {
+      const sp = new URLSearchParams(searchParams.toString());
+      if (next === "health") sp.delete("lens");
+      else sp.set("lens", next);
+      const qs = sp.toString();
+      router.replace(qs ? `?${qs}` : "?", { scroll: false });
+    },
+    [router, searchParams],
+  );
+
   return (
-    <div className="p-4 sm:p-6 space-y-4 max-w-[1600px]">
-      <header className="flex flex-wrap items-start gap-3">
-        <div className="min-w-0 flex-1 space-y-1">
-          <h1 className="flex items-center gap-2 text-lg font-semibold text-[var(--color-text-primary)]">
-            <HeartPulse className="h-5 w-5 text-[var(--color-success)]" />
-            Code Health
-          </h1>
-          <p className="text-sm text-[var(--color-text-secondary)]">
-            Per-file health scores from complexity, duplication, coverage, churn,
-            and ownership biomarkers — ranked into a fix-next queue.
-          </p>
-          {meta ? (
-            <p className="text-xs text-[var(--color-text-tertiary)]">
-              {meta.last_indexed_at
-                ? `Indexed ${new Date(meta.last_indexed_at).toLocaleString()}`
-                : "Not indexed yet"}
-              {meta.head_commit ? ` · ${meta.head_commit.slice(0, 8)}` : ""}
-              {` · ${meta.snapshot_count} snapshot${meta.snapshot_count === 1 ? "" : "s"}`}
-            </p>
-          ) : null}
-        </div>
+    <PageShell
+      title="Code Health"
+      icon={<HeartPulse className="h-5 w-5 text-[var(--color-success)]" />}
+      description="Per-file health scores from complexity, duplication, coverage, churn, and ownership biomarkers — ranked into a fix-next queue."
+      maxWidth="wide"
+      actions={
         <Button size="sm" variant="outline" onClick={() => mutate()}>
           <RotateCw className="h-3.5 w-3.5 mr-1.5" /> Refresh
         </Button>
-      </header>
+      }
+    >
+      {meta ? (
+        <p className="-mt-3 text-xs text-[var(--color-text-tertiary)]">
+          {meta.last_indexed_at
+            ? `Indexed ${new Date(meta.last_indexed_at).toLocaleString()}`
+            : "Not indexed yet"}
+          {meta.head_commit ? ` · ${meta.head_commit.slice(0, 8)}` : ""}
+          {` · ${meta.snapshot_count} snapshot${meta.snapshot_count === 1 ? "" : "s"}`}
+        </p>
+      ) : null}
 
-      <Tabs value={activeTab} onValueChange={setTab} className="space-y-4">
-        <ScrollableTabsList>
-          <TabsTrigger value="triage">Triage</TabsTrigger>
-          <TabsTrigger value="hotspots">Hotspots &amp; churn</TabsTrigger>
-          <TabsTrigger value="modules">Modules</TabsTrigger>
-          <TabsTrigger value="coverage">Coverage</TabsTrigger>
-          <TabsTrigger value="dead-code">Dead code</TabsTrigger>
-          <TabsTrigger value="impact">Impact</TabsTrigger>
-          <TabsTrigger value="security">Security</TabsTrigger>
-          <TabsTrigger value="trend">Trend</TabsTrigger>
-        </ScrollableTabsList>
-
-        {STRIP_TABS.has(activeTab) && <RiskSummaryStrip repoId={repoId} />}
-
-        <TabsContent value="triage" className="space-y-6">
-          <TriageTab repoId={repoId} />
-        </TabsContent>
-        <TabsContent value="hotspots" className="space-y-6">
-          <HotspotsTab repoId={repoId} />
-        </TabsContent>
-        <TabsContent value="modules" className="space-y-6">
-          <ModulesTab repoId={repoId} />
-        </TabsContent>
-        <TabsContent value="coverage" className="space-y-6">
-          <CoverageTab repoId={repoId} />
-        </TabsContent>
-        <TabsContent value="dead-code" className="space-y-6">
-          <DeadCodeTab repoId={repoId} />
-        </TabsContent>
-        <TabsContent value="impact" className="space-y-6">
-          <ImpactTab repoId={repoId} />
-        </TabsContent>
-        <TabsContent value="security" className="space-y-6">
-          <SecurityTab repoId={repoId} />
-        </TabsContent>
-        <TabsContent value="trend" className="space-y-6">
-          <TrendTab repoId={repoId} />
-        </TabsContent>
-      </Tabs>
-    </div>
+      <ViewTabs
+        tabs={TABS.map((id) => ({ id, label: TAB_LABELS[id] }))}
+        value={activeTab}
+        onValueChange={setTab}
+      >
+        {activeTab === "triage" && (
+          <div className="space-y-6">
+            <TriageTab
+              repoId={repoId}
+              trend={trend}
+              overlay={overlay}
+              onOverlayChange={setOverlay}
+              mapFiles={mapFilesWithChurn}
+            />
+            <CollapsibleSection title="Health trend" defaultOpen={false}>
+              <TrendSection data={trend} isLoading={trendLoading} error={trendError} />
+            </CollapsibleSection>
+          </div>
+        )}
+        {activeTab === "hotspots" && <HotspotsTab repoId={repoId} />}
+        {activeTab === "coverage" && <CoverageTab repoId={repoId} />}
+        {activeTab === "dead-code" && <DeadCodeTab repoId={repoId} />}
+        {activeTab === "impact" && <ImpactTab repoId={repoId} />}
+        {activeTab === "security" && <SecurityTab repoId={repoId} />}
+      </ViewTabs>
+    </PageShell>
   );
 }

@@ -79,13 +79,13 @@ export function SafeToDeletePile({
   return (
     <div
       className={cn(
-        "rounded-xl border border-rose-500/30 bg-gradient-to-br from-rose-500/10 via-[var(--color-bg-elevated)] to-[var(--color-bg-elevated)]",
-        "p-5 shadow-sm",
+        "rounded-xl border border-[var(--color-error)]/30 bg-gradient-to-br from-[var(--color-error)]/10 via-[var(--color-bg-elevated)] to-[var(--color-bg-elevated)]",
+        "p-5",
         className,
       )}
     >
       <div className="flex items-start gap-4">
-        <div className="rounded-lg bg-rose-500/15 p-2.5 text-rose-400 shrink-0">
+        <div className="rounded-lg bg-[var(--color-error)]/15 p-2.5 text-[var(--color-error)] shrink-0">
           <Trash2 className="h-5 w-5" />
         </div>
         <div className="flex-1 min-w-0">
@@ -106,8 +106,8 @@ export function SafeToDeletePile({
             type="button"
             onClick={() => onPropose(findings.map((f) => f.id))}
             className={cn(
-              "inline-flex items-center gap-1.5 rounded-md border border-rose-500/40 bg-rose-500/10 px-3 py-1.5",
-              "text-xs font-medium text-rose-300 transition hover:bg-rose-500/20",
+              "inline-flex items-center gap-1.5 rounded-md border border-[var(--color-error)]/40 bg-[var(--color-error)]/10 px-3 py-1.5",
+              "text-xs font-medium text-[var(--color-error)] transition hover:bg-[var(--color-error)]/20",
             )}
           >
             <Sparkles className="h-3.5 w-3.5" />

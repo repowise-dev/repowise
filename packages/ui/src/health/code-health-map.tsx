@@ -12,7 +12,24 @@ export interface CodeHealthMapFile {
   module: string | null;
   line_coverage_pct: number | null;
   has_test_file: boolean;
+  /** 0–100 churn percentile — drives the churn overlay. */
+  churn_percentile?: number | null;
+  /** Reclaimable lines on this file — drives the dead-code overlay. */
+  dead_code_lines?: number | null;
+  /** Open security findings on this file — drives the security overlay. */
+  security_findings?: number | null;
 }
+
+/**
+ * Lens applied to the same field — recolors every file node without re-laying
+ * the galaxies. One diagram, switchable overlay (the page spine).
+ */
+export type CodeHealthOverlay =
+  | "health"
+  | "coverage"
+  | "churn"
+  | "dead-code"
+  | "security";
 
 export interface CodeHealthMapProps {
   files: CodeHealthMapFile[];
@@ -26,6 +43,10 @@ export interface CodeHealthMapProps {
   onHoverFile?: (file: CodeHealthMapFile | null) => void;
   /** Canvas min height in px. */
   minHeight?: number;
+  /** Which lens recolors the field. Defaults to `health`. */
+  overlay?: CodeHealthOverlay;
+  /** When provided, an on-canvas lens switcher is rendered. */
+  onOverlayChange?: (overlay: CodeHealthOverlay) => void;
 }
 
 /* Band → SVG fill var(). Same ramp as every score pill on the surface:
@@ -43,6 +64,100 @@ const BAND_LABEL: { band: ScoreBand; label: string }[] = [
   { band: "fair", label: "Fair" },
   { band: "good", label: "Healthy" },
 ];
+
+/** Neutral fill for nodes a non-health overlay has no signal for. */
+const NEUTRAL_FILL = "var(--color-text-tertiary)";
+
+interface LegendRow {
+  fill: string;
+  label: string;
+}
+
+/** Lens metadata: how to fill a node and what the on-canvas key reads. */
+interface OverlaySpec {
+  label: string;
+  /** Caption shown under the legend key. */
+  caption: string;
+  fill: (f: CodeHealthMapFile) => string;
+  legend: LegendRow[];
+}
+
+/** Coverage band: green = well covered, red = uncovered, grey = no data. */
+function coverageFill(pct: number | null | undefined): string {
+  if (pct == null) return NEUTRAL_FILL;
+  if (pct >= 80) return "var(--color-success)";
+  if (pct >= 50) return "var(--color-caution)";
+  if (pct >= 20) return "var(--color-warning)";
+  return "var(--color-error)";
+}
+
+/** Churn band: red = top-decile churn, green = quiet. */
+function churnFill(pctile: number | null | undefined): string {
+  if (pctile == null) return NEUTRAL_FILL;
+  if (pctile >= 90) return "var(--color-error)";
+  if (pctile >= 70) return "var(--color-warning)";
+  if (pctile >= 40) return "var(--color-caution)";
+  return "var(--color-success)";
+}
+
+const OVERLAY_SPECS: Record<CodeHealthOverlay, OverlaySpec> = {
+  health: {
+    label: "Health",
+    caption: "galaxy = module · size = lines of code",
+    fill: (f) => BAND_FILL[scoreBand(f.score)],
+    legend: BAND_LABEL.map((b) => ({ fill: BAND_FILL[b.band], label: b.label })),
+  },
+  coverage: {
+    label: "Coverage",
+    caption: "color = line coverage · grey = no coverage data",
+    fill: (f) => coverageFill(f.line_coverage_pct),
+    legend: [
+      { fill: "var(--color-success)", label: "≥80%" },
+      { fill: "var(--color-caution)", label: "50–80%" },
+      { fill: "var(--color-warning)", label: "20–50%" },
+      { fill: "var(--color-error)", label: "<20%" },
+      { fill: NEUTRAL_FILL, label: "no data" },
+    ],
+  },
+  churn: {
+    label: "Churn",
+    caption: "color = 90-day churn percentile",
+    fill: (f) => churnFill(f.churn_percentile),
+    legend: [
+      { fill: "var(--color-error)", label: "Top 10%" },
+      { fill: "var(--color-warning)", label: "Top 30%" },
+      { fill: "var(--color-caution)", label: "Top 60%" },
+      { fill: "var(--color-success)", label: "Quiet" },
+      { fill: NEUTRAL_FILL, label: "no data" },
+    ],
+  },
+  "dead-code": {
+    label: "Dead code",
+    caption: "red = reclaimable lines · grey = clean",
+    fill: (f) => ((f.dead_code_lines ?? 0) > 0 ? "var(--color-error)" : NEUTRAL_FILL),
+    legend: [
+      { fill: "var(--color-error)", label: "Has dead code" },
+      { fill: NEUTRAL_FILL, label: "Clean" },
+    ],
+  },
+  security: {
+    label: "Security",
+    caption: "red = open findings · grey = clean",
+    fill: (f) => ((f.security_findings ?? 0) > 0 ? "var(--color-error)" : NEUTRAL_FILL),
+    legend: [
+      { fill: "var(--color-error)", label: "Has findings" },
+      { fill: NEUTRAL_FILL, label: "Clean" },
+    ],
+  },
+};
+
+/**
+ * Lenses offered in the on-canvas switcher. Only the three backed by per-file
+ * map data are exposed; dead-code and security have no per-file signal in the
+ * map payload and live on their own tabs, so their `OVERLAY_SPECS` entries stay
+ * defined (the type is extensible) but are not presented here.
+ */
+const OVERLAY_ORDER: CodeHealthOverlay[] = ["health", "coverage", "churn"];
 
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5)); // ~2.39996 rad
 
@@ -126,7 +241,10 @@ export function CodeHealthMap({
   onSelectFile,
   onHoverFile,
   minHeight = 640,
+  overlay = "health",
+  onOverlayChange,
 }: CodeHealthMapProps) {
+  const overlaySpec = OVERLAY_SPECS[overlay] ?? OVERLAY_SPECS.health;
   const containerRef = useRef<HTMLDivElement>(null);
   const [dims, setDims] = useState({ width: 0, height: 0 });
   const [focusModule, setFocusModule] = useState<string | null>(null);
@@ -339,7 +457,7 @@ export function CodeHealthMap({
                       cx={nd.x + offX}
                       cy={nd.y + offY}
                       r={isHover ? nd.r + 1.5 : nd.r}
-                      fill={BAND_FILL[scoreBand(f.score)]}
+                      fill={overlaySpec.fill(f)}
                       fillOpacity={faded ? 0.18 : dim ? 0.12 : isHover || isSel ? 1 : 0.9}
                       stroke={isSel ? "var(--color-text-primary)" : "var(--color-bg-canvas)"}
                       strokeWidth={isSel ? 2 : 0.5}
@@ -411,19 +529,49 @@ export function CodeHealthMap({
         })}
       </div>
 
-      {/* Legend (on-canvas) */}
-      <div className="absolute left-3 top-3 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-glass)] px-3 py-2 text-xs shadow-sm backdrop-blur-sm">
-        <div className="mb-1.5 font-medium text-[var(--color-text-secondary)]">Health</div>
+      {/* Lens switcher (on-canvas) — recolors the same field. */}
+      {onOverlayChange ? (
+        <div className="absolute left-3 top-3 flex flex-wrap gap-1 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-glass)] p-1 text-xs shadow-sm backdrop-blur-sm">
+          {OVERLAY_ORDER.map((mode) => (
+            <button
+              key={mode}
+              type="button"
+              onClick={() => onOverlayChange(mode)}
+              aria-pressed={overlay === mode}
+              className={
+                overlay === mode
+                  ? "rounded px-2 py-1 font-medium bg-[var(--color-accent-primary)] text-[var(--color-text-inverse)]"
+                  : "rounded px-2 py-1 text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
+              }
+            >
+              {OVERLAY_SPECS[mode].label}
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      {/* Legend (on-canvas) — follows the active lens. */}
+      <div
+        className={`absolute left-3 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-glass)] px-3 py-2 text-xs shadow-sm backdrop-blur-sm ${
+          onOverlayChange ? "top-14" : "top-3"
+        }`}
+      >
+        <div className="mb-1.5 font-medium text-[var(--color-text-secondary)]">
+          {overlaySpec.label}
+        </div>
         <div className="flex flex-col gap-1">
-          {BAND_LABEL.map((b) => (
-            <span key={b.band} className="flex items-center gap-1.5 text-[var(--color-text-tertiary)]">
-              <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: BAND_FILL[b.band] }} />
-              {b.label}
+          {overlaySpec.legend.map((row) => (
+            <span
+              key={row.label}
+              className="flex items-center gap-1.5 text-[var(--color-text-tertiary)]"
+            >
+              <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: row.fill }} />
+              {row.label}
             </span>
           ))}
         </div>
         <div className="mt-2 border-t border-[var(--color-border-default)] pt-1.5 text-[var(--color-text-tertiary)]">
-          galaxy = module · size = lines of code
+          {overlaySpec.caption}
           <br />
           click a galaxy to zoom
         </div>

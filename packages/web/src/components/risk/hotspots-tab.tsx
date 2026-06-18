@@ -5,8 +5,8 @@ import useSWR from "swr";
 import { useFileCardHost } from "@/components/shared/file-card-host";
 import { HotspotTopSymbolsHost } from "@/components/symbols/hotspot-top-symbols-host";
 import { SymbolDrawerWrapper } from "@/components/symbols/symbol-drawer-wrapper";
-import type { HotspotResponse as HotspotRowType, Paginated, SymbolResponse } from "@/lib/api/types";
-import type { FileCardData } from "@repowise-dev/ui/shared/file-card";
+import type { Paginated, SymbolResponse } from "@/lib/api/types";
+import { hotspotToFileCard } from "@repowise-dev/ui/shared/file-card";
 import { HotspotTable } from "@repowise-dev/ui/git/hotspot-table";
 import { HotspotTrendStrip } from "@repowise-dev/ui/git/hotspot-trend-strip";
 import { ChurnHistogram } from "@repowise-dev/ui/git/churn-histogram";
@@ -24,22 +24,6 @@ import type { HotspotResponse } from "@/lib/api/types";
 type ChurnView = "complexity" | "bus-factor";
 
 const PAGE_SIZE = 100;
-
-function hotspotToFileCard(h: HotspotRowType): FileCardData {
-  return {
-    file_path: h.file_path,
-    git: {
-      churn_percentile: h.churn_percentile,
-      commit_count_90d: h.commit_count_90d,
-      lines_added_90d: h.lines_added_90d,
-      lines_deleted_90d: h.lines_deleted_90d,
-      bus_factor: h.bus_factor,
-      primary_owner: h.primary_owner,
-      is_hotspot: h.is_hotspot,
-      temporal_hotspot_score: h.temporal_hotspot_score,
-    },
-  };
-}
 
 export function HotspotsTab({ repoId }: { repoId: string }) {
   const { showFile, dialog } = useFileCardHost(repoId);

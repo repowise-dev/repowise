@@ -6,9 +6,10 @@ import { RotateCw } from "lucide-react";
 import { toast } from "sonner";
 import { SeverityDistribution } from "@repowise-dev/ui/security/severity-distribution";
 import { SecurityFindingsTable } from "@repowise-dev/ui/security/findings-table";
-import { FindingsByDirectory } from "@repowise-dev/ui/security/findings-by-directory";
+import { SeverityDirectoryMatrix } from "@repowise-dev/ui/security/severity-directory-matrix";
 import { Button } from "@repowise-dev/ui/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui/card";
+import { CollapsibleSection } from "@repowise-dev/ui/shared/collapsible-section";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 import { listSecurityFindings, type SecurityFinding } from "@/lib/api/security";
 import { syncRepo } from "@/lib/api/repos";
@@ -90,9 +91,15 @@ export function SecurityTab({ repoId }: { repoId: string }) {
         <>
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <SeverityDistribution counts={counts} />
-            <FindingsByDirectory findings={findings ?? []} />
+            <SeverityDirectoryMatrix findings={findings ?? []} />
           </div>
-          <SecurityFindingsTable findings={findings ?? []} onSelect={handleSelect} />
+          <CollapsibleSection
+            title="All findings"
+            hint={`${(findings ?? []).length} findings`}
+            defaultOpen={false}
+          >
+            <SecurityFindingsTable findings={findings ?? []} onSelect={handleSelect} />
+          </CollapsibleSection>
         </>
       )}
 

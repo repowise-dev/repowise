@@ -24,19 +24,24 @@ import {
   RecalibrationBanner,
   RefactoringTargetList,
   DefectAccuracyCard,
+  FileSpotlight,
+  FilterSelect,
+  FilterChip,
+  ViewToggle,
+  ImpactEffortQuadrant,
   biomarkerLabel,
   buildAiPrompt,
-  scoreBadgeClass,
   type CodeHealthMapFile,
+  type CodeHealthOverlay,
   type FileSortField,
   type FindingStatus,
   type RefactoringTarget,
   type Severity,
 } from "@repowise-dev/ui/health";
+import { CollapsibleSection } from "@repowise-dev/ui/shared/collapsible-section";
 import { Search } from "lucide-react";
 import {
   getHealthOverview,
-  getHealthTrend,
   getRefactoringTargets,
   listHealthFiles,
   listHealthFindings,
@@ -64,7 +69,22 @@ const EFFORT_LABEL: Record<string, string> = {
   XL: "Extra large (>400 NLOC)",
 };
 
-export function TriageTab({ repoId: id }: { repoId: string }) {
+export function TriageTab({
+  repoId: id,
+  trend,
+  overlay = "health",
+  onOverlayChange,
+  mapFiles,
+}: {
+  repoId: string;
+  /** Trend fetched once at the page level — feeds the KPI sparklines. */
+  trend?: HealthTrendResponse;
+  /** Active map lens, owned by the page so the spine is shared across tabs. */
+  overlay?: CodeHealthOverlay;
+  onOverlayChange?: (overlay: CodeHealthOverlay) => void;
+  /** Map files fetched once at the page level (shared across overlays). */
+  mapFiles?: HealthFilesResponse;
+}) {
   const { data: overview, isLoading, error, mutate } = useSWR<HealthOverviewResponse>(
     `code-health-overview:${id}`,
     () => getHealthOverview(id, 25),
@@ -100,19 +120,6 @@ export function TriageTab({ repoId: id }: { repoId: string }) {
     { revalidateOnFocus: false },
   );
 
-  const { data: trend } = useSWR<HealthTrendResponse>(
-    `code-health-trend:${id}`,
-    () => getHealthTrend(id, 20),
-    { revalidateOnFocus: false },
-  );
-
-  // Every file (NLOC-first) for the circle-packing health map — one big pull.
-  const { data: mapFiles } = useSWR<HealthFilesResponse>(
-    `code-health-map-files:${id}`,
-    () => listHealthFiles(id, { limit: 2000, sort: "nloc", order: "desc" }),
-    { revalidateOnFocus: false },
-  );
-
   // ---- One filter set coordinates the queue AND the findings sidebar ----
   const [minSeverity, setMinSeverity] = useState<Severity | "all">("all");
   const [biomarker, setBiomarker] = useState<string>("all");
@@ -127,7 +134,6 @@ export function TriageTab({ repoId: id }: { repoId: string }) {
   // ---- Map-driven UI: rail spotlight + filename dim + collapsible list ----
   const [hoverFile, setHoverFile] = useState<CodeHealthMapFile | null>(null);
   const [mapQuery, setMapQuery] = useState("");
-  const [listOpen, setListOpen] = useState(false);
 
   const queueKey = useMemo(
     () => JSON.stringify({ id, biomarker, minSeverity, maxEffort, sort, queueLimit }),
@@ -290,6 +296,8 @@ export function TriageTab({ repoId: id }: { repoId: string }) {
                   onSelectFile={(p) => setSelectedFile(p)}
                   onHoverFile={setHoverFile}
                   minHeight={664}
+                  overlay={overlay}
+                  onOverlayChange={onOverlayChange}
                 />
               )}
             </div>
@@ -338,45 +346,31 @@ export function TriageTab({ repoId: id }: { repoId: string }) {
             </aside>
           </div>
 
-          {/* Collapsible: the full ranked queue + file inventory. */}
-          <section className="space-y-3">
-            <button
-              type="button"
-              onClick={() => setListOpen((v) => !v)}
-              aria-expanded={listOpen}
-              className="flex w-full items-center gap-2 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-2 text-sm font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
-            >
-              <span className="text-[var(--color-text-tertiary)]">{listOpen ? "▾" : "▸"}</span>
-              Targets &amp; findings list
-              <span className="ml-auto text-xs font-normal text-[var(--color-text-tertiary)]">
-                {queue?.total != null ? `${queue.total} candidates` : ""}
-              </span>
-            </button>
-
-            {listOpen ? (
+          {/* Collapsible: the full ranked queue + file inventory. The severity
+              filter is shared with the rail above (one control, no duplicate). */}
+          <CollapsibleSection
+            title="Targets &amp; findings list"
+            hint={queue?.total != null ? `${queue.total} candidates` : ""}
+            defaultOpen={false}
+          >
             <div className="space-y-3">
               <div className="flex flex-wrap items-center gap-2">
                 <h3 className="text-sm font-medium uppercase tracking-wider text-[var(--color-text-tertiary)] mr-auto">
                   Fix next
                 </h3>
-                <ViewToggle view={view} onChange={setView} />
+                <ViewToggle
+                  value={view}
+                  onChange={setView}
+                  options={[
+                    { value: "queue", label: "Queue" },
+                    { value: "files", label: "All files" },
+                  ]}
+                />
               </div>
 
               {view === "queue" ? (
                 <>
                   <div className="flex flex-wrap items-center gap-2">
-                    <FilterSelect
-                      label="Severity"
-                      value={minSeverity}
-                      onChange={(v) => setMinSeverity(v as Severity | "all")}
-                      options={[
-                        { value: "all", label: "Any severity" },
-                        { value: "low", label: "Low+" },
-                        { value: "medium", label: "Medium+" },
-                        { value: "high", label: "High+" },
-                        { value: "critical", label: "Critical only" },
-                      ]}
-                    />
                     <FilterSelect
                       label="Biomarker"
                       value={biomarker}
@@ -434,6 +428,19 @@ export function TriageTab({ repoId: id }: { repoId: string }) {
                     />
                   ) : (
                     <>
+                      {/* Leverage at a glance — impact vs effort, click a dot
+                          to open the file. Replaces the text-dense ranking as
+                          the first read of the queue. */}
+                      <ImpactEffortQuadrant
+                        points={(queue?.targets ?? []).map((t) => ({
+                          file_path: t.file_path,
+                          total_impact: t.total_impact,
+                          effort_bucket: t.effort_bucket,
+                          nloc: t.nloc,
+                          score: t.score,
+                        }))}
+                        onSelect={(p) => setSelectedFile(p.file_path)}
+                      />
                       <div className="space-y-6">
                         {grouped.map((g) => (
                           <section key={g.key} className="space-y-2">
@@ -542,8 +549,7 @@ export function TriageTab({ repoId: id }: { repoId: string }) {
                 </>
               )}
             </div>
-            ) : null}
-          </section>
+          </CollapsibleSection>
 
           {hotFunctionFindings && hotFunctionFindings.length >= 3 ? (
             <HotFunctionsPanel
@@ -587,149 +593,5 @@ export function TriageTab({ repoId: id }: { repoId: string }) {
         }
       />
     </div>
-  );
-}
-
-function ViewToggle({
-  view,
-  onChange,
-}: {
-  view: QueueView;
-  onChange: (v: QueueView) => void;
-}) {
-  return (
-    <div className="flex rounded-md border border-[var(--color-border-default)] overflow-hidden text-xs">
-      {(
-        [
-          { value: "queue", label: "Queue" },
-          { value: "files", label: "All files" },
-        ] as { value: QueueView; label: string }[]
-      ).map((opt) => (
-        <button
-          key={opt.value}
-          type="button"
-          onClick={() => onChange(opt.value)}
-          className={`px-3 py-1.5 font-medium transition-colors ${
-            view === opt.value
-              ? "bg-[var(--color-accent-primary)] text-[var(--color-text-inverse)]"
-              : "bg-transparent text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)]"
-          }`}
-        >
-          {opt.label}
-        </button>
-      ))}
-    </div>
-  );
-}
-
-/** The inspected file (last bubble hovered in the map) shown in the rail. */
-function FileSpotlight({
-  file,
-  onOpen,
-}: {
-  file: CodeHealthMapFile | null;
-  onOpen: (path: string) => void;
-}) {
-  if (!file) {
-    return (
-      <div className="rounded-lg border border-dashed border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-3 text-xs text-[var(--color-text-tertiary)]">
-        Hover a bubble to inspect a file; click it to open the full breakdown.
-      </div>
-    );
-  }
-  const name = file.file_path.split("/").pop() ?? file.file_path;
-  return (
-    <div className="space-y-2 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-3">
-      <div className="flex items-center gap-2">
-        <span
-          className={`inline-flex items-center justify-center rounded px-1.5 py-0.5 text-xs font-semibold ${scoreBadgeClass(
-            file.score,
-          )}`}
-        >
-          {file.score.toFixed(1)}
-        </span>
-        <span
-          className="truncate text-sm font-medium text-[var(--color-text-primary)]"
-          title={file.file_path}
-        >
-          {name}
-        </span>
-      </div>
-      <div
-        className="truncate font-mono text-[11px] text-[var(--color-text-tertiary)]"
-        title={file.file_path}
-      >
-        {file.file_path}
-      </div>
-      <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-[var(--color-text-secondary)]">
-        <span>{file.nloc.toLocaleString()} NLOC</span>
-        {file.line_coverage_pct != null ? (
-          <span>{Math.round(file.line_coverage_pct)}% coverage</span>
-        ) : null}
-        <span>{file.has_test_file ? "has tests" : "untested"}</span>
-        {file.module ? <span className="truncate">{file.module}</span> : null}
-      </div>
-      <Button
-        size="sm"
-        variant="outline"
-        className="w-full"
-        onClick={() => onOpen(file.file_path)}
-      >
-        Open details
-      </Button>
-    </div>
-  );
-}
-
-function FilterSelect({
-  label,
-  value,
-  onChange,
-  options,
-}: {
-  label: string;
-  value: string;
-  onChange: (v: string) => void;
-  options: { value: string; label: string }[];
-}) {
-  return (
-    <label className="inline-flex items-center gap-1.5 text-xs text-[var(--color-text-tertiary)]">
-      <span className="uppercase tracking-wider">{label}</span>
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="text-xs px-2 py-1 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] text-[var(--color-text-primary)]"
-      >
-        {options.map((o) => (
-          <option key={o.value} value={o.value}>
-            {o.label}
-          </option>
-        ))}
-      </select>
-    </label>
-  );
-}
-
-function FilterChip({
-  active,
-  onClick,
-  children,
-}: {
-  active: boolean;
-  onClick: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`text-xs rounded-md px-2 py-1 border transition-colors ${
-        active
-          ? "bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)] border-[var(--color-accent-primary)]/50"
-          : "border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:border-[var(--color-border-strong)]"
-      }`}
-    >
-      {children}
-    </button>
   );
 }
