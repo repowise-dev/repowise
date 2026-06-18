@@ -236,13 +236,16 @@ export function CouplingGraph({
         onMouseLeave={() => setFocus(null)}
       >
         <g transform={`translate(${c},${c})`}>
-          {/* Module arc bands + labels around the perimeter. */}
+          {/* Module arc bands + labels around the perimeter. Tiny (≈single
+              file) arcs are left unlabelled so their names don't pile up near
+              12 o'clock; the remaining module labels are angularly well spread. */}
           {[...groups.entries()].map(([name, g]) => {
             const mid = (g.a0 + g.a1) / 2;
-            const [lx, ly] = project(mid, radius + 30);
+            const [lx, ly] = project(mid, radius + 34);
             const [x0, y0] = project(g.a0 - 0.012, radius + 12);
             const [x1, y1] = project(g.a1 + 0.012, radius + 12);
             const large = g.a1 - g.a0 > Math.PI ? 1 : 0;
+            const span = g.a1 - g.a0;
             return (
               <g key={name}>
                 <path
@@ -254,16 +257,18 @@ export function CouplingGraph({
                   strokeWidth={1.5}
                   strokeLinecap="round"
                 />
-                <text
-                  x={lx}
-                  y={ly}
-                  fontSize={12}
-                  textAnchor="middle"
-                  dominantBaseline="middle"
-                  className="fill-[var(--color-text-secondary)] font-medium uppercase tracking-wider"
-                >
-                  {name}
-                </text>
+                {span >= 0.07 && (
+                  <text
+                    x={lx}
+                    y={ly}
+                    fontSize={11}
+                    textAnchor="middle"
+                    dominantBaseline="middle"
+                    className="fill-[var(--color-text-secondary)] font-medium uppercase tracking-wider"
+                  >
+                    {name}
+                  </text>
+                )}
               </g>
             );
           })}
@@ -305,10 +310,11 @@ export function CouplingGraph({
             // Always label the top hubs; reveal the rest on hover (focus +
             // neighbors). No more all-or-nothing 36-node gate.
             const showLabel = isFocus || isNeighbor || (focus == null && isHub);
-            // Labels stay horizontal (upright), flip-anchored on the left half
-            // so they read left-to-right and grow away from the ring.
-            const onLeft = leaf.x! > Math.PI;
-            const [lx, ly] = project(leaf.x!, leaf.y! + (onLeft ? -8 : 8));
+            // Labels radiate along each file's own spoke so angularly-adjacent
+            // hubs fan out instead of stacking on a shared baseline. Flip the
+            // left half so the text never renders upside-down.
+            const onLeft = leaf.x! >= Math.PI;
+            const labelRot = (leaf.x! * 180) / Math.PI - 90;
             return (
               <g
                 key={n.file_path}
@@ -329,11 +335,10 @@ export function CouplingGraph({
                 </circle>
                 {showLabel ? (
                   <text
-                    x={lx}
-                    y={ly}
+                    transform={`rotate(${labelRot}) translate(${leaf.y! + 8},0)${onLeft ? " rotate(180)" : ""}`}
+                    dy="0.31em"
                     fontSize={11.5}
                     textAnchor={onLeft ? "end" : "start"}
-                    dominantBaseline="middle"
                     className={
                       isFocus || isHub
                         ? "fill-[var(--color-text-primary)] font-medium"

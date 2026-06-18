@@ -55,9 +55,9 @@ type ArchView = (typeof VIEWS)[number];
 const CANONICAL_VIEWS: { id: Extract<ArchView, "map" | "explore" | "deps" | "symbols" | "coupling">; label: string; hint: string }[] = [
   { id: "map", label: "Communities", hint: "Constellation of detected communities" },
   { id: "explore", label: "Explore", hint: "Full dependency graph with dead/hot overlays" },
+  { id: "coupling", label: "Coupling", hint: "Files that tend to change together" },
   { id: "deps", label: "Dependencies", hint: "Declared third-party dependencies" },
   { id: "symbols", label: "Symbols", hint: "Every function, class and export" },
-  { id: "coupling", label: "Coupling", hint: "Files that tend to change together" },
 ];
 
 // Legacy ?view=graph deep links carried the graph scope in ?viewMode=. Scopes

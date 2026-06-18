@@ -14,7 +14,7 @@ export function OverviewGrid({
   rail: React.ReactNode;
 }) {
   return (
-    <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+    <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-3">
       <div className="space-y-4 lg:col-span-2">{main}</div>
       <div className="space-y-4">{rail}</div>
     </div>

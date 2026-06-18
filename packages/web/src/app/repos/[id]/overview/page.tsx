@@ -148,8 +148,8 @@ export default async function OverviewPage({ params }: Props) {
             }
             rail={
               <>
-                <AttentionPanel items={attentionItems} repoId={id} />
                 <SavingsMini data={summary.savings} repoId={id} />
+                <AttentionPanel items={attentionItems} repoId={id} previewCount={5} />
               </>
             }
           />
