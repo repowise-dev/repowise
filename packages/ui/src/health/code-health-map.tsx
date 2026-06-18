@@ -577,29 +577,19 @@ export function CodeHealthMap({
         </div>
       </div>
 
-      {/* Breadcrumb / zoom-out — multiple obvious escape hatches */}
-      <div className="absolute right-3 top-3 flex items-center gap-1.5 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-glass)] px-2.5 py-1.5 text-xs shadow-sm backdrop-blur-sm">
-        <button
-          type="button"
-          onClick={() => setFocusModule(null)}
-          className={focusGalaxy ? "font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]" : "font-medium text-[var(--color-text-primary)]"}
-        >
-          Universe
-        </button>
-        {focusGalaxy ? (
-          <>
-            <span className="text-[var(--color-text-tertiary)]">›</span>
-            <span className="max-w-[180px] truncate font-medium text-[var(--color-text-primary)]">{focusGalaxy.module}</span>
-            <button
-              type="button"
-              onClick={() => setFocusModule(null)}
-              className="ml-1 rounded border border-[var(--color-border-default)] px-1.5 py-0.5 text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
-            >
-              ← Overview
-            </button>
-          </>
-        ) : null}
-      </div>
+      {/* Zoom-out breadcrumb — only shown while a galaxy is focused */}
+      {focusGalaxy ? (
+        <div className="absolute right-3 top-3 flex items-center gap-1.5 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-glass)] px-2.5 py-1.5 text-xs shadow-sm backdrop-blur-sm">
+          <span className="max-w-[180px] truncate font-medium text-[var(--color-text-primary)]">{focusGalaxy.module}</span>
+          <button
+            type="button"
+            onClick={() => setFocusModule(null)}
+            className="ml-1 rounded border border-[var(--color-border-default)] px-1.5 py-0.5 text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
+          >
+            ← Overview
+          </button>
+        </div>
+      ) : null}
 
       {/* Hover tooltip */}
       {hovered ? <HoverCard file={hovered} /> : null}
