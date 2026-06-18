@@ -1,4 +1,6 @@
 export * from "./attention-panel";
+export * from "./kpi-strip";
+export * from "./overview-grid";
 export * from "./commits-mini";
 export * from "./decisions-timeline";
 export * from "./health-score-badge";

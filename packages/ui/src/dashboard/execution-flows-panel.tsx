@@ -1,10 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type CSSProperties } from "react";
 import { ChevronRight, ChevronDown, Workflow } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
-import { cn } from "../lib/cn";
 import { EmptyState } from "../shared/empty-state";
 import type { ExecutionFlowEntry } from "@repowise-dev/types/graph";
 
@@ -17,12 +16,24 @@ interface ExecutionFlowsPanelProps {
 function FlowRow({ flow }: { flow: ExecutionFlowEntry }) {
   const [expanded, setExpanded] = useState(false);
 
-  const scoreColor =
+  const scoreStyle: CSSProperties =
     flow.entry_point_score >= 0.7
-      ? "text-green-400 bg-green-400/10 border-green-400/20"
+      ? {
+          color: "var(--color-success)",
+          background: "color-mix(in srgb, var(--color-success) 12%, transparent)",
+          borderColor: "color-mix(in srgb, var(--color-success) 25%, transparent)",
+        }
       : flow.entry_point_score >= 0.4
-        ? "text-yellow-400 bg-yellow-400/10 border-yellow-400/20"
-        : "text-[var(--color-text-tertiary)] bg-[var(--color-bg-elevated)] border-[var(--color-border-default)]";
+        ? {
+            color: "var(--color-warning)",
+            background: "color-mix(in srgb, var(--color-warning) 12%, transparent)",
+            borderColor: "color-mix(in srgb, var(--color-warning) 25%, transparent)",
+          }
+        : {
+            color: "var(--color-text-tertiary)",
+            background: "var(--color-bg-elevated)",
+            borderColor: "var(--color-border-default)",
+          };
 
   return (
     <div className="border-b border-[var(--color-border-default)] last:border-0">
@@ -40,7 +51,10 @@ function FlowRow({ flow }: { flow: ExecutionFlowEntry }) {
           {flow.entry_point_name}
         </span>
 
-        <span className={cn("text-[10px] font-mono px-1.5 py-0.5 rounded border shrink-0", scoreColor)}>
+        <span
+          className="text-[10px] font-mono px-1.5 py-0.5 rounded border shrink-0"
+          style={scoreStyle}
+        >
           {(flow.entry_point_score * 100).toFixed(0)}
         </span>
 
@@ -57,16 +71,20 @@ function FlowRow({ flow }: { flow: ExecutionFlowEntry }) {
 
       {expanded && flow.trace.length > 1 && (
         <div className="px-3 pb-3 pl-8">
-          <div className="flex flex-wrap items-center gap-1">
+          <div className="flex flex-wrap items-center gap-y-2">
             {flow.trace.slice(0, 12).map((sym, i) => {
               const name = sym.includes("::") ? sym.split("::").pop() : sym.split("/").pop();
               return (
-                <span key={i} className="flex items-center gap-1">
+                <span key={i} className="flex items-center">
                   {i > 0 && (
-                    <ChevronRight className="h-2.5 w-2.5 text-[var(--color-text-tertiary)]" />
+                    <span
+                      aria-hidden
+                      className="h-px w-3 shrink-0"
+                      style={{ background: "var(--color-border-hover)" }}
+                    />
                   )}
                   <span
-                    className="text-[10px] font-mono text-[var(--color-text-secondary)] px-1 py-0.5 rounded bg-[var(--color-bg-elevated)]"
+                    className="rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2 py-0.5 font-mono text-[10px] text-[var(--color-text-secondary)]"
                     title={sym}
                   >
                     {name}
@@ -75,7 +93,7 @@ function FlowRow({ flow }: { flow: ExecutionFlowEntry }) {
               );
             })}
             {flow.trace.length > 12 && (
-              <span className="text-[10px] text-[var(--color-text-tertiary)]">
+              <span className="ml-1 text-[10px] text-[var(--color-text-tertiary)]">
                 +{flow.trace.length - 12} more
               </span>
             )}

@@ -4,8 +4,12 @@ import useSWR from "swr";
 import { CommitsMini } from "@repowise-dev/ui/dashboard/commits-mini";
 import { DecisionsTimeline } from "@repowise-dev/ui/dashboard/decisions-timeline";
 import { HotspotsMini } from "@repowise-dev/ui/dashboard/hotspots-mini";
+import {
+  CommitActivityCard,
+  OverviewPanelPair,
+} from "@repowise-dev/ui/dashboard/overview-grid";
 import { CommitCategorySparkline } from "@repowise-dev/ui/git/commit-category-sparkline";
-import { Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui/card";
+import { Card, CardContent } from "@repowise-dev/ui/ui/card";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 import { getCommitsPage } from "@/lib/api/git";
 import type { Hotspot } from "@repowise-dev/types/git";
@@ -38,7 +42,7 @@ export function PulseTab({ repoId, hotspots, hotspotTotal, decisions }: PulseTab
 
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+      <OverviewPanelPair>
         {isLoading ? (
           <Card>
             <CardContent className="space-y-2 pt-4">
@@ -51,26 +55,15 @@ export function PulseTab({ repoId, hotspots, hotspotTotal, decisions }: PulseTab
           <CommitsMini commits={commitsPage?.items ?? []} repoId={repoId} />
         )}
         <DecisionsTimeline decisions={decisions} repoId={repoId} />
-      </div>
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+      </OverviewPanelPair>
+      <OverviewPanelPair>
         <HotspotsMini hotspots={hotspots} repoId={repoId} total={hotspotTotal} />
         {hasCategories && (
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium">Commit Activity</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <CommitCategorySparkline categories={aggregatedCategories} />
-              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-2 text-[10px] text-[var(--color-text-tertiary)]">
-                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-sm" style={{ background: "var(--color-info)" }} /> Feature</span>
-                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-sm" style={{ background: "var(--color-error)" }} /> Fix</span>
-                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-sm" style={{ background: "var(--color-accent-secondary)" }} /> Refactor</span>
-                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-sm" style={{ background: "var(--color-accent-fill)" }} /> Dependency</span>
-              </div>
-            </CardContent>
-          </Card>
+          <CommitActivityCard
+            sparkline={<CommitCategorySparkline categories={aggregatedCategories} />}
+          />
         )}
-      </div>
+      </OverviewPanelPair>
     </div>
   );
 }

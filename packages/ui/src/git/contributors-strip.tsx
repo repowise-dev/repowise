@@ -59,7 +59,6 @@ export function ContributorsStrip({
   const shownPct = top.reduce((s, o) => s + (o.pct ?? 0), 0);
   const otherPct = Math.max(0, 100 - shownPct);
   const count = contributorCount ?? owners.length;
-  const lead = top[0];
 
   const hasProvenance =
     !!provenance && provenance.agentCommits > 0 && provenance.totalCommits > 0;
@@ -122,13 +121,6 @@ export function ContributorsStrip({
             </span>
           )}
         </div>
-        {lead && (
-          <p className="text-[11px] text-[var(--color-text-tertiary)]">
-            {firstName(lead.name)} owns {Math.round(lead.pct)}% of files
-            {count > 1 ? ` across ${count} contributors` : ""}.
-          </p>
-        )}
-
         {/* Agent provenance — only when there's something to report */}
         {hasProvenance && (
           <div className="mt-1 border-t border-[var(--color-border-default)] pt-2.5 space-y-2">
