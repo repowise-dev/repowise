@@ -37,6 +37,7 @@ from repowise.server.routers import (
     claude_md,
     code_health,
     costs,
+    coupling,
     dead_code,
     decisions,
     external_systems,
@@ -389,6 +390,7 @@ def create_app() -> FastAPI:
     app.include_router(git.router)
     app.include_router(dead_code.router)
     app.include_router(code_health.router)
+    app.include_router(coupling.router)
     app.include_router(claude_md.router)
     app.include_router(decisions.router)
     app.include_router(chat.router)
