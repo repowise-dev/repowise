@@ -1,0 +1,474 @@
+"use client";
+
+import { useEffect, useMemo, useRef, useState } from "react";
+import * as d3 from "d3-hierarchy";
+import { scoreBand, type ScoreBand } from "./tokens";
+import { useCommunityFamilies } from "../shared/use-theme-tokens";
+
+export interface CodeHealthMapFile {
+  file_path: string;
+  score: number;
+  nloc: number;
+  module: string | null;
+  line_coverage_pct: number | null;
+  has_test_file: boolean;
+}
+
+export interface CodeHealthMapProps {
+  files: CodeHealthMapFile[];
+  /** Highlight ring on this file. */
+  selectedPath?: string | null;
+  /** Filename substring — non-matching nodes dim out. */
+  search?: string;
+  /** File click → open the drawer. */
+  onSelectFile?: (path: string) => void;
+  /** Hover feeds the details rail. */
+  onHoverFile?: (file: CodeHealthMapFile | null) => void;
+  /** Canvas min height in px. */
+  minHeight?: number;
+}
+
+/* Band → SVG fill var(). Same ramp as every score pill on the surface:
+ * worst files burn clay/red, healthy ones go green. */
+const BAND_FILL: Record<ScoreBand, string> = {
+  critical: "var(--color-error)",
+  poor: "var(--color-warning)",
+  fair: "var(--color-caution)",
+  good: "var(--color-success)",
+};
+
+const BAND_LABEL: { band: ScoreBand; label: string }[] = [
+  { band: "critical", label: "Alert" },
+  { band: "poor", label: "Warning" },
+  { band: "fair", label: "Fair" },
+  { band: "good", label: "Healthy" },
+];
+
+const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5)); // ~2.39996 rad
+
+/** One module = one galaxy: its files plus size aggregates. */
+export interface GalaxyAgg {
+  module: string;
+  files: CodeHealthMapFile[]; // NLOC-desc
+  totalNloc: number;
+  maxNloc: number;
+}
+
+/**
+ * Group flat file rows into per-module galaxies, dropping zero-NLOC files
+ * (they can't be sized). Files come back sorted biggest-first. Pure + exported
+ * for unit testing.
+ */
+export function groupByModule(files: CodeHealthMapFile[]): GalaxyAgg[] {
+  const byModule = new Map<string, CodeHealthMapFile[]>();
+  for (const f of files) {
+    if (f.nloc <= 0) continue;
+    const key = f.module ?? "(ungrouped)";
+    const arr = byModule.get(key);
+    if (arr) arr.push(f);
+    else byModule.set(key, [f]);
+  }
+  const out: GalaxyAgg[] = [];
+  for (const [module, group] of byModule) {
+    group.sort((a, b) => b.nloc - a.nloc);
+    out.push({
+      module,
+      files: group,
+      totalNloc: group.reduce((s, f) => s + f.nloc, 0),
+      maxNloc: group[0]?.nloc ?? 1,
+    });
+  }
+  // Biggest galaxies first → stable z-order (small ones paint on top).
+  out.sort((a, b) => b.totalNloc - a.totalNloc);
+  return out;
+}
+
+interface FileNode {
+  file: CodeHealthMapFile;
+  x: number;
+  y: number;
+  r: number;
+}
+
+interface Galaxy {
+  module: string;
+  cx: number;
+  cy: number;
+  R: number;
+  fileCount: number;
+  colorId: number;
+  nodes: FileNode[];
+}
+
+/** Stable, well-spread hash so a module maps to a consistent palette family. */
+function moduleColorId(module: string): number {
+  let h = 0;
+  for (let i = 0; i < module.length; i++) h = (h * 31 + module.charCodeAt(i)) | 0;
+  return Math.abs(h);
+}
+
+/** Deterministic pseudo-random in [0,1) — for the static starfield. */
+function rand(i: number): number {
+  const x = Math.sin(i * 127.1) * 43758.5453;
+  return x - Math.floor(x);
+}
+
+/** Label a galaxy once its on-screen footprint clears this radius (px). */
+const LABEL_MIN_SCREEN_R = 40;
+/** Spokes drawn from each hub to its N biggest files (overview / focused). */
+const SPOKES_OVERVIEW = 8;
+const SPOKES_FOCUSED = 36;
+
+export function CodeHealthMap({
+  files,
+  selectedPath,
+  search,
+  onSelectFile,
+  onHoverFile,
+  minHeight = 640,
+}: CodeHealthMapProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [dims, setDims] = useState({ width: 0, height: 0 });
+  const [focusModule, setFocusModule] = useState<string | null>(null);
+  const [hovered, setHovered] = useState<CodeHealthMapFile | null>(null);
+  const famFor = useCommunityFamilies();
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+    const observer = new ResizeObserver((es) => {
+      const first = es[0];
+      if (!first) return;
+      const { width, height } = first.contentRect;
+      setDims({ width, height: Math.max(height, minHeight) });
+    });
+    observer.observe(containerRef.current);
+    return () => observer.disconnect();
+  }, [minHeight]);
+
+  // Esc always exits a focused galaxy — a guaranteed zoom-out.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setFocusModule(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  const S = Math.max(0, Math.min(dims.width, dims.height));
+
+  // Galaxy placement (d3-pack) + hub-and-spoke file layout (phyllotaxis).
+  const { galaxies, byModule } = useMemo(() => {
+    if (S === 0 || files.length === 0) {
+      return { galaxies: [] as Galaxy[], byModule: new Map<string, Galaxy>() };
+    }
+    const aggs = groupByModule(files);
+    const root = d3
+      .hierarchy<{ value?: number; agg?: GalaxyAgg; children?: unknown[] }>(
+        { children: aggs.map((a) => ({ value: a.totalNloc, agg: a })) },
+        (d) => d.children as { value?: number; agg?: GalaxyAgg }[] | undefined,
+      )
+      .sum((d) => d.value ?? 0);
+    d3.pack<{ value?: number; agg?: GalaxyAgg }>().size([S, S]).padding(S * 0.012)(
+      root as d3.HierarchyNode<{ value?: number; agg?: GalaxyAgg }>,
+    );
+    const galaxies: Galaxy[] = [];
+    for (const leaf of root.leaves() as d3.HierarchyCircularNode<{ agg?: GalaxyAgg }>[]) {
+      const agg = leaf.data.agg;
+      if (!agg) continue;
+      const R = leaf.r;
+      const cx = leaf.x;
+      const cy = leaf.y;
+      const n = agg.files.length;
+      const spread = R * 0.84;
+      const maxNodeR = Math.max(2, R * 0.16);
+      const nodes: FileNode[] = agg.files.map((file, i) => {
+        const rr = spread * Math.sqrt((i + 0.55) / n);
+        const ang = i * GOLDEN_ANGLE;
+        const nodeR = Math.max(
+          1.2,
+          Math.min(maxNodeR, maxNodeR * Math.sqrt(file.nloc / agg.maxNloc)),
+        );
+        return { file, x: cx + rr * Math.cos(ang), y: cy + rr * Math.sin(ang), r: nodeR };
+      });
+      galaxies.push({ module: agg.module, cx, cy, R, fileCount: n, colorId: moduleColorId(agg.module), nodes });
+    }
+    const byModule = new Map(galaxies.map((g) => [g.module, g]));
+    return { galaxies, byModule };
+  }, [files, S]);
+
+  // Starfield — static layer, regenerated only on resize.
+  const stars = useMemo(() => {
+    const { width, height } = dims;
+    if (width === 0) return [] as { x: number; y: number; r: number }[];
+    const count = Math.min(160, Math.floor((width * height) / 9000));
+    return Array.from({ length: count }, (_, i) => ({
+      x: rand(i) * width,
+      y: rand(i + 1000) * height,
+      r: 0.4 + rand(i + 2000) * 1.3,
+    }));
+  }, [dims]);
+
+  const focusGalaxy = focusModule ? byModule.get(focusModule) ?? null : null;
+
+  const offX = (dims.width - S) / 2;
+  const offY = (dims.height - S) / 2;
+  const k = focusGalaxy ? (S * 0.9) / (2 * focusGalaxy.R) : 1;
+  const camX = focusGalaxy ? focusGalaxy.cx : S / 2;
+  const camY = focusGalaxy ? focusGalaxy.cy : S / 2;
+  const tx = dims.width / 2 - k * (camX + offX);
+  const ty = dims.height / 2 - k * (camY + offY);
+  const toScreen = (x: number, y: number) => ({ x: k * (x + offX) + tx, y: k * (y + offY) + ty });
+
+  const q = (search ?? "").trim().toLowerCase();
+
+  if (S === 0) {
+    return <div ref={containerRef} className="w-full rounded-xl bg-[var(--color-bg-canvas)]" style={{ minHeight }} />;
+  }
+
+  if (files.length === 0) {
+    return (
+      <div
+        ref={containerRef}
+        className="flex w-full items-center justify-center rounded-xl border border-dashed border-[var(--color-border-default)] bg-[var(--color-bg-canvas)] text-sm text-[var(--color-text-tertiary)]"
+        style={{ minHeight }}
+      >
+        No files to map yet — run <code className="mx-1 font-mono">repowise init</code> to populate health.
+      </div>
+    );
+  }
+
+  const labelled = galaxies.filter((g) => focusGalaxy === g || g.R * k >= LABEL_MIN_SCREEN_R);
+  const spokeCap = focusGalaxy ? SPOKES_FOCUSED : SPOKES_OVERVIEW;
+
+  return (
+    <div
+      ref={containerRef}
+      className="relative w-full overflow-hidden rounded-xl border border-[var(--color-border-default)]"
+      style={{ minHeight }}
+    >
+      <svg
+        width={dims.width}
+        height={dims.height}
+        role="img"
+        aria-label="Code universe: modules as galaxies, files radiating from each hub, sized by lines of code and colored by health"
+        className="block"
+      >
+        <defs>
+          <radialGradient id="ch-mist" cx="50%" cy="42%" r="75%">
+            <stop offset="0%" stopColor="var(--color-bg-surface)" />
+            <stop offset="100%" stopColor="var(--color-bg-canvas)" />
+          </radialGradient>
+          <filter id="ch-nebula" x="-30%" y="-30%" width="160%" height="160%">
+            <feGaussianBlur stdDeviation="7" />
+          </filter>
+        </defs>
+
+        {/* Misty backdrop + starfield (static, clicking it exits a galaxy). */}
+        <rect
+          x={0}
+          y={0}
+          width={dims.width}
+          height={dims.height}
+          fill="url(#ch-mist)"
+          onClick={() => setFocusModule(null)}
+        />
+        <g className="pointer-events-none">
+          {stars.map((s, i) => (
+            <circle key={`star-${i}`} cx={s.x} cy={s.y} r={s.r} fill="var(--color-canvas-dot)" />
+          ))}
+        </g>
+
+        <g style={{ transition: "transform 460ms cubic-bezier(0.4,0,0.2,1)" }} transform={`translate(${tx},${ty}) scale(${k})`}>
+          {/* Nebula blobs (back layer) */}
+          {galaxies.map((g) => {
+            const fam = famFor(g.colorId);
+            const faded = focusGalaxy != null && focusGalaxy !== g;
+            return (
+              <circle
+                key={`blob-${g.module}`}
+                cx={g.cx + offX}
+                cy={g.cy + offY}
+                r={g.R * 0.96}
+                fill={fam.hub}
+                fillOpacity={faded ? 0.05 : 0.16}
+                filter="url(#ch-nebula)"
+                className="cursor-zoom-in"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setFocusModule((m) => (m === g.module ? null : g.module));
+                }}
+              />
+            );
+          })}
+
+          {/* Spokes — hub to its biggest files */}
+          {galaxies.map((g) => {
+            const fam = famFor(g.colorId);
+            const faded = focusGalaxy != null && focusGalaxy !== g;
+            if (faded) return null;
+            return (
+              <g key={`spokes-${g.module}`} stroke={fam.hub} strokeOpacity={0.28}>
+                {g.nodes.slice(0, spokeCap).map((nd) => (
+                  <line
+                    key={nd.file.file_path}
+                    x1={g.cx + offX}
+                    y1={g.cy + offY}
+                    x2={nd.x + offX}
+                    y2={nd.y + offY}
+                    strokeWidth={0.6}
+                    vectorEffect="non-scaling-stroke"
+                  />
+                ))}
+              </g>
+            );
+          })}
+
+          {/* File nodes */}
+          {galaxies.map((g) => {
+            const faded = focusGalaxy != null && focusGalaxy !== g;
+            return (
+              <g key={`nodes-${g.module}`}>
+                {g.nodes.map((nd) => {
+                  const f = nd.file;
+                  const dim = q.length > 0 && !f.file_path.toLowerCase().includes(q);
+                  const isSel = selectedPath === f.file_path;
+                  const isHover = hovered?.file_path === f.file_path;
+                  return (
+                    <circle
+                      key={f.file_path}
+                      cx={nd.x + offX}
+                      cy={nd.y + offY}
+                      r={isHover ? nd.r + 1.5 : nd.r}
+                      fill={BAND_FILL[scoreBand(f.score)]}
+                      fillOpacity={faded ? 0.18 : dim ? 0.12 : isHover || isSel ? 1 : 0.9}
+                      stroke={isSel ? "var(--color-text-primary)" : "var(--color-bg-canvas)"}
+                      strokeWidth={isSel ? 2 : 0.5}
+                      vectorEffect="non-scaling-stroke"
+                      className={onSelectFile ? "cursor-pointer" : undefined}
+                      onMouseEnter={() => {
+                        setHovered(f);
+                        onHoverFile?.(f);
+                      }}
+                      onMouseLeave={() => setHovered((h) => (h === f ? null : h))}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onSelectFile?.(f.file_path);
+                      }}
+                    >
+                      <title>{`${f.file_path}\nscore ${f.score.toFixed(1)} · ${f.nloc.toLocaleString()} NLOC`}</title>
+                    </circle>
+                  );
+                })}
+              </g>
+            );
+          })}
+
+          {/* Hub markers */}
+          {galaxies.map((g) => {
+            const fam = famFor(g.colorId);
+            const faded = focusGalaxy != null && focusGalaxy !== g;
+            return (
+              <circle
+                key={`hub-${g.module}`}
+                cx={g.cx + offX}
+                cy={g.cy + offY}
+                r={Math.max(2.5, g.R * 0.035)}
+                fill={fam.hub}
+                fillOpacity={faded ? 0.3 : 0.95}
+                stroke="var(--color-bg-canvas)"
+                strokeWidth={1}
+                vectorEffect="non-scaling-stroke"
+                className="pointer-events-none"
+              />
+            );
+          })}
+        </g>
+      </svg>
+
+      {/* Editorial galaxy labels — real-px HTML overlay, crisp at any zoom */}
+      <div className="pointer-events-none absolute inset-0">
+        {labelled.map((g) => {
+          const fam = famFor(g.colorId);
+          // toScreen already folds in offX/offY — pass the raw pack coords so
+          // the label lands on the hub (don't double-add the offset).
+          const p = toScreen(g.cx, g.cy);
+          if (p.x < -40 || p.x > dims.width + 40 || p.y < 0 || p.y > dims.height) return null;
+          const big = focusGalaxy === g;
+          return (
+            <span
+              key={`lbl-${g.module}`}
+              className={`absolute -translate-x-1/2 -translate-y-1/2 inline-flex items-center gap-1.5 whitespace-nowrap rounded bg-[var(--color-bg-glass)] px-1.5 py-0.5 font-serif uppercase tracking-wide text-[var(--color-text-primary)] shadow-sm ring-1 ring-[var(--color-border-default)] backdrop-blur-sm ${
+                big ? "text-sm font-semibold" : "text-[12px] font-medium"
+              }`}
+              style={{ left: p.x, top: p.y }}
+            >
+              {/* Galaxy color as a dot — the text itself stays high-contrast so
+                  purple/plum module hues remain legible in dark mode. */}
+              <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: fam.hub }} aria-hidden />
+              {g.module}
+            </span>
+          );
+        })}
+      </div>
+
+      {/* Legend (on-canvas) */}
+      <div className="absolute left-3 top-3 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-glass)] px-3 py-2 text-xs shadow-sm backdrop-blur-sm">
+        <div className="mb-1.5 font-medium text-[var(--color-text-secondary)]">Health</div>
+        <div className="flex flex-col gap-1">
+          {BAND_LABEL.map((b) => (
+            <span key={b.band} className="flex items-center gap-1.5 text-[var(--color-text-tertiary)]">
+              <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: BAND_FILL[b.band] }} />
+              {b.label}
+            </span>
+          ))}
+        </div>
+        <div className="mt-2 border-t border-[var(--color-border-default)] pt-1.5 text-[var(--color-text-tertiary)]">
+          galaxy = module · size = lines of code
+          <br />
+          click a galaxy to zoom
+        </div>
+      </div>
+
+      {/* Breadcrumb / zoom-out — multiple obvious escape hatches */}
+      <div className="absolute right-3 top-3 flex items-center gap-1.5 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-glass)] px-2.5 py-1.5 text-xs shadow-sm backdrop-blur-sm">
+        <button
+          type="button"
+          onClick={() => setFocusModule(null)}
+          className={focusGalaxy ? "font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]" : "font-medium text-[var(--color-text-primary)]"}
+        >
+          Universe
+        </button>
+        {focusGalaxy ? (
+          <>
+            <span className="text-[var(--color-text-tertiary)]">›</span>
+            <span className="max-w-[180px] truncate font-medium text-[var(--color-text-primary)]">{focusGalaxy.module}</span>
+            <button
+              type="button"
+              onClick={() => setFocusModule(null)}
+              className="ml-1 rounded border border-[var(--color-border-default)] px-1.5 py-0.5 text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
+            >
+              ← Overview
+            </button>
+          </>
+        ) : null}
+      </div>
+
+      {/* Hover tooltip */}
+      {hovered ? <HoverCard file={hovered} /> : null}
+    </div>
+  );
+}
+
+function HoverCard({ file }: { file: CodeHealthMapFile }) {
+  const cov = file.line_coverage_pct;
+  return (
+    <div className="pointer-events-none absolute bottom-3 left-3 max-w-[75%] rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2.5 py-1.5 text-[11px] shadow-md">
+      <div className="truncate font-mono text-[var(--color-text-primary)]">{file.file_path}</div>
+      <div className="text-[var(--color-text-tertiary)]">
+        score {file.score.toFixed(1)} · {file.nloc.toLocaleString()} NLOC
+        {cov != null ? ` · ${Math.round(cov)}% cov` : ""}
+        {file.has_test_file ? "" : " · untested"}
+      </div>
+    </div>
+  );
+}

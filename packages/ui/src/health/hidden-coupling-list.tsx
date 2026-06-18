@@ -1,6 +1,7 @@
 "use client";
 
-import { ArrowLeftRight } from "lucide-react";
+import { useState } from "react";
+import { ArrowLeftRight, ChevronDown, ChevronRight } from "lucide-react";
 import type { BiomarkerDetailsRecord } from "./biomarker-details";
 import { SEVERITY_CHIP, SEVERITY_LABEL, type Severity } from "./tokens";
 
@@ -18,6 +19,10 @@ export interface HiddenCouplingListProps {
   limit?: number;
   onSelect?: ((path: string) => void) | undefined;
   hrefFor?: ((path: string) => string) | undefined;
+  /** Start collapsed, showing only `collapsedCount` pairs behind a toggle. */
+  collapsible?: boolean;
+  /** Pairs shown while collapsed. */
+  collapsedCount?: number;
 }
 
 interface CouplingPair {
@@ -89,24 +94,49 @@ export function HiddenCouplingList({
   limit = 15,
   onSelect,
   hrefFor,
+  collapsible = false,
+  collapsedCount = 4,
 }: HiddenCouplingListProps) {
-  const rows = aggregate(findings).slice(0, limit);
-  if (rows.length === 0) return null;
+  const all = aggregate(findings).slice(0, limit);
+  const [open, setOpen] = useState(!collapsible);
+  if (all.length === 0) return null;
+  const rows = open ? all : all.slice(0, collapsedCount);
+  const headerInner = (
+    <>
+      {collapsible ? (
+        open ? (
+          <ChevronDown className="h-4 w-4 text-[var(--color-text-tertiary)]" aria-hidden="true" />
+        ) : (
+          <ChevronRight className="h-4 w-4 text-[var(--color-text-tertiary)]" aria-hidden="true" />
+        )
+      ) : null}
+      <ArrowLeftRight className="h-4 w-4 text-violet-500" aria-hidden="true" />
+      <h2 className="text-sm font-medium text-[var(--color-text-primary)]">Hidden coupling pairs</h2>
+      <span className="text-xs text-[var(--color-text-tertiary)]">
+        Files that co-change without an import edge
+      </span>
+      <span className="ml-auto text-xs text-[var(--color-text-tertiary)]">
+        {all.length} pair{all.length === 1 ? "" : "s"}
+      </span>
+    </>
+  );
 
   return (
     <section className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)]">
-      <header className="flex items-center gap-2 px-4 py-3 border-b border-[var(--color-border-default)]">
-        <ArrowLeftRight className="h-4 w-4 text-violet-500" aria-hidden="true" />
-        <h2 className="text-sm font-medium text-[var(--color-text-primary)]">
-          Hidden coupling pairs
-        </h2>
-        <span className="text-xs text-[var(--color-text-tertiary)]">
-          Files that co-change without an import edge
-        </span>
-        <span className="ml-auto text-xs text-[var(--color-text-tertiary)]">
-          {rows.length} pair{rows.length === 1 ? "" : "s"}
-        </span>
-      </header>
+      {collapsible ? (
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+          className="flex w-full items-center gap-2 px-4 py-3 border-b border-[var(--color-border-default)] text-left hover:bg-[var(--color-bg-elevated)] transition-colors"
+        >
+          {headerInner}
+        </button>
+      ) : (
+        <header className="flex items-center gap-2 px-4 py-3 border-b border-[var(--color-border-default)]">
+          {headerInner}
+        </header>
+      )}
       <ul className="divide-y divide-[var(--color-border-default)]">
         {rows.map((row) => (
           <li key={row.key} className="p-3 space-y-1.5">
@@ -133,6 +163,15 @@ export function HiddenCouplingList({
           </li>
         ))}
       </ul>
+      {collapsible && all.length > collapsedCount ? (
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          className="w-full border-t border-[var(--color-border-default)] px-4 py-2 text-xs font-medium text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] transition-colors"
+        >
+          {open ? "Show less" : `Show all ${all.length}`}
+        </button>
+      ) : null}
     </section>
   );
 }

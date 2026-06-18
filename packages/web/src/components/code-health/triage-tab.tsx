@@ -20,12 +20,14 @@ import {
   BiomarkerList,
   HotFunctionsPanel,
   HiddenCouplingList,
-  ImpactEffortQuadrant,
+  CodeHealthMap,
   RecalibrationBanner,
   RefactoringTargetList,
   DefectAccuracyCard,
   biomarkerLabel,
   buildAiPrompt,
+  scoreBadgeClass,
+  type CodeHealthMapFile,
   type FileSortField,
   type FindingStatus,
   type RefactoringTarget,
@@ -104,6 +106,13 @@ export function TriageTab({ repoId: id }: { repoId: string }) {
     { revalidateOnFocus: false },
   );
 
+  // Every file (NLOC-first) for the circle-packing health map — one big pull.
+  const { data: mapFiles } = useSWR<HealthFilesResponse>(
+    `code-health-map-files:${id}`,
+    () => listHealthFiles(id, { limit: 2000, sort: "nloc", order: "desc" }),
+    { revalidateOnFocus: false },
+  );
+
   // ---- One filter set coordinates the queue AND the findings sidebar ----
   const [minSeverity, setMinSeverity] = useState<Severity | "all">("all");
   const [biomarker, setBiomarker] = useState<string>("all");
@@ -114,7 +123,11 @@ export function TriageTab({ repoId: id }: { repoId: string }) {
   const [view, setView] = useState<QueueView>("queue");
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [promptTarget, setPromptTarget] = useState<RefactoringTarget | null>(null);
-  const [highlighted, setHighlighted] = useState<string | null>(null);
+
+  // ---- Map-driven UI: rail spotlight + filename dim + collapsible list ----
+  const [hoverFile, setHoverFile] = useState<CodeHealthMapFile | null>(null);
+  const [mapQuery, setMapQuery] = useState("");
+  const [listOpen, setListOpen] = useState(false);
 
   const queueKey = useMemo(
     () => JSON.stringify({ id, biomarker, minSeverity, maxEffort, sort, queueLimit }),
@@ -217,20 +230,6 @@ export function TriageTab({ repoId: id }: { repoId: string }) {
     return [...groups.entries()].map(([key, targets]) => ({ key, targets }));
   }, [queue, groupBy]);
 
-  // Quadrant dot click → highlight + scroll to the card.
-  const highlightTarget = (path: string) => {
-    setHighlighted(path);
-    requestAnimationFrame(() => {
-      document
-        .querySelector(`[data-refactoring-card="${CSS.escape(path)}"]`)
-        ?.scrollIntoView({ behavior: "smooth", block: "center" });
-    });
-    window.setTimeout(
-      () => setHighlighted((p) => (p === path ? null : p)),
-      2400,
-    );
-  };
-
   const avgSeries = trend?.history?.slice().reverse().map((p) => p.average_health);
   const hotspotSeries = trend?.history?.slice().reverse().map((p) => p.hotspot_health);
   const worstSeries = trend?.history
@@ -268,12 +267,98 @@ export function TriageTab({ repoId: id }: { repoId: string }) {
             <DefectAccuracyCard data={overview.defect_accuracy} collapsible />
           ) : null}
 
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div className="lg:col-span-2 space-y-3">
-              <div className="flex flex-wrap items-center gap-2">
-                <h2 className="text-sm font-medium uppercase tracking-wider text-[var(--color-text-tertiary)] mr-auto">
-                  Fix next
+          {/* Hero: the Code Health Map — modules as nested bubbles, files
+              sized by lines of code and colored by health. The centerpiece. */}
+          <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px] gap-6">
+            <div className="space-y-2">
+              <div className="flex flex-wrap items-baseline gap-2">
+                <h2 className="text-base font-semibold text-[var(--color-text-primary)]">
+                  Code health map
                 </h2>
+                <span className="text-xs text-[var(--color-text-tertiary)]">
+                  {mapFiles ? `${mapFiles.total.toLocaleString()} files` : "loading…"} · click a module to
+                  zoom, a file to open
+                </span>
+              </div>
+              {!mapFiles ? (
+                <Skeleton className="w-full rounded-xl" style={{ height: 664 }} />
+              ) : (
+                <CodeHealthMap
+                  files={mapFiles.files}
+                  search={mapQuery}
+                  selectedPath={selectedFile}
+                  onSelectFile={(p) => setSelectedFile(p)}
+                  onHoverFile={setHoverFile}
+                  minHeight={664}
+                />
+              )}
+            </div>
+
+            {/* Inspector rail — height-matched to the map (master–detail).
+                Search + the file you're inspecting sit on top; the findings
+                list scrolls in place so the rail never outgrows the map. */}
+            <aside className="flex flex-col gap-3 lg:sticky lg:top-4 lg:h-[700px]">
+              <div className="relative">
+                <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[var(--color-text-tertiary)]" />
+                <input
+                  value={mapQuery}
+                  onChange={(e) => setMapQuery(e.target.value)}
+                  placeholder="Find a file in the map…"
+                  className="w-full text-xs pl-7 pr-2 py-1.5 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] focus:outline-none focus:border-[var(--color-border-strong)]"
+                />
+              </div>
+
+              <FileSpotlight file={hoverFile} onOpen={(p) => setSelectedFile(p)} />
+
+              <div className="flex items-center gap-2">
+                <h2 className="text-sm font-medium uppercase tracking-wider text-[var(--color-text-tertiary)] mr-auto">
+                  Findings
+                </h2>
+                <select
+                  value={minSeverity}
+                  onChange={(e) => setMinSeverity(e.target.value as Severity | "all")}
+                  aria-label="Minimum severity (filters the queue too)"
+                  className="text-xs px-2 py-1 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)]"
+                >
+                  <option value="all">All severities</option>
+                  <option value="low">Low+</option>
+                  <option value="medium">Medium+</option>
+                  <option value="high">High+</option>
+                  <option value="critical">Critical</option>
+                </select>
+              </div>
+              <div className="min-h-0 flex-1 overflow-y-auto pr-1 lg:pb-0 pb-1">
+                <BiomarkerList
+                  findings={overview.top_findings}
+                  grouped
+                  minSeverity={minSeverity === "all" ? undefined : minSeverity}
+                  onSelect={(f) => setSelectedFile(f.file_path)}
+                />
+              </div>
+            </aside>
+          </div>
+
+          {/* Collapsible: the full ranked queue + file inventory. */}
+          <section className="space-y-3">
+            <button
+              type="button"
+              onClick={() => setListOpen((v) => !v)}
+              aria-expanded={listOpen}
+              className="flex w-full items-center gap-2 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-2 text-sm font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
+            >
+              <span className="text-[var(--color-text-tertiary)]">{listOpen ? "▾" : "▸"}</span>
+              Targets &amp; findings list
+              <span className="ml-auto text-xs font-normal text-[var(--color-text-tertiary)]">
+                {queue?.total != null ? `${queue.total} candidates` : ""}
+              </span>
+            </button>
+
+            {listOpen ? (
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="text-sm font-medium uppercase tracking-wider text-[var(--color-text-tertiary)] mr-auto">
+                  Fix next
+                </h3>
                 <ViewToggle view={view} onChange={setView} />
               </div>
 
@@ -349,17 +434,6 @@ export function TriageTab({ repoId: id }: { repoId: string }) {
                     />
                   ) : (
                     <>
-                      <ImpactEffortQuadrant
-                        points={queue.targets.map((t) => ({
-                          file_path: t.file_path,
-                          total_impact: t.total_impact,
-                          effort_bucket: t.effort_bucket,
-                          nloc: t.nloc,
-                          score: t.score,
-                        }))}
-                        onSelect={(p) => highlightTarget(p.file_path)}
-                      />
-
                       <div className="space-y-6">
                         {grouped.map((g) => (
                           <section key={g.key} className="space-y-2">
@@ -376,7 +450,6 @@ export function TriageTab({ repoId: id }: { repoId: string }) {
                               onSelect={(t) => setSelectedFile(t.file_path)}
                               onStatusChange={handleStatus}
                               onGeneratePrompt={(t) => setPromptTarget(t)}
-                              highlightedPath={highlighted}
                             />
                           </section>
                         ))}
@@ -469,37 +542,13 @@ export function TriageTab({ repoId: id }: { repoId: string }) {
                 </>
               )}
             </div>
-
-            <div className="space-y-3">
-              <div className="flex items-center gap-2">
-                <h2 className="text-sm font-medium uppercase tracking-wider text-[var(--color-text-tertiary)] mr-auto">
-                  Findings
-                </h2>
-                <select
-                  value={minSeverity}
-                  onChange={(e) => setMinSeverity(e.target.value as Severity | "all")}
-                  aria-label="Minimum severity (filters the queue too)"
-                  className="text-xs px-2 py-1 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)]"
-                >
-                  <option value="all">All severities</option>
-                  <option value="low">Low+</option>
-                  <option value="medium">Medium+</option>
-                  <option value="high">High+</option>
-                  <option value="critical">Critical</option>
-                </select>
-              </div>
-              <BiomarkerList
-                findings={overview.top_findings}
-                grouped
-                minSeverity={minSeverity === "all" ? undefined : minSeverity}
-                onSelect={(f) => setSelectedFile(f.file_path)}
-              />
-            </div>
-          </div>
+            ) : null}
+          </section>
 
           {hotFunctionFindings && hotFunctionFindings.length >= 3 ? (
             <HotFunctionsPanel
               findings={hotFunctionFindings}
+              collapsible
               onSelect={(f) => setSelectedFile(f.file_path)}
               symbolHrefFor={(f) =>
                 f.symbol_id ? symbolEntityPath(`/repos/${id}`, f.symbol_id) : undefined
@@ -510,6 +559,7 @@ export function TriageTab({ repoId: id }: { repoId: string }) {
           {couplingFindings && couplingFindings.length >= 3 ? (
             <HiddenCouplingList
               findings={couplingFindings}
+              collapsible
               onSelect={(path) => setSelectedFile(path)}
             />
           ) : null}
@@ -568,6 +618,65 @@ function ViewToggle({
           {opt.label}
         </button>
       ))}
+    </div>
+  );
+}
+
+/** The inspected file (last bubble hovered in the map) shown in the rail. */
+function FileSpotlight({
+  file,
+  onOpen,
+}: {
+  file: CodeHealthMapFile | null;
+  onOpen: (path: string) => void;
+}) {
+  if (!file) {
+    return (
+      <div className="rounded-lg border border-dashed border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-3 text-xs text-[var(--color-text-tertiary)]">
+        Hover a bubble to inspect a file; click it to open the full breakdown.
+      </div>
+    );
+  }
+  const name = file.file_path.split("/").pop() ?? file.file_path;
+  return (
+    <div className="space-y-2 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-3">
+      <div className="flex items-center gap-2">
+        <span
+          className={`inline-flex items-center justify-center rounded px-1.5 py-0.5 text-xs font-semibold ${scoreBadgeClass(
+            file.score,
+          )}`}
+        >
+          {file.score.toFixed(1)}
+        </span>
+        <span
+          className="truncate text-sm font-medium text-[var(--color-text-primary)]"
+          title={file.file_path}
+        >
+          {name}
+        </span>
+      </div>
+      <div
+        className="truncate font-mono text-[11px] text-[var(--color-text-tertiary)]"
+        title={file.file_path}
+      >
+        {file.file_path}
+      </div>
+      <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-[var(--color-text-secondary)]">
+        <span>{file.nloc.toLocaleString()} NLOC</span>
+        {file.line_coverage_pct != null ? (
+          <span>{Math.round(file.line_coverage_pct)}% coverage</span>
+        ) : null}
+        <span>{file.has_test_file ? "has tests" : "untested"}</span>
+        {file.module ? <span className="truncate">{file.module}</span> : null}
+      </div>
+      <Button
+        size="sm"
+        variant="outline"
+        className="w-full"
+        onClick={() => onOpen(file.file_path)}
+      >
+        Open details
+      </Button>
     </div>
   );
 }
