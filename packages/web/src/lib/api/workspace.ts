@@ -8,6 +8,7 @@ import type {
   WorkspaceSystemGraphResponse,
   WorkspaceBlastRadiusResponse,
   WorkspaceBreakingChangesResponse,
+  WorkspaceConformanceResponse,
 } from "./types";
 
 export async function getWorkspace(
@@ -92,6 +93,19 @@ export async function getWorkspaceBreakingChanges(opts?: {
   if (opts?.repo) params.repo = opts.repo;
   if (opts?.severity) params.severity = opts.severity;
   return apiGet<WorkspaceBreakingChangesResponse>("/api/workspace/breaking-changes", params);
+}
+
+/**
+ * Architecture conformance from the most recent update: dependency-rule
+ * violations + dependency cycles over the system graph. Optionally filter to
+ * findings involving one repo.
+ */
+export async function getWorkspaceConformance(opts?: {
+  repo?: string;
+}): Promise<WorkspaceConformanceResponse> {
+  const params: Record<string, string> = {};
+  if (opts?.repo) params.repo = opts.repo;
+  return apiGet<WorkspaceConformanceResponse>("/api/workspace/conformance", params);
 }
 
 /**

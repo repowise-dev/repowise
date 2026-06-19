@@ -15,7 +15,14 @@ import {
   impactBadgeTone,
 } from "../../src/workspace/system-map/blast-radius";
 import { buildBreakingChangeOverlay } from "../../src/workspace/system-map/breaking-changes";
-import type { BreakingChange, BreakingChangeReport, CrossRepoBlastRadius } from "@repowise-dev/types";
+import { buildConformanceOverlay } from "../../src/workspace/system-map/conformance";
+import { buildDsm } from "../../src/workspace/dsm/dsm";
+import type {
+  BreakingChange,
+  BreakingChangeReport,
+  ConformanceReport,
+  CrossRepoBlastRadius,
+} from "@repowise-dev/types";
 
 function node(id: string, repo: string, over: Partial<SystemNode> = {}): SystemNode {
   return {
@@ -344,5 +351,138 @@ describe("buildBreakingChangeOverlay", () => {
   it("returns an empty overlay when there are no changes", () => {
     expect(buildBreakingChangeOverlay(g, report([]))).toEqual({});
     expect(buildBreakingChangeOverlay(g, null)).toEqual({});
+  });
+});
+
+function conformanceReport(over: Partial<ConformanceReport> = {}): ConformanceReport {
+  const violations = over.violations ?? [];
+  const cycles = over.cycles ?? [];
+  return {
+    version: 1,
+    generated_at: "t",
+    rules_evaluated: 1,
+    violations,
+    cycles,
+    violation_count: violations.length,
+    cycle_count: cycles.length,
+    violating_repos: [],
+    ...over,
+  };
+}
+
+describe("buildConformanceOverlay", () => {
+  const g = graph(
+    [node("frontend", "frontend"), node("db", "db"), node("api", "api")],
+    [edge("frontend", "db"), edge("db", "frontend"), edge("frontend", "api")],
+  );
+
+  it("badges violating edges danger and highlights both endpoints", () => {
+    const overlay = buildConformanceOverlay(
+      g,
+      conformanceReport({
+        violations: [
+          {
+            rule_source: "frontend",
+            rule_target: "db",
+            rule_description: "",
+            source: "frontend",
+            source_name: "frontend",
+            target: "db",
+            target_name: "db",
+            edge_id: "frontend->db",
+            edge_kind: "http",
+            severity: "violation",
+          },
+        ],
+      }),
+    );
+    expect(overlay.edgeBadges?.["frontend->db"]).toEqual({ label: "violation", tone: "danger" });
+    expect(overlay.nodeBadges?.frontend).toEqual({ label: "violation", tone: "danger" });
+    expect(overlay.nodeBadges?.db).toEqual({ label: "violation", tone: "danger" });
+    // Additive: nothing dimmed.
+    expect(overlay.dimNodeIds).toBeUndefined();
+  });
+
+  it("badges cycle edges warning and never overrides a violation badge", () => {
+    const overlay = buildConformanceOverlay(
+      g,
+      conformanceReport({
+        violations: [
+          {
+            rule_source: "frontend",
+            rule_target: "db",
+            rule_description: "",
+            source: "frontend",
+            source_name: "frontend",
+            target: "db",
+            target_name: "db",
+            edge_id: "frontend->db",
+            edge_kind: "http",
+            severity: "violation",
+          },
+        ],
+        cycles: [{ nodes: ["frontend", "db"], edge_ids: ["frontend->db", "db->frontend"], length: 2 }],
+      }),
+    );
+    // The shared edge keeps its violation badge (danger), not "cycle".
+    expect(overlay.edgeBadges?.["frontend->db"]).toEqual({ label: "violation", tone: "danger" });
+    // The other cycle edge gets the cycle badge.
+    expect(overlay.edgeBadges?.["db->frontend"]).toEqual({ label: "cycle", tone: "warning" });
+  });
+
+  it("returns an empty overlay with no findings", () => {
+    expect(buildConformanceOverlay(g, conformanceReport())).toEqual({});
+    expect(buildConformanceOverlay(g, null)).toEqual({});
+  });
+});
+
+describe("buildDsm", () => {
+  const g = graph(
+    [node("api", "api"), node("db", "db"), node("web", "web")],
+    [edge("web", "api"), edge("api", "db", { kind: "grpc" })],
+  );
+
+  it("places a present, kind-tagged cell for each dependency", () => {
+    const dsm = buildDsm(g);
+    // axis sorted by repo: api, db, web
+    expect(dsm.axis).toEqual(["api", "db", "web"]);
+    const cell = (from: string, to: string) =>
+      dsm.cells[dsm.axis.indexOf(from)]![dsm.axis.indexOf(to)]!;
+    expect(cell("web", "api").present).toBe(true);
+    expect(cell("api", "db").present).toBe(true);
+    expect(cell("api", "db").kind).toBe("grpc");
+    // No reverse dependency.
+    expect(cell("db", "api").present).toBe(false);
+  });
+
+  it("flags violation and cycle cells from the report", () => {
+    const dsm = buildDsm(
+      g,
+      conformanceReport({
+        violations: [
+          {
+            rule_source: "web",
+            rule_target: "api",
+            rule_description: "",
+            source: "web",
+            source_name: "web",
+            target: "api",
+            target_name: "api",
+            edge_id: "web->api",
+            edge_kind: "http",
+            severity: "violation",
+          },
+        ],
+        cycles: [{ nodes: ["api", "db"], edge_ids: ["api->db"], length: 2 }],
+      }),
+    );
+    const cell = (from: string, to: string) =>
+      dsm.cells[dsm.axis.indexOf(from)]![dsm.axis.indexOf(to)]!;
+    expect(cell("web", "api").violation).toBe(true);
+    expect(cell("api", "db").cycle).toBe(true);
+  });
+
+  it("returns an empty matrix for an empty graph", () => {
+    expect(buildDsm(null)).toEqual({ axis: [], labels: [], cells: [] });
   });
 });

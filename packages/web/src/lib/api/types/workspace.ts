@@ -150,12 +150,19 @@ export type {
   BreakingChangeConsumer,
   BreakingChangeReport,
   BreakingChangeSeverity,
+  ConformanceRule,
+  ConformanceViolation,
+  DependencyCycle,
+  ConformanceReport,
+  DsmCell,
+  DsmMatrix,
 } from "@repowise-dev/types";
 
 import type {
   SystemGraph,
   CrossRepoBlastRadius,
   BreakingChangeReport,
+  ConformanceReport,
 } from "@repowise-dev/types";
 
 /** `GET /api/workspace/system-graph` — the full service-granular system graph. */
@@ -166,3 +173,6 @@ export type WorkspaceBlastRadiusResponse = CrossRepoBlastRadius;
 
 /** `GET /api/workspace/breaking-changes` — incompatible provider changes + impact. */
 export type WorkspaceBreakingChangesResponse = BreakingChangeReport;
+
+/** `GET /api/workspace/conformance` — architecture rule violations + cycles. */
+export type WorkspaceConformanceResponse = ConformanceReport;

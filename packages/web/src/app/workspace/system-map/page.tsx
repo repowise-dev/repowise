@@ -2,13 +2,15 @@
 
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Waypoints, Boxes, ArrowLeftRight, Share2, Zap, AlertTriangle } from "lucide-react";
+import { Waypoints, Boxes, ArrowLeftRight, Share2, Zap, AlertTriangle, ShieldAlert } from "lucide-react";
 import {
   SystemMap,
   SystemMapBlastPanel,
   SystemMapBreakingPanel,
+  SystemMapConformancePanel,
   buildBlastRadiusOverlay,
   buildBreakingChangeOverlay,
+  buildConformanceOverlay,
   type RepoHealth,
 } from "@repowise-dev/ui/workspace/system-map";
 import { StatCard } from "@repowise-dev/ui/shared/stat-card";
@@ -18,6 +20,7 @@ import {
   useWorkspaceGraph,
   useWorkspaceBlastRadius,
   useWorkspaceBreakingChanges,
+  useWorkspaceConformance,
 } from "@/lib/hooks/use-workspace";
 
 export default function SystemMapPage() {
@@ -40,6 +43,12 @@ export default function SystemMapPage() {
   const { data: breaking, isLoading: breakingLoading } =
     useWorkspaceBreakingChanges(showBreaking);
 
+  // Architecture conformance. Lazy-fetched on toggle; violation/cycle badges ride
+  // the same overlay prop when no blast target or breaking-change view is active.
+  const [showConformance, setShowConformance] = useState(false);
+  const { data: conformance, isLoading: conformanceLoading } =
+    useWorkspaceConformance(showConformance);
+
   // Join repo health (from the repo-level graph) onto service nodes by alias.
   // The map keys health by `SystemNode.repo`; the repo graph's node `name` is
   // the repo alias.
@@ -56,9 +65,10 @@ export default function SystemMapPage() {
   const overlay = useMemo(() => {
     if (!graph) return undefined;
     if (blast) return buildBlastRadiusOverlay(graph, blast);
+    if (showConformance && conformance) return buildConformanceOverlay(graph, conformance);
     if (showBreaking && breaking) return buildBreakingChangeOverlay(graph, breaking);
     return undefined;
-  }, [graph, blast, showBreaking, breaking]);
+  }, [graph, blast, showBreaking, breaking, showConformance, conformance]);
 
   const diag = graph?.diagnostics;
   const serviceCount = graph?.nodes.length ?? 0;
@@ -136,9 +146,31 @@ export default function SystemMapPage() {
         </label>
         <button
           type="button"
-          onClick={() => setShowBreaking((v) => !v)}
-          aria-pressed={showBreaking}
+          onClick={() => {
+            setShowConformance((v) => !v);
+            if (!showConformance) setShowBreaking(false);
+          }}
+          aria-pressed={showConformance}
           className={`ml-auto inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-sm ${
+            showConformance
+              ? "border-[var(--color-risk-high)] text-[var(--color-risk-high)]"
+              : "border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
+          }`}
+        >
+          <ShieldAlert className="h-4 w-4" />
+          Conformance
+          {showConformance && conformance && conformance.violation_count > 0 && (
+            <span className="font-semibold">· {conformance.violation_count}</span>
+          )}
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setShowBreaking((v) => !v);
+            if (!showBreaking) setShowConformance(false);
+          }}
+          aria-pressed={showBreaking}
+          className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-sm ${
             showBreaking
               ? "border-[var(--color-risk-high)] text-[var(--color-risk-high)]"
               : "border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
@@ -187,6 +219,14 @@ export default function SystemMapPage() {
                 loading={breakingLoading}
                 onSelectNode={setBlastTarget}
                 onClear={() => setShowBreaking(false)}
+              />
+            )}
+            {showConformance && (
+              <SystemMapConformancePanel
+                report={conformance}
+                loading={conformanceLoading}
+                onSelectNode={setBlastTarget}
+                onClear={() => setShowConformance(false)}
               />
             )}
           </>

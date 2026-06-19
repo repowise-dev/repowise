@@ -21,6 +21,7 @@ import {
   Link2,
   MessageSquare,
   Settings,
+  ShieldCheck,
   Users,
   Waypoints,
 } from "lucide-react";
@@ -46,6 +47,7 @@ export const GLOBAL_NAV: NavItem[] = [
 export const WORKSPACE_NAV: NavItem[] = [
   { label: "Overview", href: "/workspace", icon: Layers, exact: true },
   { label: "System Map", href: "/workspace/system-map", icon: Waypoints },
+  { label: "Conformance", href: "/workspace/conformance", icon: ShieldCheck },
   { label: "Contracts", href: "/workspace/contracts", icon: Link2 },
   { label: "Co-Changes", href: "/workspace/co-changes", icon: GitMerge },
 ];

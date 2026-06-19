@@ -61,6 +61,7 @@
     "./dashboard/*": "./src/dashboard/*.tsx",
     "./workspace": "./src/workspace/index.ts",
     "./workspace/system-map": "./src/workspace/system-map/index.ts",
+    "./workspace/dsm": "./src/workspace/dsm/index.ts",
     "./workspace/*": "./src/workspace/*.tsx",
     "./jobs": "./src/jobs/index.ts",
     "./jobs/*": "./src/jobs/*.tsx",

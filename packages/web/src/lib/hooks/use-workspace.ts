@@ -9,6 +9,7 @@ import {
   getWorkspaceGraph,
   getWorkspaceBlastRadius,
   getWorkspaceBreakingChanges,
+  getWorkspaceConformance,
 } from "@/lib/api/workspace";
 import type {
   WorkspaceResponse,
@@ -18,6 +19,7 @@ import type {
   WorkspaceGraphResponse,
   WorkspaceBlastRadiusResponse,
   WorkspaceBreakingChangesResponse,
+  WorkspaceConformanceResponse,
 } from "@/lib/api/types";
 
 export function useWorkspace() {
@@ -103,6 +105,19 @@ export function useWorkspaceBreakingChanges(enabled = true) {
   const { data, error, isLoading } = useSWR<WorkspaceBreakingChangesResponse>(
     enabled ? "workspace:breaking-changes" : null,
     () => getWorkspaceBreakingChanges(),
+    { revalidateOnFocus: false },
+  );
+  return { data: data ?? null, isLoading, error };
+}
+
+/**
+ * Architecture conformance report from the most recent workspace update. Pass
+ * ``enabled=false`` to skip the request until the view needs it.
+ */
+export function useWorkspaceConformance(enabled = true) {
+  const { data, error, isLoading } = useSWR<WorkspaceConformanceResponse>(
+    enabled ? "workspace:conformance" : null,
+    () => getWorkspaceConformance(),
     { revalidateOnFocus: false },
   );
   return { data: data ?? null, isLoading, error };

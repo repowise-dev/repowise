@@ -15,6 +15,11 @@ export {
   type SystemMapBreakingPanelProps,
 } from "./system-map-breaking-panel";
 export { buildBreakingChangeOverlay } from "./breaking-changes";
+export {
+  SystemMapConformancePanel,
+  type SystemMapConformancePanelProps,
+} from "./system-map-conformance-panel";
+export { buildConformanceOverlay } from "./conformance";
 export { useSystemMapLayout, type SystemMapLayout, type UseSystemMapLayoutArgs } from "./use-system-map-layout";
 export { applyView, computeSystemMapPositions, SYSTEM_MAP_NODE_SIZE, type SystemMapView } from "./layout";
 export { collapseToRepos } from "./collapse";
