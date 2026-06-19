@@ -24,7 +24,7 @@ from repowise.server.mcp_server._helpers import (
 from repowise.core.registry import mcp_tool_registry as mcp
 
 
-@mcp.tool()
+@mcp.tool(default=False)
 async def get_dependency_path(source: str, target: str, repo: str | None = None) -> dict:
     """Find how two files/modules are connected in the dependency graph.
 

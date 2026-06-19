@@ -18,6 +18,34 @@ def test_mcp_help_lists_streamable_http_transport() -> None:
     assert "HTTP/SSE" in result.output
 
 
+def test_mcp_cli_passes_tools_override(monkeypatch, tmp_path: Path) -> None:
+    (tmp_path / ".repowise").mkdir()
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        "repowise.server.mcp_server.run_mcp", lambda **kw: captured.update(kw)
+    )
+
+    result = CliRunner().invoke(
+        cli, ["mcp", str(tmp_path), "--tools", "+get_execution_flows,-get_dead_code"]
+    )
+
+    assert result.exit_code == 0
+    assert captured["tools"] == "+get_execution_flows,-get_dead_code"
+
+
+def test_mcp_cli_all_flag_overrides_tools(monkeypatch, tmp_path: Path) -> None:
+    (tmp_path / ".repowise").mkdir()
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        "repowise.server.mcp_server.run_mcp", lambda **kw: captured.update(kw)
+    )
+
+    result = CliRunner().invoke(cli, ["mcp", str(tmp_path), "--all", "--tools", "get_answer"])
+
+    assert result.exit_code == 0
+    assert captured["tools"] == "all"
+
+
 def test_mcp_cli_accepts_streamable_http_transport(
     monkeypatch,
     tmp_path: Path,
@@ -48,6 +76,7 @@ def test_mcp_cli_accepts_streamable_http_transport(
         "transport": "streamable-http",
         "repo_path": str(tmp_path.resolve()),
         "port": 7339,
+        "tools": None,
     }
 
 
@@ -98,6 +127,7 @@ def test_mcp_cli_streamable_http_prints_workspace_summary(
         "transport": "streamable-http",
         "repo_path": str(workspace.resolve()),
         "port": 7341,
+        "tools": None,
     }
 
 

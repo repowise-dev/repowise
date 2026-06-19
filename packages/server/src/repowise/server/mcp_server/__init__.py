@@ -1,9 +1,12 @@
-"""repowise MCP Server — 13 tools for AI coding assistants.
+"""repowise MCP Server — a curated, configurable tool surface for AI agents.
 
-Ten tools are available in single-repo mode (get_answer, get_context,
+By default a single-repo server exposes ten tools (get_answer, get_context,
 get_symbol, search_codebase, get_overview, get_risk, get_why, get_dead_code,
 get_health, list_repos); three more (get_blast_radius, get_conformance,
-get_architecture) are workspace-only.
+get_architecture) are added automatically in workspace mode. Two further tools
+(get_dependency_path, get_execution_flows) are registered but off by default and
+can be opted in via the ``mcp.tools`` config block or the ``repowise mcp
+--tools`` flag. The selection layer lives in :mod:`._tool_selection`.
 
 Exposes the full repowise wiki as queryable tools via the MCP protocol.
 Supports stdio transport (Claude Code, Cursor, Cline), streamable HTTP, and
@@ -42,12 +45,17 @@ from repowise.server.mcp_server._server import (
     mcp,
     run_mcp,
 )
+from repowise.server.mcp_server._tool_selection import (
+    snapshot_full_surface as _snapshot,
+)
 from repowise.server.mcp_server.tool_answer import get_answer
 from repowise.server.mcp_server.tool_architecture import get_architecture
 from repowise.server.mcp_server.tool_blast_radius import get_blast_radius
 from repowise.server.mcp_server.tool_conformance import get_conformance
 from repowise.server.mcp_server.tool_context import get_context
 from repowise.server.mcp_server.tool_dead_code import get_dead_code
+from repowise.server.mcp_server.tool_dependency import get_dependency_path
+from repowise.server.mcp_server.tool_flows import get_execution_flows
 from repowise.server.mcp_server.tool_health import get_health
 from repowise.server.mcp_server.tool_overview import get_overview
 from repowise.server.mcp_server.tool_repos import list_repos
@@ -60,6 +68,11 @@ from repowise.server.mcp_server.tool_why import get_why
 # the counterfactual raw-exploration tokens its answer replaced into the unified
 # ledger. The wrapper is signature-preserving, so tool schemas are unchanged.
 _mcp_tool_registry.apply(mcp, middleware=_savings_instrument)
+
+# Snapshot the full registered surface so per-server tool selection (single-repo
+# vs workspace, config/CLI overrides) can rebuild from it. Selection itself runs
+# later, in create_mcp_server / run_mcp, once the repo path is known.
+_snapshot(mcp)
 
 # ---------------------------------------------------------------------------
 # Backward-compatible access to _state globals.
@@ -121,6 +134,8 @@ __all__ = [
     "get_conformance",
     "get_context",
     "get_dead_code",
+    "get_dependency_path",
+    "get_execution_flows",
     "get_health",
     "get_overview",
     "get_risk",

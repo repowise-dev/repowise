@@ -20,7 +20,7 @@ from repowise.server.mcp_server._meta import build_meta as _build_meta
 _MCP_CORE_MEMBER_LIMIT = 25
 
 
-@mcp.tool()
+@mcp.tool(requires_workspace=True)
 async def get_architecture() -> dict[str, Any]:
     """Workspace architecture metrics — coupling, core, and a 1-10 score.
 

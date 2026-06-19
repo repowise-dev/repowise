@@ -84,13 +84,38 @@ def _print_network_startup(
     default=7338,
     help="Port for HTTP/SSE transports (default: 7338).",
 )
-def mcp_command(path: str | None, transport: str, port: int) -> None:
+@click.option(
+    "--tools",
+    default=None,
+    help=(
+        "Override which tools are exposed. A comma-separated list is an "
+        "explicit allowlist; prefix names with + or - to adjust the default "
+        "set (e.g. '+get_dependency_path,-get_dead_code'). Overrides the "
+        "mcp.tools config block."
+    ),
+)
+@click.option(
+    "--all",
+    "all_tools",
+    is_flag=True,
+    default=False,
+    help="Expose every available tool, including opt-in and workspace tools.",
+)
+def mcp_command(
+    path: str | None,
+    transport: str,
+    port: int,
+    tools: str | None,
+    all_tools: bool,
+) -> None:
     """Start the MCP server for editor integration.
 
-    Exposes 13 tools for querying the repowise wiki via the MCP protocol
-    (ten in single-repo mode, plus three workspace-only tools in workspace
-    mode). Supports stdio (for Claude Code, Codex, Cursor, Cline), streamable
-    HTTP, and legacy SSE transports.
+    Exposes a curated set of tools for querying the repowise wiki via the MCP
+    protocol: ten in single-repo mode, plus three workspace-only tools in
+    workspace mode. Two more (get_dependency_path, get_execution_flows) are
+    opt-in via ``--tools`` or the ``mcp.tools`` config block. Supports stdio
+    (for Claude Code, Codex, Cursor, Cline), streamable HTTP, and legacy SSE
+    transports.
 
     Loads ``<repo>/.repowise/.env`` into the environment before starting so
     that MCP tools (e.g. ``get_answer``) can resolve the configured LLM
@@ -100,8 +125,9 @@ def mcp_command(path: str | None, transport: str, port: int) -> None:
 
         repowise mcp                     # stdio, current directory
         repowise mcp /path/to/repo       # stdio, specific repo
+        repowise mcp --tools +get_execution_flows  # default set plus one
+        repowise mcp --all               # every available tool
         repowise mcp --transport streamable-http  # HTTP on port 7338
-        repowise mcp --transport sse     # SSE on port 7338
     """
     if path is None:
         repo_path = find_repowise_repo_root(Path.cwd()) or resolve_repo_path(None)
@@ -125,8 +151,11 @@ def mcp_command(path: str | None, transport: str, port: int) -> None:
 
     from repowise.server.mcp_server import run_mcp
 
+    tools_override: str | None = "all" if all_tools else tools
+
     run_mcp(
         transport=transport,
         repo_path=str(repo_path),
         port=port,
+        tools=tools_override,
     )

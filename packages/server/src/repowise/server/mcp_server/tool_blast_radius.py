@@ -22,7 +22,7 @@ from repowise.server.mcp_server._meta import build_meta as _build_meta
 _MCP_IMPACTED_LIMIT = 25
 
 
-@mcp.tool()
+@mcp.tool(requires_workspace=True)
 async def get_blast_radius(
     targets: list[str],
     max_depth: int = 3,

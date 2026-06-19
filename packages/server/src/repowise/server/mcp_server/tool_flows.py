@@ -35,7 +35,7 @@ from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.core.registry import mcp_tool_registry as mcp
 
 
-@mcp.tool()
+@mcp.tool(default=False)
 async def get_execution_flows(
     top_n: int = 10,
     max_depth: int = 8,

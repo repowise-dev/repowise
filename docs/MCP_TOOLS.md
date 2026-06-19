@@ -1,6 +1,6 @@
 # MCP Tools Reference
 
-repowise exposes 9 tools via the [Model Context Protocol](https://modelcontextprotocol.io) (MCP). These tools give AI coding assistants (Claude Code, Codex, Cursor, Cline, Windsurf) structured access to your codebase intelligence — dependency graph, git history, documentation, and architectural decisions.
+repowise exposes a curated set of tools via the [Model Context Protocol](https://modelcontextprotocol.io) (MCP). These tools give AI coding assistants (Claude Code, Codex, Cursor, Cline, Windsurf) structured access to your codebase intelligence — dependency graph, git history, documentation, and architectural decisions. A single-repo server advertises 10 tools by default; workspace mode adds 3 more automatically. The surface is configurable — see [Configuring the tool surface](#configuring-the-tool-surface).
 
 **Start the MCP server:**
 
@@ -27,9 +27,48 @@ repowise mcp --transport sse --port 7338 # legacy SSE transport
 | `get_why` | Architectural decisions | Before structural changes |
 | `get_dead_code` | Unreachable code | Cleanup tasks |
 | `get_health` | Code-health biomarker scores | Before refactoring — find the worst files |
+| `list_repos` | List the repos a server is serving | Discovering workspace repo aliases |
 | `get_blast_radius` | Cross-repo downstream impact (workspace only) | Before changing a service other repos consume |
 | `get_conformance` | Architecture rule violations + cycles (workspace only) | Auditing or before changing service boundaries |
 | `get_architecture` | System coupling, cyclic core, 1-10 architecture score (workspace only) | Gauging overall structure before a cross-service refactor |
+
+Two further tools are **off by default** and opt-in (see below): `get_dependency_path` (shortest dependency path between two symbols/files) and `get_execution_flows` (top entry points and their call traces).
+
+---
+
+## Configuring the tool surface
+
+The default surface is deliberately small — fewer, richer tools mean fewer round-trips and less schema overhead per task. What a server advertises is resolved from three things: each tool's defaults, whether the server is in workspace mode, and an optional override.
+
+- **Default (single-repo):** the 10 tools above (every tool except the workspace-only three).
+- **Default (workspace):** those 10 plus `get_blast_radius`, `get_conformance`, and `get_architecture`, which are added automatically when the server is started inside a workspace. They are never advertised outside one.
+- **Opt-in tools:** `get_dependency_path` and `get_execution_flows` are registered but off by default. Turn them on per repo.
+
+**Configure it in `.repowise/config.yaml`** under an `mcp.tools` key. Two shapes are supported:
+
+```yaml
+# Adjust the default set with + / - deltas (the common case):
+mcp:
+  tools: ["+get_execution_flows", "-get_dead_code"]
+
+# Or give an explicit allowlist (only these tools):
+mcp:
+  tools: ["get_answer", "get_context", "get_symbol", "search_codebase"]
+
+# Or enable everything available in the current mode:
+mcp:
+  tools: all
+```
+
+**Or per launch on the CLI**, which overrides the config block:
+
+```bash
+repowise mcp --tools "+get_execution_flows"          # default set plus one
+repowise mcp --tools "get_answer,get_context"         # explicit allowlist
+repowise mcp --all                                    # every available tool
+```
+
+Workspace-only tools named explicitly in single-repo mode are ignored (they cannot do useful work there). Unknown tool names are ignored with a warning.
 
 ---
 

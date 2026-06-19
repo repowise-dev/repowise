@@ -32,40 +32,67 @@ Usage::
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
+
+
+@dataclass(frozen=True)
+class ToolEntry:
+    """A registered tool plus the metadata that drives surface selection.
+
+    ``name`` is the tool's wire name (the function ``__name__``, which is
+    what FastMCP registers and what the selection layer removes by). ``default``
+    marks whether the tool is part of the curated default surface; opt-in tools
+    set it ``False``. ``requires_workspace`` marks tools that only do useful
+    work in workspace mode, so they are hidden from single-repo servers.
+    """
+
+    fn: Callable[..., Any]
+    name: str
+    default: bool = True
+    requires_workspace: bool = False
 
 
 class MCPToolRegistry:
     """Holds tool callables until :meth:`apply` attaches them to a server."""
 
     def __init__(self) -> None:
-        self._tools: list[Callable[..., Any]] = []
+        self._entries: list[ToolEntry] = []
         self._applied_to: list[Any] = []
 
     def register(
         self,
         *args: Any,
+        default: bool = True,
+        requires_workspace: bool = False,
         **kwargs: Any,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]] | Callable[..., Any]:
         """Decorator that schedules a function for FastMCP registration.
 
         Supports both decorator forms — bare ``@register`` and
-        ``@register()`` — so call sites read naturally. Keyword arguments
-        are currently ignored; they exist as a forward-compat hook for
-        future ``description=`` / ``name=`` overrides.
+        ``@register()`` — so call sites read naturally. ``default`` and
+        ``requires_workspace`` annotate the tool for the selection layer
+        (see :class:`ToolEntry`); any other keyword arguments are reserved
+        for future ``description=`` / ``name=`` overrides and ignored.
         """
+
+        def _add(fn: Callable[..., Any]) -> Callable[..., Any]:
+            self._entries.append(
+                ToolEntry(
+                    fn=fn,
+                    name=fn.__name__,
+                    default=default,
+                    requires_workspace=requires_workspace,
+                )
+            )
+            return fn
+
         # Bare-decorator form: @mcp_tool_registry.register
         if len(args) == 1 and callable(args[0]) and not kwargs:
-            fn = args[0]
-            self._tools.append(fn)
-            return fn
+            return _add(args[0])
 
         # Called form: @mcp_tool_registry.register()
-        def _decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
-            self._tools.append(fn)
-            return fn
-
-        return _decorator
+        return _add
 
     # FastMCP-style alias so existing tool modules can swap
     # ``from ._server import mcp`` to
@@ -93,23 +120,27 @@ class MCPToolRegistry:
         """
         if mcp in self._applied_to:
             return
-        for fn in self._tools:
-            wrapped = middleware(fn) if middleware is not None else fn
+        for entry in self._entries:
+            wrapped = middleware(entry.fn) if middleware is not None else entry.fn
             mcp.tool()(wrapped)
         self._applied_to.append(mcp)
 
     def reset(self) -> None:
         """Drop every registered tool. Used by tests."""
-        self._tools.clear()
+        self._entries.clear()
         self._applied_to.clear()
 
     def tools(self) -> list[Callable[..., Any]]:
         """Return every registered tool function. Used by tests."""
-        return list(self._tools)
+        return [entry.fn for entry in self._entries]
+
+    def entries(self) -> list[ToolEntry]:
+        """Return every registered tool with its selection metadata."""
+        return list(self._entries)
 
 
 mcp_tool_registry = MCPToolRegistry()
 """Process-wide default registry used by the OSS MCP server."""
 
 
-__all__ = ["MCPToolRegistry", "mcp_tool_registry"]
+__all__ = ["MCPToolRegistry", "ToolEntry", "mcp_tool_registry"]

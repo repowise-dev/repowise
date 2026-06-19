@@ -96,6 +96,27 @@ distill:
   `commands.enabled: false`, so a rewrite hook installed globally from another
   repo stays inert in this one.
 
+### The `mcp:` block
+
+Controls which tools the MCP server advertises. The default surface is curated
+(10 tools in single-repo mode, plus 3 workspace-only tools in workspace mode);
+this block lets you opt extra tools in or trim the set down. The `repowise mcp
+--tools` / `--all` flags override it for a single launch.
+
+```yaml
+mcp:
+  tools: ["+get_execution_flows", "-get_dead_code"]   # adjust the default set
+  # tools: ["get_answer", "get_context"]              # or an explicit allowlist
+  # tools: all                                        # or everything available
+```
+
+- `+name` / `-name` entries add to or remove from the default set; an
+  unprefixed list is treated as an explicit allowlist.
+- Opt-in tools are `get_dependency_path` and `get_execution_flows`.
+- Workspace-only tools (`get_blast_radius`, `get_conformance`,
+  `get_architecture`) are added automatically in workspace mode and ignored if
+  named in single-repo mode. See [MCP_TOOLS.md](MCP_TOOLS.md#configuring-the-tool-surface).
+
 ---
 
 ## LLM providers
