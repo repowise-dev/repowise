@@ -69,6 +69,12 @@ from .system_graph import (
     run_system_graph_build,
     save_system_graph,
 )
+from .architecture_metrics import (
+    ArchitectureMetrics,
+    NodeArchitectureRole,
+    architecture_score,
+    compute_architecture_metrics,
+)
 
 __all__ = [
     # Scanner
@@ -127,4 +133,9 @@ __all__ = [
     "load_system_graph",
     "run_system_graph_build",
     "save_system_graph",
+    # Architecture metrics (Phase 6)
+    "ArchitectureMetrics",
+    "NodeArchitectureRole",
+    "architecture_score",
+    "compute_architecture_metrics",
 ]
