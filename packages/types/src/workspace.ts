@@ -284,3 +284,97 @@ export interface BreakingChangeReport {
   impacted_services: string[];
   total_impacted_consumers: number;
 }
+
+// ---------------------------------------------------------------------------
+// Architecture conformance — declared dependency rules + dependency cycles.
+// A team declares allow/deny dependency rules in `.repowise-workspace.yaml`;
+// the checker reports structural dependencies that violate them, plus any
+// circular service dependencies. Mirrors `repowise.core.workspace.conformance`
+// and `repowise.core.workspace.cycles`.
+// ---------------------------------------------------------------------------
+
+/**
+ * One conformance rule. `source` / `target` are matchers: `"*"` (any service),
+ * `"tag:<name>"` (repo tag), or a glob over node id / repo / name. `allow=false`
+ * (default) denies the dependency; `allow=true` whitelists an exception.
+ */
+export interface ConformanceRule {
+  source: string;
+  target: string;
+  allow: boolean;
+  description: string;
+}
+
+/** A structural dependency that a deny rule forbids. */
+export interface ConformanceViolation {
+  /** The rule's source matcher that fired. */
+  rule_source: string;
+  /** The rule's target matcher that fired. */
+  rule_target: string;
+  rule_description: string;
+  /** Offending service node id (depends on `target`). */
+  source: string;
+  source_name: string;
+  /** Service node id depended upon. */
+  target: string;
+  target_name: string;
+  /** The system-graph edge that violates the rule (for map badging). */
+  edge_id: string;
+  edge_kind: SystemEdgeKind;
+  severity: string;
+}
+
+/** One elementary circular dependency among services (`nodes[i] -> nodes[i+1]`, wrapping). */
+export interface DependencyCycle {
+  /** Participating service ids in traversal order. */
+  nodes: string[];
+  /** System-graph edge ids forming the loop. */
+  edge_ids: string[];
+  /** Number of services in the cycle. */
+  length: number;
+}
+
+export interface ConformanceReport {
+  version: number;
+  generated_at: string;
+  /** How many rules were declared and evaluated. */
+  rules_evaluated: number;
+  violations: ConformanceViolation[];
+  cycles: DependencyCycle[];
+  violation_count: number;
+  cycle_count: number;
+  /** Distinct repos participating in a violation. */
+  violating_repos: string[];
+}
+
+// ---------------------------------------------------------------------------
+// Dependency-structure matrix (DSM) — a dense governance view derived purely
+// from the system graph + conformance report (built client-side, no endpoint).
+// Services index both axes; a cell is the relationship from the row service to
+// the column service.
+// ---------------------------------------------------------------------------
+
+/** One DSM cell: the dependency from `from_id` (row) on `to_id` (column). */
+export interface DsmCell {
+  from_id: string;
+  to_id: string;
+  /** True when at least one structural edge runs row → column. */
+  present: boolean;
+  /** The dominant edge kind for the cell, or null when empty. */
+  kind: SystemEdgeKind | null;
+  /** The cell's edge ids (for drill-down / highlighting). */
+  edge_ids: string[];
+  /** Row → column dependency violates a declared rule. */
+  violation: boolean;
+  /** Row → column edge participates in a dependency cycle. */
+  cycle: boolean;
+}
+
+export interface DsmMatrix {
+  /** Service ids in axis order (rows and columns share this order). */
+  axis: string[];
+  /** Display names parallel to `axis`. */
+  labels: string[];
+  /** Row-major cells: `cells[i][j]` is the dependency of `axis[i]` on `axis[j]`. */
+  cells: DsmCell[][];
+}
