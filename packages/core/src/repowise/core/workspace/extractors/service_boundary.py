@@ -4,6 +4,12 @@ Walks a repo directory tree looking for marker files (package.json, go.mod,
 Dockerfile, etc.) that indicate independent service boundaries. Used to
 distinguish intra-service calls from inter-service calls when matching
 contracts.
+
+The directory walk goes through :func:`~repowise.core.fs_walk.walk_repo`, which
+prunes junk directories and, critically, *nested git repositories*. A workspace
+repo whose root physically contains sibling/vendored repos (or benchmark clones)
+would otherwise be walked end-to-end, turning a sub-second scan into a
+multi-minute stall over hundreds of thousands of foreign files.
 """
 
 from __future__ import annotations
@@ -12,6 +18,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from repowise.core.fs_walk import walk_repo
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
 
 # ---------------------------------------------------------------------------
@@ -116,8 +123,10 @@ def detect_service_boundaries(repo_path: Path) -> list[ServiceBoundary]:
     repo_root = repo_path.resolve()
     boundaries: list[ServiceBoundary] = []
 
-    for dirpath, dirnames, filenames in os.walk(repo_root):
-        # Prune blocked dirs in-place
+    for dirpath, dirnames, filenames in walk_repo(repo_root):
+        # ``walk_repo`` already prunes junk dirs and nested git repos; layer on
+        # the derived-output names (dist/build/target/...) it intentionally
+        # leaves ambiguous, plus dotfile dirs, that are never service roots.
         dirnames[:] = [d for d in dirnames if d not in _BLOCKED_DIRS and not d.startswith(".")]
 
         current = Path(dirpath)

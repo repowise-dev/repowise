@@ -7,13 +7,14 @@ consumer patterns.
 from __future__ import annotations
 
 import logging
-import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
+
+from .base import iter_source_files
 
 if TYPE_CHECKING:
     from repowise.core.workspace.contracts import Contract
@@ -23,30 +24,6 @@ _log = logging.getLogger("repowise.workspace.extractors.topic")
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-
-_BLOCKED_DIRS = frozenset(
-    {
-        ".git",
-        "node_modules",
-        "__pycache__",
-        ".venv",
-        "venv",
-        "dist",
-        "build",
-        "target",
-        "vendor",
-        ".next",
-        ".nuxt",
-        ".tox",
-        ".mypy_cache",
-        ".gradle",
-        ".mvn",
-        "out",
-        "bin",
-    }
-)
-
-_MAX_FILE_SIZE = 512 * 1024
 
 _EXTENSIONS = _LANG_REGISTRY.extensions_for(["python", "typescript", "javascript", "java", "go"])
 
@@ -247,58 +224,41 @@ class TopicExtractor:
         from repowise.core.workspace.contracts import Contract
 
         contracts: list[Contract] = []
-        repo_root = repo_path.resolve()
         seen: set[tuple[str, str, str]] = set()  # (file, contract_id, role) dedup
 
-        for dirpath, dirnames, filenames in os.walk(repo_root):
-            dirnames[:] = [d for d in dirnames if d not in _BLOCKED_DIRS and not d.startswith(".")]
-            for fname in filenames:
-                fpath = Path(dirpath) / fname
-                suffix = fpath.suffix.lower()
-                if suffix not in _EXTENSIONS:
-                    continue
-                try:
-                    if fpath.stat().st_size > _MAX_FILE_SIZE:
+        # File discovery is gitignore- and nested-repo-aware (see
+        # ``iter_source_files``) so a workspace repo whose root contains nested
+        # repos or large ignored trees is not scanned end-to-end.
+        for rel_path, _suffix, content in iter_source_files(repo_path, _EXTENSIONS):
+            for pdef in _ALL_PATTERNS:
+                for match in pdef.regex.finditer(content):
+                    topic_name = match.group(pdef.topic_group).strip()
+                    if not topic_name:
                         continue
-                except OSError:
-                    continue
 
-                try:
-                    content = fpath.read_text(encoding="utf-8", errors="replace")
-                except OSError:
-                    continue
+                    contract_id = f"topic::{topic_name.lower()}"
 
-                rel_path = fpath.relative_to(repo_root).as_posix()
+                    # Deduplicate within the same file
+                    dedup_key = (rel_path, contract_id, pdef.role)
+                    if dedup_key in seen:
+                        continue
+                    seen.add(dedup_key)
 
-                for pdef in _ALL_PATTERNS:
-                    for match in pdef.regex.finditer(content):
-                        topic_name = match.group(pdef.topic_group).strip()
-                        if not topic_name:
-                            continue
-
-                        contract_id = f"topic::{topic_name.lower()}"
-
-                        # Deduplicate within the same file
-                        dedup_key = (rel_path, contract_id, pdef.role)
-                        if dedup_key in seen:
-                            continue
-                        seen.add(dedup_key)
-
-                        contracts.append(
-                            Contract(
-                                repo=repo_alias,
-                                contract_id=contract_id,
-                                contract_type="topic",
-                                role=pdef.role,
-                                file_path=rel_path,
-                                symbol_name=f"{pdef.label}('{topic_name}')",
-                                confidence=pdef.confidence,
-                                service=None,
-                                meta={
-                                    "topic": topic_name,
-                                    "broker": pdef.broker,
-                                },
-                            )
+                    contracts.append(
+                        Contract(
+                            repo=repo_alias,
+                            contract_id=contract_id,
+                            contract_type="topic",
+                            role=pdef.role,
+                            file_path=rel_path,
+                            symbol_name=f"{pdef.label}('{topic_name}')",
+                            confidence=pdef.confidence,
+                            service=None,
+                            meta={
+                                "topic": topic_name,
+                                "broker": pdef.broker,
+                            },
                         )
+                    )
 
         return contracts
