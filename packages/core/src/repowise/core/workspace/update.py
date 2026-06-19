@@ -709,9 +709,10 @@ async def run_cross_repo_hooks(
         return
 
     from .breaking_change import run_breaking_change_detection
+    from .conformance import run_conformance_check
     from .contracts import ContractStore, load_contract_store, run_contract_extraction
     from .cross_repo import CrossRepoOverlay, run_cross_repo_analysis
-    from .system_graph import run_system_graph_build
+    from .system_graph import SystemGraph, run_system_graph_build
 
     overlay = CrossRepoOverlay()
     try:
@@ -733,8 +734,9 @@ async def run_cross_repo_hooks(
 
     # System graph — the normalized service-granular structure every workspace
     # view reads. Built last so it folds in the contracts and overlay above.
+    system_graph: SystemGraph | None = None
     try:
-        await run_system_graph_build(ws_config, workspace_root, store, overlay)
+        system_graph = await run_system_graph_build(ws_config, workspace_root, store, overlay)
     except Exception:
         _log.warning("System graph build failed", exc_info=True)
 
@@ -744,3 +746,11 @@ async def run_cross_repo_hooks(
         run_breaking_change_detection(workspace_root, previous_store, store)
     except Exception:
         _log.warning("Breaking-change detection failed", exc_info=True)
+
+    # Conformance + cycles — check declared dependency rules and detect circular
+    # service dependencies over the freshly-built system graph.
+    if system_graph is not None:
+        try:
+            run_conformance_check(ws_config, workspace_root, system_graph)
+        except Exception:
+            _log.warning("Conformance check failed", exc_info=True)
