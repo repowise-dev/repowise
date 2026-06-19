@@ -11,6 +11,23 @@ from repowise.server.mcp_server._meta import build_meta as _build_meta
 
 def _workspace_repos(registry: Any) -> list[dict[str, Any]]:
     ws_config = getattr(registry, "ws_config", None)
+    # The registry's ws_config is a snapshot taken when this (long-lived) MCP
+    # server started. A `repowise update` that runs later rewrites the
+    # workspace config's per-repo ``indexed_at`` / ``last_commit_at_index``,
+    # but the in-process copy would keep reporting the startup values, making
+    # the index look stale long after it was synced. Re-read from disk so the
+    # freshness fields track updates without a server restart. Best-effort:
+    # fall back to the cached snapshot if the reload fails.
+    workspace_root = getattr(registry, "workspace_root", None)
+    if workspace_root is not None:
+        try:
+            from repowise.core.workspace import WorkspaceConfig
+
+            fresh = WorkspaceConfig.load(workspace_root)
+            if getattr(fresh, "repos", None):
+                ws_config = fresh
+        except Exception:
+            pass  # never fail discovery on a config reload hiccup (missing/locked file)
     default_alias = registry.get_default_alias()
 
     if ws_config is None:

@@ -23,6 +23,61 @@ def _check(name: str, ok: bool, detail: str = "") -> tuple[str, str, str]:
     return (name, status, detail)
 
 
+def _claude_md_stamp_status(repo_path, state: dict) -> tuple[bool, str] | None:
+    """Compare the managed CLAUDE.md "Last indexed" commit to state.json.
+
+    Returns ``(ok, detail)`` or ``None`` to skip the check (no CLAUDE.md, no
+    stamp, or no synced commit yet). After any index/update the stamp and
+    ``state.json``'s ``last_sync_commit`` should agree; a mismatch means
+    editor-file regeneration stopped (e.g. the workspace-update refresh bug or
+    ``editor_files.claude_md`` disabled), so the injected "Last indexed" line is
+    stale and trains agents to distrust the index. Compared against the synced
+    commit, not live HEAD, so being a few commits behind HEAD is not flagged.
+    """
+    import re
+
+    claude_md = repo_path / ".claude" / "CLAUDE.md"
+    try:
+        text = claude_md.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    m = re.search(r"Last indexed:.*?\(commit\s+([0-9a-fA-F]{7,})\)", text)
+    if not m:
+        # No stamp, or a too-short/abbreviated sha we can't compare safely.
+        return None
+    stamp = m.group(1).lower()
+    synced = ((state or {}).get("last_sync_commit") or "").lower()
+    if not synced:
+        return None
+    if synced.startswith(stamp) or stamp.startswith(synced):
+        return (True, f"in sync at {stamp}")
+    return (
+        False,
+        f"stamp {stamp} != index {synced[:8]} — run `repowise update` "
+        "or `repowise claude-md` to refresh",
+    )
+
+
+def _advise_claude_md_stamp(repo_path, state: dict) -> None:
+    """Print an advisory line when the CLAUDE.md stamp lags the index.
+
+    Advisory only (never flips the doctor's pass/fail): a stamp can briefly lag
+    when a commit lands mid-update, which self-heals on the next sync. Skipped
+    entirely when ``editor_files.claude_md`` is disabled, since there is nothing
+    to refresh and the advice would be un-actionable.
+    """
+    from repowise.cli.editor_integrations.claude import _claude_md_enabled
+
+    if not _claude_md_enabled(repo_path):
+        return
+    status = _claude_md_stamp_status(repo_path, state)
+    if status is None:
+        return
+    ok, detail = status
+    if not ok:
+        console.print(f"[yellow]CLAUDE.md stamp drift:[/yellow] {detail}")
+
+
 async def _decision_vector_ids(session, repository_id: str) -> set[str]:
     """Vector-store ids for this repo's decision records.
 
@@ -181,6 +236,7 @@ def _run_repo_checks(repo_path: _DoctorPath, repair: bool) -> bool:
     config_ok = len(config_warnings) == 0
     config_detail = "All required API keys configured" if config_ok else "; ".join(config_warnings)
     checks.append(_check("Provider config", config_ok, config_detail))
+
 
     # 7. Stale page count
     stale_count = 0
@@ -416,6 +472,12 @@ def _run_repo_checks(repo_path: _DoctorPath, repair: bool) -> bool:
     for name, status, detail in checks:
         table.add_row(name, status, detail)
     console.print(table)
+
+    # CLAUDE.md freshness stamp — advisory, never fails the run. The managed
+    # ".claude/CLAUDE.md" block stamps the commit it was generated against; if
+    # editor-file regeneration stops, the stamp freezes while the index moves
+    # on and agents reading the stale "Last indexed" line distrust the tools.
+    _advise_claude_md_stamp(repo_path, state)
 
     all_ok = all("[green]OK[/green]" in status for _, status, _ in checks)
     if all_ok:

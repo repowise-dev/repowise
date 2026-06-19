@@ -161,17 +161,27 @@ def _refresh_workspace_editor_project_files(
     repo_filter: str | None,
     agents_md: bool | None,
 ) -> None:
-    """Refresh workspace repo editor files for explicit per-run overrides."""
+    """Re-stamp each workspace repo's editor files (CLAUDE.md / AGENTS.md).
 
-    if agents_md is None:
-        return
+    Runs on every workspace update so a repo's ``.claude/CLAUDE.md`` "Last
+    indexed" stamp tracks the freshly synced index. Each integration decides
+    whether to write from the repo's own config (CLAUDE.md defaults on), so we
+    pass ``options=None`` for the common case.
 
+    ``agents_md`` is only a per-run override for AGENTS.md generation; when it
+    is ``None`` each integration falls back to config. It must NOT gate the
+    whole refresh: doing so froze the CLAUDE.md stamp for every workspace user
+    who never passed ``--agents-md`` (the default), making the index look stale
+    long after it was current. Mirrors the single-repo update path.
+    """
     from repowise.cli.editor_integrations.defaults import get_default_project_file_overrides
     from repowise.cli.editor_setup import EditorSetupOptions, refresh_editor_project_files
 
-    options = EditorSetupOptions(
-        project_file_overrides=get_default_project_file_overrides(agents_md=agents_md),
-    )
+    options: EditorSetupOptions | None = None
+    if agents_md is not None:
+        options = EditorSetupOptions(
+            project_file_overrides=get_default_project_file_overrides(agents_md=agents_md),
+        )
     for entry in ws_config.repos:
         if repo_filter and entry.alias != repo_filter:
             continue

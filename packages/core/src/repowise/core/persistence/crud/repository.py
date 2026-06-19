@@ -7,6 +7,7 @@ every public name, so existing imports are unaffected.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -34,13 +35,24 @@ async def upsert_repository(
     url: str = "",
     default_branch: str = "main",
     settings: dict | None = None,
+    head_commit: str | None = None,
 ) -> Repository:
     """Create or update a repository record.
 
     Lookup is by ``local_path`` (the canonical key for local repositories).
+
+    ``head_commit`` records the git commit the index was built against — the
+    value the MCP ``_meta`` freshness check compares to the live HEAD. Callers
+    that already know the synced commit may pass it; otherwise it is read from
+    ``local_path``'s git HEAD via plain file I/O (no ``git`` subprocess). This
+    runs at the start of every index/update, so the stored commit tracks each
+    sync and the MCP staleness signal stays calibrated instead of being NULL
+    forever (which silently disabled the preferred HEAD-vs-index comparison).
     """
     result = await session.execute(select(Repository).where(Repository.local_path == local_path))
     repo = result.scalar_one_or_none()
+
+    resolved_head = head_commit or _read_head_commit(local_path)
 
     if repo is None:
         repo = Repository(
@@ -50,6 +62,7 @@ async def upsert_repository(
             url=url,
             default_branch=default_branch,
             settings_json=json.dumps(settings or {}),
+            head_commit=resolved_head,
         )
         session.add(repo)
     else:
@@ -58,10 +71,53 @@ async def upsert_repository(
         repo.default_branch = default_branch
         if settings is not None:
             repo.settings_json = json.dumps(settings)
+        # Only advance the stamp when we could read a real commit; never blank
+        # out a previously recorded one (e.g. a transient non-checkout path).
+        if resolved_head:
+            repo.head_commit = resolved_head
         repo.updated_at = _now_utc()
 
     await session.flush()
     return repo
+
+
+def _read_head_commit(local_path: str) -> str | None:
+    """Return the repo's current git HEAD SHA via plain file I/O, or None.
+
+    Dependency-free (no ``git`` binary, no gitpython): parse ``.git/HEAD`` and
+    follow at most one ref, falling back to ``packed-refs``. Returns ``None``
+    when *local_path* is not a git checkout (hosted/ephemeral indexes) or the
+    ref can't be resolved. Mirrors the MCP ``_meta`` reader so the value we
+    write is read back the same way — keeping freshness comparisons honest.
+    """
+    try:
+        git_dir = Path(local_path) / ".git"
+        # Linked worktrees use a ``.git`` *file* (gitdir pointer), not a dir;
+        # treated as non-git here on purpose so this stays in lockstep with the
+        # MCP ``_meta._read_live_head`` reader (same is_dir() guard), keeping
+        # the written commit and the read-back comparison symmetric.
+        if not git_dir.is_dir():
+            return None
+        head = (git_dir / "HEAD").read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if head.startswith("ref: "):
+        ref_rel = head[5:].strip()
+        try:
+            return (git_dir / ref_rel).read_text(encoding="utf-8").strip() or None
+        except OSError:
+            pass
+        try:
+            for raw in (git_dir / "packed-refs").read_text(encoding="utf-8").splitlines():
+                if raw.startswith("#") or raw.startswith("^"):
+                    continue
+                sha, _, name = raw.partition(" ")
+                if name.strip() == ref_rel:
+                    return sha.strip() or None
+        except OSError:
+            return None
+        return None
+    return head or None
 
 
 async def get_repository(session: AsyncSession, repo_id: str) -> Repository | None:
