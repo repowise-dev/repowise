@@ -23,6 +23,7 @@ from .js_clients import JsClientsDialect
 from .laravel import LaravelDialect
 from .paths import normalize_http_path
 from .python_clients import PythonClientsDialect
+from .rust_axum import RustAxumDialect
 from .spring import SpringDialect
 
 if TYPE_CHECKING:
@@ -38,6 +39,7 @@ PROVIDER_DIALECTS: tuple[HttpDialect, ...] = (
     LaravelDialect(),
     GoDialect(),
     AspNetDialect(),
+    RustAxumDialect(),
 )
 
 # HTTP-client call recognisers (one client/language each).

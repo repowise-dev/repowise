@@ -212,6 +212,39 @@ class TestHttpExtractor:
         assert consumers[0].contract_id == "http::GET::/users/{param}"
         assert "base_stripped" not in consumers[0].meta
 
+    def test_rust_axum_provider(self, tmp_path: Path) -> None:
+        self._write_file(tmp_path, "src/main.rs", """
+            let app = Router::new()
+                .route("/path", post(find_path))
+                .route("/systems/{id}", get(get_system))
+                .route("/health", get(health));
+        """)
+        contracts = HttpExtractor().extract(tmp_path, "rust-svc")
+        providers = [c for c in contracts if c.role == "provider"]
+        ids = {c.contract_id for c in providers}
+        assert "http::POST::/path" in ids
+        assert "http::GET::/systems/{param}" in ids
+        assert "http::GET::/health" in ids
+
+    def test_rust_axum_chained_methods(self, tmp_path: Path) -> None:
+        self._write_file(tmp_path, "src/routes.rs", """
+            .route("/users", get(list_users).post(create_user))
+        """)
+        contracts = HttpExtractor().extract(tmp_path, "rust-svc")
+        ids = {c.contract_id for c in contracts if c.role == "provider"}
+        assert "http::GET::/users" in ids
+        assert "http::POST::/users" in ids
+
+    def test_rust_attribute_macro_provider(self, tmp_path: Path) -> None:
+        self._write_file(tmp_path, "src/handlers.rs", """
+            #[get("/systems/nearby")]
+            async fn get_nearby_systems() -> impl Responder { ... }
+        """)
+        contracts = HttpExtractor().extract(tmp_path, "rust-svc")
+        providers = [c for c in contracts if c.role == "provider"]
+        assert len(providers) == 1
+        assert providers[0].contract_id == "http::GET::/systems/nearby"
+
     def test_empty_file(self, tmp_path: Path) -> None:
         self._write_file(tmp_path, "empty.py", "")
         contracts = HttpExtractor().extract(tmp_path, "svc")

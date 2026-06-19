@@ -541,7 +541,7 @@ edits. The current coverage:
 
 | Contract | Providers | Consumers |
 |----------|-----------|-----------|
-| **HTTP** | Express, FastAPI, Spring, Laravel, Go (gin/echo/chi/net-http), ASP.NET (attribute + minimal) | `fetch` / `axios` (JS/TS), `requests` / `httpx` (Python), `HttpClient` (C#) |
+| **HTTP** | Express, FastAPI, Spring, Laravel, Go (gin/echo/chi/net-http), ASP.NET (attribute + minimal), Rust (Axum routes, Actix/Rocket attribute macros) | `fetch` / `axios` (JS/TS), `requests` / `httpx` (Python), `HttpClient` (C#) |
 | **gRPC** | `.proto` IDL, Go, Java, Python, NestJS (`@GrpcMethod`), C# (gRPC-dotnet) | Go, Java, Python, C# |
 
 ---
