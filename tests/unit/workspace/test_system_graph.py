@@ -23,24 +23,43 @@ from repowise.core.workspace.system_graph import (
 
 def _provider(repo, cid, ctype="http", file="src/handler.py") -> Contract:
     return Contract(
-        repo=repo, contract_id=cid, contract_type=ctype, role="provider",
-        file_path=file, symbol_name="handler", confidence=0.9,
+        repo=repo,
+        contract_id=cid,
+        contract_type=ctype,
+        role="provider",
+        file_path=file,
+        symbol_name="handler",
+        confidence=0.9,
     )
 
 
 def _consumer(repo, cid, ctype="http", file="src/client.py") -> Contract:
     return Contract(
-        repo=repo, contract_id=cid, contract_type=ctype, role="consumer",
-        file_path=file, symbol_name="call", confidence=0.8,
+        repo=repo,
+        contract_id=cid,
+        contract_type=ctype,
+        role="consumer",
+        file_path=file,
+        symbol_name="call",
+        confidence=0.8,
     )
 
 
-def _link(cid, p_repo, p_file, c_repo, c_file, ctype="http", match="exact", conf=0.72) -> ContractLink:
+def _link(
+    cid, p_repo, p_file, c_repo, c_file, ctype="http", match="exact", conf=0.72
+) -> ContractLink:
     return ContractLink(
-        contract_id=cid, contract_type=ctype, match_type=match, confidence=conf,
-        provider_repo=p_repo, provider_file=p_file, provider_symbol="handler",
+        contract_id=cid,
+        contract_type=ctype,
+        match_type=match,
+        confidence=conf,
+        provider_repo=p_repo,
+        provider_file=p_file,
+        provider_symbol="handler",
         provider_service=None,
-        consumer_repo=c_repo, consumer_file=c_file, consumer_symbol="call",
+        consumer_repo=c_repo,
+        consumer_file=c_file,
+        consumer_symbol="call",
         consumer_service=None,
     )
 
@@ -162,8 +181,10 @@ def test_package_dep_edge_points_dependent_to_dependency():
     overlay = CrossRepoOverlay(
         package_deps=[
             CrossRepoPackageDep(
-                source_repo="web", target_repo="shared",
-                source_manifest="package.json", kind="npm_local_path",
+                source_repo="web",
+                target_repo="shared",
+                source_manifest="package.json",
+                kind="npm_local_path",
             )
         ]
     )
@@ -179,9 +200,13 @@ def test_cochange_edge_is_behavioral_and_undirected():
     overlay = CrossRepoOverlay(
         co_changes=[
             CrossRepoCoChange(
-                source_repo="z", source_file="z/a.py",
-                target_repo="a", target_file="a/b.py",
-                strength=0.6, frequency=4, last_date="2026-06-01",
+                source_repo="z",
+                source_file="z/a.py",
+                target_repo="a",
+                target_file="a/b.py",
+                strength=0.6,
+                frequency=4,
+                last_date="2026-06-01",
             )
         ]
     )
@@ -232,22 +257,44 @@ def test_system_graph_json_shape_is_locked():
         _consumer("web", "http::GET::/users", file="web/c.py"),
     ]
     links = [_link("http::GET::/users", "api", "api/h.py", "web", "web/c.py")]
-    graph = build_system_graph(contracts, links, CrossRepoOverlay(), {}, version=1, generated_at="t")
+    graph = build_system_graph(
+        contracts, links, CrossRepoOverlay(), {}, version=1, generated_at="t"
+    )
     data = graph.to_dict()
 
     assert set(data) == {"version", "generated_at", "nodes", "edges", "diagnostics"}
     assert set(data["nodes"][0]) == {
-        "id", "repo", "service_path", "name", "kind",
-        "provider_count", "consumer_count", "contract_types",
-        "is_orphan_provider", "is_orphan_consumer", "is_isolated",
+        "id",
+        "repo",
+        "service_path",
+        "name",
+        "kind",
+        "provider_count",
+        "consumer_count",
+        "contract_types",
+        "is_orphan_provider",
+        "is_orphan_consumer",
+        "is_isolated",
     }
     assert set(data["edges"][0]) == {
-        "id", "source", "target", "kind", "match_type",
-        "confidence", "weight", "structural", "contract_refs",
+        "id",
+        "source",
+        "target",
+        "kind",
+        "match_type",
+        "confidence",
+        "weight",
+        "structural",
+        "contract_refs",
     }
     assert set(data["diagnostics"]) == {
-        "total_providers", "total_consumers", "total_links", "weak_link_count",
-        "repo_breakdown", "unmatched_consumers", "unmatched_by_reason",
+        "total_providers",
+        "total_consumers",
+        "total_links",
+        "weak_link_count",
+        "repo_breakdown",
+        "unmatched_consumers",
+        "unmatched_by_reason",
         "orphan_providers",
     }
 

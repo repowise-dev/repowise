@@ -235,9 +235,13 @@ def _format_relative_time(iso_timestamp: str | None) -> str:
         "otherwise. Skipped silently when --no-index is passed."
     ),
 )
-@click.option("--provider", "provider_name", default=None, help="LLM provider name (overrides primary's).")
+@click.option(
+    "--provider", "provider_name", default=None, help="LLM provider name (overrides primary's)."
+)
 @click.option("--model", default=None, help="Model identifier (overrides primary's).")
-@click.option("--concurrency", type=int, default=10, help="Max concurrent LLM calls during doc generation.")
+@click.option(
+    "--concurrency", type=int, default=10, help="Max concurrent LLM calls during doc generation."
+)
 def workspace_add(
     path: str,
     alias: str | None,
@@ -270,9 +274,7 @@ def workspace_add(
 
     # Validate it is a git repo
     if not (repo_path / ".git").exists():
-        raise click.ClickException(
-            f"Not a git repository (no .git found): {repo_path}"
-        )
+        raise click.ClickException(f"Not a git repository (no .git found): {repo_path}")
 
     # Default alias to directory name
     if alias is None:
@@ -500,16 +502,16 @@ def _run_index_for_repo(
     if generate_docs:
         try:
             provider = resolve_provider(
-                effective_provider, effective_model, repo_path=repo_path,
+                effective_provider,
+                effective_model,
+                repo_path=repo_path,
             )
             console.print(
                 f"  Provider: [cyan]{provider.provider_name}[/cyan] / "
                 f"Model: [cyan]{provider.model_name}[/cyan]"
             )
         except Exception as exc:
-            console.print(
-                f"  [yellow]Provider unavailable ({exc}); skipping docs.[/yellow]"
-            )
+            console.print(f"  [yellow]Provider unavailable ({exc}); skipping docs.[/yellow]")
             generate_docs = False
             docs_skip_reason = f"provider failure: {exc}"
 
@@ -561,9 +563,7 @@ def _run_index_for_repo(
 
     try:
         file_count, symbol_count, _ = run_async(_do_index())
-        console.print(
-            f"  [green]✓[/green] {file_count} files, {symbol_count:,} symbols"
-        )
+        console.print(f"  [green]✓[/green] {file_count} files, {symbol_count:,} symbols")
     except Exception as exc:
         console.print(f"[yellow]Warning:[/yellow] Indexing failed for '{alias}': {exc}")
         return
@@ -629,12 +629,9 @@ def _run_index_for_repo(
     # docs-skipped case.
     if not state["docs_enabled"]:
         reason = docs_skip_reason or "docs disabled"
+        console.print(f"\n[yellow]Note:[/yellow] '{alias}' indexed without docs ({reason}).")
         console.print(
-            f"\n[yellow]Note:[/yellow] '{alias}' indexed without docs ({reason})."
-        )
-        console.print(
-            f"  Run [bold]repowise update --repo {alias} --docs[/bold] "
-            "to generate documentation."
+            f"  Run [bold]repowise update --repo {alias} --docs[/bold] to generate documentation."
         )
 
 
@@ -723,7 +720,9 @@ def _generate_docs_for_added_repo(
         sf = create_session_factory(engine)
         async with get_session(sf) as session:
             repo = await upsert_repository(
-                session, name=repo_path.name, local_path=str(repo_path),
+                session,
+                name=repo_path.name,
+                local_path=str(repo_path),
             )
             for p in pages:
                 await upsert_page_from_generated(session, p, repo.id)
@@ -755,9 +754,7 @@ def workspace_remove(alias: str) -> None:
     entry = ws_config.get_repo(alias)
     if entry is None:
         available = ", ".join(ws_config.repo_aliases()) or "(none)"
-        raise click.ClickException(
-            f"No repo with alias '{alias}' found. Available: {available}"
-        )
+        raise click.ClickException(f"No repo with alias '{alias}' found. Available: {available}")
 
     is_default = alias == ws_config.default_repo
 
@@ -775,13 +772,9 @@ def workspace_remove(alias: str) -> None:
             f"New default is '{new_default}'."
         )
     elif is_default:
-        console.print(
-            "[yellow]Note:[/yellow] Workspace now has no repos and no default."
-        )
+        console.print("[yellow]Note:[/yellow] Workspace now has no repos and no default.")
 
-    console.print(
-        f"  (Indexed data at {removed.path}/.repowise/ was [bold]not[/bold] deleted.)"
-    )
+    console.print(f"  (Indexed data at {removed.path}/.repowise/ was [bold]not[/bold] deleted.)")
 
 
 # ---------------------------------------------------------------------------
@@ -810,15 +803,12 @@ def workspace_scan(path: str | None, yes: bool) -> None:
     scan_result = scan_for_repos(ws_root)
 
     existing_aliases = set(ws_config.repo_aliases())
-    existing_paths = {
-        (ws_root / e.path).resolve().as_posix()
-        for e in ws_config.repos
-    }
+    existing_paths = {(ws_root / e.path).resolve().as_posix() for e in ws_config.repos}
 
     new_repos = [
-        r for r in scan_result.repos
-        if r.path.as_posix() not in existing_paths
-        and r.alias not in existing_aliases
+        r
+        for r in scan_result.repos
+        if r.path.as_posix() not in existing_paths and r.alias not in existing_aliases
     ]
 
     if not new_repos:
@@ -880,9 +870,7 @@ def workspace_set_default(alias: str) -> None:
     entry = ws_config.get_repo(alias)
     if entry is None:
         available = ", ".join(ws_config.repo_aliases()) or "(none)"
-        raise click.ClickException(
-            f"No repo with alias '{alias}' found. Available: {available}"
-        )
+        raise click.ClickException(f"No repo with alias '{alias}' found. Available: {available}")
 
     previous_default = ws_config.default_repo
 
@@ -900,3 +888,106 @@ def workspace_set_default(alias: str) -> None:
         )
     else:
         console.print(f"[green]✓[/green] Default repo set to '[bold]{alias}[/bold]'.")
+
+
+# ---------------------------------------------------------------------------
+# workspace diagnostics
+# ---------------------------------------------------------------------------
+
+
+@workspace_group.command("diagnostics")
+@click.argument("path", required=False, default=None)
+@click.option("--repo", "repo_alias", default=None, help="Limit the report to one repo alias.")
+@click.option("--json", "as_json", is_flag=True, help="Emit raw diagnostics JSON.")
+def workspace_diagnostics(path: str | None, repo_alias: str | None, as_json: bool) -> None:
+    """Explain the cross-repo contract link count.
+
+    Reports, per repo, how many providers and consumers were found, which
+    consumers went unmatched and why, and which providers have no consumer —
+    the answer to "why are there so few links?". Reads the system graph built
+    during 'repowise update --workspace'.
+    """
+    import json as _json
+
+    from repowise.core.workspace.system_graph import load_system_graph
+
+    start = resolve_repo_path(path)
+    ws_root, _ws_config = _require_workspace(start)
+
+    graph = load_system_graph(ws_root)
+    if graph is None:
+        raise click.ClickException(
+            "No system graph found. Run 'repowise update --workspace' to build "
+            "cross-repo contracts and diagnostics first."
+        )
+
+    diag = graph.diagnostics
+    breakdown = diag.repo_breakdown
+    unmatched = diag.unmatched_consumers
+    orphans = diag.orphan_providers
+    if repo_alias:
+        breakdown = [r for r in breakdown if r.repo == repo_alias]
+        unmatched = [u for u in unmatched if u.repo == repo_alias]
+        orphans = [o for o in orphans if o.repo == repo_alias]
+
+    if as_json:
+        payload = {
+            "total_providers": diag.total_providers,
+            "total_consumers": diag.total_consumers,
+            "total_links": diag.total_links,
+            "weak_link_count": diag.weak_link_count,
+            "repo_breakdown": [r.to_dict() for r in breakdown],
+            "unmatched_consumers": [u.to_dict() for u in unmatched],
+            "unmatched_by_reason": diag.unmatched_by_reason,
+            "orphan_providers": [o.to_dict() for o in orphans],
+        }
+        console.print_json(_json.dumps(payload))
+        return
+
+    # Per-repo provider/consumer breakdown
+    table = Table(title=f"Contract extraction — {ws_root.name}")
+    table.add_column("Repo", style="cyan")
+    table.add_column("Providers", justify="right")
+    table.add_column("Consumers", justify="right")
+    table.add_column("By type", style="dim")
+    for r in breakdown:
+        by_type = ", ".join(
+            f"{t}:{r.providers_by_type.get(t, 0)}/{r.consumers_by_type.get(t, 0)}"
+            for t in sorted(set(r.providers_by_type) | set(r.consumers_by_type))
+        )
+        table.add_row(r.repo, str(r.provider_count), str(r.consumer_count), by_type or "-")
+    console.print(table)
+
+    console.print(
+        f"\n  [bold]{diag.total_links}[/bold] cross-repo link(s) matched "
+        f"from {diag.total_providers} provider(s) and {diag.total_consumers} consumer(s)."
+    )
+    if diag.weak_link_count:
+        console.print(f"  [yellow]{diag.weak_link_count}[/yellow] weak (low-confidence) link(s).")
+
+    # Unmatched consumers grouped by reason
+    if unmatched:
+        reason_labels = {
+            "no_provider": "no matching provider found",
+            "internal_only": "provider is same repo + service (intra-service)",
+            "unlinked": "matching provider exists but no link formed",
+        }
+        console.print(f"\n  [bold]{len(unmatched)}[/bold] unmatched consumer(s):")
+        for reason, count in sorted(diag.unmatched_by_reason.items()):
+            label = reason_labels.get(reason, reason)
+            console.print(f"    [yellow]{count}[/yellow] — {label}")
+
+    # Orphan providers
+    if orphans:
+        console.print(
+            f"\n  [bold]{len(orphans)}[/bold] orphan provider(s) (declared, never consumed):"
+        )
+        for o in orphans[:20]:
+            console.print(f"    [dim]{o.repo}[/dim] {o.contract_id} ([dim]{o.file_path}[/dim])")
+        if len(orphans) > 20:
+            console.print(f"    [dim]... and {len(orphans) - 20} more[/dim]")
+
+    if not unmatched and not orphans:
+        console.print(
+            "\n  [green]✓[/green] Every consumer matched a provider; no orphan providers."
+        )

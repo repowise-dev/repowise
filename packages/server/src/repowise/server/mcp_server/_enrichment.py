@@ -115,11 +115,13 @@ class CrossRepoEnricher:
             except KeyError:
                 _log.debug("Skipping malformed package dep entry: %s", pd)
                 continue
-            self._package_dep_index[src_repo].append({
-                "target_repo": tgt_repo,
-                "source_manifest": pd.get("source_manifest", ""),
-                "kind": pd.get("kind", ""),
-            })
+            self._package_dep_index[src_repo].append(
+                {
+                    "target_repo": tgt_repo,
+                    "source_manifest": pd.get("source_manifest", ""),
+                    "kind": pd.get("kind", ""),
+                }
+            )
             # Reverse: who depends on target_repo
             self._package_dep_reverse[tgt_repo].append(src_repo)
 
@@ -138,9 +140,7 @@ class CrossRepoEnricher:
         try:
             data = json.loads(contracts_path.read_text(encoding="utf-8"))
         except Exception:
-            _log.warning(
-                "Failed to parse contract data at %s", contracts_path, exc_info=True
-            )
+            _log.warning("Failed to parse contract data at %s", contracts_path, exc_info=True)
             return
 
         self._contracts = data.get("contracts", [])
@@ -170,9 +170,7 @@ class CrossRepoEnricher:
         try:
             self._system_graph = json.loads(system_graph_path.read_text(encoding="utf-8"))
         except Exception:
-            _log.warning(
-                "Failed to parse system graph at %s", system_graph_path, exc_info=True
-            )
+            _log.warning("Failed to parse system graph at %s", system_graph_path, exc_info=True)
             return
         _log.debug(
             "System graph loaded: %d nodes, %d edges",
@@ -238,9 +236,7 @@ class CrossRepoEnricher:
             return None
         return self._system_graph.get("diagnostics")
 
-    def get_cross_repo_partners(
-        self, repo_alias: str, file_path: str
-    ) -> list[dict]:
+    def get_cross_repo_partners(self, repo_alias: str, file_path: str) -> list[dict]:
         """Return cross-repo co-change partners for a file.
 
         Each dict: ``{repo, file, strength, frequency, last_date}``.
@@ -270,10 +266,7 @@ class CrossRepoEnricher:
             repo_pairs[pair] += 1  # type: ignore[index]
 
         top_connections = sorted(
-            [
-                {"repos": list(pair), "edge_count": count}
-                for pair, count in repo_pairs.items()
-            ],
+            [{"repos": list(pair), "edge_count": count} for pair, count in repo_pairs.items()],
             key=lambda x: -x["edge_count"],
         )[:5]
 
@@ -283,18 +276,14 @@ class CrossRepoEnricher:
             "top_connections": top_connections,
         }
 
-    def has_cross_repo_consumers(
-        self, repo_alias: str, file_path: str
-    ) -> list[dict]:
+    def has_cross_repo_consumers(self, repo_alias: str, file_path: str) -> list[dict]:
         """Return files in OTHER repos that co-change with this file.
 
         Each dict: ``{repo, file, strength}``.
         """
         return self._consumer_index.get((repo_alias, file_path), [])
 
-    def get_affected_repos(
-        self, repo_alias: str, file_path: str
-    ) -> list[str]:
+    def get_affected_repos(self, repo_alias: str, file_path: str) -> list[str]:
         """Return repo aliases that may be impacted by changes to this file.
 
         Combines co-change partners + package dep consumers + contract links.
@@ -320,15 +309,11 @@ class CrossRepoEnricher:
     # Contract queries (Phase 4)
     # ------------------------------------------------------------------
 
-    def get_contract_links_as_provider(
-        self, repo_alias: str, file_path: str
-    ) -> list[dict]:
+    def get_contract_links_as_provider(self, repo_alias: str, file_path: str) -> list[dict]:
         """Contract links where this file is the provider (has consumers)."""
         return self._contract_provider_index.get((repo_alias, file_path), [])
 
-    def get_contract_links_as_consumer(
-        self, repo_alias: str, file_path: str
-    ) -> list[dict]:
+    def get_contract_links_as_consumer(self, repo_alias: str, file_path: str) -> list[dict]:
         """Contract links where this file is the consumer (depends on providers)."""
         return self._contract_consumer_index.get((repo_alias, file_path), [])
 

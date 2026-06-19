@@ -160,9 +160,7 @@ def _query_repo_stats(db_path: Path) -> dict:
         # churn_percentile >= 90 predicate never matched: churn_percentile is
         # stored on a 0.0-1.0 scale and only scaled to 0-100 at the API layer.
         try:
-            row = c.execute(
-                "SELECT COUNT(*) FROM git_metadata WHERE is_hotspot = 1"
-            ).fetchone()
+            row = c.execute("SELECT COUNT(*) FROM git_metadata WHERE is_hotspot = 1").fetchone()
             result["hotspot_count"] = row[0] if row else 0
         except sqlite3.OperationalError:
             pass  # table or column may not exist
@@ -254,7 +252,10 @@ async def get_contracts(
 
     if enricher is None:
         return WorkspaceContractsResponse(
-            contracts=[], links=[], total_contracts=0, total_links=0,
+            contracts=[],
+            links=[],
+            total_contracts=0,
+            total_links=0,
         )
 
     contracts = list(getattr(enricher, "_contracts", []))
@@ -267,8 +268,7 @@ async def get_contracts(
     if repo:
         contracts = [c for c in contracts if c.get("repo") == repo]
         links = [
-            lk for lk in links
-            if lk.get("provider_repo") == repo or lk.get("consumer_repo") == repo
+            lk for lk in links if lk.get("provider_repo") == repo or lk.get("consumer_repo") == repo
         ]
     if role:
         contracts = [c for c in contracts if c.get("role") == role]
@@ -343,7 +343,8 @@ async def get_co_changes(
 
     if repo:
         co_changes = [
-            cc for cc in co_changes
+            cc
+            for cc in co_changes
             if cc.get("source_repo") == repo or cc.get("target_repo") == repo
         ]
     if min_strength > 0:
@@ -597,7 +598,9 @@ async def sync_workspace(
                 WorkspaceSyncResult(
                     alias=entry.alias,
                     status="skipped",
-                    reason="not indexed yet (run `repowise update --repo " + entry.alias + "` from the CLI)",
+                    reason="not indexed yet (run `repowise update --repo "
+                    + entry.alias
+                    + "` from the CLI)",
                 )
             )
             continue
@@ -605,9 +608,7 @@ async def sync_workspace(
         # Discover repo_id from the per-repo DB.
         try:
             with sqlite3.connect(str(db_path)) as conn:
-                row = conn.execute(
-                    "SELECT id FROM repositories LIMIT 1"
-                ).fetchone()
+                row = conn.execute("SELECT id FROM repositories LIMIT 1").fetchone()
         except Exception as exc:
             results.append(
                 WorkspaceSyncResult(

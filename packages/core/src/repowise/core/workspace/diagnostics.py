@@ -229,12 +229,8 @@ def build_diagnostics(
     matched_providers: set[tuple[str, str, str]] = set()
     weak_links = 0
     for lk in links:
-        matched_consumers.add(
-            _contract_key(lk.consumer_repo, lk.consumer_file, lk.contract_id)
-        )
-        matched_providers.add(
-            _contract_key(lk.provider_repo, lk.provider_file, lk.contract_id)
-        )
+        matched_consumers.add(_contract_key(lk.consumer_repo, lk.consumer_file, lk.contract_id))
+        matched_providers.add(_contract_key(lk.provider_repo, lk.provider_file, lk.contract_id))
         if lk.confidence <= WEAK_LINK_CONFIDENCE_THRESHOLD:
             weak_links += 1
 

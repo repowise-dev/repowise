@@ -33,7 +33,7 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -318,9 +318,9 @@ class _GraphBuilder:
 
     # -- finalize -------------------------------------------------------------
 
-    def finalize(self, diagnostics: ExtractionDiagnostics) -> tuple[
-        list[SystemNode], list[SystemEdge]
-    ]:
+    def finalize(
+        self, diagnostics: ExtractionDiagnostics
+    ) -> tuple[list[SystemNode], list[SystemEdge]]:
         edges = list(self._edges.values())
 
         endpoints: set[str] = set()
@@ -336,12 +336,8 @@ class _GraphBuilder:
         for node in self._nodes.values():
             node.contract_types = sorted(node.contract_types)
             node.is_isolated = node.id not in endpoints
-            node.is_orphan_provider = (
-                node.provider_count > 0 and node.id not in contract_targets
-            )
-            node.is_orphan_consumer = (
-                node.consumer_count > 0 and node.id not in contract_sources
-            )
+            node.is_orphan_provider = node.provider_count > 0 and node.id not in contract_targets
+            node.is_orphan_consumer = node.consumer_count > 0 and node.id not in contract_sources
 
         nodes = sorted(self._nodes.values(), key=lambda n: n.id)
         edges.sort(key=lambda e: e.id)
@@ -490,7 +486,7 @@ async def run_system_graph_build(
         overlay,
         boundaries_by_repo,
         diagnostics,
-        generated_at=datetime.now(timezone.utc).isoformat(),
+        generated_at=datetime.now(UTC).isoformat(),
     )
 
     out_path = save_system_graph(graph, workspace_root)

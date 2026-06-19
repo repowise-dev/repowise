@@ -452,3 +452,73 @@ class TestWorkspaceHelp:
     def test_workspace_set_default_help(self, runner):
         result = runner.invoke(cli, ["workspace", "set-default", "--help"])
         assert result.exit_code == 0
+
+
+# ---------------------------------------------------------------------------
+# workspace diagnostics
+# ---------------------------------------------------------------------------
+
+
+class TestWorkspaceDiagnostics:
+    def _setup(self, root: Path) -> None:
+        from repowise.core.workspace.contracts import Contract, ContractLink
+        from repowise.core.workspace.cross_repo import CrossRepoOverlay
+        from repowise.core.workspace.system_graph import build_system_graph, save_system_graph
+
+        (root / "backend").mkdir()
+        (root / "frontend").mkdir()
+        _write_workspace_config(
+            root,
+            repos=[
+                {"path": "backend", "alias": "backend"},
+                {"path": "frontend", "alias": "frontend"},
+            ],
+            default_repo="backend",
+        )
+        contracts = [
+            Contract(repo="backend", contract_id="http::GET::/users", contract_type="http",
+                     role="provider", file_path="r.py", symbol_name="h", confidence=0.9),
+            Contract(repo="frontend", contract_id="http::GET::/users", contract_type="http",
+                     role="consumer", file_path="c.ts", symbol_name="f", confidence=0.8),
+            Contract(repo="backend", contract_id="http::GET::/orphan", contract_type="http",
+                     role="provider", file_path="r.py", symbol_name="o", confidence=0.9),
+        ]
+        links = [
+            ContractLink(contract_id="http::GET::/users", contract_type="http", match_type="exact",
+                         confidence=0.72, provider_repo="backend", provider_file="r.py",
+                         provider_symbol="h", provider_service=None, consumer_repo="frontend",
+                         consumer_file="c.ts", consumer_symbol="f", consumer_service=None),
+        ]
+        graph = build_system_graph(contracts, links, CrossRepoOverlay(), {}, generated_at="t")
+        save_system_graph(graph, root)
+
+    def test_diagnostics_table(self, runner, tmp_path):
+        self._setup(tmp_path)
+        result = runner.invoke(cli, ["workspace", "diagnostics", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert "1 cross-repo link(s) matched" in result.output
+        assert "orphan provider" in result.output
+        assert "http::GET::/orphan" in result.output
+
+    def test_diagnostics_json(self, runner, tmp_path):
+        import json
+
+        self._setup(tmp_path)
+        result = runner.invoke(cli, ["workspace", "diagnostics", str(tmp_path), "--json"])
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["total_links"] == 1
+        assert data["total_providers"] == 2
+        assert len(data["orphan_providers"]) == 1
+
+    def test_diagnostics_missing_graph(self, runner, tmp_path):
+        (tmp_path / "backend").mkdir()
+        _write_workspace_config(tmp_path, repos=[{"path": "backend", "alias": "backend"}])
+        result = runner.invoke(cli, ["workspace", "diagnostics", str(tmp_path)])
+        assert result.exit_code != 0
+        assert "No system graph found" in result.output
+
+    def test_diagnostics_help(self, runner):
+        result = runner.invoke(cli, ["workspace", "diagnostics", "--help"])
+        assert result.exit_code == 0
+        assert "--json" in result.output

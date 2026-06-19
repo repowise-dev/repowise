@@ -10,26 +10,51 @@ from repowise.core.workspace.diagnostics import (
 )
 
 
-def _provider(repo: str, cid: str, ctype: str = "http", file: str = "h.py", service=None) -> Contract:
+def _provider(
+    repo: str, cid: str, ctype: str = "http", file: str = "h.py", service=None
+) -> Contract:
     return Contract(
-        repo=repo, contract_id=cid, contract_type=ctype, role="provider",
-        file_path=file, symbol_name="handler", confidence=0.9, service=service,
+        repo=repo,
+        contract_id=cid,
+        contract_type=ctype,
+        role="provider",
+        file_path=file,
+        symbol_name="handler",
+        confidence=0.9,
+        service=service,
     )
 
 
-def _consumer(repo: str, cid: str, ctype: str = "http", file: str = "c.py", service=None) -> Contract:
+def _consumer(
+    repo: str, cid: str, ctype: str = "http", file: str = "c.py", service=None
+) -> Contract:
     return Contract(
-        repo=repo, contract_id=cid, contract_type=ctype, role="consumer",
-        file_path=file, symbol_name="call", confidence=0.8, service=service,
+        repo=repo,
+        contract_id=cid,
+        contract_type=ctype,
+        role="consumer",
+        file_path=file,
+        symbol_name="call",
+        confidence=0.8,
+        service=service,
     )
 
 
-def _link(cid: str, p_repo: str, c_repo: str, confidence: float = 0.72, ctype: str = "http") -> ContractLink:
+def _link(
+    cid: str, p_repo: str, c_repo: str, confidence: float = 0.72, ctype: str = "http"
+) -> ContractLink:
     return ContractLink(
-        contract_id=cid, contract_type=ctype, match_type="exact", confidence=confidence,
-        provider_repo=p_repo, provider_file="h.py", provider_symbol="handler",
+        contract_id=cid,
+        contract_type=ctype,
+        match_type="exact",
+        confidence=confidence,
+        provider_repo=p_repo,
+        provider_file="h.py",
+        provider_symbol="handler",
         provider_service=None,
-        consumer_repo=c_repo, consumer_file="c.py", consumer_symbol="call",
+        consumer_repo=c_repo,
+        consumer_file="c.py",
+        consumer_symbol="call",
         consumer_service=None,
     )
 
