@@ -1,0 +1,169 @@
+import { describe, it, expect, vi, beforeAll } from "vitest";
+import { render, screen, fireEvent } from "@testing-library/react";
+import type { SystemEdge, SystemGraph, SystemNode } from "@repowise-dev/types";
+import { SystemMap } from "../../src/workspace/system-map/system-map";
+import { SystemMapFilters } from "../../src/workspace/system-map/system-map-filters";
+import { SystemMapLegend } from "../../src/workspace/system-map/system-map-legend";
+import { SystemMapInspector } from "../../src/workspace/system-map/system-map-inspector";
+
+// jsdom has no layout engine → stub ResizeObserver so React Flow can mount.
+beforeAll(() => {
+  class RO {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  vi.stubGlobal("ResizeObserver", RO);
+});
+
+function node(id: string, over: Partial<SystemNode> = {}): SystemNode {
+  return {
+    id,
+    repo: id.split("::")[0] ?? id,
+    service_path: null,
+    name: id,
+    kind: "service",
+    provider_count: 0,
+    consumer_count: 0,
+    contract_types: [],
+    is_orphan_provider: false,
+    is_orphan_consumer: false,
+    is_isolated: false,
+    ...over,
+  };
+}
+
+function edge(source: string, target: string, over: Partial<SystemEdge> = {}): SystemEdge {
+  return {
+    id: `${source}->${target}`,
+    source,
+    target,
+    kind: "http",
+    match_type: "exact",
+    confidence: 0.9,
+    weight: 1,
+    structural: true,
+    contract_refs: [],
+    ...over,
+  };
+}
+
+function graph(nodes: SystemNode[], edges: SystemEdge[]): SystemGraph {
+  return { version: 1, generated_at: "2026-06-19T00:00:00Z", nodes, edges, diagnostics: {} as never };
+}
+
+describe("SystemMap empty states", () => {
+  it("shows the no-services state for an empty graph", () => {
+    render(<SystemMap graph={graph([], [])} />);
+    expect(screen.getByText(/no services to map/i)).toBeInTheDocument();
+  });
+
+  it("shows the no-relationships state when nodes exist but no edges", async () => {
+    render(<SystemMap graph={graph([node("a"), node("b")], [])} />);
+    // Layout runs async (ELK) before the empty-state resolves.
+    expect(await screen.findByText(/no cross-repo relationships detected/i)).toBeInTheDocument();
+  });
+
+  it("surfaces an error", () => {
+    render(<SystemMap graph={null} error={new Error("boom")} />);
+    expect(screen.getByText(/couldn't load the system map/i)).toBeInTheDocument();
+    expect(screen.getByText(/boom/i)).toBeInTheDocument();
+  });
+});
+
+describe("SystemMapFilters", () => {
+  it("only offers edge kinds present in the graph and toggles them", () => {
+    const onToggleKind = vi.fn();
+    render(
+      <SystemMapFilters
+        availableKinds={new Set(["http", "co_change"])}
+        visibleKinds={new Set(["http", "co_change"])}
+        onToggleKind={onToggleKind}
+        collapsed={false}
+        onToggleCollapsed={() => {}}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "HTTP" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Co-change" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "gRPC" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "HTTP" }));
+    expect(onToggleKind).toHaveBeenCalledWith("http");
+  });
+
+  it("toggles the collapse view", () => {
+    const onToggleCollapsed = vi.fn();
+    render(
+      <SystemMapFilters
+        availableKinds={new Set(["http"])}
+        visibleKinds={new Set(["http"])}
+        onToggleKind={() => {}}
+        collapsed={false}
+        onToggleCollapsed={onToggleCollapsed}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /service view/i }));
+    expect(onToggleCollapsed).toHaveBeenCalled();
+  });
+});
+
+describe("SystemMapLegend", () => {
+  it("explains every edge kind, the match-type dashes, and the health scale", () => {
+    render(<SystemMapLegend />);
+    expect(screen.getByText("HTTP")).toBeInTheDocument();
+    expect(screen.getByText("Co-change")).toBeInTheDocument();
+    expect(screen.getByText(/exact \/ manual/i)).toBeInTheDocument();
+    expect(screen.getByText(/at risk/i)).toBeInTheDocument();
+  });
+});
+
+describe("SystemMapInspector", () => {
+  const g = graph(
+    [
+      node("web", { kind: "frontend", consumer_count: 2, contract_types: ["http"] }),
+      node("api", { provider_count: 2, contract_types: ["http"], is_orphan_provider: true }),
+    ],
+    [edge("web", "api", { contract_refs: ["http:GET /v1/users"] })],
+  );
+
+  it("renders a selected service with its counts and connections", () => {
+    const onSelectNode = vi.fn();
+    render(
+      <SystemMapInspector
+        selection={{ type: "node", id: "api" }}
+        graph={g}
+        onClose={() => {}}
+        onSelectNode={onSelectNode}
+      />,
+    );
+    expect(screen.getByText("api")).toBeInTheDocument();
+    expect(screen.getByText("2 contracts")).toBeInTheDocument();
+    expect(screen.getByText(/orphan provider/i)).toBeInTheDocument();
+    // "Depended on by" lists web → clicking selects it
+    fireEvent.click(screen.getByText("web"));
+    expect(onSelectNode).toHaveBeenCalledWith("web");
+  });
+
+  it("renders a selected edge and opens its contract evidence", () => {
+    const onOpenContract = vi.fn();
+    render(
+      <SystemMapInspector
+        selection={{ type: "edge", id: "web->api" }}
+        graph={g}
+        onClose={() => {}}
+        onSelectNode={() => {}}
+        onOpenContract={onOpenContract}
+      />,
+    );
+    expect(screen.getByText(/http relationship/i)).toBeInTheDocument();
+    expect(screen.getByText("90%")).toBeInTheDocument(); // confidence
+    fireEvent.click(screen.getByText("http:GET /v1/users"));
+    expect(onOpenContract).toHaveBeenCalledWith("http:GET /v1/users");
+  });
+
+  it("renders nothing when there is no selection", () => {
+    const { container } = render(
+      <SystemMapInspector selection={null} graph={g} onClose={() => {}} onSelectNode={() => {}} />,
+    );
+    expect(container).toBeEmptyDOMElement();
+  });
+});

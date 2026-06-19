@@ -15,13 +15,13 @@ export interface WorkspaceGraphNodeData {
   topLanguage: string;
 }
 
-function healthColor(score: number): string {
+export function healthColor(score: number): string {
   if (score >= 70) return "var(--color-risk-low)";
   if (score >= 40) return "var(--color-risk-medium)";
   return "var(--color-risk-high)";
 }
 
-function HealthRing({
+export function HealthRing({
   score,
   source,
   size = 36,
