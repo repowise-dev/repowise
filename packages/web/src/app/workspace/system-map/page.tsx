@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Waypoints, Boxes, ArrowLeftRight, Share2, Zap, AlertTriangle, ShieldAlert } from "lucide-react";
+import { Waypoints, Boxes, ArrowLeftRight, Share2, Zap, AlertTriangle, ShieldAlert, Gauge } from "lucide-react";
 import {
   SystemMap,
   SystemMapBlastPanel,
@@ -11,8 +11,10 @@ import {
   buildBlastRadiusOverlay,
   buildBreakingChangeOverlay,
   buildConformanceOverlay,
+  buildArchitectureOverlay,
   type RepoHealth,
 } from "@repowise-dev/ui/workspace/system-map";
+import type { NodeArchitectureRole } from "@/lib/api/types";
 import { StatCard } from "@repowise-dev/ui/shared/stat-card";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 import {
@@ -21,6 +23,7 @@ import {
   useWorkspaceBlastRadius,
   useWorkspaceBreakingChanges,
   useWorkspaceConformance,
+  useWorkspaceArchitecture,
 } from "@/lib/hooks/use-workspace";
 
 export default function SystemMapPage() {
@@ -49,6 +52,18 @@ export default function SystemMapPage() {
   const { data: conformance, isLoading: conformanceLoading } =
     useWorkspaceConformance(showConformance);
 
+  // Architecture metrics. Always fetched (cheap, deterministic): it feeds the
+  // score stat and the per-service role shown in the inspector. The cyclic-core
+  // highlight is an opt-in overlay toggle.
+  const { data: architecture } = useWorkspaceArchitecture();
+  const [showArchitecture, setShowArchitecture] = useState(false);
+
+  const roleByNodeId = useMemo<Map<string, NodeArchitectureRole>>(() => {
+    const m = new Map<string, NodeArchitectureRole>();
+    for (const r of architecture?.roles ?? []) m.set(r.id, r);
+    return m;
+  }, [architecture]);
+
   // Join repo health (from the repo-level graph) onto service nodes by alias.
   // The map keys health by `SystemNode.repo`; the repo graph's node `name` is
   // the repo alias.
@@ -67,8 +82,9 @@ export default function SystemMapPage() {
     if (blast) return buildBlastRadiusOverlay(graph, blast);
     if (showConformance && conformance) return buildConformanceOverlay(graph, conformance);
     if (showBreaking && breaking) return buildBreakingChangeOverlay(graph, breaking);
+    if (showArchitecture && architecture) return buildArchitectureOverlay(graph, architecture);
     return undefined;
-  }, [graph, blast, showBreaking, breaking, showConformance, conformance]);
+  }, [graph, blast, showBreaking, breaking, showConformance, conformance, showArchitecture, architecture]);
 
   const diag = graph?.diagnostics;
   const serviceCount = graph?.nodes.length ?? 0;
@@ -89,7 +105,17 @@ export default function SystemMapPage() {
         </p>
       </div>
 
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+        <StatCard
+          label="Architecture score"
+          value={architecture ? `${architecture.score.toFixed(1)} / 10` : "—"}
+          description={
+            architecture
+              ? `${architecture.propagation_cost_pct.toFixed(1)}% propagation cost`
+              : "Coupling + core roll-up"
+          }
+          icon={<Gauge className="h-4 w-4 text-[var(--color-accent-primary)]" />}
+        />
         <StatCard
           label="Services"
           value={isLoading ? "—" : serviceCount}
@@ -147,11 +173,37 @@ export default function SystemMapPage() {
         <button
           type="button"
           onClick={() => {
+            setShowArchitecture((v) => !v);
+            if (!showArchitecture) {
+              setShowBreaking(false);
+              setShowConformance(false);
+            }
+          }}
+          aria-pressed={showArchitecture}
+          className={`ml-auto inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-sm ${
+            showArchitecture
+              ? "border-[var(--color-accent-primary)] text-[var(--color-accent-primary)]"
+              : "border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
+          }`}
+          title="Highlight the cyclic architectural core"
+        >
+          <Gauge className="h-4 w-4" />
+          Core
+          {showArchitecture && architecture && architecture.core_size > 0 && (
+            <span className="font-semibold">· {architecture.core_size}</span>
+          )}
+        </button>
+        <button
+          type="button"
+          onClick={() => {
             setShowConformance((v) => !v);
-            if (!showConformance) setShowBreaking(false);
+            if (!showConformance) {
+              setShowBreaking(false);
+              setShowArchitecture(false);
+            }
           }}
           aria-pressed={showConformance}
-          className={`ml-auto inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-sm ${
+          className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-sm ${
             showConformance
               ? "border-[var(--color-risk-high)] text-[var(--color-risk-high)]"
               : "border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
@@ -167,7 +219,10 @@ export default function SystemMapPage() {
           type="button"
           onClick={() => {
             setShowBreaking((v) => !v);
-            if (!showBreaking) setShowConformance(false);
+            if (!showBreaking) {
+              setShowConformance(false);
+              setShowArchitecture(false);
+            }
           }}
           aria-pressed={showBreaking}
           className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-sm ${
@@ -205,6 +260,7 @@ export default function SystemMapPage() {
               error={error ?? null}
               healthByRepo={healthByRepo}
               {...(overlay ? { overlay } : {})}
+              roleByNodeId={roleByNodeId}
               onOpenContract={() => router.push("/workspace/contracts")}
             />
             <SystemMapBlastPanel

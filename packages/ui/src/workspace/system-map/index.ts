@@ -20,6 +20,13 @@ export {
   type SystemMapConformancePanelProps,
 } from "./system-map-conformance-panel";
 export { buildConformanceOverlay } from "./conformance";
+export {
+  buildArchitectureOverlay,
+  roleStyle,
+  ROLE_STYLE,
+  ROLE_ORDER,
+  type RoleStyle,
+} from "./architecture";
 export { useSystemMapLayout, type SystemMapLayout, type UseSystemMapLayoutArgs } from "./use-system-map-layout";
 export { applyView, computeSystemMapPositions, SYSTEM_MAP_NODE_SIZE, type SystemMapView } from "./layout";
 export { collapseToRepos } from "./collapse";

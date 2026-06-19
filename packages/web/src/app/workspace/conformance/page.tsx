@@ -2,17 +2,22 @@
 
 import { useMemo } from "react";
 import { useRouter } from "next/navigation";
-import { ShieldCheck, ShieldAlert, RefreshCw, Waypoints, ListChecks } from "lucide-react";
+import { ShieldCheck, ShieldAlert, RefreshCw, Waypoints, ListChecks, Gauge } from "lucide-react";
 import { buildDsm, DsmMatrixView } from "@repowise-dev/ui/workspace/dsm";
 import { Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui/card";
 import { StatCard } from "@repowise-dev/ui/shared/stat-card";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
-import { useWorkspaceSystemGraph, useWorkspaceConformance } from "@/lib/hooks/use-workspace";
+import {
+  useWorkspaceSystemGraph,
+  useWorkspaceConformance,
+  useWorkspaceArchitecture,
+} from "@/lib/hooks/use-workspace";
 
 export default function ConformancePage() {
   const router = useRouter();
   const { data: graph, isLoading: graphLoading } = useWorkspaceSystemGraph();
   const { data: report, isLoading: reportLoading } = useWorkspaceConformance();
+  const { data: metrics } = useWorkspaceArchitecture();
 
   const isLoading = graphLoading || reportLoading;
   const matrix = useMemo(() => buildDsm(graph, report), [graph, report]);
@@ -39,7 +44,17 @@ export default function ConformancePage() {
         </p>
       </div>
 
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <StatCard
+          label="Architecture score"
+          value={metrics ? `${metrics.score.toFixed(1)} / 10` : "—"}
+          description={
+            metrics
+              ? `${metrics.architecture_type} · ${metrics.propagation_cost_pct.toFixed(1)}% propagation cost`
+              : "Coupling + core roll-up"
+          }
+          icon={<Gauge className="h-4 w-4 text-[var(--color-accent-primary)]" />}
+        />
         <StatCard
           label="Rules evaluated"
           value={isLoading ? "—" : (report?.rules_evaluated ?? 0)}
@@ -82,7 +97,7 @@ export default function ConformancePage() {
           {isLoading ? (
             <Skeleton className="h-72 w-full" />
           ) : (
-            <DsmMatrixView matrix={matrix} />
+            <DsmMatrixView matrix={matrix} {...(metrics ? { metrics } : {})} />
           )}
         </CardContent>
       </Card>

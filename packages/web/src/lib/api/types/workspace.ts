@@ -156,6 +156,10 @@ export type {
   ConformanceReport,
   DsmCell,
   DsmMatrix,
+  ArchitectureMetrics,
+  NodeArchitectureRole,
+  NodeRole,
+  ArchitectureType,
 } from "@repowise-dev/types";
 
 import type {
@@ -163,6 +167,7 @@ import type {
   CrossRepoBlastRadius,
   BreakingChangeReport,
   ConformanceReport,
+  ArchitectureMetrics,
 } from "@repowise-dev/types";
 
 /** `GET /api/workspace/system-graph` — the full service-granular system graph. */
@@ -176,3 +181,6 @@ export type WorkspaceBreakingChangesResponse = BreakingChangeReport;
 
 /** `GET /api/workspace/conformance` — architecture rule violations + cycles. */
 export type WorkspaceConformanceResponse = ConformanceReport;
+
+/** `GET /api/workspace/architecture` — architecture-complexity metrics + roles. */
+export type WorkspaceArchitectureResponse = ArchitectureMetrics;

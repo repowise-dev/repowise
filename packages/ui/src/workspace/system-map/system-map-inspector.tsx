@@ -9,8 +9,14 @@
  */
 
 import { X } from "lucide-react";
-import type { SystemEdge, SystemGraph, SystemNode } from "@repowise-dev/types";
+import type {
+  NodeArchitectureRole,
+  SystemEdge,
+  SystemGraph,
+  SystemNode,
+} from "@repowise-dev/types";
 import { HealthRing } from "../workspace-graph-node";
+import { roleStyle } from "./architecture";
 import { edgeKindStyle, matchTypeLabel } from "./edge-kinds";
 import { nodeKindStyle } from "./node-kinds";
 import type { RepoHealth, SystemMapSelection } from "./types";
@@ -19,6 +25,8 @@ export interface SystemMapInspectorProps {
   selection: SystemMapSelection;
   graph: SystemGraph;
   healthByRepo?: ReadonlyMap<string, RepoHealth>;
+  /** Per-service architecture role + visibility profile (Phase 6, optional). */
+  roleByNodeId?: ReadonlyMap<string, NodeArchitectureRole>;
   onClose: () => void;
   /** Select another node (e.g. clicking a connected service). */
   onSelectNode: (nodeId: string) => void;
@@ -76,11 +84,13 @@ function NodeBody({
   node,
   graph,
   health,
+  role,
   onSelectNode,
 }: {
   node: SystemNode;
   graph: SystemGraph;
   health: RepoHealth | null;
+  role: NodeArchitectureRole | null;
   onSelectNode: (id: string) => void;
 }) {
   const kind = nodeKindStyle(node.kind);
@@ -98,6 +108,23 @@ function NodeBody({
         </div>
       </div>
       <div>
+        {role && (
+          <Field
+            label="Role"
+            value={
+              <span title={roleStyle(role.role).description} style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                <span style={{ width: 7, height: 7, borderRadius: "50%", background: roleStyle(role.role).color }} />
+                {roleStyle(role.role).label}
+              </span>
+            }
+          />
+        )}
+        {role && (
+          <Field
+            label="Visibility (in / out)"
+            value={`${role.visibility_fan_in} / ${role.visibility_fan_out}`}
+          />
+        )}
         {node.service_path && <Field label="Path" value={<span style={{ fontFamily: "var(--font-mono, monospace)", fontSize: 11 }}>{node.service_path}</span>} />}
         <Field label="Provides" value={`${node.provider_count} contracts`} />
         <Field label="Consumes" value={`${node.consumer_count} contracts`} />
@@ -223,7 +250,7 @@ function LinkText({ label, onClick }: { label: string; onClick: () => void }) {
   );
 }
 
-export function SystemMapInspector({ selection, graph, healthByRepo, onClose, onSelectNode, onOpenContract }: SystemMapInspectorProps) {
+export function SystemMapInspector({ selection, graph, healthByRepo, roleByNodeId, onClose, onSelectNode, onOpenContract }: SystemMapInspectorProps) {
   if (!selection) return null;
 
   if (selection.type === "node") {
@@ -232,7 +259,7 @@ export function SystemMapInspector({ selection, graph, healthByRepo, onClose, on
     return (
       <div style={panelStyle}>
         <Header kind="Service" onClose={onClose} />
-        <NodeBody node={node} graph={graph} health={healthByRepo?.get(node.repo) ?? null} onSelectNode={onSelectNode} />
+        <NodeBody node={node} graph={graph} health={healthByRepo?.get(node.repo) ?? null} role={roleByNodeId?.get(node.id) ?? null} onSelectNode={onSelectNode} />
       </div>
     );
   }

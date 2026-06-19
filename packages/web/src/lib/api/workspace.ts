@@ -9,6 +9,7 @@ import type {
   WorkspaceBlastRadiusResponse,
   WorkspaceBreakingChangesResponse,
   WorkspaceConformanceResponse,
+  WorkspaceArchitectureResponse,
 } from "./types";
 
 export async function getWorkspace(
@@ -106,6 +107,10 @@ export async function getWorkspaceConformance(opts?: {
   const params: Record<string, string> = {};
   if (opts?.repo) params.repo = opts.repo;
   return apiGet<WorkspaceConformanceResponse>("/api/workspace/conformance", params);
+}
+
+export async function getWorkspaceArchitecture(): Promise<WorkspaceArchitectureResponse> {
+  return apiGet<WorkspaceArchitectureResponse>("/api/workspace/architecture");
 }
 
 /**

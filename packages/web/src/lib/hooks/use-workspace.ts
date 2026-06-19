@@ -10,6 +10,7 @@ import {
   getWorkspaceBlastRadius,
   getWorkspaceBreakingChanges,
   getWorkspaceConformance,
+  getWorkspaceArchitecture,
 } from "@/lib/api/workspace";
 import type {
   WorkspaceResponse,
@@ -20,6 +21,7 @@ import type {
   WorkspaceBlastRadiusResponse,
   WorkspaceBreakingChangesResponse,
   WorkspaceConformanceResponse,
+  WorkspaceArchitectureResponse,
 } from "@/lib/api/types";
 
 export function useWorkspace() {
@@ -118,6 +120,19 @@ export function useWorkspaceConformance(enabled = true) {
   const { data, error, isLoading } = useSWR<WorkspaceConformanceResponse>(
     enabled ? "workspace:conformance" : null,
     () => getWorkspaceConformance(),
+    { revalidateOnFocus: false },
+  );
+  return { data: data ?? null, isLoading, error };
+}
+
+/**
+ * Architecture-complexity metrics (propagation cost, core, 1-10 score, roles)
+ * computed from the system graph. Pass ``enabled=false`` to defer the request.
+ */
+export function useWorkspaceArchitecture(enabled = true) {
+  const { data, error, isLoading } = useSWR<WorkspaceArchitectureResponse>(
+    enabled ? "workspace:architecture" : null,
+    () => getWorkspaceArchitecture(),
     { revalidateOnFocus: false },
   );
   return { data: data ?? null, isLoading, error };

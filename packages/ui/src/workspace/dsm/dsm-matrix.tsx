@@ -11,12 +11,19 @@
  */
 
 import { useMemo, useState } from "react";
-import type { DsmCell, DsmMatrix } from "@repowise-dev/types";
+import type { ArchitectureMetrics, DsmCell, DsmMatrix, NodeRole } from "@repowise-dev/types";
 import { EmptyState } from "../../shared/empty-state";
 import { edgeKindStyle } from "../system-map/edge-kinds";
+import { roleStyle } from "../system-map/architecture";
 
 export interface DsmMatrixViewProps {
   matrix: DsmMatrix;
+  /**
+   * Optional architecture metrics (Phase 6). When present, the header shows the
+   * score / propagation cost / core size and the diagonal is tinted by each
+   * service's core-periphery role, making the cyclic core block obvious.
+   */
+  metrics?: ArchitectureMetrics;
   /** Optional click handler for a present cell (drill to the dependency). */
   onSelectCell?: (cell: DsmCell) => void;
 }
@@ -24,8 +31,13 @@ export interface DsmMatrixViewProps {
 const CELL = 30;
 const HEADER = 150;
 
-function cellBackground(cell: DsmCell, isDiagonal: boolean): string {
-  if (isDiagonal) return "var(--color-bg-subtle)";
+function cellBackground(cell: DsmCell, isDiagonal: boolean, role?: NodeRole): string {
+  if (isDiagonal) {
+    // The diagonal is a service vs itself — repurpose it to surface the
+    // service's architecture role so the on-diagonal core block stands out.
+    if (role) return `color-mix(in srgb, ${roleStyle(role).color} 38%, transparent)`;
+    return "var(--color-bg-subtle)";
+  }
   if (!cell.present) return "transparent";
   if (cell.violation) return "color-mix(in srgb, var(--color-risk-high) 28%, transparent)";
   if (cell.cycle) return "color-mix(in srgb, var(--color-warning) 26%, transparent)";
@@ -39,7 +51,7 @@ function cellRing(cell: DsmCell): string {
   return "none";
 }
 
-export function DsmMatrixView({ matrix, onSelectCell }: DsmMatrixViewProps) {
+export function DsmMatrixView({ matrix, metrics, onSelectCell }: DsmMatrixViewProps) {
   const [hover, setHover] = useState<{ row: number; col: number } | null>(null);
 
   const counts = useMemo(() => {
@@ -55,6 +67,12 @@ export function DsmMatrixView({ matrix, onSelectCell }: DsmMatrixViewProps) {
     }
     return { present, violations, cycles };
   }, [matrix]);
+
+  const rolesByNodeId = useMemo(() => {
+    const m = new Map<string, NodeRole>();
+    for (const r of metrics?.roles ?? []) m.set(r.id, r.role);
+    return m;
+  }, [metrics]);
 
   if (matrix.axis.length === 0) {
     return (
@@ -85,6 +103,24 @@ export function DsmMatrixView({ matrix, onSelectCell }: DsmMatrixViewProps) {
           <strong style={{ color: "var(--color-text-secondary)" }}>{counts.present}</strong>{" "}
           dependencies
         </span>
+        {metrics && (
+          <span title="Deterministic 1-10 architecture score (higher = lower coupling)">
+            score <strong style={{ color: "var(--color-text-secondary)" }}>{metrics.score.toFixed(1)}</strong>
+          </span>
+        )}
+        {metrics && (
+          <span title="Share of other services the average service can reach transitively">
+            propagation{" "}
+            <strong style={{ color: "var(--color-text-secondary)" }}>
+              {metrics.propagation_cost_pct.toFixed(1)}%
+            </strong>
+          </span>
+        )}
+        {metrics && metrics.core_size > 0 && (
+          <span style={{ color: "var(--color-warning)" }} title="Largest cyclic group of services">
+            core {metrics.core_size}
+          </span>
+        )}
         {counts.violations > 0 && (
           <span style={{ color: "var(--color-risk-high)" }}>{counts.violations} violation(s)</span>
         )}
@@ -139,6 +175,8 @@ export function DsmMatrixView({ matrix, onSelectCell }: DsmMatrixViewProps) {
               row={row}
               label={matrix.labels[i] ?? ""}
               axisId={matrix.axis[i] ?? ""}
+              axis={matrix.axis}
+              rolesByNodeId={rolesByNodeId}
               hover={hover}
               onHover={setHover}
               {...(onSelectCell ? { onSelectCell } : {})}
@@ -155,6 +193,8 @@ function RowCells({
   row,
   label,
   axisId,
+  axis,
+  rolesByNodeId,
   hover,
   onHover,
   onSelectCell,
@@ -163,6 +203,8 @@ function RowCells({
   row: DsmCell[];
   label: string;
   axisId: string;
+  axis: string[];
+  rolesByNodeId: ReadonlyMap<string, NodeRole>;
   hover: { row: number; col: number } | null;
   onHover: (h: { row: number; col: number } | null) => void;
   onSelectCell?: (cell: DsmCell) => void;
@@ -191,12 +233,15 @@ function RowCells({
       </div>
       {row.map((cell, j) => {
         const isDiagonal = i === j;
+        const role = isDiagonal ? rolesByNodeId.get(axis[j] ?? "") : undefined;
         const interactive = cell.present && !isDiagonal && Boolean(onSelectCell);
-        const title = cell.present
-          ? `${cell.from_id} → ${cell.to_id} (${cell.kind ?? ""})${
-              cell.violation ? " · violation" : cell.cycle ? " · cycle" : ""
-            }`
-          : undefined;
+        const title = isDiagonal && role
+          ? `${axisId} · ${roleStyle(role).label} — ${roleStyle(role).description}`
+          : cell.present
+            ? `${cell.from_id} → ${cell.to_id} (${cell.kind ?? ""})${
+                cell.violation ? " · violation" : cell.cycle ? " · cycle" : ""
+              }`
+            : undefined;
         return (
           <div
             key={`cell-${i}-${j}`}
@@ -210,7 +255,7 @@ function RowCells({
               height: CELL,
               boxSizing: "border-box",
               border: "1px solid var(--color-border-subtle)",
-              background: cellBackground(cell, isDiagonal),
+              background: cellBackground(cell, isDiagonal, role),
               boxShadow: cellRing(cell),
               cursor: interactive ? "pointer" : "default",
               outline:

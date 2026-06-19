@@ -22,7 +22,7 @@ import {
   type NodeMouseHandler,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import type { SystemEdgeKind, SystemGraph } from "@repowise-dev/types";
+import type { NodeArchitectureRole, SystemEdgeKind, SystemGraph } from "@repowise-dev/types";
 import { EmptyState } from "../../shared/empty-state";
 import { systemMapNodeTypes } from "./system-map-node";
 import { systemMapEdgeTypes } from "./system-map-edge";
@@ -41,6 +41,8 @@ export interface SystemMapProps {
   healthByRepo?: ReadonlyMap<string, RepoHealth>;
   /** Additive decoration from a later phase (ripple, badges, violations). */
   overlay?: SystemMapOverlay;
+  /** Per-service architecture role + visibility, shown in the inspector (optional). */
+  roleByNodeId?: ReadonlyMap<string, NodeArchitectureRole>;
   /** Open a contract on the Contracts surface (edge drill-down). */
   onOpenContract?: (contractId: string) => void;
 }
@@ -53,7 +55,7 @@ export function SystemMap(props: SystemMapProps) {
   );
 }
 
-function SystemMapInner({ graph, loading, error, healthByRepo, overlay, onOpenContract }: SystemMapProps) {
+function SystemMapInner({ graph, loading, error, healthByRepo, overlay, roleByNodeId, onOpenContract }: SystemMapProps) {
   const availableKinds = useMemo<Set<SystemEdgeKind>>(
     () => new Set((graph?.edges ?? []).map((e) => e.kind)),
     [graph],
@@ -179,6 +181,7 @@ function SystemMapInner({ graph, loading, error, healthByRepo, overlay, onOpenCo
             selection={selection}
             graph={graph}
             {...(healthByRepo ? { healthByRepo } : {})}
+            {...(roleByNodeId ? { roleByNodeId } : {})}
             onClose={() => setSelection(null)}
             onSelectNode={selectNode}
             {...(onOpenContract ? { onOpenContract } : {})}
