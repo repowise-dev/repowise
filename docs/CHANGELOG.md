@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Consolidated the MCP tool surface.** Removed six redundant MCP tools (`annotate_file`, `get_callers_callees`, `get_community`, `get_graph_metrics`, `get_architecture_diagram`, `update_decision_records`) whose capabilities are already covered by `get_context(include=[...])` and `get_why`. The MCP server exposes 13 tools: 10 in single-repo mode plus three workspace-only tools (`get_blast_radius`, `get_conformance`, `get_architecture`). Documentation and tool counts across the project were reconciled to match.
+
 ---
 
 ## [0.20.0] — 2026-06-16

@@ -1,4 +1,9 @@
-"""repowise MCP Server — 19 tools for AI coding assistants.
+"""repowise MCP Server — 13 tools for AI coding assistants.
+
+Ten tools are available in single-repo mode (get_answer, get_context,
+get_symbol, search_codebase, get_overview, get_risk, get_why, get_dead_code,
+get_health, list_repos); three more (get_blast_radius, get_conformance,
+get_architecture) are workspace-only.
 
 Exposes the full repowise wiki as queryable tools via the MCP protocol.
 Supports stdio transport (Claude Code, Cursor, Cline), streamable HTTP, and

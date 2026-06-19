@@ -39,8 +39,7 @@ Last indexed: {{ data.indexed_at }}{% if data.indexed_commit %} (commit {{ data.
 - Risk: call `get_risk(targets=["path/to/file.py"])` before modifying shared utilities, public APIs, hotspots, high-coupling modules, or files with unknown dependents.
 - Why: call `get_why(query="...")` before architectural changes or when the user asks why code is structured a certain way.
 - Dead code: call `get_dead_code(safe_only=true)` before cleanup or removal work; treat lower-confidence findings as candidates to investigate.
-- Connections: call `get_dependency_path(source="...", target="...")` when tracing how modules connect.
-- Diagrams: call `get_architecture_diagram(scope="...")` when a visual structure would clarify the change.
+- Connections: call `get_context(targets=["..."], include=["callers", "callees"])` when tracing how a symbol connects to the rest of the code.
 {% if data.build_commands %}
 
 ### Commands

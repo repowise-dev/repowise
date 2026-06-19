@@ -153,7 +153,7 @@ Stored at `.repowise/lancedb/`. You can rebuild it at any time with `repowise re
 
 ### In-memory graph (NetworkX)
 
-The dependency graph is loaded into memory at server startup for fast traversal. Used by `get_dependency_path`, `get_architecture_diagram`, and cascade analysis during `update`.
+The dependency graph is loaded into memory at server startup for fast traversal. Used by `get_dependency_path`, `get_context` graph enrichment, and cascade analysis during `update`.
 
 **Why it matters for you:** Three stores means three access patterns. Simple lookups hit SQL. Natural language queries hit the vector store. Graph traversal hits NetworkX. The MCP server abstracts all of this — you ask one question, it queries the right store.
 
@@ -161,7 +161,7 @@ The dependency graph is loaded into memory at server startup for fast traversal.
 
 ## The MCP server
 
-The MCP server sits on top of the persistence layer and exposes everything to AI coding assistants via 10 tools. It's the primary interface between repowise and Claude Code, Codex, Cursor, Cline, or any other MCP-compatible editor.
+The MCP server sits on top of the persistence layer and exposes everything to AI coding assistants via 13 tools (10 single-repo + 3 workspace-only). It's the primary interface between repowise and Claude Code, Codex, Cursor, Cline, or any other MCP-compatible editor.
 
 When you run `repowise mcp`, the server starts in stdio mode and your editor can begin calling tools. The tools are designed to answer the questions an AI needs to make good decisions about your code — not just "what is this file" but "should I edit it", "why is it structured this way", and "what will break if I change it".
 

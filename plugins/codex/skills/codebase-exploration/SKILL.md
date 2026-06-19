@@ -19,11 +19,7 @@ Call `get_overview()` first. It returns the architecture summary, module map, en
 
 ## Understanding Connections Between Modules
 
-Call `get_dependency_path(source="module_a", target="module_b")` when the user asks how two areas connect.
-
-## Getting Diagrams
-
-Call `get_architecture_diagram(scope="module", path="path/to/module")` for a subsystem diagram, or `get_architecture_diagram()` for the full repository.
+Call `get_context(targets=["path/or/symbol"], include=["callers", "callees"])` when the user asks how two areas connect, then follow the callers and callees it returns.
 
 ## Error Handling
 

@@ -367,14 +367,8 @@ workspace overlays, MCP responses, and CLI output.
 | `get_risk` | Per-file risk, trend, risk type, owners, co-change partners, test gaps, security signals, top hotspots, optional PR blast radius. | `{results: [{risk_summary, hotspot_score}], top_hotspots: [...]}` |
 | `get_dead_code` | Tiered, grouped, and summarized dead-code findings. | `{summary: {total_findings: 12}, tiers: {...}}` |
 | `get_dependency_path` | Dependency-path or bridge context between files/symbols. | `{path: ["src/a.py", "src/b.py"]}` |
-| `get_architecture_diagram` | Mermaid architecture diagram text. | `{mermaid_syntax: "graph TD\n..."}` |
-| `update_decision_records` | Decision create/update/list/delete payloads. | `{status: "ok", decision: {...}}` |
 | `get_symbol` | Exact symbol metadata and source slice. | `{name: "create_app", signature: "def create_app(...)"}` |
-| `get_callers_callees` | Caller/callee neighborhood for a symbol. | `{callers: [...], callees: [...]}` |
-| `get_graph_metrics` | Centrality percentiles, community, entry-point score, and graph metrics for a node. | `{pagerank_percentile: 92, community_label: "api"}` |
-| `get_community` | Community details, cohesion, members, and neighboring communities. | `{label: "auth", cohesion: 0.21, members: [...]}` |
 | `get_execution_flows` | Entry-point traces through call edges. | `{flows: [{entry_point, trace, crosses_community}]}` |
-| `annotate_file` | Persistent human notes on a wiki page. | `{status: "ok", human_notes: "Watch migration path."}` |
 | Blast radius API | Direct risks, transitive affected files, co-change warnings, reviewers, test gaps, overall score. | `{overall_risk_score: 7.25}` |
 | Knowledge map API | Top owners, knowledge silos, onboarding targets. | `{top_owners: [...], knowledge_silos: [...]}` |
 | Cost summary API | Grouped costs and totals. | `{groups: [...], total_cost_usd: 3.21}` |

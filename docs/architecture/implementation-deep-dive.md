@@ -930,7 +930,7 @@ Max 10 iterations per request. Streamed via SSE (Server-Sent Events).
 
 ## 8. MCP Tools
 
-MCP (Model Context Protocol) lets AI coding assistants (Claude Code, Cursor, Windsurf, Cline) call Repowise tools directly. There are 10 tools, each answering a specific question.
+MCP (Model Context Protocol) lets AI coding assistants (Claude Code, Cursor, Windsurf, Cline) call Repowise tools directly. There are 13 tools (10 single-repo + 3 workspace-only), each answering a specific question. The most commonly used single-repo tools are described below.
 
 ### Tool 1: `get_overview` — "What is this codebase?"
 
@@ -1064,20 +1064,6 @@ co_change_signal:     If no import link but frequent co-changes → logical coup
 | Low | < 0.5 | Suspicious. Might be dynamically loaded or framework-used. |
 
 **Supports rollup by directory or owner** — so you can say "show me all dead code owned by Alice in the payments/ directory."
-
-### Tool 8: `get_architecture_diagram` — "Show me the structure"
-
-**When to use:** Getting a visual understanding of the codebase architecture.
-
-**Three scopes:**
-
-| Scope | What you get |
-|-------|-------------|
-| `"repo"` | Full architecture diagram (from pre-generated page) |
-| `"module"` | Subgraph of a specific module and its dependencies |
-| `"file"` | Single file with its imports and importers |
-
-Returns Mermaid syntax that renders as a flowchart in any Mermaid-compatible viewer.
 
 ---
 

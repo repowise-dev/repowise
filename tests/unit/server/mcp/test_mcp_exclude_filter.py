@@ -162,21 +162,6 @@ def _set_excluded(monkeypatch, tmp_path, pattern: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_diagram_excludes_node_and_its_edges(setup_mcp, tmp_path, monkeypatch):
-    """An excluded endpoint must not render even though it has a surviving
-    neighbor (service.py -> models.py edge)."""
-    from repowise.server.mcp_server.tool_diagram import get_architecture_diagram
-
-    _set_excluded(monkeypatch, tmp_path, "src/db/")
-    # scope="module" forces the graph-computed path (scope="repo" returns a
-    # stored page that bypasses node/edge filtering).
-    result = await get_architecture_diagram(scope="module")
-    mermaid = result["mermaid_syntax"]
-    assert "src_db_models_py" not in mermaid  # excluded endpoint not rendered
-    assert "src_auth_service_py" in mermaid  # non-excluded node still present
-
-
-@pytest.mark.asyncio
 async def test_dependency_path_excludes_intermediate(setup_mcp, tmp_path, monkeypatch):
     """middleware.py -> models.py only routes through service.py; excluding
     service.py must not surface it as an intermediate."""

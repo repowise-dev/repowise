@@ -140,8 +140,9 @@ The plugin version tracks the repowise release it ships alongside (e.g. `0.16.0`
 4. **Only `plugin.json` goes in `plugins/claude-code/.claude-plugin/`.** Everything
    else (`commands/`, `skills/`, `hooks/`) sits at the plugin root. The
    **marketplace** manifest lives at the **repo** root, not the plugin's.
-5. **There are 9 exposed MCP tools.** `get_dependency_path` and
-   `get_architecture_diagram` exist in the server but are **not** exposed — never
+5. **There are 13 exposed MCP tools** (10 single-repo, plus 3 workspace-only:
+   `get_blast_radius`, `get_conformance`, `get_architecture`). `get_dependency_path`
+   and `get_execution_flows` exist in the server but are **not** exposed — never
    reference them in commands/skills.
 6. **Verify CLI flags against the source.** Easy ones to get wrong:
    `--index-only` (not `--no-llm`), `--concurrency` (not `--concurrent`),

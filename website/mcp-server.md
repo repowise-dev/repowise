@@ -22,7 +22,7 @@ Connect repowise to Claude Code, Codex, Cursor, Cline, or any MCP-compatible edi
 
 ## Overview
 
-The MCP (Model Context Protocol) server is how repowise talks to AI coding assistants. Once connected, your editor's AI can call 10 tools to query your codebase wiki — synthesizing answers, looking up symbols, fetching docs, ownership, risk signals, dependency paths, and architectural decisions.
+The MCP (Model Context Protocol) server is how repowise talks to AI coding assistants. Once connected, your editor's AI can call 13 tools (10 single-repo + 3 workspace-only) to query your codebase wiki — synthesizing answers, looking up symbols, fetching docs, ownership, risk signals, dependency paths, and architectural decisions.
 
 Start the server with:
 
@@ -170,7 +170,7 @@ Clients connect to `http://localhost:7338/sse` and receive server-sent events.
 
 ---
 
-## The 10 tools
+## The single-repo tools
 
 ### `get_answer(question, scope?)`
 
@@ -387,31 +387,6 @@ Returns a tiered report of unused code.
 
 ---
 
-### `get_architecture_diagram(scope?, path?, diagram_type?, show_heat?)`
-
-Generates a Mermaid diagram of the architecture.
-
-**Parameters:**
-- `scope` — `"repo"` (default), `"module"`, or `"file"`
-- `path` — required for module/file scope
-- `diagram_type` — `"auto"`, `"flowchart"`, `"class"`, or `"sequence"`
-- `show_heat` — boolean; colors nodes by churn intensity (red = hot, green = cold)
-
-**When to use:** For documentation, architecture reviews, or understanding unfamiliar areas.
-
-**Example output:**
-```mermaid
-graph TD
-  cli["CLI (init, update, mcp...)"]
-  core["Core (ingestion, analysis, generation)"]
-  server["Server (FastAPI + MCP)"]
-  cli --> core
-  cli --> server
-  server --> core
-```
-
----
-
 ## How AI editors use these tools
 
 The tools are designed to form a decision workflow:
@@ -421,6 +396,6 @@ The tools are designed to form a decision workflow:
 3. **Before editing a file** → `get_risk(targets=[...])` to assess impact
 4. **When facing an architectural question** → `get_why(query="...")` before changing structure
 5. **When locating code** → `search_codebase(query="...")` before grep
-6. **After making changes** → `update_decision_records(action="create", ...)` to record decisions
+6. **After making changes** → `get_why(query="...")` to confirm the change aligns with recorded architectural decisions
 
 The [CLAUDE.md generator](claude-md-generator) writes these instructions directly into your project's CLAUDE.md, so Claude Code follows this workflow automatically. Codex setup writes the same workflow into managed `AGENTS.md`.

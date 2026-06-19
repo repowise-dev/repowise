@@ -87,9 +87,10 @@ def _print_network_startup(
 def mcp_command(path: str | None, transport: str, port: int) -> None:
     """Start the MCP server for editor integration.
 
-    Exposes 17 tools for querying the repowise wiki via the MCP protocol.
-    Supports stdio (for Claude Code, Codex, Cursor, Cline), streamable HTTP,
-    and legacy SSE transports.
+    Exposes 13 tools for querying the repowise wiki via the MCP protocol
+    (ten in single-repo mode, plus three workspace-only tools in workspace
+    mode). Supports stdio (for Claude Code, Codex, Cursor, Cline), streamable
+    HTTP, and legacy SSE transports.
 
     Loads ``<repo>/.repowise/.env`` into the environment before starting so
     that MCP tools (e.g. ``get_answer``) can resolve the configured LLM

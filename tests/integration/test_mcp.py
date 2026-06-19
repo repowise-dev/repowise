@@ -352,8 +352,7 @@ async def test_mcp_full_exploration_flow(mcp_env):
     overview = await get_overview()
     assert "Sample Project" in overview["content_md"]
     assert len(overview["key_modules"]) == 2
-    # `architecture_diagram_mermaid` was deliberately removed from get_overview
-    # — agents can request the diagram via get_architecture_diagram() instead.
+    # `architecture_diagram_mermaid` is deliberately not part of get_overview.
     assert "architecture_diagram_mermaid" not in overview
 
     # Step 2: Drill into auth module via get_context.

@@ -1,7 +1,8 @@
 """Add composite indexes for performant graph queries.
 
-Indexes support the new MCP graph query tools (get_callers_callees,
-get_community, get_graph_metrics, get_execution_flows) which filter
+Indexes support graph queries used by get_context enrichment
+(include=["callers", "callees", "community", "metrics"]), the
+get_execution_flows traces, and the graph REST endpoints, which filter
 by (repo, node_type, community) and (repo, source/target, edge_type).
 
 Revision ID: 0017
