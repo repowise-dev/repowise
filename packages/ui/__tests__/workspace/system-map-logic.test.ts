@@ -14,7 +14,8 @@ import {
   buildBlastRadiusOverlay,
   impactBadgeTone,
 } from "../../src/workspace/system-map/blast-radius";
-import type { CrossRepoBlastRadius } from "@repowise-dev/types";
+import { buildBreakingChangeOverlay } from "../../src/workspace/system-map/breaking-changes";
+import type { BreakingChange, BreakingChangeReport, CrossRepoBlastRadius } from "@repowise-dev/types";
 
 function node(id: string, repo: string, over: Partial<SystemNode> = {}): SystemNode {
   return {
@@ -271,5 +272,77 @@ describe("buildBlastRadiusOverlay", () => {
     expect(impactBadgeTone(2, true)).toBe("warning");
     expect(impactBadgeTone(3, true)).toBe("info");
     expect(impactBadgeTone(1, false)).toBe("info");
+  });
+});
+
+describe("buildBreakingChangeOverlay", () => {
+  function change(over: Partial<BreakingChange> = {}): BreakingChange {
+    return {
+      kind: "removed_endpoint",
+      severity: "breaking",
+      contract_id: "http::GET::/users",
+      contract_type: "http",
+      provider_repo: "api",
+      provider_file: "routes.py",
+      provider_symbol: "h",
+      provider_service: null,
+      provider_node_id: "api",
+      detail: "removed",
+      impacted_consumers: [
+        {
+          repo: "web",
+          service: null,
+          node_id: "web",
+          file: "client.ts",
+          symbol: "fetch",
+          match_type: "exact",
+          confidence: 0.9,
+        },
+      ],
+      ...over,
+    };
+  }
+  function report(changes: BreakingChange[]): BreakingChangeReport {
+    return {
+      version: 1,
+      generated_at: "t",
+      changes,
+      total: changes.length,
+      breaking_count: changes.filter((c) => c.severity === "breaking").length,
+      warning_count: changes.filter((c) => c.severity === "warning").length,
+      impacted_repos: [],
+      impacted_services: [],
+      total_impacted_consumers: 0,
+    };
+  }
+
+  const g = graph(
+    [node("api", "api"), node("web", "web"), node("idle", "idle")],
+    [edge("web", "api"), edge("idle", "api")],
+  );
+
+  it("badges the changed provider and at-risk consumers, highlighting the seam", () => {
+    const overlay = buildBreakingChangeOverlay(g, report([change()]));
+    expect(overlay.nodeBadges?.api).toEqual({ label: "1 breaking", tone: "danger" });
+    expect(overlay.nodeBadges?.web).toEqual({ label: "at risk", tone: "warning" });
+    // Only the consumer→provider edge in the report is highlighted.
+    expect(overlay.highlightEdgeIds?.has("web->api")).toBe(true);
+    expect(overlay.highlightEdgeIds?.has("idle->api")).toBe(false);
+    expect(overlay.edgeBadges?.["web->api"]).toEqual({ label: "breaking", tone: "danger" });
+    // Additive overlay: nothing is dimmed.
+    expect(overlay.dimNodeIds).toBeUndefined();
+  });
+
+  it("a warning-only provider reads as a warning badge", () => {
+    const overlay = buildBreakingChangeOverlay(
+      g,
+      report([change({ severity: "warning", kind: "removed_field", impacted_consumers: [] })]),
+    );
+    expect(overlay.nodeBadges?.api).toEqual({ label: "1 change", tone: "warning" });
+  });
+
+  it("returns an empty overlay when there are no changes", () => {
+    expect(buildBreakingChangeOverlay(g, report([]))).toEqual({});
+    expect(buildBreakingChangeOverlay(g, null)).toEqual({});
   });
 });

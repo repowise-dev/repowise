@@ -242,3 +242,48 @@ class WorkspaceBlastRadiusResponse(BaseModel):
     max_distance: int = 0
     total_impacted: int = 0
     unresolved_targets: list[str] = []
+
+
+# ---------------------------------------------------------------------------
+# Breaking-change guard — provider changes that break consumers across repos.
+# Mirrors repowise.core.workspace.breaking_change.
+# ---------------------------------------------------------------------------
+
+
+class WorkspaceImpactedConsumer(BaseModel):
+    repo: str
+    service: str | None = None
+    node_id: str
+    file: str
+    symbol: str
+    match_type: str = "exact"
+    confidence: float = 0.0
+
+
+class WorkspaceBreakingChange(BaseModel):
+    kind: str
+    severity: str  # breaking | warning
+    contract_id: str
+    contract_type: str
+    provider_repo: str
+    provider_file: str
+    provider_symbol: str
+    provider_service: str | None = None
+    provider_node_id: str = ""
+    detail: str
+    field_name: str | None = None
+    old_value: str | None = None
+    new_value: str | None = None
+    impacted_consumers: list[WorkspaceImpactedConsumer] = []
+
+
+class WorkspaceBreakingChangesResponse(BaseModel):
+    version: int = 1
+    generated_at: str = ""
+    changes: list[WorkspaceBreakingChange] = []
+    total: int = 0
+    breaking_count: int = 0
+    warning_count: int = 0
+    impacted_repos: list[str] = []
+    impacted_services: list[str] = []
+    total_impacted_consumers: int = 0

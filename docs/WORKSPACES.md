@@ -303,6 +303,32 @@ Use it three ways:
 
 ---
 
+## Breaking-Change Guard
+
+Where blast radius answers *what could be affected*, the breaking-change guard answers a sharper question: **did a provider change in a way that actually breaks its consumers?** On every `repowise update --workspace`, the freshly-extracted contracts are diffed against the previously-indexed set and each incompatible provider change is reported with the exact consumer files that call it.
+
+Detected change kinds (a registry — adding a kind is one new rule, never an `if/elif`):
+
+| Kind | Severity | Fires when |
+|------|----------|-----------|
+| `removed_endpoint` | breaking | A provider route / gRPC method / topic that existed before is gone |
+| `removed_field` | breaking (response) / warning (request) | A request or response field disappeared |
+| `field_type_changed` | breaking | A field's type changed (e.g. `string → int64`) |
+| `field_number_changed` | breaking | A proto field's wire number changed |
+| `field_required` | breaking | A field became required, or a new required field was added |
+
+**Non-breaking changes never flag** — an added *optional* field, a widened set, or a brand-new endpoint produces no record. Field-level diffs need a contract *schema*; today gRPC carries one (proto message fields, recovered by the existing proto parser), and HTTP gains field-level checks when an OpenAPI spec is present. Route-level removal is detected for every transport from the contract id alone.
+
+Impacted consumers are resolved from the matched contract links — the same provider↔consumer evidence the [system graph](#system-graph)'s edges are built from — so impact is endpoint-precise (the consumer file that calls the changed contract) and direct (the first reachability hop, which is exactly what a contract break endangers; transitive ripple stays the job of blast radius).
+
+Use it three ways:
+
+- **REST** — `GET /api/workspace/breaking-changes` returns the report from the most recent update (filterable by `repo` or `severity`). Each change carries its provider, detail, and impacted consumers with both code sides.
+- **MCP** — the `get_risk` PR-mode directive gains a `breaking_changes` block listing the provider contracts that changed incompatibly in the diff's repo and the consumers they endanger, across repos.
+- **System Map** — toggle **Breaking changes** above the map: changed providers are badged with their breaking count, the consumers they endanger are badged *at risk*, and the seams between them are highlighted (additive overlay — the map stays whole). A side panel lists each change with both the provider and consumer files.
+
+---
+
 ## MCP Integration
 
 Workspace init automatically registers MCP servers with Claude Desktop and Claude Code. The MCP server is workspace-aware:
@@ -324,6 +350,7 @@ my-workspace/
     cross_repo_edges.json          # Co-change pairs and package deps
     contracts.json                 # Extracted API contracts and links
     system_graph.json              # Service-granular system graph + diagnostics
+    breaking_changes.json          # Breaking provider changes vs the last index
   .claude/
     CLAUDE.md                      # Workspace-level CLAUDE.md for AI editors
   backend/

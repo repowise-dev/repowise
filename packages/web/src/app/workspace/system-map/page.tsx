@@ -2,11 +2,13 @@
 
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Waypoints, Boxes, ArrowLeftRight, Share2, Zap } from "lucide-react";
+import { Waypoints, Boxes, ArrowLeftRight, Share2, Zap, AlertTriangle } from "lucide-react";
 import {
   SystemMap,
   SystemMapBlastPanel,
+  SystemMapBreakingPanel,
   buildBlastRadiusOverlay,
+  buildBreakingChangeOverlay,
   type RepoHealth,
 } from "@repowise-dev/ui/workspace/system-map";
 import { StatCard } from "@repowise-dev/ui/shared/stat-card";
@@ -15,6 +17,7 @@ import {
   useWorkspaceSystemGraph,
   useWorkspaceGraph,
   useWorkspaceBlastRadius,
+  useWorkspaceBreakingChanges,
 } from "@/lib/hooks/use-workspace";
 
 export default function SystemMapPage() {
@@ -31,6 +34,12 @@ export default function SystemMapPage() {
     includeBehavioral,
   });
 
+  // Breaking-change guard. Lazy-fetched the first time it's toggled on; its
+  // at-risk badges ride the map's overlay prop when no blast target is focused.
+  const [showBreaking, setShowBreaking] = useState(false);
+  const { data: breaking, isLoading: breakingLoading } =
+    useWorkspaceBreakingChanges(showBreaking);
+
   // Join repo health (from the repo-level graph) onto service nodes by alias.
   // The map keys health by `SystemNode.repo`; the repo graph's node `name` is
   // the repo alias.
@@ -42,10 +51,14 @@ export default function SystemMapPage() {
     return m;
   }, [repoGraph]);
 
+  // A blast-radius selection focuses the map (dim + ripple) and takes precedence;
+  // otherwise the breaking-change overlay badges the at-risk seams additively.
   const overlay = useMemo(() => {
-    if (!graph || !blast) return undefined;
-    return buildBlastRadiusOverlay(graph, blast);
-  }, [graph, blast]);
+    if (!graph) return undefined;
+    if (blast) return buildBlastRadiusOverlay(graph, blast);
+    if (showBreaking && breaking) return buildBreakingChangeOverlay(graph, breaking);
+    return undefined;
+  }, [graph, blast, showBreaking, breaking]);
 
   const diag = graph?.diagnostics;
   const serviceCount = graph?.nodes.length ?? 0;
@@ -121,11 +134,27 @@ export default function SystemMapPage() {
           />
           Include co-change
         </label>
+        <button
+          type="button"
+          onClick={() => setShowBreaking((v) => !v)}
+          aria-pressed={showBreaking}
+          className={`ml-auto inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-sm ${
+            showBreaking
+              ? "border-[var(--color-risk-high)] text-[var(--color-risk-high)]"
+              : "border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
+          }`}
+        >
+          <AlertTriangle className="h-4 w-4" />
+          Breaking changes
+          {showBreaking && breaking && breaking.breaking_count > 0 && (
+            <span className="font-semibold">· {breaking.breaking_count}</span>
+          )}
+        </button>
         {blastTarget && (
           <button
             type="button"
             onClick={() => setBlastTarget(null)}
-            className="ml-auto text-sm text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]"
+            className="text-sm text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]"
           >
             Clear
           </button>
@@ -152,6 +181,14 @@ export default function SystemMapPage() {
               onSelectTarget={setBlastTarget}
               onClear={() => setBlastTarget(null)}
             />
+            {showBreaking && (
+              <SystemMapBreakingPanel
+                report={breaking}
+                loading={breakingLoading}
+                onSelectNode={setBlastTarget}
+                onClear={() => setShowBreaking(false)}
+              />
+            )}
           </>
         )}
       </div>

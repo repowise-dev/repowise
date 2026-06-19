@@ -83,12 +83,14 @@ def _acquire_lock(repo_path: Path, target_commit: str | None) -> None:
     try:
         (repo_path / ".repowise").mkdir(parents=True, exist_ok=True)
         _lock_path(repo_path).write_text(
-            _json.dumps({
-                "pid": os.getpid(),
-                "pid_create_token": process_create_token(os.getpid()),
-                "target_commit": target_commit,
-                "started_at": time.time(),
-            }),
+            _json.dumps(
+                {
+                    "pid": os.getpid(),
+                    "pid_create_token": process_create_token(os.getpid()),
+                    "target_commit": target_commit,
+                    "started_at": time.time(),
+                }
+            ),
             encoding="utf-8",
         )
     except OSError:
@@ -100,6 +102,7 @@ def _release_lock(repo_path: Path) -> None:
         _lock_path(repo_path).unlink(missing_ok=True)
     except OSError:
         pass
+
 
 # ---------------------------------------------------------------------------
 # Data models
@@ -319,17 +322,22 @@ async def _incremental_repo_update(
         if pattern not in merged_excludes:
             merged_excludes.append(pattern)
 
-    parsed_files, _source_map, graph_builder, _structure, file_count, git_meta_map = (
-        await rebuild_graph_and_git(
-            repo_path,
-            file_diffs,
-            cfg,
-            merged_excludes,
-            git_tier=state.get("git_tier"),
-            include_submodules=bool(state.get("include_submodules", False)),
-            include_nested_repos=bool(state.get("include_nested_repos", False)),
-            log=_log.info,
-        )
+    (
+        parsed_files,
+        _source_map,
+        graph_builder,
+        _structure,
+        file_count,
+        git_meta_map,
+    ) = await rebuild_graph_and_git(
+        repo_path,
+        file_diffs,
+        cfg,
+        merged_excludes,
+        git_tier=state.get("git_tier"),
+        include_submodules=bool(state.get("include_submodules", False)),
+        include_nested_repos=bool(state.get("include_nested_repos", False)),
+        log=_log.info,
     )
 
     partial_health_report, dead_code_report = run_partial_analysis(
@@ -507,13 +515,18 @@ async def update_workspace(
     for entry in entries:
         abs_path = (workspace_root / entry.path).resolve()
         if not abs_path.is_dir():
-            results.append(RepoUpdateResult(
-                alias=entry.alias, updated=False, skipped_reason="missing_directory",
-            ))
+            results.append(
+                RepoUpdateResult(
+                    alias=entry.alias,
+                    updated=False,
+                    skipped_reason="missing_directory",
+                )
+            )
             continue
 
         # Check staleness against stored commit in state.json
         import json
+
         state_path = abs_path / ".repowise" / "state.json"
         stored_commit = None
         if state_path.is_file():
@@ -524,13 +537,18 @@ async def update_workspace(
                 pass
 
         is_stale, current_head, commits_behind = check_repo_staleness(
-            abs_path, stored_commit,
+            abs_path,
+            stored_commit,
         )
 
         if not is_stale:
-            results.append(RepoUpdateResult(
-                alias=entry.alias, updated=False, skipped_reason="up_to_date",
-            ))
+            results.append(
+                RepoUpdateResult(
+                    alias=entry.alias,
+                    updated=False,
+                    skipped_reason="up_to_date",
+                )
+            )
             continue
 
         # First-time indexing path: previously this short-circuited with
@@ -569,13 +587,14 @@ async def update_workspace(
                 _log.info(
                     "workspace_update: skipping %s — update already in flight "
                     "(pid=%s target=%s elapsed=%ds)",
-                    alias, existing.get("pid"), target_short, elapsed,
+                    alias,
+                    existing.get("pid"),
+                    target_short,
+                    elapsed,
                 )
                 # Record pending so the running update can roll forward.
                 try:
-                    (path / ".repowise" / ".update.pending").write_text(
-                        new_head, encoding="utf-8"
-                    )
+                    (path / ".repowise" / ".update.pending").write_text(new_head, encoding="utf-8")
                 except OSError:
                     pass
                 return RepoUpdateResult(
@@ -599,6 +618,7 @@ async def update_workspace(
             # Update state.json with new commit
             if result.updated and new_head:
                 import json as _json
+
                 state_path = path / ".repowise" / "state.json"
                 state: dict[str, Any] = {}
                 if state_path.is_file():
@@ -618,7 +638,8 @@ async def update_workspace(
                     )
                 state_path.parent.mkdir(parents=True, exist_ok=True)
                 state_path.write_text(
-                    _json.dumps(state, indent=2), encoding="utf-8",
+                    _json.dumps(state, indent=2),
+                    encoding="utf-8",
                 )
 
             # Update workspace config entry
@@ -644,9 +665,13 @@ async def update_workspace(
     changed_aliases: list[str] = []
     for r in update_results:
         if isinstance(r, Exception):
-            results.append(RepoUpdateResult(
-                alias="unknown", updated=False, error=str(r),
-            ))
+            results.append(
+                RepoUpdateResult(
+                    alias="unknown",
+                    updated=False,
+                    error=str(r),
+                )
+            )
         else:
             results.append(r)
             if r.updated:
@@ -683,7 +708,8 @@ async def run_cross_repo_hooks(
     if len(ws_config.repos) < 2:
         return
 
-    from .contracts import ContractStore, run_contract_extraction
+    from .breaking_change import run_breaking_change_detection
+    from .contracts import ContractStore, load_contract_store, run_contract_extraction
     from .cross_repo import CrossRepoOverlay, run_cross_repo_analysis
     from .system_graph import run_system_graph_build
 
@@ -693,7 +719,12 @@ async def run_cross_repo_hooks(
     except Exception:
         _log.warning("Cross-repo analysis failed", exc_info=True)
 
-    # Phase 4: Contract extraction
+    # Snapshot the contracts as they stand on disk BEFORE extraction overwrites
+    # them — this is the cheapest honest "previous" state for the breaking-change
+    # diff (no contract history needed; the last index is the baseline).
+    previous_store = load_contract_store(workspace_root) or ContractStore()
+
+    # Contract extraction (overwrites contracts.json).
     store = ContractStore()
     try:
         store = await run_contract_extraction(ws_config, workspace_root, changed_repos)
@@ -706,3 +737,10 @@ async def run_cross_repo_hooks(
         await run_system_graph_build(ws_config, workspace_root, store, overlay)
     except Exception:
         _log.warning("System graph build failed", exc_info=True)
+
+    # Breaking-change guard — diff the previous (on-disk) contracts against the
+    # freshly extracted set and persist the impacted-consumer report.
+    try:
+        run_breaking_change_detection(workspace_root, previous_store, store)
+    except Exception:
+        _log.warning("Breaking-change detection failed", exc_info=True)

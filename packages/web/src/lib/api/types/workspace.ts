@@ -144,12 +144,25 @@ export type {
   OrphanProvider,
   ImpactedNode,
   CrossRepoBlastRadius,
+  ContractSchema,
+  SchemaField,
+  BreakingChange,
+  BreakingChangeConsumer,
+  BreakingChangeReport,
+  BreakingChangeSeverity,
 } from "@repowise-dev/types";
 
-import type { SystemGraph, CrossRepoBlastRadius } from "@repowise-dev/types";
+import type {
+  SystemGraph,
+  CrossRepoBlastRadius,
+  BreakingChangeReport,
+} from "@repowise-dev/types";
 
 /** `GET /api/workspace/system-graph` — the full service-granular system graph. */
 export type WorkspaceSystemGraphResponse = SystemGraph;
 
 /** `GET /api/workspace/blast-radius` — cross-repo downstream impact set. */
 export type WorkspaceBlastRadiusResponse = CrossRepoBlastRadius;
+
+/** `GET /api/workspace/breaking-changes` — incompatible provider changes + impact. */
+export type WorkspaceBreakingChangesResponse = BreakingChangeReport;

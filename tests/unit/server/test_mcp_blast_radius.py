@@ -17,21 +17,51 @@ from repowise.server.mcp_server.tool_blast_radius import get_blast_radius
 
 def _enricher_with_graph(tmp_path: Path) -> CrossRepoEnricher:
     contracts = [
-        Contract(repo="backend", contract_id="http::GET::/users", contract_type="http",
-                 role="provider", file_path="routes.py", symbol_name="get_users", confidence=0.9),
-        Contract(repo="frontend", contract_id="http::GET::/users", contract_type="http",
-                 role="consumer", file_path="client.ts", symbol_name="fetchUsers", confidence=0.8),
+        Contract(
+            repo="backend",
+            contract_id="http::GET::/users",
+            contract_type="http",
+            role="provider",
+            file_path="routes.py",
+            symbol_name="get_users",
+            confidence=0.9,
+        ),
+        Contract(
+            repo="frontend",
+            contract_id="http::GET::/users",
+            contract_type="http",
+            role="consumer",
+            file_path="client.ts",
+            symbol_name="fetchUsers",
+            confidence=0.8,
+        ),
     ]
     links = [
-        ContractLink(contract_id="http::GET::/users", contract_type="http", match_type="exact",
-                     confidence=0.8, provider_repo="backend", provider_file="routes.py",
-                     provider_symbol="get_users", provider_service=None, consumer_repo="frontend",
-                     consumer_file="client.ts", consumer_symbol="fetchUsers", consumer_service=None),
+        ContractLink(
+            contract_id="http::GET::/users",
+            contract_type="http",
+            match_type="exact",
+            confidence=0.8,
+            provider_repo="backend",
+            provider_file="routes.py",
+            provider_symbol="get_users",
+            provider_service=None,
+            consumer_repo="frontend",
+            consumer_file="client.ts",
+            consumer_symbol="fetchUsers",
+            consumer_service=None,
+        ),
     ]
-    overlay = CrossRepoOverlay(package_deps=[
-        CrossRepoPackageDep(source_repo="frontend", target_repo="backend",
-                            source_manifest="package.json", kind="npm_local_path"),
-    ])
+    overlay = CrossRepoOverlay(
+        package_deps=[
+            CrossRepoPackageDep(
+                source_repo="frontend",
+                target_repo="backend",
+                source_manifest="package.json",
+                kind="npm_local_path",
+            ),
+        ]
+    )
     graph = build_system_graph(contracts, links, overlay, {}, generated_at="t")
     (tmp_path / "system_graph.json").write_text(json.dumps(graph.to_dict()), encoding="utf-8")
     return CrossRepoEnricher(
@@ -113,6 +143,91 @@ def test_cross_repo_directive_empty_outside_workspace():
     _state._registry = None
     try:
         assert _cross_repo_directive("backend") == ([], [])
+    finally:
+        _state._registry = prev
+
+
+def _enricher_with_breaking(tmp_path: Path) -> CrossRepoEnricher:
+    from repowise.core.workspace.breaking_change import detect_breaking_changes
+    from repowise.core.workspace.contracts import ContractStore
+
+    prev = ContractStore(
+        contracts=[
+            Contract(
+                repo="backend",
+                contract_id="http::GET::/users",
+                contract_type="http",
+                role="provider",
+                file_path="routes.py",
+                symbol_name="get_users",
+                confidence=0.9,
+            ),
+        ],
+        contract_links=[
+            ContractLink(
+                contract_id="http::GET::/users",
+                contract_type="http",
+                match_type="exact",
+                confidence=0.8,
+                provider_repo="backend",
+                provider_file="routes.py",
+                provider_symbol="get_users",
+                provider_service=None,
+                consumer_repo="frontend",
+                consumer_file="client.ts",
+                consumer_symbol="fetchUsers",
+                consumer_service=None,
+            ),
+        ],
+    )
+    report = detect_breaking_changes(prev, ContractStore(), generated_at="t")
+    (tmp_path / "breaking_changes.json").write_text(json.dumps(report.to_dict()), encoding="utf-8")
+    return CrossRepoEnricher(
+        tmp_path / "cross_repo_edges.json",
+        breaking_changes_path=tmp_path / "breaking_changes.json",
+    )
+
+
+def test_breaking_change_directive_reports_impacted_consumers(tmp_path: Path):
+    from repowise.server.mcp_server.tool_risk import _breaking_change_directive
+
+    prev_registry = _state._registry
+    prev_enricher = _state._cross_repo_enricher
+    _state._registry = object()
+    _state._cross_repo_enricher = _enricher_with_breaking(tmp_path)
+    try:
+        directive = _breaking_change_directive("backend")
+    finally:
+        _state._registry = prev_registry
+        _state._cross_repo_enricher = prev_enricher
+    assert len(directive) == 1
+    assert directive[0]["kind"] == "removed_endpoint"
+    assert directive[0]["severity"] == "breaking"
+    assert directive[0]["impacted_consumers"][0]["repo"] == "frontend"
+
+
+def test_breaking_change_directive_empty_for_other_repo(tmp_path: Path):
+    from repowise.server.mcp_server.tool_risk import _breaking_change_directive
+
+    prev_registry = _state._registry
+    prev_enricher = _state._cross_repo_enricher
+    _state._registry = object()
+    _state._cross_repo_enricher = _enricher_with_breaking(tmp_path)
+    try:
+        # 'frontend' is a consumer, not the provider of the change → no directive.
+        assert _breaking_change_directive("frontend") == []
+    finally:
+        _state._registry = prev_registry
+        _state._cross_repo_enricher = prev_enricher
+
+
+def test_breaking_change_directive_empty_outside_workspace():
+    from repowise.server.mcp_server.tool_risk import _breaking_change_directive
+
+    prev = _state._registry
+    _state._registry = None
+    try:
+        assert _breaking_change_directive("backend") == []
     finally:
         _state._registry = prev
 

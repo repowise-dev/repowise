@@ -6,6 +6,8 @@ import { SystemMapFilters } from "../../src/workspace/system-map/system-map-filt
 import { SystemMapLegend } from "../../src/workspace/system-map/system-map-legend";
 import { SystemMapInspector } from "../../src/workspace/system-map/system-map-inspector";
 import { SystemMapBlastPanel } from "../../src/workspace/system-map/system-map-blast-panel";
+import { SystemMapBreakingPanel } from "../../src/workspace/system-map/system-map-breaking-panel";
+import type { BreakingChange, BreakingChangeReport } from "@repowise-dev/types";
 
 // jsdom has no layout engine → stub ResizeObserver so React Flow can mount.
 beforeAll(() => {
@@ -238,5 +240,73 @@ describe("SystemMapBlastPanel", () => {
       <SystemMapBlastPanel result={result()} onSelectTarget={() => {}} onClear={() => {}} />,
     );
     expect(screen.getByText(/nothing downstream/i)).toBeInTheDocument();
+  });
+});
+
+describe("SystemMapBreakingPanel", () => {
+  function change(over: Partial<BreakingChange> = {}): BreakingChange {
+    return {
+      kind: "removed_endpoint",
+      severity: "breaking",
+      contract_id: "http::GET::/users",
+      contract_type: "http",
+      provider_repo: "api",
+      provider_file: "routes.py",
+      provider_symbol: "h",
+      provider_service: null,
+      provider_node_id: "api",
+      detail: "http::GET::/users was removed",
+      impacted_consumers: [
+        {
+          repo: "web",
+          service: null,
+          node_id: "web",
+          file: "client.ts",
+          symbol: "fetch",
+          match_type: "exact",
+          confidence: 0.9,
+        },
+      ],
+      ...over,
+    };
+  }
+  function report(changes: BreakingChange[]): BreakingChangeReport {
+    return {
+      version: 1,
+      generated_at: "t",
+      changes,
+      total: changes.length,
+      breaking_count: changes.filter((c) => c.severity === "breaking").length,
+      warning_count: changes.filter((c) => c.severity === "warning").length,
+      impacted_repos: ["web"],
+      impacted_services: ["web"],
+      total_impacted_consumers: 1,
+    };
+  }
+
+  it("renders nothing without a report", () => {
+    const { container } = render(<SystemMapBreakingPanel report={null} onClear={() => {}} />);
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it("lists a changed provider with both code sides", () => {
+    render(<SystemMapBreakingPanel report={report([change()])} onClear={() => {}} />);
+    expect(screen.getByText("http::GET::/users")).toBeInTheDocument();
+    expect(screen.getByText(/was removed/i)).toBeInTheDocument();
+    expect(screen.getByText(/routes\.py/)).toBeInTheDocument(); // provider side
+    expect(screen.getByText(/client\.ts/)).toBeInTheDocument(); // consumer side
+    expect(screen.getByText(/1 breaking, 0 warning/i)).toBeInTheDocument();
+  });
+
+  it("focuses a node when a consumer is clicked", () => {
+    const onSelectNode = vi.fn();
+    render(<SystemMapBreakingPanel report={report([change()])} onSelectNode={onSelectNode} onClear={() => {}} />);
+    fireEvent.click(screen.getByText(/client\.ts/));
+    expect(onSelectNode).toHaveBeenCalledWith("web");
+  });
+
+  it("shows the clean state when there are no changes", () => {
+    render(<SystemMapBreakingPanel report={report([])} onClear={() => {}} />);
+    expect(screen.getByText(/no breaking changes/i)).toBeInTheDocument();
   });
 });

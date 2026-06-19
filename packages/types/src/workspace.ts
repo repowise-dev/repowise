@@ -205,3 +205,82 @@ export interface CrossRepoBlastRadius {
   /** Target strings that matched no node or repo. */
   unresolved_targets: string[];
 }
+
+// ---------------------------------------------------------------------------
+// Contract schema — the optional request/response field shape a contract
+// carries when a parser can recover it (proto message fields today; OpenAPI
+// when present). Drives schema-level breaking-change detection.
+// Mirrors `repowise.core.workspace.contract_schema`.
+// ---------------------------------------------------------------------------
+
+/** One field in a request or response shape. `number` is the proto wire tag. */
+export interface SchemaField {
+  name: string;
+  type: string;
+  required?: boolean;
+  number?: number | null;
+  repeated?: boolean;
+}
+
+export interface ContractSchema {
+  /** Which parser produced the shape (`"proto"` / `"openapi"`). */
+  source: string;
+  request_fields: SchemaField[];
+  response_fields: SchemaField[];
+}
+
+// ---------------------------------------------------------------------------
+// Breaking-change guard — provider contract changes that break consumers across
+// repos, computed by diffing the current contracts against the previously
+// indexed set. Mirrors `repowise.core.workspace.breaking_change`.
+// ---------------------------------------------------------------------------
+
+/** How a breaking change ranks. `breaking` = wire-incompatible; `warning` = source risk. */
+export type BreakingChangeSeverity = "breaking" | "warning";
+
+/** A consumer endangered by a provider's breaking change (from a matched link). */
+export interface BreakingChangeConsumer {
+  repo: string;
+  service: string | null;
+  /** System-graph node id of the consumer (for map badging). */
+  node_id: string;
+  /** The exact consumer file that calls the changed contract. */
+  file: string;
+  symbol: string;
+  match_type: string;
+  confidence: number;
+}
+
+export interface BreakingChange {
+  /** Rule key: `removed_endpoint` | `removed_field` | `field_type_changed` | ... */
+  kind: string;
+  severity: BreakingChangeSeverity;
+  contract_id: string;
+  contract_type: string;
+  provider_repo: string;
+  provider_file: string;
+  provider_symbol: string;
+  provider_service: string | null;
+  /** System-graph node id of the changed provider. */
+  provider_node_id: string;
+  /** Human-readable one-liner. */
+  detail: string;
+  field_name?: string | null;
+  old_value?: string | null;
+  new_value?: string | null;
+  impacted_consumers: BreakingChangeConsumer[];
+}
+
+export interface BreakingChangeReport {
+  version: number;
+  generated_at: string;
+  changes: BreakingChange[];
+  total: number;
+  breaking_count: number;
+  warning_count: number;
+  /** Distinct repos with an endangered consumer. */
+  impacted_repos: string[];
+  /** Distinct system-graph node ids with an endangered consumer. */
+  impacted_services: string[];
+  total_impacted_consumers: number;
+}

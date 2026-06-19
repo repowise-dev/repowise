@@ -7,6 +7,7 @@ import type {
   WorkspaceSyncResponse,
   WorkspaceSystemGraphResponse,
   WorkspaceBlastRadiusResponse,
+  WorkspaceBreakingChangesResponse,
 } from "./types";
 
 export async function getWorkspace(
@@ -76,6 +77,21 @@ export async function getWorkspaceBlastRadius(opts: {
   if (opts.maxDepth != null) params.max_depth = opts.maxDepth;
   if (opts.includeBehavioral != null) params.include_behavioral = opts.includeBehavioral;
   return apiGet<WorkspaceBlastRadiusResponse>("/api/workspace/blast-radius", params);
+}
+
+/**
+ * Provider contract changes from the most recent update that break consumers
+ * across repos, with the impacted consumer files. Optionally filter by provider
+ * repo or severity.
+ */
+export async function getWorkspaceBreakingChanges(opts?: {
+  repo?: string;
+  severity?: "breaking" | "warning";
+}): Promise<WorkspaceBreakingChangesResponse> {
+  const params: Record<string, string> = {};
+  if (opts?.repo) params.repo = opts.repo;
+  if (opts?.severity) params.severity = opts.severity;
+  return apiGet<WorkspaceBreakingChangesResponse>("/api/workspace/breaking-changes", params);
 }
 
 /**

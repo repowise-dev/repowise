@@ -21,6 +21,7 @@ from repowise.server.deps import (
 )
 from repowise.server.schemas import (
     WorkspaceBlastRadiusResponse,
+    WorkspaceBreakingChangesResponse,
     WorkspaceCoChangeEntry,
     WorkspaceCoChangesResponse,
     WorkspaceContractEntry,
@@ -568,6 +569,61 @@ async def get_blast_radius(
         graph, target, max_depth=max_depth, include_behavioral=include_behavioral
     )
     return WorkspaceBlastRadiusResponse(**result.to_dict())
+
+
+# ---------------------------------------------------------------------------
+# GET /api/workspace/breaking-changes
+# ---------------------------------------------------------------------------
+
+
+@router.get("/breaking-changes", response_model=WorkspaceBreakingChangesResponse)
+async def get_breaking_changes(
+    ws_config=Depends(get_workspace_config),
+    enricher=Depends(get_cross_repo_enricher),
+    repo: str | None = Query(None, description="Filter to changes whose provider is in this repo."),
+    severity: str | None = Query(None, description="Filter: breaking or warning."),
+):
+    """Provider contract changes that break consumers across repos.
+
+    Computed during the most recent ``repowise update --workspace`` by diffing the
+    freshly-extracted contracts against the previously-indexed set, then resolving
+    each change's direct consumers from the matched links. Returns an empty report
+    (not 404) when no breaking changes were detected or no report exists yet.
+    """
+    _require_workspace(ws_config)
+
+    report = enricher.get_breaking_changes() if enricher is not None else None
+    if not report:
+        return WorkspaceBreakingChangesResponse()
+
+    changes = list(report.get("changes", []))
+    if repo:
+        changes = [c for c in changes if c.get("provider_repo") == repo]
+    if severity:
+        changes = [c for c in changes if c.get("severity") == severity]
+
+    # Recompute rollups when a filter narrowed the set so the response stays
+    # self-consistent; otherwise pass the persisted rollups straight through.
+    if repo or severity:
+        impacted_repos = sorted(
+            {ic.get("repo", "") for c in changes for ic in c.get("impacted_consumers", [])}
+        )
+        impacted_services = sorted(
+            {ic.get("node_id", "") for c in changes for ic in c.get("impacted_consumers", [])}
+        )
+        return WorkspaceBreakingChangesResponse(
+            version=report.get("version", 1),
+            generated_at=report.get("generated_at", ""),
+            changes=changes,
+            total=len(changes),
+            breaking_count=sum(1 for c in changes if c.get("severity") == "breaking"),
+            warning_count=sum(1 for c in changes if c.get("severity") == "warning"),
+            impacted_repos=impacted_repos,
+            impacted_services=impacted_services,
+            total_impacted_consumers=sum(len(c.get("impacted_consumers", [])) for c in changes),
+        )
+
+    return WorkspaceBreakingChangesResponse(**report)
 
 
 # ---------------------------------------------------------------------------

@@ -99,3 +99,15 @@ ranking (one named constant, `BEHAVIORAL_EDGE_WEIGHT`, in
 `packages/core/src/repowise/core/workspace/blast_radius.py`). See
 [Cross-Repo Blast Radius](WORKSPACES.md#cross-repo-blast-radius) for the full
 model.
+
+The directive carries a third cross-repo field, `breaking_changes`, when a
+provider contract in the changed repo changed *incompatibly* (a removed route or
+field, a type or field-number change, a newly-required field). Where
+`will_break_consumers` is topology ("who depends on this repo"),
+`breaking_changes` is schema-level truth ("this specific contract changed in a
+way that breaks these consumers"), each entry listing the changed contract and
+the consumer files it endangers across repos. It is computed by diffing the
+current contracts against the previously-indexed set during
+`repowise update --workspace`; non-breaking changes (an added optional field, a
+new endpoint) never appear. See
+[Breaking-Change Guard](WORKSPACES.md#breaking-change-guard) for the full model.

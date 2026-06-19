@@ -216,6 +216,7 @@ When `changed_files` is passed, the response leads with a `directive` block. In 
 
 - `will_break_consumers` — services in *other* repos that depend on this one (structural impact), each with `repo`, `service`, `distance`, `score`, and the edge kinds carrying the impact.
 - `missing_cross_repo_cochanges` — services in other repos that historically co-change with this one but aren't in the diff.
+- `breaking_changes` — provider contracts in this repo that changed *incompatibly* since the last index (a removed route or field, a type or field-number change, a newly-required field), each with the changed `contract_id`, the change `kind`/`severity`, and the `impacted_consumers` (repo, service, file) it endangers across repos. Schema-level truth, distinct from the topology-level `will_break_consumers`; non-breaking changes (added optional field, new endpoint) never appear. See [Breaking-Change Guard](WORKSPACES.md#breaking-change-guard).
 
 **When to use:** Before modifying files — especially hotspots. Understand what could break, who to involve in review, and whether tests cover the affected area.
 
@@ -355,6 +356,7 @@ The MCP server automatically enriches responses with cross-repo intelligence:
 - **API contract links** (HTTP, gRPC, topics) between repos
 - **Package dependencies** between repos
 - **Cross-repo blast radius** via the workspace-only `get_blast_radius` tool, and a cross-repo `directive` in `get_risk` PR-mode
+- **Breaking-change guard** — incompatible provider-contract changes and the consumers they endanger, in the `get_risk` PR-mode `breaking_changes` directive
 
 ---
 

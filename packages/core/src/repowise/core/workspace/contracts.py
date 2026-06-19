@@ -24,6 +24,7 @@ from repowise.core.workspace.config import (
     WorkspaceConfig,
     ensure_workspace_data_dir,
 )
+from repowise.core.workspace.contract_schema import ContractSchema
 
 _log = logging.getLogger("repowise.workspace.contracts")
 
@@ -52,6 +53,9 @@ class Contract:
     confidence: float  # 0.7–0.9 based on extraction strategy
     service: str | None = None  # service boundary path (monorepo)
     meta: dict = field(default_factory=dict)
+    # Optional request/response shape — populated by dialects that can recover
+    # it (proto message fields today). Drives schema-level breaking-change diffs.
+    schema: ContractSchema | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -59,10 +63,15 @@ class Contract:
             del d["service"]
         if not d["meta"]:
             del d["meta"]
+        if self.schema is None or self.schema.is_empty:
+            d.pop("schema", None)
+        else:
+            d["schema"] = self.schema.to_dict()
         return d
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Contract:
+        raw_schema = data.get("schema")
         return cls(
             repo=data["repo"],
             contract_id=data["contract_id"],
@@ -73,6 +82,7 @@ class Contract:
             confidence=data["confidence"],
             service=data.get("service"),
             meta=data.get("meta", {}),
+            schema=ContractSchema.from_dict(raw_schema) if raw_schema else None,
         )
 
 
@@ -142,9 +152,7 @@ class ContractStore:
             version=data.get("version", 1),
             generated_at=data.get("generated_at", ""),
             contracts=[Contract.from_dict(c) for c in data.get("contracts", [])],
-            contract_links=[
-                ContractLink.from_dict(lk) for lk in data.get("contract_links", [])
-            ],
+            contract_links=[ContractLink.from_dict(lk) for lk in data.get("contract_links", [])],
         )
 
 
@@ -213,10 +221,29 @@ _CANDIDATE_CONFIDENCE_FACTOR = 0.6
 # can't spuriously link to a provider route that shares a suffix. ``.json`` and
 # ``.xml`` are intentionally absent — real APIs serve those.
 _STATIC_ASSET_SUFFIXES = (
-    ".js", ".mjs", ".cjs", ".css", ".map", ".html", ".htm",
-    ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".webp", ".avif",
-    ".woff", ".woff2", ".ttf", ".eot", ".otf",
-    ".pdf", ".txt", ".wasm",
+    ".js",
+    ".mjs",
+    ".cjs",
+    ".css",
+    ".map",
+    ".html",
+    ".htm",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".svg",
+    ".ico",
+    ".webp",
+    ".avif",
+    ".woff",
+    ".woff2",
+    ".ttf",
+    ".eot",
+    ".otf",
+    ".pdf",
+    ".txt",
+    ".wasm",
 )
 
 
@@ -232,10 +259,9 @@ def _find_matching_keys(
 
     # HTTP wildcard: consumer http::*::/path matches any method on that path
     if normalized.startswith("http::*::"):
-        path_suffix = normalized[len("http::*::"):]
+        path_suffix = normalized[len("http::*::") :]
         return [
-            k for k in provider_index
-            if k.startswith("http::") and k.endswith(f"::{path_suffix}")
+            k for k in provider_index if k.startswith("http::") and k.endswith(f"::{path_suffix}")
         ]
 
     # HTTP: check for wildcard providers (http::*::/path from Go HandleFunc)
@@ -291,11 +317,7 @@ def _is_static_asset_path(path: str) -> bool:
 
 def _methods_compatible(consumer_method: str, provider_method: str) -> bool:
     """HTTP methods match if equal or either side is the ``*`` wildcard."""
-    return (
-        consumer_method == provider_method
-        or consumer_method == "*"
-        or provider_method == "*"
-    )
+    return consumer_method == provider_method or consumer_method == "*" or provider_method == "*"
 
 
 def _same_repo_same_service(provider: Contract, consumer: Contract) -> bool:
@@ -450,35 +472,39 @@ def _build_manual_links(
     result: list[ContractLink] = []
     for ml in manual_links:
         if ml.from_role == "consumer":
-            result.append(ContractLink(
-                contract_id=ml.contract_id,
-                contract_type=ml.contract_type,
-                match_type="manual",
-                confidence=1.0,
-                provider_repo=ml.to_repo,
-                provider_file="",
-                provider_symbol="",
-                provider_service=None,
-                consumer_repo=ml.from_repo,
-                consumer_file="",
-                consumer_symbol="",
-                consumer_service=None,
-            ))
+            result.append(
+                ContractLink(
+                    contract_id=ml.contract_id,
+                    contract_type=ml.contract_type,
+                    match_type="manual",
+                    confidence=1.0,
+                    provider_repo=ml.to_repo,
+                    provider_file="",
+                    provider_symbol="",
+                    provider_service=None,
+                    consumer_repo=ml.from_repo,
+                    consumer_file="",
+                    consumer_symbol="",
+                    consumer_service=None,
+                )
+            )
         else:
-            result.append(ContractLink(
-                contract_id=ml.contract_id,
-                contract_type=ml.contract_type,
-                match_type="manual",
-                confidence=1.0,
-                provider_repo=ml.from_repo,
-                provider_file="",
-                provider_symbol="",
-                provider_service=None,
-                consumer_repo=ml.to_repo,
-                consumer_file="",
-                consumer_symbol="",
-                consumer_service=None,
-            ))
+            result.append(
+                ContractLink(
+                    contract_id=ml.contract_id,
+                    contract_type=ml.contract_type,
+                    match_type="manual",
+                    confidence=1.0,
+                    provider_repo=ml.from_repo,
+                    provider_file="",
+                    provider_symbol="",
+                    provider_service=None,
+                    consumer_repo=ml.to_repo,
+                    consumer_file="",
+                    consumer_symbol="",
+                    consumer_service=None,
+                )
+            )
     return result
 
 
@@ -581,9 +607,9 @@ async def run_contract_extraction(
 
         return contracts
 
-    results = await asyncio.gather(*[
-        _extract_one_repo(alias, path) for alias, path in repo_paths.items()
-    ])
+    results = await asyncio.gather(
+        *[_extract_one_repo(alias, path) for alias, path in repo_paths.items()]
+    )
     all_contracts: list[Contract] = []
     for repo_contracts in results:
         all_contracts.extend(repo_contracts)

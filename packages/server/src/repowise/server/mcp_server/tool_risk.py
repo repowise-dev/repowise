@@ -412,6 +412,56 @@ def _as_path(entry: Any) -> str | None:
 #: glanceable. The full impact set is on get_blast_radius / the REST endpoint.
 _XR_WILL_BREAK_LIMIT = 5
 _XR_COCHANGE_LIMIT = 3
+#: Caps on the breaking-change directive — providers and consumers-per-provider.
+#: The full report is on GET /api/workspace/breaking-changes.
+_BC_PROVIDER_LIMIT = 5
+_BC_CONSUMER_LIMIT = 5
+
+
+def _breaking_change_directive(repo_alias: str) -> list[dict[str, Any]]:
+    """Breaking-change half of the PR directive: incompatible provider changes.
+
+    Reads the persisted breaking-change report (current HEAD vs the previously
+    indexed contracts), filtered to providers in the changed repo, and reports
+    each change with the consumers it endangers across repos. Returns an empty
+    list when not in workspace mode or no report is available. Never raises.
+    """
+    out: list[dict[str, Any]] = []
+    try:
+        if not _is_workspace_mode():
+            return out
+        enricher = _state._cross_repo_enricher
+        if enricher is None or not getattr(enricher, "has_breaking_changes", False):
+            return out
+        for change in enricher.get_breaking_changes_for_repo(repo_alias):
+            if len(out) >= _BC_PROVIDER_LIMIT:
+                break
+            consumers = change.get("impacted_consumers", [])
+            # Only surface changes that actually endanger a cross-repo consumer —
+            # an internal-only removed endpoint isn't a cross-repo break.
+            cross = [c for c in consumers if c.get("repo") != repo_alias]
+            if not cross:
+                continue
+            out.append(
+                {
+                    "contract_id": change.get("contract_id"),
+                    "type": change.get("contract_type"),
+                    "kind": change.get("kind"),
+                    "severity": change.get("severity"),
+                    "detail": change.get("detail"),
+                    "impacted_consumers": [
+                        {
+                            "repo": c.get("repo"),
+                            "service": c.get("service"),
+                            "file": c.get("file"),
+                        }
+                        for c in cross[:_BC_CONSUMER_LIMIT]
+                    ],
+                }
+            )
+    except Exception:
+        return []
+    return out
 
 
 def _cross_repo_directive(repo_alias: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -831,12 +881,25 @@ async def get_risk(
                 f"{len(missing_cross_repo_cochanges)} cross-repo co-changer(s) missing."
             )
 
+        # Breaking-change guard — incompatible provider changes (removed route /
+        # field, type change, ...) in this repo and the consumers they endanger.
+        # Schema-level truth, distinct from the topology-level will_break_consumers.
+        breaking_changes = _breaking_change_directive(ctx.alias)
+        bc_suffix = ""
+        if breaking_changes:
+            bc_consumers = sum(len(b["impacted_consumers"]) for b in breaking_changes)
+            bc_suffix = (
+                f" Breaking changes: {len(breaking_changes)} provider contract(s) changed "
+                f"incompatibly, endangering {bc_consumers} consumer(s)."
+            )
+
         response["directive"] = {
             "will_break": will_break,
             "missing_cochanges": missing_cochanges,
             "missing_tests": missing_tests,
             "will_break_consumers": will_break_consumers,
             "missing_cross_repo_cochanges": missing_cross_repo_cochanges,
+            "breaking_changes": breaking_changes,
             "governance_risk": governance_risk,
             "overall_risk_score": trimmed_blast.get("overall_risk_score"),
             "summary": (
@@ -844,7 +907,7 @@ async def get_risk(
                 f"~{len(will_break)} downstream file(s) likely affected, "
                 f"{len(missing_cochanges)} historical co-changer(s) missing, "
                 f"{len(missing_tests)} file(s) without tests."
-                f"{gov_suffix}{xr_suffix}"
+                f"{gov_suffix}{xr_suffix}{bc_suffix}"
             ),
         }
     else:

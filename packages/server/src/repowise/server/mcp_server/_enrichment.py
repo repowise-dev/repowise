@@ -10,7 +10,6 @@ import json
 import logging
 from collections import defaultdict
 from pathlib import Path
-from typing import Any
 
 _log = logging.getLogger("repowise.mcp.enrichment")
 
@@ -23,6 +22,7 @@ class CrossRepoEnricher:
         data_path: Path,
         contracts_path: Path | None = None,
         system_graph_path: Path | None = None,
+        breaking_changes_path: Path | None = None,
     ) -> None:
         self._co_changes: list[dict] = []
         self._package_deps: list[dict] = []
@@ -44,15 +44,23 @@ class CrossRepoEnricher:
         # update. Read-only pass-through; views over it live in core/types.
         self._system_graph: dict | None = None
 
+        # Breaking-change report — provider changes from the most recent update
+        # that break consumers, with the impacted consumer files. Read-only.
+        self._breaking_changes: dict | None = None
+        self._breaking_changes_by_repo: dict[str, list[dict]] = defaultdict(list)
+
         self._data_path = data_path
         self._contracts_path = contracts_path
         self._system_graph_path = system_graph_path
+        self._breaking_changes_path = breaking_changes_path
 
         self._load(data_path)
         if contracts_path is not None:
             self._load_contracts(contracts_path)
         if system_graph_path is not None:
             self._load_system_graph(system_graph_path)
+        if breaking_changes_path is not None:
+            self._load_breaking_changes(breaking_changes_path)
 
     def _load(self, data_path: Path) -> None:
         """Parse JSON and build indexes."""
@@ -178,6 +186,27 @@ class CrossRepoEnricher:
             len(self._system_graph.get("edges", [])),
         )
 
+    def _load_breaking_changes(self, breaking_changes_path: Path) -> None:
+        """Parse ``breaking_changes.json`` and index changes by provider repo."""
+        if not breaking_changes_path.is_file():
+            _log.debug("No breaking-change report at %s", breaking_changes_path)
+            return
+        try:
+            self._breaking_changes = json.loads(breaking_changes_path.read_text(encoding="utf-8"))
+        except Exception:
+            _log.warning(
+                "Failed to parse breaking changes at %s", breaking_changes_path, exc_info=True
+            )
+            return
+        for change in self._breaking_changes.get("changes", []):
+            repo = change.get("provider_repo")
+            if repo:
+                self._breaking_changes_by_repo[repo].append(change)
+        _log.debug(
+            "Breaking-change report loaded: %d change(s)",
+            len(self._breaking_changes.get("changes", [])),
+        )
+
     def reload(self) -> None:
         """Re-read JSON files from disk and rebuild all indexes.
 
@@ -197,12 +226,16 @@ class CrossRepoEnricher:
         self._contract_provider_index = defaultdict(list)
         self._contract_consumer_index = defaultdict(list)
         self._system_graph = None
+        self._breaking_changes = None
+        self._breaking_changes_by_repo = defaultdict(list)
 
         self._load(self._data_path)
         if self._contracts_path is not None:
             self._load_contracts(self._contracts_path)
         if self._system_graph_path is not None:
             self._load_system_graph(self._system_graph_path)
+        if self._breaking_changes_path is not None:
+            self._load_breaking_changes(self._breaking_changes_path)
 
         _log.info(
             "Cross-repo enricher reloaded: %d co-change edges, %d package deps, %d contract links",
@@ -229,6 +262,19 @@ class CrossRepoEnricher:
     def get_system_graph(self) -> dict | None:
         """Return the raw system graph dict (nodes, edges, diagnostics)."""
         return self._system_graph
+
+    @property
+    def has_breaking_changes(self) -> bool:
+        """True if a breaking-change report has been loaded."""
+        return self._breaking_changes is not None
+
+    def get_breaking_changes(self) -> dict | None:
+        """Return the raw breaking-change report (changes + rollups)."""
+        return self._breaking_changes
+
+    def get_breaking_changes_for_repo(self, repo_alias: str) -> list[dict]:
+        """Return breaking changes whose provider lives in *repo_alias*."""
+        return self._breaking_changes_by_repo.get(repo_alias, [])
 
     def get_diagnostics(self) -> dict | None:
         """Return just the extraction diagnostics block of the system graph."""

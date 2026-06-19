@@ -8,6 +8,7 @@ import {
   getWorkspaceSystemGraph,
   getWorkspaceGraph,
   getWorkspaceBlastRadius,
+  getWorkspaceBreakingChanges,
 } from "@/lib/api/workspace";
 import type {
   WorkspaceResponse,
@@ -16,6 +17,7 @@ import type {
   WorkspaceSystemGraphResponse,
   WorkspaceGraphResponse,
   WorkspaceBlastRadiusResponse,
+  WorkspaceBreakingChangesResponse,
 } from "@/lib/api/types";
 
 export function useWorkspace() {
@@ -88,6 +90,19 @@ export function useWorkspaceBlastRadius(
         ...(opts?.maxDepth != null ? { maxDepth: opts.maxDepth } : {}),
         ...(opts?.includeBehavioral != null ? { includeBehavioral: opts.includeBehavioral } : {}),
       }),
+    { revalidateOnFocus: false },
+  );
+  return { data: data ?? null, isLoading, error };
+}
+
+/**
+ * Breaking-change report from the most recent workspace update. Pass
+ * ``enabled=false`` to skip the request until the user opens the panel.
+ */
+export function useWorkspaceBreakingChanges(enabled = true) {
+  const { data, error, isLoading } = useSWR<WorkspaceBreakingChangesResponse>(
+    enabled ? "workspace:breaking-changes" : null,
+    () => getWorkspaceBreakingChanges(),
     { revalidateOnFocus: false },
   );
   return { data: data ?? null, isLoading, error };

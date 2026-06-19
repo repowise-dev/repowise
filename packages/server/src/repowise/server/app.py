@@ -308,6 +308,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             except Exception as exc:
                 logger.warning("workspace_stale_job_reset_failed", extra={"error": str(exc)})
 
+            from repowise.core.workspace.breaking_change import BREAKING_CHANGES_FILENAME
             from repowise.core.workspace.contracts import CONTRACTS_FILENAME
             from repowise.core.workspace.system_graph import SYSTEM_GRAPH_FILENAME
             from repowise.server.mcp_server._enrichment import CrossRepoEnricher
@@ -315,10 +316,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             cross_repo_path = _Path(ws_root) / WORKSPACE_DATA_DIR / "cross_repo_edges.json"
             contracts_path = _Path(ws_root) / WORKSPACE_DATA_DIR / CONTRACTS_FILENAME
             system_graph_path = _Path(ws_root) / WORKSPACE_DATA_DIR / SYSTEM_GRAPH_FILENAME
+            breaking_changes_path = _Path(ws_root) / WORKSPACE_DATA_DIR / BREAKING_CHANGES_FILENAME
             enricher = CrossRepoEnricher(
                 cross_repo_path,
                 contracts_path=contracts_path,
                 system_graph_path=system_graph_path,
+                breaking_changes_path=breaking_changes_path,
             )
             if enricher.has_data or enricher.has_contract_data or enricher.has_system_graph:
                 app.state.cross_repo_enricher = enricher
