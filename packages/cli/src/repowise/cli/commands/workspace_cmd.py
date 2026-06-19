@@ -1050,9 +1050,7 @@ def workspace_check(path: str | None, as_json: bool) -> None:
 
     # Rule violations
     if report.violations:
-        console.print(
-            f"\n[red]✗ {len(report.violations)} architecture rule violation(s):[/red]"
-        )
+        console.print(f"\n[red]✗ {len(report.violations)} architecture rule violation(s):[/red]")
         for v in report.violations:
             rule = f"{v.rule_source} !-> {v.rule_target}"
             console.print(
@@ -1072,8 +1070,7 @@ def workspace_check(path: str | None, as_json: bool) -> None:
     if not report.has_findings:
         if rule_count:
             console.print(
-                f"\n[green]✓[/green] No violations of {rule_count} rule(s); "
-                "no dependency cycles."
+                f"\n[green]✓[/green] No violations of {rule_count} rule(s); no dependency cycles."
             )
         else:
             console.print("\n[green]✓[/green] No dependency cycles.")
@@ -1084,3 +1081,101 @@ def workspace_check(path: str | None, as_json: bool) -> None:
         f"{len(report.cycles)} cycle(s)."
     )
     sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# workspace metrics
+# ---------------------------------------------------------------------------
+
+
+@workspace_group.command("metrics")
+@click.argument("path", required=False, default=None)
+@click.option("--json", "as_json", is_flag=True, help="Emit the raw metrics as JSON.")
+def workspace_metrics(path: str | None, as_json: bool) -> None:
+    """Architecture metrics — propagation cost, core, and a 1-10 score.
+
+    Computes the standard architecture-complexity metrics over the system graph
+    built by 'repowise update --workspace': how coupled the whole system is
+    (propagation cost), which services form the cyclic core, and a single
+    deterministic 1-10 score. Uses structural edges only; co-change is excluded.
+    Declared-rule violations, if any, are folded into the score. CI-friendly
+    plain output.
+    """
+    import json as _json
+
+    from repowise.core.workspace.architecture_metrics import compute_architecture_metrics
+    from repowise.core.workspace.conformance import (
+        check_conformance,
+        tags_by_repo_from_config,
+    )
+    from repowise.core.workspace.system_graph import load_system_graph
+
+    start = resolve_repo_path(path)
+    ws_root, ws_config = _require_workspace(start)
+
+    graph = load_system_graph(ws_root)
+    if graph is None:
+        raise click.ClickException(
+            "No system graph found. Run 'repowise update --workspace' to build "
+            "cross-repo relationships first."
+        )
+
+    violations = check_conformance(
+        graph, ws_config.conformance.rules, tags_by_repo_from_config(ws_config)
+    )
+    metrics = compute_architecture_metrics(
+        graph,
+        conformance_violations=len(violations),
+        generated_at=graph.generated_at,
+    )
+
+    if as_json:
+        console.print_json(_json.dumps(metrics.to_dict()))
+        return
+
+    if metrics.node_count == 0:
+        console.print(
+            "[dim]No services in the system graph yet.[/dim] Run "
+            "'repowise update --workspace' after indexing repos with cross-repo "
+            "relationships."
+        )
+        return
+
+    score_color = "green" if metrics.score >= 8 else "yellow" if metrics.score >= 4 else "red"
+    console.print(
+        f"\n  Architecture score  [bold {score_color}]{metrics.score:.1f}[/bold {score_color}]"
+        f" / 10   [dim]({metrics.architecture_type})[/dim]"
+    )
+    console.print(
+        f"  Propagation cost    [bold]{metrics.propagation_cost_pct:.1f}%[/bold]"
+        f"   [dim]avg share of other services each one can reach[/dim]"
+    )
+    if metrics.core_size:
+        members = ", ".join(metrics.core_members[:6])
+        if len(metrics.core_members) > 6:
+            members += f", +{len(metrics.core_members) - 6} more"
+        console.print(
+            f"  Cyclic core         [bold]{metrics.core_size}[/bold] service(s)"
+            f" ([dim]{metrics.core_ratio * 100:.0f}% of {metrics.node_count}[/dim]) — {members}"
+        )
+    else:
+        console.print(
+            f"  Cyclic core         [green]none[/green]"
+            f"   [dim]({metrics.node_count} services, acyclic structure)[/dim]"
+        )
+    console.print(f"  Dependency cycles   [bold]{metrics.cycle_count}[/bold]")
+    if metrics.conformance_violations:
+        console.print(
+            f"  Rule violations     [red]{metrics.conformance_violations}[/red]"
+            f"   [dim](folded into the score)[/dim]"
+        )
+
+    breakdown = metrics.role_breakdown()
+    role_labels = {
+        "core": "Core",
+        "shared": "Shared",
+        "control": "Control",
+        "peripheral": "Peripheral",
+    }
+    parts = ", ".join(f"{role_labels[r]} {breakdown.get(r, 0)}" for r in role_labels)
+    console.print(f"\n  Service roles: {parts}")
