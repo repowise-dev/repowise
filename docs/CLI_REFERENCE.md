@@ -540,6 +540,16 @@ Re-scan the workspace directory for new repos not yet added.
 
 Change which repo is the default for MCP queries.
 
+### `repowise workspace diagnostics`
+
+Explain the cross-repo contract link count: per-repo provider/consumer counts, unmatched consumers grouped by reason, and orphan providers (declared but never consumed).
+
+```bash
+repowise workspace diagnostics            # human-readable report
+repowise workspace diagnostics --json     # raw JSON
+repowise workspace diagnostics --repo api # limit to one repo alias
+```
+
 See [Workspaces](WORKSPACES.md) for the full multi-repo guide.
 
 ---

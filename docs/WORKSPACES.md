@@ -169,6 +169,16 @@ Change which repo is the default for MCP queries.
 repowise workspace set-default backend
 ```
 
+### `repowise workspace diagnostics`
+
+Explain the cross-repo contract link count — per-repo provider/consumer counts, unmatched consumers grouped by reason, and orphan providers. See [Extraction Diagnostics](#extraction-diagnostics).
+
+```bash
+repowise workspace diagnostics            # human-readable report
+repowise workspace diagnostics --json     # raw JSON
+repowise workspace diagnostics --repo api # limit to one repo
+```
+
 ---
 
 ## Cross-Repo Intelligence
@@ -199,6 +209,47 @@ Scans source files for HTTP route handlers, gRPC service definitions, and messag
 ### Package Dependency Scanning
 
 Reads package manifests (`package.json`, `pyproject.toml`, `go.mod`, `pom.xml`, etc.) to detect when one repo depends on another as a package.
+
+---
+
+## System Graph
+
+The contracts, package dependencies, and co-changes above are each a flat list. repowise folds them into a single normalized **system graph** — the one structure every cross-repo view reads. It is rebuilt automatically on every `repowise update --workspace` and persisted to `.repowise-workspace/system_graph.json`.
+
+**Nodes are services, not repos.** A monorepo with three detected service boundaries (a `package.json` / `go.mod` / `Cargo.toml` sub-directory) shows three nodes; the repo is a grouping attribute on each node. A repo with no sub-boundary collapses to a single repo-root node. Each node carries its provider/consumer counts, the contract types it participates in, and flags for orphan/isolated services.
+
+**Edges are typed and honest.** Every edge carries:
+
+- a `kind` — `http`, `grpc`, `event`, `package`, or `co_change`;
+- a `match_type` — `exact`, `candidate`, `manual`, or `inferred`;
+- a `confidence` and a `weight` (how many underlying contracts / deps / co-changes it aggregates);
+- `contract_refs` back-pointers so any view can drill from an edge to its evidence.
+
+Edge direction is uniform: **`source` depends on / calls `target`.** A consumer points to the provider it calls; a dependent repo points to the repo it imports. Structural edges (contracts, package deps) are flagged distinctly from behavioral co-change edges — repowise never conflates "these change together" with "these call each other".
+
+Fetch it over REST with `GET /api/workspace/system-graph`.
+
+## Extraction Diagnostics
+
+When the cross-repo link count looks low, diagnostics explain why. Computed alongside contract matching, they report — per repo and contract type — how many providers and consumers were found, which consumers went unmatched (and why), and which providers have no consumer at all.
+
+```bash
+repowise workspace diagnostics            # human-readable report
+repowise workspace diagnostics --json     # raw JSON
+repowise workspace diagnostics --repo api # limit to one repo
+```
+
+The report covers:
+
+- **Provider / consumer counts** per repo, broken down by contract type.
+- **Unmatched consumers**, grouped by reason:
+  - `no_provider` — no provider anywhere declares a matching route/service/topic.
+  - `internal_only` — the only matching provider is in the same repo + service, so the call is intra-service and intentionally not surfaced as a cross-repo link.
+  - `unlinked` — a cross-service provider with a matching id exists, but no link formed (a candidate worth inspecting).
+- **Orphan providers** — endpoints declared but never consumed by any repo.
+- **Weak links** — matched links below the confidence threshold.
+
+The same data is available over REST at `GET /api/workspace/diagnostics` and is embedded in the system graph artifact's `diagnostics` block.
 
 ---
 
@@ -240,6 +291,7 @@ my-workspace/
   .repowise-workspace/            # Shared cross-repo data
     cross_repo_edges.json          # Co-change pairs and package deps
     contracts.json                 # Extracted API contracts and links
+    system_graph.json              # Service-granular system graph + diagnostics
   .claude/
     CLAUDE.md                      # Workspace-level CLAUDE.md for AI editors
   backend/
