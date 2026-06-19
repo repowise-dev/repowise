@@ -806,6 +806,9 @@ Configure API connection, default provider/model, embedder, and view webhook/MCP
 **Workspace Dashboard** (`/workspace`) *(workspace mode only)*
 Aggregate stats across all repos, repo cards with file/symbol/coverage counts, and cross-repo intelligence summary.
 
+**Workspace System Map** (`/workspace/system-map`) *(workspace mode only)*
+A code-derived diagram of your services and their typed relationships (HTTP, gRPC, events, package deps, co-change), health-colored, with edge-kind filters, a service-to-repo collapse toggle, and click-through drill-down to the underlying contracts.
+
 **Workspace Contracts** (`/workspace/contracts`) *(workspace mode only)*
 All detected API contracts (HTTP, gRPC, message topics) with provider/consumer matching, filterable by type and repo.
 

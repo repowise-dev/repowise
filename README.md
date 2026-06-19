@@ -317,8 +317,14 @@ repowise serve       # starts MCP server + local dashboard
 ```bash
 cd my-workspace/     # parent dir containing backend/, frontend/, shared-libs/
 repowise init .      # scans for git repos, indexes each, runs cross-repo analysis
-repowise serve       # workspace dashboard + per-repo pages
+repowise serve       # workspace dashboard, Live System Map + per-repo pages
 ```
+
+The workspace **Live System Map** renders your services and their typed
+relationships (HTTP / gRPC / events / package deps / co-change) as a
+code-derived, always-current diagram — health-colored, filterable, with
+drill-down to the underlying contracts. See
+[Workspaces](docs/WORKSPACES.md#live-system-map).
 
 `repowise init` automatically registers the MCP server, installs a PostToolUse
 hook in `~/.claude/settings.json`, generates `.mcp.json` at the project root, and

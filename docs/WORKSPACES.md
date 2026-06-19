@@ -227,7 +227,7 @@ The contracts, package dependencies, and co-changes above are each a flat list. 
 
 Edge direction is uniform: **`source` depends on / calls `target`.** A consumer points to the provider it calls; a dependent repo points to the repo it imports. Structural edges (contracts, package deps) are flagged distinctly from behavioral co-change edges — repowise never conflates "these change together" with "these call each other".
 
-Fetch it over REST with `GET /api/workspace/system-graph`.
+Fetch it over REST with `GET /api/workspace/system-graph`, or explore it visually in the [Live System Map](#live-system-map).
 
 ## Extraction Diagnostics
 
@@ -264,10 +264,23 @@ repowise serve
 In workspace mode, the web UI adds:
 
 - **Workspace Dashboard** (`/workspace`) — aggregate stats across all repos, repo cards with file/symbol/coverage counts, and cross-repo intelligence summary
+- **System Map** (`/workspace/system-map`) — the [Live System Map](#live-system-map): a code-derived diagram of services and their typed relationships
 - **Contracts View** (`/workspace/contracts`) — all detected API contracts with provider/consumer matching, filterable by type and repo
 - **Co-Changes View** (`/workspace/co-changes`) — cross-repo file pairs ranked by co-change strength
 
 The sidebar shows all workspace repos under **Repositories**. Click any repo to access its full per-repo pages (overview, docs, graph, search, hotspots, etc.).
+
+### Live System Map
+
+The System Map renders the [system graph](#system-graph) as an always-current diagram. It is the visual counterpart to the REST endpoint — the same nodes and edges, laid out and explorable, never a hand-drawn picture.
+
+- **Service nodes**, coloured by category (service, frontend, worker, library, external), with a health ring rolled up from the owning repo and small flags for orphan or isolated services.
+- **Typed edges** distinguished by `kind` (colour + glyph) and by `match_type` (solid for exact/manual, dashed for candidate, dotted for inferred co-change). Behavioral co-change edges read differently from structural contract/dependency edges.
+- **Filters** to toggle each edge kind on or off, and a **service ↔ repo** switch that collapses a monorepo's services into one node per repository.
+- **Drill-down**: click a service to inspect its providers/consumers and connected services; click an edge to see its match type, confidence, weight, and the underlying contract evidence, with a jump to the Contracts view.
+- A **legend** explaining the edge colours, dash patterns, and the health scale.
+
+The map appears once the workspace has at least two indexed repositories with detected relationships; it shows honest empty states otherwise.
 
 ---
 
