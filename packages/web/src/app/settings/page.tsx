@@ -3,6 +3,7 @@ import { ConnectionSection } from "@/components/settings/connection-section";
 import { ProviderSection } from "@/components/settings/provider-section";
 import { WebhookSection } from "@/components/settings/webhook-section";
 import { McpSection } from "@/components/settings/mcp-section";
+import { McpToolsSection } from "@/components/settings/mcp-tools-section";
 
 export const metadata: Metadata = { title: "Settings" };
 
@@ -20,6 +21,7 @@ export default function SettingsPage() {
       <ProviderSection />
       <WebhookSection />
       <McpSection />
+      <McpToolsSection />
 
       <p className="text-xs text-[var(--color-text-tertiary)]">
         Per-repository options (sync, exclude patterns, deletion) live on each

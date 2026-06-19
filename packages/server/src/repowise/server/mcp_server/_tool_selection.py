@@ -201,3 +201,74 @@ def apply_tool_selection(
             registered[name] = tool
 
     return enabled
+
+
+def _tool_description(name: str) -> str:
+    """One-line description for a tool, from its registered FastMCP schema."""
+    tool = (_full_surface or {}).get(name)
+    desc = getattr(tool, "description", "") or ""
+    return desc.strip().split("\n", 1)[0].strip()
+
+
+def describe_tool_surface(repo_path: str | None) -> dict[str, Any]:
+    """Describe the configurable tool surface for a repo (for the settings UI).
+
+    Returns ``is_workspace``, the raw ``override`` currently in config, and one
+    row per registered tool with its name, one-line description, and the flags a
+    UI needs to render and edit the selection: ``default`` (in the curated
+    default set for this mode), ``requires_workspace``, and ``enabled`` (in the
+    currently-resolved surface).
+    """
+    entries = mcp_tool_registry.entries()
+    is_workspace = _is_workspace(repo_path)
+    override = _read_config_override(repo_path)
+
+    default_surface = resolve_enabled_tools(
+        entries, is_workspace=is_workspace, override=None
+    )
+    enabled = resolve_enabled_tools(
+        entries, is_workspace=is_workspace, override=override
+    )
+
+    tools = [
+        {
+            "name": e.name,
+            "description": _tool_description(e.name),
+            "default": e.name in default_surface,
+            "requires_workspace": e.requires_workspace,
+            "enabled": e.name in enabled,
+        }
+        for e in sorted(entries, key=lambda e: e.name)
+    ]
+    return {
+        "is_workspace": is_workspace,
+        "override": list(override) if isinstance(override, (list, tuple)) else override,
+        "tools": tools,
+    }
+
+
+def set_tool_override(repo_path: str, tools: str | list[str] | None) -> None:
+    """Persist the ``mcp.tools`` override into ``.repowise/config.yaml``.
+
+    A falsy/empty ``tools`` clears the override (the repo falls back to the
+    default surface); the ``mcp`` block is removed when it becomes empty so the
+    file stays clean. Other config keys are preserved.
+    """
+    from repowise.core.repo_config import load_repo_config, save_repo_config
+
+    config = load_repo_config(repo_path)
+    mcp_cfg = config.get("mcp")
+    if not isinstance(mcp_cfg, dict):
+        mcp_cfg = {}
+
+    if tools:
+        mcp_cfg["tools"] = tools
+    else:
+        mcp_cfg.pop("tools", None)
+
+    if mcp_cfg:
+        config["mcp"] = mcp_cfg
+    else:
+        config.pop("mcp", None)
+
+    save_repo_config(repo_path, config)

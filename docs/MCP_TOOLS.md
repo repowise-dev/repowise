@@ -70,6 +70,8 @@ repowise mcp --all                                    # every available tool
 
 Workspace-only tools named explicitly in single-repo mode are ignored (they cannot do useful work there). Unknown tool names are ignored with a warning.
 
+**Or from the dashboard:** the Settings page lists every tool with its description and a per-repo toggle, and writes the same `mcp.tools` config for you.
+
 ---
 
 ## Reversible truncation — `_meta.omitted`

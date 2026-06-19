@@ -139,7 +139,7 @@ async def get_execution_flows(
         "flows": flows,
         "_meta": _build_meta(
             timing_ms=(time.perf_counter() - t0) * 1000,
-            hint="Use get_callers_callees on any trace node for detail.",
+            hint="Use get_context(include=['callers','callees']) on any trace node for detail.",
         ),
     }
     return result

@@ -19,4 +19,5 @@ export * from "./types/decisions";
 export * from "./types/chat";
 export * from "./types/workspace";
 export * from "./types/ownership";
+export * from "./types/mcp";
 export * from "./types/misc";

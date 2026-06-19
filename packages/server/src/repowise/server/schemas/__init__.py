@@ -95,6 +95,11 @@ from .health import (
     CoordinatorHealthResponse,
     HealthResponse,
 )
+from .mcp import (
+    McpToolInfo,
+    McpToolSurfaceResponse,
+    UpdateMcpToolsRequest,
+)
 from .intelligence import (
     CallerCalleeEntry,
     CallersCalleesResponse,
@@ -264,6 +269,8 @@ __all__ = [
     "KnowledgeMapResponse",
     "KnowledgeMapSilo",
     "KnowledgeMapTarget",
+    "McpToolInfo",
+    "McpToolSurfaceResponse",
     "ModuleEdgeResponse",
     "ModuleGraphResponse",
     "GoverningDecisionRef",
@@ -300,6 +307,7 @@ __all__ = [
     "SymbolNodeSummary",
     "SymbolResponse",
     "TransitiveEntry",
+    "UpdateMcpToolsRequest",
     "WebhookResponse",
     "WorkspaceCoChangeEntry",
     "WorkspaceBlastRadiusResponse",

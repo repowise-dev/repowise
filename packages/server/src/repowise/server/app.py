@@ -47,6 +47,7 @@ from repowise.server.routers import (
     health,
     jobs,
     knowledge_map,
+    mcp,
     modules,
     overview,
     owners,
@@ -407,6 +408,7 @@ def create_app() -> FastAPI:
     app.include_router(decisions.router)
     app.include_router(chat.router)
     app.include_router(providers.router)
+    app.include_router(mcp.router)
     app.include_router(costs.router)
     app.include_router(security.router)
     app.include_router(blast_radius.router)

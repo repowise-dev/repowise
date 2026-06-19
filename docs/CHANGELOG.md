@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **Configurable MCP tool surface.** The set of tools the MCP server advertises is now configurable. Workspace-only tools (`get_blast_radius`, `get_conformance`, `get_architecture`) are advertised only in workspace mode instead of always, and two extra tools (`get_dependency_path`, `get_execution_flows`) can be opted in. Configure it with an `mcp.tools` block in `.repowise/config.yaml` (`+`/`-` deltas, an explicit allowlist, or `all`) or per launch with `repowise mcp --tools` / `--all`.
+- **MCP tool surface editor in the dashboard.** The Settings page now lists every tool with its description and lets you toggle the surface per repo, writing the selection back to that repo's `mcp.tools` config. Backed by `GET`/`PATCH /api/mcp/tools`.
 
 ### Changed
 - **Consolidated the MCP tool surface.** Removed six redundant MCP tools (`annotate_file`, `get_callers_callees`, `get_community`, `get_graph_metrics`, `get_architecture_diagram`, `update_decision_records`) whose capabilities are already covered by `get_context(include=[...])` and `get_why`. The MCP server exposes 13 tools: 10 in single-repo mode plus three workspace-only tools (`get_blast_radius`, `get_conformance`, `get_architecture`). Documentation and tool counts across the project were reconciled to match.

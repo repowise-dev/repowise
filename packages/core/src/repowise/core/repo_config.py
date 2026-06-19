@@ -39,6 +39,24 @@ def load_repo_config(repo_path: Path | str) -> dict[str, Any]:
         return result
 
 
+def save_repo_config(repo_path: Path | str, config: dict[str, Any]) -> None:
+    """Write ``config`` to ``.repowise/config.yaml``, replacing the file.
+
+    Callers should round-trip through :func:`load_repo_config` and merge so
+    unrelated keys are preserved; this writer just serializes the final dict.
+    Key order is preserved and flow style is block style, to match the files the
+    CLI writes.
+    """
+    import yaml  # type: ignore[import-untyped]
+
+    cfg_dir = get_repowise_dir(repo_path)
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    (cfg_dir / CONFIG_FILENAME).write_text(
+        yaml.dump(config, default_flow_style=False, sort_keys=False),
+        encoding="utf-8",
+    )
+
+
 def _read_flat_scalar(text: str, key: str) -> str | None:
     """Read a top-level scalar from config text before YAML bool coercion."""
     for line in text.splitlines():
