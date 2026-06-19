@@ -683,17 +683,26 @@ async def run_cross_repo_hooks(
     if len(ws_config.repos) < 2:
         return
 
-    from .cross_repo import run_cross_repo_analysis
+    from .contracts import ContractStore, run_contract_extraction
+    from .cross_repo import CrossRepoOverlay, run_cross_repo_analysis
+    from .system_graph import run_system_graph_build
 
+    overlay = CrossRepoOverlay()
     try:
-        await run_cross_repo_analysis(ws_config, workspace_root, changed_repos)
+        overlay = await run_cross_repo_analysis(ws_config, workspace_root, changed_repos)
     except Exception:
         _log.warning("Cross-repo analysis failed", exc_info=True)
 
     # Phase 4: Contract extraction
-    from .contracts import run_contract_extraction
-
+    store = ContractStore()
     try:
-        await run_contract_extraction(ws_config, workspace_root, changed_repos)
+        store = await run_contract_extraction(ws_config, workspace_root, changed_repos)
     except Exception:
         _log.warning("Contract extraction failed", exc_info=True)
+
+    # System graph — the normalized service-granular structure every workspace
+    # view reads. Built last so it folds in the contracts and overlay above.
+    try:
+        await run_system_graph_build(ws_config, workspace_root, store, overlay)
+    except Exception:
+        _log.warning("System graph build failed", exc_info=True)

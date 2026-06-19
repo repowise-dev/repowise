@@ -49,6 +49,26 @@ from .contracts import (
     run_contract_extraction,
     save_contract_store,
 )
+from .diagnostics import (
+    WEAK_LINK_CONFIDENCE_THRESHOLD,
+    ExtractionDiagnostics,
+    OrphanProvider,
+    RepoDiagnostics,
+    UnmatchedConsumer,
+    UnmatchedReason,
+    build_diagnostics,
+)
+from .system_graph import (
+    EDGE_KINDS,
+    SYSTEM_GRAPH_FILENAME,
+    SystemEdge,
+    SystemGraph,
+    SystemNode,
+    build_system_graph,
+    load_system_graph,
+    run_system_graph_build,
+    save_system_graph,
+)
 
 __all__ = [
     # Scanner
@@ -89,4 +109,22 @@ __all__ = [
     "load_contract_store",
     "run_contract_extraction",
     "save_contract_store",
+    # Extraction diagnostics
+    "WEAK_LINK_CONFIDENCE_THRESHOLD",
+    "ExtractionDiagnostics",
+    "OrphanProvider",
+    "RepoDiagnostics",
+    "UnmatchedConsumer",
+    "UnmatchedReason",
+    "build_diagnostics",
+    # System graph
+    "EDGE_KINDS",
+    "SYSTEM_GRAPH_FILENAME",
+    "SystemEdge",
+    "SystemGraph",
+    "SystemNode",
+    "build_system_graph",
+    "load_system_graph",
+    "run_system_graph_build",
+    "save_system_graph",
 ]
