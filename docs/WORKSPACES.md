@@ -11,10 +11,11 @@ Repowise workspaces let you index and analyze multiple repositories together. Yo
 3. [How It Works](#how-it-works)
 4. [Workspace Commands](#workspace-commands)
 5. [Cross-Repo Intelligence](#cross-repo-intelligence)
-6. [Web UI](#web-ui)
-7. [MCP Integration](#mcp-integration)
-8. [File Layout](#file-layout)
-9. [FAQ](#faq)
+6. [Architecture Metrics](#architecture-metrics)
+7. [Web UI](#web-ui)
+8. [MCP Integration](#mcp-integration)
+9. [File Layout](#file-layout)
+10. [FAQ](#faq)
 
 ---
 
@@ -186,6 +187,15 @@ Architecture lint: check the declared `conformance:` rules against the system gr
 ```bash
 repowise workspace check                  # human-readable report; exit 1 on findings
 repowise workspace check --json           # raw report JSON
+```
+
+### `repowise workspace metrics`
+
+Architecture-complexity metrics: propagation cost, the cyclic core, per-service roles, and a deterministic 1-10 architecture score. See [Architecture Metrics](#architecture-metrics).
+
+```bash
+repowise workspace metrics                # human-readable summary
+repowise workspace metrics --json         # raw metrics JSON
 ```
 
 ---
@@ -402,12 +412,43 @@ Independently of any rules, conformance detects **circular dependencies** among 
 
 ---
 
+## Architecture Metrics
+
+Conformance and the cycle finder answer *per-relationship* questions (is this edge allowed, is this loop a cycle). Architecture metrics give the one *evaluative* read of the whole system: how coupled it is, where its architectural core is, and a single score you can track over time and compare across workspaces. These are the standard MacCormack / Baldwin / Sturtevant architecture-complexity metrics, computed deterministically over the system graph — no LLM. They use **structural edges only** (http / grpc / event / package / db); co-change is excluded.
+
+### What it computes
+
+- **Propagation cost** — the share of *other* services the average service can reach transitively through dependencies (0% = fully decoupled, 100% = everything reaches everything). The headline coupling number; lower is better.
+- **Cyclic core** — the largest cyclic group of services (the largest strongly-connected component of the structural graph). Its size and ratio (core / services) describe how much of the system is tangled together.
+- **Architecture type** — `core-periphery` when the core spans a meaningful fraction of the system, else `hierarchical`.
+- **Per-service role** — each service is classified from its visibility profile:
+  - **Core** — in the largest cyclic group (the architectural center).
+  - **Shared** — high visibility fan-in, low fan-out: many services depend on it, it depends on few (a widely-used utility/library).
+  - **Control** — high fan-out, low fan-in: it depends on many, few depend on it (an orchestrator / entry point).
+  - **Peripheral** — lightly coupled in both directions.
+- **Architecture score** — a deterministic 1-10 roll-up (matching the Code Health 1-10 convention) from propagation cost, core ratio, dependency-cycle count, and declared-rule violation count. Lower coupling and a smaller core score higher.
+
+### Using it
+
+- **CLI** — `repowise workspace metrics` prints the score, propagation cost, cyclic core, dependency-cycle count, and the per-role service breakdown. CI-friendly plain output; `--json` emits the raw metrics.
+
+  ```bash
+  repowise workspace metrics          # human-readable summary
+  repowise workspace metrics --json    # raw metrics JSON
+  ```
+
+- **REST** — `GET /api/workspace/architecture` returns the workspace metrics plus the per-service roles. Computed at request time from the system graph (no separate artifact); the conformance violation count, if a report exists, is folded into the score.
+- **MCP** — `get_architecture` gives an agent the score, propagation cost, core members, and role breakdown in one call — the system-structure read to consult before a cross-service refactor.
+- **Web** — the **architecture score** appears as a stat on both the Conformance and System Map pages. The DSM header shows score / propagation cost / core size and tints each service's diagonal cell by its role, so the on-diagonal core block stands out. On the Live System Map, toggle **Core** to highlight the cyclic core, and the inspector shows any selected service's role and visibility profile.
+
+---
+
 ## MCP Integration
 
 Workspace init automatically registers MCP servers with Claude Desktop and Claude Code. The MCP server is workspace-aware:
 
 - **Default repo context** — queries go to the primary repo unless you specify otherwise
-- **Cross-repo tools** — MCP tools can query across repos and return enriched context with co-change and contract data; `get_blast_radius` answers cross-repo downstream impact (see [Cross-Repo Blast Radius](#cross-repo-blast-radius)); `get_conformance` answers architecture rule violations and dependency cycles (see [Architecture Conformance](#architecture-conformance))
+- **Cross-repo tools** — MCP tools can query across repos and return enriched context with co-change and contract data; `get_blast_radius` answers cross-repo downstream impact (see [Cross-Repo Blast Radius](#cross-repo-blast-radius)); `get_conformance` answers architecture rule violations and dependency cycles (see [Architecture Conformance](#architecture-conformance)); `get_architecture` answers whole-system coupling, the cyclic core, and the architecture score (see [Architecture Metrics](#architecture-metrics))
 - **Repo parameter** — most tools accept an optional `repo` parameter to target a specific repo, or `"all"` to query across the workspace
 
 ---

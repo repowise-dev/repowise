@@ -29,6 +29,7 @@ repowise mcp --transport sse --port 7338 # legacy SSE transport
 | `get_health` | Code-health biomarker scores | Before refactoring — find the worst files |
 | `get_blast_radius` | Cross-repo downstream impact (workspace only) | Before changing a service other repos consume |
 | `get_conformance` | Architecture rule violations + cycles (workspace only) | Auditing or before changing service boundaries |
+| `get_architecture` | System coupling, cyclic core, 1-10 architecture score (workspace only) | Gauging overall structure before a cross-service refactor |
 
 ---
 
@@ -280,6 +281,24 @@ get_conformance(repo="frontend")
 
 ---
 
+## `get_architecture`
+
+*(Workspace mode only.)* The one evaluative read of the whole system: how coupled is it, where is the architectural core, and a single 1-10 architecture score. Deterministic, structural edges only (co-change excluded).
+
+**Parameters:** none.
+
+**Returns:** `score` (1-10), `architecture_type` (`core-periphery` or `hierarchical`), `propagation_cost_pct` (share of other services the average service reaches), `core_size` / `core_ratio` / `core_members` (the largest cyclic group), `cycle_count`, `conformance_violations`, a `role_breakdown` (count of Core / Shared / Control / Peripheral services), and a one-line `summary`.
+
+**When to use:** Before a cross-service refactor, or to gauge and compare overall system structure over time. See [Architecture Metrics](WORKSPACES.md#architecture-metrics).
+
+**Example call:**
+
+```
+get_architecture()
+```
+
+---
+
 ## `get_why`
 
 Architectural decision intelligence. Three modes depending on parameters.
@@ -384,6 +403,7 @@ The MCP server automatically enriches responses with cross-repo intelligence:
 - **Cross-repo blast radius** via the workspace-only `get_blast_radius` tool, and a cross-repo `directive` in `get_risk` PR-mode
 - **Breaking-change guard** — incompatible provider-contract changes and the consumers they endanger, in the `get_risk` PR-mode `breaking_changes` directive
 - **Architecture conformance** — declared dependency-rule violations and dependency cycles via the workspace-only `get_conformance` tool, and `conformance_violations` / `dependency_cycles` in the `get_risk` PR-mode directive
+- **Architecture metrics** — whole-system coupling (propagation cost), the cyclic core, per-service roles, and a deterministic 1-10 architecture score via the workspace-only `get_architecture` tool
 
 ---
 
