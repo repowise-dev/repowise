@@ -245,6 +245,42 @@ class TestHttpExtractor:
         assert len(providers) == 1
         assert providers[0].contract_id == "http::GET::/systems/nearby"
 
+    def test_csharp_wrapper_interpolated_consumer(self, tmp_path: Path) -> None:
+        self._write_file(tmp_path, "ApiClient.cs", """
+            public class ApiClient {
+                public async Task Bids() {
+                    return await GetRequest<Response>($"{_baseUrl}/vix/my/bids");
+                }
+            }
+        """)
+        contracts = HttpExtractor().extract(tmp_path, "unity-game")
+        consumers = [c for c in contracts if c.role == "consumer"]
+        assert len(consumers) == 1
+        assert consumers[0].contract_id == "http::GET::/vix/my/bids"
+        assert consumers[0].meta.get("base_stripped") is True
+
+    def test_csharp_wrapper_interior_param(self, tmp_path: Path) -> None:
+        self._write_file(tmp_path, "ApiClient.cs", """
+            await PostRequest<Response>($"{_baseUrl}/vix/listings/{id}/bid", payload);
+            GetAsync<Response>($"{_config.ApiBaseUrl}/fleet/summary/{playerId}", token);
+        """)
+        contracts = HttpExtractor().extract(tmp_path, "unity-game")
+        ids = {c.contract_id for c in contracts if c.role == "consumer"}
+        assert "http::POST::/vix/listings/{param}/bid" in ids
+        assert "http::GET::/fleet/summary/{param}" in ids
+
+    def test_csharp_unitywebrequest_consumer(self, tmp_path: Path) -> None:
+        self._write_file(tmp_path, "Net.cs", """
+            UnityWebRequest.Post($"{_baseUrl}/vix/my/bids", form);
+            var req = UnityWebRequest.Get(url);
+        """)
+        contracts = HttpExtractor().extract(tmp_path, "unity-game")
+        consumers = [c for c in contracts if c.role == "consumer"]
+        # The literal Post call is captured; Get(url) with a variable URL is not.
+        assert len(consumers) == 1
+        assert consumers[0].contract_id == "http::POST::/vix/my/bids"
+        assert consumers[0].meta["client"] == "unitywebrequest"
+
     def test_empty_file(self, tmp_path: Path) -> None:
         self._write_file(tmp_path, "empty.py", "")
         contracts = HttpExtractor().extract(tmp_path, "svc")
