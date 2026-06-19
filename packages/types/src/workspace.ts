@@ -378,3 +378,56 @@ export interface DsmMatrix {
   /** Row-major cells: `cells[i][j]` is the dependency of `axis[i]` on `axis[j]`. */
   cells: DsmCell[][];
 }
+
+// ---------------------------------------------------------------------------
+// Architecture metrics (Phase 6) — the standard architecture-complexity read
+// over the system graph: propagation cost, core-periphery roles, and one
+// deterministic 1-10 score. Structural edges only; co-change is excluded.
+// Mirror of `core/workspace/architecture_metrics.py`.
+// ---------------------------------------------------------------------------
+
+/** A service's core-periphery role. */
+export type NodeRole = "core" | "shared" | "control" | "peripheral";
+
+/** Whether the dependency structure is core-periphery or hierarchical. */
+export type ArchitectureType = "core-periphery" | "hierarchical";
+
+/** Per-service architectural role and visibility profile. */
+export interface NodeArchitectureRole {
+  id: string;
+  repo: string;
+  name: string;
+  /** Services that can reach this one (column sum of the visibility matrix). */
+  visibility_fan_in: number;
+  /** Services this one can reach (row sum of the visibility matrix). */
+  visibility_fan_out: number;
+  role: NodeRole;
+}
+
+/** The whole-workspace architecture-complexity metrics. */
+export interface ArchitectureMetrics {
+  node_count: number;
+  /** Count of structural (dependency) edges the metrics were computed over. */
+  structural_edge_count: number;
+  /** Fraction (0-1) of other services the average service can reach. */
+  propagation_cost: number;
+  /** `propagation_cost` as a percentage, 1 decimal — for display. */
+  propagation_cost_pct: number;
+  /** Size of the largest cyclic group (largest SCC ≥ 2). */
+  core_size: number;
+  /** `core_size / node_count`. */
+  core_ratio: number;
+  /** Service ids in the largest cyclic group. */
+  core_members: string[];
+  /** Elementary dependency cycles (matches the conformance report's count). */
+  cycle_count: number;
+  /** Declared-rule violations folded into the score (0 when no rules). */
+  conformance_violations: number;
+  architecture_type: ArchitectureType;
+  /** Deterministic 1-10 architecture score (higher = lower coupling). */
+  score: number;
+  /** Count of services per role. */
+  role_breakdown: Record<NodeRole, number>;
+  roles: NodeArchitectureRole[];
+  generated_at: string;
+}
