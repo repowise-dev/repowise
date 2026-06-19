@@ -426,6 +426,36 @@ class TestGrpcExtractor:
         assert len(providers) == 1
         assert providers[0].contract_id == "grpc::AuthService/Login"
 
+    def test_csharp_consumer_requires_grpc_context(self, tmp_path: Path) -> None:
+        self._write_file(tmp_path, "Caller.cs", """
+            using Grpc.Net.Client;
+            public class Caller {
+                public void Go() {
+                    var channel = GrpcChannel.ForAddress("https://api");
+                    var client = new GreeterClient(channel);
+                }
+            }
+        """)
+        contracts = GrpcExtractor().extract(tmp_path, "web")
+        consumers = [c for c in contracts if c.role == "consumer"]
+        assert len(consumers) == 1
+        assert consumers[0].contract_id == "grpc::Greeter/*"
+
+    def test_csharp_consumer_skips_non_grpc_clients(self, tmp_path: Path) -> None:
+        # TLS/crypto client classes with no gRPC context must not be emitted as
+        # gRPC consumers (the false positives reported in #474).
+        self._write_file(tmp_path, "Tls.cs", """
+            public class Security {
+                public void Setup() {
+                    var tls = new TlsClient(config);
+                    var sodium = new SodiumClient();
+                }
+            }
+        """)
+        contracts = GrpcExtractor().extract(tmp_path, "game")
+        consumers = [c for c in contracts if c.role == "consumer"]
+        assert consumers == []
+
 
 # ---------------------------------------------------------------------------
 # TopicExtractor

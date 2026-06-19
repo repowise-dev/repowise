@@ -2,7 +2,10 @@
 
 Providers come from explicit ``MapGrpcService<T>()`` registration and from the
 generated server-base convention ``class Impl : ServiceName.ServiceNameBase``.
-Consumers come from ``new XxxClient(...)`` generated stubs.
+Consumers come from ``new XxxClient(...)`` generated stubs — but only in files
+that carry gRPC context (a ``GrpcChannel`` / ``Grpc.Net`` / ``Grpc.Core`` /
+``AddGrpcClient`` marker), since ``new XxxClient(...)`` on its own also matches
+TLS, HTTP, and other unrelated client classes.
 """
 
 from __future__ import annotations
@@ -27,6 +30,13 @@ _CSHARP_GRPC_CLIENT_RE = re.compile(r"\bnew\s+(\w+)Client\s*\(")
 
 # Generic-class false positives — test doubles and non-gRPC clients.
 _CONSUMER_FALSE_PREFIXES = ("mock", "test", "fake", "http")
+
+# Markers that a file actually uses gRPC-dotnet, required before a bare
+# `new XxxClient(...)` is treated as a gRPC consumer.
+_GRPC_CONTEXT_RE = re.compile(
+    r"\bGrpcChannel\b|\bGrpc\.(?:Net|Core)\b|\bCallInvoker\b|\bChannelBase\b"
+    r"|\bAddGrpcClient\b|using\s+Grpc\b"
+)
 
 
 class CSharpGrpcDialect:
@@ -59,6 +69,10 @@ class CSharpGrpcDialect:
                     meta={"service": svc, "source": "csharp_base"},
                 )
             )
+        # Consumers are only credible when the file shows real gRPC usage —
+        # otherwise `new XxxClient(...)` matches unrelated client classes.
+        if not _GRPC_CONTEXT_RE.search(ctx.content):
+            return out
         for m in _CSHARP_GRPC_CLIENT_RE.finditer(ctx.content):
             svc = m.group(1)
             if svc.lower().startswith(_CONSUMER_FALSE_PREFIXES):
