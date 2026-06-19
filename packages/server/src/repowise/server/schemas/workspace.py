@@ -323,3 +323,31 @@ class WorkspaceConformanceResponse(BaseModel):
     violation_count: int = 0
     cycle_count: int = 0
     violating_repos: list[str] = []
+
+
+class WorkspaceNodeArchitectureRole(BaseModel):
+    id: str
+    repo: str = ""
+    name: str = ""
+    visibility_fan_in: int = 0
+    visibility_fan_out: int = 0
+    role: str = "peripheral"
+
+
+class WorkspaceArchitectureResponse(BaseModel):
+    """Architecture-complexity metrics over the system graph (Phase 6)."""
+
+    node_count: int = 0
+    structural_edge_count: int = 0
+    propagation_cost: float = 0.0
+    propagation_cost_pct: float = 0.0
+    core_size: int = 0
+    core_ratio: float = 0.0
+    core_members: list[str] = []
+    cycle_count: int = 0
+    conformance_violations: int = 0
+    architecture_type: str = "hierarchical"
+    score: float = 10.0
+    role_breakdown: dict[str, int] = {}
+    roles: list[WorkspaceNodeArchitectureRole] = []
+    generated_at: str = ""

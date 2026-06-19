@@ -20,6 +20,7 @@ from repowise.server.deps import (
     verify_api_key,
 )
 from repowise.server.schemas import (
+    WorkspaceArchitectureResponse,
     WorkspaceBlastRadiusResponse,
     WorkspaceBreakingChangesResponse,
     WorkspaceCoChangeEntry,
@@ -675,6 +676,48 @@ async def get_conformance(
         cycle_count=len(cycles),
         violating_repos=violating_repos,
     )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/workspace/architecture
+# ---------------------------------------------------------------------------
+
+
+@router.get("/architecture", response_model=WorkspaceArchitectureResponse)
+async def get_architecture(
+    ws_config=Depends(get_workspace_config),
+    enricher=Depends(get_cross_repo_enricher),
+):
+    """Architecture-complexity metrics — propagation cost, core, and a 1-10 score.
+
+    Computed at request time from the same ``system_graph.json`` artifact the map
+    renders, using structural edges only (co-change is excluded). The declared-rule
+    violation count, if a conformance report exists, is folded into the score.
+    Deterministic and LLM-free. Returns empty metrics (not 404) when no graph is
+    built yet.
+    """
+    _require_workspace(ws_config)
+
+    from repowise.core.workspace.architecture_metrics import compute_architecture_metrics
+    from repowise.core.workspace.system_graph import SystemGraph
+
+    raw = enricher.get_system_graph() if enricher is not None else None
+    if not raw:
+        return WorkspaceArchitectureResponse()
+
+    graph = SystemGraph.from_dict(raw)
+
+    # Fold in the conformance violation count when a report exists — the metric is
+    # otherwise independent of rule evaluation.
+    conformance = enricher.get_conformance() if enricher is not None else None
+    violations = int(conformance.get("violation_count", 0)) if conformance else 0
+
+    metrics = compute_architecture_metrics(
+        graph,
+        conformance_violations=violations,
+        generated_at=raw.get("generated_at", ""),
+    )
+    return WorkspaceArchitectureResponse(**metrics.to_dict())
 
 
 # ---------------------------------------------------------------------------

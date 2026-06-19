@@ -155,6 +155,7 @@ from .ui_helpers import (
     WebhookResponse,
 )
 from .workspace import (
+    WorkspaceArchitectureResponse,
     WorkspaceBlastRadiusResponse,
     WorkspaceBreakingChange,
     WorkspaceBreakingChangesResponse,
@@ -306,6 +307,7 @@ __all__ = [
     "WorkspaceBreakingChangesResponse",
     "WorkspaceImpactedConsumer",
     "WorkspaceCoChangesResponse",
+    "WorkspaceArchitectureResponse",
     "WorkspaceConformanceResponse",
     "WorkspaceConformanceViolation",
     "WorkspaceContractEntry",
