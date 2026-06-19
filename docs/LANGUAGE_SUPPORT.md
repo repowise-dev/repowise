@@ -501,6 +501,51 @@ relevant `__init__.py` dispatcher / dict.
 
 ---
 
+## Workspace contract extraction
+
+In **workspace mode** (multiple repos indexed together), repowise links
+service-to-service API contracts — HTTP routes and gRPC services — so a
+provider endpoint in one repo connects to its consumers in another. The
+extractors live in `core/workspace/extractors/` and follow the same
+dialect-plugin shape as the rest of the language pipeline: the orchestrator
+owns only the file walk, and each framework / client library is an
+independent module registered in a tuple.
+
+```
+workspace/extractors/
+  base.py            # iter_source_files walk + ScanContext (shared by all)
+  langs.py           # registry-derived extension sets (JS_TS, PYTHON, RUST, …)
+  http/
+    dialect.py       #   HttpDialect protocol + build_provider/consumer_contract
+    paths.py         #   normalize_http_path + URL helpers
+    express.py  fastapi.py  spring.py  laravel.py  go.py  aspnet.py   # providers
+    js_clients.py  python_clients.py  csharp_http.py                  # consumers
+    __init__.py      #   HttpExtractor + PROVIDER_DIALECTS / CONSUMER_DIALECTS
+  grpc/
+    dialect.py       #   GrpcDialect protocol + make_grpc_contract
+    proto.py  go.py  java.py  python.py  typescript.py  csharp.py
+    __init__.py      #   GrpcExtractor + DIALECTS
+```
+
+A dialect declares the file extensions it understands (via `langs.py`) and
+turns regex matches into `Contract`s through the shared builders, so every
+dialect emits identically-shaped providers/consumers and the path-normalization
+rules live in one place. Framework-specific quirks stay local to the dialect —
+Spring/ASP.NET class-prefix stitching, Go `HandleFunc` → `*` method, fetch
+GET/method de-duplication.
+
+**Adding a framework or client** means dropping one module into `http/` or
+`grpc/` and appending its dialect to the relevant registry tuple
+(`PROVIDER_DIALECTS`, `CONSUMER_DIALECTS`, or `DIALECTS`) — no orchestrator
+edits. The current coverage:
+
+| Contract | Providers | Consumers |
+|----------|-----------|-----------|
+| **HTTP** | Express, FastAPI, Spring, Laravel, Go (gin/echo/chi/net-http), ASP.NET (attribute + minimal) | `fetch` / `axios` (JS/TS), `requests` / `httpx` (Python), `HttpClient` (C#) |
+| **gRPC** | `.proto` IDL, Go, Java, Python, NestJS (`@GrpcMethod`), C# (gRPC-dotnet) | Go, Java, Python, C# |
+
+---
+
 ## Roadmap
 
 | Language | Target Tier | Status |
