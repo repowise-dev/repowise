@@ -14,6 +14,7 @@ from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session, init_db
 from repowise.core.persistence.models import GenerationJob
 from repowise.server.app import reset_workspace_stale_jobs
+from repowise.server.routers.jobs import _created_sort_key
 from tests.unit.server.conftest import create_test_repo
 
 
@@ -203,3 +204,28 @@ async def test_job_stream_completed(client: AsyncClient, app) -> None:
     assert "text/event-stream" in resp.headers["content-type"]
     # For a completed job, the stream should contain 'done' event
     assert "event: done" in resp.text or "event: progress" in resp.text
+
+
+def test_created_sort_key_handles_mixed_tz_awareness() -> None:
+    """Jobs merged from several repo DBs mix naive and aware ``created_at``.
+
+    In workspace mode the per-repo SQLite databases hand back a mix of
+    timezone-aware and naive timestamps; sorting them directly raised
+    ``TypeError: can't compare offset-naive and offset-aware datetimes`` and
+    500'd ``GET /api/jobs``. The sort key must coerce them onto common ground.
+    """
+    from datetime import UTC, datetime
+
+    aware_new = SimpleNamespace(created_at=datetime(2026, 1, 2, tzinfo=UTC))
+    naive_newest = SimpleNamespace(created_at=datetime(2026, 1, 3))  # naive, newest
+    aware_old = SimpleNamespace(created_at=datetime(2026, 1, 1, tzinfo=UTC))
+    missing = SimpleNamespace(created_at=None)
+
+    jobs = [aware_old, missing, naive_newest, aware_new]
+    # Must not raise despite the naive/aware mix.
+    jobs.sort(key=_created_sort_key, reverse=True)
+
+    assert jobs[0] is naive_newest  # 2026-01-03 is newest
+    assert jobs[1] is aware_new  # then 2026-01-02
+    assert jobs[2] is aware_old  # then 2026-01-01
+    assert jobs[-1] is missing  # None sorts oldest

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import func, select
@@ -50,6 +51,14 @@ async def _find_job_factory(app_state, job_id: str):
     return None, None
 
 
+def _created_sort_key(job: GenerationJob) -> datetime:
+    """Timezone-safe sort key for ``created_at`` across merged repo databases."""
+    dt = job.created_at
+    if dt is None:
+        return datetime.min.replace(tzinfo=UTC)
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
+
+
 @router.get("", response_model=list[JobResponse])
 async def list_jobs(
     request: Request,
@@ -59,6 +68,7 @@ async def list_jobs(
     offset: int = Query(0, ge=0),
 ) -> list[JobResponse]:
     """List generation jobs, optionally filtered by repository or status."""
+
     async def _query_jobs(factory) -> list[GenerationJob]:
         q = select(GenerationJob)
         if repo_id:
@@ -89,7 +99,11 @@ async def list_jobs(
         except Exception:
             continue
 
-    jobs.sort(key=lambda j: j.created_at, reverse=True)
+    # Jobs are merged from several repo databases in workspace mode, and SQLite
+    # hands back a mix of timezone-aware and naive ``created_at`` values, which
+    # cannot be compared directly. Coerce naive timestamps to UTC for the sort
+    # (they are stored as UTC) so the merge never raises.
+    jobs.sort(key=_created_sort_key, reverse=True)
     return [JobResponse.from_orm(j) for j in jobs[offset : offset + limit]]
 
 
