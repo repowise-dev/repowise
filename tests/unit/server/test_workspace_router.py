@@ -849,3 +849,107 @@ class TestGetBreakingChanges:
         assert data["changes"] == []
         assert data["total"] == 0
         assert data["impacted_repos"] == []
+
+
+# ---------------------------------------------------------------------------
+# GET /api/workspace/conformance
+# ---------------------------------------------------------------------------
+
+
+def _make_conformance_enricher(tmp_path: Path) -> CrossRepoEnricher:
+    """Enricher backed by a real, core-built conformance report artifact."""
+    from repowise.core.workspace.config import ConformanceRule
+    from repowise.core.workspace.conformance import build_conformance_report
+    from repowise.core.workspace.system_graph import SystemEdge, SystemGraph, SystemNode
+
+    graph = SystemGraph(
+        nodes=[
+            SystemNode(id="frontend", repo="frontend", service_path=None, name="frontend"),
+            SystemNode(id="db", repo="db", service_path=None, name="db"),
+        ],
+        edges=[
+            SystemEdge(
+                id="frontend->db:http",
+                source="frontend",
+                target="db",
+                kind="http",
+                match_type="exact",
+                confidence=1.0,
+                weight=1,
+                structural=True,
+            ),
+            SystemEdge(
+                id="db->frontend:http",
+                source="db",
+                target="frontend",
+                kind="http",
+                match_type="exact",
+                confidence=1.0,
+                weight=1,
+                structural=True,
+            ),
+        ],
+    )
+    report = build_conformance_report(
+        graph, [ConformanceRule(source="frontend", target="db")], generated_at="t"
+    )
+    _write_json(tmp_path / "conformance.json", report.to_dict())
+    return CrossRepoEnricher(
+        tmp_path / "cross_repo_edges.json",
+        conformance_path=tmp_path / "conformance.json",
+    )
+
+
+class TestGetConformance:
+    @pytest.mark.asyncio
+    async def test_not_workspace_mode(self) -> None:
+        app = _make_workspace_app()
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.get("/api/workspace/conformance")
+        assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_empty_when_no_report(self) -> None:
+        app = _make_workspace_app(ws_config=_make_ws_config(), enricher=None)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.get("/api/workspace/conformance")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["violations"] == []
+        assert body["cycles"] == []
+
+    @pytest.mark.asyncio
+    async def test_reports_violation_and_cycle(self, tmp_path: Path) -> None:
+        enricher = _make_conformance_enricher(tmp_path)
+        app = _make_workspace_app(ws_config=_make_ws_config(), enricher=enricher)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.get("/api/workspace/conformance")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["violation_count"] == 1
+        assert data["cycle_count"] == 1
+        assert data["violations"][0]["source"] == "frontend"
+        assert data["violations"][0]["target"] == "db"
+        assert set(data["violating_repos"]) == {"frontend", "db"}
+
+    @pytest.mark.asyncio
+    async def test_filter_by_repo(self, tmp_path: Path) -> None:
+        enricher = _make_conformance_enricher(tmp_path)
+        app = _make_workspace_app(ws_config=_make_ws_config(), enricher=enricher)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.get("/api/workspace/conformance", params={"repo": "frontend"})
+        assert resp.status_code == 200
+        data = resp.json()
+        # frontend participates in both the violation and the cycle
+        assert data["violation_count"] == 1
+        assert data["cycle_count"] == 1
+
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.get("/api/workspace/conformance", params={"repo": "unrelated"})
+        data = resp.json()
+        assert data["violation_count"] == 0
+        assert data["cycle_count"] == 0

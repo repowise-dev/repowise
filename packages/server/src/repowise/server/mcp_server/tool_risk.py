@@ -416,6 +416,10 @@ _XR_COCHANGE_LIMIT = 3
 #: The full report is on GET /api/workspace/breaking-changes.
 _BC_PROVIDER_LIMIT = 5
 _BC_CONSUMER_LIMIT = 5
+#: Caps on the conformance directive — violations and cycles that touch the repo.
+#: The full report is on GET /api/workspace/conformance.
+_CF_VIOLATION_LIMIT = 5
+_CF_CYCLE_LIMIT = 3
 
 
 def _breaking_change_directive(repo_alias: str) -> list[dict[str, Any]]:
@@ -462,6 +466,41 @@ def _breaking_change_directive(repo_alias: str) -> list[dict[str, Any]]:
     except Exception:
         return []
     return out
+
+
+def _conformance_directive(repo_alias: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Conformance half of the PR directive: architecture findings touching this repo.
+
+    Reads the persisted conformance report (rule violations + dependency cycles
+    over the system graph) and returns those that involve the changed repo, so a
+    diff that participates in a denied dependency or a circular dependency is
+    flagged. Returns two empty lists when not in workspace mode or no report is
+    available. Never raises.
+    """
+    violations: list[dict[str, Any]] = []
+    cycles: list[dict[str, Any]] = []
+    try:
+        if not _is_workspace_mode():
+            return violations, cycles
+        enricher = _state._cross_repo_enricher
+        if enricher is None or not getattr(enricher, "has_conformance", False):
+            return violations, cycles
+        scoped = enricher.get_conformance_for_repo(repo_alias)
+        for v in scoped.get("violations", [])[:_CF_VIOLATION_LIMIT]:
+            violations.append(
+                {
+                    "source": v.get("source"),
+                    "target": v.get("target"),
+                    "rule": f"{v.get('rule_source')} !-> {v.get('rule_target')}",
+                    "edge_kind": v.get("edge_kind"),
+                    "description": v.get("rule_description") or None,
+                }
+            )
+        for c in scoped.get("cycles", [])[:_CF_CYCLE_LIMIT]:
+            cycles.append({"nodes": c.get("nodes", []), "length": c.get("length", 0)})
+    except Exception:
+        return [], []
+    return violations, cycles
 
 
 def _cross_repo_directive(repo_alias: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -893,6 +932,18 @@ async def get_risk(
                 f"incompatibly, endangering {bc_consumers} consumer(s)."
             )
 
+        # Architecture conformance — declared dependency-rule violations and
+        # dependency cycles this repo participates in. Governance-level truth,
+        # distinct from the topology / schema directives above.
+        conformance_violations, dependency_cycles = _conformance_directive(ctx.alias)
+        cf_suffix = ""
+        if conformance_violations or dependency_cycles:
+            cf_suffix = (
+                f" Conformance: {len(conformance_violations)} architecture rule "
+                f"violation(s), {len(dependency_cycles)} dependency cycle(s) involving "
+                f"this repo."
+            )
+
         response["directive"] = {
             "will_break": will_break,
             "missing_cochanges": missing_cochanges,
@@ -900,6 +951,8 @@ async def get_risk(
             "will_break_consumers": will_break_consumers,
             "missing_cross_repo_cochanges": missing_cross_repo_cochanges,
             "breaking_changes": breaking_changes,
+            "conformance_violations": conformance_violations,
+            "dependency_cycles": dependency_cycles,
             "governance_risk": governance_risk,
             "overall_risk_score": trimmed_blast.get("overall_risk_score"),
             "summary": (
@@ -907,7 +960,7 @@ async def get_risk(
                 f"~{len(will_break)} downstream file(s) likely affected, "
                 f"{len(missing_cochanges)} historical co-changer(s) missing, "
                 f"{len(missing_tests)} file(s) without tests."
-                f"{gov_suffix}{xr_suffix}{bc_suffix}"
+                f"{gov_suffix}{xr_suffix}{bc_suffix}{cf_suffix}"
             ),
         }
     else:

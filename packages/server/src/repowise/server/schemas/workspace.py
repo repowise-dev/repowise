@@ -287,3 +287,39 @@ class WorkspaceBreakingChangesResponse(BaseModel):
     impacted_repos: list[str] = []
     impacted_services: list[str] = []
     total_impacted_consumers: int = 0
+
+
+# ---------------------------------------------------------------------------
+# Architecture conformance — rule violations + dependency cycles.
+# Mirrors repowise.core.workspace.{conformance,cycles}.
+# ---------------------------------------------------------------------------
+
+
+class WorkspaceConformanceViolation(BaseModel):
+    rule_source: str
+    rule_target: str
+    rule_description: str = ""
+    source: str
+    source_name: str
+    target: str
+    target_name: str
+    edge_id: str
+    edge_kind: str
+    severity: str = "violation"
+
+
+class WorkspaceDependencyCycle(BaseModel):
+    nodes: list[str] = []
+    edge_ids: list[str] = []
+    length: int = 0
+
+
+class WorkspaceConformanceResponse(BaseModel):
+    version: int = 1
+    generated_at: str = ""
+    rules_evaluated: int = 0
+    violations: list[WorkspaceConformanceViolation] = []
+    cycles: list[WorkspaceDependencyCycle] = []
+    violation_count: int = 0
+    cycle_count: int = 0
+    violating_repos: list[str] = []

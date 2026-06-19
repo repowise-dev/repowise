@@ -23,6 +23,7 @@ class CrossRepoEnricher:
         contracts_path: Path | None = None,
         system_graph_path: Path | None = None,
         breaking_changes_path: Path | None = None,
+        conformance_path: Path | None = None,
     ) -> None:
         self._co_changes: list[dict] = []
         self._package_deps: list[dict] = []
@@ -49,10 +50,15 @@ class CrossRepoEnricher:
         self._breaking_changes: dict | None = None
         self._breaking_changes_by_repo: dict[str, list[dict]] = defaultdict(list)
 
+        # Conformance report — architecture rule violations + dependency cycles
+        # from the most recent update. Read-only pass-through.
+        self._conformance: dict | None = None
+
         self._data_path = data_path
         self._contracts_path = contracts_path
         self._system_graph_path = system_graph_path
         self._breaking_changes_path = breaking_changes_path
+        self._conformance_path = conformance_path
 
         self._load(data_path)
         if contracts_path is not None:
@@ -61,6 +67,8 @@ class CrossRepoEnricher:
             self._load_system_graph(system_graph_path)
         if breaking_changes_path is not None:
             self._load_breaking_changes(breaking_changes_path)
+        if conformance_path is not None:
+            self._load_conformance(conformance_path)
 
     def _load(self, data_path: Path) -> None:
         """Parse JSON and build indexes."""
@@ -207,6 +215,22 @@ class CrossRepoEnricher:
             len(self._breaking_changes.get("changes", [])),
         )
 
+    def _load_conformance(self, conformance_path: Path) -> None:
+        """Parse ``conformance.json`` (read-only pass-through to views)."""
+        if not conformance_path.is_file():
+            _log.debug("No conformance report at %s", conformance_path)
+            return
+        try:
+            self._conformance = json.loads(conformance_path.read_text(encoding="utf-8"))
+        except Exception:
+            _log.warning("Failed to parse conformance at %s", conformance_path, exc_info=True)
+            return
+        _log.debug(
+            "Conformance report loaded: %d violation(s), %d cycle(s)",
+            len(self._conformance.get("violations", [])),
+            len(self._conformance.get("cycles", [])),
+        )
+
     def reload(self) -> None:
         """Re-read JSON files from disk and rebuild all indexes.
 
@@ -228,6 +252,7 @@ class CrossRepoEnricher:
         self._system_graph = None
         self._breaking_changes = None
         self._breaking_changes_by_repo = defaultdict(list)
+        self._conformance = None
 
         self._load(self._data_path)
         if self._contracts_path is not None:
@@ -236,6 +261,8 @@ class CrossRepoEnricher:
             self._load_system_graph(self._system_graph_path)
         if self._breaking_changes_path is not None:
             self._load_breaking_changes(self._breaking_changes_path)
+        if self._conformance_path is not None:
+            self._load_conformance(self._conformance_path)
 
         _log.info(
             "Cross-repo enricher reloaded: %d co-change edges, %d package deps, %d contract links",
@@ -275,6 +302,43 @@ class CrossRepoEnricher:
     def get_breaking_changes_for_repo(self, repo_alias: str) -> list[dict]:
         """Return breaking changes whose provider lives in *repo_alias*."""
         return self._breaking_changes_by_repo.get(repo_alias, [])
+
+    @property
+    def has_conformance(self) -> bool:
+        """True if a conformance report has been loaded."""
+        return self._conformance is not None
+
+    def get_conformance(self) -> dict | None:
+        """Return the raw conformance report (violations + cycles + rollups)."""
+        return self._conformance
+
+    @staticmethod
+    def _node_repo(node_id: str) -> str:
+        """Repo alias for a system-graph node id (``repo`` or ``repo::service``)."""
+        return node_id.split("::", 1)[0]
+
+    def get_conformance_for_repo(self, repo_alias: str) -> dict:
+        """Violations + cycles that involve *repo_alias*.
+
+        A violation involves the repo when either endpoint lives in it; a cycle
+        when any participating service does. Used by the ``get_risk`` PR-mode
+        directive to surface architecture findings a diff's repo participates in.
+        """
+        report = self._conformance
+        if not report:
+            return {"violations": [], "cycles": []}
+        violations = [
+            v
+            for v in report.get("violations", [])
+            if self._node_repo(v.get("source", "")) == repo_alias
+            or self._node_repo(v.get("target", "")) == repo_alias
+        ]
+        cycles = [
+            c
+            for c in report.get("cycles", [])
+            if any(self._node_repo(n) == repo_alias for n in c.get("nodes", []))
+        ]
+        return {"violations": violations, "cycles": cycles}
 
     def get_diagnostics(self) -> dict | None:
         """Return just the extraction diagnostics block of the system graph."""

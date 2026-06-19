@@ -24,6 +24,7 @@ from repowise.server.schemas import (
     WorkspaceBreakingChangesResponse,
     WorkspaceCoChangeEntry,
     WorkspaceCoChangesResponse,
+    WorkspaceConformanceResponse,
     WorkspaceContractEntry,
     WorkspaceContractLinkEntry,
     WorkspaceContractsResponse,
@@ -624,6 +625,56 @@ async def get_breaking_changes(
         )
 
     return WorkspaceBreakingChangesResponse(**report)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/workspace/conformance
+# ---------------------------------------------------------------------------
+
+
+@router.get("/conformance", response_model=WorkspaceConformanceResponse)
+async def get_conformance(
+    ws_config=Depends(get_workspace_config),
+    enricher=Depends(get_cross_repo_enricher),
+    repo: str | None = Query(
+        None, description="Filter to violations/cycles that involve this repo alias."
+    ),
+):
+    """Architecture conformance — declared dependency-rule violations + cycles.
+
+    Computed during the most recent ``repowise update --workspace`` by checking
+    the workspace's declared allow/deny rules against the system graph and
+    detecting circular service dependencies. Returns an empty report (not 404)
+    when no rules are declared, no findings exist, or no report has been built.
+    """
+    _require_workspace(ws_config)
+
+    report = enricher.get_conformance() if enricher is not None else None
+    if not report:
+        return WorkspaceConformanceResponse()
+
+    if not repo:
+        return WorkspaceConformanceResponse(**report)
+
+    # Narrow to findings that involve the repo, recomputing rollups so the
+    # response stays self-consistent.
+    scoped = enricher.get_conformance_for_repo(repo)
+    violations = scoped["violations"]
+    cycles = scoped["cycles"]
+    violating_repos = sorted(
+        {v.get("source", "").split("::", 1)[0] for v in violations}
+        | {v.get("target", "").split("::", 1)[0] for v in violations}
+    )
+    return WorkspaceConformanceResponse(
+        version=report.get("version", 1),
+        generated_at=report.get("generated_at", ""),
+        rules_evaluated=report.get("rules_evaluated", 0),
+        violations=violations,
+        cycles=cycles,
+        violation_count=len(violations),
+        cycle_count=len(cycles),
+        violating_repos=violating_repos,
+    )
 
 
 # ---------------------------------------------------------------------------

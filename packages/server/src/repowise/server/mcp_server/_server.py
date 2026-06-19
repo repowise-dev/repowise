@@ -284,6 +284,7 @@ async def _lifespan(server: FastMCP):
         try:
             from repowise.core.workspace.breaking_change import BREAKING_CHANGES_FILENAME
             from repowise.core.workspace.config import WORKSPACE_DATA_DIR
+            from repowise.core.workspace.conformance import CONFORMANCE_FILENAME
             from repowise.core.workspace.contracts import CONTRACTS_FILENAME
             from repowise.core.workspace.system_graph import SYSTEM_GRAPH_FILENAME
             from repowise.server.mcp_server._enrichment import CrossRepoEnricher
@@ -292,11 +293,13 @@ async def _lifespan(server: FastMCP):
             contracts_path = ws_root / WORKSPACE_DATA_DIR / CONTRACTS_FILENAME
             system_graph_path = ws_root / WORKSPACE_DATA_DIR / SYSTEM_GRAPH_FILENAME
             breaking_changes_path = ws_root / WORKSPACE_DATA_DIR / BREAKING_CHANGES_FILENAME
+            conformance_path = ws_root / WORKSPACE_DATA_DIR / CONFORMANCE_FILENAME
             enricher = CrossRepoEnricher(
                 cross_repo_path,
                 contracts_path=contracts_path,
                 system_graph_path=system_graph_path,
                 breaking_changes_path=breaking_changes_path,
+                conformance_path=conformance_path,
             )
             if enricher.has_data or enricher.has_system_graph:
                 _state._cross_repo_enricher = enricher
