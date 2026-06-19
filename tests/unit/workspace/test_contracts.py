@@ -281,6 +281,44 @@ class TestHttpExtractor:
         assert consumers[0].contract_id == "http::POST::/vix/my/bids"
         assert consumers[0].meta["client"] == "unitywebrequest"
 
+    def test_js_wrapper_consumer_with_method(self, tmp_path: Path) -> None:
+        self._write_file(tmp_path, "src/api.ts", """
+            fetchJSON(`${BASE}/path`, { method: "POST" });
+        """)
+        contracts = HttpExtractor().extract(tmp_path, "client")
+        consumers = [c for c in contracts if c.role == "consumer"]
+        assert len(consumers) == 1
+        assert consumers[0].contract_id == "http::POST::/path"
+        assert consumers[0].meta["client"] == "wrapper"
+
+    def test_js_wrapper_consumer_default_get_and_interior_param(self, tmp_path: Path) -> None:
+        self._write_file(tmp_path, "src/api.ts", """
+            fetchJSON(`${BASE}/health`);
+            fetchJSON(`${BASE}/systems/${Number(id)}`);
+        """)
+        contracts = HttpExtractor().extract(tmp_path, "client")
+        ids = {c.contract_id for c in contracts if c.role == "consumer"}
+        assert "http::GET::/health" in ids
+        assert "http::GET::/systems/{param}" in ids
+
+    def test_js_wrapper_method_signal_without_http_name(self, tmp_path: Path) -> None:
+        self._write_file(tmp_path, "src/api.ts", """
+            send("/orders", { method: "PUT" });
+        """)
+        contracts = HttpExtractor().extract(tmp_path, "client")
+        ids = {c.contract_id for c in contracts if c.role == "consumer"}
+        assert ids == {"http::PUT::/orders"}
+
+    def test_js_wrapper_ignores_navigation_and_keys(self, tmp_path: Path) -> None:
+        self._write_file(tmp_path, "src/app.tsx", """
+            navigate("/dashboard");
+            router.push("/home");
+            t("/some/i18n/key");
+        """)
+        contracts = HttpExtractor().extract(tmp_path, "client")
+        consumers = [c for c in contracts if c.role == "consumer"]
+        assert consumers == []
+
     def test_empty_file(self, tmp_path: Path) -> None:
         self._write_file(tmp_path, "empty.py", "")
         contracts = HttpExtractor().extract(tmp_path, "svc")
