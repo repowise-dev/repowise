@@ -28,6 +28,7 @@ repowise mcp --transport sse --port 7338 # legacy SSE transport
 | `get_dead_code` | Unreachable code | Cleanup tasks |
 | `get_health` | Code-health biomarker scores | Before refactoring — find the worst files |
 | `get_blast_radius` | Cross-repo downstream impact (workspace only) | Before changing a service other repos consume |
+| `get_conformance` | Architecture rule violations + cycles (workspace only) | Auditing or before changing service boundaries |
 
 ---
 
@@ -217,6 +218,8 @@ When `changed_files` is passed, the response leads with a `directive` block. In 
 - `will_break_consumers` — services in *other* repos that depend on this one (structural impact), each with `repo`, `service`, `distance`, `score`, and the edge kinds carrying the impact.
 - `missing_cross_repo_cochanges` — services in other repos that historically co-change with this one but aren't in the diff.
 - `breaking_changes` — provider contracts in this repo that changed *incompatibly* since the last index (a removed route or field, a type or field-number change, a newly-required field), each with the changed `contract_id`, the change `kind`/`severity`, and the `impacted_consumers` (repo, service, file) it endangers across repos. Schema-level truth, distinct from the topology-level `will_break_consumers`; non-breaking changes (added optional field, new endpoint) never appear. See [Breaking-Change Guard](WORKSPACES.md#breaking-change-guard).
+- `conformance_violations` — declared dependency-rule breaches the diff's repo participates in, each with the offending `source`/`target` services, the `rule` (e.g. `frontend !-> db`), and `edge_kind`. See [Architecture Conformance](WORKSPACES.md#architecture-conformance).
+- `dependency_cycles` — circular service dependencies involving this repo, each with the participating `nodes` and `length`.
 
 **When to use:** Before modifying files — especially hotspots. Understand what could break, who to involve in review, and whether tests cover the affected area.
 
@@ -250,6 +253,29 @@ get_risk(changed_files=["src/api/routes.ts", "src/middleware/cors.ts"])
 ```
 get_blast_radius(targets=["backend"])
 get_blast_radius(targets=["mono::services/auth"], max_depth=2, include_behavioral=false)
+```
+
+---
+
+## `get_conformance`
+
+*(Workspace mode only.)* Architecture governance: does the live system graph obey the declared dependency rules, and are there circular service dependencies?
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `repo` | string | No | Limit findings to those involving this repo alias |
+
+**Returns:** `violations` (each with the offending `source`/`target` services, the `rule_source`/`rule_target` matchers that fired, and the `edge_kind`), `cycles` (each with the participating `nodes` and `length`), and the `violation_count` / `cycle_count` / `rules_evaluated` rollups.
+
+**When to use:** Before a refactor that changes service boundaries, or to audit whether the live architecture still matches the intended one. Rules are declared under `conformance:` in `.repowise-workspace.yaml`. See [Architecture Conformance](WORKSPACES.md#architecture-conformance).
+
+**Example calls:**
+
+```
+get_conformance()
+get_conformance(repo="frontend")
 ```
 
 ---
@@ -357,6 +383,7 @@ The MCP server automatically enriches responses with cross-repo intelligence:
 - **Package dependencies** between repos
 - **Cross-repo blast radius** via the workspace-only `get_blast_radius` tool, and a cross-repo `directive` in `get_risk` PR-mode
 - **Breaking-change guard** — incompatible provider-contract changes and the consumers they endanger, in the `get_risk` PR-mode `breaking_changes` directive
+- **Architecture conformance** — declared dependency-rule violations and dependency cycles via the workspace-only `get_conformance` tool, and `conformance_violations` / `dependency_cycles` in the `get_risk` PR-mode directive
 
 ---
 

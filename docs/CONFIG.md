@@ -270,3 +270,49 @@ repowise init
 ```
 
 The schema is managed with Alembic migrations.
+
+---
+
+## Workspace config (`.repowise-workspace.yaml`)
+
+A multi-repo [workspace](WORKSPACES.md) is configured by a `.repowise-workspace.yaml` at the workspace root. Alongside the repo list it carries two optional blocks.
+
+### `repos[].tags`
+
+Each repo entry may declare free-form `tags` used to group services in conformance rules:
+
+```yaml
+repos:
+  - path: web
+    alias: frontend
+    tags: [ui, edge]
+  - path: services/db
+    alias: db
+    tags: [data]
+```
+
+### The `conformance:` block
+
+Declares architecture conformance rules (allow/deny dependency rules) checked by `repowise workspace check` and the workspace Conformance view. See [Architecture Conformance](WORKSPACES.md#architecture-conformance).
+
+```yaml
+conformance:
+  rules:
+    - source: frontend          # matcher: a glob over node id / repo / name
+      target: db                # matcher
+      allow: false              # optional, default false (deny). true = exception
+      description: "..."        # optional, shown in reports
+    - source: "tag:ui"          # matcher: tag:<name> — repos carrying that tag
+      target: "tag:data"
+    - source: "*"               # matcher: * — any service
+      target: legacy-payments
+```
+
+| Field | Type | Default | Meaning |
+|-------|------|---------|---------|
+| `source` | string (matcher) | required | The dependent side. `*`, `tag:<name>`, or a glob over node id / repo alias / display name |
+| `target` | string (matcher) | required | The depended-upon side (same matcher forms) |
+| `allow` | bool | `false` | `false` = deny (a matching dependency is a violation); `true` = whitelist an otherwise-denied edge |
+| `description` | string | `""` | Human-readable rationale, surfaced in reports |
+
+Rules are evaluated only against structural edges (HTTP, gRPC, event, package, db); behavioral co-change is never treated as a dependency.

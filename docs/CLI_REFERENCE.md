@@ -550,6 +550,15 @@ repowise workspace diagnostics --json     # raw JSON
 repowise workspace diagnostics --repo api # limit to one repo alias
 ```
 
+### `repowise workspace check`
+
+Architecture lint: check the declared `conformance:` rules against the system graph and detect dependency cycles. Exits non-zero on any finding, so it gates CI.
+
+```bash
+repowise workspace check                  # human-readable report; exit 1 on findings
+repowise workspace check --json           # raw report JSON
+```
+
 See [Workspaces](WORKSPACES.md) for the full multi-repo guide.
 
 ---

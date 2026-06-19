@@ -179,6 +179,15 @@ repowise workspace diagnostics --json     # raw JSON
 repowise workspace diagnostics --repo api # limit to one repo
 ```
 
+### `repowise workspace check`
+
+Architecture lint: check the declared `conformance:` rules against the system graph and detect dependency cycles. Exits non-zero on any finding, so it gates CI. See [Architecture Conformance](#architecture-conformance).
+
+```bash
+repowise workspace check                  # human-readable report; exit 1 on findings
+repowise workspace check --json           # raw report JSON
+```
+
 ---
 
 ## Cross-Repo Intelligence
@@ -329,12 +338,76 @@ Use it three ways:
 
 ---
 
+## Architecture Conformance
+
+Workspaces let you declare, in `.repowise-workspace.yaml`, which services are *allowed* to depend on which others, and then continuously check the live system graph against those rules. This is your team's **architecture lint**: the intended architecture, expressed as code, verified on every update.
+
+### Declaring rules
+
+Conformance rules live in a `conformance:` block in the workspace config (no separate file). Each rule has a `source` and a `target` *matcher* and an `allow` flag:
+
+```yaml
+repos:
+  - path: web
+    alias: frontend
+    tags: [ui, edge]
+  - path: services/db
+    alias: db
+    tags: [data]
+
+conformance:
+  rules:
+    # Deny rules (allow defaults to false): the dependency is a violation.
+    - source: frontend
+      target: db
+      description: The UI must call the API, never the database directly.
+    - source: "*"
+      target: legacy-payments
+    # Tag-based: nothing in the "ui" tier may depend on the "data" tier...
+    - source: "tag:ui"
+      target: "tag:data"
+    # ...except migrations, which are explicitly allowed (an exception).
+    - source: migrations
+      target: db
+      allow: true
+```
+
+A **matcher** resolves against service nodes in the [system graph](#system-graph):
+
+| Matcher form | Matches |
+|--------------|---------|
+| `*` | every service |
+| `tag:<name>` | every service whose repo declares that tag (see `tags:` on each repo) |
+| anything else | a glob over the node id, repo alias, and display name (`frontend`, `api::*`, `*-worker`) |
+
+A rule with `allow: false` (the default) is a **deny** rule: a structural dependency from a matching source to a matching target is a violation. A rule with `allow: true` is an **exception** that whitelists an otherwise-denied edge. Only structural edges (HTTP, gRPC, event, package, db) are evaluated; behavioral co-change is never a dependency.
+
+### Dependency cycles
+
+Independently of any rules, conformance detects **circular dependencies** among services over structural edges (`A → B → … → A`). A cycle means the services cannot be built, deployed, or reasoned about independently. Cycle detection runs even with zero rules declared, so every workspace gets it for free.
+
+### Using it
+
+- **CLI** — `repowise workspace check` prints violations and cycles and exits non-zero when any are found, so it gates CI (the architecture lint):
+
+  ```bash
+  repowise workspace check          # human-readable report; exit 1 on findings
+  repowise workspace check --json    # raw report JSON (still exits 1 on findings)
+  ```
+
+  It recomputes from the persisted system graph, so editing rules and re-running picks them up without a full re-index.
+- **REST** — `GET /api/workspace/conformance` returns the report from the most recent update (filterable by `repo`).
+- **MCP** — `get_conformance` exposes violations and cycles to an agent; the `get_risk` PR-mode directive gains `conformance_violations` and `dependency_cycles` blocks for the findings the diff's repo participates in.
+- **Conformance view** — the web UI's Conformance page renders a **dependency-structure matrix (DSM)**: services on both axes, each filled cell a dependency tinted by transport, with rule violations ringed red and cycle cells amber. Governance panels list the violations and cycles. Violations also badge the offending edges on the [Live System Map](#live-system-map) (toggle **Conformance**), reusing the same additive overlay as the breaking-change guard.
+
+---
+
 ## MCP Integration
 
 Workspace init automatically registers MCP servers with Claude Desktop and Claude Code. The MCP server is workspace-aware:
 
 - **Default repo context** — queries go to the primary repo unless you specify otherwise
-- **Cross-repo tools** — MCP tools can query across repos and return enriched context with co-change and contract data; `get_blast_radius` answers cross-repo downstream impact (see [Cross-Repo Blast Radius](#cross-repo-blast-radius))
+- **Cross-repo tools** — MCP tools can query across repos and return enriched context with co-change and contract data; `get_blast_radius` answers cross-repo downstream impact (see [Cross-Repo Blast Radius](#cross-repo-blast-radius)); `get_conformance` answers architecture rule violations and dependency cycles (see [Architecture Conformance](#architecture-conformance))
 - **Repo parameter** — most tools accept an optional `repo` parameter to target a specific repo, or `"all"` to query across the workspace
 
 ---
@@ -351,6 +424,7 @@ my-workspace/
     contracts.json                 # Extracted API contracts and links
     system_graph.json              # Service-granular system graph + diagnostics
     breaking_changes.json          # Breaking provider changes vs the last index
+    conformance.json               # Architecture rule violations + dependency cycles
   .claude/
     CLAUDE.md                      # Workspace-level CLAUDE.md for AI editors
   backend/
