@@ -245,6 +245,34 @@ class TestHttpExtractor:
         assert len(providers) == 1
         assert providers[0].contract_id == "http::GET::/systems/nearby"
 
+    def test_rust_reqwest_literal_consumer(self, tmp_path: Path) -> None:
+        self._write_file(tmp_path, "src/client.rs", """
+            let resp = client.post("http://backend:8000/api/data").send().await?;
+            let r = reqwest::get("http://svc/health").await?;
+        """)
+        contracts = HttpExtractor().extract(tmp_path, "rust-client")
+        ids = {c.contract_id for c in contracts if c.role == "consumer"}
+        assert "http::POST::/api/data" in ids
+        assert "http::GET::/health" in ids
+
+    def test_rust_reqwest_format_consumer(self, tmp_path: Path) -> None:
+        self._write_file(tmp_path, "src/client.rs", """
+            let r = client.get(format!("{}/systems/{}", base, id)).send().await?;
+        """)
+        contracts = HttpExtractor().extract(tmp_path, "rust-client")
+        consumers = [c for c in contracts if c.role == "consumer"]
+        assert len(consumers) == 1
+        assert consumers[0].contract_id == "http::GET::/systems/{param}"
+        assert consumers[0].meta.get("base_stripped") is True
+
+    def test_rust_reqwest_ignores_map_get(self, tmp_path: Path) -> None:
+        # A HashMap-style .get("key") has no slash and must not look like a route.
+        self._write_file(tmp_path, "src/lookup.rs", """
+            let v = config.get("database_url");
+        """)
+        contracts = HttpExtractor().extract(tmp_path, "rust-client")
+        assert [c for c in contracts if c.role == "consumer"] == []
+
     def test_csharp_wrapper_interpolated_consumer(self, tmp_path: Path) -> None:
         self._write_file(tmp_path, "ApiClient.cs", """
             public class ApiClient {

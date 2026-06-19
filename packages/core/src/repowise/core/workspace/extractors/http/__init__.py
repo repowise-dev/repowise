@@ -24,6 +24,7 @@ from .laravel import LaravelDialect
 from .paths import normalize_http_path
 from .python_clients import PythonClientsDialect
 from .rust_axum import RustAxumDialect
+from .rust_clients import RustClientsDialect
 from .spring import SpringDialect
 
 if TYPE_CHECKING:
@@ -47,6 +48,7 @@ CONSUMER_DIALECTS: tuple[HttpDialect, ...] = (
     JsClientsDialect(),
     PythonClientsDialect(),
     CSharpHttpDialect(),
+    RustClientsDialect(),
 )
 
 
