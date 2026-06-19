@@ -7,6 +7,7 @@ import type {
   WorkspaceSyncResponse,
   WorkspaceSystemGraphResponse,
   WorkspaceDiagnosticsResponse,
+  WorkspaceBlastRadiusResponse,
 } from "./types";
 
 export async function getWorkspace(
@@ -71,6 +72,22 @@ export async function getWorkspaceDiagnostics(
     undefined,
     fetchOptions,
   );
+}
+
+/**
+ * Cross-repo blast radius from a service node (or repo alias): the downstream
+ * services impacted if it changes, ranked by impact. Reads the same system
+ * graph the map renders.
+ */
+export async function getWorkspaceBlastRadius(opts: {
+  target: string;
+  maxDepth?: number;
+  includeBehavioral?: boolean;
+}): Promise<WorkspaceBlastRadiusResponse> {
+  const params: Record<string, string | number | boolean> = { target: opts.target };
+  if (opts.maxDepth != null) params.max_depth = opts.maxDepth;
+  if (opts.includeBehavioral != null) params.include_behavioral = opts.includeBehavioral;
+  return apiGet<WorkspaceBlastRadiusResponse>("/api/workspace/blast-radius", params);
 }
 
 /**

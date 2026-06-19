@@ -284,12 +284,31 @@ The map appears once the workspace has at least two indexed repositories with de
 
 ---
 
+## Cross-Repo Blast Radius
+
+Blast radius answers a single question: **if I change this service, what downstream services and repos break?** It walks the [system graph](#system-graph) *against* its edge direction — a `consumer → provider` edge means changing the provider impacts the consumer — and returns every reachable service ranked by an impact score.
+
+Two edge classes are weighted and labelled distinctly:
+
+- **Structural** edges (http / grpc / event / package) assert a real dependency — a contract or an import. They propagate impact at full weight and surface as **will break**.
+- **Behavioral** co-change edges only assert that two files historically *changed together*. They are correlation, not a call, so they propagate at half weight (one named constant, `BEHAVIORAL_EDGE_WEIGHT`) and surface as **may drift**.
+
+Each impacted service carries its `distance` (hops from the change) and `score` (0-1, with distance decay and the behavioral weighting baked in). Nearer, structural impact ranks highest.
+
+Use it three ways:
+
+- **REST** — `GET /api/workspace/blast-radius?target=<node-id-or-repo>&max_depth=3&include_behavioral=true`. `target` is a node id (`repo` or `repo::service/path`) or a repo alias (expands to all its services).
+- **MCP** — the `get_blast_radius` tool (workspace mode) gives an agent the impacted set before it touches a high-fan-out provider. The `get_risk` PR-mode directive also gains `will_break_consumers` and `missing_cross_repo_cochanges` so a diff in one repo flags its cross-repo fallout.
+- **System Map** — pick a service in the **Blast radius** control above the map; the reachable set ripples (highlighted, the rest dimmed, badges grading intensity), and a side panel lists the impacted services. Click any impacted service to walk the impact outward from there.
+
+---
+
 ## MCP Integration
 
 Workspace init automatically registers MCP servers with Claude Desktop and Claude Code. The MCP server is workspace-aware:
 
 - **Default repo context** — queries go to the primary repo unless you specify otherwise
-- **Cross-repo tools** — MCP tools can query across repos and return enriched context with co-change and contract data
+- **Cross-repo tools** — MCP tools can query across repos and return enriched context with co-change and contract data; `get_blast_radius` answers cross-repo downstream impact (see [Cross-Repo Blast Radius](#cross-repo-blast-radius))
 - **Repo parameter** — most tools accept an optional `repo` parameter to target a specific repo, or `"all"` to query across the workspace
 
 ---

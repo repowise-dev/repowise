@@ -20,6 +20,7 @@ from repowise.server.deps import (
     verify_api_key,
 )
 from repowise.server.schemas import (
+    WorkspaceBlastRadiusResponse,
     WorkspaceCoChangeEntry,
     WorkspaceCoChangesResponse,
     WorkspaceContractEntry,
@@ -525,6 +526,48 @@ async def get_diagnostics(
     if not diagnostics:
         return WorkspaceExtractionDiagnostics()
     return WorkspaceExtractionDiagnostics(**diagnostics)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/workspace/blast-radius
+# ---------------------------------------------------------------------------
+
+
+@router.get("/blast-radius", response_model=WorkspaceBlastRadiusResponse)
+async def get_blast_radius(
+    ws_config=Depends(get_workspace_config),
+    enricher=Depends(get_cross_repo_enricher),
+    target: list[str] = Query(
+        ...,
+        description="One or more node ids ('repo' or 'repo::service/path') or repo aliases.",
+    ),
+    max_depth: int = Query(3, ge=1, le=8, description="Reachability depth."),
+    include_behavioral: bool = Query(
+        True, description="Include co-change (behavioral) edges in reachability."
+    ),
+):
+    """Cross-repo blast radius — downstream services impacted by a change.
+
+    Traverses the system graph against its edge direction (a consumer→provider
+    edge means changing the provider impacts the consumer), ranking impacted
+    services by an impact score that weights structural dependencies above
+    behavioral co-change. Reads the same ``system_graph.json`` artifact the map
+    renders. Returns an empty result (not 404) when no graph is built yet.
+    """
+    _require_workspace(ws_config)
+
+    from repowise.core.workspace.blast_radius import cross_repo_blast_radius
+    from repowise.core.workspace.system_graph import SystemGraph
+
+    raw = enricher.get_system_graph() if enricher is not None else None
+    if not raw:
+        return WorkspaceBlastRadiusResponse(targets=[], unresolved_targets=list(target))
+
+    graph = SystemGraph.from_dict(raw)
+    result = cross_repo_blast_radius(
+        graph, target, max_depth=max_depth, include_behavioral=include_behavioral
+    )
+    return WorkspaceBlastRadiusResponse(**result.to_dict())
 
 
 # ---------------------------------------------------------------------------

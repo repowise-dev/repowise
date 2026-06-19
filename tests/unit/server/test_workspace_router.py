@@ -637,6 +637,60 @@ class TestGetSystemGraph:
         assert ("frontend", "backend", "package") in kinds  # dependent -> dependency
 
 
+class TestGetBlastRadius:
+    @pytest.mark.asyncio
+    async def test_not_workspace_mode(self) -> None:
+        app = _make_workspace_app()
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.get("/api/workspace/blast-radius", params={"target": "backend"})
+        assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_empty_when_no_graph(self) -> None:
+        app = _make_workspace_app(ws_config=_make_ws_config(), enricher=None)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.get("/api/workspace/blast-radius", params={"target": "backend"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["impacted"] == []
+        assert data["unresolved_targets"] == ["backend"]
+
+    @pytest.mark.asyncio
+    async def test_changing_provider_impacts_consumer(self, tmp_path: Path) -> None:
+        enricher = _make_system_graph_enricher(tmp_path)
+        app = _make_workspace_app(ws_config=_make_ws_config(), enricher=enricher)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.get("/api/workspace/blast-radius", params={"target": "backend"})
+        assert resp.status_code == 200
+        data = resp.json()
+        # frontend consumes backend's http contract AND package-depends on it.
+        assert "frontend" in {n["id"] for n in data["impacted"]}
+        assert data["structural_count"] >= 1
+        assert "frontend" in data["impacted_repos"]
+
+    @pytest.mark.asyncio
+    async def test_unresolved_target_reported(self, tmp_path: Path) -> None:
+        enricher = _make_system_graph_enricher(tmp_path)
+        app = _make_workspace_app(ws_config=_make_ws_config(), enricher=enricher)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.get("/api/workspace/blast-radius", params={"target": "ghost"})
+        data = resp.json()
+        assert data["unresolved_targets"] == ["ghost"]
+        assert data["impacted"] == []
+
+    @pytest.mark.asyncio
+    async def test_target_is_required(self) -> None:
+        app = _make_workspace_app(ws_config=_make_ws_config())
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.get("/api/workspace/blast-radius")
+        assert resp.status_code == 422  # missing required query param
+
+
 class TestGetDiagnostics:
     @pytest.mark.asyncio
     async def test_not_workspace_mode(self) -> None:

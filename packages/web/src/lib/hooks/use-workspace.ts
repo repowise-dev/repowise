@@ -8,6 +8,7 @@ import {
   getWorkspaceSystemGraph,
   getWorkspaceDiagnostics,
   getWorkspaceGraph,
+  getWorkspaceBlastRadius,
 } from "@/lib/api/workspace";
 import type {
   WorkspaceResponse,
@@ -16,6 +17,7 @@ import type {
   WorkspaceSystemGraphResponse,
   WorkspaceDiagnosticsResponse,
   WorkspaceGraphResponse,
+  WorkspaceBlastRadiusResponse,
 } from "@/lib/api/types";
 
 export function useWorkspace() {
@@ -73,6 +75,30 @@ export function useWorkspaceDiagnostics() {
   const { data, error, isLoading } = useSWR<WorkspaceDiagnosticsResponse>(
     "workspace:diagnostics",
     () => getWorkspaceDiagnostics(),
+    { revalidateOnFocus: false },
+  );
+  return { data: data ?? null, isLoading, error };
+}
+
+/**
+ * Cross-repo blast radius for a selected target service. Pass ``null`` to skip
+ * the request (no target selected).
+ */
+export function useWorkspaceBlastRadius(
+  target: string | null,
+  opts?: { maxDepth?: number; includeBehavioral?: boolean },
+) {
+  const key = target
+    ? `workspace:blast-radius:${target}:${opts?.maxDepth ?? ""}:${opts?.includeBehavioral ?? ""}`
+    : null;
+  const { data, error, isLoading } = useSWR<WorkspaceBlastRadiusResponse>(
+    key,
+    () =>
+      getWorkspaceBlastRadius({
+        target: target as string,
+        ...(opts?.maxDepth != null ? { maxDepth: opts.maxDepth } : {}),
+        ...(opts?.includeBehavioral != null ? { includeBehavioral: opts.includeBehavioral } : {}),
+      }),
     { revalidateOnFocus: false },
   );
   return { data: data ?? null, isLoading, error };

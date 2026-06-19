@@ -10,6 +10,11 @@ import {
 } from "../../src/workspace/system-map/edge-kinds";
 import { nodeKindStyle, NODE_KIND_ORDER } from "../../src/workspace/system-map/node-kinds";
 import { resolveEdgeOverlay, resolveNodeOverlay } from "../../src/workspace/system-map/types";
+import {
+  buildBlastRadiusOverlay,
+  impactBadgeTone,
+} from "../../src/workspace/system-map/blast-radius";
+import type { CrossRepoBlastRadius } from "@repowise-dev/types";
 
 function node(id: string, repo: string, over: Partial<SystemNode> = {}): SystemNode {
   return {
@@ -199,5 +204,72 @@ describe("overlay resolution", () => {
 
   it("resolves edge overlay independently", () => {
     expect(resolveEdgeOverlay({ dimEdgeIds: new Set(["e"]) }, "e")).toEqual({ highlighted: false, dimmed: true });
+  });
+});
+
+describe("buildBlastRadiusOverlay", () => {
+  function result(over: Partial<CrossRepoBlastRadius> = {}): CrossRepoBlastRadius {
+    return {
+      targets: ["db"],
+      target_repos: ["db"],
+      impacted: [],
+      impacted_repos: [],
+      structural_count: 0,
+      behavioral_count: 0,
+      max_distance: 0,
+      total_impacted: 0,
+      unresolved_targets: [],
+      ...over,
+    };
+  }
+
+  const g = graph(
+    [node("db", "db"), node("api", "api"), node("web", "web"), node("idle", "idle")],
+    [edge("api", "db"), edge("web", "api"), edge("web", "idle")],
+  );
+
+  it("highlights the focus set and dims everything else", () => {
+    const overlay = buildBlastRadiusOverlay(
+      g,
+      result({
+        impacted: [
+          { id: "api", repo: "api", name: "api", kind: "service", distance: 1, score: 0.5, structural: true, edge_kinds: ["http"] },
+          { id: "web", repo: "web", name: "web", kind: "service", distance: 2, score: 0.2, structural: true, edge_kinds: ["http"] },
+        ],
+      }),
+    );
+    expect([...(overlay.highlightNodeIds ?? [])].sort()).toEqual(["api", "db", "web"]);
+    // The unrelated node is dimmed.
+    expect(overlay.dimNodeIds?.has("idle")).toBe(true);
+    expect(overlay.dimNodeIds?.has("api")).toBe(false);
+    // Edges fully inside focus are highlighted; the rest dimmed.
+    expect(overlay.highlightEdgeIds?.has("api->db")).toBe(true);
+    expect(overlay.highlightEdgeIds?.has("web->api")).toBe(true);
+    expect(overlay.dimEdgeIds?.has("web->idle")).toBe(true);
+  });
+
+  it("badges the source and grades impacted nodes by intensity", () => {
+    const overlay = buildBlastRadiusOverlay(
+      g,
+      result({
+        impacted: [
+          { id: "api", repo: "api", name: "api", kind: "service", distance: 1, score: 0.5, structural: true, edge_kinds: ["http"] },
+        ],
+      }),
+    );
+    expect(overlay.nodeBadges?.db).toEqual({ label: "source", tone: "info" });
+    expect(overlay.nodeBadges?.api).toEqual({ label: "d1", tone: "danger" });
+  });
+
+  it("returns an empty overlay when nothing is in focus", () => {
+    const overlay = buildBlastRadiusOverlay(g, result({ targets: [], impacted: [] }));
+    expect(overlay).toEqual({});
+  });
+
+  it("grades intensity: structural-near danger, structural-far info, behavioral info", () => {
+    expect(impactBadgeTone(1, true)).toBe("danger");
+    expect(impactBadgeTone(2, true)).toBe("warning");
+    expect(impactBadgeTone(3, true)).toBe("info");
+    expect(impactBadgeTone(1, false)).toBe("info");
   });
 });

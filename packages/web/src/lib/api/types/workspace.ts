@@ -142,12 +142,21 @@ export type {
   UnmatchedConsumer,
   UnmatchedReason,
   OrphanProvider,
+  ImpactedNode,
+  CrossRepoBlastRadius,
 } from "@repowise-dev/types";
 
-import type { SystemGraph, ExtractionDiagnostics } from "@repowise-dev/types";
+import type {
+  SystemGraph,
+  ExtractionDiagnostics,
+  CrossRepoBlastRadius,
+} from "@repowise-dev/types";
 
 /** `GET /api/workspace/system-graph` — the full service-granular system graph. */
 export type WorkspaceSystemGraphResponse = SystemGraph;
 
 /** `GET /api/workspace/diagnostics` — extraction diagnostics standalone. */
 export type WorkspaceDiagnosticsResponse = ExtractionDiagnostics;
+
+/** `GET /api/workspace/blast-radius` — cross-repo downstream impact set. */
+export type WorkspaceBlastRadiusResponse = CrossRepoBlastRadius;

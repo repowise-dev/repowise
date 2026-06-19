@@ -27,6 +27,7 @@ repowise mcp --transport sse --port 7338 # legacy SSE transport
 | `get_why` | Architectural decisions | Before structural changes |
 | `get_dead_code` | Unreachable code | Cleanup tasks |
 | `get_health` | Code-health biomarker scores | Before refactoring — find the worst files |
+| `get_blast_radius` | Cross-repo downstream impact (workspace only) | Before changing a service other repos consume |
 
 ---
 
@@ -211,6 +212,11 @@ Modification risk assessment for files or a set of changed files.
 
 **Returns:** Per-file risk score (0–10), hotspot status, dependent count, co-change partners, blast radius, recommended reviewers, test gap analysis, security signals. In workspace mode, enriched with cross-repo co-change partners and contract dependencies.
 
+When `changed_files` is passed, the response leads with a `directive` block. In workspace mode that directive also carries the cross-repo fallout of the changed repo:
+
+- `will_break_consumers` — services in *other* repos that depend on this one (structural impact), each with `repo`, `service`, `distance`, `score`, and the edge kinds carrying the impact.
+- `missing_cross_repo_cochanges` — services in other repos that historically co-change with this one but aren't in the diff.
+
 **When to use:** Before modifying files — especially hotspots. Understand what could break, who to involve in review, and whether tests cover the affected area.
 
 **Example calls:**
@@ -218,6 +224,31 @@ Modification risk assessment for files or a set of changed files.
 ```
 get_risk(targets=["src/auth/middleware.ts"])
 get_risk(changed_files=["src/api/routes.ts", "src/middleware/cors.ts"])
+```
+
+---
+
+## `get_blast_radius`
+
+*(Workspace mode only.)* Cross-repo downstream impact: if you change this service, what breaks across the other repos?
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `targets` | list[string] | Yes | Node ids (`repo` or `repo::service/path`) or repo aliases |
+| `max_depth` | int | No | Reachability depth (1–8, default 3) |
+| `include_behavioral` | bool | No | Include co-change (behavioral) edges (default true) |
+
+**Returns:** The impacted services ranked by impact `score`, each with `distance` (hops), `structural` (a real dependency vs co-change only), and the edge kinds that carried the impact; plus `impacted_repos`, `structural_count` / `behavioral_count`, `total_impacted`, and any `unresolved_targets`.
+
+**When to use:** Before changing a high-fan-out provider — see who consumes it across repo boundaries. Structural impact (`will break`) outweighs behavioral co-change (`may drift`). Reads the same system graph the [Live System Map](WORKSPACES.md#live-system-map) renders.
+
+**Example calls:**
+
+```
+get_blast_radius(targets=["backend"])
+get_blast_radius(targets=["mono::services/auth"], max_depth=2, include_behavioral=false)
 ```
 
 ---
@@ -323,12 +354,13 @@ The MCP server automatically enriches responses with cross-repo intelligence:
 - **Co-change partners** from other repos surfaced in `get_context` and `get_risk`
 - **API contract links** (HTTP, gRPC, topics) between repos
 - **Package dependencies** between repos
+- **Cross-repo blast radius** via the workspace-only `get_blast_radius` tool, and a cross-repo `directive` in `get_risk` PR-mode
 
 ---
 
 ## Proactive Hooks (Complementary)
 
-In addition to the 9 MCP tools, `repowise init` installs AI-agent hooks (Claude Code and Codex) that provide **passive, automatic** context enrichment:
+In addition to the MCP tools above, `repowise init` installs AI-agent hooks (Claude Code and Codex) that provide **passive, automatic** context enrichment:
 
 - **Claude Code PostToolUse** — broad or zero-result `Grep`/`Glob` calls can be enriched with graph context, and git operations can trigger stale-wiki notices.
 - **Codex SessionStart/UserPromptSubmit** — Codex receives concise Repowise MCP workflow guidance when a session or prompt starts.

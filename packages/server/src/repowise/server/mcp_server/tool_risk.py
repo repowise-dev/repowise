@@ -408,6 +408,57 @@ def _as_path(entry: Any) -> str | None:
     return None
 
 
+#: Caps on the cross-repo directive lists — kept tight so the PR directive stays
+#: glanceable. The full impact set is on get_blast_radius / the REST endpoint.
+_XR_WILL_BREAK_LIMIT = 5
+_XR_COCHANGE_LIMIT = 3
+
+
+def _cross_repo_directive(repo_alias: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Cross-repo half of the PR directive: downstream services in other repos.
+
+    Resolves the changed repo to its system-graph nodes and ranks reachable
+    services in OTHER repos by impact, splitting structural (``will_break``) from
+    behavioral co-change (``missing_cochanges``). Returns two empty lists when
+    not in workspace mode or no system graph is available. Never raises.
+    """
+    will_break_consumers: list[dict[str, Any]] = []
+    missing_cross_repo_cochanges: list[dict[str, Any]] = []
+    try:
+        if not _is_workspace_mode():
+            return will_break_consumers, missing_cross_repo_cochanges
+        enricher = _state._cross_repo_enricher
+        raw_graph = enricher.get_system_graph() if enricher is not None else None
+        if not raw_graph:
+            return will_break_consumers, missing_cross_repo_cochanges
+
+        from repowise.core.workspace.blast_radius import cross_repo_blast_radius
+        from repowise.core.workspace.system_graph import SystemGraph
+
+        result = cross_repo_blast_radius(SystemGraph.from_dict(raw_graph), [repo_alias])
+        for n in result.impacted:
+            if n.repo == repo_alias:
+                continue  # cross-repo only — intra-repo impact is the single-repo blast
+            if n.structural:
+                if len(will_break_consumers) < _XR_WILL_BREAK_LIMIT:
+                    will_break_consumers.append(
+                        {
+                            "repo": n.repo,
+                            "service": n.name,
+                            "distance": n.distance,
+                            "score": n.score,
+                            "via": n.edge_kinds,
+                        }
+                    )
+            elif len(missing_cross_repo_cochanges) < _XR_COCHANGE_LIMIT:
+                missing_cross_repo_cochanges.append(
+                    {"repo": n.repo, "service": n.name, "score": n.score}
+                )
+    except Exception:
+        return [], []
+    return will_break_consumers, missing_cross_repo_cochanges
+
+
 def _trim_blast_lists(
     pr_blast_radius: dict[str, Any],
     exclude_spec: Any,
@@ -765,10 +816,27 @@ async def get_risk(
 
         gov_count = len(governance_risk)
         gov_suffix = f" {gov_count} governance risk(s) detected." if gov_count > 0 else ""
+
+        # Cross-repo directive (workspace mode only). Resolve the changed repo to
+        # its system-graph nodes and walk reachability to find downstream
+        # services in OTHER repos — split structural (will break) from behavioral
+        # (co-change only). Repo-scoped: it answers "can this PR's repo break
+        # something across a repo boundary?" using the same reachability the map
+        # and get_blast_radius use.
+        will_break_consumers, missing_cross_repo_cochanges = _cross_repo_directive(ctx.alias)
+        xr_suffix = ""
+        if will_break_consumers or missing_cross_repo_cochanges:
+            xr_suffix = (
+                f" Cross-repo: {len(will_break_consumers)} consumer service(s) may break, "
+                f"{len(missing_cross_repo_cochanges)} cross-repo co-changer(s) missing."
+            )
+
         response["directive"] = {
             "will_break": will_break,
             "missing_cochanges": missing_cochanges,
             "missing_tests": missing_tests,
+            "will_break_consumers": will_break_consumers,
+            "missing_cross_repo_cochanges": missing_cross_repo_cochanges,
             "governance_risk": governance_risk,
             "overall_risk_score": trimmed_blast.get("overall_risk_score"),
             "summary": (
@@ -776,7 +844,7 @@ async def get_risk(
                 f"~{len(will_break)} downstream file(s) likely affected, "
                 f"{len(missing_cochanges)} historical co-changer(s) missing, "
                 f"{len(missing_tests)} file(s) without tests."
-                f"{gov_suffix}"
+                f"{gov_suffix}{xr_suffix}"
             ),
         }
     else:

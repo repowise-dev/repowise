@@ -155,6 +155,7 @@ from .ui_helpers import (
     WebhookResponse,
 )
 from .workspace import (
+    WorkspaceBlastRadiusResponse,
     WorkspaceCoChangeEntry,
     WorkspaceCoChangesResponse,
     WorkspaceContractEntry,
@@ -166,6 +167,7 @@ from .workspace import (
     WorkspaceGraphEdge,
     WorkspaceGraphNode,
     WorkspaceGraphResponse,
+    WorkspaceImpactedNode,
     WorkspaceOrphanProvider,
     WorkspaceRepoDiagnostics,
     WorkspaceRepoEntry,
@@ -293,6 +295,7 @@ __all__ = [
     "TransitiveEntry",
     "WebhookResponse",
     "WorkspaceCoChangeEntry",
+    "WorkspaceBlastRadiusResponse",
     "WorkspaceCoChangesResponse",
     "WorkspaceContractEntry",
     "WorkspaceContractLinkEntry",
@@ -303,6 +306,7 @@ __all__ = [
     "WorkspaceGraphEdge",
     "WorkspaceGraphNode",
     "WorkspaceGraphResponse",
+    "WorkspaceImpactedNode",
     "WorkspaceOrphanProvider",
     "WorkspaceRepoDiagnostics",
     "WorkspaceRepoEntry",

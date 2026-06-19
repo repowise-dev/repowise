@@ -161,3 +161,47 @@ export interface ExtractionDiagnostics {
   unmatched_by_reason: Record<string, number>;
   orphan_providers: OrphanProvider[];
 }
+
+// ---------------------------------------------------------------------------
+// Cross-repo blast radius — reachability over the system graph. "If I change
+// this service, what downstream services and repos break?" Mirrors the
+// single-repo blast-radius vocabulary (`blast-radius.ts`): impacted items carry
+// an impact `score` and a `distance`. Mirrors `repowise.core.workspace.blast_radius`.
+// ---------------------------------------------------------------------------
+
+/** A service reachable from the change, with its ranked impact. */
+export interface ImpactedNode {
+  /** System-graph node id (`"repo"` or `"repo::service/path"`). */
+  id: string;
+  repo: string;
+  name: string;
+  kind: "service" | "frontend" | "worker" | "library" | "external";
+  /** Hops from the nearest changed node (1 = a direct dependent). */
+  distance: number;
+  /** 0-1 ranked impact, with distance decay and behavioral weighting baked in. */
+  score: number;
+  /** Reachable via an all-structural path (a real dependency, not co-change). */
+  structural: boolean;
+  /** Distinct edge kinds that carried impact into this node. */
+  edge_kinds: SystemEdgeKind[];
+}
+
+export interface CrossRepoBlastRadius {
+  /** Resolved node ids the traversal started from. */
+  targets: string[];
+  /** Distinct repos of the targets. */
+  target_repos: string[];
+  /** Ranked impact set (strongest first), capped server-side. */
+  impacted: ImpactedNode[];
+  /** Distinct repos in the impact set, excluding the target repos. */
+  impacted_repos: string[];
+  /** Impacted nodes reachable via a real dependency. */
+  structural_count: number;
+  /** Impacted nodes reachable only via co-change correlation. */
+  behavioral_count: number;
+  max_distance: number;
+  /** True count before the server-side cap. */
+  total_impacted: number;
+  /** Target strings that matched no node or repo. */
+  unresolved_targets: string[];
+}

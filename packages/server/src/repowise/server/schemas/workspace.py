@@ -213,3 +213,32 @@ class WorkspaceSystemGraphResponse(BaseModel):
     nodes: list[WorkspaceSystemNode] = []
     edges: list[WorkspaceSystemEdge] = []
     diagnostics: WorkspaceExtractionDiagnostics = WorkspaceExtractionDiagnostics()
+
+
+# ---------------------------------------------------------------------------
+# Cross-repo blast radius (reachability over the system graph)
+# Mirrors repowise.core.workspace.blast_radius.
+# ---------------------------------------------------------------------------
+
+
+class WorkspaceImpactedNode(BaseModel):
+    id: str
+    repo: str
+    name: str
+    kind: str = "service"
+    distance: int
+    score: float
+    structural: bool
+    edge_kinds: list[str] = []
+
+
+class WorkspaceBlastRadiusResponse(BaseModel):
+    targets: list[str] = []
+    target_repos: list[str] = []
+    impacted: list[WorkspaceImpactedNode] = []
+    impacted_repos: list[str] = []
+    structural_count: int = 0
+    behavioral_count: int = 0
+    max_distance: int = 0
+    total_impacted: int = 0
+    unresolved_targets: list[str] = []

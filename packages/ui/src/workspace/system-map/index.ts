@@ -8,6 +8,8 @@ export { SystemMap, type SystemMapProps } from "./system-map";
 export { SystemMapLegend } from "./system-map-legend";
 export { SystemMapFilters, type SystemMapFiltersProps } from "./system-map-filters";
 export { SystemMapInspector, type SystemMapInspectorProps } from "./system-map-inspector";
+export { SystemMapBlastPanel, type SystemMapBlastPanelProps } from "./system-map-blast-panel";
+export { buildBlastRadiusOverlay, impactBadgeTone } from "./blast-radius";
 export { useSystemMapLayout, type SystemMapLayout, type UseSystemMapLayoutArgs } from "./use-system-map-layout";
 export { applyView, computeSystemMapPositions, SYSTEM_MAP_NODE_SIZE, type SystemMapView } from "./layout";
 export { collapseToRepos } from "./collapse";

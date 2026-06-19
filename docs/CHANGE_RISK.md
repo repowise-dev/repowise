@@ -78,3 +78,24 @@ ship; the runtime stays deterministic and zero-LLM.
 
 Recalibrate via `repowise-bench/health-defect/jit_calibration.py`; the constants
 live in `packages/core/src/repowise/core/analysis/change_risk/model.py`.
+
+## Cross-repo change risk (workspace mode)
+
+In a workspace, a change rarely stops at the repo boundary. When `get_risk` is
+called in PR mode (`changed_files`), its `directive` block gains two cross-repo
+fields derived from the [system graph](WORKSPACES.md#system-graph):
+
+- `will_break_consumers` — services in *other* repos that structurally depend on
+  the changed repo (a contract or package import). These are the consumers most
+  likely to break.
+- `missing_cross_repo_cochanges` — services in other repos that historically
+  co-change with the changed repo but aren't in the diff. Correlation, not a
+  call, so they read as "may drift," not "will break."
+
+The same reachability powers the `get_blast_radius` MCP tool, the
+`GET /api/workspace/blast-radius` endpoint, and the Live System Map's
+blast-radius ripple. Structural edges outweigh behavioral co-change in the
+ranking (one named constant, `BEHAVIORAL_EDGE_WEIGHT`, in
+`packages/core/src/repowise/core/workspace/blast_radius.py`). See
+[Cross-Repo Blast Radius](WORKSPACES.md#cross-repo-blast-radius) for the full
+model.

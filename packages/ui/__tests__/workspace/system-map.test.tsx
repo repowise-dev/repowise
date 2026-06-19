@@ -1,10 +1,11 @@
 import { describe, it, expect, vi, beforeAll } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
-import type { SystemEdge, SystemGraph, SystemNode } from "@repowise-dev/types";
+import type { CrossRepoBlastRadius, SystemEdge, SystemGraph, SystemNode } from "@repowise-dev/types";
 import { SystemMap } from "../../src/workspace/system-map/system-map";
 import { SystemMapFilters } from "../../src/workspace/system-map/system-map-filters";
 import { SystemMapLegend } from "../../src/workspace/system-map/system-map-legend";
 import { SystemMapInspector } from "../../src/workspace/system-map/system-map-inspector";
+import { SystemMapBlastPanel } from "../../src/workspace/system-map/system-map-blast-panel";
 
 // jsdom has no layout engine → stub ResizeObserver so React Flow can mount.
 beforeAll(() => {
@@ -165,5 +166,77 @@ describe("SystemMapInspector", () => {
       <SystemMapInspector selection={null} graph={g} onClose={() => {}} onSelectNode={() => {}} />,
     );
     expect(container).toBeEmptyDOMElement();
+  });
+});
+
+describe("SystemMapBlastPanel", () => {
+  function result(over: Partial<CrossRepoBlastRadius> = {}): CrossRepoBlastRadius {
+    return {
+      targets: ["db"],
+      target_repos: ["db"],
+      impacted: [],
+      impacted_repos: [],
+      structural_count: 0,
+      behavioral_count: 0,
+      max_distance: 0,
+      total_impacted: 0,
+      unresolved_targets: [],
+      ...over,
+    };
+  }
+
+  it("renders nothing without a result", () => {
+    const { container } = render(
+      <SystemMapBlastPanel result={null} onSelectTarget={() => {}} onClear={() => {}} />,
+    );
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it("lists impacted services split by structural vs behavioral", () => {
+    render(
+      <SystemMapBlastPanel
+        result={result({
+          impacted: [
+            { id: "api", repo: "api", name: "api", kind: "service", distance: 1, score: 0.5, structural: true, edge_kinds: ["http"] },
+            { id: "ops", repo: "ops", name: "ops", kind: "service", distance: 1, score: 0.2, structural: false, edge_kinds: ["co_change"] },
+          ],
+          impacted_repos: ["api", "ops"],
+          structural_count: 1,
+          behavioral_count: 1,
+          total_impacted: 2,
+        })}
+        onSelectTarget={() => {}}
+        onClear={() => {}}
+      />,
+    );
+    expect(screen.getByText(/will break/i)).toBeInTheDocument();
+    expect(screen.getByText(/may drift/i)).toBeInTheDocument();
+    expect(screen.getByText("api")).toBeInTheDocument();
+    expect(screen.getByText(/2 impacted across 2 other repo/i)).toBeInTheDocument();
+  });
+
+  it("re-targets when an impacted service is clicked", () => {
+    const onSelectTarget = vi.fn();
+    render(
+      <SystemMapBlastPanel
+        result={result({
+          impacted: [
+            { id: "api", repo: "api", name: "api", kind: "service", distance: 1, score: 0.5, structural: true, edge_kinds: ["http"] },
+          ],
+          total_impacted: 1,
+        })}
+        onSelectTarget={onSelectTarget}
+        onClear={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByText("api"));
+    expect(onSelectTarget).toHaveBeenCalledWith("api");
+  });
+
+  it("shows the no-downstream state honestly", () => {
+    render(
+      <SystemMapBlastPanel result={result()} onSelectTarget={() => {}} onClear={() => {}} />,
+    );
+    expect(screen.getByText(/nothing downstream/i)).toBeInTheDocument();
   });
 });
