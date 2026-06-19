@@ -340,6 +340,31 @@ class CrossRepoEnricher:
         ]
         return {"violations": violations, "cycles": cycles}
 
+    def get_architecture_metrics(self) -> dict | None:
+        """Compute the architecture-complexity metrics from the system graph.
+
+        Pure read over the already-loaded ``system_graph`` (structural edges
+        only); the conformance violation count, if a report is loaded, is folded
+        into the score. Returns ``None`` when no system graph is available.
+        """
+        if self._system_graph is None:
+            return None
+        from repowise.core.workspace.architecture_metrics import (
+            compute_architecture_metrics,
+        )
+        from repowise.core.workspace.system_graph import SystemGraph
+
+        graph = SystemGraph.from_dict(self._system_graph)
+        violations = 0
+        if self._conformance:
+            violations = int(self._conformance.get("violation_count", 0))
+        metrics = compute_architecture_metrics(
+            graph,
+            conformance_violations=violations,
+            generated_at=self._system_graph.get("generated_at", ""),
+        )
+        return metrics.to_dict()
+
     def get_diagnostics(self) -> dict | None:
         """Return just the extraction diagnostics block of the system graph."""
         if self._system_graph is None:

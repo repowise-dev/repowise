@@ -38,6 +38,7 @@ from repowise.server.mcp_server._server import (
     run_mcp,
 )
 from repowise.server.mcp_server.tool_answer import get_answer
+from repowise.server.mcp_server.tool_architecture import get_architecture
 from repowise.server.mcp_server.tool_blast_radius import get_blast_radius
 from repowise.server.mcp_server.tool_conformance import get_conformance
 from repowise.server.mcp_server.tool_context import get_context
@@ -110,6 +111,7 @@ __all__ = [
     "_is_path",
     "create_mcp_server",
     "get_answer",
+    "get_architecture",
     "get_blast_radius",
     "get_conformance",
     "get_context",
