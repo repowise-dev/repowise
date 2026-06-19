@@ -522,3 +522,91 @@ class TestWorkspaceDiagnostics:
         result = runner.invoke(cli, ["workspace", "diagnostics", "--help"])
         assert result.exit_code == 0
         assert "--json" in result.output
+
+
+# ---------------------------------------------------------------------------
+# workspace check
+# ---------------------------------------------------------------------------
+
+
+class TestWorkspaceCheck:
+    def _write_config_with_rule(self, root: Path, rules: list[dict]) -> None:
+        data = {
+            "version": 1,
+            "default_repo": "frontend",
+            "repos": [
+                {"path": "frontend", "alias": "frontend"},
+                {"path": "db", "alias": "db"},
+            ],
+            "conformance": {"rules": rules},
+        }
+        (root / WORKSPACE_CONFIG_FILENAME).write_text(
+            yaml.dump(data, default_flow_style=False), encoding="utf-8"
+        )
+
+    def _save_graph(self, root: Path, edges: list[tuple[str, str]]) -> None:
+        from repowise.core.workspace.system_graph import (
+            SystemEdge,
+            SystemGraph,
+            SystemNode,
+            save_system_graph,
+        )
+
+        node_ids = {n for e in edges for n in e}
+        graph = SystemGraph(
+            nodes=[SystemNode(id=n, repo=n, service_path=None, name=n) for n in sorted(node_ids)],
+            edges=[
+                SystemEdge(
+                    id=f"{s}->{t}:http",
+                    source=s,
+                    target=t,
+                    kind="http",
+                    match_type="exact",
+                    confidence=1.0,
+                    weight=1,
+                    structural=True,
+                )
+                for s, t in edges
+            ],
+        )
+        save_system_graph(graph, root)
+
+    def test_check_reports_violation_and_cycle(self, runner, tmp_path):
+        self._write_config_with_rule(tmp_path, [{"source": "frontend", "target": "db"}])
+        # frontend -> db (violation) and db -> frontend (forms a cycle)
+        self._save_graph(tmp_path, [("frontend", "db"), ("db", "frontend")])
+        result = runner.invoke(cli, ["workspace", "check", str(tmp_path)])
+        assert result.exit_code == 1, result.output
+        assert "violation" in result.output.lower()
+        assert "cycle" in result.output.lower()
+        assert "frontend !-> db" in result.output
+
+    def test_check_clean_passes(self, runner, tmp_path):
+        self._write_config_with_rule(tmp_path, [{"source": "frontend", "target": "db"}])
+        # frontend never depends on db directly, and the graph is acyclic
+        (tmp_path / "api").mkdir(exist_ok=True)
+        self._save_graph(tmp_path, [("frontend", "api"), ("api", "db")])
+        result = runner.invoke(cli, ["workspace", "check", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert "No violations" in result.output
+
+    def test_check_json_exit_code(self, runner, tmp_path):
+        import json
+
+        self._write_config_with_rule(tmp_path, [{"source": "frontend", "target": "db"}])
+        self._save_graph(tmp_path, [("frontend", "db")])
+        result = runner.invoke(cli, ["workspace", "check", str(tmp_path), "--json"])
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert data["violation_count"] == 1
+
+    def test_check_missing_graph(self, runner, tmp_path):
+        self._write_config_with_rule(tmp_path, [])
+        result = runner.invoke(cli, ["workspace", "check", str(tmp_path)])
+        assert result.exit_code != 0
+        assert "No system graph found" in result.output
+
+    def test_check_help(self, runner):
+        result = runner.invoke(cli, ["workspace", "check", "--help"])
+        assert result.exit_code == 0
+        assert "non-zero" in result.output or "CI" in result.output

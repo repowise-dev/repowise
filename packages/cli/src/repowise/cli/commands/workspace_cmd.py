@@ -991,3 +991,96 @@ def workspace_diagnostics(path: str | None, repo_alias: str | None, as_json: boo
         console.print(
             "\n  [green]✓[/green] Every consumer matched a provider; no orphan providers."
         )
+
+
+# ---------------------------------------------------------------------------
+# workspace check
+# ---------------------------------------------------------------------------
+
+
+@workspace_group.command("check")
+@click.argument("path", required=False, default=None)
+@click.option("--json", "as_json", is_flag=True, help="Emit the raw conformance report as JSON.")
+def workspace_check(path: str | None, as_json: bool) -> None:
+    """Architecture lint — fail on dependency-rule violations or cycles.
+
+    Checks the declared ``conformance`` rules in ``.repowise-workspace.yaml``
+    against the system graph and detects circular service dependencies. Exits
+    non-zero when any violation or cycle is found, so it can gate CI. Reads (and
+    recomputes from) the system graph built by 'repowise update --workspace', so
+    editing rules and re-running picks them up without a full re-index.
+    """
+    import json as _json
+    import sys
+
+    from repowise.core.workspace.conformance import (
+        build_conformance_report,
+        tags_by_repo_from_config,
+    )
+    from repowise.core.workspace.system_graph import load_system_graph
+
+    start = resolve_repo_path(path)
+    ws_root, ws_config = _require_workspace(start)
+
+    graph = load_system_graph(ws_root)
+    if graph is None:
+        raise click.ClickException(
+            "No system graph found. Run 'repowise update --workspace' to build "
+            "cross-repo relationships first."
+        )
+
+    report = build_conformance_report(
+        graph,
+        ws_config.conformance.rules,
+        tags_by_repo_from_config(ws_config),
+    )
+
+    if as_json:
+        console.print_json(_json.dumps(report.to_dict()))
+        if report.has_findings:
+            sys.exit(1)
+        return
+
+    rule_count = report.rules_evaluated
+    if rule_count == 0:
+        console.print(
+            "[dim]No conformance rules declared.[/dim] Add a [bold]conformance:[/bold] "
+            "block to .repowise-workspace.yaml to enforce allowed dependencies."
+        )
+
+    # Rule violations
+    if report.violations:
+        console.print(
+            f"\n[red]✗ {len(report.violations)} architecture rule violation(s):[/red]"
+        )
+        for v in report.violations:
+            rule = f"{v.rule_source} !-> {v.rule_target}"
+            console.print(
+                f"  [red]{v.source}[/red] -> [red]{v.target}[/red] "
+                f"([dim]{v.edge_kind}[/dim]) violates [yellow]{rule}[/yellow]"
+            )
+            if v.rule_description:
+                console.print(f"      [dim]{v.rule_description}[/dim]")
+
+    # Dependency cycles
+    if report.cycles:
+        console.print(f"\n[red]✗ {len(report.cycles)} dependency cycle(s):[/red]")
+        for c in report.cycles:
+            loop = " -> ".join([*c.nodes, c.nodes[0]]) if c.nodes else ""
+            console.print(f"  [red]{loop}[/red]")
+
+    if not report.has_findings:
+        if rule_count:
+            console.print(
+                f"\n[green]✓[/green] No violations of {rule_count} rule(s); "
+                "no dependency cycles."
+            )
+        else:
+            console.print("\n[green]✓[/green] No dependency cycles.")
+        return
+
+    console.print(
+        f"\n[red]Architecture check failed:[/red] {len(report.violations)} violation(s), "
+        f"{len(report.cycles)} cycle(s)."
+    )
+    sys.exit(1)
