@@ -6,7 +6,6 @@ import type {
   WorkspaceGraphResponse,
   WorkspaceSyncResponse,
   WorkspaceSystemGraphResponse,
-  WorkspaceDiagnosticsResponse,
   WorkspaceBlastRadiusResponse,
 } from "./types";
 
@@ -58,17 +57,6 @@ export async function getWorkspaceSystemGraph(
 ): Promise<WorkspaceSystemGraphResponse> {
   return apiGet<WorkspaceSystemGraphResponse>(
     "/api/workspace/system-graph",
-    undefined,
-    fetchOptions,
-  );
-}
-
-/** Extraction diagnostics (providers/consumers, unmatched-by-reason, orphans). */
-export async function getWorkspaceDiagnostics(
-  fetchOptions?: RequestInit,
-): Promise<WorkspaceDiagnosticsResponse> {
-  return apiGet<WorkspaceDiagnosticsResponse>(
-    "/api/workspace/diagnostics",
     undefined,
     fetchOptions,
   );

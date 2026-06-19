@@ -6,7 +6,6 @@ import {
   getWorkspaceContracts,
   getWorkspaceCoChanges,
   getWorkspaceSystemGraph,
-  getWorkspaceDiagnostics,
   getWorkspaceGraph,
   getWorkspaceBlastRadius,
 } from "@/lib/api/workspace";
@@ -15,7 +14,6 @@ import type {
   WorkspaceContractsResponse,
   WorkspaceCoChangesResponse,
   WorkspaceSystemGraphResponse,
-  WorkspaceDiagnosticsResponse,
   WorkspaceGraphResponse,
   WorkspaceBlastRadiusResponse,
 } from "@/lib/api/types";
@@ -66,15 +64,6 @@ export function useWorkspaceSystemGraph() {
   const { data, error, isLoading } = useSWR<WorkspaceSystemGraphResponse>(
     "workspace:system-graph",
     () => getWorkspaceSystemGraph(),
-    { revalidateOnFocus: false },
-  );
-  return { data: data ?? null, isLoading, error };
-}
-
-export function useWorkspaceDiagnostics() {
-  const { data, error, isLoading } = useSWR<WorkspaceDiagnosticsResponse>(
-    "workspace:diagnostics",
-    () => getWorkspaceDiagnostics(),
     { revalidateOnFocus: false },
   );
   return { data: data ?? null, isLoading, error };
