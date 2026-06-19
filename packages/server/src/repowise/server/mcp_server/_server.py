@@ -284,12 +284,18 @@ async def _lifespan(server: FastMCP):
         try:
             from repowise.core.workspace.config import WORKSPACE_DATA_DIR
             from repowise.core.workspace.contracts import CONTRACTS_FILENAME
+            from repowise.core.workspace.system_graph import SYSTEM_GRAPH_FILENAME
             from repowise.server.mcp_server._enrichment import CrossRepoEnricher
 
             cross_repo_path = ws_root / WORKSPACE_DATA_DIR / "cross_repo_edges.json"
             contracts_path = ws_root / WORKSPACE_DATA_DIR / CONTRACTS_FILENAME
-            enricher = CrossRepoEnricher(cross_repo_path, contracts_path=contracts_path)
-            if enricher.has_data:
+            system_graph_path = ws_root / WORKSPACE_DATA_DIR / SYSTEM_GRAPH_FILENAME
+            enricher = CrossRepoEnricher(
+                cross_repo_path,
+                contracts_path=contracts_path,
+                system_graph_path=system_graph_path,
+            )
+            if enricher.has_data or enricher.has_system_graph:
                 _state._cross_repo_enricher = enricher
                 _log.info(
                     "Cross-repo enricher loaded: %d co-change edges, %d package deps, %d contract links",

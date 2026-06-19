@@ -27,11 +27,13 @@ from repowise.server.schemas import (
     WorkspaceContractsResponse,
     WorkspaceContractSummary,
     WorkspaceCrossRepoSummary,
+    WorkspaceExtractionDiagnostics,
     WorkspaceGraphEdge,
     WorkspaceGraphNode,
     WorkspaceGraphResponse,
     WorkspaceRepoEntry,
     WorkspaceResponse,
+    WorkspaceSystemGraphResponse,
 )
 from repowise.server.services.module_health import read_repo_health_score
 
@@ -474,6 +476,54 @@ async def get_workspace_graph(
             )
 
     return WorkspaceGraphResponse(nodes=nodes, edges=edges)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/workspace/system-graph
+# ---------------------------------------------------------------------------
+
+
+@router.get("/system-graph", response_model=WorkspaceSystemGraphResponse)
+async def get_system_graph(
+    ws_config=Depends(get_workspace_config),
+    enricher=Depends(get_cross_repo_enricher),
+):
+    """Service-granular system graph: typed service nodes + directed edges.
+
+    Read straight from the ``system_graph.json`` artifact built during workspace
+    update. Edge direction is uniform — ``source`` depends on / calls ``target``.
+    Returns an empty graph (not 404) when no graph has been built yet.
+    """
+    _require_workspace(ws_config)
+
+    graph = enricher.get_system_graph() if enricher is not None else None
+    if not graph:
+        return WorkspaceSystemGraphResponse()
+    return WorkspaceSystemGraphResponse(**graph)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/workspace/diagnostics
+# ---------------------------------------------------------------------------
+
+
+@router.get("/diagnostics", response_model=WorkspaceExtractionDiagnostics)
+async def get_diagnostics(
+    ws_config=Depends(get_workspace_config),
+    enricher=Depends(get_cross_repo_enricher),
+):
+    """Extraction diagnostics — why the cross-repo link count is what it is.
+
+    Reports per-repo provider/consumer counts, unmatched consumers grouped by
+    reason, orphan providers, and weak links. Sourced from the system graph
+    artifact's ``diagnostics`` block.
+    """
+    _require_workspace(ws_config)
+
+    diagnostics = enricher.get_diagnostics() if enricher is not None else None
+    if not diagnostics:
+        return WorkspaceExtractionDiagnostics()
+    return WorkspaceExtractionDiagnostics(**diagnostics)
 
 
 # ---------------------------------------------------------------------------

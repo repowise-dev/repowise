@@ -139,3 +139,77 @@ class WorkspaceGraphEdge(BaseModel):
 class WorkspaceGraphResponse(BaseModel):
     nodes: list[WorkspaceGraphNode] = []
     edges: list[WorkspaceGraphEdge] = []
+
+
+# ---------------------------------------------------------------------------
+# System graph (service-granular) + extraction diagnostics
+# Mirrors repowise.core.workspace.{system_graph,diagnostics}.
+# ---------------------------------------------------------------------------
+
+
+class WorkspaceSystemNode(BaseModel):
+    id: str
+    repo: str
+    service_path: str | None = None
+    name: str
+    kind: str = "service"
+    provider_count: int = 0
+    consumer_count: int = 0
+    contract_types: list[str] = []
+    is_orphan_provider: bool = False
+    is_orphan_consumer: bool = False
+    is_isolated: bool = False
+
+
+class WorkspaceSystemEdge(BaseModel):
+    id: str
+    source: str
+    target: str
+    kind: str  # http | grpc | event | package | co_change | db
+    match_type: str  # exact | candidate | manual | inferred
+    confidence: float = 0.0
+    weight: int = 1
+    structural: bool = True
+    contract_refs: list[str] = []
+
+
+class WorkspaceRepoDiagnostics(BaseModel):
+    repo: str
+    providers_by_type: dict[str, int] = {}
+    consumers_by_type: dict[str, int] = {}
+    provider_count: int = 0
+    consumer_count: int = 0
+
+
+class WorkspaceUnmatchedConsumer(BaseModel):
+    repo: str
+    file_path: str
+    contract_id: str
+    contract_type: str
+    reason: str  # no_provider | internal_only | unlinked
+
+
+class WorkspaceOrphanProvider(BaseModel):
+    repo: str
+    file_path: str
+    contract_id: str
+    contract_type: str
+
+
+class WorkspaceExtractionDiagnostics(BaseModel):
+    total_providers: int = 0
+    total_consumers: int = 0
+    total_links: int = 0
+    weak_link_count: int = 0
+    repo_breakdown: list[WorkspaceRepoDiagnostics] = []
+    unmatched_consumers: list[WorkspaceUnmatchedConsumer] = []
+    unmatched_by_reason: dict[str, int] = {}
+    orphan_providers: list[WorkspaceOrphanProvider] = []
+
+
+class WorkspaceSystemGraphResponse(BaseModel):
+    version: int = 1
+    generated_at: str = ""
+    nodes: list[WorkspaceSystemNode] = []
+    edges: list[WorkspaceSystemEdge] = []
+    diagnostics: WorkspaceExtractionDiagnostics = WorkspaceExtractionDiagnostics()

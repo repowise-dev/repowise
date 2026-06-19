@@ -564,3 +564,99 @@ class TestQueryRepoStats:
         stats = workspace._query_repo_stats(db_path)
 
         assert stats["hotspot_count"] == 0
+
+
+# ---------------------------------------------------------------------------
+# GET /api/workspace/system-graph + /diagnostics
+# ---------------------------------------------------------------------------
+
+
+def _make_system_graph_enricher(tmp_path: Path) -> CrossRepoEnricher:
+    """Enricher backed by a real, core-built system graph artifact."""
+    from repowise.core.workspace.contracts import Contract, ContractLink
+    from repowise.core.workspace.cross_repo import CrossRepoOverlay, CrossRepoPackageDep
+    from repowise.core.workspace.system_graph import build_system_graph
+
+    contracts = [
+        Contract(repo="backend", contract_id="http::GET::/api/users", contract_type="http",
+                 role="provider", file_path="routes.py", symbol_name="get_users", confidence=0.85),
+        Contract(repo="frontend", contract_id="http::GET::/api/users", contract_type="http",
+                 role="consumer", file_path="client.ts", symbol_name="fetchUsers", confidence=0.75),
+        Contract(repo="backend", contract_id="http::GET::/orphan", contract_type="http",
+                 role="provider", file_path="routes.py", symbol_name="orphan", confidence=0.85),
+    ]
+    links = [
+        ContractLink(contract_id="http::GET::/api/users", contract_type="http", match_type="exact",
+                     confidence=0.75, provider_repo="backend", provider_file="routes.py",
+                     provider_symbol="get_users", provider_service=None, consumer_repo="frontend",
+                     consumer_file="client.ts", consumer_symbol="fetchUsers", consumer_service=None),
+    ]
+    overlay = CrossRepoOverlay(package_deps=[
+        CrossRepoPackageDep(source_repo="frontend", target_repo="backend",
+                            source_manifest="package.json", kind="npm_local_path"),
+    ])
+    graph = build_system_graph(contracts, links, overlay, {}, generated_at="t")
+
+    _write_json(tmp_path / "system_graph.json", graph.to_dict())
+    return CrossRepoEnricher(
+        tmp_path / "cross_repo_edges.json",
+        system_graph_path=tmp_path / "system_graph.json",
+    )
+
+
+class TestGetSystemGraph:
+    @pytest.mark.asyncio
+    async def test_not_workspace_mode(self) -> None:
+        app = _make_workspace_app()
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.get("/api/workspace/system-graph")
+        assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_empty_when_no_graph(self) -> None:
+        app = _make_workspace_app(ws_config=_make_ws_config(), enricher=None)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.get("/api/workspace/system-graph")
+        assert resp.status_code == 200
+        assert resp.json()["nodes"] == []
+
+    @pytest.mark.asyncio
+    async def test_returns_nodes_and_typed_edges(self, tmp_path: Path) -> None:
+        enricher = _make_system_graph_enricher(tmp_path)
+        app = _make_workspace_app(ws_config=_make_ws_config(), enricher=enricher)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.get("/api/workspace/system-graph")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert {n["id"] for n in data["nodes"]} == {"backend", "frontend"}
+        kinds = {(e["source"], e["target"], e["kind"]) for e in data["edges"]}
+        assert ("frontend", "backend", "http") in kinds  # consumer -> provider
+        assert ("frontend", "backend", "package") in kinds  # dependent -> dependency
+
+
+class TestGetDiagnostics:
+    @pytest.mark.asyncio
+    async def test_not_workspace_mode(self) -> None:
+        app = _make_workspace_app()
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.get("/api/workspace/diagnostics")
+        assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_reports_orphans_and_counts(self, tmp_path: Path) -> None:
+        enricher = _make_system_graph_enricher(tmp_path)
+        app = _make_workspace_app(ws_config=_make_ws_config(), enricher=enricher)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.get("/api/workspace/diagnostics")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total_providers"] == 2
+        assert data["total_consumers"] == 1
+        assert data["total_links"] == 1
+        assert len(data["orphan_providers"]) == 1
+        assert data["orphan_providers"][0]["contract_id"] == "http::GET::/orphan"

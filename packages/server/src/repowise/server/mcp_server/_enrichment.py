@@ -22,6 +22,7 @@ class CrossRepoEnricher:
         self,
         data_path: Path,
         contracts_path: Path | None = None,
+        system_graph_path: Path | None = None,
     ) -> None:
         self._co_changes: list[dict] = []
         self._package_deps: list[dict] = []
@@ -39,12 +40,19 @@ class CrossRepoEnricher:
         self._contract_provider_index: dict[tuple[str, str], list[dict]] = defaultdict(list)
         self._contract_consumer_index: dict[tuple[str, str], list[dict]] = defaultdict(list)
 
+        # System graph — the service-granular structure built during workspace
+        # update. Read-only pass-through; views over it live in core/types.
+        self._system_graph: dict | None = None
+
         self._data_path = data_path
         self._contracts_path = contracts_path
+        self._system_graph_path = system_graph_path
 
         self._load(data_path)
         if contracts_path is not None:
             self._load_contracts(contracts_path)
+        if system_graph_path is not None:
+            self._load_system_graph(system_graph_path)
 
     def _load(self, data_path: Path) -> None:
         """Parse JSON and build indexes."""
@@ -154,6 +162,24 @@ class CrossRepoEnricher:
             len(self._contract_links),
         )
 
+    def _load_system_graph(self, system_graph_path: Path) -> None:
+        """Parse ``system_graph.json`` (read-only pass-through to views)."""
+        if not system_graph_path.is_file():
+            _log.debug("No system graph at %s", system_graph_path)
+            return
+        try:
+            self._system_graph = json.loads(system_graph_path.read_text(encoding="utf-8"))
+        except Exception:
+            _log.warning(
+                "Failed to parse system graph at %s", system_graph_path, exc_info=True
+            )
+            return
+        _log.debug(
+            "System graph loaded: %d nodes, %d edges",
+            len(self._system_graph.get("nodes", [])),
+            len(self._system_graph.get("edges", [])),
+        )
+
     def reload(self) -> None:
         """Re-read JSON files from disk and rebuild all indexes.
 
@@ -172,10 +198,13 @@ class CrossRepoEnricher:
         self._contract_links = []
         self._contract_provider_index = defaultdict(list)
         self._contract_consumer_index = defaultdict(list)
+        self._system_graph = None
 
         self._load(self._data_path)
         if self._contracts_path is not None:
             self._load_contracts(self._contracts_path)
+        if self._system_graph_path is not None:
+            self._load_system_graph(self._system_graph_path)
 
         _log.info(
             "Cross-repo enricher reloaded: %d co-change edges, %d package deps, %d contract links",
@@ -193,6 +222,21 @@ class CrossRepoEnricher:
     def has_contract_data(self) -> bool:
         """True if contracts or contract links are available."""
         return bool(self._contracts or self._contract_links)
+
+    @property
+    def has_system_graph(self) -> bool:
+        """True if a system graph artifact has been loaded."""
+        return self._system_graph is not None
+
+    def get_system_graph(self) -> dict | None:
+        """Return the raw system graph dict (nodes, edges, diagnostics)."""
+        return self._system_graph
+
+    def get_diagnostics(self) -> dict | None:
+        """Return just the extraction diagnostics block of the system graph."""
+        if self._system_graph is None:
+            return None
+        return self._system_graph.get("diagnostics")
 
     def get_cross_repo_partners(
         self, repo_alias: str, file_path: str
