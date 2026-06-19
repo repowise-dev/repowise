@@ -9,14 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.21.0] — 2026-06-19
 
 ### Added
-- **Configurable MCP tool surface.** The set of tools the MCP server advertises is now configurable. Workspace-only tools (`get_blast_radius`, `get_conformance`, `get_architecture`) are advertised only in workspace mode instead of always, and two extra tools (`get_dependency_path`, `get_execution_flows`) can be opted in. Configure it with an `mcp.tools` block in `.repowise/config.yaml` (`+`/`-` deltas, an explicit allowlist, or `all`) or per launch with `repowise mcp --tools` / `--all`.
-- **MCP tool surface editor in the dashboard.** The Settings page now lists every tool with its description and lets you toggle the surface per repo, writing the selection back to that repo's `mcp.tools` config. Backed by `GET`/`PATCH /api/mcp/tools`.
+- **Cross-repo workspace intelligence.** Workspace mode gained a live system map of cross-repo services, backed by a service-granular system graph with extraction diagnostics, cross-repo blast radius and change risk, and a breaking-change guard that flags edits to contracts other repos depend on. (#511, #512, #513, #514)
+- **Architecture analysis.** New architecture conformance checks, dependency-cycle detection, a design-structure-matrix (DSM) view, and architecture metrics (propagation cost, core/periphery roles, and a 1-10 architecture score). (#515, #517)
+- **Repo-wide change-coupling graph.** A new graph surfaces files that tend to change together across the whole repo. (#497)
+- **Wider cross-repo contract extraction.** HTTP contract extraction now spans more languages and frameworks: Rust HTTP route providers and reqwest consumers, C#/Unity consumers, and JS wrapper / variable-URL consumers. Extractors were split into per-framework dialects for maintainability. (#505, #506, #507, #508, #510)
+- **Configurable MCP tool surface.** The set of tools the MCP server advertises is now configurable. Workspace-only tools (`get_blast_radius`, `get_conformance`, `get_architecture`) are advertised only in workspace mode instead of always, and two extra tools (`get_dependency_path`, `get_execution_flows`) can be opted in. Configure it with an `mcp.tools` block in `.repowise/config.yaml` (`+`/`-` deltas, an explicit allowlist, or `all`) or per launch with `repowise mcp --tools` / `--all`. (#520)
+- **MCP tool surface editor in the dashboard.** The Settings page now lists every tool with its description and lets you toggle the surface per repo, writing the selection back to that repo's `mcp.tools` config. Backed by `GET`/`PATCH /api/mcp/tools`. (#521)
 
 ### Changed
-- **Consolidated the MCP tool surface.** Removed six redundant MCP tools (`annotate_file`, `get_callers_callees`, `get_community`, `get_graph_metrics`, `get_architecture_diagram`, `update_decision_records`) whose capabilities are already covered by `get_context(include=[...])` and `get_why`. The MCP server exposes 13 tools: 10 in single-repo mode plus three workspace-only tools (`get_blast_radius`, `get_conformance`, `get_architecture`). Documentation and tool counts across the project were reconciled to match.
+- **Code-health-first repo overview.** The repo overview page was rebuilt around code health. (#501)
+- **Airier, diagram-first web UI.** A UX overhaul restyles the dashboard on a shared composition backbone, with more whitespace and diagram-forward layouts. (#504)
+- **Consolidated the MCP tool surface.** Removed six redundant MCP tools (`annotate_file`, `get_callers_callees`, `get_community`, `get_graph_metrics`, `get_architecture_diagram`, `update_decision_records`) whose capabilities are already covered by `get_context(include=[...])` and `get_why`. The MCP server exposes 13 tools: 10 in single-repo mode plus three workspace-only tools (`get_blast_radius`, `get_conformance`, `get_architecture`). Documentation and tool counts across the project were reconciled to match. (#519)
+
+### Fixed
+- **Contract extraction no longer scans nested repos.** Workspace contract extraction could hang scanning up to a million files when a repo contained nested checkouts; it now uses the shared file traverser and skips nested repos. (#516)
+- **C# gRPC consumer extraction requires gRPC context** before treating a client call as a cross-repo consumer, removing false positives. (#509)
+- **Skip Unity-generated dotnet scan paths during ingestion.** (#499)
+
+### Documentation
+- Plugin: version bump to 0.21.0; MCP tool surface docs reconciled to the consolidated, configurable set.
 
 ---
 

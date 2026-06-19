@@ -2,6 +2,15 @@
 
 All notable changes to the Repowise Claude Code plugin are documented here.
 
+## 0.21.0
+
+### Changed
+- Reconciled the documented MCP tool surface to the consolidated, configurable
+  set: ten tools in single-repo mode, three more added automatically in
+  workspace mode (`get_blast_radius`, `get_conformance`, `get_architecture`),
+  and two opt-in tools (`get_dependency_path`, `get_execution_flows`). The six
+  removed redundant tools no longer appear in any command or skill.
+
 ## 0.20.0
 
 Version bump to track the repowise 0.20.0 release. No changes to the plugin's
