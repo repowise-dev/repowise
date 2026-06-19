@@ -5,6 +5,8 @@ import type {
   WorkspaceCoChangesResponse,
   WorkspaceGraphResponse,
   WorkspaceSyncResponse,
+  WorkspaceSystemGraphResponse,
+  WorkspaceDiagnosticsResponse,
 } from "./types";
 
 export async function getWorkspace(
@@ -43,6 +45,32 @@ export async function getWorkspaceCoChanges(opts?: {
 
 export async function getWorkspaceGraph(): Promise<WorkspaceGraphResponse> {
   return apiGet<WorkspaceGraphResponse>("/api/workspace/graph");
+}
+
+/**
+ * The service-granular system graph (nodes = services, typed directed edges)
+ * that the Live System Map renders. Thin pass-through over the persisted
+ * `system_graph.json` artifact.
+ */
+export async function getWorkspaceSystemGraph(
+  fetchOptions?: RequestInit,
+): Promise<WorkspaceSystemGraphResponse> {
+  return apiGet<WorkspaceSystemGraphResponse>(
+    "/api/workspace/system-graph",
+    undefined,
+    fetchOptions,
+  );
+}
+
+/** Extraction diagnostics (providers/consumers, unmatched-by-reason, orphans). */
+export async function getWorkspaceDiagnostics(
+  fetchOptions?: RequestInit,
+): Promise<WorkspaceDiagnosticsResponse> {
+  return apiGet<WorkspaceDiagnosticsResponse>(
+    "/api/workspace/diagnostics",
+    undefined,
+    fetchOptions,
+  );
 }
 
 /**

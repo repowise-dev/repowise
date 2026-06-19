@@ -45,6 +45,7 @@ export const GLOBAL_NAV: NavItem[] = [
 
 export const WORKSPACE_NAV: NavItem[] = [
   { label: "Overview", href: "/workspace", icon: Layers, exact: true },
+  { label: "System Map", href: "/workspace/system-map", icon: Waypoints },
   { label: "Contracts", href: "/workspace/contracts", icon: Link2 },
   { label: "Co-Changes", href: "/workspace/co-changes", icon: GitMerge },
 ];

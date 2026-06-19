@@ -5,11 +5,17 @@ import {
   getWorkspace,
   getWorkspaceContracts,
   getWorkspaceCoChanges,
+  getWorkspaceSystemGraph,
+  getWorkspaceDiagnostics,
+  getWorkspaceGraph,
 } from "@/lib/api/workspace";
 import type {
   WorkspaceResponse,
   WorkspaceContractsResponse,
   WorkspaceCoChangesResponse,
+  WorkspaceSystemGraphResponse,
+  WorkspaceDiagnosticsResponse,
+  WorkspaceGraphResponse,
 } from "@/lib/api/types";
 
 export function useWorkspace() {
@@ -49,6 +55,34 @@ export function useWorkspaceCoChanges(opts?: {
   const { data, error, isLoading } = useSWR<WorkspaceCoChangesResponse>(
     key,
     () => getWorkspaceCoChanges(opts),
+    { revalidateOnFocus: false },
+  );
+  return { data: data ?? null, isLoading, error };
+}
+
+export function useWorkspaceSystemGraph() {
+  const { data, error, isLoading } = useSWR<WorkspaceSystemGraphResponse>(
+    "workspace:system-graph",
+    () => getWorkspaceSystemGraph(),
+    { revalidateOnFocus: false },
+  );
+  return { data: data ?? null, isLoading, error };
+}
+
+export function useWorkspaceDiagnostics() {
+  const { data, error, isLoading } = useSWR<WorkspaceDiagnosticsResponse>(
+    "workspace:diagnostics",
+    () => getWorkspaceDiagnostics(),
+    { revalidateOnFocus: false },
+  );
+  return { data: data ?? null, isLoading, error };
+}
+
+/** Repo-level graph (carries the per-repo health score used by the map). */
+export function useWorkspaceGraph() {
+  const { data, error, isLoading } = useSWR<WorkspaceGraphResponse>(
+    "workspace:graph",
+    () => getWorkspaceGraph(),
     { revalidateOnFocus: false },
   );
   return { data: data ?? null, isLoading, error };

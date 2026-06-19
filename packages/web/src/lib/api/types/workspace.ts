@@ -124,3 +124,30 @@ export interface WorkspaceGraphResponse {
   nodes: WorkspaceGraphNode[];
   edges: WorkspaceGraphEdge[];
 }
+
+// ---------------------------------------------------------------------------
+// System graph + extraction diagnostics — the canonical service-granular
+// shapes live in @repowise-dev/types; the wire responses match them 1:1, so we
+// re-export rather than re-derive (the repo-wide consolidation convention).
+// ---------------------------------------------------------------------------
+
+export type {
+  SystemNode,
+  SystemEdge,
+  SystemGraph,
+  SystemEdgeKind,
+  SystemEdgeMatchType,
+  ExtractionDiagnostics,
+  RepoDiagnostics,
+  UnmatchedConsumer,
+  UnmatchedReason,
+  OrphanProvider,
+} from "@repowise-dev/types";
+
+import type { SystemGraph, ExtractionDiagnostics } from "@repowise-dev/types";
+
+/** `GET /api/workspace/system-graph` — the full service-granular system graph. */
+export type WorkspaceSystemGraphResponse = SystemGraph;
+
+/** `GET /api/workspace/diagnostics` — extraction diagnostics standalone. */
+export type WorkspaceDiagnosticsResponse = ExtractionDiagnostics;
