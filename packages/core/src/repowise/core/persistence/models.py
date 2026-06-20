@@ -881,6 +881,10 @@ class HealthFinding(Base):
     details_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     health_impact: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # Health dimension this finding homes under (defect / maintainability /
+    # performance). Nullable + no backfill: old rows stay NULL until the next
+    # index recomputes them; new writes always set it (defaults to "defect").
+    dimension: Mapped[str | None] = mapped_column(String(16), nullable=True, default="defect")
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="open")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
@@ -909,6 +913,13 @@ class HealthFileMetric(Base):
     line_coverage_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     branch_coverage_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     module: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Three-signal split. ``score`` above stays the overall surfaced number and
+    # equals ``defect_score`` until a deliberate blend decision. ``performance_score``
+    # is NULL until the performance detectors land. All nullable + no backfill:
+    # recompute on the next index repopulates them.
+    defect_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    maintainability_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    performance_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc, onupdate=_now_utc
     )

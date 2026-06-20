@@ -666,14 +666,19 @@ class HealthAnalyzer:
         )
 
         biomarker_results = detect_all(ctx, disabled=disabled)
-        score, deductions = score_file(biomarker_results)
+        scores, deductions = score_file(biomarker_results)
         findings = attach_impacts(biomarker_results, deductions)
         for f in findings:
             f.file_path = file_path
 
+        # The overall surfaced score stays == the defect dimension (no blend
+        # yet); the per-dimension scores ride alongside it, additively.
+        defect_score = scores["defect"]
+        maint_score = scores["maintainability"]
+        perf_score = scores["performance"]
         metric = HealthFileMetricData(
             file_path=file_path,
-            score=round(score, 2),
+            score=round(defect_score, 2),
             max_ccn=max_ccn,
             max_nesting=max_nesting,
             nloc=nloc,
@@ -682,6 +687,9 @@ class HealthAnalyzer:
             line_coverage_pct=line_cov,
             branch_coverage_pct=branch_cov,
             duplication_pct=dup_pct,
+            defect_score=round(defect_score, 2),
+            maintainability_score=(round(maint_score, 2) if maint_score is not None else None),
+            performance_score=(round(perf_score, 2) if perf_score is not None else None),
         )
         return metric, findings
 

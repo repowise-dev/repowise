@@ -260,6 +260,7 @@ async def save_health_findings(
                     "details_json": json.dumps(f.details or {}),
                     "health_impact": float(f.health_impact),
                     "reason": f.reason or "",
+                    "dimension": getattr(f, "dimension", None) or "defect",
                 }
             else:
                 data = dict(f)
@@ -342,6 +343,7 @@ async def replace_governance_findings(
                     "details_json": json.dumps(f.details or {}),
                     "health_impact": float(f.health_impact),
                     "reason": f.reason or "",
+                    "dimension": getattr(f, "dimension", None) or "defect",
                 }
             else:
                 data = dict(f)
@@ -396,6 +398,9 @@ async def save_health_metrics(
                     "line_coverage_pct": m.line_coverage_pct,
                     "branch_coverage_pct": m.branch_coverage_pct,
                     "module": m.module,
+                    "defect_score": getattr(m, "defect_score", None),
+                    "maintainability_score": getattr(m, "maintainability_score", None),
+                    "performance_score": getattr(m, "performance_score", None),
                 }
             else:
                 data = dict(m)
@@ -618,6 +623,7 @@ async def upsert_health_findings(
                     "details_json": json.dumps(f.details or {}),
                     "health_impact": float(f.health_impact),
                     "reason": f.reason or "",
+                    "dimension": getattr(f, "dimension", None) or "defect",
                 }
             else:
                 data = dict(f)
@@ -673,6 +679,9 @@ async def upsert_health_metrics(
                 "line_coverage_pct": m.line_coverage_pct,
                 "branch_coverage_pct": m.branch_coverage_pct,
                 "module": m.module,
+                "defect_score": getattr(m, "defect_score", None),
+                "maintainability_score": getattr(m, "maintainability_score", None),
+                "performance_score": getattr(m, "performance_score", None),
             }
         else:
             data = dict(m)

@@ -156,22 +156,22 @@ def test_known_fixture_score_is_stable():
         _result("untested_hotspot", Severity.HIGH),
         _result("knowledge_loss", Severity.LOW),
     ]
-    score, _ = score_file(findings)
+    scores, _ = score_file(findings)
     # Math (defect-calibrated weights):
     #   structural   = brain(2.0*0.5) + nested(1.2*1.34) = 1.0 + 1.608 = 2.608 -> capped at 2.5
     #   size_and_cx  = complex_method 0.7 * 1.21 = 0.847   (under 1.5 cap)
     #   coverage     = untested_hotspot 1.2 * 1.3 = 1.56   (under 2.0 cap)
     #   organizational = knowledge_loss 0.3 * 0.4 = 0.12   (under 3.5 cap)
     #   total deduction = 2.5 + 0.847 + 1.56 + 0.12 = 5.027 -> 10 - 5.027 = 4.973
-    assert score == 4.973
+    assert scores["defect"] == 4.973
 
 
 def test_category_cap_clamps_score():
     """Many critical structural findings should not exceed the -2.5 cap."""
     findings = [_result("brain_method", Severity.CRITICAL) for _ in range(10)]
-    score, _ = score_file(findings)
+    scores, _ = score_file(findings)
     # Cap at -2.5, so floor on this category alone is 7.5.
-    assert score == 7.5
+    assert scores["defect"] == 7.5
 
 
 def test_continuous_deduction_override_is_used_and_capped():
@@ -192,8 +192,8 @@ def test_continuous_deduction_override_is_used_and_capped():
         reason="",
         deduction=4.0 * 0.25,
     )
-    score, ded = score_file([quarter])
-    assert score == 9.0  # 10 - 1.0
+    scores, ded = score_file([quarter])
+    assert scores["defect"] == 9.0  # 10 - 1.0
     assert ded == [1.0]
 
     deep = BiomarkerResult(
@@ -206,8 +206,8 @@ def test_continuous_deduction_override_is_used_and_capped():
         reason="",
         deduction=4.0 * 0.80,
     )
-    score2, ded2 = score_file([deep])
-    assert score2 == 8.0  # 10 - 2.0 (cap)
+    scores2, ded2 = score_file([deep])
+    assert scores2["defect"] == 8.0  # 10 - 2.0 (cap)
     assert ded2 == [2.0]
 
 
@@ -215,13 +215,13 @@ def test_error_handling_cap_bounds_stream():
     """error_handling findings deduct 0.15 each (LOW 0.3 x 0.5 weight) in
     their own advisory category, capped at 0.5/file regardless of count."""
     two = [_result("error_handling", Severity.LOW) for _ in range(2)]
-    score, deductions = score_file(two)
-    assert score == 9.7  # 10 - 2 * 0.15
+    scores, deductions = score_file(two)
+    assert scores["defect"] == 9.7  # 10 - 2 * 0.15
     assert deductions == [0.15, 0.15]
 
     many = [_result("error_handling", Severity.LOW) for _ in range(10)]
-    score2, _ = score_file(many)
-    assert score2 == 9.5  # 10 * 0.15 = 1.5 raw -> clamped to the 0.5 cap
+    scores2, _ = score_file(many)
+    assert scores2["defect"] == 9.5  # 10 * 0.15 = 1.5 raw -> clamped to the 0.5 cap
 
 
 def test_organizational_cap_bounds_stream():
@@ -229,6 +229,6 @@ def test_organizational_cap_bounds_stream():
     developer_congestion defect-calibrated down to 0.5 (it was a HEAD-leakage
     artifact), three CRITICALs deduct under the cap rather than saturating it."""
     findings = [_result("developer_congestion", Severity.CRITICAL) for _ in range(3)]
-    score, _ = score_file(findings)
+    scores, _ = score_file(findings)
     # 3 * 2.0 * 0.5 = 3.0 weighted (< 3.5 cap) -> score = 7.0
-    assert score == 7.0
+    assert scores["defect"] == 7.0

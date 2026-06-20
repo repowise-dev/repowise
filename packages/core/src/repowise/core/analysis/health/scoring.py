@@ -19,7 +19,7 @@ empirical predictors are no longer suppressed by uniform severity values.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 
 from .biomarkers.base import BiomarkerResult
 from .models import HealthFileMetricData, HealthFindingData, Severity
@@ -171,6 +171,92 @@ _BIOMARKER_CATEGORY: dict[str, str] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Per-dimension scoring (defect / maintainability / performance)
+# ---------------------------------------------------------------------------
+#
+# The single surfaced health score is, and remains, the DEFECT score: today's
+# exact weights / categories / caps (the tables above), unchanged. Splitting the
+# score into dimensions is purely additive: ``maintainability`` and
+# ``performance`` are independent, independently-capped signals derived from the
+# SAME biomarker stream, and they NEVER feed back into ``defect``.
+#
+# The load-bearing guarantee (locked by ``tests/unit/health/test_scoring_dimensions``)
+# is that ``score_file(results)["defect"]`` reproduces the pre-split single
+# score byte-for-byte for any input. If that drifts, the split is wrong.
+
+DIMENSIONS: tuple[str, ...] = ("defect", "maintainability", "performance")
+
+# Which dimensions each biomarker's deduction feeds. Biomarkers not listed here
+# contribute to ``defect`` only - the historical behaviour, since every
+# biomarker has always counted toward the single score. The maintainability
+# smells the defect calibration floored to 0.5 (because they don't predict bugs)
+# get their full weight back in ``maintainability``; the structural smells are
+# genuine defect predictors AND core maintainability signals, so they count
+# toward both.
+_BIOMARKER_DIMENSIONS: dict[str, set[str]] = {
+    # Floored-in-defect maintainability smells -> full weight in maintainability.
+    "low_cohesion": {"defect", "maintainability"},
+    "brain_method": {"defect", "maintainability"},
+    "primitive_obsession": {"defect", "maintainability"},
+    "dry_violation": {"defect", "maintainability"},
+    "error_handling": {"defect", "maintainability"},
+    # Structural smells: calibrated defect predictors that are ALSO core
+    # maintainability signals - they contribute to both dimensions.
+    "god_class": {"defect", "maintainability"},
+    "large_method": {"defect", "maintainability"},
+    "nested_complexity": {"defect", "maintainability"},
+}
+
+# Maintainability per-biomarker weight multipliers. Expert-set by definition -
+# the defect calibration does not apply to a non-defect signal. The smells the
+# defect score floors to 0.5 deduct at FULL weight (1.0) here; the structural
+# duals stay at 1.0 too. Tuned only against the maintainability cap budget
+# below, never against the defect corpus. Unknown biomarkers fall back to 1.0.
+_MAINTAINABILITY_WEIGHT_MULTIPLIER: dict[str, float] = {
+    "low_cohesion": 1.0,
+    "brain_method": 1.0,
+    "primitive_obsession": 1.0,
+    "dry_violation": 1.0,
+    "error_handling": 1.0,
+    "god_class": 1.0,
+    "large_method": 1.0,
+    "nested_complexity": 1.0,
+}
+
+# Maintainability category per biomarker - an OWN table, independent of the
+# defect category map, so the two dimensions can be retuned separately.
+_MAINTAINABILITY_CATEGORY: dict[str, str] = {
+    "brain_method": "structural_complexity",
+    "low_cohesion": "structural_complexity",
+    "god_class": "structural_complexity",
+    "nested_complexity": "structural_complexity",
+    "large_method": "structural_complexity",
+    "primitive_obsession": "size_and_complexity",
+    "dry_violation": "duplication",
+    "error_handling": "error_handling",
+}
+
+# Maintainability per-category caps. Bounded so no single category dominates the
+# maintainability score, mirroring the defect cap discipline but on the
+# maintainability dimension's own budget.
+_MAINTAINABILITY_CATEGORY_CAPS: dict[str, float] = {
+    "structural_complexity": 4.0,
+    "size_and_complexity": 2.0,
+    "duplication": 2.0,
+    "error_handling": 2.0,
+}
+
+# A finding's single "home" dimension, used for display and per-pillar
+# filtering. Biomarkers that exist ONLY as maintainability signals home there;
+# the structural duals and every calibrated predictor home to ``defect`` (their
+# primary, calibrated role). Multi-dimension membership for scoring lives in
+# ``_BIOMARKER_DIMENSIONS`` - this label is just the finding's primary bucket.
+_MAINTAINABILITY_HOME: frozenset[str] = frozenset(
+    {"low_cohesion", "brain_method", "primitive_obsession", "dry_violation", "error_handling"}
+)
+
+
 def severity_deduction(sev: Severity) -> float:
     return _SEVERITY_DEDUCTION.get(sev, 0.5)
 
@@ -185,31 +271,55 @@ def biomarker_category(name: str) -> str:
     return _BIOMARKER_CATEGORY.get(name, "size_and_complexity")
 
 
-def score_file(results: Iterable[BiomarkerResult]) -> tuple[float, list[float]]:
-    """Aggregate biomarker hits -> final score in [1.0, 10.0].
+def dimensions_for(name: str) -> set[str]:
+    """Dimensions a biomarker's deduction contributes to (always >= ``{"defect"}``)."""
+    return _BIOMARKER_DIMENSIONS.get(name, {"defect"})
 
-    Returns ``(score, per_result_deductions)`` where the deductions list
-    is parallel to *results* and represents each finding's contribution
-    AFTER category capping. Use it to populate
-    ``HealthFindingData.health_impact`` so the UI can show per-finding
-    impact.
+
+def biomarker_dimension(name: str) -> str:
+    """The finding's single 'home' dimension for display / per-pillar filtering."""
+    if name in _MAINTAINABILITY_HOME:
+        return "maintainability"
+    return "defect"
+
+
+def maintainability_weight(name: str) -> float:
+    """Maintainability multiplier; 1.0 for unknown biomarkers."""
+    return _MAINTAINABILITY_WEIGHT_MULTIPLIER.get(name, 1.0)
+
+
+def maintainability_category(name: str) -> str:
+    """Default to ``size_and_complexity`` for unknown biomarkers."""
+    return _MAINTAINABILITY_CATEGORY.get(name, "size_and_complexity")
+
+
+def _score_dimension(
+    results_list: list[BiomarkerResult],
+    weight_fn: Callable[[str], float],
+    category_fn: Callable[[str], str],
+    caps: dict[str, float],
+) -> tuple[float, list[float]]:
+    """Aggregate one dimension's deductions -> ``(score, per_result_deductions)``.
+
+    The single, shared scoring kernel: weight each finding, accumulate per
+    category, cap each category, clamp to ``[1.0, 10.0]``. Every dimension runs
+    the identical algorithm against its own weight / category / cap tables.
     """
-    results_list = list(results)
     raw: dict[str, list[tuple[int, float]]] = {}
     for idx, r in enumerate(results_list):
-        cat = biomarker_category(r.biomarker_type)
+        cat = category_fn(r.biomarker_type)
         # A continuous ``deduction`` override (e.g. coverage scaled by the
         # uncovered fraction) takes the place of the discrete severity table;
         # both paths are then weighted and category-capped identically, so the
         # per-finding ``health_impact`` stays linear and attributable.
         base = r.deduction if r.deduction is not None else severity_deduction(r.severity)
-        weighted = base * biomarker_weight(r.biomarker_type)
+        weighted = base * weight_fn(r.biomarker_type)
         raw.setdefault(cat, []).append((idx, weighted))
 
     per_result = [0.0] * len(results_list)
     total = 0.0
     for cat, entries in raw.items():
-        cap = CATEGORY_CAPS.get(cat, 1.0)
+        cap = caps.get(cat, 1.0)
         cat_sum = sum(d for _, d in entries)
         if cat_sum <= cap:
             for idx, d in entries:
@@ -224,6 +334,48 @@ def score_file(results: Iterable[BiomarkerResult]) -> tuple[float, list[float]]:
 
     score = max(1.0, min(10.0, 10.0 - total))
     return score, per_result
+
+
+def score_file(results: Iterable[BiomarkerResult]) -> tuple[dict[str, float | None], list[float]]:
+    """Aggregate biomarker hits into per-dimension scores in ``[1.0, 10.0]``.
+
+    Returns ``(scores, defect_deductions)`` where:
+
+    - ``scores`` maps each dimension in ``DIMENSIONS`` to its score.
+      ``scores["defect"]`` is the historical single score - byte-for-byte
+      identical to the pre-split ``score_file`` (the load-bearing guarantee).
+      ``scores["performance"]`` is ``None`` until the performance detectors land
+      (no biomarker contributes to it yet), signalling "not measured" rather
+      than a misleading perfect 10.0.
+    - ``defect_deductions`` is each finding's contribution to the DEFECT score
+      after category capping, parallel to *results*. It populates
+      ``HealthFindingData.health_impact`` - a defect-pillar quantity - so the
+      surfaced per-finding impact numbers are unchanged.
+    """
+    results_list = list(results)
+
+    defect_score, defect_deductions = _score_dimension(
+        results_list, biomarker_weight, biomarker_category, CATEGORY_CAPS
+    )
+
+    maint_results = [
+        r for r in results_list if "maintainability" in dimensions_for(r.biomarker_type)
+    ]
+    maint_score, _ = _score_dimension(
+        maint_results,
+        maintainability_weight,
+        maintainability_category,
+        _MAINTAINABILITY_CATEGORY_CAPS,
+    )
+
+    scores: dict[str, float | None] = {
+        "defect": defect_score,
+        "maintainability": maint_score,
+        # No performance detectors exist yet; the dimension is defined but empty
+        # until PR3 registers its biomarkers. ``None`` = not measured.
+        "performance": None,
+    }
+    return scores, defect_deductions
 
 
 def attach_impacts(
@@ -243,6 +395,7 @@ def attach_impacts(
                 details=r.details,
                 health_impact=round(d, 3),
                 reason=r.reason,
+                dimension=biomarker_dimension(r.biomarker_type),
             )
         )
     return out

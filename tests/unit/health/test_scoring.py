@@ -24,8 +24,8 @@ def _r(name: str, severity: Severity) -> BiomarkerResult:
 
 
 def test_score_clean_file_is_ten():
-    score, deductions = score_file([])
-    assert score == 10.0
+    scores, deductions = score_file([])
+    assert scores["defect"] == 10.0
     assert deductions == []
 
 
@@ -33,10 +33,10 @@ def test_score_clamps_floor_at_one():
     # Twenty critical findings in the same category — should hit the cap
     # but never go below 1.0.
     results = [_r("complex_method", Severity.CRITICAL) for _ in range(20)]
-    score, _ = score_file(results)
-    assert score >= 1.0
+    scores, _ = score_file(results)
+    assert scores["defect"] >= 1.0
     # Cap on size_and_complexity is 1.5 (post-recalibration) → score 8.5.
-    assert score == 8.5
+    assert scores["defect"] == 8.5
 
 
 def test_category_cap_applied():
@@ -46,8 +46,8 @@ def test_category_cap_applied():
         _r("brain_method", Severity.CRITICAL),  # 2.0 raw
         _r("nested_complexity", Severity.CRITICAL),  # 2.0 raw
     ]
-    score, _ = score_file(results)
-    assert score == 10.0 - CATEGORY_CAPS["structural_complexity"]
+    scores, _ = score_file(results)
+    assert scores["defect"] == 10.0 - CATEGORY_CAPS["structural_complexity"]
 
 
 def test_compute_kpis_uses_nloc_weighting():

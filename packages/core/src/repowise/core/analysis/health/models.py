@@ -33,6 +33,10 @@ class HealthFindingData:
     details: dict[str, Any]
     health_impact: float
     reason: str = ""
+    # The finding's "home" health dimension (``defect`` / ``maintainability`` /
+    # ``performance``) for per-pillar filtering. Defaults to ``defect`` - the
+    # historical, surfaced pillar - so callers that don't set it are unchanged.
+    dimension: str = "defect"
 
 
 @dataclass
@@ -49,6 +53,14 @@ class HealthFileMetricData:
     duplication_pct: float | None = None
     line_coverage_pct: float | None = None
     branch_coverage_pct: float | None = None
+    # Per-dimension scores from the three-signal split. ``score`` above stays the
+    # overall surfaced number and equals ``defect_score`` for now (the overall
+    # score is not blended until a later, deliberate decision). ``performance_score``
+    # is ``None`` until the performance detectors land. All nullable/defaulted so
+    # the split is additive.
+    defect_score: float | None = None
+    maintainability_score: float | None = None
+    performance_score: float | None = None
 
 
 @dataclass
