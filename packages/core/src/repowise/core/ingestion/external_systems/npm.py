@@ -12,6 +12,7 @@ from pathlib import Path
 
 from .base import ExternalSystemRecord
 from .classifier import classify, display_name_for
+from .io_kind import classify_io_kind
 
 filenames: tuple[str, ...] = ("package.json",)
 ecosystem: str = "npm"
@@ -55,6 +56,7 @@ def parse(manifest_path: Path, repo_root: Path) -> list[ExternalSystemRecord]:
                     version=version,
                     display_name=display_name_for(name),
                     category=classify(name),
+                    io_kind=classify_io_kind(name),
                     is_dev_dep=is_dev,
                 )
             )

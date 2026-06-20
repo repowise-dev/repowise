@@ -94,6 +94,7 @@ async def _external_views(
                 category=row.category,
                 ecosystem=row.ecosystem,
                 version=row.version,
+                io_kind=row.io_kind,
             )
         )
         name_to_id[name] = view_id

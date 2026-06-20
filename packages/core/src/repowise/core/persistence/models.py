@@ -208,6 +208,10 @@ class ExternalSystem(Base):
     display_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     ecosystem: Mapped[str] = mapped_column(String(32), nullable=False)
     category: Mapped[str] = mapped_column(String(32), nullable=False, default="library")
+    # Boundary type in {db, network, filesystem, subprocess, lock}; nullable.
+    # NULL means "untyped" and every consumer (C4, perf, security) degrades
+    # gracefully. Populated by ingestion.external_systems.io_kind.
+    io_kind: Mapped[str | None] = mapped_column(String(16), nullable=True)
     version: Mapped[str | None] = mapped_column(String(64), nullable=True)
     declared_in: Mapped[str] = mapped_column(Text, nullable=False)
     is_dev_dep: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

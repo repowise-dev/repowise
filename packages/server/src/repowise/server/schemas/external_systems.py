@@ -12,6 +12,7 @@ class ExternalSystemEntry(BaseModel):
     display_name: str
     ecosystem: str  # npm | pypi | cargo | gomod | nuget | ...
     category: str  # framework | service | tool | library
+    io_kind: str | None = None  # db | network | filesystem | subprocess | lock | null
     version: str | None = None
     declared_in: str  # manifest path, e.g. "packages/web/package.json"
     is_dev_dep: bool = False

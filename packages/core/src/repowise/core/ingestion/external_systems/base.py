@@ -25,6 +25,7 @@ class ExternalSystemRecord:
     version: str | None = None
     display_name: str = ""
     category: str = "library"  # populated by classifier
+    io_kind: str | None = None  # populated by io_kind classifier; None = untyped
     is_dev_dep: bool = False
     extras: dict[str, str] = field(default_factory=dict)
 

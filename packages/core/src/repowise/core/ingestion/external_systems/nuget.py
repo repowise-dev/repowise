@@ -13,6 +13,7 @@ from xml.etree import ElementTree as ET
 
 from .base import ExternalSystemRecord
 from .classifier import classify, display_name_for
+from .io_kind import classify_io_kind
 
 # .csproj filenames are repo-specific; the discovery layer matches "*.csproj".
 filenames: tuple[str, ...] = ()
@@ -48,6 +49,7 @@ def parse(manifest_path: Path, repo_root: Path) -> list[ExternalSystemRecord]:
                 version=version.strip() if version else None,
                 display_name=display_name_for(name.split(".")[-1]),
                 category=classify(name),
+                io_kind=classify_io_kind(name),
                 is_dev_dep=False,
             )
         )

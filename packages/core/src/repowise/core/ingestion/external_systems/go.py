@@ -14,6 +14,7 @@ from pathlib import Path
 
 from .base import ExternalSystemRecord
 from .classifier import classify, display_name_for
+from .io_kind import classify_io_kind
 
 filenames: tuple[str, ...] = ("go.mod",)
 ecosystem: str = "go"
@@ -80,6 +81,7 @@ def parse(manifest_path: Path, repo_root: Path) -> list[ExternalSystemRecord]:
                 version=version,
                 display_name=display_name_for(name.split("/")[-1]),
                 category=classify(name.split("/")[-1]),
+                io_kind=classify_io_kind(name.split("/")[-1]),
                 is_dev_dep=indirect,
             )
         )

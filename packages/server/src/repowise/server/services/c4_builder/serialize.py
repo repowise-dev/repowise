@@ -38,6 +38,7 @@ def external_system_response(e: ExternalSystemView) -> C4ExternalSystemResponse:
         category=e.category,
         ecosystem=e.ecosystem,
         version=e.version,
+        io_kind=e.io_kind,
     )
 
 

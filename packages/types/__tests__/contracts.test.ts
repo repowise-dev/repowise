@@ -15,7 +15,7 @@
  *     raw entries with a `path` key must adapt before assignment.
  */
 
-import { describe, expectTypeOf, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vitest";
 import type {
   ChatArtifact,
   KnownChatArtifact,
@@ -34,6 +34,11 @@ import type {
   SymbolHeritage,
 } from "../src/symbols.js";
 import type { SecurityFinding, SecuritySeverity } from "../src/security.js";
+import {
+  C4_IO_KINDS,
+  type C4IoKind,
+  type ExternalSystemEntry,
+} from "../src/external-systems.js";
 
 describe("ChatArtifact discriminated union", () => {
   it("narrows on .type to the per-variant data shape", () => {
@@ -174,5 +179,42 @@ describe("Canonical Hotspot key shape", () => {
     // NOT satisfy Hotspot; this is the contract that forces an adapter call.
     type RawPathHotspot = { path: string };
     expectTypeOf<RawPathHotspot>().not.toMatchTypeOf<Hotspot>();
+  });
+});
+
+describe("C4 io_kind parity", () => {
+  // Cross-language guard: these five values are the canonical IO_KINDS in the
+  // Python classifier (ingestion/external_systems/io_kind.py). The Python half
+  // (tests/unit/ingestion/test_io_kind.py) asserts the same membership; if one
+  // side adds/removes/renames a kind without the other, one snapshot fails CI.
+  it("freezes the boundary-kind set", () => {
+    expect([...C4_IO_KINDS]).toEqual([
+      "db",
+      "network",
+      "filesystem",
+      "subprocess",
+      "lock",
+    ]);
+  });
+
+  it("derives C4IoKind from the runtime tuple", () => {
+    expectTypeOf<C4IoKind>().toEqualTypeOf<
+      "db" | "network" | "filesystem" | "subprocess" | "lock"
+    >();
+  });
+
+  it("keeps io_kind nullable on the registry entry", () => {
+    // A row with a null io_kind (untyped dep) must still satisfy the contract.
+    const untyped: ExternalSystemEntry = {
+      name: "left-pad",
+      display_name: "Left Pad",
+      ecosystem: "npm",
+      category: "library",
+      io_kind: null,
+      version: "1.0.0",
+      declared_in: "package.json",
+      is_dev_dep: false,
+    };
+    expect(untyped.io_kind).toBeNull();
   });
 });

@@ -24,6 +24,7 @@ class C4ExternalSystemResponse(BaseModel):
     category: str  # framework | service | tool | library
     ecosystem: str
     version: str | None = None
+    io_kind: str | None = None  # db | network | filesystem | subprocess | lock | null
 
 
 class C4ContainerResponse(BaseModel):

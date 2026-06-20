@@ -38,8 +38,27 @@ def _q(text: str) -> str:
     return text.replace('"', "'")
 
 
-def _ext_kind(cat: str) -> str:
-    """Map our category to a Mermaid C4 element type."""
+# Boundary type to Mermaid C4 element. ``SystemDb_Ext`` renders with the
+# cylinder glyph so a db dependency reads as a database rather than a generic
+# box; the other kinds fall back to standard external boxes.
+_IO_KIND_ELEMENT: dict[str, str] = {
+    "db": "SystemDb_Ext",
+    "network": "System_Ext",
+    "filesystem": "Container_Ext",
+    "subprocess": "Container_Ext",
+    "lock": "Container_Ext",
+}
+
+
+def _ext_kind(cat: str, io_kind: str | None = None) -> str:
+    """Map a dependency to a Mermaid C4 element type.
+
+    Prefer the I/O boundary type when known (a db dep renders as a database
+    cylinder); fall back to the coarse category when ``io_kind`` is None so
+    untyped dependencies keep today's behaviour.
+    """
+    if io_kind is not None and io_kind in _IO_KIND_ELEMENT:
+        return _IO_KIND_ELEMENT[io_kind]
     if cat == "service":
         return "System_Ext"
     return "Container_Ext"
@@ -146,7 +165,7 @@ def _emit_externals(externals: list[ExternalSystemView]) -> list[str]:
 
 
 def _external_line(ext: ExternalSystemView) -> str:
-    kind = _ext_kind(ext.category)
+    kind = _ext_kind(ext.category, ext.io_kind)
     version = f" {ext.version}" if ext.version else ""
     return (
         f'    {kind}({_sid(ext.id)}, "{_q(ext.display_name)}", '

@@ -356,6 +356,7 @@ async def run_pipeline(
                 "display_name": r.display_name,
                 "ecosystem": r.ecosystem,
                 "category": r.category,
+                "io_kind": r.io_kind,
                 "version": r.version,
                 "declared_in": r.declared_in,
                 "is_dev_dep": r.is_dev_dep,

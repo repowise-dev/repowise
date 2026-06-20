@@ -37,6 +37,9 @@ class ExternalSystemView:
     category: str      # framework | service | tool | library
     ecosystem: str
     version: str | None = None
+    # Boundary type in {db, network, filesystem, subprocess, lock}; None when
+    # the dependency isn't in the io_kind seed table (renders untyped).
+    io_kind: str | None = None
 
 
 @dataclass(frozen=True)

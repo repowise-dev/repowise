@@ -8,6 +8,9 @@ export type C4Level = 1 | 2 | 3;
 
 export type C4Category = "framework" | "service" | "tool" | "library";
 
+/** I/O-boundary type of an external dependency (mirrors backend `io_kind`). */
+export type C4IoKind = "db" | "network" | "filesystem" | "subprocess" | "lock";
+
 export interface C4Person {
   id: string;
   name: string;
@@ -27,6 +30,8 @@ export interface C4ExternalSystem {
   category: C4Category | string;
   ecosystem: string;
   version: string | null;
+  /** Boundary type, or null when the dependency isn't in the io_kind table. */
+  io_kind?: C4IoKind | string | null;
 }
 
 export interface C4Container {

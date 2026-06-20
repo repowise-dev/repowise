@@ -54,6 +54,7 @@ async def list_external_systems(
                 display_name=r.display_name or r.name,
                 ecosystem=r.ecosystem,
                 category=r.category,
+                io_kind=r.io_kind,
                 version=r.version,
                 declared_in=r.declared_in,
                 is_dev_dep=bool(r.is_dev_dep),

@@ -13,6 +13,7 @@ from pathlib import Path
 
 from .base import ExternalSystemRecord
 from .classifier import classify, display_name_for
+from .io_kind import classify_io_kind
 
 filenames: tuple[str, ...] = ("pom.xml",)
 ecosystem: str = "maven"
@@ -136,6 +137,7 @@ def parse(manifest_path: Path, repo_root: Path) -> list[ExternalSystemRecord]:
                     version=version if version and "${" not in version else None,
                     display_name=display_name_for(artifact_id),
                     category=classify(artifact_id),
+                    io_kind=classify_io_kind(artifact_id),
                     is_dev_dep=is_dev,
                 )
             )

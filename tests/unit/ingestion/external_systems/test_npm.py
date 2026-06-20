@@ -42,6 +42,25 @@ def test_parses_dependencies_and_dev_dependencies(tmp_path):
     assert vitest.category == "tool"
 
 
+def test_io_kind_is_wired_through_the_parser(tmp_path):
+    manifest = _write(
+        tmp_path,
+        "package.json",
+        {
+            "dependencies": {
+                "axios": "^1.0.0",
+                "@prisma/client": "^5.0.0",
+                "react": "^18.0.0",
+            },
+        },
+    )
+    records = {r.name: r for r in npm.parse(manifest, tmp_path)}
+    assert records["axios"].io_kind == "network"
+    assert records["@prisma/client"].io_kind == "db"
+    # An untyped dependency carries None, not a guess.
+    assert records["react"].io_kind is None
+
+
 def test_handles_malformed_json_without_raising(tmp_path):
     p = tmp_path / "package.json"
     p.write_text("{ not valid", encoding="utf-8")
