@@ -1031,6 +1031,10 @@ _LOOP_STMT_MARKER_KINDS = frozenset(
 # Markers for a call that is its OWN iteration construct (``.reduce``), a perf
 # smell at any loop depth — emitted via ``dialect.bare_call_marker``.
 _BARE_CALL_MARKER_KINDS = frozenset({"array_spread_in_reduce"})
+# Markers fired on a loop whose ITERABLE is itself a slow call (``df.iterrows()``)
+# — the call lives in the loop header, so the body markers miss it. Emitted via
+# ``dialect.loop_iterable_call_marker`` against the loop node.
+_LOOP_ITERABLE_CALL_MARKER_KINDS = frozenset({"pandas_iterrows_in_loop"})
 
 # Boundary kinds that are *unambiguously blocking* when called synchronously, so
 # a loop_depth-0 occurrence in a hot function is a ``hot_path_sync_io`` candidate.
@@ -1112,6 +1116,7 @@ def _collect_perf_hits(
     do_loop_call_marker = bool(markers & _LOOP_CALL_MARKER_KINDS)
     do_loop_stmt_marker = bool(markers & _LOOP_STMT_MARKER_KINDS)
     do_bare_call_marker = bool(markers & _BARE_CALL_MARKER_KINDS)
+    do_loop_iterable_call_marker = bool(markers & _LOOP_ITERABLE_CALL_MARKER_KINDS)
     do_serial_await = "serial_await_in_loop" in markers
     # Phase 7b markers.
     do_nested_io = "nested_loop_with_io" in markers
@@ -1192,6 +1197,17 @@ def _collect_perf_hits(
                 misc = _acc(next_start, next_func)[3]
                 if misc[0] == 0:
                     misc[0] = node.start_point[0] + 1
+
+        # A loop whose ITERABLE is itself a slow call (``for _, r in
+        # df.iterrows()``): the call sits in the loop header (runs once), so the
+        # body call markers never see it. Fire on the loop node itself, at any
+        # nesting depth — ``iterrows`` is O(n)-boxing slow on its own.
+        if is_loop and do_loop_iterable_call_marker:
+            icm = dialect.loop_iterable_call_marker(node)
+            if icm is not None:
+                hits.append(
+                    PerfHit(icm, node.start_point[0] + 1, next_func, "", func_start=next_start)
+                )
 
         if t in call_kinds:
             method = dialect.callee_method_name(node) or ""
