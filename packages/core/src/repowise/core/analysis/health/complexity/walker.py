@@ -163,6 +163,40 @@ class PerfHit:
     line: int  # 1-indexed
     function: str | None = None
     detail: str = ""
+    # Reachability path for a cross-function hit: the resolved symbol-node
+    # chain ``A -> B -> ... -> sink`` (PR4). Empty for same-function hits —
+    # its emptiness is what distinguishes the two cases downstream.
+    path: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class PerfFnFacts:
+    """Per-function facts the cross-function perf bridge needs (PR4).
+
+    Collected on the same whole-tree perf pass as ``PerfHit``. Two signals:
+
+    - ``loop_call_targets`` — the rightmost names of calls made inside a loop
+      body that are NOT themselves a direct I/O sink (those are already a
+      same-function ``io_in_loop`` hit). Each is a candidate helper whose body
+      might reach a sink transitively — the entry points of the reachability
+      walk.
+    - ``bare_sink_kind`` — the boundary kind of an I/O sink this function
+      executes at ``loop_depth 0`` (its own top level, not nested in a loop),
+      else ``None``. A function with a bare sink is a *reachability target*:
+      when a loop in another function calls into it, that sink runs once per
+      iteration. The ``loop_depth 0`` requirement is deliberate — a sink the
+      function runs inside its own loop is already counted there.
+
+    ``func_start`` is the 1-indexed line of the enclosing function's ``def``
+    (0 for module scope, which maps to the synthetic ``::__module__`` node);
+    the bridge resolves it to a graph symbol node by line containment.
+    """
+
+    function: str | None
+    func_start: int
+    # ``(callee_name, call_line)`` pairs for the loop-nested non-sink calls.
+    loop_call_targets: tuple[tuple[str, int], ...]
+    bare_sink_kind: str | None
 
 
 @dataclass
@@ -187,6 +221,11 @@ class FileComplexity:
     # boundary kind (db / network / filesystem / subprocess / lock). The
     # per-file import bridge; PR4's cross-function reachability consumes it.
     io_boundary_names: dict[str, str] = field(default_factory=dict)
+    # Per-function facts feeding PR4's cross-function N+1 detection: which
+    # callees each function invokes inside a loop body, and whether the
+    # function holds a bare (non-loop) I/O sink. Empty when the language opts
+    # out of the perf pass. Consumed by ``perf.crossfn``, not by a biomarker.
+    perf_fn_facts: list[PerfFnFacts] = field(default_factory=list)
 
 
 # Leaf node types that carry a declared name at the bottom of a C/C++
@@ -1078,17 +1117,23 @@ def _is_string_concat(node: Node, language: str) -> bool:
 
 def _collect_perf_hits(
     root: Node, language: str, lmap: LanguageNodeMap
-) -> tuple[list[PerfHit], dict[str, str]]:
-    """Whole-tree perf pass → ``(hits, io_boundary_names)``.
+) -> tuple[list[PerfHit], dict[str, str], list[PerfFnFacts]]:
+    """Whole-tree perf pass → ``(hits, io_boundary_names, fn_facts)``.
 
-    Iterative DFS carrying ``(node, loop_depth, in_async, func_name)`` — the
-    proven Phase-0 shape. Loop-body scoping and constant-loop skipping are
-    applied so only genuinely per-iteration calls are flagged. Returns no hits
-    for languages that opt out of the perf pass (empty ``call_kinds``).
+    Iterative DFS carrying ``(node, loop_depth, in_async, func_name,
+    func_start)`` — the proven Phase-0 shape, extended with the enclosing
+    function's start line so per-function facts can be keyed to a graph symbol
+    node. Loop-body scoping and constant-loop skipping are applied so only
+    genuinely per-iteration calls are flagged. Returns nothing for languages
+    that opt out of the perf pass (empty ``call_kinds``).
+
+    Alongside the same-function ``hits``, it accumulates ``fn_facts`` (one
+    :class:`PerfFnFacts` per enclosing function that has any loop-nested call
+    or a bare sink) — the input to PR4's cross-function reachability.
     """
     call_kinds = lmap.call_kinds
     if not call_kinds:
-        return [], {}
+        return [], {}, []
 
     io_names = collect_io_names(root, language)
     has_db_import = any(k == "db" for k in io_names.values())
@@ -1099,10 +1144,21 @@ def _collect_perf_hits(
     async_fn_kinds = lmap.async_function_kinds
 
     hits: list[PerfHit] = []
-    # (node, loop_depth, in_async, func_name)
-    stack: list[tuple[Node, int, bool, str | None]] = [(root, 0, False, None)]
+    # Per-enclosing-function accumulators keyed by the function's start line
+    # (0 = module scope). ``(name, loop_targets{name->min line}, [bare_sink])``.
+    fn_acc: dict[int, tuple[str | None, dict[str, int], list[str | None]]] = {}
+
+    def _acc(func_start: int, func_name: str | None) -> tuple[dict[str, int], list[str | None]]:
+        entry = fn_acc.get(func_start)
+        if entry is None:
+            entry = (func_name, {}, [None])
+            fn_acc[func_start] = entry
+        return entry[1], entry[2]
+
+    # (node, loop_depth, in_async, func_name, func_start)
+    stack: list[tuple[Node, int, bool, str | None, int]] = [(root, 0, False, None, 0)]
     while stack:
-        node, loop_depth, in_async, func_name = stack.pop()
+        node, loop_depth, in_async, func_name, func_start = stack.pop()
         t = node.type
 
         is_loop = t in loop_kinds
@@ -1113,8 +1169,10 @@ def _collect_perf_hits(
         is_async_fn = t in async_fn_kinds or (entering_fn and _has_async_modifier(node))
         next_async = True if is_async_fn else (False if entering_fn else in_async)
         next_func = func_name
+        next_start = func_start
         if t in fn_kinds:
             next_func = _perf_func_name(node) or func_name
+            next_start = node.start_point[0] + 1
 
         if t in call_kinds:
             method = _callee_method_name(node) or ""
@@ -1122,18 +1180,31 @@ def _collect_perf_hits(
             parent = node.parent
             awaited = parent is not None and "await" in parent.type
             line = node.start_point[0] + 1
+            kind = classify_call_sink(
+                language,
+                root_name,
+                method,
+                awaited=awaited,
+                is_attribute=_callee_is_attribute(node),
+                io_names=io_names,
+                has_db_import=has_db_import,
+            )
             if loop_depth >= 1:
-                kind = classify_call_sink(
-                    language,
-                    root_name,
-                    method,
-                    awaited=awaited,
-                    is_attribute=_callee_is_attribute(node),
-                    io_names=io_names,
-                    has_db_import=has_db_import,
-                )
                 if kind is not None:
                     hits.append(PerfHit("io_in_loop", line, next_func, kind))
+                elif method:
+                    # A loop-nested call to a non-sink helper: a candidate
+                    # entry for cross-function reachability (PR4). Keep the
+                    # first line we see the helper called at, for the finding.
+                    targets = _acc(next_start, next_func)[0]
+                    if method not in targets:
+                        targets[method] = line
+            elif kind is not None:
+                # A sink at loop_depth 0 makes this function a reachability
+                # target: a loop elsewhere calling into it runs the sink N times.
+                sink_slot = _acc(next_start, next_func)[1]
+                if sink_slot[0] is None:
+                    sink_slot[0] = kind
             if is_py and in_async and not awaited:
                 api = _blocking_sync_api(root_name, method)
                 if api is not None:
@@ -1150,13 +1221,13 @@ def _collect_perf_hits(
                 # with ``==`` (identity by tree + byte range), never ``is``.
                 for c in node.children:
                     cd = loop_depth + 1 if c == body else loop_depth
-                    stack.append((c, cd, next_async, next_func))
+                    stack.append((c, cd, next_async, next_func, next_start))
             else:
                 for c in node.children:
-                    stack.append((c, loop_depth + 1, next_async, next_func))
+                    stack.append((c, loop_depth + 1, next_async, next_func, next_start))
         else:
             for c in node.children:
-                stack.append((c, loop_depth, next_async, next_func))
+                stack.append((c, loop_depth, next_async, next_func, next_start))
 
     # Dedup chained sinks: ``result.scalars().all()`` parses as two call nodes
     # on one line (the ``.scalars()`` sink and the ``.all()`` materializer) —
@@ -1170,7 +1241,19 @@ def _collect_perf_hits(
         seen.add(key)
         deduped.append(h)
     deduped.sort(key=lambda h: (h.line, h.kind))
-    return deduped, io_names
+
+    fn_facts = [
+        PerfFnFacts(
+            function=name,
+            func_start=start,
+            loop_call_targets=tuple(sorted(targets.items())),
+            bare_sink_kind=sink[0],
+        )
+        for start, (name, targets, sink) in fn_acc.items()
+        if targets or sink[0] is not None
+    ]
+    fn_facts.sort(key=lambda f: f.func_start)
+    return deduped, io_names, fn_facts
 
 
 # ----------------------------------------------------------------------
@@ -1465,7 +1548,7 @@ def walk_file(
         fc_by_node_id[fn_node.id] = fc
 
     classes = _collect_classes(tree.root_node, lmap, source, fc_by_node_id)
-    perf_hits, io_boundary_names = _collect_perf_hits(tree.root_node, language, lmap)
+    perf_hits, io_boundary_names, perf_fn_facts = _collect_perf_hits(tree.root_node, language, lmap)
     return FileComplexity(
         functions=functions,
         classes=classes,
@@ -1473,6 +1556,7 @@ def walk_file(
         error_handling_hits=_collect_error_handling(tree.root_node, language, lmap),
         perf_hits=perf_hits,
         io_boundary_names=io_boundary_names,
+        perf_fn_facts=perf_fn_facts,
     )
 
 

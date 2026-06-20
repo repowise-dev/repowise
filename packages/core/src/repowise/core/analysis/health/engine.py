@@ -37,6 +37,7 @@ from .complexity import FileComplexity, FunctionComplexity, walk_file
 from .coverage import is_test_file as _coverage_is_test_file
 from .duplication import DuplicationReport, detect_clones
 from .models import HealthFileMetricData, HealthFindingData, HealthReport
+from .perf import collect_crossfn_io_in_loop
 from .scoring import attach_impacts, compute_kpis, score_file
 
 log = structlog.get_logger(__name__)
@@ -362,6 +363,9 @@ class HealthAnalyzer:
         repo_dependents_p80 = _compute_repo_dependents_p80(self.parsed_files, self.graph)
         repo_active_contributors = _compute_repo_active_contributors(self.git_meta_map)
 
+        # Cross-function N+1: augment perf_hits before the biomarker stage.
+        self._apply_crossfn_perf(walked)
+
         for pf, fcx in walked:
             # Side-effect: bump Symbol.complexity_estimate when we can
             # match by enclosing line range. Symbols not matched keep
@@ -505,6 +509,10 @@ class HealthAnalyzer:
         repo_dependents_p80 = _compute_repo_dependents_p80(self.parsed_files, self.graph)
         repo_active_contributors = _compute_repo_active_contributors(self.git_meta_map)
 
+        # Cross-function N+1: augment perf_hits before the biomarker stage.
+        walked = list(walked)
+        self._apply_crossfn_perf(walked)
+
         findings: list[HealthFindingData] = []
         metrics: list[HealthFileMetricData] = []
         for pf, fcx in walked:
@@ -550,6 +558,27 @@ class HealthAnalyzer:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _apply_crossfn_perf(self, walked: list[tuple[Any, FileComplexity]]) -> None:
+        """Splice cross-function ``io_in_loop`` hits into the walked files.
+
+        Runs the bounded reachability pass once over the resolved ``calls``
+        graph and appends the cross-function hits onto the matching file's
+        ``perf_hits`` in place, so the ``io_in_loop`` biomarker handles
+        same-function and cross-function hits through one path. Failure-isolated
+        and a no-op without a graph — never blocks the rest of the report.
+        """
+        if self.graph is None:
+            return
+        try:
+            crossfn = collect_crossfn_io_in_loop(walked, self.graph)
+        except Exception as exc:
+            log.debug("health_crossfn_perf_failed", error=str(exc))
+            return
+        for _pf, fcx in walked:
+            extra = crossfn.get(_pf.file_info.path)
+            if extra:
+                fcx.perf_hits = [*fcx.perf_hits, *extra]
 
     def _function_blame_rows(self, walked: list[tuple[Any, FileComplexity]]) -> list[dict]:
         """Build the per-function blame rollup from the walked files + the

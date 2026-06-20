@@ -1,9 +1,18 @@
-"""IO-in-loop — an execution sink at an I/O boundary inside a loop body.
+"""IO-in-loop — an execution sink at an I/O boundary reached from a loop body.
 
-The Tier-A core of the ``performance`` dimension: a database round-trip, HTTP
-call, filesystem read, or subprocess spawn that runs **once per loop
-iteration** (the classic N+1 shape). One finding per occurrence, anchored to
-its line and tagged with the boundary kind.
+The core of the ``performance`` dimension: a database round-trip, HTTP call,
+filesystem read, or subprocess spawn that runs **once per loop iteration** (the
+classic N+1 shape). One finding per occurrence, anchored to its line and tagged
+with the boundary kind.
+
+Two cases share this detector and the same ``performance`` budget:
+
+  * **same-function** (Tier A, PR3) — the sink is written directly inside the
+    loop; ``PerfHit.path`` is empty.
+  * **cross-function** (Tier B, PR4) — the loop calls a helper that, within a
+    few call hops, executes the sink; ``PerfHit.path`` carries the resolved
+    ``A -> ... -> sink`` symbol chain for explainability. This is the
+    interprocedural case file-local linters cannot see.
 
 This is a *high-precision, low-recall* signal by design (measured 79% on the
 Phase-0 gate, CI 68-87). The precision comes from three constraints enforced
@@ -25,6 +34,7 @@ unsupported languages and parse failures yield nothing, never a false positive.
 
 from __future__ import annotations
 
+from ..complexity import PerfHit
 from ..models import Severity
 from .base import BiomarkerResult, FileContext
 
@@ -49,18 +59,44 @@ class IoInLoopDetector:
             if hit.kind != _KIND:
                 continue
             phrasing = _BOUNDARY_PHRASING.get(hit.detail, "an I/O call")
-            out.append(
-                BiomarkerResult(
-                    biomarker_type=self.name,
-                    severity=Severity.MEDIUM,
-                    function_name=hit.function,
-                    line_start=hit.line,
-                    line_end=hit.line,
-                    details={"boundary_kind": hit.detail},
-                    reason=f"{phrasing} runs once per loop iteration (N+1 / IO-in-loop)",
+            if hit.path:
+                out.append(self._cross_function(hit, phrasing))
+            else:
+                out.append(
+                    BiomarkerResult(
+                        biomarker_type=self.name,
+                        severity=Severity.MEDIUM,
+                        function_name=hit.function,
+                        line_start=hit.line,
+                        line_end=hit.line,
+                        details={"boundary_kind": hit.detail, "cross_function": False},
+                        reason=f"{phrasing} runs once per loop iteration (N+1 / IO-in-loop)",
+                    )
                 )
-            )
         return out
+
+    @staticmethod
+    def _cross_function(hit: PerfHit, phrasing: str) -> BiomarkerResult:
+        # Render the resolved symbol chain (``file.py::A`` -> ...) as bare
+        # function names for the reason, and keep the full path in details.
+        names = [seg.rsplit("::", 1)[-1] for seg in hit.path]
+        chain = " -> ".join(names)
+        return BiomarkerResult(
+            biomarker_type=_KIND,
+            severity=Severity.MEDIUM,
+            function_name=hit.function,
+            line_start=hit.line,
+            line_end=hit.line,
+            details={
+                "boundary_kind": hit.detail,
+                "cross_function": True,
+                "path": list(hit.path),
+            },
+            reason=(
+                f"{phrasing} is reached once per loop iteration through "
+                f"{chain} (cross-function N+1)"
+            ),
+        )
 
 
 BIOMARKER = IoInLoopDetector()
