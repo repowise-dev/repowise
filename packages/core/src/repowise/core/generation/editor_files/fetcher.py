@@ -297,6 +297,19 @@ class EditorFileDataFetcher:
                 else sum(m.maintainability_score for m in maint_rows) / len(maint_rows)
             )
 
+        # Performance pillar headline: same NLOC-weighted average over the
+        # per-file performance scores (static performance RISK). ``None`` when
+        # unmeasured so the section omits the line rather than printing 10.0.
+        perf_rows = [m for m in metric_rows if getattr(m, "performance_score", None) is not None]
+        performance_average: float | None = None
+        if perf_rows:
+            p_nloc = sum(max(m.nloc, 1) for m in perf_rows)
+            performance_average = (
+                sum(m.performance_score * max(m.nloc, 1) for m in perf_rows) / p_nloc
+                if p_nloc
+                else sum(m.performance_score for m in perf_rows) / len(perf_rows)
+            )
+
         # Critical biomarkers: brain methods, or critical-severity findings
         # in hotspot files. Cap at 5 to keep CLAUDE.md tight.
         f_res = await self._session.execute(
@@ -332,6 +345,9 @@ class EditorFileDataFetcher:
             hotspot_trend="stable",
             maintainability_average=(
                 round(maintainability_average, 2) if maintainability_average is not None else None
+            ),
+            performance_average=(
+                round(performance_average, 2) if performance_average is not None else None
             ),
             critical_biomarkers=critical,
             untested_hotspots=[],  # Phase 2 fills this from coverage data

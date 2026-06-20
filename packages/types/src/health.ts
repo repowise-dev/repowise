@@ -15,6 +15,8 @@
  * cutoffs anywhere else — derive from these consts or read the API `band`.
  */
 
+import type { C4IoKind } from "./external-systems.js";
+
 /** Finding severity used across the health surface. */
 export type HealthSeverity = "low" | "medium" | "high" | "critical";
 
@@ -24,11 +26,12 @@ export type HealthSeverity = "low" | "medium" | "high" | "critical";
 
 /**
  * The orthogonal health signals. `defect` is the historical, calibrated score
- * surfaced as the overall number; `maintainability` is a co-surfaced second
- * signal made of the smells the defect calibration floors (they don't predict
- * bugs, so they get a proper home here instead of diluting the defect score);
- * `performance` is defined but not yet surfaced (no detectors land until a
- * later release).
+ * surfaced as the overall number; `maintainability` is a co-surfaced signal
+ * made of the smells the defect calibration floors (they don't predict bugs, so
+ * they get a proper home here instead of diluting the defect score);
+ * `performance` is the co-surfaced third signal: static performance RISK
+ * (I/O-in-loop / N+1 shapes that waste work). All three are co-equal views; the
+ * overall number stays the defect score and is never a blend.
  *
  * Mirror of `DIMENSIONS` in
  * `packages/core/src/repowise/core/analysis/health/scoring.py`, kept in sync by
@@ -49,6 +52,21 @@ export const HEALTH_DIMENSION_LABEL: Record<HealthDimension, string> = {
   defect: "Defect risk",
   maintainability: "Maintainability",
   performance: "Performance",
+};
+
+/**
+ * Human-readable labels for the I/O-boundary kind a performance finding crosses
+ * (the `boundary_kind` on an `io_in_loop` finding's `details`). The kind set is
+ * the canonical `C4IoKind` from `external-systems.ts`, parity-locked against the
+ * Python `IO_KINDS` classifier; this only adds display strings, no new wire
+ * enum. Used to render "a database call runs once per loop iteration" detail.
+ */
+export const PERF_BOUNDARY_LABEL: Record<C4IoKind, string> = {
+  db: "Database",
+  network: "Network",
+  filesystem: "Filesystem",
+  subprocess: "Subprocess",
+  lock: "Lock",
 };
 
 /* ------------------------------------------------------------------ *
@@ -224,6 +242,14 @@ export interface HealthOverviewSummary {
    */
   maintainability_average?: number | null;
   maintainability_hotspot?: number | null;
+  /**
+   * NLOC-weighted repo headline for the performance pillar (the third surfaced
+   * signal: static performance RISK, not measured runtime). `null`/absent when
+   * no file carries a performance score. `performance_hotspot` is the same
+   * average restricted to hotspot files, when available.
+   */
+  performance_average?: number | null;
+  performance_hotspot?: number | null;
 }
 
 export interface HealthOverviewResponse {

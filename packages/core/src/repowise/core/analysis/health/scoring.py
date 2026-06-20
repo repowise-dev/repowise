@@ -513,6 +513,10 @@ def compute_kpis(
       NLOC-weighted averages over the per-file ``maintainability_score``, so the
       maintainability pillar surfaces a repo headline alongside the defect one.
       ``None`` when no file carries a maintainability score.
+    - ``performance_average`` / ``performance_hotspot``: the same two
+      NLOC-weighted averages over the per-file ``performance_score`` (static
+      performance RISK), so the performance pillar surfaces a repo headline too.
+      ``None`` when no file carries a performance score.
     """
     if not metrics:
         return {
@@ -523,6 +527,8 @@ def compute_kpis(
             "file_count": 0,
             "maintainability_average": None,
             "maintainability_hotspot": None,
+            "performance_average": None,
+            "performance_hotspot": None,
         }
 
     def _wavg(rows: list[HealthFileMetricData]) -> float:
@@ -537,6 +543,8 @@ def compute_kpis(
     worst = min(metrics, key=lambda m: m.score)
     maint_avg = _wavg_attr(metrics, "maintainability_score")
     maint_hotspot = _wavg_attr(hotspots, "maintainability_score")
+    perf_avg = _wavg_attr(metrics, "performance_score")
+    perf_hotspot = _wavg_attr(hotspots, "performance_score")
     return {
         "hotspot_health": round(_wavg(hotspots), 2),
         "average_health": round(_wavg(metrics), 2),
@@ -545,4 +553,6 @@ def compute_kpis(
         "file_count": len(metrics),
         "maintainability_average": round(maint_avg, 2) if maint_avg is not None else None,
         "maintainability_hotspot": round(maint_hotspot, 2) if maint_hotspot is not None else None,
+        "performance_average": round(perf_avg, 2) if perf_avg is not None else None,
+        "performance_hotspot": round(perf_hotspot, 2) if perf_hotspot is not None else None,
     }

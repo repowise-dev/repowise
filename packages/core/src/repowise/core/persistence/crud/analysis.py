@@ -472,6 +472,7 @@ async def get_health_summary(session: AsyncSession, repository_id: str) -> dict:
             "worst_performer_score": None,
             "open_findings": 0,
             "maintainability_average": None,
+            "performance_average": None,
         }
     total_nloc = sum(max(m.nloc, 1) for m in metrics)
     if total_nloc:
@@ -497,6 +498,20 @@ async def get_health_summary(session: AsyncSession, repository_id: str) -> dict:
                 maint_scored
             )
 
+    # Performance headline: same NLOC-weighted average over the per-file
+    # performance scores (static performance RISK). ``None`` when no row carries
+    # a performance score so the surface reads "not measured" rather than 10.0.
+    perf_scored = [m for m in metrics if getattr(m, "performance_score", None) is not None]
+    performance_average: float | None = None
+    if perf_scored:
+        perf_nloc = sum(max(m.nloc, 1) for m in perf_scored)
+        if perf_nloc:
+            performance_average = (
+                sum(m.performance_score * max(m.nloc, 1) for m in perf_scored) / perf_nloc
+            )
+        else:
+            performance_average = sum(m.performance_score for m in perf_scored) / len(perf_scored)
+
     findings_count = await session.execute(
         select(func.count())
         .select_from(HealthFinding)
@@ -513,6 +528,9 @@ async def get_health_summary(session: AsyncSession, repository_id: str) -> dict:
         "open_findings": findings_count.scalar() or 0,
         "maintainability_average": (
             round(maintainability_average, 2) if maintainability_average is not None else None
+        ),
+        "performance_average": (
+            round(performance_average, 2) if performance_average is not None else None
         ),
     }
 

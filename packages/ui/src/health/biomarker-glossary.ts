@@ -15,6 +15,7 @@ export type BiomarkerCategory =
   | "test_coverage_gradient"
   | "test_quality"
   | "error_handling"
+  | "performance"
   | "organizational";
 
 export interface BiomarkerInfo {
@@ -31,6 +32,7 @@ export const CATEGORY_LABEL: Record<BiomarkerCategory, string> = {
   test_coverage_gradient: "Coverage gradient",
   test_quality: "Test quality",
   error_handling: "Error handling",
+  performance: "Performance",
   organizational: "Organizational",
 };
 
@@ -43,6 +45,10 @@ export const CATEGORY_CAP: Record<BiomarkerCategory, number> = {
   duplication: 1.0,
   test_quality: 0.5,
   error_handling: 0.5,
+  // One bounded performance category cap (mirrors `_PERFORMANCE_CATEGORY_CAPS`
+  // in scoring.py): the whole performance pillar deducts at most 1.0, keeping it
+  // advisory.
+  performance: 1.0,
 };
 
 export const BIOMARKER_GLOSSARY: Record<string, BiomarkerInfo> = {
@@ -220,6 +226,24 @@ export const BIOMARKER_GLOSSARY: Record<string, BiomarkerInfo> = {
     description:
       "Two governing decisions on record contradict each other. The file is caught between conflicting documented intents.",
   },
+  io_in_loop: {
+    label: "I/O in loop",
+    category: "performance",
+    description:
+      "A database call, network request, filesystem read, or subprocess spawn that runs once per loop iteration — the classic N+1. Detected across function boundaries via the call graph, resolved to a classified I/O boundary. A static performance RISK (high precision, low recall), not measured runtime.",
+  },
+  string_concat_in_loop: {
+    label: "String concat in loop",
+    category: "performance",
+    description:
+      "A string built by repeated += inside a loop, which is quadratic in many runtimes (each concat copies the whole accumulated string). Use a buffer + join for linear cost.",
+  },
+  blocking_sync_in_async: {
+    label: "Blocking call in async",
+    category: "performance",
+    description:
+      "A synchronous blocking call (time.sleep, requests.get, subprocess.run) inside an async function blocks the whole event loop, stalling every other coroutine. Mirrors ruff's ASYNC210/230/251.",
+  },
 };
 
 export function biomarkerInfo(name: string): BiomarkerInfo {
@@ -240,7 +264,7 @@ export function biomarkerLabel(name: string): string {
  * Health dimensions: which pillar a biomarker "homes" under
  * ------------------------------------------------------------------ */
 
-export type BiomarkerDimension = "defect" | "maintainability";
+export type BiomarkerDimension = "defect" | "maintainability" | "performance";
 
 /**
  * The biomarkers whose "home" pillar is maintainability: the smells the defect
@@ -263,21 +287,37 @@ export const MAINTAINABILITY_HOME_BIOMARKERS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * The biomarkers whose "home" pillar is performance: static performance RISK
+ * detectors (I/O-in-loop / N+1, string-concat-in-loop, blocking-sync-in-async).
+ * Mirror of ``_PERFORMANCE_HOME`` in ``scoring.py``. Same fallback-only role as
+ * the maintainability set above — the server stamps the authoritative dimension.
+ */
+export const PERFORMANCE_HOME_BIOMARKERS: ReadonlySet<string> = new Set([
+  "io_in_loop",
+  "string_concat_in_loop",
+  "blocking_sync_in_async",
+]);
+
+/**
  * A biomarker's home dimension for display / filtering. Prefer a finding's
  * server-provided `dimension` field where available; this is the fallback when
  * only the biomarker type is known (e.g. a glossary entry).
  */
 export function biomarkerDimension(name: string): BiomarkerDimension {
-  return MAINTAINABILITY_HOME_BIOMARKERS.has(name) ? "maintainability" : "defect";
+  if (PERFORMANCE_HOME_BIOMARKERS.has(name)) return "performance";
+  if (MAINTAINABILITY_HOME_BIOMARKERS.has(name)) return "maintainability";
+  return "defect";
 }
 
 export const DIMENSION_LABEL: Record<BiomarkerDimension, string> = {
   defect: "Defect risk",
   maintainability: "Maintainability",
+  performance: "Performance",
 };
 
 /** Tailwind chip classes per pillar, matching the surrounding chip palette. */
 export const DIMENSION_CHIP: Record<BiomarkerDimension, string> = {
   defect: "bg-[var(--color-accent-primary)]/10 text-[var(--color-accent-primary)]",
   maintainability: "bg-[var(--color-accent-secondary)]/10 text-[var(--color-accent-secondary)]",
+  performance: "bg-[var(--color-info)]/10 text-[var(--color-info)]",
 };

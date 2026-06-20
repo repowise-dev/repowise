@@ -125,7 +125,7 @@ export function TriageTab({
 
   // ---- One filter set coordinates the queue AND the findings sidebar ----
   const [minSeverity, setMinSeverity] = useState<Severity | "all">("all");
-  const [pillar, setPillar] = useState<"all" | "defect" | "maintainability">("all");
+  const [pillar, setPillar] = useState<"all" | "defect" | "maintainability" | "performance">("all");
   const [biomarker, setBiomarker] = useState<string>("all");
   const [maxEffort, setMaxEffort] = useState<string>("all");
   const [sort, setSort] = useState<RefactoringQuery["sort"]>("impact_per_effort");
@@ -250,8 +250,8 @@ export function TriageTab({
   return (
     <div className="space-y-6">
       {isLoading ? (
-        <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
-          {Array.from({ length: 6 }).map((_, i) => (
+        <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-7 gap-3">
+          {Array.from({ length: 7 }).map((_, i) => (
             <Skeleton key={i} className="h-24 w-full rounded-lg" />
           ))}
         </div>
@@ -330,7 +330,13 @@ export function TriageTab({
                 <select
                   value={pillar}
                   onChange={(e) =>
-                    setPillar(e.target.value as "all" | "defect" | "maintainability")
+                    setPillar(
+                      e.target.value as
+                        | "all"
+                        | "defect"
+                        | "maintainability"
+                        | "performance",
+                    )
                   }
                   aria-label="Health pillar"
                   className="text-xs px-2 py-1 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)]"
@@ -338,6 +344,7 @@ export function TriageTab({
                   <option value="all">All pillars</option>
                   <option value="defect">Defect risk</option>
                   <option value="maintainability">Maintainability</option>
+                  <option value="performance">Performance</option>
                 </select>
                 <select
                   value={minSeverity}

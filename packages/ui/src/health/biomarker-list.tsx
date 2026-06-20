@@ -31,7 +31,13 @@ export interface BiomarkerFinding {
 
 /** A finding's home pillar, preferring the server value over the glossary. */
 function findingDimension(f: BiomarkerFinding): BiomarkerDimension {
-  if (f.dimension === "maintainability" || f.dimension === "defect") return f.dimension;
+  if (
+    f.dimension === "defect" ||
+    f.dimension === "maintainability" ||
+    f.dimension === "performance"
+  ) {
+    return f.dimension;
+  }
   return biomarkerDimension(f.biomarker_type);
 }
 

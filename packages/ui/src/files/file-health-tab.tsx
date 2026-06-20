@@ -5,7 +5,15 @@ import { HeartPulse } from "lucide-react";
 import { EmptyState } from "../shared/empty-state";
 import { ScoreBreakdown, type ScoreBreakdownCategory } from "../health/score-breakdown";
 import { BiomarkerDetails, type BiomarkerDetailsRecord } from "../health/biomarker-details";
-import { biomarkerInfo, biomarkerLabel, CATEGORY_LABEL } from "../health/biomarker-glossary";
+import {
+  biomarkerInfo,
+  biomarkerLabel,
+  biomarkerDimension,
+  CATEGORY_LABEL,
+  DIMENSION_CHIP,
+  DIMENSION_LABEL,
+  type BiomarkerDimension,
+} from "../health/biomarker-glossary";
 import { SEVERITY_CHIP, SEVERITY_LABEL, scoreBadgeClass, type Severity } from "../health/tokens";
 import { FileTrendChart } from "../health/file-trend-chart";
 import { FileSignalsPanel } from "../health/file-signals-panel";
@@ -75,7 +83,7 @@ export function FileHealthTab({
       {metric && (
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           <Stat
-            label="Score"
+            label="Defect risk"
             value={
               <span
                 className={`inline-flex items-baseline rounded px-2 py-0.5 font-bold tabular-nums ${scoreBadgeClass(metric.score)}`}
@@ -85,6 +93,8 @@ export function FileHealthTab({
               </span>
             }
           />
+          <Stat label="Maintainability" value={<DimScore score={metric.maintainability_score} />} />
+          <Stat label="Performance" value={<DimScore score={metric.performance_score} />} />
           <Stat label="Max CCN" value={<Num v={metric.max_ccn} />} />
           <Stat label="Max nesting" value={<Num v={metric.max_nesting} />} />
           <Stat label="NLOC" value={<Num v={metric.nloc} />} />
@@ -152,6 +162,7 @@ export function FileHealthTab({
                     <span className="text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)]">
                       {CATEGORY_LABEL[info.category]}
                     </span>
+                    <DimensionChip dimension={findingDimension(f)} />
                     {f.function_name && (
                       <span className="text-xs font-mono text-[var(--color-text-tertiary)]">
                         {f.function_name}
@@ -275,4 +286,42 @@ function Stat({ label, value }: { label: string; value: React.ReactNode }) {
 
 function Num({ v }: { v: number }) {
   return <span className="text-base font-semibold tabular-nums">{v}</span>;
+}
+
+/** A per-dimension pillar score badge, or "—" when the pillar is unmeasured. */
+function DimScore({ score }: { score?: number | null | undefined }) {
+  if (score == null) {
+    return <span className="text-xs text-[var(--color-text-tertiary)]">—</span>;
+  }
+  return (
+    <span
+      className={`inline-flex items-baseline rounded px-2 py-0.5 font-bold tabular-nums ${scoreBadgeClass(score)}`}
+    >
+      {score.toFixed(1)}
+      <span className="ml-0.5 text-[10px] font-normal opacity-70">/10</span>
+    </span>
+  );
+}
+
+/** A finding's home pillar, preferring the server value over the glossary. */
+function findingDimension(f: { dimension?: string; biomarker_type: string }): BiomarkerDimension {
+  if (
+    f.dimension === "defect" ||
+    f.dimension === "maintainability" ||
+    f.dimension === "performance"
+  ) {
+    return f.dimension;
+  }
+  return biomarkerDimension(f.biomarker_type);
+}
+
+function DimensionChip({ dimension }: { dimension: BiomarkerDimension }) {
+  return (
+    <span
+      className={`inline-flex items-center rounded px-1.5 py-px text-[10px] font-medium ${DIMENSION_CHIP[dimension]}`}
+      title={`${DIMENSION_LABEL[dimension]} pillar`}
+    >
+      {DIMENSION_LABEL[dimension]}
+    </span>
+  );
 }

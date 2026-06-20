@@ -588,6 +588,7 @@ async def health_data(session: AsyncSession, populated_db: str) -> str:
                 "module": "auth",
                 "defect_score": 4.5,
                 "maintainability_score": 6.0,
+                "performance_score": 9.0,
             },
             {
                 "file_path": "src/db/models.py",
@@ -599,6 +600,7 @@ async def health_data(session: AsyncSession, populated_db: str) -> str:
                 "module": "db",
                 "defect_score": 8.5,
                 "maintainability_score": 9.0,
+                "performance_score": 10.0,
             },
         ],
     )
@@ -639,6 +641,22 @@ async def health_data(session: AsyncSession, populated_db: str) -> str:
                 "health_impact": 1.0,
                 "reason": "AuthService has low cohesion",
                 "dimension": "maintainability",
+            },
+            {
+                "file_path": "src/auth/service.py",
+                "biomarker_type": "io_in_loop",
+                "severity": "medium",
+                "function_name": "load_users",
+                "line_start": 42,
+                "line_end": 42,
+                "details": {
+                    "boundary_kind": "db",
+                    "cross_function": True,
+                    "path": ["src/auth/service.py::load_users", "src/db/models.py::fetch_one"],
+                },
+                "health_impact": 1.0,
+                "reason": "a database call is reached once per loop iteration (cross-function N+1)",
+                "dimension": "performance",
             },
         ],
     )
