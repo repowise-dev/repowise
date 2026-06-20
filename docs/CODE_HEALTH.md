@@ -69,7 +69,12 @@ The final score is clamped to `[1.0, 10.0]`. The three repo-level KPIs:
 - **Average Health** — NLOC-weighted average over all files.
 - **Worst Performer** — single lowest-scoring file.
 
-## Two health signals: defect risk and maintainability
+## Three health signals: defect risk, maintainability, and performance
+
+Repowise surfaces **three orthogonal health signals** computed from the same
+biomarker stream by one shared scoring kernel: **defect risk** (the calibrated,
+overall number), **maintainability**, and **performance**. They are co-equal
+*views*, never blended into one number (see "The overall score" below for why).
 
 The score above is the **defect-risk** signal: it is calibrated against a defect
 corpus, the bands are calibrated to it (Alert files carry ~17x the defect rate
@@ -113,12 +118,75 @@ co-equal headline:
   `performance`) naming the pillar it homes under, so findings can be filtered
   per signal.
 
-A third dimension, **performance**, is computed by the same machinery but is not
-yet surfaced as its own pillar in the dashboard, MCP KPIs, or CLAUDE.md (that
-arrives in a later release); its per-file `performance_score` reads `null` on
-indexes built before the performance detectors landed. The dimension names are
-mirrored in `@repowise-dev/types` (`HEALTH_DIMENSIONS`) with a parity test on
-each side.
+## Performance: static performance risk
+
+The third signal, **performance**, flags *shapes that waste work* (code whose
+structure does redundant I/O), rather than measured runtime. It is deliberately
+**high-precision, low-recall**: a few real findings the rest of the toolchain
+can trust beat a wall of maybes. The detectors (all under one bounded `performance`
+category cap of 1.0, so the pillar stays advisory) are:
+
+- **`io_in_loop`**: a database call, network request, filesystem read, or
+  subprocess spawn that runs **once per loop iteration**: the classic N+1. This
+  is the moat. Two things make it more than a file-local lint:
+  - **Dependency classification.** The loop-nested call is resolved through a
+    shared I/O-boundary classifier (`io_kind ∈ {db, network, filesystem,
+    subprocess, lock}`) and only fires on a *classified* execution sink (an
+    actual round-trip like `.execute` / awaited HTTP / `subprocess.run`), not a
+    query-builder chain or a same-named pure helper.
+  - **Call-graph reachability.** The loop and the I/O call need not be in the
+    same function. A bounded-depth (≤3 hops) walk over the resolved `calls` graph
+    catches the interprocedural case (loop in `A`, sink in a helper `A` calls)
+    that no file-local linter can see. Cross-function findings carry their
+    resolved `caller -> ... -> sink` path for explainability.
+- **`string_concat_in_loop`**: quadratic `+=` string building in a loop.
+- **`blocking_sync_in_async`**: a synchronous blocking call inside an `async`
+  function, which stalls the whole event loop (mirrors ruff `ASYNC210/230/251`).
+
+Each performance finding's `details` carry the `boundary_kind` it crosses, a
+`cross_function` flag, and the reachability `path` for the cross-function case.
+Severity is ranked by **centrality** (an N+1 in a high-traffic, churny function
+outranks one in a leaf), not by raw count.
+
+**Soundness limits (honest, by design).** Performance is a *static* signal, so
+it under-reports rather than over-reports (these cap recall, not precision):
+dynamic dispatch / monkeypatching / callbacks-as-values produce no `calls` edge
+and are invisible; ORM lazy-load N+1 fires on attribute access (no visible call)
+and is explicitly out of scope; chains longer than three hops from the loop are
+not followed; and an unmodelled library is untyped (`None`), so its sinks don't
+fire. We call this **performance RISK**, never measured performance, and never
+fold it into the defect score. The commit-agreement precision study and its
+caveats live in `local-stash/performance-pillar/VALIDATION.md`.
+
+Performance surfaces exactly where maintainability does: a `performance_average`
+on the overview summary and MCP `kpis`, a per-file `performance_score`, a
+Performance KPI card and per-pillar finding filter on the dashboard, the
+per-file Health tab and drawer, and a `Performance risk` line in CLAUDE.md and
+the CLI `status` summary (each omitted/`null` on indexes built before the
+detectors landed). The dimension names are mirrored in `@repowise-dev/types`
+(`HEALTH_DIMENSIONS`) with a parity test on each side.
+
+## The overall score: defect, not a blend
+
+The single number repowise surfaces as the headline (the dashboard ring, the
+band, the badge, the "does the score find the bugs?" stat) is, and stays, the
+**defect score**. Maintainability and performance are presented as co-equal
+*pillars/views*, not blended into the headline. This is a deliberate decision,
+for three reasons:
+
+1. **Band calibration.** The Healthy/Warning/Alert cutoffs are calibrated to the
+   defect score (Alert ≈ 17× the defect rate). A blended headline would invalidate
+   those boundaries with no recalibration corpus behind the new number.
+2. **Honesty of the validation stat.** "Does the score find the bugs?" is a claim
+   about the *defect* pillar; it must stay bound to the number it measures.
+3. **Different precision profiles.** Maintainability is expert-set and performance
+   is high-precision/low-recall advisory — neither is a calibrated bug predictor,
+   so neither should move the bug-calibrated headline.
+
+A golden test (`tests/unit/health/test_scoring_dimensions`) locks the defect
+score byte-for-byte against the pre-split single score, so no pillar can ever
+regress it. Introducing a blended overall score would require a written rationale
+and a recalibration plan; until then, overall = defect.
 
 ## Bands and distribution
 
@@ -530,10 +598,11 @@ unchanged files stay put — no nightly full re-index needed.
 
 ## Status one-liner
 
-`repowise status` includes a single-line health summary:
+`repowise status` includes a single-line health summary (the maintainability and
+performance pillars append once the index has populated them):
 
 ```
-Health: 7.4 (avg) · 6.2 (hotspots) · 2.1 (worst: payments/processor.ts)
+Health: 7.4 (avg) · 6.2 (hotspots) · 2.1 (worst: payments/processor.ts) · 7.0 (maintainability) · 9.1 (performance)
 ```
 
 ## Comparison

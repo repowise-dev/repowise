@@ -20,6 +20,9 @@ export interface HealthSummary {
   /** Maintainability pillar headline (the co-surfaced second signal). `null`
    *  when no file carries a maintainability score yet. */
   maintainability_average?: number | null;
+  /** Performance pillar headline (the co-surfaced third signal: static
+   *  performance RISK). `null` when no file carries a performance score yet. */
+  performance_average?: number | null;
 }
 
 export interface HealthKpiCardsProps {
@@ -45,8 +48,9 @@ export function HealthKpiCards({
 }: HealthKpiCardsProps) {
   const band = summary.band ?? bandForScore(summary.average_health);
   const maint = summary.maintainability_average;
+  const perf = summary.performance_average;
   return (
-    <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+    <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-7">
       <Card label="Files Analyzed">
         <p className="text-2xl font-bold text-[var(--color-text-primary)] tabular-nums">
           {formatNumber(summary.file_count)}
@@ -91,6 +95,31 @@ export function HealthKpiCards({
             </span>
             <span className={`text-xs font-semibold uppercase tracking-wide ${healthBandTextColor(bandForScore(maint))}`}>
               {HEALTH_BAND_LABEL[bandForScore(maint)]}
+            </span>
+          </p>
+        )}
+      </Card>
+      <Card
+        label="Performance"
+        hint="A third, parallel health signal: static performance RISK — I/O-in-loop / N+1 shapes (a DB, network, filesystem, or subprocess call per loop iteration), detected across function boundaries via the call graph and resolved to a classified I/O boundary. High precision, low recall; never blended into the defect score. NLOC-weighted across the repo."
+      >
+        {perf == null ? (
+          <p className="text-2xl font-bold tabular-nums text-[var(--color-text-tertiary)]">
+            —
+            <span className="ml-1 align-middle text-xs font-normal text-[var(--color-text-tertiary)]">
+              not measured
+            </span>
+          </p>
+        ) : (
+          <p
+            className={`flex items-baseline gap-2 text-2xl font-bold tabular-nums ${scoreTextColor(perf)}`}
+          >
+            <span>
+              {perf.toFixed(1)}
+              <span className="text-base font-normal text-[var(--color-text-secondary)]">/10</span>
+            </span>
+            <span className={`text-xs font-semibold uppercase tracking-wide ${healthBandTextColor(bandForScore(perf))}`}>
+              {HEALTH_BAND_LABEL[bandForScore(perf)]}
             </span>
           </p>
         )}

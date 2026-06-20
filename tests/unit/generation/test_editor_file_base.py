@@ -51,13 +51,17 @@ def test_render_contains_repo_name(gen):
     assert "test-repo" in result
 
 
-def _health_block(maintainability_average: float | None) -> CodeHealthBlock:
+def _health_block(
+    maintainability_average: float | None,
+    performance_average: float | None = None,
+) -> CodeHealthBlock:
     return CodeHealthBlock(
         hotspot_health=5.0,
         average_health=7.5,
         worst_score=2.0,
         worst_path="src/bad.py",
         maintainability_average=maintainability_average,
+        performance_average=performance_average,
     )
 
 
@@ -77,6 +81,26 @@ def test_render_omits_maintainability_when_unmeasured(gen):
     # Defect-risk block still renders; the maintainability line is suppressed.
     assert "Hotspot health" in result
     assert "Maintainability, Average" not in result
+
+
+def test_render_surfaces_performance_when_present(gen):
+    import dataclasses
+
+    data = dataclasses.replace(
+        _minimal_data(), code_health=_health_block(6.4, performance_average=9.2)
+    )
+    result = gen.render(data)
+    assert "Performance risk, Average: 9.2/10" in result
+
+
+def test_render_omits_performance_when_unmeasured(gen):
+    import dataclasses
+
+    data = dataclasses.replace(_minimal_data(), code_health=_health_block(6.4))
+    result = gen.render(data)
+    # Maintainability still renders; the performance line is suppressed.
+    assert "Maintainability, Average: 6.4/10" in result
+    assert "Performance risk, Average" not in result
 
 
 def test_write_creates_new_file(gen, tmp_path):

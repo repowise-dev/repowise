@@ -168,6 +168,16 @@ export function HealthFileDrawer({
                     </span>
                   )
                 } />
+                <Stat label="Performance" value={
+                  metric.performance_score == null ? (
+                    <span className="text-xs text-[var(--color-text-tertiary)]">—</span>
+                  ) : (
+                    <span className={`inline-flex items-baseline rounded px-2 py-0.5 font-bold tabular-nums ${scoreBadgeClass(metric.performance_score)}`}>
+                      {metric.performance_score.toFixed(1)}
+                      <span className="ml-0.5 text-[10px] font-normal opacity-70">/10</span>
+                    </span>
+                  )
+                } />
                 <Stat label="Max CCN" value={<span className="text-base font-semibold tabular-nums">{metric.max_ccn}</span>} />
                 <Stat label="Nest" value={<span className="text-base font-semibold tabular-nums">{metric.max_nesting}</span>} />
                 <Stat label="NLOC" value={<span className="text-base font-semibold tabular-nums">{metric.nloc}</span>} />
@@ -266,7 +276,9 @@ export function HealthFileDrawer({
                             </span>
                             {(() => {
                               const dim =
-                                f.dimension === "maintainability" || f.dimension === "defect"
+                                f.dimension === "maintainability" ||
+                                f.dimension === "defect" ||
+                                f.dimension === "performance"
                                   ? f.dimension
                                   : biomarkerDimension(f.biomarker_type);
                               return (

@@ -54,6 +54,10 @@ class CodeHealthBlock:
     # maintainability scores). ``None`` until the split populates the column, so
     # the section omits it rather than printing a misleading 10.0.
     maintainability_average: float | None = None
+    # Performance pillar headline (NLOC-weighted average over the per-file
+    # performance scores: static performance RISK). ``None`` when unmeasured, so
+    # the section omits the line rather than printing a misleading 10.0.
+    performance_average: float | None = None
     critical_biomarkers: list[dict] = field(default_factory=list)
     untested_hotspots: list[dict] = field(default_factory=list)
 
