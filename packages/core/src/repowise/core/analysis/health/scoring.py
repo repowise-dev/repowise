@@ -222,6 +222,12 @@ _BIOMARKER_DIMENSIONS: dict[str, set[str]] = {
     "nested_loop_quadratic": {"performance"},
     "hot_path_sync_io": {"performance"},
     "blocking_io_under_lock": {"performance"},
+    # Phase 7d language-specific markers - performance-only.
+    "list_insert_zero_in_loop": {"performance"},
+    "pd_concat_in_loop": {"performance"},
+    "json_parse_in_loop": {"performance"},
+    "array_spread_in_reduce": {"performance"},
+    "goroutine_in_unbounded_loop": {"performance"},
 }
 
 # Maintainability per-biomarker weight multipliers. Expert-set by definition -
@@ -288,7 +294,11 @@ _MAINTAINABILITY_HOME: frozenset[str] = frozenset(
 _PERFORMANCE_WEIGHT_MULTIPLIER: dict[str, float] = {
     "io_in_loop": 1.0,
     "blocking_sync_in_async": 0.7,
-    "string_concat_in_loop": 0.5,
+    # PROMOTED 0.5 -> 0.7 (Phase-7d): the reset-per-iteration guard lifted Python
+    # precision to 100% (26/26 on the headroom corpus) by dropping the dominant
+    # FP class (an accumulator re-initialized each iteration is bounded, not
+    # O(n^2)). Clears the 70% bar with comfortable n.
+    "string_concat_in_loop": 0.7,
     # Phase 7a markers. Ship at advisory weight pending each one's Phase-0 gate
     # (MARKER_BACKLOG.md); promote to full weight where corpus precision >= 70%.
     # resource_construction is the highest-confidence (classified constructor),
@@ -308,6 +318,15 @@ _PERFORMANCE_WEIGHT_MULTIPLIER: dict[str, float] = {
     "blocking_io_under_lock": 0.6,
     "hot_path_sync_io": 0.5,
     "nested_loop_quadratic": 0.4,
+    # Phase 7d language-specific markers. Ship advisory pending each one's gate
+    # (MARKER_BACKLOG.md / PHASE7D); the two O(n^2)-by-construction Python ones
+    # (front-insert / pd.concat) carry slightly more weight than the moderate-
+    # precision json_parse / goroutine-spawn ones.
+    "list_insert_zero_in_loop": 0.6,
+    "pd_concat_in_loop": 0.6,
+    "array_spread_in_reduce": 0.5,
+    "json_parse_in_loop": 0.4,
+    "goroutine_in_unbounded_loop": 0.4,
 }
 
 # All perf biomarkers share one ``performance`` category, so the single cap
@@ -324,6 +343,11 @@ _PERFORMANCE_CATEGORY: dict[str, str] = {
     "nested_loop_quadratic": "performance",
     "hot_path_sync_io": "performance",
     "blocking_io_under_lock": "performance",
+    "list_insert_zero_in_loop": "performance",
+    "pd_concat_in_loop": "performance",
+    "json_parse_in_loop": "performance",
+    "array_spread_in_reduce": "performance",
+    "goroutine_in_unbounded_loop": "performance",
 }
 
 # One bounded performance category cap. ~1.0 keeps performance advisory.
@@ -345,6 +369,11 @@ _PERFORMANCE_HOME: frozenset[str] = frozenset(
         "nested_loop_quadratic",
         "hot_path_sync_io",
         "blocking_io_under_lock",
+        "list_insert_zero_in_loop",
+        "pd_concat_in_loop",
+        "json_parse_in_loop",
+        "array_spread_in_reduce",
+        "goroutine_in_unbounded_loop",
     }
 )
 

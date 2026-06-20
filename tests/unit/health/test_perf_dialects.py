@@ -280,3 +280,115 @@ def test_python_asyncio_sleep_not_a_sink():
     kinds = {k for k, _ in _hits("python", src)}
     assert "io_in_loop" not in kinds
     assert "serial_await_in_loop" not in kinds
+
+
+# ---------------------------------------------------------------------------
+# Phase-7d marker refinements (precision lifts surfaced by the 7c corpus)
+# ---------------------------------------------------------------------------
+
+
+def test_go_regex_dynamic_pattern_not_flagged():
+    """``regexp.MustCompile(pat)`` with a dynamic arg is not hoistable.
+
+    Phase-7c Go corpus: 10 dynamic-arg cases were UNSURE (the pattern may vary
+    per iteration). Only a string-literal pattern is unambiguously hoistable.
+    """
+    dyn = 'package p\nimport "regexp"\nfunc f(ids []string){ for _, id := range ids { regexp.MustCompile(id) } }\n'
+    lit = 'package p\nimport "regexp"\nfunc f(ids []string){ for _, id := range ids { regexp.MustCompile(`^x$`) } }\n'
+    assert not any(k == "regex_compile_in_loop" for k, _ in _hits("go", dyn))
+    assert ("regex_compile_in_loop", "") in _hits("go", lit)
+
+
+def test_python_string_concat_reset_per_iteration_not_flagged():
+    """``buf = seed; ... buf += part`` reset each iteration is bounded, not O(n^2).
+
+    Phase-7c headroom corpus: reset-per-iteration was the dominant Py FP (77.8%).
+    """
+    reset = (
+        "def f(rows):\n"
+        "    for r in rows:\n"
+        "        buf = 'x'\n"
+        "        for c in r:\n"
+        "            buf += 'y'\n"
+    )
+    accum = (
+        "def g(rows):\n    out = ''\n    for r in rows:\n        out += 'line'\n    return out\n"
+    )
+    assert not any(k == "string_concat_in_loop" for k, _ in _hits("python", reset))
+    assert ("string_concat_in_loop", "") in _hits("python", accum)
+
+
+def test_ts_nested_io_requires_collection_outer_loop():
+    """A ``while`` cursor wrapping an inner ``for ... of`` is io_in_loop, not nested.
+
+    Phase-7c dub corpus: pagination ``while (hasMore) { for (row of chunk) … }``
+    miscounted as ``nested_loop_with_io``; the outer loop must iterate a
+    collection for the O(n*m) round-trip claim to hold.
+    """
+    cursor = (
+        "async function f(prisma){ while (hasMore) { for (const r of chunk) {"
+        " await prisma.user.findMany(); } } }"
+    )
+    nested = (
+        "async function g(prisma, xs, ys){ for (const x of xs) { for (const y of ys) {"
+        " await prisma.user.findMany(); } } }"
+    )
+    assert not any(k == "nested_loop_with_io" for k, _ in _hits("typescript", cursor))
+    assert ("nested_loop_with_io", "db") in _hits("typescript", nested)
+
+
+# ---------------------------------------------------------------------------
+# Phase-7d language-specific markers
+# ---------------------------------------------------------------------------
+
+
+def test_go_goroutine_in_range_loop_but_not_accept_loop():
+    spawn = "package m\nfunc f(items []int){ for _, it := range items { go work(it) } }"
+    accept = "package m\nfunc f(){ for { go handle() } }"
+    # Single-variable ``for i := range n`` is a bounded count loop (Go 1.22
+    # range-over-int / a count constant), not a per-element fan-out (Phase-7d).
+    count = "package m\nfunc f(){ for i := range numG { go work(i) } }"
+    assert ("goroutine_in_unbounded_loop", "") in _hits("go", spawn)
+    assert not any(k == "goroutine_in_unbounded_loop" for k, _ in _hits("go", accept))
+    assert not any(k == "goroutine_in_unbounded_loop" for k, _ in _hits("go", count))
+
+
+def test_python_list_insert_zero_vs_variable_index():
+    front = "def f(xs):\n    out = []\n    for x in xs:\n        out.insert(0, x)\n"
+    idx = "def f(xs):\n    out = []\n    for i, x in enumerate(xs):\n        out.insert(i, x)\n"
+    # A list re-created fresh each iteration is bounded, not O(n^2) (Phase-7d
+    # reset guard — the same FP class as string_concat).
+    reset = "def f(xs):\n    for x in xs:\n        cand = [x]\n        cand.insert(0, prev)\n"
+    assert ("list_insert_zero_in_loop", "") in _hits("python", front)
+    assert not any(k == "list_insert_zero_in_loop" for k, _ in _hits("python", idx))
+    assert not any(k == "list_insert_zero_in_loop" for k, _ in _hits("python", reset))
+
+
+def test_ts_json_parse_only_deep_clone_idiom():
+    """Bare ``JSON.parse(x.payload)`` of a distinct per-iteration payload is
+    necessary work (Phase-7d: bare parse/stringify was 0% precision)."""
+    bare = "function f(xs){ for (const x of xs) { const c = JSON.parse(x.payload); } }"
+    assert not any(k == "json_parse_in_loop" for k, _ in _hits("typescript", bare))
+
+
+def test_python_pd_concat_in_loop():
+    src = (
+        "import pandas as pd\n"
+        "def f(chunks):\n"
+        "    df = pd.DataFrame()\n"
+        "    for c in chunks:\n"
+        "        df = pd.concat([df, c])\n"
+    )
+    assert ("pd_concat_in_loop", "") in _hits("python", src)
+
+
+def test_ts_json_parse_in_loop():
+    src = "function f(xs){ for (const x of xs) { const c = JSON.parse(JSON.stringify(x)); } }"
+    assert ("json_parse_in_loop", "") in _hits("typescript", src)
+
+
+def test_ts_array_spread_in_reduce_vs_push():
+    spread = "function f(xs){ return xs.reduce((acc, x) => [...acc, x], []); }"
+    push = "function f(xs){ return xs.reduce((acc, x) => { acc.push(x); return acc; }, []); }"
+    assert ("array_spread_in_reduce", "") in _hits("typescript", spread)
+    assert not any(k == "array_spread_in_reduce" for k, _ in _hits("typescript", push))

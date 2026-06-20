@@ -95,11 +95,30 @@ class TsJsPerfDialect(BasePerfDialect):
             "nested_loop_with_io",
             "nested_loop_quadratic",
             "hot_path_sync_io",
+            # Phase 7d — JS/TS-specific anti-patterns.
+            "json_parse_in_loop",
+            "array_spread_in_reduce",
         }
     )
 
     string_literal_kinds = _TS_STRING_KINDS
     aug_assign_kinds = _TS_AUG_ASSIGN_KINDS
+
+    # Only ``for ... of`` / ``for ... in`` multiply over a collection. C-style
+    # ``for (;;)``, ``while`` and ``do`` are cursors (pagination / polling), so
+    # they do not make an inner sink a nested O(n*m) round-trip.
+    _ITERATION_LOOP_KINDS: frozenset[str] = frozenset({"for_in_statement", "for_of_statement"})
+
+    def is_iteration_loop(self, node: Node) -> bool:
+        return node.type in self._ITERATION_LOOP_KINDS
+
+    def loop_iterable_name(self, node: Node) -> str | None:
+        if node.type not in self._ITERATION_LOOP_KINDS:
+            return None
+        right = node.child_by_field_name("right")
+        if right is not None and right.type in ("identifier", "member_expression"):
+            return self._dotted_path(right)
+        return None
 
     def sink_kind(
         self,
@@ -135,7 +154,94 @@ class TsJsPerfDialect(BasePerfDialect):
         # ``arr.includes(x)`` where ``arr`` is a known array -> O(n) membership.
         if method == "includes" and root in list_names:
             return "membership_test_against_list_in_loop"
+        # ``JSON.parse(JSON.stringify(x))`` deep-clone in a loop is the canonical
+        # waste (use ``structuredClone``). Phase-7d gate: a BARE ``JSON.parse`` /
+        # ``JSON.stringify`` per iteration was 0% precision (30/30 were
+        # format-conversion loops serializing a DISTINCT payload each pass —
+        # necessary work, not waste), so the marker is restricted to the
+        # deep-clone idiom, which is unconditionally hoistable.
+        if root == "JSON" and method == "parse" and self._arg_is_json_stringify(node):
+            return "json_parse_in_loop"
         return None
+
+    @staticmethod
+    def _arg_is_json_stringify(node: Node) -> bool:
+        """True if the call's first argument is itself a ``JSON.stringify(...)``
+        call — the ``JSON.parse(JSON.stringify(x))`` deep-clone idiom."""
+        args = node.child_by_field_name("arguments")
+        if args is None:
+            return False
+        first = next((c for c in args.children if c.is_named), None)
+        if first is None or first.type != "call_expression":
+            return False
+        fn = first.child_by_field_name("function")
+        return (
+            fn is not None
+            and fn.text is not None
+            and fn.text.decode("utf-8", "replace") == "JSON.stringify"
+        )
+
+    def bare_call_marker(self, root: str, method: str, node: Node) -> str | None:
+        # ``arr.reduce((acc, x) => [...acc, x], [])`` rebuilds the accumulator
+        # every step -> O(n^2). The ``.reduce`` IS the loop, so this fires at any
+        # depth. Precision-first: only when the callback spreads its OWN
+        # accumulator param into a fresh array / object literal.
+        if method != "reduce":
+            return None
+        args = node.child_by_field_name("arguments")
+        if args is None:
+            return None
+        cb = next((c for c in args.children if c.is_named), None)
+        if cb is None or cb.type not in ("arrow_function", "function", "function_expression"):
+            return None
+        acc = self._first_param_name(cb)
+        body = cb.child_by_field_name("body")
+        if acc is None or body is None:
+            return None
+        return "array_spread_in_reduce" if self._spreads_name_in_collection(body, acc) else None
+
+    @staticmethod
+    def _first_param_name(cb: Node) -> str | None:
+        """First parameter identifier of an arrow/function (the reduce accumulator)."""
+        params = cb.child_by_field_name("parameters")
+        if params is not None:
+            for c in params.children:
+                ident = c if c.type == "identifier" else c.child_by_field_name("pattern")
+                if ident is not None and ident.type == "identifier" and ident.text is not None:
+                    return ident.text.decode("utf-8", "replace")
+            return None
+        # ``x => …`` single unparenthesized param.
+        first = next((c for c in cb.children if c.is_named), None)
+        if first is not None and first.type == "identifier" and first.text is not None:
+            return first.text.decode("utf-8", "replace")
+        return None
+
+    @staticmethod
+    def _spreads_name_in_collection(body: Node, name: str) -> bool:
+        """True if *body* spreads ``name`` into an array / object literal
+        (``[...name, x]`` / ``{...name}``) — the O(n^2) accumulator rebuild."""
+        stack: list[Node] = [body]
+        while stack:
+            n = stack.pop()
+            if (
+                n.type == "spread_element"
+                and n.parent is not None
+                and n.parent.type
+                in (
+                    "array",
+                    "object",
+                )
+            ):
+                arg = next((c for c in n.children if c.is_named), None)
+                if (
+                    arg is not None
+                    and arg.type == "identifier"
+                    and arg.text is not None
+                    and arg.text.decode("utf-8", "replace") == name
+                ):
+                    return True
+            stack.extend(n.children)
+        return False
 
     def loop_stmt_marker(self, node: Node, list_names: frozenset[str]) -> str | None:
         # ``new PrismaClient(...)`` etc. is a ``new_expression`` (not a

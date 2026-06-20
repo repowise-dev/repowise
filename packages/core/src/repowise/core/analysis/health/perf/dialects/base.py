@@ -181,6 +181,47 @@ class BasePerfDialect:
         """True if this loop's bound is a compile-time constant (not N+1)."""
         return False
 
+    def is_iteration_loop(self, node: Node) -> bool:
+        """True if this loop iterates a *collection* (a data multiplier), rather
+        than spinning a cursor (``while (hasMore)`` / ``for (;;)``).
+
+        The precision lever for the nested-loop markers: only when the OUTER
+        loop multiplies over a collection is an inner I/O sink genuinely O(n*m).
+        A pagination ``while`` cursor wrapping an inner ``for ... of chunk`` is
+        ``io_in_loop``, not a nested round-trip explosion (Phase-7c TS corpus).
+        Default ``True`` — a language that does not distinguish keeps today's
+        behavior byte-for-byte; TS/JS overrides this to exclude ``while`` /
+        C-style ``for`` cursors.
+        """
+        return True
+
+    @staticmethod
+    def _dotted_path(node: Node | None) -> str | None:
+        """The text of *node* if it is a stable dotted path (``items`` /
+        ``self.items`` / ``a.b.c``) with no call / subscript / index, else None.
+
+        Lets the same-collection ``nested_loop_quadratic`` gate compare two
+        loops iterating ``self.items`` — not only bare locals — while excluding
+        ``get_items()`` / ``rows[i]`` which are not stable identities."""
+        if node is None or node.text is None:
+            return None
+        txt = node.text.decode("utf-8", "replace")
+        if not txt or not (txt[0].isalpha() or txt[0] == "_"):
+            return None
+        return txt if all(c.isalnum() or c in "_." for c in txt) else None
+
+    def loop_iterable_name(self, node: Node) -> str | None:
+        """Bare identifier this loop iterates over (``for x in items`` -> 'items'),
+        or ``None`` when it is not a simple name.
+
+        The gate for the same-collection ``nested_loop_quadratic`` shape: two
+        nested loops over the SAME named collection are an all-pairs O(n^2) site
+        (the high-precision shape that replaces raw nesting depth). Default
+        ``None`` so a language that does not override it never fires the shaped
+        marker. Precision-first by construction.
+        """
+        return None
+
     def is_string_concat(self, node: Node) -> bool:
         """True if *node* is a ``+=`` accumulation onto a string."""
         if not self.aug_assign_kinds or node.type not in self.aug_assign_kinds:
@@ -237,6 +278,18 @@ class BasePerfDialect:
         ``lock_in_loop`` (``lock.acquire`` / ``mu.Lock``), and the JS/TS
         ``arr.includes`` form of ``membership_test_against_list_in_loop`` (gated
         on ``root in list_names``). Default ``None``.
+        """
+        return None
+
+    def bare_call_marker(self, root: str, method: str, node: Node) -> str | None:
+        """Marker kind for a *call* that is its own iteration construct, so it is
+        a perf smell at ANY loop depth (not only inside an outer loop).
+
+        Used for ``array_spread_in_reduce`` (``arr.reduce((a,x)=>[...a,x], [])``
+        rebuilds the accumulator every step -> O(n^2)): the ``.reduce`` IS the
+        loop, so unlike :meth:`loop_call_marker` this fires without an enclosing
+        loop. Default ``None`` so a language that does not override it is
+        byte-for-byte unchanged.
         """
         return None
 

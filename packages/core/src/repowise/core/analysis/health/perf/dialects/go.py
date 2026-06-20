@@ -114,6 +114,8 @@ class GoPerfDialect(BasePerfDialect):
             "nested_loop_with_io",
             "nested_loop_quadratic",
             "hot_path_sync_io",
+            # Phase 7d — Go-specific spawn explosion.
+            "goroutine_in_unbounded_loop",
         }
     )
 
@@ -186,7 +188,12 @@ class GoPerfDialect(BasePerfDialect):
     def loop_call_marker(
         self, root: str, method: str, node: Node, list_names: frozenset[str]
     ) -> str | None:
-        if root == "regexp" and method in GO_REGEX_COMPILE:
+        if root == "regexp" and method in GO_REGEX_COMPILE and self._has_static_pattern_arg(node):
+            # Only a *string-literal* pattern is unambiguously hoistable: a
+            # dynamic argument (``regexp.MustCompile(pat)`` / a concatenation with
+            # a per-iteration variable) may legitimately vary each iteration and
+            # cannot be lifted out of the loop. Phase-7c Go corpus: the 10
+            # dynamic-arg cases were all UNSURE; gating on a literal removes them.
             return "regex_compile_in_loop"
         if (root, method) in GO_RESOURCE_CTORS:
             return "resource_construction_in_loop"
@@ -196,10 +203,77 @@ class GoPerfDialect(BasePerfDialect):
             return "lock_in_loop"
         return None
 
+    def loop_iterable_name(self, node: Node) -> str | None:
+        """The collection a ``for _, x := range coll`` loop iterates (``coll``)."""
+        if node.type != "for_statement":
+            return None
+        clause = next((c for c in node.children if c.type == "range_clause"), None)
+        if clause is None:
+            return None
+        # ``range_clause`` ends with the iterated expression after the ``range``
+        # keyword; take the last named child when it is a bare identifier.
+        named = [c for c in clause.children if c.is_named]
+        if named and named[-1].type in ("identifier", "selector_expression"):
+            return self._dotted_path(named[-1])
+        return None
+
+    @staticmethod
+    def _has_static_pattern_arg(node: Node) -> bool:
+        """True if the call's first argument is a compile-time string literal.
+
+        ``regexp.MustCompile("^foo$")`` is hoistable; ``regexp.MustCompile(pat)``
+        or ``regexp.MustCompile("^"+x)`` may vary per iteration and is excluded.
+        """
+        args = node.child_by_field_name("arguments")
+        if args is None:
+            return False
+        first = next((c for c in args.children if c.is_named), None)
+        return first is not None and first.type in _GO_STRING_KINDS
+
     def loop_stmt_marker(self, node: Node, list_names: frozenset[str]) -> str | None:
         if node.type == "defer_statement":
             return "defer_in_loop"
+        # ``go func(){…}()`` spawned per element of a ``for … range`` loop fans
+        # out one goroutine per item with no concurrency bound (the spawn-
+        # explosion anti-pattern: should use a worker pool / semaphore). Gated to
+        # a RANGE loop — a bare ``for {}`` accept loop or a ``for cond`` cursor
+        # spawns one-per-event (idiomatic), so it is excluded.
+        if node.type == "go_statement" and self._nearest_for_is_range(node):
+            return "goroutine_in_unbounded_loop"
         return None
+
+    @staticmethod
+    def _nearest_for_is_range(node: Node) -> bool:
+        """True if the nearest enclosing ``for`` loop ranges over a COLLECTION.
+
+        Phase-7d gate: a single-variable ``for i := range n`` (Go 1.22
+        range-over-int, or a count constant) is a bounded count loop, NOT a
+        per-element fan-out — both 0%-precision FPs were ``for i := range
+        <const>`` in tests. The two-variable ``for k, v := range coll`` form is
+        only legal over a slice / map / string / channel, so requiring a value
+        variable isolates the genuine per-element spawn. Stops at the function
+        boundary.
+        """
+        cur = node.parent
+        for _ in range(64):
+            if cur is None or cur.type in (
+                "function_declaration",
+                "method_declaration",
+                "func_literal",
+            ):
+                return False
+            if cur.type == "for_statement":
+                clause = next((c for c in cur.children if c.type == "range_clause"), None)
+                if clause is None:
+                    return False
+                left = clause.child_by_field_name("left")
+                if left is None:
+                    return False
+                # ``left`` is an expression_list of the range variables; a value
+                # variable (>= 2) proves iteration over a collection.
+                return sum(1 for c in left.children if c.is_named) >= 2
+            cur = cur.parent
+        return False
 
 
 DIALECT = GoPerfDialect()

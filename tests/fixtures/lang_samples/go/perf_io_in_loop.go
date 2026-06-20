@@ -42,7 +42,8 @@ func deferInLoop(paths []string) {
 
 func regexpCompileInRange(ids []string) {
 	for _, id := range ids {
-		regexp.MustCompile(id) // POSITIVE: recompiled per iteration
+		regexp.MustCompile(`^[a-z]+$`) // POSITIVE: a static literal pattern, hoistable
+		regexp.MustCompile(id)         // NEGATIVE: a dynamic per-iteration arg cannot be hoisted
 	}
 }
 

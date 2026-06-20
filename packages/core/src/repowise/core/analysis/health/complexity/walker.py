@@ -33,6 +33,8 @@ from .languages import LanguageNodeMap, get_language_map
 if TYPE_CHECKING:
     from tree_sitter import Node
 
+    from ..perf.dialects.base import BasePerfDialect
+
 log = structlog.get_logger(__name__)
 
 
@@ -1010,6 +1012,10 @@ _LOOP_CALL_MARKER_KINDS = frozenset(
         "resource_construction_in_loop",
         "lock_in_loop",
         "membership_test_against_list_in_loop",
+        # Phase 7d — language-specific call markers.
+        "list_insert_zero_in_loop",
+        "pd_concat_in_loop",
+        "json_parse_in_loop",
     }
 )
 _LOOP_STMT_MARKER_KINDS = frozenset(
@@ -1018,8 +1024,13 @@ _LOOP_STMT_MARKER_KINDS = frozenset(
         "resource_construction_in_loop",
         "lock_in_loop",
         "membership_test_against_list_in_loop",
+        # Phase 7d — language-specific statement markers.
+        "goroutine_in_unbounded_loop",
     }
 )
+# Markers for a call that is its OWN iteration construct (``.reduce``), a perf
+# smell at any loop depth — emitted via ``dialect.bare_call_marker``.
+_BARE_CALL_MARKER_KINDS = frozenset({"array_spread_in_reduce"})
 
 # Boundary kinds that are *unambiguously blocking* when called synchronously, so
 # a loop_depth-0 occurrence in a hot function is a ``hot_path_sync_io`` candidate.
@@ -1052,6 +1063,25 @@ def _perf_func_name(node: Node) -> str | None:
     return None
 
 
+def _enclosing_loop_iterables(
+    node: Node, dialect: BasePerfDialect, loop_kinds: frozenset[str], fn_kinds: frozenset[str]
+) -> set[str]:
+    """Names of the collections every enclosing loop (up to the function bound)
+    iterates over — the lookup the same-collection ``nested_loop_quadratic``
+    shape gate compares the inner loop's iterable against."""
+    names: set[str] = set()
+    cur = node.parent
+    for _ in range(64):
+        if cur is None or cur.type in fn_kinds:
+            break
+        if cur.type in loop_kinds:
+            nm = dialect.loop_iterable_name(cur)
+            if nm:
+                names.add(nm)
+        cur = cur.parent
+    return names
+
+
 def _collect_perf_hits(
     root: Node, language: str, lmap: LanguageNodeMap
 ) -> tuple[list[PerfHit], dict[str, str], list[PerfFnFacts]]:
@@ -1081,6 +1111,7 @@ def _collect_perf_hits(
     do_blocking = "blocking_sync_in_async" in markers
     do_loop_call_marker = bool(markers & _LOOP_CALL_MARKER_KINDS)
     do_loop_stmt_marker = bool(markers & _LOOP_STMT_MARKER_KINDS)
+    do_bare_call_marker = bool(markers & _BARE_CALL_MARKER_KINDS)
     do_serial_await = "serial_await_in_loop" in markers
     # Phase 7b markers.
     do_nested_io = "nested_loop_with_io" in markers
@@ -1124,10 +1155,14 @@ def _collect_perf_hits(
             fn_acc[func_start] = entry
         return entry[1], entry[2], entry[3], entry[4]
 
-    # (node, loop_depth, in_async, func_name, func_start, lock_depth)
-    stack: list[tuple[Node, int, bool, str | None, int, int]] = [(root, 0, False, None, 0, 0)]
+    # (node, loop_depth, in_async, func_name, func_start, lock_depth, outer_iter)
+    # ``outer_iter`` is whether the OUTERMOST enclosing loop iterates a collection
+    # (vs a ``while``/cursor) — the precision gate for ``nested_loop_with_io``.
+    stack: list[tuple[Node, int, bool, str | None, int, int, bool]] = [
+        (root, 0, False, None, 0, 0, True)
+    ]
     while stack:
-        node, loop_depth, in_async, func_name, func_start, lock_depth = stack.pop()
+        node, loop_depth, in_async, func_name, func_start, lock_depth, outer_iter = stack.pop()
         t = node.type
 
         is_loop = t in loop_kinds
@@ -1148,9 +1183,15 @@ def _collect_perf_hits(
         # engine emits ``nested_loop_quadratic`` only when the function is hot
         # (centrality gate), so the noisy-everywhere shape never ships ungated.
         if is_loop and loop_depth >= 1 and do_nested_quadratic:
-            misc = _acc(next_start, next_func)[3]
-            if misc[0] == 0:
-                misc[0] = node.start_point[0] + 1
+            # Shape gate (Phase-7d): raw nesting depth was ~3-20% precision in
+            # every language. Fire only on the SAME-COLLECTION shape — the inner
+            # loop iterates the same named collection as an enclosing loop
+            # (all-pairs O(n^2)) — which all four Phase-7c labelers converged on.
+            nm = dialect.loop_iterable_name(node)
+            if nm and nm in _enclosing_loop_iterables(node, dialect, loop_kinds, fn_kinds):
+                misc = _acc(next_start, next_func)[3]
+                if misc[0] == 0:
+                    misc[0] = node.start_point[0] + 1
 
         if t in call_kinds:
             method = dialect.callee_method_name(node) or ""
@@ -1158,6 +1199,12 @@ def _collect_perf_hits(
             parent = node.parent
             awaited = parent is not None and "await" in parent.type
             line = node.start_point[0] + 1
+            if do_bare_call_marker:
+                # A call that is its own iteration construct (``.reduce`` with an
+                # accumulator spread) — a perf smell at any loop depth.
+                bare = dialect.bare_call_marker(root_name, method, node)
+                if bare is not None:
+                    hits.append(PerfHit(bare, line, next_func, "", func_start=next_start))
             kind = dialect.sink_kind(
                 root_name,
                 method,
@@ -1180,10 +1227,14 @@ def _collect_perf_hits(
                                 "serial_await_in_loop", line, next_func, kind, func_start=next_start
                             )
                         )
-                    if do_nested_io and loop_depth >= 2:
+                    if do_nested_io and loop_depth >= 2 and outer_iter:
                         # A sink in the inner body of a NESTED loop -> O(n·m)
                         # round-trips. Nesting raises confidence, so it ships
-                        # un-gated alongside ``io_in_loop``.
+                        # un-gated alongside ``io_in_loop`` — but only when the
+                        # OUTER loop iterates a collection (``outer_iter``): a
+                        # ``while`` pagination cursor wrapping an inner ``for ...
+                        # of chunk`` is ``io_in_loop``, not a nested explosion
+                        # (Phase-7c TS while-cursor FP).
                         hits.append(
                             PerfHit(
                                 "nested_loop_with_io", line, next_func, kind, func_start=next_start
@@ -1293,6 +1344,9 @@ def _collect_perf_hits(
         entering_lock = do_lock_io and dialect.is_lock_scope(node)
 
         if is_loop:
+            # The outermost loop in a nest fixes ``outer_iter``; deeper loops
+            # inherit it. Set when entering the first loop (loop_depth 0 -> 1).
+            next_outer_iter = outer_iter if loop_depth >= 1 else dialect.is_iteration_loop(node)
             # Only the loop BODY runs per-iteration; the ``for x in <iterable>``
             # header / ``while <cond>`` condition runs once.
             body = node.child_by_field_name("body")
@@ -1301,18 +1355,32 @@ def _collect_perf_hits(
                 # with ``==`` (identity by tree + byte range), never ``is``.
                 for c in node.children:
                     cd = loop_depth + 1 if c == body else loop_depth
-                    stack.append((c, cd, next_async, next_func, next_start, lock_depth))
+                    stack.append(
+                        (c, cd, next_async, next_func, next_start, lock_depth, next_outer_iter)
+                    )
             else:
                 for c in node.children:
-                    stack.append((c, loop_depth + 1, next_async, next_func, next_start, lock_depth))
+                    stack.append(
+                        (
+                            c,
+                            loop_depth + 1,
+                            next_async,
+                            next_func,
+                            next_start,
+                            lock_depth,
+                            next_outer_iter,
+                        )
+                    )
         elif entering_lock:
             # Raise lock_depth for the body block only (not the lock-object expr).
             for c in node.children:
                 cl = lock_depth + 1 if c.type in _LOCK_BODY_KINDS else lock_depth
-                stack.append((c, loop_depth, next_async, next_func, next_start, cl))
+                stack.append((c, loop_depth, next_async, next_func, next_start, cl, outer_iter))
         else:
             for c in node.children:
-                stack.append((c, loop_depth, next_async, next_func, next_start, lock_depth))
+                stack.append(
+                    (c, loop_depth, next_async, next_func, next_start, lock_depth, outer_iter)
+                )
 
     # Dedup chained sinks: ``result.scalars().all()`` parses as two call nodes
     # on one line (the ``.scalars()`` sink and the ``.all()`` materializer) —

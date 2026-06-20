@@ -108,6 +108,9 @@ class PythonPerfDialect(BasePerfDialect):
             "nested_loop_with_io",
             "nested_loop_quadratic",
             "hot_path_sync_io",
+            # Phase 7d — Python-specific quadratic anti-patterns.
+            "list_insert_zero_in_loop",
+            "pd_concat_in_loop",
         }
     )
 
@@ -199,6 +202,80 @@ class PythonPerfDialect(BasePerfDialect):
             return True
         return False
 
+    # Builtins that wrap a collection without changing what is iterated, so the
+    # same-collection O(n^2) shape sees through them: ``for x in enumerate(items)``
+    # iterates ``items``.
+    _ITER_WRAPPERS: frozenset[str] = frozenset({"enumerate", "sorted", "reversed", "list", "set"})
+
+    def loop_iterable_name(self, node: Node) -> str | None:
+        if node.type != "for_statement":
+            return None
+        right = node.child_by_field_name("right")
+        if right is None:
+            return None
+        if right.type in ("identifier", "attribute"):
+            return self._dotted_path(right)
+        if right.type == "call":
+            fn = right.child_by_field_name("function")
+            if fn is None or fn.text is None:
+                return None
+            if fn.text.decode("utf-8", "replace") not in self._ITER_WRAPPERS:
+                return None
+            args = right.child_by_field_name("arguments")
+            if args is None:
+                return None
+            first = next((c for c in args.children if c.is_named), None)
+            if first is not None and first.type == "identifier" and first.text is not None:
+                return first.text.decode("utf-8", "replace")
+        return None
+
+    def is_string_concat(self, node: Node) -> bool:
+        """``s += "x"`` accumulation — but skip an accumulator that is *reset*
+        each iteration of an enclosing loop.
+
+        ``buf = base[:N]; ... buf += part`` inside a loop builds a fresh, bounded
+        string per iteration (not the O(n^2) cross-iteration accumulation the
+        marker targets), so it is a false positive. Phase-7c headroom corpus:
+        the reset-per-iteration shape was the dominant FP class (Py 77.8%). When
+        the same name is plainly re-assigned inside an enclosing loop body, the
+        ``+=`` cannot accumulate across iterations, so do not flag it.
+        """
+        if not super().is_string_concat(node):
+            return False
+        left = node.child_by_field_name("left")
+        if left is None or left.type != "identifier" or left.text is None:
+            return True  # opaque target -> keep the (precision-first) flag
+        name = left.text.decode("utf-8", "replace")
+        cur = node.parent
+        while cur is not None:
+            if cur.type in ("for_statement", "while_statement"):
+                body = cur.child_by_field_name("body")
+                if body is not None and self._resets_name(body, name, node):
+                    return False
+            cur = cur.parent
+        return True
+
+    @staticmethod
+    def _resets_name(body: Node, name: str, exclude: Node) -> bool:
+        """True if *body* contains a plain ``name = ...`` assignment (not the
+        ``+=`` node *exclude* itself) — i.e. the accumulator is reset here."""
+        stack: list[Node] = [body]
+        while stack:
+            n = stack.pop()
+            if n.type == "assignment" and not (
+                n.start_byte == exclude.start_byte and n.end_byte == exclude.end_byte
+            ):
+                lhs = n.child_by_field_name("left")
+                if (
+                    lhs is not None
+                    and lhs.type == "identifier"
+                    and lhs.text is not None
+                    and lhs.text.decode("utf-8", "replace") == name
+                ):
+                    return True
+            stack.extend(n.children)
+        return False
+
     def blocking_sync_api(self, root: str, method: str) -> str | None:
         """The offending API name if ``root.method`` is a known blocking sync call.
 
@@ -228,7 +305,52 @@ class PythonPerfDialect(BasePerfDialect):
         # extra guard against a bare-name collision).
         if method in _PY_LOCK_METHODS and self.callee_is_attribute(node):
             return "lock_in_loop"
+        # ``lst.insert(0, x)`` each iteration shifts the whole list -> O(n^2);
+        # ``collections.deque.appendleft`` / build-then-reverse is O(n). Gated to
+        # a literal ``0`` first arg (``insert(i, x)`` at a variable index is not
+        # the front-insertion anti-pattern) AND to a list that is not re-created
+        # each iteration (a fresh ``buf = [...]; buf.insert(0, x)`` is bounded,
+        # not O(n^2) — the same reset-per-iteration FP class as string_concat;
+        # Phase-7d headroom corpus).
+        if (
+            method == "insert"
+            and self.callee_is_attribute(node)
+            and self._first_arg_is_zero(node)
+            and not self._receiver_reset_in_loop(node, root)
+        ):
+            return "list_insert_zero_in_loop"
+        # ``pd.concat([acc, chunk])`` / ``pandas.concat(...)`` in a loop copies
+        # the whole frame each pass -> O(n^2); collect a list and concat once.
+        if root in ("pd", "pandas") and method == "concat":
+            return "pd_concat_in_loop"
         return None
+
+    def _receiver_reset_in_loop(self, node: Node, name: str) -> bool:
+        """True if the call's receiver ``name`` is re-assigned (reset to a fresh
+        list) inside an enclosing loop body — so the per-front-insert is bounded
+        per iteration, not an O(n^2) accumulation."""
+        if not name:
+            return False
+        cur = node.parent
+        while cur is not None:
+            if cur.type in ("for_statement", "while_statement"):
+                body = cur.child_by_field_name("body")
+                if body is not None and self._resets_name(body, name, node):
+                    return True
+            cur = cur.parent
+        return False
+
+    @staticmethod
+    def _first_arg_is_zero(node: Node) -> bool:
+        args = node.child_by_field_name("arguments")
+        if args is None:
+            return False
+        first = next((c for c in args.children if c.is_named), None)
+        return (
+            first is not None
+            and first.type == "integer"
+            and (first.text or b"").decode("utf-8", "replace") == "0"
+        )
 
     def loop_stmt_marker(self, node: Node, list_names: frozenset[str]) -> str | None:
         # ``x in big_list`` / ``x not in big_list`` where ``big_list`` is a

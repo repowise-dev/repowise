@@ -188,10 +188,29 @@ below) rather than the shared core:
 
 - **`regex_compile_in_loop`** (Java, Go): a `Pattern.compile` /
   `regexp.MustCompile` recompiled every iteration instead of hoisted. Skipped on
-  Python / .NET, which cache compiled patterns.
+  Python / .NET, which cache compiled patterns; on Go it fires only for a
+  **string-literal pattern** (a dynamic argument may legitimately vary per
+  iteration and cannot be hoisted).
 - **`defer_in_loop`** (Go): a `defer` inside a loop holds the deferred handle
   until the enclosing function returns, not the iteration: the classic Go file /
   row-handle leak. A pure syntactic shape, very high precision.
+- **`goroutine_in_unbounded_loop`** (Go): a `go …()` spawned per element of a
+  `for k, v := range coll` loop, with no concurrency bound — a spawn explosion
+  (use a worker pool / bounded `errgroup`). Restricted to the two-variable
+  `range` form, which is only legal over a collection (a single-variable
+  `for i := range n` is a bounded count loop). Advisory.
+- **`list_insert_zero_in_loop`** (Python): `lst.insert(0, x)` each iteration
+  shifts the whole list (O(n²)); use `collections.deque.appendleft`. Gated to a
+  literal `0` index and to a list not re-created each iteration.
+- **`pd_concat_in_loop`** (Python): `pd.concat([acc, chunk])` inside a loop
+  copies the whole frame each pass (O(n²)); collect chunks and concat once.
+- **`json_parse_in_loop`** (JS/TS): the `JSON.parse(JSON.stringify(x))`
+  deep-clone idiom in a loop (use `structuredClone`). Restricted to that idiom —
+  parsing a *distinct* payload each iteration is necessary work, not waste.
+  Advisory.
+- **`array_spread_in_reduce`** (JS/TS): `arr.reduce((a, x) => [...a, x], [])`
+  rebuilds the accumulator every step (O(n²)); push-and-return instead. The
+  `.reduce` is itself the loop, so this fires regardless of an enclosing loop.
 - **sync-over-async** (C#, via `blocking_sync_in_async`): `.Result` / `.Wait()`
   / `.GetAwaiter().GetResult()` inside an `async` method blocks a thread-pool
   thread. C# is the one non-Python language with real `async`/`await`.
@@ -215,10 +234,14 @@ gated for precision: distinctive sinks (EF `*Async`, Spring-Data `findBy*`, JDBC
 db-import evidence. **`io_in_loop` is validated across languages** on an 11-repo
 OSS corpus: Go 96.7%, TypeScript 100%, Python 96.2% hand-labeled precision; the
 `blocking_sync_in_async` C# `.Result`/Result-pattern collision and the Go
-`*sql.Rows.Scan` cursor FP were caught and fixed by that validation. `nested_loop_quadratic`
-measured below the bar in every language (centrality gates volume, not shape) and
-stays advisory-only, as does `blocking_io_under_lock` (rare-by-good-practice: zero
-corpus instances even on concurrency-heavy Java).
+`*sql.Rows.Scan` cursor FP were caught and fixed by that validation.
+`string_concat_in_loop` is validated at 100% (26/26) after a reset-per-iteration
+guard (an accumulator re-initialized each iteration is bounded, not O(n²)).
+`nested_loop_quadratic` now fires only on a **same-collection** shape (two nested
+loops over the same collection = all-pairs O(n²)) instead of raw nesting depth;
+that makes it precision-safe-by-construction but rare, so it stays advisory-only,
+as do `blocking_io_under_lock`, `pd_concat_in_loop`, `json_parse_in_loop`, and
+`goroutine_in_unbounded_loop` (high-precision by construction, low corpus recall).
 
 **Soundness limits (honest, by design).** Performance is a *static* signal, so
 it under-reports rather than over-reports (these cap recall, not precision):

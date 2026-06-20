@@ -248,11 +248,12 @@ def test_perf_category_cap_bounds_dimension():
 
 
 def test_perf_bonus_markers_advisory_weight():
-    """string_concat (0.5) and blocking_sync (0.7) ride at reduced weight."""
+    """string_concat (0.7, Phase-7d promoted) and blocking_sync (0.7) ride at
+    reduced weight."""
     assert dimensions_for("string_concat_in_loop") == {"performance"}
     assert dimensions_for("blocking_sync_in_async") == {"performance"}
-    s1, _ = score_file([_r("string_concat_in_loop", Severity.LOW)])  # 0.3 * 0.5
-    assert s1["performance"] == round(10.0 - 0.15, 2)
+    s1, _ = score_file([_r("string_concat_in_loop", Severity.LOW)])  # 0.3 * 0.7
+    assert s1["performance"] == round(10.0 - 0.21, 2)
     s2, _ = score_file([_r("blocking_sync_in_async", Severity.MEDIUM)])  # 0.7 * 0.7
     assert s2["performance"] == round(10.0 - 0.49, 2)
 

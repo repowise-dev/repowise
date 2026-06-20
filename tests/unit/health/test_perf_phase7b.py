@@ -145,12 +145,23 @@ def test_blocking_io_under_lock_same_function(lang, src, expected, note):
 
 
 def test_walker_records_nested_loop_fact_not_a_hit():
-    src = "def f(xs, ys):\n    for x in xs:\n        for y in ys:\n            use(x, y)\n"
+    # SAME-collection nested iteration (all-pairs O(n^2)) — the Phase-7d shape
+    # gate. The fact is recorded for the centrality gate, but no hit is emitted.
+    src = "def f(items):\n    for x in items:\n        for y in items:\n            use(x, y)\n"
     fc = walk_file("t.py", "python", src.encode())
-    # No I/O, no nested_loop_with_io hit — but the fact is recorded for the gate.
     assert all(h.kind != "nested_loop_quadratic" for h in fc.perf_hits)
     fact = {f.function: f for f in fc.perf_fn_facts}["f"]
     assert fact.nested_loop_line == 3  # the inner ``for``
+
+
+def test_walker_skips_different_collection_nested_loops():
+    # Two nested loops over DIFFERENT collections are not an all-pairs O(n^2)
+    # site (it is O(n*m) over independent inputs) — the Phase-7d shape gate drops
+    # this raw-nesting case that previously FP'd nested_loop_quadratic ~3-20%.
+    src = "def f(xs, ys):\n    for x in xs:\n        for y in ys:\n            use(x, y)\n"
+    fc = walk_file("t.py", "python", src.encode())
+    fact = {f.function: f for f in fc.perf_fn_facts}.get("f")
+    assert fact is None or fact.nested_loop_line == 0
 
 
 def test_walker_records_blocking_sink_fact_not_a_hit():
@@ -199,10 +210,10 @@ def _walked(path: str, src: str):
 
 _HOT_SRC = (
     "import subprocess\n"
-    "def hot(xs, ys):\n"
+    "def hot(items):\n"
     "    subprocess.run(['git', 'status'])\n"  # a blocking loop_depth-0 sink (hot_path)
-    "    for x in xs:\n"
-    "        for y in ys:\n"  # nested loop (quadratic)
+    "    for x in items:\n"
+    "        for y in items:\n"  # same-collection nested loop (all-pairs O(n^2))
     "            use(x, y)\n"
 )
 
