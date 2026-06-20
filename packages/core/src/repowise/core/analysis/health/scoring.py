@@ -225,6 +225,7 @@ _BIOMARKER_DIMENSIONS: dict[str, set[str]] = {
     # Phase 7d language-specific markers - performance-only.
     "list_insert_zero_in_loop": {"performance"},
     "pd_concat_in_loop": {"performance"},
+    "pandas_iterrows_in_loop": {"performance"},
     "json_parse_in_loop": {"performance"},
     "array_spread_in_reduce": {"performance"},
     "goroutine_in_unbounded_loop": {"performance"},
@@ -324,6 +325,10 @@ _PERFORMANCE_WEIGHT_MULTIPLIER: dict[str, float] = {
     # precision json_parse / goroutine-spawn ones.
     "list_insert_zero_in_loop": 0.6,
     "pd_concat_in_loop": 0.6,
+    # ``iterrows`` is a documented pandas anti-pattern, high-precision by the
+    # distinctive method name; advisory pending corpus volume (no pandas in the
+    # OSS gate corpus — by-construction, like pd_concat).
+    "pandas_iterrows_in_loop": 0.6,
     "array_spread_in_reduce": 0.5,
     "json_parse_in_loop": 0.4,
     "goroutine_in_unbounded_loop": 0.4,
@@ -345,6 +350,7 @@ _PERFORMANCE_CATEGORY: dict[str, str] = {
     "blocking_io_under_lock": "performance",
     "list_insert_zero_in_loop": "performance",
     "pd_concat_in_loop": "performance",
+    "pandas_iterrows_in_loop": "performance",
     "json_parse_in_loop": "performance",
     "array_spread_in_reduce": "performance",
     "goroutine_in_unbounded_loop": "performance",
@@ -371,6 +377,7 @@ _PERFORMANCE_HOME: frozenset[str] = frozenset(
         "blocking_io_under_lock",
         "list_insert_zero_in_loop",
         "pd_concat_in_loop",
+        "pandas_iterrows_in_loop",
         "json_parse_in_loop",
         "array_spread_in_reduce",
         "goroutine_in_unbounded_loop",

@@ -47,6 +47,7 @@ from .nested_complexity import NestedComplexityDetector
 from .nested_loop_quadratic import NestedLoopQuadraticDetector
 from .nested_loop_with_io import NestedLoopWithIoDetector
 from .ownership_risk import OwnershipRiskDetector
+from .pandas_iterrows_in_loop import PandasIterrowsInLoopDetector
 from .pd_concat_in_loop import PdConcatInLoopDetector
 from .primitive_obsession import PrimitiveObsessionDetector
 from .prior_defect import PriorDefectDetector
@@ -99,6 +100,7 @@ _DETECTOR_FACTORIES: list[type[Biomarker]] = [
     # Phase 7d — language-specific markers (advisory weight; bounded by the cap).
     ListInsertZeroInLoopDetector,  # type: ignore[list-item]
     PdConcatInLoopDetector,  # type: ignore[list-item]
+    PandasIterrowsInLoopDetector,  # type: ignore[list-item]
     JsonParseInLoopDetector,  # type: ignore[list-item]
     ArraySpreadInReduceDetector,  # type: ignore[list-item]
     GoroutineInUnboundedLoopDetector,  # type: ignore[list-item]

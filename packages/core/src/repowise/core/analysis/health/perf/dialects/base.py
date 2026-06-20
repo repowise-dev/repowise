@@ -293,6 +293,19 @@ class BasePerfDialect:
         """
         return None
 
+    def loop_iterable_call_marker(self, node: Node) -> str | None:
+        """Marker kind for a loop whose *iterable expression is itself a call*.
+
+        Used for ``pandas_iterrows_in_loop`` (``for _, row in df.iterrows()``):
+        the offending call sits in the loop HEADER, so it runs once and the body
+        :meth:`loop_call_marker` (loop_depth >= 1) never sees it. This hook is
+        handed the loop node itself, so the dialect inspects the iterable and
+        fires regardless of nesting depth (``iterrows`` is O(n)-boxing slow on
+        its own, not only when nested). Default ``None`` so a language that does
+        not override it is byte-for-byte unchanged.
+        """
+        return None
+
     def loop_stmt_marker(self, node: Node, list_names: frozenset[str]) -> str | None:
         """Marker kind for a loop-nested *non-call statement* node.
 

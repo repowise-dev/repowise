@@ -111,6 +111,8 @@ class PythonPerfDialect(BasePerfDialect):
             # Phase 7d — Python-specific quadratic anti-patterns.
             "list_insert_zero_in_loop",
             "pd_concat_in_loop",
+            # Header-call marker: the slow iterable IS the loop driver.
+            "pandas_iterrows_in_loop",
         }
     )
 
@@ -323,6 +325,27 @@ class PythonPerfDialect(BasePerfDialect):
         # the whole frame each pass -> O(n^2); collect a list and concat once.
         if root in ("pd", "pandas") and method == "concat":
             return "pd_concat_in_loop"
+        return None
+
+    def loop_iterable_call_marker(self, node: Node) -> str | None:
+        """``for _, row in df.iterrows():`` — row-by-row DataFrame iteration.
+
+        ``DataFrame.iterrows()`` boxes every row into a fresh Series, an order of
+        magnitude slower than a vectorized operation (and slower than
+        ``itertuples`` / ``to_dict`` when row access is unavoidable). The call
+        sits in the loop header, so the body ``loop_call_marker`` misses it.
+        Gated to the distinctive method name on a member-access receiver
+        (``x.iterrows()``, never a bare ``iterrows(...)``) — high-precision by
+        construction, like the ``pd``/``pandas`` ``concat`` root: ``iterrows`` is
+        a pandas-only verb with no common collision.
+        """
+        if node.type != "for_statement":
+            return None
+        right = node.child_by_field_name("right")
+        if right is None or right.type != "call":
+            return None
+        if self.callee_method_name(right) == "iterrows" and self.callee_is_attribute(right):
+            return "pandas_iterrows_in_loop"
         return None
 
     def _receiver_reset_in_loop(self, node: Node, name: str) -> bool:

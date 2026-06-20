@@ -97,7 +97,7 @@ def test_java_cases(src, expected, note):
 def test_go_fixture_counts():
     fc = _walk("go/perf_io_in_loop.go", "go")
     counts = _kinds(fc.perf_hits)
-    # db (db.Query) · network (http.Get) · filesystem (os.Open ×2, incl. the
+    # db (db.Query) · network (http.Get) · filesystem (os.Open x2, incl. the
     # one in deferInLoop). The constant-bound and out-of-loop queries do not.
     assert counts["io_in_loop"] == 4
     assert {h.detail for h in fc.perf_hits if h.kind == "io_in_loop"} == {
@@ -380,6 +380,19 @@ def test_python_pd_concat_in_loop():
         "        df = pd.concat([df, c])\n"
     )
     assert ("pd_concat_in_loop", "") in _hits("python", src)
+
+
+def test_python_pandas_iterrows_in_loop():
+    # The iterrows() call lives in the loop HEADER, so the body call-markers
+    # never see it — the loop_iterable_call_marker hook fires on the loop node.
+    iterrows = "def f(df):\n    for _, row in df.iterrows():\n        use(row)\n"
+    assert ("pandas_iterrows_in_loop", "") in _hits("python", iterrows)
+    # itertuples is the recommended faster alternative — never flagged.
+    tuples = "def f(df):\n    for row in df.itertuples():\n        use(row)\n"
+    assert not any(k == "pandas_iterrows_in_loop" for k, _ in _hits("python", tuples))
+    # A plain collection iterable is not a header-call smell.
+    plain = "def f(rows):\n    for row in rows:\n        use(row)\n"
+    assert not any(k == "pandas_iterrows_in_loop" for k, _ in _hits("python", plain))
 
 
 def test_ts_json_parse_in_loop():
