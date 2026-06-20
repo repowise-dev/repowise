@@ -123,11 +123,22 @@ def collect_io_names(tree_root: _NodeLike, language: str) -> dict[str, str]:
     stack: list[_NodeLike] = [tree_root]
     while stack:
         node = stack.pop()
-        if "import" in node.type:
-            kind, bound = _classify_import(node)
-            if kind is not None:
-                for name in bound:
-                    names.setdefault(name, kind)
+        # ``import`` covers Python / TS / Java / Go import nodes; C# spells its
+        # import a ``using_directive`` (and Go an ``import_spec``), neither of
+        # which contains the substring "import".
+        if "import" in node.type or node.type == "using_directive":
+            # Classify only the *leaf* import node. A Go grouped
+            # ``import ( "database/sql"; "regexp" )`` is an ``import_declaration``
+            # wrapping per-line ``import_spec`` leaves; classifying the wrapper
+            # binds every name in the block to whichever line resolves first
+            # (so ``regexp`` would inherit ``db``). Skip a node that contains a
+            # nested import-spec — its children carry the scoped truth.
+            has_spec_child = any("import_spec" in c.type for c in node.children)
+            if not has_spec_child:
+                kind, bound = _classify_import(node)
+                if kind is not None:
+                    for name in bound:
+                        names.setdefault(name, kind)
         for child in node.children:
             stack.append(child)
     return names

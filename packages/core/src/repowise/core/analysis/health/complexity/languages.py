@@ -211,6 +211,7 @@ _GO = LanguageNodeMap(
     # future receiver-aware grouping pass; until then Go emits no classes.
     # ``assert.Equal(t, ...)`` (testify) — best-effort call detection.
     assert_call_kinds=frozenset({"call_expression"}),
+    call_kinds=frozenset({"call_expression"}),
 )
 
 _JAVA = LanguageNodeMap(
@@ -239,6 +240,9 @@ _JAVA = LanguageNodeMap(
     # ``assert x`` (JUnit ``assert`` keyword) + ``assertEquals(...)`` calls.
     assert_kinds=frozenset({"assert_statement"}),
     assert_call_kinds=frozenset({"method_invocation"}),
+    # The perf pass needs both forms: ``repo.find()`` (method_invocation) and
+    # ``new FileInputStream()`` (object_creation_expression).
+    call_kinds=frozenset({"method_invocation", "object_creation_expression"}),
 )
 
 _RUST = LanguageNodeMap(
@@ -341,6 +345,7 @@ _CSHARP = LanguageNodeMap(
     # xUnit / NUnit / MSTest: ``Assert.Equal(...)`` / ``Assert.True(...)`` are
     # invocations whose callee chain begins with ``Assert``.
     assert_call_kinds=frozenset({"invocation_expression"}),
+    call_kinds=frozenset({"invocation_expression"}),
 )
 
 

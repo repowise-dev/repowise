@@ -14,6 +14,9 @@ No edits to the walker. A language absent here ⇒ the perf pass is silent for i
 
 from __future__ import annotations
 
+from . import csharp as _csharp
+from . import go as _go
+from . import java as _java
 from . import python as _python
 from . import ts_js as _ts_js
 from .base import PERF_DIALECTS, BasePerfDialect
@@ -27,6 +30,9 @@ _REGISTER: tuple[tuple[str, BasePerfDialect], ...] = (
     ("tsx", _ts_js.DIALECT),
     ("javascript", _ts_js.DIALECT),
     ("jsx", _ts_js.DIALECT),
+    ("java", _java.DIALECT),
+    ("go", _go.DIALECT),
+    ("csharp", _csharp.DIALECT),
 )
 
 for _tag, _dialect in _REGISTER:

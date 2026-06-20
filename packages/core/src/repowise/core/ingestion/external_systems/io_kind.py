@@ -47,6 +47,18 @@ _DB_NAMES: frozenset[str] = frozenset({
     "ioredis", "mongoose", "mongodb", "@prisma/client", "prisma",
     "drizzle-orm", "knex", "pg", "mysql", "mysql2", "sequelize", "typeorm",
     "better-sqlite3", "@elastic/elasticsearch", "@planetscale/database", "kysely",
+    # JVM (dotted-prefix or bare-segment keys; the import classifier emits both
+    # progressive dotted prefixes and interior path segments).
+    "java.sql", "javax.sql", "org.hibernate", "jakarta.persistence",
+    "javax.persistence", "org.springframework.data", "com.zaxxer.hikari",
+    "org.jooq", "org.mybatis", "org.jdbi",
+    # Go (module paths resolve via their interior segment, e.g.
+    # github.com/go-redis/redis -> redis, already a db name above).
+    "database/sql", "gorm", "sqlx", "pgx", "mongo-driver",
+    # .NET (progressive dotted prefixes of the namespace).
+    "microsoft.entityframeworkcore", "system.data.sqlclient",
+    "microsoft.data.sqlclient", "dapper", "npgsql", "mongodb.driver",
+    "stackexchange.redis",
 })
 
 _NETWORK_NAMES: frozenset[str] = frozenset({
@@ -56,6 +68,13 @@ _NETWORK_NAMES: frozenset[str] = frozenset({
     # TS / Node
     "axios", "node-fetch", "got", "superagent", "undici", "ky", "needle",
     "request", "@grpc/grpc-js", "ws", "socket.io-client", "graphql-request",
+    # JVM
+    "java.net.http", "okhttp3", "retrofit2", "feign", "org.apache.http",
+    "org.apache.hc", "org.springframework.web",
+    # Go (interior segments / module names)
+    "net/http", "grpc", "resty", "fasthttp",
+    # .NET
+    "system.net.http", "grpc.net.client", "restsharp", "flurl",
 })
 
 _FILESYSTEM_NAMES: frozenset[str] = frozenset({
@@ -63,6 +82,12 @@ _FILESYSTEM_NAMES: frozenset[str] = frozenset({
     "open", "aiofiles", "watchdog", "pathlib", "shutil", "fsspec",
     # TS / Node
     "node:fs", "fs", "fs-extra", "graceful-fs", "chokidar", "node:path",
+    # JVM
+    "java.nio.file", "java.io",
+    # Go (interior segment of golang.org/x/... etc.; os/exec is subprocess)
+    "io/ioutil",
+    # .NET
+    "system.io",
 })
 
 _SUBPROCESS_NAMES: frozenset[str] = frozenset({
@@ -70,6 +95,8 @@ _SUBPROCESS_NAMES: frozenset[str] = frozenset({
     "subprocess", "sh", "pexpect", "plumbum", "invoke",
     # TS / Node
     "child_process", "node:child_process", "execa", "cross-spawn", "shelljs",
+    # Go (os/exec resolves via the interior segment ``exec``)
+    "os/exec",
 })
 
 _LOCK_NAMES: frozenset[str] = frozenset({
