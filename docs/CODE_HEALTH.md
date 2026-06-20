@@ -143,20 +143,51 @@ category cap of 1.0, so the pillar stays advisory) are:
 - **`blocking_sync_in_async`**: a synchronous blocking call inside an `async`
   function, which stalls the whole event loop (mirrors ruff `ASYNC210/230/251`).
 
+A few markers are language-specific, contributed by that language's dialect (see
+below) rather than the shared core:
+
+- **`regex_compile_in_loop`** (Java, Go): a `Pattern.compile` /
+  `regexp.MustCompile` recompiled every iteration instead of hoisted. Skipped on
+  Python / .NET, which cache compiled patterns.
+- **`defer_in_loop`** (Go): a `defer` inside a loop holds the deferred handle
+  until the enclosing function returns, not the iteration: the classic Go file /
+  row-handle leak. A pure syntactic shape, very high precision.
+- **sync-over-async** (C#, via `blocking_sync_in_async`): `.Result` / `.Wait()`
+  / `.GetAwaiter().GetResult()` inside an `async` method blocks a thread-pool
+  thread. C# is the one non-Python language with real `async`/`await`.
+
 Each performance finding's `details` carry the `boundary_kind` it crosses, a
 `cross_function` flag, and the reachability `path` for the cross-function case.
 Severity is ranked by **centrality** (an N+1 in a high-traffic, churny function
 outranks one in a leaf), not by raw count.
 
+**Languages.** The performance signal fires on **Python, TypeScript/JavaScript,
+Java, Go, and C#**. Each language is a self-contained `PerfDialect` plugin
+(`analysis/health/perf/dialects/`) that owns its callee-extraction grammar, its
+execution-sink lexicon, the loop / string / async predicates, and its own marker
+list, registered in `PERF_DIALECTS` like the rest of the per-language pipeline.
+A language without a dialect emits no perf findings (never a wrong one). The
+db/network/filesystem/subprocess lexicons and the per-language precision hazards
+(Java `.find`/`.get`, GORM `Find`/`Save`, C# in-memory-vs-`IQueryable` LINQ) are
+documented in `local-stash/performance-pillar/PHASE6_PLAN.md`. The verb sets are
+gated for precision: distinctive sinks (EF `*Async`, Spring-Data `findBy*`, JDBC
+`executeQuery`) fire on name alone, while ambiguous verbs require file-level
+db-import evidence (MEDIUM precision; formal per-language OSS precision gates are
+a tracked follow-up, and until they land the markers stay advisory under the
+bounded `performance` cap).
+
 **Soundness limits (honest, by design).** Performance is a *static* signal, so
 it under-reports rather than over-reports (these cap recall, not precision):
 dynamic dispatch / monkeypatching / callbacks-as-values produce no `calls` edge
 and are invisible; ORM lazy-load N+1 fires on attribute access (no visible call)
-and is explicitly out of scope; chains longer than three hops from the loop are
-not followed; and an unmodelled library is untyped (`None`), so its sinks don't
-fire. We call this **performance RISK**, never measured performance, and never
-fold it into the defect score. The commit-agreement precision study and its
-caveats live in `local-stash/performance-pillar/VALIDATION.md`.
+and is explicitly out of scope --- this includes Hibernate lazy-load N+1 (fires
+on a getter) and EF Core navigation-property lazy load, so we catch *explicit*
+repository / query calls in loops, not attribute-triggered lazy loads; chains
+longer than three hops from the loop are not followed; and an unmodelled library
+is untyped (`None`), so its sinks don't fire. We call this **performance RISK**,
+never measured performance, and never fold it into the defect score. The
+commit-agreement precision study and its caveats live in
+`local-stash/performance-pillar/VALIDATION.md`.
 
 Performance surfaces exactly where maintainability does: a `performance_average`
 on the overview summary and MCP `kpis`, a per-file `performance_score`, a
