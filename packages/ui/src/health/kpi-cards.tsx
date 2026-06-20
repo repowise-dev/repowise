@@ -17,6 +17,9 @@ export interface HealthSummary {
   severity_breakdown?: SeverityBreakdown;
   /** Repo-level band from the API; derived from average_health when absent. */
   band?: HealthBand;
+  /** Maintainability pillar headline (the co-surfaced second signal). `null`
+   *  when no file carries a maintainability score yet. */
+  maintainability_average?: number | null;
 }
 
 export interface HealthKpiCardsProps {
@@ -41,8 +44,9 @@ export function HealthKpiCards({
   hotspotDelta,
 }: HealthKpiCardsProps) {
   const band = summary.band ?? bandForScore(summary.average_health);
+  const maint = summary.maintainability_average;
   return (
-    <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
+    <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
       <Card label="Files Analyzed">
         <p className="text-2xl font-bold text-[var(--color-text-primary)] tabular-nums">
           {formatNumber(summary.file_count)}
@@ -65,6 +69,31 @@ export function HealthKpiCards({
             <HealthDistributionBar distribution={distribution} showCounts={false} height="sm" />
           </div>
         ) : null}
+      </Card>
+      <Card
+        label="Maintainability"
+        hint="A second, parallel health signal: the smells that hurt readability and change-cost (low cohesion, brain methods, primitive obsession, duplication, error handling) scored on their own, separate from the defect-backed score, which they don't predict. NLOC-weighted across the repo."
+      >
+        {maint == null ? (
+          <p className="text-2xl font-bold tabular-nums text-[var(--color-text-tertiary)]">
+            —
+            <span className="ml-1 align-middle text-xs font-normal text-[var(--color-text-tertiary)]">
+              not measured
+            </span>
+          </p>
+        ) : (
+          <p
+            className={`flex items-baseline gap-2 text-2xl font-bold tabular-nums ${scoreTextColor(maint)}`}
+          >
+            <span>
+              {maint.toFixed(1)}
+              <span className="text-base font-normal text-[var(--color-text-secondary)]">/10</span>
+            </span>
+            <span className={`text-xs font-semibold uppercase tracking-wide ${healthBandTextColor(bandForScore(maint))}`}>
+              {HEALTH_BAND_LABEL[bandForScore(maint)]}
+            </span>
+          </p>
+        )}
       </Card>
       <Card
         label="Hotspot Health"

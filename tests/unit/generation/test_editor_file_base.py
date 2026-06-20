@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from repowise.core.generation.editor_files.base import BaseEditorFileGenerator
-from repowise.core.generation.editor_files.data import EditorFileData
+from repowise.core.generation.editor_files.data import CodeHealthBlock, EditorFileData
 
 # ---------------------------------------------------------------------------
 # Minimal concrete subclass for testing
@@ -49,6 +49,34 @@ def test_render_contains_repo_name(gen):
     data = _minimal_data()
     result = gen.render(data)
     assert "test-repo" in result
+
+
+def _health_block(maintainability_average: float | None) -> CodeHealthBlock:
+    return CodeHealthBlock(
+        hotspot_health=5.0,
+        average_health=7.5,
+        worst_score=2.0,
+        worst_path="src/bad.py",
+        maintainability_average=maintainability_average,
+    )
+
+
+def test_render_surfaces_maintainability_when_present(gen):
+    import dataclasses
+
+    data = dataclasses.replace(_minimal_data(), code_health=_health_block(6.4))
+    result = gen.render(data)
+    assert "Maintainability, Average: 6.4/10" in result
+
+
+def test_render_omits_maintainability_when_unmeasured(gen):
+    import dataclasses
+
+    data = dataclasses.replace(_minimal_data(), code_health=_health_block(None))
+    result = gen.render(data)
+    # Defect-risk block still renders; the maintainability line is suppressed.
+    assert "Hotspot health" in result
+    assert "Maintainability, Average" not in result
 
 
 def test_write_creates_new_file(gen, tmp_path):

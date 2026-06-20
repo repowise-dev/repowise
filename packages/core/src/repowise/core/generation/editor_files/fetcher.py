@@ -284,6 +284,19 @@ class EditorFileDataFetcher:
         else:
             hotspot_health = avg
 
+        # Maintainability pillar headline: NLOC-weighted over the per-file
+        # maintainability scores, skipping rows that predate the split. ``None``
+        # when unmeasured so the section omits the line rather than printing 10.0.
+        maint_rows = [m for m in metric_rows if getattr(m, "maintainability_score", None) is not None]
+        maintainability_average: float | None = None
+        if maint_rows:
+            m_nloc = sum(max(m.nloc, 1) for m in maint_rows)
+            maintainability_average = (
+                sum(m.maintainability_score * max(m.nloc, 1) for m in maint_rows) / m_nloc
+                if m_nloc
+                else sum(m.maintainability_score for m in maint_rows) / len(maint_rows)
+            )
+
         # Critical biomarkers: brain methods, or critical-severity findings
         # in hotspot files. Cap at 5 to keep CLAUDE.md tight.
         f_res = await self._session.execute(
@@ -317,6 +330,9 @@ class EditorFileDataFetcher:
             worst_score=round(worst.score, 2),
             worst_path=worst.file_path,
             hotspot_trend="stable",
+            maintainability_average=(
+                round(maintainability_average, 2) if maintainability_average is not None else None
+            ),
             critical_biomarkers=critical,
             untested_hotspots=[],  # Phase 2 fills this from coverage data
         )

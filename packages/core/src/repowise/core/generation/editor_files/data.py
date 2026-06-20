@@ -50,6 +50,10 @@ class CodeHealthBlock:
     worst_score: float
     worst_path: str
     hotspot_trend: str = "stable"
+    # Maintainability pillar headline (NLOC-weighted average over the per-file
+    # maintainability scores). ``None`` until the split populates the column, so
+    # the section omits it rather than printing a misleading 10.0.
+    maintainability_average: float | None = None
     critical_biomarkers: list[dict] = field(default_factory=list)
     untested_hotspots: list[dict] = field(default_factory=list)
 

@@ -3,7 +3,15 @@
 import { useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { InfoTip } from "../shared/info-tip";
-import { biomarkerLabel, biomarkerInfo, CATEGORY_LABEL } from "./biomarker-glossary";
+import {
+  biomarkerLabel,
+  biomarkerInfo,
+  biomarkerDimension,
+  CATEGORY_LABEL,
+  DIMENSION_CHIP,
+  DIMENSION_LABEL,
+  type BiomarkerDimension,
+} from "./biomarker-glossary";
 import { BiomarkerDetails, type BiomarkerDetailsRecord } from "./biomarker-details";
 import { SEVERITY_CHIP, SEVERITY_LABEL, SEVERITY_ORDER, type Severity } from "./tokens";
 
@@ -16,6 +24,15 @@ export interface BiomarkerFinding {
   health_impact: number;
   reason: string;
   details?: BiomarkerDetailsRecord | null;
+  /** Server-provided home pillar; falls back to the biomarker's glossary
+   *  dimension when an older payload omits it. */
+  dimension?: BiomarkerDimension | string;
+}
+
+/** A finding's home pillar, preferring the server value over the glossary. */
+function findingDimension(f: BiomarkerFinding): BiomarkerDimension {
+  if (f.dimension === "maintainability" || f.dimension === "defect") return f.dimension;
+  return biomarkerDimension(f.biomarker_type);
 }
 
 export interface BiomarkerListProps {
@@ -24,6 +41,8 @@ export interface BiomarkerListProps {
   grouped?: boolean;
   /** Optional minimum severity filter. */
   minSeverity?: Severity;
+  /** Optional pillar filter: restrict to one health dimension. */
+  dimension?: BiomarkerDimension | undefined;
   onSelect?: ((f: BiomarkerFinding) => void) | undefined;
   maxPerGroup?: number;
   /** Click-handler for the partner-file chip on hidden_coupling rows. */
@@ -36,14 +55,17 @@ export function BiomarkerList({
   findings,
   grouped = false,
   minSeverity,
+  dimension,
   onSelect,
   maxPerGroup = 8,
   onPartnerSelect,
   onPartnerHref,
 }: BiomarkerListProps) {
-  const filtered = minSeverity
-    ? findings.filter((f) => SEVERITY_ORDER[f.severity] >= SEVERITY_ORDER[minSeverity])
-    : findings;
+  const filtered = findings.filter(
+    (f) =>
+      (!minSeverity || SEVERITY_ORDER[f.severity] >= SEVERITY_ORDER[minSeverity]) &&
+      (!dimension || findingDimension(f) === dimension),
+  );
 
   if (filtered.length === 0) {
     return (
@@ -137,6 +159,7 @@ function BiomarkerGroup({
         <span className="text-xs text-[var(--color-text-tertiary)]">
           {CATEGORY_LABEL[info.category]}
         </span>
+        <DimensionChip dimension={biomarkerDimension(type)} />
         <span className="ml-auto inline-flex items-center gap-1.5 text-xs tabular-nums">
           {(Object.keys(sevCounts) as Severity[]).map((s) =>
             sevCounts[s] > 0 ? (
@@ -175,6 +198,17 @@ function BiomarkerGroup({
   );
 }
 
+function DimensionChip({ dimension }: { dimension: BiomarkerDimension }) {
+  return (
+    <span
+      className={`inline-flex items-center rounded px-1.5 py-px text-[10px] font-medium ${DIMENSION_CHIP[dimension]}`}
+      title={`${DIMENSION_LABEL[dimension]} pillar`}
+    >
+      {DIMENSION_LABEL[dimension]}
+    </span>
+  );
+}
+
 function FindingRow({
   finding,
   onSelect,
@@ -210,6 +244,7 @@ function FindingRow({
                 label={`About ${biomarkerLabel(f.biomarker_type)}`}
               />
             ) : null}
+            <DimensionChip dimension={findingDimension(f)} />
           </span>
         ) : null}
         <span className="ml-auto text-xs tabular-nums text-[var(--color-error)]">

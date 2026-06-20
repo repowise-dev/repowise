@@ -1,7 +1,12 @@
 "use client";
 
 import { Info } from "lucide-react";
-import { biomarkerInfo, CATEGORY_LABEL } from "./biomarker-glossary";
+import {
+  biomarkerInfo,
+  biomarkerDimension,
+  CATEGORY_LABEL,
+  DIMENSION_LABEL,
+} from "./biomarker-glossary";
 
 export interface BiomarkerChipProps {
   type: string;
@@ -11,7 +16,7 @@ export interface BiomarkerChipProps {
 
 export function BiomarkerChip({ type, showInfo = true, className = "" }: BiomarkerChipProps) {
   const info = biomarkerInfo(type);
-  const title = `${info.label} · ${CATEGORY_LABEL[info.category]}\n\n${info.description}`;
+  const title = `${info.label} · ${CATEGORY_LABEL[info.category]} · ${DIMENSION_LABEL[biomarkerDimension(type)]}\n\n${info.description}`;
   return (
     <span
       className={`inline-flex items-center gap-1 text-xs font-medium text-[var(--color-text-primary)] ${className}`}

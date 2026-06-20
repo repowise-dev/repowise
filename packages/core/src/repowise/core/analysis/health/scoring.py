@@ -484,6 +484,22 @@ def attach_impacts(
     return out
 
 
+def _wavg_attr(rows: list[HealthFileMetricData], attr: str) -> float | None:
+    """NLOC-weighted average of one metric attribute, skipping ``None`` values.
+
+    Returns ``None`` when no row carries the attribute (e.g. a repo whose
+    ``maintainability_score`` predates the split) so the KPI reads "not measured"
+    rather than a misleading perfect 10.0.
+    """
+    scored = [r for r in rows if getattr(r, attr, None) is not None]
+    if not scored:
+        return None
+    total_w = sum(max(r.nloc, 1) for r in scored)
+    if total_w == 0:
+        return sum(getattr(r, attr) for r in scored) / len(scored)
+    return sum(getattr(r, attr) * max(r.nloc, 1) for r in scored) / total_w
+
+
 def compute_kpis(
     metrics: list[HealthFileMetricData],
     hotspot_paths: set[str],
@@ -493,6 +509,10 @@ def compute_kpis(
     - ``hotspot_health``: NLOC-weighted average over files in *hotspot_paths*.
     - ``average_health``: NLOC-weighted average over all files.
     - ``worst_performer``: lowest-scoring file + score.
+    - ``maintainability_average`` / ``maintainability_hotspot``: the same two
+      NLOC-weighted averages over the per-file ``maintainability_score``, so the
+      maintainability pillar surfaces a repo headline alongside the defect one.
+      ``None`` when no file carries a maintainability score.
     """
     if not metrics:
         return {
@@ -501,6 +521,8 @@ def compute_kpis(
             "worst_performer_path": None,
             "worst_performer_score": None,
             "file_count": 0,
+            "maintainability_average": None,
+            "maintainability_hotspot": None,
         }
 
     def _wavg(rows: list[HealthFileMetricData]) -> float:
@@ -513,10 +535,14 @@ def compute_kpis(
 
     hotspots = [m for m in metrics if m.file_path in hotspot_paths]
     worst = min(metrics, key=lambda m: m.score)
+    maint_avg = _wavg_attr(metrics, "maintainability_score")
+    maint_hotspot = _wavg_attr(hotspots, "maintainability_score")
     return {
         "hotspot_health": round(_wavg(hotspots), 2),
         "average_health": round(_wavg(metrics), 2),
         "worst_performer_path": worst.file_path,
         "worst_performer_score": round(worst.score, 2),
         "file_count": len(metrics),
+        "maintainability_average": round(maint_avg, 2) if maint_avg is not None else None,
+        "maintainability_hotspot": round(maint_hotspot, 2) if maint_hotspot is not None else None,
     }

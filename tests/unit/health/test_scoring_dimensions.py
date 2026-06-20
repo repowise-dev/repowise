@@ -189,6 +189,16 @@ def test_score_file_returns_all_dimensions():
     assert set(scores) == set(DIMENSIONS)
 
 
+def test_dimensions_parity_with_typescript():
+    """Order + membership must match HEALTH_DIMENSIONS in packages/types/src/health.ts.
+
+    The TS half of this guard lives in packages/types/__tests__/health.test.ts.
+    The dimension labels cross the wire (the ``dimension`` field on findings), so
+    a silent rename on one side without the other fails one of these two tests.
+    """
+    assert DIMENSIONS == ("defect", "maintainability", "performance")
+
+
 def test_performance_measured_with_no_findings_is_ten():
     """The perf detectors are registered (PR3): a file with no perf findings is
     measured at 10.0, not null. None of the defect/maintainability fixtures

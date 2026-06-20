@@ -9,12 +9,21 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { ALERT_MAX, HEALTHY_MIN, bandForScore } from "../src/health.js";
+import { ALERT_MAX, HEALTHY_MIN, HEALTH_DIMENSIONS, bandForScore } from "../src/health.js";
 
 describe("health band cutoffs", () => {
   it("are the frozen defect-backed values", () => {
     expect(ALERT_MAX).toBe(4.0);
     expect(HEALTHY_MIN).toBe(8.0);
+  });
+});
+
+describe("health dimensions", () => {
+  it("match core's DIMENSIONS order (parity guard)", () => {
+    // Mirror of `DIMENSIONS` in
+    // packages/core/src/repowise/core/analysis/health/scoring.py. The Python
+    // half of this guard lives in tests/unit/health/test_scoring_dimensions.py.
+    expect(HEALTH_DIMENSIONS).toEqual(["defect", "maintainability", "performance"]);
   });
 });
 

@@ -191,11 +191,16 @@ def _query_health_line(repo_path: Path) -> str | None:
 
     band = band_for(float(data["average_health"]))
     band_color = {"healthy": "green", "warning": "yellow", "alert": "red"}[band]
+    # Maintainability is a co-surfaced second pillar; show it when the split has
+    # populated it (None on indexes that predate the split).
+    maint = data.get("maintainability_average")
+    maint_part = f" · {maint:.1f} (maintainability)" if maint is not None else ""
     return (
         f"[bold]Health:[/bold] {data['average_health']:.1f} (avg) "
         f"[[{band_color}]{BAND_LABEL[band]}[/{band_color}]] · "
         f"{data['hotspot_health']:.1f} (hotspots) · "
         f"{worst_repr} (worst: {worst_path})"
+        f"{maint_part}"
     )
 
 

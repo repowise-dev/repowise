@@ -586,6 +586,8 @@ async def health_data(session: AsyncSession, populated_db: str) -> str:
                 "nloc": 200,
                 "has_test_file": False,
                 "module": "auth",
+                "defect_score": 4.5,
+                "maintainability_score": 6.0,
             },
             {
                 "file_path": "src/db/models.py",
@@ -595,6 +597,8 @@ async def health_data(session: AsyncSession, populated_db: str) -> str:
                 "nloc": 50,
                 "has_test_file": True,
                 "module": "db",
+                "defect_score": 8.5,
+                "maintainability_score": 9.0,
             },
         ],
     )
@@ -623,6 +627,18 @@ async def health_data(session: AsyncSession, populated_db: str) -> str:
                 "details": {"max_nesting": 5, "ccn": 15, "cognitive": 30},
                 "health_impact": 0.7,
                 "reason": "authenticate nests 5 levels deep",
+            },
+            {
+                "file_path": "src/auth/service.py",
+                "biomarker_type": "low_cohesion",
+                "severity": "high",
+                "function_name": None,
+                "line_start": None,
+                "line_end": None,
+                "details": {},
+                "health_impact": 1.0,
+                "reason": "AuthService has low cohesion",
+                "dimension": "maintainability",
             },
         ],
     )

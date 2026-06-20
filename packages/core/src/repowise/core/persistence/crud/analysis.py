@@ -471,6 +471,7 @@ async def get_health_summary(session: AsyncSession, repository_id: str) -> dict:
             "worst_performer_path": None,
             "worst_performer_score": None,
             "open_findings": 0,
+            "maintainability_average": None,
         }
     total_nloc = sum(max(m.nloc, 1) for m in metrics)
     if total_nloc:
@@ -478,6 +479,24 @@ async def get_health_summary(session: AsyncSession, repository_id: str) -> dict:
     else:
         avg = sum(m.score for m in metrics) / len(metrics)
     worst = min(metrics, key=lambda r: r.score)
+
+    # Maintainability headline: NLOC-weighted average over the per-file
+    # maintainability scores (skipping rows that predate the split / lack one).
+    # ``None`` when no row carries a maintainability score so the surface reads
+    # "not measured" rather than a misleading 10.0.
+    maint_scored = [m for m in metrics if getattr(m, "maintainability_score", None) is not None]
+    maintainability_average: float | None = None
+    if maint_scored:
+        maint_nloc = sum(max(m.nloc, 1) for m in maint_scored)
+        if maint_nloc:
+            maintainability_average = (
+                sum(m.maintainability_score * max(m.nloc, 1) for m in maint_scored) / maint_nloc
+            )
+        else:
+            maintainability_average = sum(m.maintainability_score for m in maint_scored) / len(
+                maint_scored
+            )
+
     findings_count = await session.execute(
         select(func.count())
         .select_from(HealthFinding)
@@ -492,6 +511,9 @@ async def get_health_summary(session: AsyncSession, repository_id: str) -> dict:
         "worst_performer_path": worst.file_path,
         "worst_performer_score": round(worst.score, 2),
         "open_findings": findings_count.scalar() or 0,
+        "maintainability_average": (
+            round(maintainability_average, 2) if maintainability_average is not None else None
+        ),
     }
 
 

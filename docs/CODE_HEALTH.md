@@ -69,6 +69,57 @@ The final score is clamped to `[1.0, 10.0]`. The three repo-level KPIs:
 - **Average Health** — NLOC-weighted average over all files.
 - **Worst Performer** — single lowest-scoring file.
 
+## Two health signals: defect risk and maintainability
+
+The score above is the **defect-risk** signal: it is calibrated against a defect
+corpus, the bands are calibrated to it (Alert files carry ~17x the defect rate
+of Healthy files), and it is the overall number surfaced everywhere. But not
+every code smell predicts bugs. A handful of biomarkers fire widely and matter a
+lot for how hard code is to read and change, yet proved weak as defect
+predictors under leakage-free scoring, so the defect calibration floors them to
+0.5 (`low_cohesion`, `brain_method`, `primitive_obsession`, `dry_violation`,
+`error_handling`). Floored inside a defect-framed score they do two unhelpful
+things at once: they still nudge the number a little (noise against the
+calibrated signal) and they get no credit for the real problem they describe
+(maintainability).
+
+Repowise therefore computes a second, parallel signal, **maintainability**, from
+the same biomarker stream:
+
+- The floored smells above deduct at **full weight (1.0)** in maintainability
+  instead of the 0.5 the defect calibration imposes. The defect calibration does
+  not apply to a non-defect signal, so the maintainability weights are expert-set
+  and tuned only against the maintainability pillar's own per-category caps.
+- The structural smells that are genuine defect predictors **and** core
+  maintainability concerns (`god_class`, `large_method`, `nested_complexity`)
+  count toward **both** dimensions.
+- Pure defect/organizational predictors (`change_entropy`, `ownership_risk`,
+  `co_change_scatter`, ...) stay out of maintainability entirely.
+
+The two signals are computed by the single shared scoring kernel
+(`scoring.score_file`) against independent weight/category/cap tables, and they
+**never feed back into each other**. The overall, surfaced score remains exactly
+the defect score (byte-for-byte; a golden test locks this) until a later,
+deliberate decision to blend. Maintainability is surfaced alongside it as a
+co-equal headline:
+
+- **REST/overview**: `summary.maintainability_average` plus a per-file
+  `maintainability_score` on every metric row.
+- **MCP `get_health`**: `kpis.maintainability_average` and per-file
+  `defect_score` / `maintainability_score` / `performance_score`.
+- **CLAUDE.md** and the CLI `status` line print a maintainability headline next
+  to defect-risk health.
+- Every finding carries a `dimension` (`defect` / `maintainability` /
+  `performance`) naming the pillar it homes under, so findings can be filtered
+  per signal.
+
+A third dimension, **performance**, is computed by the same machinery but is not
+yet surfaced as its own pillar in the dashboard, MCP KPIs, or CLAUDE.md (that
+arrives in a later release); its per-file `performance_score` reads `null` on
+indexes built before the performance detectors landed. The dimension names are
+mirrored in `@repowise-dev/types` (`HEALTH_DIMENSIONS`) with a parity test on
+each side.
+
 ## Bands and distribution
 
 On top of the 1–10 number, every score falls into one of three **bands**. These

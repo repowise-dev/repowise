@@ -235,3 +235,49 @@ export function biomarkerInfo(name: string): BiomarkerInfo {
 export function biomarkerLabel(name: string): string {
   return biomarkerInfo(name).label;
 }
+
+/* ------------------------------------------------------------------ *
+ * Health dimensions: which pillar a biomarker "homes" under
+ * ------------------------------------------------------------------ */
+
+export type BiomarkerDimension = "defect" | "maintainability";
+
+/**
+ * The biomarkers whose "home" pillar is maintainability: the smells the defect
+ * calibration floors because they don't predict bugs, given a proper home here.
+ * Mirror of ``_MAINTAINABILITY_HOME`` in
+ * ``packages/core/src/repowise/core/analysis/health/scoring.py``. Every other
+ * biomarker (including the structural duals that count toward both dimensions)
+ * homes under defect, its primary calibrated role.
+ *
+ * The server stamps each finding's authoritative ``dimension`` from the same
+ * Python source; this set is only the client-side fallback for payloads that
+ * omit it, so the two can never disagree on a fresh response.
+ */
+export const MAINTAINABILITY_HOME_BIOMARKERS: ReadonlySet<string> = new Set([
+  "low_cohesion",
+  "brain_method",
+  "primitive_obsession",
+  "dry_violation",
+  "error_handling",
+]);
+
+/**
+ * A biomarker's home dimension for display / filtering. Prefer a finding's
+ * server-provided `dimension` field where available; this is the fallback when
+ * only the biomarker type is known (e.g. a glossary entry).
+ */
+export function biomarkerDimension(name: string): BiomarkerDimension {
+  return MAINTAINABILITY_HOME_BIOMARKERS.has(name) ? "maintainability" : "defect";
+}
+
+export const DIMENSION_LABEL: Record<BiomarkerDimension, string> = {
+  defect: "Defect risk",
+  maintainability: "Maintainability",
+};
+
+/** Tailwind chip classes per pillar, matching the surrounding chip palette. */
+export const DIMENSION_CHIP: Record<BiomarkerDimension, string> = {
+  defect: "bg-[var(--color-accent-primary)]/10 text-[var(--color-accent-primary)]",
+  maintainability: "bg-[var(--color-accent-secondary)]/10 text-[var(--color-accent-secondary)]",
+};

@@ -69,3 +69,43 @@ def test_compute_kpis_empty_returns_defaults():
     kpis = compute_kpis([], hotspot_paths=set())
     assert kpis["average_health"] == 10.0
     assert kpis["file_count"] == 0
+    assert kpis["maintainability_average"] is None
+
+
+def test_compute_kpis_maintainability_average_nloc_weighted():
+    metrics = [
+        HealthFileMetricData(
+            "a.py",
+            score=5.0,
+            max_ccn=1,
+            max_nesting=1,
+            nloc=100,
+            has_test_file=False,
+            maintainability_score=6.0,
+        ),
+        HealthFileMetricData(
+            "b.py",
+            score=10.0,
+            max_ccn=1,
+            max_nesting=1,
+            nloc=10,
+            has_test_file=False,
+            maintainability_score=9.0,
+        ),
+    ]
+    kpis = compute_kpis(metrics, hotspot_paths={"a.py"})
+    # Weighted avg = (6*100 + 9*10) / 110 ≈ 6.27
+    assert abs(kpis["maintainability_average"] - 6.27) < 0.02
+    # Hotspot restricted to a.py -> its own maintainability score.
+    assert kpis["maintainability_hotspot"] == 6.0
+
+
+def test_compute_kpis_maintainability_none_when_unscored():
+    """Files predating the split (no maintainability_score) -> None, not 10.0."""
+    metrics = [
+        HealthFileMetricData(
+            "a.py", score=5.0, max_ccn=1, max_nesting=1, nloc=100, has_test_file=False
+        ),
+    ]
+    kpis = compute_kpis(metrics, hotspot_paths=set())
+    assert kpis["maintainability_average"] is None
