@@ -268,6 +268,30 @@ export const BIOMARKER_GLOSSARY: Record<string, BiomarkerInfo> = {
     description:
       "Testing `x in big_list` (or big_list.includes(x)) inside a loop is O(n·m); a set makes each lookup O(1), turning the loop linear. Only fires when the right operand is provably a list, never a set or dict.",
   },
+  nested_loop_with_io: {
+    label: "I/O in nested loop",
+    category: "performance",
+    description:
+      "A database / network / filesystem / subprocess call in the inner body of a nested loop — O(n·m) round-trips, the quadratic cousin of I/O-in-loop. The nesting raises confidence it is real, so it surfaces alongside io_in_loop. Batch the inner query or restructure the loops.",
+  },
+  hot_path_sync_io: {
+    label: "Blocking I/O on a hot path",
+    category: "performance",
+    description:
+      "A blocking subprocess or filesystem call in a hot, request-reachable function (top call-graph centrality or a churny file), even outside a loop. Its latency is paid on every call through the function. Advisory — a latency signal ranked by centrality, not always a defect.",
+  },
+  blocking_io_under_lock: {
+    label: "Blocking I/O under a lock",
+    category: "performance",
+    description:
+      "A database / network / filesystem / subprocess round-trip reached while a lock is held (a C# lock(){} or Java synchronized(){} block, directly or through a call). Every other thread blocks for the full I/O wait. Do the I/O outside the critical section and take the lock only to mutate shared state.",
+  },
+  nested_loop_quadratic: {
+    label: "Quadratic nested loop",
+    category: "performance",
+    description:
+      "A data-dependent loop nested inside another (O(n^2)) in a hot, central function. Advisory / informational — surfaced only where centrality ranking says it is worth a look; check the inner bound or use a set/map lookup if it is a search.",
+  },
 };
 
 export function biomarkerInfo(name: string): BiomarkerInfo {
@@ -324,6 +348,10 @@ export const PERFORMANCE_HOME_BIOMARKERS: ReadonlySet<string> = new Set([
   "lock_in_loop",
   "serial_await_in_loop",
   "membership_test_against_list_in_loop",
+  "nested_loop_with_io",
+  "nested_loop_quadratic",
+  "hot_path_sync_io",
+  "blocking_io_under_lock",
 ]);
 
 /**

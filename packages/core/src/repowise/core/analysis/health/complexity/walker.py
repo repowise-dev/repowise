@@ -166,6 +166,22 @@ class PerfHit:
       ``big_list.includes(x)``) inside a loop where the right operand is a known
       list -> O(n·m); a set would make each probe O(1).
 
+    Phase-7b markers (``func_start``-carrying so the centrality gate can resolve
+    the enclosing function to a graph symbol node):
+
+    - ``nested_loop_with_io`` — an I/O sink in the inner body of a nested loop
+      (``loop_depth >= 2``) -> O(n·m) round-trips. Rides alongside ``io_in_loop``;
+      the nesting itself raises confidence, so it is NOT centrality-gated.
+    - ``nested_loop_quadratic`` — a data-dependent loop nested inside another
+      (O(n^2) shape). Emitted as a *candidate*; the centrality gate keeps it
+      ONLY in a hot/central function (the gate is the precision fix).
+    - ``hot_path_sync_io`` — a blocking (non-awaited) I/O sink at ``loop_depth 0``.
+      Emitted as a *candidate*; survives only in a top-centrality function.
+    - ``blocking_io_under_lock`` — an I/O sink reached while a block-scoped lock
+      (C# ``lock``/Java ``synchronized``) is held. Same-function (sink lexically
+      under the lock) is emitted here; the cross-function case is added by
+      ``perf.gated.collect_blocking_io_under_lock``.
+
     The Phase-7a markers above are emitted via the dialect ``loop_call_marker`` /
     ``loop_stmt_marker`` hooks (and the inline awaited-sink path for
     ``serial_await_in_loop``), so each is per-language opt-in.
@@ -175,6 +191,10 @@ class PerfHit:
     line: int  # 1-indexed
     function: str | None = None
     detail: str = ""
+    # 1-indexed ``def`` line of the enclosing function (0 = module scope). Lets
+    # the centrality gate (Phase 7b) resolve a candidate hit to its graph symbol
+    # node without a separate lookup. 0 for hits where it is irrelevant.
+    func_start: int = 0
     # Reachability path for a cross-function hit: the resolved symbol-node
     # chain ``A -> B -> ... -> sink`` (PR4). Empty for same-function hits —
     # its emptiness is what distinguishes the two cases downstream.
@@ -202,6 +222,11 @@ class PerfFnFacts:
     ``func_start`` is the 1-indexed line of the enclosing function's ``def``
     (0 for module scope, which maps to the synthetic ``::__module__`` node);
     the bridge resolves it to a graph symbol node by line containment.
+
+    ``lock_call_targets`` is the Phase-7b analogue of ``loop_call_targets``: the
+    rightmost names of non-sink calls made while a block-scoped lock is held.
+    Each is a candidate helper whose body might reach a sink transitively —
+    the cross-function ``blocking_io_under_lock`` entry points.
     """
 
     function: str | None
@@ -209,6 +234,16 @@ class PerfFnFacts:
     # ``(callee_name, call_line)`` pairs for the loop-nested non-sink calls.
     loop_call_targets: tuple[tuple[str, int], ...]
     bare_sink_kind: str | None
+    # ``(callee_name, call_line)`` pairs for non-sink calls under a held lock.
+    lock_call_targets: tuple[tuple[str, int], ...] = ()
+    # Phase-7b centrality-gated facts the engine turns into hits only for a hot
+    # function. ``nested_loop_line`` is a representative data-dependent
+    # nested-loop site (0 = none -> ``nested_loop_quadratic``);
+    # ``blocking_sink_{kind,line}`` is the first non-awaited loop_depth-0 I/O
+    # sink (None/0 = none -> ``hot_path_sync_io``).
+    nested_loop_line: int = 0
+    blocking_sink_kind: str | None = None
+    blocking_sink_line: int = 0
 
 
 @dataclass
@@ -986,6 +1021,29 @@ _LOOP_STMT_MARKER_KINDS = frozenset(
     }
 )
 
+# Boundary kinds that are *unambiguously blocking* when called synchronously, so
+# a loop_depth-0 occurrence in a hot function is a ``hot_path_sync_io`` candidate.
+# Limited to ``subprocess`` + ``filesystem`` on purpose:
+#   * ``db`` — in an async codebase DB access is awaited (non-blocking), and the
+#     un-awaited DB calls a static pass sees are almost all result *materializers*
+#     (``result.scalars().all()`` / ``.scalar_one()``) on an already-awaited
+#     result, not a round-trip (a probe-confirmed FP generator).
+#   * ``network`` — async HTTP is awaited too; the walker's ``awaited`` test only
+#     inspects the immediate parent, so a wrapped/chained await
+#     (``(await client.GetAsync(u)).X``) can read as non-awaited and FP. Every
+#     hot-path TP on the OSS corpus was subprocess/fs (0 network), so excluding
+#     it costs no measured precision and removes that FP class. (A wrapper-aware
+#     ``awaited`` test could re-admit sync ``requests`` — tracked as a follow-up.)
+# subprocess (``subprocess.run`` / ``os.system``) and filesystem (bare ``open``)
+# are synchronous by construction, with no await semantics to misread.
+_HOT_PATH_SINK_KINDS = frozenset({"subprocess", "filesystem"})
+
+# Block node kinds that form the *body* of a lock construct (C# ``lock (x) {…}``
+# / Java ``synchronized (x) {…}``). Only the body runs with the lock held, so
+# ``lock_depth`` is raised for the body child only — a sink in the lock-object
+# expression (``synchronized(repo.find(id)){…}``) runs BEFORE the lock is taken.
+_LOCK_BODY_KINDS = frozenset({"block", "statement_block", "compound_statement"})
+
 
 def _perf_func_name(node: Node) -> str | None:
     nm = node.child_by_field_name("name")
@@ -1000,9 +1058,10 @@ def _collect_perf_hits(
     """Whole-tree perf pass → ``(hits, io_boundary_names, fn_facts)``.
 
     Iterative DFS carrying ``(node, loop_depth, in_async, func_name,
-    func_start)`` — the proven Phase-0 shape, extended with the enclosing
-    function's start line so per-function facts can be keyed to a graph symbol
-    node. Loop-body scoping and constant-loop skipping are applied so only
+    func_start, lock_depth)`` — the proven Phase-0 shape, extended with the
+    enclosing function's start line (so per-function facts key to a graph symbol
+    node) and a block-scoped ``lock_depth`` (so an I/O sink under a held lock is
+    flagged). Loop-body scoping and constant-loop skipping are applied so only
     genuinely per-iteration calls are flagged. Returns nothing for languages
     that opt out of the perf pass (empty ``call_kinds``).
 
@@ -1023,6 +1082,11 @@ def _collect_perf_hits(
     do_loop_call_marker = bool(markers & _LOOP_CALL_MARKER_KINDS)
     do_loop_stmt_marker = bool(markers & _LOOP_STMT_MARKER_KINDS)
     do_serial_await = "serial_await_in_loop" in markers
+    # Phase 7b markers.
+    do_nested_io = "nested_loop_with_io" in markers
+    do_nested_quadratic = "nested_loop_quadratic" in markers
+    do_hot_path = "hot_path_sync_io" in markers
+    do_lock_io = "blocking_io_under_lock" in markers
     # ``list_names`` is the precision gate for the membership marker; compute it
     # once per file only when this dialect can emit that marker, then thread it
     # to the loop-marker hooks (which ignore it for every other marker).
@@ -1038,20 +1102,32 @@ def _collect_perf_hits(
 
     hits: list[PerfHit] = []
     # Per-enclosing-function accumulators keyed by the function's start line
-    # (0 = module scope). ``(name, loop_targets{name->min line}, [bare_sink])``.
-    fn_acc: dict[int, tuple[str | None, dict[str, int], list[str | None]]] = {}
+    # (0 = module scope): ``(name, loop_targets{name->line}, lock_targets{...},
+    # [bare_sink], misc)``. loop/lock targets feed the cross-function
+    # reachability passes; the bare-sink slot makes the function a reachability
+    # target. ``misc`` carries the Phase-7b *centrality-gated* facts the engine
+    # turns into hits only for hot functions (kept out of ``hits`` so the raw
+    # walker output stays the same high-precision same-function set):
+    #   misc[0] = nested_loop_line   (a data-dependent loop nested in another)
+    #   misc[1] = blocking_sink_kind (first non-awaited loop_depth-0 sink kind)
+    #   misc[2] = blocking_sink_line
+    fn_acc: dict[
+        int, tuple[str | None, dict[str, int], dict[str, int], list[str | None], list]
+    ] = {}
 
-    def _acc(func_start: int, func_name: str | None) -> tuple[dict[str, int], list[str | None]]:
+    def _acc(
+        func_start: int, func_name: str | None
+    ) -> tuple[dict[str, int], dict[str, int], list[str | None], list]:
         entry = fn_acc.get(func_start)
         if entry is None:
-            entry = (func_name, {}, [None])
+            entry = (func_name, {}, {}, [None], [0, None, 0])
             fn_acc[func_start] = entry
-        return entry[1], entry[2]
+        return entry[1], entry[2], entry[3], entry[4]
 
-    # (node, loop_depth, in_async, func_name, func_start)
-    stack: list[tuple[Node, int, bool, str | None, int]] = [(root, 0, False, None, 0)]
+    # (node, loop_depth, in_async, func_name, func_start, lock_depth)
+    stack: list[tuple[Node, int, bool, str | None, int, int]] = [(root, 0, False, None, 0, 0)]
     while stack:
-        node, loop_depth, in_async, func_name, func_start = stack.pop()
+        node, loop_depth, in_async, func_name, func_start, lock_depth = stack.pop()
         t = node.type
 
         is_loop = t in loop_kinds
@@ -1067,6 +1143,15 @@ def _collect_perf_hits(
             next_func = _perf_func_name(node) or func_name
             next_start = node.start_point[0] + 1
 
+        # A data-dependent loop nested inside another (``loop_depth`` only counts
+        # non-constant loops) is an O(n^2) shape. Record the site as a fact; the
+        # engine emits ``nested_loop_quadratic`` only when the function is hot
+        # (centrality gate), so the noisy-everywhere shape never ships ungated.
+        if is_loop and loop_depth >= 1 and do_nested_quadratic:
+            misc = _acc(next_start, next_func)[3]
+            if misc[0] == 0:
+                misc[0] = node.start_point[0] + 1
+
         if t in call_kinds:
             method = dialect.callee_method_name(node) or ""
             root_name = dialect.callee_root_name(node) or ""
@@ -1081,24 +1166,67 @@ def _collect_perf_hits(
                 io_names=io_names,
                 has_db_import=has_db_import,
             )
-            if loop_depth >= 1:
-                if kind is not None:
-                    hits.append(PerfHit("io_in_loop", line, next_func, kind))
+            if kind is not None:
+                if loop_depth >= 1:
+                    hits.append(PerfHit("io_in_loop", line, next_func, kind, func_start=next_start))
                     if do_serial_await and awaited:
                         # An *awaited* sink in a loop body is additionally a
                         # missed-concurrency candidate (a serial round-trip that
                         # a ``gather`` / ``Promise.all`` could fan out). Advisory
                         # co-signal alongside ``io_in_loop``; ``detail`` carries
                         # the boundary kind for the finding.
-                        hits.append(PerfHit("serial_await_in_loop", line, next_func, kind))
+                        hits.append(
+                            PerfHit(
+                                "serial_await_in_loop", line, next_func, kind, func_start=next_start
+                            )
+                        )
+                    if do_nested_io and loop_depth >= 2:
+                        # A sink in the inner body of a NESTED loop -> O(n·m)
+                        # round-trips. Nesting raises confidence, so it ships
+                        # un-gated alongside ``io_in_loop``.
+                        hits.append(
+                            PerfHit(
+                                "nested_loop_with_io", line, next_func, kind, func_start=next_start
+                            )
+                        )
                 else:
+                    # A sink at loop_depth 0 makes this function a reachability
+                    # target: a loop elsewhere calling into it runs the sink N
+                    # times (cross-function N+1).
+                    _lt, _kt, sink_slot, misc = _acc(next_start, next_func)
+                    if sink_slot[0] is None:
+                        sink_slot[0] = kind
+                    if (
+                        do_hot_path
+                        and not awaited
+                        and misc[1] is None
+                        and kind in _HOT_PATH_SINK_KINDS
+                    ):
+                        # An inherently-blocking (non-awaited subprocess / fs /
+                        # sync-network) sink outside any loop. Noisy everywhere,
+                        # so record it as a fact; the engine emits
+                        # ``hot_path_sync_io`` only for a hot, request-reachable
+                        # function (centrality gate). ``db`` is excluded — see
+                        # ``_HOT_PATH_SINK_KINDS``.
+                        misc[1] = kind
+                        misc[2] = line
+                if do_lock_io and lock_depth >= 1:
+                    # A sink reached while a block-scoped lock is held: the
+                    # round-trip runs under the lock, serializing every thread.
+                    hits.append(
+                        PerfHit(
+                            "blocking_io_under_lock", line, next_func, kind, func_start=next_start
+                        )
+                    )
+            else:
+                if loop_depth >= 1:
                     marker = (
                         dialect.loop_call_marker(root_name, method, node, list_names)
                         if do_loop_call_marker
                         else None
                     )
                     if marker is not None:
-                        hits.append(PerfHit(marker, line, next_func, ""))
+                        hits.append(PerfHit(marker, line, next_func, "", func_start=next_start))
                     elif method:
                         # A loop-nested call to a non-sink helper: a candidate
                         # entry for cross-function reachability (PR4). Keep the
@@ -1106,33 +1234,63 @@ def _collect_perf_hits(
                         targets = _acc(next_start, next_func)[0]
                         if method not in targets:
                             targets[method] = line
-            elif kind is not None:
-                # A sink at loop_depth 0 makes this function a reachability
-                # target: a loop elsewhere calling into it runs the sink N times.
-                sink_slot = _acc(next_start, next_func)[1]
-                if sink_slot[0] is None:
-                    sink_slot[0] = kind
+                if do_lock_io and lock_depth >= 1 and method:
+                    # A non-sink call under a held lock: a candidate entry for the
+                    # cross-function ``blocking_io_under_lock`` reachability pass.
+                    lock_targets = _acc(next_start, next_func)[1]
+                    if method not in lock_targets:
+                        lock_targets[method] = line
             if do_blocking and in_async and not awaited:
                 api = dialect.blocking_sync_api(root_name, method)
                 if api is not None:
-                    hits.append(PerfHit("blocking_sync_in_async", line, next_func, api))
+                    hits.append(
+                        PerfHit(
+                            "blocking_sync_in_async", line, next_func, api, func_start=next_start
+                        )
+                    )
         else:
             if do_blocking and in_async:
                 # A non-call member read that blocks in async (C# ``task.Result``).
                 mem = dialect.async_blocking_member(node)
                 if mem is not None:
                     hits.append(
-                        PerfHit("blocking_sync_in_async", node.start_point[0] + 1, next_func, mem)
+                        PerfHit(
+                            "blocking_sync_in_async",
+                            node.start_point[0] + 1,
+                            next_func,
+                            mem,
+                            func_start=next_start,
+                        )
                     )
             if loop_depth >= 1:
                 if do_string_concat and dialect.is_string_concat(node):
                     hits.append(
-                        PerfHit("string_concat_in_loop", node.start_point[0] + 1, next_func, "")
+                        PerfHit(
+                            "string_concat_in_loop",
+                            node.start_point[0] + 1,
+                            next_func,
+                            "",
+                            func_start=next_start,
+                        )
                     )
                 elif do_loop_stmt_marker:
                     sm = dialect.loop_stmt_marker(node, list_names)
                     if sm is not None:
-                        hits.append(PerfHit(sm, node.start_point[0] + 1, next_func, ""))
+                        hits.append(
+                            PerfHit(
+                                sm,
+                                node.start_point[0] + 1,
+                                next_func,
+                                "",
+                                func_start=next_start,
+                            )
+                        )
+
+        # A block-scoped lock (``lock``/``synchronized``) opens a held region.
+        # Only its BLOCK body runs with the lock held — a sink in the lock-object
+        # expression (``synchronized(repo.find(id)){…}``) runs before the lock is
+        # taken — so ``lock_depth`` is raised per-child, for the body block only.
+        entering_lock = do_lock_io and dialect.is_lock_scope(node)
 
         if is_loop:
             # Only the loop BODY runs per-iteration; the ``for x in <iterable>``
@@ -1143,13 +1301,18 @@ def _collect_perf_hits(
                 # with ``==`` (identity by tree + byte range), never ``is``.
                 for c in node.children:
                     cd = loop_depth + 1 if c == body else loop_depth
-                    stack.append((c, cd, next_async, next_func, next_start))
+                    stack.append((c, cd, next_async, next_func, next_start, lock_depth))
             else:
                 for c in node.children:
-                    stack.append((c, loop_depth + 1, next_async, next_func, next_start))
+                    stack.append((c, loop_depth + 1, next_async, next_func, next_start, lock_depth))
+        elif entering_lock:
+            # Raise lock_depth for the body block only (not the lock-object expr).
+            for c in node.children:
+                cl = lock_depth + 1 if c.type in _LOCK_BODY_KINDS else lock_depth
+                stack.append((c, loop_depth, next_async, next_func, next_start, cl))
         else:
             for c in node.children:
-                stack.append((c, loop_depth, next_async, next_func, next_start))
+                stack.append((c, loop_depth, next_async, next_func, next_start, lock_depth))
 
     # Dedup chained sinks: ``result.scalars().all()`` parses as two call nodes
     # on one line (the ``.scalars()`` sink and the ``.all()`` materializer) —
@@ -1168,11 +1331,15 @@ def _collect_perf_hits(
         PerfFnFacts(
             function=name,
             func_start=start,
-            loop_call_targets=tuple(sorted(targets.items())),
+            loop_call_targets=tuple(sorted(loop_targets.items())),
             bare_sink_kind=sink[0],
+            lock_call_targets=tuple(sorted(lock_targets.items())),
+            nested_loop_line=misc[0],
+            blocking_sink_kind=misc[1],
+            blocking_sink_line=misc[2],
         )
-        for start, (name, targets, sink) in fn_acc.items()
-        if targets or sink[0] is not None
+        for start, (name, loop_targets, lock_targets, sink, misc) in fn_acc.items()
+        if (loop_targets or lock_targets or sink[0] is not None or misc[0] or misc[1] is not None)
     ]
     fn_facts.sort(key=lambda f: f.func_start)
     return deduped, io_names, fn_facts

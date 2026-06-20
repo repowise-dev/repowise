@@ -106,6 +106,10 @@ class GoPerfDialect(BasePerfDialect):
             "regex_compile_in_loop",
             "resource_construction_in_loop",
             "lock_in_loop",
+            # Phase 7b — centrality-gated / nesting-confidence markers.
+            "nested_loop_with_io",
+            "nested_loop_quadratic",
+            "hot_path_sync_io",
         }
     )
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from .base import Biomarker, BiomarkerResult, FileContext
+from .blocking_io_under_lock import BlockingIoUnderLockDetector
 from .blocking_sync_in_async import BlockingSyncInAsyncDetector
 from .brain_method import BrainMethodDetector
 from .bumpy_road import BumpyRoadDetector
@@ -30,6 +31,7 @@ from .error_handling import ErrorHandlingDetector
 from .function_hotspot import FunctionHotspotDetector
 from .god_class import GodClassDetector
 from .hidden_coupling import HiddenCouplingDetector
+from .hot_path_sync_io import HotPathSyncIoDetector
 from .io_in_loop import IoInLoopDetector
 from .knowledge_loss import KnowledgeLossDetector
 from .large_assertion_block import LargeAssertionBlockDetector
@@ -38,6 +40,8 @@ from .lock_in_loop import LockInLoopDetector
 from .low_cohesion import LowCohesionDetector
 from .membership_test_against_list_in_loop import MembershipTestAgainstListInLoopDetector
 from .nested_complexity import NestedComplexityDetector
+from .nested_loop_quadratic import NestedLoopQuadraticDetector
+from .nested_loop_with_io import NestedLoopWithIoDetector
 from .ownership_risk import OwnershipRiskDetector
 from .primitive_obsession import PrimitiveObsessionDetector
 from .prior_defect import PriorDefectDetector
@@ -82,6 +86,11 @@ _DETECTOR_FACTORIES: list[type[Biomarker]] = [
     LockInLoopDetector,  # type: ignore[list-item]
     SerialAwaitInLoopDetector,  # type: ignore[list-item]
     MembershipTestAgainstListInLoopDetector,  # type: ignore[list-item]
+    # Phase 7b — centrality-gated moat markers.
+    NestedLoopWithIoDetector,  # type: ignore[list-item]
+    NestedLoopQuadraticDetector,  # type: ignore[list-item]
+    HotPathSyncIoDetector,  # type: ignore[list-item]
+    BlockingIoUnderLockDetector,  # type: ignore[list-item]
 ]
 
 

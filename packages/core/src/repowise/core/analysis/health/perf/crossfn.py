@@ -48,6 +48,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 
+from .callgraph import CallGraphIndex
 from .reachability import path_to_sink, reachable_to_sink
 
 if TYPE_CHECKING:
@@ -61,86 +62,23 @@ if TYPE_CHECKING:
 CROSSFN_KIND = "io_in_loop"
 
 
-def _module_node_id(path: str) -> str:
-    return f"{path}::__module__"
-
-
-class _CallGraphIndex:
-    """One-pass index of the dependency graph for the cross-function pass.
-
-    Holds only what the pass needs: symbol-node name lookup, a ``calls``
-    adjacency in both directions, and a resolver from ``(file, def-line)`` to a
-    symbol-node id. Built once; never mutates the source graph.
-    """
-
-    __slots__ = ("_by_file_line", "_ranges", "forward", "name", "nodes", "reverse")
-
-    def __init__(self, graph: Any) -> None:
-        self.nodes: set[str] = set()
-        self.name: dict[str, str] = {}
-        self.forward: dict[str, list[str]] = {}
-        self.reverse: dict[str, list[str]] = {}
-        # Exact (path, start_line) -> symbol id, plus a per-file range list for
-        # the containment fallback when a def line doesn't match exactly.
-        self._by_file_line: dict[tuple[str, int], str] = {}
-        self._ranges: dict[str, list[tuple[int, int, str]]] = {}
-
-        for node_id, attrs in graph.nodes(data=True):
-            self.nodes.add(node_id)
-            if attrs.get("node_type") != "symbol":
-                continue
-            self.name[node_id] = attrs.get("name") or ""
-            path = attrs.get("file_path")
-            if not path:
-                continue
-            start = attrs.get("start_line")
-            end = attrs.get("end_line")
-            if isinstance(start, int):
-                self._by_file_line.setdefault((path, start), node_id)
-                if isinstance(end, int):
-                    self._ranges.setdefault(path, []).append((start, end, node_id))
-
-        for src, dst, data in graph.edges(data=True):
-            if data.get("edge_type") != "calls":
-                continue
-            self.forward.setdefault(src, []).append(dst)
-            self.reverse.setdefault(dst, []).append(src)
-
-    def resolve_function(self, path: str, func_start: int) -> str | None:
-        """Symbol-node id for the function defined at ``func_start`` in ``path``.
-
-        ``func_start == 0`` is module scope (the synthetic ``::__module__``
-        node). Otherwise prefer an exact def-line match, then fall back to the
-        innermost symbol whose line range contains ``func_start`` (tolerates a
-        decorator/def off-by-one without matching an enclosing scope).
-        """
-        if func_start == 0:
-            mod = _module_node_id(path)
-            return mod if mod in self.nodes else None
-        exact = self._by_file_line.get((path, func_start))
-        if exact is not None:
-            return exact
-        best: str | None = None
-        best_start = -1
-        for start, end, node_id in self._ranges.get(path, ()):
-            if start <= func_start <= end and start > best_start:
-                best, best_start = node_id, start
-        return best
-
-
 def collect_crossfn_io_in_loop(
     walked: Iterable[tuple[Any, FileComplexity]],
     graph: Any,
     *,
+    index: CallGraphIndex | None = None,
     max_depth: int = 3,
 ) -> dict[str, list[PerfHit]]:
     """Cross-function ``io_in_loop`` hits, keyed by the loop-owning file path.
 
     ``walked`` is the engine's ``(parsed_file, FileComplexity)`` list; ``graph``
     is the resolved dependency graph (file + symbol nodes with ``calls``
-    edges), or ``None``. Each returned :class:`PerfHit` carries the sink's
-    boundary kind in ``detail`` and the ``A -> ... -> sink`` symbol path in
-    ``path`` (non-empty ``path`` is what marks a hit as cross-function).
+    edges), or ``None``. ``index`` is an optional pre-built
+    :class:`CallGraphIndex` (the engine builds one and shares it across the
+    graph passes); when omitted it is built from ``graph``. Each returned
+    :class:`PerfHit` carries the sink's boundary kind in ``detail`` and the
+    ``A -> ... -> sink`` symbol path in ``path`` (non-empty ``path`` is what
+    marks a hit as cross-function).
     """
     walked_list = list(walked)
     if graph is None or not walked_list:
@@ -159,7 +97,8 @@ def collect_crossfn_io_in_loop(
     if not (has_sink and has_entry):
         return {}
 
-    index = _CallGraphIndex(graph)
+    if index is None:
+        index = CallGraphIndex(graph)
     if not index.forward:
         return {}  # no resolved call edges → nothing cross-function to find
 
@@ -199,7 +138,7 @@ def collect_crossfn_io_in_loop(
 def _hits_for_function(
     path: str,
     fact: PerfFnFacts,
-    index: _CallGraphIndex,
+    index: CallGraphIndex,
     reach: dict[str, Any],
     sink_kind: dict[str, str],
 ) -> list[PerfHit]:

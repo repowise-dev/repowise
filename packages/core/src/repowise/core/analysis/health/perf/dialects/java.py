@@ -108,8 +108,18 @@ class JavaPerfDialect(BasePerfDialect):
             "regex_compile_in_loop",
             "resource_construction_in_loop",
             "lock_in_loop",
+            # Phase 7b — centrality-gated / nesting-confidence markers + the
+            # block-scoped lock→I/O case (``synchronized`` is a held region).
+            "nested_loop_with_io",
+            "nested_loop_quadratic",
+            "hot_path_sync_io",
+            "blocking_io_under_lock",
         }
     )
+
+    def is_lock_scope(self, node: Node) -> bool:
+        # ``synchronized (x) { ... }`` — the body is the held-lock region.
+        return node.type == "synchronized_statement"
 
     # ``s += "x"`` is an ``assignment_expression`` with the literal directly on
     # the ``right`` field (no list wrapper, unlike Go).

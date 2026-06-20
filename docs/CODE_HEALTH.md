@@ -156,6 +156,32 @@ category cap of 1.0, so the pillar stays advisory) are:
 - **`membership_test_against_list_in_loop`**: `x in big_list` (or
   `big_list.includes(x)`) inside a loop is O(n·m); a set makes each lookup O(1).
   Fires only when the right operand is *provably* a list, never a set or dict.
+- **`nested_loop_with_io`**: an I/O sink in the inner body of a **nested** loop:
+  O(n·m) round-trips, the quadratic cousin of `io_in_loop`. The nesting itself
+  raises confidence the finding is real, so it surfaces alongside `io_in_loop`.
+- **`blocking_io_under_lock`**: an I/O round-trip reached while a block-scoped
+  lock is held (a C# `lock(){}` / Java `synchronized(){}` block, directly or
+  through a call). Every other thread blocks for the full I/O wait — a throughput
+  killer. The cross-function case reuses the same bounded-reachability engine as
+  the N+1 moat, with a `lock → io` entry set.
+
+Two markers use **centrality as a precision gate**, not just a sort key — a
+shape that is noisy when flagged everywhere only fires in a *hot* function (one
+with top-quintile call-graph in-degree, or in a churny/hotspot file), computed by
+a reusable severity ranker over the same call graph the N+1 pass uses:
+
+- **`hot_path_sync_io`**: a blocking **subprocess / filesystem** call in a hot,
+  request-reachable function — **even outside a loop**. Generalizes the pillar
+  beyond loops: its latency is paid on every call through the function. (DB and
+  network are excluded — both are awaited in async code, and the un-awaited calls
+  a static pass sees are result *materializers* or chained awaits, not blocking
+  round-trips; subprocess/filesystem are synchronous by construction.) Advisory —
+  a latency signal ranked by centrality, not a defect.
+- **`nested_loop_quadratic`**: a data-dependent loop nested inside another
+  (O(n²)) in a hot function. The centrality gate makes the list short and
+  reviewable (it cut a 13× volume of raw nested loops), but centrality answers
+  "is this function important", not "is n large" — so it ships **advisory /
+  informational** only, never at a weight that moves the score.
 
 A few markers are language-specific, contributed by that language's dialect (see
 below) rather than the shared core:

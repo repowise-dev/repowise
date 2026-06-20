@@ -217,6 +217,11 @@ _BIOMARKER_DIMENSIONS: dict[str, set[str]] = {
     "lock_in_loop": {"performance"},
     "serial_await_in_loop": {"performance"},
     "membership_test_against_list_in_loop": {"performance"},
+    # Phase 7b centrality-gated moat markers - performance-only.
+    "nested_loop_with_io": {"performance"},
+    "nested_loop_quadratic": {"performance"},
+    "hot_path_sync_io": {"performance"},
+    "blocking_io_under_lock": {"performance"},
 }
 
 # Maintainability per-biomarker weight multipliers. Expert-set by definition -
@@ -292,6 +297,15 @@ _PERFORMANCE_WEIGHT_MULTIPLIER: dict[str, float] = {
     "lock_in_loop": 0.5,
     "membership_test_against_list_in_loop": 0.5,
     "serial_await_in_loop": 0.4,
+    # Phase 7b markers. Ship at advisory weight pending each one's Phase-0 gate
+    # (MARKER_BACKLOG.md / PHASE7B_LABELS.md). nested_loop_with_io rides with
+    # io_in_loop (nesting-confident); blocking_io_under_lock is high-confidence
+    # by construction (a sink under a held lock); the centrality-gated pair are
+    # advisory (the gate is precision, but the algorithmic cost is context-bound).
+    "nested_loop_with_io": 0.5,
+    "blocking_io_under_lock": 0.6,
+    "hot_path_sync_io": 0.5,
+    "nested_loop_quadratic": 0.4,
 }
 
 # All perf biomarkers share one ``performance`` category, so the single cap
@@ -304,6 +318,10 @@ _PERFORMANCE_CATEGORY: dict[str, str] = {
     "lock_in_loop": "performance",
     "serial_await_in_loop": "performance",
     "membership_test_against_list_in_loop": "performance",
+    "nested_loop_with_io": "performance",
+    "nested_loop_quadratic": "performance",
+    "hot_path_sync_io": "performance",
+    "blocking_io_under_lock": "performance",
 }
 
 # One bounded performance category cap. ~1.0 keeps performance advisory.
@@ -321,6 +339,10 @@ _PERFORMANCE_HOME: frozenset[str] = frozenset(
         "lock_in_loop",
         "serial_await_in_loop",
         "membership_test_against_list_in_loop",
+        "nested_loop_with_io",
+        "nested_loop_quadratic",
+        "hot_path_sync_io",
+        "blocking_io_under_lock",
     }
 )
 

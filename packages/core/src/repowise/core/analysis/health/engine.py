@@ -37,7 +37,13 @@ from .complexity import FileComplexity, FunctionComplexity, walk_file
 from .coverage import is_test_file as _coverage_is_test_file
 from .duplication import DuplicationReport, detect_clones
 from .models import HealthFileMetricData, HealthFindingData, HealthReport
-from .perf import collect_crossfn_io_in_loop
+from .perf import (
+    CallGraphIndex,
+    PerfRanker,
+    collect_blocking_io_under_lock,
+    collect_centrality_gated,
+    collect_crossfn_io_in_loop,
+)
 from .scoring import attach_impacts, compute_kpis, score_file
 
 log = structlog.get_logger(__name__)
@@ -560,25 +566,45 @@ class HealthAnalyzer:
     # ------------------------------------------------------------------
 
     def _apply_crossfn_perf(self, walked: list[tuple[Any, FileComplexity]]) -> None:
-        """Splice cross-function ``io_in_loop`` hits into the walked files.
+        """Run the graph-dependent perf passes over the walked files, in place.
 
-        Runs the bounded reachability pass once over the resolved ``calls``
-        graph and appends the cross-function hits onto the matching file's
-        ``perf_hits`` in place, so the ``io_in_loop`` biomarker handles
-        same-function and cross-function hits through one path. Failure-isolated
-        and a no-op without a graph — never blocks the rest of the report.
+        Four sources of extra ``perf_hits``, all sharing one
+        :class:`CallGraphIndex` (built once over the resolved ``calls`` graph):
+
+          1. cross-function ``io_in_loop`` / N+1 (PR4);
+          2. cross-function ``blocking_io_under_lock`` (Phase 7b) — the lock→I/O
+             reachability case;
+          3. the centrality-gated ``nested_loop_quadratic`` / ``hot_path_sync_io``
+             markers (Phase 7b), generated from the walker's per-function facts
+             ONLY for a hot function, via the :class:`PerfRanker`.
+
+        Each is appended onto the matching file's ``perf_hits`` in place so the
+        biomarkers handle every case through one path. Failure-isolated and never
+        blocks the report. The cross-function passes are a no-op without a graph;
+        the centrality-gated pass ALWAYS runs — when no graph/git signal is
+        available nothing is hot, so it emits nothing (precision-first: we never
+        ship a centrality-gated marker we cannot establish centrality for).
         """
-        if self.graph is None:
-            return
         try:
-            crossfn = collect_crossfn_io_in_loop(walked, self.graph)
+            index = CallGraphIndex(self.graph) if self.graph is not None else None
+            by_file: dict[str, list] = {}
+            if self.graph is not None and index is not None:
+                for src in (
+                    collect_crossfn_io_in_loop(walked, self.graph, index=index),
+                    collect_blocking_io_under_lock(walked, self.graph, index=index),
+                ):
+                    for path, hits in src.items():
+                        by_file.setdefault(path, []).extend(hits)
+            ranker = PerfRanker(index, self.git_meta_map)
+            for path, hits in collect_centrality_gated(walked, ranker).items():
+                by_file.setdefault(path, []).extend(hits)
+            for _pf, fcx in walked:
+                extra = by_file.get(_pf.file_info.path)
+                if extra:
+                    fcx.perf_hits = [*fcx.perf_hits, *extra]
         except Exception as exc:
             log.debug("health_crossfn_perf_failed", error=str(exc))
             return
-        for _pf, fcx in walked:
-            extra = crossfn.get(_pf.file_info.path)
-            if extra:
-                fcx.perf_hits = [*fcx.perf_hits, *extra]
 
     def _function_blame_rows(self, walked: list[tuple[Any, FileComplexity]]) -> list[dict]:
         """Build the per-function blame rollup from the walked files + the

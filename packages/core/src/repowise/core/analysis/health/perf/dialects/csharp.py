@@ -178,8 +178,18 @@ class CSharpPerfDialect(BasePerfDialect):
             "resource_construction_in_loop",
             "lock_in_loop",
             "serial_await_in_loop",
+            # Phase 7b — centrality-gated / nesting-confidence markers + the
+            # block-scoped lock→I/O case (``lock (x) {}`` is a held region).
+            "nested_loop_with_io",
+            "nested_loop_quadratic",
+            "hot_path_sync_io",
+            "blocking_io_under_lock",
         }
     )
+
+    def is_lock_scope(self, node: Node) -> bool:
+        # ``lock (x) { ... }`` — the body is the held-lock region.
+        return node.type == "lock_statement"
 
     # ``invocation_expression`` -> ``member_access_expression`` is the call
     # shape; add it so a member call reads as attribute-style.

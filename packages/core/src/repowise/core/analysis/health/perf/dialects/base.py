@@ -275,6 +275,21 @@ class BasePerfDialect:
         """
         return None
 
+    def is_lock_scope(self, node: Node) -> bool:
+        """True if *node* opens a block-scoped held-lock region.
+
+        The walker tracks a ``lock_depth`` analogous to ``loop_depth`` so the
+        ``blocking_io_under_lock`` marker can fire on an I/O sink reached while a
+        lock is held. Only unambiguous *block* constructs qualify — C#
+        ``lock (x) { ... }`` and Java ``synchronized (x) { ... }`` — where the
+        held region is exactly the node's body. Acquire/release *pairs*
+        (``lock.acquire()`` … ``lock.release()``) are not block-scoped and are
+        deliberately out of scope here (no held-region node to bound), so this
+        defaults to ``False`` and a language that does not override it produces
+        no lock-scope signal. Precision-first by construction.
+        """
+        return False
+
 
 # The registry, populated by ``dialects/__init__.py`` from each language module.
 # Keyed by ``LanguageTag``; a missing key ⇒ the perf pass is silent for that

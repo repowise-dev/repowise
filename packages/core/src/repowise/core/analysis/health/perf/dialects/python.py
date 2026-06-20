@@ -104,6 +104,10 @@ class PythonPerfDialect(BasePerfDialect):
             "lock_in_loop",
             "serial_await_in_loop",
             "membership_test_against_list_in_loop",
+            # Phase 7b — centrality-gated / nesting-confidence markers.
+            "nested_loop_with_io",
+            "nested_loop_quadratic",
+            "hot_path_sync_io",
         }
     )
 
