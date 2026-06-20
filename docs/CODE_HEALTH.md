@@ -212,9 +212,13 @@ db/network/filesystem/subprocess lexicons and the per-language precision hazards
 documented in `local-stash/performance-pillar/PHASE6_PLAN.md`. The verb sets are
 gated for precision: distinctive sinks (EF `*Async`, Spring-Data `findBy*`, JDBC
 `executeQuery`) fire on name alone, while ambiguous verbs require file-level
-db-import evidence (MEDIUM precision; formal per-language OSS precision gates are
-a tracked follow-up, and until they land the markers stay advisory under the
-bounded `performance` cap).
+db-import evidence. **`io_in_loop` is validated across languages** on an 11-repo
+OSS corpus: Go 96.7%, TypeScript 100%, Python 96.2% hand-labeled precision; the
+`blocking_sync_in_async` C# `.Result`/Result-pattern collision and the Go
+`*sql.Rows.Scan` cursor FP were caught and fixed by that validation. `nested_loop_quadratic`
+measured below the bar in every language (centrality gates volume, not shape) and
+stays advisory-only, as does `blocking_io_under_lock` (rare-by-good-practice: zero
+corpus instances even on concurrency-heavy Java).
 
 **Soundness limits (honest, by design).** Performance is a *static* signal, so
 it under-reports rather than over-reports (these cap recall, not precision):

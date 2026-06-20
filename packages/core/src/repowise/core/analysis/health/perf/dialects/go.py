@@ -44,6 +44,11 @@ GO_SQL_METHODS: frozenset[str] = frozenset(
 # GORM finisher methods (the ones that actually hit the database, not the
 # builder chain ``.Where`` / ``.Preload`` / ``.Joins``). All collide with
 # ordinary method names, so gated on a GORM/db import in the file.
+# ``Scan`` is deliberately EXCLUDED: ``*sql.Rows.Scan`` (decoding an
+# already-fetched cursor row inside ``for rows.Next()``) is far more common than
+# GORM's ``db.Scan`` finisher and is NOT a round-trip — it FP'd ``io_in_loop``
+# on every cursor-read loop (Phase-7c syft corpus). Dropping it costs ~0
+# measured recall (no corpus GORM-``Scan``-in-loop) and removes the FP class.
 GO_GORM_METHODS: frozenset[str] = frozenset(
     {
         "Find",
@@ -56,7 +61,6 @@ GO_GORM_METHODS: frozenset[str] = frozenset(
         "Delete",
         "Count",
         "Pluck",
-        "Scan",
     }
 )
 # ``os`` / ``io/ioutil`` filesystem round-trips, keyed on the package receiver.

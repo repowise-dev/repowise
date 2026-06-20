@@ -77,8 +77,7 @@ _JAVA_CASES = [
         "ambiguous get() WITH a db import passes the file-level gate",
     ),
     (
-        "class A{void m(java.util.List<String> ids){"
-        "for(String id:ids){ helper(id); }}}",
+        "class A{void m(java.util.List<String> ids){for(String id:ids){ helper(id); }}}",
         [],
         "a plain helper call in a loop is not a sink",
     ),
@@ -119,14 +118,12 @@ _GO_CASES = [
         "GORM Find with a gorm import fires",
     ),
     (
-        "package m\n"
-        "func f(repo Repo, ids []int){ for _, id := range ids { repo.Find(id) } }",
+        "package m\nfunc f(repo Repo, ids []int){ for _, id := range ids { repo.Find(id) } }",
         [],
         "ambiguous Find with NO db import is gated out",
     ),
     (
-        'package m\nimport "database/sql"\n'
-        'func f(db *sql.DB){ for {} ; db.Query("x") }',
+        'package m\nimport "database/sql"\nfunc f(db *sql.DB){ for {} ; db.Query("x") }',
         [],
         "clause-less for{} is a real loop but the query is outside it",
     ),
@@ -193,3 +190,93 @@ _CSHARP_CASES = [
 @pytest.mark.parametrize("src,expected,note", _CSHARP_CASES, ids=[c[2] for c in _CSHARP_CASES])
 def test_csharp_cases(src, expected, note):
     assert _hits("csharp", src) == sorted(expected), note
+
+
+# ---------------------------------------------------------------------------
+# Phase-7c precision fixes (multi-language corpus FP classes)
+# ---------------------------------------------------------------------------
+
+
+def test_csharp_result_pattern_collision_not_blocking():
+    """``.Result`` on a namespace/Result-DTO path is NOT a Task block.
+
+    Phase-7c C# corpus: 10/12 ``blocking_sync_in_async`` FPs were
+    ``Ardalis.Result.ResultStatus.X`` (``.Result`` as an intermediate namespace
+    segment) + a ``response.Result = ...`` DTO write. Neither blocks a thread.
+    """
+    # Intermediate segment of a qualified name (Ardalis.Result.ResultStatus).
+    assert (
+        _hits(
+            "csharp",
+            "class A{ async System.Threading.Tasks.Task M(){ var s = "
+            "Ardalis.Result.ResultStatus.Error; }}",
+        )
+        == []
+    )
+    # Write to a DTO ``.Result`` property (assignment target, not a read).
+    assert (
+        _hits(
+            "csharp",
+            "class A{ async System.Threading.Tasks.Task M(R response){ response.Result = 1; }}",
+        )
+        == []
+    )
+
+
+def test_csharp_task_result_still_blocks():
+    """A genuine terminal ``task.Result`` read in async still fires."""
+    assert ("blocking_sync_in_async", ".Result") in _hits(
+        "csharp",
+        "class A{ async System.Threading.Tasks.Task M(System.Threading.Tasks.Task<int> t){ "
+        "var x = t.Result; }}",
+    )
+
+
+def test_csharp_task_result_chained_read_still_blocks():
+    """``itemGetTask.Result.CatalogItem`` (camelCase local) still blocks.
+
+    Phase-7c eShopOnWeb: a genuine ``Task.Result`` read FOLLOWED by a member
+    access has the same ``X.Result.Y`` shape as the ``Ardalis.Result.X``
+    namespace FP; the receiver-root casing gate keeps the real one.
+    """
+    assert ("blocking_sync_in_async", ".Result") in _hits(
+        "csharp",
+        "class A{ async System.Threading.Tasks.Task M(){ "
+        "var c = itemGetTask.Result.CatalogItem; }}",
+    )
+
+
+def test_go_sql_rows_scan_not_io_in_loop():
+    """``rows.Scan`` inside ``for rows.Next()`` is a cursor decode, not a sink.
+
+    Phase-7c syft corpus: ``*sql.Rows.Scan`` FP'd ``io_in_loop`` (the query ran
+    once, outside the loop). ``Scan`` is no longer a GORM finisher verb.
+    """
+    src = (
+        'package p\nimport "database/sql"\n'
+        "func f(rows *sql.Rows){ for rows.Next() { var x int; _ = rows.Scan(&x) } }\n"
+    )
+    assert not any(k == "io_in_loop" for k, _ in _hits("go", src))
+
+
+def test_go_gorm_create_still_io_in_loop():
+    """A real GORM finisher (``Create``) in a range loop still fires."""
+    src = (
+        'package p\nimport "gorm.io/gorm"\n'
+        "func f(db *gorm.DB, items []int){ for _, it := range items { db.Create(&it) } }\n"
+    )
+    assert ("io_in_loop", "db") in _hits("go", src)
+
+
+def test_python_asyncio_sleep_not_a_sink():
+    """``await asyncio.sleep(...)`` in a loop is a yield, not network I/O.
+
+    Phase-7c headroom corpus: the awaited-network arm FP'd ``io_in_loop`` /
+    ``serial_await_in_loop`` on every backoff/poll loop.
+    """
+    src = (
+        "import asyncio\nasync def f(items):\n    for x in items:\n        await asyncio.sleep(x)\n"
+    )
+    kinds = {k for k, _ in _hits("python", src)}
+    assert "io_in_loop" not in kinds
+    assert "serial_await_in_loop" not in kinds

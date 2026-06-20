@@ -295,7 +295,9 @@ _PERFORMANCE_WEIGHT_MULTIPLIER: dict[str, float] = {
     # serial_await the lowest (cannot prove iteration independence).
     "resource_construction_in_loop": 0.7,
     "lock_in_loop": 0.5,
-    "membership_test_against_list_in_loop": 0.5,
+    # PROMOTED 0.5 -> 0.7 (Phase-7c): 100% precision across corpora (7a 22/22 +
+    # headroom Python 12/12 = 34/34; list-vs-set gate holds). Clears the 70% bar.
+    "membership_test_against_list_in_loop": 0.7,
     "serial_await_in_loop": 0.4,
     # Phase 7b markers. Ship at advisory weight pending each one's Phase-0 gate
     # (MARKER_BACKLOG.md / PHASE7B_LABELS.md). nested_loop_with_io rides with

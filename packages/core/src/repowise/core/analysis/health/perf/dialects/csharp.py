@@ -257,9 +257,72 @@ class CSharpPerfDialect(BasePerfDialect):
         if node.type != "member_access_expression":
             return None
         nm = node.child_by_field_name("name")
-        if nm is not None and nm.text and nm.text.decode("utf-8", "replace") == "Result":
-            return ".Result"
-        return None
+        if nm is None or not nm.text or nm.text.decode("utf-8", "replace") != "Result":
+            return None
+        # ``.Result`` collides hard with the ubiquitous Result-pattern
+        # (Ardalis.Result / FluentResults / custom ``Result<T>`` DTOs), which is
+        # NOT a ``Task`` and does not block. Two precision-first guards (Phase-7c
+        # C# corpus: 10/12 FPs were ``Ardalis.Result.ResultStatus.X``, 1 a write):
+        # NOTE: py-tree-sitter returns fresh Node wrappers per call, so compare
+        # by byte span (``_same_span``), never identity.
+        parent = node.parent
+        # ``Ardalis.Result.ResultStatus`` — ``.Result`` is an INTERMEDIATE segment
+        # of a longer qualified NAMESPACE/TYPE path, not a Task block. The shape
+        # ``X.Result.Y`` is identical to a genuine ``itemGetTask.Result.CatalogItem``
+        # chained read, so we additionally require the receiver root to be
+        # type-like (PascalCase): a Task is virtually always read off a camelCase
+        # local / param / field, while ``Ardalis`` / ``FluentResults`` are
+        # PascalCase namespaces.
+        if (
+            parent is not None
+            and parent.type == "member_access_expression"
+            and self._same_span(parent.child_by_field_name("expression"), node)
+            and self._receiver_root_is_typelike(node)
+        ):
+            return None
+        # ``response.Result = ...`` — a WRITE to a DTO property, not a blocking
+        # read of ``Task.Result``.
+        if (
+            parent is not None
+            and parent.type == "assignment_expression"
+            and self._same_span(parent.child_by_field_name("left"), node)
+        ):
+            return None
+        return ".Result"
+
+    @staticmethod
+    def _same_span(a: Node | None, b: Node | None) -> bool:
+        return (
+            a is not None
+            and b is not None
+            and a.start_byte == b.start_byte
+            and a.end_byte == b.end_byte
+        )
+
+    @staticmethod
+    def _receiver_root_is_typelike(node: Node) -> bool:
+        """True if the receiver of ``.Result`` is a PascalCase qualified-name path.
+
+        Walks the ``expression`` (object) side of the ``.Result`` member access
+        down to its leftmost identifier; returns True only when that root is a
+        plain identifier starting with an uppercase letter (a namespace / type,
+        e.g. ``Ardalis`` in ``Ardalis.Result.ResultStatus``). A method-call
+        receiver (``GetAsync(id).Result``) or a camelCase local
+        (``itemGetTask.Result``) is NOT type-like, so a real ``Task.Result`` read
+        is preserved.
+        """
+        cur = node.child_by_field_name("expression")
+        for _ in range(8):
+            if cur is None:
+                return False
+            if cur.type == "identifier":
+                txt = (cur.text or b"").decode("utf-8", "replace")
+                return bool(txt) and txt[0].isupper()
+            if cur.type == "member_access_expression":
+                cur = cur.child_by_field_name("expression")
+                continue
+            return False  # invocation / element access / this -> not a type path
+        return False
 
     def loop_call_marker(
         self, root: str, method: str, node: Node, list_names: frozenset[str]

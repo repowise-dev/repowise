@@ -127,6 +127,15 @@ class PythonPerfDialect(BasePerfDialect):
         root_kind = io_names.get(root)
         db_evidence = has_db_import or root_kind == "db"
 
+        # ``asyncio.sleep`` / ``time.sleep`` / ``trio.sleep`` is a cooperative
+        # yield, never an I/O round-trip — but ``await asyncio.sleep(...)`` would
+        # otherwise hit the awaited-network arm below when ``asyncio`` is
+        # import-classified as network, FP-ing ``io_in_loop`` / ``serial_await``
+        # on every backoff/poll loop (Phase-7c headroom corpus). No legitimate
+        # execution sink is named ``sleep``, so excluding it costs no recall.
+        if method == "sleep":
+            return None
+
         if method in PY_DB_UNAMBIGUOUS:
             # A real DB sink is always a method on a session/cursor/result
             # object; a bare identifier call (the builtin ``all(...)``) is not.
