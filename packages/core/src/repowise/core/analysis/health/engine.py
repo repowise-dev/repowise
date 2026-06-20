@@ -663,6 +663,8 @@ class HealthAnalyzer:
             repo_function_mod_p80=repo_function_mod_p80,
             repo_active_contributors_90d=repo_active_contributors_90d,
             error_handling_hits=fcx.error_handling_hits,
+            perf_hits=fcx.perf_hits,
+            io_boundary_names=set(fcx.io_boundary_names),
         )
 
         biomarker_results = detect_all(ctx, disabled=disabled)

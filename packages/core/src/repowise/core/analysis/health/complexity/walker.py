@@ -26,6 +26,12 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from ..perf.io_boundaries import (
+    HTTP_VERBS,
+    PY_SUBPROC_METHODS,
+    classify_call_sink,
+    collect_io_names,
+)
 from .languages import LanguageNodeMap, get_language_map
 
 if TYPE_CHECKING:
@@ -132,6 +138,33 @@ class ErrorHandlingHit:
     line: int  # 1-indexed
 
 
+@dataclass(frozen=True)
+class PerfHit:
+    """One performance-risk occurrence in a file (the ``performance`` dimension).
+
+    Collected by the walker's whole-tree perf pass (see
+    ``_collect_perf_hits``) and lifted into findings by the perf biomarkers.
+    Precision-first: every hit is loop-body-scoped and execution-sink-gated so
+    an unsupported language / parse failure / builder-only call yields nothing.
+
+    ``kind`` is one of:
+
+    - ``io_in_loop`` — an execution sink at an I/O boundary (db / network /
+      filesystem / subprocess) inside a real, data-dependent loop body. The
+      boundary kind is carried in ``detail``.
+    - ``string_concat_in_loop`` — string accumulation (``+=`` onto a string)
+      inside a loop, instead of a buffer / ``join``.
+    - ``blocking_sync_in_async`` — a known blocking sync call (``time.sleep`` /
+      sync ``requests`` / ``subprocess`` / ``os.system`` / bare ``open``) inside
+      an ``async def``, not awaited. ``detail`` carries the offending API.
+    """
+
+    kind: str
+    line: int  # 1-indexed
+    function: str | None = None
+    detail: str = ""
+
+
 @dataclass
 class FileComplexity:
     """Walker output for one file: per-function and per-class metrics.
@@ -147,6 +180,13 @@ class FileComplexity:
     # the language is unsupported or parsing failed — "no signal", never a
     # false positive.
     error_handling_hits: list[ErrorHandlingHit] = field(default_factory=list)
+    # Performance-risk occurrences (whole-tree perf pass). Empty when the
+    # language opts out of the perf pass (no ``call_kinds``) or parsing failed.
+    perf_hits: list[PerfHit] = field(default_factory=list)
+    # Names imported from an I/O-typed library in this file, mapped to their
+    # boundary kind (db / network / filesystem / subprocess / lock). The
+    # per-file import bridge; PR4's cross-function reachability consumes it.
+    io_boundary_names: dict[str, str] = field(default_factory=dict)
 
 
 # Leaf node types that carry a declared name at the bottom of a C/C++
@@ -863,6 +903,277 @@ def _collect_error_handling(
 
 
 # ----------------------------------------------------------------------
+# Performance-risk detection (io_in_loop / string_concat_in_loop /
+# blocking_sync_in_async — the ``performance`` health dimension)
+# ----------------------------------------------------------------------
+# One whole-tree pass mirroring ``_collect_error_handling`` but carrying the
+# per-node context the perf signal needs: loop depth, in-async, and the
+# enclosing function name. Two non-negotiable refinements (Phase-0 gate: they
+# took precision from 49% to 79%) are baked in:
+#   1. Loop-BODY scoping — only calls under a loop node's ``body`` field run
+#      per-iteration; a call in the ``for x in <iterable>`` header runs once.
+#   2. Constant-bound-loop skip — ``for _ in range(<int literals>)`` and loops
+#      over literal / ALL_CAPS-named-constant collections are not data-dependent.
+
+# Python string-literal node kinds (f-strings parse as ``string`` too).
+_PY_STRING_KINDS = frozenset({"string", "concatenated_string"})
+_TS_STRING_KINDS = frozenset({"string", "template_string"})
+_AUG_ASSIGN_KINDS = frozenset({"augmented_assignment", "augmented_assignment_expression"})
+
+
+def _callee_root_name(call_node: Node) -> str | None:
+    """Root identifier of a call's callee: ``a.b.c()`` -> 'a', ``foo()`` -> 'foo'."""
+    fn = call_node.child_by_field_name("function")
+    if fn is None:
+        named = [c for c in call_node.children if c.is_named]
+        fn = named[0] if named else None
+    if fn is None:
+        return None
+    node = fn
+    for _ in range(8):
+        if node.type in ("identifier", "property_identifier", "field_identifier"):
+            break
+        obj = node.child_by_field_name("object") or node.child_by_field_name("value")
+        if obj is None:
+            named = [c for c in node.children if c.is_named]
+            if not named:
+                break
+            node = named[0]
+        else:
+            node = obj
+    txt = (node.text or b"").decode("utf-8", "replace")
+    return txt.split(".")[0] if txt else None
+
+
+def _callee_method_name(call_node: Node) -> str | None:
+    """Rightmost member of the callee (``x.execute`` -> 'execute')."""
+    fn = call_node.child_by_field_name("function")
+    if fn is None:
+        return None
+    prop = (
+        fn.child_by_field_name("property")
+        or fn.child_by_field_name("field")
+        or fn.child_by_field_name("attribute")
+    )
+    if prop is not None and prop.text:
+        return prop.text.decode("utf-8", "replace")
+    if fn.type == "identifier" and fn.text:
+        return fn.text.decode("utf-8", "replace")
+    ids = [c for c in fn.children if c.type == "identifier"]
+    if ids and ids[-1].text:
+        return ids[-1].text.decode("utf-8", "replace")
+    return None
+
+
+def _callee_is_attribute(call_node: Node) -> bool:
+    """True if the callee is a member access (``x.foo()``), not a bare call."""
+    fn = call_node.child_by_field_name("function")
+    if fn is None:
+        return False
+    return fn.type in (
+        "attribute",
+        "member_expression",
+        "field_expression",
+        "selector_expression",
+    )
+
+
+def _perf_func_name(node: Node) -> str | None:
+    nm = node.child_by_field_name("name")
+    if nm is not None and nm.text:
+        return nm.text.decode("utf-8", "replace")
+    return None
+
+
+def _has_async_modifier(node: Node) -> bool:
+    """True if a function node carries an ``async`` modifier token (TS/JS)."""
+    return any(c.type == "async" for c in node.children)
+
+
+def _is_constant_for(node: Node) -> bool:
+    """True if a Python for-loop iterates a compile-time-constant bound.
+
+    Catches ``for _ in range(<int literals>)``, ``for x in (<literal>)``, and —
+    a refinement over the Phase-0 probe — ``for x in ALL_CAPS`` (a named
+    module constant by convention). ``while`` loops are never constant.
+    """
+    if node.type != "for_statement":
+        return False
+    right = node.child_by_field_name("right")
+    if right is None:
+        return False
+    if right.type in ("list", "tuple", "set"):
+        return True
+    # A bare ALL_CAPS identifier is a named constant by convention.
+    if right.type == "identifier" and right.text is not None:
+        name = right.text.decode("utf-8", "replace")
+        if name.isupper() and len(name) > 1:
+            return True
+    if right.type == "call":
+        fn = right.child_by_field_name("function")
+        if fn is None or (fn.text or b"").decode("utf-8", "replace") != "range":
+            return False
+        args = right.child_by_field_name("arguments")
+        if args is None:
+            return False
+        for a in args.children:
+            if not a.is_named:
+                continue
+            if a.type == "integer":
+                continue
+            if a.type == "unary_operator" and any(c.type == "integer" for c in a.children):
+                continue
+            return False  # a non-literal arg (e.g. len(x)) ⇒ data-dependent
+        return True
+    return False
+
+
+def _blocking_sync_api(root: str, method: str) -> str | None:
+    """The offending API name if ``root.method`` is a known blocking sync call.
+
+    A small, high-precision allowlist (mirrors ruff ASYNC210/230/251): these
+    are always-synchronous stdlib / ``requests`` calls that block the event
+    loop when run inside an ``async def``.
+    """
+    if root == "time" and method == "sleep":
+        return "time.sleep"
+    if root == "requests" and method in HTTP_VERBS:
+        return f"requests.{method}"
+    if root == "subprocess" and method in PY_SUBPROC_METHODS:
+        return f"subprocess.{method}"
+    if root == "os" and method == "system":
+        return "os.system"
+    if root == "open" and method == "open":
+        return "open"
+    return None
+
+
+def _rhs_is_stringish(node: Node, language: str) -> bool:
+    """True if an augmented-assignment's RHS is provably string-typed.
+
+    Precision-first: only a string/template literal directly on the RHS (or as
+    an operand of a ``+`` on the RHS) counts. ``s += chunk`` where ``chunk`` is
+    an opaque variable is NOT flagged — we refuse to guess a numeric ``+=`` is
+    a string concat.
+    """
+    right = node.child_by_field_name("right")
+    if right is None:
+        return False
+    string_kinds = _PY_STRING_KINDS if language == "python" else _TS_STRING_KINDS
+    if right.type in string_kinds:
+        return True
+    if right.type in ("binary_operator", "binary_expression"):
+        return any(c.is_named and c.type in string_kinds for c in right.children)
+    return False
+
+
+def _is_string_concat(node: Node, language: str) -> bool:
+    """True if *node* is a ``+=`` string accumulation."""
+    if node.type not in _AUG_ASSIGN_KINDS:
+        return False
+    if not any(c.type == "+=" for c in node.children):
+        return False
+    return _rhs_is_stringish(node, language)
+
+
+def _collect_perf_hits(
+    root: Node, language: str, lmap: LanguageNodeMap
+) -> tuple[list[PerfHit], dict[str, str]]:
+    """Whole-tree perf pass → ``(hits, io_boundary_names)``.
+
+    Iterative DFS carrying ``(node, loop_depth, in_async, func_name)`` — the
+    proven Phase-0 shape. Loop-body scoping and constant-loop skipping are
+    applied so only genuinely per-iteration calls are flagged. Returns no hits
+    for languages that opt out of the perf pass (empty ``call_kinds``).
+    """
+    call_kinds = lmap.call_kinds
+    if not call_kinds:
+        return [], {}
+
+    io_names = collect_io_names(root, language)
+    has_db_import = any(k == "db" for k in io_names.values())
+    is_py = language == "python"
+    loop_kinds = lmap.loop_kinds
+    fn_kinds = lmap.function_kinds
+    lambda_kinds = lmap.lambda_kinds
+    async_fn_kinds = lmap.async_function_kinds
+
+    hits: list[PerfHit] = []
+    # (node, loop_depth, in_async, func_name)
+    stack: list[tuple[Node, int, bool, str | None]] = [(root, 0, False, None)]
+    while stack:
+        node, loop_depth, in_async, func_name = stack.pop()
+        t = node.type
+
+        is_loop = t in loop_kinds
+        if is_loop and is_py and _is_constant_for(node):
+            is_loop = False
+
+        entering_fn = t in fn_kinds or t in lambda_kinds
+        is_async_fn = t in async_fn_kinds or (entering_fn and _has_async_modifier(node))
+        next_async = True if is_async_fn else (False if entering_fn else in_async)
+        next_func = func_name
+        if t in fn_kinds:
+            next_func = _perf_func_name(node) or func_name
+
+        if t in call_kinds:
+            method = _callee_method_name(node) or ""
+            root_name = _callee_root_name(node) or ""
+            parent = node.parent
+            awaited = parent is not None and "await" in parent.type
+            line = node.start_point[0] + 1
+            if loop_depth >= 1:
+                kind = classify_call_sink(
+                    language,
+                    root_name,
+                    method,
+                    awaited=awaited,
+                    is_attribute=_callee_is_attribute(node),
+                    io_names=io_names,
+                    has_db_import=has_db_import,
+                )
+                if kind is not None:
+                    hits.append(PerfHit("io_in_loop", line, next_func, kind))
+            if is_py and in_async and not awaited:
+                api = _blocking_sync_api(root_name, method)
+                if api is not None:
+                    hits.append(PerfHit("blocking_sync_in_async", line, next_func, api))
+        elif loop_depth >= 1 and _is_string_concat(node, language):
+            hits.append(PerfHit("string_concat_in_loop", node.start_point[0] + 1, next_func, ""))
+
+        if is_loop:
+            # Only the loop BODY runs per-iteration; the ``for x in <iterable>``
+            # header / ``while <cond>`` condition runs once.
+            body = node.child_by_field_name("body")
+            if body is not None:
+                # NB: tree-sitter Node wrappers are not singletons, so compare
+                # with ``==`` (identity by tree + byte range), never ``is``.
+                for c in node.children:
+                    cd = loop_depth + 1 if c == body else loop_depth
+                    stack.append((c, cd, next_async, next_func))
+            else:
+                for c in node.children:
+                    stack.append((c, loop_depth + 1, next_async, next_func))
+        else:
+            for c in node.children:
+                stack.append((c, loop_depth, next_async, next_func))
+
+    # Dedup chained sinks: ``result.scalars().all()`` parses as two call nodes
+    # on one line (the ``.scalars()`` sink and the ``.all()`` materializer) —
+    # one logical query, one finding. Collapse per (kind, line, function).
+    seen: set[tuple[str, int, str | None]] = set()
+    deduped: list[PerfHit] = []
+    for h in hits:
+        key = (h.kind, h.line, h.function)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(h)
+    deduped.sort(key=lambda h: (h.line, h.kind))
+    return deduped, io_names
+
+
+# ----------------------------------------------------------------------
 # Class-level analysis (LCOM4 / god-class)
 # ----------------------------------------------------------------------
 
@@ -1154,11 +1465,14 @@ def walk_file(
         fc_by_node_id[fn_node.id] = fc
 
     classes = _collect_classes(tree.root_node, lmap, source, fc_by_node_id)
+    perf_hits, io_boundary_names = _collect_perf_hits(tree.root_node, language, lmap)
     return FileComplexity(
         functions=functions,
         classes=classes,
         file_nloc=_count_file_nloc_tree(tree.root_node, source),
         error_handling_hits=_collect_error_handling(tree.root_node, language, lmap),
+        perf_hits=perf_hits,
+        io_boundary_names=io_boundary_names,
     )
 
 

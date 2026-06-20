@@ -206,6 +206,12 @@ _BIOMARKER_DIMENSIONS: dict[str, set[str]] = {
     "god_class": {"defect", "maintainability"},
     "large_method": {"defect", "maintainability"},
     "nested_complexity": {"defect", "maintainability"},
+    # Performance-risk detectors contribute to ``performance`` ONLY. They are
+    # NOT defect predictors and must never move the surfaced (defect) score -
+    # that exclusion is what keeps the defect golden guarantee intact.
+    "io_in_loop": {"performance"},
+    "string_concat_in_loop": {"performance"},
+    "blocking_sync_in_async": {"performance"},
 }
 
 # Maintainability per-biomarker weight multipliers. Expert-set by definition -
@@ -257,6 +263,43 @@ _MAINTAINABILITY_HOME: frozenset[str] = frozenset(
 )
 
 
+# ---------------------------------------------------------------------------
+# Performance dimension (PR3). Shipped at a small, ADVISORY weight - the whole
+# pillar is bounded by a single 1.0 category cap, so even a file riddled with
+# perf hits loses at most one health point on this dimension. Promotion to a
+# co-equal weight waits on PR4's cross-function precision study.
+# ---------------------------------------------------------------------------
+
+# Per-biomarker weight on the performance dimension. ``io_in_loop`` is the
+# gate-cleared core (measured 79% precision, Phase 0) and carries full weight;
+# ``string_concat_in_loop`` and ``blocking_sync_in_async`` ride the same pass
+# at a reduced advisory weight pending their own spot-check (see
+# MARKER_BACKLOG.md). Unknown biomarkers fall back to 1.0.
+_PERFORMANCE_WEIGHT_MULTIPLIER: dict[str, float] = {
+    "io_in_loop": 1.0,
+    "blocking_sync_in_async": 0.7,
+    "string_concat_in_loop": 0.5,
+}
+
+# All perf biomarkers share one ``performance`` category, so the single cap
+# below bounds the entire dimension's deduction.
+_PERFORMANCE_CATEGORY: dict[str, str] = {
+    "io_in_loop": "performance",
+    "string_concat_in_loop": "performance",
+    "blocking_sync_in_async": "performance",
+}
+
+# One bounded performance category cap. ~1.0 keeps performance advisory.
+_PERFORMANCE_CATEGORY_CAPS: dict[str, float] = {
+    "performance": 1.0,
+}
+
+# Perf biomarkers home to ``performance`` for display / per-pillar filtering.
+_PERFORMANCE_HOME: frozenset[str] = frozenset(
+    {"io_in_loop", "string_concat_in_loop", "blocking_sync_in_async"}
+)
+
+
 def severity_deduction(sev: Severity) -> float:
     return _SEVERITY_DEDUCTION.get(sev, 0.5)
 
@@ -272,12 +315,20 @@ def biomarker_category(name: str) -> str:
 
 
 def dimensions_for(name: str) -> set[str]:
-    """Dimensions a biomarker's deduction contributes to (always >= ``{"defect"}``)."""
+    """Dimensions a biomarker's deduction contributes to.
+
+    Unlisted biomarkers default to ``{"defect"}`` (the historical single score).
+    Performance-only detectors map to ``{"performance"}`` and are deliberately
+    excluded from ``defect`` - that exclusion is what keeps the defect golden
+    guarantee intact.
+    """
     return _BIOMARKER_DIMENSIONS.get(name, {"defect"})
 
 
 def biomarker_dimension(name: str) -> str:
     """The finding's single 'home' dimension for display / per-pillar filtering."""
+    if name in _PERFORMANCE_HOME:
+        return "performance"
     if name in _MAINTAINABILITY_HOME:
         return "maintainability"
     return "defect"
@@ -291,6 +342,16 @@ def maintainability_weight(name: str) -> float:
 def maintainability_category(name: str) -> str:
     """Default to ``size_and_complexity`` for unknown biomarkers."""
     return _MAINTAINABILITY_CATEGORY.get(name, "size_and_complexity")
+
+
+def performance_weight(name: str) -> float:
+    """Performance multiplier; 1.0 for unknown biomarkers."""
+    return _PERFORMANCE_WEIGHT_MULTIPLIER.get(name, 1.0)
+
+
+def performance_category(name: str) -> str:
+    """Default to ``performance`` for unknown biomarkers (single capped category)."""
+    return _PERFORMANCE_CATEGORY.get(name, "performance")
 
 
 def _score_dimension(
@@ -344,9 +405,10 @@ def score_file(results: Iterable[BiomarkerResult]) -> tuple[dict[str, float | No
     - ``scores`` maps each dimension in ``DIMENSIONS`` to its score.
       ``scores["defect"]`` is the historical single score - byte-for-byte
       identical to the pre-split ``score_file`` (the load-bearing guarantee).
-      ``scores["performance"]`` is ``None`` until the performance detectors land
-      (no biomarker contributes to it yet), signalling "not measured" rather
-      than a misleading perfect 10.0.
+      ``scores["performance"]`` is now measured (PR3): a file with no perf
+      findings scores 10.0; the perf detectors deduct under a single bounded
+      ``performance`` cap. It is still capped low (advisory) and never blends
+      into ``defect``.
     - ``defect_deductions`` is each finding's contribution to the DEFECT score
       after category capping, parallel to *results*. It populates
       ``HealthFindingData.health_impact`` - a defect-pillar quantity - so the
@@ -354,9 +416,22 @@ def score_file(results: Iterable[BiomarkerResult]) -> tuple[dict[str, float | No
     """
     results_list = list(results)
 
-    defect_score, defect_deductions = _score_dimension(
-        results_list, biomarker_weight, biomarker_category, CATEGORY_CAPS
+    # DEFECT: only biomarkers whose dimensions include ``defect`` deduct. EVERY
+    # historical biomarker does (``dimensions_for`` defaults to ``{"defect"}``),
+    # so this reproduces the pre-split single score byte-for-byte; the new
+    # performance-only detectors are excluded and never move the surfaced score.
+    # ``defect_deductions`` stays parallel to the FULL ``results_list`` (perf
+    # findings get 0.0 defect impact) so ``attach_impacts`` can zip 1:1.
+    defect_idx = [
+        i for i, r in enumerate(results_list) if "defect" in dimensions_for(r.biomarker_type)
+    ]
+    defect_results = [results_list[i] for i in defect_idx]
+    defect_score, defect_sub = _score_dimension(
+        defect_results, biomarker_weight, biomarker_category, CATEGORY_CAPS
     )
+    defect_deductions = [0.0] * len(results_list)
+    for sub_i, orig_i in enumerate(defect_idx):
+        defect_deductions[orig_i] = defect_sub[sub_i]
 
     maint_results = [
         r for r in results_list if "maintainability" in dimensions_for(r.biomarker_type)
@@ -368,12 +443,20 @@ def score_file(results: Iterable[BiomarkerResult]) -> tuple[dict[str, float | No
         _MAINTAINABILITY_CATEGORY_CAPS,
     )
 
+    # PERFORMANCE: now that the detectors are registered, every file is measured
+    # - a clean file scores 10.0 (no perf findings), not ``None``.
+    perf_results = [r for r in results_list if "performance" in dimensions_for(r.biomarker_type)]
+    perf_score, _ = _score_dimension(
+        perf_results,
+        performance_weight,
+        performance_category,
+        _PERFORMANCE_CATEGORY_CAPS,
+    )
+
     scores: dict[str, float | None] = {
         "defect": defect_score,
         "maintainability": maint_score,
-        # No performance detectors exist yet; the dimension is defined but empty
-        # until PR3 registers its biomarkers. ``None`` = not measured.
-        "performance": None,
+        "performance": perf_score,
     }
     return scores, defect_deductions
 

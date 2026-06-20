@@ -12,6 +12,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from .base import Biomarker, BiomarkerResult, FileContext
+from .blocking_sync_in_async import BlockingSyncInAsyncDetector
 from .brain_method import BrainMethodDetector
 from .bumpy_road import BumpyRoadDetector
 from .change_entropy import ChangeEntropyDetector
@@ -29,6 +30,7 @@ from .error_handling import ErrorHandlingDetector
 from .function_hotspot import FunctionHotspotDetector
 from .god_class import GodClassDetector
 from .hidden_coupling import HiddenCouplingDetector
+from .io_in_loop import IoInLoopDetector
 from .knowledge_loss import KnowledgeLossDetector
 from .large_assertion_block import LargeAssertionBlockDetector
 from .large_method import LargeMethodDetector
@@ -37,6 +39,7 @@ from .nested_complexity import NestedComplexityDetector
 from .ownership_risk import OwnershipRiskDetector
 from .primitive_obsession import PrimitiveObsessionDetector
 from .prior_defect import PriorDefectDetector
+from .string_concat_in_loop import StringConcatInLoopDetector
 from .untested_hotspot import UntestedHotspotDetector
 
 _DETECTOR_FACTORIES: list[type[Biomarker]] = [
@@ -66,6 +69,10 @@ _DETECTOR_FACTORIES: list[type[Biomarker]] = [
     LargeAssertionBlockDetector,  # type: ignore[list-item]
     DuplicatedAssertionBlockDetector,  # type: ignore[list-item]
     ErrorHandlingDetector,  # type: ignore[list-item]
+    # Performance dimension (advisory weight; bounded by the perf cap).
+    IoInLoopDetector,  # type: ignore[list-item]
+    StringConcatInLoopDetector,  # type: ignore[list-item]
+    BlockingSyncInAsyncDetector,  # type: ignore[list-item]
 ]
 
 

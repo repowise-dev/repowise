@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from ....ingestion.git_indexer.function_blame import BlameIndex
-from ..complexity import ClassComplexity, ErrorHandlingHit, FunctionComplexity
+from ..complexity import ClassComplexity, ErrorHandlingHit, FunctionComplexity, PerfHit
 from ..duplication import ClonePair
 from ..models import Severity
 
@@ -101,6 +101,18 @@ class FileContext:
     # unsupported or parsing failed — the documented "no signal" outcome.
     # Consumed by the ``error_handling`` biomarker.
     error_handling_hits: list[ErrorHandlingHit] = field(default_factory=list)
+    # Performance-risk occurrences (io-in-loop, string-concat-in-loop,
+    # blocking-sync-in-async) collected by the complexity walker's whole-tree
+    # perf pass. Empty when the language opts out of the perf pass or parsing
+    # failed — the documented "no signal" outcome. Consumed by the perf
+    # biomarkers (``io_in_loop`` / ``string_concat_in_loop`` /
+    # ``blocking_sync_in_async``).
+    perf_hits: list[PerfHit] = field(default_factory=list)
+    # Names imported from an I/O-typed library in this file (the import
+    # bridge). Empty when none / language opts out. Carried for PR4's
+    # cross-function reachability; the same-function perf biomarkers read the
+    # already-resolved ``perf_hits`` instead.
+    io_boundary_names: set[str] = field(default_factory=set)
 
 
 # A repo whose trailing-90-day window has at most this many active human

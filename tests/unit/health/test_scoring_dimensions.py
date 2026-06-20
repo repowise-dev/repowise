@@ -189,17 +189,68 @@ def test_score_file_returns_all_dimensions():
     assert set(scores) == set(DIMENSIONS)
 
 
-def test_performance_is_none_until_detectors_land():
-    """No performance biomarkers exist yet -> the dimension is null, not 10.0."""
+def test_performance_measured_with_no_findings_is_ten():
+    """The perf detectors are registered (PR3): a file with no perf findings is
+    measured at 10.0, not null. None of the defect/maintainability fixtures
+    carry perf biomarkers, so every one scores a clean 10.0 on performance."""
     for fixture in _FIXTURES:
         scores, _ = score_file(fixture)
-        assert scores["performance"] is None
+        assert scores["performance"] == 10.0
 
 
 def test_clean_file_is_ten_in_every_active_dimension():
     scores, _ = score_file([])
     assert scores["defect"] == 10.0
     assert scores["maintainability"] == 10.0
+    assert scores["performance"] == 10.0
+
+
+# ---------------------------------------------------------------------------
+# Performance dimension
+# ---------------------------------------------------------------------------
+
+
+def test_perf_biomarker_does_not_touch_defect_or_maintainability():
+    """io_in_loop scores ONLY performance - the surfaced (defect) score and the
+    golden guarantee must be untouched by perf findings."""
+    findings = [_r("io_in_loop", Severity.MEDIUM)]
+    assert dimensions_for("io_in_loop") == {"performance"}
+    scores, deductions = score_file(findings)
+    assert scores["defect"] == 10.0
+    assert scores["maintainability"] == 10.0
+    assert scores["performance"] < 10.0
+    # Its defect-pillar health_impact is exactly 0 (it never moved defect).
+    assert deductions == [0.0]
+
+
+def test_perf_io_in_loop_deduction():
+    """io_in_loop MEDIUM (0.7) x weight 1.0 -> 9.3 performance."""
+    scores, _ = score_file([_r("io_in_loop", Severity.MEDIUM)])
+    assert scores["performance"] == 9.3
+
+
+def test_perf_category_cap_bounds_dimension():
+    """The single 1.0 performance cap bounds the whole pillar."""
+    findings = [_r("io_in_loop", Severity.MEDIUM) for _ in range(10)]
+    scores, _ = score_file(findings)
+    # 10 * 0.7 = 7.0 raw -> capped at 1.0 -> 9.0, never lower.
+    assert scores["performance"] == 9.0
+
+
+def test_perf_bonus_markers_advisory_weight():
+    """string_concat (0.5) and blocking_sync (0.7) ride at reduced weight."""
+    assert dimensions_for("string_concat_in_loop") == {"performance"}
+    assert dimensions_for("blocking_sync_in_async") == {"performance"}
+    s1, _ = score_file([_r("string_concat_in_loop", Severity.LOW)])  # 0.3 * 0.5
+    assert s1["performance"] == round(10.0 - 0.15, 2)
+    s2, _ = score_file([_r("blocking_sync_in_async", Severity.MEDIUM)])  # 0.7 * 0.7
+    assert s2["performance"] == round(10.0 - 0.49, 2)
+
+
+def test_perf_home_dimension():
+    assert biomarker_dimension("io_in_loop") == "performance"
+    assert biomarker_dimension("string_concat_in_loop") == "performance"
+    assert biomarker_dimension("blocking_sync_in_async") == "performance"
 
 
 # ---------------------------------------------------------------------------

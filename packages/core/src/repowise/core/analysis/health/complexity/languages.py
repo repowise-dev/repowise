@@ -113,6 +113,24 @@ class LanguageNodeMap:
     assert_kinds: frozenset[str] = frozenset()
     assert_call_kinds: frozenset[str] = frozenset()
 
+    # ------------------------------------------------------------------
+    # Performance pass (io_in_loop / string_concat_in_loop /
+    # blocking_sync_in_async). Both fields default to empty, making the
+    # perf pass OPT-IN per language:
+    #
+    #   * ``call_kinds`` — node type(s) for a call expression (Python
+    #     ``call``; JS/TS ``call_expression``). The perf walker needs these
+    #     to find execution sinks; a language that maps none produces no
+    #     perf hits (never a false positive).
+    #   * ``async_function_kinds`` — function node type(s) that are
+    #     *syntactically* async (Python ``async_function_definition``). Used
+    #     by ``blocking_sync_in_async``. Languages whose async-ness is a
+    #     modifier token on a shared node type (TS ``async`` arrow/function)
+    #     are additionally sniffed for an ``async`` child token by the
+    #     walker, so this set only needs the dedicated async node types.
+    call_kinds: frozenset[str] = frozenset()
+    async_function_kinds: frozenset[str] = frozenset()
+
 
 _PY = LanguageNodeMap(
     function_kinds=frozenset({"function_definition", "async_function_definition"}),
@@ -131,6 +149,8 @@ _PY = LanguageNodeMap(
     # call.
     assert_kinds=frozenset({"assert_statement"}),
     assert_call_kinds=frozenset({"call"}),
+    call_kinds=frozenset({"call"}),
+    async_function_kinds=frozenset({"async_function_definition"}),
 )
 
 _TS = LanguageNodeMap(
@@ -166,6 +186,10 @@ _TS = LanguageNodeMap(
     # ``expect(x).toBe(y)`` / ``assert.equal(...)`` — best-effort: any call
     # whose callee chain mentions ``expect`` / ``assert*``.
     assert_call_kinds=frozenset({"call_expression"}),
+    call_kinds=frozenset({"call_expression"}),
+    # TS/JS async is a modifier token, not a distinct node type; the walker
+    # sniffs the ``async`` child token instead, so this stays empty.
+    async_function_kinds=frozenset(),
 )
 
 _JS = _TS  # identical control-flow nodes; tree-sitter-javascript shares shape.
