@@ -212,6 +212,11 @@ _BIOMARKER_DIMENSIONS: dict[str, set[str]] = {
     "io_in_loop": {"performance"},
     "string_concat_in_loop": {"performance"},
     "blocking_sync_in_async": {"performance"},
+    # Phase 7a loop markers - performance-only, same as the originals.
+    "resource_construction_in_loop": {"performance"},
+    "lock_in_loop": {"performance"},
+    "serial_await_in_loop": {"performance"},
+    "membership_test_against_list_in_loop": {"performance"},
 }
 
 # Maintainability per-biomarker weight multipliers. Expert-set by definition -
@@ -279,6 +284,14 @@ _PERFORMANCE_WEIGHT_MULTIPLIER: dict[str, float] = {
     "io_in_loop": 1.0,
     "blocking_sync_in_async": 0.7,
     "string_concat_in_loop": 0.5,
+    # Phase 7a markers. Ship at advisory weight pending each one's Phase-0 gate
+    # (MARKER_BACKLOG.md); promote to full weight where corpus precision >= 70%.
+    # resource_construction is the highest-confidence (classified constructor),
+    # serial_await the lowest (cannot prove iteration independence).
+    "resource_construction_in_loop": 0.7,
+    "lock_in_loop": 0.5,
+    "membership_test_against_list_in_loop": 0.5,
+    "serial_await_in_loop": 0.4,
 }
 
 # All perf biomarkers share one ``performance`` category, so the single cap
@@ -287,6 +300,10 @@ _PERFORMANCE_CATEGORY: dict[str, str] = {
     "io_in_loop": "performance",
     "string_concat_in_loop": "performance",
     "blocking_sync_in_async": "performance",
+    "resource_construction_in_loop": "performance",
+    "lock_in_loop": "performance",
+    "serial_await_in_loop": "performance",
+    "membership_test_against_list_in_loop": "performance",
 }
 
 # One bounded performance category cap. ~1.0 keeps performance advisory.
@@ -296,7 +313,15 @@ _PERFORMANCE_CATEGORY_CAPS: dict[str, float] = {
 
 # Perf biomarkers home to ``performance`` for display / per-pillar filtering.
 _PERFORMANCE_HOME: frozenset[str] = frozenset(
-    {"io_in_loop", "string_concat_in_loop", "blocking_sync_in_async"}
+    {
+        "io_in_loop",
+        "string_concat_in_loop",
+        "blocking_sync_in_async",
+        "resource_construction_in_loop",
+        "lock_in_loop",
+        "serial_await_in_loop",
+        "membership_test_against_list_in_loop",
+    }
 )
 
 

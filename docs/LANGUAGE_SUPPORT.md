@@ -438,9 +438,12 @@ without touching the shared pipeline files:
   `object`/`name`, C# `member_access_expression`), the execution-sink
   lexicon (`sink_kind`), the constant-loop / string-concat / async
   predicates, and its own **marker list** --- so Go contributes
-  `defer_in_loop`, Java/Go contribute `regex_compile_in_loop`, and C#
-  contributes sync-over-async `blocking_sync_in_async`, none hardcoded in
-  the walker. Every method has a safe "no signal" default, so a language
+  `defer_in_loop`, Java/Go contribute `regex_compile_in_loop`, C#
+  contributes sync-over-async `blocking_sync_in_async`, and the Phase-7a loop
+  markers (`resource_construction_in_loop`, `lock_in_loop`,
+  `serial_await_in_loop`, `membership_test_against_list_in_loop`) are each
+  opt-in per dialect via the `loop_call_marker` / `loop_stmt_marker` hooks,
+  none hardcoded in the walker. Every method has a safe "no signal" default, so a language
   without a dialect (or one that overrides only some facets) produces no
   false perf findings. Adding a language's perf support is one module plus a
   `call_kinds` line on its `LanguageNodeMap` and its
@@ -453,14 +456,14 @@ the language's `LanguageNodeMap`); it is independent of the control-flow /
 class / assertion tiers. A language without a dialect simply emits no perf
 findings.
 
-| Language | io_in_loop | string_concat | Language-specific markers | sync-over-async |
-|----------|:---:|:---:|---|:---:|
-| Python | Y | Y | --- | `blocking_sync_in_async` |
-| TypeScript / JavaScript | Y | Y | --- | --- |
-| Java | Y | Y | `regex_compile_in_loop` | --- (no async syntax) |
-| Go | Y | Y | `defer_in_loop`, `regex_compile_in_loop` | --- (goroutines) |
-| C# | Y | Y | --- (.NET caches regexes) | `blocking_sync_in_async` (`.Result` / `.Wait()` / `.GetResult()`) |
-| Kotlin / Rust / C++ | --- | --- | --- | --- |
+| Language | io_in_loop | string_concat | Phase-7a loop markers | Other language-specific markers | sync-over-async |
+|----------|:---:|:---:|---|---|:---:|
+| Python | Y | Y | resource_construction, lock, serial_await, membership | --- | `blocking_sync_in_async` |
+| TypeScript / JavaScript | Y | Y | resource_construction, serial_await, membership | --- | --- |
+| Java | Y | Y | resource_construction, lock | `regex_compile_in_loop` | --- (no async syntax) |
+| Go | Y | Y | resource_construction, lock | `defer_in_loop`, `regex_compile_in_loop` | --- (goroutines) |
+| C# | Y | Y | resource_construction, lock, serial_await | --- (.NET caches regexes) | `blocking_sync_in_async` (`.Result` / `.Wait()` / `.GetResult()`) |
+| Kotlin / Rust / C++ | --- | --- | --- | --- | --- |
 
 Kotlin will be nearly free once it rides the JVM lexicon; Rust (sqlx /
 reqwest) and C++ are later. What each dialect classifies as a db / network /

@@ -183,7 +183,8 @@ _CSHARP_CASES = [
         "class A{ async System.Threading.Tasks.Task M("
         "System.Collections.Generic.List<int> ids){"
         "foreach(var id in ids){ await ctx.Set().FirstOrDefaultAsync(); }}}",
-        [("io_in_loop", "db")],
+        # Awaited EF query in a loop: io_in_loop + the serial_await co-signal.
+        [("io_in_loop", "db"), ("serial_await_in_loop", "db")],
         "EF *Async family is unambiguous db (no import gate)",
     ),
 ]

@@ -79,11 +79,34 @@ GO_REGEX_COMPILE: frozenset[str] = frozenset(
 )
 _GO_STRING_KINDS: frozenset[str] = frozenset({"interpreted_string_literal", "raw_string_literal"})
 
+# Heavy connection / client constructors, keyed ``(package, func)``. Opening one
+# per ``for ... range`` iteration is the connection-churn anti-pattern.
+GO_RESOURCE_CTORS: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("sql", "Open"),
+        ("sqlx", "Open"),
+        ("sqlx", "Connect"),
+        ("pgx", "Connect"),
+        ("pgxpool", "New"),
+        ("redis", "NewClient"),
+        ("mongo", "Connect"),
+    }
+)
+# ``sync.Mutex`` / ``sync.RWMutex`` acquisition (the contention side only).
+GO_LOCK_METHODS: frozenset[str] = frozenset({"Lock", "RLock"})
+
 
 class GoPerfDialect(BasePerfDialect):
     language = "go"
     markers = frozenset(
-        {"io_in_loop", "string_concat_in_loop", "defer_in_loop", "regex_compile_in_loop"}
+        {
+            "io_in_loop",
+            "string_concat_in_loop",
+            "defer_in_loop",
+            "regex_compile_in_loop",
+            "resource_construction_in_loop",
+            "lock_in_loop",
+        }
     )
 
     def sink_kind(
@@ -152,12 +175,20 @@ class GoPerfDialect(BasePerfDialect):
         targets = right.named_children if right.type == "expression_list" else [right]
         return any(c.type in _GO_STRING_KINDS for c in targets)
 
-    def loop_call_marker(self, root: str, method: str, node: Node) -> str | None:
+    def loop_call_marker(
+        self, root: str, method: str, node: Node, list_names: frozenset[str]
+    ) -> str | None:
         if root == "regexp" and method in GO_REGEX_COMPILE:
             return "regex_compile_in_loop"
+        if (root, method) in GO_RESOURCE_CTORS:
+            return "resource_construction_in_loop"
+        # ``mu.Lock()`` / ``mu.RLock()`` — a method on a receiver (the package-
+        # level ``sync.Lock`` does not exist, so the attribute gate is a guard).
+        if method in GO_LOCK_METHODS and self.callee_is_attribute(node):
+            return "lock_in_loop"
         return None
 
-    def loop_stmt_marker(self, node: Node) -> str | None:
+    def loop_stmt_marker(self, node: Node, list_names: frozenset[str]) -> str | None:
         if node.type == "defer_statement":
             return "defer_in_loop"
         return None

@@ -30,18 +30,32 @@ Member                            What it answers
                                   walker.
 ================================  ============================================
 
-Three *optional* hooks let a language emit markers beyond the original three,
+Four *optional* hooks let a language emit markers beyond the original three,
 each defaulting to "no signal" so a language that does not set them is byte-for-
 byte unchanged:
 
 ================================  ============================================
-``loop_call_marker(root, m, n)``  a loop-nested *call* that is a non-I/O marker
-                                  (``regexp.MustCompile`` / ``Pattern.compile``).
-``loop_stmt_marker(node)``        a loop-nested *non-call statement* marker
-                                  (Go ``defer`` in a loop -> handle leak).
+``loop_call_marker(root, m, n,    a loop-nested *call* that is a non-I/O marker
+``list_names)``                   (``regexp.MustCompile`` / ``Pattern.compile`` ·
+                                  ``sqlite3.connect`` resource construction ·
+                                  ``lock.acquire`` contention ·
+                                  ``big_list``-bound ``arr.includes`` membership).
+``loop_stmt_marker(node,          a loop-nested *non-call statement* marker
+``list_names)``                   (Go ``defer`` · C# ``lock(x){}`` · ``new
+                                  HttpClient()`` resource construction · Python
+                                  ``x in big_list`` membership test).
 ``async_blocking_member(node)``   a non-call member read that blocks in async
                                   (C# ``task.Result``).
+``list_bound_names(root)``        names provably bound to a list literal /
+                                  comprehension in this file — the gate for the
+                                  ``membership_test_against_list_in_loop`` marker.
 ================================  ============================================
+
+The ``list_names`` argument on the two loop-marker hooks is the frozenset
+returned by :meth:`list_bound_names` (computed once per file by the walker only
+when a dialect lists the membership marker); it lets a marker fire ``x in
+big_list`` only when ``big_list`` is a known list, not a set/dict that membership
+tests cheaply.
 
 Every method has a safe default on :class:`BasePerfDialect`, so an unmapped
 language (no entry in ``PERF_DIALECTS``) produces no perf signal at all, and a
@@ -211,21 +225,47 @@ class BasePerfDialect:
 
     # -- optional extra-marker hooks (default: no signal) ---------------------
 
-    def loop_call_marker(self, root: str, method: str, node: Node) -> str | None:
+    def loop_call_marker(
+        self, root: str, method: str, node: Node, list_names: frozenset[str]
+    ) -> str | None:
         """Marker kind for a loop-nested *call* that is not an I/O sink.
 
         Used for ``regex_compile_in_loop`` (``Pattern.compile`` /
-        ``regexp.MustCompile`` recompiled every iteration). Default ``None``.
+        ``regexp.MustCompile`` recompiled every iteration), the per-iteration
+        heavy-client construction ``resource_construction_in_loop``
+        (``sqlite3.connect`` / ``boto3.client``), the lock-contention
+        ``lock_in_loop`` (``lock.acquire`` / ``mu.Lock``), and the JS/TS
+        ``arr.includes`` form of ``membership_test_against_list_in_loop`` (gated
+        on ``root in list_names``). Default ``None``.
         """
         return None
 
-    def loop_stmt_marker(self, node: Node) -> str | None:
+    def loop_stmt_marker(self, node: Node, list_names: frozenset[str]) -> str | None:
         """Marker kind for a loop-nested *non-call statement* node.
 
         Used for Go ``defer_in_loop`` (a ``defer`` inside a loop leaks the
-        deferred handle until the enclosing function returns). Default ``None``.
+        deferred handle until the enclosing function returns), C# ``lock(x){}``
+        / Java ``synchronized`` blocks (``lock_in_loop``), constructor nodes the
+        language does not route through ``call_kinds`` (TS ``new PrismaClient``
+        / C# ``new HttpClient`` -> ``resource_construction_in_loop``), and the
+        Python ``x in big_list`` comparison form of
+        ``membership_test_against_list_in_loop`` (gated on ``list_names``).
+        Default ``None``.
         """
         return None
+
+    def list_bound_names(self, root: Node) -> frozenset[str]:
+        """Names provably bound to a *list* in this file (literal / comprehension
+        / ``list(...)`` / ``sorted(...)``).
+
+        The precision gate for ``membership_test_against_list_in_loop``: an
+        ``x in name`` test is O(n) per probe only when ``name`` is a list — a set
+        or dict membership test is O(1) and must not fire. Precision-first: only
+        bindings whose RHS is *provably* a list count, so an opaque
+        ``name = build()`` never enables the marker. Default: empty (the marker
+        cannot fire for a language that does not override this).
+        """
+        return frozenset()
 
     def async_blocking_member(self, node: Node) -> str | None:
         """The offending name if *node* is a non-call member read that blocks

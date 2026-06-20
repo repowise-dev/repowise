@@ -85,10 +85,31 @@ NET_CONSTRUCTORS: frozenset[str] = frozenset({"Socket", "ServerSocket"})
 # ``delete`` do not over-fire in a db-importing file.
 AMBIGUOUS_DB: frozenset[str] = frozenset({"find", "get", "execute", "save", "count"})
 
+# Heavy clients to hoist, not ``new`` each iteration. A ``new RestTemplate()``
+# arrives as an ``object_creation_expression`` whose extracted "method" is the
+# constructed type name (see ``callee_method_name``); ``getConnection`` is the
+# DataSource / DriverManager connection-acquisition verb. Deliberately limited
+# to framework-distinctive type names: a bare ``HttpClient`` is excluded because
+# it collides with user-defined wrappers and Apache's ``HttpClient`` *interface*
+# (resolved by last segment only, with no import gate) — a precision risk that
+# outweighs the recall.
+JAVA_RESOURCE_CTORS: frozenset[str] = frozenset({"RestTemplate", "OkHttpClient"})
+JAVA_RESOURCE_METHODS: frozenset[str] = frozenset({"getConnection"})
+# ``java.util.concurrent.locks.Lock`` acquisition (the contention side only).
+JAVA_LOCK_METHODS: frozenset[str] = frozenset({"lock", "lockInterruptibly"})
+
 
 class JavaPerfDialect(BasePerfDialect):
     language = "java"
-    markers = frozenset({"io_in_loop", "string_concat_in_loop", "regex_compile_in_loop"})
+    markers = frozenset(
+        {
+            "io_in_loop",
+            "string_concat_in_loop",
+            "regex_compile_in_loop",
+            "resource_construction_in_loop",
+            "lock_in_loop",
+        }
+    )
 
     # ``s += "x"`` is an ``assignment_expression`` with the literal directly on
     # the ``right`` field (no list wrapper, unlike Go).
@@ -168,7 +189,18 @@ class JavaPerfDialect(BasePerfDialect):
             return "db"
         return None
 
-    def loop_call_marker(self, root: str, method: str, node: Node) -> str | None:
+    def loop_call_marker(
+        self, root: str, method: str, node: Node, list_names: frozenset[str]
+    ) -> str | None:
+        # ``new RestTemplate()`` etc. — an ``object_creation_expression`` whose
+        # extracted method is the type name.
+        if node.type == "object_creation_expression":
+            return "resource_construction_in_loop" if method in JAVA_RESOURCE_CTORS else None
+        if method in JAVA_RESOURCE_METHODS:
+            return "resource_construction_in_loop"
+        # ``lock.lock()`` — a method on a receiver (not a bare ``lock()``).
+        if method in JAVA_LOCK_METHODS and node.child_by_field_name("object") is not None:
+            return "lock_in_loop"
         # ``Pattern.compile(...)`` recompiled per iteration (no cached Pattern).
         # ``root`` is the first segment, so an FQN ``java.util.regex.Pattern``
         # lands as ``java``; match on the receiver's last segment instead.
@@ -182,6 +214,13 @@ class JavaPerfDialect(BasePerfDialect):
                 else None
             )
         return "regex_compile_in_loop" if root == "Pattern" else None
+
+    def loop_stmt_marker(self, node: Node, list_names: frozenset[str]) -> str | None:
+        # ``synchronized (x) { ... }`` taken every iteration is a contention
+        # site, the block-statement counterpart of ``lock.lock()``.
+        if node.type == "synchronized_statement":
+            return "lock_in_loop"
+        return None
 
 
 DIALECT = JavaPerfDialect()

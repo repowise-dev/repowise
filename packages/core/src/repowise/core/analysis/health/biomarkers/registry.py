@@ -34,11 +34,15 @@ from .io_in_loop import IoInLoopDetector
 from .knowledge_loss import KnowledgeLossDetector
 from .large_assertion_block import LargeAssertionBlockDetector
 from .large_method import LargeMethodDetector
+from .lock_in_loop import LockInLoopDetector
 from .low_cohesion import LowCohesionDetector
+from .membership_test_against_list_in_loop import MembershipTestAgainstListInLoopDetector
 from .nested_complexity import NestedComplexityDetector
 from .ownership_risk import OwnershipRiskDetector
 from .primitive_obsession import PrimitiveObsessionDetector
 from .prior_defect import PriorDefectDetector
+from .resource_construction_in_loop import ResourceConstructionInLoopDetector
+from .serial_await_in_loop import SerialAwaitInLoopDetector
 from .string_concat_in_loop import StringConcatInLoopDetector
 from .untested_hotspot import UntestedHotspotDetector
 
@@ -73,6 +77,11 @@ _DETECTOR_FACTORIES: list[type[Biomarker]] = [
     IoInLoopDetector,  # type: ignore[list-item]
     StringConcatInLoopDetector,  # type: ignore[list-item]
     BlockingSyncInAsyncDetector,  # type: ignore[list-item]
+    # Phase 7a — cheap, high-precision loop markers.
+    ResourceConstructionInLoopDetector,  # type: ignore[list-item]
+    LockInLoopDetector,  # type: ignore[list-item]
+    SerialAwaitInLoopDetector,  # type: ignore[list-item]
+    MembershipTestAgainstListInLoopDetector,  # type: ignore[list-item]
 ]
 
 

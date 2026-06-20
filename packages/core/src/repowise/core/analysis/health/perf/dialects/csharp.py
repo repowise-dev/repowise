@@ -160,9 +160,26 @@ FILE_METHODS: frozenset[str] = frozenset(
 )
 
 
+# Heavy clients/connections to hoist out of a ``foreach``. Built via ``new X()``
+# (an ``object_creation_expression``, which C# does NOT route through
+# ``call_kinds``, so it reaches ``loop_stmt_marker``).
+CSHARP_RESOURCE_CTORS: frozenset[str] = frozenset(
+    {"HttpClient", "SqlConnection", "NpgsqlConnection", "MongoClient", "SqlConnectionStringBuilder"}
+)
+
+
 class CSharpPerfDialect(BasePerfDialect):
     language = "csharp"
-    markers = frozenset({"io_in_loop", "string_concat_in_loop", "blocking_sync_in_async"})
+    markers = frozenset(
+        {
+            "io_in_loop",
+            "string_concat_in_loop",
+            "blocking_sync_in_async",
+            "resource_construction_in_loop",
+            "lock_in_loop",
+            "serial_await_in_loop",
+        }
+    )
 
     # ``invocation_expression`` -> ``member_access_expression`` is the call
     # shape; add it so a member call reads as attribute-style.
@@ -232,6 +249,30 @@ class CSharpPerfDialect(BasePerfDialect):
         nm = node.child_by_field_name("name")
         if nm is not None and nm.text and nm.text.decode("utf-8", "replace") == "Result":
             return ".Result"
+        return None
+
+    def loop_call_marker(
+        self, root: str, method: str, node: Node, list_names: frozenset[str]
+    ) -> str | None:
+        # ``Monitor.Enter(lock)`` — the call form of lock acquisition (the
+        # ``lock(x){}`` statement form is handled in ``loop_stmt_marker``).
+        if root == "Monitor" and method == "Enter":
+            return "lock_in_loop"
+        return None
+
+    def loop_stmt_marker(self, node: Node, list_names: frozenset[str]) -> str | None:
+        # ``new HttpClient()`` per iteration — the canonical C# socket-exhaustion
+        # bug — is an ``object_creation_expression`` (not an invocation).
+        if node.type == "object_creation_expression":
+            t = node.child_by_field_name("type")
+            if t is not None and t.text:
+                name = t.text.decode("utf-8", "replace").split(".")[-1]
+                if name in CSHARP_RESOURCE_CTORS:
+                    return "resource_construction_in_loop"
+            return None
+        # ``lock (gate) { ... }`` taken every iteration is a contention site.
+        if node.type == "lock_statement":
+            return "lock_in_loop"
         return None
 
 

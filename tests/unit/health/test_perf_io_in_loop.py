@@ -138,8 +138,10 @@ _CASES = [
     (
         "typescript",
         b"async function f(urls) {\n  for (const u of urls) {\n    await fetch(u);\n  }\n}\n",
-        [("io_in_loop", "network")],
-        "fetch in a loop",
+        # An awaited sink in a loop is BOTH an N+1 (io_in_loop) and a missed-
+        # concurrency candidate (serial_await_in_loop, advisory co-signal).
+        [("io_in_loop", "network"), ("serial_await_in_loop", "network")],
+        "fetch in a loop (awaited -> also serial_await)",
     ),
     (
         "typescript",

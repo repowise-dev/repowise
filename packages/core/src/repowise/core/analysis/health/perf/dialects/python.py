@@ -46,10 +46,66 @@ PY_SUBPROC_METHODS: frozenset[str] = frozenset(
 _PY_STRING_KINDS: frozenset[str] = frozenset({"string", "concatenated_string"})
 _PY_AUG_ASSIGN_KINDS: frozenset[str] = frozenset({"augmented_assignment"})
 
+# Heavy-resource constructors: building one of these per loop iteration opens a
+# fresh connection / client / pool instead of reusing a hoisted one. Keyed as
+# ``(root, method)`` pairs whose root is a distinctive I/O library (so the match
+# is unambiguous without import resolution) ...
+_PY_RESOURCE_CTORS: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("sqlite3", "connect"),
+        ("psycopg", "connect"),
+        ("psycopg2", "connect"),
+        ("pymysql", "connect"),
+        ("MySQLdb", "connect"),
+        ("aiosqlite", "connect"),
+        ("httpx", "Client"),
+        ("httpx", "AsyncClient"),
+        ("requests", "Session"),
+        ("aiohttp", "ClientSession"),
+        ("boto3", "client"),
+        ("boto3", "resource"),
+        ("redis", "Redis"),
+        ("redis", "StrictRedis"),
+        ("pymongo", "MongoClient"),
+    }
+)
+# ... plus a few constructors distinctive enough on their own (the rightmost
+# name), so an aliased ``from sqlalchemy import create_engine`` still resolves.
+_PY_RESOURCE_METHODS: frozenset[str] = frozenset({"create_engine", "MongoClient"})
+
+# Lock acquisition (the contention side only — never ``release``, which would
+# double-count the same critical section). ``.acquire()`` is the threading /
+# asyncio / multiprocessing / filelock primitive verb.
+_PY_LOCK_METHODS: frozenset[str] = frozenset({"acquire"})
+
+# RHS node kinds that prove a name is bound to a list (the membership gate).
+_PY_LIST_RHS_KINDS: frozenset[str] = frozenset({"list", "list_comprehension"})
+# Builtins whose call result is provably a list.
+_PY_LIST_BUILTINS: frozenset[str] = frozenset({"list", "sorted"})
+# RHS shapes that make a name a NON-list container (a set/dict literal or
+# comprehension, or a ``set()`` / ``dict()`` / ``frozenset()`` call). A name
+# bound to one of these ANYWHERE in the file is ambiguous and excluded from the
+# membership gate, even if another scope binds the same name to a list — the
+# ``seen = []`` in one function / ``seen: set = set()`` in another collision.
+_PY_NONLIST_RHS_KINDS: frozenset[str] = frozenset(
+    {"set", "dictionary", "set_comprehension", "dictionary_comprehension"}
+)
+_PY_NONLIST_BUILTINS: frozenset[str] = frozenset({"set", "dict", "frozenset"})
+
 
 class PythonPerfDialect(BasePerfDialect):
     language = "python"
-    markers = frozenset({"io_in_loop", "string_concat_in_loop", "blocking_sync_in_async"})
+    markers = frozenset(
+        {
+            "io_in_loop",
+            "string_concat_in_loop",
+            "blocking_sync_in_async",
+            "resource_construction_in_loop",
+            "lock_in_loop",
+            "serial_await_in_loop",
+            "membership_test_against_list_in_loop",
+        }
+    )
 
     string_literal_kinds = _PY_STRING_KINDS
     aug_assign_kinds = _PY_AUG_ASSIGN_KINDS
@@ -148,6 +204,91 @@ class PythonPerfDialect(BasePerfDialect):
         if root == "open" and method == "open":
             return "open"
         return None
+
+    def loop_call_marker(
+        self, root: str, method: str, node: Node, list_names: frozenset[str]
+    ) -> str | None:
+        if (root, method) in _PY_RESOURCE_CTORS or method in _PY_RESOURCE_METHODS:
+            return "resource_construction_in_loop"
+        # ``lock.acquire()`` — a method call on a receiver (never the builtin
+        # ``acquire(...)``, which does not exist; the attribute gate is a cheap
+        # extra guard against a bare-name collision).
+        if method in _PY_LOCK_METHODS and self.callee_is_attribute(node):
+            return "lock_in_loop"
+        return None
+
+    def loop_stmt_marker(self, node: Node, list_names: frozenset[str]) -> str | None:
+        # ``x in big_list`` / ``x not in big_list`` where ``big_list`` is a
+        # known list -> O(n) per probe. A set/dict membership test is O(1) and
+        # must not fire, hence the ``list_names`` gate.
+        if not list_names or node.type != "comparison_operator":
+            return None
+        # ``x in y`` is an ``in`` operator token; ``x not in y`` is a single
+        # ``not in`` token. Either way it is an O(n) membership probe on a list.
+        if not any(c.type in ("in", "not in") for c in node.children):
+            return None
+        named = [c for c in node.children if c.is_named]
+        if len(named) < 2:
+            return None
+        right = named[-1]
+        if right.type != "identifier" or right.text is None:
+            return None
+        name = right.text.decode("utf-8", "replace")
+        return "membership_test_against_list_in_loop" if name in list_names else None
+
+    def list_bound_names(self, root: Node) -> frozenset[str]:
+        """Names assigned a provable list anywhere in the file, minus any name
+        also bound to a non-list container.
+
+        Covers ``name = [...]`` / ``name = [x for x in ...]`` / ``name =
+        list(...)`` / ``name = sorted(...)``. Conservative on purpose: an opaque
+        ``name = build()`` is not counted, and a name bound to a set/dict in any
+        scope of the file is dropped (the ``seen``-as-list-here /
+        ``seen``-as-set-there collision), so the membership marker only fires
+        against a name we can prove is always a list.
+        """
+        list_names: set[str] = set()
+        exclude: set[str] = set()
+        stack: list[Node] = [root]
+        while stack:
+            n = stack.pop()
+            if n.type == "assignment":
+                left = n.child_by_field_name("left")
+                right = n.child_by_field_name("right")
+                if (
+                    left is not None
+                    and left.type == "identifier"
+                    and left.text is not None
+                    and right is not None
+                ):
+                    name = left.text.decode("utf-8", "replace")
+                    if self._rhs_is_list(right):
+                        list_names.add(name)
+                    elif self._rhs_is_nonlist_container(right):
+                        exclude.add(name)
+            for c in n.children:
+                stack.append(c)
+        return frozenset(list_names - exclude)
+
+    @staticmethod
+    def _rhs_is_list(right: Node) -> bool:
+        if right.type in _PY_LIST_RHS_KINDS:
+            return True
+        if right.type == "call":
+            fn = right.child_by_field_name("function")
+            if fn is not None and fn.type == "identifier" and fn.text is not None:
+                return fn.text.decode("utf-8", "replace") in _PY_LIST_BUILTINS
+        return False
+
+    @staticmethod
+    def _rhs_is_nonlist_container(right: Node) -> bool:
+        if right.type in _PY_NONLIST_RHS_KINDS:
+            return True
+        if right.type == "call":
+            fn = right.child_by_field_name("function")
+            if fn is not None and fn.type == "identifier" and fn.text is not None:
+                return fn.text.decode("utf-8", "replace") in _PY_NONLIST_BUILTINS
+        return False
 
 
 DIALECT = PythonPerfDialect()

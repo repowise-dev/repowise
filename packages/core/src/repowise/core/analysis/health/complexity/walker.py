@@ -153,6 +153,22 @@ class PerfHit:
     - ``blocking_sync_in_async`` — a known blocking sync call (``time.sleep`` /
       sync ``requests`` / ``subprocess`` / ``os.system`` / bare ``open``) inside
       an ``async def``, not awaited. ``detail`` carries the offending API.
+    - ``resource_construction_in_loop`` — a heavy I/O client / connection
+      (``sqlite3.connect`` / ``httpx.Client`` / ``boto3.client`` / ``new
+      PrismaClient``) constructed each iteration instead of hoisted.
+    - ``lock_in_loop`` — a lock acquired each iteration (``lock.acquire`` /
+      ``mu.Lock`` / ``synchronized`` / ``lock(x){}``); a contention signal that
+      activates the ``lock`` I/O boundary kind.
+    - ``serial_await_in_loop`` — an awaited I/O sink in a loop body (the
+      missed-``gather`` / ``Promise.all`` shape). ``detail`` carries the
+      boundary kind. Rides alongside ``io_in_loop`` as an advisory co-signal.
+    - ``membership_test_against_list_in_loop`` — ``x in big_list`` (or
+      ``big_list.includes(x)``) inside a loop where the right operand is a known
+      list -> O(n·m); a set would make each probe O(1).
+
+    The Phase-7a markers above are emitted via the dialect ``loop_call_marker`` /
+    ``loop_stmt_marker`` hooks (and the inline awaited-sink path for
+    ``serial_await_in_loop``), so each is per-language opt-in.
     """
 
     kind: str
@@ -950,6 +966,27 @@ def _collect_error_handling(
 #   2. Constant-bound-loop skip — ``for _ in range(<int literals>)`` and loops
 #      over literal / ALL_CAPS-named-constant collections are not data-dependent.
 
+# Marker kinds emitted through each dialect hook. The walker consults a
+# dialect's ``markers`` set against these to decide whether to invoke the hook
+# at all, so a dialect that lists none of a hook's kinds never pays for it.
+_LOOP_CALL_MARKER_KINDS = frozenset(
+    {
+        "regex_compile_in_loop",
+        "resource_construction_in_loop",
+        "lock_in_loop",
+        "membership_test_against_list_in_loop",
+    }
+)
+_LOOP_STMT_MARKER_KINDS = frozenset(
+    {
+        "defer_in_loop",
+        "resource_construction_in_loop",
+        "lock_in_loop",
+        "membership_test_against_list_in_loop",
+    }
+)
+
+
 def _perf_func_name(node: Node) -> str | None:
     nm = node.child_by_field_name("name")
     if nm is not None and nm.text:
@@ -983,8 +1020,17 @@ def _collect_perf_hits(
     markers = dialect.markers
     do_string_concat = "string_concat_in_loop" in markers
     do_blocking = "blocking_sync_in_async" in markers
-    do_loop_call_marker = "regex_compile_in_loop" in markers
-    do_loop_stmt_marker = "defer_in_loop" in markers
+    do_loop_call_marker = bool(markers & _LOOP_CALL_MARKER_KINDS)
+    do_loop_stmt_marker = bool(markers & _LOOP_STMT_MARKER_KINDS)
+    do_serial_await = "serial_await_in_loop" in markers
+    # ``list_names`` is the precision gate for the membership marker; compute it
+    # once per file only when this dialect can emit that marker, then thread it
+    # to the loop-marker hooks (which ignore it for every other marker).
+    list_names = (
+        dialect.list_bound_names(root)
+        if "membership_test_against_list_in_loop" in markers
+        else frozenset()
+    )
     loop_kinds = lmap.loop_kinds
     fn_kinds = lmap.function_kinds
     lambda_kinds = lmap.lambda_kinds
@@ -1038,9 +1084,16 @@ def _collect_perf_hits(
             if loop_depth >= 1:
                 if kind is not None:
                     hits.append(PerfHit("io_in_loop", line, next_func, kind))
+                    if do_serial_await and awaited:
+                        # An *awaited* sink in a loop body is additionally a
+                        # missed-concurrency candidate (a serial round-trip that
+                        # a ``gather`` / ``Promise.all`` could fan out). Advisory
+                        # co-signal alongside ``io_in_loop``; ``detail`` carries
+                        # the boundary kind for the finding.
+                        hits.append(PerfHit("serial_await_in_loop", line, next_func, kind))
                 else:
                     marker = (
-                        dialect.loop_call_marker(root_name, method, node)
+                        dialect.loop_call_marker(root_name, method, node, list_names)
                         if do_loop_call_marker
                         else None
                     )
@@ -1077,7 +1130,7 @@ def _collect_perf_hits(
                         PerfHit("string_concat_in_loop", node.start_point[0] + 1, next_func, "")
                     )
                 elif do_loop_stmt_marker:
-                    sm = dialect.loop_stmt_marker(node)
+                    sm = dialect.loop_stmt_marker(node, list_names)
                     if sm is not None:
                         hits.append(PerfHit(sm, node.start_point[0] + 1, next_func, ""))
 

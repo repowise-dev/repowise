@@ -142,6 +142,20 @@ category cap of 1.0, so the pillar stays advisory) are:
 - **`string_concat_in_loop`**: quadratic `+=` string building in a loop.
 - **`blocking_sync_in_async`**: a synchronous blocking call inside an `async`
   function, which stalls the whole event loop (mirrors ruff `ASYNC210/230/251`).
+- **`resource_construction_in_loop`**: a heavy I/O client or connection
+  (`sqlite3.connect` / `httpx.Client` / `boto3.client` / `new PrismaClient` /
+  `new HttpClient` / `sql.Open`) constructed every iteration instead of hoisted:
+  connection churn, and socket exhaustion for `HttpClient`.
+- **`lock_in_loop`**: a mutex acquired on every iteration (`lock.acquire` /
+  `mu.Lock` / `synchronized` / `lock(x){}`): a contention site. Activates the
+  `lock` I/O-boundary kind.
+- **`serial_await_in_loop`**: an awaited I/O round-trip run one at a time in a
+  loop where a `gather` / `Promise.all` could fan it out. Advisory — a static
+  analyzer cannot prove the iterations are independent, so the finding suggests
+  rather than asserts.
+- **`membership_test_against_list_in_loop`**: `x in big_list` (or
+  `big_list.includes(x)`) inside a loop is O(n·m); a set makes each lookup O(1).
+  Fires only when the right operand is *provably* a list, never a set or dict.
 
 A few markers are language-specific, contributed by that language's dialect (see
 below) rather than the shared core:

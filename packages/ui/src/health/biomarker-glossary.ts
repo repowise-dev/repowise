@@ -244,6 +244,30 @@ export const BIOMARKER_GLOSSARY: Record<string, BiomarkerInfo> = {
     description:
       "A synchronous blocking call (time.sleep, requests.get, subprocess.run) inside an async function blocks the whole event loop, stalling every other coroutine. Mirrors ruff's ASYNC210/230/251.",
   },
+  resource_construction_in_loop: {
+    label: "Resource built in loop",
+    category: "performance",
+    description:
+      "A heavy I/O client or connection (sqlite3.connect, httpx.Client, boto3.client, new PrismaClient, sql.Open) constructed every loop iteration instead of once. Opens a fresh connection/pool per iteration — connection churn and, for HttpClient, socket exhaustion. Hoist and reuse a single instance.",
+  },
+  lock_in_loop: {
+    label: "Lock in loop",
+    category: "performance",
+    description:
+      "A mutex or lock acquired on every loop iteration (lock.acquire, mu.Lock, synchronized, lock(x){}). Serializes the loop body and concentrates contention. Hoist the lock outside the loop or batch the critical section.",
+  },
+  serial_await_in_loop: {
+    label: "Serial await in loop",
+    category: "performance",
+    description:
+      "An awaited I/O round-trip run one-at-a-time inside a loop. When the iterations are independent, fan them out with gather / Promise.all / Task.WhenAll for concurrent execution. Advisory — a static analyzer cannot prove the iterations are independent.",
+  },
+  membership_test_against_list_in_loop: {
+    label: "List membership in loop",
+    category: "performance",
+    description:
+      "Testing `x in big_list` (or big_list.includes(x)) inside a loop is O(n·m); a set makes each lookup O(1), turning the loop linear. Only fires when the right operand is provably a list, never a set or dict.",
+  },
 };
 
 export function biomarkerInfo(name: string): BiomarkerInfo {
@@ -296,6 +320,10 @@ export const PERFORMANCE_HOME_BIOMARKERS: ReadonlySet<string> = new Set([
   "io_in_loop",
   "string_concat_in_loop",
   "blocking_sync_in_async",
+  "resource_construction_in_loop",
+  "lock_in_loop",
+  "serial_await_in_loop",
+  "membership_test_against_list_in_loop",
 ]);
 
 /**
