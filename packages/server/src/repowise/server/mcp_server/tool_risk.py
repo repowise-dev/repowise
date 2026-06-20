@@ -233,6 +233,43 @@ async def _get_security_signals(session: AsyncSession, repo_id: str, target: str
         return []
 
 
+def _build_co_changes(meta: Any, import_related: set[str], exclude_spec: Any) -> list[dict]:
+    """Top-5 co-change partners for *meta*, by frequency, with import-link flags.
+
+    Larger lists make MCP responses verbose without adding signal: top-5 captures
+    the bulk of the temporal-coupling mass and keeps tool output tight for agents.
+    """
+    partners = json.loads(meta.co_change_partners_json)
+    partners_sorted = sorted(
+        partners,
+        key=lambda p: p.get("co_change_count", p.get("count", 0)) or 0,
+        reverse=True,
+    )[:5]
+    return filter_dicts_by_key(
+        [
+            {
+                "file_path": p.get("file_path", p.get("path", "")),
+                "count": p.get("co_change_count", p.get("count", 0)),
+                "last_co_change": p.get("last_co_change"),
+                "has_import_link": p.get("file_path", p.get("path", "")) in import_related,
+            }
+            for p in partners_sorted
+        ],
+        "file_path",
+        exclude_spec,
+    )
+
+
+def _load_commit_categories(meta: Any) -> dict:
+    """Parse the persisted commit-category counts, tolerating malformed JSON."""
+    categories: dict = {}
+    cat_json = getattr(meta, "commit_categories_json", None)
+    if cat_json:
+        with contextlib.suppress(json.JSONDecodeError, TypeError):
+            categories = json.loads(cat_json)
+    return categories
+
+
 async def _assess_one_target(
     session: AsyncSession,
     repository: Repository,
@@ -285,29 +322,7 @@ async def _assess_one_target(
 
     hotspot_score = meta.churn_percentile or 0.0
 
-    # Co-change partners — keep only the top-5 by frequency. Larger lists make
-    # MCP responses verbose without adding signal: top-5 captures the bulk of
-    # the temporal-coupling mass and keeps tool output tight for LLM agents.
-    partners = json.loads(meta.co_change_partners_json)
-    partners_sorted = sorted(
-        partners,
-        key=lambda p: p.get("co_change_count", p.get("count", 0)) or 0,
-        reverse=True,
-    )[:5]
-    import_related = import_links.get(target, set())
-    co_changes = filter_dicts_by_key(
-        [
-            {
-                "file_path": p.get("file_path", p.get("path", "")),
-                "count": p.get("co_change_count", p.get("count", 0)),
-                "last_co_change": p.get("last_co_change"),
-                "has_import_link": p.get("file_path", p.get("path", "")) in import_related,
-            }
-            for p in partners_sorted
-        ],
-        "file_path",
-        exclude_spec,
-    )
+    co_changes = _build_co_changes(meta, import_links.get(target, set()), exclude_spec)
 
     owner = meta.primary_owner_name or "unknown"
     pct = meta.primary_owner_commit_pct or 0.0
@@ -321,49 +336,35 @@ async def _assess_one_target(
     # --- Impact surface ---
     impact_surface = _compute_impact_surface(target, reverse_deps, node_meta, exclude_spec)
 
-    # Phase 2: diff size & change magnitude
-    lines_added = getattr(meta, "lines_added_90d", 0) or 0
-    lines_deleted = getattr(meta, "lines_deleted_90d", 0) or 0
-    avg_size = getattr(meta, "avg_commit_size", 0.0) or 0.0
-
     # Phase 2: commit classification → change_pattern
-    categories = {}
-    cat_json = getattr(meta, "commit_categories_json", None)
-    if cat_json:
-        with contextlib.suppress(json.JSONDecodeError, TypeError):
-            categories = json.loads(cat_json)
-    change_pattern = _derive_change_pattern(categories)
+    change_pattern = _derive_change_pattern(_load_commit_categories(meta))
 
     # Phase 2: recent owner & bus factor
-    recent_owner = getattr(meta, "recent_owner_name", None)
-    recent_owner_pct = getattr(meta, "recent_owner_commit_pct", None)
     bus_factor = getattr(meta, "bus_factor", 0) or 0
-    contributor_count = getattr(meta, "contributor_count", 0) or 0
-
-    # Phase 3: rename tracking & merge commit proxy
-    original_path = getattr(meta, "original_path", None)
-    merge_commit_count = getattr(meta, "merge_commit_count_90d", 0) or 0
 
     result_data["hotspot_score"] = hotspot_score
     result_data["dependents_count"] = dep_count
     result_data["co_change_partners"] = co_changes
     result_data["primary_owner"] = owner
     result_data["owner_pct"] = pct
-    result_data["recent_owner"] = recent_owner
-    result_data["recent_owner_pct"] = recent_owner_pct
+    result_data["recent_owner"] = getattr(meta, "recent_owner_name", None)
+    result_data["recent_owner_pct"] = getattr(meta, "recent_owner_commit_pct", None)
     result_data["bus_factor"] = bus_factor
-    result_data["contributor_count"] = contributor_count
+    result_data["contributor_count"] = getattr(meta, "contributor_count", 0) or 0
     result_data["trend"] = trend
     result_data["risk_type"] = risk_type
     result_data["change_pattern"] = change_pattern
     result_data["change_magnitude"] = {
-        "lines_added_90d": lines_added,
-        "lines_deleted_90d": lines_deleted,
-        "avg_commit_size": round(avg_size, 1),
+        "lines_added_90d": getattr(meta, "lines_added_90d", 0) or 0,
+        "lines_deleted_90d": getattr(meta, "lines_deleted_90d", 0) or 0,
+        "avg_commit_size": round(getattr(meta, "avg_commit_size", 0.0) or 0.0, 1),
     }
     result_data["impact_surface"] = impact_surface
+    # Phase 3: rename tracking & merge commit proxy
+    original_path = getattr(meta, "original_path", None)
     if original_path:
         result_data["original_path"] = original_path
+    merge_commit_count = getattr(meta, "merge_commit_count_90d", 0) or 0
     if merge_commit_count > 0:
         result_data["merge_commit_count_90d"] = merge_commit_count
 
@@ -586,6 +587,309 @@ def _trim_blast_lists(
     return trimmed_blast
 
 
+async def _enrich_cross_repo(results: list[dict], alias: str) -> None:
+    """Annotate per-target results with cross-repo partners, affected repos and
+    contract links (workspace mode only). Mutates *results* in place; no-op when
+    no enricher data is available. Behavior preserved verbatim from inline form.
+    """
+    enricher = _state._cross_repo_enricher
+    if enricher is None or not enricher.has_data or not _is_workspace_mode():
+        return
+    for r in results:
+        target = r["target"]
+        cross_partners = enricher.get_cross_repo_partners(alias, target)
+        affected_repos = enricher.get_affected_repos(alias, target)
+        if cross_partners or affected_repos:
+            r["cross_repo_impact"] = {
+                "cross_repo_consumers": [
+                    {"repo": p["repo"], "file": p["file"], "strength": p["strength"]}
+                    for p in cross_partners[:5]
+                ],
+                "affected_repos": affected_repos,
+            }
+            r["dependents_count"] = r.get("dependents_count", 0) + len(cross_partners)
+            # Rebuild risk_summary with updated dependents count
+            if "_base_dep_count" in r:
+                r["risk_summary"] = r["risk_summary"].replace(
+                    f"{r['_base_dep_count']} dependents",
+                    f"{r['dependents_count']} dependents",
+                )
+
+        # Contract links (Phase 4)
+        if not enricher.has_contract_data:
+            continue
+        provider_links = enricher.get_contract_links_as_provider(alias, target)
+        consumer_links = enricher.get_contract_links_as_consumer(alias, target)
+        if not (provider_links or consumer_links):
+            continue
+        impact = r.setdefault("cross_repo_impact", {})
+        if provider_links:
+            impact["contract_consumers"] = [
+                {
+                    "consumer_repo": lk["consumer_repo"],
+                    "consumer_file": lk["consumer_file"],
+                    "contract_id": lk["contract_id"],
+                    "type": lk["contract_type"],
+                }
+                for lk in provider_links[:5]
+            ]
+            r["dependents_count"] = r.get("dependents_count", 0) + len(provider_links)
+        if consumer_links:
+            impact["contract_providers"] = [
+                {
+                    "provider_repo": lk["provider_repo"],
+                    "provider_file": lk["provider_file"],
+                    "contract_id": lk["contract_id"],
+                    "type": lk["contract_type"],
+                }
+                for lk in consumer_links[:5]
+            ]
+
+
+def _finalize_dep_summaries(results: list[dict]) -> None:
+    """Rebuild risk_summary for any post-enrichment dependents_count change and
+    drop the internal ``_base_dep_count`` key. Mutates *results* in place.
+    """
+    for r in results:
+        base = r.pop("_base_dep_count", None)
+        if base is not None and r.get("dependents_count", base) != base:
+            r["risk_summary"] = r["risk_summary"].replace(
+                f"{base} dependents",
+                f"{r['dependents_count']} dependents",
+            )
+
+
+async def _enrich_health(results: list[dict], ctx: Any, repo_id: str) -> None:
+    """Attach per-file health_score, coverage, and top_biomarkers from the health
+    tables. Conservative: missing data → no field, never invented. Never raises.
+    """
+    try:
+        from repowise.core.persistence.models import HealthFileMetric, HealthFinding
+
+        target_paths = [r["target"] for r in results if r.get("target")]
+        if not target_paths:
+            return
+        async with get_session(ctx.session_factory) as _h_session:
+            m_res = await _h_session.execute(
+                select(HealthFileMetric).where(
+                    HealthFileMetric.repository_id == repo_id,
+                    HealthFileMetric.file_path.in_(target_paths),
+                )
+            )
+            metric_map = {m.file_path: m for m in m_res.scalars().all()}
+
+            f_res = await _h_session.execute(
+                select(HealthFinding)
+                .where(
+                    HealthFinding.repository_id == repo_id,
+                    HealthFinding.file_path.in_(target_paths),
+                    HealthFinding.status == "open",
+                )
+                .order_by(HealthFinding.health_impact.desc())
+            )
+            top_by_file: dict[str, list[dict]] = {}
+            for f in f_res.scalars().all():
+                lst = top_by_file.setdefault(f.file_path, [])
+                if len(lst) >= 3:
+                    continue
+                lst.append(
+                    {
+                        "biomarker_type": f.biomarker_type,
+                        "severity": f.severity,
+                        "function_name": f.function_name,
+                        "impact": round(f.health_impact, 2),
+                    }
+                )
+
+        for r in results:
+            path = r.get("target")
+            m = metric_map.get(path)
+            if m is not None:
+                r["health_score"] = round(m.score, 2)
+                if m.line_coverage_pct is not None:
+                    r["coverage_pct"] = round(m.line_coverage_pct, 2)
+                if m.branch_coverage_pct is not None:
+                    r["branch_coverage_pct"] = round(m.branch_coverage_pct, 2)
+            if path in top_by_file:
+                r["top_biomarkers"] = top_by_file[path]
+    except Exception:
+        pass
+
+
+async def _governance_directive(ctx: Any, changed_files: list[str]) -> list[dict[str, Any]]:
+    """Governing decisions over *changed_files* that are stale, superseded, or
+    contradicted. Bounded to 5 entries. Never raises (returns what it has).
+    """
+    governance_risk: list[dict[str, Any]] = []
+    try:
+        async with get_session(ctx.session_factory) as _gr_session:
+            _gr_repo = await _get_repo(_gr_session)
+            _gr_repo_id = _gr_repo.id
+            conflict_edges = await list_conflict_edges(_gr_session, _gr_repo_id)
+            conflict_decision_ids: set[str] = set()
+            for ce in conflict_edges:
+                conflict_decision_ids.add(ce.src_decision_id)
+                conflict_decision_ids.add(ce.dst_decision_id)
+            seen_dr_ids: set[str] = set()
+            for cf in changed_files:
+                for dr in await get_governing_decisions(_gr_session, _gr_repo_id, cf):
+                    if dr.id in seen_dr_ids:
+                        continue
+                    seen_dr_ids.add(dr.id)
+                    reason = _governance_reason(dr, conflict_decision_ids)
+                    if reason is None:
+                        continue
+                    governance_risk.append(
+                        {
+                            "file": cf,
+                            "decision_id": dr.id,
+                            "title": dr.title,
+                            "status": dr.status,
+                            "reason": reason,
+                        }
+                    )
+                    if len(governance_risk) >= 5:
+                        break
+                if len(governance_risk) >= 5:
+                    break
+    except Exception:
+        pass
+    return governance_risk
+
+
+def _governance_reason(dr: Any, conflict_decision_ids: set[str]) -> str | None:
+    """Map a governing decision to a directive reason, or None when clean."""
+    staleness = dr.staleness_score or 0.0
+    if dr.status == "active" and staleness >= 0.5:
+        return "stale_governance"
+    if dr.status == "superseded":
+        return "superseded_decision"
+    if dr.id in conflict_decision_ids:
+        return "contradicted_decision"
+    return None
+
+
+def _build_pr_directive(
+    response: dict,
+    pr_blast_radius: dict,
+    changed_files: list[str],
+    exclude_spec: Any,
+    collector: OmissionCollector,
+    governance_risk: list[dict[str, Any]],
+    alias: str,
+) -> None:
+    """Assemble PR-mode output: trim co-change lists + blast radius, then build
+    the directive block. Mutates *response* in place. Behavior preserved.
+    """
+    # PR mode — drop global_hotspots (irrelevant to a specific diff), trim
+    # per-target co-change lists, and synthesize a tight directive the
+    # agent can act on without parsing the whole blast-radius dossier.
+    # Everything trimmed below is persisted via the collector so the
+    # response carries an expandable [repowise#<ref>] marker for it.
+    for r in response["targets"].values():
+        partners = r.get("co_change_partners") or []
+        if len(partners) > 3:
+            r["co_change_partners"] = partners[:3]
+            collector.add(
+                f"{r.get('target')} :: co_change_partners beyond 3",
+                partners[3:],
+            )
+
+    trimmed_blast = _trim_blast_lists(pr_blast_radius, exclude_spec, collector)
+    response["pr_blast_radius"] = trimmed_blast
+
+    # Directive: 3 short lists the agent can read in one glance. Each
+    # entry is a file path (string), never a dossier. Designed to answer
+    # "what should I do about this PR" in three lines.
+
+    will_break = filter_path_list(
+        [p for p in (_as_path(e) for e in trimmed_blast.get("transitive_affected", [])) if p],
+        exclude_spec,
+    )[:5]
+    missing_cochanges = filter_path_list(
+        [p for p in (_as_path(e) for e in trimmed_blast.get("cochange_warnings", [])) if p],
+        exclude_spec,
+    )[:3]
+    # Scope to the PR: the directive answers "what should I do about
+    # THIS diff", so only changed files belong here. Repo-wide test
+    # gaps stay available in pr_blast_radius.test_gaps for deeper
+    # review — surfacing them in the directive made unrelated files
+    # ("alembic/env.py has no tests") read as failings of the PR.
+    # Read from the untrimmed analyzer payload: the trimmed list is
+    # capped at 10 repo-wide entries and may have already dropped the
+    # changed files we're looking for.
+    changed_set = set(changed_files)
+    missing_tests = filter_path_list(
+        [
+            p
+            for p in (_as_path(e) for e in pr_blast_radius.get("test_gaps", []))
+            if p and p in changed_set
+        ],
+        exclude_spec,
+    )[:3]
+
+    gov_count = len(governance_risk)
+    gov_suffix = f" {gov_count} governance risk(s) detected." if gov_count > 0 else ""
+
+    # Cross-repo directive (workspace mode only). Resolve the changed repo to
+    # its system-graph nodes and walk reachability to find downstream
+    # services in OTHER repos — split structural (will break) from behavioral
+    # (co-change only). Repo-scoped: it answers "can this PR's repo break
+    # something across a repo boundary?" using the same reachability the map
+    # and get_blast_radius use.
+    will_break_consumers, missing_cross_repo_cochanges = _cross_repo_directive(alias)
+    xr_suffix = ""
+    if will_break_consumers or missing_cross_repo_cochanges:
+        xr_suffix = (
+            f" Cross-repo: {len(will_break_consumers)} consumer service(s) may break, "
+            f"{len(missing_cross_repo_cochanges)} cross-repo co-changer(s) missing."
+        )
+
+    # Breaking-change guard — incompatible provider changes (removed route /
+    # field, type change, ...) in this repo and the consumers they endanger.
+    # Schema-level truth, distinct from the topology-level will_break_consumers.
+    breaking_changes = _breaking_change_directive(alias)
+    bc_suffix = ""
+    if breaking_changes:
+        bc_consumers = sum(len(b["impacted_consumers"]) for b in breaking_changes)
+        bc_suffix = (
+            f" Breaking changes: {len(breaking_changes)} provider contract(s) changed "
+            f"incompatibly, endangering {bc_consumers} consumer(s)."
+        )
+
+    # Architecture conformance — declared dependency-rule violations and
+    # dependency cycles this repo participates in. Governance-level truth,
+    # distinct from the topology / schema directives above.
+    conformance_violations, dependency_cycles = _conformance_directive(alias)
+    cf_suffix = ""
+    if conformance_violations or dependency_cycles:
+        cf_suffix = (
+            f" Conformance: {len(conformance_violations)} architecture rule "
+            f"violation(s), {len(dependency_cycles)} dependency cycle(s) involving "
+            f"this repo."
+        )
+
+    response["directive"] = {
+        "will_break": will_break,
+        "missing_cochanges": missing_cochanges,
+        "missing_tests": missing_tests,
+        "will_break_consumers": will_break_consumers,
+        "missing_cross_repo_cochanges": missing_cross_repo_cochanges,
+        "breaking_changes": breaking_changes,
+        "conformance_violations": conformance_violations,
+        "dependency_cycles": dependency_cycles,
+        "governance_risk": governance_risk,
+        "overall_risk_score": trimmed_blast.get("overall_risk_score"),
+        "summary": (
+            f"PR touches {len(changed_files)} file(s). "
+            f"~{len(will_break)} downstream file(s) likely affected, "
+            f"{len(missing_cochanges)} historical co-changer(s) missing, "
+            f"{len(missing_tests)} file(s) without tests."
+            f"{gov_suffix}{xr_suffix}{bc_suffix}{cf_suffix}"
+        ),
+    }
+
+
 @mcp.tool()
 async def get_risk(
     targets: list[str],
@@ -691,119 +995,16 @@ async def get_risk(
             pr_blast_radius = await analyzer.analyze_files(changed_files)
 
     # Cross-repo blast radius enrichment (Phase 3 + 4)
-    enricher = _state._cross_repo_enricher
-    if enricher is not None and enricher.has_data and _is_workspace_mode():
-        for r in results:
-            target = r["target"]
-            cross_partners = enricher.get_cross_repo_partners(ctx.alias, target)
-            affected_repos = enricher.get_affected_repos(ctx.alias, target)
-            if cross_partners or affected_repos:
-                r["cross_repo_impact"] = {
-                    "cross_repo_consumers": [
-                        {"repo": p["repo"], "file": p["file"], "strength": p["strength"]}
-                        for p in cross_partners[:5]
-                    ],
-                    "affected_repos": affected_repos,
-                }
-                r["dependents_count"] = r.get("dependents_count", 0) + len(cross_partners)
-                # Rebuild risk_summary with updated dependents count
-                if "_base_dep_count" in r:
-                    r["risk_summary"] = r["risk_summary"].replace(
-                        f"{r['_base_dep_count']} dependents",
-                        f"{r['dependents_count']} dependents",
-                    )
-
-            # Contract links (Phase 4)
-            if enricher.has_contract_data:
-                provider_links = enricher.get_contract_links_as_provider(ctx.alias, target)
-                consumer_links = enricher.get_contract_links_as_consumer(ctx.alias, target)
-                if provider_links or consumer_links:
-                    impact = r.setdefault("cross_repo_impact", {})
-                    if provider_links:
-                        impact["contract_consumers"] = [
-                            {
-                                "consumer_repo": lk["consumer_repo"],
-                                "consumer_file": lk["consumer_file"],
-                                "contract_id": lk["contract_id"],
-                                "type": lk["contract_type"],
-                            }
-                            for lk in provider_links[:5]
-                        ]
-                        r["dependents_count"] = r.get("dependents_count", 0) + len(provider_links)
-                    if consumer_links:
-                        impact["contract_providers"] = [
-                            {
-                                "provider_repo": lk["provider_repo"],
-                                "provider_file": lk["provider_file"],
-                                "contract_id": lk["contract_id"],
-                                "type": lk["contract_type"],
-                            }
-                            for lk in consumer_links[:5]
-                        ]
+    await _enrich_cross_repo(results, ctx.alias)
 
     # Final risk_summary rebuild for any remaining dependents_count updates
     # (e.g. contract provider links) and cleanup of internal keys.
-    for r in results:
-        base = r.pop("_base_dep_count", None)
-        if base is not None and r.get("dependents_count", base) != base:
-            r["risk_summary"] = r["risk_summary"].replace(
-                f"{base} dependents",
-                f"{r['dependents_count']} dependents",
-            )
+    _finalize_dep_summaries(results)
 
     # ---- Code-health enrichment --------------------------------------------
     # Attach per-file health_score + top_biomarkers (up to 3) drawn from the
     # health tables. Conservative: missing data → no field, never invented.
-    try:
-        from repowise.core.persistence.models import HealthFileMetric, HealthFinding
-
-        target_paths = [r["target"] for r in results if r.get("target")]
-        if target_paths:
-            async with get_session(ctx.session_factory) as _h_session:
-                m_res = await _h_session.execute(
-                    select(HealthFileMetric).where(
-                        HealthFileMetric.repository_id == repo_id,
-                        HealthFileMetric.file_path.in_(target_paths),
-                    )
-                )
-                metric_map = {m.file_path: m for m in m_res.scalars().all()}
-
-                f_res = await _h_session.execute(
-                    select(HealthFinding)
-                    .where(
-                        HealthFinding.repository_id == repo_id,
-                        HealthFinding.file_path.in_(target_paths),
-                        HealthFinding.status == "open",
-                    )
-                    .order_by(HealthFinding.health_impact.desc())
-                )
-                top_by_file: dict[str, list[dict]] = {}
-                for f in f_res.scalars().all():
-                    lst = top_by_file.setdefault(f.file_path, [])
-                    if len(lst) >= 3:
-                        continue
-                    lst.append(
-                        {
-                            "biomarker_type": f.biomarker_type,
-                            "severity": f.severity,
-                            "function_name": f.function_name,
-                            "impact": round(f.health_impact, 2),
-                        }
-                    )
-
-            for r in results:
-                path = r.get("target")
-                m = metric_map.get(path)
-                if m is not None:
-                    r["health_score"] = round(m.score, 2)
-                    if m.line_coverage_pct is not None:
-                        r["coverage_pct"] = round(m.line_coverage_pct, 2)
-                    if m.branch_coverage_pct is not None:
-                        r["branch_coverage_pct"] = round(m.branch_coverage_pct, 2)
-                if path in top_by_file:
-                    r["top_biomarkers"] = top_by_file[path]
-    except Exception:
-        pass
+    await _enrich_health(results, ctx, repo_id)
 
     response: dict = {
         "targets": {r["target"]: r for r in results},
@@ -811,158 +1012,17 @@ async def get_risk(
 
     collector = OmissionCollector("get_risk", repo_root=ctx.path)
     if pr_blast_radius is not None:
-        # PR mode — drop global_hotspots (irrelevant to a specific diff), trim
-        # per-target co-change lists, and synthesize a tight directive the
-        # agent can act on without parsing the whole blast-radius dossier.
-        # Everything trimmed below is persisted via the collector so the
-        # response carries an expandable [repowise#<ref>] marker for it.
-        for r in response["targets"].values():
-            partners = r.get("co_change_partners") or []
-            if len(partners) > 3:
-                r["co_change_partners"] = partners[:3]
-                collector.add(
-                    f"{r.get('target')} :: co_change_partners beyond 3",
-                    partners[3:],
-                )
-
-        trimmed_blast = _trim_blast_lists(pr_blast_radius, exclude_spec, collector)
-        response["pr_blast_radius"] = trimmed_blast
-
-        # Directive: 3 short lists the agent can read in one glance. Each
-        # entry is a file path (string), never a dossier. Designed to answer
-        # "what should I do about this PR" in three lines.
-
-        will_break = filter_path_list(
-            [p for p in (_as_path(e) for e in trimmed_blast.get("transitive_affected", [])) if p],
-            exclude_spec,
-        )[:5]
-        missing_cochanges = filter_path_list(
-            [p for p in (_as_path(e) for e in trimmed_blast.get("cochange_warnings", [])) if p],
-            exclude_spec,
-        )[:3]
-        # Scope to the PR: the directive answers "what should I do about
-        # THIS diff", so only changed files belong here. Repo-wide test
-        # gaps stay available in pr_blast_radius.test_gaps for deeper
-        # review — surfacing them in the directive made unrelated files
-        # ("alembic/env.py has no tests") read as failings of the PR.
-        # Read from the untrimmed analyzer payload: the trimmed list is
-        # capped at 10 repo-wide entries and may have already dropped the
-        # changed files we're looking for.
-        changed_set = set(changed_files)
-        missing_tests = filter_path_list(
-            [
-                p
-                for p in (_as_path(e) for e in pr_blast_radius.get("test_gaps", []))
-                if p and p in changed_set
-            ],
-            exclude_spec,
-        )[:3]
-
         # Governance risk — bounded query over changed_files (small set).
-        governance_risk: list[dict[str, Any]] = []
-        try:
-            async with get_session(ctx.session_factory) as _gr_session:
-                _gr_repo = await _get_repo(_gr_session)
-                _gr_repo_id = _gr_repo.id
-                conflict_edges = await list_conflict_edges(_gr_session, _gr_repo_id)
-                conflict_decision_ids: set[str] = set()
-                for ce in conflict_edges:
-                    conflict_decision_ids.add(ce.src_decision_id)
-                    conflict_decision_ids.add(ce.dst_decision_id)
-                seen_dr_ids: set[str] = set()
-                for cf in changed_files:
-                    for dr in await get_governing_decisions(_gr_session, _gr_repo_id, cf):
-                        if dr.id in seen_dr_ids:
-                            continue
-                        seen_dr_ids.add(dr.id)
-                        staleness = dr.staleness_score or 0.0
-                        is_stale = dr.status == "active" and staleness >= 0.5
-                        is_superseded = dr.status == "superseded"
-                        is_conflicted = dr.id in conflict_decision_ids
-                        if is_stale:
-                            reason = "stale_governance"
-                        elif is_superseded:
-                            reason = "superseded_decision"
-                        elif is_conflicted:
-                            reason = "contradicted_decision"
-                        else:
-                            continue
-                        governance_risk.append(
-                            {
-                                "file": cf,
-                                "decision_id": dr.id,
-                                "title": dr.title,
-                                "status": dr.status,
-                                "reason": reason,
-                            }
-                        )
-                        if len(governance_risk) >= 5:
-                            break
-                    if len(governance_risk) >= 5:
-                        break
-        except Exception:
-            pass
-
-        gov_count = len(governance_risk)
-        gov_suffix = f" {gov_count} governance risk(s) detected." if gov_count > 0 else ""
-
-        # Cross-repo directive (workspace mode only). Resolve the changed repo to
-        # its system-graph nodes and walk reachability to find downstream
-        # services in OTHER repos — split structural (will break) from behavioral
-        # (co-change only). Repo-scoped: it answers "can this PR's repo break
-        # something across a repo boundary?" using the same reachability the map
-        # and get_blast_radius use.
-        will_break_consumers, missing_cross_repo_cochanges = _cross_repo_directive(ctx.alias)
-        xr_suffix = ""
-        if will_break_consumers or missing_cross_repo_cochanges:
-            xr_suffix = (
-                f" Cross-repo: {len(will_break_consumers)} consumer service(s) may break, "
-                f"{len(missing_cross_repo_cochanges)} cross-repo co-changer(s) missing."
-            )
-
-        # Breaking-change guard — incompatible provider changes (removed route /
-        # field, type change, ...) in this repo and the consumers they endanger.
-        # Schema-level truth, distinct from the topology-level will_break_consumers.
-        breaking_changes = _breaking_change_directive(ctx.alias)
-        bc_suffix = ""
-        if breaking_changes:
-            bc_consumers = sum(len(b["impacted_consumers"]) for b in breaking_changes)
-            bc_suffix = (
-                f" Breaking changes: {len(breaking_changes)} provider contract(s) changed "
-                f"incompatibly, endangering {bc_consumers} consumer(s)."
-            )
-
-        # Architecture conformance — declared dependency-rule violations and
-        # dependency cycles this repo participates in. Governance-level truth,
-        # distinct from the topology / schema directives above.
-        conformance_violations, dependency_cycles = _conformance_directive(ctx.alias)
-        cf_suffix = ""
-        if conformance_violations or dependency_cycles:
-            cf_suffix = (
-                f" Conformance: {len(conformance_violations)} architecture rule "
-                f"violation(s), {len(dependency_cycles)} dependency cycle(s) involving "
-                f"this repo."
-            )
-
-        response["directive"] = {
-            "will_break": will_break,
-            "missing_cochanges": missing_cochanges,
-            "missing_tests": missing_tests,
-            "will_break_consumers": will_break_consumers,
-            "missing_cross_repo_cochanges": missing_cross_repo_cochanges,
-            "breaking_changes": breaking_changes,
-            "conformance_violations": conformance_violations,
-            "dependency_cycles": dependency_cycles,
-            "governance_risk": governance_risk,
-            "overall_risk_score": trimmed_blast.get("overall_risk_score"),
-            "summary": (
-                f"PR touches {len(changed_files)} file(s). "
-                f"~{len(will_break)} downstream file(s) likely affected, "
-                f"{len(missing_cochanges)} historical co-changer(s) missing, "
-                f"{len(missing_tests)} file(s) without tests."
-                f"{gov_suffix}{xr_suffix}{bc_suffix}{cf_suffix}"
-            ),
-        }
+        governance_risk = await _governance_directive(ctx, changed_files)
+        _build_pr_directive(
+            response,
+            pr_blast_radius,
+            changed_files,
+            exclude_spec,
+            collector,
+            governance_risk,
+            ctx.alias,
+        )
     else:
         # Standard per-file risk request (no diff) — keep global hotspots as
         # ambient awareness. Cheap (≤5 entries) and useful for orientation.

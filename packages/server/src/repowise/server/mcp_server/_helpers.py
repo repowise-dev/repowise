@@ -108,9 +108,7 @@ def _is_path(query: str) -> bool:
         return False
 
     # Sentence-shaped input (multiple words including a question word) → NL.
-    if len(tokens) >= 4 and any(
-        t.lower().rstrip(",.;:") in _NL_QUESTION_TOKENS for t in tokens
-    ):
+    if len(tokens) >= 4 and any(t.lower().rstrip(",.;:") in _NL_QUESTION_TOKENS for t in tokens):
         return False
 
     # A path can't contain whitespace.
@@ -212,6 +210,96 @@ def _unsupported_repo_all(tool_name: str) -> dict:
 # Origin story & alignment (used by get_context, get_why)
 # ---------------------------------------------------------------------------
 
+# Common stop-words stripped before commit/decision keyword overlap.
+_ORIGIN_STOP_WORDS = frozenset(
+    {"the", "a", "an", "is", "for", "to", "of", "in", "and", "or", "with"}
+)
+
+
+def _meaningful_words(text: str) -> set[str]:
+    """Lowercase keyword set with common stop-words removed."""
+    return set(text.lower().split()) - _ORIGIN_STOP_WORDS
+
+
+def _commits_matching_decision(decision: dict, commits: list[dict]) -> list[dict]:
+    """Return commits whose messages share at least one keyword with *decision*."""
+    decision_text = (
+        f"{decision.get('title', '')} {decision.get('decision', '')} "
+        f"{decision.get('rationale', '')}"
+    )
+    decision_words = _meaningful_words(decision_text)
+
+    related_commits = []
+    for c in commits:
+        overlap = decision_words & _meaningful_words(c.get("message", ""))
+        if not overlap:
+            continue
+        related_commits.append(
+            {
+                "sha": c.get("sha", ""),
+                "message": c.get("message", ""),
+                "author": c.get("author", ""),
+                "date": c.get("date", ""),
+                "matching_keywords": sorted(overlap)[:5],
+            }
+        )
+    return related_commits
+
+
+def _link_decisions_to_commits(governing_decisions: list[dict], commits: list[dict]) -> list[dict]:
+    """Attach commit evidence to each governing decision via keyword overlap."""
+    linked_decisions = []
+    for d in governing_decisions:
+        linked_decisions.append(
+            {
+                "title": d.get("title", ""),
+                "status": d.get("status", ""),
+                "source": d.get("source", ""),
+                "rationale": d.get("rationale", ""),
+                "evidence_commits": _commits_matching_decision(d, commits),
+            }
+        )
+    return linked_decisions
+
+
+def _origin_summary_parts(
+    authors: list,
+    earliest_commit: dict | None,
+    linked_decisions: list[dict],
+    primary: str,
+    total: int,
+    first_date: str,
+    last_date: str,
+    age: int,
+) -> list[str]:
+    """Assemble the narrative sentences for an origin story."""
+    parts = [
+        f"Created ~{first_date}, last modified {last_date} ({age} days old).",
+        f"Primary author: {primary} ({total} total commits).",
+    ]
+
+    if earliest_commit:
+        parts.append(
+            f'Earliest key commit: "{earliest_commit.get("message", "")}" '
+            f"by {earliest_commit.get('author', 'unknown')} on {earliest_commit.get('date', 'unknown')}."
+        )
+
+    if linked_decisions:
+        decision_titles = [d["title"] for d in linked_decisions[:3]]
+        parts.append(f"Governed by: {', '.join(decision_titles)}.")
+        for ld in linked_decisions:
+            if ld["evidence_commits"]:
+                ec = ld["evidence_commits"][0]
+                parts.append(
+                    f'Commit "{ec["message"]}" by {ec["author"]} is evidence for "{ld["title"]}".'
+                )
+
+    if len(authors) > 1:
+        names = [a.get("name", "") for a in authors[:3]]
+        parts.append(f"Contributors: {', '.join(names)}.")
+
+    return parts
+
 
 def _build_origin_story(
     file_path: str,
@@ -233,49 +321,10 @@ def _build_origin_story(
     # Find the earliest significant commit as the "creation" context
     earliest_commit = None
     if commits:
-        sorted_commits = sorted(commits, key=lambda c: c.get("date", ""))
-        earliest_commit = sorted_commits[0]
+        earliest_commit = sorted(commits, key=lambda c: c.get("date", ""))[0]
 
-    # Link commits to decisions via keyword overlap
-    linked_decisions = []
-    for d in governing_decisions:
-        # Build a keyword set from the decision
-        decision_text = (
-            f"{d.get('title', '')} {d.get('decision', '')} {d.get('rationale', '')}".lower()
-        )
-        decision_words = set(decision_text.split())
-        decision_words -= {"the", "a", "an", "is", "for", "to", "of", "in", "and", "or", "with"}
+    linked_decisions = _link_decisions_to_commits(governing_decisions, commits)
 
-        # Find commits whose messages overlap with this decision
-        related_commits = []
-        for c in commits:
-            msg = c.get("message", "").lower()
-            msg_words = set(msg.split())
-            msg_words -= {"the", "a", "an", "is", "for", "to", "of", "in", "and", "or", "with"}
-            overlap = decision_words & msg_words
-            # Require at least 1 meaningful word match
-            if len(overlap) >= 1:
-                related_commits.append(
-                    {
-                        "sha": c.get("sha", ""),
-                        "message": c.get("message", ""),
-                        "author": c.get("author", ""),
-                        "date": c.get("date", ""),
-                        "matching_keywords": sorted(overlap)[:5],
-                    }
-                )
-
-        linked_decisions.append(
-            {
-                "title": d.get("title", ""),
-                "status": d.get("status", ""),
-                "source": d.get("source", ""),
-                "rationale": d.get("rationale", ""),
-                "evidence_commits": related_commits,
-            }
-        )
-
-    # Build narrative summary
     primary = git_meta.primary_owner_name or "unknown"
     total = git_meta.commit_count_total or 0
     first_date = (
@@ -286,30 +335,16 @@ def _build_origin_story(
     )
     age = git_meta.age_days or 0
 
-    parts = [f"Created ~{first_date}, last modified {last_date} ({age} days old)."]
-    parts.append(f"Primary author: {primary} ({total} total commits).")
-
-    if earliest_commit:
-        parts.append(
-            f'Earliest key commit: "{earliest_commit.get("message", "")}" '
-            f"by {earliest_commit.get('author', 'unknown')} on {earliest_commit.get('date', 'unknown')}."
-        )
-
-    if linked_decisions:
-        decision_titles = [d["title"] for d in linked_decisions[:3]]
-        parts.append(f"Governed by: {', '.join(decision_titles)}.")
-        # Highlight any commit-decision links
-        for ld in linked_decisions:
-            if ld["evidence_commits"]:
-                ec = ld["evidence_commits"][0]
-                parts.append(
-                    f'Commit "{ec["message"]}" by {ec["author"]} is evidence for "{ld["title"]}".'
-                )
-
-    contributor_count = len(authors)
-    if contributor_count > 1:
-        names = [a.get("name", "") for a in authors[:3]]
-        parts.append(f"Contributors: {', '.join(names)}.")
+    parts = _origin_summary_parts(
+        authors,
+        earliest_commit,
+        linked_decisions,
+        primary,
+        total,
+        first_date,
+        last_date,
+        age,
+    )
 
     return {
         "available": True,
@@ -324,6 +359,71 @@ def _build_origin_story(
         "linked_decisions": linked_decisions,
         "summary": " ".join(parts),
     }
+
+
+def _sibling_coverage(file_path: str, governing: list[dict], all_decisions: list) -> float | None:
+    """Fraction of sibling-file decisions that also cover *file_path* (None if no siblings)."""
+    dir_path = "/".join(file_path.split("/")[:-1])
+    sibling_decision_ids = set()
+    file_decision_titles = {d["title"] for d in governing}
+
+    for d in all_decisions:
+        affected = json.loads(d.affected_files_json)
+        json.loads(d.affected_modules_json)
+        for af in affected:
+            af_dir = "/".join(af.split("/")[:-1])
+            if af_dir == dir_path and af != file_path:
+                sibling_decision_ids.add(d.title)
+
+    if not sibling_decision_ids:
+        return None  # No siblings to compare
+    shared = file_decision_titles & sibling_decision_ids
+    return len(shared) / len(sibling_decision_ids)
+
+
+def _active_alignment(active: list, dir_path: str, sibling_coverage: float | None) -> tuple:
+    """Score/explanation when active decisions govern the file."""
+    if sibling_coverage is not None and sibling_coverage >= 0.5:
+        return "high", (
+            f"Follows {len(active)} active decision(s) shared with sibling files. "
+            f"This file aligns with established patterns in {dir_path}/."
+        )
+    if sibling_coverage is not None and sibling_coverage < 0.5:
+        return "medium", (
+            f"Has {len(active)} active decision(s) but limited overlap with "
+            f"sibling files in {dir_path}/. May use a different pattern than neighbors."
+        )
+    return "high", f"Governed by {len(active)} active decision(s)."
+
+
+def _alignment_score(
+    governing: list[dict],
+    active: list,
+    deprecated: list,
+    stale: list,
+    proposed: list,
+    dir_path: str,
+    sibling_coverage: float | None,
+) -> tuple:
+    """Derive the (score, explanation) tuple from decision status counts."""
+    if deprecated and not active and not proposed:
+        return "low", (
+            "All governing decisions are deprecated/superseded. "
+            "This file likely contains technical debt that should be migrated."
+        )
+    if stale and len(stale) >= len(governing) / 2:
+        return "low", (
+            f"{len(stale)} of {len(governing)} governing decision(s) are stale. "
+            f"The architectural rationale may no longer apply."
+        )
+    if active:
+        return _active_alignment(active, dir_path, sibling_coverage)
+    if proposed:
+        return "medium", (
+            f"Governed by {len(proposed)} proposed (unreviewed) decision(s). "
+            f"Patterns are established but not yet formally approved."
+        )
+    return "medium", f"Governed by {len(governing)} decision(s) with mixed status."
 
 
 def _compute_alignment(
@@ -352,64 +452,12 @@ def _compute_alignment(
     stale = [d for d in governing if d.get("staleness_score", 0) > 0.5]
     proposed = [d for d in governing if d["status"] == "proposed"]
 
-    # Check sibling files — do neighbors share the same decisions?
     dir_path = "/".join(file_path.split("/")[:-1])
-    sibling_decision_ids = set()
-    file_decision_titles = {d["title"] for d in governing}
+    sibling_coverage = _sibling_coverage(file_path, governing, all_decisions)
 
-    for d in all_decisions:
-        affected = json.loads(d.affected_files_json)
-        _affected_modules = json.loads(d.affected_modules_json)
-        for af in affected:
-            af_dir = "/".join(af.split("/")[:-1])
-            if af_dir == dir_path and af != file_path:
-                sibling_decision_ids.add(d.title)
-
-    # Overlap: how many of sibling decisions also cover this file
-    if sibling_decision_ids:
-        shared = file_decision_titles & sibling_decision_ids
-        sibling_coverage = len(shared) / len(sibling_decision_ids)
-    else:
-        sibling_coverage = None  # No siblings to compare
-
-    # Compute alignment score
-    if deprecated and not active and not proposed:
-        score = "low"
-        explanation = (
-            "All governing decisions are deprecated/superseded. "
-            "This file likely contains technical debt that should be migrated."
-        )
-    elif stale and len(stale) >= len(governing) / 2:
-        score = "low"
-        explanation = (
-            f"{len(stale)} of {len(governing)} governing decision(s) are stale. "
-            f"The architectural rationale may no longer apply."
-        )
-    elif active:
-        if sibling_coverage is not None and sibling_coverage >= 0.5:
-            score = "high"
-            explanation = (
-                f"Follows {len(active)} active decision(s) shared with sibling files. "
-                f"This file aligns with established patterns in {dir_path}/."
-            )
-        elif sibling_coverage is not None and sibling_coverage < 0.5:
-            score = "medium"
-            explanation = (
-                f"Has {len(active)} active decision(s) but limited overlap with "
-                f"sibling files in {dir_path}/. May use a different pattern than neighbors."
-            )
-        else:
-            score = "high"
-            explanation = f"Governed by {len(active)} active decision(s)."
-    elif proposed:
-        score = "medium"
-        explanation = (
-            f"Governed by {len(proposed)} proposed (unreviewed) decision(s). "
-            f"Patterns are established but not yet formally approved."
-        )
-    else:
-        score = "medium"
-        explanation = f"Governed by {len(governing)} decision(s) with mixed status."
+    score, explanation = _alignment_score(
+        governing, active, deprecated, stale, proposed, dir_path, sibling_coverage
+    )
 
     return {
         "score": score,

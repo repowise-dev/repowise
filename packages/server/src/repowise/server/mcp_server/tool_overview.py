@@ -216,6 +216,454 @@ def _build_workspace_footer() -> dict | None:
     return footer
 
 
+async def _load_overview_page(session: Any, repository: Any) -> Page | None:
+    """Repo overview page, preferring the canonical target_path=<repo_name> row."""
+    result = await session.execute(
+        select(Page)
+        .where(
+            Page.repository_id == repository.id,
+            Page.page_type == "repo_overview",
+        )
+        .order_by(
+            (Page.target_path == repository.name).desc(),
+            Page.updated_at.desc(),
+        )
+    )
+    return result.scalars().first()
+
+
+async def _load_module_pages(
+    session: Any, repository: Any, collector: OmissionCollector
+) -> list[Page]:
+    """Module pages capped to 20; the remainder goes to the omission store."""
+    result = await session.execute(
+        select(Page)
+        .where(
+            Page.repository_id == repository.id,
+            Page.page_type == "module_page",
+        )
+        .order_by(Page.title)
+    )
+    all_module_pages = result.scalars().all()
+    if len(all_module_pages) > 20:
+        collector.add(
+            f"module pages beyond cap=20 ({len(all_module_pages) - 20} dropped)",
+            "\n".join(f"{p.title}: {p.target_path}" for p in all_module_pages[20:]),
+        )
+    return all_module_pages[:20]
+
+
+def _drop_fixtures(ids: list[str], exclude_spec: Any) -> list[str]:
+    """Drop excluded ids and obvious fixture/test-data paths."""
+    return [
+        nid
+        for nid in ids
+        if not is_excluded(nid, exclude_spec)
+        and not any(
+            seg in nid.lower() for seg in ("fixture", "test_data", "testdata", "sample_repo")
+        )
+    ]
+
+
+async def _resolve_entry_point_ids(session: Any, repository: Any, exclude_spec: Any) -> list[str]:
+    """Curated orientation entry points, falling back to the raw is_entry_point flag.
+
+    Re-export barrels and package-export sinks are demoted; survivors are ranked
+    by execution centrality. Older indexes (no kg_project_meta row) fall back to
+    the flag.
+    """
+    proj_meta = await _get_kg_project_meta(session, repository.id)
+    curated_ids: list[str] = []
+    if proj_meta is not None:
+        try:
+            curated_ids = json.loads(proj_meta.entry_points_json or "[]")
+        except (json.JSONDecodeError, TypeError):
+            curated_ids = []
+
+    if curated_ids:
+        return _drop_fixtures(curated_ids, exclude_spec)
+
+    result = await session.execute(
+        select(GraphNode).where(
+            GraphNode.repository_id == repository.id,
+            GraphNode.is_entry_point == True,  # noqa: E712
+            GraphNode.is_test == False,  # noqa: E712
+        )
+    )
+    entry_nodes = filter_graph_nodes(
+        [
+            n
+            for n in result.scalars().all()
+            if not any(
+                seg in n.node_id.lower()
+                for seg in ("fixture", "test_data", "testdata", "sample_repo")
+            )
+        ],
+        exclude_spec,
+    )
+    return [n.node_id for n in entry_nodes]
+
+
+def _build_git_health(all_git: list) -> dict[str, Any]:
+    """Repo-wide git health summary (hotspots, bus factor, churn trend, top modules)."""
+    if not all_git:
+        return {}
+
+    hotspot_count = sum(1 for g in all_git if g.is_hotspot)
+    bus_factors = [getattr(g, "bus_factor", 0) or 0 for g in all_git]
+    avg_bus = sum(bus_factors) / len(bus_factors) if bus_factors else 0
+    bf1 = sum(1 for b in bus_factors if b == 1)
+    c30_total = sum(g.commit_count_30d or 0 for g in all_git)
+    c90_total = sum(g.commit_count_90d or 0 for g in all_git)
+    baseline = c90_total - c30_total
+    if baseline > 0:
+        ratio = (c30_total / 30.0) / (baseline / 60.0)
+        churn_trend = "increasing" if ratio > 1.5 else ("decreasing" if ratio < 0.5 else "stable")
+    else:
+        churn_trend = "increasing" if c30_total > 0 else "stable"
+    # Top churn modules (group by first directory component)
+    module_churn: Counter = Counter()
+    for g in all_git:
+        parts = g.file_path.split("/")
+        mod = parts[0] if len(parts) == 1 else "/".join(parts[:2])
+        module_churn[mod] += g.commit_count_90d or 0
+    top_modules = [m for m, _ in module_churn.most_common(5) if module_churn[m] > 0]
+
+    return {
+        "total_files_indexed": len(all_git),
+        "hotspot_count": hotspot_count,
+        "avg_bus_factor": round(avg_bus, 1),
+        "files_with_bus_factor_1": bf1,
+        "churn_trend": churn_trend,
+        "top_churn_modules": top_modules,
+    }
+
+
+def _build_knowledge_map(all_git: list) -> dict[str, Any]:
+    """Top owners and knowledge silos aggregated across all indexed files."""
+    if not all_git:
+        return {}
+
+    owner_file_count: dict[str, int] = defaultdict(int)
+    owner_pct_sum: dict[str, float] = defaultdict(float)
+    for g in all_git:
+        email = g.primary_owner_email or ""
+        if email:
+            owner_file_count[email] += 1
+            owner_pct_sum[email] += float(g.primary_owner_commit_pct or 0.0)
+
+    total_files = len(all_git) or 1
+    top_owners = sorted(
+        [
+            {
+                "email": email,
+                "files_owned": count,
+                "percentage": round(count / total_files * 100.0, 1),
+            }
+            for email, count in owner_file_count.items()
+        ],
+        key=lambda x: -x["files_owned"],
+    )[:10]
+
+    # knowledge_silos: files where primary owner has > 80% ownership.
+    # Filter out boilerplate (migrations, __init__.py, config, lock files).
+    silo_exclude_patterns = (
+        "alembic/versions/",
+        "__init__.py",
+        "migrations/",
+        ".lock",
+        "package-lock",
+        "conftest.py",
+    )
+    knowledge_silos = [
+        g.file_path
+        for g in sorted(all_git, key=lambda g: -(g.primary_owner_commit_pct or 0.0))
+        if (g.primary_owner_commit_pct or 0.0) > 0.8
+        and not any(pat in g.file_path for pat in silo_exclude_patterns)
+    ][:10]
+
+    return {
+        "top_owners": top_owners,
+        "knowledge_silos": knowledge_silos,
+    }
+
+
+async def _load_community_nodes(
+    session: Any, repository: Any, exclude_spec: Any, all_git: list
+) -> list[GraphNode]:
+    """File nodes for community grouping; widened to all non-test nodes when git data exists."""
+    if not all_git:
+        node_result = await session.execute(
+            select(GraphNode).where(
+                GraphNode.repository_id == repository.id,
+                GraphNode.node_type == "file",
+            )
+        )
+    else:
+        node_result = await session.execute(
+            select(GraphNode).where(
+                GraphNode.repository_id == repository.id,
+                GraphNode.is_test == False,  # noqa: E712
+            )
+        )
+    return filter_graph_nodes(list(node_result.scalars().all()), exclude_spec)
+
+
+def _community_display_label(
+    label: str, members: list[GraphNode], cid: int, generic_labels: set[str]
+) -> str:
+    """Use the heuristic label, or the dominant specific directory when it's generic."""
+    if label and label.lower() not in generic_labels:
+        return label
+    dir_counts: Counter = Counter()
+    for m in members:
+        parts = m.node_id.split("/")
+        # Use the deepest meaningful directory segment
+        for p in reversed(parts[:-1]):
+            if p.lower() not in generic_labels and p not in ("src",):
+                dir_counts[p] += 1
+                break
+    return dir_counts.most_common(1)[0][0] if dir_counts else f"cluster_{cid}"
+
+
+def _build_community_summary(all_nodes: list[GraphNode]) -> list[dict[str, Any]]:
+    """Top-10 communities by size, skipping generic/unhelpful labels."""
+    community_groups: dict[int, list[GraphNode]] = defaultdict(list)
+    for n in all_nodes:
+        if n.node_type == "file" and n.community_id is not None:
+            community_groups[n.community_id].append(n)
+
+    generic_labels = {"packages", "src", "lib", "core", "app", ""}
+    community_summary: list[dict[str, Any]] = []
+    for cid, members in sorted(community_groups.items(), key=lambda x: -len(x[1])):
+        if len(community_summary) >= 10:
+            break
+        label = ""
+        cohesion = 0.0
+        if members:
+            try:
+                meta = json.loads(members[0].community_meta_json or "{}")
+                label = meta.get("label", "")
+                cohesion = meta.get("cohesion", 0.0)
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        community_summary.append(
+            {
+                "id": cid,
+                "label": _community_display_label(label, members, cid, generic_labels),
+                "size": len(members),
+                "cohesion": round(cohesion, 3),
+            }
+        )
+    return community_summary
+
+
+async def _build_architecture(session: Any, repository: Any) -> dict[str, Any]:
+    """KG architecture layers + tour availability."""
+    kg_layers = await _get_kg_layers(session, repository.id)
+    kg_tour = await _get_kg_tour_steps(session, repository.id)
+    if not kg_layers:
+        return {}
+    return {
+        "layers": [
+            {
+                "name": layer.name,
+                "description": _truncate_at_word(layer.description or "", 120),
+                "file_count": len(json.loads(layer.node_ids_json) if layer.node_ids_json else []),
+            }
+            for layer in kg_layers
+        ],
+        "tour_available": bool(kg_tour),
+        "tour_step_count": len(kg_tour),
+    }
+
+
+async def _build_reading_order(session: Any, repository: Any) -> list[dict[str, Any]]:
+    """Canonical onboarding spine — only slots that actually produced a page."""
+    ro_result = await session.execute(
+        select(Page).where(
+            Page.repository_id == repository.id,
+            Page.page_type.in_(["onboarding", *PROMOTED_SLOTS.keys()]),
+        )
+    )
+    slot_to_page: dict[str, Page] = {}
+    for p in ro_result.scalars().all():
+        if p.page_type == "onboarding":
+            slot = (p.target_path or "").rsplit("/", 1)[-1]
+        else:
+            slot = PROMOTED_SLOTS.get(p.page_type, "")
+        if slot and slot not in slot_to_page:
+            slot_to_page[slot] = p
+    reading_order: list[dict[str, Any]] = []
+    for slot in ONBOARDING_ORDER:
+        p = slot_to_page.get(slot)
+        if p is None:
+            continue
+        reading_order.append(
+            {
+                "order": len(reading_order) + 1,
+                "slot": slot,
+                "title": p.title,
+                "page_id": p.id,
+                "target_path": p.target_path,
+            }
+        )
+    return reading_order
+
+
+def _resolve_title(overview_page: Page | None, repository: Any) -> str:
+    """Substitute the real repo name back into legacy "Repository Overview: repo" titles.
+
+    Exact match only: a prefix replace would corrupt any repo whose name starts
+    with "repo" ("Repository Overview: repowise" -> "...repowisewise").
+    """
+    if not overview_page:
+        return repository.name
+    persisted_title = overview_page.title or ""
+    if persisted_title.strip() == "Repository Overview: repo":
+        return f"Repository Overview: {repository.name}"
+    return persisted_title
+
+
+async def _build_code_health(session: Any, repository: Any) -> dict[str, Any]:
+    """Headline code-health KPIs; empty when health hasn't been run on this repo."""
+    try:
+        health_summary = await _get_health_summary(session, repository.id)
+        metrics_rows = await _get_health_metrics(session, repository.id)
+        if not metrics_rows:
+            return {}
+        # Hotspot health: NLOC-weighted avg over the top-25% files by NLOC,
+        # matching the dashboard KPI definition.
+        sorted_by_nloc = sorted(metrics_rows, key=lambda m: m.nloc or 0, reverse=True)
+        top_q = sorted_by_nloc[: max(1, len(sorted_by_nloc) // 4)]
+        tot = sum(max(m.nloc, 1) for m in top_q)
+        hotspot_avg = sum(m.score * max(m.nloc, 1) for m in top_q) / tot if tot else 10.0
+        return {
+            "average_health": health_summary["average_health"],
+            "band": band_for(float(health_summary["average_health"])),
+            "hotspot_health": round(hotspot_avg, 2),
+            "worst_performer_path": health_summary["worst_performer_path"],
+            "worst_performer_score": health_summary["worst_performer_score"],
+            "open_findings": health_summary["open_findings"],
+            "file_count": health_summary["file_count"],
+            "distribution": health_distribution(metrics_rows),
+        }
+    except Exception:
+        return {}
+
+
+async def _build_recent_reversals(session: Any, repository: Any) -> list[dict[str, Any]]:
+    """Recent supersede edges resolved to newer/older decision title pairs."""
+    supersede_edges_res = await session.execute(
+        select(DecisionEdge)
+        .where(
+            DecisionEdge.repository_id == repository.id,
+            DecisionEdge.kind == "supersedes",
+        )
+        .order_by(DecisionEdge.created_at.desc())
+        .limit(5)
+    )
+    supersede_edges = supersede_edges_res.scalars().all()
+    if not supersede_edges:
+        return []
+    all_edge_ids = list(
+        {e.src_decision_id for e in supersede_edges} | {e.dst_decision_id for e in supersede_edges}
+    )
+    edge_recs_res = await session.execute(
+        select(DecisionRecord).where(DecisionRecord.id.in_(all_edge_ids))
+    )
+    edge_recs = {r.id: r for r in edge_recs_res.scalars().all()}
+    recent_reversals: list[dict[str, Any]] = []
+    for edge in supersede_edges:
+        src = edge_recs.get(edge.src_decision_id)
+        dst = edge_recs.get(edge.dst_decision_id)
+        if src and dst:
+            recent_reversals.append(
+                {
+                    "newer": {"id": src.id, "title": src.title},
+                    "older": {
+                        "id": dst.id,
+                        "title": dst.title,
+                        "status": dst.status,
+                    },
+                }
+            )
+    return recent_reversals
+
+
+async def _build_key_decisions(session: Any, repository: Any) -> dict[str, Any]:
+    """Top active decisions + recent reversals (Phase 4A)."""
+    try:
+        top_decisions_res = await session.execute(
+            select(DecisionRecord)
+            .where(
+                DecisionRecord.repository_id == repository.id,
+                DecisionRecord.status == "active",
+            )
+            .order_by(DecisionRecord.confidence.desc())
+            .limit(5)
+        )
+        top_decisions = top_decisions_res.scalars().all()
+        if not top_decisions:
+            return {}
+        key_decisions_list = []
+        for dr in top_decisions:
+            try:
+                affected_files = json.loads(dr.affected_files_json or "[]")[:3]
+            except (json.JSONDecodeError, TypeError):
+                affected_files = []
+            key_decisions_list.append(
+                {
+                    "id": dr.id,
+                    "title": dr.title,
+                    "status": dr.status,
+                    "confidence": dr.confidence,
+                    "verification": dr.verification,
+                    "affected_files": affected_files,
+                }
+            )
+        return {
+            "top_active": key_decisions_list,
+            "recent_reversals": await _build_recent_reversals(session, repository),
+        }
+    except Exception:
+        return {}
+
+
+def _build_guided_tour(overview_page: Page, result: dict[str, Any]) -> None:
+    """Attach the topology-driven guided tour + layer order from overview page metadata."""
+    from repowise.core.generation.models import compute_page_id
+
+    try:
+        ov_meta = json.loads(overview_page.metadata_json or "{}")
+    except (json.JSONDecodeError, TypeError):
+        ov_meta = {}
+    tour = ov_meta.get("guided_tour") or []
+    if tour:
+        result["guided_tour"] = [
+            {
+                "order": s.get("order"),
+                "title": s.get("title"),
+                "kind": s.get("kind"),
+                "reason": s.get("reason"),
+                "target_path": s.get("target_path"),
+                "page_id": compute_page_id(
+                    s.get("page_type", "file_page"), s.get("target_path", "")
+                ),
+            }
+            for s in tour
+        ]
+        result["guided_tour_hint"] = (
+            "Topology-ordered walk of the codebase: read these page_ids "
+            "in order — entry points first, then the files they import, "
+            "with infrastructure last. Each step builds on the previous."
+        )
+    layer_order = ov_meta.get("layer_order") or []
+    if layer_order:
+        result.setdefault("architecture", {})["layer_order"] = layer_order
+
+
 @mcp.tool()
 async def get_overview(repo: str | None = None) -> dict:
     """Architecture map for an unfamiliar repo — first call when you don't know your way around.
@@ -246,89 +694,9 @@ async def get_overview(repo: str | None = None) -> dict:
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
 
-        # Get repo overview page. Older indexes occasionally left a stale
-        # row with target_path='repo' alongside the canonical
-        # target_path=<repo_name> row, so prefer the row matching the repo
-        # name and fall back to the most recently updated one. Using
-        # scalar_one_or_none here would crash with MultipleResultsFound on
-        # those legacy DBs.
-        result = await session.execute(
-            select(Page)
-            .where(
-                Page.repository_id == repository.id,
-                Page.page_type == "repo_overview",
-            )
-            .order_by(
-                (Page.target_path == repository.name).desc(),
-                Page.updated_at.desc(),
-            )
-        )
-        overview_page = result.scalars().first()
-
-        # Get module pages
-        result = await session.execute(
-            select(Page)
-            .where(
-                Page.repository_id == repository.id,
-                Page.page_type == "module_page",
-            )
-            .order_by(Page.title)
-        )
-        all_module_pages = result.scalars().all()
-        module_pages = all_module_pages[:20]  # Cap to keep response bounded
-        if len(all_module_pages) > 20:
-            collector.add(
-                f"module pages beyond cap=20 ({len(all_module_pages) - 20} dropped)",
-                "\n".join(f"{p.title}: {p.target_path}" for p in all_module_pages[20:]),
-            )
-
-        # Entry points: prefer the curated orientation list — re-export barrels
-        # and package-export sinks demoted, survivors ranked by execution
-        # centrality. The raw ``is_entry_point`` flag also tags every npm-exported
-        # file (cn.ts, types/*.ts): high fan-in sinks that are the opposite of
-        # where a reader starts. Fall back to the flag only for indexes built
-        # before the curation pass (no ``kg_project_meta`` row).
-        def _drop_fixtures(ids: list[str]) -> list[str]:
-            return [
-                nid
-                for nid in ids
-                if not is_excluded(nid, exclude_spec)
-                and not any(
-                    seg in nid.lower()
-                    for seg in ("fixture", "test_data", "testdata", "sample_repo")
-                )
-            ]
-
-        proj_meta = await _get_kg_project_meta(session, repository.id)
-        curated_ids: list[str] = []
-        if proj_meta is not None:
-            try:
-                curated_ids = json.loads(proj_meta.entry_points_json or "[]")
-            except (json.JSONDecodeError, TypeError):
-                curated_ids = []
-
-        if curated_ids:
-            entry_point_ids = _drop_fixtures(curated_ids)
-        else:
-            result = await session.execute(
-                select(GraphNode).where(
-                    GraphNode.repository_id == repository.id,
-                    GraphNode.is_entry_point == True,  # noqa: E712
-                    GraphNode.is_test == False,  # noqa: E712
-                )
-            )
-            entry_nodes = filter_graph_nodes(
-                [
-                    n
-                    for n in result.scalars().all()
-                    if not any(
-                        seg in n.node_id.lower()
-                        for seg in ("fixture", "test_data", "testdata", "sample_repo")
-                    )
-                ],
-                exclude_spec,
-            )
-            entry_point_ids = [n.node_id for n in entry_nodes]
+        overview_page = await _load_overview_page(session, repository)
+        module_pages = await _load_module_pages(session, repository, collector)
+        entry_point_ids = await _resolve_entry_point_ids(session, repository, exclude_spec)
 
         # Phase 4: repo-wide git health summary
         git_res = await session.execute(
@@ -338,312 +706,15 @@ async def get_overview(repo: str | None = None) -> dict:
         )
         all_git = filter_rows_by_attr(list(git_res.scalars().all()), "file_path", exclude_spec)
 
-        git_health: dict[str, Any] = {}
-        if all_git:
-            hotspot_count = sum(1 for g in all_git if g.is_hotspot)
-            bus_factors = [getattr(g, "bus_factor", 0) or 0 for g in all_git]
-            avg_bus = sum(bus_factors) / len(bus_factors) if bus_factors else 0
-            bf1 = sum(1 for b in bus_factors if b == 1)
-            c30_total = sum(g.commit_count_30d or 0 for g in all_git)
-            c90_total = sum(g.commit_count_90d or 0 for g in all_git)
-            baseline = c90_total - c30_total
-            if baseline > 0:
-                ratio = (c30_total / 30.0) / (baseline / 60.0)
-                churn_trend = (
-                    "increasing" if ratio > 1.5 else ("decreasing" if ratio < 0.5 else "stable")
-                )
-            else:
-                churn_trend = "increasing" if c30_total > 0 else "stable"
-            # Top churn modules (group by first directory component)
-            module_churn: Counter = Counter()
-            for g in all_git:
-                parts = g.file_path.split("/")
-                mod = parts[0] if len(parts) == 1 else "/".join(parts[:2])
-                module_churn[mod] += g.commit_count_90d or 0
-            top_modules = [m for m, _ in module_churn.most_common(5) if module_churn[m] > 0]
-
-            git_health = {
-                "total_files_indexed": len(all_git),
-                "hotspot_count": hotspot_count,
-                "avg_bus_factor": round(avg_bus, 1),
-                "files_with_bus_factor_1": bf1,
-                "churn_trend": churn_trend,
-                "top_churn_modules": top_modules,
-            }
-
-        # B. Knowledge map -------------------------------------------------------
-        knowledge_map: dict[str, Any] = {}
-        if all_git:
-            # top_owners: aggregate primary_owner_email across all files
-            owner_file_count: dict[str, int] = defaultdict(int)
-            owner_pct_sum: dict[str, float] = defaultdict(float)
-            for g in all_git:
-                email = g.primary_owner_email or ""
-                if email:
-                    owner_file_count[email] += 1
-                    owner_pct_sum[email] += float(g.primary_owner_commit_pct or 0.0)
-
-            total_files = len(all_git) or 1
-            top_owners = sorted(
-                [
-                    {
-                        "email": email,
-                        "files_owned": count,
-                        "percentage": round(count / total_files * 100.0, 1),
-                    }
-                    for email, count in owner_file_count.items()
-                ],
-                key=lambda x: -x["files_owned"],
-            )[:10]
-
-            # knowledge_silos: files where primary owner has > 80% ownership
-            # Filter out boilerplate (migrations, __init__.py, config, lock files)
-            silo_exclude_patterns = (
-                "alembic/versions/",
-                "__init__.py",
-                "migrations/",
-                ".lock",
-                "package-lock",
-                "conftest.py",
-            )
-            knowledge_silos = [
-                g.file_path
-                for g in sorted(all_git, key=lambda g: -(g.primary_owner_commit_pct or 0.0))
-                if (g.primary_owner_commit_pct or 0.0) > 0.8
-                and not any(pat in g.file_path for pat in silo_exclude_patterns)
-            ][:10]
-
-            knowledge_map = {
-                "top_owners": top_owners,
-                "knowledge_silos": knowledge_silos,
-            }
-
-        # C. Community summary ---------------------------------------------------
-        community_summary: list[dict[str, Any]] = []
-        # Fetch file nodes for community grouping
-        if not all_git:
-            node_result = await session.execute(
-                select(GraphNode).where(
-                    GraphNode.repository_id == repository.id,
-                    GraphNode.node_type == "file",
-                )
-            )
-            all_nodes = filter_graph_nodes(list(node_result.scalars().all()), exclude_spec)
-        else:
-            node_result = await session.execute(
-                select(GraphNode).where(
-                    GraphNode.repository_id == repository.id,
-                    GraphNode.is_test == False,  # noqa: E712
-                )
-            )
-            all_nodes = filter_graph_nodes(list(node_result.scalars().all()), exclude_spec)
-
-        # Group file nodes by community_id
-        community_groups: dict[int, list[GraphNode]] = defaultdict(list)
-        for n in all_nodes:
-            if n.node_type == "file" and n.community_id is not None:
-                community_groups[n.community_id].append(n)
-
-        # Sort communities by size descending, take top 10
-        # Skip communities with generic/unhelpful labels
-        generic_labels = {"packages", "src", "lib", "core", "app", ""}
-        for cid, members in sorted(community_groups.items(), key=lambda x: -len(x[1])):
-            if len(community_summary) >= 10:
-                break
-            label = ""
-            cohesion = 0.0
-            if members:
-                try:
-                    meta = json.loads(members[0].community_meta_json or "{}")
-                    label = meta.get("label", "")
-                    cohesion = meta.get("cohesion", 0.0)
-                except (json.JSONDecodeError, TypeError):
-                    pass
-
-            # Build a useful label: if the heuristic label is generic,
-            # use the most common directory segment among members
-            display_label = label
-            if not label or label.lower() in generic_labels:
-                # Find dominant specific directory
-                dir_counts: Counter = Counter()
-                for m in members:
-                    parts = m.node_id.split("/")
-                    # Use the deepest meaningful directory segment
-                    for p in reversed(parts[:-1]):
-                        if p.lower() not in generic_labels and p not in ("src",):
-                            dir_counts[p] += 1
-                            break
-                display_label = dir_counts.most_common(1)[0][0] if dir_counts else f"cluster_{cid}"
-
-            community_summary.append(
-                {
-                    "id": cid,
-                    "label": display_label,
-                    "size": len(members),
-                    "cohesion": round(cohesion, 3),
-                }
-            )
-
-        # D. KG architecture layers + tour availability -------------------------
-        kg_layers = await _get_kg_layers(session, repository.id)
-        kg_tour = await _get_kg_tour_steps(session, repository.id)
-        architecture: dict[str, Any] = {}
-        if kg_layers:
-            architecture["layers"] = [
-                {
-                    "name": layer.name,
-                    "description": _truncate_at_word(layer.description or "", 120),
-                    "file_count": len(
-                        json.loads(layer.node_ids_json) if layer.node_ids_json else []
-                    ),
-                }
-                for layer in kg_layers
-            ]
-            architecture["tour_available"] = bool(kg_tour)
-            architecture["tour_step_count"] = len(kg_tour)
-
-        # E. Reading order — the canonical onboarding spine, mirrored for agents
-        # so they can walk the wiki in the same order a human would (§ dual
-        # audience). Only slots that actually produced a page are listed.
-        ro_result = await session.execute(
-            select(Page).where(
-                Page.repository_id == repository.id,
-                Page.page_type.in_(["onboarding", *PROMOTED_SLOTS.keys()]),
-            )
-        )
-        slot_to_page: dict[str, Page] = {}
-        for p in ro_result.scalars().all():
-            if p.page_type == "onboarding":
-                slot = (p.target_path or "").rsplit("/", 1)[-1]
-            else:
-                slot = PROMOTED_SLOTS.get(p.page_type, "")
-            if slot and slot not in slot_to_page:
-                slot_to_page[slot] = p
-        reading_order: list[dict[str, Any]] = []
-        for slot in ONBOARDING_ORDER:
-            p = slot_to_page.get(slot)
-            if p is None:
-                continue
-            reading_order.append(
-                {
-                    "order": len(reading_order) + 1,
-                    "slot": slot,
-                    "title": p.title,
-                    "page_id": p.id,
-                    "target_path": p.target_path,
-                }
-            )
-
-        # Older indexes persisted titles like "Repository Overview: repo" because
-        # repo_name was not passed through to generate_repo_overview. Substitute
-        # the actual repo name back in so the response is useful without reindex.
-        # Exact match only: a prefix replace would corrupt any repo whose name
-        # starts with "repo" ("Repository Overview: repowise" → "...repowisewise").
-        if overview_page:
-            persisted_title = overview_page.title or ""
-            if persisted_title.strip() == "Repository Overview: repo":
-                title = f"Repository Overview: {repository.name}"
-            else:
-                title = persisted_title
-        else:
-            title = repository.name
-        # Code-health KPIs — three headline numbers for the architecture
-        # summary. Falls back to defaults (avg 10/10, no worst file) when
-        # health hasn't been run on this repo yet.
-        code_health: dict[str, Any] = {}
-        try:
-            health_summary = await _get_health_summary(session, repository.id)
-            metrics_rows = await _get_health_metrics(session, repository.id)
-            if metrics_rows:
-                # Hotspot health: NLOC-weighted avg over the top-25% files
-                # by NLOC, matching the dashboard KPI definition.
-                sorted_by_nloc = sorted(metrics_rows, key=lambda m: m.nloc or 0, reverse=True)
-                top_q = sorted_by_nloc[: max(1, len(sorted_by_nloc) // 4)]
-                tot = sum(max(m.nloc, 1) for m in top_q)
-                hotspot_avg = sum(m.score * max(m.nloc, 1) for m in top_q) / tot if tot else 10.0
-                code_health = {
-                    "average_health": health_summary["average_health"],
-                    "band": band_for(float(health_summary["average_health"])),
-                    "hotspot_health": round(hotspot_avg, 2),
-                    "worst_performer_path": health_summary["worst_performer_path"],
-                    "worst_performer_score": health_summary["worst_performer_score"],
-                    "open_findings": health_summary["open_findings"],
-                    "file_count": health_summary["file_count"],
-                    "distribution": health_distribution(metrics_rows),
-                }
-        except Exception:
-            code_health = {}
-
-        # F. Key decisions + recent reversals (Phase 4A) -----------------------
-        key_decisions_section: dict[str, Any] = {}
-        try:
-            top_decisions_res = await session.execute(
-                select(DecisionRecord)
-                .where(
-                    DecisionRecord.repository_id == repository.id,
-                    DecisionRecord.status == "active",
-                )
-                .order_by(DecisionRecord.confidence.desc())
-                .limit(5)
-            )
-            top_decisions = top_decisions_res.scalars().all()
-            if top_decisions:
-                key_decisions_list = []
-                for dr in top_decisions:
-                    try:
-                        affected_files = json.loads(dr.affected_files_json or "[]")[:3]
-                    except (json.JSONDecodeError, TypeError):
-                        affected_files = []
-                    key_decisions_list.append(
-                        {
-                            "id": dr.id,
-                            "title": dr.title,
-                            "status": dr.status,
-                            "confidence": dr.confidence,
-                            "verification": dr.verification,
-                            "affected_files": affected_files,
-                        }
-                    )
-                recent_reversals: list[dict[str, Any]] = []
-                supersede_edges_res = await session.execute(
-                    select(DecisionEdge)
-                    .where(
-                        DecisionEdge.repository_id == repository.id,
-                        DecisionEdge.kind == "supersedes",
-                    )
-                    .order_by(DecisionEdge.created_at.desc())
-                    .limit(5)
-                )
-                supersede_edges = supersede_edges_res.scalars().all()
-                if supersede_edges:
-                    all_edge_ids = list(
-                        {e.src_decision_id for e in supersede_edges}
-                        | {e.dst_decision_id for e in supersede_edges}
-                    )
-                    edge_recs_res = await session.execute(
-                        select(DecisionRecord).where(DecisionRecord.id.in_(all_edge_ids))
-                    )
-                    edge_recs = {r.id: r for r in edge_recs_res.scalars().all()}
-                    for edge in supersede_edges:
-                        src = edge_recs.get(edge.src_decision_id)
-                        dst = edge_recs.get(edge.dst_decision_id)
-                        if src and dst:
-                            recent_reversals.append(
-                                {
-                                    "newer": {"id": src.id, "title": src.title},
-                                    "older": {
-                                        "id": dst.id,
-                                        "title": dst.title,
-                                        "status": dst.status,
-                                    },
-                                }
-                            )
-                key_decisions_section = {
-                    "top_active": key_decisions_list,
-                    "recent_reversals": recent_reversals,
-                }
-        except Exception:
-            key_decisions_section = {}
+        git_health = _build_git_health(all_git)
+        knowledge_map = _build_knowledge_map(all_git)
+        all_nodes = await _load_community_nodes(session, repository, exclude_spec, all_git)
+        community_summary = _build_community_summary(all_nodes)
+        architecture = await _build_architecture(session, repository)
+        reading_order = await _build_reading_order(session, repository)
+        title = _resolve_title(overview_page, repository)
+        code_health = await _build_code_health(session, repository)
+        key_decisions_section = await _build_key_decisions(session, repository)
 
         result = {
             "title": title,
@@ -681,35 +752,7 @@ async def get_overview(repo: str | None = None) -> dict:
         # from the import graph (entry points first, then inward, infra last).
         # Persisted on the repo_overview page metadata at generation time.
         if overview_page:
-            from repowise.core.generation.models import compute_page_id
-
-            try:
-                ov_meta = json.loads(overview_page.metadata_json or "{}")
-            except (json.JSONDecodeError, TypeError):
-                ov_meta = {}
-            tour = ov_meta.get("guided_tour") or []
-            if tour:
-                result["guided_tour"] = [
-                    {
-                        "order": s.get("order"),
-                        "title": s.get("title"),
-                        "kind": s.get("kind"),
-                        "reason": s.get("reason"),
-                        "target_path": s.get("target_path"),
-                        "page_id": compute_page_id(
-                            s.get("page_type", "file_page"), s.get("target_path", "")
-                        ),
-                    }
-                    for s in tour
-                ]
-                result["guided_tour_hint"] = (
-                    "Topology-ordered walk of the codebase: read these page_ids "
-                    "in order — entry points first, then the files they import, "
-                    "with infrastructure last. Each step builds on the previous."
-                )
-            layer_order = ov_meta.get("layer_order") or []
-            if layer_order:
-                result.setdefault("architecture", {})["layer_order"] = layer_order
+            _build_guided_tour(overview_page, result)
 
         # Append workspace context footer when in workspace mode
         ws_footer = _build_workspace_footer()

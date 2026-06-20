@@ -55,92 +55,26 @@ async def get_why(
     if repo == "all":
         if not query:
             return _unsupported_repo_all("get_why (health dashboard)")
-
-        contexts = await _resolve_all_contexts()
-        merged: list[dict] = []
-        for ctx in contexts:
-            async with get_session(ctx.session_factory) as session:
-                repository = await _get_repo(session)
-                res = await session.execute(
-                    select(DecisionRecord).where(
-                        DecisionRecord.repository_id == repository.id,
-                    )
-                )
-                for d in res.scalars().all():
-                    text = f"{d.title} {d.decision} {d.rationale} {d.context}".lower()
-                    if any(w in text for w in query.lower().split()):
-                        merged.append(
-                            {
-                                "repo": ctx.alias,
-                                "id": d.id,
-                                "title": d.title,
-                                "status": d.status,
-                                "decision": d.decision,
-                                "rationale": d.rationale,
-                                "source": d.source,
-                                "confidence": d.confidence,
-                            }
-                        )
-        return {
-            "mode": "search",
-            "query": query,
-            "workspace": True,
-            "decisions": merged[:15],
-            "_meta": _build_meta(),
-        }
+        return await _why_workspace_search(query)
 
     # --- Mode 1: No query → health dashboard ---
     if not query:
-        from repowise.core.persistence.crud import get_decision_health_summary
-
-        ctx = await _resolve_repo_context(repo)
-        async with get_session(ctx.session_factory) as session:
-            repository = await _get_repo(session)
-            health = await get_decision_health_summary(session, repository.id)
-
-            stale = health["stale_decisions"]
-            proposed = health["proposed_awaiting_review"]
-            ungoverned = health["ungoverned_hotspots"]
-
-            return {
-                "mode": "health",
-                "summary": (
-                    f"{health['summary'].get('active', 0)} active · "
-                    f"{health['summary'].get('stale', 0)} stale · "
-                    f"{len(proposed)} proposed · "
-                    f"{len(ungoverned)} ungoverned hotspots"
-                ),
-                "counts": health["summary"],
-                "stale_decisions": [
-                    {
-                        "id": d.id,
-                        "title": d.title,
-                        "staleness_score": d.staleness_score,
-                        "affected_files": filter_path_list(
-                            json.loads(d.affected_files_json), _get_exclude_spec(ctx.path)
-                        )[:5],
-                    }
-                    for d in stale[:10]
-                ],
-                "proposed_awaiting_review": [
-                    {
-                        "id": d.id,
-                        "title": d.title,
-                        "source": d.source,
-                        "confidence": d.confidence,
-                    }
-                    for d in proposed[:10]
-                ],
-                "ungoverned_hotspots": ungoverned[:15],
-                "conflicts": health.get("conflicts", [])[:10],
-                "_meta": _build_meta(repository=repository),
-            }
+        return await _why_health_dashboard(repo)
 
     # --- Mode 2: Path → decisions, origin story, alignment ---
     if _is_path(query):
-        ctx = await _resolve_repo_context(repo)
-        if is_excluded(query, _get_exclude_spec(ctx.path)):
-            return {"query": query, "error": f"'{query}' is excluded by exclude_patterns."}
+        return await _why_path(query, repo)
+
+    # --- Mode 3: Natural language → target-aware search ---
+    return await _why_search(query, targets, repo)
+
+
+async def _why_workspace_search(query: str) -> dict:
+    """repo="all": keyword-search decisions across every repo in the workspace."""
+    contexts = await _resolve_all_contexts()
+    merged: list[dict] = []
+    query_words = query.lower().split()
+    for ctx in contexts:
         async with get_session(ctx.session_factory) as session:
             repository = await _get_repo(session)
             res = await session.execute(
@@ -148,154 +82,242 @@ async def get_why(
                     DecisionRecord.repository_id == repository.id,
                 )
             )
-            all_decisions = res.scalars().all()
-
-            # Load git metadata for origin story
-            git_res = await session.execute(
-                select(GitMetadata).where(
-                    GitMetadata.repository_id == repository.id,
-                    GitMetadata.file_path == query,
-                )
-            )
-            git_meta = git_res.scalar_one_or_none()
-
-            # Pre-load all git metadata for cross-file search (used by fallback)
-            all_git_res = await session.execute(
-                select(GitMetadata).where(
-                    GitMetadata.repository_id == repository.id,
-                )
-            )
-            all_git_meta = all_git_res.scalars().all()
-
-            from repowise.core.persistence.decision_graph import build_lineage_chain
-
-            governing = []
-            for d in all_decisions:
-                affected_files = json.loads(d.affected_files_json)
-                affected_modules = json.loads(d.affected_modules_json)
-                if query in affected_files or query in affected_modules:
-                    # Walk supersedes/refines back to roots so the answer is a
-                    # lineage chain (sessions → JWT → OAuth2), not a flat list.
-                    lineage = await build_lineage_chain(session, d.id)
-                    governing.append(
+            for d in res.scalars().all():
+                text = f"{d.title} {d.decision} {d.rationale} {d.context}".lower()
+                if any(w in text for w in query_words):
+                    merged.append(
                         {
+                            "repo": ctx.alias,
                             "id": d.id,
                             "title": d.title,
                             "status": d.status,
-                            "context": d.context,
                             "decision": d.decision,
                             "rationale": d.rationale,
-                            "alternatives": json.loads(d.alternatives_json),
-                            "consequences": json.loads(d.consequences_json),
-                            "affected_files": affected_files,
                             "source": d.source,
                             "confidence": d.confidence,
-                            "staleness_score": d.staleness_score,
-                            "lineage": lineage if len(lineage) > 1 else [],
                         }
                     )
+    return {
+        "mode": "search",
+        "query": query,
+        "workspace": True,
+        "decisions": merged[:15],
+        "_meta": _build_meta(),
+    }
 
-            result_data: dict[str, Any] = {
-                "mode": "path",
-                "path": query,
-                "decisions": governing,
-                "origin_story": _build_origin_story(query, git_meta, governing),
-                "alignment": _compute_alignment(query, governing, all_decisions),
-            }
 
-            # --- Fallback: git archaeology when no decisions found ---
-            if not governing:
-                result_data["git_archaeology"] = await _git_archaeology_fallback(
-                    query,
-                    git_meta,
-                    all_git_meta,
-                    repository,
-                )
-
-            result_data["_meta"] = _build_meta(repository=repository)
-            return result_data
-
-    # --- Mode 3: Natural language → target-aware search ---
-    from repowise.core.persistence.crud import list_decisions as _list_decisions
+async def _why_health_dashboard(repo: str | None) -> dict:
+    """Mode 1: no query — return the decision health dashboard."""
+    from repowise.core.persistence.crud import get_decision_health_summary
 
     ctx = await _resolve_repo_context(repo)
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
-        all_decisions = await _list_decisions(
-            session, repository.id, include_proposed=True, limit=200
-        )
+        health = await get_decision_health_summary(session, repository.id)
 
-        # Load git metadata for targets (for origin context in results)
-        target_git: dict[str, Any] = {}
-        if targets:
-            for t in targets:
-                git_res = await session.execute(
-                    select(GitMetadata).where(
-                        GitMetadata.repository_id == repository.id,
-                        GitMetadata.file_path == t,
-                    )
-                )
-                meta = git_res.scalar_one_or_none()
-                if meta:
-                    target_git[t] = meta
+        stale = health["stale_decisions"]
+        proposed = health["proposed_awaiting_review"]
+        ungoverned = health["ungoverned_hotspots"]
 
-    # Build target file set for boosting
-    target_set = set(targets) if targets else set()
+        return {
+            "mode": "health",
+            "summary": (
+                f"{health['summary'].get('active', 0)} active · "
+                f"{health['summary'].get('stale', 0)} stale · "
+                f"{len(proposed)} proposed · "
+                f"{len(ungoverned)} ungoverned hotspots"
+            ),
+            "counts": health["summary"],
+            "stale_decisions": [
+                {
+                    "id": d.id,
+                    "title": d.title,
+                    "staleness_score": d.staleness_score,
+                    "affected_files": filter_path_list(
+                        json.loads(d.affected_files_json), _get_exclude_spec(ctx.path)
+                    )[:5],
+                }
+                for d in stale[:10]
+            ],
+            "proposed_awaiting_review": [
+                {
+                    "id": d.id,
+                    "title": d.title,
+                    "source": d.source,
+                    "confidence": d.confidence,
+                }
+                for d in proposed[:10]
+            ],
+            "ungoverned_hotspots": ungoverned[:15],
+            "conflicts": health.get("conflicts", [])[:10],
+            "_meta": _build_meta(repository=repository),
+        }
 
-    # Weighted keyword scoring across ALL decision fields
-    query_lower = query.lower()
-    query_words = set(query_lower.split())
-    # Remove stop words for better matching
-    stop_words = {
-        "why",
-        "was",
-        "is",
-        "the",
-        "a",
-        "an",
-        "this",
-        "that",
-        "how",
-        "what",
-        "when",
-        "where",
-        "for",
-        "to",
-        "of",
-        "in",
-        "it",
-        "be",
+
+def _governing_decision_entry(d: Any, affected_files: list, lineage: list[dict]) -> dict:
+    """Serialize a decision that governs a path, including its lineage chain."""
+    return {
+        "id": d.id,
+        "title": d.title,
+        "status": d.status,
+        "context": d.context,
+        "decision": d.decision,
+        "rationale": d.rationale,
+        "alternatives": json.loads(d.alternatives_json),
+        "consequences": json.loads(d.consequences_json),
+        "affected_files": affected_files,
+        "source": d.source,
+        "confidence": d.confidence,
+        "staleness_score": d.staleness_score,
+        "lineage": lineage if len(lineage) > 1 else [],
     }
-    query_words -= stop_words
 
+
+async def _why_path(query: str, repo: str | None) -> dict:
+    """Mode 2: query is a path — governing decisions, origin story, alignment."""
+    ctx = await _resolve_repo_context(repo)
+    if is_excluded(query, _get_exclude_spec(ctx.path)):
+        return {"query": query, "error": f"'{query}' is excluded by exclude_patterns."}
+    async with get_session(ctx.session_factory) as session:
+        repository = await _get_repo(session)
+        res = await session.execute(
+            select(DecisionRecord).where(
+                DecisionRecord.repository_id == repository.id,
+            )
+        )
+        all_decisions = res.scalars().all()
+
+        # Load git metadata for origin story
+        git_res = await session.execute(
+            select(GitMetadata).where(
+                GitMetadata.repository_id == repository.id,
+                GitMetadata.file_path == query,
+            )
+        )
+        git_meta = git_res.scalar_one_or_none()
+
+        # Pre-load all git metadata for cross-file search (used by fallback)
+        all_git_res = await session.execute(
+            select(GitMetadata).where(
+                GitMetadata.repository_id == repository.id,
+            )
+        )
+        all_git_meta = all_git_res.scalars().all()
+
+        from repowise.core.persistence.decision_graph import build_lineage_chain
+
+        governing = []
+        for d in all_decisions:
+            affected_files = json.loads(d.affected_files_json)
+            affected_modules = json.loads(d.affected_modules_json)
+            if query not in affected_files and query not in affected_modules:
+                continue
+            # Walk supersedes/refines back to roots so the answer is a
+            # lineage chain (sessions → JWT → OAuth2), not a flat list.
+            lineage = await build_lineage_chain(session, d.id)
+            governing.append(_governing_decision_entry(d, affected_files, lineage))
+
+        result_data: dict[str, Any] = {
+            "mode": "path",
+            "path": query,
+            "decisions": governing,
+            "origin_story": _build_origin_story(query, git_meta, governing),
+            "alignment": _compute_alignment(query, governing, all_decisions),
+        }
+
+        # --- Fallback: git archaeology when no decisions found ---
+        if not governing:
+            result_data["git_archaeology"] = await _git_archaeology_fallback(
+                query,
+                git_meta,
+                all_git_meta,
+                repository,
+            )
+
+        result_data["_meta"] = _build_meta(repository=repository)
+        return result_data
+
+
+# Stop words removed before keyword matching for better signal.
+_QUERY_STOP_WORDS = {
+    "why",
+    "was",
+    "is",
+    "the",
+    "a",
+    "an",
+    "this",
+    "that",
+    "how",
+    "what",
+    "when",
+    "where",
+    "for",
+    "to",
+    "of",
+    "in",
+    "it",
+    "be",
+}
+
+
+async def _load_target_git(
+    session: Any, repository_id: Any, targets: list[str] | None
+) -> dict[str, Any]:
+    """Load per-target git metadata keyed by file path (only present ones)."""
+    target_git: dict[str, Any] = {}
+    if not targets:
+        return target_git
+    for t in targets:
+        git_res = await session.execute(
+            select(GitMetadata).where(
+                GitMetadata.repository_id == repository_id,
+                GitMetadata.file_path == t,
+            )
+        )
+        meta = git_res.scalar_one_or_none()
+        if meta:
+            target_git[t] = meta
+    return target_git
+
+
+def _rank_keyword_matches(all_decisions: list, query: str, target_set: set[str]) -> list:
+    """Score decisions by weighted keyword overlap and return the top 8."""
+    query_words = set(query.lower().split()) - _QUERY_STOP_WORDS
     scored_decisions: list[tuple[float, Any]] = []
     for d in all_decisions:
         score = _score_decision(d, query_words, target_set)
         if score > 0:
             scored_decisions.append((score, d))
     scored_decisions.sort(key=lambda t: t[0], reverse=True)
-    keyword_matches = [d for _, d in scored_decisions[:8]]
+    return [d for _, d in scored_decisions[:8]]
 
-    # Semantic search over the shared page store, filtered to the decision: namespace.
-    # Over-fetch because decisions are a small slice of a page-dominated store.
-    decision_results = []
+
+async def _semantic_decision_results(ctx: Any, query: str) -> list:
+    """Semantic search of the page store, filtered to the decision: namespace."""
+    decision_results: list = []
     with contextlib.suppress(Exception):
         if ctx.vector_store is not None:
             _raw = await ctx.vector_store.search(query, limit=50)
             decision_results = [
                 r for r in _raw if getattr(r, "page_id", "").startswith(DECISION_VECTOR_PREFIX)
             ][:5]
+    return decision_results
 
-    # Semantic search over documentation
-    doc_results = []
+
+async def _semantic_doc_results(ctx: Any, query: str) -> list:
+    """Semantic search over documentation, falling back to FTS."""
     try:
-        doc_results = await ctx.vector_store.search(query, limit=3)
+        return await ctx.vector_store.search(query, limit=3)
     except Exception:
+        doc_results: list = []
         with contextlib.suppress(Exception):
             doc_results = await ctx.fts.search(query, limit=3)
+        return doc_results
 
-    # Lineage for the keyword matches: walk supersedes/refines back to roots so
-    # a "why is X structured this way?" answer renders the chain, not a flat list.
+
+async def _lineage_for_matches(ctx: Any, keyword_matches: list) -> dict[str, list[dict]]:
+    """Walk lineage chains for the keyword matches; keep only multi-node chains."""
     from repowise.core.persistence.decision_graph import build_lineage_chain
 
     lineage_by_id: dict[str, list[dict]] = {}
@@ -305,42 +327,120 @@ async def get_why(
                 chain = await build_lineage_chain(session3, d.id)
                 if len(chain) > 1:
                     lineage_by_id[d.id] = chain
+    return lineage_by_id
 
-    # Merge keyword matches with semantic results (dedup by ID)
+
+def _merge_decisions(
+    keyword_matches: list,
+    decision_results: list,
+    lineage_by_id: dict[str, list[dict]],
+) -> list[dict]:
+    """Merge keyword and semantic decision hits, deduplicated by id."""
     seen_ids: set[str] = set()
-    merged_decisions = []
+    merged_decisions: list[dict] = []
     for d in keyword_matches:
-        if d.id not in seen_ids:
-            seen_ids.add(d.id)
-            merged_decisions.append(
-                {
-                    "id": d.id,
-                    "title": d.title,
-                    "status": d.status,
-                    "decision": d.decision,
-                    "rationale": d.rationale,
-                    "context": d.context,
-                    "consequences": json.loads(d.consequences_json),
-                    "affected_files": json.loads(d.affected_files_json),
-                    "source": d.source,
-                    "confidence": d.confidence,
-                    "lineage": lineage_by_id.get(d.id, []),
-                }
-            )
+        if d.id in seen_ids:
+            continue
+        seen_ids.add(d.id)
+        merged_decisions.append(
+            {
+                "id": d.id,
+                "title": d.title,
+                "status": d.status,
+                "decision": d.decision,
+                "rationale": d.rationale,
+                "context": d.context,
+                "consequences": json.loads(d.consequences_json),
+                "affected_files": json.loads(d.affected_files_json),
+                "source": d.source,
+                "confidence": d.confidence,
+                "lineage": lineage_by_id.get(d.id, []),
+            }
+        )
 
     for r in decision_results:
         # Strip the "decision:" prefix so the returned id matches the SQL primary key.
         real_id = r.page_id[len(DECISION_VECTOR_PREFIX) :]
-        if real_id not in seen_ids:
-            seen_ids.add(real_id)
-            merged_decisions.append(
-                {
-                    "id": real_id,
-                    "title": r.title,
-                    "snippet": r.snippet,
-                    "relevance_score": r.score,
-                }
+        if real_id in seen_ids:
+            continue
+        seen_ids.add(real_id)
+        merged_decisions.append(
+            {
+                "id": real_id,
+                "title": r.title,
+                "snippet": r.snippet,
+                "relevance_score": r.score,
+            }
+        )
+    return merged_decisions
+
+
+async def _build_target_context(
+    ctx: Any,
+    repository: Any,
+    all_decisions: list,
+    target_git: dict[str, Any],
+    targets: list[str],
+) -> dict[str, Any]:
+    """Per-target governing decisions + origin story, with archaeology fallback."""
+    async with get_session(ctx.session_factory) as session2:
+        # Load all git metadata for cross-file search
+        all_git_res = await session2.execute(
+            select(GitMetadata).where(
+                GitMetadata.repository_id == repository.id,
             )
+        )
+        all_git_meta_list = all_git_res.scalars().all()
+
+        target_context: dict[str, Any] = {}
+        for t in targets:
+            t_governing = []
+            for d in all_decisions:
+                affected = json.loads(d.affected_files_json)
+                affected_mods = json.loads(d.affected_modules_json)
+                if t in affected or any(t.startswith(m + "/") for m in affected_mods):
+                    t_governing.append({"title": d.title, "status": d.status})
+            git_m = target_git.get(t)
+            ctx_entry: dict[str, Any] = {
+                "governing_decisions": t_governing,
+                "origin": _build_origin_story(t, git_m, t_governing)
+                if git_m
+                else {
+                    "available": False,
+                    "summary": f"No git history for {t}.",
+                },
+            }
+            # Git archaeology fallback when no decisions found
+            if not t_governing:
+                ctx_entry["git_archaeology"] = await _git_archaeology_fallback(
+                    t,
+                    git_m,
+                    all_git_meta_list,
+                    repository,
+                )
+            target_context[t] = ctx_entry
+        return target_context
+
+
+async def _why_search(query: str, targets: list[str] | None, repo: str | None) -> dict:
+    """Mode 3: natural-language, target-aware decision + documentation search."""
+    from repowise.core.persistence.crud import list_decisions as _list_decisions
+
+    ctx = await _resolve_repo_context(repo)
+    async with get_session(ctx.session_factory) as session:
+        repository = await _get_repo(session)
+        all_decisions = await _list_decisions(
+            session, repository.id, include_proposed=True, limit=200
+        )
+        # Load git metadata for targets (for origin context in results)
+        target_git = await _load_target_git(session, repository.id, targets)
+
+    target_set = set(targets) if targets else set()
+    keyword_matches = _rank_keyword_matches(all_decisions, query, target_set)
+    decision_results = await _semantic_decision_results(ctx, query)
+    doc_results = await _semantic_doc_results(ctx, query)
+    lineage_by_id = await _lineage_for_matches(ctx, keyword_matches)
+    merged_decisions = _merge_decisions(keyword_matches, decision_results, lineage_by_id)
 
     result_data: dict[str, Any] = {
         "mode": "search",
@@ -360,43 +460,9 @@ async def get_why(
 
     # If targets provided, include target context
     if targets:
-        async with get_session(ctx.session_factory) as session2:
-            # Load all git metadata for cross-file search
-            all_git_res = await session2.execute(
-                select(GitMetadata).where(
-                    GitMetadata.repository_id == repository.id,
-                )
-            )
-            all_git_meta_list = all_git_res.scalars().all()
-
-            target_context = {}
-            for t in targets:
-                t_governing = []
-                for d in all_decisions:
-                    affected = json.loads(d.affected_files_json)
-                    affected_mods = json.loads(d.affected_modules_json)
-                    if t in affected or any(t.startswith(m + "/") for m in affected_mods):
-                        t_governing.append({"title": d.title, "status": d.status})
-                git_m = target_git.get(t)
-                ctx_entry: dict[str, Any] = {
-                    "governing_decisions": t_governing,
-                    "origin": _build_origin_story(t, git_m, t_governing)
-                    if git_m
-                    else {
-                        "available": False,
-                        "summary": f"No git history for {t}.",
-                    },
-                }
-                # Git archaeology fallback when no decisions found
-                if not t_governing:
-                    ctx_entry["git_archaeology"] = await _git_archaeology_fallback(
-                        t,
-                        git_m,
-                        all_git_meta_list,
-                        repository,
-                    )
-                target_context[t] = ctx_entry
-            result_data["target_context"] = target_context
+        result_data["target_context"] = await _build_target_context(
+            ctx, repository, all_decisions, target_git, targets
+        )
 
     result_data["_meta"] = _build_meta(repository=repository)
     return result_data
