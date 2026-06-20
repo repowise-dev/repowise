@@ -26,12 +26,8 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from ..perf.io_boundaries import (
-    HTTP_VERBS,
-    PY_SUBPROC_METHODS,
-    classify_call_sink,
-    collect_io_names,
-)
+from ..perf.dialects import PERF_DIALECTS
+from ..perf.io_boundaries import collect_io_names
 from .languages import LanguageNodeMap, get_language_map
 
 if TYPE_CHECKING:
@@ -954,165 +950,11 @@ def _collect_error_handling(
 #   2. Constant-bound-loop skip — ``for _ in range(<int literals>)`` and loops
 #      over literal / ALL_CAPS-named-constant collections are not data-dependent.
 
-# Python string-literal node kinds (f-strings parse as ``string`` too).
-_PY_STRING_KINDS = frozenset({"string", "concatenated_string"})
-_TS_STRING_KINDS = frozenset({"string", "template_string"})
-_AUG_ASSIGN_KINDS = frozenset({"augmented_assignment", "augmented_assignment_expression"})
-
-
-def _callee_root_name(call_node: Node) -> str | None:
-    """Root identifier of a call's callee: ``a.b.c()`` -> 'a', ``foo()`` -> 'foo'."""
-    fn = call_node.child_by_field_name("function")
-    if fn is None:
-        named = [c for c in call_node.children if c.is_named]
-        fn = named[0] if named else None
-    if fn is None:
-        return None
-    node = fn
-    for _ in range(8):
-        if node.type in ("identifier", "property_identifier", "field_identifier"):
-            break
-        obj = node.child_by_field_name("object") or node.child_by_field_name("value")
-        if obj is None:
-            named = [c for c in node.children if c.is_named]
-            if not named:
-                break
-            node = named[0]
-        else:
-            node = obj
-    txt = (node.text or b"").decode("utf-8", "replace")
-    return txt.split(".")[0] if txt else None
-
-
-def _callee_method_name(call_node: Node) -> str | None:
-    """Rightmost member of the callee (``x.execute`` -> 'execute')."""
-    fn = call_node.child_by_field_name("function")
-    if fn is None:
-        return None
-    prop = (
-        fn.child_by_field_name("property")
-        or fn.child_by_field_name("field")
-        or fn.child_by_field_name("attribute")
-    )
-    if prop is not None and prop.text:
-        return prop.text.decode("utf-8", "replace")
-    if fn.type == "identifier" and fn.text:
-        return fn.text.decode("utf-8", "replace")
-    ids = [c for c in fn.children if c.type == "identifier"]
-    if ids and ids[-1].text:
-        return ids[-1].text.decode("utf-8", "replace")
-    return None
-
-
-def _callee_is_attribute(call_node: Node) -> bool:
-    """True if the callee is a member access (``x.foo()``), not a bare call."""
-    fn = call_node.child_by_field_name("function")
-    if fn is None:
-        return False
-    return fn.type in (
-        "attribute",
-        "member_expression",
-        "field_expression",
-        "selector_expression",
-    )
-
-
 def _perf_func_name(node: Node) -> str | None:
     nm = node.child_by_field_name("name")
     if nm is not None and nm.text:
         return nm.text.decode("utf-8", "replace")
     return None
-
-
-def _has_async_modifier(node: Node) -> bool:
-    """True if a function node carries an ``async`` modifier token (TS/JS)."""
-    return any(c.type == "async" for c in node.children)
-
-
-def _is_constant_for(node: Node) -> bool:
-    """True if a Python for-loop iterates a compile-time-constant bound.
-
-    Catches ``for _ in range(<int literals>)``, ``for x in (<literal>)``, and —
-    a refinement over the Phase-0 probe — ``for x in ALL_CAPS`` (a named
-    module constant by convention). ``while`` loops are never constant.
-    """
-    if node.type != "for_statement":
-        return False
-    right = node.child_by_field_name("right")
-    if right is None:
-        return False
-    if right.type in ("list", "tuple", "set"):
-        return True
-    # A bare ALL_CAPS identifier is a named constant by convention.
-    if right.type == "identifier" and right.text is not None:
-        name = right.text.decode("utf-8", "replace")
-        if name.isupper() and len(name) > 1:
-            return True
-    if right.type == "call":
-        fn = right.child_by_field_name("function")
-        if fn is None or (fn.text or b"").decode("utf-8", "replace") != "range":
-            return False
-        args = right.child_by_field_name("arguments")
-        if args is None:
-            return False
-        for a in args.children:
-            if not a.is_named:
-                continue
-            if a.type == "integer":
-                continue
-            if a.type == "unary_operator" and any(c.type == "integer" for c in a.children):
-                continue
-            return False  # a non-literal arg (e.g. len(x)) ⇒ data-dependent
-        return True
-    return False
-
-
-def _blocking_sync_api(root: str, method: str) -> str | None:
-    """The offending API name if ``root.method`` is a known blocking sync call.
-
-    A small, high-precision allowlist (mirrors ruff ASYNC210/230/251): these
-    are always-synchronous stdlib / ``requests`` calls that block the event
-    loop when run inside an ``async def``.
-    """
-    if root == "time" and method == "sleep":
-        return "time.sleep"
-    if root == "requests" and method in HTTP_VERBS:
-        return f"requests.{method}"
-    if root == "subprocess" and method in PY_SUBPROC_METHODS:
-        return f"subprocess.{method}"
-    if root == "os" and method == "system":
-        return "os.system"
-    if root == "open" and method == "open":
-        return "open"
-    return None
-
-
-def _rhs_is_stringish(node: Node, language: str) -> bool:
-    """True if an augmented-assignment's RHS is provably string-typed.
-
-    Precision-first: only a string/template literal directly on the RHS (or as
-    an operand of a ``+`` on the RHS) counts. ``s += chunk`` where ``chunk`` is
-    an opaque variable is NOT flagged — we refuse to guess a numeric ``+=`` is
-    a string concat.
-    """
-    right = node.child_by_field_name("right")
-    if right is None:
-        return False
-    string_kinds = _PY_STRING_KINDS if language == "python" else _TS_STRING_KINDS
-    if right.type in string_kinds:
-        return True
-    if right.type in ("binary_operator", "binary_expression"):
-        return any(c.is_named and c.type in string_kinds for c in right.children)
-    return False
-
-
-def _is_string_concat(node: Node, language: str) -> bool:
-    """True if *node* is a ``+=`` string accumulation."""
-    if node.type not in _AUG_ASSIGN_KINDS:
-        return False
-    if not any(c.type == "+=" for c in node.children):
-        return False
-    return _rhs_is_stringish(node, language)
 
 
 def _collect_perf_hits(
@@ -1132,12 +974,17 @@ def _collect_perf_hits(
     or a bare sink) — the input to PR4's cross-function reachability.
     """
     call_kinds = lmap.call_kinds
-    if not call_kinds:
+    dialect = PERF_DIALECTS.get(language)
+    if not call_kinds or dialect is None:
         return [], {}, []
 
     io_names = collect_io_names(root, language)
     has_db_import = any(k == "db" for k in io_names.values())
-    is_py = language == "python"
+    markers = dialect.markers
+    do_string_concat = "string_concat_in_loop" in markers
+    do_blocking = "blocking_sync_in_async" in markers
+    do_loop_call_marker = "regex_compile_in_loop" in markers
+    do_loop_stmt_marker = "defer_in_loop" in markers
     loop_kinds = lmap.loop_kinds
     fn_kinds = lmap.function_kinds
     lambda_kinds = lmap.lambda_kinds
@@ -1162,11 +1009,11 @@ def _collect_perf_hits(
         t = node.type
 
         is_loop = t in loop_kinds
-        if is_loop and is_py and _is_constant_for(node):
+        if is_loop and dialect.is_constant_loop(node):
             is_loop = False
 
         entering_fn = t in fn_kinds or t in lambda_kinds
-        is_async_fn = t in async_fn_kinds or (entering_fn and _has_async_modifier(node))
+        is_async_fn = t in async_fn_kinds or (entering_fn and dialect.is_async_fn(node))
         next_async = True if is_async_fn else (False if entering_fn else in_async)
         next_func = func_name
         next_start = func_start
@@ -1175,42 +1022,64 @@ def _collect_perf_hits(
             next_start = node.start_point[0] + 1
 
         if t in call_kinds:
-            method = _callee_method_name(node) or ""
-            root_name = _callee_root_name(node) or ""
+            method = dialect.callee_method_name(node) or ""
+            root_name = dialect.callee_root_name(node) or ""
             parent = node.parent
             awaited = parent is not None and "await" in parent.type
             line = node.start_point[0] + 1
-            kind = classify_call_sink(
-                language,
+            kind = dialect.sink_kind(
                 root_name,
                 method,
                 awaited=awaited,
-                is_attribute=_callee_is_attribute(node),
+                is_attribute=dialect.callee_is_attribute(node),
                 io_names=io_names,
                 has_db_import=has_db_import,
             )
             if loop_depth >= 1:
                 if kind is not None:
                     hits.append(PerfHit("io_in_loop", line, next_func, kind))
-                elif method:
-                    # A loop-nested call to a non-sink helper: a candidate
-                    # entry for cross-function reachability (PR4). Keep the
-                    # first line we see the helper called at, for the finding.
-                    targets = _acc(next_start, next_func)[0]
-                    if method not in targets:
-                        targets[method] = line
+                else:
+                    marker = (
+                        dialect.loop_call_marker(root_name, method, node)
+                        if do_loop_call_marker
+                        else None
+                    )
+                    if marker is not None:
+                        hits.append(PerfHit(marker, line, next_func, ""))
+                    elif method:
+                        # A loop-nested call to a non-sink helper: a candidate
+                        # entry for cross-function reachability (PR4). Keep the
+                        # first line we see the helper called at, for the finding.
+                        targets = _acc(next_start, next_func)[0]
+                        if method not in targets:
+                            targets[method] = line
             elif kind is not None:
                 # A sink at loop_depth 0 makes this function a reachability
                 # target: a loop elsewhere calling into it runs the sink N times.
                 sink_slot = _acc(next_start, next_func)[1]
                 if sink_slot[0] is None:
                     sink_slot[0] = kind
-            if is_py and in_async and not awaited:
-                api = _blocking_sync_api(root_name, method)
+            if do_blocking and in_async and not awaited:
+                api = dialect.blocking_sync_api(root_name, method)
                 if api is not None:
                     hits.append(PerfHit("blocking_sync_in_async", line, next_func, api))
-        elif loop_depth >= 1 and _is_string_concat(node, language):
-            hits.append(PerfHit("string_concat_in_loop", node.start_point[0] + 1, next_func, ""))
+        else:
+            if do_blocking and in_async:
+                # A non-call member read that blocks in async (C# ``task.Result``).
+                mem = dialect.async_blocking_member(node)
+                if mem is not None:
+                    hits.append(
+                        PerfHit("blocking_sync_in_async", node.start_point[0] + 1, next_func, mem)
+                    )
+            if loop_depth >= 1:
+                if do_string_concat and dialect.is_string_concat(node):
+                    hits.append(
+                        PerfHit("string_concat_in_loop", node.start_point[0] + 1, next_func, "")
+                    )
+                elif do_loop_stmt_marker:
+                    sm = dialect.loop_stmt_marker(node)
+                    if sm is not None:
+                        hits.append(PerfHit(sm, node.start_point[0] + 1, next_func, ""))
 
         if is_loop:
             # Only the loop BODY runs per-iteration; the ``for x in <iterable>``
