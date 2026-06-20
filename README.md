@@ -10,11 +10,11 @@
 
 <p align="center">
   <a href="https://www.repowise.dev"><img src="https://img.shields.io/badge/LIVE_DEMO-repowise.dev-F59520?style=for-the-badge&labelColor=0A0A0A" alt="Live demo — repowise.dev" /></a>
+  <a href="https://github.com/repowise-dev/repowise"><img src="https://img.shields.io/badge/Star_this_repo-1E293B?style=for-the-badge&logo=github&logoColor=white&labelColor=0A0A0A" alt="Star repowise on GitHub" /></a>
 </p>
 
 <p align="center">
   <a href="https://pypi.org/project/repowise/"><img src="https://img.shields.io/pypi/v/repowise?style=for-the-badge&color=1E293B&labelColor=0A0A0A&logo=pypi&logoColor=white" alt="PyPI version" /></a>
-  <a href="https://www.repowise.dev"><img src="https://img.shields.io/badge/code_health-tracked-1E293B?style=for-the-badge&labelColor=0A0A0A" alt="Code health tracked on repowise.dev" /></a>
   <a href="https://www.gnu.org/licenses/agpl-3.0"><img src="https://img.shields.io/badge/License-AGPL--v3-059669?style=for-the-badge&labelColor=0A0A0A" alt="License: AGPL v3" /></a>
   <a href="https://pypi.org/project/repowise/"><img src="https://img.shields.io/badge/Python-3.11%2B-1E293B?style=for-the-badge&labelColor=0A0A0A&logo=python&logoColor=white" alt="Python 3.11+" /></a>
   <a href="https://modelcontextprotocol.io"><img src="https://img.shields.io/badge/MCP-compatible-1E293B?style=for-the-badge&labelColor=0A0A0A" alt="MCP compatible" /></a>
@@ -79,7 +79,7 @@ Each layer is queryable from the CLI, the MCP tools, and the local dashboard.
 | **◈ Git** | hotspots (churn × complexity) · ownership % · co-change pairs (hidden coupling) · bus factor · contributor profiles · module health · reviewer suggestions | Behavioral signals static analysis can't see |
 | **◈ Docs** | LLM-generated wiki per module/file · incremental on every commit · freshness + confidence scoring · hybrid RAG search (FTS + vector via RRF) · selectable wiki styles (comprehensive / reference / tutorial / caveman) | Stays current — rebuilt every commit |
 | **◈ Decisions** | architectural decisions mined from **8 sources**, evidence-backed (verified / fuzzy / unverified), linked to graph nodes, connected by `supersedes`/`refines`/`conflicts_with` edges, tracked for staleness | **★ Captured nowhere else** |
-| **★ Code Health** | **25 deterministic biomarkers**, 1–10 score per file · defect-calibrated weights · coverage ingestion · trend alerts · refactoring targets · **zero LLM, <30s** | **★ Defect-validated — our edge ↓** |
+| **★ Code Health** | **25 deterministic biomarkers**, 1–10 per file · **three signals: defect risk · maintainability · performance** · coverage ingestion · trend alerts · refactoring targets · **zero LLM, <30s** | **★ Defect-validated — our edge ↓** |
 
 Full deep-dive on every layer (graph, git, docs, decisions, hooks, auto-sync,
 dead code, CLAUDE.md generation): **[docs/INTELLIGENCE_LAYERS.md →](docs/INTELLIGENCE_LAYERS.md)**
@@ -96,6 +96,15 @@ McCabe complexity, deep nesting, brain methods, class cohesion (LCOM4), god
 classes, native Rabin–Karp clone detection, untested hotspots, function-level
 churn, code-age volatility, ownership dispersion, change entropy, co-change
 scatter, prior-defect history, test-quality smells, and more.
+
+**Three signals, one index.** The headline 1–10 is **defect risk** — the
+defect-calibrated, bug-predictive score in the table below. From the same
+biomarker stream, repowise surfaces two co-equal companion views:
+**maintainability** (cohesion, brain methods, primitive obsession, DRY and
+god-class smells that raise change-cost without predicting bugs) and
+**performance** (static I/O-in-loop / N+1 risk, including cross-function cases
+caught through the call graph). The two companions are separate lenses — never
+blended into the defect headline, so the bug-predictive number stays clean.
 
 > **Zero LLM calls. Zero cloud requirement. Zero new runtime dependencies.**
 > Pure Python over tree-sitter + git data — finishes in **under 30 seconds** on
@@ -225,6 +234,10 @@ languages**:
 
 Full report: **[health-defect/BENCHMARK_REPORT.md →](https://github.com/repowise-dev/repowise-bench/blob/master/health-defect/BENCHMARK_REPORT.md)**
 
+<div align="center">
+<sub>⭐ <strong>Star the repo</strong> if repowise just saved your agent a few greps — it helps the next engineer find it, and tells us to keep building.</sub>
+</div>
+
 ---
 
 ## Local dashboard
@@ -239,8 +252,9 @@ graph sidebar) · **Graph** (interactive, 2,000+ nodes, community coloring, path
 finder) · **C4 Architecture** (Context → Containers → Components) · **Risk**
 (hotspots, ownership heatmap, module health, dead code, blast radius) ·
 **Contributors** (per-author profiles) · **Decisions** (evidence drawer,
-evolution timeline, decision-graph) · **Health** (biomarker scores, coverage,
-trends) · **Security** (local pattern scan) · **Costs** · **Workspace**
+evolution timeline, decision-graph) · **Health** (three signals — defect ·
+maintainability · performance — coverage, trends) · **Security** (local pattern
+scan) · **Costs** · **Workspace**
 (cross-repo contracts & co-changes). Full view-by-view list in
 [docs/USER_GUIDE.md](docs/USER_GUIDE.md).
 
@@ -383,7 +397,7 @@ diverges from live `.git/HEAD`.
 | `get_risk(targets, changed_files?)` | Hotspot scores, dependents, co-change partners, ownership, test gaps, security signals. Pass `changed_files` for PR mode → a `directive` block (`will_break`, `missing_cochanges`, `missing_tests`, `governance_risk`). |
 | `get_why(query?, targets?)` | Architectural decision records, status, evidence spans, and the supersession **lineage chain**. Falls back to git archaeology when no ADRs exist. |
 | `get_dead_code(...)` | Unreachable code by confidence tier with cleanup-impact estimates; cross-repo consumer detection in workspace mode. |
-| `get_health(targets?, include?)` | 25-biomarker scores per file. Dashboard mode → KPIs + lowest-scoring files + module rollup; targeted mode → per-file findings. `include`: coverage, refactoring, trend. |
+| `get_health(targets?, include?)` | 25-biomarker scores per file across three signals (defect · maintainability · performance). Dashboard mode → KPIs + lowest-scoring files + module rollup; targeted mode → per-file findings. `include`: coverage, refactoring, trend. |
 
 Worked example (*"Add rate limiting to all API endpoints"* in 5 calls instead of
 ~30 greps+reads) and the full reference: **[docs/MCP_TOOLS.md →](docs/MCP_TOOLS.md)**
@@ -501,6 +515,8 @@ or contact [hello@repowise.dev](mailto:hello@repowise.dev).
 <div align="center">
 
 <em>Built for engineers who got tired of watching their AI agent <code>cat</code> the same file for the fourth time.</em>
+
+<p align="center"><sub>⭐ If repowise earns a place in your workflow, <strong>give it a star</strong>. It costs you nothing, and it's the signal that keeps a small team building this in the open.</sub></p>
 
 <p align="center">
   <a href="https://repowise.dev"><strong>repowise.dev</strong></a> ·
