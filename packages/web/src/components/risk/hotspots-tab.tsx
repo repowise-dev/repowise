@@ -17,6 +17,8 @@ import {
   CodeHealthMap,
   type CodeHealthOverlay,
 } from "@repowise-dev/ui/health/code-health-map";
+import { AiPromptModal, buildHotspotAiPrompt } from "@repowise-dev/ui/health";
+import type { Hotspot } from "@repowise-dev/types/git";
 import { Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui/card";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 import { getHotspotsPage } from "@/lib/api/git";
@@ -30,6 +32,7 @@ export function HotspotsTab({ repoId }: { repoId: string }) {
   const { showFile, dialog } = useFileCardHost(repoId);
   const [pageLimit, setPageLimit] = useState(PAGE_SIZE);
   const [drawerSymbol, setDrawerSymbol] = useState<SymbolResponse | null>(null);
+  const [promptHotspot, setPromptHotspot] = useState<Hotspot | null>(null);
   // The galaxy map opens on the churn lens here — this is the hotspots surface,
   // so "what changes most" is the first read; the switcher still offers
   // health/coverage for cross-reference.
@@ -217,6 +220,7 @@ export function HotspotsTab({ repoId }: { repoId: string }) {
         hotspots={list}
         repoId={repoId}
         onSelect={(h) => showFile(hotspotToFileCard(h))}
+        onGeneratePrompt={setPromptHotspot}
         total={total}
         hasMore={hasMore}
         loadingMore={validatingHotspots && !loadingHotspots}
@@ -234,6 +238,35 @@ export function HotspotsTab({ repoId }: { repoId: string }) {
         symbol={drawerSymbol}
         repoId={repoId}
         onClose={() => setDrawerSymbol(null)}
+      />
+      <AiPromptModal
+        open={promptHotspot !== null}
+        onOpenChange={(o) => !o && setPromptHotspot(null)}
+        getPrompt={
+          promptHotspot
+            ? (flavor) =>
+                buildHotspotAiPrompt({
+                  hotspot: {
+                    file_path: promptHotspot.file_path,
+                    churn_percentile: promptHotspot.churn_percentile,
+                    commit_count_90d: promptHotspot.commit_count_90d,
+                    commit_count_30d: promptHotspot.commit_count_30d,
+                    bus_factor: promptHotspot.bus_factor,
+                    contributor_count: promptHotspot.contributor_count,
+                    primary_owner: promptHotspot.primary_owner,
+                    lines_added_90d: promptHotspot.lines_added_90d,
+                    lines_deleted_90d: promptHotspot.lines_deleted_90d,
+                    temporal_hotspot_score: promptHotspot.temporal_hotspot_score,
+                    change_entropy_pct: promptHotspot.change_entropy_pct,
+                    prior_defect_count: promptHotspot.prior_defect_count,
+                  },
+                  flavor,
+                })
+            : null
+        }
+        filePath={promptHotspot?.file_path}
+        title="AI stabilization prompt"
+        description="A ready-to-paste prompt that has your AI agent diagnose why this file churns and propose changes that make it cheaper to maintain."
       />
     </div>
   );

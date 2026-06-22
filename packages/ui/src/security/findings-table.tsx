@@ -5,6 +5,7 @@ import { Search } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { Input } from "../ui/input";
 import { EmptyState } from "../shared/empty-state";
+import { AiPromptButton } from "../health/ai-prompt-button";
 
 export interface SecurityFinding {
   id: number;
@@ -24,9 +25,11 @@ const SEVERITY_VARIANT: Record<string, "outdated" | "stale" | "outline"> = {
 export interface SecurityFindingsTableProps {
   findings: SecurityFinding[];
   onSelect?: (finding: SecurityFinding) => void;
+  /** When set, each row shows an "AI fix prompt" action that calls this. */
+  onGeneratePrompt?: (finding: SecurityFinding) => void;
 }
 
-export function SecurityFindingsTable({ findings, onSelect }: SecurityFindingsTableProps) {
+export function SecurityFindingsTable({ findings, onSelect, onGeneratePrompt }: SecurityFindingsTableProps) {
   const [q, setQ] = useState("");
   const [sev, setSev] = useState<"all" | "high" | "med" | "low">("all");
 
@@ -108,6 +111,7 @@ export function SecurityFindingsTable({ findings, onSelect }: SecurityFindingsTa
               <th className="px-3 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-28">
                 Detected
               </th>
+              {onGeneratePrompt && <th className="px-3 py-2.5 w-10" />}
             </tr>
           </thead>
           <tbody>
@@ -137,6 +141,15 @@ export function SecurityFindingsTable({ findings, onSelect }: SecurityFindingsTa
                 <td className="px-3 py-2 text-xs text-[var(--color-text-tertiary)] tabular-nums">
                   {new Date(f.detected_at).toLocaleDateString()}
                 </td>
+                {onGeneratePrompt && (
+                  <td className="px-3 py-2" onClick={(e) => e.stopPropagation()}>
+                    <AiPromptButton
+                      variant="icon"
+                      label="AI fix prompt"
+                      onClick={() => onGeneratePrompt(f)}
+                    />
+                  </td>
+                )}
               </tr>
             ))}
           </tbody>

@@ -37,24 +37,63 @@ const FLAVOR_PREAMBLE: Record<AiPromptFlavor, string> = {
  * to the repowise tools it already has instead of repeating the exploration
  * repowise did at index time; every other flavor keeps the read-first wording.
  */
+type CloserKind = "refactor" | "coverage" | "security" | "hotspot";
+
+const CLOSER_CONFIG: Record<
+  CloserKind,
+  { mcpSecond: (f: string) => string; mcpInto: string; verb: string; readFirst: string }
+> = {
+  refactor: {
+    mcpSecond: (f) =>
+      `\`get_risk(['${f}'])\` for the blast radius, co-change partners, and test gaps`,
+    mcpInto: "functions below",
+    verb: "propose a fix",
+    readFirst:
+      "Start by reading the file end-to-end, then explore its callers, tests, and any related helpers. The findings below describe symptoms — the actual root cause may live elsewhere. Don't propose a fix until you've grounded each one in the real code.",
+  },
+  coverage: {
+    mcpSecond: (f) =>
+      `\`get_context(['${f}'], include=['callers'])\` to see who exercises it`,
+    mcpInto: "functions you'll test",
+    verb: "write a test",
+    readFirst:
+      "Start by reading the file end-to-end, then explore its callers, the existing tests directory, and any sibling files that test similar code. The coverage numbers below come from a static report — verify them by looking at the real test files and the real source. Don't write a test before you've seen the code it's exercising and the project's existing test conventions.",
+  },
+  security: {
+    mcpSecond: (f) =>
+      `\`get_risk(['${f}'])\` to see who depends on this code before you touch it`,
+    mcpInto: "flagged lines",
+    verb: "change anything",
+    readFirst:
+      "Start by reading the file and the exact lines flagged, then trace how the value flows in and out. The scanner matches patterns — confirm this is actually exploitable in context before you change anything. If it's a false positive (test fixture, sample data, already-sanitized), say so and stop.",
+  },
+  hotspot: {
+    mcpSecond: (f) =>
+      `\`get_risk(['${f}'])\` for the co-change partners and test gaps that make this file risky to touch`,
+    mcpInto: "most-churned functions",
+    verb: "propose changes",
+    readFirst:
+      "Start by reading the file end-to-end, then look at what it co-changes with and how well it's tested. High churn is a symptom — the goal is to make this file safer and cheaper to change, not to rewrite it. Don't propose changes until you understand why it churns.",
+  },
+};
+
+/**
+ * Closing instruction, tailored per surface. The MCP flavor steers the agent to
+ * the repowise tools it already has instead of repeating the exploration
+ * repowise did at index time; every other flavor keeps the read-first wording.
+ */
 function explorationCloser(
   flavor: AiPromptFlavor,
   filePath: string,
-  kind: "refactor" | "coverage",
+  kind: CloserKind,
 ): string {
+  const cfg = CLOSER_CONFIG[kind];
   if (flavor === "claude-code-mcp") {
-    const second =
-      kind === "coverage"
-        ? `\`get_context(['${filePath}'], include=['callers'])\` to see who exercises it`
-        : `\`get_risk(['${filePath}'])\` for the blast radius, co-change partners, and test gaps`;
-    const verb = kind === "coverage" ? "write a test" : "propose a fix";
-    const into = kind === "coverage" ? "functions you'll test" : "functions below";
-    return `Start with \`get_context(['${filePath}'])\` for the skeleton and ${second}, then \`get_symbol\` into the specific ${into}. repowise already indexed this repo — lean on it before falling back to Read/Grep. The findings describe symptoms; the real root cause may live in a caller or a co-change partner. Don't ${verb} until you've grounded each one in the actual code.`;
+    return `Start with \`get_context(['${filePath}'])\` for the skeleton and ${cfg.mcpSecond(
+      filePath,
+    )}, then \`get_symbol\` into the specific ${cfg.mcpInto}. repowise already indexed this repo — lean on it before falling back to Read/Grep. Don't ${cfg.verb} until you've grounded each finding in the actual code.`;
   }
-  if (kind === "coverage") {
-    return "Start by reading the file end-to-end, then explore its callers, the existing tests directory, and any sibling files that test similar code. The coverage numbers below come from a static report — verify them by looking at the real test files and the real source. Don't write a test before you've seen the code it's exercising and the project's existing test conventions.";
-  }
-  return "Start by reading the file end-to-end, then explore its callers, tests, and any related helpers. The findings below describe symptoms — the actual root cause may live elsewhere. Don't propose a fix until you've grounded each one in the real code.";
+  return cfg.readFirst;
 }
 
 function bulletList(items: (string | null | undefined | false)[]): string {
@@ -393,6 +432,295 @@ export function buildCoverageAiPrompt({
     completionContract.join("\n"),
     "",
     explorationCloser(flavor, row.file_path, "coverage"),
+  ]
+    .filter((s) => s !== "")
+    .join("\n");
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Dead-code cleanup prompt (bulk — the safe-to-delete pile)
+// ─────────────────────────────────────────────────────────────────────
+
+export interface DeadCodePromptFinding {
+  file_path: string;
+  symbol_name?: string | null;
+  kind?: string | null;
+  reason?: string | null;
+  lines?: number | null;
+  confidence?: number | null;
+  risk_factors?: string[] | null;
+}
+
+export interface BuildDeadCodePromptOptions {
+  findings: DeadCodePromptFinding[];
+  flavor?: AiPromptFlavor;
+  repoName?: string;
+}
+
+// Cap the file list so a big cleanup pile doesn't produce a giant prompt; the
+// tail is summarized so the agent still knows the full scope.
+const MAX_DEAD_CODE_FILES = 20;
+
+export function buildDeadCodeAiPrompt({
+  findings,
+  flavor = "generic",
+  repoName,
+}: BuildDeadCodePromptOptions): string {
+  const repoLine = repoName ? ` (\`${repoName}\`)` : "";
+
+  const byFile = new Map<string, DeadCodePromptFinding[]>();
+  for (const f of findings) {
+    byFile.set(f.file_path, [...(byFile.get(f.file_path) ?? []), f]);
+  }
+  const files = Array.from(byFile.entries()).sort(
+    (a, b) =>
+      b[1].reduce((s, f) => s + (f.lines ?? 0), 0) -
+      a[1].reduce((s, f) => s + (f.lines ?? 0), 0),
+  );
+  const shown = files.slice(0, MAX_DEAD_CODE_FILES);
+  const hidden = files.slice(MAX_DEAD_CODE_FILES);
+  const totalLines = findings.reduce((s, f) => s + (f.lines ?? 0), 0);
+
+  const fileBlock = shown
+    .map(([path, fs]) => {
+      const symbols = fs.map((f) => f.symbol_name).filter(Boolean).join(", ");
+      const kinds = Array.from(new Set(fs.map((f) => f.kind).filter(Boolean)));
+      const reason = fs.map((f) => f.reason).filter(Boolean)[0];
+      const risk = Array.from(
+        new Set(fs.flatMap((f) => f.risk_factors ?? [])),
+      );
+      return [
+        `- \`${path}\`${symbols ? ` — ${symbols}` : ""}`,
+        kinds.length ? `  - Kind: ${kinds.join(", ")}` : null,
+        reason ? `  - Why flagged: ${reason}` : null,
+        risk.length ? `  - Runtime-load risk to rule out first: ${risk.join(", ")}` : null,
+      ]
+        .filter(Boolean)
+        .join("\n");
+    })
+    .join("\n");
+
+  const hiddenLine =
+    hidden.length > 0
+      ? `…and ${hidden.length} more file${hidden.length === 1 ? "" : "s"} in the same pile (open the dead-code report in repowise for the full list).`
+      : null;
+
+  const constraintList = [
+    "**Verify before deleting.** Each entry was flagged by static analysis, not proven dead. Search the whole repo (including config, DI containers, string-based imports, templates, and tests) for every symbol before removing it.",
+    "Watch for dynamic access: reflection, `getattr`/`importlib`, dependency-injection registries, plugin discovery, serialization, and public-API re-exports can use code that looks unreferenced.",
+    "Delete in small, reviewable commits grouped by area — not one giant sweep. Keep each commit independently revertible.",
+    "Run the full test suite (and a build/type-check) after each group. If anything fails, the symbol wasn't dead — restore it and note why.",
+    "Remove now-orphaned imports, fixtures, and tests that only existed for the deleted code.",
+    "If a finding turns out to be reachable, mark it as a false positive in your summary instead of forcing the deletion.",
+  ];
+
+  const completionContract = [
+    "1. A short plan grouping the deletions into safe, independently-revertible commits.",
+    "2. The deletions themselves, with the cross-repo search you ran to confirm each one is unused.",
+    "3. The test/build result after each group.",
+    "4. A list of any findings you skipped as false positives, with the reference that kept them alive.",
+  ];
+
+  return [
+    FLAVOR_PREAMBLE[flavor],
+    "",
+    `## Dead-code cleanup${repoLine}`,
+    "",
+    bulletList([
+      `Files in this pile: **${files.length}**`,
+      `Estimated reclaimable lines: **${totalLines.toLocaleString()}**`,
+      "Source: repowise dead-code analysis (high-confidence, safe-to-delete tier).",
+    ]),
+    "",
+    "## Files to clean up (largest first)",
+    "",
+    fileBlock,
+    hiddenLine ?? "",
+    "",
+    "## Hard constraints",
+    "",
+    bulletList(constraintList),
+    "",
+    "## What I expect back",
+    "",
+    completionContract.join("\n"),
+    "",
+    flavor === "claude-code-mcp"
+      ? "For each file, call `get_risk([...])` to see who still imports it and `get_context([...])` for its exported surface before deleting — repowise already mapped the dependency graph, so use it instead of grepping blind. A file with live dependents is not dead; surface that and skip it."
+      : "Start with the largest files. For each, run a repo-wide search for its name and every exported symbol before you delete anything — the analyzer can't see dynamic or string-based references. A file with live dependents is not dead; skip it and say so.",
+  ]
+    .filter((s) => s !== "")
+    .join("\n");
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Security remediation prompt (per finding)
+// ─────────────────────────────────────────────────────────────────────
+
+export interface SecurityPromptFinding {
+  file_path: string;
+  kind: string;
+  severity: string;
+  snippet?: string | null;
+}
+
+export interface BuildSecurityPromptOptions {
+  finding: SecurityPromptFinding;
+  flavor?: AiPromptFlavor;
+  repoName?: string;
+}
+
+export function buildSecurityAiPrompt({
+  finding,
+  flavor = "generic",
+  repoName,
+}: BuildSecurityPromptOptions): string {
+  const repoLine = repoName ? ` (\`${repoName}\`)` : "";
+  const isSecret = /secret|key|token|credential|password/i.test(finding.kind);
+
+  const constraintList = [
+    "**Confirm it's real first.** Reproduce the issue or trace the data flow before editing. Pattern scanners over-flag — test fixtures, sample data, and already-sanitized paths are common false positives. If this is one, say so and stop.",
+    isSecret
+      ? "If this is a live secret, the fix is two-part: (1) remove it from the code and load it from a secret manager / env var, and (2) call out that the secret must be **rotated** — it is compromised the moment it lands in git history."
+      : "Fix the root cause, not the symptom — validate/escape/parameterize at the boundary rather than blocking one known-bad input.",
+    "Preserve behavior for legitimate inputs. Don't break the feature to silence the scanner.",
+    "Add or update a test that fails on the vulnerable behavior and passes after the fix, where the project's setup allows it.",
+    "Don't introduce a new dependency for this unless there's no safe stdlib/first-party option; if you do, justify it.",
+  ];
+
+  const completionContract = [
+    "1. A one-line verdict: is this exploitable, and how (or why it's a false positive)?",
+    "2. The fix, scoped to the smallest change that closes the issue.",
+    "3. The test that now covers it, if one was feasible.",
+    isSecret ? "4. An explicit rotation/remediation note for the exposed secret." : "4. Any related spots in the codebase with the same pattern that should get the same fix.",
+  ];
+
+  return [
+    FLAVOR_PREAMBLE[flavor],
+    "",
+    `## Security finding${repoLine}`,
+    "",
+    bulletList([
+      `File: \`${finding.file_path}\``,
+      `Type: **${finding.kind}**`,
+      `Severity: **${finding.severity.toUpperCase()}**`,
+      "Source: repowise local security scan (pattern-based — treat as a lead).",
+    ]),
+    "",
+    finding.snippet
+      ? ["## Flagged code", "", "```", finding.snippet, "```", ""].join("\n")
+      : "",
+    "## Your task",
+    "",
+    `Investigate and remediate this ${finding.kind} finding in \`${finding.file_path}\`.`,
+    "",
+    "## Hard constraints",
+    "",
+    bulletList(constraintList),
+    "",
+    "## What I expect back",
+    "",
+    completionContract.join("\n"),
+    "",
+    explorationCloser(flavor, finding.file_path, "security"),
+  ]
+    .filter((s) => s !== "")
+    .join("\n");
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Hotspot stabilization prompt (per file)
+// ─────────────────────────────────────────────────────────────────────
+
+export interface HotspotPromptInput {
+  file_path: string;
+  churn_percentile?: number | null;
+  commit_count_90d?: number | null;
+  commit_count_30d?: number | null;
+  bus_factor?: number | null;
+  contributor_count?: number | null;
+  primary_owner?: string | null;
+  lines_added_90d?: number | null;
+  lines_deleted_90d?: number | null;
+  temporal_hotspot_score?: number | null;
+  change_entropy_pct?: number | null;
+  prior_defect_count?: number | null;
+  module?: string | null;
+}
+
+export interface BuildHotspotPromptOptions {
+  hotspot: HotspotPromptInput;
+  flavor?: AiPromptFlavor;
+  repoName?: string;
+}
+
+export function buildHotspotAiPrompt({
+  hotspot: h,
+  flavor = "generic",
+  repoName,
+}: BuildHotspotPromptOptions): string {
+  const repoLine = repoName ? ` (\`${repoName}\`)` : "";
+  const soleOwner = h.bus_factor != null && h.bus_factor <= 1;
+
+  const constraintList = [
+    "**Understand the churn before touching it.** A hotspot is a file that keeps changing — find out why (a god module, mixed responsibilities, a leaky abstraction, missing tests) before proposing structure changes.",
+    "Make it safer to change, don't just rewrite it. Behavior-preserving refactors, better seams, and tests beat a from-scratch rewrite.",
+    soleOwner
+      ? "This file has a low bus factor (one person holds the knowledge). Favor changes that make it more legible to others — clear names, docs on the non-obvious parts, tests that document intent."
+      : "Keep the change reviewable — a single coherent improvement, not a sprawling rewrite.",
+    "Because this file changes often, raise its test coverage as part of the work — that's what makes future changes cheap.",
+    "Check its co-change partners: if it always changes alongside another file, the coupling itself may be the thing to fix.",
+  ];
+
+  const completionContract = [
+    "1. A diagnosis: why does this file churn so much? (2–4 bullets, grounded in the actual code and its history.)",
+    "2. A prioritized plan to reduce its change-cost — structural seams, extractions, or decoupling, smallest-risk first.",
+    "3. The change you'd make first, scoped and behavior-preserving, with the tests that protect it.",
+    "4. What you'd leave for later and why.",
+  ];
+
+  return [
+    FLAVOR_PREAMBLE[flavor],
+    "",
+    `## Hotspot to stabilize${repoLine}`,
+    "",
+    `\`${h.file_path}\``,
+    "",
+    "## Why it's flagged",
+    "",
+    bulletList([
+      h.churn_percentile != null
+        ? `Churn: **${Math.round(h.churn_percentile)}th percentile** in this repo (it changes more than most files)`
+        : null,
+      h.commit_count_90d != null
+        ? `Commits: **${h.commit_count_90d} in 90 days**${h.commit_count_30d != null ? ` (${h.commit_count_30d} in the last 30)` : ""}`
+        : null,
+      h.bus_factor != null
+        ? `Bus factor: **${h.bus_factor}**${soleOwner ? " — knowledge concentrated in one person" : ""}`
+        : null,
+      h.contributor_count != null ? `Contributors: ${h.contributor_count}` : null,
+      h.primary_owner ? `Primary owner: ${h.primary_owner}` : null,
+      h.lines_added_90d != null || h.lines_deleted_90d != null
+        ? `Lines churned (90d): +${h.lines_added_90d ?? 0} / −${h.lines_deleted_90d ?? 0}`
+        : null,
+      h.change_entropy_pct != null
+        ? `Change entropy: ${Math.round(h.change_entropy_pct)}th percentile (how scattered the edits are)`
+        : null,
+      h.prior_defect_count != null && h.prior_defect_count > 0
+        ? `Prior bug-fix commits here: ${h.prior_defect_count}`
+        : null,
+      h.module ? `Module: \`${h.module}\`` : null,
+    ]),
+    "",
+    "## Hard constraints",
+    "",
+    bulletList(constraintList),
+    "",
+    "## What I expect back",
+    "",
+    completionContract.join("\n"),
+    "",
+    explorationCloser(flavor, h.file_path, "hotspot"),
   ]
     .filter((s) => s !== "")
     .join("\n");

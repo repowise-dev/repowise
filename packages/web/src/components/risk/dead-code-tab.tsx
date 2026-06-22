@@ -13,6 +13,7 @@ import { SafeToDeletePile } from "@repowise-dev/ui/dead-code/safe-to-delete-pile
 import { OwnerLeaderboard } from "@repowise-dev/ui/dead-code/owner-leaderboard";
 import { FindingsBreakdownGrid } from "@repowise-dev/ui/dead-code/findings-breakdown-grid";
 import { FindingsTable } from "@repowise-dev/ui/dead-code/findings-table";
+import { AiPromptModal, buildDeadCodeAiPrompt } from "@repowise-dev/ui/health";
 import { getDeadCodeSummary, listDeadCode, analyzeDeadCode, patchDeadCodeFinding } from "@/lib/api/dead-code";
 import type { DeadCodeFindingResponse, DeadCodeSummaryResponse } from "@/lib/api/types";
 import type { DeadCodeStatus } from "@repowise-dev/types/dead-code";
@@ -20,6 +21,7 @@ import type { DeadCodeStatus } from "@repowise-dev/types/dead-code";
 export function DeadCodeTab({ repoId }: { repoId: string }) {
   const router = useRouter();
   const [analyzing, setAnalyzing] = useState(false);
+  const [promptIds, setPromptIds] = useState<string[] | null>(null);
 
   const { data: summary, isLoading: loadingSummary, error: summaryError, mutate: mutateSummary } =
     useSWR<DeadCodeSummaryResponse>(
@@ -39,40 +41,14 @@ export function DeadCodeTab({ repoId }: { repoId: string }) {
   const findingsList = findings ?? [];
   const safeFindings = findingsList.filter((f) => f.safe_to_delete);
 
-  // "Propose cleanup" builds an agent-ready brief from the safe pile and
-  // copies it — the cheapest path from finding to action until a server-side
-  // cleanup-PR flow exists.
-  const handlePropose = async (findingIds: string[]) => {
-    const selected = safeFindings.filter((f) => findingIds.includes(f.id));
-    const byFile = new Map<string, typeof selected>();
-    for (const f of selected) {
-      byFile.set(f.file_path, [...(byFile.get(f.file_path) ?? []), f]);
-    }
-    const lines = [...byFile.entries()].map(([path, fs]) => {
-      const symbols = fs
-        .map((f) => f.symbol_name)
-        .filter(Boolean)
-        .join(", ");
-      return `- ${path}${symbols ? ` (${symbols})` : ""} — ${fs
-        .map((f) => f.reason)
-        .filter(Boolean)
-        .slice(0, 1)
-        .join("")}`;
-    });
-    const brief = [
-      "Remove the following dead code. Each entry was flagged high-confidence",
-      "safe-to-delete by repowise's dead-code analysis. Verify with a project",
-      "search before deleting, then run the test suite.",
-      "",
-      ...lines,
-    ].join("\n");
-    try {
-      await navigator.clipboard.writeText(brief);
-      toast.success(`Cleanup brief for ${byFile.size} files copied — paste it to your agent`);
-    } catch {
-      toast.error("Couldn't copy to clipboard");
-    }
-  };
+  // "Propose cleanup" opens the shared AI-prompt modal seeded with the safe
+  // pile — same agent-flavor picker (incl. repowise MCP) and copy affordance as
+  // every other AI action in the dashboard.
+  const handlePropose = (findingIds: string[]) => setPromptIds(findingIds);
+
+  const promptFindings = promptIds
+    ? safeFindings.filter((f) => promptIds.includes(f.id))
+    : [];
 
   const handleAnalyze = async () => {
     setAnalyzing(true);
@@ -204,6 +180,30 @@ export function DeadCodeTab({ repoId }: { repoId: string }) {
           isLoading={loadingFindings}
         />
       </CollapsibleSection>
+
+      <AiPromptModal
+        open={promptIds !== null}
+        onOpenChange={(o) => !o && setPromptIds(null)}
+        getPrompt={
+          promptFindings.length > 0
+            ? (flavor) =>
+                buildDeadCodeAiPrompt({
+                  findings: promptFindings.map((f) => ({
+                    file_path: f.file_path,
+                    symbol_name: f.symbol_name,
+                    kind: f.kind,
+                    reason: f.reason,
+                    lines: f.lines,
+                    confidence: f.confidence,
+                    risk_factors: f.risk_factors,
+                  })),
+                  flavor,
+                })
+            : null
+        }
+        title="AI cleanup prompt"
+        description="A ready-to-paste prompt that has your AI agent verify and remove this dead-code pile safely, in reviewable commits."
+      />
     </div>
   );
 }

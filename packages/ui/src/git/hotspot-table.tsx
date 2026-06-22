@@ -8,6 +8,7 @@ import { Input } from "../ui/input";
 import { EmptyState } from "../shared/empty-state";
 import { ResultsFooter } from "../shared/results-footer";
 import { RowActions } from "../shared/row-actions";
+import { AiPromptButton } from "../health/ai-prompt-button";
 import { ChurnBar } from "./churn-bar";
 import { formatLOC } from "../lib/format";
 import { cn } from "../lib/cn";
@@ -40,6 +41,8 @@ interface HotspotTableProps {
    * The host owns data-fetching and renders the panel body.
    */
   renderExpandedRow?: (hotspot: Hotspot) => React.ReactNode;
+  /** When set, each row shows an "AI stabilize" action that calls this. */
+  onGeneratePrompt?: (hotspot: Hotspot) => void;
 }
 
 type Filter = "all" | "hot" | "risk" | "accelerating";
@@ -68,6 +71,7 @@ export function HotspotTable({
   loadingMore,
   onLoadMore,
   renderExpandedRow,
+  onGeneratePrompt,
 }: HotspotTableProps) {
   const expandable = !!renderExpandedRow;
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
@@ -333,6 +337,13 @@ export function HotspotTable({
                       <div className="flex items-center gap-1">
                         {h.is_hotspot && <Badge variant="outdated">Hot</Badge>}
                         {h.is_stable && <Badge variant="fresh">Stable</Badge>}
+                        {onGeneratePrompt && (
+                          <AiPromptButton
+                            variant="icon"
+                            label="AI stabilization prompt"
+                            onClick={() => onGeneratePrompt(h)}
+                          />
+                        )}
                         {prefix && (
                           <RowActions
                             actions={[

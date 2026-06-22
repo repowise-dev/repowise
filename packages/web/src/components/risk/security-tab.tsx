@@ -6,6 +6,7 @@ import { RotateCw } from "lucide-react";
 import { toast } from "sonner";
 import { SecurityFindingsTable } from "@repowise-dev/ui/security/findings-table";
 import { SeverityDirectoryMatrix } from "@repowise-dev/ui/security/severity-directory-matrix";
+import { AiPromptModal, buildSecurityAiPrompt } from "@repowise-dev/ui/health";
 import { Button } from "@repowise-dev/ui/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui/card";
 import { CollapsibleSection } from "@repowise-dev/ui/shared/collapsible-section";
@@ -22,6 +23,7 @@ export function SecurityTab({ repoId }: { repoId: string }) {
     { revalidateOnFocus: false },
   );
   const [rescanning, setRescanning] = useState(false);
+  const [promptFinding, setPromptFinding] = useState<SecurityFinding | null>(null);
 
   const handleRescan = async () => {
     setRescanning(true);
@@ -85,10 +87,27 @@ export function SecurityTab({ repoId }: { repoId: string }) {
             hint={`${(findings ?? []).length} findings`}
             defaultOpen={false}
           >
-            <SecurityFindingsTable findings={findings ?? []} onSelect={handleSelect} />
+            <SecurityFindingsTable
+              findings={findings ?? []}
+              onSelect={handleSelect}
+              onGeneratePrompt={setPromptFinding}
+            />
           </CollapsibleSection>
         </>
       )}
+
+      <AiPromptModal
+        open={promptFinding !== null}
+        onOpenChange={(o) => !o && setPromptFinding(null)}
+        getPrompt={
+          promptFinding
+            ? (flavor) => buildSecurityAiPrompt({ finding: promptFinding, flavor })
+            : null
+        }
+        filePath={promptFinding?.file_path}
+        title="AI fix prompt"
+        description="A ready-to-paste prompt that walks your AI agent through confirming and remediating this security finding."
+      />
 
       {dialog}
     </div>
