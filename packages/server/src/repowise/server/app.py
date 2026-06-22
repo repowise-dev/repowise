@@ -56,6 +56,7 @@ from repowise.server.routers import (
     repos,
     search,
     security,
+    stats,
     symbols,
     webhooks,
     workspace,
@@ -417,6 +418,7 @@ def create_app() -> FastAPI:
     app.include_router(owners.router)
     app.include_router(modules.router)
     app.include_router(overview.router)
+    app.include_router(stats.router)
     app.include_router(files.router)
     app.include_router(external_systems.router)
 

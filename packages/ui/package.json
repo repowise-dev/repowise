@@ -59,6 +59,8 @@
     "./chat/*": "./src/chat/*.tsx",
     "./dashboard": "./src/dashboard/index.ts",
     "./dashboard/*": "./src/dashboard/*.tsx",
+    "./stats": "./src/stats/index.ts",
+    "./stats/*": "./src/stats/*.tsx",
     "./workspace": "./src/workspace/index.ts",
     "./workspace/system-map": "./src/workspace/system-map/index.ts",
     "./workspace/dsm": "./src/workspace/dsm/index.ts",

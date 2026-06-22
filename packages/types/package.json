@@ -27,7 +27,8 @@
     "./files": "./src/files.ts",
     "./external-systems": "./src/external-systems.ts",
     "./health": "./src/health.ts",
-    "./coupling": "./src/coupling.ts"
+    "./coupling": "./src/coupling.ts",
+    "./stats": "./src/stats.ts"
   },
   "publishConfig": {
     "registry": "https://npm.pkg.github.com",

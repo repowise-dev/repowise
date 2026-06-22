@@ -9,6 +9,7 @@
 
 import {
   Activity,
+  BarChart3,
   BookOpen,
   Boxes,
   DollarSign,
@@ -78,6 +79,7 @@ export function repoNavGroups(repoId: string): NavGroup[] {
     {
       label: "Settings",
       items: [
+        { label: "Stats", href: `${base}/stats`, icon: BarChart3 },
         { label: "Usage & savings", href: `${base}/costs`, icon: DollarSign },
         { label: "Settings", href: `${base}/settings`, icon: Settings },
       ],

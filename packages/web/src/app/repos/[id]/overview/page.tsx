@@ -4,6 +4,8 @@ import { Hash } from "lucide-react";
 import Link from "next/link";
 import { getOverviewSummary } from "@/lib/api/overview";
 import { getProviders } from "@/lib/api/providers";
+import { getStatsHighlights } from "@/lib/api/stats";
+import { StatsTeaserCard } from "@/components/overview/stats-teaser-card";
 import { Badge } from "@repowise-dev/ui/ui/badge";
 import { EmptyState, PageShell } from "@repowise-dev/ui/shared";
 import { HealthOverviewCard } from "@repowise-dev/ui/dashboard/health-overview-card";
@@ -34,9 +36,10 @@ async function safeFetch<T>(fn: () => Promise<T>): Promise<T | null> {
 export default async function OverviewPage({ params }: Props) {
   const { id } = await params;
 
-  const [summary, providers] = await Promise.all([
+  const [summary, providers, statsHighlights] = await Promise.all([
     safeFetch(() => getOverviewSummary(id)),
     safeFetch(() => getProviders()),
+    safeFetch(() => getStatsHighlights(id)),
   ]);
   if (!summary) notFound();
 
@@ -150,6 +153,7 @@ export default async function OverviewPage({ params }: Props) {
             }
             rail={
               <>
+                {statsHighlights && <StatsTeaserCard repoId={id} data={statsHighlights} />}
                 <SavingsMini data={summary.savings} repoId={id} />
                 <AttentionPanel items={attentionItems} repoId={id} previewCount={5} repoName={repo.name} />
               </>
