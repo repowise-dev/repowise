@@ -57,6 +57,16 @@ export interface BiomarkerListProps {
   onPartnerHref?: ((path: string) => string) | undefined;
 }
 
+/**
+ * Stable, collision-proof React key for a finding row. The API's `id` is not
+ * guaranteed unique within a list (the same symbol/file can surface more than
+ * once), so we compose it with the distinguishing fields and the render index
+ * as a final tiebreaker. Rows are stateless, so an index in the key is safe.
+ */
+function findingKey(f: BiomarkerFinding, index: number): string {
+  return `${f.id}:${f.biomarker_type}:${f.file_path}:${f.function_name ?? ""}:${index}`;
+}
+
 export function BiomarkerList({
   findings,
   grouped = false,
@@ -84,9 +94,9 @@ export function BiomarkerList({
   if (!grouped) {
     return (
       <ul className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] divide-y divide-[var(--color-border-default)]">
-        {filtered.map((f) => (
+        {filtered.map((f, i) => (
           <FindingRow
-            key={f.id}
+            key={findingKey(f, i)}
             finding={f}
             onSelect={onSelect}
             onPartnerSelect={onPartnerSelect}
@@ -144,12 +154,23 @@ function BiomarkerGroup({
   const sevCounts = { critical: 0, high: 0, medium: 0, low: 0 } as Record<Severity, number>;
   for (const f of findings) sevCounts[f.severity]++;
   const visible = expanded ? findings : findings.slice(0, maxPerGroup);
+  const toggle = () => setExpanded((e) => !e);
   return (
     <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)]">
-      <button
-        type="button"
-        onClick={() => setExpanded((e) => !e)}
-        className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-[var(--color-bg-elevated)] transition-colors"
+      {/* role="button" rather than a real <button>: the header hosts an InfoTip,
+          which renders its own <button>, and a button can't nest a button. */}
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={toggle}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            toggle();
+          }
+        }}
+        aria-expanded={expanded}
+        className="flex w-full items-center gap-2 px-3 py-2 text-left cursor-pointer rounded-t-lg hover:bg-[var(--color-bg-elevated)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
       >
         {expanded ? (
           <ChevronDown className="h-4 w-4 text-[var(--color-text-tertiary)]" />
@@ -182,11 +203,11 @@ function BiomarkerGroup({
             {findings.length}
           </span>
         </span>
-      </button>
+      </div>
       <ul className="divide-y divide-[var(--color-border-default)] border-t border-[var(--color-border-default)]">
-        {visible.map((f) => (
+        {visible.map((f, i) => (
           <FindingRow
-            key={f.id}
+            key={findingKey(f, i)}
             finding={f}
             onSelect={onSelect}
             hideBiomarker
