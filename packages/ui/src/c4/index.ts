@@ -79,6 +79,7 @@ export {
   ArchBreadcrumb,
   ArchLegend,
   PersonaSelector,
+  ArchTourButton,
   CodeViewer,
   getLanguageFromPath,
   NodeTooltip,

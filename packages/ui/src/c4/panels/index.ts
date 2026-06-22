@@ -25,6 +25,7 @@ export { FilterPanel } from "./FilterPanel";
 export { NodeTypeCategoryFilters } from "./NodeTypeCategoryFilters";
 export { LearnPanel } from "./LearnPanel";
 export { PersonaSelector } from "./PersonaSelector";
+export { ArchTourButton } from "./ArchTourButton";
 export { CodeViewer, getLanguageFromPath } from "./CodeViewer";
 export type { CodeViewerProps } from "./CodeViewer";
 export { PathFinderModal } from "./PathFinderModal";

@@ -7,7 +7,7 @@
  * refresh + share preserve the view state.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { useQueryState, parseAsString, parseAsStringLiteral } from "nuqs";
 import {
   ArchCanvas,
@@ -17,6 +17,7 @@ import {
   SearchBar,
   ArchBreadcrumb,
   PersonaSelector,
+  ArchTourButton,
   NodeTypeCategoryFilters,
   FilterPanel,
   CodeViewer,
@@ -26,10 +27,6 @@ import {
 import { ReactFlowProvider, useReactFlow, type Node } from "@xyflow/react";
 import { useArchitectureView } from "@/lib/hooks/use-architecture";
 import { ArchDetailPanelHost } from "@/components/c4/arch-detail-panel-host";
-import { Compass } from "lucide-react";
-
-// First-visit discoverability flag for the guided tour.
-const TOUR_SEEN_KEY = "repowise:arch-tour-seen";
 
 const VIEW_VALUES = ["overview", "groups", "detail"] as const;
 const PERSONA_VALUES = ["overview", "learn", "deep-dive"] as const;
@@ -97,19 +94,6 @@ function ArchitectureViewInner({
   const setPersona = useArchitectureStore((s) => s.setPersona);
   const setReactFlowInstance = useArchitectureStore((s) => s.setReactFlowInstance);
   const pathFinderOpen = useArchitectureStore((s) => s.pathFinderOpen);
-  const tourActive = useArchitectureStore((s) => s.tourActive);
-  const startTour = useArchitectureStore((s) => s.startTour);
-
-  // "Take the tour" is highlighted until first taken (localStorage flag).
-  const [tourSeen, setTourSeen] = useState(true);
-  useEffect(() => {
-    setTourSeen(localStorage.getItem(TOUR_SEEN_KEY) === "1");
-  }, []);
-  const handleStartTour = useCallback(() => {
-    localStorage.setItem(TOUR_SEEN_KEY, "1");
-    setTourSeen(true);
-    startTour();
-  }, [startTour]);
 
   useEffect(() => {
     if (view) setView(view);
@@ -271,19 +255,7 @@ function ArchitectureViewInner({
             <span aria-hidden />
           )}
           <div className="flex items-center gap-3">
-            {view && view.tour.length > 0 && !tourActive && (
-              <button
-                onClick={handleStartTour}
-                className={`flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
-                  tourSeen
-                    ? "border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-elevated)]"
-                    : "border-[var(--color-accent-primary)]/50 bg-[var(--color-accent-primary)]/10 text-[var(--color-accent-primary)] hover:bg-[var(--color-accent-primary)]/20"
-                }`}
-              >
-                <Compass className="h-3.5 w-3.5" />
-                Take the tour
-              </button>
-            )}
+            <ArchTourButton />
             <PersonaSelector />
             <NodeTypeCategoryFilters />
           </div>
