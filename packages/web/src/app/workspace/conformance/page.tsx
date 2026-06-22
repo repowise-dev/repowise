@@ -1,9 +1,10 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ShieldCheck, ShieldAlert, RefreshCw, Waypoints, ListChecks, Gauge } from "lucide-react";
 import { buildDsm, DsmMatrixView } from "@repowise-dev/ui/workspace/dsm";
+import { AiPromptButton, AiPromptModal, buildConformanceAiPrompt } from "@repowise-dev/ui/health";
 import { Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui/card";
 import { StatCard } from "@repowise-dev/ui/shared/stat-card";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
@@ -15,6 +16,7 @@ import {
 
 export default function ConformancePage() {
   const router = useRouter();
+  const [promptOpen, setPromptOpen] = useState(false);
   const { data: graph, isLoading: graphLoading } = useWorkspaceSystemGraph();
   const { data: report, isLoading: reportLoading } = useWorkspaceConformance();
   const { data: metrics } = useWorkspaceArchitecture();
@@ -105,11 +107,17 @@ export default function ConformancePage() {
       {/* Governance findings */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <Card>
-          <CardHeader className="pb-2">
+          <CardHeader className="pb-2 flex-row items-center justify-between gap-2">
             <CardTitle className="text-sm font-medium inline-flex items-center gap-2">
               <ShieldAlert className="h-4 w-4 text-[var(--color-risk-high)]" />
               Rule violations ({violations.length})
             </CardTitle>
+            {violations.length > 0 && (
+              <AiPromptButton
+                label="Fix violations with AI"
+                onClick={() => setPromptOpen(true)}
+              />
+            )}
           </CardHeader>
           <CardContent className="pt-0 space-y-3">
             {isLoading ? (
@@ -187,6 +195,28 @@ export default function ConformancePage() {
           </CardContent>
         </Card>
       </div>
+
+      <AiPromptModal
+        open={promptOpen}
+        onOpenChange={setPromptOpen}
+        getPrompt={(flavor) =>
+          buildConformanceAiPrompt({
+            violations: violations.map((v) => ({
+              source: v.source,
+              target: v.target,
+              source_name: v.source_name,
+              target_name: v.target_name,
+              edge_kind: v.edge_kind,
+              rule_source: v.rule_source,
+              rule_target: v.rule_target,
+              rule_description: v.rule_description,
+            })),
+            flavor,
+          })
+        }
+        title="AI conformance fix"
+        description="A ready-to-paste prompt that has your AI agent resolve these architecture rule violations by removing the disallowed dependencies."
+      />
     </div>
   );
 }
