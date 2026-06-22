@@ -1,6 +1,6 @@
 """The ``PerfDialect`` plugin contract + the ``PERF_DIALECTS`` registry.
 
-The performance pass (``complexity/walker.py::_collect_perf_hits``) is
+The performance pass (``complexity/perf_walk.py::_collect_perf_hits``) is
 language-agnostic: every language difference lives in a ``PerfDialect``. This
 mirrors the per-language plugin idiom the rest of the pipeline already uses
 (``resolvers/``, ``extractors/bindings/``, ``heritage/``, ``framework_edges/``,

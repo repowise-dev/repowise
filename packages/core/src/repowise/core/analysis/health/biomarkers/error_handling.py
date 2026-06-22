@@ -14,7 +14,7 @@ ships in its own ``error_handling`` category with an advisory 0.5 cap and
 a floored 0.5 weight, and is excluded from the defect-calibration roster.
 
 Detection happens in the complexity walker's whole-tree pass (see
-``complexity.walker._collect_error_handling``); this detector just lifts
+``complexity.error_handling._collect_error_handling``); this detector just lifts
 the pre-collected hits into findings. Precision-first: unsupported
 languages and parse failures yield zero hits, never a false positive.
 """

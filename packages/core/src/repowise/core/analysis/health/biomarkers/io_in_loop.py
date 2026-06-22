@@ -16,7 +16,7 @@ Two cases share this detector and the same ``performance`` budget:
 
 This is a *high-precision, low-recall* signal by design (measured 79% on the
 Phase-0 gate, CI 68-87). The precision comes from three constraints enforced
-upstream in the walker's perf pass (``complexity.walker._collect_perf_hits``)
+upstream in the walker's perf pass (``complexity.perf_walk._collect_perf_hits``)
 and the boundary classifier (``perf.io_boundaries``):
 
   1. **Loop-body scoping** — only calls under a loop's ``body`` field count; a

@@ -7,7 +7,7 @@ almost never incidental, so this rides alongside ``io_in_loop`` un-gated (it doe
 NOT need the centrality gate the bare O(n^2) marker does).
 
 A ``performance`` dimension signal. This detector lifts the pre-collected,
-loop-depth-scoped hits (``complexity.walker._collect_perf_hits``, emitted only at
+loop-depth-scoped hits (``complexity.perf_walk._collect_perf_hits``, emitted only at
 ``loop_depth >= 2``) into findings — unsupported languages yield nothing.
 """
 

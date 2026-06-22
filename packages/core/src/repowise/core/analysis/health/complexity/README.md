@@ -2,6 +2,27 @@
 
 Tree-sitter AST walker. Single AST pass per file computes:
 
+> **Module layout.** `walker.py` is a thin orchestrator: it parses the source
+> once and drives the passes, each of which lives in its own module.
+>
+> | Module | Responsibility |
+> |--------|----------------|
+> | `walker.py` | Orchestration (`walk_file` / `walk_file_complexity`) + public re-exports |
+> | `models.py` | Output dataclasses (`FunctionComplexity`, `ClassComplexity`, `PerfHit`, ...) |
+> | `ast_utils.py` | Name/text helpers, function-node collection, parameter counting |
+> | `nloc.py` | Non-blank / non-comment line counting |
+> | `cyclomatic.py` | The CCN / cognitive / max-nesting engine (`_walk_function_body`) |
+> | `assertions.py` | Assertion-block detection (test-quality smells) |
+> | `error_handling.py` | Error-handling anti-pattern detection (`_collect_error_handling`) |
+> | `perf_walk.py` | Performance-risk pass (`_collect_perf_hits`) |
+> | `class_analysis.py` | Class-level LCOM4 / god-class metrics (`_compute_lcom4`) |
+> | `languages.py` | Per-language tree-sitter `LanguageNodeMap` registry (extension point) |
+>
+> The package `__init__` re-exports the dataclasses plus `walk_file` /
+> `walk_file_complexity`, so importers use
+> `from repowise.core.analysis.health.complexity import ...` and are unaffected
+> by the internal split.
+
 - **CCN** — McCabe cyclomatic complexity. Counts branching constructs
   (`if`, `for`, `while`, `case`, `catch`) plus boolean operators
   (`&&`, `||`).
@@ -121,7 +142,7 @@ fields on its `LanguageNodeMap` (all default to empty = opt-out):
   field reads and method calls).
 
 The receiver and member-name children are extracted by a generic
-field-name probe (`walker._self_member_name`), which tries the
+field-name probe (`class_analysis._self_member_name`), which tries the
 `object`/`value`/`argument`/`expression` (receiver) and
 `property`/`attribute`/`field`/`name` (member) fields and then falls back
 to positional children — so most tree-sitter grammars need only the
