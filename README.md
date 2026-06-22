@@ -41,7 +41,15 @@
 
 ---
 
-<img src=".github/assets/demo.gif" alt="repowise demo — repowise init → Claude Code querying via MCP tools" width="100%" />
+<p align="center">
+  <strong>up to −96% context tokens</strong> &nbsp;·&nbsp; <strong>−70% agent tool calls</strong> &nbsp;·&nbsp; <strong>answer quality at parity</strong><br/>
+  <strong>60–90% fewer tokens</strong> on noisy command output &nbsp;·&nbsp; errors-first, fully reversible<br/>
+  <strong>code health that predicts real bugs</strong> &nbsp;·&nbsp; out-ranks the leading commercial tool <strong>2.3×</strong> under a fixed review budget
+</p>
+
+<p align="center"><sub>Measured, reproducible, on public codebases — <a href="#benchmarks">see the benchmarks ↓</a></sub></p>
+
+<img src=".github/assets/demo.gif" alt="repowise demo — Claude Code querying the codebase through repowise's MCP tools, then a tour of the local dashboard" width="100%" />
 
 ---
 
@@ -245,7 +253,7 @@ Full report: **[health-defect/BENCHMARK_REPORT.md →](https://github.com/repowi
 `repowise serve` starts a full web UI alongside the MCP server — no separate
 setup.
 
-<img src=".github/assets/webui.gif" alt="repowise web UI" width="100%" />
+<img src=".github/assets/webui.gif" alt="repowise local dashboard — Overview, Knowledge Graph, Code Health map, Commits, Chat, and By the Numbers" width="100%" />
 
 Highlights: **Chat** (natural-language Q&A) · **Docs** (wiki with Mermaid +
 graph sidebar) · **Graph** (interactive, 2,000+ nodes, community coloring, path
