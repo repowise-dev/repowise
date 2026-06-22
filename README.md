@@ -4,8 +4,6 @@
 
 <a href="https://www.repowise.dev"><img src=".github/assets/banner.png" alt="repowise — the codebase intelligence layer for your AI coding agent" width="100%" /></a>
 
-<p align="center"><em>The codebase intelligence layer for the AI era. Context your AI agent can use, and the health, risk, and ownership signals your team can trust.</em></p>
-
 <p align="center"><strong>Five intelligence layers · Nine MCP tools · 15 languages · Multi-repo workspaces · One <code>pip install</code></strong></p>
 
 <p align="center">
