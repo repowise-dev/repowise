@@ -44,7 +44,7 @@
 <p align="center">
   <strong>up to −96% context tokens</strong> &nbsp;·&nbsp; <strong>−70% agent tool calls</strong> &nbsp;·&nbsp; <strong>answer quality at parity</strong><br/>
   <strong>60–90% fewer tokens</strong> on noisy command output &nbsp;·&nbsp; errors-first, fully reversible<br/>
-  <strong>code health that predicts real bugs</strong> &nbsp;·&nbsp; out-ranks the leading commercial tool <strong>2.3×</strong> under a fixed review budget
+  <strong>code health that predicts real bugs</strong> &nbsp;·&nbsp; <strong>ROC AUC 0.74</strong> &nbsp;·&nbsp; <strong>2.3×</strong> the commercial market leader under a fixed review budget
 </p>
 
 <p align="center"><sub>Measured, reproducible, on public codebases — <a href="#benchmarks">see the benchmarks ↓</a></sub></p>
