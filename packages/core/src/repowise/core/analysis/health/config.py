@@ -8,14 +8,27 @@ detector list. Decisions deliberately kept narrow in v1:
 - Per-path ``rules``: a list of glob → ``disabled_biomarkers`` entries.
   First matching glob wins. Patterns use ``fnmatch`` semantics over the
   repo-relative POSIX path (``src/legacy/**.py``).
+- Repo-wide and per-path ``severity_overrides``: remap a biomarker's
+  severity (typically a *demotion*, e.g. ``complex_method`` → ``low``) so a
+  team can soften a signal it considers advisory without disabling it
+  outright. This is the policy surface the PR Checks gate reads. Numeric
+  weights and category caps are deliberately NOT overridable — they are the
+  calibrated constants the benchmark claims rest on, so only the severity
+  *label* (which the scorer turns into a deduction via a fixed table) can be
+  tuned. Biomarkers that carry a continuous ``deduction`` override
+  (``coverage_gradient``) ignore the severity remap by design.
+- A named ``profile`` ("small-team") expands to a preset override map. An
+  explicit ``severity_overrides`` entry wins over the profile preset.
 
 Schema (validated on load, errors logged but never raised):
 
     {
+      "profile": "small-team",
       "disabled_biomarkers": ["dry_violation"],
+      "severity_overrides": {"complex_method": "low"},
       "rules": [
         {"path": "src/legacy/**", "disabled_biomarkers": ["complex_method"]},
-        {"path": "**/*.generated.ts", "disabled_biomarkers": ["large_method"]}
+        {"path": "**/*.generated.ts", "severity_overrides": {"large_method": "low"}}
       ]
     }
 """
@@ -31,10 +44,50 @@ import structlog
 
 from repowise.core.repo_config import get_repowise_dir
 
+from .models import Severity
+
 log = structlog.get_logger(__name__)
 
 
 HEALTH_RULES_FILENAME = "health-rules.json"
+
+# Accepted severity labels for ``severity_overrides`` values, normalized to
+# the ``Severity`` enum. Anything else is dropped with a warning on load.
+_SEVERITY_BY_NAME: dict[str, Severity] = {s.value: s for s in Severity}
+
+# Named presets. A profile expands to a repo-wide severity-override map;
+# explicit ``severity_overrides`` keys take precedence over the preset. The
+# "small-team" profile demotes the process/people signals that a 1-3 person
+# repo cannot support (already floored in scoring, but a team may want them
+# off the headline entirely) plus the structural smells most prone to noise
+# on a small codebase. Numeric weights stay untouched — only labels move.
+_PROFILES: dict[str, dict[str, Severity]] = {
+    "small-team": {
+        "developer_congestion": Severity.LOW,
+        "knowledge_loss": Severity.LOW,
+        "ownership_risk": Severity.LOW,
+        "change_entropy": Severity.LOW,
+        "co_change_scatter": Severity.LOW,
+        "primitive_obsession": Severity.LOW,
+        "bumpy_road": Severity.LOW,
+    },
+}
+
+
+def _coerce_severity_map(raw: object) -> dict[str, Severity]:
+    """Parse a ``{biomarker: "severity"}`` dict, dropping invalid entries."""
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, Severity] = {}
+    for name, value in raw.items():
+        if not isinstance(name, str) or not isinstance(value, str):
+            continue
+        sev = _SEVERITY_BY_NAME.get(value.strip().lower())
+        if sev is None:
+            log.warning("health_rules_bad_severity", biomarker=name, value=value)
+            continue
+        out[name] = sev
+    return out
 
 
 @dataclass
@@ -43,6 +96,7 @@ class HealthRule:
 
     path_glob: str
     disabled_biomarkers: list[str] = field(default_factory=list)
+    severity_overrides: dict[str, Severity] = field(default_factory=dict)
 
 
 @dataclass
@@ -51,6 +105,10 @@ class HealthConfig:
 
     disabled_biomarkers: list[str] = field(default_factory=list)
     rules: list[HealthRule] = field(default_factory=list)
+    # Repo-wide biomarker → severity remap. Merged on top of the ``profile``
+    # preset (explicit keys win). Per-path remaps live on each ``HealthRule``.
+    severity_overrides: dict[str, Severity] = field(default_factory=dict)
+    profile: str | None = None
 
     @classmethod
     def load(cls, repo_path: Path | str) -> HealthConfig:
@@ -89,8 +147,27 @@ class HealthConfig:
             disabled_for = [
                 str(b) for b in (entry.get("disabled_biomarkers") or []) if isinstance(b, str)
             ]
-            rules.append(HealthRule(path_glob=glob, disabled_biomarkers=disabled_for))
-        return cls(disabled_biomarkers=disabled, rules=rules)
+            rules.append(
+                HealthRule(
+                    path_glob=glob,
+                    disabled_biomarkers=disabled_for,
+                    severity_overrides=_coerce_severity_map(entry.get("severity_overrides")),
+                )
+            )
+        profile = raw.get("profile")
+        profile = profile if isinstance(profile, str) and profile in _PROFILES else None
+        return cls(
+            disabled_biomarkers=disabled,
+            rules=rules,
+            severity_overrides=_coerce_severity_map(raw.get("severity_overrides")),
+            profile=profile,
+        )
+
+    def _repo_severity_overrides(self) -> dict[str, Severity]:
+        """Profile preset with explicit repo-wide overrides layered on top."""
+        merged: dict[str, Severity] = dict(_PROFILES.get(self.profile or "", {}))
+        merged.update(self.severity_overrides)
+        return merged
 
     def per_file_disabled(self, file_paths: list[str]) -> dict[str, set[str]]:
         """Materialize per-path overrides.
@@ -112,9 +189,33 @@ class HealthConfig:
                 out[path] = disabled
         return out
 
+    def per_file_severity_overrides(self, file_paths: list[str]) -> dict[str, dict[str, Severity]]:
+        """Materialize per-path severity remaps.
+
+        Returns ``{path: {biomarker: Severity}}`` for files matched by at
+        least one rule that carries a ``severity_overrides`` map. Later
+        matching rules win per biomarker (consistent with how
+        ``per_file_disabled`` unions, but here a key can be re-pointed).
+        """
+        rules_with_sev = [r for r in self.rules if r.severity_overrides]
+        if not rules_with_sev:
+            return {}
+        out: dict[str, dict[str, Severity]] = {}
+        for path in file_paths:
+            norm = path.replace("\\", "/")
+            overrides: dict[str, Severity] = {}
+            for rule in rules_with_sev:
+                if fnmatch.fnmatchcase(norm, rule.path_glob):
+                    overrides.update(rule.severity_overrides)
+            if overrides:
+                out[path] = overrides
+        return out
+
     def to_analyzer_config(self, file_paths: list[str]) -> dict[str, object]:
         """Return the dict accepted by ``HealthAnalyzer.analyze``."""
         return {
             "disabled_biomarkers": list(self.disabled_biomarkers),
             "per_file_disabled": self.per_file_disabled(file_paths),
+            "severity_overrides": dict(self._repo_severity_overrides()),
+            "per_file_severity_overrides": self.per_file_severity_overrides(file_paths),
         }

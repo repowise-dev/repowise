@@ -689,6 +689,33 @@ Per-file overrides live in `.repowise/health-rules.json`:
 `path` holds an fnmatch-style glob over the repo-relative POSIX path
 (`path_glob` and `glob` are accepted aliases).
 
+### Severity overrides and profiles
+
+A team can soften a signal it treats as advisory without disabling it
+outright by remapping its severity (typically a *demotion*). Overrides apply
+repo-wide and per-path; an explicit per-path entry wins over the repo-wide one.
+
+```json
+{
+  "profile": "small-team",
+  "severity_overrides": { "complex_method": "low" },
+  "rules": [
+    { "path": "src/generated/**", "severity_overrides": { "large_method": "low" } }
+  ]
+}
+```
+
+Accepted severity values are `low`, `medium`, `high`, `critical`. The named
+`small-team` profile expands to a preset demotion of the process/people and
+noisier structural signals a 1-3 person repo can't support; an explicit
+`severity_overrides` key always wins over the preset.
+
+Only the severity *label* is tunable. The per-biomarker weight multipliers and
+the category caps are the calibrated constants the benchmark numbers rest on
+and are deliberately **not** overridable, so a team's local policy never
+changes what the published accuracy claims mean. Biomarkers that carry a
+continuous deduction (`coverage_gradient`) are unaffected by severity remaps.
+
 ## Incremental updates
 
 `repowise update` only re-scores the changed files. Findings and metrics for

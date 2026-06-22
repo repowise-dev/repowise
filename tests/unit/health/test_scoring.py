@@ -7,6 +7,7 @@ from repowise.core.analysis.health.models import HealthFileMetricData, Severity
 from repowise.core.analysis.health.scoring import (
     CATEGORY_CAPS,
     compute_kpis,
+    remap_severities,
     score_file,
 )
 
@@ -21,6 +22,42 @@ def _r(name: str, severity: Severity) -> BiomarkerResult:
         details={},
         reason="",
     )
+
+
+def test_remap_severities_demotes_and_lowers_deduction():
+    # A HIGH complex_method deducts more than a LOW one; remapping to LOW
+    # must raise the resulting score (smaller deduction).
+    high = [_r("complex_method", Severity.HIGH)]
+    base_score, _ = score_file(high)
+    remapped = remap_severities(high, {"complex_method": Severity.LOW})
+    low_score, _ = score_file(remapped)
+    assert low_score["defect"] > base_score["defect"]
+    # Original list is not mutated in place.
+    assert high[0].severity is Severity.HIGH
+
+
+def test_remap_severities_noop_without_overrides():
+    results = [_r("complex_method", Severity.HIGH)]
+    assert remap_severities(results, None) is results
+    assert remap_severities(results, {}) is results
+
+
+def test_remap_severities_skips_continuous_deduction_findings():
+    # coverage_gradient-style findings carry a ``deduction`` override; their
+    # magnitude is not severity-derived, so a remap must not touch them.
+    r = BiomarkerResult(
+        biomarker_type="coverage_gradient",
+        severity=Severity.HIGH,
+        function_name=None,
+        line_start=1,
+        line_end=10,
+        details={},
+        reason="",
+        deduction=2.0,
+    )
+    out = remap_severities([r], {"coverage_gradient": Severity.LOW})
+    assert out[0] is r  # untouched
+    assert out[0].deduction == 2.0
 
 
 def test_score_clean_file_is_ten():

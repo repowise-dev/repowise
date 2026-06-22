@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from repowise.core.analysis.health.config import HealthConfig
+from repowise.core.analysis.health.models import Severity
 
 
 def _write(tmp_path: Path, payload: dict) -> Path:
@@ -91,6 +92,72 @@ def test_glob_and_path_glob_aliases_accepted(tmp_path: Path):
     pfd = cfg.per_file_disabled(["tests/unit/test_x.py", "src/legacy/old.py"])
     assert pfd["tests/unit/test_x.py"] == {"large_method"}
     assert pfd["src/legacy/old.py"] == {"dry_violation"}
+
+
+def test_repo_wide_severity_overrides_parsed_and_normalized(tmp_path: Path):
+    _write(
+        tmp_path,
+        {"severity_overrides": {"complex_method": "low", "god_class": "MEDIUM"}},
+    )
+    cfg = HealthConfig.load(tmp_path)
+    assert cfg.severity_overrides == {
+        "complex_method": Severity.LOW,
+        "god_class": Severity.MEDIUM,
+    }
+    out = cfg.to_analyzer_config(["src/foo.py"])
+    assert out["severity_overrides"] == {
+        "complex_method": Severity.LOW,
+        "god_class": Severity.MEDIUM,
+    }
+
+
+def test_invalid_severity_value_dropped(tmp_path: Path):
+    _write(
+        tmp_path,
+        {"severity_overrides": {"complex_method": "bogus", "god_class": "high"}},
+    )
+    cfg = HealthConfig.load(tmp_path)
+    assert cfg.severity_overrides == {"god_class": Severity.HIGH}
+
+
+def test_per_path_severity_overrides_materialize(tmp_path: Path):
+    _write(
+        tmp_path,
+        {
+            "rules": [
+                {"path": "src/legacy/*", "severity_overrides": {"large_method": "low"}},
+            ]
+        },
+    )
+    cfg = HealthConfig.load(tmp_path)
+    pfso = cfg.per_file_severity_overrides(["src/legacy/old.py", "src/modern/api.py"])
+    assert pfso["src/legacy/old.py"] == {"large_method": Severity.LOW}
+    assert "src/modern/api.py" not in pfso
+
+
+def test_small_team_profile_expands_with_explicit_override_winning(tmp_path: Path):
+    _write(
+        tmp_path,
+        {
+            "profile": "small-team",
+            # Explicit entry overrides the profile preset for this biomarker.
+            "severity_overrides": {"ownership_risk": "medium"},
+        },
+    )
+    cfg = HealthConfig.load(tmp_path)
+    assert cfg.profile == "small-team"
+    resolved = cfg.to_analyzer_config([])["severity_overrides"]
+    # Preset entry present...
+    assert resolved["developer_congestion"] == Severity.LOW
+    # ...and the explicit key won over the preset's ownership_risk=LOW.
+    assert resolved["ownership_risk"] == Severity.MEDIUM
+
+
+def test_unknown_profile_ignored(tmp_path: Path):
+    _write(tmp_path, {"profile": "enterprise"})
+    cfg = HealthConfig.load(tmp_path)
+    assert cfg.profile is None
+    assert cfg.to_analyzer_config([])["severity_overrides"] == {}
 
 
 def test_malformed_file_falls_back_silently(tmp_path: Path):

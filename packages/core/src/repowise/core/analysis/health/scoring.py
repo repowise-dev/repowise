@@ -20,6 +20,7 @@ empirical predictors are no longer suppressed by uniform severity values.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
+from dataclasses import replace
 
 from .biomarkers.base import BiomarkerResult
 from .models import HealthFileMetricData, HealthFindingData, Severity
@@ -480,6 +481,32 @@ def _score_dimension(
 
     score = max(1.0, min(10.0, 10.0 - total))
     return score, per_result
+
+
+def remap_severities(
+    results: list[BiomarkerResult],
+    overrides: dict[str, Severity] | None,
+) -> list[BiomarkerResult]:
+    """Return *results* with biomarker severities relabeled per *overrides*.
+
+    A user ``severity_overrides`` map (from ``.repowise/health-rules.json``)
+    relabels a biomarker's severity, which changes its deduction via the fixed
+    ``_SEVERITY_DEDUCTION`` table — the only sanctioned tuning knob. Numeric
+    weight multipliers and category caps are NEVER affected (they are the
+    calibrated constants the benchmark rests on). Findings that carry a
+    continuous ``deduction`` override (``coverage_gradient``) are left
+    untouched: their magnitude does not come from the severity table.
+    """
+    if not overrides:
+        return results
+    out: list[BiomarkerResult] = []
+    for r in results:
+        target = overrides.get(r.biomarker_type)
+        if target is not None and r.deduction is None and target != r.severity:
+            out.append(replace(r, severity=target))
+        else:
+            out.append(r)
+    return out
 
 
 def score_file(results: Iterable[BiomarkerResult]) -> tuple[dict[str, float | None], list[float]]:
