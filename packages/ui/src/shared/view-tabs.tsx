@@ -7,6 +7,11 @@ export interface ViewTab {
   id: string;
   label: string;
   badge?: number;
+  /** Optional leading icon. Lets a host carry a canonical icon for a tab (e.g.
+   *  the Architecture/Knowledge-Graph surface) so both apps render the same
+   *  glyph from one tab definition instead of hand-rolling their own toggle.
+   *  Omit it and the tab is label-only. */
+  icon?: React.ReactNode;
 }
 
 export interface ViewTabsProps {
@@ -90,6 +95,11 @@ export function ViewTabs({
                   : "text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]",
               )}
             >
+              {tab.icon != null && (
+                <span className="inline-flex shrink-0 items-center" aria-hidden>
+                  {tab.icon}
+                </span>
+              )}
               {tab.label}
               {typeof tab.badge === "number" && (
                 <span className="inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-[var(--color-bg-elevated)] px-1.5 py-0.5 text-xs font-medium tabular-nums text-[var(--color-text-secondary)]">
