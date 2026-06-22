@@ -178,6 +178,36 @@ export interface AgentTrend {
   agent_names: { name: string; count: number }[];
 }
 
+/** Canonical commit-category labels for the Code Evolution timeline. */
+export type CommitCategory =
+  | "feature"
+  | "fix"
+  | "refactor"
+  | "docs"
+  | "test"
+  | "deps"
+  | "chore"
+  | "other";
+
+/** One time bucket of commit-category counts. */
+export interface CommitEvolutionBucket {
+  period: string; // "YYYY-MM" (monthly) or "YYYY-Wnn" (weekly)
+  start: string; // ISO date of the bucket's first day
+  total: number;
+  counts: Partial<Record<CommitCategory, number>>;
+}
+
+/** Commit-category mix over time — the repo's development "story arc". */
+export interface CommitEvolution {
+  buckets: CommitEvolutionBucket[];
+  categories: CommitCategory[]; // present across the window, canonical order
+  totals: Partial<Record<CommitCategory, number>>;
+  total_commits: number;
+  granularity: "month" | "week";
+  first_commit_at: string | null;
+  last_commit_at: string | null;
+}
+
 export interface OwnershipEntry {
   module_path: string;
   primary_owner: string | null;

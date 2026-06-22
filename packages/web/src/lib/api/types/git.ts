@@ -145,3 +145,30 @@ export interface AgentTrend {
   agent_pct: number;
   agent_names: { name: string; count: number }[];
 }
+
+export type CommitCategory =
+  | "feature"
+  | "fix"
+  | "refactor"
+  | "docs"
+  | "test"
+  | "deps"
+  | "chore"
+  | "other";
+
+export interface CommitEvolutionBucket {
+  period: string;
+  start: string;
+  total: number;
+  counts: Partial<Record<CommitCategory, number>>;
+}
+
+export interface CommitEvolution {
+  buckets: CommitEvolutionBucket[];
+  categories: CommitCategory[];
+  totals: Partial<Record<CommitCategory, number>>;
+  total_commits: number;
+  granularity: "month" | "week";
+  first_commit_at: string | null;
+  last_commit_at: string | null;
+}

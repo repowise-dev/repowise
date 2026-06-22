@@ -65,6 +65,8 @@ from .git import (
     AgentTrendBucket,
     AgentTrendResponse,
     CommitDetailResponse,
+    CommitEvolutionBucket,
+    CommitEvolutionResponse,
     CommitResponse,
     GitMetadataResponse,
     GitSummaryResponse,
@@ -195,6 +197,8 @@ from .workspace import (
 __all__ = [
     "AgentTrendBucket",
     "AgentTrendResponse",
+    "CommitEvolutionBucket",
+    "CommitEvolutionResponse",
     "ArchEdgeResponse",
     "ArchLayerResponse",
     "ArchNodeResponse",

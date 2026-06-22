@@ -19,10 +19,17 @@ import {
 } from "@repowise-dev/ui/commits/commit-table";
 import { CommitDetailCard } from "@repowise-dev/ui/commits/commit-detail-card";
 import { AiPromptButton, AiPromptModal, buildCommitAiPrompt } from "@repowise-dev/ui/health";
-import { CredibilityStrip } from "@repowise-dev/ui/commits/credibility-strip";
+import { CredibilityInfoButton } from "@repowise-dev/ui/commits/credibility-strip";
+import { CodeEvolutionChart } from "@repowise-dev/ui/commits/code-evolution-chart";
 import { AgentTrendStrip } from "@repowise-dev/ui/commits/agent-trend-strip";
 import { RiskDistributionChart } from "@repowise-dev/ui/git/risk-distribution-chart";
-import { getAgentTrend, getCommit, getCommitsPage, getHotspots } from "@/lib/api/git";
+import {
+  getAgentTrend,
+  getCommit,
+  getCommitEvolution,
+  getCommitsPage,
+  getHotspots,
+} from "@/lib/api/git";
 import type { CommitResponse, Paginated } from "@/lib/api/types";
 
 const PAGE_SIZE = 50;
@@ -45,6 +52,13 @@ export function CommitsExplorer({ repoId }: { repoId: string }) {
   const { data: trend } = useSWR(
     `agent-trend:${repoId}`,
     () => getAgentTrend(repoId),
+    { revalidateOnFocus: false },
+  );
+
+  // Headline: the repo's development "story arc" — commit-category mix over time.
+  const { data: evolution } = useSWR(
+    `commit-evolution:${repoId}`,
+    () => getCommitEvolution(repoId),
     { revalidateOnFocus: false },
   );
 
@@ -93,18 +107,9 @@ export function CommitsExplorer({ repoId }: { repoId: string }) {
 
   return (
     <div className="space-y-6">
-      <CredibilityStrip />
-
-      {hotspots && hotspots.length > 0 && (
-        <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-4">
-          <p className="mb-2 text-xs font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
-            Risk distribution across the riskiest files
-          </p>
-          <RiskDistributionChart hotspots={hotspots} maxBars={25} />
-        </div>
+      {evolution && evolution.total_commits > 0 && (
+        <CodeEvolutionChart evolution={evolution} />
       )}
-
-      {trend && <AgentTrendStrip trend={trend} />}
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <StatCard
@@ -132,24 +137,48 @@ export function CommitsExplorer({ repoId }: { repoId: string }) {
         />
       </div>
 
-      <CommitTable
-        commits={list}
-        sort={sort}
-        onSortChange={(s) => {
-          setSort(s);
-          setLimit(PAGE_SIZE);
-        }}
-        authorship={authorship}
-        onAuthorshipChange={(a) => {
-          setAuthorship(a);
-          setLimit(PAGE_SIZE);
-        }}
-        onSelect={(c) => void setSelectedSha(c.sha)}
-        total={total}
-        hasMore={hasMore}
-        loadingMore={isValidating && !isLoading}
-        onLoadMore={() => setLimit((n) => Math.min(n + PAGE_SIZE, 200))}
-      />
+      {/* Secondary signals — smaller than the headline. Risk distribution
+          turns the queue's "relative to this repo" claim into a picture; the
+          agent-trend strip sits alongside it. */}
+      <div className="grid gap-4 lg:grid-cols-2">
+        {hotspots && hotspots.length > 0 && (
+          <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-4">
+            <p className="mb-2 text-xs font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
+              Risk distribution across the riskiest files
+            </p>
+            <RiskDistributionChart hotspots={hotspots} maxBars={12} />
+          </div>
+        )}
+        {trend && trend.agent_commits > 0 && (
+          <AgentTrendStrip trend={trend} />
+        )}
+      </div>
+
+      <div className="space-y-2">
+        <div className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
+          <span>Review-priority queue</span>
+          <CredibilityInfoButton />
+        </div>
+
+        <CommitTable
+          commits={list}
+          sort={sort}
+          onSortChange={(s) => {
+            setSort(s);
+            setLimit(PAGE_SIZE);
+          }}
+          authorship={authorship}
+          onAuthorshipChange={(a) => {
+            setAuthorship(a);
+            setLimit(PAGE_SIZE);
+          }}
+          onSelect={(c) => void setSelectedSha(c.sha)}
+          total={total}
+          hasMore={hasMore}
+          loadingMore={isValidating && !isLoading}
+          onLoadMore={() => setLimit((n) => Math.min(n + PAGE_SIZE, 200))}
+        />
+      </div>
 
       <Sheet
         open={selectedSha !== null}

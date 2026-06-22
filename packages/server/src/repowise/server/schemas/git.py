@@ -218,3 +218,34 @@ class AgentTrendResponse(BaseModel):
     agent_commits: int
     agent_pct: float  # 0-100 across the whole window
     agent_names: list[dict] = []  # [{name, count}] descending
+
+
+class CommitEvolutionBucket(BaseModel):
+    """One time bucket of commit-category counts for the Code Evolution timeline.
+
+    ``counts`` keys are drawn from
+    :data:`repowise.core.ingestion.git_indexer._constants.EVOLUTION_CATEGORIES`;
+    a category is omitted when its count is zero in this bucket.
+    """
+
+    period: str  # "YYYY-MM" (monthly) or "YYYY-Wnn" (weekly)
+    start: str  # ISO date of the bucket's first day, for axis ordering/tooltips
+    total: int
+    counts: dict[str, int] = {}
+
+
+class CommitEvolutionResponse(BaseModel):
+    """Commit-category mix over time — the repo's development "story arc".
+
+    Each commit is classified into exactly one category (feature/fix/refactor/
+    docs/test/deps/chore/other) from its subject and bucketed by ``granularity``.
+    The UI renders ``buckets`` as a stacked area (share or volume).
+    """
+
+    buckets: list[CommitEvolutionBucket]
+    categories: list[str]  # categories present across the window, in canonical order
+    totals: dict[str, int] = {}  # window-wide count per category
+    total_commits: int
+    granularity: str  # "month" | "week"
+    first_commit_at: str | None = None
+    last_commit_at: str | None = None

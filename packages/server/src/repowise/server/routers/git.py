@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
@@ -13,6 +15,10 @@ from repowise.core.analysis.change_risk import (
     RiskNormalizer,
     score_change,
 )
+from repowise.core.ingestion.git_indexer._constants import (
+    EVOLUTION_CATEGORIES,
+    classify_commit_category,
+)
 from repowise.core.persistence import crud
 from repowise.core.persistence.models import GitCommit, GitMetadata
 from repowise.server.deps import get_db_session, verify_api_key
@@ -21,6 +27,8 @@ from repowise.server.schemas import (
     AgentTrendBucket,
     AgentTrendResponse,
     CommitDetailResponse,
+    CommitEvolutionBucket,
+    CommitEvolutionResponse,
     CommitResponse,
     GitMetadataResponse,
     GitSummaryResponse,
@@ -248,6 +256,85 @@ async def get_agent_trend(
             key=lambda x: x["count"],
             reverse=True,
         ),
+    )
+
+
+@router.get("/{repo_id}/commits/evolution", response_model=CommitEvolutionResponse)
+async def get_commit_evolution(
+    repo_id: str,
+    granularity: str = Query("auto", pattern="^(auto|month|week)$"),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+) -> CommitEvolutionResponse:
+    """The repo's development "story arc" — commit-category mix over time.
+
+    Each commit is classified into exactly one category (feature / fix /
+    refactor / docs / test / deps / chore / other) from its subject and bucketed
+    by month (or week on short-history repos). Classification is pure and runs
+    off the already-stored subject, so this needs no reindex. The UI stacks the
+    buckets to show how the development emphasis shifts as the repo matures.
+    """
+    result = await session.execute(
+        select(GitCommit.committed_at, GitCommit.subject).where(
+            GitCommit.repository_id == repo_id
+        )
+    )
+    rows = [(ts, subj) for ts, subj in result.all() if ts is not None]
+
+    if not rows:
+        return CommitEvolutionResponse(
+            buckets=[],
+            categories=[],
+            totals={},
+            total_commits=0,
+            granularity="month",
+        )
+
+    rows.sort(key=lambda r: r[0])
+    first, last = rows[0][0], rows[-1][0]
+
+    # Auto: weekly resolution keeps short-lived repos from collapsing into one
+    # or two fat monthly columns; anything spanning more than ~26 weeks reads
+    # better monthly.
+    if granularity == "auto":
+        span_days = (last - first).days
+        granularity = "week" if span_days <= 26 * 7 else "month"
+
+    def _bucket_key(ts: datetime) -> tuple[str, str]:
+        if granularity == "week":
+            iso_year, iso_week, _ = ts.isocalendar()
+            monday = (ts - timedelta(days=ts.isoweekday() - 1)).date()
+            return f"{iso_year}-W{iso_week:02d}", monday.isoformat()
+        return ts.strftime("%Y-%m"), ts.replace(day=1).date().isoformat()
+
+    buckets: dict[str, dict] = {}
+    totals: Counter[str] = Counter()
+    for ts, subject in rows:
+        period, start = _bucket_key(ts)
+        cat = classify_commit_category(subject or "")
+        b = buckets.setdefault(period, {"start": start, "total": 0, "counts": Counter()})
+        b["total"] += 1
+        b["counts"][cat] += 1
+        totals[cat] += 1
+
+    # Canonical category order, restricted to those that actually appear.
+    present = [c for c in EVOLUTION_CATEGORIES if totals.get(c)]
+
+    return CommitEvolutionResponse(
+        buckets=[
+            CommitEvolutionBucket(
+                period=period,
+                start=b["start"],
+                total=b["total"],
+                counts=dict(b["counts"]),
+            )
+            for period, b in sorted(buckets.items(), key=lambda kv: kv[1]["start"])
+        ],
+        categories=present,
+        totals=dict(totals),
+        total_commits=len(rows),
+        granularity=granularity,
+        first_commit_at=first.isoformat(),
+        last_commit_at=last.isoformat(),
     )
 
 
