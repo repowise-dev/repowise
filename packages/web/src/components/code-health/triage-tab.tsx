@@ -7,7 +7,8 @@
  * function-level panels.
  */
 
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import useSWR from "swr";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 import { Button } from "@repowise-dev/ui/ui/button";
@@ -39,7 +40,7 @@ import {
   type Severity,
 } from "@repowise-dev/ui/health";
 import { CollapsibleSection } from "@repowise-dev/ui/shared/collapsible-section";
-import { Search } from "lucide-react";
+import { Gauge, Search } from "lucide-react";
 import {
   getHealthOverview,
   getRefactoringTargets,
@@ -123,9 +124,19 @@ export function TriageTab({
     { revalidateOnFocus: false },
   );
 
+  // Every open performance-pillar finding (the cross-function N+1 / I/O-in-loop
+  // moat), for the dedicated Performance risks panel.
+  const { data: perfFindings } = useSWR<HealthFinding[]>(
+    `code-health-perf-findings:${id}`,
+    () =>
+      listHealthFindings(id, { dimension: "performance", limit: 200 }).catch(
+        () => [] as HealthFinding[],
+      ),
+    { revalidateOnFocus: false },
+  );
+
   // ---- One filter set coordinates the queue AND the findings sidebar ----
   const [minSeverity, setMinSeverity] = useState<Severity | "all">("all");
-  const [pillar, setPillar] = useState<"all" | "defect" | "maintainability" | "performance">("all");
   const [biomarker, setBiomarker] = useState<string>("all");
   const [maxEffort, setMaxEffort] = useState<string>("all");
   const [sort, setSort] = useState<RefactoringQuery["sort"]>("impact_per_effort");
@@ -138,6 +149,36 @@ export function TriageTab({
   // ---- Map-driven UI: rail spotlight + filename dim + collapsible list ----
   const [hoverFile, setHoverFile] = useState<CodeHealthMapFile | null>(null);
   const [mapQuery, setMapQuery] = useState("");
+
+  // ---- Pillar filter is URL-synced (?pillar=) so the Overview + KPI tiles can
+  //      deep-link straight into a single dimension's findings. ----
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const rawPillar = searchParams.get("pillar");
+  const pillar: "all" | "defect" | "maintainability" | "performance" =
+    rawPillar === "defect" ||
+    rawPillar === "maintainability" ||
+    rawPillar === "performance"
+      ? rawPillar
+      : "all";
+  const findingsRef = useRef<HTMLDivElement | null>(null);
+  const setPillar = useCallback(
+    (next: "all" | "defect" | "maintainability" | "performance") => {
+      const sp = new URLSearchParams(searchParams.toString());
+      if (next === "all") sp.delete("pillar");
+      else sp.set("pillar", next);
+      const qs = sp.toString();
+      router.replace(qs ? `?${qs}` : "?", { scroll: false });
+    },
+    [router, searchParams],
+  );
+  const focusPillar = useCallback(
+    (next: "defect" | "maintainability" | "performance") => {
+      setPillar(next);
+      findingsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    },
+    [setPillar],
+  );
 
   const queueKey = useMemo(
     () => JSON.stringify({ id, biomarker, minSeverity, maxEffort, sort, queueLimit }),
@@ -250,10 +291,17 @@ export function TriageTab({
   return (
     <div className="space-y-6">
       {isLoading ? (
-        <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-7 gap-3">
-          {Array.from({ length: 7 }).map((_, i) => (
-            <Skeleton key={i} className="h-24 w-full rounded-lg" />
-          ))}
+        <div className="space-y-3">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {Array.from({ length: 3 }).map((_, i) => (
+              <Skeleton key={i} className="h-28 w-full rounded-xl" />
+            ))}
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <Skeleton key={i} className="h-20 w-full rounded-lg" />
+            ))}
+          </div>
         </div>
       ) : error ? (
         <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] p-4 text-sm text-[var(--color-text-secondary)] flex items-center justify-between gap-2">
@@ -271,6 +319,7 @@ export function TriageTab({
             worstHistory={worstSeries}
             averageDelta={trend?.summary?.average_delta ?? undefined}
             hotspotDelta={trend?.summary?.hotspot_delta ?? undefined}
+            onSelectPillar={focusPillar}
           />
 
           {overview.defect_accuracy ? (
@@ -323,7 +372,7 @@ export function TriageTab({
 
               <FileSpotlight file={hoverFile} onOpen={(p) => setSelectedFile(p)} />
 
-              <div className="flex items-center gap-2">
+              <div ref={findingsRef} className="flex items-center gap-2 scroll-mt-4">
                 <h2 className="text-sm font-medium uppercase tracking-wider text-[var(--color-text-tertiary)] mr-auto">
                   Findings
                 </h2>
@@ -370,6 +419,35 @@ export function TriageTab({
               </div>
             </aside>
           </div>
+
+          {/* Performance risks — the cross-function N+1 / I/O-in-loop moat,
+              given a dedicated home. Only rendered when risks actually exist
+              (high precision, low recall), so a clean repo stays uncluttered. */}
+          {perfFindings && perfFindings.length > 0 ? (
+            <CollapsibleSection
+              title={
+                <span className="inline-flex items-center gap-2">
+                  <Gauge className="h-4 w-4 text-[var(--color-info)]" />
+                  Performance risks
+                </span>
+              }
+              hint={`${perfFindings.length} ${perfFindings.length === 1 ? "risk" : "risks"}`}
+              defaultOpen
+            >
+              <div className="space-y-3">
+                <p className="text-xs text-[var(--color-text-secondary)]">
+                  Static performance risk: a DB, network, filesystem, or subprocess call
+                  per loop iteration, detected across function boundaries via the call
+                  graph. High precision, low recall, never blended into the defect score.
+                </p>
+                <BiomarkerList
+                  findings={perfFindings}
+                  grouped
+                  onSelect={(f) => setSelectedFile(f.file_path)}
+                />
+              </div>
+            </CollapsibleSection>
+          ) : null}
 
           {/* Collapsible: the full ranked queue + file inventory. The severity
               filter is shared with the rail above (one control, no duplicate). */}

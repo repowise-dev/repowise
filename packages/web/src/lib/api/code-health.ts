@@ -60,6 +60,7 @@ export async function listHealthFindings(
     biomarker_type?: string;
     file_path?: string;
     min_severity?: string;
+    dimension?: string;
     limit?: number;
   },
 ): Promise<HealthFinding[]> {

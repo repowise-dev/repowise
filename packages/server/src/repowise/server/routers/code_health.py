@@ -460,6 +460,7 @@ async def list_health_findings(
     biomarker_type: str | None = Query(None),
     file_path: str | None = Query(None),
     min_severity: str | None = Query(None),
+    dimension: str | None = Query(None),
     limit: int = Query(100, ge=1, le=1000),
     session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> list[dict]:
@@ -469,6 +470,7 @@ async def list_health_findings(
         biomarker_type=biomarker_type,
         file_path=file_path,
         min_severity=min_severity,
+        dimension=dimension,
     )
     return await _attach_symbol_ids(
         session, repo_id, [_finding_to_dict(f) for f in findings[:limit]]

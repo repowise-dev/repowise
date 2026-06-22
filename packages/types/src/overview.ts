@@ -46,6 +46,17 @@ export interface OverviewHealth {
   worst_performer_path: string | null;
   worst_performer_score: number | null;
   open_findings: number;
+  /** Co-equal maintainability pillar headline (NLOC-weighted). `null` when no
+   *  file carries a maintainability score yet. */
+  maintainability_average?: number | null;
+  /** Co-equal performance pillar headline: static performance RISK (I/O-in-loop
+   *  / N+1). `null` when not yet measured. */
+  performance_average?: number | null;
+  /** Open findings homing under the performance pillar — the actionable count. */
+  performance_findings?: number;
+  /** Lowest-scoring file by performance risk, surfaced only when score < 10. */
+  worst_performance_path?: string | null;
+  worst_performance_score?: number | null;
   severity_breakdown: Record<string, number>;
   last_indexed_at: string | null;
   snapshot_count: number;

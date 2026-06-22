@@ -250,6 +250,14 @@ export interface HealthOverviewSummary {
    */
   performance_average?: number | null;
   performance_hotspot?: number | null;
+  /** Open findings homing under the maintainability / performance pillars — the
+   *  per-pillar actionable counts. Absent on payloads predating the split. */
+  maintainability_findings?: number;
+  performance_findings?: number;
+  /** Lowest-scoring file by performance risk, surfaced only when score < 10
+   *  (a clean repo returns `null` rather than a misleading "worst" at 10.0). */
+  worst_performance_path?: string | null;
+  worst_performance_score?: number | null;
 }
 
 export interface HealthOverviewResponse {

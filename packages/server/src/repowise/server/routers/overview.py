@@ -390,6 +390,12 @@ async def overview_summary(
             "worst_performer_path": health_summary.get("worst_performer_path"),
             "worst_performer_score": health_summary.get("worst_performer_score"),
             "open_findings": health_summary.get("open_findings", 0),
+            # The two co-equal pillars surfaced alongside the defect headline.
+            "maintainability_average": health_summary.get("maintainability_average"),
+            "performance_average": health_summary.get("performance_average"),
+            "performance_findings": health_summary.get("performance_findings", 0),
+            "worst_performance_path": health_summary.get("worst_performance_path"),
+            "worst_performance_score": health_summary.get("worst_performance_score"),
             "severity_breakdown": severity_breakdown,
             "last_indexed_at": last_indexed_at,
             "snapshot_count": len(snapshots),

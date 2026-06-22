@@ -5,6 +5,8 @@ import {
   TrendingDown,
   ShieldAlert,
   ArrowRight,
+  Wrench,
+  Gauge,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { fileEntityPath } from "../shared/entity/routes";
@@ -27,6 +29,12 @@ export interface HealthOverviewData {
   /** Open biomarker findings, with a severity rollup. */
   open_findings: number;
   severity_breakdown: Record<string, number>;
+  /** Co-equal maintainability pillar headline (1–10), null until measured. */
+  maintainability_average?: number | null;
+  /** Co-equal performance pillar headline (1–10, static risk), null until measured. */
+  performance_average?: number | null;
+  /** Open findings homing under the performance pillar — the actionable count. */
+  performance_findings?: number;
   /** Snapshot history, oldest→newest, for the trend sparkline. */
   history: HealthOverviewPoint[];
   snapshot_count: number;
@@ -351,9 +359,118 @@ export function HealthOverviewCard({
                 </a>
               )}
             </div>
+
+            {/* The two co-equal pillars beside the defect headline above —
+                maintainability and performance, each a jump into its findings. */}
+            {(data.maintainability_average != null || data.performance_average != null) && (
+              <div className="grid grid-cols-2 divide-x divide-[var(--color-border-default)] border-t border-[var(--color-border-default)]">
+                <PillarStat
+                  href={`${reportHref}?pillar=maintainability`}
+                  icon={<Wrench className="h-3 w-3" />}
+                  label="Maintainability"
+                  score={data.maintainability_average ?? null}
+                />
+                <PerformancePillarStat
+                  href={`${reportHref}?pillar=performance`}
+                  score={data.performance_average ?? null}
+                  findings={data.performance_findings ?? 0}
+                />
+              </div>
+            )}
           </>
         )}
       </CardContent>
     </Card>
+  );
+}
+
+/** A compact pillar cell in the Overview health card — label + score/10 + band,
+ *  the whole cell a link into that pillar's filtered findings. */
+function PillarStat({
+  href,
+  icon,
+  label,
+  score,
+}: {
+  href: string;
+  icon: React.ReactNode;
+  label: string;
+  score: number | null;
+}) {
+  const b = score != null ? band(score) : null;
+  return (
+    <a
+      href={href}
+      className="flex flex-col gap-1 px-4 py-3 transition-colors hover:bg-[var(--color-bg-elevated)]"
+    >
+      <span className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
+        {icon}
+        {label}
+      </span>
+      {score == null ? (
+        <span className="text-sm text-[var(--color-text-tertiary)]">Not measured</span>
+      ) : (
+        <span className="flex items-baseline gap-1.5">
+          <span className="text-xl font-bold tabular-nums leading-none" style={{ color: b?.color }}>
+            {score.toFixed(1)}
+          </span>
+          <span className="text-xs text-[var(--color-text-tertiary)]">/10</span>
+          {b ? (
+            <span className="text-[10px] font-medium uppercase tracking-wide" style={{ color: b.color }}>
+              {b.label}
+            </span>
+          ) : null}
+        </span>
+      )}
+    </a>
+  );
+}
+
+/** Performance is a risk pillar, so its cell leads with the count of open risks
+ *  (the actionable read) and keeps the /10 score as a quiet secondary line. */
+function PerformancePillarStat({
+  href,
+  score,
+  findings,
+}: {
+  href: string;
+  score: number | null;
+  findings: number;
+}) {
+  const clear = score != null && findings === 0;
+  return (
+    <a
+      href={href}
+      className="flex flex-col gap-1 px-4 py-3 transition-colors hover:bg-[var(--color-bg-elevated)]"
+    >
+      <span className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
+        <Gauge className="h-3 w-3" />
+        Performance
+      </span>
+      {score == null ? (
+        <span className="text-sm text-[var(--color-text-tertiary)]">Not measured</span>
+      ) : clear ? (
+        <span className="flex items-baseline gap-1.5">
+          <span className="text-xl font-bold tabular-nums leading-none text-[var(--color-success)]">
+            0
+          </span>
+          <span className="text-[10px] font-medium uppercase tracking-wide text-[var(--color-success)]">
+            All clear
+          </span>
+        </span>
+      ) : (
+        <span className="flex items-baseline gap-1.5">
+          <span className="text-xl font-bold tabular-nums leading-none text-[var(--color-text-primary)]">
+            {findings.toLocaleString()}
+          </span>
+          <span className="text-xs text-[var(--color-text-secondary)]">
+            {findings === 1 ? "risk" : "risks"}
+          </span>
+          <span className="text-[10px] tabular-nums text-[var(--color-text-tertiary)]">
+            · {score.toFixed(1)}/10
+          </span>
+        </span>
+      )}
+    </a>
   );
 }

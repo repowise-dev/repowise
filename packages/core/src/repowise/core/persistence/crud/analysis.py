@@ -10,7 +10,7 @@ import json
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.dead_code.risk_factors import effective_safe_to_delete
@@ -426,6 +426,7 @@ async def get_health_findings(
     biomarker_type: str | None = None,
     min_severity: str | None = None,
     file_path: str | None = None,
+    dimension: str | None = None,
     status: str = "open",
 ) -> list[HealthFinding]:
     q = select(HealthFinding).where(
@@ -436,6 +437,15 @@ async def get_health_findings(
         q = q.where(HealthFinding.biomarker_type == biomarker_type)
     if file_path is not None:
         q = q.where(HealthFinding.file_path == file_path)
+    if dimension is not None:
+        # Older rows predate the split and carry a NULL dimension that homes
+        # under "defect"; fold those in so a defect filter never drops them.
+        if dimension == "defect":
+            q = q.where(
+                or_(HealthFinding.dimension == "defect", HealthFinding.dimension.is_(None))
+            )
+        else:
+            q = q.where(HealthFinding.dimension == dimension)
     if min_severity is not None:
         # Severity order: low < medium < high < critical
         order = {"low": 0, "medium": 1, "high": 2, "critical": 3}
@@ -473,6 +483,10 @@ async def get_health_summary(session: AsyncSession, repository_id: str) -> dict:
             "open_findings": 0,
             "maintainability_average": None,
             "performance_average": None,
+            "maintainability_findings": 0,
+            "performance_findings": 0,
+            "worst_performance_path": None,
+            "worst_performance_score": None,
         }
     total_nloc = sum(max(m.nloc, 1) for m in metrics)
     if total_nloc:
@@ -512,26 +526,48 @@ async def get_health_summary(session: AsyncSession, repository_id: str) -> dict:
         else:
             performance_average = sum(m.performance_score for m in perf_scored) / len(perf_scored)
 
-    findings_count = await session.execute(
-        select(func.count())
-        .select_from(HealthFinding)
+    # Worst-performance file: the lowest per-file performance score, surfaced only
+    # when there is genuine risk (score < 10) so a clean repo shows no actionable
+    # target rather than a misleading "worst" at a perfect 10.0.
+    worst_performance_path: str | None = None
+    worst_performance_score: float | None = None
+    if perf_scored:
+        perf_worst = min(perf_scored, key=lambda r: r.performance_score)
+        if perf_worst.performance_score < 10.0:
+            worst_performance_path = perf_worst.file_path
+            worst_performance_score = round(perf_worst.performance_score, 2)
+
+    # Open-finding counts split by home dimension (NULL homes under "defect"),
+    # so each pillar can show its own actionable count.
+    dim_rows = await session.execute(
+        select(HealthFinding.dimension, func.count())
         .where(
             HealthFinding.repository_id == repository_id,
             HealthFinding.status == "open",
         )
+        .group_by(HealthFinding.dimension)
     )
+    by_dim: dict[str, int] = {}
+    for dim, count in dim_rows.all():
+        by_dim[dim or "defect"] = by_dim.get(dim or "defect", 0) + int(count)
+    open_findings = sum(by_dim.values())
+
     return {
         "file_count": len(metrics),
         "average_health": round(avg, 2),
         "worst_performer_path": worst.file_path,
         "worst_performer_score": round(worst.score, 2),
-        "open_findings": findings_count.scalar() or 0,
+        "open_findings": open_findings,
         "maintainability_average": (
             round(maintainability_average, 2) if maintainability_average is not None else None
         ),
         "performance_average": (
             round(performance_average, 2) if performance_average is not None else None
         ),
+        "maintainability_findings": by_dim.get("maintainability", 0),
+        "performance_findings": by_dim.get("performance", 0),
+        "worst_performance_path": worst_performance_path,
+        "worst_performance_score": worst_performance_score,
     }
 
 
