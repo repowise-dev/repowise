@@ -1,0 +1,9 @@
+# Smoke-test config for the Repowise bot health gate (throwaway PR).
+bot:
+  comment_mode: always
+  health_gate:
+    mode: blocking
+    repo_drop_block: 0.3
+    min_new_file_score: 7.0
+    block_on_introduced: true
+    block_ai_regression: true
