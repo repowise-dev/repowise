@@ -15,16 +15,47 @@
 import { biomarkerInfo, CATEGORY_LABEL } from "./biomarker-glossary";
 import type { RefactoringTarget } from "./refactoring-card";
 
-export type AiPromptFlavor = "generic" | "claude-code" | "cursor";
+export type AiPromptFlavor =
+  | "generic"
+  | "claude-code"
+  | "claude-code-mcp"
+  | "cursor";
 
 const FLAVOR_PREAMBLE: Record<AiPromptFlavor, string> = {
   generic:
     "You are a senior engineer working on one file in this repository. The findings below were detected by a static analyzer — treat them as **leads, not ground truth**. Open the file, read its callers, tests, and neighbors, and verify each finding against the actual code before you act. If a finding is a false positive given the broader context, say so and skip it.",
   "claude-code":
     "You are Claude Code working in this repository. The findings below were detected by a static analyzer — treat them as leads to investigate, not commands to execute. Use Read, Grep, and Glob to explore the file, its callers, its tests, and any related modules before planning edits. Verify each finding against the actual code; flag any that turn out to be false positives. Use TodoWrite for non-trivial steps.",
+  "claude-code-mcp":
+    "You are Claude Code working in this repository, which is indexed by repowise and exposes its MCP tools. The findings below were detected by repowise's static analyzer — treat them as leads to investigate, not commands to execute. Before re-reading files by hand, pull the context repowise already computed: call `get_context([...])` for the file skeleton (every signature + the bodies of the most central symbols, ~37% of a full Read), `get_symbol(\"file::Name\")` for the exact bytes of one function, `get_risk([...])` before editing to see blast radius, co-change partners, and test gaps, and `get_why(...)` for the decision behind the current shape. Fall back to Read / Grep / Glob only for what the index can't serve. Verify each finding against the real code; flag false positives. Use TodoWrite for non-trivial steps.",
   cursor:
     "Work on the file referenced below. The findings below were detected by a static analyzer — treat them as leads, not ground truth. Use @file and @codebase to read the file, its callers, its tests, and neighboring modules before editing. Verify each finding against the real code; skip and call out any false positives.",
 };
+
+/**
+ * Closing instruction, tailored per flavor. The MCP flavor steers the agent
+ * to the repowise tools it already has instead of repeating the exploration
+ * repowise did at index time; every other flavor keeps the read-first wording.
+ */
+function explorationCloser(
+  flavor: AiPromptFlavor,
+  filePath: string,
+  kind: "refactor" | "coverage",
+): string {
+  if (flavor === "claude-code-mcp") {
+    const second =
+      kind === "coverage"
+        ? `\`get_context(['${filePath}'], include=['callers'])\` to see who exercises it`
+        : `\`get_risk(['${filePath}'])\` for the blast radius, co-change partners, and test gaps`;
+    const verb = kind === "coverage" ? "write a test" : "propose a fix";
+    const into = kind === "coverage" ? "functions you'll test" : "functions below";
+    return `Start with \`get_context(['${filePath}'])\` for the skeleton and ${second}, then \`get_symbol\` into the specific ${into}. repowise already indexed this repo — lean on it before falling back to Read/Grep. The findings describe symptoms; the real root cause may live in a caller or a co-change partner. Don't ${verb} until you've grounded each one in the actual code.`;
+  }
+  if (kind === "coverage") {
+    return "Start by reading the file end-to-end, then explore its callers, the existing tests directory, and any sibling files that test similar code. The coverage numbers below come from a static report — verify them by looking at the real test files and the real source. Don't write a test before you've seen the code it's exercising and the project's existing test conventions.";
+  }
+  return "Start by reading the file end-to-end, then explore its callers, tests, and any related helpers. The findings below describe symptoms — the actual root cause may live elsewhere. Don't propose a fix until you've grounded each one in the real code.";
+}
 
 function bulletList(items: (string | null | undefined | false)[]): string {
   return items.filter(Boolean).map((s) => `- ${s}`).join("\n");
@@ -134,7 +165,15 @@ export function buildAiPrompt({
     .slice()
     .sort((a, b) => b.health_impact - a.health_impact);
 
-  const findingsBlock = findings
+  // Cap the detailed findings so a file with dozens of hits doesn't produce a
+  // multi-thousand-token prompt. The top findings (by impact) are spelled out
+  // in full; the long tail is rolled up into a single grouped line so the agent
+  // still knows what's left without paying for every description.
+  const MAX_DETAILED_FINDINGS = 8;
+  const detailed = findings.slice(0, MAX_DETAILED_FINDINGS);
+  const remainder = findings.slice(MAX_DETAILED_FINDINGS);
+
+  const findingsBlock = detailed
     .map((f, i) => {
       const info = biomarkerInfo(f.biomarker_type);
       const loc = f.function_name
@@ -159,6 +198,22 @@ export function buildAiPrompt({
         .join("\n");
     })
     .join("\n\n");
+
+  const remainderLine = (() => {
+    if (remainder.length === 0) return null;
+    const counts = new Map<string, number>();
+    for (const f of remainder) {
+      counts.set(f.biomarker_type, (counts.get(f.biomarker_type) ?? 0) + 1);
+    }
+    const grouped = Array.from(counts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .map(([type, n]) => `${n}× ${biomarkerInfo(type).label}`)
+      .join(", ");
+    const tailImpact = remainder.reduce((s, f) => s + f.health_impact, 0);
+    return `…and ${remainder.length} more lower-impact finding${
+      remainder.length === 1 ? "" : "s"
+    } (${grouped}; −${tailImpact.toFixed(2)} total). Clean these up after the ranked items above; open the file's full health report in repowise for the per-finding detail.`;
+  })();
 
   const constraintList = [
     "**Read first, edit second.** Read the file, its callers, its tests, and any obvious helpers before proposing a change.",
@@ -196,6 +251,7 @@ export function buildAiPrompt({
     "## Issues to fix (ranked by impact)",
     "",
     findingsBlock,
+    remainderLine ?? "",
     "",
     t.primary_suggestion
       ? ["## Suggested direction", "", t.primary_suggestion, ""].join("\n")
@@ -208,7 +264,7 @@ export function buildAiPrompt({
     "",
     completionContract.join("\n"),
     "",
-    "Start by reading the file end-to-end, then explore its callers, tests, and any related helpers. The findings below describe symptoms — the actual root cause may live elsewhere. Don't propose a fix until you've grounded each one in the real code.",
+    explorationCloser(flavor, t.file_path, "refactor"),
   ]
     .filter((s) => s !== "")
     .join("\n");
@@ -336,7 +392,7 @@ export function buildCoverageAiPrompt({
     "",
     completionContract.join("\n"),
     "",
-    "Start by reading the file end-to-end, then explore its callers, the existing tests directory, and any sibling files that test similar code. The coverage numbers below come from a static report — verify them by looking at the real test files and the real source. Don't write a test before you've seen the code it's exercising and the project's existing test conventions.",
+    explorationCloser(flavor, row.file_path, "coverage"),
   ]
     .filter((s) => s !== "")
     .join("\n");
