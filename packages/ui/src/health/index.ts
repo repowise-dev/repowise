@@ -38,3 +38,4 @@ export * from "./recalibration-banner";
 export * from "./defect-accuracy-card";
 export * from "./code-health-adapter";
 export * from "./triage-view";
+export * from "./coverage-view";
