@@ -39,9 +39,9 @@ class RewriteResult:
         #: The replacement command (e.g. ``repowise distill pytest -x``).
         self.command = command
         #: ``"ask"`` surfaces the rewritten command for user approval;
-        #: ``"allow"`` executes it without a prompt. Never auto-allow unless
-        #: the user opted in per command family — a silently mutated command
-        #: is a permission escalation.
+        #: ``"allow"`` executes it without a prompt (the default — see the
+        #: ``rewrite_hook`` module docstring for why auto-allowing a
+        #: bailout-filtered ``repowise distill`` wrap is not an escalation).
         self.permission = permission
         #: One-line human explanation shown in the agent's permission UI.
         self.reason = reason

@@ -47,6 +47,7 @@ class ClaudeCodeSetup:
 
     def register_client(self, console_obj: Any, repo_path: Path) -> None:
         from repowise.cli.editor_integrations.claude_config import (
+            enable_tool_search_in_claude_code,
             install_claude_code_hooks,
             register_with_claude_code,
             register_with_claude_desktop,
@@ -63,6 +64,12 @@ class ClaudeCodeSetup:
         hooks = install_claude_code_hooks()
         if hooks:
             console_obj.print("  [green]✓[/green] Claude Code hooks registered (PostToolUse)")
+
+        if enable_tool_search_in_claude_code():
+            console_obj.print(
+                "  [green]✓[/green] Claude Code tool-search enabled "
+                "(defers MCP tool schemas)"
+            )
 
     def refresh_project_files(
         self,

@@ -96,6 +96,39 @@ def register_with_claude_code(repo_path: Path) -> Path | None:
     return settings_path if merge_mcp_entry(settings_path, entry) else None
 
 
+def enable_tool_search_in_claude_code() -> Path | None:
+    """Set ``env.ENABLE_TOOL_SEARCH=true`` in ~/.claude/settings.json.
+
+    Claude Code defers MCP tool schemas (loads them on demand via tool search)
+    when this is on, so repowise's tools don't sit in every session's standing
+    context. The behavior is client-default in newer builds but flips off in
+    some configs, so we pin it explicitly. Idempotent and non-destructive: an
+    existing ``ENABLE_TOOL_SEARCH`` value the user set (including a deliberate
+    ``false``) is left untouched, and other ``env`` keys are preserved.
+
+    Returns the settings path when it newly sets the key, else None (already
+    set, or a write failure — both non-fatal to ``init``).
+    """
+    settings_path = _claude_code_settings_path()
+    try:
+        if settings_path.exists():
+            existing = load_existing_config(settings_path)
+        else:
+            settings_path.parent.mkdir(parents=True, exist_ok=True)
+            existing = {}
+        env = existing.get("env")
+        if not isinstance(env, dict):
+            env = {}
+        if "ENABLE_TOOL_SEARCH" in env:
+            return None
+        env["ENABLE_TOOL_SEARCH"] = "true"
+        existing["env"] = env
+        settings_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
+        return settings_path
+    except (OSError, ValueError):
+        return None
+
+
 # Current augment PostToolUse matcher. Read/Edit/Write power the distill
 # read-intelligence layer (skeleton nudges + per-file stale-read notices);
 # PowerShell is the Windows Claude Code shell tool (same payload shape as

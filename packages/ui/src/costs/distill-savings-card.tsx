@@ -41,6 +41,9 @@ export interface DistillSavingsData {
   missed_events?: number;
   missed_tokens_est?: number;
   missed_window_days?: number;
+  /** Full re-reads of unchanged files a targeted get_symbol would have replaced. */
+  reread_events?: number;
+  reread_tokens_est?: number;
 }
 
 export interface DistillSavingsCardProps {
@@ -110,6 +113,7 @@ export function DistillSavingsCard({ data }: DistillSavingsCardProps) {
   const priced = agentLabel(data.pricing_agent) || data.pricing_model;
   const detected = data.pricing_source && data.pricing_source !== "default";
   const missed = (data.missed_tokens_est ?? 0) > 0;
+  const reread = (data.reread_tokens_est ?? 0) > 0;
 
   // Prefer the counterfactual framing ("N queries answered") when any MCP call
   // recorded a real saving; fall back to the truncation-drop count otherwise.
@@ -238,6 +242,21 @@ export function DistillSavingsCard({ data }: DistillSavingsCardProps) {
               {data.missed_window_days ?? 7} days. Enable auto-capture →
             </div>
           </a>
+        )}
+
+        {/* Re-read waste → MCP opportunity CTA */}
+        {reread && (
+          <div className="mt-3 flex items-center gap-3 rounded-lg border border-[var(--color-warning)]/30 bg-[var(--color-warning)]/5 px-3 py-2.5">
+            <Zap className="h-4 w-4 shrink-0 text-[var(--color-warning)]" />
+            <div className="text-xs text-[var(--color-text-secondary)]">
+              <span className="font-medium text-[var(--color-warning)]">
+                Save ~{formatTokens(data.reread_tokens_est ?? 0)} more
+              </span>{" "}
+              — {(data.reread_events ?? 0).toLocaleString()} full re-read
+              {(data.reread_events ?? 0) === 1 ? "" : "s"} of unchanged files a targeted{" "}
+              <code>get_symbol</code> would have replaced.
+            </div>
+          </div>
         )}
 
         <p className="mt-3 text-xs leading-snug text-[var(--color-text-tertiary)]">

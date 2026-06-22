@@ -856,6 +856,7 @@ def _load_session_state(repo_path: Path, session_id: str) -> dict:
         "edits": {},
         "nudged": [],
         "stale_notified": [],
+        "reread_notified": [],
     }
     try:
         state = json.loads(_session_state_path(repo_path).read_text(encoding="utf-8"))
@@ -931,16 +932,35 @@ def _handle_read_post(
     # reasoning still anchored on the pre-edit excerpt.
     last_read = state["reads"].get(rel)
     last_edit = state["edits"].get(rel)
-    if (
-        last_read is not None
-        and last_edit is not None
-        and last_read < last_edit
-        and rel not in state["stale_notified"]
-    ):
+    edited_since_read = last_read is not None and last_edit is not None and last_read < last_edit
+    if edited_since_read and rel not in state["stale_notified"]:
         state["stale_notified"].append(rel)
         notices.append(
             f"[repowise] {rel} changed (Edit/Write) after your previous read of it — "
             "excerpts from before that edit are stale."
+        )
+
+    # Re-read: already read this session, unchanged since (the read→edit→read
+    # case is the stale notice above), and this is a full re-read of a
+    # non-trivial file — the content is still in context, so re-reading the
+    # whole file just re-bills it. A targeted range re-read is the behavior
+    # we'd recommend, so it is deliberately not flagged; the line floor (the
+    # skeleton nudge's) keeps small files from generating noise.
+    partial_read = isinstance(tool_input, dict) and (
+        tool_input.get("offset") is not None or tool_input.get("limit") is not None
+    )
+    if (
+        last_read is not None
+        and not edited_since_read
+        and not partial_read
+        and rel not in state["reread_notified"]
+        and _read_output_line_count(tool_output) >= _READ_NUDGE_MIN_LINES
+    ):
+        state["reread_notified"].append(rel)
+        notices.append(
+            f"[repowise] You already read {rel} this session and it is unchanged — "
+            "its content is still in context. For a specific symbol use "
+            f'get_symbol("{rel}::Name") or a line-range read instead of re-reading the file.'
         )
 
     state["seq"] += 1

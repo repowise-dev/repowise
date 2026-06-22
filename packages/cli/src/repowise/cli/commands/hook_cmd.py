@@ -167,8 +167,9 @@ def _codex_capability_note(version, supports) -> str:
     default=None,
     help=(
         "Seed a Claude Code permission allow rule for `repowise distill` "
-        "commands so existing allowlist entries keep working after rewrites. "
-        "Prompts when omitted (interactive only)."
+        "commands. Only needed if you set `permission: ask` in "
+        ".repowise/config.yaml; the default `allow` posture rewrites without "
+        "a prompt and needs no allow rule."
     ),
 )
 def rewrite_install(
@@ -182,8 +183,6 @@ def rewrite_install(
     otherwise — since a prior ``repowise init`` opt-out may have gated
     repos off.
     """
-    import sys
-
     from repowise.cli.agent_adapters.claude_code import ClaudeCodeAdapter
     from repowise.cli.helpers import save_distill_commands_enabled
 
@@ -196,23 +195,18 @@ def rewrite_install(
     console.print(f"Rewrite hook: [green]installed[/green] ({hook_path})")
     console.print(
         "  [dim]Per-repo behavior is configured under `distill.commands` "
-        "in .repowise/config.yaml (permission: ask | allow).[/dim]"
+        "in .repowise/config.yaml (permission: allow | ask).[/dim]"
+    )
+    console.print(
+        "  [dim]Rewrites run without a prompt by default (for the main agent "
+        "and subagents alike); set `permission: ask` to review each one.[/dim]"
     )
 
-    # A rewrite changes the command string, so a user's existing allowlist
-    # entry (e.g. `Bash(git diff:*)`) no longer matches the rewritten
-    # `repowise distill git diff …` — every rewrite asks again. Offer to
-    # seed an allow rule for the distill prefix; strictly opt-in, the hook
-    # posture itself stays `ask`.
-    if allow_rule is None and sys.stdin.isatty():
-        console.print(
-            "  [dim]Rewritten commands no longer match your existing Claude Code "
-            "allowlist entries (e.g. `Bash(git diff:*)`), so they prompt again.[/dim]"
-        )
-        allow_rule = click.confirm(
-            "  Add a permission allow rule for `repowise distill` commands?",
-            default=False,
-        )
+    # The default `allow` posture rewrites without a prompt, so no allowlist
+    # entry is needed. Seeding `Bash(repowise distill:*)` only helps users who
+    # set `permission: ask` and want their existing allowlist (e.g.
+    # `Bash(git diff:*)`) to keep matching the rewritten string — honor it
+    # only when explicitly requested via --allow-rule.
     if allow_rule:
         from repowise.cli.editor_integrations.claude_config import (
             add_claude_code_distill_allow_rules,

@@ -174,8 +174,10 @@ async def get_distill_savings(
     # Missed savings: best-effort scan of local agent transcripts; the module
     # degrades to an empty report on any failure, never raises.
     from repowise.core.distill.missed import scan_missed_savings
+    from repowise.core.distill.missed_mcp import scan_missed_mcp_savings
 
     missed = scan_missed_savings(Path(repo.local_path))
+    reread = scan_missed_mcp_savings(Path(repo.local_path))
 
     # Price at the coding agent's actual model — saved tokens are input tokens
     # that agent never had to read. Detection is best-effort (sonnet default).
@@ -209,4 +211,6 @@ async def get_distill_savings(
         missed_events=missed["events"],
         missed_tokens_est=missed["est_saved_tokens"],
         missed_window_days=missed["window_days"],
+        reread_events=reread["events"],
+        reread_tokens_est=reread["est_saved_tokens"],
     )

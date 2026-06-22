@@ -113,8 +113,9 @@ class TestRewriteInstallFlag:
         data = json.loads(settings_path.read_text(encoding="utf-8"))
         assert "permissions" not in data
 
-    def test_default_is_no_rule_when_not_interactive(self, repo, settings_path) -> None:
-        # CliRunner stdin is not a tty — the prompt is skipped, no rule added.
+    def test_default_adds_no_rule(self, repo, settings_path) -> None:
+        # The default `allow` posture rewrites without a prompt, so install
+        # seeds no allowlist entry unless --allow-rule is passed explicitly.
         result = self._invoke(["rewrite", "install", str(repo)])
         assert result.exit_code == 0, result.output
         data = json.loads(settings_path.read_text(encoding="utf-8"))

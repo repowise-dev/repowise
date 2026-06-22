@@ -2,10 +2,17 @@
 
 Fires before every shell command an AI agent runs and decides whether to
 rewrite it to ``repowise distill <command>`` so the agent sees a compact,
-errors-first rendering instead of the raw flood. The hook only *proposes*
-the rewrite — the default permission posture is ``ask``, so the user
-approves the modified command unless they opted into auto-allow per
-command family in ``.repowise/config.yaml``.
+errors-first rendering instead of the raw flood. The default permission
+posture is ``allow``: a rewritten command runs without an approval prompt,
+uniformly across the main agent and every subagent. This is safe because
+``classify`` only ever rewrites a closed set of recognized command families
+(test/lint/build/git/search/listing/log) that survive the bailouts below —
+no pipes, redirects, compound commands, substitution, or interactive
+commands. The rewrite is therefore always ``repowise distill <one simple,
+recognized command>``, never an arbitrary command smuggled behind the
+wrapper, so auto-allowing it is not a permission escalation. Users who want
+to review every rewrite can set ``permission: ask`` in
+``.repowise/config.yaml``; a family set to ``off`` is never rewritten.
 
 Hot-path discipline (this fires on EVERY Bash tool call):
 
@@ -239,9 +246,12 @@ def _load_commands_config(repo_root: str) -> tuple[bool, str, dict]:
     """Return (enabled, default_permission, per-family overrides).
 
     Missing file, missing yaml, malformed yaml → permissive defaults with
-    ``ask`` (the hook is only installed for users who opted in).
+    ``allow`` (the hook is only installed for users who opted in, and a
+    rewrite is always a bailout-filtered ``repowise distill`` wrap — see the
+    module docstring for why auto-allow is safe). Set ``permission: ask`` to
+    restore per-rewrite approval prompts.
     """
-    enabled, permission, families = True, "ask", {}
+    enabled, permission, families = True, "allow", {}
     config_path = os.path.join(repo_root, ".repowise", "config.yaml")
     try:
         with open(config_path, encoding="utf-8") as fh:

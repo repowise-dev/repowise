@@ -87,12 +87,18 @@ class TestSkeletonNudge:
         _write_big_file(repo, "src/big.py")
         _index_file(repo, "src/big.py", [(10, 60), (70, 150), (160, 195)])
 
-        assert _read_event(repo, "src/big.py") is not None
-        # Identical payload, same session: silent.
+        first = _read_event(repo, "src/big.py")
+        assert first is not None and 'include=["skeleton"]' in first
+        # Second read of the same big file surfaces a re-read notice (content
+        # already in context), not a second skeleton pointer.
+        second = _read_event(repo, "src/big.py")
+        assert second is not None and 'include=["skeleton"]' not in second
+        assert "already read" in second
+        # Third read: both the skeleton and re-read notices are once-per-file.
         assert _read_event(repo, "src/big.py") is None
-        assert _read_event(repo, "src/big.py") is None
-        # A new session resets the claim.
-        assert _read_event(repo, "src/big.py", session="session-2") is not None
+        # A new session resets the claim — skeleton pointer fires again.
+        third_session = _read_event(repo, "src/big.py", session="session-2")
+        assert third_session is not None and 'include=["skeleton"]' in third_session
 
     def test_silent_below_line_threshold(self, repo: Path) -> None:
         _write_big_file(repo, "src/big.py")
@@ -203,6 +209,53 @@ class TestStaleReadNotice:
         assert result is None
         state = _load_session_state(repo, SESSION)
         assert state["edits"] == {}
+
+
+class TestRereadNotice:
+    def test_full_reread_of_unchanged_file_is_flagged(self, repo: Path) -> None:
+        _write_big_file(repo, "a.py", lines=200)
+        assert _read_event(repo, "a.py", num_lines=150) is None  # first read
+        notice = _read_event(repo, "a.py", num_lines=150)
+        assert notice is not None
+        assert "a.py" in notice and "already read" in notice
+        assert "get_symbol" in notice
+
+    def test_notice_is_once_per_file_per_session(self, repo: Path) -> None:
+        _write_big_file(repo, "a.py", lines=200)
+        _read_event(repo, "a.py", num_lines=150)
+        assert _read_event(repo, "a.py", num_lines=150) is not None
+        assert _read_event(repo, "a.py", num_lines=150) is None
+
+    def test_partial_reread_is_not_flagged(self, repo: Path) -> None:
+        # A targeted range re-read is the behavior we recommend; never nag it.
+        _write_big_file(repo, "a.py", lines=200)
+        _read_event(repo, "a.py", num_lines=150)
+        result = _handle_post_tool_use(
+            "Read",
+            {"file_path": str(repo / "a.py"), "offset": 40, "limit": 30},
+            {"file": {"numLines": 30}},
+            str(repo),
+            session_id=SESSION,
+        )
+        assert result is None
+
+    def test_small_file_reread_is_not_flagged(self, repo: Path) -> None:
+        _write_big_file(repo, "a.py", lines=10)
+        assert _read_event(repo, "a.py", num_lines=10) is None
+        assert _read_event(repo, "a.py", num_lines=10) is None
+
+    def test_edit_between_reads_is_stale_not_reread(self, repo: Path) -> None:
+        _write_big_file(repo, "a.py", lines=200)
+        _read_event(repo, "a.py", num_lines=150)
+        _edit_event(repo, "a.py")
+        notice = _read_event(repo, "a.py", num_lines=150)
+        assert notice is not None and "stale" in notice
+        assert "already read" not in notice
+
+    def test_new_session_forgets_history(self, repo: Path) -> None:
+        _write_big_file(repo, "a.py", lines=200)
+        _read_event(repo, "a.py", num_lines=150)
+        assert _read_event(repo, "a.py", num_lines=150, session="other") is None
 
 
 class TestSessionState:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 from io import StringIO
 from pathlib import Path
 from typing import Any
@@ -608,9 +609,14 @@ def test_claude_client_registration_uses_existing_claude_setup(
         calls.append(("hooks", tmp_path))
         return tmp_path / ".claude" / "settings.json"
 
+    def fake_tool_search() -> Path:
+        calls.append(("tool_search", tmp_path))
+        return tmp_path / ".claude" / "settings.json"
+
     monkeypatch.setattr(claude_config, "register_with_claude_desktop", fake_desktop)
     monkeypatch.setattr(claude_config, "register_with_claude_code", fake_code)
     monkeypatch.setattr(claude_config, "install_claude_code_hooks", fake_hooks)
+    monkeypatch.setattr(claude_config, "enable_tool_search_in_claude_code", fake_tool_search)
 
     output = StringIO()
     console = Console(file=output, force_terminal=False)
@@ -621,8 +627,44 @@ def test_claude_client_registration_uses_existing_claude_setup(
         ("desktop", tmp_path),
         ("code", tmp_path),
         ("hooks", tmp_path),
+        ("tool_search", tmp_path),
     ]
     text = output.getvalue()
     assert "Claude Desktop MCP registered" in text
     assert "Claude Code MCP registered" in text
     assert "Claude Code hooks registered" in text
+    assert "tool-search enabled" in text
+
+
+def test_enable_tool_search_sets_env_idempotently(tmp_path: Path, monkeypatch: Any) -> None:
+    settings = tmp_path / ".claude" / "settings.json"
+    monkeypatch.setattr(claude_config, "_claude_code_settings_path", lambda: settings)
+
+    # First call creates the env block and sets the flag.
+    assert claude_config.enable_tool_search_in_claude_code() == settings
+    data = json.loads(settings.read_text(encoding="utf-8"))
+    assert data["env"]["ENABLE_TOOL_SEARCH"] == "true"
+
+    # Idempotent: a second call leaves it set but reports nothing new to do.
+    assert claude_config.enable_tool_search_in_claude_code() is None
+
+    # A user's explicit value is never overwritten.
+    settings.write_text(json.dumps({"env": {"ENABLE_TOOL_SEARCH": "false"}}), encoding="utf-8")
+    assert claude_config.enable_tool_search_in_claude_code() is None
+    data = json.loads(settings.read_text(encoding="utf-8"))
+    assert data["env"]["ENABLE_TOOL_SEARCH"] == "false"
+
+
+def test_enable_tool_search_preserves_existing_settings(tmp_path: Path, monkeypatch: Any) -> None:
+    settings = tmp_path / ".claude" / "settings.json"
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    settings.write_text(
+        json.dumps({"env": {"FOO": "bar"}, "mcpServers": {"repowise": {}}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(claude_config, "_claude_code_settings_path", lambda: settings)
+
+    assert claude_config.enable_tool_search_in_claude_code() == settings
+    data = json.loads(settings.read_text(encoding="utf-8"))
+    assert data["env"] == {"FOO": "bar", "ENABLE_TOOL_SEARCH": "true"}
+    assert data["mcpServers"] == {"repowise": {}}

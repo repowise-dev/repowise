@@ -98,3 +98,7 @@ class DistillSavingsResponse(BaseModel):
     missed_events: int = 0
     missed_tokens_est: int = 0
     missed_window_days: float = 0.0
+    # Missed MCP savings — full re-reads of unchanged files a targeted
+    # get_symbol / range read would have replaced, same transcript scan.
+    reread_events: int = 0
+    reread_tokens_est: int = 0

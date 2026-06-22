@@ -155,6 +155,7 @@ def saved_command(
     )
     console.print(f"  [dim]Ledger: {db_path}[/dim]")
     _print_missed_summary_line(start, missed_days)
+    _print_reread_summary_line(start, missed_days)
     console.print()
 
 
@@ -182,16 +183,51 @@ def _print_missed_summary_line(start: Path, days: float) -> None:
     )
 
 
-def _print_missed_report(start: Path, days: float, pricing_model: str) -> None:
-    report = _missed_report(start, days)
+def _reread_report(start: Path, days: float) -> dict | None:
+    """Best-effort wasteful-re-read scan rooted at the enclosing repowise repo."""
+    try:
+        from repowise.cli.helpers import find_repowise_repo_root
+        from repowise.core.distill.missed_mcp import scan_missed_mcp_savings
+
+        repo_root = find_repowise_repo_root(start) or start
+        return scan_missed_mcp_savings(repo_root, days=days)
+    except Exception:
+        return None
+
+
+def _print_reread_summary_line(start: Path, days: float) -> None:
+    """One re-read-waste line under the main report; silent when empty."""
+    report = _reread_report(start, days)
     if not report or not report["events"]:
+        return
+    console.print(
+        f"  Re-reads: [yellow]~{report['est_saved_tokens']:,} tokens[/yellow] across "
+        f"{report['events']} full re-reads of unchanged files in the last {days:g} days "
+        f"[dim](repowise saved --missed)[/dim]"
+    )
+
+
+def _print_missed_report(start: Path, days: float, pricing_model: str) -> None:
+    missed = _missed_report(start, days)
+    reread = _reread_report(start, days)
+    has_missed = bool(missed and missed["events"])
+    has_reread = bool(reread and reread["events"])
+
+    if not has_missed and not has_reread:
         console.print(
             f"[yellow]No missed savings found in the last {days:g} days.[/yellow] "
-            "Either every distillable command already ran through 'repowise distill', "
-            "or no agent transcripts cover this repo."
+            "Either every distillable command already ran through 'repowise distill' "
+            "and no files were needlessly re-read, or no agent transcripts cover this repo."
         )
         return
 
+    if has_missed:
+        _render_missed_distill_table(missed, days, pricing_model)
+    if has_reread:
+        _render_reread_table(reread, days, pricing_model)
+
+
+def _render_missed_distill_table(report: dict, days: float, pricing_model: str) -> None:
     usd, rate = _estimate_usd(report["est_saved_tokens"], pricing_model)
     table = Table(
         title=f"Missed distill savings - last {days:g} days",
@@ -229,6 +265,49 @@ def _print_missed_report(start: Path, days: float, pricing_model: str) -> None:
     console.print(
         "  [dim]Tip: install the rewrite hook ('repowise hook rewrite install') "
         "to catch these automatically.[/dim]"
+    )
+    console.print()
+
+
+def _render_reread_table(report: dict, days: float, pricing_model: str) -> None:
+    usd, rate = _estimate_usd(report["est_saved_tokens"], pricing_model)
+    table = Table(
+        title=f"Missed MCP savings (file re-reads) - last {days:g} days",
+        border_style="dim",
+        show_footer=True,
+        caption=(
+            "Full re-reads of unchanged files a targeted get_symbol / range read "
+            "would have replaced; estimates credit a conservative half of each "
+            "re-read. Scanned from local Claude Code transcripts - nothing leaves "
+            "this machine."
+        ),
+    )
+    table.add_column("File", style="cyan", footer="[bold]TOTAL[/bold]")
+    table.add_column("Re-reads", justify="right", footer=str(report["events"]))
+    table.add_column("Raw Tokens", justify="right", footer=f"{report['raw_tokens']:,}")
+    table.add_column(
+        "Est. Foregone",
+        justify="right",
+        footer=f"[bold yellow]{report['est_saved_tokens']:,}[/bold yellow]",
+    )
+    for rel, stats in list(report["per_file"].items())[:15]:
+        table.add_row(
+            rel,
+            str(stats["events"]),
+            f"{stats['raw_tokens']:,}",
+            f"[yellow]{stats['est_saved_tokens']:,}[/yellow]",
+        )
+
+    console.print()
+    console.print(table)
+    console.print(
+        f"  Estimated foregone: [bold yellow]${usd:.4f}[/bold yellow] "
+        f"[dim](at ${rate:.2f}/M input tokens, {pricing_model}; "
+        f"tokens are chars/4 estimates)[/dim]"
+    )
+    console.print(
+        '  [dim]Tip: for a known symbol use get_symbol("file::Name") or a '
+        "line-range read instead of re-reading the whole file.[/dim]"
     )
     console.print()
 

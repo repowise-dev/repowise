@@ -187,11 +187,11 @@ def _write_config(repo, distill_block) -> None:
 
 
 class TestDecide:
-    def test_default_is_ask(self, repo) -> None:
+    def test_default_is_allow(self, repo) -> None:
         result = decide("pytest -x", str(repo))
         assert result is not None
         assert result.command == "repowise distill --source hook-bash pytest -x"
-        assert result.permission == "ask"
+        assert result.permission == "allow"
         assert "repowise expand" in result.reason
 
     def test_no_repowise_dir_passes_through(self, tmp_path) -> None:
@@ -218,10 +218,16 @@ class TestDecide:
         _write_config(repo, {"commands": {"permission": "allow"}})
         assert decide("git status", str(repo)).permission == "allow"
 
-    def test_family_allow_overrides_ask(self, repo) -> None:
-        _write_config(repo, {"commands": {"families": {"git_status": "allow"}}})
+    def test_family_setting_overrides_default(self, repo) -> None:
+        # A per-family `ask` overrides the default `allow`; an unlisted family
+        # keeps the default.
+        _write_config(repo, {"commands": {"families": {"test_output": "ask"}}})
         assert decide("git status", str(repo)).permission == "allow"
         assert decide("pytest -x", str(repo)).permission == "ask"
+
+    def test_global_ask_posture(self, repo) -> None:
+        _write_config(repo, {"commands": {"permission": "ask"}})
+        assert decide("git status", str(repo)).permission == "ask"
 
     def test_family_off_disables_one_family(self, repo) -> None:
         _write_config(repo, {"commands": {"families": {"git_diff": "off"}}})
@@ -232,12 +238,12 @@ class TestDecide:
         _write_config(repo, {"commands": {"families": {"git_diff": "deny"}}})
         assert decide("git diff main", str(repo)) is None
 
-    def test_malformed_config_defaults_to_ask(self, repo) -> None:
+    def test_malformed_config_defaults_to_allow(self, repo) -> None:
         (repo / ".repowise" / "config.yaml").write_text(
             "distill: [not, a, mapping", encoding="utf-8"
         )
         result = decide("pytest -x", str(repo))
-        assert result is not None and result.permission == "ask"
+        assert result is not None and result.permission == "allow"
 
 
 class TestDecidePowerShell:
@@ -274,7 +280,7 @@ class TestDecidePowerShell:
         result = decide(command, str(repo), shell="powershell")
         assert result is not None
         assert result.command == f"repowise distill --source hook-powershell {command}"
-        assert result.permission == "ask"
+        assert result.permission == "allow"
 
 
 # ---------------------------------------------------------------------------
@@ -313,7 +319,7 @@ class TestMain:
         response = json.loads(out)
         hso = response["hookSpecificOutput"]
         assert hso["hookEventName"] == "PreToolUse"
-        assert hso["permissionDecision"] == "ask"
+        assert hso["permissionDecision"] == "allow"
         assert hso["updatedInput"] == {"command": "repowise distill --source hook-bash pytest -x"}
         assert hso["permissionDecisionReason"]
 
@@ -329,7 +335,7 @@ class TestMain:
         assert hso["updatedInput"] == {
             "command": "repowise distill --source hook-powershell git status"
         }
-        assert hso["permissionDecision"] == "ask"
+        assert hso["permissionDecision"] == "allow"
 
     def test_powershell_alias_passes_through(self, monkeypatch, repo) -> None:
         assert _run_main(monkeypatch, _payload("ls -la", str(repo), tool_name="PowerShell")) == ""
@@ -354,9 +360,20 @@ class TestMainCodex:
     """
 
     def test_ask_family_passes_through(self, monkeypatch, repo) -> None:
-        # Default posture is ask → Codex gets nothing, command runs raw.
+        # An explicit `ask` posture → Codex has no ask-with-mutation, so the
+        # command runs raw instead of silently escalating to an unprompted
+        # rewrite.
+        _write_config(repo, {"commands": {"permission": "ask"}})
         out = _run_main(monkeypatch, _payload("pytest -x", str(repo)), argv=["--agent", "codex"])
         assert out == ""
+
+    def test_default_allow_rewrites_for_codex(self, monkeypatch, repo) -> None:
+        # The default `allow` posture is honorable by Codex, so a plain repo
+        # rewrites without any config.
+        out = _run_main(monkeypatch, _payload("pytest -x", str(repo)), argv=["--agent", "codex"])
+        hso = json.loads(out)["hookSpecificOutput"]
+        assert hso["permissionDecision"] == "allow"
+        assert hso["updatedInput"] == {"command": "repowise distill --source hook-codex pytest -x"}
 
     def test_allow_family_rewrites(self, monkeypatch, repo) -> None:
         _write_config(repo, {"commands": {"families": {"test_output": "allow"}}})
@@ -379,4 +396,4 @@ class TestMainCodex:
 
     def test_unknown_agent_falls_back_to_claude_code(self, monkeypatch, repo) -> None:
         out = _run_main(monkeypatch, _payload("pytest -x", str(repo)), argv=["--agent", "weird"])
-        assert json.loads(out)["hookSpecificOutput"]["permissionDecision"] == "ask"
+        assert json.loads(out)["hookSpecificOutput"]["permissionDecision"] == "allow"
