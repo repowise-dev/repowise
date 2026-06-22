@@ -438,6 +438,125 @@ export function buildCoverageAiPrompt({
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// Work-queue prompt (repo-level — the Attention Needed backlog)
+// ─────────────────────────────────────────────────────────────────────
+
+const WORK_QUEUE_PREAMBLE: Record<AiPromptFlavor, string> = {
+  generic:
+    "You are a senior engineer triaging a backlog of issues repowise flagged across this repository. Work through them in priority order, one focused change at a time. Each item is a lead from static + git analysis — verify it against the real code before acting, and skip anything that turns out to be a false positive (say why).",
+  "claude-code":
+    "You are Claude Code clearing a backlog of issues repowise flagged across this repository. Use TodoWrite to track the queue, and Read / Grep / Glob to investigate each item before editing. Work in priority order, one focused, independently-revertible change at a time. Verify each item against the real code; flag false positives instead of forcing a change.",
+  "claude-code-mcp":
+    "You are Claude Code clearing a backlog of issues repowise flagged across this repository, which is indexed by repowise and exposes its MCP tools. Use TodoWrite to track the queue. For each item, pull the context repowise already computed — `get_context([target])` for the skeleton, `get_risk([target])` before editing, `get_why(...)` for decision items, `get_health([target])` for code-health items — instead of re-exploring by hand. Work in priority order, one focused, independently-revertible change at a time. Verify each item; flag false positives.",
+  cursor:
+    "You are clearing a backlog of issues repowise flagged across this repository. Work through them in priority order, one focused change at a time. Use @file and @codebase to investigate each item before editing. Verify each against the real code and skip false positives, saying why.",
+};
+
+const WORK_QUEUE_GUIDANCE: Record<string, string> = {
+  stale_decision:
+    "Re-check this architectural decision against the current code; update it, or supersede it if the code has moved on.",
+  proposed_decision:
+    "Review this auto-proposed decision: confirm it reflects reality and accept it, or reject it with a reason.",
+  knowledge_silo:
+    "One person holds the knowledge for this area (low bus factor). Add tests and docs that make it legible to others.",
+  ungoverned_hotspot:
+    "A high-churn file with no governing decision. Stabilize it (tests, clearer seams) and/or capture the decision behind it.",
+  dead_code:
+    "Verify with a repo-wide search (including dynamic references), then remove it in a small, revertible commit.",
+};
+
+export interface WorkQueueItem {
+  type: string;
+  title: string;
+  description: string;
+  severity: "high" | "medium" | "low";
+  target_id?: string | null;
+}
+
+export interface BuildWorkQueuePromptOptions {
+  items: WorkQueueItem[];
+  flavor?: AiPromptFlavor;
+  repoName?: string;
+}
+
+const MAX_WORK_QUEUE_ITEMS = 15;
+const SEVERITY_ORDER: Record<string, number> = { high: 0, medium: 1, low: 2 };
+
+export function buildWorkQueueAiPrompt({
+  items,
+  flavor = "generic",
+  repoName,
+}: BuildWorkQueuePromptOptions): string {
+  const repoLine = repoName ? ` (\`${repoName}\`)` : "";
+  const ranked = items
+    .slice()
+    .sort((a, b) => (SEVERITY_ORDER[a.severity] ?? 3) - (SEVERITY_ORDER[b.severity] ?? 3));
+  const shown = ranked.slice(0, MAX_WORK_QUEUE_ITEMS);
+  const hidden = ranked.length - shown.length;
+
+  const itemsBlock = shown
+    .map((it, i) => {
+      const guidance = WORK_QUEUE_GUIDANCE[it.type];
+      return [
+        `${i + 1}. [${it.severity.toUpperCase()}] **${it.title}**`,
+        it.description ? `   - Detail: ${it.description}` : null,
+        it.target_id ? `   - Target: \`${it.target_id}\`` : null,
+        guidance ? `   - How to approach: ${guidance}` : null,
+      ]
+        .filter(Boolean)
+        .join("\n");
+    })
+    .join("\n\n");
+
+  const constraintList = [
+    "Work top-down by severity. Finish (or consciously defer) one item before starting the next.",
+    "One focused, independently-revertible change per item — don't bundle unrelated fixes into a single commit.",
+    "Verify each item against the real code first. If it's a false positive, skip it and record why instead of forcing a change.",
+    "Preserve behavior. Add or update tests for anything whose logic you touch.",
+    "If an item is too large for one pass, propose a phased plan for it and move on rather than half-finishing.",
+  ];
+
+  const completionContract = [
+    "1. A triaged plan: the order you'll take these in and why.",
+    "2. For each item you action: the change, scoped and verified, with the tests that cover it.",
+    "3. For each item you skip: a one-line reason (false positive, needs product input, too large — with a proposed follow-up).",
+    "4. A short summary of what's left in the queue at the end.",
+  ];
+
+  return [
+    WORK_QUEUE_PREAMBLE[flavor],
+    "",
+    `## Repository backlog${repoLine}`,
+    "",
+    bulletList([
+      `Items in this queue: **${ranked.length}**`,
+      "Source: repowise's Attention Needed panel (decisions, hotspots, knowledge silos, dead code).",
+    ]),
+    "",
+    "## Issues to work through (highest severity first)",
+    "",
+    itemsBlock,
+    hidden > 0
+      ? `\n…and ${hidden} more lower-priority item${hidden === 1 ? "" : "s"} in the panel — handle these after the above.`
+      : "",
+    "",
+    "## Hard constraints",
+    "",
+    bulletList(constraintList),
+    "",
+    "## What I expect back",
+    "",
+    completionContract.join("\n"),
+    "",
+    flavor === "claude-code-mcp"
+      ? "Start by calling `get_overview()` to orient, then take the queue top-down — `get_context` / `get_risk` / `get_why` per item before you touch anything. repowise already did the exploration; lean on it."
+      : "Start with the highest-severity items and ground each one in the real code before acting. The list describes symptoms; confirm the root cause before you change anything.",
+  ]
+    .filter((s) => s !== "")
+    .join("\n");
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // Dead-code cleanup prompt (bulk — the safe-to-delete pile)
 // ─────────────────────────────────────────────────────────────────────
 
@@ -548,6 +667,82 @@ export function buildDeadCodeAiPrompt({
     flavor === "claude-code-mcp"
       ? "For each file, call `get_risk([...])` to see who still imports it and `get_context([...])` for its exported surface before deleting — repowise already mapped the dependency graph, so use it instead of grepping blind. A file with live dependents is not dead; surface that and skip it."
       : "Start with the largest files. For each, run a repo-wide search for its name and every exported symbol before you delete anything — the analyzer can't see dynamic or string-based references. A file with live dependents is not dead; skip it and say so.",
+  ]
+    .filter((s) => s !== "")
+    .join("\n");
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Coupling decouple prompt (per co-change pair)
+// ─────────────────────────────────────────────────────────────────────
+
+export interface CouplingPromptEdge {
+  source: string;
+  target: string;
+  strength?: number | null;
+  last_co_change?: string | null;
+}
+
+export interface BuildCouplingPromptOptions {
+  edge: CouplingPromptEdge;
+  flavor?: AiPromptFlavor;
+  repoName?: string;
+}
+
+export function buildCouplingAiPrompt({
+  edge,
+  flavor = "generic",
+  repoName,
+}: BuildCouplingPromptOptions): string {
+  const repoLine = repoName ? ` (\`${repoName}\`)` : "";
+  const last = edge.last_co_change
+    ? new Date(edge.last_co_change).toISOString().slice(0, 10)
+    : null;
+
+  const constraintList = [
+    "**Diagnose before decoupling.** Read both files and the commits that touched them together. The coupling may be legitimate (two halves of one feature) or accidental (a leaky abstraction, a shared constant, copy-paste). Name which it is before acting.",
+    "If it's accidental, fix the cause: extract the shared concept into one owner, invert the dependency, or introduce a stable interface — don't just move code around.",
+    "If it's legitimate and unavoidable, say so and stop. Forcing a split that the domain doesn't support makes things worse.",
+    "Preserve behavior. This is a structural change, not a feature change.",
+    "Add or update tests so the new boundary is exercised and the old hidden contract can't silently regress.",
+  ];
+
+  const completionContract = [
+    "1. A verdict: is this coupling accidental or legitimate, and what's the underlying shared concern?",
+    "2. If accidental — a concrete decoupling plan (extract / invert / interface), smallest-risk first.",
+    "3. The first change, scoped and behavior-preserving, with its tests.",
+    "4. If legitimate — the reason to leave it, and any lighter-touch improvement (docs, a shared module) worth doing instead.",
+  ];
+
+  const closer =
+    flavor === "claude-code-mcp"
+      ? `Call \`get_risk(['${edge.source}'])\` and \`get_context(['${edge.source}', '${edge.target}'])\` to see what else each file pulls in before you plan the split — repowise already mapped the dependency graph and the co-change history. Don't restructure until you know why they move together.`
+      : "Start by reading both files and `git log` for the commits that changed them together. The co-change count is a symptom; find the shared concern driving it before you restructure anything.";
+
+  return [
+    FLAVOR_PREAMBLE[flavor],
+    "",
+    `## Hidden coupling to untangle${repoLine}`,
+    "",
+    bulletList([
+      `File A: \`${edge.source}\``,
+      `File B: \`${edge.target}\``,
+      edge.strength != null
+        ? `Coupling strength: **${edge.strength}** (recency-weighted count of commits that changed both — not a verified dependency)`
+        : null,
+      last ? `Last changed together: ${last}` : null,
+      "Source: repowise co-change analysis (git history — treat as a lead).",
+    ]),
+    "",
+    "## Hard constraints",
+    "",
+    bulletList(constraintList),
+    "",
+    "## What I expect back",
+    "",
+    completionContract.join("\n"),
+    "",
+    closer,
   ]
     .filter((s) => s !== "")
     .join("\n");
@@ -721,6 +916,197 @@ export function buildHotspotAiPrompt({
     completionContract.join("\n"),
     "",
     explorationCloser(flavor, h.file_path, "hotspot"),
+  ]
+    .filter((s) => s !== "")
+    .join("\n");
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Decision verification prompt (per architectural decision)
+// ─────────────────────────────────────────────────────────────────────
+
+export interface DecisionPromptInput {
+  title: string;
+  status: string;
+  context?: string | null;
+  decision?: string | null;
+  rationale?: string | null;
+  alternatives?: string[];
+  consequences?: string[];
+  affected_modules?: string[];
+  affected_files?: string[];
+  staleness_score?: number | null;
+  confidence?: number | null;
+}
+
+export interface BuildDecisionPromptOptions {
+  decision: DecisionPromptInput;
+  flavor?: AiPromptFlavor;
+  repoName?: string;
+}
+
+export function buildDecisionAiPrompt({
+  decision: d,
+  flavor = "generic",
+  repoName,
+}: BuildDecisionPromptOptions): string {
+  const repoLine = repoName ? ` (\`${repoName}\`)` : "";
+  const isProposed = d.status === "proposed";
+  const isStale = (d.staleness_score ?? 0) > 0.5;
+  const scope = [...(d.affected_modules ?? []), ...(d.affected_files ?? [])];
+
+  const task = isProposed
+    ? "repowise auto-proposed this architectural decision from the code and history. Verify it: does the codebase actually reflect this decision today? Then recommend whether to **confirm** it (it's real and current) or **reject** it (it's wrong, speculative, or already superseded)."
+    : isStale
+      ? "This recorded decision is flagged stale — the code it governs has changed since it was written. Re-verify it against the current code and recommend whether to **keep**, **update**, or **deprecate** it."
+      : "Verify this recorded decision against the current code: is it still honored in the implementation? Recommend whether to keep, update, or deprecate it.";
+
+  const constraintList = [
+    "Ground every claim in the actual code, not the decision text. The decision describes intent; the code is the truth. Where they disagree, the code wins and the decision is stale.",
+    scope.length > 0
+      ? "Start from the affected modules/files listed below, then follow the dependency graph to anything that should obey this decision but doesn't."
+      : "Identify which parts of the codebase this decision governs, then check them for conformance.",
+    "Cite specific files/symbols as evidence for your verdict — don't assert without a reference.",
+    "Distinguish 'the decision is wrong' from 'the code drifted from a still-good decision' — they lead to opposite actions (reject/deprecate vs. fix the code).",
+    "Do not change code as part of this task unless asked — this is a verification, not an implementation.",
+  ];
+
+  const completionContract = [
+    `1. A verdict: ${isProposed ? "**confirm** or **reject**" : "**keep**, **update**, or **deprecate**"}, in one line.`,
+    "2. The evidence: the files/symbols you checked and whether each conforms.",
+    "3. Any conformance gaps — places that violate the decision — as a short list.",
+    "4. If you'd update the decision text, the exact wording you'd change.",
+  ];
+
+  const closer =
+    flavor === "claude-code-mcp"
+      ? `Use \`get_why('${d.title.replace(/'/g, "")}')\` for the recorded rationale and \`get_context([${scope.slice(0, 3).map((s) => `'${s}'`).join(", ")}])\` for the governed code — repowise links decisions to graph nodes, so verify against that instead of guessing. Then check conformance file by file.`
+      : "Read the decision below, then open the code it governs and check it line up. The decision is a claim about the code — your job is to confirm or refute it with evidence.";
+
+  return [
+    FLAVOR_PREAMBLE[flavor],
+    "",
+    `## Architectural decision to verify${repoLine}`,
+    "",
+    bulletList([
+      `Title: **${d.title}**`,
+      `Status: ${d.status}`,
+      d.confidence != null ? `Recorded confidence: ${Math.round(d.confidence * 100)}%` : null,
+      isStale ? `Staleness: ${(d.staleness_score ?? 0).toFixed(2)} — flagged stale` : null,
+      scope.length > 0 ? `Governs: ${scope.slice(0, 8).map((s) => `\`${s}\``).join(", ")}${scope.length > 8 ? `, +${scope.length - 8} more` : ""}` : null,
+    ]),
+    "",
+    d.context ? ["## Context", "", d.context, ""].join("\n") : "",
+    d.decision ? ["## Decision", "", d.decision, ""].join("\n") : "",
+    d.rationale ? ["## Rationale", "", d.rationale, ""].join("\n") : "",
+    d.alternatives && d.alternatives.length > 0
+      ? ["## Alternatives rejected", "", bulletList(d.alternatives), ""].join("\n")
+      : "",
+    d.consequences && d.consequences.length > 0
+      ? ["## Consequences", "", bulletList(d.consequences), ""].join("\n")
+      : "",
+    "## Your task",
+    "",
+    task,
+    "",
+    "## Hard constraints",
+    "",
+    bulletList(constraintList),
+    "",
+    "## What I expect back",
+    "",
+    completionContract.join("\n"),
+    "",
+    closer,
+  ]
+    .filter((s) => s !== "")
+    .join("\n");
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Commit review prompt (per commit)
+// ─────────────────────────────────────────────────────────────────────
+
+export interface CommitPromptInput {
+  sha: string;
+  subject: string;
+  review_priority?: string | null;
+  risk_percentile?: number | null;
+  change_risk_score?: number | null;
+  is_fix?: boolean;
+  files_changed?: number | null;
+  lines_added?: number | null;
+  lines_deleted?: number | null;
+  entropy?: number | null;
+  top_drivers?: string[];
+  author_name?: string | null;
+}
+
+export interface BuildCommitPromptOptions {
+  commit: CommitPromptInput;
+  flavor?: AiPromptFlavor;
+  repoName?: string;
+}
+
+export function buildCommitAiPrompt({
+  commit: c,
+  flavor = "generic",
+  repoName,
+}: BuildCommitPromptOptions): string {
+  const repoLine = repoName ? ` (\`${repoName}\`)` : "";
+  const short = c.sha.slice(0, 10);
+
+  const constraintList = [
+    "Read the diff first. The risk score is a prior, not a verdict — a high score on a mechanical rename is fine; a low score hiding a logic change is not.",
+    "Focus on what the change-risk drivers flag: scattered edits, missing tests, a hotspot touch, a new-to-the-area author. Confirm each against the actual diff.",
+    "Check the blast radius: what depends on the changed files, and is anything that usually changes with them missing from this commit?",
+    "Call out missing or weak test coverage for the behavior this commit changes.",
+    "Be specific — reference files and lines. A review that says 'looks risky' is useless.",
+  ];
+
+  const completionContract = [
+    "1. A one-paragraph risk read: is this commit actually risky, and where?",
+    "2. The specific things a reviewer should scrutinize, as a checklist tied to files.",
+    "3. Suggested reviewers — who owns or recently changed the affected code.",
+    "4. Any missing tests or co-change partners that should have been in this commit.",
+  ];
+
+  const closer =
+    flavor === "claude-code-mcp"
+      ? `Call \`get_risk(changed_files=[...])\` for this commit's files to get the blast radius, co-change partners, missing-test directive, and owners in one shot — repowise computes all of that. Then read the diff and ground each flag.`
+      : `Start with \`git show ${short}\` to read the diff, then check who owns and recently touched the changed files. Ground every risk call in the actual change.`;
+
+  return [
+    FLAVOR_PREAMBLE[flavor],
+    "",
+    `## Commit to review${repoLine}`,
+    "",
+    bulletList([
+      `Commit: \`${short}\` — ${c.subject || "(no subject)"}`,
+      c.author_name ? `Author: ${c.author_name}` : null,
+      c.is_fix ? "Tagged as a bug-fix commit." : null,
+      c.review_priority ? `Review priority (repo-relative): **${c.review_priority}**` : null,
+      c.risk_percentile != null ? `Risk percentile in this repo: ${Math.round(c.risk_percentile)}th` : null,
+      c.change_risk_score != null ? `Raw change-risk score: ${c.change_risk_score.toFixed(1)}/10` : null,
+      c.files_changed != null ? `Files changed: ${c.files_changed}` : null,
+      c.lines_added != null || c.lines_deleted != null
+        ? `Lines: +${c.lines_added ?? 0} / −${c.lines_deleted ?? 0}`
+        : null,
+      c.entropy != null ? `Change entropy: ${c.entropy.toFixed(2)} (how scattered the edits are)` : null,
+      c.top_drivers && c.top_drivers.length > 0
+        ? `Top risk drivers: ${c.top_drivers.slice(0, 3).join(", ")}`
+        : null,
+    ]),
+    "",
+    "## Hard constraints",
+    "",
+    bulletList(constraintList),
+    "",
+    "## What I expect back",
+    "",
+    completionContract.join("\n"),
+    "",
+    closer,
   ]
     .filter((s) => s !== "")
     .join("\n");

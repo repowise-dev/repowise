@@ -18,6 +18,7 @@ import {
   type CommitSort,
 } from "@repowise-dev/ui/commits/commit-table";
 import { CommitDetailCard } from "@repowise-dev/ui/commits/commit-detail-card";
+import { AiPromptButton, AiPromptModal, buildCommitAiPrompt } from "@repowise-dev/ui/health";
 import { CredibilityStrip } from "@repowise-dev/ui/commits/credibility-strip";
 import { AgentTrendStrip } from "@repowise-dev/ui/commits/agent-trend-strip";
 import { RiskDistributionChart } from "@repowise-dev/ui/git/risk-distribution-chart";
@@ -33,6 +34,7 @@ export function CommitsExplorer({ repoId }: { repoId: string }) {
   // ?commit= deep link — entity links from Overview/file pages land here with
   // the detail sheet already open, and the sheet state survives refresh.
   const [selectedSha, setSelectedSha] = useQueryState("commit");
+  const [promptOpen, setPromptOpen] = useState(false);
 
   const { data, isLoading, isValidating, error } = useSWR<Paginated<CommitResponse>>(
     `commits:${repoId}:${sort}:${authorship}:${limit}`,
@@ -164,11 +166,51 @@ export function CommitsExplorer({ repoId }: { repoId: string }) {
                 <Skeleton className="h-40 w-full" />
               </div>
             ) : (
-              <CommitDetailCard commit={detail} />
+              <>
+                <div className="flex justify-end pt-1 pb-3">
+                  <AiPromptButton
+                    label="AI review prompt"
+                    onClick={() => setPromptOpen(true)}
+                  />
+                </div>
+                <CommitDetailCard commit={detail} />
+              </>
             )}
           </div>
         </SheetContent>
       </Sheet>
+
+      <AiPromptModal
+        open={promptOpen}
+        onOpenChange={setPromptOpen}
+        getPrompt={
+          detail
+            ? (flavor) =>
+                buildCommitAiPrompt({
+                  commit: {
+                    sha: detail.sha,
+                    subject: detail.subject,
+                    review_priority: detail.review_priority,
+                    risk_percentile: detail.risk_percentile,
+                    change_risk_score: detail.change_risk_score,
+                    is_fix: detail.is_fix,
+                    files_changed: detail.files_changed,
+                    lines_added: detail.lines_added,
+                    lines_deleted: detail.lines_deleted,
+                    entropy: detail.entropy,
+                    top_drivers: detail.drivers
+                      .filter((d) => d.contribution > 0)
+                      .map((d) => d.label),
+                    author_name: detail.author_name,
+                  },
+                  flavor,
+                })
+            : null
+        }
+        filePath={detail ? detail.short_sha : null}
+        title="AI commit review"
+        description="A ready-to-paste prompt that has your AI agent review this commit's change-risk, flag what to scrutinize, and suggest reviewers."
+      />
     </div>
   );
 }

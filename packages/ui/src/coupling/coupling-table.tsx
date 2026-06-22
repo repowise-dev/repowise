@@ -5,6 +5,7 @@ import {
   ResponsiveTable,
   type ResponsiveColumn,
 } from "../shared/responsive-table";
+import { AiPromptButton } from "../health/ai-prompt-button";
 import type { CouplingEdge } from "@repowise-dev/types/coupling";
 
 interface CouplingTableProps {
@@ -12,6 +13,8 @@ interface CouplingTableProps {
   /** Focused file (emphasizes rows incident to it; synced with the diagram). */
   focusedPath?: string | null;
   onFocusChange?: (path: string | null) => void;
+  /** When set, each row shows an "AI decouple prompt" action. */
+  onGeneratePrompt?: (edge: CouplingEdge) => void;
 }
 
 function basename(path: string): string {
@@ -23,7 +26,7 @@ function basename(path: string): string {
  * coupling, strongest first. Clicking a row focuses that file in the ring;
  * rows touching the focused file are emphasized.
  */
-export function CouplingTable({ edges, focusedPath, onFocusChange }: CouplingTableProps) {
+export function CouplingTable({ edges, focusedPath, onFocusChange, onGeneratePrompt }: CouplingTableProps) {
   const maxStrength = Math.max(...edges.map((e) => e.strength), 1);
   const incident = (e: CouplingEdge) =>
     focusedPath != null && (e.source === focusedPath || e.target === focusedPath);
@@ -95,6 +98,23 @@ export function CouplingTable({ edges, focusedPath, onFocusChange }: CouplingTab
         </span>
       ),
     },
+    ...(onGeneratePrompt
+      ? [
+          {
+            key: "ai",
+            header: "",
+            priority: 3,
+            headerClassName: "w-10",
+            render: (e: CouplingEdge) => (
+              <AiPromptButton
+                variant="icon"
+                label="AI decouple prompt"
+                onClick={() => onGeneratePrompt(e)}
+              />
+            ),
+          } as ResponsiveColumn<CouplingEdge>,
+        ]
+      : []),
   ];
 
   return (

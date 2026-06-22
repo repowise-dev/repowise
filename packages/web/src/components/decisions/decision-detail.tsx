@@ -14,6 +14,7 @@ import { ModuleLinkEditor } from "@repowise-dev/ui/decisions/module-link-editor"
 import { VerificationBadge } from "@repowise-dev/ui/decisions/verification-badge";
 import { DecisionEvidenceDrawer } from "@repowise-dev/ui/decisions/decision-evidence-drawer";
 import { DecisionLineage } from "@repowise-dev/ui/decisions/decision-lineage";
+import { AiPromptButton, AiPromptModal, buildDecisionAiPrompt } from "@repowise-dev/ui/health";
 import {
   getDecisionEvidence,
   getDecisionLineage,
@@ -58,6 +59,7 @@ export function DecisionDetail({ decision, repoId }: DecisionDetailProps) {
   const [linkedFiles, setLinkedFiles] = React.useState(decision.affected_files);
   const [linkageSaving, setLinkageSaving] = React.useState(false);
   const [evidenceOpen, setEvidenceOpen] = React.useState(false);
+  const [promptOpen, setPromptOpen] = React.useState(false);
 
   // Lineage: cheap, load eagerly so the Evolution timeline renders when present.
   const { data: lineage } = useSWR(
@@ -225,10 +227,15 @@ export function DecisionDetail({ decision, repoId }: DecisionDetailProps) {
           {decision.verification && (
             <VerificationBadge verification={decision.verification} />
           )}
+          <AiPromptButton
+            label={status === "proposed" ? "Verify & confirm with AI" : "Verify with AI"}
+            onClick={() => setPromptOpen(true)}
+            className="ml-auto"
+          />
           <button
             type="button"
             onClick={() => setEvidenceOpen(true)}
-            className="ml-auto inline-flex items-center gap-1.5 rounded-md border border-[var(--color-border-default)] px-2.5 py-1 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)]"
+            className="inline-flex items-center gap-1.5 rounded-md border border-[var(--color-border-default)] px-2.5 py-1 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)]"
           >
             <FileSearch className="h-3.5 w-3.5" />
             Evidence
@@ -400,6 +407,32 @@ export function DecisionDetail({ decision, repoId }: DecisionDetailProps) {
         isLoading={evidenceLoading}
         error={evidenceError}
         decisionTitle={decision.title}
+      />
+
+      <AiPromptModal
+        open={promptOpen}
+        onOpenChange={setPromptOpen}
+        getPrompt={(flavor) =>
+          buildDecisionAiPrompt({
+            decision: {
+              title: decision.title,
+              status,
+              context: decision.context,
+              decision: decision.decision,
+              rationale: decision.rationale,
+              alternatives: decision.alternatives,
+              consequences: decision.consequences,
+              affected_modules: linkedModules,
+              affected_files: linkedFiles,
+              staleness_score: decision.staleness_score,
+              confidence: decision.confidence,
+            },
+            flavor,
+          })
+        }
+        filePath={stripMarkdown(decision.title)}
+        title="AI decision verification"
+        description="A ready-to-paste prompt that has your AI agent check this decision against the current code and recommend whether to keep, update, or retire it."
       />
     </div>
   );

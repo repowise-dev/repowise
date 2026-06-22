@@ -3,7 +3,8 @@
 import { useState } from "react";
 import { CouplingGraph, CouplingTable } from "@repowise-dev/ui/coupling";
 import { GraphCanvasShell } from "@repowise-dev/ui/graph/graph-canvas-shell";
-import type { CouplingGraphResponse } from "@repowise-dev/types/coupling";
+import { AiPromptModal, buildCouplingAiPrompt } from "@repowise-dev/ui/health";
+import type { CouplingEdge, CouplingGraphResponse } from "@repowise-dev/types/coupling";
 
 interface CouplingViewProps {
   data: CouplingGraphResponse;
@@ -20,6 +21,7 @@ interface CouplingViewProps {
  */
 export function CouplingView({ data }: CouplingViewProps) {
   const [focusedPath, setFocusedPath] = useState<string | null>(null);
+  const [promptEdge, setPromptEdge] = useState<CouplingEdge | null>(null);
 
   return (
     <div className="space-y-5">
@@ -40,8 +42,22 @@ export function CouplingView({ data }: CouplingViewProps) {
           edges={data.edges}
           focusedPath={focusedPath}
           onFocusChange={setFocusedPath}
+          onGeneratePrompt={setPromptEdge}
         />
       </div>
+
+      <AiPromptModal
+        open={promptEdge !== null}
+        onOpenChange={(o) => !o && setPromptEdge(null)}
+        getPrompt={
+          promptEdge
+            ? (flavor) => buildCouplingAiPrompt({ edge: promptEdge, flavor })
+            : null
+        }
+        filePath={promptEdge ? `${promptEdge.source} ↔ ${promptEdge.target}` : null}
+        title="AI decouple prompt"
+        description="A ready-to-paste prompt that has your AI agent diagnose why these two files change together and propose how to decouple them."
+      />
     </div>
   );
 }

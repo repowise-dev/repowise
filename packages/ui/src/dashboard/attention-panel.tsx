@@ -12,6 +12,9 @@ import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Badge } from "../ui/badge";
 import { stripMarkdown } from "../lib/format";
 import { fileEntityPath } from "../shared/entity/routes";
+import { AiPromptButton } from "../health/ai-prompt-button";
+import { AiPromptModal } from "../health/ai-prompt-modal";
+import { buildWorkQueueAiPrompt } from "../health/ai-prompt-builder";
 
 export type AttentionItemType =
   | "stale_decision"
@@ -60,6 +63,8 @@ interface AttentionPanelProps {
   linkPrefix?: string;
   /** Initial preview window; expanding the panel reveals all items. */
   previewCount?: number;
+  /** Shown next to the title of the generated work-queue prompt. */
+  repoName?: string;
 }
 
 function getDefaultHref(item: AttentionItem, prefix: string): string {
@@ -92,9 +97,11 @@ export function AttentionPanel({
   repoId,
   linkPrefix,
   previewCount = 8,
+  repoName,
 }: AttentionPanelProps) {
   const prefix = linkPrefix ?? `/repos/${repoId}`;
   const [expanded, setExpanded] = useState(false);
+  const [promptOpen, setPromptOpen] = useState(false);
   const visible = expanded ? items : items.slice(0, previewCount);
   if (items.length === 0) {
     return (
@@ -109,16 +116,23 @@ export function AttentionPanel({
   }
 
   return (
+    <>
     <Card>
       <CardHeader className="pb-2">
-        <CardTitle className="text-sm flex items-center justify-between">
+        <CardTitle className="text-sm flex items-center justify-between gap-2">
           <span className="flex items-center gap-2">
             <AlertTriangle className="h-4 w-4 text-[var(--color-warning)]" />
             Attention Needed
           </span>
-          <Badge variant="outline" className="text-[10px] h-5 tabular-nums">
-            {items.length}
-          </Badge>
+          <span className="flex items-center gap-2">
+            <AiPromptButton
+              label="Hand queue to AI"
+              onClick={() => setPromptOpen(true)}
+            />
+            <Badge variant="outline" className="text-[10px] h-5 tabular-nums">
+              {items.length}
+            </Badge>
+          </span>
         </CardTitle>
       </CardHeader>
       <CardContent className="pt-0">
@@ -165,5 +179,25 @@ export function AttentionPanel({
         </div>
       </CardContent>
     </Card>
+    <AiPromptModal
+      open={promptOpen}
+      onOpenChange={setPromptOpen}
+      getPrompt={(flavor) =>
+        buildWorkQueueAiPrompt({
+          items: items.map((it) => ({
+            type: it.type,
+            title: it.title,
+            description: it.description,
+            severity: it.severity,
+            target_id: it.target_id ?? null,
+          })),
+          flavor,
+          ...(repoName ? { repoName } : {}),
+        })
+      }
+      title="AI work queue"
+      description="A ready-to-paste prompt that hands your AI agent this repo's Attention Needed backlog as a prioritized worklist."
+    />
+    </>
   );
 }
