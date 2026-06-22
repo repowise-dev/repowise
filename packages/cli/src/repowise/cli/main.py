@@ -29,6 +29,7 @@ from repowise.cli.commands.serve_cmd import serve_command
 from repowise.cli.commands.status_cmd import status_command
 from repowise.cli.commands.update_cmd import update_command
 from repowise.cli.commands.watch_cmd import watch_command
+from repowise.cli.commands.whats_new_cmd import whats_new_command
 from repowise.cli.commands.workspace_cmd import workspace_group
 from repowise.core.registry import cli_registry, register_command
 
@@ -80,6 +81,7 @@ register_command(mcp_command)
 register_command(reindex_command)
 register_command(restyle_command)
 register_command(wiki_styles_command)
+register_command(whats_new_command)
 register_command(workspace_group)
 
 cli_registry.apply(cli)

@@ -504,6 +504,18 @@ def serve_command(
         console.print("[red]uvicorn is not installed. Install it with: pip install repowise[/red]")
         raise SystemExit(1) from None
 
+    # One-line, non-blocking "newer release available" advisory at startup.
+    # Best-effort and interactive-only; the cached check keeps it off the network
+    # on most launches.
+    if console.is_terminal:
+        try:
+            from repowise.cli.update_check import get_cli_update_check_cached
+            from repowise.cli.whats_new import render_update_advisory
+
+            render_update_advisory(console, get_cli_update_check_cached())
+        except Exception:
+            pass
+
     # Load the local .repowise/.env (API keys written by `repowise init`) and
     # seed the chat/search provider + embedder from .repowise/config.yaml. This
     # runs before _setup_embedder so a configured embedder/key is detected
