@@ -465,7 +465,7 @@ pricing: **[docs/COMMERCIAL.md](docs/COMMERCIAL.md)** · [Get in touch →](http
 
 ## Privacy
 
-- **Self-hosted:** your code never leaves your infrastructure. No telemetry. No analytics.
+- **Self-hosted:** your code never leaves your infrastructure — no code, file paths, or repo names are ever sent. The CLI does report **anonymous, opt-out** usage telemetry (command names + coarse environment only) to help us prioritize; turn it off with `repowise telemetry disable`, `DO_NOT_TRACK=1`, or by running fully offline. [What's collected →](docs/TELEMETRY.md)
 - **BYOK:** bring your own Anthropic / OpenAI key. We never see your LLM calls. Zero data retention via Anthropic's API policy.
 - **What's stored:** the NetworkX graph, LanceDB embeddings (non-reversible vectors), generated wiki pages, git metadata. Raw source is processed transiently and never persisted.
 - **Fully offline:** Ollama + a local embedding model = zero external API calls.
