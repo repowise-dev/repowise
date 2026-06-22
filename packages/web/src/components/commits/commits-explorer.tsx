@@ -139,20 +139,16 @@ export function CommitsExplorer({ repoId }: { repoId: string }) {
 
       {/* Secondary signals — smaller than the headline. Risk distribution
           turns the queue's "relative to this repo" claim into a picture; the
-          agent-trend strip sits alongside it. */}
-      <div className="grid gap-4 lg:grid-cols-2">
-        {hotspots && hotspots.length > 0 && (
-          <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-4">
-            <p className="mb-2 text-xs font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
-              Risk distribution across the riskiest files
-            </p>
-            <RiskDistributionChart hotspots={hotspots} maxBars={12} />
-          </div>
-        )}
-        {trend && trend.agent_commits > 0 && (
-          <AgentTrendStrip trend={trend} />
-        )}
-      </div>
+          agent-trend strip is a thin full-width band beneath it. */}
+      {hotspots && hotspots.length > 0 && (
+        <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-4">
+          <p className="mb-2 text-xs font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
+            Risk distribution across the riskiest files
+          </p>
+          <RiskDistributionChart hotspots={hotspots} maxBars={12} />
+        </div>
+      )}
+      {trend && trend.agent_commits > 0 && <AgentTrendStrip trend={trend} />}
 
       <div className="space-y-2">
         <div className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
