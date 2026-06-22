@@ -21,6 +21,7 @@ from .fastapi import FastApiDialect
 from .go import GoDialect
 from .js_clients import JsClientsDialect
 from .laravel import LaravelDialect
+from .mounts import merge_mount_maps
 from .paths import normalize_http_path
 from .python_clients import PythonClientsDialect
 from .rust_axum import RustAxumDialect
@@ -66,14 +67,22 @@ class HttpExtractor:
     consumer_dialects: tuple[HttpDialect, ...] = CONSUMER_DIALECTS
 
     def extract(self, repo_path: Path, repo_alias: str = "") -> list[Contract]:
-        """Scan all source files in *repo_path* and return Contract instances."""
+        """Scan all source files in *repo_path* and return Contract instances.
+
+        Files are read once into memory so a first pass can collect repo-wide
+        router mounts (``include_router(prefix=...)`` / ``app.use('/x', router)``)
+        before the extraction pass stitches them onto each provider route.
+        """
         all_exts = _union_extensions(self.provider_dialects) | _union_extensions(
             self.consumer_dialects
         )
 
+        files = list(iter_source_files(repo_path, all_exts))
+        mounts = self._collect_mounts(files)
+
         contracts: list[Contract] = []
-        for rel_path, suffix, content in iter_source_files(repo_path, all_exts):
-            ctx = ScanContext(repo_alias, rel_path, suffix, content)
+        for rel_path, suffix, content in files:
+            ctx = ScanContext(repo_alias, rel_path, suffix, content, mounts)
             for dialect in self.provider_dialects:
                 if suffix in dialect.extensions:
                     contracts.extend(dialect.extract(ctx))
@@ -81,6 +90,23 @@ class HttpExtractor:
                 if suffix in dialect.extensions:
                     contracts.extend(dialect.extract(ctx))
         return contracts
+
+    def _collect_mounts(self, files: list[tuple[str, str, str]]) -> dict[str, str]:
+        """Build the unambiguous repo-wide ``router-var -> mount-prefix`` map.
+
+        Each provider dialect may expose ``collect_mounts(content)``; results are
+        merged across every file, dropping any router name mounted at conflicting
+        prefixes (see :func:`merge_mount_maps`).
+        """
+        per_file: list[dict[str, str]] = []
+        for _rel, suffix, content in files:
+            for dialect in self.provider_dialects:
+                collect = getattr(dialect, "collect_mounts", None)
+                if collect is not None and suffix in dialect.extensions:
+                    found = collect(content)
+                    if found:
+                        per_file.append(found)
+        return merge_mount_maps(per_file)
 
 
 __all__ = ["CONSUMER_DIALECTS", "PROVIDER_DIALECTS", "HttpExtractor", "normalize_http_path"]

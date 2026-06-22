@@ -154,6 +154,99 @@ class TestHttpExtractor:
         assert len(providers) == 1
         assert providers[0].contract_id == "http::GET::/health"
 
+    def test_fastapi_router_prefix_infile(self, tmp_path: Path) -> None:
+        # APIRouter(prefix=...) must be stitched onto each decorator path.
+        self._write_file(tmp_path, "routers/snapshots.py", """
+            router = APIRouter(prefix="/snapshots", tags=["snap"])
+
+            @router.get("/{snapshot_id}/symbols")
+            async def symbols(snapshot_id: str): ...
+
+            @router.post("/{snapshot_id}/chat")
+            async def chat(snapshot_id: str): ...
+        """)
+        contracts = HttpExtractor().extract(tmp_path, "backend")
+        ids = {c.contract_id for c in contracts if c.role == "provider"}
+        assert "http::GET::/snapshots/{param}/symbols" in ids
+        assert "http::POST::/snapshots/{param}/chat" in ids
+
+    def test_fastapi_multiple_routers_distinct_prefixes(self, tmp_path: Path) -> None:
+        # Each route uses its own router's prefix, not the first one in the file.
+        self._write_file(tmp_path, "routers/multi.py", """
+            repos_router = APIRouter(prefix="/repos")
+            users_router = APIRouter(prefix="/users")
+
+            @repos_router.get("/{repo_id}")
+            async def repo(repo_id: str): ...
+
+            @users_router.get("/me")
+            async def me(): ...
+        """)
+        ids = {c.contract_id for c in HttpExtractor().extract(tmp_path, "backend") if c.role == "provider"}
+        assert "http::GET::/repos/{param}" in ids
+        assert "http::GET::/users/me" in ids
+
+    def test_fastapi_dependency_paren_in_args(self, tmp_path: Path) -> None:
+        # A nested call in the constructor args must not truncate the prefix scan.
+        self._write_file(tmp_path, "routers/secure.py", """
+            router = APIRouter(prefix="/admin", dependencies=[Depends(require_admin)])
+
+            @router.get("/stats")
+            async def stats(): ...
+        """)
+        ids = {c.contract_id for c in HttpExtractor().extract(tmp_path, "backend") if c.role == "provider"}
+        assert "http::GET::/admin/stats" in ids
+
+    def test_fastapi_unknown_decorator_not_a_route(self, tmp_path: Path) -> None:
+        # @cache.get(...) on a non-router object must not become a contract.
+        self._write_file(tmp_path, "service.py", """
+            @cache.get("/some-key")
+            def cached(): ...
+        """)
+        providers = [c for c in HttpExtractor().extract(tmp_path, "api") if c.role == "provider"]
+        assert providers == []
+
+    def test_fastapi_cross_file_include_router_prefix(self, tmp_path: Path) -> None:
+        # include_router(items_router, prefix="/api") in main.py mounts a router
+        # defined in another file under that prefix.
+        self._write_file(tmp_path, "app/main.py", """
+            from .items import items_router
+            app = FastAPI()
+            app.include_router(items_router, prefix="/api")
+        """)
+        self._write_file(tmp_path, "app/items.py", """
+            items_router = APIRouter(prefix="/items")
+
+            @items_router.get("/{item_id}")
+            async def get_item(item_id: int): ...
+        """)
+        ids = {c.contract_id for c in HttpExtractor().extract(tmp_path, "backend") if c.role == "provider"}
+        assert "http::GET::/api/items/{param}" in ids
+
+    def test_express_cross_file_app_use_prefix(self, tmp_path: Path) -> None:
+        # app.use('/api/users', userRouter) mounts a uniquely-named router.
+        self._write_file(tmp_path, "src/app.js", """
+            const userRouter = require('./users');
+            app.use('/api/users', userRouter);
+        """)
+        self._write_file(tmp_path, "src/users.js", """
+            const userRouter = express.Router();
+            userRouter.get('/:id', handler);
+        """)
+        ids = {c.contract_id for c in HttpExtractor().extract(tmp_path, "backend") if c.role == "provider"}
+        assert "http::GET::/api/users/{param}" in ids
+
+    def test_go_route_group_nested(self, tmp_path: Path) -> None:
+        # Nested groups compose: v1 := api.Group("/v1") under api := r.Group("/api").
+        self._write_file(tmp_path, "main.go", """
+            r := gin.Default()
+            api := r.Group("/api")
+            v1 := api.Group("/v1")
+            v1.GET("/users", listUsers)
+        """)
+        ids = {c.contract_id for c in HttpExtractor().extract(tmp_path, "svc") if c.role == "provider"}
+        assert "http::GET::/api/v1/users" in ids
+
     def test_fetch_consumer(self, tmp_path: Path) -> None:
         self._write_file(tmp_path, "src/api.ts", """
             const users = await fetch('/api/users');

@@ -12,8 +12,8 @@ descend into sibling/vendored repos rooted under the workspace.
 from __future__ import annotations
 
 import os
-from collections.abc import Iterator
-from dataclasses import dataclass
+from collections.abc import Iterator, Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -23,13 +23,16 @@ class ScanContext:
 
     ``rel_path`` is POSIX-relative to the repo root; ``suffix`` is the
     lower-cased file extension (including the dot); ``content`` is the decoded
-    file text.
+    file text. ``mounts`` is the repo-wide ``router-variable -> mount-prefix``
+    map a provider dialect uses to recover cross-file route prefixes (see
+    :mod:`.http.mounts`); empty for single-file extraction.
     """
 
     repo_alias: str
     rel_path: str
     suffix: str
     content: str
+    mounts: Mapping[str, str] = field(default_factory=dict)
 
 
 def iter_source_files(
