@@ -17,6 +17,8 @@ from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTR
 from .base import iter_source_files
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from repowise.core.workspace.contracts import Contract
 
 _log = logging.getLogger("repowise.workspace.extractors.topic")
@@ -220,7 +222,12 @@ _ALL_PATTERNS = _KAFKA_PATTERNS + _RABBITMQ_PATTERNS + _NATS_PATTERNS
 class TopicExtractor:
     """Extract message topic/queue contracts from source files."""
 
-    def extract(self, repo_path: Path, repo_alias: str = "") -> list[Contract]:
+    def extract(
+        self,
+        repo_path: Path,
+        repo_alias: str = "",
+        exclude: Callable[[str], bool] | None = None,
+    ) -> list[Contract]:
         from repowise.core.workspace.contracts import Contract
 
         contracts: list[Contract] = []
@@ -229,7 +236,7 @@ class TopicExtractor:
         # File discovery is gitignore- and nested-repo-aware (see
         # ``iter_source_files``) so a workspace repo whose root contains nested
         # repos or large ignored trees is not scanned end-to-end.
-        for rel_path, _suffix, content in iter_source_files(repo_path, _EXTENSIONS):
+        for rel_path, _suffix, content in iter_source_files(repo_path, _EXTENSIONS, exclude):
             for pdef in _ALL_PATTERNS:
                 for match in pdef.regex.finditer(content):
                     topic_name = match.group(pdef.topic_group).strip()

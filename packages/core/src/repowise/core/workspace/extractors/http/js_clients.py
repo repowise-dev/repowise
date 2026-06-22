@@ -59,13 +59,16 @@ class JsClientsDialect:
         content = ctx.content
         out: list[Contract] = []
 
+        def emit(*, method: str, url: str, client: str, confidence: float = 0.75) -> None:
+            c = build_consumer_contract(
+                ctx, method=method, url=url, client=client, confidence=confidence
+            )
+            if c is not None:
+                out.append(c)
+
         # fetch() with an explicit method.
         for m in _FETCH_METHOD_RE.finditer(content):
-            out.append(
-                build_consumer_contract(
-                    ctx, method=m.group(2).upper(), url=m.group(1), client="fetch"
-                )
-            )
+            emit(method=m.group(2).upper(), url=m.group(1), client="fetch")
 
         # fetch() without a method → GET, skipping URLs already matched above.
         method_urls = {m.group(1) for m in _FETCH_METHOD_RE.finditer(content)}
@@ -73,15 +76,11 @@ class JsClientsDialect:
             url = m.group(1)
             if url in method_urls:
                 continue
-            out.append(build_consumer_contract(ctx, method="GET", url=url, client="fetch"))
+            emit(method="GET", url=url, client="fetch")
 
         # axios.<method>()
         for m in _AXIOS_RE.finditer(content):
-            out.append(
-                build_consumer_contract(
-                    ctx, method=m.group(1).upper(), url=m.group(2), client="axios"
-                )
-            )
+            emit(method=m.group(1).upper(), url=m.group(2), client="axios")
 
         # Wrapper calls — fetchJSON(`${BASE}/path`, { method: "POST" }) etc.
         for m in _WRAPPER_CALL_RE.finditer(content):
@@ -95,10 +94,6 @@ class JsClientsDialect:
             if not (_HTTP_NAME_RE.search(callee) or method_opt):
                 continue
             method = method_opt.group(1).upper() if method_opt else "GET"
-            out.append(
-                build_consumer_contract(
-                    ctx, method=method, url=m.group(2), client="wrapper", confidence=0.65
-                )
-            )
+            emit(method=method, url=m.group(2), client="wrapper", confidence=0.65)
 
         return out

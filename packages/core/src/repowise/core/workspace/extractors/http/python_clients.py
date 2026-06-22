@@ -27,9 +27,9 @@ class PythonClientsDialect:
     def extract(self, ctx: ScanContext) -> list[Contract]:
         out: list[Contract] = []
         for m in _REQUESTS_RE.finditer(ctx.content):
-            out.append(
-                build_consumer_contract(
-                    ctx, method=m.group(1).upper(), url=m.group(2), client="requests"
-                )
+            c = build_consumer_contract(
+                ctx, method=m.group(1).upper(), url=m.group(2), client="requests"
             )
+            if c is not None:
+                out.append(c)
         return out

@@ -12,9 +12,61 @@ descend into sibling/vendored repos rooted under the workspace.
 from __future__ import annotations
 
 import os
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
+from fnmatch import fnmatch
 from pathlib import Path
+
+# Path segments that mark a test/mock tree. A route handler or topic publisher
+# that exists only under one of these is a fixture, not a real service contract,
+# so it is excluded from contract extraction by default (configurable via the
+# workspace ``contracts.exclude_globs``). Kept to unambiguous test-only dir names:
+# singular ``test``/``spec``/``e2e`` are intentionally excluded because they
+# double as legitimate product directories (an OpenAPI ``spec/``, a ``test/``
+# feature). Test *files* under those dirs are still caught by the filename
+# patterns below.
+_TEST_DIR_SEGMENTS = frozenset({"tests", "__tests__", "__mocks__"})
+
+# Filename patterns that mark a test file regardless of directory.
+_TEST_FILE_PATTERNS = (
+    "test_*.py",
+    "*_test.py",
+    "*_test.go",
+    "*.test.*",
+    "*.spec.*",
+    "*.e2e.*",
+    "conftest.py",
+)
+
+
+def is_test_path(rel_path: str) -> bool:
+    """True when *rel_path* (POSIX) lives in a test tree or is a test file."""
+    parts = rel_path.split("/")
+    if any(seg in _TEST_DIR_SEGMENTS for seg in parts[:-1]):
+        return True
+    name = parts[-1]
+    return any(fnmatch(name, pat) for pat in _TEST_FILE_PATTERNS)
+
+
+def make_exclude_predicate(
+    extra_globs: tuple[str, ...] = (),
+    *,
+    exclude_tests: bool = True,
+) -> Callable[[str], bool]:
+    """Build a ``rel_path -> bool`` skip predicate for contract extraction.
+
+    Skips the default test/spec trees (unless *exclude_tests* is False) plus any
+    user-supplied ``extra_globs`` (matched against the full POSIX path and the
+    bare filename).
+    """
+
+    def skip(rel_path: str) -> bool:
+        if exclude_tests and is_test_path(rel_path):
+            return True
+        name = rel_path.rsplit("/", 1)[-1]
+        return any(fnmatch(rel_path, g) or fnmatch(name, g) for g in extra_globs)
+
+    return skip
 
 
 @dataclass(frozen=True)
@@ -36,7 +88,9 @@ class ScanContext:
 
 
 def iter_source_files(
-    repo_root: Path, extensions: frozenset[str]
+    repo_root: Path,
+    extensions: frozenset[str],
+    exclude: Callable[[str], bool] | None = None,
 ) -> Iterator[tuple[str, str, str]]:
     """Yield ``(rel_path, suffix, content)`` for each scannable source file.
 
@@ -66,6 +120,8 @@ def iter_source_files(
     for info in traverser.traverse():
         suffix = os.path.splitext(info.path)[1].lower()
         if suffix not in extensions:
+            continue
+        if exclude is not None and exclude(info.path):
             continue
         try:
             content = Path(info.abs_path).read_text(encoding="utf-8", errors="replace")

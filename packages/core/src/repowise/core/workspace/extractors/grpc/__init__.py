@@ -21,6 +21,7 @@ from .python import PythonGrpcDialect
 from .typescript import TypeScriptGrpcDialect
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
     from repowise.core.workspace.contracts import Contract
@@ -49,11 +50,16 @@ class GrpcExtractor:
 
     dialects: tuple[GrpcDialect, ...] = DIALECTS
 
-    def extract(self, repo_path: Path, repo_alias: str = "") -> list[Contract]:
+    def extract(
+        self,
+        repo_path: Path,
+        repo_alias: str = "",
+        exclude: Callable[[str], bool] | None = None,
+    ) -> list[Contract]:
         all_exts = _union_extensions(self.dialects)
 
         contracts: list[Contract] = []
-        for rel_path, suffix, content in iter_source_files(repo_path, all_exts):
+        for rel_path, suffix, content in iter_source_files(repo_path, all_exts, exclude):
             ctx = ScanContext(repo_alias, rel_path, suffix, content)
             for dialect in self.dialects:
                 if suffix in dialect.extensions:

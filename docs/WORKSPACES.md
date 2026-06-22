@@ -225,6 +225,33 @@ Scans source files for HTTP route handlers, gRPC service definitions, and messag
 | gRPC | `.proto` service definitions | gRPC client stubs |
 | Topics | Kafka, RabbitMQ, Redis Pub/Sub, NATS producers | Corresponding consumers |
 
+HTTP routes are matched on their **full** path: a router mount prefix
+(`APIRouter(prefix=...)`, `include_router(prefix=...)`, Express `app.use('/x', router)`,
+Go route groups) is stitched onto each handler path before matching. A client call
+whose base URL is an unresolved placeholder (`fetch(\`${API_BASE}/users\`)`) matches
+on the host-relative path; the link is **exact** when exactly one workspace service
+provides that path and a lower-confidence **candidate** when the target is ambiguous.
+
+**Tuning extraction** via the `contracts:` block in `.repowise-workspace.yaml`:
+
+```yaml
+contracts:
+  # Map a consumer base token or absolute host to the repo it targets, so a
+  # call whose base is unresolved at parse time links as an exact match.
+  service_bases:
+    API_BASE: backend          # ${API_BASE}/... -> the "backend" repo
+    api.example.com: backend    # https://api.example.com/... -> "backend"
+  # Extra globs to skip (added to the built-in test/spec defaults).
+  exclude_globs:
+    - "generated/**"
+```
+
+Files under test trees (`tests/`, `test/`, `__tests__/`, `spec/`, `e2e/`) and test
+files (`test_*.py`, `*.test.ts`, `*.spec.ts`, ...) are excluded by default: a route
+or topic that exists only in a test is a fixture, not a service contract. Calls to a
+literal third-party host (Stripe, Formspree, ...) that is not a workspace service are
+excluded from matching and reported under the `external_host` diagnostics reason.
+
 ### Package Dependency Scanning
 
 Reads package manifests (`package.json`, `pyproject.toml`, `go.mod`, `pom.xml`, etc.) to detect when one repo depends on another as a package.
@@ -265,6 +292,7 @@ The report covers:
   - `no_provider` — no provider anywhere declares a matching route/service/topic.
   - `internal_only` — the only matching provider is in the same repo + service, so the call is intra-service and intentionally not surfaced as a cross-repo link.
   - `unlinked` — a cross-service provider with a matching id exists, but no link formed (a candidate worth inspecting).
+  - `external_host` — the call targets a literal third-party host (Stripe, Formspree, ...) that is not a workspace service, so it is intentionally excluded from matching.
 - **Orphan providers** — endpoints declared but never consumed by any repo.
 - **Weak links** — matched links below the confidence threshold.
 

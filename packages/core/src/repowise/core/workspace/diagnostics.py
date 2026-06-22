@@ -49,6 +49,9 @@ class UnmatchedReason:
     #: formed (e.g. an HTTP path that only the candidate pass could bridge and
     #: did not). Rare; flags a potential matcher gap worth inspecting.
     UNLINKED = "unlinked"
+    #: The call targets a literal third-party host (Stripe, Formspree, …) that is
+    #: not a workspace service, so it is intentionally excluded from matching.
+    EXTERNAL_HOST = "external_host"
 
 
 # ---------------------------------------------------------------------------
@@ -177,6 +180,8 @@ def _classify_unmatched(
     providers_by_norm_id: dict[str, list[Contract]],
 ) -> str:
     """Return the :class:`UnmatchedReason` for an unmatched *consumer*."""
+    if consumer.meta.get("external"):
+        return UnmatchedReason.EXTERNAL_HOST
     candidates = providers_by_norm_id.get(normalize_contract_id(consumer.contract_id))
     if not candidates:
         return UnmatchedReason.NO_PROVIDER

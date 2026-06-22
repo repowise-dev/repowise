@@ -29,6 +29,7 @@ from .rust_clients import RustClientsDialect
 from .spring import SpringDialect
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
     from repowise.core.workspace.contracts import Contract
@@ -66,7 +67,12 @@ class HttpExtractor:
     provider_dialects: tuple[HttpDialect, ...] = PROVIDER_DIALECTS
     consumer_dialects: tuple[HttpDialect, ...] = CONSUMER_DIALECTS
 
-    def extract(self, repo_path: Path, repo_alias: str = "") -> list[Contract]:
+    def extract(
+        self,
+        repo_path: Path,
+        repo_alias: str = "",
+        exclude: Callable[[str], bool] | None = None,
+    ) -> list[Contract]:
         """Scan all source files in *repo_path* and return Contract instances.
 
         Files are read once into memory so a first pass can collect repo-wide
@@ -77,7 +83,7 @@ class HttpExtractor:
             self.consumer_dialects
         )
 
-        files = list(iter_source_files(repo_path, all_exts))
+        files = list(iter_source_files(repo_path, all_exts, exclude))
         mounts = self._collect_mounts(files)
 
         contracts: list[Contract] = []

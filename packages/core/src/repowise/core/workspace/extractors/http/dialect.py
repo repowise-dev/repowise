@@ -13,8 +13,10 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from ..base import ScanContext
 from .paths import (
+    absolute_host,
     consumer_meta,
     extract_path_from_url,
+    is_unusable_consumer_path,
     normalize_http_path,
     strip_leading_base_expr,
 )
@@ -96,13 +98,21 @@ def build_consumer_contract(
     url: str,
     client: str,
     confidence: float = 0.75,
-) -> Contract:
-    """Build a consumer contract from a raw client-call URL."""
+) -> Contract | None:
+    """Build a consumer contract from a raw client-call URL.
+
+    Returns ``None`` for URLs that can never be a meaningful match key — a
+    truncated template literal or a path with no concrete segment (see
+    :func:`is_unusable_consumer_path`).
+    """
     from repowise.core.workspace.contracts import Contract
 
+    host = absolute_host(url)
     path = extract_path_from_url(url)
-    path, base_stripped = strip_leading_base_expr(path)
+    path, base_token = strip_leading_base_expr(path)
     norm_path = normalize_http_path(path)
+    if is_unusable_consumer_path(norm_path):
+        return None
     return Contract(
         repo=ctx.repo_alias,
         contract_id=f"http::{method}::{norm_path}",
@@ -112,5 +122,5 @@ def build_consumer_contract(
         symbol_name=f"{client}:{method} {url}",
         confidence=confidence,
         service=None,
-        meta=consumer_meta(method, norm_path, client, base_stripped),
+        meta=consumer_meta(method, norm_path, client, base_token, host),
     )

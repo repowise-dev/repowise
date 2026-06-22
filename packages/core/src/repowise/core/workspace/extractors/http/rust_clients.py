@@ -52,11 +52,11 @@ class RustClientsDialect:
         def emit(method: str, url: str) -> None:
             if "/" not in url:
                 return  # Not a URL path — skip map/collection .get("key") calls.
-            out.append(
-                build_consumer_contract(
-                    ctx, method=method.upper(), url=url, client="reqwest", confidence=0.65
-                )
+            c = build_consumer_contract(
+                ctx, method=method.upper(), url=url, client="reqwest", confidence=0.65
             )
+            if c is not None:
+                out.append(c)
 
         for rx in (_METHOD_LIT_RE, _FREE_LIT_RE):
             for m in rx.finditer(content):

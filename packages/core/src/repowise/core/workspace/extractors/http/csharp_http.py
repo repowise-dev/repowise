@@ -70,11 +70,11 @@ class CSharpHttpDialect:
             url = _to_template(prefix, text)
             if "/" not in url:
                 return  # Not a URL path — skip non-route strings.
-            out.append(
-                build_consumer_contract(
-                    ctx, method=method.upper(), url=url, client=client, confidence=0.70
-                )
+            c = build_consumer_contract(
+                ctx, method=method.upper(), url=url, client=client, confidence=0.70
             )
+            if c is not None:
+                out.append(c)
 
         for m in _WRAPPER_RE.finditer(content):
             emit(m.group(1), m.group(2), m.group(3), "httpclient")

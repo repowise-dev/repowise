@@ -104,6 +104,14 @@ class ContractConfig:
     detect_grpc: bool = True
     detect_topics: bool = True
     manual_links: list[ManualContractLink] = field(default_factory=list)
+    # Map a consumer base token or absolute host to the repo alias it targets,
+    # so a ``fetch(`${API_BASE}/users`)`` whose base resolves to ``backend`` links
+    # to that service as an exact match. Keys are env-var identifiers
+    # (``API_BASE``, ``VITE_API_URL``) or hosts (``api.example.com``).
+    service_bases: dict[str, str] = field(default_factory=dict)
+    # Extra glob patterns (added to the built-in test/spec defaults) whose files
+    # are skipped during contract extraction.
+    exclude_globs: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -113,6 +121,10 @@ class ContractConfig:
         }
         if self.manual_links:
             d["manual_links"] = [ml.to_dict() for ml in self.manual_links]
+        if self.service_bases:
+            d["service_bases"] = dict(self.service_bases)
+        if self.exclude_globs:
+            d["exclude_globs"] = list(self.exclude_globs)
         return d
 
     @classmethod
@@ -123,6 +135,8 @@ class ContractConfig:
             detect_grpc=bool(data.get("detect_grpc", True)),
             detect_topics=bool(data.get("detect_topics", True)),
             manual_links=manual,
+            service_bases={str(k): str(v) for k, v in data.get("service_bases", {}).items()},
+            exclude_globs=[str(g) for g in data.get("exclude_globs", [])],
         )
 
 
@@ -209,12 +223,17 @@ class WorkspaceConfig:
         }
         # Only include contracts section if non-default
         contracts_d = self.contracts.to_dict()
-        if self.contracts.manual_links or not all(
-            [
-                self.contracts.detect_http,
-                self.contracts.detect_grpc,
-                self.contracts.detect_topics,
-            ]
+        if (
+            self.contracts.manual_links
+            or self.contracts.service_bases
+            or self.contracts.exclude_globs
+            or not all(
+                [
+                    self.contracts.detect_http,
+                    self.contracts.detect_grpc,
+                    self.contracts.detect_topics,
+                ]
+            )
         ):
             d["contracts"] = contracts_d
         # Only include conformance section when rules are declared.

@@ -12,6 +12,7 @@ from repowise.core.workspace.contracts import (
     Contract,
     ContractLink,
     ContractStore,
+    annotate_consumer_targets,
     load_contract_store,
     match_contracts,
     normalize_contract_id,
@@ -449,6 +450,59 @@ class TestHttpExtractor:
         self._write_file(tmp_path, "utils.py", "def add(a, b): return a + b")
         contracts = HttpExtractor().extract(tmp_path, "svc")
         assert contracts == []
+
+    def test_truncated_template_literal_dropped(self, tmp_path: Path) -> None:
+        # A nested quote inside the template expression truncates the capture,
+        # leaving an unbalanced ``${`` — this is noise and must not be emitted.
+        self._write_file(tmp_path, "src/api.ts", """
+            fetchJSON(`/repos/explore${qs ? '?' + qs : ''}`);
+        """)
+        consumers = [
+            c for c in HttpExtractor().extract(tmp_path, "frontend") if c.role == "consumer"
+        ]
+        assert consumers == []
+
+    def test_bare_param_path_dropped(self, tmp_path: Path) -> None:
+        # fetch(`${x}`) collapses to a single {param} segment — no concrete path
+        # to match on, so it is dropped rather than linked indiscriminately.
+        self._write_file(tmp_path, "src/api.ts", """
+            await fetch(`${endpoint}`);
+        """)
+        consumers = [
+            c for c in HttpExtractor().extract(tmp_path, "frontend") if c.role == "consumer"
+        ]
+        assert consumers == []
+
+    def test_absolute_host_recorded_in_meta(self, tmp_path: Path) -> None:
+        # An absolute third-party URL keeps its host so the matcher can exclude it.
+        self._write_file(tmp_path, "src/api.ts", """
+            fetch('https://formspree.io/f/mkopzvak', { method: 'POST' });
+        """)
+        consumers = [
+            c for c in HttpExtractor().extract(tmp_path, "frontend") if c.role == "consumer"
+        ]
+        assert len(consumers) == 1
+        assert consumers[0].meta.get("host") == "formspree.io"
+
+    def test_test_directory_files_excluded(self, tmp_path: Path) -> None:
+        # A route defined only under tests/ is a fixture, not a service contract.
+        self._write_file(tmp_path, "tests/test_routes.py", """
+            @app.get("/fixture-only")
+            def fixture(): ...
+        """)
+        self._write_file(tmp_path, "app/routes.py", """
+            @app.get("/real")
+            def real(): ...
+        """)
+        from repowise.core.workspace.extractors.base import make_exclude_predicate
+
+        ids = {
+            c.contract_id
+            for c in HttpExtractor().extract(tmp_path, "svc", make_exclude_predicate())
+            if c.role == "provider"
+        }
+        assert "http::GET::/real" in ids
+        assert "http::GET::/fixture-only" not in ids
 
 
 # ---------------------------------------------------------------------------
@@ -917,9 +971,9 @@ class TestCandidateMatching:
         assert len(links) == 1
         assert links[0].match_type == "candidate"
 
-    def test_base_stripped_consumer_is_candidate_not_exact(self) -> None:
-        # Even when the suffix matches exactly, a stripped base means we can't
-        # be certain of the mount point — so it is a candidate, not exact.
+    def test_base_stripped_consumer_unique_service_is_exact(self) -> None:
+        # A stripped base whose full path matches exactly one provider service is
+        # unambiguous: the base can only be that service, so the link is exact.
         contracts = [
             self._c(repo="backend", role="provider", contract_id="http::GET::/resource"),
             self._c(repo="frontend", role="consumer", contract_id="http::GET::/resource",
@@ -927,7 +981,35 @@ class TestCandidateMatching:
         ]
         links = match_contracts(contracts)
         assert len(links) == 1
-        assert links[0].match_type == "candidate"
+        assert links[0].match_type == "exact"
+
+    def test_base_stripped_consumer_ambiguous_is_candidate(self) -> None:
+        # The same stripped path provided by two distinct services is ambiguous —
+        # we can't tell which one the base points at, so both links are candidate.
+        contracts = [
+            self._c(repo="backend", role="provider", contract_id="http::GET::/resource"),
+            self._c(repo="payments", role="provider", contract_id="http::GET::/resource"),
+            self._c(repo="frontend", role="consumer", contract_id="http::GET::/resource",
+                    file_path="c.ts", meta={"base_stripped": True}),
+        ]
+        links = match_contracts(contracts)
+        assert len(links) == 2
+        assert all(lk.match_type == "candidate" for lk in links)
+
+    def test_base_stripped_consumer_resolved_by_service_bases(self) -> None:
+        # An ambiguous stripped path is promoted to exact (and narrowed to the
+        # configured repo) once a base token resolves the target service.
+        contracts = [
+            self._c(repo="backend", role="provider", contract_id="http::GET::/resource"),
+            self._c(repo="payments", role="provider", contract_id="http::GET::/resource"),
+            self._c(repo="frontend", role="consumer", contract_id="http::GET::/resource",
+                    file_path="c.ts", meta={"base_stripped": True, "base_token": "API_BASE"}),
+        ]
+        annotate_consumer_targets(contracts, {"API_BASE": "backend"})
+        links = match_contracts(contracts)
+        assert len(links) == 1
+        assert links[0].match_type == "exact"
+        assert links[0].provider_repo == "backend"
 
     def test_exact_match_takes_precedence_over_candidate(self) -> None:
         contracts = [
@@ -947,6 +1029,69 @@ class TestCandidateMatching:
         ]
         links = match_contracts(contracts)
         assert links == []
+
+    def test_external_host_consumer_excluded(self) -> None:
+        # A consumer pointing at a literal third-party host (not a workspace
+        # repo) is excluded from matching even when a path-equal provider exists.
+        contracts = [
+            self._c(repo="backend", role="provider", contract_id="http::POST::/f/mkopzvak"),
+            self._c(repo="frontend", role="consumer", contract_id="http::POST::/f/mkopzvak",
+                    file_path="c.ts", meta={"host": "formspree.io"}),
+        ]
+        annotate_consumer_targets(contracts)
+        assert any(c.meta.get("external") for c in contracts if c.role == "consumer")
+        assert match_contracts(contracts) == []
+
+    def test_absolute_host_matching_repo_alias_links(self) -> None:
+        # http://backend:8000/... resolves to the workspace 'backend' repo and
+        # links normally (target host is a service, not a third party).
+        contracts = [
+            self._c(repo="backend", role="provider", contract_id="http::GET::/api/data"),
+            self._c(repo="worker", role="consumer", contract_id="http::GET::/api/data",
+                    file_path="c.py", meta={"host": "backend"}),
+        ]
+        annotate_consumer_targets(contracts)
+        links = match_contracts(contracts)
+        assert len(links) == 1
+        assert links[0].provider_repo == "backend"
+
+    def test_public_subdomain_not_mistaken_for_repo_alias(self) -> None:
+        # backend.stripe.com must be external even though 'backend' is a repo —
+        # only the full host or an internal-DNS leading label maps to an alias.
+        contracts = [
+            self._c(repo="backend", role="provider", contract_id="http::GET::/v1/charges"),
+            self._c(repo="frontend", role="consumer", contract_id="http::GET::/v1/charges",
+                    file_path="c.ts", meta={"host": "backend.stripe.com"}),
+        ]
+        annotate_consumer_targets(contracts)
+        assert any(c.meta.get("external") for c in contracts if c.role == "consumer")
+        assert match_contracts(contracts) == []
+
+    def test_internal_dns_host_resolves_to_alias(self) -> None:
+        # k8s service DNS backend.default.svc.cluster.local -> the 'backend' repo.
+        contracts = [
+            self._c(repo="backend", role="provider", contract_id="http::GET::/api/data"),
+            self._c(repo="worker", role="consumer", contract_id="http::GET::/api/data",
+                    file_path="c.py", meta={"host": "backend.default.svc.cluster.local"}),
+        ]
+        annotate_consumer_targets(contracts)
+        links = match_contracts(contracts)
+        assert len(links) == 1
+        assert links[0].provider_repo == "backend"
+
+    def test_base_stripped_stale_service_base_stays_candidate(self) -> None:
+        # A service_bases target that matches no provider must fall back to the
+        # ambiguity rule, not emit exact links to every service.
+        contracts = [
+            self._c(repo="backend", role="provider", contract_id="http::GET::/resource"),
+            self._c(repo="payments", role="provider", contract_id="http::GET::/resource"),
+            self._c(repo="frontend", role="consumer", contract_id="http::GET::/resource",
+                    file_path="c.ts", meta={"base_stripped": True, "base_token": "API_BASE"}),
+        ]
+        annotate_consumer_targets(contracts, {"API_BASE": "typo_repo"})
+        links = match_contracts(contracts)
+        assert len(links) == 2
+        assert all(lk.match_type == "candidate" for lk in links)
 
     def test_method_mismatch_no_candidate(self) -> None:
         contracts = [
