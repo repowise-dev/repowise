@@ -21,7 +21,7 @@ plain file reads don't, usually in one round-trip instead of many.
 |---|---|
 | First orientation in an unfamiliar repo | `get_overview()` — architecture summary, key modules, entry points, git health, knowledge map. Skip it once you have the map. |
 | A direct answer to "how/where/why does X work" | `get_answer(question="…")` — synthesised answer with citations + a `retrieval_quality` signal. Collapses the search → read → reason loop. |
-| Candidate files for a fuzzy concept | `search_codebase(query="…")` — semantic wiki search. Each hit reports `search_method` (`embedding` vs `bm25` fallback). Use Grep for exact identifiers. |
+| Find a symbol, file, or fuzzy concept | `search_codebase(query="…")` — hybrid search. `mode="auto"` routes an identifier to indexed symbol hits (`symbol_id`/line bounds → pipe into `get_symbol`), a path to file pages (→ `get_context`), and prose to semantic wiki search (each hit reports `search_method`: `embedding` vs `bm25`). Force a branch with `mode=symbol\|path\|concept\|hybrid`; narrow symbols with `symbol_kind`. |
 | A triage card for specific files/symbols | `get_context(targets=[…])` — title, summary, signatures, hotspot bit, top callers, decision titles, symbol_ids. Batch many targets in one call. |
 | The actual source of one symbol | `get_symbol("path/to/file.py::Name")` — exact bytes with line bounds. Cheaper than Read + offset math. Use a `symbol_id` from `get_context`. |
 
@@ -32,7 +32,10 @@ plain file reads don't, usually in one round-trip instead of many.
    - High confidence → answer it, cite the paths.
    - `medium`/`low` confidence → follow `best_guesses[0].file` or
      `fallback_targets[0]` into `get_context`, then `get_symbol` for bytes.
-3. More files around a concept → `search_codebase`, then `get_context` on the
+3. A named symbol or a path → `search_codebase(query="Name")` /
+   `search_codebase(query="path/to/file.py")`; symbol hits pipe straight into
+   `get_symbol`, file hits into `get_context`.
+4. More files around a concept → `search_codebase`, then `get_context` on the
    hits (batched), then `get_symbol` only for the bodies you actually need.
 
 Fall back to raw Read/Grep only when the indexed context doesn't cover the

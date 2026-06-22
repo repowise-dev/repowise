@@ -246,7 +246,7 @@ repowise mcp --transport sse          # legacy SSE transport on port 7338
 | `get_context(targets)` | Docs, ownership, history, decisions, freshness for files/modules/symbols | When you need to understand specific code before reading or modifying it |
 | `get_risk(targets)` | Hotspot score, dependents, co-change partners, risk summary | Before modifying files — assess what could break |
 | `get_why(query?)` | Architectural decisions, rationale, constraints | Before making architectural changes — understand existing intent |
-| `search_codebase(query)` | Semantic search over full wiki | When you don't know where something lives |
+| `search_codebase(query, mode?)` | Hybrid symbol / path / concept search (auto-routes by query shape) | When locating a symbol, a file, or code by topic |
 | `get_dependency_path(from, to)` | Connection path between two files/modules | When you need to understand how two things are connected |
 | `get_dead_code` | Unused/unreachable code sorted by cleanup impact | Before cleanup tasks |
 | `get_answer(question)` | One-call RAG with confidence gating and caching | First call on any code question |

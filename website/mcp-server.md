@@ -321,27 +321,36 @@ get_why(query="why is rate limiting done in the app layer")
 
 ---
 
-### `search_codebase(query, limit?, page_type?)`
+### `search_codebase(query, limit?, mode?, kind?, symbol_kind?, page_type?)`
 
-Semantic search over the full wiki using natural language.
+Hybrid code search. Depending on the query, it searches the indexed **symbols**, **file paths**, or the **wiki** — a single tool for "find this function", "find this file", and "find code about this topic".
 
 **Parameters:**
-- `query` (string) — natural language query
+- `query` (string) — identifier, path, or natural-language query
 - `limit` (int, default 5) — max results
-- `page_type` (optional) — filter to `"file"`, `"module"`, or `"repository"`
+- `mode` (optional) — `auto` (default) \| `concept` \| `symbol` \| `path` \| `hybrid`
+- `kind` (optional) — `implementation` \| `test` \| `config` \| `doc`
+- `symbol_kind` (optional) — restrict symbol hits by kind (`function`, `class`, `method`, …)
+- `page_type` (optional) — `file_page` \| `module_page` \| `symbol_spotlight` (concept mode)
 
-**Returns:** Ranked list of wiki pages with relevance scores and short excerpts. Recently-changed files receive a freshness boost.
+**Modes:** `auto` routes by shape — an identifier searches indexed symbols (results carry `symbol_id` + line bounds, pipe into `get_symbol`), a path searches file pages (pipe into `get_context`), prose runs wiki-semantic search, and mixed queries run hybrid (symbols first). Force a branch with an explicit `mode`.
 
-**When to use:** When locating code — prefer over `grep`/`find` for conceptual searches.
+**Returns:** Symbol hits (`symbol_id`, `file`, line bounds, `signature`, `next: "get_symbol"`), file hits (`page_id`, `file`, `next: "get_context"`), or ranked wiki pages with relevance scores and a `search_method`. Recently-changed files receive a freshness boost.
+
+**When to use:** Locating a symbol or file by name, or discovering code by topic — prefer over `grep`/`find`.
 
 **Example:**
 ```
+search_codebase(query="GitIndexer index_repo")
+
+→ 1. symbol  packages/core/.../git_indexer/indexer.py::GitIndexer.index_repo
+     async def index_repo(...) -> tuple[GitIndexSummary, list[dict]]   (lines 75-306)
+     next: get_symbol
+
 search_codebase(query="how database connections are pooled")
 
 → 1. packages/server/src/repowise/server/db.py (0.92)
      "Creates async SQLAlchemy engine with connection pooling..."
-  2. packages/core/src/repowise/core/persistence/session.py (0.87)
-     "Session factory configured with pool_size=5..."
 ```
 
 ---

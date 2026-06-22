@@ -13,7 +13,7 @@ Call `get_overview()` first. It returns the architecture summary, module map, en
 
 ## Answering How Or Where Questions
 
-1. Call `search_codebase(query="topic or symbol")` to find relevant documented modules and files.
+1. Call `search_codebase(query="topic, symbol, or path")`. It auto-routes: an identifier returns indexed symbol hits (`symbol_id` + line bounds — pipe into `get_symbol`), a path returns file pages, and prose runs semantic search. Force a branch with `mode=symbol|path|concept|hybrid`.
 2. Call `get_context(targets=[...])` with all relevant files from the search results in one batch.
 3. Read raw source only after the indexed context is not specific enough for the user’s question.
 

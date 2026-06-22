@@ -192,12 +192,19 @@ def _build_registry() -> dict[str, ToolDef]:
         search_codebase,
     )
 
+    async def _search_concept(query: str, **kwargs):
+        # Chat surfaces wiki documentation pages (see the schema/artifact_type
+        # below), so pin the concept branch — the symbol/path modes return
+        # symbol/file shapes the chat artifact renderer doesn't expect.
+        kwargs["mode"] = "concept"
+        return await search_codebase(query, **kwargs)
+
     func_map: dict[str, Callable] = {
         "get_overview": get_overview,
         "get_context": get_context,
         "get_risk": get_risk,
         "get_why": get_why,
-        "search_codebase": search_codebase,
+        "search_codebase": _search_concept,
         "get_dead_code": get_dead_code,
     }
 

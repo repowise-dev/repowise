@@ -78,7 +78,7 @@ Registered automatically when the plugin is enabled:
 | `get_answer` | Cited, synthesised answer to a code question + a calibrated confidence |
 | `get_context` | Triage card (docs, signatures, hotspot bit, callers, decisions) for files/modules/symbols |
 | `get_symbol` | Raw source of one symbol with exact line bounds |
-| `search_codebase` | Semantic search over the wiki |
+| `search_codebase` | Hybrid code search — `mode="auto"` routes identifiers to indexed symbols, paths to files, prose to semantic wiki search |
 | `get_risk` | Per-file hotspot, dependents, co-changes, owners; PR `directive` block with `changed_files` |
 | `get_why` | Architectural decisions — search, path-anchored, or health dashboard |
 | `get_dead_code` | Unused/unreachable findings tiered by confidence |

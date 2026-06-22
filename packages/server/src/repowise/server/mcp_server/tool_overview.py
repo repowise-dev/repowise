@@ -772,7 +772,9 @@ async def get_overview(repo: str | None = None) -> dict:
                 "get_context hotspot: true → get_risk before editing",
                 "get_context decision_records → get_why(targets=[...]) for rationale",
                 "PR review → get_risk(targets, changed_files) and read directive first",
-                "search_codebase grep_hint present → prefer Grep for those identifiers",
+                "search_codebase(query) auto-routes: identifier → symbol hits "
+                "(pipe symbol_id into get_symbol), path → files (get_context), "
+                "prose → wiki search. Force with mode=symbol|path|concept|hybrid.",
             ],
             "reread_triggers": "Only re-read source on bounds: approximate, "
             "stale_warning in _meta, or search_method: bm25.",

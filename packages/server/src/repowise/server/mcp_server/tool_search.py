@@ -13,16 +13,20 @@ from repowise.core.persistence.models import (
     GitMetadata,
     Page,
 )
-from repowise.server.mcp_server import _state
+from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
     _get_repo,
+    _is_path,
     _resolve_all_contexts,
     _resolve_repo_context,
     filter_dicts_by_key,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
-from repowise.core.registry import mcp_tool_registry as mcp
+from repowise.server.mcp_server.tool_search_symbols import (
+    search_paths_single,
+    search_symbols_single,
+)
 
 # Minimum relevance score below which results are dropped. Prevents
 # returning semantically unrelated pages when the corpus has no real match.
@@ -425,6 +429,116 @@ def _grep_hint_for(query: str) -> str | None:
     return None
 
 
+_VALID_MODES = {"auto", "concept", "symbol", "path", "hybrid"}
+
+
+def _resolve_mode(query: str, mode: str | None) -> str:
+    """Resolve ``mode="auto"`` to a concrete branch from the query shape.
+
+    Explicit modes pass through. ``auto`` routes path-shaped queries to path
+    search, single identifier-shaped tokens to symbol search, and queries that
+    merely *carry* an identifier inside natural language to hybrid; everything
+    else stays concept (the original wiki-semantic path). The routing reuses
+    the exact heuristics that previously only emitted a grep_hint.
+    """
+    m = (mode or "auto").lower()
+    if m not in _VALID_MODES:
+        m = "auto"
+    if m != "auto":
+        return m
+    if _is_path(query):
+        return "path"
+    if _looks_like_exact_token(query):
+        return "symbol"
+    if _embedded_identifiers(query):
+        return "hybrid"
+    return "concept"
+
+
+async def _contexts_for(repo: str | None) -> list:
+    """The repo contexts a structured search runs over (one, or all in 'all')."""
+    if repo == "all":
+        return await _resolve_all_contexts()
+    return [await _resolve_repo_context(repo)]
+
+
+def _tag_repo(items: list[dict], ctx, multi: bool) -> None:
+    if multi:
+        for item in items:
+            item["repo"] = ctx.alias
+
+
+async def _structured_search(
+    query: str,
+    limit: int,
+    page_type: str | None,
+    kind: str | None,
+    symbol_kind: str | None,
+    repo: str | None,
+    mode: str,
+    grep_hint: str | None,
+) -> dict:
+    """Run symbol / path / hybrid search and shape the response.
+
+    Honours ``repo="all"`` (federates across contexts, then re-ranks by score),
+    per-repo ``exclude_patterns`` and tombstones (enforced inside the
+    single-repo helpers). The grep_hint is attached only as a fallback — when
+    the structural index produced nothing, the agent still has a path forward.
+    """
+    contexts = await _contexts_for(repo)
+    multi = len(contexts) > 1
+
+    symbols: list[dict] = []
+    files: list[dict] = []
+    concepts: list[dict] = []
+
+    for ctx in contexts:
+        if mode in ("symbol", "hybrid"):
+            s = await search_symbols_single(ctx, query, limit, symbol_kind=symbol_kind, kind=kind)
+            _tag_repo(s, ctx, multi)
+            symbols.extend(s)
+        if mode == "path":
+            f = await search_paths_single(ctx, query, limit)
+            _tag_repo(f, ctx, multi)
+            files.extend(f)
+        if mode == "hybrid":
+            c, method = await _search_single_repo(ctx, query, limit, page_type, kind)
+            for item in c:
+                item.setdefault("search_method", method)
+                item["type"] = "page"
+            _tag_repo(c, ctx, multi)
+            concepts.extend(c)
+
+    symbols.sort(key=lambda x: -(x.get("score") or 0.0))
+    files.sort(key=lambda x: -(x.get("score") or 0.0))
+
+    if mode == "symbol":
+        results = symbols[:limit]
+    elif mode == "path":
+        results = files[:limit]
+    else:  # hybrid — symbol matches first, then concept pages for new files
+        sym_files = {s.get("file") for s in symbols}
+        concepts = [c for c in concepts if c.get("target_path") not in sym_files]
+        # Federation appends per-repo concept lists in repo order — re-rank by
+        # relevance so a strong page in repo B isn't buried under repo A's weak
+        # ones. (Single-repo: already sorted upstream; this is a no-op.)
+        concepts.sort(key=lambda x: -(x.get("relevance_score") or 0.0))
+        # Reserve up to half the window for concept pages so hybrid stays
+        # hybrid: a flood of symbol matches must not truncate every page out.
+        reserved = min(len(concepts), limit // 2)
+        results = (symbols[: max(1, limit - reserved)] + concepts)[:limit]
+
+    repository = None
+    if not multi:
+        async with get_session(contexts[0].session_factory) as session:
+            repository = await _get_repo(session)
+
+    response: dict = {"results": results, "mode": mode, "_meta": _build_meta(repository=repository)}
+    if grep_hint and not results:
+        response["grep_hint"] = grep_hint
+    return response
+
+
 @mcp.tool()
 async def search_codebase(
     query: str,
@@ -432,23 +546,36 @@ async def search_codebase(
     page_type: str | None = None,
     kind: str | None = None,
     repo: str | None = None,
+    mode: str = "auto",
+    symbol_kind: str | None = None,
 ) -> dict:
-    """Find pages by concept — semantic search across the wiki.
+    """Find code by concept, symbol, or path — hybrid codebase search.
 
-    For conceptual queries ("rate limiting", "where do we handle webhooks")
-    when you don't know the file. For exact identifiers use Grep —
-    identifier-bearing queries get a grep_hint. Results carry search_method
-    ("embedding", or "bm25" fallback: verify those). Decision records rank
-    below file pages unless the query is why-shaped.
+    mode="auto" (default) routes the query: identifier-shaped queries search
+    the indexed symbols (returns symbol_id/file/line bounds — pipe into
+    get_symbol), path-shaped queries resolve files (pipe into get_context),
+    and conceptual queries ("rate limiting", "where do we handle webhooks")
+    run wiki-semantic search. Mixed natural-language + identifier queries run
+    hybrid (symbol hits first, then concept pages). Concept results carry
+    search_method ("embedding" or "bm25" fallback: verify those); decision
+    records rank below file pages unless the query is why-shaped.
 
     Args:
-        query: natural-language query.
+        query: identifier, path, or natural-language query.
         limit: max results (default 5).
-        page_type: file_page | module_page | symbol_spotlight.
-        kind: implementation | test | config | doc.
+        page_type: file_page | module_page | symbol_spotlight (concept only).
+        kind: implementation | test | config | doc (concept/symbol modes).
         repo: alias, or "all" for workspace-wide.
+        mode: auto | concept | symbol | path | hybrid.
+        symbol_kind: filter symbol hits by kind (function|class|method|...).
     """
     grep_hint = _grep_hint_for(query)
+    resolved_mode = _resolve_mode(query, mode)
+
+    if resolved_mode in ("symbol", "path", "hybrid"):
+        return await _structured_search(
+            query, limit, page_type, kind, symbol_kind, repo, resolved_mode, grep_hint
+        )
 
     if repo == "all":
         # kind is filtered per-repo inside _search_single_repo, before each

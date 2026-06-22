@@ -22,7 +22,7 @@ repowise mcp --transport sse --port 7338 # legacy SSE transport
 | `get_answer` | One-call RAG Q&A | First call on any code question |
 | `get_context` | Rich context for targets | Before reading or modifying code |
 | `get_symbol` | Raw source bytes for one symbol | When you need one function/class body |
-| `search_codebase` | Semantic search | Discovering code by topic |
+| `search_codebase` | Hybrid symbol / path / concept search | Finding a symbol or file, or discovering code by topic |
 | `get_risk` | Modification risk | Before changing hotspot files |
 | `get_why` | Architectural decisions | Before structural changes |
 | `get_dead_code` | Unreachable code | Cleanup tasks |
@@ -218,25 +218,52 @@ get_symbol(symbol_id="repowise#a1b2c3d4e5f6", query="FAILED")
 
 ## `search_codebase`
 
-Semantic search over the full wiki. Natural language queries.
+Hybrid code search over RepoWise's indexes. A single tool that, depending on
+the shape of the query, searches the indexed **symbols**, **file paths**, or
+the **wiki** — instead of forcing a fallback to Grep for identifiers.
 
 **Parameters:**
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `query` | string | Yes | Natural language search query |
+| `query` | string | Yes | Identifier, path, or natural-language query |
+| `limit` | int | No | Max results (default 5) |
+| `mode` | string | No | `auto` (default) \| `concept` \| `symbol` \| `path` \| `hybrid` |
+| `kind` | string | No | `implementation` \| `test` \| `config` \| `doc` |
+| `symbol_kind` | string | No | Restrict symbol hits by kind (`function`, `class`, `method`, …) |
+| `page_type` | string | No | `file_page` \| `module_page` \| `symbol_spotlight` (concept mode) |
 | `repo` | string | No | *(workspace only)* Target repo alias, or `"all"` to search across workspace |
 
-**Returns:** Ranked wiki pages with relevance scores, snippets, and file paths.
+**Modes:**
 
-**When to use:** When `get_answer` returned low confidence and you need to discover candidate pages by topic. Also useful for broad exploration ("how do we handle retries?", "payment processing flow").
+- **`auto`** (default) routes by query shape:
+  - an **identifier** (`GitIndexer`, `index_repo`) → searches indexed symbols;
+  - a **path** (`core/ingestion/indexer.py`) → searches file pages;
+  - **prose** ("how do we handle retries?") → wiki-semantic search;
+  - mixed prose + identifier → **hybrid** (symbol hits first, then concept pages).
+- **`concept`** forces the original wiki-semantic behavior.
+- **`symbol`** / **`path`** force the structural search.
 
-In workspace mode, searches across all repos and merges results.
+**Returns:**
 
-**Example call:**
+- *Symbol hits* — `{type: "symbol", symbol_id, name, kind, file, start_line, end_line, signature, next: "get_symbol"}`. Ranked by exact-name/qualified-name match, query-token coverage, then graph centrality (PageRank / betweenness / entry-point); non-test before test unless `kind="test"`.
+- *File hits* — `{type: "file", page_id, file, title, next: "get_context"}`.
+- *Concept hits* — ranked wiki pages with `relevance_score`, `snippet`, `target_path`, and a `search_method` (`embedding` vs `bm25` fallback).
+
+Tombstoned and `exclude_patterns`-excluded results are filtered. In workspace
+mode, structural and concept searches both federate across repos and merge.
+
+**When to use:** Locating a function/class/method by name, resolving a
+path-shaped query, or discovering pages by topic — the symbol/file shapes pipe
+directly into `get_symbol` / `get_context`.
+
+**Example calls:**
 
 ```
-search_codebase(query="rate limit OR throttle OR retry")
+search_codebase(query="GitIndexer index_repo")          # → symbol hits
+search_codebase(query="core/ingestion/indexer.py")      # → file hits
+search_codebase(query="rate limit OR throttle OR retry") # → wiki pages
+search_codebase(query="login", mode="symbol", symbol_kind="method")
 ```
 
 ---

@@ -294,6 +294,199 @@ class TestDecisionDemotionAndRescue:
         assert result["results"][0]["page_type"] == "decision_record"
 
 
+class TestSymbolSearch:
+    """mode="symbol" / "auto" routing into the structural index (issue #484)."""
+
+    @pytest.mark.asyncio
+    async def test_exact_name_returns_symbol_shape(self, setup_mcp):
+        from repowise.server.mcp_server import search_codebase
+
+        result = await search_codebase("AuthService", mode="symbol")
+        assert result["mode"] == "symbol"
+        hits = result["results"]
+        assert hits, "exact name must resolve to a symbol"
+        top = hits[0]
+        assert top["type"] == "symbol"
+        assert top["symbol_id"] == "src/auth/service.py::AuthService"
+        assert top["name"] == "AuthService"
+        assert top["kind"] == "class"
+        assert top["file"] == "src/auth/service.py"
+        assert top["start_line"] == 10
+        assert top["end_line"] == 100
+        assert top["next"] == "get_symbol"
+
+    @pytest.mark.asyncio
+    async def test_auto_routes_bare_identifier_to_symbol(self, setup_mcp):
+        from repowise.server.mcp_server import search_codebase
+
+        result = await search_codebase("AuthService")
+        assert result["mode"] == "symbol"
+        assert any(r["symbol_id"] == "src/auth/service.py::AuthService" for r in result["results"])
+
+    @pytest.mark.asyncio
+    async def test_camelcase_multitoken_qualified_match(self, setup_mcp):
+        # "AuthService login" must surface AuthService.login via token coverage.
+        from repowise.server.mcp_server import search_codebase
+
+        result = await search_codebase("AuthService login", mode="symbol")
+        ids = [r["symbol_id"] for r in result["results"]]
+        assert "src/auth/service.py::login" in ids
+
+    @pytest.mark.asyncio
+    async def test_symbol_kind_filter(self, setup_mcp):
+        from repowise.server.mcp_server import search_codebase
+
+        result = await search_codebase("login", mode="symbol", symbol_kind="class")
+        # login is a method, not a class — the kind filter removes it.
+        assert all(r["kind"] == "class" for r in result["results"])
+        assert not any(r["name"] == "login" for r in result["results"])
+
+    @pytest.mark.asyncio
+    async def test_no_match_falls_back_to_grep_hint(self, setup_mcp):
+        from repowise.server.mcp_server import search_codebase
+
+        result = await search_codebase("NonexistentSymbol", mode="symbol")
+        assert result["results"] == []
+        assert "grep_hint" in result
+
+    @pytest.mark.asyncio
+    async def test_excluded_symbol_dropped(self, setup_mcp, monkeypatch):
+        # Exclude the auth file at query time; the symbol must not surface.
+        import pathspec
+
+        import repowise.server.mcp_server.tool_search_symbols as ss
+
+        spec = pathspec.PathSpec.from_lines("gitwildmatch", ["src/auth/**"])
+        monkeypatch.setattr(ss, "_get_exclude_spec", lambda _p: spec)
+
+        from repowise.server.mcp_server import search_codebase
+
+        result = await search_codebase("AuthService", mode="symbol")
+        assert result["results"] == []
+
+    @pytest.mark.asyncio
+    async def test_tombstoned_symbol_dropped(self, setup_mcp, factory):
+        # Tombstone the auth service page; its symbols must be filtered out.
+        from sqlalchemy import update
+
+        from repowise.core.persistence.models import Page
+
+        async with factory() as s:
+            await s.execute(
+                update(Page)
+                .where(Page.id == "file_page:src/auth/service.py")
+                .values(freshness_status="tombstone")
+            )
+            await s.commit()
+
+        from repowise.server.mcp_server import search_codebase
+
+        result = await search_codebase("AuthService", mode="symbol")
+        assert not any(r["file"] == "src/auth/service.py" for r in result["results"])
+
+
+class TestPathSearch:
+    """mode="path" / "auto" routing into file pages."""
+
+    @pytest.mark.asyncio
+    async def test_path_query_resolves_file(self, setup_mcp):
+        from repowise.server.mcp_server import search_codebase
+
+        result = await search_codebase("src/auth/service.py", mode="path")
+        assert result["mode"] == "path"
+        files = [r["file"] for r in result["results"]]
+        assert "src/auth/service.py" in files
+        top = result["results"][0]
+        assert top["type"] == "file"
+        assert top["next"] == "get_context"
+
+    @pytest.mark.asyncio
+    async def test_auto_routes_path_shaped_query(self, setup_mcp):
+        from repowise.server.mcp_server import search_codebase
+
+        result = await search_codebase("src/db/models.py")
+        assert result["mode"] == "path"
+        assert any(r["file"] == "src/db/models.py" for r in result["results"])
+
+
+class TestHybridSearch:
+    """Mixed natural-language + identifier queries run hybrid."""
+
+    @pytest.mark.asyncio
+    async def test_auto_routes_mixed_query_to_hybrid(self, setup_mcp):
+        from repowise.server.mcp_server import search_codebase
+
+        result = await search_codebase("where is AuthService defined")
+        assert result["mode"] == "hybrid"
+
+    @pytest.mark.asyncio
+    async def test_hybrid_puts_symbols_first(self, setup_mcp):
+        import repowise.server.mcp_server as mcp_mod
+        from repowise.server.mcp_server import search_codebase
+
+        async def fake_search(query, limit=10):
+            return [
+                _mk_result(
+                    "file_page:src/auth/service.py",
+                    "Auth Service",
+                    "file_page",
+                    "src/auth/service.py",
+                    0.42,
+                ),
+            ]
+
+        mcp_mod._vector_store.search = fake_search
+        result = await search_codebase("how does AuthService work", mode="hybrid")
+        assert result["results"][0]["type"] == "symbol"
+
+    @pytest.mark.asyncio
+    async def test_hybrid_keeps_concept_page_alongside_symbol(self, setup_mcp):
+        # A concept page for a DIFFERENT file (not the symbol's own file, which
+        # would dedupe out) must survive the merge — hybrid is symbols AND pages.
+        import repowise.server.mcp_server as mcp_mod
+        from repowise.server.mcp_server import search_codebase
+
+        async def fake_search(query, limit=10):
+            return [
+                _mk_result(
+                    "file_page:src/db/models.py",
+                    "DB Models",
+                    "file_page",
+                    "src/db/models.py",
+                    0.6,
+                ),
+            ]
+
+        mcp_mod._vector_store.search = fake_search
+        result = await search_codebase("how does AuthService work", mode="hybrid", limit=5)
+        types = {r["type"] for r in result["results"]}
+        assert "symbol" in types, "symbol hit must be present"
+        assert "page" in types, "concept page must survive the merge"
+
+
+class TestConceptModeUnchanged:
+    """Forcing mode="concept" preserves the original semantic behavior."""
+
+    @pytest.mark.asyncio
+    async def test_concept_mode_runs_semantic(self, setup_mcp):
+        import repowise.server.mcp_server as mcp_mod
+        from repowise.server.mcp_server import search_codebase
+
+        await mcp_mod._vector_store.embed_and_upsert(
+            "file_page:src/auth/service.py",
+            "Auth Service — Main authentication service class",
+            {
+                "title": "Auth Service",
+                "page_type": "file_page",
+                "target_path": "src/auth/service.py",
+            },
+        )
+        result = await search_codebase("AuthService", mode="concept")
+        # Concept mode does not set the structural "mode" routing key.
+        assert "results" in result
+        assert all(r.get("type") != "symbol" for r in result["results"])
+
+
 class TestIdentifierGrepHint:
     @pytest.mark.asyncio
     async def test_multiword_query_with_identifier_gets_hint(self, setup_mcp):
