@@ -7,7 +7,7 @@ from collections import Counter
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.change_risk import (
@@ -30,6 +30,7 @@ from repowise.server.schemas import (
     CommitEvolutionBucket,
     CommitEvolutionResponse,
     CommitResponse,
+    CommitStatsResponse,
     GitMetadataResponse,
     GitSummaryResponse,
     HotspotResponse,
@@ -256,6 +257,46 @@ async def get_agent_trend(
             key=lambda x: x["count"],
             reverse=True,
         ),
+    )
+
+
+@router.get("/{repo_id}/commits/stats", response_model=CommitStatsResponse)
+async def get_commit_stats(
+    repo_id: str,
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+) -> CommitStatsResponse:
+    """Repo-wide commit aggregates for the headline stat cards.
+
+    Computed over **every** indexed commit, not the loaded page — the feed is
+    paginated, so reducing the client's window mis-counts (a risk-sorted first
+    page is entirely top-tercile, and its fix/entropy figures are a slice, not
+    the whole). High-priority uses the same repo-relative tercile as the feed.
+    """
+    total = await crud.count_git_commits(session, repo_id)
+
+    # is_fix / entropy / agent counts in a single pass. CASE-SUM rather than
+    # COUNT(...) FILTER keeps it portable across SQLite and Postgres.
+    agg = (
+        await session.execute(
+            select(
+                func.sum(case((GitCommit.is_fix.is_(True), 1), else_=0)),
+                func.avg(GitCommit.entropy),
+                func.sum(case((GitCommit.agent_name.is_not(None), 1), else_=0)),
+            ).where(GitCommit.repository_id == repo_id)
+        )
+    ).one()
+    fix_count, avg_entropy, agent_count = agg
+
+    scores = await crud.get_commit_risk_scores(session, repo_id)
+    normalizer = RiskNormalizer.from_scores(scores)
+    high_priority = sum(1 for s in scores if normalizer.priority(s) == "high")
+
+    return CommitStatsResponse(
+        total_commits=total,
+        high_priority_count=high_priority,
+        fix_commit_count=int(fix_count or 0),
+        agent_commit_count=int(agent_count or 0),
+        avg_entropy=float(avg_entropy or 0.0),
     )
 
 

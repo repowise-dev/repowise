@@ -249,3 +249,19 @@ class CommitEvolutionResponse(BaseModel):
     granularity: str  # "month" | "week"
     first_commit_at: str | None = None
     last_commit_at: str | None = None
+
+
+class CommitStatsResponse(BaseModel):
+    """Repo-wide commit aggregates for the commits-page headline stat cards.
+
+    Computed over **all** indexed commits, not the loaded page — the paginated
+    feed only returns a window, so client-side reductions over it under-count
+    (e.g. a risk-sorted first page is all top-tercile). These are the honest
+    totals for the whole repository.
+    """
+
+    total_commits: int
+    high_priority_count: int  # commits in the repo-relative top risk tercile
+    fix_commit_count: int  # subjects classified as bug-fixes
+    agent_commit_count: int  # agent-attributed commits
+    avg_entropy: float  # mean change-diffusion across all commits

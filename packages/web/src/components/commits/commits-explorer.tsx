@@ -28,6 +28,7 @@ import {
   getAgentTrend,
   getCommit,
   getCommitEvolution,
+  getCommitStats,
   getCommitsPage,
   getHotspots,
 } from "@/lib/api/git";
@@ -63,6 +64,15 @@ export function CommitsExplorer({ repoId }: { repoId: string }) {
     { revalidateOnFocus: false },
   );
 
+  // Repo-wide stat-card aggregates. Computed server-side over ALL commits — the
+  // loaded page is only a window (and, when risk-sorted, entirely top-tercile),
+  // so reducing `list` here would under-count fixes and inflate high-priority.
+  const { data: stats } = useSWR(
+    `commit-stats:${repoId}`,
+    () => getCommitStats(repoId),
+    { revalidateOnFocus: false },
+  );
+
   // Repo-relative risk distribution — turns the credibility strip's
   // "relative to this repo" claim into a picture.
   const { data: hotspots } = useSWR(
@@ -78,15 +88,19 @@ export function CommitsExplorer({ repoId }: { repoId: string }) {
   );
 
   const list = data?.items ?? [];
-  const total = data?.total ?? list.length;
+  const total = stats?.total_commits ?? data?.total ?? list.length;
   const hasMore = data?.has_more ?? false;
 
-  const highCount = list.filter((c) => c.review_priority === "high").length;
-  const fixCount = list.filter((c) => c.is_fix).length;
+  // Prefer the repo-wide aggregates; fall back to the loaded page only until
+  // the stats request resolves so the cards aren't blank on first paint.
+  const highCount =
+    stats?.high_priority_count ?? list.filter((c) => c.review_priority === "high").length;
+  const fixCount = stats?.fix_commit_count ?? list.filter((c) => c.is_fix).length;
   const avgEntropy =
-    list.length > 0
+    stats?.avg_entropy ??
+    (list.length > 0
       ? list.reduce((s, c) => s + (c.entropy || 0), 0) / list.length
-      : 0;
+      : 0);
 
   if (isLoading && list.length === 0) {
     return (
@@ -122,7 +136,7 @@ export function CommitsExplorer({ repoId }: { repoId: string }) {
         <StatCard
           label="High priority"
           value={highCount}
-          description="top tercile (loaded)"
+          description="top risk tercile"
           icon={<AlertTriangle className="h-4 w-4 text-[var(--color-error)]" />}
         />
         <StatCard

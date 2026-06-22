@@ -2,6 +2,7 @@ import { apiGet } from "./client";
 import type {
   AgentTrend,
   CommitEvolution,
+  CommitStats,
   CommitDetailResponse,
   CommitResponse,
   GitMetadataResponse,
@@ -145,6 +146,10 @@ export async function getCommitEvolution(
   return apiGet<CommitEvolution>(
     `/api/repos/${repoId}/commits/evolution?granularity=${granularity}`,
   );
+}
+
+export async function getCommitStats(repoId: string): Promise<CommitStats> {
+  return apiGet<CommitStats>(`/api/repos/${repoId}/commits/stats`);
 }
 
 export async function getCommit(

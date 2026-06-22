@@ -208,6 +208,15 @@ export interface CommitEvolution {
   last_commit_at: string | null;
 }
 
+/** Repo-wide commit aggregates (over all commits, not the loaded page). */
+export interface CommitStats {
+  total_commits: number;
+  high_priority_count: number;
+  fix_commit_count: number;
+  agent_commit_count: number;
+  avg_entropy: number;
+}
+
 export interface OwnershipEntry {
   module_path: string;
   primary_owner: string | null;
