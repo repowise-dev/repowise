@@ -151,6 +151,28 @@ _CASES = [
     ),
     (
         "typescript",
+        b"import fs from 'fs';\n"
+        b'function f() {\n  for (const p of ["/proc/net/tcp", "/proc/net/tcp6"]) {\n'
+        b'    fs.readFileSync(p, "utf8");\n  }\n}\n',
+        [],
+        "for-of over an inline array literal is constant-bounded -> skipped",
+    ),
+    (
+        "typescript",
+        b"import fs from 'fs';\nconst NAMES = ['DREAMS.md', 'dreams.md'];\n"
+        b"function f() {\n  for (const n of NAMES) {\n    fs.readFileSync(n);\n  }\n}\n",
+        [],
+        "for-of over an ALL_CAPS named constant is constant-bounded -> skipped",
+    ),
+    (
+        "typescript",
+        b"import fs from 'fs';\n"
+        b'function f(paths) {\n  for (const p of paths) {\n    fs.readFileSync(p, "utf8");\n  }\n}\n',
+        [("io_in_loop", "filesystem")],
+        "for-of over a data-dependent variable still fires (contrast to constant)",
+    ),
+    (
+        "typescript",
         b"import axios from 'axios';\n"
         b"function f(items) {\n"
         b"  for (const u of items) {\n"

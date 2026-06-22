@@ -120,6 +120,27 @@ class TsJsPerfDialect(BasePerfDialect):
             return self._dotted_path(right)
         return None
 
+    def is_constant_loop(self, node: Node) -> bool:
+        """True if a ``for...of`` / ``for...in`` iterates a compile-time-constant
+        bound: an inline **array literal** (``for (const p of ["/a", "/b"])`` —
+        the author enumerated a fixed set, so there is no data-dependent N+1
+        blow-up) or an **ALL_CAPS** named constant (``for (const f of
+        DREAMS_FILENAMES)``). Mirrors the Python dialect's literal-collection
+        skip. C-style ``for (;;)`` / ``while`` / ``do`` are cursors — never
+        constant here (they are pagination / polling)."""
+        if node.type not in self._ITERATION_LOOP_KINDS:
+            return False
+        right = node.child_by_field_name("right")
+        if right is None:
+            return False
+        if right.type == "array":
+            return True
+        if right.type == "identifier" and right.text is not None:
+            name = right.text.decode("utf-8", "replace")
+            if name.isupper() and len(name) > 1:
+                return True
+        return False
+
     def sink_kind(
         self,
         root: str,
