@@ -258,6 +258,111 @@ def test_python_dynamic_hints_ignore_dotted_strings_without_loader(
     assert all(e.source != "pkg/doc.py" for e in edges)
 
 
+# ---------------------------------------------------------------------------
+# 5. Same-file references in a non-call position (PR #531 false positives)
+# ---------------------------------------------------------------------------
+
+
+def test_callable_passed_as_argument_same_file_not_flagged() -> None:
+    """A function handed to a higher-order helper — never invoked by name —
+    is live. Mirrors ``maintainability_weight`` / ``performance_category``
+    passed into ``_score_dimension`` in ``health/scoring.py``."""
+    sources = {
+        "packages/core/src/myrepo/__init__.py": "",
+        "packages/core/src/myrepo/scoring.py": (
+            "def maintainability_weight(name):\n    return 1.0\n\n\n"
+            "def maintainability_category(name):\n    return 'x'\n\n\n"
+            "def _score_dimension(results, weight_fn, category_fn):\n"
+            "    return weight_fn(results) + category_fn(results)\n\n\n"
+            "def score_file(results):\n"
+            "    return _score_dimension(\n"
+            "        results, maintainability_weight, maintainability_category\n"
+            "    )\n"
+        ),
+    }
+    graph = _graph_from_sources(sources)
+    flagged = _unused_export_names(graph)
+    assert "maintainability_weight" not in flagged
+    assert "maintainability_category" not in flagged
+
+
+def test_class_used_only_as_type_annotation_same_file_not_flagged() -> None:
+    """A Pydantic-style model used only as a request-body parameter type is
+    live — FastAPI instantiates it at runtime, so no constructor call lands
+    in user code. Mirrors ``FindingStatusUpdate`` in ``routers/code_health.py``."""
+    sources = {
+        "packages/server/src/myrepo/__init__.py": "",
+        "packages/server/src/myrepo/server/__init__.py": "",
+        "packages/server/src/myrepo/server/routers/__init__.py": "",
+        "packages/server/src/myrepo/server/routers/code_health.py": (
+            "from pydantic import BaseModel\n\n\n"
+            "class FindingStatusUpdate(BaseModel):\n    status: str\n\n\n"
+            "def update_status(finding_id, payload: FindingStatusUpdate):\n"
+            "    return payload.status\n"
+        ),
+    }
+    graph = _graph_from_sources(sources)
+    assert "FindingStatusUpdate" not in _unused_export_names(graph)
+
+
+def test_forward_ref_annotation_same_file_not_flagged() -> None:
+    """A quoted forward-reference annotation (``payload: "Body"``) still
+    counts as a use — the parser re-parses string annotations."""
+    sources = {
+        "pkg/__init__.py": "",
+        "pkg/api.py": (
+            "class Body:\n    x: int = 0\n\n\n"
+            "def handler(payload: 'Body'):\n    return payload\n"
+        ),
+    }
+    graph = _graph_from_sources(sources)
+    assert "Body" not in _unused_export_names(graph)
+
+
+def test_genuinely_unused_same_file_symbol_still_flagged() -> None:
+    """The rescue must not blanket-hide dead code: a public symbol that is
+    never referenced anywhere (in-file or cross-file) is still reported."""
+    sources = {
+        "pkg/__init__.py": "",
+        "pkg/mod.py": (
+            "def used_helper():\n    return 1\n\n\n"
+            "def caller():\n    return used_helper()\n\n\n"
+            "def never_referenced():\n    return 2\n"
+        ),
+    }
+    graph = _graph_from_sources(sources)
+    flagged = _unused_export_names(graph)
+    assert "never_referenced" in flagged
+
+
+def test_genuinely_unused_recursive_symbol_still_flagged() -> None:
+    """A symbol's own body must not rescue it: a recursive function that is
+    dead from the rest of the codebase is still reported (its only reference
+    is its own recursive call)."""
+    sources = {
+        "pkg/__init__.py": "",
+        "pkg/mod.py": (
+            "def dead_recursive(n):\n"
+            "    if n <= 0:\n        return 0\n"
+            "    return dead_recursive(n - 1)\n"
+        ),
+    }
+    graph = _graph_from_sources(sources)
+    assert "dead_recursive" in _unused_export_names(graph)
+
+
+def test_name_only_in_all_string_is_not_rescued() -> None:
+    """A name appearing solely as an ``__all__`` string literal is not a
+    real reference (it is export bookkeeping, not a use) and must not be
+    rescued by the same-file machinery."""
+    sources = {
+        "pkg/__init__.py": "",
+        "pkg/mod.py": ("__all__ = ['orphan']\n\n\ndef orphan():\n    return 1\n"),
+    }
+    graph = _graph_from_sources(sources)
+    assert "orphan" in _unused_export_names(graph)
+
+
 def test_dynamic_use_edge_marks_target_file_live() -> None:
     """An incoming ``dynamic_uses`` edge keeps every public export of the
     target file out of the unused-export results (analyzer contract that the

@@ -68,6 +68,7 @@ from .parser_helpers import (
     _qualified_cpp_parent,
     _run_query,
 )
+from .python_local_refs import extract_python_local_refs
 
 log = structlog.get_logger(__name__)
 
@@ -290,6 +291,16 @@ class ASTParser:
         docstring = extract_module_docstring(root, src, lang)
         type_refs = self._extract_type_refs(matches, src, lang)
 
+        # Same-file reference rescue (Python only): top-level symbols used
+        # elsewhere in their own module in a non-call / non-import position
+        # (callable passed as an arg, type annotation, decorator, default)
+        # carry no graph edge, so the dead-code unused-export pass would flag
+        # them. Stamp the referenced names so the analyzer can rescue them.
+        local_refs: frozenset[str] = frozenset()
+        if lang == "python":
+            top_level_names = {s.name for s in symbols if s.name and not s.parent_name}
+            local_refs = extract_python_local_refs(src, top_level_names)
+
         if len(symbols) > _SYMBOL_COUNT_WARN_THRESHOLD:
             log.warning(
                 "parser.symbol_bloat",
@@ -309,6 +320,7 @@ class ASTParser:
             docstring=docstring,
             parse_errors=parse_errors,
             type_refs=type_refs,
+            local_refs=local_refs,
         )
 
     # ------------------------------------------------------------------
