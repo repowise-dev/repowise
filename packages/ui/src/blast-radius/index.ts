@@ -8,3 +8,5 @@ export * from "./reviewers-table";
 export * from "./test-gaps-list";
 export * from "./blast-radius-summary";
 export * from "./blast-radius-results";
+export * from "./impact-adapter";
+export * from "./impact-view";
