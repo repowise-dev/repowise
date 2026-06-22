@@ -2,6 +2,13 @@
 
 All notable changes to the Repowise Claude Code plugin are documented here.
 
+## 0.22.0
+
+### Changed
+- Updated the `search_codebase` skill docs to describe hybrid symbol/path search:
+  the new `mode` parameter (`auto`/`concept`/`symbol`/`path`/`hybrid`) and
+  identifier/path query routing into structural-index results.
+
 ## 0.21.0
 
 ### Changed

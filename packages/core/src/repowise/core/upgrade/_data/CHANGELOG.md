@@ -9,6 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.22.0] — 2026-06-22
+
+### Added
+- **Three-signal code health.** The single code-health score is now split into three co-equal signals: **defect risk** (the headline score), **maintainability** (smells that raise change-cost without predicting bugs), and **performance risk** (static I/O-in-loop / N+1 shapes). Maintainability and performance are surfaced as their own pillars across the dashboard and the `get_health` MCP tool rather than being blended into the defect headline. (#528, #531, #533, #544)
+- **Performance-risk detection across languages.** A new performance detector finds I/O-in-loop and N+1 shapes, including cross-function cases resolved through call-graph reachability, with language-specific markers and dialects for Python, Java, Go, and C# (loop-level markers, `pandas_iterrows_in_loop`, centrality gating, and a reusable severity ranker). Detection runs through a `PerfDialect` plugin registry. (#530, #532, #536, #537, #538, #539, #541, #542)
+- **Dependencies classified by I/O boundary.** External systems are now classified by the kind of I/O boundary they sit on, feeding the performance and architecture views. (#529)
+- **Reindex-free upgrades.** The on-disk store now carries a format version separate from the package version, so upgrading repowise no longer forces a reindex. Upgrades show a release advisory and a "what's new" panel on the CLI, and the dashboard surfaces available upgrades with release info shared through core. (#553, #554, #556)
+- **Hybrid symbol and path search in `search_codebase`.** `search_codebase` now searches repowise's own structural index for identifier- and path-shaped queries instead of only running wiki-semantic search. A new `mode` parameter (`auto`/`concept`/`symbol`/`path`/`hybrid`) controls routing; `auto` picks by query shape and returns symbol IDs, file/line bounds, and signatures for identifier queries. (#558)
+- **Anonymous, opt-out CLI telemetry.** The CLI now collects anonymous usage telemetry behind a central platform layer; it is opt-out and collects no source code. (#555)
+- **AI prompt actions across the dashboard.** Health findings now carry MCP-native "fix this" AI prompt actions, rolled across the dashboard, with a finding-count cap to keep output bounded. (#546, #547)
+- **Commits and stats redesigns.** The commits page leads with a Code Evolution timeline, the blast-radius impact tab was redesigned, the owners view leads with a knowledge-distribution headline, and a new repo Stats "By the Numbers" page was added. Co-changes gained a repo-pair summary drill-down. (#543, #548, #549, #550, #551)
+
+### Changed
+- **Distill: seamless rewrite permissions + re-read savings.** `repowise distill` gained smoother rewrite-permission handling and additional re-read token savings. (#559)
+
+### Fixed
+- **Overview "Last synced" reflects CLI auto-syncs.** The overview page now reflects auto-syncs triggered by the CLI in its "Last synced" timestamp. (#564)
+- **Dead-code analyzer keeps same-file Python symbols.** Python symbols referenced only within their own file (callable-as-argument, annotation-only) are no longer flagged as dead code. (#563)
+- **Index freshness stays current.** Updates now keep the `CLAUDE.md` stamp and the indexed commit current so agents don't distrust a fresh index. (#524)
+- **Commits-page follow-ups.** Full-width agent strip, collapsible risk panel, and repo-wide stat cards on the commits page. (#552)
+- **Fewer performance false positives.** Eliminated three perf-detector false-positive classes across C#/Go/Python and now skips `for...of` over constant collections in the TS/JS detector. (#540, #545)
+
+### Documentation
+- README refreshed: banner, numbers-first lead, combined demo GIF, three-signal code-health framing, and star CTAs. (#534, #535, #562)
+- Plugin: version bump to 0.22.0; `search_codebase` skill docs updated for hybrid symbol/path search.
+
+---
+
 ## [0.21.0] — 2026-06-19
 
 ### Added
