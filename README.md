@@ -374,7 +374,7 @@ To add the MCP server to another editor manually:
 > commit-triggered update takes **under 30 seconds** and only regenerates the
 > pages your change touched.
 
-**Docs:** [Quickstart](docs/QUICKSTART.md) · [User Guide](docs/USER_GUIDE.md) · [CLI Reference](docs/CLI_REFERENCE.md) · [Codex](docs/CODEX.md) · [MCP Tools](docs/MCP_TOOLS.md) · [Distill](docs/DISTILL.md) · [Workspaces](docs/WORKSPACES.md) · [Auto-Sync](docs/AUTO_SYNC.md) · [Config](docs/CONFIG.md)
+**Docs:** [Quickstart](docs/QUICKSTART.md) · [User Guide](docs/USER_GUIDE.md) · [CLI Reference](docs/CLI_REFERENCE.md) · [Codex](docs/CODEX.md) · [MCP Tools](docs/MCP_TOOLS.md) · [Distill](docs/DISTILL.md) · [Workspaces](docs/WORKSPACES.md) · [Auto-Sync](docs/AUTO_SYNC.md) · [Upgrading](docs/UPGRADING.md) · [Config](docs/CONFIG.md)
 
 ---
 

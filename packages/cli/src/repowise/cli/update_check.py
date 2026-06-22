@@ -22,12 +22,23 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-PYPI_URL = "https://pypi.org/pypi/repowise/json"
+# Version comparison and the PyPI fetch are defined once in core (the server
+# shares them too). Re-exported here so existing ``repowise.cli.update_check``
+# importers keep working.
+from repowise.core.upgrade.release import (
+    DEFAULT_TTL_HOURS,
+    fetch_latest_version,
+    is_newer_version,
+)
 
-#: Default freshness window for the cached PyPI check. Within this window the
-#: last fetched ``latest_version`` is reused so routine commands never hit the
-#: network. 24h keeps the advisory current without nagging PyPI on every run.
-DEFAULT_TTL_HOURS = 24.0
+__all__ = [
+    "DEFAULT_TTL_HOURS",
+    "UpdateCheck",
+    "get_cli_update_check",
+    "get_cli_update_check_cached",
+    "is_newer_version",
+    "suggest_update_command",
+]
 
 
 @dataclass(frozen=True)
@@ -48,44 +59,6 @@ class UpdateCheck:
     suggested_command: str
     install_hint: str
     error: str | None = None
-
-
-def _parse_release(version: str) -> tuple[int, ...] | None:
-    """Parse the leading numeric release parts of a version string.
-
-    Returns a tuple of ints for the dotted numeric prefix (so ``0.15.2`` ->
-    ``(0, 15, 2)``). Pre-release/local suffixes such as ``-rc1`` or ``+local``
-    are ignored. Returns ``None`` when no numeric component can be parsed.
-    """
-    parts: list[int] = []
-    for chunk in version.strip().split("."):
-        digits = ""
-        for ch in chunk:
-            if ch.isdigit():
-                digits += ch
-            else:
-                break
-        if not digits:
-            break
-        parts.append(int(digits))
-    return tuple(parts) or None
-
-
-def is_newer_version(latest: str, current: str) -> bool:
-    """Return ``True`` if ``latest`` is a strictly newer release than ``current``.
-
-    Uses a simple numeric-release comparison. If either version cannot be
-    parsed, returns ``False`` (no update decision) rather than raising.
-    """
-    lat = _parse_release(latest)
-    cur = _parse_release(current)
-    if lat is None or cur is None:
-        return False
-    # Pad to equal length so 0.15 compares correctly against 0.15.2.
-    length = max(len(lat), len(cur))
-    lat = lat + (0,) * (length - len(lat))
-    cur = cur + (0,) * (length - len(cur))
-    return lat > cur
 
 
 def suggest_update_command(executable: str | None, python: str) -> tuple[str, str]:
@@ -146,23 +119,7 @@ def get_cli_update_check(timeout: float = 2.0) -> UpdateCheck:
     else:
         suggested, hint = suggest_update_command(resolved or running, python)
 
-    latest: str | None = None
-    error: str | None = None
-    try:
-        import httpx
-
-        resp = httpx.get(PYPI_URL, timeout=timeout)
-        resp.raise_for_status()
-        fetched = resp.json()["info"]["version"]
-        # Only accept a version we can actually compare; otherwise leave
-        # latest=None so callers report "unknown" rather than a false "latest".
-        if _parse_release(fetched) is None:
-            error = f"unparsable latest version: {fetched!r}"
-        else:
-            latest = fetched
-    except Exception as exc:  # network, JSON, missing key — all advisory
-        error = str(exc) or exc.__class__.__name__
-
+    latest, error = fetch_latest_version(timeout=timeout)
     if latest is None:
         update_available: bool | None = None
     else:

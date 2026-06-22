@@ -103,6 +103,12 @@ from .mcp import (
     McpToolSurfaceResponse,
     UpdateMcpToolsRequest,
 )
+from .meta import (
+    ChangelogEntryModel,
+    ChangelogResponse,
+    ChangelogSectionModel,
+    VersionResponse,
+)
 from .intelligence import (
     CallerCalleeEntry,
     CallersCalleesResponse,
@@ -222,6 +228,9 @@ __all__ = [
     "C4SystemResponse",
     "CallerCalleeEntry",
     "CallersCalleesResponse",
+    "ChangelogEntryModel",
+    "ChangelogResponse",
+    "ChangelogSectionModel",
     "ChatMessageResponse",
     "ChatRequest",
     "CochangeWarning",
@@ -314,6 +323,7 @@ __all__ = [
     "SymbolResponse",
     "TransitiveEntry",
     "UpdateMcpToolsRequest",
+    "VersionResponse",
     "WebhookResponse",
     "WorkspaceCoChangeEntry",
     "WorkspaceBlastRadiusResponse",

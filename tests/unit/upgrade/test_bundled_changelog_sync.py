@@ -13,9 +13,9 @@ from pathlib import Path
 
 import pytest
 
-import repowise.cli as cli_pkg
+from repowise.core.upgrade.release import BUNDLED_CHANGELOG_PATH
 
-_BUNDLED = Path(cli_pkg.__file__).parent / "_data" / "CHANGELOG.md"
+_BUNDLED = BUNDLED_CHANGELOG_PATH
 
 
 def _source_changelog() -> Path | None:

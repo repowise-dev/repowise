@@ -24,12 +24,13 @@ from repowise.core.upgrade.changelog import (
     entries_between,
     parse_changelog,
 )
+from repowise.core.upgrade.release import BUNDLED_CHANGELOG_PATH
 
 from .helpers import user_global_dir
 
 RELEASES_URL = "https://github.com/repowise-dev/repowise/releases"
 
-_BUNDLED_CHANGELOG = Path(__file__).parent / "_data" / "CHANGELOG.md"
+_BUNDLED_CHANGELOG = BUNDLED_CHANGELOG_PATH
 _LAST_SEEN_FILENAME = "last-seen-version"
 
 

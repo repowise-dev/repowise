@@ -16,6 +16,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@repowise-dev/ui/u
 import { ScrollArea } from "@repowise-dev/ui/ui/scroll-area";
 import { Separator } from "@repowise-dev/ui/ui/separator";
 import { AddRepoDialog } from "@/components/repos/add-repo-dialog";
+import { VersionFooter } from "./version-footer";
 import { cn } from "@/lib/utils/cn";
 import {
   GLOBAL_NAV,
@@ -241,7 +242,7 @@ export function MobileNav({ repos = [], workspace }: MobileNavProps) {
           </ScrollArea>
 
           <div className="border-t border-[var(--color-border-default)] px-4 py-3">
-            <p className="text-xs text-[var(--color-text-tertiary)]">repowise v0.21.0</p>
+            <VersionFooter />
           </div>
         </SheetContent>
       </Sheet>
