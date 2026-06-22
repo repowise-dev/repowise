@@ -1,4 +1,5 @@
 export * from "./risk-score-card";
+export * from "./blast-radius-header";
 export * from "./impact-graph";
 export * from "./table-section";
 export * from "./direct-risks-table";

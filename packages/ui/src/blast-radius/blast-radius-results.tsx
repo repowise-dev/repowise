@@ -1,7 +1,6 @@
 import type { ReactNode } from "react";
 import type { BlastRadiusResponse } from "@repowise-dev/types/blast-radius";
-import { RiskScoreCard } from "./risk-score-card";
-import { BlastRadiusSummary } from "./blast-radius-summary";
+import { BlastRadiusHeader } from "./blast-radius-header";
 import { ImpactGraph } from "./impact-graph";
 import { DirectRisksTable } from "./direct-risks-table";
 import { TransitiveTable } from "./transitive-table";
@@ -32,10 +31,7 @@ export function BlastRadiusResults({
 }: BlastRadiusResultsProps) {
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-4">
-        <RiskScoreCard score={result.overall_risk_score} />
-        <BlastRadiusSummary result={result} />
-      </div>
+      <BlastRadiusHeader result={result} changedFiles={changedFiles} />
 
       {/* One picture: changed files → direct → transitive. */}
       <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-4">

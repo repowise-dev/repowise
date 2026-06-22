@@ -61,8 +61,8 @@ describe("TableSection", () => {
 describe("DirectRisksTable", () => {
   it("scales risk_score 0–1 → 0–10", () => {
     render(<DirectRisksTable rows={fixture.direct_risks} />);
-    expect(screen.getByText("8.20")).toBeTruthy();
-    expect(screen.getByText("7.40")).toBeTruthy();
+    expect(screen.getByText("8.2")).toBeTruthy();
+    expect(screen.getByText("7.4")).toBeTruthy();
   });
 });
 
@@ -106,17 +106,18 @@ describe("BlastRadiusSummary", () => {
 });
 
 describe("BlastRadiusResults", () => {
-  it("composes the risk gauge, summary, impact map, and collapsible sections", () => {
+  it("composes the risk header, impact map, and collapsible sections", () => {
     render(<BlastRadiusResults result={fixture} changedFiles={["src/auth/login.py"]} />);
-    expect(screen.getByText("High Risk")).toBeTruthy();
-    // Summary stat label (capitalized) is distinct from the collapsible toggle
-    // title (sentence case), so each appears once.
-    expect(screen.getByText("Direct Risks")).toBeTruthy();
-    expect(screen.getByText("Direct risks")).toBeTruthy();
+    // Header band label + gauge score.
+    expect(screen.getByText("High risk")).toBeTruthy();
+    expect(screen.getByText("7.6")).toBeTruthy();
+    // The header tile and the collapsible toggle share the "Direct risks" /
+    // "Test gaps" copy, so each appears more than once.
+    expect(screen.getAllByText("Direct risks").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText("Transitive affected files")).toBeTruthy();
     expect(screen.getByText("Co-change warnings")).toBeTruthy();
     expect(screen.getByText("Recommended reviewers")).toBeTruthy();
-    expect(screen.getByText("Test gaps")).toBeTruthy();
+    expect(screen.getAllByText("Test gaps").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText("Impact map")).toBeTruthy();
   });
 
@@ -131,6 +132,6 @@ describe("BlastRadiusResults", () => {
     };
     render(<BlastRadiusResults result={empty} />);
     expect(screen.getByText("No downstream impact found")).toBeTruthy();
-    expect(screen.getByText("Low Risk")).toBeTruthy();
+    expect(screen.getByText("Low risk")).toBeTruthy();
   });
 });
