@@ -5,8 +5,9 @@ re-parses the whole repo when one file changed, and large-repo inits pay
 minutes of tree-sitter time. A ParsedFile is a pure function of the file
 *bytes* and the parser itself, so it caches safely keyed by
 ``(relative path, content hash)`` under a parser fingerprint (the compiled
-``.scm`` query sources + the package version) that invalidates the whole
-cache when extraction rules change.
+``.scm`` query sources + ``PARSER_SCHEMA_VERSION``) that invalidates the whole
+cache when extraction rules change. The fingerprint excludes the package
+version on purpose so unrelated releases keep the cache warm.
 
 Entries are stored as pickle *bytes* snapshotted at parse time — downstream
 graph builds mutate ParsedFile in place (``Import.resolved_file``,
@@ -48,18 +49,21 @@ __all__ = ["ParseCache", "parser_fingerprint"]
 def parser_fingerprint() -> str:
     """Fingerprint of everything that determines a ParsedFile besides bytes.
 
-    Hashes every ``.scm`` query source (extraction rules) plus the package
-    version (parser/extractor code changes ship as releases). A mismatch
-    invalidates the whole cache — correctness over reuse.
+    Hashes every ``.scm`` query source (extraction rules) plus
+    ``PARSER_SCHEMA_VERSION`` (Python-side extraction logic). Deliberately
+    *not* the package ``__version__``: an unrelated release must not churn a
+    user's whole parse cache. The schema version is bumped only when parser /
+    extractor behaviour actually changes, so a mismatch still invalidates the
+    cache when correctness demands it. See :mod:`repowise.core.upgrade.version`.
     """
     h = hashlib.sha256()
     h.update(f"cache-version:{_CACHE_VERSION}".encode())
     try:
-        from repowise.core import __version__
+        from repowise.core.upgrade.version import PARSER_SCHEMA_VERSION
 
-        h.update(f"version:{__version__}".encode())
+        h.update(f"parser-schema:{PARSER_SCHEMA_VERSION}".encode())
     except Exception:
-        h.update(b"version:unknown")
+        h.update(b"parser-schema:unknown")
     queries_dir = Path(__file__).parent / "queries"
     try:
         for scm in sorted(queries_dir.glob("*.scm")):

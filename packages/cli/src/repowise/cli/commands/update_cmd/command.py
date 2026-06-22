@@ -12,6 +12,7 @@ from __future__ import annotations
 import time
 
 import click
+import structlog
 
 from repowise.cli.helpers import (
     acquire_update_lock,
@@ -56,6 +57,8 @@ from .reporting import (
     show_full_completion,
 )
 from .workspace import _workspace_update
+
+log = structlog.get_logger(__name__)
 
 
 @click.command("update")
@@ -342,6 +345,29 @@ def update_command(
     clear_update_queued(repo_path)
     atexit.register(release_update_lock, repo_path)
     atexit.register(clear_update_queued, repo_path)
+
+    # --- Store-format upgrade assessment --------------------------------
+    # Single decision point for "does upgrading repowise need to touch this
+    # store". Runs any no-LLM auto actions (e.g. re-embed after an embedding
+    # model change); reindex is only ever recommended, never forced here.
+    # Placed after the single-flight lock so an auto re-embed (a full vector
+    # rebuild) can't race a concurrent update. Best-effort: the upgrade layer
+    # must never block a routine update.
+    try:
+        from repowise.cli.upgrade import apply_upgrade, assess_store
+
+        verdict = assess_store(repo_path)
+        if not verdict.is_noop:
+            if verdict.reindex_recommended and verdict.reindex_command:
+                console.print(f"[yellow]Reindex recommended:[/yellow] {verdict.reindex_command}")
+                if verdict.user_notice:
+                    console.print(f"[dim]{verdict.user_notice}[/dim]")
+            if verdict.actions and not dry_run:
+                for action in verdict.actions:
+                    console.print(f"[dim]Upgrade: {action.reason}[/dim]")
+                run_async(apply_upgrade(repo_path, verdict))
+    except Exception as exc:  # never block a routine update on the upgrade layer
+        log.debug("store_upgrade_skipped", error=str(exc))
 
     render_header(repo_path, base_ref, head)
 
