@@ -37,6 +37,8 @@ export interface GraphFlowProps {
   repoName?: string;
   initialViewMode?: ViewMode;
   initialColorMode?: GraphFlowShellProps["initialColorMode"];
+  /** Controlled node color mode — the page URL-syncs it and passes it down. */
+  colorMode?: GraphFlowShellProps["colorMode"];
   initialSelectedNode?: string | null;
   onNodeClick?: GraphFlowShellProps["onNodeClick"];
   onNodeViewDocs?: GraphFlowShellProps["onNodeViewDocs"];
@@ -59,6 +61,7 @@ export function GraphFlow({
   repoName,
   initialViewMode,
   initialColorMode,
+  colorMode,
   initialSelectedNode,
   onNodeClick,
   onNodeViewDocs,
@@ -136,6 +139,7 @@ export function GraphFlow({
       executionFlows={executionFlowsData as ExecutionFlows | undefined}
       initialViewMode={initialViewMode}
       initialColorMode={initialColorMode}
+      colorMode={colorMode}
       initialSelectedNode={initialSelectedNode}
       onViewModeChange={(mode) => {
         setViewMode(mode);

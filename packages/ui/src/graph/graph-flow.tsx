@@ -102,9 +102,15 @@ export interface GraphFlowProps {
   communities?: CommunitySummaryItem[];
   executionFlows?: ExecutionFlows;
   initialViewMode?: ViewMode;
-  /** Initial node color mode. Hosts derive this from their URL state instead
-   *  of the component reading window.location. */
+  /** Initial node color mode (uncontrolled seed). Hosts derive this from their
+   *  URL state instead of the component reading window.location. Ignored when
+   *  {@link colorMode} is supplied. */
   initialColorMode?: ColorMode;
+  /** Controlled node color mode. When supplied, the host owns the value (and
+   *  typically URL-syncs it); the component reflects it directly and reports
+   *  user changes via {@link onColorModeChange}. Omit to let the component
+   *  track its own color mode seeded by {@link initialColorMode}. */
+  colorMode?: ColorMode;
   initialSelectedNode?: string | null;
   onViewModeChange?: (mode: ViewMode) => void;
   /** Fired when the node color mode changes (toolbar or 1/2/3 shortcut) so
@@ -162,6 +168,7 @@ export function GraphFlow(props: GraphFlowProps) {
     executionFlows,
     initialViewMode,
     initialColorMode,
+    colorMode: controlledColorMode,
     initialSelectedNode,
     onViewModeChange,
     onColorModeChange,
@@ -183,7 +190,21 @@ export function GraphFlow(props: GraphFlowProps) {
   // ---- Core state ----
   // Default scope is the constellation (radial Knowledge Graph).
   const [viewMode, setViewMode] = useState<ViewMode>(initialViewMode ?? "architecture");
-  const [colorMode, setColorMode] = useState<ColorMode>(initialColorMode ?? "community");
+  // Color mode is controlled by the host when `colorMode` is supplied
+  // (URL-synced); otherwise the component tracks it locally, seeded by
+  // `initialColorMode`. The wrapped setter routes through the host callback in
+  // controlled mode and falls back to local state in uncontrolled mode.
+  const [colorModeState, setColorModeState] = useState<ColorMode>(
+    initialColorMode ?? "community",
+  );
+  const colorMode = controlledColorMode ?? colorModeState;
+  const setColorMode = useCallback(
+    (next: ColorMode) => {
+      if (onColorModeChange) onColorModeChange(next);
+      else setColorModeState(next);
+    },
+    [onColorModeChange],
+  );
   const [highlightedPath, setHighlightedPath] = useState<Set<string>>(new Set());
   const [highlightedEdges, setHighlightedEdges] = useState<Set<string>>(new Set());
   const [showPathFinder, setShowPathFinder] = useState(false);
@@ -860,18 +881,6 @@ export function GraphFlow(props: GraphFlowProps) {
     onEscape: handleEscapeCollapse,
     onToggleHelp: handleToggleShortcutHelp,
   });
-
-  // Surface color-mode changes (toolbar or 1/2/3 shortcut) to the host so it
-  // can sync the URL. Skip the mount-time report — only real changes count.
-  const colorModeReported = useRef(false);
-  useEffect(() => {
-    if (!colorModeReported.current) {
-      colorModeReported.current = true;
-      return;
-    }
-    onColorModeChange?.(colorMode);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [colorMode]);
 
   const handlePathFound = useCallback(
     (pathNodes: string[]) => {

@@ -179,7 +179,10 @@ export function GraphView({
         key={flowKey}
         repoId={repoId}
         initialViewMode={forcedViewMode ?? mountViewMode}
-        initialColorMode={initialColorMode}
+        // Color mode is controlled here so the URL (?colorMode=) is the single
+        // source of truth — back/forward and shared links restore it. Defaults
+        // to community coloring, matching the canvas's own default.
+        colorMode={initialColorMode ?? "community"}
         initialSelectedNode={initialNode}
         // Communities locks to the constellation; Explore drops the
         // constellation scope (it lives in the Knowledge Graph view) so the

@@ -10,7 +10,10 @@ interface GraphKeyboardShortcutOptions {
   setSearchQuery: Dispatch<SetStateAction<string>>;
   setCtxMenu: Dispatch<SetStateAction<GraphCtxMenu | null>>;
   setCommunityPanelId: Dispatch<SetStateAction<number | null>>;
-  setColorMode: Dispatch<SetStateAction<ColorMode>>;
+  /** Sets the active color mode. Accepts a concrete mode only (the shortcuts
+   *  always pass a literal), so it composes with both the local state setter
+   *  and a host-controlled setter. */
+  setColorMode: (mode: ColorMode) => void;
   /** Optional Escape pre-handler. Return true to consume the keystroke and skip
    *  the default clear. Used to dismiss the top UI layer first: clear an open
    *  selection/panel, else collapse the most recent constellation hub. */
