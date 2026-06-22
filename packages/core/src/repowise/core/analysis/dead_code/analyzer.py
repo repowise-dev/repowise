@@ -838,6 +838,19 @@ class DeadCodeAnalyzer:
                 if local_type_uses and sym_name in local_type_uses:
                     continue
 
+                # Same-file reference rescue (Python): a top-level function
+                # or class consumed only within its own module in a non-call
+                # position carries no graph edge — passed as a first-class
+                # callable argument (``_score_dimension(.., weight_fn, ..)``),
+                # used purely as a type annotation (a Pydantic model that is
+                # only a FastAPI request-body param type), named in a
+                # decorator, or stored as a default/collection value. The
+                # parser stamps these intra-module references on the file node
+                # (see ``ingestion/python_local_refs.py``); treat them as live.
+                local_refs = node_data.get("local_refs")
+                if local_refs and sym_name in local_refs:
+                    continue
+
                 is_deprecated = any(
                     sym_name.endswith(suffix) for suffix in ("_DEPRECATED", "_LEGACY", "_COMPAT")
                 )

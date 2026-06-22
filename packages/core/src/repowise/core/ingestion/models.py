@@ -301,6 +301,12 @@ class ParsedFile:
     parse_errors: list[str] = field(default_factory=list)  # non-fatal parser warnings/errors
     content_hash: str = ""  # SHA-256 hex of raw file bytes
     type_refs: list[TypeReference] = field(default_factory=list)
+    # Top-level symbol names referenced elsewhere in this same file in a
+    # non-import, non-call position (callable passed as an argument, used as
+    # a type annotation, decorator target, default value, …). Populated for
+    # Python only; lets the dead-code unused-export pass rescue symbols whose
+    # only use is intra-module. See ``python_local_refs``.
+    local_refs: frozenset[str] = field(default_factory=frozenset)
 
 
 def compute_content_hash(source: bytes) -> str:
