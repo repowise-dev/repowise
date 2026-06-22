@@ -345,6 +345,7 @@ async def overview_summary(
     )
     last_sync_at: str | None = None
     last_resync_at: str | None = None
+    last_resync_dt = None
     last_sync_model: str | None = None
     active_job_id: str | None = None
     for j in job_rows:
@@ -357,9 +358,24 @@ async def overview_summary(
         if j.status == "completed" and j.finished_at:
             if mode == "full_resync" and last_resync_at is None:
                 last_resync_at = j.finished_at.isoformat()
+                last_resync_dt = j.finished_at
             elif mode != "full_resync" and last_sync_at is None:
                 last_sync_at = j.finished_at.isoformat()
                 last_sync_model = j.model_name or None
+
+    # Fall back to the repository's own ``updated_at`` when no completed
+    # server-side sync job exists. CLI / git-hook auto-syncs (``repowise
+    # update``) refresh the index and bump ``repositories.updated_at`` via
+    # ``upsert_repository``, but never create a GenerationJob row, so a
+    # job-only derivation reports "never synced" even though the index is
+    # current. Only adopt it when it is newer than the last full re-index so a
+    # re-index is not relabelled as a sync.
+    if (
+        last_sync_at is None
+        and repo.updated_at is not None
+        and (last_resync_dt is None or repo.updated_at > last_resync_dt)
+    ):
+        last_sync_at = repo.updated_at.isoformat()
 
     savings = await _savings_headline(repo.local_path)
 

@@ -39,6 +39,7 @@ def _create_test_app():
         jobs,
         meta,
         modules,
+        overview,
         owners,
         pages,
         repos,
@@ -84,6 +85,7 @@ def _create_test_app():
     app.include_router(modules.router)
     app.include_router(decisions.router)
     app.include_router(external_systems.router)
+    app.include_router(overview.router)
 
     return app
 
