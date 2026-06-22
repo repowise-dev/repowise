@@ -145,3 +145,39 @@ export interface AgentTrend {
   agent_pct: number;
   agent_names: { name: string; count: number }[];
 }
+
+export type CommitCategory =
+  | "feature"
+  | "fix"
+  | "refactor"
+  | "docs"
+  | "test"
+  | "deps"
+  | "chore"
+  | "other";
+
+export interface CommitEvolutionBucket {
+  period: string;
+  start: string;
+  total: number;
+  counts: Partial<Record<CommitCategory, number>>;
+}
+
+export interface CommitEvolution {
+  buckets: CommitEvolutionBucket[];
+  categories: CommitCategory[];
+  totals: Partial<Record<CommitCategory, number>>;
+  total_commits: number;
+  granularity: "month" | "week";
+  first_commit_at: string | null;
+  last_commit_at: string | null;
+}
+
+/** Repo-wide commit aggregates (computed over all commits, not the loaded page). */
+export interface CommitStats {
+  total_commits: number;
+  high_priority_count: number;
+  fix_commit_count: number;
+  agent_commit_count: number;
+  avg_entropy: number;
+}

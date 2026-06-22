@@ -5,6 +5,7 @@ from __future__ import annotations
 import click
 
 from repowise.cli import __version__
+from repowise.cli._instrumented_group import InstrumentedGroup
 from repowise.cli.commands.augment_cmd import augment_command
 from repowise.cli.commands.claude_md_cmd import claude_md_command
 from repowise.cli.commands.corrections_cmd import corrections_command
@@ -27,13 +28,15 @@ from repowise.cli.commands.saved_cmd import saved_command
 from repowise.cli.commands.search_cmd import search_command
 from repowise.cli.commands.serve_cmd import serve_command
 from repowise.cli.commands.status_cmd import status_command
+from repowise.cli.commands.telemetry_cmd import telemetry_command
 from repowise.cli.commands.update_cmd import update_command
 from repowise.cli.commands.watch_cmd import watch_command
+from repowise.cli.commands.whats_new_cmd import whats_new_command
 from repowise.cli.commands.workspace_cmd import workspace_group
 from repowise.core.registry import cli_registry, register_command
 
 
-@click.group()
+@click.group(cls=InstrumentedGroup)
 @click.version_option(version=__version__, prog_name="repowise")
 @click.pass_context
 def cli(ctx: click.Context) -> None:
@@ -80,6 +83,8 @@ register_command(mcp_command)
 register_command(reindex_command)
 register_command(restyle_command)
 register_command(wiki_styles_command)
+register_command(whats_new_command)
+register_command(telemetry_command)
 register_command(workspace_group)
 
 cli_registry.apply(cli)

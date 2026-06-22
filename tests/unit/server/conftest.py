@@ -37,6 +37,7 @@ def _create_test_app():
         graph,
         health,
         jobs,
+        meta,
         modules,
         owners,
         pages,
@@ -75,6 +76,7 @@ def _create_test_app():
     app.include_router(symbols.router)
     app.include_router(graph.router)
     app.include_router(c4.router)
+    app.include_router(meta.router)
     app.include_router(webhooks.router)
     app.include_router(git.router)
     app.include_router(dead_code.router)

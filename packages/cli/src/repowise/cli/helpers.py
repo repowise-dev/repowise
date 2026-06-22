@@ -127,6 +127,18 @@ def get_repowise_dir(repo_path: Path) -> Path:
     return repo_path / REPOWISE_DIR
 
 
+def user_global_dir() -> Path:
+    """Return the user-global ``~/.repowise`` dir (created), for cross-repo state.
+
+    Home to machine-wide, repo-independent artifacts: the cached web bundle, the
+    PyPI update-check cache, and the last-seen release marker. Distinct from a
+    repo's local ``.repowise/`` store.
+    """
+    d = Path.home() / REPOWISE_DIR
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 def ensure_repowise_dir(repo_path: Path) -> Path:
     """Create the ``.repowise/`` directory if it does not exist and return it."""
     d = get_repowise_dir(repo_path)
@@ -183,8 +195,20 @@ def load_state(repo_path: Path) -> dict[str, Any]:
 
 
 def save_state(repo_path: Path, state: dict[str, Any]) -> None:
-    """Write *state* to ``.repowise/state.json``."""
+    """Write *state* to ``.repowise/state.json``.
+
+    Every persist stamps the store-format markers (``store_format_version`` and
+    the ``written_by_version`` package version that wrote it) so the upgrade
+    layer always has a current record of the store's shape and provenance.
+    """
     ensure_repowise_dir(repo_path)
+    try:
+        from repowise.cli import __version__ as _pkg_version
+        from repowise.core.upgrade import stamp as _stamp_store_version
+
+        _stamp_store_version(state, package_version=_pkg_version)
+    except Exception:  # never let stamping block a persist
+        pass
     state_path = get_repowise_dir(repo_path) / STATE_FILENAME
     state_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
 
@@ -347,9 +371,7 @@ def write_update_queued(repo_path: Path, head: str | None) -> None:
         return
     payload = {"target_commit": head, "queued_at": time.time()}
     try:
-        _update_queued_path(repo_path).write_text(
-            json.dumps(payload), encoding="utf-8"
-        )
+        _update_queued_path(repo_path).write_text(json.dumps(payload), encoding="utf-8")
     except OSError:
         pass
 
@@ -841,6 +863,7 @@ def validate_provider_config(provider_name: str | None = None) -> list[str]:
 
         if provider_name == "opencode":
             import shutil
+
             if not shutil.which("opencode"):
                 warnings.append(
                     "Provider 'opencode' requires the opencode CLI.\n"
@@ -1061,7 +1084,9 @@ def resolve_command_target(
         raise click.UsageError("--workspace and --no-workspace are mutually exclusive.")
 
     if repo_alias is not None and no_workspace_flag:
-        raise click.UsageError("--repo <alias> implies workspace mode, but --no-workspace was passed.")
+        raise click.UsageError(
+            "--repo <alias> implies workspace mode, but --no-workspace was passed."
+        )
 
     explicit_path = path is not None
     base_path = resolve_repo_path(path)
@@ -1100,14 +1125,12 @@ def resolve_command_target(
         ws_config = _load_ws(ws_root)
         if ws_config is None:
             raise WorkspaceNotFound(
-                f"Found workspace config at {ws_root} but couldn't load it. "
-                "Is it valid YAML?"
+                f"Found workspace config at {ws_root} but couldn't load it. Is it valid YAML?"
             )
         if repo_alias is not None and ws_config.get_repo(repo_alias) is None:
             available = ", ".join(ws_config.repo_aliases()) or "(none)"
             raise click.UsageError(
-                f"Unknown repo alias '{repo_alias}' in workspace. "
-                f"Available: {available}"
+                f"Unknown repo alias '{repo_alias}' in workspace. Available: {available}"
             )
         reason = "via --workspace flag" if workspace_flag else f"via --repo {repo_alias}"
         return CommandTarget(

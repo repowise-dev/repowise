@@ -1,6 +1,8 @@
 import { apiGet } from "./client";
 import type {
   AgentTrend,
+  CommitEvolution,
+  CommitStats,
   CommitDetailResponse,
   CommitResponse,
   GitMetadataResponse,
@@ -135,6 +137,19 @@ export async function getCommitsPage(
 /** Monthly agent-vs-human commit volume across the indexed window. */
 export async function getAgentTrend(repoId: string): Promise<AgentTrend> {
   return apiGet<AgentTrend>(`/api/repos/${repoId}/commits/agent-trend`);
+}
+
+export async function getCommitEvolution(
+  repoId: string,
+  granularity: "auto" | "month" | "week" = "auto",
+): Promise<CommitEvolution> {
+  return apiGet<CommitEvolution>(
+    `/api/repos/${repoId}/commits/evolution?granularity=${granularity}`,
+  );
+}
+
+export async function getCommitStats(repoId: string): Promise<CommitStats> {
+  return apiGet<CommitStats>(`/api/repos/${repoId}/commits/stats`);
 }
 
 export async function getCommit(

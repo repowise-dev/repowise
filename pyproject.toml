@@ -136,6 +136,11 @@ namespaces = true
 [tool.setuptools.package-data]
 "repowise.core.ingestion" = ["queries/*.scm"]
 "repowise.core.generation" = ["templates/*.j2"]
+# Bundled copy of docs/CHANGELOG.md so the CLI `whats-new` / post-upgrade panel
+# and the web what's-new view work offline from the installed wheel. Lives in
+# core (the neutral home shared by cli + server). Kept in sync with the
+# canonical docs/CHANGELOG.md by a drift-guard test (see tests/unit/upgrade).
+"repowise.core.upgrade" = ["_data/CHANGELOG.md"]
 
 # ---------------------------------------------------------------------------
 # uv workspace (kept for local development)

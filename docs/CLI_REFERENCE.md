@@ -737,6 +737,30 @@ its absence never fails doctor.
 
 ---
 
+### `repowise whats-new`
+
+Show release notes for repowise versions you haven't seen yet. By default it
+lists releases newer than the last one you viewed, then records the current
+version as seen. Works offline from the changelog bundled with the install.
+
+| Flag | Description |
+|------|-------------|
+| `--version X.Y.Z` | Show notes for a single release |
+| `--all` | Show the full changelog history |
+
+```bash
+repowise whats-new                       # what changed since you last looked
+repowise whats-new --version 0.21.0      # one specific release
+repowise whats-new --all                 # full history
+```
+
+`repowise update` shows a short "what's new" panel automatically after you
+upgrade to a newer version, and both `update` and `serve` print a one-line,
+non-blocking notice when a newer release is available on PyPI. See
+[docs/UPGRADING.md](UPGRADING.md) for the full upgrade flow.
+
+---
+
 ### `repowise delete [REPO_ID]`
 
 Delete a repository's index and all stored intelligence (wiki, graph, embeddings,

@@ -212,6 +212,112 @@ def is_fix_commit(subject: str) -> bool:
     return any(p.search(subject) for p in _FIX_COMMIT_INCLUDE)
 
 
+# ---------------------------------------------------------------------------
+# Single-label commit-category classification (powers the "Code Evolution"
+# timeline on the commits page). Unlike ``_COMMIT_CATEGORIES`` — which is
+# *multi-label* and tuned for per-file category *ratios* — this assigns each
+# commit exactly ONE category so a stacked timeline sums cleanly to 100%.
+#
+# Resolution order: an explicit conventional-commit prefix (``feat:``,
+# ``fix(scope):`` …) wins outright; otherwise the keyword patterns below are
+# tried in priority order and the first match decides. Anything unmatched
+# falls through to "other". The labels are the seven that read as a story arc
+# (feature-born → fix/refactor/docs as a repo matures) plus deps/chore/test.
+# ---------------------------------------------------------------------------
+
+# Ordered: more specific / higher-signal intents first so a "fix typo in docs"
+# resolves the way a human would skim it.
+EVOLUTION_CATEGORIES: tuple[str, ...] = (
+    "feature",
+    "fix",
+    "refactor",
+    "docs",
+    "test",
+    "deps",
+    "chore",
+    "other",
+)
+
+# Conventional-commit type -> our category. The prefix is authoritative when
+# present (``type(scope)!: subject``), so this short-circuits the keyword pass.
+_CONVENTIONAL_PREFIX = re.compile(
+    r"^\s*(?P<type>[a-z]+)(?:\([^)]*\))?!?:",
+    re.IGNORECASE,
+)
+_CONVENTIONAL_MAP: dict[str, str] = {
+    "feat": "feature",
+    "feature": "feature",
+    "fix": "fix",
+    "bugfix": "fix",
+    "hotfix": "fix",
+    "perf": "refactor",
+    "refactor": "refactor",
+    "style": "refactor",
+    "docs": "docs",
+    "doc": "docs",
+    "test": "test",
+    "tests": "test",
+    "build": "deps",
+    "deps": "deps",
+    "ci": "chore",
+    "chore": "chore",
+    "revert": "fix",
+}
+
+# Keyword fallback, tried in this exact order; first hit wins.
+_EVOLUTION_KEYWORDS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("docs", re.compile(r"\b(docs?|documentation|readme|changelog|comment)\b", re.IGNORECASE)),
+    ("test", re.compile(r"\b(test|tests|testing|spec|coverage|fixture)\b", re.IGNORECASE)),
+    (
+        "deps",
+        re.compile(
+            r"\b(bump|upgrade|downgrade|depend|dependency|dependencies|lockfile|"
+            r"requirements|vendor|pin)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    ("fix", re.compile(r"\b(fix|fixes|fixed|bug|patch|hotfix|regression|crash|revert)\b", re.IGNORECASE)),
+    (
+        "refactor",
+        re.compile(
+            r"\b(refactor|restructure|cleanup|clean.up|rename|reorganize|extract|"
+            r"simplify|move|tidy|dedupe|perf|optimi[sz]e)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "feature",
+        re.compile(
+            r"\b(add|adds|added|implement|introduce|create|new|feat|feature|support|enable)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "chore",
+        re.compile(r"\b(chore|lint|format|style|ci|build|release|merge|config|tooling)\b", re.IGNORECASE),
+    ),
+)
+
+
+def classify_commit_category(subject: str) -> str:
+    """Assign a commit *subject* exactly one :data:`EVOLUTION_CATEGORIES` label.
+
+    A leading conventional-commit prefix is authoritative; otherwise the first
+    matching keyword pattern (in priority order) wins. Unmatched -> ``"other"``.
+    """
+    if not subject:
+        return "other"
+    m = _CONVENTIONAL_PREFIX.match(subject)
+    if m:
+        mapped = _CONVENTIONAL_MAP.get(m.group("type").lower())
+        if mapped:
+            return mapped
+    for label, pattern in _EVOLUTION_KEYWORDS:
+        if pattern.search(subject):
+            return label
+    return "other"
+
+
 # Co-change temporal decay: half-life ~125 days (lambda for exp(-t/tau)).
 _CO_CHANGE_DECAY_TAU: float = 180.0
 

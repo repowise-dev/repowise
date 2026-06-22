@@ -9,6 +9,7 @@ import { Skeleton } from "../ui/skeleton";
 import { EmptyState } from "../shared/empty-state";
 import { ResultsFooter } from "../shared/results-footer";
 import { OwnerCard } from "./owner-card";
+import { OwnershipDistributionBar } from "./ownership-distribution-bar";
 
 export type OwnerSortKey =
   | "files_owned"
@@ -64,6 +65,14 @@ export function OwnerDirectory({
 
   return (
     <div className="space-y-5">
+      {owners.length > 0 && (
+        <OwnershipDistributionBar
+          owners={owners}
+          totalContributors={total}
+          onSelect={onSelect}
+        />
+      )}
+
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <Headline label="Contributors" value={total} />
         <Headline label="Silo owners" value={headline.siloOwners} tone="warn" />
