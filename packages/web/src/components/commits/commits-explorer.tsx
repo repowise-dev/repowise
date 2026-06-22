@@ -23,6 +23,7 @@ import { CredibilityInfoButton } from "@repowise-dev/ui/commits/credibility-stri
 import { CodeEvolutionChart } from "@repowise-dev/ui/commits/code-evolution-chart";
 import { AgentTrendStrip } from "@repowise-dev/ui/commits/agent-trend-strip";
 import { RiskDistributionChart } from "@repowise-dev/ui/git/risk-distribution-chart";
+import { CollapsibleSection } from "@repowise-dev/ui/shared/collapsible-section";
 import {
   getAgentTrend,
   getCommit,
@@ -137,16 +138,19 @@ export function CommitsExplorer({ repoId }: { repoId: string }) {
         />
       </div>
 
-      {/* Secondary signals — smaller than the headline. Risk distribution
-          turns the queue's "relative to this repo" claim into a picture; the
-          agent-trend strip is a thin full-width band beneath it. */}
+      {/* Secondary signals — smaller than the headline. Risk distribution is
+          collapsible (it's a demoted detail); the agent-trend strip is a thin
+          full-width band beneath it. */}
       {hotspots && hotspots.length > 0 && (
-        <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-4">
-          <p className="mb-2 text-xs font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
-            Risk distribution across the riskiest files
-          </p>
-          <RiskDistributionChart hotspots={hotspots} maxBars={12} />
-        </div>
+        <CollapsibleSection
+          title="Risk distribution across the riskiest files"
+          hint={`${Math.min(12, hotspots.length)} of ${hotspots.length}`}
+          defaultOpen
+        >
+          <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-4">
+            <RiskDistributionChart hotspots={hotspots} maxBars={12} />
+          </div>
+        </CollapsibleSection>
       )}
       {trend && trend.agent_commits > 0 && <AgentTrendStrip trend={trend} />}
 
