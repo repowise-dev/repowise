@@ -14,12 +14,20 @@ package manager.
 
 from __future__ import annotations
 
+import contextlib
+import json
 import shutil
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
 PYPI_URL = "https://pypi.org/pypi/repowise/json"
+
+#: Default freshness window for the cached PyPI check. Within this window the
+#: last fetched ``latest_version`` is reused so routine commands never hit the
+#: network. 24h keeps the advisory current without nagging PyPI on every run.
+DEFAULT_TTL_HOURS = 24.0
 
 
 @dataclass(frozen=True)
@@ -171,3 +179,76 @@ def get_cli_update_check(timeout: float = 2.0) -> UpdateCheck:
         install_hint=hint,
         error=error,
     )
+
+
+def _cache_path() -> Path:
+    from repowise.cli.helpers import user_global_dir
+
+    return user_global_dir() / "update-check.json"
+
+
+def _build_from_cached_latest(latest: str | None, error: str | None) -> UpdateCheck:
+    """Assemble an :class:`UpdateCheck` from a cached ``latest`` + local facts.
+
+    Only ``latest_version`` requires the network; everything else (current
+    version, resolved executable, suggested command) is cheap and local, so a
+    cache hit recomputes them freshly rather than persisting stale paths.
+    """
+    from repowise.cli import __version__
+
+    current = __version__
+    resolved = shutil.which("repowise")
+    running = sys.argv[0] if sys.argv else ""
+    python = sys.executable or "python"
+    checkout = _editable_checkout()
+    if checkout is not None:
+        suggested = f"cd {checkout} && git pull && {python} -m pip install -e ."
+        hint = "editable"
+    else:
+        suggested, hint = suggest_update_command(resolved or running, python)
+    update_available = is_newer_version(latest, current) if latest else None
+    return UpdateCheck(
+        current_version=current,
+        latest_version=latest,
+        resolved_executable=resolved,
+        running_executable=running,
+        python=python,
+        update_available=update_available,
+        suggested_command=suggested,
+        install_hint=hint,
+        error=error,
+    )
+
+
+def get_cli_update_check_cached(
+    ttl_hours: float = DEFAULT_TTL_HOURS, timeout: float = 2.0
+) -> UpdateCheck:
+    """TTL-cached variant of :func:`get_cli_update_check`. Never raises.
+
+    Reuses the last fetched ``latest_version`` from ``~/.repowise/update-check.json``
+    while it is younger than *ttl_hours*, so routine commands stay offline. On a
+    miss it performs the live check and persists the result. Cache I/O is
+    best-effort: any read/write failure degrades to a live check.
+    """
+    path = _cache_path()
+    try:
+        cached = json.loads(path.read_text(encoding="utf-8"))
+        age = time.time() - float(cached["checked_at"])
+        if 0 <= age < ttl_hours * 3600:
+            return _build_from_cached_latest(cached.get("latest_version"), cached.get("error"))
+    except Exception:
+        pass  # missing / corrupt / stale -> fall through to a live check
+
+    result = get_cli_update_check(timeout=timeout)
+    with contextlib.suppress(Exception):  # caching is opportunistic
+        path.write_text(
+            json.dumps(
+                {
+                    "checked_at": time.time(),
+                    "latest_version": result.latest_version,
+                    "error": result.error,
+                }
+            ),
+            encoding="utf-8",
+        )
+    return result

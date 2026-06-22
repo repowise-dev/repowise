@@ -61,6 +61,33 @@ from .workspace import _workspace_update
 log = structlog.get_logger(__name__)
 
 
+def _surface_release_news(*, written_by: str | None) -> None:
+    """Show a post-upgrade "what's new" panel and a cached PyPI advisory.
+
+    Best-effort and interactive-only (the caller gates on a terminal). The
+    what's-new panel appears only when the store was written by an older repowise
+    than the one running now.
+    """
+    from repowise.cli import __version__
+    from repowise.cli.update_check import get_cli_update_check_cached
+    from repowise.cli.whats_new import (
+        load_changelog_entries,
+        render_update_advisory,
+        render_whats_new,
+    )
+
+    if written_by and written_by != __version__:
+        entries = load_changelog_entries()
+        render_whats_new(
+            console,
+            entries,
+            since_version=written_by,
+            up_to_version=__version__,
+            title=f"Upgraded to v{__version__} - what's new",
+        )
+    render_update_advisory(console, get_cli_update_check_cached())
+
+
 @click.command("update")
 @click.argument("path", required=False, default=None)
 @click.option("--provider", "provider_name", default=None, help="LLM provider name.")
@@ -366,6 +393,12 @@ def update_command(
                 for action in verdict.actions:
                     console.print(f"[dim]Upgrade: {action.reason}[/dim]")
                 run_async(apply_upgrade(repo_path, verdict))
+        # Surface "what's new" + a PyPI advisory only in an interactive terminal,
+        # so the background post-commit hook never spams output. The store's
+        # ``written_by`` (read before this run re-stamps it) bounds the panel to
+        # releases the user has actually crossed.
+        if console.is_terminal:
+            _surface_release_news(written_by=verdict.written_by)
     except Exception as exc:  # never block a routine update on the upgrade layer
         log.debug("store_upgrade_skipped", error=str(exc))
 

@@ -127,6 +127,18 @@ def get_repowise_dir(repo_path: Path) -> Path:
     return repo_path / REPOWISE_DIR
 
 
+def user_global_dir() -> Path:
+    """Return the user-global ``~/.repowise`` dir (created), for cross-repo state.
+
+    Home to machine-wide, repo-independent artifacts: the cached web bundle, the
+    PyPI update-check cache, and the last-seen release marker. Distinct from a
+    repo's local ``.repowise/`` store.
+    """
+    d = Path.home() / REPOWISE_DIR
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 def ensure_repowise_dir(repo_path: Path) -> Path:
     """Create the ``.repowise/`` directory if it does not exist and return it."""
     d = get_repowise_dir(repo_path)
