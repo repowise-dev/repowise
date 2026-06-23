@@ -41,6 +41,7 @@ class TestCliBasics:
         assert "xhigh" in result.output
         assert "--codex" in result.output
         assert "--agents" in result.output
+        assert "--no-workspace" in result.output
 
     def test_update_help(self, runner):
         result = runner.invoke(cli, ["update", "--help"])
@@ -132,6 +133,165 @@ class TestErrorCases:
         (tmp_path / ".repowise").mkdir()
         result = runner.invoke(cli, ["update", str(tmp_path)])
         assert result.exit_code != 0
+
+
+class TestInitNoWorkspaceFlag:
+    """Tests for ``repowise init --no-workspace``."""
+
+    def test_no_workspace_forces_single_repo(self, runner, tmp_path, monkeypatch):
+        """--no-workspace skips the workspace branch even when scan returns >1 repo."""
+        from unittest.mock import MagicMock, patch
+
+        # Simulate a workspace with two repos detected.
+        fake_repo = MagicMock()
+        fake_repo.path = tmp_path
+        fake_scan = MagicMock()
+        fake_scan.repos = [fake_repo, MagicMock()]  # 2 repos -> would trigger workspace
+
+        workspace_entered = []
+
+        def fake_workspace_init(**kwargs):
+            workspace_entered.append(True)
+
+        # Patch scan_for_repos so we control what it returns, and patch
+        # _workspace_init so we can detect if the workspace branch runs.
+        with (
+            patch(
+                "repowise.core.workspace.scan_for_repos",
+                return_value=fake_scan,
+            ),
+            patch(
+                "repowise.cli.commands.init_cmd.command._workspace_init",
+                side_effect=fake_workspace_init,
+            ),
+        ):
+            # Without --no-workspace the workspace branch should be entered.
+            result = runner.invoke(cli, ["init", str(tmp_path)])
+            assert workspace_entered, "expected workspace branch without --no-workspace"
+
+            workspace_entered.clear()
+
+            # With --no-workspace the workspace branch must NOT be entered.
+            result = runner.invoke(cli, ["init", "--no-workspace", str(tmp_path)])
+            assert not workspace_entered, (
+                f"--no-workspace should skip workspace branch, but it was entered. "
+                f"exit_code={result.exit_code}, output={result.output}"
+            )
+
+    def test_no_workspace_in_help(self, runner):
+        """--no-workspace flag is documented in init --help output."""
+        result = runner.invoke(cli, ["init", "--help"])
+        assert result.exit_code == 0
+        assert "--no-workspace" in result.output
+
+
+class TestInitYesFlag:
+    """Tests that -y/--yes makes init fully non-interactive."""
+
+    def test_yes_skips_offer_hook_install(self):
+        """offer_hook_install returns immediately when yes=True, never calling click.confirm."""
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from repowise.cli.commands.init_cmd._interactive import offer_hook_install
+
+        console_mock = type(
+            "C", (), {"print": lambda self, *a, **kw: None, "line": lambda self: None}
+        )()
+
+        with patch(
+            "click.confirm", side_effect=AssertionError("should not prompt")
+        ) as mock_confirm:
+            # With yes=True and a TTY-like stdin, confirm must never be called.
+            offer_hook_install(console_mock, [Path("/tmp/repo")], yes=True)
+            mock_confirm.assert_not_called()
+
+    def test_yes_skips_offer_distill_rewrite_hook_when_flag_is_none(self):
+        """offer_distill_rewrite_hook skips any prompt when yes=True and flag=None."""
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from repowise.cli.commands.init_cmd._interactive import offer_distill_rewrite_hook
+
+        console_mock = type(
+            "C", (), {"print": lambda self, *a, **kw: None, "line": lambda self: None}
+        )()
+
+        with patch(
+            "click.confirm", side_effect=AssertionError("should not prompt")
+        ) as mock_confirm:
+            offer_distill_rewrite_hook(console_mock, [Path("/tmp/repo")], flag=None, yes=True)
+            mock_confirm.assert_not_called()
+
+    def test_yes_skips_wiki_style_prompt(self, runner, tmp_path, monkeypatch):
+        """With -y, the wiki-style interactive prompt is never shown."""
+        from unittest.mock import MagicMock, patch
+
+        # Single-repo scan (no workspace branch).
+        fake_repo = MagicMock()
+        fake_repo.path = tmp_path
+        fake_scan = MagicMock()
+        fake_scan.repos = [fake_repo]
+
+        prompt_called = []
+
+        def _fake_prompt_wiki_style(_console):
+            prompt_called.append(True)
+            return "comprehensive"
+
+        with (
+            patch(
+                "repowise.core.workspace.scan_for_repos",
+                return_value=fake_scan,
+            ),
+            patch(
+                "repowise.cli.commands.init_cmd.command._prompt_wiki_style",
+                side_effect=_fake_prompt_wiki_style,
+            ),
+            patch(
+                "repowise.cli.commands.init_cmd.command.resolve_provider",
+                side_effect=Exception("stop early"),
+            ),
+        ):
+            runner.invoke(cli, ["init", "-y", "--index-only", str(tmp_path)])
+            assert not prompt_called, "-y should bypass the wiki-style interactive prompt"
+
+    def test_yes_skips_mode_select_on_tty(self, runner, tmp_path):
+        """With -y on a TTY, the interactive mode-selection menu is never shown.
+
+        Without the ``and not yes`` guard on ``is_interactive`` a scripted
+        ``init -y`` would still block on ``interactive_mode_select`` whenever
+        stdin happens to be a TTY.
+        """
+        from unittest.mock import MagicMock, patch
+
+        fake_repo = MagicMock()
+        fake_repo.path = tmp_path
+        fake_scan = MagicMock()
+        fake_scan.repos = [fake_repo]
+
+        mode_select_called = []
+
+        with (
+            patch(
+                "repowise.core.workspace.scan_for_repos",
+                return_value=fake_scan,
+            ),
+            patch("sys.stdin.isatty", return_value=True),
+            patch(
+                "repowise.cli.commands.init_cmd.command.interactive_mode_select",
+                side_effect=lambda *_a, **_kw: mode_select_called.append(True),
+            ),
+            # Stop before the real pipeline runs.
+            patch(
+                "repowise.cli.commands.init_cmd.command.resolve_provider",
+                side_effect=Exception("stop early"),
+            ),
+        ):
+            runner.invoke(cli, ["init", "-y", str(tmp_path)])
+            assert not mode_select_called, (
+                "-y must bypass the interactive mode-selection menu even on a TTY"
+            )
 
 
 class TestBuildFilteredChangedPaths:

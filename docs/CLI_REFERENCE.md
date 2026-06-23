@@ -55,6 +55,7 @@ In workspace mode, adds: repo scanning, per-repo indexing, cross-repo analysis (
 | `--embedder` | Embedder for semantic search: `gemini`, `openai`, `mock` |
 | `--index-only` | Skip LLM generation. Only parse, build graph, and index git. Free. |
 | `--mode` | Pipeline depth: `standard` (default) or `fast` (graph + essential-git only — no per-file blame/co-change, no LLM — for very large repos; upgrade later with `update --full`). |
+| `--no-workspace` | Force single-repo mode even when invoked from a workspace root (indexes only the target PATH instead of fanning out across workspace repos). |
 | `--wiki-style` | Documentation voice/density: `comprehensive` (default), `caveman` (token-condensed, AI-first), `reference` (API-manual), `tutorial` (beginner-friendly). Interactive full runs prompt when omitted. Saved to config so `update` keeps the style. See [WIKI_STYLES.md](WIKI_STYLES.md). |
 | `--dry-run` | Show generation plan and cost estimate without running. |
 | `--test-run` | Generate docs for only the top 10 files (by PageRank). |
@@ -91,6 +92,7 @@ repowise init --include-submodules                    # include submodules
 repowise init --no-codex --no-agents                  # skip Codex project files
 repowise init .                                       # workspace mode
 repowise init . --index-only -x "node_modules/"      # workspace, no LLM
+repowise init . --no-workspace                        # force single-repo, even in a workspace root
 ```
 
 ---

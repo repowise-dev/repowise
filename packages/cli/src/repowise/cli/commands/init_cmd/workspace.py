@@ -444,14 +444,19 @@ def _workspace_init(
     console.print(f"  Detected [bold]{len(scan.repos)}[/bold] repositories in {root}\n")
 
     # Step 1: Select repos to index
-    selected = list(scan.repos) if init_all else interactive_repo_select(console, scan.repos)
+    # --yes or --all: take every detected repo without prompting.
+    select_all = init_all or yes
+    selected = list(scan.repos) if select_all else interactive_repo_select(console, scan.repos)
 
     if not selected:
         console.print("[yellow]No repositories selected. Aborting.[/yellow]")
         return
 
     # Step 2: Select primary repo
-    primary_alias = selected[0].alias if init_all else interactive_primary_select(console, selected)
+    # --yes or --all: auto-pick the first repo as primary without prompting.
+    primary_alias = (
+        selected[0].alias if select_all else interactive_primary_select(console, selected)
+    )
 
     # Determine root path (for provider resolution + dotenv)
     primary_repo = next((r for r in selected if r.alias == primary_alias), selected[0])
@@ -459,7 +464,8 @@ def _workspace_init(
 
     # Step 2b: Mode selection + provider setup
     # When running interactively with no explicit flags, present the mode menu.
-    is_interactive = sys.stdin.isatty() and provider_name is None and not index_only
+    # --yes suppresses all interactive prompts: treat as non-interactive.
+    is_interactive = sys.stdin.isatty() and provider_name is None and not index_only and not yes
 
     embedder_name_resolved = resolve_embedder(embedder_name)
 
@@ -631,6 +637,7 @@ def _workspace_init(
             console,
             [r.path for r in indexed_repos],
             aliases=[r.alias for r in indexed_repos],
+            yes=yes,
         )
     # Opt-in distill command-rewrite hook for Claude Code: one user-level
     # install, with the verdict recorded per repo. Applied to *all* selected
@@ -638,5 +645,5 @@ def _workspace_init(
     # failed) because ensure_repowise_dir already created `.repowise/` in
     # each, and the hook treats any repo with `.repowise/` and no recorded
     # verdict as enabled — a decline must gate every one of them off.
-    offer_distill_rewrite_hook(console, [r.path for r in selected], distill_hook)
+    offer_distill_rewrite_hook(console, [r.path for r in selected], distill_hook, yes=yes)
     console.print()

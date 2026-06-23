@@ -341,6 +341,16 @@ def _run_generation_phase(
     help="Include git submodule directories (excluded by default).",
 )
 @click.option(
+    "--no-workspace",
+    "no_workspace",
+    is_flag=True,
+    default=False,
+    help=(
+        "Force single-repo mode even when invoked from a workspace root. "
+        "Indexes only the target PATH and skips workspace detection."
+    ),
+)
+@click.option(
     "--all",
     "init_all",
     is_flag=True,
@@ -417,6 +427,7 @@ def init_command(
     codex_setup: bool | None,
     distill_hook: bool | None,
     include_submodules: bool,
+    no_workspace: bool,
     init_all: bool,
     onboarding: bool,
     coverage_pct: float | None,
@@ -442,11 +453,12 @@ def init_command(
 
     # ---- Workspace detection ----
     # If the path contains multiple git repos (and is not itself a single repo),
-    # branch into the multi-repo workspace flow.
+    # branch into the multi-repo workspace flow.  --no-workspace bypasses this
+    # entirely and forces single-repo mode regardless of what scan finds.
     from repowise.core.workspace import scan_for_repos
 
     scan = scan_for_repos(repo_path, include_submodules=include_submodules)
-    if len(scan.repos) > 1:
+    if len(scan.repos) > 1 and not no_workspace:
         _workspace_init(
             scan=scan,
             init_all=init_all,
@@ -500,7 +512,11 @@ def init_command(
         index_only = True
 
     # ---- Interactive mode (TTY, no explicit flags) ----
-    is_interactive = sys.stdin.isatty() and provider_name is None and not index_only
+    # --yes forces non-interactive even on a TTY (mirrors the workspace path),
+    # so a scripted `init -y` never blocks on the mode-selection menu.
+    is_interactive = (
+        sys.stdin.isatty() and provider_name is None and not index_only and not yes
+    )
 
     # Tiered doc generation cap (set in advanced mode); None = every selected
     # file page is a full-LLM tier-1 page (unchanged behaviour).
@@ -578,7 +594,8 @@ def init_command(
 
         # Wiki style: prompt in interactive full-mode runs when not set via flag.
         # Index-only runs generate no pages, so the question is skipped (D7).
-        if wiki_style is None and not index_only:
+        # --yes skips the prompt and uses the default style.
+        if wiki_style is None and not index_only and not yes:
             wiki_style = _prompt_wiki_style(console)
 
     # Resolve the effective style (CLI flag > interactive prompt > default) and
@@ -921,8 +938,8 @@ def init_command(
     )
 
     # Offer to install post-commit hook (both index-only and full modes)
-    offer_hook_install(console, [repo_path])
+    offer_hook_install(console, [repo_path], yes=yes)
 
     # Opt-in distill command-rewrite hook for Claude Code. The workspace flow
     # runs its own offer across all selected repos inside _workspace_init.
-    offer_distill_rewrite_hook(console, [repo_path], distill_hook)
+    offer_distill_rewrite_hook(console, [repo_path], distill_hook, yes=yes)

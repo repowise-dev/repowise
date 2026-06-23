@@ -13,6 +13,8 @@ def offer_distill_rewrite_hook(
     console_obj: Any,
     repo_paths: list[Path],
     flag: bool | None,
+    *,
+    yes: bool = False,
 ) -> None:
     """Opt-in install of the distill command-rewrite hook (Claude Code).
 
@@ -21,6 +23,9 @@ def offer_distill_rewrite_hook(
     config (so a hook installed globally from another repo stays inert
     there), None prompts when interactive (defaulting to yes) and does
     nothing otherwise.
+
+    When ``yes`` is True any prompt that would arise from ``flag=None`` is
+    skipped (no hook is installed silently).
 
     The hook itself is user-level (one install covers every repo), but the
     verdict is recorded per repo as ``distill.commands.enabled`` in each
@@ -39,6 +44,9 @@ def offer_distill_rewrite_hook(
         "false",
         "no",
     ):
+        return
+    # --yes with an undecided flag: skip the interactive prompt entirely.
+    if flag is None and yes:
         return
     if flag is None and not sys.stdin.isatty():
         return
@@ -86,12 +94,17 @@ def offer_hook_install(
     console_obj: Any,
     repo_paths: list[Path],
     aliases: list[str] | None = None,
+    *,
+    yes: bool = False,
 ) -> None:
     """Interactively offer to install post-commit hooks for auto-sync.
 
     For a single repo, asks yes/no.  For multiple repos (workspace), lets the
-    user pick which repos to install hooks for.
+    user pick which repos to install hooks for.  When ``yes`` is True all
+    interactive prompts are skipped (no hook is installed silently).
     """
+    if yes:
+        return  # --yes: skip all interactive prompts
     if not sys.stdin.isatty():
         return  # Non-interactive — skip
 
