@@ -20,13 +20,12 @@ from .findings import ReviewReport
 logger = structlog.get_logger(__name__)
 
 
-def _kg_parts(kg: Any) -> tuple[list[dict], list[dict], list[dict], dict]:
-    """Extract (nodes, layers, tour, domain_graph) from a KG-like object."""
+def _kg_parts(kg: Any) -> tuple[list[dict], list[dict], list[dict]]:
+    """Extract (nodes, layers, tour) from a KnowledgeGraphResult-like object."""
     nodes = list(getattr(kg, "nodes", None) or [])
     layers = list(getattr(kg, "layers", None) or [])
     tour = list(getattr(kg, "tour", None) or [])
-    domain_graph = getattr(kg, "domain_graph", None) or {}
-    return nodes, layers, tour, domain_graph
+    return nodes, layers, tour
 
 
 def run_review(kg: Any) -> ReviewReport:
@@ -35,7 +34,7 @@ def run_review(kg: Any) -> ReviewReport:
     Pure and side-effect free. *kg* is any object exposing ``nodes``,
     ``layers``, and ``tour`` (the in-memory ``KnowledgeGraphResult``).
     """
-    nodes, layers, tour, domain_graph = _kg_parts(kg)
+    nodes, layers, tour = _kg_parts(kg)
     findings = [
         *checks.check_summaries_restate_filename(nodes),
         *checks.check_tour_reasons_distinct(tour),
@@ -43,13 +42,6 @@ def run_review(kg: Any) -> ReviewReport:
         *checks.check_tour_sequential(tour),
         *checks.check_layer_name_category(layers, nodes),
     ]
-    if domain_graph:
-        findings += [
-            *checks.check_no_orphan_domains(domain_graph),
-            *checks.check_flow_has_steps(domain_graph),
-            *checks.check_step_maps_to_real_node(domain_graph, nodes),
-            *checks.check_step_order_valid(domain_graph),
-        ]
     return ReviewReport(findings=findings)
 
 

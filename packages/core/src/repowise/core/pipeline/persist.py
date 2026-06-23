@@ -645,32 +645,6 @@ async def persist_generation(result: Any, session: Any, repo_id: str) -> None:
         if file_node_meta:
             await upsert_kg_node_meta(session, repo_id, file_node_meta)
 
-        # ---- Domain graph (behavior-oriented Domain -> Flow -> Step) --------
-        domain_graph = getattr(kg, "domain_graph", None) or {}
-        if domain_graph.get("domains"):
-            from repowise.core.generation.domain_graph import (
-                DomainGraph,
-                flatten_edges,
-                flatten_nodes,
-            )
-            from repowise.core.persistence.crud import (
-                upsert_domain_graph_edges,
-                upsert_domain_graph_nodes,
-            )
-
-            graph = DomainGraph.from_dict(domain_graph)
-            # Optional hottest-step risk annotation: flag steps touching a churn
-            # hotspot, sourced from the per-file git metadata.
-            hotspot_node_ids = {
-                "file:" + gm.get("file_path", "")
-                for gm in (result.git_metadata_list or [])
-                if isinstance(gm, dict) and gm.get("is_hotspot") and gm.get("file_path")
-            }
-            await upsert_domain_graph_nodes(
-                session, repo_id, flatten_nodes(graph, hotspot_node_ids)
-            )
-            await upsert_domain_graph_edges(session, repo_id, flatten_edges(graph))
-
 
 async def persist_pipeline_result(
     result: Any,

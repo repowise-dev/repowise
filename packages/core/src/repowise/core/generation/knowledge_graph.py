@@ -51,7 +51,6 @@ async def enrich_knowledge_graph(
     generated_pages: list[Any] | None = None,
     progress: Any | None = None,
     reasoning: str = "auto",
-    prior_domain_graph: dict | None = None,
 ) -> Any:
     """Enrich deterministic KG with LLM-generated layer names and tour."""
     enriched_layers = await _enrich_layers(
@@ -90,14 +89,6 @@ async def enrich_knowledge_graph(
 
     kg_skeleton.layers = enriched_layers
     kg_skeleton.tour = tour
-
-    # Behavior-oriented domain graph (Domain -> Flow -> Step). Synthesized from
-    # the enriched layers + file summaries + import edges (not raw source), with
-    # a fixed, bounded LLM budget. Best-effort: a failure leaves the structural
-    # KG untouched and the domain graph empty.
-    await _synthesize_domain_graph(
-        kg_skeleton, llm_client, generated_pages, reasoning, prior_domain_graph
-    )
 
     # Post-generation invariant gate: validate the fully-assembled KG (layers,
     # tour, summaries) against hard invariants and quality signals before it is
@@ -371,51 +362,6 @@ def build_deterministic_tour(
             order += 1
 
     return steps
-
-
-# ---------------------------------------------------------------------------
-# Domain graph synthesis
-# ---------------------------------------------------------------------------
-
-
-def _page_summary_map(generated_pages: list[Any] | None) -> dict[str, str]:
-    """target_path -> summary, from generated wiki pages (zero LLM cost)."""
-    out: dict[str, str] = {}
-    for p in generated_pages or []:
-        summary = getattr(p, "summary", None) or ""
-        target = getattr(p, "target_path", None) or ""
-        if summary and target:
-            out[target] = summary
-    return out
-
-
-async def _synthesize_domain_graph(
-    kg_skeleton: Any,
-    llm_client: Any,
-    generated_pages: list[Any] | None,
-    reasoning: str,
-    prior_domain_graph: dict | None,
-) -> None:
-    """Synthesize + attach the domain graph; best-effort, never blocks export."""
-    try:
-        from repowise.core.generation.domain_graph import (
-            DomainGraph,
-            synthesize_domain_graph,
-        )
-
-        prior = DomainGraph.from_dict(prior_domain_graph) if prior_domain_graph else None
-        graph = await synthesize_domain_graph(
-            layers=kg_skeleton.layers,
-            nodes=kg_skeleton.nodes,
-            edges=kg_skeleton.edges,
-            llm_client=llm_client,
-            page_summaries=_page_summary_map(generated_pages),
-            prior=prior,
-            reasoning=reasoning,
-        )
-        kg_skeleton.domain_graph = graph.to_dict() if not graph.is_empty() else {}
-    except Exception as exc:  # pragma: no cover - defensive, never blocks export
-        logger.warning("domain_graph_synthesis_failed", error=str(exc))
 
 
 # ---------------------------------------------------------------------------

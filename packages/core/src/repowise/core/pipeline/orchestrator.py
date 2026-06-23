@@ -694,17 +694,12 @@ async def run_pipeline(
                 generated_pages=generated_pages,
                 progress=progress,
                 reasoning=_kg_reasoning,
-                # When the KG was reused (fingerprint unchanged) it carries the
-                # prior domain graph; pass it so unchanged domains skip the LLM.
-                prior_domain_graph=getattr(knowledge_graph_result, "domain_graph", None) or None,
             )
             if progress:
-                _dg = getattr(knowledge_graph_result, "domain_graph", None) or {}
                 progress.on_message(
                     "info",
                     f"  ↳ KG enriched: {len(knowledge_graph_result.layers)} layers, "
-                    f"{len(knowledge_graph_result.tour)} tour steps, "
-                    f"{len(_dg.get('domains', []))} domains",
+                    f"{len(knowledge_graph_result.tour)} tour steps",
                 )
             _phase_done(progress, "knowledge_graph.enrich")
         except (ValueError, KeyError, OSError, RuntimeError) as exc:

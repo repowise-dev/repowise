@@ -21,7 +21,6 @@ from __future__ import annotations
 from .analysis import *  # noqa: F403
 from .chat import *  # noqa: F403
 from .decisions import *  # noqa: F403
-from .domain_graph import *  # noqa: F403
 from .external_systems import *  # noqa: F403
 from .git import *  # noqa: F403
 from .graph import *  # noqa: F403

@@ -30,11 +30,6 @@ class KnowledgeGraphResult:
     # populates this; empty means the key is omitted from ``to_dict`` so the
     # flag-off artifact stays byte-identical.
     modules: list[dict] = field(default_factory=list)
-    # Behavior-oriented domain graph (Domain -> Flow -> Step), synthesized by the
-    # generation pipeline after pages exist. Serialized as a ``DomainGraph`` dict
-    # (see ``core.generation.domain_graph``); empty/omitted on the deterministic
-    # skeleton so the uncurated export's byte shape is unchanged.
-    domain_graph: dict = field(default_factory=dict)
     fingerprint: str = ""
 
     def to_dict(self) -> dict:
@@ -77,11 +72,6 @@ class KnowledgeGraphResult:
             out["modules"] = [
                 {**m, "nodeIds": sorted(m.get("nodeIds", []))} for m in self.modules
             ]
-        if self.domain_graph:
-            # Additive key: present only when the domain graph was synthesized,
-            # so the skeleton/uncurated export's byte shape is unchanged. Lets
-            # the graph round-trip through ``knowledge-graph.json`` for caching.
-            out["domain_graph"] = self.domain_graph
         return out
 
     @classmethod
@@ -98,7 +88,6 @@ class KnowledgeGraphResult:
             layers=data.get("layers", []),
             tour=data.get("tour", []),
             modules=data.get("modules", []),
-            domain_graph=data.get("domain_graph", {}),
         )
 
 
