@@ -323,5 +323,7 @@ def test_base_includes_all_models():
         "knowledge_graph_tour_steps",
         "kg_project_meta",
         "kg_node_meta",
+        "domain_graph_nodes",
+        "domain_graph_edges",
     }
     assert expected == table_names
