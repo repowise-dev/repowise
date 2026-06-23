@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from repowise.core.generation.tour import (
     DEFAULT_MAX_STOPS,
     build_tour,
     score_entry_points,
+    select_hotspot_stop,
     tour_landmark_paths,
 )
 
@@ -58,6 +59,42 @@ def test_score_entry_points_withholds_stem_bonus_from_docs():
     scored = {p: s for s, p in score_entry_points(files, pr)}
     assert scored["src/main.py"] >= 3.0
     assert scored.get("docs/index.md", 0.0) < 3.0
+
+
+def test_score_entry_points_withholds_bonus_from_deep_glue_leaf():
+    # A deeply-nested resolver index.py defines real symbols (not a barrel) but
+    # dispatches; it must not earn the entry bonuses that would seed the walk
+    # and label it "an entry point".
+    files = [
+        _PF(_FI(path="core/ingestion/resolvers/dotnet/index.py", is_entry_point=True)),
+        _PF(_FI(path="src/main.py")),
+    ]
+    pr = {"core/ingestion/resolvers/dotnet/index.py": 0.9, "src/main.py": 0.5}
+    scored = {p: s for s, p in score_entry_points(files, pr)}
+    assert scored["src/main.py"] >= 3.0
+    assert scored.get("core/ingestion/resolvers/dotnet/index.py", 0.0) < 3.0
+
+
+# ---------------------------------------------------------------------------
+# Hotspot stop selection
+# ---------------------------------------------------------------------------
+
+
+def test_select_hotspot_stop_picks_highest_commit_count():
+    candidates = ["a/orchestrator.py", "b/walker.py", "c/quiet.py"]
+    commits = {"a/orchestrator.py": 36, "b/walker.py": 17, "c/quiet.py": 0}
+    assert select_hotspot_stop(candidates, commits) == "a/orchestrator.py"
+
+
+def test_select_hotspot_stop_returns_none_without_activity():
+    # No git history (the fixture matrix): nothing qualifies, tour unchanged.
+    assert select_hotspot_stop(["a/x.py", "b/y.py"], {}) is None
+    assert select_hotspot_stop(["a/x.py"], {"a/x.py": 0}) is None
+
+
+def test_select_hotspot_stop_is_deterministic_on_ties():
+    commits = {"z/a.py": 5, "a/b.py": 5}
+    assert select_hotspot_stop(["z/a.py", "a/b.py"], commits) == "a/b.py"
 
 
 # ---------------------------------------------------------------------------

@@ -97,14 +97,20 @@ class TestClaudeMdKGSection:
             architecture_summary="",
             kg_layers=[KGLayerSummary(name="Core", file_count=5, description="Core")],
             kg_tour=[
-                KGTourStepSummary(order=1, title="Entry Point", primary_file="src/main.py"),
+                KGTourStepSummary(
+                    order=1,
+                    title="Entry Point",
+                    primary_file="src/main.py",
+                    reason="An entry point — execution starts here.",
+                ),
                 KGTourStepSummary(order=2, title="Graph Building", primary_file="src/graph.py"),
             ],
         )
         rendered = tmpl.render(data=data)
         assert "### Guided Tour (2 steps)" in rendered
-        assert "**Entry Point**" in rendered
+        # The package-qualified path is the step identifier; the reason follows.
         assert "`src/main.py`" in rendered
+        assert "An entry point — execution starts here." in rendered
 
     def test_key_modules_owner_column_dropped_when_no_owners(self, jinja_env):
         from repowise.core.generation.editor_files.data import KeyModule
@@ -169,8 +175,8 @@ class TestClaudeMdKGSection:
             kg_tour=steps,
         )
         rendered = tmpl.render(data=data)
-        assert "**Step 6**" in rendered
-        assert "**Step 7**" not in rendered
+        assert "`f6.py`" in rendered
+        assert "`f7.py`" not in rendered
         assert "3 more steps" in rendered
 
 

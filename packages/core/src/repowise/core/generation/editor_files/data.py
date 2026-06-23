@@ -74,6 +74,7 @@ class KGTourStepSummary:
     order: int
     title: str
     primary_file: str
+    reason: str = ""
 
 
 @dataclass(frozen=True)

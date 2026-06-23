@@ -32,6 +32,11 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from repowise.core.analysis.knowledge_graph import KnowledgeGraphResult, _slugify
+from repowise.core.generation.entry_points import (
+    GLUE_STEMS,
+    is_glue_leaf,
+    rank_entry_points,
+)
 from repowise.core.generation.layers import (
     ADJACENT_LAYERS,
     compute_layer_order,
@@ -43,6 +48,7 @@ from repowise.core.generation.tour import (
     DEFAULT_MAX_STOPS,
     build_tour,
     score_entry_points,
+    select_hotspot_stop,
 )
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
 
@@ -56,6 +62,15 @@ _FIXTURE_CAMEL_RES = _LANG_REGISTRY.camel_fixture_res_by_extension()
 # Test-project dir suffixes (.Tests/.Specs) — when present, the suite's
 # face must come from inside one.
 _TEST_PROJECT_DIR_SUFFIXES: tuple[str, ...] = _LANG_REGISTRY.test_dir_suffixes()
+# Config/markup/data + infra languages — a server.json or a Dockerfile
+# describes or wires the system, it is never where execution starts, so it
+# never belongs on the orientation entry-point list.
+_NON_CODE_ENTRY_LANGUAGES: frozenset[str] = (
+    _LANG_REGISTRY.config_languages() | _LANG_REGISTRY.infra_languages()
+)
+# Conventional execution-start filename stems (main/app/cli/manage/…) minus
+# the dispatch-glue stems (index/mod) — drives the entry-point name ranking.
+_CONVENTIONAL_ENTRY_STEMS: frozenset[str] = _LANG_REGISTRY.entry_filename_stems() - GLUE_STEMS
 
 # Honest-degradation thresholds. Density = (imports + tested_by)
 # edges per dominant-language file — the same definition the validation
@@ -192,6 +207,7 @@ def curate_knowledge_graph(
     graph_builder: Any,
     repo_structure: Any,
     community_info: Any,
+    git_meta_map: dict[str, dict] | None = None,
     enabled: bool = False,
     defer_summary_floor: bool = False,
 ) -> KnowledgeGraphResult:
@@ -244,8 +260,17 @@ def curate_knowledge_graph(
     except Exception:  # pragma: no cover - defensive; keep skeleton entry points
         logger.exception("kg_curation._curate_entry_points failed; keeping raw entry points")
 
+    # Genuine churn hotspots (a constantly-edited file off the hot import path)
+    # earn a tour stop on this signal alone. Only flagged hotspots with recent
+    # commits qualify; repos without git history pass an empty map and the tour
+    # is unchanged.
+    hotspot_commits = {
+        path: int(meta.get("commit_count_90d", 0) or 0)
+        for path, meta in (git_meta_map or {}).items()
+        if meta.get("is_hotspot")
+    }
     try:
-        tour = _curate_tour(kg, parsed_files, graph_builder)
+        tour = _curate_tour(kg, parsed_files, graph_builder, hotspot_commits=hotspot_commits)
         if tour is not None:
             kg.tour = tour
     except Exception:  # pragma: no cover - defensive; keep skeleton/LLM tour
@@ -827,11 +852,15 @@ def _curate_entry_points(
     Mutates only the presentation view: drops the ``entry_point`` *tag* from
     barrel nodes (and adds a ``barrel`` tag) without touching the AST graph's
     ``is_entry_point`` flag (the dead-code pass relies on it). Survivors are
-    ranked by ``pagerank + betweenness``; ``project.entry_points`` holds the top
-    few, ``project.entry_candidates`` the full ranked list. When ingestion
-    flagged no entries at all, the strong :func:`score_entry_points` scorers
-    (entry-style filenames) fill in, so the orientation panel never opens empty
-    on repos without a detectable main.
+    ranked by :func:`rank_entry_points` — execution-start evidence (a
+    conventional entry name, shallow path) first, centrality only as a tiebreak
+    — so a deeply-nested resolver ``index.py`` cannot outrank the real
+    ``main.py``. Config/data files (``server.json``) and generic-glue leaves
+    (a resolver's deep ``index.py``) are dropped from candidacy outright.
+    ``project.entry_points`` holds the top few, ``project.entry_candidates`` the
+    full ranked list. When ingestion flagged no entries at all, the strong
+    :func:`score_entry_points` scorers (entry-style filenames) fill in, so the
+    orientation panel never opens empty on repos without a detectable main.
     """
     pf_by_path = {pf.file_info.path: pf for pf in parsed_files if getattr(pf, "file_info", None)}
     lang_by_path = {n["filePath"]: (n.get("language") or "").lower() for n in _file_nodes(kg)}
@@ -841,7 +870,14 @@ def _curate_entry_points(
     except Exception:  # pragma: no cover - defensive
         betweenness = {}
 
-    survivors: list[tuple[float, str]] = []
+    def _not_an_execution_start(path: str, language: str) -> bool:
+        # Config/data files (server.json) describe the system and deep
+        # generic-glue leaves (a resolver's index.py) dispatch within it —
+        # neither is where a reader enters. Barrel demotion is handled
+        # separately (it mutates tags), so this covers only candidacy.
+        return language in _NON_CODE_ENTRY_LANGUAGES or is_glue_leaf(path)
+
+    candidates: list[tuple[str, float, float]] = []
     for node in kg.nodes:
         nid = node.get("id", "")
         if not (isinstance(nid, str) and nid.startswith("file:")):
@@ -850,7 +886,8 @@ def _curate_entry_points(
         if "entry_point" not in tags:
             continue
         path = node.get("filePath", "")
-        if infer_layer(path, node.get("language")) in ADJACENT_LAYERS or is_support_path(path):
+        language = (node.get("language") or "").lower()
+        if infer_layer(path, language) in ADJACENT_LAYERS or is_support_path(path):
             # Test fixtures (a wsgi.py inside tests/) and sample programs
             # (examples/*/main.go) may carry the ingestion flag, but they are
             # not where a reader enters the system.
@@ -862,27 +899,28 @@ def _curate_entry_points(
                 new_tags.append("barrel")
             node["tags"] = new_tags
             continue
-        score = pagerank.get(path, 0.0) + betweenness.get(path, 0.0)
-        survivors.append((score, path))
+        if _not_an_execution_start(path, language):
+            continue
+        candidates.append((path, pagerank.get(path, 0.0), betweenness.get(path, 0.0)))
 
-    if not survivors:
+    if not candidates:
         # No ingestion-flagged entries (or all were barrels): fall back to the
         # strong filename scorers the tour seeds from (score >= 3 means an
         # entry-style name or flag, never just shallow/high-PageRank).
         for s, path in score_entry_points(parsed_files, pagerank):
             if s < 3.0:
                 continue
-            if infer_layer(path, lang_by_path.get(path)) in ADJACENT_LAYERS or is_support_path(path):
+            language = lang_by_path.get(path, "")
+            if infer_layer(path, language) in ADJACENT_LAYERS or is_support_path(path):
                 continue
             pf = pf_by_path.get(path)
             if pf is not None and _is_barrel(pf):
                 continue
-            score = pagerank.get(path, 0.0) + betweenness.get(path, 0.0)
-            survivors.append((score, path))
+            if _not_an_execution_start(path, language):
+                continue
+            candidates.append((path, pagerank.get(path, 0.0), betweenness.get(path, 0.0)))
 
-    # Highest score first; path as a stable, deterministic tie-break.
-    survivors.sort(key=lambda sp: (-sp[0], sp[1]))
-    ranked = [path for _, path in survivors]
+    ranked = rank_entry_points(candidates, _CONVENTIONAL_ENTRY_STEMS)
     kg.project["entry_points"] = ranked[:_MAX_ENTRY_POINTS]
     kg.project["entry_candidates"] = ranked
 
@@ -1099,7 +1137,10 @@ def _drop_extra_barrels(paths: list[str], barrels: set[str], keep: int = 1) -> l
 
 
 def _curate_tour(
-    kg: KnowledgeGraphResult, parsed_files: list[Any], graph_builder: Any
+    kg: KnowledgeGraphResult,
+    parsed_files: list[Any],
+    graph_builder: Any,
+    hotspot_commits: dict[str, int] | None = None,
 ) -> list[dict] | None:
     """Build one canonical, execution-flow tour over the curated layers.
 
@@ -1274,6 +1315,7 @@ def _curate_tour(
     budget = max(0, DEFAULT_MAX_STOPS - len(overview) - len(closing_paths) - len(infra))
     swapped_depth: dict[str, int] = {}  # rep path -> depth of the slot it fills
     structural_reasons: dict[str, str] = {}
+    hotspot_added: str | None = None  # churn hotspot given a reserved slot
 
     if graph_mode == "structural":
         # Structure, not flow: evidence-ranked anchor + one face per
@@ -1300,9 +1342,27 @@ def _curate_tour(
             and file_layers.get(s.target_path) not in ADJACENT_LAYERS
             and not is_support_path(s.target_path)
         ]
+        # A genuine churn hotspot off the hot import path (a constantly-edited
+        # pipeline file buried in a large catch-all layer) earns one reserved
+        # slot — picked from the whole code universe, not just build_tour's
+        # selection, and only when it is not already a stop. Repos without git
+        # history pass an empty map, so the reserve is a no-op there.
+        hotspot_path: str | None = None
+        if hotspot_commits:
+            hotspot_pool = [
+                p
+                for p in walk_universe
+                if p not in barrels
+                and file_layers.get(p) not in ADJACENT_LAYERS
+                and type_by_path.get(p) not in {"config", "document"}
+            ]
+            hotspot_path = select_hotspot_stop(hotspot_pool, hotspot_commits)
+        budgeted = _drop_extra_barrels(walk_all, barrels)[:budget]
+        reserve = 1 if (hotspot_path is not None and hotspot_path not in budgeted) else 0
+
         # One re-export barrel earns a stop; the rest are demoted so real code
         # fills the budget instead of a run of identical "public surface" hubs.
-        walk = _drop_extra_barrels(walk_all, barrels)[:budget]
+        walk = _drop_extra_barrels(walk_all, barrels)[: max(0, budget - reserve)]
 
         # --- Diversify for layer coverage (swap slots, never re-sort) -----
         seen_layers: set[str] = set()
@@ -1358,6 +1418,11 @@ def _curate_tour(
             walk[pos] = rep
             seen_layers.add(layer)
 
+        # Spend the reserved slot last so layer-coverage swaps keep priority.
+        if reserve and hotspot_path is not None and hotspot_path not in walk:
+            walk.append(hotspot_path)
+            hotspot_added = hotspot_path
+
     # --- Assemble the exported tour --------------------------------------
     tour: list[dict] = []
     order_n = 0
@@ -1385,6 +1450,12 @@ def _curate_tour(
         elif p in swapped_depth:
             depth = swapped_depth[p]
             reason = f"The {layer} layer's anchor — its most depended-on file."
+        elif p == hotspot_added:
+            depth = 0
+            reason = (
+                "A top churn hotspot — one of the most frequently changed files "
+                "in the repo; worth understanding early."
+            )
         elif step is not None:
             depth = step.depth
             reason = step.reason
