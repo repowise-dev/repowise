@@ -18,6 +18,7 @@ from . import csharp as _csharp
 from . import go as _go
 from . import java as _java
 from . import python as _python
+from . import rust as _rust
 from . import ts_js as _ts_js
 from .base import PERF_DIALECTS, BasePerfDialect
 
@@ -33,6 +34,7 @@ _REGISTER: tuple[tuple[str, BasePerfDialect], ...] = (
     ("java", _java.DIALECT),
     ("go", _go.DIALECT),
     ("csharp", _csharp.DIALECT),
+    ("rust", _rust.DIALECT),
 )
 
 for _tag, _dialect in _REGISTER:

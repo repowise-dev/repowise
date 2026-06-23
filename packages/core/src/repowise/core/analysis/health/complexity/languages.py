@@ -268,6 +268,12 @@ _RUST = LanguageNodeMap(
     member_access_kinds=frozenset({"field_expression"}),
     # ``assert!`` / ``assert_eq!`` / ``assert_ne!`` are macro invocations.
     assert_call_kinds=frozenset({"macro_invocation"}),
+    # The perf pass: both ``foo()`` and method/scoped calls (``x.fetch_all()`` /
+    # ``std::fs::read()``) parse as ``call_expression``. Rust has no dedicated
+    # async function node type — ``async fn`` is a ``function_item`` carrying a
+    # ``function_modifiers`` child — so ``async_function_kinds`` stays empty and
+    # ``RustPerfDialect.is_async_fn`` sniffs the modifier instead.
+    call_kinds=frozenset({"call_expression"}),
 )
 
 

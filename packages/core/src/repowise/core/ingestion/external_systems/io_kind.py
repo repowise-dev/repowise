@@ -59,6 +59,11 @@ _DB_NAMES: frozenset[str] = frozenset({
     "microsoft.entityframeworkcore", "system.data.sqlclient",
     "microsoft.data.sqlclient", "dapper", "npgsql", "mongodb.driver",
     "stackexchange.redis",
+    # Rust (the crate root as imported, ``use sqlx::...`` -> ``sqlx``; both the
+    # hyphenated Cargo name and the underscore import alias are seeded). ``sqlx``
+    # is already listed under the Go section above.
+    "diesel", "sea-orm", "sea_orm", "tokio-postgres", "tokio_postgres",
+    "rusqlite", "deadpool-postgres", "deadpool_postgres", "scylla", "bb8",
 })
 
 _NETWORK_NAMES: frozenset[str] = frozenset({
@@ -75,6 +80,8 @@ _NETWORK_NAMES: frozenset[str] = frozenset({
     "net/http", "grpc", "resty", "fasthttp",
     # .NET
     "system.net.http", "grpc.net.client", "restsharp", "flurl",
+    # Rust (HTTP / gRPC client crates as imported).
+    "reqwest", "hyper", "isahc", "surf", "ureq", "awc", "tonic",
 })
 
 _FILESYSTEM_NAMES: frozenset[str] = frozenset({

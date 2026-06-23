@@ -463,12 +463,17 @@ findings.
 | Java | Y | Y | resource_construction, lock | `regex_compile_in_loop` | --- (no async syntax) |
 | Go | Y | Y | resource_construction, lock | `defer_in_loop`, `regex_compile_in_loop` | --- (goroutines) |
 | C# | Y | Y | resource_construction, lock, serial_await | --- (.NET caches regexes) | `blocking_sync_in_async` (`.Result` / `.Wait()` / `.GetResult()`) |
-| Kotlin / Rust / C++ | --- | --- | --- | --- | --- |
+| Rust | Y | --- (`String` is amortized) | resource_construction, serial_await | `regex_compile_in_loop` (`Regex::new`) | `blocking_sync_in_async` (`block_on` / `std::thread::sleep` / sync `std::fs` in `async fn`) |
+| Kotlin / C++ | --- | --- | --- | --- | --- |
 
-Kotlin will be nearly free once it rides the JVM lexicon; Rust (sqlx /
-reqwest) and C++ are later. What each dialect classifies as a db / network /
-filesystem / subprocess sink, and the per-language precision hazards, lives
-in `docs/CODE_HEALTH.md` and
+The Rust dialect classifies `sqlx` executor verbs (db), `reqwest::get` /
+`reqwest::post` and `std::fs` (network / filesystem) as sinks; `io_in_loop` is
+multi-repo validated (85% on bevy / rtk / deepwiki-rs). `string_concat_in_loop`
+is intentionally absent — Rust `String::push_str` / `+=` are amortized O(1), so
+it would be a guaranteed false positive. Kotlin will be nearly free once it
+rides the JVM lexicon; C++ is later. What each dialect classifies as a db /
+network / filesystem / subprocess sink, and the per-language precision hazards,
+lives in `docs/CODE_HEALTH.md` and
 `local-stash/performance-pillar/PHASE6_PLAN.md`.
 
 ---

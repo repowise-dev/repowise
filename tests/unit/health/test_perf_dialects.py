@@ -193,6 +193,111 @@ def test_csharp_cases(src, expected, note):
 
 
 # ---------------------------------------------------------------------------
+# Rust
+# ---------------------------------------------------------------------------
+
+
+def test_rust_fixture_counts():
+    fc = _walk("rust/perf_io_in_loop.rs", "rust")
+    counts = _kinds(fc.perf_hits)
+    # db (sqlx fetch_all) · filesystem (std::fs::read + fs::read_to_string) ·
+    # network (reqwest::get) = 4. The constant-range and out-of-loop reads and
+    # the push_str loop (amortized O(1)) do not fire.
+    assert counts["io_in_loop"] == 4
+    assert {h.detail for h in fc.perf_hits if h.kind == "io_in_loop"} == {
+        "db",
+        "filesystem",
+        "network",
+    }
+    # The two awaited sinks (sqlx + reqwest) carry the serial_await co-signal.
+    assert counts["serial_await_in_loop"] == 2
+    assert counts["regex_compile_in_loop"] == 1
+    assert counts["resource_construction_in_loop"] == 1
+    assert counts["blocking_sync_in_async"] == 1
+    # Rust String building is amortized, so string_concat is never a Rust marker.
+    assert counts["string_concat_in_loop"] == 0
+
+
+_RUST_CASES = [
+    (
+        "async fn f(pool: &PgPool, ids: Vec<i32>){ for id in ids { "
+        'let _ = sqlx::query("x").fetch_one(pool).await; } }',
+        [("io_in_loop", "db"), ("serial_await_in_loop", "db")],
+        "a sqlx fetch_one verb in a for loop is an awaited db round-trip",
+    ),
+    (
+        "fn f(paths: Vec<String>){ for p in paths { let _ = std::fs::read(&p); } }",
+        [("io_in_loop", "filesystem")],
+        "std::fs::read keys on the `fs` module qualifier, not the `std` root",
+    ),
+    (
+        "use reqwest;\nasync fn f(urls: Vec<String>){ for u in urls { "
+        "let _ = reqwest::get(&u).await; } }",
+        [("io_in_loop", "network"), ("serial_await_in_loop", "network")],
+        "reqwest::get free function in a loop is a network round-trip",
+    ),
+    (
+        "async fn f(tx: Sender<i32>, n: i32){ for i in 0..n { tx.send(i).await; } }",
+        [],
+        "a channel tx.send(i).await is NOT a reqwest round-trip (no false sink)",
+    ),
+    (
+        'fn f(items: Vec<i32>){ for x in items { let r = Regex::new("^a$"); let _ = r; } }',
+        [("regex_compile_in_loop", "")],
+        "Regex::new with a static literal pattern is hoistable",
+    ),
+    (
+        "fn f(items: Vec<String>){ for x in items { let r = Regex::new(&x); let _ = r; } }",
+        [],
+        "Regex::new with a dynamic arg may vary per iteration — not flagged",
+    ),
+    (
+        "async fn f(urls: Vec<String>){ for u in urls { let _ = PgPool::connect(&u).await; } }",
+        [("resource_construction_in_loop", "")],
+        "a fresh PgPool::connect per iteration is resource construction",
+    ),
+    (
+        "fn f(items: Vec<i32>){ let mut s = String::new(); "
+        "for x in items { s.push_str(&x.to_string()); } let _ = s; }",
+        [],
+        "String::push_str is amortized O(1) — Rust has no string_concat marker",
+    ),
+    (
+        "async fn f(){ let _ = futures::executor::block_on(g()); }",
+        [("blocking_sync_in_async", "block_on")],
+        "block_on inside an async fn blocks the executor",
+    ),
+]
+
+
+@pytest.mark.parametrize("src,expected,note", _RUST_CASES, ids=[c[2] for c in _RUST_CASES])
+def test_rust_cases(src, expected, note):
+    assert _hits("rust", src) == sorted(expected), note
+
+
+def test_rust_execute_gated_on_db_import():
+    """``.execute()`` is ambiguous, so it fires only with file-level db evidence
+    (a ``use sqlx::...`` resolved through the ``use_declaration`` io_names pass)."""
+    with_import = (
+        "use sqlx::PgPool;\nasync fn f(pool: &PgPool, ids: Vec<i32>){ "
+        'for id in ids { let _ = sqlx::query("x").execute(pool).await; } }'
+    )
+    no_import = "async fn f(c: &Conn, ids: Vec<i32>){ for id in ids { c.execute(id); } }"
+    assert ("io_in_loop", "db") in _hits("rust", with_import)
+    assert not any(k == "io_in_loop" for k, _ in _hits("rust", no_import))
+
+
+def test_rust_fs_in_async_blocks():
+    """Sync ``std::fs`` inside an ``async fn`` is executor-blocking; the awaited
+    ``tokio::fs`` equivalent is excluded by the walker's not-awaited gate."""
+    blocking = "async fn f(p: String){ let _ = std::fs::read(&p); }"
+    assert ("blocking_sync_in_async", "fs::read") in _hits("rust", blocking)
+    # tokio::fs::read is always awaited -> never read as a blocking sync call.
+    awaited = "async fn f(p: String){ let _ = tokio::fs::read(&p).await; }"
+    assert not any(k == "blocking_sync_in_async" for k, _ in _hits("rust", awaited))
+
+
+# ---------------------------------------------------------------------------
 # Phase-7c precision fixes (multi-language corpus FP classes)
 # ---------------------------------------------------------------------------
 

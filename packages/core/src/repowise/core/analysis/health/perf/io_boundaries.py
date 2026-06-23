@@ -35,7 +35,7 @@ from ....ingestion.external_systems.io_kind import classify_io_kind
 
 # Tokens that are syntax, not bindable import names.
 _IMPORT_KW: frozenset[str] = frozenset(
-    {"import", "from", "as", "require", "const", "let", "var", "default", "type", "typeof"}
+    {"import", "from", "as", "require", "const", "let", "var", "default", "type", "typeof", "use"}
 )
 
 
@@ -70,9 +70,19 @@ def _candidate_variants(tok: str) -> set[str]:
     parts = [p for p in tok.split("/") if p]
     out.update(parts)
     for seg in parts:
-        dotted = seg.split(".")
-        for i in range(1, len(dotted) + 1):
-            out.add(".".join(dotted[:i]))
+        # Rust scoped paths use ``::`` (``std::fs::read`` / ``sqlx::query``).
+        # Decompose into interior segments + progressive ``::`` prefixes so
+        # ``use sqlx::Pool`` resolves via ``sqlx`` and ``use std::fs`` via the
+        # ``fs`` segment (already a filesystem name, cross-ecosystem). A no-op
+        # for the dotted/slash ecosystems (no ``::`` to split).
+        colon_parts = [c for c in seg.split("::") if c]
+        out.update(colon_parts)
+        for i in range(1, len(colon_parts) + 1):
+            out.add("::".join(colon_parts[:i]))
+        for cp in colon_parts:
+            dotted = cp.split(".")
+            for i in range(1, len(dotted) + 1):
+                out.add(".".join(dotted[:i]))
     return out
 
 
@@ -124,9 +134,9 @@ def collect_io_names(tree_root: _NodeLike, language: str) -> dict[str, str]:
     while stack:
         node = stack.pop()
         # ``import`` covers Python / TS / Java / Go import nodes; C# spells its
-        # import a ``using_directive`` (and Go an ``import_spec``), neither of
-        # which contains the substring "import".
-        if "import" in node.type or node.type == "using_directive":
+        # import a ``using_directive`` (and Go an ``import_spec``), Rust a
+        # ``use_declaration`` — none of which contains the substring "import".
+        if "import" in node.type or node.type in ("using_directive", "use_declaration"):
             # Classify only the *leaf* import node. A Go grouped
             # ``import ( "database/sql"; "regexp" )`` is an ``import_declaration``
             # wrapping per-line ``import_spec`` leaves; classifying the wrapper
