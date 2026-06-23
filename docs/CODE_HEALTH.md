@@ -351,6 +351,14 @@ dashboards, where it expands into a per-K table (worst 10/20/30), a
 concentration stat (what share of recently-fixed files fall in the
 least-healthy 20%), and the exact flagged files.
 
+Agents can read the same stat over MCP, so a coding agent can confirm the score
+is trustworthy on this repo before acting on it:
+
+```python
+# MCP — dashboard mode, the same precision@K / lift block
+get_health(include=["accuracy"])
+```
+
 It stays silent on repos without enough history to be honest (fewer than 25
 scored files, or fewer than 5 recently-fixed files). One caveat it discloses:
 `prior_defect` is itself one (down-weighted) input to the score, so this is an
@@ -631,6 +639,9 @@ GET /api/repos/{repo_id}/health/files/breakdown?file_path=path/to/file.py
 ```python
 # MCP — attached to the get_context health block (null fields dropped)
 get_context(targets=["path/to/file.py"], include=["health"])
+
+# MCP — also on get_health targeted mode, one `signals` object per metric
+get_health(targets=["path/to/file.py"], include=["signals"])
 ```
 
 ## Hotspot anatomy
@@ -652,6 +663,11 @@ dashboard tab, toggleable with the churn × bus-factor view.
 ```bash
 # REST — repo-level point list (one point per churned file)
 GET /api/repos/{repo_id}/health/churn-complexity
+```
+
+```python
+# MCP — the same point list, dashboard mode
+get_health(include=["churn_complexity"])
 ```
 
 Files with no recent churn are omitted (they have nothing to say on the churn

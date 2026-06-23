@@ -425,33 +425,59 @@ get_dead_code(min_confidence=0.8, include_internals=true)
 
 ## `get_health`
 
-Code-health biomarker scores — the same 25 deterministic biomarkers the
-`repowise health` CLI computes, exposed for agentic workflows. Zero LLM calls.
+Code-health biomarker scores — the same deterministic biomarkers the
+`repowise health` CLI computes, across three signals (defect risk ·
+maintainability · performance), exposed for agentic workflows. Zero LLM calls.
+Use it to **self-check a change before opening a PR** — the same signals a
+code-health merge-gate judges it on.
 
 **Parameters:**
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `targets` | list[string] | No | File paths, or `module:foo` to expand a module's file set. Empty → dashboard mode. |
-| `include` | list[string] | No | `"refactoring"` (rule-based suggestions), `"trend"` (snapshot diff + declining / predicted-decline alerts), `"coverage"` |
+| `include` | list[string] | No | Opt-in blocks (default response stays lean): `"biomarkers"` (findings in dashboard mode), `"refactoring"` (rule-based suggestions per finding), `"trend"` (snapshot diff + declining / predicted-decline alerts), `"coverage"`, `"accuracy"` (the "does the score find the bugs?" stat, dashboard mode), `"signals"` (per-file process / people / topology signals, targeted mode), `"churn_complexity"` (churn × complexity quadrant points, dashboard mode), and a dimension name — `"performance"` / `"defect"` / `"maintainability"` — to filter findings to that pillar. |
 | `repo` | string | No | *(workspace only)* Target repo alias |
 | `limit` | int | No | Max rows in the lowest-scoring file list (default 20, capped at 50) |
 
 **Returns:** Dashboard mode (no `targets`) returns repo-level KPIs (hotspot
-health, average health, worst performer), the lowest-scoring files, and a
-per-module NLOC-weighted rollup. Targeted mode returns per-file biomarker
-findings with severity and the score breakdown.
+health, average health, worst performer, maintainability / performance pillar
+averages), the lowest-scoring files, and a per-module NLOC-weighted rollup.
+Targeted mode returns per-file biomarker findings with severity, per-dimension
+scores, and the score breakdown. Each finding carries a `dimension`
+(`defect` / `maintainability` / `performance`).
 
-**When to use:** Before refactoring — find the worst-scoring files and what to
-fix first. Pair with `get_risk` on hotspots.
+The opt-in enrichments:
+
+- **`accuracy`** → a `defect_accuracy` block: of the K least-healthy files, how
+  many were recently bug-fixed vs the repo-wide base rate (precision@K + `lift`),
+  with a per-K table and the flagged files. Silent (`null`) on repos with too
+  little history to be honest (< 25 scored files or < 5 recently-fixed files).
+- **`signals`** → a `signals` object on each targeted metric: prior-defect count,
+  change scatter, 90-day churn, primary / recent owner, and graph in / out
+  degree. Honest `null` per field when the underlying row is absent (never an
+  imputed zero).
+- **`churn_complexity`** → `churn_complexity` points (one per recently-changed
+  file: 90-day commit count, max CCN, NLOC, score, churn percentile) — the
+  refactor zone where volatility and tangle collide.
+- **dimension filter** → narrows the returned findings to one pillar. Pair with
+  `"biomarkers"` for the full (uncapped) finding set, e.g.
+  `include=["biomarkers", "performance"]`.
+
+**When to use:** Before opening a PR, to self-check the files you changed
+(`targets=[...], include=["signals"]`) and confirm you are not regressing the
+worst files. Before refactoring — find the worst-scoring files and what to fix
+first (`include=["accuracy", "churn_complexity"]`). Pair with `get_risk` on
+hotspots.
 
 **Example calls:**
 
 ```
 get_health()
-get_health(include=["refactoring"])
-get_health(targets=["src/api/server.py"])
-get_health(targets=["module:src.api"], include=["trend"])
+get_health(include=["accuracy", "churn_complexity"])
+get_health(include=["biomarkers", "performance"])     # only performance findings
+get_health(targets=["src/api/server.py"], include=["signals"])
+get_health(targets=["module:src.api"], include=["trend", "refactoring"])
 ```
 
 ---
