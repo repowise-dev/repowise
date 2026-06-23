@@ -13,6 +13,14 @@ export interface OverviewRepoMeta {
   default_branch: string;
   head_commit: string | null;
   updated_at: string | null;
+  /** GitHub owner/login. Hosted-only — lets surfaces like the MCP connect
+   *  card build the `owner/name` server URL without resolving the repo
+   *  through the viewer's own repo list (so it works on public shares for
+   *  non-owners). Absent/`""` for the OSS CLI, which has no remote owner. */
+  owner?: string;
+  /** Whether the repo is publicly browsable. Hosted-only; drives the
+   *  public/private connect copy. Defaults to public when absent. */
+  is_public?: boolean;
 }
 
 export interface OverviewStatDeltas {

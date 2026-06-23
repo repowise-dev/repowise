@@ -62,6 +62,11 @@ interface ArchitectureStoreState {
 
   pathFinderOpen: boolean;
   reactFlowInstance: ReactFlowInstance | null;
+
+  /** Whether the right-hand info/files panel is visible. Open on desktop;
+   *  the panel itself collapses this on small screens at mount so it doesn't
+   *  obstruct the graph. */
+  sidebarOpen: boolean;
 }
 
 interface ArchitectureStoreActions {
@@ -112,6 +117,9 @@ interface ArchitectureStoreActions {
 
   setPathFinderOpen: (open: boolean) => void;
   setReactFlowInstance: (instance: ReactFlowInstance | null) => void;
+
+  setSidebarOpen: (open: boolean) => void;
+  toggleSidebar: () => void;
 }
 
 export type ArchitectureStore = ArchitectureStoreState & ArchitectureStoreActions;
@@ -308,6 +316,8 @@ const INITIAL_STATE: ArchitectureStoreState = {
 
   pathFinderOpen: false,
   reactFlowInstance: null,
+
+  sidebarOpen: true,
 };
 
 export const useArchitectureStore = create<ArchitectureStore>()(
@@ -407,6 +417,9 @@ export const useArchitectureStore = create<ArchitectureStore>()(
           ...drillStateForNode(state, nodeId),
           selectedNodeId: nodeId,
           focusNodeId: null,
+          // Selecting a node surfaces its details — reopen the panel if the
+          // user had collapsed it (key on mobile, where it starts closed).
+          ...(nodeId ? { sidebarOpen: true } : {}),
         });
       },
 
@@ -636,6 +649,14 @@ export const useArchitectureStore = create<ArchitectureStore>()(
 
       setReactFlowInstance: (instance: ReactFlowInstance | null) => {
         set({ reactFlowInstance: instance });
+      },
+
+      setSidebarOpen: (open: boolean) => {
+        set({ sidebarOpen: open });
+      },
+
+      toggleSidebar: () => {
+        set({ sidebarOpen: !get().sidebarOpen });
       },
     }),
     { name: "architecture-store" },

@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { Info, FolderOpen } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Info, FolderOpen, PanelRightOpen, X } from "lucide-react";
 import { useArchitectureStore } from "../store/use-architecture-store";
 import { ProjectOverview } from "./ProjectOverview";
 import { ArchNodeInfo } from "./ArchNodeInfo";
@@ -50,9 +50,55 @@ export function Sidebar(props: SidebarProps) {
   const view = useArchitectureStore((s) => s.view);
   const selectedNodeId = useArchitectureStore((s) => s.selectedNodeId);
   const tourActive = useArchitectureStore((s) => s.tourActive);
+  const sidebarOpen = useArchitectureStore((s) => s.sidebarOpen);
+  const setSidebarOpen = useArchitectureStore((s) => s.setSidebarOpen);
   const [activeTab, setActiveTab] = useState<SidebarTab>("info");
 
+  // Collapse on small screens at first mount — a 320px overlay swallows the
+  // whole graph on a phone. Runs once; the user's manual toggle wins after.
+  useEffect(() => {
+    if (
+      typeof window !== "undefined" &&
+      window.matchMedia("(max-width: 767px)").matches
+    ) {
+      setSidebarOpen(false);
+    }
+  }, [setSidebarOpen]);
+
   if (!view) return null;
+
+  // Collapsed: a small floating affordance to bring the panel back, kept in
+  // the same corner so it reads as "the panel lives here".
+  if (!sidebarOpen) {
+    return (
+      <button
+        type="button"
+        aria-label="Open Knowledge Graph panel"
+        onClick={() => setSidebarOpen(true)}
+        style={{
+          position: "absolute",
+          top: 12,
+          right: 12,
+          zIndex: 5,
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          padding: "8px 10px",
+          fontSize: 12,
+          fontWeight: 600,
+          cursor: "pointer",
+          color: "var(--color-text-primary)",
+          background: "var(--color-bg-elevated, rgba(17,24,39,0.96))",
+          border: "1px solid var(--color-border-default)",
+          borderRadius: 8,
+          boxShadow: "0 10px 30px rgba(0,0,0,0.35)",
+        }}
+      >
+        <PanelRightOpen size={14} />
+        Details
+      </button>
+    );
+  }
 
   return (
     <aside
@@ -61,7 +107,9 @@ export function Sidebar(props: SidebarProps) {
         position: "absolute",
         top: 12,
         right: 12,
-        width: 320,
+        // Cap to the viewport on phones so the panel never overflows the
+        // canvas edge-to-edge.
+        width: "min(320px, calc(100vw - 24px))",
         maxHeight: "calc(100% - 24px)",
         background: "var(--color-bg-elevated, rgba(17,24,39,0.96))",
         border: "1px solid var(--color-border-default)",
@@ -79,6 +127,7 @@ export function Sidebar(props: SidebarProps) {
         aria-label="Sidebar tabs"
         style={{
           display: "flex",
+          alignItems: "stretch",
           borderBottom: "1px solid var(--color-border-default)",
           flexShrink: 0,
         }}
@@ -106,6 +155,25 @@ export function Sidebar(props: SidebarProps) {
         >
           <FolderOpen size={13} />
           Files
+        </button>
+        <button
+          type="button"
+          aria-label="Close panel"
+          onClick={() => setSidebarOpen(false)}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: 34,
+            flexShrink: 0,
+            cursor: "pointer",
+            background: "none",
+            border: "none",
+            borderLeft: "1px solid var(--color-border-default)",
+            color: "var(--color-text-secondary)",
+          }}
+        >
+          <X size={14} />
         </button>
       </nav>
 
