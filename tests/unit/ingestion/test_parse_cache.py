@@ -143,6 +143,42 @@ def test_fingerprint_mismatch_invalidates(repo, tmp_path):
     assert cache.misses == 1
 
 
+def test_dataclass_schema_change_invalidates_cache(repo, monkeypatch):
+    """A ParsedFile (or nested dataclass) field change must self-invalidate.
+
+    Regression: ``parse_cache.pkl`` pickles ParsedFile object graphs, so a new
+    field on a cached dataclass made an old entry deserialize without the
+    attribute, crashing the graph builder. The fingerprint now folds in every
+    cached dataclass's field set, so the stale entry is treated as a miss.
+    """
+    import dataclasses
+
+    from repowise.core.ingestion import models, parse_cache
+
+    _build(repo)  # populate the cache under the current fingerprint
+    cache_file = _cache_path(repo)
+    assert pickle.loads(cache_file.read_bytes())["fingerprint"] == parser_fingerprint()
+
+    # Simulate a release that adds a field to ParsedFile.
+    @dataclasses.dataclass
+    class _Evolved(models.ParsedFile):
+        new_field: int = 0
+
+    _Evolved.__module__ = models.__name__  # masquerade as a models.py type
+    monkeypatch.setattr(models, "ParsedFile", _Evolved)
+    parse_cache.parser_fingerprint.cache_clear()
+    try:
+        assert parser_fingerprint() != pickle.loads(cache_file.read_bytes())["fingerprint"]
+
+        cache = ParseCache(repo / ".repowise")
+        cache.load()
+        fi = _make_file_info(repo / "other.py", "other.py")
+        source = (repo / "other.py").read_bytes()
+        assert cache.get(fi, compute_content_hash(source)) is None
+    finally:
+        parse_cache.parser_fingerprint.cache_clear()
+
+
 def _make_file_info(abs_path, rel_path):
     from datetime import UTC, datetime
 

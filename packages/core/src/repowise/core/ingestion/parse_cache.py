@@ -25,6 +25,7 @@ so deleted files age out naturally.
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import hashlib
 import os
 import pickle
@@ -35,6 +36,7 @@ from typing import Any
 
 import structlog
 
+from . import models
 from .models import FileInfo, ParsedFile
 
 log = structlog.get_logger(__name__)
@@ -45,16 +47,48 @@ _CACHE_FILENAME = "parse_cache.pkl"
 __all__ = ["ParseCache", "parser_fingerprint"]
 
 
+def _models_schema_fingerprint(h: Any) -> None:
+    """Fold the field shape of every cached dataclass into *h*.
+
+    The cache pickles ``ParsedFile`` object graphs, so the fields of
+    ``ParsedFile`` *and* every dataclass it nests (``Symbol``, ``Import``,
+    ``CallSite``, ``FileInfo``, …) are part of the on-disk contract. When the
+    code adds, removes, or retypes a field, an entry pickled by the old build
+    deserializes into an object that is missing the attribute, and the next
+    consumer that reads it crashes (``AttributeError: 'ParsedFile' object has
+    no attribute '<new field>'``).
+
+    Hashing the field set of every dataclass declared in :mod:`.models` makes
+    such a change invalidate the cache automatically, without anyone having to
+    remember to bump ``PARSER_SCHEMA_VERSION`` for a pure data-shape change.
+    Iterating in name order keeps the digest stable across runs.
+    """
+    for name in sorted(vars(models)):
+        obj = getattr(models, name)
+        if not (isinstance(obj, type) and dataclasses.is_dataclass(obj)):
+            continue
+        if getattr(obj, "__module__", None) != models.__name__:
+            continue  # skip re-exports; only fingerprint models.py's own types
+        h.update(f"dc:{name}".encode())
+        for f in dataclasses.fields(obj):
+            # ``str(f.type)`` is the annotation text (string under
+            # ``from __future__ import annotations``); it changes whenever a
+            # field's declared type changes.
+            h.update(f"|{f.name}:{f.type!s}".encode())
+
+
 @lru_cache(maxsize=1)
 def parser_fingerprint() -> str:
     """Fingerprint of everything that determines a ParsedFile besides bytes.
 
-    Hashes every ``.scm`` query source (extraction rules) plus
-    ``PARSER_SCHEMA_VERSION`` (Python-side extraction logic). Deliberately
-    *not* the package ``__version__``: an unrelated release must not churn a
-    user's whole parse cache. The schema version is bumped only when parser /
-    extractor behaviour actually changes, so a mismatch still invalidates the
-    cache when correctness demands it. See :mod:`repowise.core.upgrade.version`.
+    Hashes every ``.scm`` query source (extraction rules), the field shape of
+    every cached dataclass in :mod:`.models` (so a ``ParsedFile`` schema change
+    self-invalidates), plus ``PARSER_SCHEMA_VERSION`` (Python-side extraction
+    logic). Deliberately *not* the package ``__version__``: an unrelated release
+    must not churn a user's whole parse cache. The schema version is bumped only
+    when parser / extractor *behaviour* changes (same fields, different values),
+    so a mismatch still invalidates the cache when correctness demands it. See
+    :mod:`repowise.core.upgrade.version`.
     """
     h = hashlib.sha256()
     h.update(f"cache-version:{_CACHE_VERSION}".encode())
@@ -64,6 +98,10 @@ def parser_fingerprint() -> str:
         h.update(f"parser-schema:{PARSER_SCHEMA_VERSION}".encode())
     except Exception:
         h.update(b"parser-schema:unknown")
+    try:
+        _models_schema_fingerprint(h)
+    except Exception:
+        h.update(b"models-schema:unreadable")
     queries_dir = Path(__file__).parent / "queries"
     try:
         for scm in sorted(queries_dir.glob("*.scm")):
