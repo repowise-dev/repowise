@@ -25,10 +25,17 @@ function ArchContainerNodeImpl(props: NodeProps) {
   const ChevronIcon = expanded ? ChevronDown : ChevronRight;
 
   // Unified click grammar (kg-ux plan B5): single click selects (page-level
-  // handler); double-click expands/collapses (page-level too). Keyboard
-  // Enter/Space mirrors single-click selection.
+  // handler). Keyboard Enter/Space mirrors single-click selection.
   const handleSelect = () => {
     useArchitectureStore.getState().selectNode(containerId);
+  };
+
+  // Expand/collapse on double-click, owned here so it stays reliable even when
+  // a preceding single-click eases the camera and slides the node out from
+  // under the cursor (which would make React Flow miss the second click).
+  const handleToggle = (e: { stopPropagation: () => void }) => {
+    e.stopPropagation();
+    useArchitectureStore.getState().toggleContainer(containerId);
   };
 
   // Diagram ink, not panel chrome: the panel border tokens sit at ~12% alpha
@@ -44,6 +51,7 @@ function ArchContainerNodeImpl(props: NodeProps) {
       role="button"
       tabIndex={0}
       aria-label={`Inspect folder ${label}`}
+      onDoubleClick={handleToggle}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();

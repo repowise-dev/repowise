@@ -20,23 +20,61 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from collections.abc import Iterable
 
-from repowise.core.persistence import ExternalSystem, GraphNode
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.persistence import ExternalSystem, GraphNode
+
 from .models import Container
+
+# Package-manifest basenames. A directory holding one of these is a container
+# root even when the manifest declares no external dependencies (so a package
+# like ``packages/core`` is its own container rather than dissolving into the
+# repo-root catch-all).
+_MANIFEST_BASENAMES = frozenset(
+    {
+        "pyproject.toml",
+        "setup.py",
+        "setup.cfg",
+        "package.json",
+        "cargo.toml",
+        "go.mod",
+        "pom.xml",
+        "build.gradle",
+        "composer.json",
+        "gemfile",
+    }
+)
+_MANIFEST_SUFFIXES = (".csproj",)
+
+
+def _is_manifest(node_id: str) -> bool:
+    base = node_id.rsplit("/", 1)[-1].lower()
+    return base in _MANIFEST_BASENAMES or base.endswith(_MANIFEST_SUFFIXES)
 
 
 async def detect_containers(
-    session: AsyncSession, repository_id: str
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    root_name: str | None = None,
 ) -> list[Container]:
     """Return the list of containers detected for ``repository_id``.
+
+    ``root_name`` (the repository name) labels the root container of a
+    single-manifest / root-manifest repo, which would otherwise serialize as
+    the uninformative ``"."``.
 
     Stable ordering by ``path`` so the C4 diagram doesn't reshuffle between
     requests.
     """
     container_roots = await _container_roots_from_manifests(session, repository_id)
     file_nodes = await _file_nodes(session, repository_id)
+
+    # Also treat any directory holding a package manifest as a container root,
+    # even when that manifest declared no external deps (catches e.g. a core
+    # package that would otherwise dissolve into the repo-root catch-all).
+    container_roots |= _manifest_roots(node.node_id for node in file_nodes)
 
     if not container_roots:
         container_roots = _top_level_dirs(node.node_id for node in file_nodes)
@@ -50,15 +88,16 @@ async def detect_containers(
         if root is not None:
             grouped[root].append(node)
 
+    fallback_root_name = (root_name or ".").strip() or "."
     containers: list[Container] = []
     for root in sorted(grouped):
         nodes = grouped[root]
         lang = _dominant_language(nodes)
-        name = root.split("/")[-1] if root else "."
+        name = root.split("/")[-1] if root else fallback_root_name
         containers.append(
             Container(
                 id=container_id(root),
-                name=name or ".",
+                name=name or fallback_root_name,
                 path=root,
                 language=lang,
                 file_count=len(nodes),
@@ -96,9 +135,22 @@ async def _file_nodes(session: AsyncSession, repository_id: str) -> list[GraphNo
         select(GraphNode).where(
             GraphNode.repository_id == repository_id,
             GraphNode.node_type == "file",
+            # ``external:*`` nodes are unresolved-import / dependency targets,
+            # not real source files — they must not become containers or inflate
+            # file counts. Real external deps surface via the ext: mechanism.
+            ~GraphNode.node_id.like("external:%"),
         )
     )
     return list(result.scalars())
+
+
+def _manifest_roots(paths: Iterable[str]) -> set[str]:
+    """Parent directories of every package-manifest file node."""
+    roots: set[str] = set()
+    for path in paths:
+        if _is_manifest(path):
+            roots.add(path.rsplit("/", 1)[0] if "/" in path else "")
+    return roots
 
 
 def _top_level_dirs(paths: Iterable[str]) -> set[str]:

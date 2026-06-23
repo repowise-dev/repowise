@@ -11,10 +11,14 @@ export type C4Category = "framework" | "service" | "tool" | "library";
 /** I/O-boundary type of an external dependency (mirrors backend `io_kind`). */
 export type C4IoKind = "db" | "network" | "filesystem" | "subprocess" | "lock";
 
+/** How an L1 actor enters the system (mirrors backend `Person.kind`). */
+export type C4ActorKind = "cli" | "api" | "scheduler" | "developer" | "user";
+
 export interface C4Person {
   id: string;
   name: string;
   description: string;
+  kind: C4ActorKind | string;
 }
 
 export interface C4System {
@@ -54,12 +58,17 @@ export interface C4Component {
   symbol_count: number;
 }
 
+/** Qualitative coupling strength of a relation (mirrors backend `coupling`). */
+export type C4Coupling = "loose" | "moderate" | "tight";
+
 export interface C4Relation {
   source_id: string;
   target_id: string;
   label: string;
   edge_count: number;
   edge_types: string[];
+  /** loose | moderate | tight; empty on synthetic edges (L1 actor->system). */
+  coupling?: C4Coupling | string;
 }
 
 export interface C4L1 {

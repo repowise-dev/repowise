@@ -15,12 +15,18 @@ re-scan is performed at request time.
 
 from __future__ import annotations
 
+import json
 from collections import defaultdict
+from dataclasses import replace
 
-from repowise.core.persistence import ExternalSystem, Repository
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.persistence import ExternalSystem, Repository
+from repowise.core.persistence.crud import get_kg_project_meta
+from repowise.core.persistence.models import DeadCodeFinding, GitMetadata
+
+from .actors import derive_actors
 from .components import detect_components
 from .containers import container_id, detect_containers
 from .models import (
@@ -35,6 +41,7 @@ from .models import (
     System,
 )
 from .relations import aggregate_relations, external_node_to_system_id
+from .signals import count_box_signals
 
 __all__ = [
     "C4L1",
@@ -117,11 +124,17 @@ async def build_l1(session: AsyncSession, repo_id: str) -> C4L1:
     system = _system_for(repo, repo_id)
     externals, _ = await _external_views(session, repo_id)
 
-    # Default actor — Phase 1 of issue #203 keeps a single generic User.
-    person = Person(id="person:user", name="User", description="Uses the system")
+    # Derive the actor set from how the system is actually entered (CLI user,
+    # API client, scheduled job …) rather than a lone hardcoded "User".
+    entry_points = await _curated_entry_points(session, repo_id)
+    actors = derive_actors(entry_points)
+    people = [
+        Person(id=a.id, name=a.name, description=a.description, kind=a.kind)
+        for a in actors
+    ]
 
     relations: list[Relation] = [
-        Relation(source_id=person.id, target_id=system.id, label="uses")
+        Relation(source_id=a.id, target_id=system.id, label=a.verb) for a in actors
     ]
     for ext in externals:
         relations.append(
@@ -129,18 +142,25 @@ async def build_l1(session: AsyncSession, repo_id: str) -> C4L1:
         )
     return C4L1(
         system=system,
-        people=[person],
+        people=people,
         external_systems=externals,
         relations=relations,
     )
 
 
 async def build_l2(session: AsyncSession, repo_id: str) -> C4L2:
-    containers = await detect_containers(session, repo_id)
+    repo = await load_repo(session, repo_id)
+    containers = await detect_containers(
+        session, repo_id, root_name=repo.name if repo else None
+    )
     externals, _ = await _external_views(session, repo_id)
 
     file_to_container = await _file_to_container_map(session, repo_id, containers)
     file_to_external = await external_node_to_system_id(session, repo_id)
+
+    containers = await _annotate_container_signals(
+        session, repo_id, containers, file_to_container
+    )
 
     relations = await aggregate_relations(
         session,
@@ -157,14 +177,32 @@ async def build_l2(session: AsyncSession, repo_id: str) -> C4L2:
 
 async def build_l3(session: AsyncSession, repo_id: str, container_id_value: str) -> C4L3 | None:
     """Return L3 view for one container, or ``None`` if it doesn't exist."""
-    containers = await detect_containers(session, repo_id)
+    repo = await load_repo(session, repo_id)
+    containers = await detect_containers(
+        session, repo_id, root_name=repo.name if repo else None
+    )
     container = next((c for c in containers if c.id == container_id_value), None)
     if container is None:
         return None
 
+    # Files owned by sibling containers must not be re-bucketed as this
+    # container's components (matters for a root/catch-all container).
+    sibling_roots = [c.path for c in containers if c.id != container.id and c.path]
     components, in_container_index = await detect_components(
-        session, repo_id, container.path
+        session,
+        repo_id,
+        container.path,
+        sibling_roots=sibling_roots,
     )
+
+    # Annotate the focused container with its hotspot / dead-code counts so the
+    # header card matches what L2 shows.
+    full_file_to_container = await _file_to_container_map(session, repo_id, containers)
+    container = (
+        await _annotate_container_signals(
+            session, repo_id, [container], full_file_to_container
+        )
+    )[0]
 
     # Files outside this container map to their owning container so cross-
     # container edges show as component → other-container.
@@ -208,6 +246,60 @@ async def build_l3(session: AsyncSession, repo_id: str, container_id_value: str)
 # ---------------------------------------------------------------------------
 
 
+async def _curated_entry_points(session: AsyncSession, repo_id: str) -> list[str]:
+    """Return the curated entry-point paths persisted at index time.
+
+    These are the ranked, cleaned execution starts (Phase 1) — not the raw
+    ingestion ``is_entry_point`` flags, which still include barrels/configs.
+    """
+    project_meta = await get_kg_project_meta(session, repo_id)
+    if not project_meta:
+        return []
+    try:
+        return list(json.loads(project_meta.entry_points_json or "[]"))
+    except (ValueError, TypeError):
+        return []
+
+
+async def _annotate_container_signals(
+    session: AsyncSession,
+    repo_id: str,
+    containers: list[Container],
+    file_to_container: dict[str, str],
+) -> list[Container]:
+    """Populate each container's ``hotspot_count`` / ``dead_count`` from the
+    persisted git-metadata hotspots and open unreachable-file findings."""
+    hotspot_paths = {
+        row[0]
+        for row in (
+            await session.execute(
+                select(GitMetadata.file_path).where(
+                    GitMetadata.repository_id == repo_id,
+                    GitMetadata.is_hotspot.is_(True),
+                )
+            )
+        ).all()
+    }
+    dead_paths = {
+        row[0]
+        for row in (
+            await session.execute(
+                select(DeadCodeFinding.file_path).where(
+                    DeadCodeFinding.repository_id == repo_id,
+                    DeadCodeFinding.status == "open",
+                    DeadCodeFinding.kind == "unreachable_file",
+                )
+            )
+        ).all()
+    }
+    counts = count_box_signals(file_to_container, hotspot_paths, dead_paths)
+    annotated: list[Container] = []
+    for c in containers:
+        hot, dead = counts.get(c.id, (0, 0))
+        annotated.append(replace(c, hotspot_count=hot, dead_count=dead))
+    return annotated
+
+
 async def _file_to_container_map(
     session: AsyncSession,
     repo_id: str,
@@ -220,6 +312,8 @@ async def _file_to_container_map(
         select(GraphNode.node_id).where(
             GraphNode.repository_id == repo_id,
             GraphNode.node_type == "file",
+            # External / unresolved-import targets are not source files.
+            ~GraphNode.node_id.like("external:%"),
         )
     )
     paths = [row[0] for row in result.all()]

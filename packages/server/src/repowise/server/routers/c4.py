@@ -12,10 +12,10 @@ work happens here, so this works on hosted backends without a checkout.
 
 from __future__ import annotations
 
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from fastapi import APIRouter, Depends, HTTPException, Query
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.schemas import (
     ArchitectureViewResponse,
@@ -142,7 +142,7 @@ def _system(s: System) -> C4SystemResponse:
 
 
 def _person(p: Person) -> C4PersonResponse:
-    return C4PersonResponse(id=p.id, name=p.name, description=p.description)
+    return C4PersonResponse(id=p.id, name=p.name, description=p.description, kind=p.kind)
 
 
 def _container(c: Container) -> C4ContainerResponse:
@@ -176,6 +176,7 @@ def _relation(r: Relation) -> C4RelationResponse:
         label=r.label,
         edge_count=r.edge_count,
         edge_types=list(r.edge_types),
+        coupling=r.coupling,
     )
 
 

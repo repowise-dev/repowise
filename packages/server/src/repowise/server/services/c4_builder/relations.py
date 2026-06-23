@@ -20,10 +20,12 @@ from __future__ import annotations
 
 from collections import defaultdict
 
-from repowise.core.persistence import ExternalSystem, GraphEdge, GraphNode
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.persistence import ExternalSystem, GraphEdge, GraphNode
+
+from .labels import coupling_strength, relation_label
 from .models import Relation
 
 
@@ -73,14 +75,14 @@ async def aggregate_relations(
     relations: list[Relation] = []
     for (src_box, tgt_box), count in counts.items():
         etypes = tuple(sorted(types[(src_box, tgt_box)]))
-        label = etypes[0] if len(etypes) == 1 else f"{etypes[0]} +{len(etypes) - 1}"
         relations.append(
             Relation(
                 source_id=src_box,
                 target_id=tgt_box,
-                label=label,
+                label=relation_label(etypes),
                 edge_count=count,
                 edge_types=etypes,
+                coupling=coupling_strength(count),
             )
         )
     relations.sort(key=lambda r: (-r.edge_count, r.source_id, r.target_id))

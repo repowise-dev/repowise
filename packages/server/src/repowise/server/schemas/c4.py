@@ -9,6 +9,7 @@ class C4PersonResponse(BaseModel):
     id: str
     name: str
     description: str = ""
+    kind: str = "user"  # cli | api | scheduler | developer | user
 
 
 class C4SystemResponse(BaseModel):
@@ -53,6 +54,7 @@ class C4RelationResponse(BaseModel):
     label: str = ""
     edge_count: int = 1
     edge_types: list[str] = Field(default_factory=list)
+    coupling: str = ""  # loose | moderate | tight (empty on synthetic edges)
 
 
 class C4L1Response(BaseModel):

@@ -18,6 +18,9 @@ class Person:
     id: str
     name: str
     description: str = ""
+    # How this actor enters the system: cli | api | scheduler | developer |
+    # user. Drives the L1 actor icon; "user" is the generic fallback.
+    kind: str = "user"
 
 
 @dataclass(frozen=True)
@@ -60,8 +63,8 @@ class Container:
 
 @dataclass(frozen=True)
 class Component:
-    """A sub-module inside a container — top-level child directory, or the
-    synthetic ``_root`` group for files at the container root.
+    """A sub-module inside a container — a meaningful child directory, or the
+    synthetic ``(root)`` group for files that sit at the container root.
     """
 
     id: str            # "cmp:packages/core/ingestion"
@@ -83,6 +86,9 @@ class Relation:
     label: str = ""
     edge_count: int = 1
     edge_types: tuple[str, ...] = field(default_factory=tuple)
+    # Qualitative coupling strength derived from ``edge_count``:
+    # loose | moderate | tight. Empty on synthetic edges (e.g. L1 actor->system).
+    coupling: str = ""
 
 
 @dataclass(frozen=True)

@@ -35,9 +35,24 @@ function LayerClusterNodeImpl(props: NodeProps) {
 
   // Unified click grammar (kg-ux plan B5): single click / Enter = select +
   // inspect (the page-level onNodeClick handles mouse; keyboard mirrors it
-  // here). Drilling moved to double-click, owned by the page handler.
+  // here).
   const handleSelect = () => {
     useArchitectureStore.getState().selectNode(layer.id);
+  };
+
+  // Drill on double-click, owned here rather than only by the page-level
+  // onNodeDoubleClick: a single click eases the camera onto the selected card,
+  // which can slide the node out from under the cursor so React Flow never
+  // registers the second click as a node double-click. Handling it on the card
+  // (and stopping propagation) makes "double-click to open" reliable.
+  const handleDrill = (e: { stopPropagation: () => void }) => {
+    e.stopPropagation();
+    const store = useArchitectureStore.getState();
+    if (kind === "subGroup") {
+      store.drillIntoSubGroup(layer.id);
+    } else {
+      store.drillIntoLayer(layer.id);
+    }
   };
 
   const dominantComplexity = (["complex", "moderate", "simple"] as const)
@@ -108,6 +123,7 @@ function LayerClusterNodeImpl(props: NodeProps) {
       role="button"
       tabIndex={0}
       aria-label={`${kind === "subGroup" ? "Inspect group" : "Inspect layer"} ${layer.name}`}
+      onDoubleClick={handleDrill}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();

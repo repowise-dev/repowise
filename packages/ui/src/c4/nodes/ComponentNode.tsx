@@ -18,7 +18,7 @@ function ComponentNodeImpl(props: NodeProps) {
     <NodeShell
       tone="component"
       kindLabel="Component"
-      title={component.name === "_root" ? "(root)" : component.name}
+      title={component.name}
       subtitle={component.path !== component.name ? component.path : undefined}
       selected={selected}
       hasDocs={hasDocs}

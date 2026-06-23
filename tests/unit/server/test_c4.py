@@ -104,9 +104,11 @@ async def test_l3_endpoint_returns_components_for_container(client: AsyncClient,
     assert resp.status_code == 200
     body = resp.json()
     assert body["container"]["path"] == "packages/core"
-    # All files in packages/core sit at the container root → _root component
+    # All files in packages/core sit at the container root → the labeled root
+    # bucket, never the leaky "_root" token.
     comp_names = {c["name"] for c in body["components"]}
-    assert comp_names == {"_root"}
+    assert comp_names == {"(root)"}
+    assert "_root" not in {c["id"] for c in body["components"]}
     # Only fastapi (used from packages/core), react is filtered out
     assert {e["name"] for e in body["external_systems"]} == {"fastapi"}
 

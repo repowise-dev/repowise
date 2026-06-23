@@ -7,6 +7,8 @@ asserts the shape of build_l1 / build_l2 / build_l3 output.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from repowise.core.persistence import (
@@ -15,6 +17,11 @@ from repowise.core.persistence import (
     bulk_upsert_external_systems,
     link_graph_nodes_to_external_systems,
     upsert_repository,
+)
+from repowise.core.persistence.models import (
+    DeadCodeFinding,
+    GitMetadata,
+    KnowledgeGraphProjectMeta,
 )
 from repowise.server.services import c4_builder
 
@@ -122,3 +129,125 @@ async def test_build_l3_unknown_container_returns_none(async_session):
     repo = await _seed_monorepo(async_session)
     view = await c4_builder.build_l3(async_session, repo.id, "pkg:does/not/exist")
     assert view is None
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 shaping: root naming, external/sibling exclusion, component depth,
+# signal counts, derived L1 actors.
+# ---------------------------------------------------------------------------
+
+
+async def _seed_single_package(session):
+    """A root-manifest repo (one pyproject.toml at the root) with a ``src``
+    layout, a stray unresolved external node, and curated entry points.
+    """
+    repo = await upsert_repository(session, name="acme-tool", local_path="/tmp/acme")
+    files = [
+        "pyproject.toml",
+        "README.md",
+        "src/acme/cli/main.py",
+        "src/acme/server/app.py",
+        "src/acme/core/engine.py",
+        "scripts/run.py",
+    ]
+    nodes = [
+        {"node_id": f, "node_type": "file", "language": "python", "symbol_count": 2}
+        for f in files
+    ]
+    # An unresolved-import target — must never become a file/component.
+    nodes.append({"node_id": "external:@/lib/thing", "node_type": "file", "language": "python", "symbol_count": 0})
+    await batch_upsert_graph_nodes(session, repo.id, nodes)
+
+    session.add(
+        KnowledgeGraphProjectMeta(
+            repository_id=repo.id,
+            entry_points_json=json.dumps(
+                ["src/acme/cli/main.py", "src/acme/server/app.py", "scripts/run.py"]
+            ),
+        )
+    )
+    # One hotspot + one dead file so the counts have something to report.
+    session.add(GitMetadata(repository_id=repo.id, file_path="src/acme/core/engine.py", is_hotspot=True))
+    session.add(
+        DeadCodeFinding(
+            repository_id=repo.id,
+            kind="unreachable_file",
+            file_path="src/acme/cli/main.py",
+            status="open",
+            confidence=0.9,
+            reason="",
+        )
+    )
+    await session.commit()
+    return repo
+
+
+@pytest.mark.asyncio
+async def test_root_container_uses_repo_name_not_dot(async_session):
+    repo = await _seed_single_package(async_session)
+    view = await c4_builder.build_l2(async_session, repo.id)
+    root = next(c for c in view.containers if c.path == "")
+    assert root.name == "acme-tool"
+    assert root.name != "."
+
+
+@pytest.mark.asyncio
+async def test_external_nodes_excluded_from_counts_and_components(async_session):
+    repo = await _seed_single_package(async_session)
+    view = await c4_builder.build_l2(async_session, repo.id)
+    root = next(c for c in view.containers if c.path == "")
+    # 6 real files, not 7 — the external:@ node is excluded.
+    assert root.file_count == 6
+
+    l3 = await c4_builder.build_l3(async_session, repo.id, root.id)
+    assert l3 is not None
+    assert all("external:" not in c.id for c in l3.components)
+    assert all("external:" not in c.path for c in l3.components)
+
+
+@pytest.mark.asyncio
+async def test_component_depth_skips_passthrough_and_names_root_bucket(async_session):
+    repo = await _seed_single_package(async_session)
+    root = next(
+        c for c in (await c4_builder.build_l2(async_session, repo.id)).containers if c.path == ""
+    )
+    l3 = await c4_builder.build_l3(async_session, repo.id, root.id)
+    assert l3 is not None
+    names = {c.name for c in l3.components}
+    # `src/acme/...` strips `src`, surfacing `acme` rather than a giant `src`;
+    # the root-level files collapse into a labeled bucket, never "_root".
+    assert "acme" in names
+    assert "scripts" in names
+    assert "_root" not in names
+    assert "(root)" in names
+    assert not any(c.id.endswith("/_root") or "_root" in c.id for c in l3.components)
+
+
+@pytest.mark.asyncio
+async def test_container_signal_counts_populated(async_session):
+    repo = await _seed_single_package(async_session)
+    view = await c4_builder.build_l2(async_session, repo.id)
+    root = next(c for c in view.containers if c.path == "")
+    assert root.hotspot_count == 1
+    assert root.dead_count == 1
+
+
+@pytest.mark.asyncio
+async def test_l1_actors_derived_from_entry_points(async_session):
+    repo = await _seed_single_package(async_session)
+    view = await c4_builder.build_l1(async_session, repo.id)
+    kinds = [p.kind for p in view.people]
+    assert kinds == ["cli", "api", "developer"]
+    # Every actor drives one edge into the system.
+    actor_edges = [r for r in view.relations if r.target_id == view.system.id]
+    assert len(actor_edges) == 3
+
+
+@pytest.mark.asyncio
+async def test_relation_labels_are_readable_with_coupling(async_session):
+    repo = await _seed_monorepo(async_session)
+    view = await c4_builder.build_l2(async_session, repo.id)
+    cross = next(r for r in view.relations if r.source_id == "pkg:packages/web")
+    assert cross.label == "imports"
+    assert cross.coupling in {"loose", "moderate", "tight"}
+    assert "+1" not in cross.label

@@ -41,13 +41,17 @@ function RelationEdgeImpl(props: EdgeProps) {
   });
 
   const stroke = selected ? THEME.selection.ring : "var(--color-diagram-edge)";
-  const strokeWidth = relation && relation.edge_count > 5 ? 2 : 1.25;
+  // Tighter coupling reads as a heavier line. Falls back to the pair-count
+  // when the relation predates the coupling field.
+  const couplingWidth: Record<string, number> = { tight: 2.25, moderate: 1.75, loose: 1.25 };
+  const strokeWidth = relation
+    ? (couplingWidth[relation.coupling ?? ""] ?? (relation.edge_count > 5 ? 2 : 1.25))
+    : 1.25;
 
+  // The backend now ships a readable verb ("imports", "co-changes"); keep a
+  // bare-type fallback only for older payloads that predate it.
   const label = relation
-    ? relation.label ||
-      (relation.edge_count > 1
-        ? `${relation.edge_count} ${relation.edge_types[0] ?? "calls"}`
-        : (relation.edge_types[0] ?? ""))
+    ? relation.label || (relation.edge_types[0] ?? "")
     : "";
 
   return (
