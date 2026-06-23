@@ -425,3 +425,260 @@ async def test_mcp_search_flow(mcp_env):
     result = await search_codebase("authentication login OAuth")
     assert "results" in result
     assert len(result["results"]) >= 1
+
+
+@pytest.fixture
+async def health_mcp_env():
+    """MCP environment populated with code-health metrics, findings, git
+    metadata, and graph topology so ``get_health`` enrichment can be exercised
+    end-to-end."""
+    from repowise.core.persistence.models import HealthFileMetric, HealthFinding
+
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    await init_db(engine)
+    factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+
+    async with factory() as session:
+        session.add(
+            Repository(
+                id="health-repo",
+                name="health-project",
+                url="https://github.com/example/health",
+                local_path="/tmp/health-project",
+                default_branch="main",
+                settings_json="{}",
+                created_at=_NOW,
+                updated_at=_NOW,
+            )
+        )
+
+        # 30 files so the defect-accuracy guard (>= 25 files) is satisfied.
+        # Score ascending with the index, so f0..f5 (lowest health) are the
+        # files we tag as recently bug-fixed — precision@K should be high.
+        for i in range(30):
+            session.add(
+                HealthFileMetric(
+                    id=f"hm{i}",
+                    repository_id="health-repo",
+                    file_path=f"src/mod/f{i}.py",
+                    score=round(i * 0.3, 2),
+                    max_ccn=10,
+                    max_nesting=3,
+                    nloc=100,
+                    has_test_file=False,
+                    module="src/mod",
+                    defect_score=round(i * 0.3, 2),
+                    maintainability_score=8.0,
+                    performance_score=9.0,
+                    updated_at=_NOW,
+                )
+            )
+
+        # prior_defect findings on the 6 least-healthy files (the positive
+        # class for defect_accuracy, >= 5 required).
+        for i in range(6):
+            session.add(
+                HealthFinding(
+                    id=f"hfd{i}",
+                    repository_id="health-repo",
+                    file_path=f"src/mod/f{i}.py",
+                    biomarker_type="prior_defect",
+                    severity="medium",
+                    details_json=json.dumps({"prior_defect_count": 2, "window_days": 180}),
+                    health_impact=0.5,
+                    reason="recently bug-fixed",
+                    dimension="defect",
+                    status="open",
+                    created_at=_NOW,
+                    updated_at=_NOW,
+                )
+            )
+
+        # One performance-pillar finding + one defect finding for the
+        # dimension filter test.
+        session.add(
+            HealthFinding(
+                id="hfp1",
+                repository_id="health-repo",
+                file_path="src/mod/f0.py",
+                biomarker_type="io_in_loop",
+                severity="high",
+                details_json=json.dumps({"boundary_kind": "db", "cross_function": False}),
+                health_impact=0.9,
+                reason="I/O inside a loop",
+                dimension="performance",
+                status="open",
+                created_at=_NOW,
+                updated_at=_NOW,
+            )
+        )
+        session.add(
+            HealthFinding(
+                id="hfc1",
+                repository_id="health-repo",
+                file_path="src/mod/f0.py",
+                biomarker_type="complex_method",
+                severity="high",
+                details_json="{}",
+                health_impact=0.8,
+                reason="too complex",
+                dimension="defect",
+                status="open",
+                created_at=_NOW,
+                updated_at=_NOW,
+            )
+        )
+
+        # Git metadata (churn + process/people signals) for the worst file.
+        session.add(
+            GitMetadata(
+                id="hgm0",
+                repository_id="health-repo",
+                file_path="src/mod/f0.py",
+                commit_count_total=40,
+                commit_count_90d=10,
+                commit_count_30d=4,
+                prior_defect_count=2,
+                change_entropy_pct=0.6,
+                lines_added_90d=200,
+                lines_deleted_90d=80,
+                primary_owner_name="Alice",
+                primary_owner_commit_pct=0.6,
+                recent_owner_name="Bob",
+                recent_owner_commit_pct=0.5,
+                is_hotspot=True,
+                churn_percentile=0.9,
+                age_days=300,
+                created_at=_NOW,
+                updated_at=_NOW,
+            )
+        )
+
+        # Graph node + edge so f0 has a non-zero out-degree for topology signals.
+        session.add(
+            GraphNode(
+                id="hgn0",
+                repository_id="health-repo",
+                node_id="src/mod/f0.py",
+                node_type="file",
+                language="python",
+                symbol_count=3,
+                created_at=_NOW,
+            )
+        )
+        session.add(
+            GraphNode(
+                id="hgn1",
+                repository_id="health-repo",
+                node_id="src/mod/f1.py",
+                node_type="file",
+                language="python",
+                symbol_count=2,
+                created_at=_NOW,
+            )
+        )
+        session.add(
+            GraphEdge(
+                id="hge0",
+                repository_id="health-repo",
+                source_node_id="src/mod/f0.py",
+                target_node_id="src/mod/f1.py",
+                imported_names_json="[]",
+                created_at=_NOW,
+            )
+        )
+
+        await session.commit()
+
+    import repowise.server.mcp_server as mcp_mod
+
+    mcp_mod._session_factory = factory
+    mcp_mod._repo_path = "/tmp/health-project"
+
+    yield
+
+    mcp_mod._session_factory = None
+    mcp_mod._repo_path = None
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_mcp_health_default_is_lean(health_mcp_env):
+    """The default dashboard response carries none of the opt-in enrichments."""
+    from repowise.server.mcp_server import get_health
+
+    res = await get_health()
+    assert res["mode"] == "dashboard"
+    assert res["kpis"]["file_count"] == 30
+    # Enrichment fields are gated behind include= and must be absent by default.
+    for absent in ("defect_accuracy", "churn_complexity"):
+        assert absent not in res
+
+
+@pytest.mark.asyncio
+async def test_mcp_health_accuracy(health_mcp_env):
+    """include=["accuracy"] surfaces the defect-accuracy self-validation stat."""
+    from repowise.server.mcp_server import get_health
+
+    res = await get_health(include=["accuracy"])
+    acc = res["defect_accuracy"]
+    assert acc is not None
+    assert acc["scored_files"] == 30
+    assert acc["defect_files"] == 6
+    # All 6 bug-fixed files are among the 20 least-healthy → precision is high.
+    assert acc["hits"] == 6
+    assert acc["lift"] is not None and acc["lift"] > 1.0
+
+
+@pytest.mark.asyncio
+async def test_mcp_health_churn_complexity(health_mcp_env):
+    """include=["churn_complexity"] returns the quadrant points for churned files."""
+    from repowise.server.mcp_server import get_health
+
+    res = await get_health(include=["churn_complexity"])
+    points = res["churn_complexity"]
+    # Only f0 has recent churn (commit_count_90d > 0).
+    assert len(points) == 1
+    p = points[0]
+    assert p["file_path"] == "src/mod/f0.py"
+    assert p["commit_count_90d"] == 10
+    assert p["max_ccn"] == 10
+
+
+@pytest.mark.asyncio
+async def test_mcp_health_signals_targeted(health_mcp_env):
+    """include=["signals"] attaches per-file process/people/topology signals."""
+    from repowise.server.mcp_server import get_health
+
+    res = await get_health(targets=["src/mod/f0.py", "src/mod/f7.py"], include=["signals"])
+    assert res["mode"] == "targets"
+    by_path = {m["file_path"]: m for m in res["metrics"]}
+
+    # f0 has full git history + a graph node → real signals.
+    sig = by_path["src/mod/f0.py"]["signals"]
+    assert sig["prior_defect_count"] == 2
+    assert sig["commit_count_90d"] == 10
+    assert sig["recent_owner_name"] == "Bob"
+    assert sig["out_degree"] == 1  # f0 -> f1
+
+    # f7 has neither git metadata nor a graph node → honest None everywhere,
+    # never an imputed zero (the signals.py honesty rule, surfaced through MCP).
+    sig7 = by_path["src/mod/f7.py"]["signals"]
+    assert all(v is None for v in sig7.values())
+
+
+@pytest.mark.asyncio
+async def test_mcp_health_performance_filter(health_mcp_env):
+    """A dimension name in include filters findings to that pillar."""
+    from repowise.server.mcp_server import get_health
+
+    # Pull all findings, then keep only the performance pillar.
+    res = await get_health(include=["biomarkers", "performance"])
+    findings = res["findings"]
+    assert findings  # non-empty
+    assert all(f["dimension"] == "performance" for f in findings)
+    assert any(f["biomarker_type"] == "io_in_loop" for f in findings)

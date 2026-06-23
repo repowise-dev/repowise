@@ -3,16 +3,24 @@
 from __future__ import annotations
 
 import json
+from dataclasses import asdict
 from typing import Any
 
 from sqlalchemy import select
 
+from repowise.core.analysis.health.churn_complexity import churn_complexity_points
+from repowise.core.analysis.health.defect_accuracy import compute_defect_accuracy
 from repowise.core.analysis.health.grading import band_for
 from repowise.core.analysis.health.grading import distribution as health_distribution
+from repowise.core.analysis.health.signals import file_signals
 from repowise.core.analysis.health.suggestions import suggestion_for
 from repowise.core.analysis.health.trends import diff_snapshots, file_trend, recent_kpis
 from repowise.core.persistence.crud import (
+    get_all_git_metadata,
     get_coverage_summary,
+    get_git_metadata,
+    get_graph_node,
+    get_node_degree_counts,
     list_health_snapshots,
     load_coverage_for_repo,
 )
@@ -201,11 +209,30 @@ async def get_health(
     resolved ``caller -> ... -> sink`` symbol chain). Performance is a static signal:
     dynamic dispatch, ORM lazy-load, and unmodelled libraries are out of scope.
 
+    Self-check before a PR: an agent can read the same signals the code-health
+    merge-gate judges a change on. ``include=["accuracy"]`` returns
+    ``defect_accuracy`` (does the score actually rank the buggy files first —
+    precision@K of the least-healthy files vs the repo bug-fix base rate, with a
+    ``lift`` headline); ``include=["signals"]`` attaches per-file process / people
+    / topology ``signals`` (prior-defect count, churn, owners, in/out degree) to
+    each targeted metric; ``include=["churn_complexity"]`` returns the
+    churn x complexity quadrant points (volatile-and-complex files are where
+    defects concentrate); and a dimension name in ``include``
+    (``"performance"`` / ``"defect"`` / ``"maintainability"``) filters the
+    returned findings to that pillar.
+
     Args:
-        targets: List of file paths. Empty → dashboard mode.
-        include: Optional flags. ``"biomarkers"`` always returns findings;
-            ``"coverage"`` will surface coverage data when available
-            (Phase 2).
+        targets: List of file paths (or ``module:<name>``). Empty → dashboard mode.
+        include: Optional opt-in flags (default response stays lean):
+            ``"biomarkers"`` returns findings in dashboard mode;
+            ``"refactoring"`` attaches a deterministic ``suggestion`` per finding;
+            ``"trend"`` adds the repo trend + alert block;
+            ``"coverage"`` surfaces coverage rows when ingested;
+            ``"accuracy"`` adds repo-level ``defect_accuracy`` (dashboard mode);
+            ``"signals"`` attaches per-file ``signals`` (targeted mode);
+            ``"churn_complexity"`` adds the churn x complexity points (dashboard);
+            ``"performance"`` / ``"defect"`` / ``"maintainability"`` filter
+            findings to that dimension.
         repo: Repo alias / id / path.
         limit: Max rows in the lowest-scoring file list (capped at 50).
     """
@@ -278,6 +305,32 @@ async def get_health(
             # here; the per-file rows above are exclude-filtered.
             coverage_summary = await get_coverage_summary(session, repository.id)
 
+        # Per-file process/people/topology signals for targeted files — the
+        # same join the file-detail drawer and REST breakdown use, so an agent
+        # can read why a file is risky (prior defects, churn, owners, degree)
+        # before touching it. Targeted mode only; the target set is small.
+        signals_by_path: dict[str, dict[str, Any]] = {}
+        if "signals" in include_set and effective_targets:
+            for path in effective_targets:
+                git_meta = await get_git_metadata(session, repository.id, path)
+                node = await get_graph_node(session, repository.id, path)
+                degrees = (
+                    await get_node_degree_counts(session, repository.id, path)
+                    if node is not None
+                    else None
+                )
+                signals_by_path[path] = asdict(file_signals(git_meta, degrees))
+
+        # Churn x complexity quadrant for the whole repo (dashboard mode). One
+        # git-metadata query joined against the already-loaded metrics.
+        churn_points: list[dict[str, Any]] = []
+        if "churn_complexity" in include_set and not effective_targets:
+            git_meta_by_path = await get_all_git_metadata(session, repository.id)
+            churn_points = [
+                asdict(p)
+                for p in churn_complexity_points(all_metrics, git_meta_by_path)[:limit]
+            ]
+
         # Load the snapshot window for the repo-level trend block and/or the
         # per-file trajectory we attach in targeted mode ("should I touch this
         # file" context for agents).
@@ -288,10 +341,16 @@ async def get_health(
     kpis = _compute_kpis(metric_rows if effective_targets else all_metrics)
 
     if effective_targets:
+        metric_payload: list[dict[str, Any]] = []
+        for m in metric_rows:
+            row = _serialize_metric(m)
+            if m.file_path in signals_by_path:
+                row["signals"] = signals_by_path[m.file_path]
+            metric_payload.append(row)
         result: dict[str, Any] = {
             "mode": "targets",
             "targets": raw_targets,
-            "metrics": [_serialize_metric(m) for m in metric_rows],
+            "metrics": metric_payload,
             "findings": [_serialize_finding(f) for f in finding_rows],
         }
         # Per-file score trajectory for each target — silent (omitted) when a
@@ -327,6 +386,16 @@ async def get_health(
             "top_findings": [_serialize_finding(f) for f in finding_rows[:limit]],
             "modules": _module_rollups(all_metrics),
         }
+        if "churn_complexity" in include_set:
+            result["churn_complexity"] = churn_points
+        if "accuracy" in include_set:
+            # Self-validation: does the score rank the buggy files first? Pure
+            # over the already-loaded metrics + findings (no extra query).
+            # ``None`` when there isn't enough signal for an honest number.
+            result["defect_accuracy"] = compute_defect_accuracy(
+                all_metrics,
+                [_serialize_finding(f) for f in finding_rows],
+            )
 
     if "biomarkers" in include_set and "findings" not in result:
         result["findings"] = [_serialize_finding(f) for f in finding_rows]
@@ -394,6 +463,20 @@ async def get_health(
             "summary": coverage_summary,
             "files": coverage_payload,
         }
+
+    # Dimension filter: ``include=["performance"]`` (or "defect" /
+    # "maintainability") narrows the returned findings to that pillar so an
+    # agent can ask "show me only the performance risk in this change". Applied
+    # after the biomarkers/refactoring includes so it filters whatever findings
+    # the response carries. Each finding's ``dimension`` is set at scoring time.
+    dimension_filter = include_set & {"performance", "defect", "maintainability"}
+    if dimension_filter:
+        for field in ("findings", "top_findings"):
+            rows = result.get(field)
+            if rows:
+                result[field] = [
+                    r for r in rows if (r.get("dimension") or "defect") in dimension_filter
+                ]
 
     result["_meta"] = _build_meta(repository=repository)
     return result
