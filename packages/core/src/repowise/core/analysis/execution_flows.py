@@ -8,7 +8,7 @@ intra-community or cross-community based on community assignments.
 from __future__ import annotations
 
 import re
-from collections import deque
+from collections import defaultdict
 from dataclasses import dataclass, field
 
 import networkx as nx
@@ -59,6 +59,10 @@ class FlowConfig:
     max_flows: int = 50
     min_fan_out: int = 2
     deduplicate: bool = True
+    # Minimum number of call hops (trace nodes - 1) for a flow to be reported.
+    # A single call (depth 1) is not a meaningful "flow"; the onboarding
+    # "How It Works" page already gates at >= 3 trace nodes.
+    min_flow_depth: int = 2
 
 
 @dataclass
@@ -81,6 +85,10 @@ class ExecutionFlowReport:
     total_entry_points_scored: int
     total_flows: int
     flows: list[ExecutionFlow]
+    # {node_id: score} for *every* candidate scoring >= the entry-point
+    # threshold, not just the ones that produced a traced flow. Persisted so
+    # the symbol-level "entry point" indicator works for all entry points.
+    entry_point_scores: dict[str, float] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -88,25 +96,38 @@ class ExecutionFlowReport:
 # ---------------------------------------------------------------------------
 
 
-def _count_edges_by_type(
-    node_id: str, graph: nx.DiGraph, edge_type: str, direction: str,
-) -> int:
-    """Count edges of a specific type in a given direction."""
-    if direction == "out":
-        return sum(
-            1 for _, _, d in graph.out_edges(node_id, data=True)
-            if d.get("edge_type") == edge_type
-        )
-    return sum(
-        1 for _, _, d in graph.in_edges(node_id, data=True)
-        if d.get("edge_type") == edge_type
+def _build_call_degree_maps(
+    graph: nx.DiGraph,
+) -> tuple[dict[str, int], dict[str, int]]:
+    """Precompute call-edge in/out degree per node in a single edge pass.
+
+    Replaces repeated per-node ``out_edges``/``in_edges`` rescans (which made
+    scoring and successor ordering O(nodes x degree)) with O(1) lookups.
+    """
+    out_deg: dict[str, int] = defaultdict(int)
+    in_deg: dict[str, int] = defaultdict(int)
+    for u, v, d in graph.edges(data=True):
+        if d.get("edge_type") == "calls":
+            out_deg[u] += 1
+            in_deg[v] += 1
+    return out_deg, in_deg
+
+
+def _is_excluded_node(graph: nx.DiGraph, node_id: str) -> bool:
+    """True if the node lives in a test/demo/fixture/script path."""
+    data = graph.nodes.get(node_id, {})
+    file_path = data.get("file_path") or (
+        node_id.split("::", 1)[0] if "::" in node_id else ""
     )
+    return bool(_EXCLUDE_PATH_PATTERNS.search(file_path))
 
 
 def _score_entry_point(
     node_id: str,
     graph: nx.DiGraph,
     community_map: dict[str, int],
+    out_deg: dict[str, int],
+    in_deg: dict[str, int],
 ) -> float:
     """Score a symbol as a potential entry point. Returns 0.0-1.0."""
     data = graph.nodes.get(node_id, {})
@@ -119,8 +140,8 @@ def _score_entry_point(
         return 0.0
 
     # Signal 1: Fan-out ratio (weight 0.35)
-    out_calls = _count_edges_by_type(node_id, graph, "calls", "out")
-    in_calls = _count_edges_by_type(node_id, graph, "calls", "in")
+    out_calls = out_deg.get(node_id, 0)
+    in_calls = in_deg.get(node_id, 0)
     total = in_calls + out_calls + 1
     fan_out_signal = out_calls / total
 
@@ -174,22 +195,25 @@ def _score_entry_point(
 
 
 def _get_call_successors(
-    node_id: str, graph: nx.DiGraph,
+    node_id: str, graph: nx.DiGraph, out_deg: dict[str, int],
 ) -> list[str]:
-    """Get outgoing call targets, sorted by out-degree descending."""
+    """Get outgoing call targets, sorted by out-degree descending.
+
+    Test/demo/fixture nodes are dropped so traces stay on production code
+    even when a call edge mis-resolves to a test fake (e.g. a fake
+    ``fetchall`` in a unit test).
+    """
     successors = []
     for _, target, d in graph.out_edges(node_id, data=True):
-        if d.get("edge_type") == "calls" and d.get("confidence", 0) >= 0.5:
+        if (
+            d.get("edge_type") == "calls"
+            and d.get("confidence", 0) >= 0.5
+            and not _is_excluded_node(graph, target)
+        ):
             successors.append(target)
 
-    # Sort by out-degree descending to follow primary execution path
-    successors.sort(
-        key=lambda n: sum(
-            1 for _, _, d in graph.out_edges(n, data=True)
-            if d.get("edge_type") == "calls"
-        ),
-        reverse=True,
-    )
+    # Sort by out-degree descending to follow primary execution path.
+    successors.sort(key=lambda n: out_deg.get(n, 0), reverse=True)
     return successors
 
 
@@ -198,8 +222,9 @@ def _bfs_trace(
     graph: nx.DiGraph,
     community_map: dict[str, int],
     config: FlowConfig,
+    out_deg: dict[str, int],
 ) -> ExecutionFlow | None:
-    """BFS trace from an entry point following call edges.
+    """Trace from an entry point following call edges.
 
     Follows the highest-fan-out successor at each step to build
     the primary execution path.
@@ -212,7 +237,7 @@ def _bfs_trace(
     current = entry_id
 
     for _ in range(config.max_depth):
-        successors = _get_call_successors(current, graph)
+        successors = _get_call_successors(current, graph, out_deg)
         # Pick the first unvisited successor (highest fan-out)
         next_node = None
         for s in successors:
@@ -302,6 +327,8 @@ def trace_execution_flows(
             total_entry_points_scored=0, total_flows=0, flows=[],
         )
 
+    out_deg, in_deg = _build_call_degree_maps(graph)
+
     # Score all symbol nodes that are functions/methods
     candidates: list[tuple[str, float]] = []
     for node_id, data in graph.nodes(data=True):
@@ -312,25 +339,26 @@ def trace_execution_flows(
             continue
 
         # Must have minimum fan-out to be interesting
-        out_calls = sum(
-            1 for _, _, d in graph.out_edges(node_id, data=True)
-            if d.get("edge_type") == "calls"
-        )
-        if out_calls < config.min_fan_out:
+        if out_deg.get(node_id, 0) < config.min_fan_out:
             continue
 
-        score = _score_entry_point(node_id, graph, community_map)
+        score = _score_entry_point(node_id, graph, community_map, out_deg, in_deg)
         if score >= _MIN_ENTRY_POINT_SCORE:
             candidates.append((node_id, score))
 
     candidates.sort(key=lambda x: -x[1])
+
+    # Every scored candidate is a persistable entry point, independent of
+    # whether it produced a long enough trace below.
+    entry_point_scores = {node_id: score for node_id, score in candidates}
+
     top_candidates = candidates[:config.max_flows]
 
     # Trace from each candidate
     flows: list[ExecutionFlow] = []
     for node_id, score in top_candidates:
-        flow = _bfs_trace(node_id, graph, community_map, config)
-        if flow is not None:
+        flow = _bfs_trace(node_id, graph, community_map, config, out_deg)
+        if flow is not None and flow.depth >= config.min_flow_depth:
             flow.entry_point_score = score
             flows.append(flow)
 
@@ -356,4 +384,5 @@ def trace_execution_flows(
         total_entry_points_scored=len(candidates),
         total_flows=len(flows),
         flows=flows,
+        entry_point_scores=entry_point_scores,
     )

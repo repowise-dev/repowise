@@ -7,14 +7,25 @@ across `tool_flows.py` and `routers/graph.py`.
 from __future__ import annotations
 
 import json
-from collections import deque
 from typing import Any
 
+from repowise.core.analysis.execution_flows import _EXCLUDE_PATH_PATTERNS
 from repowise.core.persistence.crud import (
     get_graph_edges_for_node,
     get_graph_nodes_by_ids,
 )
 from repowise.core.persistence.models import GraphNode
+
+
+def _node_id_is_excluded(node_id: str) -> bool:
+    """True if a ``path::Name`` node id lives in a test/demo/fixture path.
+
+    Uses the same pattern as the core entry-point scorer so server-side
+    traces never wander into test fakes that a mis-resolved call edge points
+    at (e.g. a fake ``fetchall``).
+    """
+    path = node_id.split("::", 1)[0] if "::" in node_id else node_id
+    return bool(_EXCLUDE_PATH_PATTERNS.search(path))
 
 
 def parse_community_meta(node: GraphNode) -> dict[str, Any]:
@@ -44,7 +55,7 @@ def entry_point_score(node: GraphNode) -> float:
 
 
 def percentile_rank(value: float, all_values: list[float]) -> int:
-    """Compute the percentile rank (0–100) of *value* within *all_values*."""
+    """Compute the percentile rank (0-100) of *value* within *all_values*."""
     if not all_values:
         return 0
     count_below = sum(1 for v in all_values if v < value)
@@ -58,24 +69,24 @@ async def bfs_trace(
     max_depth: int,
     node_cache: dict[str, GraphNode] | None = None,
 ) -> list[str]:
-    """BFS trace from *entry_id* following ``calls`` edges.
+    """Trace the primary execution path from *entry_id* along ``calls`` edges.
 
-    Returns an ordered list of symbol IDs in the trace.  Uses greedy
-    successor ordering (highest confidence first for the primary path)
-    and a visited set for cycle safety.
+    Returns an ordered list of symbol IDs forming a single linear chain — the
+    same shape the core analysis (``analysis/execution_flows``) produces for
+    docs, so the MCP/REST/dashboard traces match the wiki. At each hop it
+    follows the highest-confidence unvisited successor (confidence is the
+    DB-cheap proxy for the core scorer's fan-out ordering). Test/demo/fixture
+    nodes and low-confidence (< 0.5) edges are skipped; a visited set keeps it
+    cycle-safe.
     """
     if node_cache is None:
         node_cache = {}
 
     trace: list[str] = [entry_id]
     visited: set[str] = {entry_id}
-    queue: deque[tuple[str, int]] = deque([(entry_id, 0)])
+    current = entry_id
 
-    while queue:
-        current, depth = queue.popleft()
-        if depth >= max_depth:
-            continue
-
+    for _ in range(max_depth):
         edges = await get_graph_edges_for_node(
             session,
             repo_id,
@@ -85,19 +96,27 @@ async def bfs_trace(
             limit=20,
         )
 
-        successors: list[tuple[str, float]] = []
+        best_id: str | None = None
+        best_conf = -1.0
         for e in edges:
-            if e.target_node_id not in visited:
-                successors.append((e.target_node_id, e.confidence or 0.0))
-
-        successors.sort(key=lambda x: -x[1])
-
-        for target_id, _ in successors:
-            if target_id in visited:
+            tid = e.target_node_id
+            conf = e.confidence if e.confidence is not None else 0.0
+            if (
+                tid in visited
+                or conf < 0.5
+                or _node_id_is_excluded(tid)
+            ):
                 continue
-            visited.add(target_id)
-            trace.append(target_id)
-            queue.append((target_id, depth + 1))
+            if conf > best_conf:
+                best_conf = conf
+                best_id = tid
+
+        if best_id is None:
+            break
+
+        visited.add(best_id)
+        trace.append(best_id)
+        current = best_id
 
     return trace
 

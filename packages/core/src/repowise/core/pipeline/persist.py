@@ -80,6 +80,31 @@ async def mark_tombstone_pages(
     return marked
 
 
+def _derive_entry_point_scores(graph_builder: Any) -> dict[str, float]:
+    """Best-effort entry-point scores from the builder's execution-flow report.
+
+    Returns ``{node_id: score}`` for every scored entry-point candidate (not
+    just the ones that produced a traced flow). The call is cached on the
+    builder, so this is cheap when flows were already computed.
+    """
+    try:
+        report = graph_builder.execution_flows()
+    except Exception as exc:  # analysis is non-load-bearing for persistence
+        logger.warning("entry_point_scores_derive_failed", error=str(exc))
+        return {}
+    if report is None:
+        return {}
+    scores = getattr(report, "entry_point_scores", None)
+    if scores:
+        return dict(scores)
+    # Back-compat: older reports only expose per-flow scores.
+    return {
+        f.entry_point_id: f.entry_point_score
+        for f in getattr(report, "flows", []) or []
+        if hasattr(f, "entry_point_id") and hasattr(f, "entry_point_score")
+    }
+
+
 async def persist_graph_nodes(
     session: Any,
     repo_id: str,
@@ -105,7 +130,13 @@ async def persist_graph_nodes(
     cd = graph_builder.community_detection()
     sc = graph_builder.symbol_communities()
     ci = graph_builder.community_info()
-    ep_scores = ep_scores or {}
+    # ``None`` means "derive scores from the graph" (the incremental update
+    # path passes nothing). An explicit ``{}`` means "no scores" and is left
+    # untouched. Without this, every ``update`` re-upserted symbol nodes with
+    # empty community_meta and wiped the entry_point_scores written at init,
+    # leaving get_execution_flows / the dashboard panel permanently empty.
+    if ep_scores is None:
+        ep_scores = _derive_entry_point_scores(graph_builder)
 
     nodes = []
     for node_id in graph.nodes:
@@ -368,13 +399,21 @@ async def persist_ingestion(result: Any, session: Any, repo_id: str) -> int:
     )
 
     # ---- Graph nodes ---------------------------------------------------------
-    ep_scores: dict[str, float] = {}
-    if result.execution_flow_report and getattr(result.execution_flow_report, "flows", None):
+    # Prefer the full candidate-score map (all scored entry points), falling
+    # back to deriving from the builder when no report rode along on the
+    # result. Passing ``None`` lets persist_graph_nodes derive them itself.
+    report = result.execution_flow_report
+    ep_scores: dict[str, float] | None
+    if report is not None and getattr(report, "entry_point_scores", None):
+        ep_scores = dict(report.entry_point_scores)
+    elif report is not None and getattr(report, "flows", None):
         ep_scores = {
             f.entry_point_id: f.entry_point_score
-            for f in result.execution_flow_report.flows
+            for f in report.flows
             if hasattr(f, "entry_point_id") and hasattr(f, "entry_point_score")
         }
+    else:
+        ep_scores = None
     await persist_graph_nodes(session, repo_id, result.graph_builder, ep_scores)
 
     # ---- Graph edges ---------------------------------------------------------
