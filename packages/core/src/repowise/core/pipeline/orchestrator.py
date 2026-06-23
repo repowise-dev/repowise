@@ -560,6 +560,7 @@ async def run_pipeline(
                     graph_builder=graph_builder,
                     repo_structure=repo_structure,
                     community_info=graph_builder.community_info(),
+                    git_meta_map=git_meta_map,
                     enabled=curation_enabled(),
                     defer_summary_floor=will_generate,
                 )

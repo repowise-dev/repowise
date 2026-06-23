@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any
 
+from repowise.core.generation.entry_points import is_glue_leaf
 from repowise.core.generation.layers import ADJACENT_LAYERS, infer_layer, is_support_path
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
 
@@ -118,8 +119,10 @@ def score_entry_points(
     Both entry bonuses are withheld from doc/data languages — ``docs/index.md``
     must never outrank a real ``main.py``, even when ingestion's stem rule
     flagged it — from test files (``tests/testserver/server.py`` is a fixture,
-    not where a reader enters the system), and from example/demo dirs (every
-    ``examples/*/main.go`` is an entry by *name*; none is the system).
+    not where a reader enters the system), from example/demo dirs (every
+    ``examples/*/main.go`` is an entry by *name*; none is the system), and from
+    deep generic-glue leaves (a resolver's nested ``index.py`` dispatches, it
+    does not start the program).
 
     Returns ``[(score, path), ...]`` sorted by score then path for stability.
     Only files with a positive score are returned.
@@ -140,6 +143,7 @@ def score_entry_points(
             language not in _NON_CODE_LANGUAGES
             and infer_layer(path, language) not in ADJACENT_LAYERS
             and not is_support_path(path)
+            and not is_glue_leaf(path)
         )
         if entry_eligible and getattr(fi, "is_entry_point", False):
             score += 3.0
@@ -153,6 +157,32 @@ def score_entry_points(
             scored.append((score, path))
     scored.sort(key=lambda t: (-t[0], t[1]))
     return scored
+
+
+def select_hotspot_stop(
+    candidates: Iterable[str],
+    commit_count: Mapping[str, int],
+    *,
+    min_commits: int = 1,
+) -> str | None:
+    """Pick the single most actively-changed file worth a churn-based stop.
+
+    The execution-flow walk follows the import graph, so a file that the whole
+    team edits constantly but that sits *off* the hot import path (a pipeline
+    orchestrator buried in a large catch-all layer) never earns a stop on
+    structure alone. This surfaces exactly one such file: the highest 90-day
+    commit count among *candidates*, path as a deterministic tiebreak.
+
+    *candidates* should already be code files flagged as genuine hotspots.
+    Returns ``None`` when none has recent activity, so repos without git
+    history (and the parsed-only fixture matrix) get no hotspot stop and the
+    tour is unchanged.
+    """
+    ranked = sorted(
+        (p for p in candidates if commit_count.get(p, 0) >= min_commits),
+        key=lambda p: (-commit_count.get(p, 0), p),
+    )
+    return ranked[0] if ranked else None
 
 
 def tour_landmark_paths(

@@ -394,6 +394,7 @@ class EditorFileDataFetcher:
                         order=s.get("order") or len(tour) + 1,
                         title=s.get("title") or "",
                         primary_file=s.get("target_path") or "",
+                        reason=s.get("reason") or "",
                     )
                 )
         if not tour:
