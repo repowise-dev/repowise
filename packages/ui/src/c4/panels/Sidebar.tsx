@@ -56,9 +56,11 @@ export function Sidebar(props: SidebarProps) {
 
   // Collapse on small screens at first mount — a 320px overlay swallows the
   // whole graph on a phone. Runs once; the user's manual toggle wins after.
+  // `matchMedia` is absent in SSR and in the jsdom test env, so guard it.
   useEffect(() => {
     if (
       typeof window !== "undefined" &&
+      typeof window.matchMedia === "function" &&
       window.matchMedia("(max-width: 767px)").matches
     ) {
       setSidebarOpen(false);
