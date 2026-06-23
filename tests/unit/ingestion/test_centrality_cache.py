@@ -131,3 +131,37 @@ async def test_compute_metrics_parallel_with_cache(tmp_path):
     sym_sig = subgraph_signature(gb.symbol_subgraph())
     assert cache.get("file", file_sig) == gb.betweenness_centrality()
     assert cache.get("symbol", sym_sig) == gb.symbol_betweenness_centrality()
+
+
+def test_centrality_cache_is_picklable(tmp_path):
+    """The cache's ``threading.Lock`` must not block pickling (it's dropped
+    and recreated), and entries survive the round trip."""
+    import pickle
+
+    cache = CentralityCache(tmp_path)
+    cache.put("file", "sig-1", {"n": 0.25})
+
+    restored = pickle.loads(pickle.dumps(cache))
+    assert restored.get("file", "sig-1") == {"n": 0.25}
+    # The lock is recreated (not None) so the restored cache is usable.
+    assert restored.get("file", "sig-2") is None
+
+
+def test_graph_builder_round_trips_through_pickle(tmp_path):
+    """GraphBuilder is pickled to hand built graph state across a process
+    boundary (e.g. the hosted static-state bundle). A ``threading.Lock`` member
+    used to make that raise ``TypeError: cannot pickle '_thread.lock'``; this
+    locks in that a fully-built, cache-backed builder serializes and the
+    reloaded object is still usable (the lock is recreated)."""
+    import pickle
+
+    gb = _build(tmp_path, _FILES)
+    file_bc = gb.betweenness_centrality()
+    pr = gb.pagerank()
+
+    reloaded = pickle.loads(pickle.dumps(gb, protocol=pickle.HIGHEST_PROTOCOL))
+
+    assert set(reloaded._parsed_files) == set(gb._parsed_files)
+    assert reloaded.pagerank() == pr
+    # The lock-guarded subgraph path must work after restore (lock recreated).
+    assert reloaded.betweenness_centrality() == file_bc

@@ -67,6 +67,20 @@ class CentralityCache:
         self._lock = threading.Lock()
         self._loaded = False
 
+    def __getstate__(self) -> dict:
+        # A ``threading.Lock`` is not picklable, and the GraphBuilder that owns
+        # this cache is pickled to hand graph state across a process boundary
+        # (e.g. the hosted static-state bundle). Drop the lock here; the entries
+        # are the only state worth carrying. ``__setstate__`` restores a fresh
+        # lock.
+        state = self.__dict__.copy()
+        state["_lock"] = None
+        return state
+
+    def __setstate__(self, state: dict) -> None:
+        self.__dict__.update(state)
+        self._lock = threading.Lock()
+
     def _ensure_loaded(self) -> None:
         if self._loaded:
             return

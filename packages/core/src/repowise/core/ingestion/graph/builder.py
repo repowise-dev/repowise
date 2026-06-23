@@ -100,6 +100,24 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         # call + heritage resolvers; reset whenever files change).
         self._import_name_maps: Any | None = None
 
+    def __getstate__(self) -> dict:
+        # GraphBuilder is pickled to hand a fully-built graph (structure +
+        # materialized metric caches) across a process boundary without a
+        # re-clone + re-run of the pipeline — e.g. the hosted static-state
+        # bundle that feeds doc generation. ``threading.Lock`` is not
+        # picklable, so drop it; every other member (the NetworkX graph,
+        # ParsedFiles, metric caches, the resolvers) pickles fine.
+        # ``__setstate__`` recreates the lock.
+        state = self.__dict__.copy()
+        state["_subgraph_lock"] = None
+        return state
+
+    def __setstate__(self, state: dict) -> None:
+        import threading
+
+        self.__dict__.update(state)
+        self._subgraph_lock = threading.Lock()
+
     def set_tsconfig_resolver(self, resolver: Any) -> None:
         """Attach a :class:`TsconfigResolver` for TS/JS path-alias resolution."""
         self._tsconfig_resolver = resolver
