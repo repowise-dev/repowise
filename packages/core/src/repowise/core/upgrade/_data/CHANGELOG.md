@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.23.0] — 2026-06-23
+
+### Added
+- **Repo-understanding overhaul: knowledge graph, C4, and guided tour.** The C4 model now derives real actors, true coupling, and accurate containers instead of approximations (#576). The guided tour ranks orientation entry points by execution-start order and surfaces churn hotspots (#574), and docs/tooling files are routed out of the layer catch-all with an invariant reviewer gate to keep the layering honest (#575). The knowledge-graph info panel is now collapsible (#579).
+- **Enriched `get_health` for pre-PR self-check.** The `get_health` MCP tool returns a richer payload so an agent can read the same signals the merge gate judges a change on before opening a PR. (#571, #572)
+- **`init --no-workspace` and a fully non-interactive `--yes`.** `repowise init` can skip workspace setup, and `--yes` is now fully non-interactive for scripted/CI use. (#573)
+- **Rust performance dialect.** Performance-risk detection gained a Rust dialect for I/O-in-loop / N+1 shapes. (#581)
+- **Configurable health rules.** `health-rules.json` now supports severity overrides and a small-team profile. (#569)
+- **Better cross-repo contract matching.** HTTP contract extraction resolves router mount prefixes (#567), and consumer-side matching gained hygiene filtering and base-URL service resolution (#568).
+
+### Fixed
+- **`GraphBuilder` is picklable across a process boundary.** Fixes a failure when the graph builder is handed to a worker process. (#583)
+- **Parse cache versioned by `ParsedFile` schema shape.** The parse cache now keys on the parsed-file schema rather than the package version, so unrelated releases keep the cache warm and a schema change invalidates it automatically. (#582)
+- **Knowledge-graph panel guards `matchMedia`.** The KG panel mount effect no longer assumes `matchMedia` is present, fixing a crash in environments without it. (#580)
+
+### Documentation
+- Plugin: version bump to 0.23.0.
+
+---
+
 ## [0.22.0] — 2026-06-22
 
 ### Added
