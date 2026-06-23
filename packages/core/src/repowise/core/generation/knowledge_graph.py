@@ -89,6 +89,18 @@ async def enrich_knowledge_graph(
 
     kg_skeleton.layers = enriched_layers
     kg_skeleton.tour = tour
+
+    # Post-generation invariant gate: validate the fully-assembled KG (layers,
+    # tour, summaries) against hard invariants and quality signals before it is
+    # persisted. Deterministic, zero-LLM, bounded (no regeneration loop) —
+    # tags low-signal summaries and surfaces any structural regression.
+    try:
+        from repowise.core.generation.kg_reviewer import apply_review
+
+        apply_review(kg_skeleton)
+    except Exception as exc:  # pragma: no cover - defensive, never blocks export
+        logger.warning("kg_reviewer_failed", error=str(exc))
+
     return kg_skeleton
 
 
@@ -177,6 +189,11 @@ def _build_layer_naming_prompt(
     lines = [
         "Assign a concise semantic name (2-4 words) and a one-sentence description "
         "to each code community below.",
+        "The name must describe what the *majority* of the community's files do. "
+        "The heuristic label is only a hint — do not reuse an architectural "
+        "category word (e.g. middleware, service, controller, repository) unless "
+        "it accurately fits the files; a docs/config/tooling group must not be "
+        "named for a runtime category it does not belong to.",
         "",
         f"Tech stack: {', '.join(tech_names) if tech_names else 'unknown'}",
         f"Entry points: {', '.join(entry_points) if entry_points else 'none detected'}",

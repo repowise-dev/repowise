@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from repowise.core.generation.layers import (
     DEFAULT_LAYER,
+    DOCS_TOOLING_LAYER,
     compute_layer_order,
     infer_layer,
 )
@@ -82,6 +83,46 @@ def test_infer_layer_root_dot_dirs_are_tooling_config():
     assert infer_layer(".agents/plugins/marketplace.json") == "Config"
     assert infer_layer(".github/workflows/ci.yml") == "Config"
     assert infer_layer(".claude/CLAUDE.md") == "Config"
+
+
+def test_infer_layer_routes_docs_and_tooling_out_of_catch_all():
+    # Documentation, sample, and build/CI/extension-tooling trees are support
+    # material — they must not swell the Application catch-all.
+    assert infer_layer("docs/architecture.md") == DOCS_TOOLING_LAYER
+    assert infer_layer("website/src/pages/index.tsx") == DOCS_TOOLING_LAYER
+    assert infer_layer("scripts/release/publish.py") == DOCS_TOOLING_LAYER
+    assert infer_layer("docker/entrypoint.sh") == DOCS_TOOLING_LAYER
+    assert infer_layer("examples/quickstart/main.go") == DOCS_TOOLING_LAYER
+    assert infer_layer("benches/throughput.rs") == DOCS_TOOLING_LAYER
+
+
+def test_infer_layer_plugin_tree_is_tooling_not_middleware():
+    # A top-level plugins/ tree holds editor/agent extension manifests, not
+    # request-pipeline middleware — it must not borrow the Middleware category.
+    assert infer_layer("plugins/claude-code/hooks/hooks.json") == DOCS_TOOLING_LAYER
+    assert infer_layer("plugins/codex/.codex-plugin/plugin.json") == DOCS_TOOLING_LAYER
+    # Genuine middleware under a middleware/ dir is unaffected.
+    assert infer_layer("src/middleware/auth.ts") == "Middleware"
+
+
+def test_infer_layer_tooling_root_wins_over_deeper_runtime_hint():
+    # A runtime-looking directory inside a tooling tree describes the tooling,
+    # not a real runtime service.
+    assert infer_layer("scripts/services/deploy.py") == DOCS_TOOLING_LAYER
+    assert infer_layer("docs/api/reference.py") == DOCS_TOOLING_LAYER
+
+
+def test_docs_tooling_pinned_after_runtime_layers():
+    # Support bucket is pinned after the runtime stack even though its files
+    # import core code (it must not be crowned the top consumer).
+    file_layers = {
+        "scripts/run.py": DOCS_TOOLING_LAYER,
+        "src/api/users.py": "API",
+        "src/services/core.py": "Service",
+    }
+    edges = [("scripts/run.py", "src/services/core.py")]
+    order = compute_layer_order(file_layers, edges)
+    assert order[-1] == DOCS_TOOLING_LAYER
 
 
 def test_infer_layer_test_root_beats_deeper_hints():

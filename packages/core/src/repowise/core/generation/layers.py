@@ -208,6 +208,24 @@ def is_support_path(path: str) -> bool:
         for s in PurePosixPath(path).parts[:-1]
     )
 
+
+# Build / CI / extension tooling directories: scripts, container definitions,
+# and agent/editor plugin trees. Like the doc and example dirs above, these
+# support the project without being part of its runtime architecture, so they
+# must not swell the application catch-all or borrow a runtime category. A
+# top-level ``plugins/`` tree holds editor/agent extension manifests far more
+# often than request-pipeline middleware (genuine middleware lives under
+# ``middleware/``), so it is routed here rather than to the Middleware layer.
+_TOOLING_DIR_TOKENS = frozenset({"scripts", "script", "docker", "plugins"})
+
+# The single non-architectural support bucket. Every doc/example/benchmark and
+# build/CI/extension-tooling file lands here instead of the runtime layers, so
+# the architectural layers describe the system and only the system.
+DOCS_TOOLING_LAYER = "Docs & Tooling"
+
+# Directory-name tokens that route a file to :data:`DOCS_TOOLING_LAYER`.
+_NON_ARCH_DIR_TOKENS = _EXAMPLE_DIR_TOKENS | _DOC_DIR_TOKENS | _TOOLING_DIR_TOKENS
+
 # Fallback layer for files whose path matches no hint (root scripts, etc.).
 DEFAULT_LAYER = "Application"
 
@@ -226,8 +244,19 @@ _CANONICAL_RANK: dict[str, int] = {
     "Types": 7,
     "Config": 8,
     "Utility": 9,
-    "Test": 10,
+    DOCS_TOOLING_LAYER: 10,
+    "Test": 11,
 }
+
+# Layers pinned after the runtime stack when ordering. Tests (see
+# ADJACENT_LAYERS) and the support bucket both sit outside the runtime
+# dependency race: a script or doc importing core code says nothing about where
+# core sits, and letting them compete would crown the tooling bucket the top
+# "consumer". Distinct from ADJACENT_LAYERS, which also governs entry-point
+# candidacy — a tooling file (scripts/validate.py) may still be a real entry
+# point, so DOCS_TOOLING_LAYER is pinned for ordering only, never excluded from
+# entry points.
+_PINNED_AFTER_RUNTIME: frozenset[str] = ADJACENT_LAYERS | {DOCS_TOOLING_LAYER}
 
 
 def infer_layer(path: str, language: str | None = None) -> str:
@@ -279,6 +308,15 @@ def infer_layer(path: str, language: str | None = None) -> str:
     # not mint phantom runtime layers.
     if segments and segments[0].startswith("."):
         return "Config"
+
+    # Documentation sites, sample harnesses, and build/CI/extension tooling are
+    # support material, not the runtime architecture. Route the whole subtree
+    # to a single explicit support bucket so docs/scripts/website/plugins never
+    # swell the application catch-all or borrow a runtime category. Checked
+    # before the hint scan: a deeper architectural token inside a tooling tree
+    # (scripts/build/services/…) describes the tooling, not a runtime service.
+    if any(seg in _NON_ARCH_DIR_TOKENS for seg in segments):
+        return DOCS_TOOLING_LAYER
 
     lang = (language or "").lower()
     token_hints = _LANG_TOKEN_HINTS.get(lang)
@@ -333,7 +371,7 @@ def layer_order_basis(
         ld = file_layers.get(dst)
         if not ls or not ld or ls == ld:
             continue
-        if ls in ADJACENT_LAYERS or ld in ADJACENT_LAYERS:
+        if ls in _PINNED_AFTER_RUNTIME or ld in _PINNED_AFTER_RUNTIME:
             continue
         return "imports"
     return "canonical"
@@ -360,17 +398,18 @@ def compute_layer_order(
     the canonical rank so the result is stable on graphs with no clear
     direction.
 
-    :data:`ADJACENT_LAYERS` (tests) sit outside the runtime stack: their edges
-    are excluded from the race (a test importing a service says nothing about
-    where the service sits) and they are appended after the runtime layers in
-    canonical-rank order.
+    Layers in :data:`_PINNED_AFTER_RUNTIME` (tests and the Docs & Tooling
+    support bucket) sit outside the runtime stack: their edges are excluded
+    from the race (a test or build script importing a service says nothing
+    about where the service sits) and they are appended after the runtime
+    layers in canonical-rank order.
     """
     layers = sorted(set(file_layers.values()))
     if len(layers) <= 1:
         return layers
 
-    runtime = [layer for layer in layers if layer not in ADJACENT_LAYERS]
-    adjacent = [layer for layer in layers if layer in ADJACENT_LAYERS]
+    runtime = [layer for layer in layers if layer not in _PINNED_AFTER_RUNTIME]
+    adjacent = [layer for layer in layers if layer in _PINNED_AFTER_RUNTIME]
 
     out_deg: dict[str, int] = defaultdict(int)  # edges leaving the layer
     in_deg: dict[str, int] = defaultdict(int)  # edges entering the layer
@@ -381,7 +420,7 @@ def compute_layer_order(
         ld = file_layers.get(dst)
         if not ls or not ld or ls == ld:
             continue
-        if ls in ADJACENT_LAYERS or ld in ADJACENT_LAYERS:
+        if ls in _PINNED_AFTER_RUNTIME or ld in _PINNED_AFTER_RUNTIME:
             continue
         out_deg[ls] += 1
         in_deg[ld] += 1

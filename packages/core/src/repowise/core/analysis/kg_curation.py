@@ -50,6 +50,7 @@ from repowise.core.generation.tour import (
     score_entry_points,
     select_hotspot_stop,
 )
+from repowise.core.generation.well_known_files import well_known_role
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
 
 # Closing-stop anchors (conftest, spec_helper, test_helper, …) and
@@ -1625,16 +1626,27 @@ def _cheap_summary(node: dict, parsed_file: Any | None) -> str:
 
     if "barrel" in tags:
         return f"Re-export barrel for {parent}/."
+
+    name = PurePosixPath(path).name
+    if node_type in {"pipeline", "service", "schema", "config", "document"} or (
+        tags and ({"ci", "infra", "data", "config"} & set(tags))
+    ):
+        # Recognised scaffolding earns a real role instead of a bare name
+        # restatement; only genuinely opaque support files fall back to the
+        # type template below.
+        role = well_known_role(path)
+        if role is not None:
+            return role
     if node_type == "pipeline" or "ci" in tags:
-        return f"CI / pipeline definition: {PurePosixPath(path).name}."
+        return f"CI / pipeline definition: {name}."
     if node_type == "service" or "infra" in tags:
-        return f"Infrastructure definition: {PurePosixPath(path).name}."
+        return f"Infrastructure definition: {name}."
     if node_type == "schema" or "data" in tags:
-        return f"Data / schema definition: {PurePosixPath(path).name}."
+        return f"Data / schema definition: {name}."
     if node_type == "config" or "config" in tags:
-        return f"Configuration file: {PurePosixPath(path).name}."
+        return f"Configuration file: {name}."
     if node_type == "document":
-        return f"Documentation: {PurePosixPath(path).name}."
+        return f"Documentation: {name}."
     if "test" in tags:
         return f"Tests for {_infer_test_target(path)}."
 
