@@ -787,6 +787,8 @@ class HealthAnalyzer:
             classes=fcx.classes,
             findings=findings,
             dependents_count=dependents_count,
+            clones=list(clones),
+            module_map=self.module_map,
         )
         suggestions = detect_refactorings(rctx, disabled=disabled_refactorings or ())
         return metric, findings, suggestions

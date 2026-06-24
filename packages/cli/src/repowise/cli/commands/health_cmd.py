@@ -549,11 +549,19 @@ def _render_refactoring_targets(
 
     # Structured plans are ranked + displayed independently of the impact/effort
     # file table (a god class worth splitting may not top that churn-weighted
-    # list), highest recovered impact first.
-    ranked_plans = sorted(
-        (_suggestion_to_dict(s) for s in suggestions),
-        key=lambda p: -p.get("impact_delta", 0.0),
-    )[:limit]
+    # list): highest recovered impact first, then — for clone dedup, where the
+    # dry_violation deduction is near-uniform — the actively co-changed, larger
+    # blocks; target_symbol last for a deterministic tie-break.
+    def _plan_rank(p: dict) -> tuple:
+        ev = p.get("evidence", {}) or {}
+        return (
+            -p.get("impact_delta", 0.0),
+            -int(ev.get("co_change_count", 0)),
+            -int(ev.get("duplicated_lines", 0)),
+            p.get("target_symbol", ""),
+        )
+
+    ranked_plans = sorted((_suggestion_to_dict(s) for s in suggestions), key=_plan_rank)[:limit]
 
     if fmt == "json":
         click.echo(json.dumps({"targets": targets, "refactoring_plans": ranked_plans}, indent=2))
@@ -567,6 +575,7 @@ def _render_refactoring_targets(
                 f"— {t['primary_biomarker']}: {t['primary_reason']}"
             )
         _render_extract_class_plans_md(ranked_plans)
+        _render_extract_helper_plans_md(ranked_plans)
         return
 
     table = Table(title=f"Refactoring targets ({len(targets)})")
@@ -587,6 +596,7 @@ def _render_refactoring_targets(
         )
     console.print(table)
     _render_extract_class_plans_console(ranked_plans)
+    _render_extract_helper_plans_console(ranked_plans)
 
 
 def _render_extract_class_plans_console(plans: list[dict]) -> None:
@@ -627,6 +637,46 @@ def _render_extract_class_plans_md(plans: list[dict]) -> None:
         for i, g in enumerate(groups, 1):
             fields = ", ".join(g["fields"]) or "—"
             click.echo(f"  {i}. methods: {', '.join(g['methods'])}  ·  fields: {fields}")
+
+
+def _render_extract_helper_plans_console(plans: list[dict]) -> None:
+    """Print the concrete Extract Helper (clone dedup) plans below the table."""
+    eh_plans = [p for p in plans if p["refactoring_type"] == "extract_helper"]
+    if not eh_plans:
+        return
+    console.print(f"\n[bold]Extract Helper plans ({len(eh_plans)})[/bold]")
+    for p in eh_plans:
+        ev = p["evidence"]
+        occ = p["plan"].get("occurrences", [])
+        site = p["plan"].get("suggested_site", {}) or {}
+        where = site.get("module") or site.get("directory") or "a shared module"
+        co = ev.get("co_change_count", 0)
+        console.print(
+            f"\n[cyan]{ev.get('duplicated_lines')} duplicated lines[/cyan] across "
+            f"{len(occ)} sites → extract a helper near [bold]{where}[/bold] "
+            f"[dim](recover ~{p['impact_delta']:.2f}, effort {p['effort_bucket']}, "
+            f"{p['confidence']} confidence" + (f", co-changed {co}x" if co else "") + ")[/dim]"
+        )
+        for o in occ:
+            console.print(f"  [dim]-[/dim] {o['file']}:{o['line_start']}-{o['line_end']}")
+
+
+def _render_extract_helper_plans_md(plans: list[dict]) -> None:
+    eh_plans = [p for p in plans if p["refactoring_type"] == "extract_helper"]
+    if not eh_plans:
+        return
+    click.echo("\n## Extract Helper plans\n")
+    for p in eh_plans:
+        ev = p["evidence"]
+        occ = p["plan"].get("occurrences", [])
+        site = p["plan"].get("suggested_site", {}) or {}
+        where = site.get("module") or site.get("directory") or "a shared module"
+        click.echo(
+            f"- **{ev.get('duplicated_lines')} duplicated lines** across "
+            f"{len(occ)} sites — extract a helper near `{where}`:"
+        )
+        for o in occ:
+            click.echo(f"  - {o['file']}:{o['line_start']}-{o['line_end']}")
 
 
 def _render_trend(repo_path: object, *, fmt: str) -> None:

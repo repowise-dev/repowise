@@ -13,7 +13,10 @@ from __future__ import annotations
 
 # Importing the detector modules triggers their ``@register`` side effect.
 # Listed explicitly (and in a fixed order) so the registry is deterministic.
-from . import extract_class  # noqa: F401  (import-for-side-effect)
+from . import (
+    extract_class,  # noqa: F401  (import-for-side-effect)
+    extract_helper,  # noqa: F401  (import-for-side-effect)
+)
 from .models import (
     CONFIDENCE_LEVELS,
     RefactoringContext,

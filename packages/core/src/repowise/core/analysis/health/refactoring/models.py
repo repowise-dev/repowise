@@ -18,6 +18,18 @@ type without touching this module. For Extract Class (Phase 1):
   "wmc": int}`` — the cohesion/size signals that justify the split.
 - ``blast_radius`` = ``{"dependents_count": int}`` — files importing the
   class's file that may need to follow the split.
+
+For Extract Helper (Phase 2):
+
+- ``plan`` = ``{"occurrences": [{"file": str, "line_start": int,
+  "line_end": int}, ...], "suggested_site": {"module": str | None,
+  "directory": str | None}, "duplicated_lines": int}`` — every site of the
+  duplicated block and where the shared helper should live.
+- ``evidence`` = ``{"occurrence_count": int, "duplicated_lines": int,
+  "token_count": int, "co_change_count": int, "is_intra_file": bool}`` — the
+  size + activity signals that justify extracting a helper.
+- ``blast_radius`` = ``{"files": [...], "file_count": int,
+  "co_change_count": int}`` — the other files that must change in lockstep.
 """
 
 from __future__ import annotations
@@ -53,6 +65,17 @@ class RefactoringContext:
     findings: list[Any] = field(default_factory=list)
     # Files importing this file (graph in-degree) — the blast-radius seed.
     dependents_count: int = 0
+    # The file's clone pairs (``duplication.ClonePair`` records, typed ``Any``
+    # for the same circular-import reason) — every pair touches this file.
+    # Consumed by the Extract Helper detector. Empty when duplication is
+    # disabled or the file has no clones.
+    clones: list[Any] = field(default_factory=list)
+    # Repo-wide file -> community/module label map (a shared reference, not a
+    # per-file copy). The Extract Helper detector reads it to place the
+    # extracted helper at the community centroid of the clone's occurrences.
+    # Empty on small repos that produced no community labels — the detector
+    # then falls back to a shared-directory site.
+    module_map: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
