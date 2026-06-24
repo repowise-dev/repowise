@@ -547,21 +547,12 @@ def _render_refactoring_targets(
     targets.sort(key=lambda t: (-t["impact_per_effort"], -t["total_impact"]))
     targets = targets[:limit]
 
-    # Structured plans are ranked + displayed independently of the impact/effort
-    # file table (a god class worth splitting may not top that churn-weighted
-    # list): highest recovered impact first, then — for clone dedup, where the
-    # dry_violation deduction is near-uniform — the actively co-changed, larger
-    # blocks; target_symbol last for a deterministic tie-break.
-    def _plan_rank(p: dict) -> tuple:
-        ev = p.get("evidence", {}) or {}
-        return (
-            -p.get("impact_delta", 0.0),
-            -int(ev.get("co_change_count", 0)),
-            -int(ev.get("duplicated_lines", 0)),
-            p.get("target_symbol", ""),
-        )
-
-    ranked_plans = sorted((_suggestion_to_dict(s) for s in suggestions), key=_plan_rank)[:limit]
+    # Structured plans are displayed independently of the impact/effort file
+    # table (a god class worth splitting may not top that churn-weighted list).
+    # The order is the engine's unified rank (impact x centrality x blast
+    # radius across all detector types), so we preserve it rather than
+    # re-sorting per type.
+    ranked_plans = [_suggestion_to_dict(s) for s in suggestions][:limit]
 
     if fmt == "json":
         click.echo(json.dumps({"targets": targets, "refactoring_plans": ranked_plans}, indent=2))
@@ -576,6 +567,8 @@ def _render_refactoring_targets(
             )
         _render_extract_class_plans_md(ranked_plans)
         _render_extract_helper_plans_md(ranked_plans)
+        _render_move_method_plans_md(ranked_plans)
+        _render_break_cycle_plans_md(ranked_plans)
         return
 
     table = Table(title=f"Refactoring targets ({len(targets)})")
@@ -597,6 +590,8 @@ def _render_refactoring_targets(
     console.print(table)
     _render_extract_class_plans_console(ranked_plans)
     _render_extract_helper_plans_console(ranked_plans)
+    _render_move_method_plans_console(ranked_plans)
+    _render_break_cycle_plans_console(ranked_plans)
 
 
 def _render_extract_class_plans_console(plans: list[dict]) -> None:
@@ -677,6 +672,80 @@ def _render_extract_helper_plans_md(plans: list[dict]) -> None:
         )
         for o in occ:
             click.echo(f"  - {o['file']}:{o['line_start']}-{o['line_end']}")
+
+
+def _render_move_method_plans_console(plans: list[dict]) -> None:
+    """Print the concrete Move Method (feature-envy) plans below the table."""
+    mm_plans = [p for p in plans if p["refactoring_type"] == "move_method"]
+    if not mm_plans:
+        return
+    console.print(f"\n[bold]Move Method plans ({len(mm_plans)})[/bold]")
+    for p in mm_plans:
+        pl = p["plan"]
+        ev = p["evidence"]
+        to_file = pl.get("to_file")
+        dest = f"{pl.get('to_class')}" + (f" [dim]({to_file})[/dim]" if to_file else "")
+        console.print(
+            f"\n[cyan]{pl.get('from_class')}.{pl.get('method')}[/cyan] "
+            f"[dim]({p['file_path']})[/dim] → move to [bold]{dest}[/bold] "
+            f"[dim](uses {ev.get('foreign_calls')} of its members vs "
+            f"{ev.get('own_calls')} of its own, effort {p['effort_bucket']}, "
+            f"{p['confidence']} confidence)[/dim]"
+        )
+
+
+def _render_move_method_plans_md(plans: list[dict]) -> None:
+    mm_plans = [p for p in plans if p["refactoring_type"] == "move_method"]
+    if not mm_plans:
+        return
+    click.echo("\n## Move Method plans\n")
+    for p in mm_plans:
+        pl = p["plan"]
+        ev = p["evidence"]
+        dest = pl.get("to_class")
+        if pl.get("to_file"):
+            dest = f"{dest} ({pl['to_file']})"
+        click.echo(
+            f"- **{pl.get('from_class')}.{pl.get('method')}** ({p['file_path']}) "
+            f"— move to `{dest}` "
+            f"(uses {ev.get('foreign_calls')} vs {ev.get('own_calls')} own members)"
+        )
+
+
+def _render_break_cycle_plans_console(plans: list[dict]) -> None:
+    """Print the concrete Break Cycle (import-cycle cut) plans below the table."""
+    bc_plans = [p for p in plans if p["refactoring_type"] == "break_cycle"]
+    if not bc_plans:
+        return
+    console.print(f"\n[bold]Break Cycle plans ({len(bc_plans)})[/bold]")
+    for p in bc_plans:
+        pl = p["plan"]
+        ev = p["evidence"]
+        cuts = pl.get("cut_edges", [])
+        console.print(
+            f"\n[cyan]Import cycle of {ev.get('cycle_size')} files[/cyan] "
+            f"[dim]({ev.get('edge_count')} edges)[/dim] → cut "
+            f"{len(cuts)} edge(s) "
+            f"[dim](effort {p['effort_bucket']}, {p['confidence']} confidence)[/dim]"
+        )
+        for e in cuts:
+            console.print(f"  [dim]-[/dim] invert {e['from']} → {e['to']}")
+        for f in pl.get("cycle", []):
+            console.print(f"  [dim]·[/dim] {f}")
+
+
+def _render_break_cycle_plans_md(plans: list[dict]) -> None:
+    bc_plans = [p for p in plans if p["refactoring_type"] == "break_cycle"]
+    if not bc_plans:
+        return
+    click.echo("\n## Break Cycle plans\n")
+    for p in bc_plans:
+        pl = p["plan"]
+        ev = p["evidence"]
+        cuts = pl.get("cut_edges", [])
+        click.echo(f"- **Import cycle of {ev.get('cycle_size')} files** — cut {len(cuts)} edge(s):")
+        for e in cuts:
+            click.echo(f"  - invert {e['from']} -> {e['to']}")
 
 
 def _render_trend(repo_path: object, *, fmt: str) -> None:

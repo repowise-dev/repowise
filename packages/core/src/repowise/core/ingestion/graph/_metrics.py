@@ -40,9 +40,7 @@ class MetricsMixin:
         values without recomputing them via NetworkX.
         """
         self._pagerank_cache = {n: float(m.get("pagerank", 0.0)) for n, m in metrics.items()}
-        self._betweenness_cache = {
-            n: float(m.get("betweenness", 0.0)) for n, m in metrics.items()
-        }
+        self._betweenness_cache = {n: float(m.get("betweenness", 0.0)) for n, m in metrics.items()}
         self._community_cache = {n: int(m.get("community_id", 0)) for n, m in metrics.items()}
         self._in_degree_cache = {n: int(m.get("in_degree", 0)) for n, m in metrics.items()}
         self._out_degree_cache = {n: int(m.get("out_degree", 0)) for n, m in metrics.items()}
@@ -98,9 +96,7 @@ class MetricsMixin:
             ]
             sub = g.subgraph(file_nodes).copy()
             edges_to_remove = [
-                (u, v)
-                for u, v, d in sub.edges(data=True)
-                if d.get("edge_type") in ("co_changes",)
+                (u, v) for u, v, d in sub.edges(data=True) if d.get("edge_type") in ("co_changes",)
             ]
             sub.remove_edges_from(edges_to_remove)
             self._file_subgraph_cache = sub
@@ -385,3 +381,51 @@ class MetricsMixin:
             for node in scc:
                 result[node] = scc_id
         return result
+
+    def node_membership_snapshot(self) -> dict[str, dict[str, Any]]:
+        """Materialize SCC + symbol-community memberships as a ``node_id → {...}`` map.
+
+        Two structural facts the graph carries but never persisted as rows:
+
+        - **File-level SCCs** (import cycles). Only non-trivial components
+          (``size >= 2``) are emitted — a singleton is not a cycle — each with
+          a stable ``scc_id`` and the cycle ``scc_size``.
+        - **Symbol communities** (call/heritage clusters). Only communities of
+          ``size >= 2`` are emitted (a lone symbol is not a community).
+
+        Read back by the web layer (and the break-cycle / move-method
+        detectors' downstream queries) without rebuilding the NetworkX graph.
+        Computed from the cached metric kernels, so calling it is cheap once
+        the graph is built.
+        """
+        out: dict[str, dict[str, Any]] = {}
+
+        for scc_id, scc in enumerate(nx.strongly_connected_components(self.file_subgraph())):
+            if len(scc) < 2:
+                continue
+            for node in scc:
+                out[node] = {
+                    "node_type": "file",
+                    "scc_id": scc_id,
+                    "scc_size": len(scc),
+                    "symbol_community_id": None,
+                }
+
+        sym_communities = self.symbol_communities()
+        community_sizes: dict[int, int] = {}
+        for cid in sym_communities.values():
+            community_sizes[cid] = community_sizes.get(cid, 0) + 1
+        for node, cid in sym_communities.items():
+            if community_sizes.get(cid, 0) < 2:
+                continue
+            entry = out.get(node)
+            if entry is None:
+                out[node] = {
+                    "node_type": "symbol",
+                    "scc_id": None,
+                    "scc_size": 0,
+                    "symbol_community_id": int(cid),
+                }
+            else:
+                entry["symbol_community_id"] = int(cid)
+        return out

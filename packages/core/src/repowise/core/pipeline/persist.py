@@ -119,6 +119,7 @@ async def persist_graph_nodes(
     """
     from repowise.core.persistence import (
         batch_upsert_graph_metrics,
+        batch_upsert_graph_node_membership,
         batch_upsert_graph_nodes,
     )
 
@@ -202,6 +203,16 @@ async def persist_graph_nodes(
         await batch_upsert_graph_metrics(session, repo_id, graph_builder.file_metrics_snapshot())
     except Exception as exc:  # materialization is non-load-bearing
         logger.warning("graph_metrics_materialize_skipped", error=str(exc))
+
+    # Materialize file-level SCCs (import cycles) + symbol communities as
+    # queryable rows (graph_node_membership). Feeds the break-cycle /
+    # move-method refactoring surfaces; non-load-bearing like graph_metrics.
+    try:
+        await batch_upsert_graph_node_membership(
+            session, repo_id, graph_builder.node_membership_snapshot()
+        )
+    except Exception as exc:  # materialization is non-load-bearing
+        logger.warning("graph_node_membership_materialize_skipped", error=str(exc))
 
 
 # Chunk size for IN (...) deletes — stays under SQLite's host-parameter limit.

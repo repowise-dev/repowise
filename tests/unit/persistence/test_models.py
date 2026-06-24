@@ -320,6 +320,7 @@ def test_base_includes_all_models():
         "coverage_files",
         "pipeline_jobs",
         "graph_metrics",
+        "graph_node_membership",
         "knowledge_graph_layers",
         "knowledge_graph_tour_steps",
         "kg_project_meta",

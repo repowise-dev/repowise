@@ -37,7 +37,6 @@ from .complexity import FileComplexity, FunctionComplexity, walk_file
 from .coverage import is_test_file as _coverage_is_test_file
 from .duplication import DuplicationReport, detect_clones
 from .models import HealthFileMetricData, HealthFindingData, HealthReport, Severity
-from .refactoring import RefactoringContext, RefactoringSuggestion, detect_refactorings
 from .perf import (
     CallGraphIndex,
     PerfRanker,
@@ -45,6 +44,13 @@ from .perf import (
     collect_centrality_gated,
     collect_crossfn_io_in_loop,
 )
+from .refactoring import (
+    RefactoringContext,
+    RefactoringSuggestion,
+    detect_refactorings,
+    rank_suggestions,
+)
+from .refactoring.graph_signals import build_file_scc_index
 from .scoring import attach_impacts, compute_kpis, remap_severities, score_file
 
 log = structlog.get_logger(__name__)
@@ -350,6 +356,9 @@ class HealthAnalyzer:
                 dup_report = DuplicationReport()
 
         disabled_refactorings: list[str] = list(cfg.get("disabled_refactorings", ()))
+        # Repo-wide SCC index (import cycles), computed once and threaded into
+        # each file's RefactoringContext so Break Cycle never recomputes it.
+        file_scc_index = build_file_scc_index(self.graph)
         findings: list[HealthFindingData] = []
         metrics: list[HealthFileMetricData] = []
         suggestions: list[RefactoringSuggestion] = []
@@ -406,6 +415,7 @@ class HealthAnalyzer:
                 repo_active_contributors_90d=repo_active_contributors,
                 severity_overrides=file_severity_overrides or None,
                 disabled_refactorings=disabled_refactorings,
+                file_scc_index=file_scc_index,
             )
             metrics.append(file_metric)
             findings.extend(file_findings)
@@ -423,6 +433,9 @@ class HealthAnalyzer:
         else:
             kpis = {}
 
+        suggestions = rank_suggestions(
+            suggestions, centrality=self._refactoring_centrality(suggestions)
+        )
         return HealthReport(
             repo_id="",
             analyzed_at=datetime.now(UTC),
@@ -537,6 +550,7 @@ class HealthAnalyzer:
         self._apply_crossfn_perf(walked)
 
         disabled_refactorings: list[str] = list(cfg.get("disabled_refactorings", ()))
+        file_scc_index = build_file_scc_index(self.graph)
         findings: list[HealthFindingData] = []
         metrics: list[HealthFileMetricData] = []
         suggestions: list[RefactoringSuggestion] = []
@@ -563,6 +577,7 @@ class HealthAnalyzer:
                 repo_active_contributors_90d=repo_active_contributors,
                 severity_overrides=file_severity_overrides or None,
                 disabled_refactorings=disabled_refactorings,
+                file_scc_index=file_scc_index,
             )
             metrics.append(file_metric)
             findings.extend(file_findings)
@@ -576,6 +591,9 @@ class HealthAnalyzer:
         else:
             kpis = {}
 
+        suggestions = rank_suggestions(
+            suggestions, centrality=self._refactoring_centrality(suggestions)
+        )
         return HealthReport(
             repo_id="",
             analyzed_at=datetime.now(UTC),
@@ -589,6 +607,24 @@ class HealthAnalyzer:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _refactoring_centrality(self, suggestions: list[RefactoringSuggestion]) -> dict[str, float]:
+        """File-dependency centrality (importer in-degree) for each file a
+        suggestion targets — the cheap, deterministic proxy ``rank`` blends
+        with impact + blast radius. Empty when the health pass ran without a
+        graph (the ranking then degrades to impact + blast only)."""
+        if self.graph is None:
+            return {}
+        out: dict[str, float] = {}
+        for s in suggestions:
+            path = s.file_path
+            if path in out or path not in self.graph:
+                continue
+            try:
+                out[path] = float(self.graph.in_degree(path))
+            except Exception:
+                out[path] = 0.0
+        return out
 
     def _apply_crossfn_perf(self, walked: list[tuple[Any, FileComplexity]]) -> None:
         """Run the graph-dependent perf passes over the walked files, in place.
@@ -686,6 +722,7 @@ class HealthAnalyzer:
         repo_active_contributors_90d: int | None = None,
         severity_overrides: dict[str, Severity] | None = None,
         disabled_refactorings: list[str] | None = None,
+        file_scc_index: dict[str, tuple[str, ...]] | None = None,
     ) -> tuple[HealthFileMetricData, list[HealthFindingData], list[RefactoringSuggestion]]:
         file_path = pf.file_info.path
 
@@ -789,6 +826,8 @@ class HealthAnalyzer:
             dependents_count=dependents_count,
             clones=list(clones),
             module_map=self.module_map,
+            graph=self.graph,
+            file_scc=(file_scc_index or {}).get(file_path),
         )
         suggestions = detect_refactorings(rctx, disabled=disabled_refactorings or ())
         return metric, findings, suggestions

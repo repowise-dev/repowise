@@ -10,7 +10,7 @@ is the source of truth, never a string.
 The schema is shared across refactoring types: ``plan`` / ``evidence`` /
 ``blast_radius`` are open dicts whose shape is type-specific (documented per
 detector), so later phases (Extract Helper, Move Method, Break Cycle) add a
-type without touching this module. For Extract Class (Phase 1):
+type without touching this module. For Extract Class:
 
 - ``plan`` = ``{"groups": [{"name": None, "methods": [...], "fields": [...]}]}``
   — one group per cohesive cluster the class should split into.
@@ -19,7 +19,7 @@ type without touching this module. For Extract Class (Phase 1):
 - ``blast_radius`` = ``{"dependents_count": int}`` — files importing the
   class's file that may need to follow the split.
 
-For Extract Helper (Phase 2):
+For Extract Helper:
 
 - ``plan`` = ``{"occurrences": [{"file": str, "line_start": int,
   "line_end": int}, ...], "suggested_site": {"module": str | None,
@@ -30,6 +30,26 @@ For Extract Helper (Phase 2):
   size + activity signals that justify extracting a helper.
 - ``blast_radius`` = ``{"files": [...], "file_count": int,
   "co_change_count": int}`` — the other files that must change in lockstep.
+
+For Move Method:
+
+- ``plan`` = ``{"method": str, "from_class": str, "to_class": str,
+  "to_file": str | None}`` — the feature-envy method and where it belongs.
+- ``evidence`` = ``{"foreign_calls": int, "own_calls": int,
+  "own_distance": float, "target_distance": float}`` — the Jaccard distances
+  and call counts that prove the method is closer to ``to_class`` than its own.
+- ``blast_radius`` = ``{"callers": int, "files": [...]}`` — who calls the
+  method (they keep working, but the move touches both classes' files).
+
+For Break Cycle:
+
+- ``plan`` = ``{"cycle": [str, ...], "cut_edges": [{"from": str, "to": str},
+  ...]}`` — the files in the import cycle and the minimal set of import edges
+  to invert/abstract to break it (greedy MFAS).
+- ``evidence`` = ``{"cycle_size": int, "edge_count": int,
+  "cut_count": int}`` — the SCC size, total intra-cycle edges, and cut size.
+- ``blast_radius`` = ``{"files": [...], "file_count": int}`` — every file in
+  the cycle (breaking it is a multi-file change).
 """
 
 from __future__ import annotations
@@ -38,7 +58,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 # Confidence buckets a detector may assign. Ordered low -> high; the surface
-# layers may filter on a ``min_confidence`` config (Phase 1 default: medium).
+# layers may filter on a ``min_confidence`` config (default: medium).
 CONFIDENCE_LEVELS = ("low", "medium", "high")
 
 
@@ -76,6 +96,17 @@ class RefactoringContext:
     # Empty on small repos that produced no community labels — the detector
     # then falls back to a shared-directory site.
     module_map: dict[str, str] = field(default_factory=dict)
+    # The repo's symbol/file graph (a ``networkx.DiGraph``, typed ``Any`` to
+    # avoid importing networkx into the model layer). A shared read-only
+    # reference — the graph-native detectors (Move Method, Break Cycle) read
+    # call / has_method / imports edges off it. ``None`` when the health pass
+    # ran without a graph; those detectors then degrade to "no suggestion".
+    graph: Any = None
+    # This file's strongly-connected component (sorted member file paths) when
+    # it sits in a real import cycle (``size >= 2``); ``None`` otherwise. The
+    # engine precomputes the repo's SCC index once and threads the per-file
+    # slice in, so Break Cycle never recomputes SCCs per file.
+    file_scc: tuple[str, ...] | None = None
 
 
 @dataclass
@@ -84,7 +115,7 @@ class RefactoringSuggestion:
     ``RefactoringSuggestion`` ORM row; rendered to text only at the edges.
     """
 
-    refactoring_type: str  # "extract_class" (Phase 1); more in later phases
+    refactoring_type: str  # "extract_class", "extract_helper", "move_method", ...
     file_path: str
     target_symbol: str  # the class / method / site the refactoring acts on
     line_start: int | None
