@@ -178,3 +178,77 @@ export function blastCount(plan: RefactoringPlan): number {
   }
   return blastFiles(plan).length;
 }
+
+// ── Evidence + win framing (shared by the inspector and the modal) ─────────
+
+export const EVIDENCE_LABELS: Record<string, string> = {
+  lcom4: "LCOM4",
+  method_count: "Methods",
+  field_count: "Fields",
+  wmc: "WMC",
+  occurrence_count: "Occurrences",
+  duplicated_lines: "Duplicated lines",
+  co_change_count: "Co-changes",
+  foreign_calls: "Calls to target",
+  own_calls: "Calls to own class",
+  own_distance: "Distance to own",
+  target_distance: "Distance to target",
+  cycle_size: "Cycle size",
+  edge_count: "Edges in cycle",
+  cut_count: "Edges to cut",
+};
+
+export function evidenceRows(plan: RefactoringPlan): { label: string; value: string }[] {
+  const rows: { label: string; value: string }[] = [];
+  for (const [key, label] of Object.entries(EVIDENCE_LABELS)) {
+    const v = plan.evidence?.[key];
+    if (typeof v === "number" && Number.isFinite(v)) {
+      rows.push({ label, value: Number.isInteger(v) ? String(v) : v.toFixed(2) });
+    }
+  }
+  return rows;
+}
+
+export interface PlanWin {
+  /** A health-score win is rendered as the hero; the rest are supporting. */
+  hero?: boolean;
+  label: string;
+}
+
+/** The concrete payoff of applying a plan, framed as wins for the "what you
+ *  gain" band. The health delta (if any) leads as the hero. */
+export function planWins(plan: RefactoringPlan): PlanWin[] {
+  const wins: PlanWin[] = [];
+  if (plan.impact_delta > 0) {
+    wins.push({ hero: true, label: `+${plan.impact_delta.toFixed(1)} health recovered` });
+  }
+  switch (plan.refactoring_type) {
+    case "extract_class": {
+      const n = extractClassGroups(plan).filter(
+        (g) => g.methods.length > 0 || g.fields.length > 0,
+      ).length;
+      if (n) wins.push({ label: `${n} focused, single-responsibility class${n === 1 ? "" : "es"}` });
+      break;
+    }
+    case "extract_helper": {
+      const occ = extractHelperOccurrences(plan).length;
+      const lines = Number(plan.evidence?.duplicated_lines ?? 0);
+      if (occ) wins.push({ label: `${occ} duplicate cop${occ === 1 ? "y" : "ies"} collapsed to one` });
+      if (lines) wins.push({ label: `~${lines} duplicated lines removed` });
+      break;
+    }
+    case "move_method": {
+      const mv = moveTarget(plan);
+      if (mv) wins.push({ label: `${mv.method} lives with the data it uses` });
+      break;
+    }
+    case "break_cycle": {
+      const members = cycleMembers(plan).length;
+      const edges = cutEdges(plan).length;
+      if (members) wins.push({ label: `${members} files untangled` });
+      if (edges) wins.push({ label: `${edges} import edge${edges === 1 ? "" : "s"} cut` });
+      break;
+    }
+  }
+  return wins;
+}

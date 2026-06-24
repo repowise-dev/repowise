@@ -20,14 +20,18 @@ export interface RefactoringPlanCardProps {
   highlighted?: boolean;
 }
 
-function shortFile(path: string): string {
+function fileParts(path: string): { name: string; dir: string } {
   const parts = path.split("/");
-  return parts.length <= 3 ? path : `…/${parts.slice(-3).join("/")}`;
+  const name = parts[parts.length - 1] ?? path;
+  const dirParts = parts.slice(0, -1);
+  const dir = dirParts.length <= 3 ? dirParts.join("/") : `…/${dirParts.slice(-3).join("/")}`;
+  return { name, dir };
 }
 
 /**
- * A compact, clickable plan card. Deliberately light — the heavy visual lives
- * in the inspector that opens on click — so a long grid stays performant.
+ * A compact, clickable plan card — file first, with a type-colored rail so the
+ * grid reads at a glance. Deliberately light: the heavy visual lives in the
+ * modal that opens on click, so a long grid stays performant.
  */
 export function RefactoringPlanCard({
   plan,
@@ -41,62 +45,56 @@ export function RefactoringPlanCard({
   const blast = blastCount(plan);
   const effort = (plan.effort_bucket || "M") as EffortBucket;
   const confidence = (plan.confidence || "medium") as Confidence;
+  const { name, dir } = fileParts(plan.file_path);
 
   return (
     <article
       data-refactoring-plan={plan.id}
-      className={`group relative flex flex-col rounded-2xl border bg-[var(--color-bg-surface)] transition-all ${
+      className={`group relative flex flex-col overflow-hidden rounded-2xl border bg-[var(--color-bg-surface)] transition-all ${
         highlighted
           ? "border-[var(--color-accent-primary)] ring-1 ring-[var(--color-accent-primary)]/30"
           : "border-[var(--color-border-default)] hover:border-[var(--color-border-strong)] hover:shadow-sm"
       }`}
     >
+      {/* type-colored rail — the at-a-glance differentiator */}
+      <span aria-hidden className="absolute inset-y-0 left-0 w-1" style={{ backgroundColor: accent }} />
+
       <button
         type="button"
         onClick={onOpen ? () => onOpen(plan) : undefined}
-        className="flex flex-1 flex-col gap-3 p-4 text-left"
+        className="flex flex-1 flex-col gap-2.5 py-4 pl-5 pr-4 text-left"
         disabled={!onOpen}
-        aria-label={`Open ${meta.label} plan for ${plan.target_symbol}`}
+        aria-label={`Open ${meta.label} plan for ${plan.file_path}`}
       >
-        <div className="flex items-start gap-3">
-          <span
-            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg"
-            style={{ backgroundColor: `color-mix(in srgb, ${accent} 14%, transparent)`, color: accent }}
+        {/* file first */}
+        <div className="min-w-0">
+          <h3
+            className="truncate text-sm font-semibold text-[var(--color-text-primary)]"
+            title={plan.file_path}
           >
-            <Icon className="h-4 w-4" />
-          </span>
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
-              <span className="text-[13px] font-semibold text-[var(--color-text-primary)]">
-                {meta.label}
-              </span>
-              <span
-                className="inline-flex items-center gap-1 text-[10px] text-[var(--color-text-tertiary)]"
-                title={`Detector confidence: ${CONFIDENCE_LABEL[confidence]}`}
-              >
-                <span className={`h-1.5 w-1.5 rounded-full ${CONFIDENCE_DOT[confidence]}`} />
-                {CONFIDENCE_LABEL[confidence]}
-              </span>
-            </div>
-            <p className="mt-0.5 truncate text-xs text-[var(--color-text-secondary)]">
-              {planSynopsis(plan)}
-            </p>
-          </div>
+            {name}
+          </h3>
+          {dir ? (
+            <p className="truncate font-mono text-[11px] text-[var(--color-text-tertiary)]">{dir}</p>
+          ) : null}
         </div>
 
-        {plan.target_symbol ? (
-          <code className="block truncate text-[11px] text-[var(--color-text-secondary)]">
-            {plan.target_symbol}
-          </code>
-        ) : null}
-        <span
-          className="truncate font-mono text-[11px] text-[var(--color-text-tertiary)]"
-          title={plan.file_path}
-        >
-          {shortFile(plan.file_path)}
-        </span>
+        {/* type + one-line synopsis */}
+        <div className="flex items-center gap-2">
+          <span
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-md px-1.5 py-0.5 text-[11px] font-semibold"
+            style={{ backgroundColor: `color-mix(in srgb, ${accent} 14%, transparent)`, color: accent }}
+          >
+            <Icon className="h-3.5 w-3.5" />
+            {meta.label}
+          </span>
+          <span className="min-w-0 flex-1 truncate text-xs text-[var(--color-text-secondary)]">
+            {planSynopsis(plan)}
+          </span>
+        </div>
 
-        <div className="mt-auto flex flex-wrap items-center gap-x-3 gap-y-1.5 pt-1 text-[11px] text-[var(--color-text-tertiary)]">
+        {/* metric footer */}
+        <div className="mt-auto flex items-center gap-x-3 gap-y-1.5 border-t border-[var(--color-border-default)] pt-3 text-[11px] text-[var(--color-text-tertiary)]">
           <span title={`Effort: ${EFFORT_LABEL[effort]}`} className="inline-flex items-center gap-1">
             <span className="rounded bg-[var(--color-bg-elevated)] px-1.5 py-0.5 font-medium tabular-nums text-[var(--color-text-secondary)]">
               {effort}
@@ -108,8 +106,18 @@ export function RefactoringPlanCard({
               {blast}
             </span>
           ) : null}
+          <span
+            className="inline-flex items-center gap-1"
+            title={`Detector confidence: ${CONFIDENCE_LABEL[confidence]}`}
+          >
+            <span className={`h-1.5 w-1.5 rounded-full ${CONFIDENCE_DOT[confidence]}`} />
+            {CONFIDENCE_LABEL[confidence]}
+          </span>
           {plan.impact_delta > 0 ? (
-            <span className="tabular-nums" title="Health recovered if applied">
+            <span
+              className="ml-auto inline-flex items-center gap-1 rounded-full bg-[var(--color-success)]/10 px-2 py-0.5 font-semibold tabular-nums text-[var(--color-success)]"
+              title="Health recovered if applied"
+            >
               +{plan.impact_delta.toFixed(1)}
             </span>
           ) : null}
@@ -117,7 +125,7 @@ export function RefactoringPlanCard({
       </button>
 
       {onAiPrompt ? (
-        <div className="border-t border-[var(--color-border-default)] px-4 py-2">
+        <div className="border-t border-[var(--color-border-default)] py-2 pl-5 pr-4">
           <button
             type="button"
             onClick={(e) => {

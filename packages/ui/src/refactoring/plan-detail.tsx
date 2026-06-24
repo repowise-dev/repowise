@@ -17,6 +17,9 @@ export interface PlanDetailProps {
   plan: RefactoringPlan;
   /** Render a file path as a link (e.g. to the file's health drawer). */
   fileHref?: ((path: string, line?: number | null) => string | undefined) | undefined;
+  /** Drop the leading prose line — used when the plan is the "after" column of
+   *  a before→after comparison, where the intro would be redundant. */
+  hideIntro?: boolean;
 }
 
 function shortFile(path: string): string {
@@ -28,27 +31,35 @@ function FileRef({
   path,
   line,
   fileHref,
+  className = "",
 }: {
   path: string;
   line?: number | null;
   fileHref?: PlanDetailProps["fileHref"];
+  /** Extra classes, e.g. `block truncate` inside a `min-w-0` flex item. */
+  className?: string;
 }) {
-  const label = (
-    <span className="font-mono text-xs text-[var(--color-text-secondary)]">
+  const inner = (
+    <>
       {shortFile(path)}
       {line ? <span className="text-[var(--color-text-tertiary)]">:{line}</span> : null}
-    </span>
+    </>
   );
   const href = fileHref?.(path, line ?? null);
-  if (!href) return label;
+  if (!href) {
+    return (
+      <span className={`font-mono text-xs text-[var(--color-text-secondary)] ${className}`} title={path}>
+        {inner}
+      </span>
+    );
+  }
   return (
     <a
       href={href}
-      className="font-mono text-xs text-[var(--color-text-secondary)] underline-offset-2 hover:text-[var(--color-accent-primary)] hover:underline"
+      className={`font-mono text-xs text-[var(--color-text-secondary)] underline-offset-2 hover:text-[var(--color-accent-primary)] hover:underline ${className}`}
       title={path}
     >
-      {shortFile(path)}
-      {line ? <span className="text-[var(--color-text-tertiary)]">:{line}</span> : null}
+      {inner}
     </a>
   );
 }
@@ -58,7 +69,7 @@ function FileRef({
  * tree, the move as an arrow, clone occurrences as a list, the cycle as cut
  * edges. This is the "what exactly to do" — the heart of the surface.
  */
-export function PlanDetail({ plan, fileHref }: PlanDetailProps) {
+export function PlanDetail({ plan, fileHref, hideIntro = false }: PlanDetailProps) {
   const accent = typeAccent(plan.refactoring_type);
 
   if (plan.refactoring_type === "extract_class") {
@@ -67,10 +78,12 @@ export function PlanDetail({ plan, fileHref }: PlanDetailProps) {
     );
     return (
       <div className="space-y-3">
-        <p className="text-xs text-[var(--color-text-tertiary)]">
-          Split into {groups.length} cohesive group{groups.length === 1 ? "" : "s"} — each
-          group's methods travel with the fields they touch.
-        </p>
+        {hideIntro ? null : (
+          <p className="text-xs text-[var(--color-text-tertiary)]">
+            Split into {groups.length} cohesive group{groups.length === 1 ? "" : "s"} — each
+            group's methods travel with the fields they touch.
+          </p>
+        )}
         <div className="grid gap-2.5 sm:grid-cols-2">
           {groups.map((g, i) => (
             <div
@@ -132,24 +145,28 @@ export function PlanDetail({ plan, fileHref }: PlanDetailProps) {
     const site = helperSite(plan);
     return (
       <div className="space-y-3">
-        <p className="text-xs text-[var(--color-text-tertiary)]">
-          The same block appears in {occ.length} place{occ.length === 1 ? "" : "s"}. Extract
-          it once
-          {site ? (
-            <>
-              {" "}
-              near{" "}
-              <code className="rounded bg-[var(--color-bg-elevated)] px-1 py-0.5 text-[11px] text-[var(--color-text-secondary)]">
-                {site}
-              </code>
-            </>
-          ) : null}
-          .
-        </p>
+        {hideIntro ? null : (
+          <p className="text-xs text-[var(--color-text-tertiary)]">
+            The same block appears in {occ.length} place{occ.length === 1 ? "" : "s"}. Extract
+            it once
+            {site ? (
+              <>
+                {" "}
+                near{" "}
+                <code className="rounded bg-[var(--color-bg-elevated)] px-1 py-0.5 text-[11px] text-[var(--color-text-secondary)]">
+                  {site}
+                </code>
+              </>
+            ) : null}
+            .
+          </p>
+        )}
         <ul className="divide-y divide-[var(--color-border-default)] overflow-hidden rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-surface)]">
           {occ.map((o, i) => (
             <li key={i} className="flex items-center justify-between gap-3 px-3.5 py-2.5">
-              <FileRef path={o.file} line={o.line_start} fileHref={fileHref} />
+              <span className="min-w-0 flex-1">
+                <FileRef path={o.file} line={o.line_start} fileHref={fileHref} className="block truncate" />
+              </span>
               <span className="shrink-0 text-[11px] tabular-nums text-[var(--color-text-tertiary)]">
                 lines {o.line_start}–{o.line_end}
               </span>
@@ -165,9 +182,11 @@ export function PlanDetail({ plan, fileHref }: PlanDetailProps) {
     if (!mv) return null;
     return (
       <div className="space-y-3">
-        <p className="text-xs text-[var(--color-text-tertiary)]">
-          This method leans on another class's data more than its own — move it home.
-        </p>
+        {hideIntro ? null : (
+          <p className="text-xs text-[var(--color-text-tertiary)]">
+            This method leans on another class's data more than its own — move it home.
+          </p>
+        )}
         <div className="flex flex-wrap items-center gap-3 rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-4">
           <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-3 py-2">
             <div className="text-[10px] uppercase tracking-wide text-[var(--color-text-tertiary)]">
@@ -203,24 +222,26 @@ export function PlanDetail({ plan, fileHref }: PlanDetailProps) {
     const edges = cutEdges(plan);
     return (
       <div className="space-y-3">
-        <p className="text-xs text-[var(--color-text-tertiary)]">
-          {members.length} files import each other in a cycle. Cut {edges.length} edge
-          {edges.length === 1 ? "" : "s"} to break it.
-        </p>
+        {hideIntro ? null : (
+          <p className="text-xs text-[var(--color-text-tertiary)]">
+            {members.length} files import each other in a cycle. Cut {edges.length} edge
+            {edges.length === 1 ? "" : "s"} to break it.
+          </p>
+        )}
         <div className="space-y-2 rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-3.5">
           <div className="text-[10px] uppercase tracking-wide text-[var(--color-text-tertiary)]">
             Cut these import edges
           </div>
           {edges.map((e, i) => (
-            <div key={i} className="flex items-center gap-2 text-xs">
+            <div key={i} className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
               <Scissors className="h-3.5 w-3.5 shrink-0" style={{ color: accent }} />
-              <FileRef path={e.from} fileHref={fileHref} />
+              <FileRef path={e.from} fileHref={fileHref} className="min-w-0 truncate" />
               <ArrowRight className="h-3.5 w-3.5 shrink-0 text-[var(--color-text-tertiary)]" />
-              <FileRef path={e.to} fileHref={fileHref} />
+              <FileRef path={e.to} fileHref={fileHref} className="min-w-0 truncate" />
             </div>
           ))}
           {members.length > 0 ? (
-            <div className="pt-1 text-[11px] text-[var(--color-text-tertiary)]">
+            <div className="break-words pt-1 text-[11px] leading-relaxed text-[var(--color-text-tertiary)]">
               Cycle: {members.map(shortFile).join(" → ")}
             </div>
           ) : null}

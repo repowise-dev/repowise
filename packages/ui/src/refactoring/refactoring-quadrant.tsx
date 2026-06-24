@@ -73,7 +73,7 @@ export function RefactoringQuadrant({ plans, onSelect, height = 400 }: Refactori
         </p>
       ) : null}
       <div className="relative">
-        <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} role="img" aria-label="Priority versus effort scatter plot" className="overflow-visible">
+        <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Priority versus effort scatter plot" className="h-auto w-full overflow-visible">
           {/* quadrant tints — top-left (high priority / low effort) is the sweet spot */}
           <rect x={padL} y={padT} width={midX - padL} height={midY - padT} fill="currentColor" className="text-[var(--color-success)]/[0.06]" />
           <rect x={midX} y={padT} width={W - padR - midX} height={midY - padT} fill="currentColor" className="text-[var(--color-caution)]/[0.04]" />
