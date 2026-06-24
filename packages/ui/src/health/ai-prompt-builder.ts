@@ -14,6 +14,17 @@
 
 import { biomarkerInfo, CATEGORY_LABEL } from "./biomarker-glossary";
 import type { RefactoringTarget } from "./refactoring-card";
+import {
+  blastFiles,
+  cutEdges,
+  cycleMembers,
+  extractClassGroups,
+  extractHelperOccurrences,
+  helperSite,
+  moveTarget,
+  type RefactoringPlan,
+} from "../refactoring/types";
+import { typeMeta } from "../refactoring/meta";
 
 export type AiPromptFlavor =
   | "generic"
@@ -1205,6 +1216,157 @@ export function buildCommitAiPrompt({
     completionContract.join("\n"),
     "",
     closer,
+  ]
+    .filter((s) => s !== "")
+    .join("\n");
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Refactoring plan prompt — hand a deterministic plan to a coding agent
+// ─────────────────────────────────────────────────────────────────────
+
+export interface BuildRefactoringPlanPromptOptions {
+  plan: RefactoringPlan;
+  flavor?: AiPromptFlavor;
+  repoName?: string;
+}
+
+function planSourceLink(path: string, start: number | null, end: number | null): string {
+  if (start && end) return `\`${path}:${start}-${end}\``;
+  if (start) return `\`${path}:${start}\``;
+  return `\`${path}\``;
+}
+
+/** Render the concrete, type-specific steps the agent should carry out. The
+ *  detection is already done deterministically; this is the executable plan. */
+function refactoringPlanSteps(plan: RefactoringPlan): string {
+  switch (plan.refactoring_type) {
+    case "extract_class": {
+      const groups = extractClassGroups(plan).filter(
+        (g) => g.methods.length > 0 || g.fields.length > 0,
+      );
+      const lines = groups.map((g, i) => {
+        const name = g.name ?? `NewClass${i + 1}`;
+        const methods = g.methods.length ? g.methods.join(", ") : "(none)";
+        const fields = g.fields.length ? g.fields.join(", ") : "(none)";
+        return `- **${name}** — methods: ${methods}; fields: ${fields}`;
+      });
+      return [
+        `Split \`${plan.target_symbol}\` into ${groups.length} cohesive class${
+          groups.length === 1 ? "" : "es"
+        }, one per group below. Each group's methods and the fields they touch move together:`,
+        "",
+        lines.join("\n"),
+        "",
+        "Pick a clear name for each group (the `NewClass*` placeholders are not final), keep the original class as a thin facade or update call sites, and preserve behavior.",
+      ].join("\n");
+    }
+    case "extract_helper": {
+      const occ = extractHelperOccurrences(plan);
+      const site = helperSite(plan);
+      const lines = occ.map((o) => `- ${planSourceLink(o.file, o.line_start, o.line_end)}`);
+      return [
+        `Extract the duplicated block (${occ.length} occurrence${
+          occ.length === 1 ? "" : "s"
+        }) into one shared helper${site ? ` near \`${site}\`` : ""}:`,
+        "",
+        lines.join("\n"),
+        "",
+        "Define the helper once, replace every occurrence with a call to it, and confirm the behavior is identical at each site (watch for small per-site differences that need a parameter).",
+      ].join("\n");
+    }
+    case "move_method": {
+      const mv = moveTarget(plan);
+      if (!mv) return "Move the method to the class it belongs to.";
+      return [
+        `Move \`${mv.method}\` from \`${mv.from_class}\` to \`${mv.to_class}\`${
+          mv.to_file ? ` (in \`${mv.to_file}\`)` : ""
+        }.`,
+        "",
+        "The method uses the target class's data more than its own. Move it, update both classes, and fix every call site. Only do this if the target class is legally accessible from the call sites.",
+      ].join("\n");
+    }
+    case "break_cycle": {
+      const members = cycleMembers(plan);
+      const edges = cutEdges(plan);
+      const edgeLines = edges.map((e) => `- \`${e.from}\` → \`${e.to}\``);
+      return [
+        `Break the import cycle across ${members.length} file${
+          members.length === 1 ? "" : "s"
+        } by cutting ${edges.length} edge${edges.length === 1 ? "" : "s"}:`,
+        "",
+        edgeLines.join("\n"),
+        "",
+        "For each edge, invert the dependency or introduce an abstraction/interface so the importer no longer needs the importee at module load time. Don't just move the import inside a function unless that genuinely breaks the cycle.",
+      ].join("\n");
+    }
+    default:
+      return "Apply the refactoring described above.";
+  }
+}
+
+/**
+ * Build a ready-to-paste prompt that hands a coding agent ONE deterministic
+ * refactoring plan: what to change, the concrete per-type steps, the blast
+ * radius it must keep consistent, and a completion contract. Unlike the
+ * file-level fix prompt, the plan here is already computed — the agent's job is
+ * to execute it and verify behavior, not to rediscover the smell.
+ */
+export function buildRefactoringPlanPrompt({
+  plan,
+  flavor = "generic",
+  repoName,
+}: BuildRefactoringPlanPromptOptions): string {
+  const repoLine = repoName ? ` (\`${repoName}\`)` : "";
+  const meta = typeMeta(plan.refactoring_type);
+  const files = blastFiles(plan).filter((f) => f !== plan.file_path);
+
+  const constraintList = [
+    "Preserve behavior exactly — this is a refactoring, not a feature change. No public API or observable behavior should shift.",
+    "Run the project's tests (and type-checker/linter) after the change; the suite must stay green.",
+    "If, after reading the real code, the plan looks wrong or unsafe, stop and explain why instead of forcing it — the detection is static and can be a false positive.",
+    files.length > 0
+      ? `Keep these co-affected files consistent: ${files.map((f) => `\`${f}\``).join(", ")}.`
+      : null,
+  ];
+
+  const completionContract = [
+    "1. The refactored code, with each step above applied.",
+    "2. A short note on what you renamed/introduced and why.",
+    "3. Confirmation the tests pass (or the exact failures if they don't).",
+    "4. Any call sites or co-changed files you had to update.",
+  ];
+
+  return [
+    FLAVOR_PREAMBLE[flavor],
+    "",
+    `## ${meta.label}${repoLine}`,
+    "",
+    bulletList([
+      `Target: ${planSourceLink(plan.file_path, plan.line_start, plan.line_end)}${
+        plan.target_symbol ? ` — \`${plan.target_symbol}\`` : ""
+      }`,
+      `What: ${meta.blurb}`,
+      plan.impact_delta > 0
+        ? `Recovers ~${plan.impact_delta.toFixed(2)} of health score if applied.`
+        : null,
+      plan.effort_bucket ? `Effort: ${plan.effort_bucket} bucket.` : null,
+      plan.confidence ? `Detector confidence: ${plan.confidence}.` : null,
+    ]),
+    "",
+    "## The plan",
+    "",
+    refactoringPlanSteps(plan),
+    "",
+    "## Hard constraints",
+    "",
+    bulletList(constraintList),
+    "",
+    "## What I expect back",
+    "",
+    completionContract.join("\n"),
+    "",
+    explorationCloser(flavor, plan.file_path, "refactor"),
   ]
     .filter((s) => s !== "")
     .join("\n");

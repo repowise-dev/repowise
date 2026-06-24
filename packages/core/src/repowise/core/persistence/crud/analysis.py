@@ -884,6 +884,25 @@ async def upsert_refactoring_suggestions(
         await session.flush()
 
 
+async def get_refactoring_suggestion(
+    session: AsyncSession,
+    repository_id: str,
+    suggestion_id: str,
+) -> RefactoringSuggestion | None:
+    """Return one refactoring suggestion by id, scoped to *repository_id*.
+
+    Powers the web tab's plan-detail drill-down (and any deep link to a single
+    plan). Returns ``None`` when the id is unknown or belongs to another repo.
+    """
+    result = await session.execute(
+        select(RefactoringSuggestion).where(
+            RefactoringSuggestion.repository_id == repository_id,
+            RefactoringSuggestion.id == suggestion_id,
+        )
+    )
+    return result.scalar_one_or_none()
+
+
 async def get_refactoring_suggestions(
     session: AsyncSession,
     repository_id: str,

@@ -42,6 +42,7 @@ def _create_test_app():
         overview,
         owners,
         pages,
+        refactoring,
         repos,
         search,
         symbols,
@@ -86,6 +87,7 @@ def _create_test_app():
     app.include_router(decisions.router)
     app.include_router(external_systems.router)
     app.include_router(overview.router)
+    app.include_router(refactoring.router)
 
     return app
 
