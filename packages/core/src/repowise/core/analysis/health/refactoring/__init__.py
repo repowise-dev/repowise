@@ -14,14 +14,18 @@ from __future__ import annotations
 # Importing the detector modules triggers their ``@register`` side effect.
 # Listed explicitly (and in a fixed order) so the registry is deterministic.
 from . import (
+    break_cycle,  # noqa: F401  (import-for-side-effect)
     extract_class,  # noqa: F401  (import-for-side-effect)
     extract_helper,  # noqa: F401  (import-for-side-effect)
+    move_method,  # noqa: F401  (import-for-side-effect)
 )
+from .graph_signals import build_file_scc_index
 from .models import (
     CONFIDENCE_LEVELS,
     RefactoringContext,
     RefactoringSuggestion,
 )
+from .rank import rank_suggestions
 from .registry import (
     RefactoringDetector,
     detect_refactorings,
@@ -35,8 +39,10 @@ __all__ = [
     "RefactoringContext",
     "RefactoringDetector",
     "RefactoringSuggestion",
+    "build_file_scc_index",
     "detect_refactorings",
     "effort_bucket",
+    "rank_suggestions",
     "register",
     "registered_detectors",
 ]

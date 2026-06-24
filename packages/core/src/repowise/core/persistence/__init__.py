@@ -19,6 +19,7 @@ from repowise.core.providers.embedding.base import Embedder, MockEmbedder
 from .crud import (
     batch_upsert_graph_edges,
     batch_upsert_graph_metrics,
+    batch_upsert_graph_node_membership,
     batch_upsert_graph_nodes,
     batch_upsert_symbols,
     bulk_upsert_decisions,
@@ -56,6 +57,7 @@ from .crud import (
     get_page_versions,
     get_repository,
     get_repository_by_path,
+    get_scc_members,
     get_stale_decisions,
     get_stale_pages,
     get_top_entry_points,
@@ -127,6 +129,7 @@ from .models import (
     GraphEdge,
     GraphMetric,
     GraphNode,
+    GraphNodeMembership,
     KnowledgeGraphLayer,
     KnowledgeGraphNodeMeta,
     KnowledgeGraphProjectMeta,
@@ -169,6 +172,7 @@ __all__ = [
     "GraphEdge",
     "GraphMetric",
     "GraphNode",
+    "GraphNodeMembership",
     # vector store
     "InMemoryVectorStore",
     # knowledge graph
@@ -190,6 +194,7 @@ __all__ = [
     # crud
     "batch_upsert_graph_edges",
     "batch_upsert_graph_metrics",
+    "batch_upsert_graph_node_membership",
     "batch_upsert_graph_nodes",
     "batch_upsert_symbols",
     # decision graph (edges + node links + lineage)
@@ -244,6 +249,7 @@ __all__ = [
     "get_repo_db_path",
     "get_repository",
     "get_repository_by_path",
+    "get_scc_members",
     "get_session",
     "get_stale_decisions",
     "get_stale_pages",

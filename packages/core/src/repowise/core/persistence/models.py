@@ -279,6 +279,39 @@ class GraphMetric(Base):
     __table_args__ = (UniqueConstraint("repository_id", "node_id", name="uq_graph_metric"),)
 
 
+class GraphNodeMembership(Base):
+    """Materialized component memberships — SCCs and symbol communities.
+
+    Persists two structural facts the graph carries but never exposed as
+    queryable rows: file-level strongly-connected components (import cycles,
+    ``scc_id`` / ``scc_size`` with ``scc_size >= 2``) and symbol-level
+    communities (``symbol_community_id``). The break-cycle and move-method
+    refactoring detectors compute the same structure from the in-memory graph
+    at health time; this snapshot lets the web layer read cycles and
+    communities without rebuilding the graph. Additive to ``graph_nodes`` /
+    ``graph_metrics``; non-load-bearing.
+    """
+
+    __tablename__ = "graph_node_membership"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_uuid)
+    repository_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    node_id: Mapped[str] = mapped_column(Text, nullable=False)
+    node_type: Mapped[str] = mapped_column(String(16), nullable=False, default="file")
+    scc_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    scc_size: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    symbol_community_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc
+    )
+
+    __table_args__ = (
+        UniqueConstraint("repository_id", "node_id", name="uq_graph_node_membership"),
+    )
+
+
 class WebhookEvent(Base):
     __tablename__ = "webhook_events"
 

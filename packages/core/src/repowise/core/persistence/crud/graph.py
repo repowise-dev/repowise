@@ -15,6 +15,7 @@ from ..models import (
     GraphEdge,
     GraphMetric,
     GraphNode,
+    GraphNodeMembership,
     _new_uuid,
 )
 from ._shared import _BATCH_SIZE, _batch_upsert_keyed
@@ -43,6 +44,15 @@ def _update_graph_edge(existing: GraphEdge, edge_data: dict) -> None:
 
 def _update_graph_metric(existing: GraphMetric, m: dict) -> None:
     for key in _METRIC_FIELDS:
+        if key in m:
+            setattr(existing, key, m[key])
+
+
+_MEMBERSHIP_FIELDS = ("node_type", "scc_id", "scc_size", "symbol_community_id")
+
+
+def _update_graph_node_membership(existing: GraphNodeMembership, m: dict) -> None:
+    for key in _MEMBERSHIP_FIELDS:
         if key in m:
             setattr(existing, key, m[key])
 
@@ -144,6 +154,65 @@ async def batch_upsert_graph_metrics(
             out_degree=int(kv[1].get("out_degree", 0)),
         ),
     )
+
+
+async def batch_upsert_graph_node_membership(
+    session: AsyncSession,
+    repository_id: str,
+    membership: dict[str, dict],
+) -> None:
+    """Materialize the SCC + symbol-community snapshot into ``graph_node_membership``.
+
+    *membership* maps ``node_id`` → a dict with ``node_type`` and any of
+    ``scc_id`` / ``scc_size`` (file nodes in a size>=2 cycle) /
+    ``symbol_community_id`` (symbol nodes). Additive to ``graph_nodes``;
+    SELECT-then-write for dialect portability (SQLite + Postgres).
+    """
+    await _batch_upsert_keyed(
+        session,
+        GraphNodeMembership,
+        list(membership.items()),
+        prefilter=(GraphNodeMembership.repository_id == repository_id,),
+        item_key_fn=lambda kv: kv[0],
+        row_key_fn=lambda row: row.node_id,
+        update_fn=lambda existing, kv: _update_graph_node_membership(existing, kv[1]),
+        insert_fn=lambda kv: GraphNodeMembership(
+            id=_new_uuid(),
+            repository_id=repository_id,
+            node_id=kv[0],
+            node_type=str(kv[1].get("node_type", "file")),
+            scc_id=(None if kv[1].get("scc_id") is None else int(kv[1]["scc_id"])),
+            scc_size=int(kv[1].get("scc_size", 0)),
+            symbol_community_id=(
+                None
+                if kv[1].get("symbol_community_id") is None
+                else int(kv[1]["symbol_community_id"])
+            ),
+        ),
+    )
+
+
+async def get_scc_members(
+    session: AsyncSession,
+    repository_id: str,
+) -> dict[int, list[str]]:
+    """Read the persisted file-level cycles as ``scc_id → [node_id, ...]``.
+
+    Only non-trivial SCCs (``scc_size >= 2``) are materialized, so every
+    returned group is a real import cycle.
+    """
+    result = await session.execute(
+        select(GraphNodeMembership).where(
+            GraphNodeMembership.repository_id == repository_id,
+            GraphNodeMembership.scc_id.isnot(None),
+        )
+    )
+    out: dict[int, list[str]] = {}
+    for row in result.scalars().all():
+        out.setdefault(int(row.scc_id), []).append(row.node_id)
+    for members in out.values():
+        members.sort()
+    return out
 
 
 async def get_graph_metrics(
