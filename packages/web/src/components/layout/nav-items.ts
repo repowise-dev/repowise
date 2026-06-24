@@ -13,6 +13,7 @@ import {
   BookOpen,
   Boxes,
   DollarSign,
+  FolderTree,
   GitCommitHorizontal,
   GitMerge,
   HeartPulse,
@@ -65,6 +66,7 @@ export function repoNavGroups(repoId: string): NavGroup[] {
         { label: "Knowledge Graph", href: `${base}/knowledge-graph`, icon: Waypoints },
         { label: "Code Health", href: `${base}/code-health`, icon: HeartPulse },
         { label: "Refactoring", href: `${base}/refactoring`, icon: Wrench },
+        { label: "Files", href: `${base}/files`, icon: FolderTree },
       ],
     },
     {

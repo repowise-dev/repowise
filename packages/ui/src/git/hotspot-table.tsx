@@ -187,21 +187,21 @@ export function HotspotTable({
       {filtered.length === 0 ? (
         <EmptyState title="No matches" description="Try adjusting your search or filters." />
       ) : (
-        <div className="rounded-lg border border-[var(--color-border-default)] overflow-x-auto">
+        <div className="border border-[var(--color-border-default)] overflow-hidden overflow-x-auto">
           <table className="w-full min-w-[760px] text-sm">
-            <thead className="sticky top-0 z-10 bg-[var(--color-bg-elevated)]">
-              <tr className="border-b border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]">
+            <thead className="sticky top-0 z-10 bg-[var(--color-bg-surface)]">
+              <tr className="border-b border-[var(--color-border-default)] bg-[var(--color-bg-surface)]">
                 {expandable && <th className="w-6 px-1" aria-hidden="true" />}
-                <th className="px-3 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-8">
+                <th className="px-3 py-2.5 text-left text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-8">
                   #
                 </th>
-                <th className="px-3 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
+                <th className="px-3 py-2.5 text-left text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
                   File
                 </th>
                 <th
                   scope="col"
                   aria-sort={ariaSortFor("commits", sortKey, sortDir)}
-                  className="px-3 py-2.5 text-right text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-24 cursor-pointer select-none hover:text-[var(--color-text-secondary)]"
+                  className="px-3 py-2.5 text-right text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-24 cursor-pointer select-none hover:text-[var(--color-text-secondary)]"
                   onClick={() => handleSort("commits")}
                 >
                   Commits 90d<SortIcon column="commits" sortKey={sortKey} sortDir={sortDir} />
@@ -209,7 +209,7 @@ export function HotspotTable({
                 <th
                   scope="col"
                   aria-sort={ariaSortFor("churn", sortKey, sortDir)}
-                  className="px-3 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-32 cursor-pointer select-none hover:text-[var(--color-text-secondary)] hidden lg:table-cell"
+                  className="px-3 py-2.5 text-left text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-32 cursor-pointer select-none hover:text-[var(--color-text-secondary)] hidden lg:table-cell"
                   onClick={() => handleSort("churn")}
                 >
                   Churn<SortIcon column="churn" sortKey={sortKey} sortDir={sortDir} />
@@ -217,19 +217,19 @@ export function HotspotTable({
                 <th
                   scope="col"
                   aria-sort={ariaSortFor("trend", sortKey, sortDir)}
-                  className="px-3 py-2.5 text-right text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-24 cursor-pointer select-none hover:text-[var(--color-text-secondary)]"
+                  className="px-3 py-2.5 text-right text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-24 cursor-pointer select-none hover:text-[var(--color-text-secondary)]"
                   onClick={() => handleSort("trend")}
                   title="Exponential decay score weighting recent commits more heavily (180-day half-life)"
                 >
                   Trend<SortIcon column="trend" sortKey={sortKey} sortDir={sortDir} />
                 </th>
-                <th className="px-3 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-20 hidden md:table-cell">
+                <th className="px-3 py-2.5 text-left text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-20 hidden md:table-cell">
                   Bus Factor
                 </th>
-                <th className="px-3 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-24 hidden lg:table-cell">
+                <th className="px-3 py-2.5 text-left text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-24 hidden lg:table-cell">
                   Lines ±90d
                 </th>
-                <th className="px-3 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider hidden md:table-cell">
+                <th className="px-3 py-2.5 text-left text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider hidden md:table-cell">
                   Owner
                 </th>
                 <th className="px-3 py-2.5 w-20" />
@@ -245,7 +245,7 @@ export function HotspotTable({
                   <tr
                     onClick={onSelect ? () => onSelect(h) : undefined}
                     className={cn(
-                      "border-b border-[var(--color-border-default)] hover:bg-[var(--color-bg-elevated)] transition-colors",
+                      "border-b border-[var(--color-table-divider)] hover:bg-[var(--color-bg-elevated)] transition-colors group",
                       !isExpanded && "last:border-0",
                       onSelect && "cursor-pointer",
                     )}
@@ -276,7 +276,7 @@ export function HotspotTable({
                       {i + 1}
                     </td>
                     <td className="px-3 py-2.5 font-mono text-xs text-[var(--color-text-primary)] min-w-[180px] max-w-[420px]">
-                      <span className="block truncate" title={h.file_path}>{h.file_path}</span>
+                      <span className="block truncate group-hover:underline underline-offset-2" title={h.file_path}>{h.file_path}</span>
                     </td>
                     <td className="px-3 py-2.5 tabular-nums text-xs text-right">
                       <span className="inline-flex items-center justify-end gap-1">
@@ -357,7 +357,7 @@ export function HotspotTable({
                     </td>
                   </tr>
                   {expandable && isExpanded && (
-                    <tr className="border-b border-[var(--color-border-default)] bg-[var(--color-bg-subtle)] last:border-0">
+                    <tr className="border-b border-[var(--color-table-divider)] bg-[var(--color-bg-subtle)] last:border-0">
                       <td className="px-1" />
                       <td colSpan={9} className="px-3 py-3">
                         {renderExpandedRow!(h)}

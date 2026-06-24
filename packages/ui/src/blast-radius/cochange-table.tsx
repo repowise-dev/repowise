@@ -11,7 +11,7 @@ export function CochangeTable({ rows }: CochangeTableProps) {
       <table className="w-full">
         <caption className="sr-only">Co-change warnings</caption>
         <thead>
-          <tr>
+          <tr className="border-b border-[var(--color-border-default)]">
             <Th>Changed File</Th>
             <Th>Missing Partner</Th>
             <Th>Co-change Count</Th>
@@ -21,10 +21,13 @@ export function CochangeTable({ rows }: CochangeTableProps) {
           {rows.map((r, i) => (
             <tr
               key={`${r.changed}|${r.missing_partner}|${i}`}
-              className="border-t border-[var(--color-border-default)]"
+              className="group border-t border-[var(--color-table-divider)] hover:bg-[var(--color-bg-elevated)]"
             >
               <Td>
-                <span className="font-mono break-all" title={r.changed}>
+                <span
+                  className="font-mono break-all group-hover:underline underline-offset-2"
+                  title={r.changed}
+                >
                   {r.changed}
                 </span>
               </Td>

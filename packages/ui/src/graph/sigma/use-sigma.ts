@@ -410,7 +410,7 @@ export function useSigmaRenderer(options: UseSigmaOptions): UseSigmaReturn {
     if (!graph || graph.order === 0) return;
     const viz = (vizRef.current = resolveVizPalette(options.graphTheme));
     const cm = options.colorMode;
-    const coreColor = resolveToken("--color-bg-inset", "#110d17");
+    const coreColor = resolveToken("--color-bg-inset", "#141415");
     graph.updateEachNodeAttributes(
       (_node, attrs) => {
         let color: string;

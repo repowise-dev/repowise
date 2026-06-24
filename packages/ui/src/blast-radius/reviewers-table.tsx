@@ -11,7 +11,7 @@ export function ReviewersTable({ rows }: ReviewersTableProps) {
       <table className="w-full">
         <caption className="sr-only">Recommended reviewers</caption>
         <thead>
-          <tr>
+          <tr className="border-b border-[var(--color-border-default)]">
             <Th>Email</Th>
             <Th>Files Owned</Th>
             <Th>Avg Ownership %</Th>
@@ -19,8 +19,15 @@ export function ReviewersTable({ rows }: ReviewersTableProps) {
         </thead>
         <tbody>
           {rows.map((r) => (
-            <tr key={r.email} className="border-t border-[var(--color-border-default)]">
-              <Td>{r.email}</Td>
+            <tr
+              key={r.email}
+              className="group border-t border-[var(--color-table-divider)] hover:bg-[var(--color-bg-elevated)]"
+            >
+              <Td>
+                <span className="group-hover:underline underline-offset-2">
+                  {r.email}
+                </span>
+              </Td>
               <Td className="text-right tabular-nums">{r.files}</Td>
               <Td className="text-right tabular-nums">
                 {(r.ownership_pct * 100).toFixed(1)}%

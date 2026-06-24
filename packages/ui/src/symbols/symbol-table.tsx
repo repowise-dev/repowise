@@ -267,30 +267,30 @@ export function SymbolTable({
       ) : items.length === 0 ? (
         <EmptyState title="No symbols found" description="Try adjusting your filters." />
       ) : (
-        <div className="rounded-lg border border-[var(--color-border-default)] overflow-hidden">
+        <div className="border border-[var(--color-border-default)] overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
-              <thead className="sticky top-0 z-10">
-                <tr className="border-b border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]">
-                  <th className="px-4 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-32">
+              <thead className="sticky top-0 z-10 bg-[var(--color-bg-surface)]">
+                <tr className="border-b border-[var(--color-border-default)] bg-[var(--color-bg-surface)]">
+                  <th className="px-4 py-2.5 text-left text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-32">
                     <span className="inline-flex items-center gap-1">
                       <TrendingUp className="h-3 w-3" />
                       Importance
                     </span>
                   </th>
-                  <th className="px-4 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
+                  <th className="px-4 py-2.5 text-left text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
                     Name
                   </th>
-                  <th className="px-4 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
+                  <th className="px-4 py-2.5 text-left text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
                     Signals
                   </th>
-                  <th className="px-4 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider hidden sm:table-cell">
+                  <th className="px-4 py-2.5 text-left text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider hidden sm:table-cell">
                     Kind
                   </th>
-                  <th className="px-4 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider hidden sm:table-cell">
+                  <th className="px-4 py-2.5 text-left text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider hidden sm:table-cell">
                     File
                   </th>
-                  <th className="px-4 py-2.5 text-right text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider hidden md:table-cell">
+                  <th className="px-4 py-2.5 text-right text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider hidden md:table-cell">
                     Complexity
                   </th>
                   {prefix && <th className="px-2 py-2.5 w-12" />}
@@ -300,7 +300,7 @@ export function SymbolTable({
                 {items.map((sym) => (
                   <tr
                     key={sym.id}
-                    className="border-b border-[var(--color-border-default)] hover:bg-[var(--color-bg-elevated)] transition-colors last:border-0 cursor-pointer focus:outline-none focus:bg-[var(--color-bg-elevated)]"
+                    className="group border-b border-[var(--color-table-divider)] hover:bg-[var(--color-bg-elevated)] transition-colors last:border-0 cursor-pointer focus:outline-none focus:bg-[var(--color-bg-elevated)]"
                     tabIndex={0}
                     role="button"
                     aria-label={`View ${sym.qualified_name || sym.name}`}
@@ -316,7 +316,7 @@ export function SymbolTable({
                       <ImportanceBar score={sym.importance_score} />
                     </td>
                     <td className="px-4 py-2.5 font-mono text-xs text-[var(--color-text-primary)] min-w-[200px] max-w-[420px]">
-                      <span className="truncate block" title={sym.qualified_name || sym.name}>
+                      <span className="truncate block group-hover:underline underline-offset-2" title={sym.qualified_name || sym.name}>
                         {sym.name}
                       </span>
                       {sym.parent_name && (

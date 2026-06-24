@@ -11,16 +11,22 @@ export function TransitiveTable({ rows }: TransitiveTableProps) {
       <table className="w-full">
         <caption className="sr-only">Transitively affected files</caption>
         <thead>
-          <tr>
+          <tr className="border-b border-[var(--color-border-default)]">
             <Th>File</Th>
             <Th>Depth</Th>
           </tr>
         </thead>
         <tbody>
           {rows.map((r) => (
-            <tr key={r.path} className="border-t border-[var(--color-border-default)]">
+            <tr
+              key={r.path}
+              className="group border-t border-[var(--color-table-divider)] hover:bg-[var(--color-bg-elevated)]"
+            >
               <Td>
-                <span className="font-mono break-all" title={r.path}>
+                <span
+                  className="font-mono break-all group-hover:underline underline-offset-2"
+                  title={r.path}
+                >
                   {r.path}
                 </span>
               </Td>

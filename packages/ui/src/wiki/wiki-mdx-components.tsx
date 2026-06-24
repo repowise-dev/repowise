@@ -67,22 +67,28 @@ export const wikiMdxComponents = {
     />
   ),
   table: (props: React.HTMLAttributes<HTMLTableElement>) => (
-    <div className="my-4 overflow-x-auto rounded border border-[var(--color-border-default)]">
+    <div className="my-4 overflow-x-auto overflow-hidden border border-[var(--color-border-default)]">
       <table className="w-full text-sm" {...props} />
     </div>
   ),
   thead: (props: React.HTMLAttributes<HTMLTableSectionElement>) => (
-    <thead className="bg-[var(--color-bg-elevated)]" {...props} />
+    <thead className="bg-[var(--color-bg-surface)] border-b border-[var(--color-border-default)]" {...props} />
   ),
   th: (props: React.HTMLAttributes<HTMLTableCellElement>) => (
     <th
-      className="px-4 py-2 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider"
+      className="px-3 py-2.5 text-left text-[11px] font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]"
+      {...props}
+    />
+  ),
+  tr: (props: React.HTMLAttributes<HTMLTableRowElement>) => (
+    <tr
+      className="border-t border-[var(--color-table-divider)] transition-colors hover:bg-[var(--color-bg-elevated)]"
       {...props}
     />
   ),
   td: (props: React.HTMLAttributes<HTMLTableCellElement>) => (
     <td
-      className="px-4 py-2 text-sm text-[var(--color-text-secondary)] border-t border-[var(--color-border-default)]"
+      className="px-3 py-2.5 text-[var(--color-text-secondary)]"
       {...props}
     />
   ),

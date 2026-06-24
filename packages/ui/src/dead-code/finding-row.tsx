@@ -81,7 +81,7 @@ export function FindingRow({ finding, repoId, selected, onToggle, onPatch, onUpd
   return (
     <tr
       className={cn(
-        "border-b border-[var(--color-border-default)] transition-colors last:border-0",
+        "border-b border-[var(--color-table-divider)] transition-colors last:border-0",
         selected ? "bg-[var(--color-accent-muted)]" : "hover:bg-[var(--color-bg-elevated)]",
       )}
     >

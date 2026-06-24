@@ -209,20 +209,25 @@ function buildComponents(
     </blockquote>
   ),
   table: ({ children }) => (
-    <div className="my-4 overflow-x-auto rounded border border-[var(--color-border-default)]">
+    <div className="my-4 overflow-x-auto overflow-hidden border border-[var(--color-border-default)]">
       <table className="w-full text-sm">{children}</table>
     </div>
   ),
   thead: ({ children }) => (
-    <thead className="bg-[var(--color-bg-elevated)]">{children}</thead>
+    <thead className="bg-[var(--color-bg-surface)] border-b border-[var(--color-border-default)]">{children}</thead>
   ),
   th: ({ children }) => (
-    <th className="px-4 py-2 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
+    <th className="px-3 py-2.5 text-left text-[11px] font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
       {children}
     </th>
   ),
+  tr: ({ children }) => (
+    <tr className="border-t border-[var(--color-table-divider)] transition-colors hover:bg-[var(--color-bg-elevated)]">
+      {children}
+    </tr>
+  ),
   td: ({ children }) => (
-    <td className="px-4 py-2 text-sm text-[var(--color-text-secondary)] border-t border-[var(--color-border-default)]">
+    <td className="px-3 py-2.5 text-[var(--color-text-secondary)]">
       {children}
     </td>
   ),

@@ -182,6 +182,10 @@
   --color-bg-wash: rgba(36, 27, 44, 0.05);
   --color-bg-wash-hover: rgba(36, 27, 44, 0.1);
   --color-border-subtle: var(--color-border-default);
+  /* Faint hairline for table row dividers — half the weight of a normal
+     border so rows whisper while the header rule still reads. References the
+     themed --color-border-default lazily, so it adapts in dark mode too. */
+  --color-table-divider: color-mix(in srgb, var(--color-border-default) 50%, transparent);
   --color-text-muted: var(--color-text-tertiary);
 
   /* Viz state colors (selection / diff) — brand-aligned + theme-aware */
@@ -289,25 +293,28 @@
 /* -------------------------------------------------------------------- */
 
 .dark {
-  /* Plum-tinted charcoal base — the theme's own dark identity.
-     A restrained violet cast (hue ~270, low sat) differentiates the product
-     from the many neutral-charcoal + orange UIs while keeping the brand
-     orange accent popping. Verified in docs/design/contrast_check.py. */
-  --color-bg-root: #17131d;
-  --color-bg-surface: #211b29;
-  --color-bg-elevated: #2a2335;
-  --color-bg-overlay: #322a3e;
-  --color-bg-inset: #110d17;
+  /* Neutral graphite base — a true dark gray (near-zero hue) so nothing reads
+     blue, green, or plum. The surface ramp climbs root -> surface -> elevated
+     -> overlay with wide steps so the sidebar, breadcrumb bar, cards, tables,
+     and modals all read as distinct layers off the same tokens. Light mode is
+     unchanged. */
+  --color-bg-root: #1a1a1b;
+  --color-bg-surface: #232325;
+  --color-bg-elevated: #2b2c2e;
+  --color-bg-overlay: #343539;
+  --color-bg-inset: #141415;
 
-  --color-border-default: rgba(213, 197, 232, 0.1);
-  --color-border-hover: rgba(213, 197, 232, 0.18);
+  /* Neutral hairlines so card / sidebar / table edges read on the gray base. */
+  --color-border-default: rgba(255, 255, 255, 0.1);
+  --color-border-hover: rgba(255, 255, 255, 0.18);
   --color-border-active: rgba(245, 149, 32, 0.55);
 
-  --color-text-primary: #eeeaf4;
-  --color-text-secondary: #a79db3;
-  --color-text-tertiary: #786f84;
-  --color-text-inverse: #17131d;
-  --color-text-on-accent: #17131d;
+  /* Neutral gray text (no plum / blue cast) to match the graphite chrome. */
+  --color-text-primary: #ececed;
+  --color-text-secondary: #a2a2a6;
+  --color-text-tertiary: #717176;
+  --color-text-inverse: #1a1a1b;
+  --color-text-on-accent: #1a1a1b;
 
   --color-accent-primary: #f59520;
   --color-accent-fill: #f59520;
@@ -349,10 +356,10 @@
 
   /* C4 / graph canvas surfaces — dark variants (the var()-derived aliases
      flip on their own; only the explicit rgbas need a dark override). */
-  --color-canvas-dot: rgba(222, 210, 235, 0.06);
-  --color-bg-glass: rgba(33, 27, 41, 0.72);
-  --color-bg-wash: rgba(222, 210, 235, 0.05);
-  --color-bg-wash-hover: rgba(222, 210, 235, 0.1);
+  --color-canvas-dot: rgba(255, 255, 255, 0.05);
+  --color-bg-glass: rgba(35, 35, 37, 0.72);
+  --color-bg-wash: rgba(255, 255, 255, 0.04);
+  --color-bg-wash-hover: rgba(255, 255, 255, 0.08);
 
   /* Edge hue that isn't a pure var() derivation gets a dark-legible tweak */
   --color-edge-inherits: #a98fc4; /* plum-300 reads better on dark */
@@ -374,13 +381,13 @@
 
   /* Deep shadows with a neutral inset hairline for premium depth */
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
-  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.45), inset 0 0 0 1px rgba(222, 210, 235, 0.05);
-  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5), inset 0 0 0 1px rgba(222, 210, 235, 0.06);
-  --shadow-xl: 0 16px 48px rgba(0, 0, 0, 0.6), inset 0 0 0 1px rgba(222, 210, 235, 0.07);
+  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.45), inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5), inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+  --shadow-xl: 0 16px 48px rgba(0, 0, 0, 0.6), inset 0 0 0 1px rgba(255, 255, 255, 0.07);
   --shadow-button: 0 1px 2px rgba(0, 0, 0, 0.4);
 
-  /* Dark soft wash — plum charcoal with a faint warm lift at the end */
-  --gradient-warm-wash: linear-gradient(160deg, #1b1622 0%, #241d2e 55%, #2e2629 100%);
+  /* Dark soft wash — neutral graphite with a faint lift at the end */
+  --gradient-warm-wash: linear-gradient(160deg, #1c1c1e 0%, #232325 55%, #2c2c2f 100%);
 }
 
 /* -------------------------------------------------------------------- */
@@ -479,11 +486,11 @@ body {
 }
 
 .dark ::-webkit-scrollbar-thumb {
-  background: rgba(222, 210, 235, 0.12);
+  background: rgba(255, 255, 255, 0.14);
 }
 
 .dark ::-webkit-scrollbar-thumb:hover {
-  background: rgba(222, 210, 235, 0.22);
+  background: rgba(255, 255, 255, 0.26);
 }
 
 /* -------------------------------------------------------------------- */
@@ -537,7 +544,18 @@ body {
   --tw-prose-quotes: var(--color-text-secondary);
   --tw-prose-quote-borders: var(--color-border-default);
   --tw-prose-th-borders: var(--color-border-default);
-  --tw-prose-td-borders: var(--color-border-default);
+  /* Faint row hairlines to match the app-wide table spec; the header rule
+     (th-borders) stays at full weight so the head still separates cleanly. */
+  --tw-prose-td-borders: var(--color-table-divider);
+}
+
+/* Markdown data tables: quiet row hover, square edges (consistent with the
+   app table spec). Header weight + borders come from the prose vars above. */
+.prose tbody tr {
+  transition: background-color var(--duration-fast) var(--ease-out);
+}
+.prose tbody tr:hover {
+  background: var(--color-bg-elevated);
 }
 
 .prose code {

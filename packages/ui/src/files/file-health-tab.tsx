@@ -210,9 +210,9 @@ export function FileHealthTab({
           <h3 className="text-xs font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
             Functions by churn
           </h3>
-          <div className="overflow-x-auto rounded-md border border-[var(--color-border-default)]">
+          <div className="overflow-x-auto overflow-hidden border border-[var(--color-border-default)]">
             <table className="w-full text-xs">
-              <thead>
+              <thead className="bg-[var(--color-bg-surface)]">
                 <tr className="border-b border-[var(--color-border-default)] text-left text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)]">
                   <th className="px-3 py-2 font-medium">Function</th>
                   <th className="px-3 py-2 font-medium text-right">Mods</th>
@@ -233,7 +233,7 @@ export function FileHealthTab({
                   return (
                     <tr
                       key={b.symbol_id}
-                      className="border-b border-[var(--color-border-default)] last:border-0"
+                      className="border-b border-[var(--color-table-divider)] last:border-0 hover:bg-[var(--color-bg-elevated)]"
                     >
                       <td className="px-3 py-1.5 text-[var(--color-text-primary)]">
                         {symbolHref ? (
