@@ -511,6 +511,7 @@ async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
         save_health_findings,
         save_health_metrics,
         save_health_snapshot,
+        save_refactoring_suggestions,
         upsert_git_function_blame_bulk,
     )
 
@@ -524,6 +525,11 @@ async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
         await save_health_metrics(session, repo_id, hr.metrics or [])
         if hr.findings:
             await save_health_findings(session, repo_id, hr.findings)
+        # Structured refactoring suggestions (Extract Class, ...). Repo-wide
+        # delete-then-insert like findings; empty list clears prior rows.
+        await save_refactoring_suggestions(
+            session, repo_id, getattr(hr, "refactoring_suggestions", None) or []
+        )
         # Per-function blame rollup (FULL tier only; empty otherwise).
         fn_blame_rows = getattr(hr, "function_blame_rows", None)
         if fn_blame_rows:

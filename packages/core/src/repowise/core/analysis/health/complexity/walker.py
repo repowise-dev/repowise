@@ -50,6 +50,7 @@ from .languages import get_language_map
 # keep importing the output schema from ``complexity.walker`` unchanged.
 from .models import (
     ClassComplexity,
+    CohesionGroup,
     ConditionComplexity,
     ErrorHandlingHit,
     FileComplexity,
@@ -65,6 +66,7 @@ from .perf_walk import _collect_perf_hits
 
 __all__ = [
     "ClassComplexity",
+    "CohesionGroup",
     "ConditionComplexity",
     "ErrorHandlingHit",
     "FileComplexity",

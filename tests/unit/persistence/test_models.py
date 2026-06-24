@@ -316,6 +316,7 @@ def test_base_includes_all_models():
         "health_findings",
         "health_file_metrics",
         "health_snapshots",
+        "refactoring_suggestions",
         "coverage_files",
         "pipeline_jobs",
         "graph_metrics",

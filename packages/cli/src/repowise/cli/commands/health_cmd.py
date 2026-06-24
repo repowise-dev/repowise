@@ -286,7 +286,12 @@ def health_command(
         findings = [f for f in findings if f.file_path.startswith(module_filter)]
 
     if refactoring_targets:
-        _render_refactoring_targets(metrics_sorted, findings, fmt=fmt)
+        suggestions = getattr(report, "refactoring_suggestions", None) or []
+        if file_filter:
+            suggestions = [s for s in suggestions if s.file_path == file_filter]
+        if module_filter:
+            suggestions = [s for s in suggestions if s.file_path.startswith(module_filter)]
+        _render_refactoring_targets(metrics_sorted, findings, suggestions, fmt=fmt)
         return
 
     if badge_view:
@@ -489,10 +494,27 @@ def _effort_bucket(nloc: int) -> tuple[str, int]:
     return "XL", 5
 
 
+def _suggestion_to_dict(s: object) -> dict:
+    """Serialize a ``RefactoringSuggestion`` dataclass to a plain dict."""
+    import dataclasses
+
+    return dataclasses.asdict(s) if dataclasses.is_dataclass(s) else dict(s)
+
+
 def _render_refactoring_targets(
-    metrics: list, findings: list, *, fmt: str, limit: int = 20
+    metrics: list, findings: list, suggestions: list | None = None, *, fmt: str, limit: int = 20
 ) -> None:
-    """Aggregate findings per file, rank by impact/effort, render."""
+    """Aggregate findings per file, rank by impact/effort, render.
+
+    When the refactoring layer produced structured *suggestions* (e.g. an
+    Extract Class split), the concrete plan is attached to each target's row
+    (JSON/MD) and printed as a group tree below the table.
+    """
+    suggestions = suggestions or []
+    sugg_by_file: dict[str, list] = {}
+    for s in suggestions:
+        sugg_by_file.setdefault(s.file_path, []).append(s)
+
     by_file: dict[str, list] = {}
     for f in findings:
         by_file.setdefault(f.file_path, []).append(f)
@@ -506,6 +528,7 @@ def _render_refactoring_targets(
         primary = max(fs, key=lambda x: x.health_impact)
         total_impact = round(sum(x.health_impact for x in fs), 3)
         bucket, weight = _effort_bucket(nloc)
+        file_sugg = sugg_by_file.get(path, [])
         targets.append(
             {
                 "file_path": path,
@@ -518,13 +541,22 @@ def _render_refactoring_targets(
                 "effort_bucket": bucket,
                 "impact_per_effort": round(total_impact / weight, 3),
                 "finding_count": len(fs),
+                "plans": [_suggestion_to_dict(s) for s in file_sugg],
             }
         )
     targets.sort(key=lambda t: (-t["impact_per_effort"], -t["total_impact"]))
     targets = targets[:limit]
 
+    # Structured plans are ranked + displayed independently of the impact/effort
+    # file table (a god class worth splitting may not top that churn-weighted
+    # list), highest recovered impact first.
+    ranked_plans = sorted(
+        (_suggestion_to_dict(s) for s in suggestions),
+        key=lambda p: -p.get("impact_delta", 0.0),
+    )[:limit]
+
     if fmt == "json":
-        click.echo(json.dumps({"targets": targets}, indent=2))
+        click.echo(json.dumps({"targets": targets, "refactoring_plans": ranked_plans}, indent=2))
         return
     if fmt == "md":
         click.echo("# Refactoring targets\n")
@@ -534,6 +566,7 @@ def _render_refactoring_targets(
                 f"score {t['score']:.1f}/10, -{t['total_impact']:.2f}) "
                 f"— {t['primary_biomarker']}: {t['primary_reason']}"
             )
+        _render_extract_class_plans_md(ranked_plans)
         return
 
     table = Table(title=f"Refactoring targets ({len(targets)})")
@@ -553,6 +586,47 @@ def _render_refactoring_targets(
             t["primary_biomarker"],
         )
     console.print(table)
+    _render_extract_class_plans_console(ranked_plans)
+
+
+def _render_extract_class_plans_console(plans: list[dict]) -> None:
+    """Print the concrete Extract Class splits below the table — the wedge."""
+    ec_plans = [p for p in plans if p["refactoring_type"] == "extract_class"]
+    if not ec_plans:
+        return
+    console.print(f"\n[bold]Extract Class plans ({len(ec_plans)})[/bold]")
+    for p in ec_plans:
+        ev = p["evidence"]
+        groups = p["plan"].get("groups", [])
+        console.print(
+            f"\n[cyan]{p['target_symbol']}[/cyan] [dim]({p['file_path']})[/dim] — "
+            f"LCOM4={ev.get('lcom4')}, {ev.get('method_count')} methods, "
+            f"WMC={ev.get('wmc')} → split into {len(groups)} classes "
+            f"[dim](recover ~{p['impact_delta']:.2f}, effort {p['effort_bucket']}, "
+            f"{p['confidence']} confidence)[/dim]"
+        )
+        for i, g in enumerate(groups, 1):
+            fields = ", ".join(g["fields"]) or "—"
+            console.print(
+                f"  [bold]{i}.[/bold] methods: {', '.join(g['methods'])}\n"
+                f"     [dim]fields:[/dim] {fields}"
+            )
+
+
+def _render_extract_class_plans_md(plans: list[dict]) -> None:
+    ec_plans = [p for p in plans if p["refactoring_type"] == "extract_class"]
+    if not ec_plans:
+        return
+    click.echo("\n## Extract Class plans\n")
+    for p in ec_plans:
+        groups = p["plan"].get("groups", [])
+        click.echo(
+            f"- **{p['target_symbol']}** ({p['file_path']}) — "
+            f"LCOM4={p['evidence'].get('lcom4')}, split into {len(groups)} classes:"
+        )
+        for i, g in enumerate(groups, 1):
+            fields = ", ".join(g["fields"]) or "—"
+            click.echo(f"  {i}. methods: {', '.join(g['methods'])}  ·  fields: {fields}")
 
 
 def _render_trend(repo_path: object, *, fmt: str) -> None:
@@ -705,9 +779,7 @@ def _persist_health(
                     average_health=float(kpis.get("average_health", 10.0)),
                     worst_performer_path=kpis.get("worst_performer_path"),
                     worst_performer_score=kpis.get("worst_performer_score"),
-                    per_file_scores={
-                        m.file_path: round(float(m.score), 2) for m in metrics
-                    },
+                    per_file_scores={m.file_path: round(float(m.score), 2) for m in metrics},
                 )
             except Exception as exc:
                 console.print(f"[yellow]Snapshot write skipped: {exc}[/yellow]")

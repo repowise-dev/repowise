@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 from .ast_utils import _IDENTIFIER_SUFFIX, _find_name
 from .languages import LanguageNodeMap
-from .models import ClassComplexity, FunctionComplexity
+from .models import ClassComplexity, CohesionGroup, FunctionComplexity
 from .nloc import _count_nloc
 
 if TYPE_CHECKING:
@@ -147,23 +147,27 @@ def _compute_lcom4(
     method_nodes: list[Node],
     method_fcs: list[FunctionComplexity],
     lmap: LanguageNodeMap,
-) -> tuple[int, int]:
-    """Return ``(lcom4, field_count)`` for a class.
+) -> tuple[int, int, list[CohesionGroup]]:
+    """Return ``(lcom4, field_count, components)`` for a class.
 
     LCOM4 = number of connected components over the methods, where two
     methods are connected if they share an instance member or one calls
     the other (a call shows up as a reference to the callee's name).
+    ``components`` is the per-component membership behind that integer:
+    one ``CohesionGroup`` (methods + the fields they touch) per connected
+    component, stable-ordered. It *is* the Extract Class split.
 
     **Safety valve:** if no instance-member references are detected at all
     (a pure-static class, or — importantly — a language whose
     member-access node type we have not mapped), return ``1`` rather than
     ``len(methods)``. This prevents ``low_cohesion`` from false-firing on
     an unverified language: a missing mapping yields "no signal", never a
-    spurious high-LCOM hit.
+    spurious high-LCOM hit. ``components`` is empty in every no-signal case
+    (the integer carries no real split to expose).
     """
     n = len(method_nodes)
     if n == 0:
-        return 1, 0
+        return 1, 0, []
 
     members_per_method: list[set[str]] = [
         _collect_self_members(node, lmap) for node in method_nodes
@@ -174,7 +178,7 @@ def _compute_lcom4(
     field_count = len(all_members - method_names)
 
     if total_refs == 0:
-        return 1, field_count
+        return 1, field_count, []
 
     # Union-find over method indices.
     parent = list(range(n))
@@ -207,8 +211,39 @@ def _compute_lcom4(
         for other in group[1:]:
             _union(first, other)
 
-    components = {_find(i) for i in range(n)}
-    return len(components), field_count
+    roots = [_find(i) for i in range(n)]
+    components = set(roots)
+
+    # Build the per-component membership behind the integer. Bucket method
+    # indices by their union-find root, then order each group's methods (and
+    # the groups themselves) by source position so the split reads
+    # top-to-bottom. Ordering is by ``(start_line, name)`` rather than
+    # collection index, which makes it both deterministic and stable across
+    # runs. Each group's fields are the members its methods reference that
+    # aren't method names.
+    by_root: dict[int, list[int]] = {}
+    for i in range(n):
+        by_root.setdefault(roots[i], []).append(i)
+
+    def _pos(i: int) -> tuple[int, str]:
+        return (method_fcs[i].start_line, method_fcs[i].name)
+
+    # Pair each group with its earliest member index so the inter-group sort
+    # keys off that index directly (robust to duplicate method names, which a
+    # name->index lookup would resolve to the wrong method).
+    indexed_groups: list[tuple[int, CohesionGroup]] = []
+    for member_idxs in by_root.values():
+        member_idxs.sort(key=_pos)
+        group_methods = [method_fcs[i].name for i in member_idxs]
+        group_fields: set[str] = set()
+        for i in member_idxs:
+            group_fields |= members_per_method[i] - method_names
+        indexed_groups.append(
+            (member_idxs[0], CohesionGroup(methods=group_methods, fields=sorted(group_fields)))
+        )
+    indexed_groups.sort(key=lambda pair: _pos(pair[0]))
+    groups = [g for _, g in indexed_groups]
+    return len(components), field_count, groups
 
 
 def _collect_classes(
@@ -227,7 +262,7 @@ def _collect_classes(
         # Keep nodes and FCs aligned (a method missing from the function
         # pass — unusual — drops out of both).
         aligned_nodes = [m for m in method_nodes if m.id in fc_by_node_id]
-        lcom4, field_count = _compute_lcom4(aligned_nodes, method_fcs, lmap)
+        lcom4, field_count, components = _compute_lcom4(aligned_nodes, method_fcs, lmap)
         classes.append(
             ClassComplexity(
                 name=_class_name(class_node),
@@ -239,6 +274,7 @@ def _collect_classes(
                 lcom4=lcom4,
                 max_method_ccn=max((fc.ccn for fc in method_fcs), default=0),
                 field_count=field_count,
+                components=components,
             )
         )
     return classes

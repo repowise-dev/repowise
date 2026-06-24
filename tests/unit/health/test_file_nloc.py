@@ -85,7 +85,7 @@ def test_health_metric_nloc_uses_file_nloc():
         file_info=SimpleNamespace(path="src/route.js", language="javascript", abs_path=str(p)),
         symbols=[],
     )
-    metric, _ = HealthAnalyzer(graph=None)._evaluate_file(
+    metric, _, _ = HealthAnalyzer(graph=None)._evaluate_file(
         pf,
         fcx,
         path_basenames={"route.js"},

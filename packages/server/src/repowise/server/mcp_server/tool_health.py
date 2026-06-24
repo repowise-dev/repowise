@@ -21,6 +21,7 @@ from repowise.core.persistence.crud import (
     get_git_metadata,
     get_graph_node,
     get_node_degree_counts,
+    get_refactoring_suggestions,
     list_health_snapshots,
     load_coverage_for_repo,
 )
@@ -55,6 +56,36 @@ def _serialize_finding(f: HealthFinding) -> dict[str, Any]:
         # Health pillar this finding homes under (defect / maintainability /
         # performance) for per-dimension filtering.
         "dimension": getattr(f, "dimension", None) or "defect",
+    }
+
+
+def _serialize_refactoring(r: Any) -> dict[str, Any]:
+    """Serialize a ``RefactoringSuggestion`` ORM row into a structured plan.
+
+    The ``*_json`` columns are decoded back into their open dicts so an agent
+    reads the concrete plan (the split groups, the evidence, the blast radius)
+    rather than a prose string.
+    """
+
+    def _load(raw: str | None) -> Any:
+        try:
+            return json.loads(raw) if raw else {}
+        except Exception:
+            return {}
+
+    return {
+        "refactoring_type": r.refactoring_type,
+        "file_path": r.file_path,
+        "target_symbol": r.target_symbol,
+        "line_start": r.line_start,
+        "line_end": r.line_end,
+        "plan": _load(r.plan_json),
+        "evidence": _load(r.evidence_json),
+        "impact_delta": round(r.impact_delta, 3),
+        "effort_bucket": r.effort_bucket,
+        "blast_radius": _load(r.blast_radius_json),
+        "confidence": r.confidence,
+        "source_biomarker": r.source_biomarker,
     }
 
 
@@ -291,6 +322,20 @@ async def get_health(
             exclude_spec,
         )
 
+        # Structured refactoring plans (Extract Class, ...) — loaded only when
+        # asked for, scoped to the same targets, exclude-filtered like findings.
+        refactoring_rows: list[Any] = []
+        if "refactoring" in include_set:
+            refactoring_rows = filter_rows_by_attr(
+                await get_refactoring_suggestions(
+                    session,
+                    repository.id,
+                    file_paths=list(effective_targets) if effective_targets else None,
+                ),
+                "file_path",
+                exclude_spec,
+            )
+
         coverage_rows: list[Any] = []
         coverage_summary: dict[str, Any] = {}
         if "coverage" in include_set:
@@ -327,8 +372,7 @@ async def get_health(
         if "churn_complexity" in include_set and not effective_targets:
             git_meta_by_path = await get_all_git_metadata(session, repository.id)
             churn_points = [
-                asdict(p)
-                for p in churn_complexity_points(all_metrics, git_meta_by_path)[:limit]
+                asdict(p) for p in churn_complexity_points(all_metrics, git_meta_by_path)[:limit]
             ]
 
         # Load the snapshot window for the repo-level trend block and/or the
@@ -401,9 +445,13 @@ async def get_health(
         result["findings"] = [_serialize_finding(f) for f in finding_rows]
 
     if "refactoring" in include_set:
-        # Attach deterministic refactoring suggestions to every finding
-        # in the response. Surfaces on the dashboard cards as well so
-        # both consumers stay in sync.
+        # Structured refactoring plans (the concrete split groups / evidence /
+        # blast radius) for detectors that have one — the upgrade over the old
+        # prose-string suggestions.
+        result["refactoring_plans"] = [_serialize_refactoring(r) for r in refactoring_rows]
+        # Attach the deterministic prose suggestion to every finding as the
+        # fallback for biomarkers without a structured detector yet. Surfaces
+        # on the dashboard cards too so both consumers stay in sync.
         for field in ("findings", "top_findings"):
             rows = result.get(field)
             if rows:

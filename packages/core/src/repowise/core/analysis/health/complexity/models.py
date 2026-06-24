@@ -58,6 +58,23 @@ class FunctionComplexity:
 
 
 @dataclass
+class CohesionGroup:
+    """One LCOM4 connected component within a class.
+
+    A cluster of methods that share instance state (a field or a
+    method-call edge), plus the instance fields the cluster collectively
+    touches. Emitted as a side-channel by ``_compute_lcom4`` and consumed
+    by the Extract Class refactoring detector — when a class has
+    ``lcom4 >= 2`` each group is a candidate extracted class. ``methods``
+    and ``fields`` are stable-sorted (by first appearance / name) so the
+    same class yields the same split across runs.
+    """
+
+    methods: list[str]
+    fields: list[str]
+
+
+@dataclass
 class ClassComplexity:
     """Per-class aggregate metrics produced by the walker.
 
@@ -71,6 +88,12 @@ class ClassComplexity:
     ``1`` means a fully cohesive class (or "no signal": see the safety
     valve in ``_compute_lcom4``). Higher values mean the class splinters
     into unrelated method clusters.
+
+    ``components`` carries those connected components as ``CohesionGroup``
+    records (the method+field membership behind the ``lcom4`` integer).
+    Empty when there is no cohesion signal (``lcom4`` was the ``1`` safety
+    valve); otherwise ``len(components) == lcom4``. The Extract Class
+    refactoring detector reads it directly — it *is* the split.
     """
 
     name: str
@@ -82,6 +105,7 @@ class ClassComplexity:
     lcom4: int = 1
     max_method_ccn: int = 0
     field_count: int = 0
+    components: list[CohesionGroup] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

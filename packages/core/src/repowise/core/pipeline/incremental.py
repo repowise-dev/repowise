@@ -332,6 +332,7 @@ async def persist_partial_health(session: Any, repo_id: str, report: Any) -> Non
     from repowise.core.persistence.crud import (
         upsert_health_findings,
         upsert_health_metrics,
+        upsert_refactoring_suggestions,
     )
 
     changed_paths = sorted({m.file_path for m in report.metrics or []})
@@ -340,6 +341,15 @@ async def persist_partial_health(session: Any, repo_id: str, report: Any) -> Non
     await upsert_health_metrics(session, repo_id, report.metrics or [])
     await upsert_health_findings(
         session, repo_id, list(report.findings or []), file_paths=changed_paths
+    )
+    # Refactoring suggestions for the changed files only (unchanged files keep
+    # theirs). Scoped delete-then-insert across the full changed-file set, so a
+    # file that became clean has its stale suggestions removed.
+    await upsert_refactoring_suggestions(
+        session,
+        repo_id,
+        list(getattr(report, "refactoring_suggestions", None) or []),
+        file_paths=changed_paths,
     )
     # Per-function blame rollup for the changed files (keeps git_function_blame
     # current between full indexes; FULL git tier only — empty otherwise).

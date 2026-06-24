@@ -54,7 +54,7 @@ def _evaluate(severity_overrides):
         ),
         symbols=[],
     )
-    metric, findings = HealthAnalyzer(graph=None)._evaluate_file(
+    metric, findings, _ = HealthAnalyzer(graph=None)._evaluate_file(
         pf,
         fcx,
         path_basenames=set(),
