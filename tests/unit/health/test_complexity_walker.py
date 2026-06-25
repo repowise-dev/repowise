@@ -50,6 +50,33 @@ def _require_language(language: str) -> None:
         pytest.skip(f"tree-sitter language pack missing for {language}")
 
 
+def test_tcc_cohesive_vs_split():
+    """TCC is 1.0 when every method pair shares a field, lower when the class
+    splinters into disjoint field groups."""
+    _require_language("python")
+
+    cohesive = (
+        b"class C:\n"
+        b"    def a(self):\n        self.x = 1\n"
+        b"    def b(self):\n        return self.x\n"
+        b"    def c(self):\n        self.x += 1\n"
+    )
+    split = (
+        b"class D:\n"
+        b"    def a(self):\n        self.x = 1\n"
+        b"    def b(self):\n        return self.x\n"
+        b"    def c(self):\n        self.y = 1\n"
+        b"    def d(self):\n        return self.y\n"
+    )
+    c = next(k for k in walk_file("c.py", "python", cohesive).classes if k.name == "C")
+    d = next(k for k in walk_file("d.py", "python", split).classes if k.name == "D")
+
+    assert c.tcc == 1.0
+    # D has 6 method pairs, 2 connected (a-b via x, c-d via y) -> 1/3.
+    assert d.tcc == pytest.approx(2 / 6)
+    assert d.tcc < c.tcc
+
+
 def test_python_nested_depth():
     results = _walk("python/nested.py", "python")
     deep = _find(results, "deeply_nested")
