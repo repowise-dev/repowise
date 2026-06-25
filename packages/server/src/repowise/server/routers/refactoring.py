@@ -207,6 +207,107 @@ async def get_refactoring_targets(
     )
 
 
+# ---------------------------------------------------------------------------
+# Code-gen settings — read/write the refactoring.llm config block. Declared
+# before the dynamic /{suggestion_id} GET so the static `settings` path wins.
+# ---------------------------------------------------------------------------
+
+
+class RefactoringSettings(BaseModel):
+    """The opt-in code-generation switches, mirrored from ``refactoring.llm``."""
+
+    enabled: bool = False
+    provider: str | None = None
+    model: str | None = None
+
+
+def _read_refactoring_settings(config: dict[str, Any]) -> RefactoringSettings:
+    """Project ``refactoring.llm`` out of a loaded config, tolerant of shape.
+
+    ``enabled`` defaults to ``True`` when unset, matching
+    :func:`llm_enrichment_enabled` — an untouched repo shows the toggle on.
+    """
+    refactoring = config.get("refactoring")
+    llm = refactoring.get("llm") if isinstance(refactoring, dict) else None
+    if not isinstance(llm, dict):
+        return RefactoringSettings(enabled=True)
+    provider = llm.get("provider")
+    model = llm.get("model")
+    return RefactoringSettings(
+        enabled=bool(llm.get("enabled", True)),
+        provider=provider if isinstance(provider, str) and provider else None,
+        model=model if isinstance(model, str) and model else None,
+    )
+
+
+async def _local_repo_path(session: AsyncSession, repo_id: str) -> Path:
+    """The repo's on-disk checkout, or a 404 — code-gen settings are a
+    local-``serve`` capability (they live in the repo's ``.repowise``)."""
+    repo = await crud.get_repository(session, repo_id)
+    if repo is None or not repo.local_path:
+        raise HTTPException(status_code=404, detail=f"repository not found: {repo_id}")
+    repo_path = Path(repo.local_path)
+    if not repo_path.exists():
+        raise HTTPException(
+            status_code=404, detail="repository checkout not accessible on this server"
+        )
+    return repo_path
+
+
+@router.get("/{repo_id}/refactoring/settings", response_model=RefactoringSettings)
+async def get_refactoring_settings(
+    repo_id: str,
+    session: AsyncSession = Depends(get_db_session),
+) -> RefactoringSettings:
+    """Current ``refactoring.llm`` settings for the repo (enabled + provider/model)."""
+    from repowise.core.repo_config import load_repo_config
+
+    repo_path = await _local_repo_path(session, repo_id)
+    return _read_refactoring_settings(load_repo_config(repo_path))
+
+
+@router.put("/{repo_id}/refactoring/settings", response_model=RefactoringSettings)
+async def update_refactoring_settings(
+    repo_id: str,
+    body: RefactoringSettings,
+    session: AsyncSession = Depends(get_db_session),
+) -> RefactoringSettings:
+    """Persist the ``refactoring.llm`` block to the repo's ``.repowise/config.yaml``.
+
+    Round-trips through the loaded config so unrelated keys are preserved, then
+    writes only the ``refactoring.llm.{enabled,provider,model}`` sub-tree. A
+    blank provider/model clears that key rather than writing an empty string.
+    """
+    from repowise.core.repo_config import load_repo_config, save_repo_config
+
+    repo_path = await _local_repo_path(session, repo_id)
+    config = load_repo_config(repo_path)
+
+    refactoring = config.get("refactoring")
+    if not isinstance(refactoring, dict):
+        refactoring = {}
+        config["refactoring"] = refactoring
+    llm = refactoring.get("llm")
+    if not isinstance(llm, dict):
+        llm = {}
+        refactoring["llm"] = llm
+
+    llm["enabled"] = bool(body.enabled)
+    provider = (body.provider or "").strip()
+    model = (body.model or "").strip()
+    if provider:
+        llm["provider"] = provider
+    else:
+        llm.pop("provider", None)
+    if model:
+        llm["model"] = model
+    else:
+        llm.pop("model", None)
+
+    save_repo_config(repo_path, config)
+    return _read_refactoring_settings(config)
+
+
 @router.get("/{repo_id}/refactoring/{suggestion_id}", response_model=RefactoringPlanResponse)
 async def get_refactoring_plan(
     repo_id: str,

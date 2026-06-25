@@ -105,19 +105,22 @@ class EnrichmentResult:
 
 
 def llm_enrichment_enabled(config: dict[str, Any]) -> bool:
-    """Whether ``refactoring.llm.enabled`` is set in a loaded repo config.
+    """Whether code generation is enabled for this repo (``refactoring.llm.enabled``).
 
-    Off by default. The CLI's explicit ``--generate-code`` flag is its own
-    opt-in and does not consult this; the server/MCP surfaces gate on it so a
-    hosted deployment never exposes code-gen unless the repo enabled it.
+    Enabled unless the repo explicitly turns it off — an unset key means on.
+    Code generation never runs during indexing and only ever fires on an
+    explicit request (a button click / CLI flag / MCP call), and the web + MCP
+    surfaces both require a local checkout (they 404 without one), so defaulting
+    on simply makes the local-``serve`` experience work without a config trip;
+    a repo can still set ``refactoring.llm.enabled: false`` to disable it.
     """
     refactoring = config.get("refactoring")
     if not isinstance(refactoring, dict):
-        return False
+        return True
     llm = refactoring.get("llm")
     if not isinstance(llm, dict):
-        return False
-    return bool(llm.get("enabled", False))
+        return True
+    return bool(llm.get("enabled", True))
 
 
 def build_enrichment_provider(
@@ -485,8 +488,15 @@ def _validate_extract_class(
         return {"status": "skipped", "reason": "no classes parsed from response"}
 
     before = evidence.get("lcom4") if isinstance(evidence, dict) else None
-    after = [{"name": c.name, "lcom4": c.lcom4} for c in classes]
+    before_tcc = evidence.get("tcc") if isinstance(evidence, dict) else None
+    after = [
+        {"name": c.name, "lcom4": c.lcom4, "tcc": round(float(getattr(c, "tcc", 1.0)), 3)}
+        for c in classes
+    ]
     after_max = max((c.lcom4 for c in classes), default=None)
+    # The split's weakest class drives the TCC verdict — every extracted class
+    # should be cohesive (TCC near 1), so the minimum is the honest floor.
+    after_min_tcc = min((float(getattr(c, "tcc", 1.0)) for c in classes), default=None)
     improved = (
         isinstance(before, int)
         and after_max is not None
@@ -496,8 +506,10 @@ def _validate_extract_class(
     return {
         "status": "checked",
         "before_lcom4": before,
+        "before_tcc": before_tcc,
         "after_classes": after,
         "after_max_lcom4": after_max,
+        "after_min_tcc": None if after_min_tcc is None else round(after_min_tcc, 3),
         "class_count": len(classes),
         "improved": bool(improved),
     }

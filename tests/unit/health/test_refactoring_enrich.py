@@ -243,6 +243,8 @@ async def test_self_check_skipped_for_non_extract_class(tmp_path: Path) -> None:
 
 def test_llm_enrichment_enabled_gate() -> None:
     assert llm_enrichment_enabled({"refactoring": {"llm": {"enabled": True}}}) is True
+    # Only an explicit false disables it; an unset key defaults on (the local
+    # serve experience works without a config trip).
     assert llm_enrichment_enabled({"refactoring": {"llm": {"enabled": False}}}) is False
-    assert llm_enrichment_enabled({"refactoring": {}}) is False
-    assert llm_enrichment_enabled({}) is False
+    assert llm_enrichment_enabled({"refactoring": {}}) is True
+    assert llm_enrichment_enabled({}) is True

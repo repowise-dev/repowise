@@ -22,9 +22,9 @@ async def _setup(factory, *, enabled: bool) -> tuple[Path, str]:
     repo_dir = Path(tempfile.mkdtemp()) / "mcp-enrich"
     (repo_dir / "pkg").mkdir(parents=True, exist_ok=True)
     (repo_dir / ".repowise").mkdir(exist_ok=True)
+    # enabled defaults on, so the disabled case writes an explicit false.
     cfg = "provider: mock\n"
-    if enabled:
-        cfg += "refactoring:\n  llm:\n    enabled: true\n"
+    cfg += f"refactoring:\n  llm:\n    enabled: {'true' if enabled else 'false'}\n"
     (repo_dir / ".repowise" / "config.yaml").write_text(cfg, encoding="utf-8")
     (repo_dir / "pkg" / "leaf.py").write_text(
         "class GodClass:\n    def a(self):\n        return 1\n", encoding="utf-8"
