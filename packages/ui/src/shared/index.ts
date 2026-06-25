@@ -11,6 +11,14 @@ export {
   type ResponsiveTableProps,
   type ColumnPriority,
 } from "./responsive-table";
+export {
+  VirtualizedTable,
+  type VirtualizedTableProps,
+  useVirtualRows,
+  type UseVirtualRowsOptions,
+  type UseVirtualRows,
+  type VirtualRow,
+} from "./virtualized-table";
 export { Toaster, toast, type ToasterProps } from "./toast";
 export * from "./breadcrumb";
 export * from "./empty-state";
