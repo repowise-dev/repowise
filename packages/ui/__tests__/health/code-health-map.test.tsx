@@ -114,8 +114,8 @@ describe("CodeHealthMap", () => {
         onOverlayChange={onOverlayChange}
       />,
     );
-    // The lens switcher renders one toggle button per lens; click "Churn".
-    fireEvent.click(getByRole("button", { name: "Churn" }));
-    expect(onOverlayChange).toHaveBeenCalledWith("churn");
+    // The lens switcher renders one toggle button per lens; click "Maintainability".
+    fireEvent.click(getByRole("button", { name: "Maintainability" }));
+    expect(onOverlayChange).toHaveBeenCalledWith("maintainability");
   });
 });
