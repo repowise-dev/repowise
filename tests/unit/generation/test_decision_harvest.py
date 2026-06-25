@@ -128,6 +128,28 @@ def test_partial_hallucination_drops_only_ungrounded_fields():
     assert d["rationale"] == "", "the ungrounded rationale must be dropped"
 
 
+def test_title_promoted_to_decision_when_gate_clears_paraphrase():
+    # The decision/rationale are real but paraphrased, so the substring gate
+    # clears them; the verbatim source_quote keeps the record alive. Without the
+    # title fallback this leaves a body-less, title-only record. The title (the
+    # model's canonical one-line summary) must be promoted into ``decision``.
+    content = _fenced(
+        '{"decisions": [{"title": "Use Redis for caching", '
+        '"decision": "Persistence layer selected by the platform team", '
+        '"rationale": "latency targets demanded an alternative approach", '
+        '"source_quote": "We use Redis as the cache backend"}]}'
+    )
+    _clean, decisions = harvest_decisions(content, source_text=_SOURCE, evidence_file="cache.py")
+    assert len(decisions) == 1
+    d = decisions[0]
+    # Paraphrased prose was cleared by the gate...
+    assert d["rationale"] == ""
+    # ...but the record is not body-less: the title filled the empty decision.
+    assert d["decision"] == "Use Redis for caching"
+    # The grounding quote that kept the record alive is still recorded.
+    assert d["source_quote"] == "We use Redis as the cache backend"
+
+
 def test_no_fence_yields_no_decisions():
     clean, decisions = harvest_decisions(
         "# Overview\n\nPlain page.\n", source_text=_SOURCE, evidence_file="cache.py"

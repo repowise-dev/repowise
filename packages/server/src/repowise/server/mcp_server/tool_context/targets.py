@@ -28,6 +28,7 @@ from repowise.core.persistence.models import (
     WikiSymbol,
 )
 from repowise.server.mcp_server._helpers import (
+    _decision_body,
     filter_dicts_by_key,
     filter_path_list,
     is_excluded,
@@ -703,7 +704,7 @@ async def _resolve_one_target(
                         "id": d.id,
                         "title": d.title,
                         "status": d.status,
-                        "decision": d.decision,
+                        "decision": _decision_body(d),
                         "rationale": d.rationale,
                         "confidence": d.confidence,
                     }
