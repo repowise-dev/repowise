@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.24.1] — 2026-06-25
+
+### Changed
+- **Workspace tables and the dependency-structure matrix stay responsive on large repos.** The co-change, repo-pair, contract-links, and package-deps tables now use the windowed virtualized table, and the dependency-structure-matrix grid is capped to the top-60 services by connectivity so a large workspace can't render tens of thousands of cells; counts still reflect the full matrix. (#602)
+
+---
+
 ## [0.24.0] — 2026-06-25
 
 ### Added
