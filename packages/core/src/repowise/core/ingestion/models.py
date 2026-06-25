@@ -43,6 +43,7 @@ LanguageTag = Literal[
     "clojure",
     "dart",
     "haskell",
+    "lean",
     "ocaml",
     "fsharp",
     "crystal",

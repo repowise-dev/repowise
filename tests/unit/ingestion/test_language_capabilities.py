@@ -152,6 +152,7 @@ _PARTIAL = {
     "dart",
     "clojure",
     "haskell",
+    "lean",
     "erlang",
     "fsharp",
 }
@@ -199,6 +200,7 @@ _ENTRY_PATTERNS_BY_LANGUAGE = {
     "clojure": ("core.clj", "main.clj"),
     "dart": ("main.dart",),
     "haskell": ("Main.hs",),
+    "lean": ("Main.lean",),
     "ocaml": ("main.ml",),
     "erlang": ("*_app.erl",),
     "fsharp": ("Program.fs",),
