@@ -29,6 +29,7 @@
 <p align="center"><sub>
   <a href="#the-five-layers">Layers</a> ·
   <a href="#-code-health--the-layer-nobody-else-nails">Code Health</a> ·
+  <a href="#refactoring-intelligence">Refactoring</a> ·
   <a href="#benchmarks">Benchmarks</a> ·
   <a href="#supported-languages">Languages</a> ·
   <a href="#quickstart">Quickstart</a> ·
@@ -40,9 +41,9 @@
 ---
 
 <p align="center">
-  <strong>up to −96% context tokens</strong> &nbsp;·&nbsp; <strong>−70% agent tool calls</strong> &nbsp;·&nbsp; <strong>answer quality at parity</strong><br/>
-  <strong>60–90% fewer tokens</strong> on noisy command output &nbsp;·&nbsp; errors-first, fully reversible<br/>
-  <strong>code health that predicts real bugs</strong> &nbsp;·&nbsp; <strong>ROC AUC 0.74</strong> &nbsp;·&nbsp; <strong>2.3×</strong> the commercial market leader under a fixed review budget
+  <strong>measure, locate, and fix what your AI ships</strong><br/>
+  <strong>code health that predicts real bugs</strong> &nbsp;·&nbsp; <strong>ROC AUC 0.74</strong> &nbsp;·&nbsp; <strong>2.3×</strong> the commercial market leader under a fixed review budget<br/>
+  <strong>graph-aware refactoring plans</strong> your agent can execute &nbsp;·&nbsp; <strong>up to −96% context tokens</strong> &nbsp;·&nbsp; <strong>−70% agent tool calls</strong> at answer-quality parity
 </p>
 
 <p align="center"><sub>Measured, reproducible, on public codebases — <a href="#benchmarks">see the benchmarks ↓</a></sub></p>
@@ -53,24 +54,27 @@
 
 </div>
 
-Your AI coding agent reads files. It doesn't know which ones change together,
-which ones are dead, or *why* they were built the way they were. It has the
-source code and no memory of how the codebase got there.
+AI now writes a large and growing share of the code, and the humans accountable
+for it have to trust what ships. A score that says *"this file is risky"* isn't
+enough — you need to know **where** the risk concentrates and **how** to fix it.
 
-repowise fixes that. It indexes your codebase into **five intelligence layers** —
-dependency graph, git history, auto-generated docs, architectural decisions, and
-code health — and exposes them to Claude Code, Codex, and any MCP-compatible agent
-through **nine task-shaped tools**. The result: your agent answers *"why does
-auth work this way?"* instead of *"here is what `auth.ts` contains"* — with
-**fewer tool calls, fewer file reads, and lower cost per query, at comparable
-answer quality** ([benchmarks ↓](#benchmarks)).
+repowise closes that loop. It indexes your codebase once and scores **every file
+for defect risk, maintainability, and performance** from 25 deterministic
+biomarkers — calibrated against a real defect corpus, no LLM, in under 30 seconds
+([the proof ↓](#-code-health--the-layer-nobody-else-nails)). The same index then
+**locates** the risk through a real dependency graph and git history, and
+**generates the fix**: concrete, graph-aware refactoring plans — split this god
+class, move this method, break this dependency cycle, dedup this clone — that
+your coding agent can execute.
 
-That is one half of the job. AI now writes a large and growing share of the code,
-and the humans accountable for it need to trust what ships. So the same index
-also powers a **defect-validated code-health score**, **change-risk scoring** on
-every PR, and **agent provenance** that shows how much of your code an AI wrote
-and whether it is healthy. One index: context your agent can use, signals your
-team can trust.
+And because it is all one index, your agent gets the rest for free: **five
+intelligence layers** — dependency graph, git history, auto-generated docs,
+architectural decisions, and code health — exposed to Claude Code, Codex, and any
+MCP-compatible agent through **nine task-shaped tools**. Your agent answers *"why
+does auth work this way?"* instead of *"here is what `auth.ts` contains"* — with
+fewer tool calls, fewer file reads, and lower cost per query, at comparable
+answer quality ([benchmarks ↓](#benchmarks)). One index: context your agent can
+use, signals your team can trust, and the fix it can apply.
 
 ---
 
@@ -85,7 +89,7 @@ Each layer is queryable from the CLI, the MCP tools, and the local dashboard.
 | **◈ Git** | hotspots (churn × complexity) · ownership % · co-change pairs (hidden coupling) · bus factor · contributor profiles · module health · reviewer suggestions | Behavioral signals static analysis can't see |
 | **◈ Docs** | LLM-generated wiki per module/file · incremental on every commit · freshness + confidence scoring · hybrid RAG search (FTS + vector via RRF) · selectable wiki styles (comprehensive / reference / tutorial / caveman) | Stays current — rebuilt every commit |
 | **◈ Decisions** | architectural decisions mined from **8 sources**, evidence-backed (verified / fuzzy / unverified), linked to graph nodes, connected by `supersedes`/`refines`/`conflicts_with` edges, tracked for staleness | **★ Captured nowhere else** |
-| **★ Code Health** | **25 deterministic biomarkers**, 1–10 per file · **three signals: defect risk · maintainability · performance** · coverage ingestion · trend alerts · refactoring targets · **zero LLM, <30s** | **★ Defect-validated — our edge ↓** |
+| **★ Code Health** | **25 deterministic biomarkers**, 1–10 per file · **three signals: defect risk · maintainability · performance** · coverage ingestion · trend alerts · **concrete graph-aware refactoring plans** (Extract Class / Helper / Move Method / Break Cycle) · **zero LLM, <30s** | **★ Defect-validated, with the fix attached — our edge ↓** |
 
 Full deep-dive on every layer (graph, git, docs, decisions, hooks, auto-sync,
 dead code, CLAUDE.md generation): **[docs/INTELLIGENCE_LAYERS.md →](docs/INTELLIGENCE_LAYERS.md)**
@@ -95,7 +99,14 @@ dead code, CLAUDE.md generation): **[docs/INTELLIGENCE_LAYERS.md →](docs/INTEL
 ## ★ Code Health — the layer nobody else nails
 
 Code health is repowise's deepest differentiator — the one layer with no real
-equivalent, and **the only one we can prove predicts real bugs**.
+equivalent, and **the only one we can prove predicts real bugs**. It runs as a
+loop: **measure** every file across three signals, **locate** where the risk
+concentrates through the graph and git history, then **fix** it with a concrete
+refactoring plan your agent can execute.
+
+<div align="center">
+<img src=".github/assets/health-loop.svg" alt="repowise code-health loop — 25 deterministic biomarkers fan into three signals (defect risk, maintainability, performance), the graph and git history locate where risk concentrates, and refactoring intelligence emits concrete plans (Extract Class, Extract Helper, Move Method, Break Cycle) your agent executes" width="100%" />
+</div>
 
 repowise scores **every file 1–10** from **25 deterministic biomarkers** —
 McCabe complexity, deep nesting, brain methods, class cohesion (LCOM4), god
@@ -147,6 +158,46 @@ budget** (Popt Δ +0.144, recall Δ +0.098, density Δ p = 0.003 — all paired,
 significant). [Full methodology & CIs →](https://github.com/repowise-dev/repowise-bench/blob/master/health-defect/COMPARISON_REPORT.md)
 
 User guide & per-biomarker reference: **[docs/CODE_HEALTH.md](docs/CODE_HEALTH.md)**
+
+### Refactoring intelligence
+
+A health score tells you a file is in trouble. Every other tool stops there, or
+prints the same static sentence for every god class in every repo. repowise names
+the **specific** fix, computed deterministically from the graph, the class model,
+and git co-change — the same data the score is built on:
+
+- **Extract Class** — split an incohesive class along its real cohesion groups
+  (LCOM4 components): *"these methods + these fields belong together; these don't."*
+- **Extract Helper** — dedup a clone across its exact occurrences, with the
+  shared helper placed at the community centroid of the files involved.
+- **Move Method** — relocate a feature-envy method to the class it actually talks
+  to (Jaccard distance over the call graph), not the one it lives in.
+- **Break Cycle** — name the minimal set of import edges to invert to break a
+  dependency cycle (greedy minimum feedback arc set over the real import graph).
+
+Every plan carries its **blast radius** (the callers and co-changing files that
+must move with it) and is ranked **graph-aware** — `impact × call-graph centrality
+× blast radius`, so a fix on a central hub outranks the same fix on a leaf. That
+is the wedge: the leading commercial tool ranks by churn alone, stays
+within-function, and ignores its own coupling signal when it generates code.
+
+The deterministic plan is the product; an LLM is **strictly opt-in** and never in
+the indexing hot path. Turn it on and any plan can be expanded into generated code
+plus a unified diff, fed the graph and co-change context a bare codegen tool
+throws away.
+
+```bash
+repowise health --refactoring-targets        # ranked plans, biggest win for least effort
+```
+
+```python
+get_health(include=["refactoring"])           # the same structured plans over MCP
+```
+
+The web **Refactoring** tab renders each plan as a card — the split groups as a
+tree, the move arrow, the clone occurrences with line links — with a
+**copy-to-agent** button and the opt-in **Generate code** diff view. Full
+reference: **[docs/REFACTORING.md](docs/REFACTORING.md)**
 
 ---
 
@@ -259,8 +310,9 @@ finder) · **C4 Architecture** (Context → Containers → Components) · **Risk
 (hotspots, ownership heatmap, module health, dead code, blast radius) ·
 **Contributors** (per-author profiles) · **Decisions** (evidence drawer,
 evolution timeline, decision-graph) · **Health** (three signals — defect ·
-maintainability · performance — coverage, trends) · **Security** (local pattern
-scan) · **Costs** · **Workspace**
+maintainability · performance — coverage, trends) · **Refactoring** (ranked plan
+cards, blast radius, copy-to-agent, opt-in code-gen diff) · **Security** (local
+pattern scan) · **Costs** · **Workspace**
 (cross-repo contracts & co-changes). Full view-by-view list in
 [docs/USER_GUIDE.md](docs/USER_GUIDE.md).
 
@@ -403,7 +455,7 @@ diverges from live `.git/HEAD`.
 | `get_risk(targets, changed_files?)` | Hotspot scores, dependents, co-change partners, ownership, test gaps, security signals. Pass `changed_files` for PR mode → a `directive` block (`will_break`, `missing_cochanges`, `missing_tests`, `governance_risk`). |
 | `get_why(query?, targets?)` | Architectural decision records, status, evidence spans, and the supersession **lineage chain**. Falls back to git archaeology when no ADRs exist. |
 | `get_dead_code(...)` | Unreachable code by confidence tier with cleanup-impact estimates; cross-repo consumer detection in workspace mode. |
-| `get_health(targets?, include?)` | Biomarker scores per file across three signals (defect · maintainability · performance). Dashboard mode → KPIs + lowest-scoring files + module rollup; targeted mode → per-file findings. Self-check before a PR via `include`: `accuracy` (does the score find the bugs), `signals` (per-file churn / owners / prior defects), `churn_complexity`, a dimension name to filter findings, plus `coverage`, `refactoring`, `trend`. |
+| `get_health(targets?, include?)` | Biomarker scores per file across three signals (defect · maintainability · performance). Dashboard mode → KPIs + lowest-scoring files + module rollup; targeted mode → per-file findings. Self-check before a PR via `include`: `accuracy` (does the score find the bugs), `signals` (per-file churn / owners / prior defects), `churn_complexity`, a dimension name to filter findings, plus `coverage`, `trend`, and `refactoring` → **structured, graph-aware refactoring plans** (split groups, move target, cut edges + blast radius), not template strings. |
 
 Worked example (*"Add rate limiting to all API endpoints"* in 5 calls instead of
 ~30 greps+reads) and the full reference: **[docs/MCP_TOOLS.md →](docs/MCP_TOOLS.md)**
@@ -426,6 +478,7 @@ Worked example (*"Add rate limiting to all API endpoints"* in 5 calls instead of
 | Untested-hotspot detection | ✅ coverage × hotspot | ❌ | ❌ | ❌ | ❌ |
 | Health trend + declining alerts | ✅ rolling snapshots | ❌ | ❌ | ❌ | ✅ |
 | Refactoring recommendations | ✅ deterministic | ❌ | ❌ | ❌ | ✅ |
+| Concrete cross-file refactoring plans (Extract Class / Move Method / Break Cycle) | ✅ graph-aware + blast radius | ❌ | ❌ | ❌ | ⚠️ within-function only |
 | Git intelligence (hotspots, ownership, co-change) | ✅ | ❌ | ❌ | ❌ | ✅ |
 | Bus factor analysis | ✅ | ❌ | ❌ | ❌ | ✅ |
 | Dead code detection | ✅ | ❌ | ❌ | ❌ | ❌ |
@@ -434,8 +487,9 @@ Worked example (*"Add rate limiting to all API endpoints"* in 5 calls instead of
 | Local dashboard | ✅ | ❌ | ❌ | ❌ IDE only | ✅ |
 
 **repowise is the intersection:** behavioral git intelligence + a defect-validated
-code-health score + auto-generated docs + agent-native MCP + architectural
-decisions + multi-repo workspace intelligence — self-hostable and open source.
+code-health score *with the graph-aware fix attached* + auto-generated docs +
+agent-native MCP + architectural decisions + multi-repo workspace intelligence —
+self-hostable and open source.
 Full side-by-side comparisons (CodeScene, DeepWiki, Sourcegraph, Cursor, GitClear):
 **[repowise.dev/compare →](https://www.repowise.dev/compare)**.
 
