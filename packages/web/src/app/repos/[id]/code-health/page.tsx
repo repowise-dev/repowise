@@ -14,7 +14,7 @@
  */
 
 import { useParams, useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useMemo } from "react";
+import { useCallback } from "react";
 import useSWR from "swr";
 import { HeartPulse, RotateCw } from "lucide-react";
 import { PageShell } from "@repowise-dev/ui/shared/page-shell";
@@ -23,6 +23,7 @@ import { CollapsibleSection } from "@repowise-dev/ui/shared/collapsible-section"
 import { Button } from "@repowise-dev/ui/ui/button";
 import type { CodeHealthOverlay } from "@repowise-dev/ui/health";
 import { TriageTab } from "@/components/code-health/triage-tab";
+import { FindingsTab } from "@/components/code-health/findings-tab";
 import { CoverageTab } from "@/components/code-health/coverage-tab";
 import { TrendSection } from "@/components/code-health/trend-tab";
 import { HotspotsTab } from "@/components/risk/hotspots-tab";
@@ -30,21 +31,20 @@ import { DeadCodeTab } from "@/components/risk/dead-code-tab";
 import { ImpactTab } from "@/components/risk/impact-tab";
 import { SecurityTab } from "@/components/risk/security-tab";
 import {
-  getChurnComplexity,
   getHealthOverview,
   getHealthTrend,
   listHealthFiles,
-  type ChurnComplexityResponse,
   type HealthOverviewResponse,
   type HealthTrendResponse,
   type HealthFilesResponse,
 } from "@/lib/api/code-health";
 
-const TABS = ["triage", "hotspots", "coverage", "dead-code", "impact", "security"] as const;
+const TABS = ["triage", "findings", "hotspots", "coverage", "dead-code", "impact", "security"] as const;
 type TabId = (typeof TABS)[number];
 
 const TAB_LABELS: Record<TabId, string> = {
-  triage: "Triage",
+  triage: "Overview",
+  findings: "Findings",
   hotspots: "Hotspots",
   coverage: "Coverage",
   "dead-code": "Dead code",
@@ -64,12 +64,13 @@ const TAB_ALIASES: Record<string, TabId> = {
 };
 
 /**
- * Lenses selectable on the map. Only the three backed by per-file map data are
- * offered; an unrecognized `?lens=` (including the retired `dead-code`/
- * `security` values, which now live solely on their own tabs) falls back to
+ * Lenses selectable on the map: the three co-equal health signals (defect /
+ * maintainability / performance), all backed by a per-file score in the map
+ * payload. An unrecognized `?lens=` (including the retired `coverage`/`churn`/
+ * `dead-code`/`security` values, which live on their own tabs) falls back to
  * `health` so a stale URL never renders an all-grey map.
  */
-const OVERLAYS: CodeHealthOverlay[] = ["health", "coverage", "churn"];
+const OVERLAYS: CodeHealthOverlay[] = ["health", "maintainability", "performance"];
 
 export default function CodeHealthPage() {
   const params = useParams<{ id: string }>();
@@ -113,35 +114,10 @@ export default function CodeHealthPage() {
     { revalidateOnFocus: false },
   );
 
-  // Churn percentiles for the churn lens. Shares the SWR key the Hotspots tab
-  // already uses (`health-churn-complexity:`), so the two surfaces dedupe onto
-  // one request rather than double-fetching.
-  const { data: churn, isLoading: churnLoading } = useSWR<ChurnComplexityResponse>(
-    `health-churn-complexity:${repoId}`,
-    () => getChurnComplexity(repoId),
-    { revalidateOnFocus: false },
-  );
-
-  // The churn lens recolors by `churn_percentile`, which arrives from a separate
-  // request. Until it resolves every node falls back to NEUTRAL_FILL — visually
-  // identical to "no data". Flag the in-flight state so the map shows a loading
-  // legend instead of a misleading empty one.
-  const overlayLoading = overlay === "churn" && churnLoading && !churn;
-
-  // Merge churn_percentile onto each map file (join by path) so the churn lens
-  // colors real data. Re-runs only when either source changes.
-  const mapFilesWithChurn: HealthFilesResponse | undefined = useMemo(() => {
-    if (!mapFiles) return undefined;
-    if (!churn) return mapFiles;
-    const byPath = new Map(churn.points.map((p) => [p.file_path, p.churn_percentile]));
-    return {
-      ...mapFiles,
-      files: mapFiles.files.map((file) => ({
-        ...file,
-        churn_percentile: byPath.get(file.file_path) ?? null,
-      })),
-    };
-  }, [mapFiles, churn]);
+  // The maintainability + performance lenses recolor by per-file scores that
+  // already ride along on the map payload (the `/files` rows carry
+  // `maintainability_score` / `performance_score`), so no second fetch or merge
+  // is needed — the lens switch is a pure recolor.
 
   const setTab = useCallback(
     (next: string) => {
@@ -199,14 +175,14 @@ export default function CodeHealthPage() {
               trend={trend}
               overlay={overlay}
               onOverlayChange={setOverlay}
-              mapFiles={mapFilesWithChurn}
-              overlayLoading={overlayLoading}
+              mapFiles={mapFiles}
             />
             <CollapsibleSection title="Health trend" defaultOpen={false}>
               <TrendSection data={trend} isLoading={trendLoading} error={trendError} />
             </CollapsibleSection>
           </div>
         )}
+        {activeTab === "findings" && <FindingsTab repoId={repoId} />}
         {activeTab === "hotspots" && <HotspotsTab repoId={repoId} />}
         {activeTab === "coverage" && <CoverageTab repoId={repoId} />}
         {activeTab === "dead-code" && <DeadCodeTab repoId={repoId} />}

@@ -15,6 +15,14 @@ import {
 import { BiomarkerDetails, type BiomarkerDetailsRecord } from "./biomarker-details";
 import { SEVERITY_CHIP, SEVERITY_LABEL, SEVERITY_ORDER, type Severity } from "./tokens";
 
+/** Severity → dot color, same ramp as every score pill on the surface. */
+const SEVERITY_DOT: Record<Severity, string> = {
+  critical: "var(--color-error)",
+  high: "var(--color-warning)",
+  medium: "var(--color-caution)",
+  low: "var(--color-text-tertiary)",
+};
+
 export interface BiomarkerFinding {
   id: string;
   file_path: string;
@@ -45,6 +53,12 @@ export interface BiomarkerListProps {
   findings: BiomarkerFinding[];
   /** When true, group by biomarker type with collapsible sections. */
   grouped?: boolean;
+  /**
+   * One-line-per-finding mode for narrow rails: a severity dot, the file, a
+   * muted biomarker tag, and the impact, with the prose moved to the tooltip.
+   * Overrides `grouped`.
+   */
+  compact?: boolean;
   /** Optional minimum severity filter. */
   minSeverity?: Severity;
   /** Optional pillar filter: restrict to one health dimension. */
@@ -70,6 +84,7 @@ function findingKey(f: BiomarkerFinding, index: number): string {
 export function BiomarkerList({
   findings,
   grouped = false,
+  compact = false,
   minSeverity,
   dimension,
   onSelect,
@@ -88,6 +103,16 @@ export function BiomarkerList({
       <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-6 text-sm text-[var(--color-text-secondary)]">
         No biomarker findings match the current filters.
       </div>
+    );
+  }
+
+  if (compact) {
+    return (
+      <ul className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] divide-y divide-[var(--color-border-default)]">
+        {filtered.map((f, i) => (
+          <CompactFindingRow key={findingKey(f, i)} finding={f} onSelect={onSelect} />
+        ))}
+      </ul>
     );
   }
 
@@ -222,6 +247,46 @@ function BiomarkerGroup({
         ) : null}
       </ul>
     </div>
+  );
+}
+
+/** A single-line finding row for the inspector rail: severity dot · file ·
+ *  muted biomarker tag · impact. The reason + location ride in the tooltip. */
+function CompactFindingRow({
+  finding,
+  onSelect,
+}: {
+  finding: BiomarkerFinding;
+  onSelect?: ((f: BiomarkerFinding) => void) | undefined;
+}) {
+  const f = finding;
+  const interactive = !!onSelect;
+  const fileName = f.file_path.split("/").pop() ?? f.file_path;
+  const tooltip = `${f.file_path}${f.function_name ? ` :: ${f.function_name}` : ""}\n${SEVERITY_LABEL[f.severity]} · −${f.health_impact.toFixed(2)}\n${f.reason}`;
+  return (
+    <li
+      className={`flex items-center gap-2 px-2.5 py-1.5 text-xs ${interactive ? "cursor-pointer hover:bg-[var(--color-bg-elevated)]" : ""}`}
+      onClick={interactive ? () => onSelect!(f) : undefined}
+      title={tooltip}
+    >
+      <span
+        className="h-2 w-2 shrink-0 rounded-full"
+        style={{ backgroundColor: SEVERITY_DOT[f.severity] }}
+        aria-label={SEVERITY_LABEL[f.severity]}
+      />
+      <span className="min-w-0 flex-1 truncate font-mono text-[var(--color-text-primary)]">
+        {fileName}
+        {f.function_name ? (
+          <span className="text-[var(--color-text-tertiary)]">{` :: ${f.function_name}`}</span>
+        ) : null}
+      </span>
+      <span className="shrink-0 text-[10px] uppercase tracking-wide text-[var(--color-text-tertiary)]">
+        {biomarkerLabel(f.biomarker_type)}
+      </span>
+      <span className="shrink-0 tabular-nums text-[var(--color-error)]">
+        −{f.health_impact.toFixed(2)}
+      </span>
+    </li>
   );
 }
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as d3 from "d3-hierarchy";
 import { scoreBand, type ScoreBand } from "./tokens";
 import { useCommunityFamilies } from "../shared/use-theme-tokens";
@@ -12,6 +12,10 @@ export interface CodeHealthMapFile {
   module: string | null;
   line_coverage_pct: number | null;
   has_test_file: boolean;
+  /** Maintainability pillar score (1–10) — drives the maintainability overlay. */
+  maintainability_score?: number | null;
+  /** Performance-risk pillar score (1–10) — drives the performance overlay. */
+  performance_score?: number | null;
   /** 0–100 churn percentile — drives the churn overlay. */
   churn_percentile?: number | null;
   /** Reclaimable lines on this file — drives the dead-code overlay. */
@@ -26,6 +30,8 @@ export interface CodeHealthMapFile {
  */
 export type CodeHealthOverlay =
   | "health"
+  | "maintainability"
+  | "performance"
   | "coverage"
   | "churn"
   | "dead-code"
@@ -88,6 +94,12 @@ interface OverlaySpec {
   legend: LegendRow[];
 }
 
+/** Score band: same ramp as the health lens, grey when the pillar is unscored. */
+function scoreFill(score: number | null | undefined): string {
+  if (score == null) return NEUTRAL_FILL;
+  return BAND_FILL[scoreBand(score)];
+}
+
 /** Coverage band: green = well covered, red = uncovered, grey = no data. */
 function coverageFill(pct: number | null | undefined): string {
   if (pct == null) return NEUTRAL_FILL;
@@ -112,6 +124,24 @@ const OVERLAY_SPECS: Record<CodeHealthOverlay, OverlaySpec> = {
     caption: "galaxy = module · size = lines of code",
     fill: (f) => BAND_FILL[scoreBand(f.score)],
     legend: BAND_LABEL.map((b) => ({ fill: BAND_FILL[b.band], label: b.label })),
+  },
+  maintainability: {
+    label: "Maintainability",
+    caption: "color = maintainability score · grey = not measured",
+    fill: (f) => scoreFill(f.maintainability_score),
+    legend: [
+      ...BAND_LABEL.map((b) => ({ fill: BAND_FILL[b.band], label: b.label })),
+      { fill: NEUTRAL_FILL, label: "not measured" },
+    ],
+  },
+  performance: {
+    label: "Performance",
+    caption: "color = performance-risk score · grey = not measured",
+    fill: (f) => scoreFill(f.performance_score),
+    legend: [
+      ...BAND_LABEL.map((b) => ({ fill: BAND_FILL[b.band], label: b.label })),
+      { fill: NEUTRAL_FILL, label: "not measured" },
+    ],
   },
   coverage: {
     label: "Coverage",
@@ -158,12 +188,12 @@ const OVERLAY_SPECS: Record<CodeHealthOverlay, OverlaySpec> = {
 };
 
 /**
- * Lenses offered in the on-canvas switcher. Only the three backed by per-file
- * map data are exposed; dead-code and security have no per-file signal in the
- * map payload and live on their own tabs, so their `OVERLAY_SPECS` entries stay
- * defined (the type is extensible) but are not presented here.
+ * Lenses offered in the on-canvas switcher: the three co-equal health signals,
+ * all backed by a per-file score in the map payload. Coverage / churn / dead-code
+ * / security keep their `OVERLAY_SPECS` entries (other tabs still use them) but
+ * are not presented in this switcher.
  */
-const OVERLAY_ORDER: CodeHealthOverlay[] = ["health", "coverage", "churn"];
+const OVERLAY_ORDER: CodeHealthOverlay[] = ["health", "maintainability", "performance"];
 
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5)); // ~2.39996 rad
 
@@ -258,6 +288,23 @@ export function CodeHealthMap({
   const [hovered, setHovered] = useState<CodeHealthMapFile | null>(null);
   const famFor = useCommunityFamilies();
 
+  // Latest callbacks held in refs so the node-layer handlers stay referentially
+  // stable across renders (the parent re-renders on every hover to drive the
+  // rail). Stable handlers let the memoized <FileNodes> skip re-rendering its
+  // ~2,000 circles when only the hover/selection highlight changes.
+  const onSelectRef = useRef(onSelectFile);
+  onSelectRef.current = onSelectFile;
+  const onHoverRef = useRef(onHoverFile);
+  onHoverRef.current = onHoverFile;
+  const handleSelect = useCallback((path: string) => onSelectRef.current?.(path), []);
+  const handleHoverEnter = useCallback((f: CodeHealthMapFile) => {
+    setHovered(f);
+    onHoverRef.current?.(f);
+  }, []);
+  const handleHoverLeave = useCallback((f: CodeHealthMapFile) => {
+    setHovered((h) => (h === f ? null : h));
+  }, []);
+
   useEffect(() => {
     if (!containerRef.current) return;
     const observer = new ResizeObserver((es) => {
@@ -320,6 +367,14 @@ export function CodeHealthMap({
     const byModule = new Map(galaxies.map((g) => [g.module, g]));
     return { galaxies, byModule };
   }, [files, S]);
+
+  // path → laid-out node, for the highlight overlay to position itself without
+  // re-rendering the whole node layer on hover/selection.
+  const nodeIndex = useMemo(() => {
+    const m = new Map<string, FileNode>();
+    for (const g of galaxies) for (const nd of g.nodes) m.set(nd.file.file_path, nd);
+    return m;
+  }, [galaxies]);
 
   // Starfield — static layer, regenerated only on resize.
   const stars = useMemo(() => {
@@ -448,45 +503,33 @@ export function CodeHealthMap({
             );
           })}
 
-          {/* File nodes */}
-          {galaxies.map((g) => {
-            const faded = focusGalaxy != null && focusGalaxy !== g;
-            return (
-              <g key={`nodes-${g.module}`}>
-                {g.nodes.map((nd) => {
-                  const f = nd.file;
-                  const dim = q.length > 0 && !f.file_path.toLowerCase().includes(q);
-                  const isSel = selectedPath === f.file_path;
-                  const isHover = hovered?.file_path === f.file_path;
-                  return (
-                    <circle
-                      key={f.file_path}
-                      cx={nd.x + offX}
-                      cy={nd.y + offY}
-                      r={isHover ? nd.r + 1.5 : nd.r}
-                      fill={overlaySpec.fill(f)}
-                      fillOpacity={faded ? 0.18 : dim ? 0.12 : isHover || isSel ? 1 : 0.9}
-                      stroke={isSel ? "var(--color-text-primary)" : "var(--color-bg-canvas)"}
-                      strokeWidth={isSel ? 2 : 0.5}
-                      vectorEffect="non-scaling-stroke"
-                      className={onSelectFile ? "cursor-pointer" : undefined}
-                      onMouseEnter={() => {
-                        setHovered(f);
-                        onHoverFile?.(f);
-                      }}
-                      onMouseLeave={() => setHovered((h) => (h === f ? null : h))}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onSelectFile?.(f.file_path);
-                      }}
-                    >
-                      <title>{`${f.file_path}\nscore ${f.score.toFixed(1)} · ${f.nloc.toLocaleString()} NLOC`}</title>
-                    </circle>
-                  );
-                })}
-              </g>
-            );
-          })}
+          {/* File nodes — memoized base layer (~2,000 circles). Hover and
+              selection are drawn by the cheap highlight layer below, so moving
+              the mouse never re-renders this layer. */}
+          <FileNodes
+            galaxies={galaxies}
+            focusModuleKey={focusGalaxy?.module ?? null}
+            fill={overlaySpec.fill}
+            q={q}
+            offX={offX}
+            offY={offY}
+            interactive={!!onSelectFile}
+            onSelect={handleSelect}
+            onHoverEnter={handleHoverEnter}
+            onHoverLeave={handleHoverLeave}
+          />
+
+          {/* Highlight overlay — the hovered (enlarged, opaque) and selected
+              (ring) nodes only, drawn on top. Re-renders on hover/select; the
+              base node layer above stays untouched. */}
+          <NodeHighlight
+            hovered={hovered}
+            selectedPath={selectedPath ?? null}
+            nodeIndex={nodeIndex}
+            offX={offX}
+            offY={offY}
+            fill={overlaySpec.fill}
+          />
 
           {/* Hub markers */}
           {galaxies.map((g) => {
@@ -608,6 +651,123 @@ export function CodeHealthMap({
       {/* Hover tooltip */}
       {hovered ? <HoverCard file={hovered} /> : null}
     </div>
+  );
+}
+
+/**
+ * The base file-node layer: every file as a circle, sized + colored by the
+ * active lens. Memoized and fed only stable props (laid-out galaxies, a stable
+ * fill fn, stable handlers), so a hover — which re-renders the parent — never
+ * reconciles these ~2,000 elements. Hover/selection live in {@link NodeHighlight}.
+ */
+const FileNodes = memo(function FileNodes({
+  galaxies,
+  focusModuleKey,
+  fill,
+  q,
+  offX,
+  offY,
+  interactive,
+  onSelect,
+  onHoverEnter,
+  onHoverLeave,
+}: {
+  galaxies: Galaxy[];
+  focusModuleKey: string | null;
+  fill: (f: CodeHealthMapFile) => string;
+  q: string;
+  offX: number;
+  offY: number;
+  interactive: boolean;
+  onSelect: (path: string) => void;
+  onHoverEnter: (f: CodeHealthMapFile) => void;
+  onHoverLeave: (f: CodeHealthMapFile) => void;
+}) {
+  return (
+    <>
+      {galaxies.map((g) => {
+        const faded = focusModuleKey != null && g.module !== focusModuleKey;
+        return (
+          <g key={`nodes-${g.module}`}>
+            {g.nodes.map((nd) => {
+              const f = nd.file;
+              const dim = q.length > 0 && !f.file_path.toLowerCase().includes(q);
+              return (
+                <circle
+                  key={f.file_path}
+                  cx={nd.x + offX}
+                  cy={nd.y + offY}
+                  r={nd.r}
+                  fill={fill(f)}
+                  fillOpacity={faded ? 0.18 : dim ? 0.12 : 0.9}
+                  stroke="var(--color-bg-canvas)"
+                  strokeWidth={0.5}
+                  vectorEffect="non-scaling-stroke"
+                  className={interactive ? "cursor-pointer" : undefined}
+                  onMouseEnter={() => onHoverEnter(f)}
+                  onMouseLeave={() => onHoverLeave(f)}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onSelect(f.file_path);
+                  }}
+                >
+                  <title>{`${f.file_path}\nscore ${f.score.toFixed(1)} · ${f.nloc.toLocaleString()} NLOC`}</title>
+                </circle>
+              );
+            })}
+          </g>
+        );
+      })}
+    </>
+  );
+});
+
+/** The hovered + selected nodes only, drawn on top of the static node layer so
+ *  pointer movement repaints two circles instead of the whole field. */
+function NodeHighlight({
+  hovered,
+  selectedPath,
+  nodeIndex,
+  offX,
+  offY,
+  fill,
+}: {
+  hovered: CodeHealthMapFile | null;
+  selectedPath: string | null;
+  nodeIndex: Map<string, FileNode>;
+  offX: number;
+  offY: number;
+  fill: (f: CodeHealthMapFile) => string;
+}) {
+  const sel = selectedPath ? nodeIndex.get(selectedPath) : null;
+  const hov = hovered ? nodeIndex.get(hovered.file_path) : null;
+  return (
+    <g className="pointer-events-none">
+      {sel ? (
+        <circle
+          cx={sel.x + offX}
+          cy={sel.y + offY}
+          r={sel.r}
+          fill={fill(sel.file)}
+          fillOpacity={1}
+          stroke="var(--color-text-primary)"
+          strokeWidth={2}
+          vectorEffect="non-scaling-stroke"
+        />
+      ) : null}
+      {hov && hov !== sel ? (
+        <circle
+          cx={hov.x + offX}
+          cy={hov.y + offY}
+          r={hov.r + 1.5}
+          fill={fill(hov.file)}
+          fillOpacity={1}
+          stroke="var(--color-bg-canvas)"
+          strokeWidth={0.5}
+          vectorEffect="non-scaling-stroke"
+        />
+      ) : null}
+    </g>
   );
 }
 

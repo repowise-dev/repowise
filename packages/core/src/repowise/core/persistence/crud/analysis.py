@@ -433,7 +433,12 @@ async def get_health_findings(
         HealthFinding.status == status,
     )
     if biomarker_type is not None:
-        q = q.where(HealthFinding.biomarker_type == biomarker_type)
+        # Accept a comma-separated list so a caller can pull several biomarker
+        # types in one request (e.g. the function-level + coupling panels).
+        # A single value with no comma still matches exactly (``IN`` of one).
+        types = [t.strip() for t in biomarker_type.split(",") if t.strip()]
+        if types:
+            q = q.where(HealthFinding.biomarker_type.in_(types))
     if file_path is not None:
         q = q.where(HealthFinding.file_path == file_path)
     if dimension is not None:
