@@ -18,6 +18,7 @@ import { Skeleton } from "../ui/skeleton";
 import { EmptyState } from "../shared/empty-state";
 import { ResultsFooter } from "../shared/results-footer";
 import { RowActions } from "../shared/row-actions";
+import { VirtualizedTable } from "../shared/virtualized-table";
 import { truncatePath } from "../lib/format";
 import { cn } from "../lib/cn";
 import type { CodeSymbol } from "@repowise-dev/types/symbols";
@@ -268,113 +269,114 @@ export function SymbolTable({
         <EmptyState title="No symbols found" description="Try adjusting your filters." />
       ) : (
         <div className="rounded-lg border border-[var(--color-border-default)] overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="sticky top-0 z-10">
-                <tr className="border-b border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]">
-                  <th className="px-4 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-32">
-                    <span className="inline-flex items-center gap-1">
-                      <TrendingUp className="h-3 w-3" />
-                      Importance
+          <VirtualizedTable
+            rows={items}
+            rowKey={(sym) => sym.id}
+            estimateRowHeight={48}
+            className="overflow-x-auto"
+            tableClassName="w-full text-sm"
+            headerClassName="border-b border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]"
+            header={
+              <tr className="border-b border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]">
+                <th className="px-4 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-32">
+                  <span className="inline-flex items-center gap-1">
+                    <TrendingUp className="h-3 w-3" />
+                    Importance
+                  </span>
+                </th>
+                <th className="px-4 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
+                  Name
+                </th>
+                <th className="px-4 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
+                  Signals
+                </th>
+                <th className="px-4 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider hidden sm:table-cell">
+                  Kind
+                </th>
+                <th className="px-4 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider hidden sm:table-cell">
+                  File
+                </th>
+                <th className="px-4 py-2.5 text-right text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider hidden md:table-cell">
+                  Complexity
+                </th>
+                {prefix && <th className="px-2 py-2.5 w-12" />}
+              </tr>
+            }
+            renderRow={(sym) => (
+              <tr
+                className="border-b border-[var(--color-border-default)] hover:bg-[var(--color-bg-elevated)] transition-colors last:border-0 cursor-pointer focus:outline-none focus:bg-[var(--color-bg-elevated)]"
+                tabIndex={0}
+                role="button"
+                aria-label={`View ${sym.qualified_name || sym.name}`}
+                onClick={() => onSelect(sym)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    onSelect(sym);
+                  }
+                }}
+              >
+                <td className="px-4 py-2.5">
+                  <ImportanceBar score={sym.importance_score} />
+                </td>
+                <td className="px-4 py-2.5 font-mono text-xs text-[var(--color-text-primary)] min-w-[200px] max-w-[420px]">
+                  <span className="truncate block" title={sym.qualified_name || sym.name}>
+                    {sym.name}
+                  </span>
+                  {sym.parent_name && (
+                    <span
+                      className="block truncate text-[var(--color-text-tertiary)]"
+                      title={sym.parent_name}
+                    >
+                      .{sym.parent_name}
                     </span>
-                  </th>
-                  <th className="px-4 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
-                    Name
-                  </th>
-                  <th className="px-4 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
-                    Signals
-                  </th>
-                  <th className="px-4 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider hidden sm:table-cell">
-                    Kind
-                  </th>
-                  <th className="px-4 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider hidden sm:table-cell">
-                    File
-                  </th>
-                  <th className="px-4 py-2.5 text-right text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider hidden md:table-cell">
-                    Complexity
-                  </th>
-                  {prefix && <th className="px-2 py-2.5 w-12" />}
-                </tr>
-              </thead>
-              <tbody>
-                {items.map((sym) => (
-                  <tr
-                    key={sym.id}
-                    className="border-b border-[var(--color-border-default)] hover:bg-[var(--color-bg-elevated)] transition-colors last:border-0 cursor-pointer focus:outline-none focus:bg-[var(--color-bg-elevated)]"
-                    tabIndex={0}
-                    role="button"
-                    aria-label={`View ${sym.qualified_name || sym.name}`}
-                    onClick={() => onSelect(sym)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" || e.key === " ") {
-                        e.preventDefault();
-                        onSelect(sym);
-                      }
-                    }}
-                  >
-                    <td className="px-4 py-2.5">
-                      <ImportanceBar score={sym.importance_score} />
-                    </td>
-                    <td className="px-4 py-2.5 font-mono text-xs text-[var(--color-text-primary)] min-w-[200px] max-w-[420px]">
-                      <span className="truncate block" title={sym.qualified_name || sym.name}>
-                        {sym.name}
-                      </span>
-                      {sym.parent_name && (
-                        <span
-                          className="block truncate text-[var(--color-text-tertiary)]"
-                          title={sym.parent_name}
-                        >
-                          .{sym.parent_name}
-                        </span>
-                      )}
-                    </td>
-                    <td className="px-4 py-2.5">
-                      <SignalChips sym={sym} />
-                    </td>
-                    <td className="px-4 py-2.5 hidden sm:table-cell">
-                      <Badge variant={sym.kind === "class" ? "accent" : "default"}>{sym.kind}</Badge>
-                    </td>
-                    <td className="px-4 py-2.5 font-mono text-xs text-[var(--color-text-tertiary)] min-w-[200px] max-w-[420px] hidden sm:table-cell">
-                      <span className="block truncate" title={`${sym.file_path}:${sym.start_line}`}>
-                        {truncatePath(sym.file_path)}:{sym.start_line}
-                      </span>
-                    </td>
-                    <td className="px-4 py-2.5 text-xs text-[var(--color-text-secondary)] tabular-nums hidden md:table-cell text-right">
-                      <span
-                        className={cn(
-                          sym.complexity_estimate > 15
-                            ? "text-[var(--color-error)]"
-                            : sym.complexity_estimate > 8
-                              ? "text-[var(--color-warning)]"
-                              : "",
-                        )}
-                      >
-                        {sym.complexity_estimate}
-                      </span>
-                    </td>
-                    {prefix && (
-                      <td className="px-2 py-2.5" onClick={(e) => e.stopPropagation()}>
-                        <RowActions
-                          actions={[
-                            {
-                              icon: GitBranch,
-                              label: "Graph",
-                              href: `${prefix}/architecture?view=graph&node=${encodeURIComponent(sym.file_path)}`,
-                            },
-                            {
-                              icon: BookOpen,
-                              label: "Docs",
-                              href: `${prefix}/docs?file=${encodeURIComponent(sym.file_path)}`,
-                            },
-                          ]}
-                        />
-                      </td>
+                  )}
+                </td>
+                <td className="px-4 py-2.5">
+                  <SignalChips sym={sym} />
+                </td>
+                <td className="px-4 py-2.5 hidden sm:table-cell">
+                  <Badge variant={sym.kind === "class" ? "accent" : "default"}>{sym.kind}</Badge>
+                </td>
+                <td className="px-4 py-2.5 font-mono text-xs text-[var(--color-text-tertiary)] min-w-[200px] max-w-[420px] hidden sm:table-cell">
+                  <span className="block truncate" title={`${sym.file_path}:${sym.start_line}`}>
+                    {truncatePath(sym.file_path)}:{sym.start_line}
+                  </span>
+                </td>
+                <td className="px-4 py-2.5 text-xs text-[var(--color-text-secondary)] tabular-nums hidden md:table-cell text-right">
+                  <span
+                    className={cn(
+                      sym.complexity_estimate > 15
+                        ? "text-[var(--color-error)]"
+                        : sym.complexity_estimate > 8
+                          ? "text-[var(--color-warning)]"
+                          : "",
                     )}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                  >
+                    {sym.complexity_estimate}
+                  </span>
+                </td>
+                {prefix && (
+                  <td className="px-2 py-2.5" onClick={(e) => e.stopPropagation()}>
+                    <RowActions
+                      actions={[
+                        {
+                          icon: GitBranch,
+                          label: "Graph",
+                          href: `${prefix}/architecture?view=graph&node=${encodeURIComponent(sym.file_path)}`,
+                        },
+                        {
+                          icon: BookOpen,
+                          label: "Docs",
+                          href: `${prefix}/docs?file=${encodeURIComponent(sym.file_path)}`,
+                        },
+                      ]}
+                    />
+                  </td>
+                )}
+              </tr>
+            )}
+          />
           <ResultsFooter
             shown={items.length}
             total={total}

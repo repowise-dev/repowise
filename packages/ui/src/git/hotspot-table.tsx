@@ -12,7 +12,15 @@ import { AiPromptButton } from "../health/ai-prompt-button";
 import { ChurnBar } from "./churn-bar";
 import { formatLOC } from "../lib/format";
 import { cn } from "../lib/cn";
+import { useVirtualRows } from "../shared/virtualized-table";
 import type { Hotspot } from "@repowise-dev/types/git";
+
+/**
+ * Collapsed main-row height (px), used as the initial virtualization estimate.
+ * Real heights — including expanded detail rows — are measured at runtime via
+ * `measureElement`, so this only affects the first paint and off-screen spacers.
+ */
+const ESTIMATED_ROW_HEIGHT = 44;
 
 interface HotspotTableProps {
   hotspots: Hotspot[];
@@ -137,6 +145,36 @@ export function HotspotTable({
     return items;
   }, [hotspots, search, filter, sortKey, sortDir]);
 
+  // Memoize the filter chips' counts so the three full `hotspots` scans only
+  // run when the dataset changes, not on every keystroke / sort / expand.
+  const filters: { key: Filter; label: string; count: number }[] = useMemo(
+    () => [
+      { key: "all", label: "All", count: hotspots.length },
+      { key: "hot", label: "Hot", count: hotspots.filter((h) => h.is_hotspot).length },
+      { key: "risk", label: "Bus factor risk", count: hotspots.filter((h) => h.bus_factor <= 1).length },
+      { key: "accelerating", label: "Accelerating", count: hotspots.filter((h) => h.commit_count_30d * 3 > h.commit_count_90d).length },
+    ],
+    [hotspots],
+  );
+
+  // Window the tbody rows. Rows are variable-height (an expanded row adds a
+  // second <tr>), so we drive the windowing with the lower-level hook and let
+  // it MEASURE real heights via `measureElement`. To capture the *combined*
+  // height of a logical row (main <tr> + optional expanded <tr>) within valid
+  // table semantics, each logical row is rendered as its own <tbody> — a
+  // <table> may contain multiple <tbody>s — and the measured/`data-index`d
+  // element is that <tbody>, so an expanded row's full height is tracked.
+  const {
+    scrollRef,
+    virtualRows,
+    paddingTop,
+    paddingBottom,
+    measureElement,
+  } = useVirtualRows({
+    count: filtered.length,
+    estimateSize: ESTIMATED_ROW_HEIGHT,
+  });
+
   if (hotspots.length === 0) {
     return (
       <EmptyState
@@ -145,13 +183,6 @@ export function HotspotTable({
       />
     );
   }
-
-  const filters: { key: Filter; label: string; count: number }[] = [
-    { key: "all", label: "All", count: hotspots.length },
-    { key: "hot", label: "Hot", count: hotspots.filter((h) => h.is_hotspot).length },
-    { key: "risk", label: "Bus factor risk", count: hotspots.filter((h) => h.bus_factor <= 1).length },
-    { key: "accelerating", label: "Accelerating", count: hotspots.filter((h) => h.commit_count_30d * 3 > h.commit_count_90d).length },
-  ];
 
   return (
     <div className="space-y-3">
@@ -187,7 +218,11 @@ export function HotspotTable({
       {filtered.length === 0 ? (
         <EmptyState title="No matches" description="Try adjusting your search or filters." />
       ) : (
-        <div className="rounded-lg border border-[var(--color-border-default)] overflow-x-auto">
+        <div
+          ref={scrollRef}
+          className="rounded-lg border border-[var(--color-border-default)] overflow-auto"
+          style={{ maxHeight: 600 }}
+        >
           <table className="w-full min-w-[760px] text-sm">
             <thead className="sticky top-0 z-10 bg-[var(--color-bg-elevated)]">
               <tr className="border-b border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]">
@@ -235,13 +270,22 @@ export function HotspotTable({
                 <th className="px-3 py-2.5 w-20" />
               </tr>
             </thead>
-            <tbody>
-              {filtered.map((h, i) => {
-                const accelerating = h.commit_count_30d * 3 > h.commit_count_90d;
-                const trendScore = h.temporal_hotspot_score;
-                const isExpanded = expanded.has(h.file_path);
-                return (
-                  <React.Fragment key={h.file_path}>
+            {paddingTop > 0 && (
+              <tbody aria-hidden>
+                <tr>
+                  <td style={{ height: paddingTop, padding: 0, border: 0 }} />
+                </tr>
+              </tbody>
+            )}
+            {virtualRows.map((vr) => {
+              const h = filtered[vr.index];
+              if (h === undefined) return null;
+              const i = vr.index;
+              const accelerating = h.commit_count_30d * 3 > h.commit_count_90d;
+              const trendScore = h.temporal_hotspot_score;
+              const isExpanded = expanded.has(h.file_path);
+              return (
+                <tbody key={h.file_path} ref={measureElement} data-index={i}>
                   <tr
                     onClick={onSelect ? () => onSelect(h) : undefined}
                     className={cn(
@@ -364,10 +408,16 @@ export function HotspotTable({
                       </td>
                     </tr>
                   )}
-                  </React.Fragment>
-                );
-              })}
-            </tbody>
+                </tbody>
+              );
+            })}
+            {paddingBottom > 0 && (
+              <tbody aria-hidden>
+                <tr>
+                  <td style={{ height: paddingBottom, padding: 0, border: 0 }} />
+                </tr>
+              </tbody>
+            )}
           </table>
           {total != null && (
             <ResultsFooter

@@ -71,4 +71,41 @@ describe("SymbolTable", () => {
     // ResultsFooter renders "Showing 2 of 2 symbols"
     expect(screen.getByText(/Showing/)).toBeTruthy();
   });
+
+  it("windows rows through VirtualizedTable while keeping the footer outside the scroll area", () => {
+    // A small (sub-threshold) dataset so every row renders and assertions stay
+    // deterministic — the windowing wrapper renders all rows below its threshold.
+    const items = Array.from({ length: 30 }, (_, i) =>
+      sym({ id: `s${i}`, name: `sym_${i}`, file_path: `src/file_${i}.ts` }),
+    );
+    const { container } = render(
+      <SymbolTable
+        items={items}
+        isLoading={false}
+        isValidating={false}
+        hasMore={true}
+        total={5000}
+        filters={defaultFilters}
+        onFiltersChange={vi.fn()}
+        onLoadMore={vi.fn()}
+        onSelect={vi.fn()}
+      />,
+    );
+
+    // Every loaded row is present (sub-threshold ⇒ no off-screen omission).
+    expect(screen.getByText("sym_0")).toBeTruthy();
+    expect(screen.getByText("sym_29")).toBeTruthy();
+
+    // The pagination footer reports the authoritative total and lives outside
+    // the virtualized scroll container (so it stays visible as rows scroll).
+    const scroller = container.querySelector(".overflow-x-auto");
+    expect(scroller).not.toBeNull();
+    // ResultsFooter renders the total via toLocaleString ("5,000") in its own node.
+    const totalNode = screen.getByText("5,000");
+    expect(totalNode).toBeTruthy();
+    expect(scroller?.contains(totalNode)).toBe(false);
+    // The "Load more" affordance also lives in the footer, outside the scroller.
+    const loadMore = screen.getByRole("button", { name: "Load more" });
+    expect(scroller?.contains(loadMore)).toBe(false);
+  });
 });

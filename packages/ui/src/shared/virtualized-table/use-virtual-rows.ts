@@ -41,9 +41,9 @@ export interface VirtualRow {
   size: number;
 }
 
-export interface UseVirtualRows {
+export interface UseVirtualRows<E extends HTMLElement = HTMLDivElement> {
   /** Attach to the scroll container (needs `overflow: auto` + a bounded height). */
-  scrollRef: React.RefObject<HTMLDivElement | null>;
+  scrollRef: React.RefObject<E | null>;
   /** The window of rows to render (every row when not virtualizing). */
   virtualRows: VirtualRow[];
   /** Spacer height before the first rendered row; 0 when not virtualizing. */
@@ -66,13 +66,13 @@ const DEFAULT_THRESHOLD = 60;
 
 const NOOP_MEASURE = () => {};
 
-export function useVirtualRows({
+export function useVirtualRows<E extends HTMLElement = HTMLDivElement>({
   count,
   estimateSize = DEFAULT_ESTIMATE,
   overscan = DEFAULT_OVERSCAN,
   threshold = DEFAULT_THRESHOLD,
-}: UseVirtualRowsOptions): UseVirtualRows {
-  const scrollRef = React.useRef<HTMLDivElement | null>(null);
+}: UseVirtualRowsOptions): UseVirtualRows<E> {
+  const scrollRef = React.useRef<E | null>(null);
   const enabled = count > threshold;
 
   const virtualizer = useVirtualizer({

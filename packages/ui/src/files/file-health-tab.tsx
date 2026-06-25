@@ -1,8 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { HeartPulse } from "lucide-react";
 import { EmptyState } from "../shared/empty-state";
+import { VirtualizedTable, useVirtualRows } from "../shared/virtualized-table";
 import { ScoreBreakdown, type ScoreBreakdownCategory } from "../health/score-breakdown";
 import { BiomarkerDetails, type BiomarkerDetailsRecord } from "../health/biomarker-details";
 import {
@@ -41,6 +42,11 @@ interface FileHealthTabProps {
   symbolHref?: ((symbolId: string) => string) | undefined;
 }
 
+/** Collapsed finding-card height guess; cards expand and are measured live. */
+const FINDING_CARD_ESTIMATE = 120;
+/** Blame table row height (compact `py-1.5` rows). */
+const BLAME_ROW_ESTIMATE = 32;
+
 function medianAgeDays(medianAuthorTime: number | null): number | null {
   if (!medianAuthorTime) return null;
   return Math.max(0, Math.round((Date.now() / 1000 - medianAuthorTime) / 86400));
@@ -56,6 +62,30 @@ export function FileHealthTab({
   const [statusOverride, setStatusOverride] = useState<Record<string, FindingStatus>>({});
   const [savingId, setSavingId] = useState<string | null>(null);
   const { metric, breakdown, findings, trend, signals } = health;
+
+  // Window the findings card list. Cards expand, so this is variable-height —
+  // FINDING_CARD_ESTIMATE is the collapsed-card guess; real heights are measured.
+  const findingsVirtual = useVirtualRows<HTMLUListElement>({
+    count: findings.length,
+    estimateSize: FINDING_CARD_ESTIMATE,
+  });
+
+  // Hoist medianAgeDays + the row-name JSX out of the blame render loop so they
+  // run once per dataset change instead of on every render.
+  const blameRows = useMemo(
+    () =>
+      functionBlame.map((row) => ({
+        row,
+        age: medianAgeDays(row.median_author_time),
+        name: (
+          <span className="font-mono">
+            {row.function_name}
+            <span className="text-[var(--color-text-tertiary)]">:{row.start_line}</span>
+          </span>
+        ) as ReactNode,
+      })),
+    [functionBlame],
+  );
 
   if (!metric && findings.length === 0) {
     return (
@@ -141,13 +171,24 @@ export function FileHealthTab({
           <h3 className="text-xs font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
             Findings ({findings.length})
           </h3>
-          <ul className="space-y-2">
-            {findings.map((f) => {
+          <ul
+            ref={findingsVirtual.scrollRef}
+            className="space-y-2 overflow-auto"
+            style={{ maxHeight: 600 }}
+          >
+            {findingsVirtual.paddingTop > 0 && (
+              <li aria-hidden style={{ height: findingsVirtual.paddingTop }} />
+            )}
+            {findingsVirtual.virtualRows.map((vr) => {
+              const f = findings[vr.index];
+              if (f === undefined) return null;
               const info = biomarkerInfo(f.biomarker_type);
               const status = statusOverride[f.id] ?? (f.status as FindingStatus) ?? "open";
               return (
                 <li
                   key={f.id}
+                  ref={findingsVirtual.measureElement}
+                  data-index={vr.index}
                   className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-3 space-y-1"
                 >
                   <div className="flex items-center gap-2 flex-wrap">
@@ -201,6 +242,9 @@ export function FileHealthTab({
                 </li>
               );
             })}
+            {findingsVirtual.paddingBottom > 0 && (
+              <li aria-hidden style={{ height: findingsVirtual.paddingBottom }} />
+            )}
           </ul>
         </section>
       )}
@@ -210,63 +254,57 @@ export function FileHealthTab({
           <h3 className="text-xs font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
             Functions by churn
           </h3>
-          <div className="overflow-x-auto rounded-md border border-[var(--color-border-default)]">
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="border-b border-[var(--color-border-default)] text-left text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)]">
-                  <th className="px-3 py-2 font-medium">Function</th>
-                  <th className="px-3 py-2 font-medium text-right">Mods</th>
-                  <th className="px-3 py-2 font-medium text-right">Recent</th>
-                  <th className="px-3 py-2 font-medium text-right">Median age</th>
-                  <th className="px-3 py-2 font-medium">Owner</th>
-                </tr>
-              </thead>
-              <tbody>
-                {functionBlame.map((b) => {
-                  const age = medianAgeDays(b.median_author_time);
-                  const name = (
-                    <span className="font-mono">
-                      {b.function_name}
-                      <span className="text-[var(--color-text-tertiary)]">:{b.start_line}</span>
-                    </span>
-                  );
-                  return (
-                    <tr
-                      key={b.symbol_id}
-                      className="border-b border-[var(--color-border-default)] last:border-0"
+          <VirtualizedTable
+            rows={blameRows}
+            rowKey={(b) => b.row.symbol_id}
+            estimateRowHeight={BLAME_ROW_ESTIMATE}
+            className="overflow-x-auto rounded-md border border-[var(--color-border-default)]"
+            tableClassName="text-xs"
+            headerClassName="bg-transparent"
+            header={
+              <tr className="border-b border-[var(--color-border-default)] text-left text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)]">
+                <th className="px-3 py-2 font-medium">Function</th>
+                <th className="px-3 py-2 font-medium text-right">Mods</th>
+                <th className="px-3 py-2 font-medium text-right">Recent</th>
+                <th className="px-3 py-2 font-medium text-right">Median age</th>
+                <th className="px-3 py-2 font-medium">Owner</th>
+              </tr>
+            }
+            renderRow={({ row: b, age, name }, index, measureRef) => (
+              <tr
+                ref={measureRef}
+                data-index={index}
+                className="border-b border-[var(--color-border-default)] last:border-0"
+              >
+                <td className="px-3 py-1.5 text-[var(--color-text-primary)]">
+                  {symbolHref ? (
+                    <a
+                      href={symbolHref(b.symbol_id)}
+                      className="hover:text-[var(--color-accent-primary)] hover:underline"
                     >
-                      <td className="px-3 py-1.5 text-[var(--color-text-primary)]">
-                        {symbolHref ? (
-                          <a
-                            href={symbolHref(b.symbol_id)}
-                            className="hover:text-[var(--color-accent-primary)] hover:underline"
-                          >
-                            {name}
-                          </a>
-                        ) : (
-                          name
-                        )}
-                      </td>
-                      <td className="px-3 py-1.5 text-right tabular-nums">{b.mod_count}</td>
-                      <td className="px-3 py-1.5 text-right tabular-nums">{b.recent_mod_count}</td>
-                      <td className="px-3 py-1.5 text-right tabular-nums">
-                        {age == null ? "—" : `${age}d`}
-                      </td>
-                      <td className="px-3 py-1.5 text-[var(--color-text-secondary)]">
-                        {b.owner_name ?? "—"}
-                        {b.owner_line_pct != null && (
-                          <span className="text-[var(--color-text-tertiary)]">
-                            {" "}
-                            ({Math.round(b.owner_line_pct * 100)}%)
-                          </span>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+                      {name}
+                    </a>
+                  ) : (
+                    name
+                  )}
+                </td>
+                <td className="px-3 py-1.5 text-right tabular-nums">{b.mod_count}</td>
+                <td className="px-3 py-1.5 text-right tabular-nums">{b.recent_mod_count}</td>
+                <td className="px-3 py-1.5 text-right tabular-nums">
+                  {age == null ? "—" : `${age}d`}
+                </td>
+                <td className="px-3 py-1.5 text-[var(--color-text-secondary)]">
+                  {b.owner_name ?? "—"}
+                  {b.owner_line_pct != null && (
+                    <span className="text-[var(--color-text-tertiary)]">
+                      {" "}
+                      ({Math.round(b.owner_line_pct * 100)}%)
+                    </span>
+                  )}
+                </td>
+              </tr>
+            )}
+          />
         </section>
       )}
     </div>

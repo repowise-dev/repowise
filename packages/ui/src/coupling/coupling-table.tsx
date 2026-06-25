@@ -1,10 +1,8 @@
 "use client";
 
+import { useMemo } from "react";
 import { EmptyState } from "../shared/empty-state";
-import {
-  ResponsiveTable,
-  type ResponsiveColumn,
-} from "../shared/responsive-table";
+import { VirtualizedTable } from "../shared/virtualized-table";
 import { AiPromptButton } from "../health/ai-prompt-button";
 import type { CouplingEdge } from "@repowise-dev/types/coupling";
 
@@ -21,13 +19,26 @@ function basename(path: string): string {
   return path.split("/").pop() ?? path;
 }
 
+// Column-priority hide classes, mirroring the shared ResponsiveTable scale:
+// priority 2 hides below md (768px), priority 3 hides below lg (1024px). The
+// "pair" identity column (priority 1) is always visible.
+const HIDE_BELOW_MD = "max-md:hidden";
+const HIDE_BELOW_LG = "max-lg:hidden";
+
 /**
  * The precise, sortable companion to the coupling diagram: one row per
  * coupling, strongest first. Clicking a row focuses that file in the ring;
  * rows touching the focused file are emphasized.
+ *
+ * The body is virtualized (windowed `<tbody>`) so long coupling lists stay
+ * cheap to render; below the wrapper's threshold every row renders, so the
+ * common short list behaves exactly as a plain table.
  */
 export function CouplingTable({ edges, focusedPath, onFocusChange, onGeneratePrompt }: CouplingTableProps) {
-  const maxStrength = Math.max(...edges.map((e) => e.strength), 1);
+  // The strength bars are normalized to the strongest coupling; recompute only
+  // when the edge list changes rather than on every render.
+  const maxStrength = useMemo(() => Math.max(...edges.map((e) => e.strength), 1), [edges]);
+
   const incident = (e: CouplingEdge) =>
     focusedPath != null && (e.source === focusedPath || e.target === focusedPath);
 
@@ -46,92 +57,91 @@ export function CouplingTable({ edges, focusedPath, onFocusChange, onGeneratePro
     );
   };
 
-  const columns: ResponsiveColumn<CouplingEdge>[] = [
-    {
-      key: "pair",
-      header: "Coupled files",
-      priority: 1,
-      cellClassName: "min-w-[200px]",
-      render: (e) => (
-        <div className="flex flex-col gap-0.5">
-          {fileCell(e.source, e)}
-          {fileCell(e.target, e, "↔ ")}
-        </div>
-      ),
-    },
-    {
-      key: "strength",
-      header: (
+  if (edges.length === 0) {
+    return (
+      <EmptyState
+        title="No couplings detected"
+        description="No files in this repository have a history of changing together yet."
+      />
+    );
+  }
+
+  const header = (
+    <tr className="bg-[var(--color-bg-elevated)] text-[var(--color-text-tertiary)] text-xs uppercase tracking-wider">
+      <th className="px-3 py-2 text-left font-medium whitespace-nowrap min-w-[200px]">
+        Coupled files
+      </th>
+      <th className={`px-3 py-2 text-left font-medium whitespace-nowrap w-36 ${HIDE_BELOW_MD}`}>
         <span
           title="Recency-weighted count of commits that touched both files. Higher means more or more-recent shared changes. It is not a percentage or a verified dependency."
           className="cursor-help underline decoration-dotted underline-offset-2"
         >
           Strength
         </span>
-      ),
-      mobileLabel: "Strength",
-      priority: 2,
-      headerClassName: "w-36",
-      render: (e) => (
-        <div className="flex items-center gap-2 min-w-[100px]">
-          <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-[var(--color-bg-inset)]">
-            <div
-              className="h-full rounded-full bg-[var(--color-accent-primary)]"
-              style={{ width: `${Math.max(6, Math.round((e.strength / maxStrength) * 100))}%` }}
-            />
+      </th>
+      <th className={`px-3 py-2 text-left font-medium whitespace-nowrap ${HIDE_BELOW_LG}`}>Last</th>
+      {onGeneratePrompt ? (
+        <th className={`px-3 py-2 text-left font-medium whitespace-nowrap w-10 ${HIDE_BELOW_LG}`} />
+      ) : null}
+    </tr>
+  );
+
+  const renderRow = (e: CouplingEdge) => {
+    const onClick = onFocusChange
+      ? () => onFocusChange(focusedPath === e.source ? null : e.source)
+      : undefined;
+    const isSelected = focusedPath != null && focusedPath === e.source;
+    return (
+      <tr
+        className={`border-t border-[var(--color-border-default)] hover:bg-[var(--color-bg-elevated)] ${
+          isSelected ? "bg-[var(--color-accent-muted)]/30 " : ""
+        }${onClick ? "cursor-pointer" : ""}`}
+        onClick={onClick}
+      >
+        <td className="px-3 py-2 text-left min-w-[200px]">
+          <div className="flex flex-col gap-0.5">
+            {fileCell(e.source, e)}
+            {fileCell(e.target, e, "↔ ")}
           </div>
-          <span className="w-8 text-right text-xs tabular-nums text-[var(--color-text-tertiary)]">
-            {e.strength}
-          </span>
-        </div>
-      ),
-      mobileRender: (e) => e.strength,
-    },
-    {
-      key: "last",
-      header: "Last",
-      priority: 3,
-      cellClassName: "text-xs text-[var(--color-text-tertiary)]",
-      render: (e) => (
-        <span title={e.last_co_change ? new Date(e.last_co_change).toLocaleString() : undefined}>
-          {e.last_co_change ? new Date(e.last_co_change).toLocaleDateString() : "—"}
-        </span>
-      ),
-    },
-    ...(onGeneratePrompt
-      ? [
-          {
-            key: "ai",
-            header: "",
-            priority: 3,
-            headerClassName: "w-10",
-            render: (e: CouplingEdge) => (
-              <AiPromptButton
-                variant="icon"
-                label="AI decouple prompt"
-                onClick={() => onGeneratePrompt(e)}
+        </td>
+        <td className={`px-3 py-2 text-left ${HIDE_BELOW_MD}`}>
+          <div className="flex items-center gap-2 min-w-[100px]">
+            <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-[var(--color-bg-inset)]">
+              <div
+                className="h-full rounded-full bg-[var(--color-accent-primary)]"
+                style={{ width: `${Math.max(6, Math.round((e.strength / maxStrength) * 100))}%` }}
               />
-            ),
-          } as ResponsiveColumn<CouplingEdge>,
-        ]
-      : []),
-  ];
+            </div>
+            <span className="w-8 text-right text-xs tabular-nums text-[var(--color-text-tertiary)]">
+              {e.strength}
+            </span>
+          </div>
+        </td>
+        <td className={`px-3 py-2 text-left text-xs text-[var(--color-text-tertiary)] ${HIDE_BELOW_LG}`}>
+          <span title={e.last_co_change ? new Date(e.last_co_change).toLocaleString() : undefined}>
+            {e.last_co_change ? new Date(e.last_co_change).toLocaleDateString() : "—"}
+          </span>
+        </td>
+        {onGeneratePrompt ? (
+          <td className={`px-3 py-2 text-left w-10 ${HIDE_BELOW_LG}`}>
+            <AiPromptButton
+              variant="icon"
+              label="AI decouple prompt"
+              onClick={() => onGeneratePrompt(e)}
+            />
+          </td>
+        ) : null}
+      </tr>
+    );
+  };
 
   return (
-    <ResponsiveTable
-      columns={columns}
+    <VirtualizedTable<CouplingEdge>
       rows={edges}
       rowKey={(e) => `${e.source}|${e.target}`}
-      bare
-      onRowClick={
-        onFocusChange ? (e) => onFocusChange(focusedPath === e.source ? null : e.source) : undefined
-      }
-      empty={
-        <EmptyState
-          title="No couplings detected"
-          description="No files in this repository have a history of changing together yet."
-        />
-      }
+      header={header}
+      renderRow={renderRow}
+      aria-label="Change-coupling pairs"
     />
   );
 }

@@ -35,6 +35,9 @@ function inkFor(score: number | null): string {
   return score == null ? NEUTRAL_INK : BAND_INK[bandForScore(score)];
 }
 
+/** Shared empty neighbor set so the no-focus path allocates nothing. */
+const EMPTY_SET: ReadonlySet<string> = new Set<string>();
+
 /** A leaf in the radial cluster: a file, plus its layout angle/radius. */
 interface TreeDatum {
   name: string; // path segment (display)
@@ -132,6 +135,17 @@ export function CouplingGraph({
     const leafByPath = new Map<string, HierarchyNode<TreeDatum>>();
     for (const leaf of leaves) if (leaf.data.path) leafByPath.set(leaf.data.path, leaf);
 
+    // O(1) lookups for the render/hover paths: file_path -> node, and a
+    // symmetric adjacency map built once from the edge list. These replace the
+    // former O(N) `nodes.find(...)` per edge and the O(E) per-focus rescan.
+    const nodeByPath = new Map<string, CouplingNode>();
+    for (const n of nodes) nodeByPath.set(n.file_path, n);
+    const adjacency = new Map<string, Set<string>>();
+    for (const e of edges) {
+      (adjacency.get(e.source) ?? adjacency.set(e.source, new Set()).get(e.source)!).add(e.target);
+      (adjacency.get(e.target) ?? adjacency.set(e.target, new Set()).get(e.target)!).add(e.source);
+    }
+
     const line = lineRadial<HierarchyNode<TreeDatum>>()
       .curve(curveBundle.beta(0.82))
       .radius((d) => d.y!)
@@ -169,7 +183,18 @@ export function CouplingGraph({
       }
     }
 
-    return { radius, leaves, leafByPath, drawn, degree, maxNloc, maxStrength, groups };
+    return {
+      radius,
+      leaves,
+      leafByPath,
+      nodeByPath,
+      adjacency,
+      drawn,
+      degree,
+      maxNloc,
+      maxStrength,
+      groups,
+    };
   }, [nodes, edges, size]);
 
   if (!layout) {
@@ -184,7 +209,8 @@ export function CouplingGraph({
     );
   }
 
-  const { radius, leaves, drawn, degree, maxNloc, maxStrength, groups } = layout;
+  const { radius, leaves, nodeByPath, adjacency, drawn, degree, maxNloc, maxStrength, groups } =
+    layout;
   const c = size / 2;
 
   // Top-degree hubs are always labelled; the rest reveal on hover. This replaces
@@ -214,14 +240,9 @@ export function CouplingGraph({
     return base;
   };
 
-  // Neighbors of the focused file (for dimming + dot emphasis).
-  const neighbors = new Set<string>();
-  if (focus) {
-    for (const e of edges) {
-      if (e.source === focus) neighbors.add(e.target);
-      if (e.target === focus) neighbors.add(e.source);
-    }
-  }
+  // Neighbors of the focused file (for dimming + dot emphasis). O(1) lookup
+  // into the precomputed adjacency map instead of an O(E) rescan per focus.
+  const neighbors = (focus ? adjacency.get(focus) : undefined) ?? EMPTY_SET;
 
   const dotR = (n: CouplingNode) =>
     2 + Math.sqrt(n.nloc / maxNloc) * 2.4 + Math.min((degree.get(n.file_path) ?? 0) / 6, 2.6);
@@ -280,9 +301,7 @@ export function CouplingGraph({
               const incident = focus === edge.source || focus === edge.target;
               const dim = focus != null && !incident;
               const partnerPath = focus === edge.source ? edge.target : edge.source;
-              const partnerNode = incident
-                ? nodes.find((n) => n.file_path === partnerPath)
-                : undefined;
+              const partnerNode = incident ? nodeByPath.get(partnerPath) : undefined;
               const strengthFrac = edge.strength / maxStrength;
               const stroke = incident ? inkFor(partnerNode?.score ?? null) : NEUTRAL_INK;
               return (
