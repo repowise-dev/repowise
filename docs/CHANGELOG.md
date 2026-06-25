@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.24.0] — 2026-06-25
+
+### Added
+- **Refactoring intelligence: deterministic, graph-aware refactoring plans.** Code Health now derives concrete refactoring suggestions from the dependency graph and health biomarkers, with detectors for **Extract Class**, **Extract Helper**, **Move Method**, and **Break Cycle** (#586, #587, #588). Each suggestion is a ranked plan card carrying impact, effort, blast radius, and evidence, browsable in a new web Refactoring tab with file-first cards, a visual plan modal, and one-click agent export (#589, #590). Plans can optionally be turned into real code: opt-in LLM code generation produces a change from a deterministic plan, viewable in a side-by-side diff viewer (#592, #594).
+- **Airy Code Health overview with a Findings workbench.** The Code Health page was redesigned around a calmer overview and a dedicated Findings workbench for triaging biomarkers. (#593)
+- **Browsable Files page.** A new Files page lets you browse the repo's files directly, with a restyled table and dark-mode polish. (#591)
+- **`init` Advanced options.** `repowise init` gained an Advanced section with a docs toggle and a configurable index-only mode, and raised the commit-history cap. (#599)
+
+### Changed
+- **Large tables are virtualized.** A shared windowing primitive virtualizes large tables across the dashboard, keeping big repos responsive. (#598)
+
+### Fixed
+- **Execution-flow entry-point scores survive updates.** Incremental updates no longer wipe entry-point scores on the execution-flow graph. (#585)
+
+### Documentation
+- README and docs now lead with code health as a measure-locate-fix loop and document refactoring intelligence. (#595)
+- Plugin: version bump to 0.24.0.
+
+---
+
 ## [0.23.0] — 2026-06-23
 
 ### Added
