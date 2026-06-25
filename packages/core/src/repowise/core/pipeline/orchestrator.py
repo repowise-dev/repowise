@@ -186,7 +186,7 @@ async def run_pipeline(
     repo_path:
         Path to an already-cloned repository on disk.
     commit_depth:
-        Maximum commits to analyse per file (1-5000). Default 500.
+        Maximum commits to analyse per file (1-10000). Default 500.
     follow_renames:
         Use ``git log --follow`` to track files across renames.
     skip_tests:
@@ -225,7 +225,7 @@ async def run_pipeline(
     repo_path = Path(repo_path).resolve()
     start = time.monotonic()
 
-    commit_depth = max(1, min(commit_depth, 5000))
+    commit_depth = max(1, min(commit_depth, 10000))
 
     # Mode policy: FAST forces ESSENTIAL git indexing and disables doc
     # generation (and therefore all LLM calls). STANDARD preserves the

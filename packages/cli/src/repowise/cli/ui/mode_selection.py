@@ -15,6 +15,7 @@ from rich.text import Text
 
 from repowise.cli.ui.brand import BRAND, BRAND_STYLE, DIM
 from repowise.cli.ui.repo_scanner import RepoScanInfo
+from repowise.core.generation.styles import DEFAULT_STYLE, list_styles
 from repowise.core.reasoning import REASONING_MODES
 
 # A repo at or above this many files is "large" — large enough that a quick
@@ -83,8 +84,8 @@ def interactive_mode_select(console: Console) -> str:
 
     body.append("  [3]", style=BRAND_STYLE)
     body.append("  Advanced\n", style="bold")
-    body.append("       Everything, with extra configuration\n")
-    body.append("       (commit limit, exclude patterns, concurrency …)")
+    body.append("       Full control — turn AI docs on or off, then tune indexing\n")
+    body.append("       and generation (commit limit, exclude patterns, concurrency …)")
 
     console.print(
         Panel(
@@ -102,6 +103,53 @@ def interactive_mode_select(console: Console) -> str:
         console=console,
     )
     return {"1": "full", "2": "index_only", "3": "advanced"}[choice]
+
+
+def interactive_generate_docs_toggle(console: Console) -> bool:
+    """Advanced-mode entry: ask whether to generate AI wiki docs.
+
+    Returns True for a full doc-generating run, False for an index-only run that
+    still flows through the indexing-configuration prompts. Indexing (graph, git,
+    code health, dead code) is free; only doc generation calls the LLM.
+    """
+    console.print()
+    console.print(
+        "  [dim]AI docs call the LLM (has a cost). Indexing — dependency graph, "
+        "git history,\n  code health, dead code — is always free.[/dim]"
+    )
+    return click.confirm("  Generate AI wiki docs?", default=True)
+
+
+def interactive_customize_offer(console: Console, *, generate_docs: bool) -> bool:
+    """Offer to drop into advanced configuration from full / index-only modes.
+
+    Returns True when the user wants to tune the defaults rather than accept
+    them. The label tracks whether generation knobs are in scope.
+    """
+    what = "indexing & generation" if generate_docs else "indexing"
+    console.print()
+    return click.confirm(f"  Customize {what} options?", default=False)
+
+
+def prompt_wiki_style(console: Console) -> str:
+    """Interactive picker for the wiki documentation style.
+
+    Returns the chosen style name. Defaults to the comprehensive baseline so a
+    bare Enter keeps today's behaviour.
+    """
+    styles = list_styles()
+    console.print("\n[bold]Documentation style[/bold]")
+    for idx, spec in enumerate(styles, 1):
+        marker = " [dim](default)[/dim]" if spec.name == DEFAULT_STYLE else ""
+        console.print(f"  {idx}. [cyan]{spec.name}[/cyan]{marker} — {spec.description}")
+    default_idx = next((i for i, s in enumerate(styles, 1) if s.name == DEFAULT_STYLE), 1)
+    choice = click.prompt(
+        "  Choose a style",
+        type=click.IntRange(1, len(styles)),
+        default=default_idx,
+        show_default=True,
+    )
+    return styles[choice - 1].name
 
 
 def _prompt_scope(console: Console, scan: RepoScanInfo | None, result: dict[str, Any]) -> None:
@@ -216,7 +264,7 @@ def _prompt_git(console: Console, scan: RepoScanInfo | None, result: dict[str, A
         default=default_limit,
         type=int,
     )
-    val = max(1, min(val, 5000))
+    val = max(1, min(val, 10000))
     result["commit_limit"] = val
 
     result["follow_renames"] = click.confirm(
@@ -233,8 +281,14 @@ def _prompt_generation(
     allow_fast: bool,
     is_large: bool,
     prompt_reasoning: bool = True,
+    wiki_style: str | None = None,
 ) -> None:
-    """Generation section: concurrency, reasoning, embedder, test run, tiering."""
+    """Generation section: concurrency, reasoning, embedder, test run, tiering,
+    onboarding, decision harvesting, and wiki style.
+
+    *wiki_style* carries an explicit ``--wiki-style`` value; when set the style
+    prompt is skipped so the flag wins.
+    """
     console.print()
     console.print(f"  [{BRAND}]Generation[/]")
     console.print("  [dim]LLM page generation settings[/dim]")
@@ -276,15 +330,34 @@ def _prompt_generation(
         default=False,
     )
 
+    # Curated onboarding collection (up to 8 overview pages) — extra LLM cost,
+    # slots without enough signal are skipped automatically.
+    result["onboarding"] = click.confirm(
+        "  Generate the curated Onboarding collection? (up to 8 overview pages)",
+        default=True,
+    )
+
+    # Decision harvesting rides along with file-page generation; the token cost
+    # lands only on files that actually carry a decision.
+    result["harvest_decisions"] = click.confirm(
+        "  Harvest architectural decisions during generation?",
+        default=True,
+    )
+
     # Tiered doc generation: cap the number of full-LLM (tier-1) file pages on
     # large repos. The long tail is rendered from a deterministic template +
     # embedded for search (no LLM). 0 = no cap (every selected page is tier-1).
-    # Only meaningful when docs actually generate (standard mode).
+    # Only meaningful when docs actually generate (standard mode). This caps the
+    # full-LLM pages; the coverage chooser (shown later) sets how many files are
+    # documented at all.
     result["tier1_top_n"] = None
     if allow_fast and result["run_mode"] == "standard":
         tier_default = 300 if is_large else 0
         console.print()
-        console.print("  [dim]Tiered docs: cap full-LLM file pages; rest are template-only.[/dim]")
+        console.print(
+            "  [dim]Tiered docs: cap full-LLM file pages; rest are template-only. "
+            "Coverage (how many files to document) is chosen just before generation.[/dim]"
+        )
         tier_val = click.prompt(
             "  Full-LLM file-page cap (tier-1, 0 = no cap)",
             default=tier_default,
@@ -292,33 +365,59 @@ def _prompt_generation(
         )
         result["tier1_top_n"] = tier_val if tier_val > 0 else None
 
+    # Documentation voice/density. An explicit --wiki-style wins; otherwise prompt
+    # here so the choice lands inside the section, before the summary panel.
+    result["wiki_style"] = wiki_style if wiki_style is not None else prompt_wiki_style(console)
 
-def _build_summary_table(result: dict[str, Any], patterns: list[str], *, allow_fast: bool) -> Table:
-    """Build the configuration-summary table from the gathered answers."""
+
+def _build_summary_table(
+    result: dict[str, Any],
+    patterns: list[str],
+    *,
+    allow_fast: bool,
+    generate_docs: bool = True,
+) -> Table:
+    """Build the configuration-summary table from the gathered answers.
+
+    Generation rows are shown only when *generate_docs* is True, so an
+    index-only advanced run doesn't list knobs that never apply.
+    """
     summary = Table(box=None, padding=(0, 2), show_header=False)
     summary.add_column("Option", style="dim")
     summary.add_column("Value", style="bold")
+
+    # ── Indexing (always) ──────────────────────────────────────────────────
+    summary.add_row("Generate docs", "yes" if generate_docs else "no (index only)")
     summary.add_row("Skip tests", "yes" if result["skip_tests"] else "no")
     summary.add_row("Skip infra", "yes" if result["skip_infra"] else "no")
     if result["include_submodules"]:
         summary.add_row("Include submodules", "yes")
     summary.add_row("Commit limit", str(result["commit_limit"]))
     summary.add_row("Follow renames", "yes" if result["follow_renames"] else "no")
-    summary.add_row("Concurrency", str(result["concurrency"]))
-    if result.get("reasoning"):
-        summary.add_row("Reasoning", result["reasoning"])
-    summary.add_row("Embedder", result["embedder"])
     if allow_fast:
         summary.add_row("Run mode", result["run_mode"])
-        if result.get("tier1_top_n"):
-            summary.add_row("Full-LLM page cap", str(result["tier1_top_n"]))
     if patterns:
         if len(patterns) <= 5:
             summary.add_row("Exclude", ", ".join(patterns))
         else:
             # Bullet-list when many patterns — comma-joined wraps unreadably.
             summary.add_row("Exclude", "\n".join(f"• {p}" for p in patterns))
-    summary.add_row("Test run", "yes" if result["test_run"] else "no")
+
+    # ── Generation (docs only) ─────────────────────────────────────────────
+    if generate_docs:
+        summary.add_row("Concurrency", str(result["concurrency"]))
+        if result.get("reasoning"):
+            summary.add_row("Reasoning", result["reasoning"])
+        summary.add_row("Embedder", result["embedder"])
+        if result.get("wiki_style"):
+            summary.add_row("Wiki style", result["wiki_style"])
+        if allow_fast and result.get("tier1_top_n"):
+            summary.add_row("Full-LLM page cap", str(result["tier1_top_n"]))
+        summary.add_row("Onboarding", "yes" if result.get("onboarding", True) else "no")
+        summary.add_row(
+            "Harvest decisions", "yes" if result.get("harvest_decisions", True) else "no"
+        )
+        summary.add_row("Test run", "yes" if result["test_run"] else "no")
     return summary
 
 
@@ -328,16 +427,26 @@ def interactive_advanced_config(
     *,
     allow_fast: bool = False,
     prompt_reasoning: bool = True,
+    generate_docs: bool = True,
+    wiki_style: str | None = None,
 ) -> dict[str, Any]:
     """Prompt for advanced init options, grouped into logical sections.
 
     When *scan* is provided, uses it for smart defaults and contextual hints
     (file counts, suggested exclude patterns, etc.).
 
+    The indexing section (scope, run mode, exclude, git) is always prompted.
+    The generation section (concurrency, reasoning, embedder, onboarding,
+    decision harvesting, tiering, wiki style, test run) is prompted only when
+    *generate_docs* is True, so an index-only advanced run skips knobs that have
+    no effect. ``generate_docs`` is echoed back in the result.
+
     Returns a dict with keys matching init_command kwargs:
     ``commit_limit``, ``follow_renames``, ``skip_tests``, ``skip_infra``,
-    ``concurrency``, ``exclude``, ``test_run``, ``embedder``,
-    ``include_submodules``.
+    ``exclude``, ``include_submodules``, ``run_mode``, ``generate_docs`` (always),
+    plus ``concurrency``, ``reasoning``, ``embedder``, ``test_run``,
+    ``tier1_top_n``, ``onboarding``, ``harvest_decisions``, ``wiki_style`` (docs
+    only).
 
     Editor integration prompts are intentionally not asked here so that full and
     advanced modes stay aligned. Editor setup owns those prompts after mode
@@ -358,18 +467,23 @@ def interactive_advanced_config(
     _prompt_run_mode(console, result, allow_fast=allow_fast, is_large=is_large)
     patterns = _prompt_exclude(console, scan, result)
     _prompt_git(console, scan, result)
-    _prompt_generation(
-        console,
-        scan,
-        result,
-        allow_fast=allow_fast,
-        is_large=is_large,
-        prompt_reasoning=prompt_reasoning,
-    )
+    if generate_docs:
+        _prompt_generation(
+            console,
+            scan,
+            result,
+            allow_fast=allow_fast,
+            is_large=is_large,
+            prompt_reasoning=prompt_reasoning,
+            wiki_style=wiki_style,
+        )
+    result["generate_docs"] = generate_docs
 
     # ── Summary ───────────────────────────────────────────────────────────
     console.print()
-    summary = _build_summary_table(result, patterns, allow_fast=allow_fast)
+    summary = _build_summary_table(
+        result, patterns, allow_fast=allow_fast, generate_docs=generate_docs
+    )
     console.print(
         Panel(
             summary,

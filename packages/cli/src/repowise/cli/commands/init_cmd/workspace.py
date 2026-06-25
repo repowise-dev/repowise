@@ -480,7 +480,12 @@ def _workspace_init(
             provider_name = selection.provider_name
             model = selection.model
             reasoning = selection.reasoning
-            adv = interactive_advanced_config(console, prompt_reasoning=False)
+            # Pass the resolved style so the advanced generation section doesn't
+            # add a per-workspace wiki-style prompt (the workspace flow applies
+            # one style uniformly); onboarding / decision harvesting still apply.
+            adv = interactive_advanced_config(
+                console, prompt_reasoning=False, wiki_style=wiki_style
+            )
             commit_limit = adv.get("commit_limit") or commit_limit
             follow_renames = adv.get("follow_renames", follow_renames)
             skip_tests = adv.get("skip_tests", skip_tests)
@@ -491,6 +496,10 @@ def _workspace_init(
             test_run = adv.get("test_run", test_run)
             reasoning = adv.get("reasoning") or reasoning
             embedder_name_resolved = resolve_embedder(adv.get("embedder") or embedder_name)
+            onboarding = adv.get("onboarding", onboarding)
+            harvest_decisions = adv.get("harvest_decisions", harvest_decisions)
+            if adv.get("wiki_style"):
+                wiki_style = adv["wiki_style"]
         elif not index_only:
             # "full" mode
             selection = interactive_provider_config_select(
@@ -545,7 +554,7 @@ def _workspace_init(
     console.print()
 
     # Step 4: Index each selected repo (always generate_docs=False; generation is separate)
-    resolved_commit_limit = max(1, min(commit_limit or 500, 5000))
+    resolved_commit_limit = max(1, min(commit_limit or 500, 10000))
     total_files = 0
     total_symbols = 0
     total_pages = 0

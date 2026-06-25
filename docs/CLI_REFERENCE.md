@@ -46,6 +46,14 @@ repowise init .
 
 In workspace mode, adds: repo scanning, per-repo indexing, cross-repo analysis (co-changes, contracts, package deps), workspace CLAUDE.md generation.
 
+**Interactive modes.** Running a bare `repowise init` on a TTY (no `--provider`, `--index-only`, or `--yes`) opens a menu:
+
+1. **Everything** — index + AI docs. After picking a provider you can answer **"Customize?"** to tune any setting before the run.
+2. **Index only** — graph, git, code health, dead code; no LLM, no cost. Answer **"Customize indexing?"** to set exclude patterns, commit limit, skip-tests/infra, submodules, and fast mode.
+3. **Advanced** — full control. First choose **"Generate AI docs?"**; the prompts then split into an **Indexing** section (always) and a **Generation** section (provider, concurrency, embedder, wiki style, onboarding, decision harvesting, tiering — only when docs are on).
+
+All three reach the indexing knobs; the LLM-only knobs appear only when docs are enabled. Passing any of the flags below (or `--yes`) skips the menu and runs non-interactively.
+
 **Options:**
 
 | Flag | Description |
@@ -63,11 +71,14 @@ In workspace mode, adds: repo scanning, per-repo indexing, cross-repo analysis (
 | `--skip-infra` | Exclude infrastructure files (Dockerfiles, Makefiles, Terraform). |
 | `--exclude / -x` | Gitignore-style exclusion patterns. Repeatable. |
 | `--include-submodules` | Include git submodule directories. |
-| `--concurrency` | Max concurrent LLM calls (default: 5). |
+| `--concurrency` | Max concurrent LLM calls (default: 10). |
 | `--reasoning` | Reasoning mode for supported providers: `auto`, `off`/`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max` (default: `auto`). |
+| `--coverage` | Documentation coverage as a fraction of repo files (e.g. `0.10`, `0.20`, `0.50`). Bypasses the interactive coverage chooser. |
+| `--onboarding / --no-onboarding` | Generate the curated Onboarding collection (up to 8 overview pages). Default: on; slots without enough signal are skipped. |
+| `--harvest-decisions / --no-harvest-decisions` | Harvest architectural decisions during page generation (verified against source before storage). Default: on. |
 | `--resume` | Resume from the last checkpoint if interrupted. |
 | `--force` | Regenerate all pages even if they exist. |
-| `--commit-limit` | Max commits to analyze per file (default: 500). |
+| `--commit-limit` | Max commits to analyze per file (default: 500, max: 10000). |
 | `--follow-renames` | Track file renames in git history. |
 | `--no-claude-md` | Don't generate `CLAUDE.md`. |
 | `--distill-hook / --no-distill-hook` | Install or skip the Distill command-rewrite hook (Claude Code PreToolUse). Strictly opt-in: interactive runs prompt (default No); `--no-distill-hook` also gates the repo off in config so a globally installed hook stays inert here. In workspace mode the verdict (prompt or flag) applies to every selected repo. See [DISTILL.md](DISTILL.md). |

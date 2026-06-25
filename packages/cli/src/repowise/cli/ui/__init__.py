@@ -28,9 +28,12 @@ from repowise.cli.ui.mascot import (
 from repowise.cli.ui.mode_selection import (
     LARGE_REPO_FILE_THRESHOLD,
     interactive_advanced_config,
+    interactive_customize_offer,
     interactive_fast_mode_offer,
+    interactive_generate_docs_toggle,
     interactive_mode_select,
     print_index_only_intro,
+    prompt_wiki_style,
     should_offer_fast_mode,
 )
 from repowise.cli.ui.progress import MaybeCountColumn, RichProgressCallback
@@ -74,7 +77,9 @@ __all__ = [
     "build_contextual_next_steps",
     "format_elapsed",
     "interactive_advanced_config",
+    "interactive_customize_offer",
     "interactive_fast_mode_offer",
+    "interactive_generate_docs_toggle",
     "interactive_mode_select",
     "interactive_primary_select",
     "interactive_provider_config_select",
@@ -86,6 +91,7 @@ __all__ = [
     "print_index_only_intro",
     "print_phase_header",
     "print_scan_summary",
+    "prompt_wiki_style",
     "quick_repo_scan",
     "should_offer_fast_mode",
 ]

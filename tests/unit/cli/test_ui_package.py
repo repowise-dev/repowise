@@ -12,6 +12,7 @@ import pytest
 import repowise.cli.ui as ui
 from repowise.cli.ui import mode_selection
 from repowise.cli.ui.repo_scanner import RepoScanInfo
+from repowise.core.generation.styles import DEFAULT_STYLE
 
 
 def test_facade_reexports_public_surface() -> None:
@@ -66,6 +67,7 @@ def _drive_advanced_config(
     *,
     scan: RepoScanInfo | None,
     allow_fast: bool,
+    generate_docs: bool = True,
 ) -> dict:
     """Run interactive_advanced_config with all prompts answered by their defaults."""
 
@@ -84,13 +86,14 @@ def _drive_advanced_config(
             pass
 
     return mode_selection.interactive_advanced_config(
-        _NullConsole(), scan=scan, allow_fast=allow_fast
+        _NullConsole(), scan=scan, allow_fast=allow_fast, generate_docs=generate_docs
     )
 
 
 def test_advanced_config_default_keys_no_fast(monkeypatch: pytest.MonkeyPatch) -> None:
     result = _drive_advanced_config(monkeypatch, scan=None, allow_fast=False)
     assert result == {
+        "generate_docs": True,
         "skip_tests": False,
         "skip_infra": False,
         "include_submodules": False,
@@ -102,8 +105,31 @@ def test_advanced_config_default_keys_no_fast(monkeypatch: pytest.MonkeyPatch) -
         "reasoning": "auto",
         "embedder": "mock",
         "test_run": False,
+        "onboarding": True,
+        "harvest_decisions": True,
         "tier1_top_n": None,
+        "wiki_style": DEFAULT_STYLE,
     }
+
+
+def test_advanced_config_index_only_omits_generation_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """generate_docs=False gathers indexing knobs only — no LLM-only keys."""
+    result = _drive_advanced_config(monkeypatch, scan=None, allow_fast=False, generate_docs=False)
+    assert result == {
+        "generate_docs": False,
+        "skip_tests": False,
+        "skip_infra": False,
+        "include_submodules": False,
+        "run_mode": "standard",
+        "exclude": (),
+        "commit_limit": 500,
+        "follow_renames": False,
+    }
+    # The generation-only knobs must not appear.
+    for key in ("concurrency", "embedder", "onboarding", "harvest_decisions", "wiki_style"):
+        assert key not in result
 
 
 def test_advanced_config_allow_fast_small_repo(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -245,7 +245,7 @@ class TestInitYesFlag:
                 return_value=fake_scan,
             ),
             patch(
-                "repowise.cli.commands.init_cmd.command._prompt_wiki_style",
+                "repowise.cli.commands.init_cmd.command.prompt_wiki_style",
                 side_effect=_fake_prompt_wiki_style,
             ),
             patch(

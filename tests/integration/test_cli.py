@@ -156,7 +156,7 @@ class TestInitIndexOnly:
 
         cfg = load_config(work_repo)
         assert cfg["exclude_patterns"] == ["vendor/"]
-        assert cfg["commit_limit"] == 5000  # 99999 clamped to the 5000 max
+        assert cfg["commit_limit"] == 10000  # 99999 clamped to the 10000 max
 
     def test_index_only_omits_excludes_when_none_given(self, runner, work_repo):
         from repowise.cli.helpers import load_config

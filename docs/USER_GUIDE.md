@@ -193,7 +193,7 @@ repowise init [PATH]
 | `--reasoning` | Reasoning mode for supported providers: `auto`, `off`/`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max` (default: `auto`). |
 | `--resume` | Resume from the last checkpoint if a previous run was interrupted. |
 | `--force` | Regenerate all pages even if they already exist. |
-| `--commit-limit` | Max commits to analyze per file (default: 500, max: 5000). Saved to config. |
+| `--commit-limit` | Max commits to analyze per file (default: 500, max: 10000). Saved to config. |
 | `--follow-renames` | Track file renames in git history (slower but more accurate). |
 | `--no-claude-md` | Don't generate `CLAUDE.md` at the end. |
 | `--agents / --no-agents` | Generate or skip managed `AGENTS.md` for Codex. Persists the preference. |

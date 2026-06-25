@@ -52,7 +52,9 @@ from repowise.cli.ui import (
     MaybeCountColumn,
     RichProgressCallback,
     interactive_advanced_config,
+    interactive_customize_offer,
     interactive_fast_mode_offer,
+    interactive_generate_docs_toggle,
     interactive_mode_select,
     interactive_provider_config_select,
     load_dotenv,
@@ -60,6 +62,7 @@ from repowise.cli.ui import (
     print_index_only_intro,
     print_phase_header,
     print_scan_summary,
+    prompt_wiki_style,
     quick_repo_scan,
     should_offer_fast_mode,
 )
@@ -77,27 +80,6 @@ from .persistence import (
 )
 from .reporting import show_analysis_summary, show_completion
 from .workspace import _workspace_init
-
-
-def _prompt_wiki_style(console: Any) -> str:
-    """Interactive picker for the wiki documentation style (full-mode init only).
-
-    Returns the chosen style name. Defaults to the comprehensive baseline so a
-    bare Enter keeps today's behaviour.
-    """
-    styles = list_styles()
-    console.print("\n[bold]Documentation style[/bold]")
-    for idx, spec in enumerate(styles, 1):
-        marker = " [dim](default)[/dim]" if spec.name == DEFAULT_STYLE else ""
-        console.print(f"  {idx}. [cyan]{spec.name}[/cyan]{marker} — {spec.description}")
-    default_idx = next((i for i, s in enumerate(styles, 1) if s.name == DEFAULT_STYLE), 1)
-    choice = click.prompt(
-        "  Choose a style",
-        type=click.IntRange(1, len(styles)),
-        default=default_idx,
-        show_default=True,
-    )
-    return styles[choice - 1].name
 
 
 def _run_generation_phase(
@@ -296,7 +278,7 @@ def _run_generation_phase(
     "--commit-limit",
     type=int,
     default=None,
-    help="Max commits to analyze per file and for co-change detection (default: 500, max: 5000). Saved to config.",
+    help="Max commits to analyze per file and for co-change detection (default: 500, max: 10000). Saved to config.",
 )
 @click.option(
     "--follow-renames",
@@ -522,6 +504,13 @@ def init_command(
     # file page is a full-LLM tier-1 page (unchanged behaviour).
     tier1_top_n: int | None = None
 
+    # The two orthogonal axes the interactive menu resolves: whether docs are
+    # generated and whether we entered the advanced-config prompts. Initialized
+    # for the non-interactive path (where the menu never runs); the menu
+    # overrides them below. They gate the editor-files prompt further down.
+    generate_docs = not index_only
+    customize = False
+
     # Pre-scan for interactive mode — fast stats to inform choices
     scan_info = None
     if is_interactive:
@@ -531,18 +520,24 @@ def init_command(
         print_scan_summary(console, scan_info)
         mode = interactive_mode_select(console)
 
+        # Map the menu onto the two axes (docs on/off, customize yes/no):
+        #   full       -> docs on,  optional customize
+        #   index_only -> docs off, optional customize
+        #   advanced   -> docs toggle, always customize
         if mode == "index_only":
-            index_only = True
-            # On a large repo, an index-only run is exactly the case where the
-            # fast tier (essential git, no blame/co-change) pays off — offer it,
-            # defaulting to yes since docs are already opted out.
-            if (
-                run_mode != "fast"
-                and should_offer_fast_mode(scan_info)
-                and interactive_fast_mode_offer(console, scan_info, default_fast=True)
-            ):
-                run_mode = "fast"
+            generate_docs = False
+            customize = interactive_customize_offer(console, generate_docs=False)
         elif mode == "advanced":
+            generate_docs = interactive_generate_docs_toggle(console)
+            customize = True
+        else:  # full
+            generate_docs = True
+            customize = interactive_customize_offer(console, generate_docs=True)
+        index_only = not generate_docs
+
+        # Provider selection only when docs will be generated. Index-only runs
+        # auto-detect a decision-extraction provider later without prompting.
+        if generate_docs:
             selection = interactive_provider_config_select(
                 console,
                 model,
@@ -552,51 +547,60 @@ def init_command(
             provider_name = selection.provider_name
             model = selection.model
             reasoning = selection.reasoning
+
+        if customize:
             adv = interactive_advanced_config(
                 console,
                 scan=scan_info,
                 allow_fast=True,
                 prompt_reasoning=False,
+                generate_docs=generate_docs,
+                wiki_style=wiki_style,
             )
+            # Indexing knobs (always present).
             commit_limit = adv["commit_limit"]
             follow_renames = adv["follow_renames"]
             skip_tests = adv["skip_tests"]
             skip_infra = adv["skip_infra"]
-            concurrency = adv["concurrency"]
-            reasoning = adv.get("reasoning") or reasoning
             exclude = adv["exclude"]
-            test_run = adv["test_run"]
-            embedder_name = adv.get("embedder") or embedder_name
             include_submodules = adv.get("include_submodules", include_submodules)
             run_mode = adv.get("run_mode", run_mode)
-            tier1_top_n = adv.get("tier1_top_n")
+            # Generation knobs (only gathered when docs are on).
+            if generate_docs:
+                concurrency = adv["concurrency"]
+                reasoning = adv.get("reasoning") or reasoning
+                embedder_name = adv.get("embedder") or embedder_name
+                test_run = adv["test_run"]
+                tier1_top_n = adv.get("tier1_top_n")
+                onboarding = adv.get("onboarding", onboarding)
+                harvest_decisions = adv.get("harvest_decisions", harvest_decisions)
+                if adv.get("wiki_style"):
+                    wiki_style = adv["wiki_style"]
+            # Fast mode (picked in the indexing section) is a no-LLM index, so it
+            # forces index-only even if the user had asked for docs.
             if run_mode == "fast":
                 index_only = True
+                generate_docs = False
         else:
-            selection = interactive_provider_config_select(
-                console,
-                model,
-                reasoning,
-                repo_path=repo_path,
-            )
-            provider_name = selection.provider_name
-            model = selection.model
-            reasoning = selection.reasoning
-            # Full mode picked, but on a large repo offer the quick path too.
-            # Default no here — the user explicitly asked for docs.
+            # No customization: still offer the fast first-index on large repos.
+            # Default yes for an index-only run (docs already opted out), no for a
+            # full run (the user explicitly asked for docs).
             if (
                 run_mode != "fast"
                 and should_offer_fast_mode(scan_info)
-                and interactive_fast_mode_offer(console, scan_info, default_fast=False)
+                and interactive_fast_mode_offer(
+                    console, scan_info, default_fast=not generate_docs
+                )
             ):
                 run_mode = "fast"
                 index_only = True
+                generate_docs = False
 
-        # Wiki style: prompt in interactive full-mode runs when not set via flag.
-        # Index-only runs generate no pages, so the question is skipped (D7).
-        # --yes skips the prompt and uses the default style.
-        if wiki_style is None and not index_only and not yes:
-            wiki_style = _prompt_wiki_style(console)
+        # Wiki style: prompt for a docs run when not already chosen (via the
+        # --wiki-style flag or the advanced generation section). Index-only runs
+        # generate no pages, so the question is skipped. --yes uses the default.
+        if generate_docs and wiki_style is None and not yes:
+            wiki_style = prompt_wiki_style(console)
 
     # Resolve the effective style (CLI flag > interactive prompt > default) and
     # canonicalize it. Used by generation and persisted so update/restyle honor it.
@@ -613,7 +617,10 @@ def init_command(
         integration_overrides=get_default_integration_overrides(
             codex_setup=codex_setup,
         ),
-        prompt_for_project_files=is_interactive and not index_only,
+        # Prompt for CLAUDE.md / AGENTS.md / Codex setup whenever the user is
+        # engaging interactively — either generating docs or customizing an
+        # index-only run (the latter previously got no say).
+        prompt_for_project_files=is_interactive and (generate_docs or customize),
     )
 
     # Merge exclude_patterns from config.yaml and --exclude/-x flags
@@ -624,7 +631,7 @@ def init_command(
 
     # Resolve commit limit: CLI flag → config.yaml → default (500)
     resolved_commit_limit: int = commit_limit or config.get("commit_limit") or 500
-    resolved_commit_limit = max(1, min(resolved_commit_limit, 5000))
+    resolved_commit_limit = max(1, min(resolved_commit_limit, 10000))
     if commit_limit is not None:
         config["commit_limit"] = resolved_commit_limit
 
