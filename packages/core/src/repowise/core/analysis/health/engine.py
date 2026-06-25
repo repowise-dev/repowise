@@ -762,7 +762,8 @@ class HealthAnalyzer:
             nloc=nloc,
             has_test_file=_has_paired_test_file(file_path, path_basenames)
             or _is_test_file(file_path)
-            or _coverage_is_test_file(file_path),
+            or _coverage_is_test_file(file_path)
+            or fcx.has_inline_tests,
             module=module,
             function_metrics=fn_metrics,
             class_metrics=fcx.classes,

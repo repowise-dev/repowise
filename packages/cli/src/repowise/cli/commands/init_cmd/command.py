@@ -363,6 +363,19 @@ def _run_generation_phase(
     ),
 )
 @click.option(
+    "--coverage-report",
+    "coverage_report",
+    type=click.Path(exists=True, dir_okay=False),
+    multiple=True,
+    metavar="PATH",
+    help=(
+        "Test-coverage report(s) to ingest (lcov / Cobertura / Clover). "
+        "Repeatable. When omitted, common locations (coverage/lcov.info, "
+        "**/cobertura.xml, ...) are auto-discovered. Distinct from --coverage, "
+        "which controls documentation breadth."
+    ),
+)
+@click.option(
     "--harvest-decisions/--no-harvest-decisions",
     "harvest_decisions",
     default=True,
@@ -413,6 +426,7 @@ def init_command(
     init_all: bool,
     onboarding: bool,
     coverage_pct: float | None,
+    coverage_report: tuple[str, ...],
     harvest_decisions: bool,
     wiki_style: str | None,
 ) -> None:
@@ -782,6 +796,9 @@ def init_command(
                     progress=callback,
                     existing_kg_fingerprint=_prev_kg_fp,
                     resume_controller=controller,
+                    coverage_report_paths=(
+                        [Path(p) for p in coverage_report] if coverage_report else None
+                    ),
                 )
             finally:
                 if engine is not None:

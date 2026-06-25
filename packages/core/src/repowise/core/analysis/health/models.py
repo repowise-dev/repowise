@@ -80,3 +80,9 @@ class HealthReport:
     # or no opportunity is found. Typed ``Any`` to avoid importing the
     # refactoring package here (it imports this module).
     refactoring_suggestions: list[Any] = field(default_factory=list)
+    # Resolved coverage rows ingested for this run (``FileCoverage`` with
+    # canonical repo keys), plus the source format. Populated by the pipeline
+    # when a coverage report is discovered/passed; the persister writes these
+    # to the ``coverage_files`` table. Empty when no coverage was ingested.
+    coverage_files: list[Any] = field(default_factory=list)
+    coverage_format: str | None = None

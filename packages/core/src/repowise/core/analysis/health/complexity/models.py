@@ -277,3 +277,10 @@ class FileComplexity:
     # function holds a bare (non-loop) I/O sink. Empty when the language opts
     # out of the perf pass. Consumed by ``perf.crossfn``, not by a biomarker.
     perf_fn_facts: list[PerfFnFacts] = field(default_factory=list)
+    # True when the file carries co-located tests that the filename/dir
+    # heuristic cannot see — e.g. Rust ``#[cfg(test)] mod tests`` blocks,
+    # which live inside the source file itself. OR'd into ``has_test_file``
+    # so well-tested inline-test files aren't flagged as untested. Only ever
+    # flips a file from "untested" to "tested", so it can silence a finding
+    # but never invent one.
+    has_inline_tests: bool = False

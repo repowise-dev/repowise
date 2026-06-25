@@ -152,6 +152,7 @@ def walk_file(
         perf_hits=perf_hits,
         io_boundary_names=io_boundary_names,
         perf_fn_facts=perf_fn_facts,
+        has_inline_tests=_detect_inline_tests(source, language),
     )
 
 
@@ -165,3 +166,22 @@ def walk_file_complexity(
     Prefer ``walk_file`` when class-level metrics are also needed.
     """
     return walk_file(abs_path, language, source).functions
+
+
+# Idiomatic Rust unit tests live in a ``#[cfg(test)] mod tests`` block inside
+# the source file itself, so there is no separate test file to pair against.
+# A cheap substring scan over the file head is enough to recognize them —
+# ``#[cfg(test)]`` gates the test module; ``#[test]`` marks each test fn.
+_RUST_INLINE_TEST_MARKERS = (b"#[cfg(test)]", b"#[test]")
+
+
+def _detect_inline_tests(source: bytes, language: str) -> bool:
+    """True when *source* carries co-located tests the filename can't reveal.
+
+    Currently Rust-only. Pure substring scan (no extra parse); returns False
+    for every other language, so it can only ever clear a false ``untested``
+    flag, never create a finding.
+    """
+    if language != "rust":
+        return False
+    return any(marker in source for marker in _RUST_INLINE_TEST_MARKERS)

@@ -10,6 +10,7 @@ from repowise.cli.commands.augment_cmd import augment_command
 from repowise.cli.commands.claude_md_cmd import claude_md_command
 from repowise.cli.commands.corrections_cmd import corrections_command
 from repowise.cli.commands.costs_cmd import costs_command
+from repowise.cli.commands.coverage_cmd import coverage_group
 from repowise.cli.commands.dead_code_cmd import dead_code_command
 from repowise.cli.commands.decision_cmd import decision_group
 from repowise.cli.commands.delete_cmd import delete_command
@@ -68,6 +69,7 @@ register_command(dead_code_command)
 register_command(health_command)
 register_command(risk_command)
 register_command(decision_group)
+register_command(coverage_group)
 register_command(search_command)
 register_command(distill_command)
 register_command(expand_command)

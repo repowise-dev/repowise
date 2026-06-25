@@ -518,6 +518,7 @@ async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
     from repowise.core.persistence.crud import (
         bulk_upsert_decisions,
         recompute_decision_staleness,
+        save_coverage_files,
         save_dead_code_findings,
         save_health_findings,
         save_health_metrics,
@@ -536,6 +537,19 @@ async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
         await save_health_metrics(session, repo_id, hr.metrics or [])
         if hr.findings:
             await save_health_findings(session, repo_id, hr.findings)
+        # Resolved coverage rows, when a report was ingested this run.
+        coverage_files = getattr(hr, "coverage_files", None)
+        if coverage_files:
+            head_sha = getattr(result, "head_commit", None) or getattr(
+                result, "commit_sha", None
+            )
+            await save_coverage_files(
+                session,
+                repo_id,
+                coverage_files,
+                source_format=getattr(hr, "coverage_format", None) or "lcov",
+                ingested_commit_sha=head_sha,
+            )
         # Structured refactoring suggestions (Extract Class, ...). Repo-wide
         # delete-then-insert like findings; empty list clears prior rows.
         await save_refactoring_suggestions(

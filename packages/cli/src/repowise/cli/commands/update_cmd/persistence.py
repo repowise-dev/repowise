@@ -17,6 +17,66 @@ from repowise.cli.helpers import console, run_async, save_state
 from .incremental import _build_repo_graph
 
 
+async def _coverage_for_rescore(
+    session: Any,
+    repo_id: str,
+    repo_path: Path,
+    parsed_files: list[Any],
+) -> tuple[dict[str, dict], list[Any], str | None]:
+    """Coverage to feed a health re-score, preserved across updates.
+
+    Default: reload the rows already persisted (no re-parse). When
+    ``coverage.reingest_on_update`` is set, re-discover and re-resolve a
+    fresh report instead. Returns ``(coverage_map, files_to_persist,
+    source_format)`` — ``files_to_persist`` is empty on the reload path
+    (rows are unchanged) and populated when re-ingested.
+    """
+    import json
+
+    from repowise.core.analysis.health.coverage import (
+        CoverageConfig,
+        build_coverage_map,
+        discover_artifacts,
+    )
+    from repowise.core.persistence.crud import load_coverage_for_repo
+    from repowise.core.repo_config import load_repo_config
+
+    cfg = CoverageConfig.from_repo_config(load_repo_config(repo_path))
+
+    if cfg.reingest_on_update and cfg.auto_discover:
+        report_paths = discover_artifacts(repo_path, globs=cfg.artifacts or None)
+        if report_paths:
+            repo_keys = {pf.file_info.path for pf in parsed_files}
+            resolved, _errors = build_coverage_map(
+                repo_path,
+                report_paths,
+                repo_keys,
+                coverage_format=cfg.format,
+                strip_prefix=cfg.strip_prefix,
+                path_prefix=cfg.path_prefix,
+            )
+            if resolved.coverage_map:
+                return resolved.coverage_map, resolved.files, resolved.source_format
+
+    rows = await load_coverage_for_repo(session, repo_id)
+    coverage_map: dict[str, dict] = {}
+    source_format: str | None = None
+    for row in rows:
+        source_format = source_format or getattr(row, "source_format", None)
+        try:
+            covered = json.loads(row.covered_lines_json) if row.covered_lines_json else []
+        except (ValueError, TypeError):
+            covered = []
+        coverage_map[row.file_path] = {
+            "line_coverage_pct": row.line_coverage_pct,
+            "branch_coverage_pct": row.branch_coverage_pct,
+            "covered_lines": covered,
+            "total_coverable_lines": row.total_coverable_lines or 0,
+            "source_format": source_format,
+        }
+    return coverage_map, [], source_format
+
+
 async def _persist_partial_health(session: Any, repo_id: str, report: Any) -> None:
     """Upsert health findings + metrics for the changed-files subset.
 
@@ -178,7 +238,11 @@ def _run_full_health_rescore(
             init_db,
             upsert_repository,
         )
-        from repowise.core.persistence.crud import save_health_findings, save_health_metrics
+        from repowise.core.persistence.crud import (
+            save_coverage_files,
+            save_health_findings,
+            save_health_metrics,
+        )
         from repowise.core.persistence.models import GitMetadata
         from repowise.core.pipeline.persist import persist_graph_nodes
 
@@ -215,10 +279,20 @@ def _run_full_health_rescore(
                 if exclude_spec is None or not exclude_spec.match_file(gm.file_path)
             }
 
+            # Preserve coverage across a re-score. The previous behaviour
+            # rebuilt the analyzer with no coverage_map, nulling every file's
+            # line/branch coverage even though the coverage_files rows still
+            # existed. Reload them (and optionally re-discover a fresh report)
+            # so coverage survives `repowise update`.
+            coverage_map, coverage_files, coverage_format = await _coverage_for_rescore(
+                session, repo_id, repo_path, parsed_files
+            )
+
             analyzer = HealthAnalyzer(
                 graph_builder.graph(),
                 git_meta_map=git_meta_map,
                 parsed_files=parsed_files,
+                coverage_map=coverage_map,
                 duplication_cache_dir=Path(repo_path) / ".repowise",
             )
             hcfg = HealthConfig.load(repo_path)
@@ -236,6 +310,14 @@ def _run_full_health_rescore(
 
             await save_health_metrics(session, repo_id, report.metrics or [])
             await save_health_findings(session, repo_id, list(report.findings or []))
+            if coverage_files:
+                await save_coverage_files(
+                    session,
+                    repo_id,
+                    coverage_files,
+                    source_format=coverage_format or "lcov",
+                    ingested_commit_sha=getattr(repo, "head_commit", None),
+                )
             await persist_graph_nodes(session, repo_id, graph_builder)
 
     try:
