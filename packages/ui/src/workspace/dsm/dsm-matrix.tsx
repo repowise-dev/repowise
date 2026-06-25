@@ -31,6 +31,51 @@ export interface DsmMatrixViewProps {
 const CELL = 30;
 const HEADER = 150;
 
+/**
+ * Max services rendered per axis. The grid is a single flat CSS grid of
+ * `(n+1)²` cells — for large `n` that is tens of thousands of DOM nodes. Above
+ * this threshold we render only the top-N most-connected services on both axes
+ * (a render budget, mirroring the hosted system-map node budget) so the grid is
+ * bounded to `(N+1)²` cells. The counts strip still summarises the full matrix.
+ */
+const DSM_RENDER_BUDGET = 60;
+
+/**
+ * Slice `matrix` down to the `DSM_RENDER_BUDGET` most-connected services on both
+ * axes when it exceeds the budget. Degree = present cells in a service's row
+ * (out-degree) + present cells in its column (in-degree); ties break by original
+ * axis order for determinism. The sliced `cells[i][j]` still means
+ * selected-service-i depends on selected-service-j, so diagonal detection
+ * (`i === j`) and role lookup via the sliced `axis[j]` stay correct.
+ */
+function budgetMatrix(matrix: DsmMatrix): { matrix: DsmMatrix; total: number } {
+  const total = matrix.axis.length;
+  if (total <= DSM_RENDER_BUDGET) return { matrix, total };
+
+  const degree = new Array<number>(total).fill(0);
+  for (let i = 0; i < total; i += 1) {
+    const row = matrix.cells[i] ?? [];
+    for (let j = 0; j < total; j += 1) {
+      if (row[j]?.present) {
+        degree[i] = (degree[i] ?? 0) + 1; // out-degree (row i)
+        degree[j] = (degree[j] ?? 0) + 1; // in-degree (column j)
+      }
+    }
+  }
+
+  // Top-N by degree, tie-broken by original axis order (stable index ascending).
+  const selected = Array.from({ length: total }, (_, idx) => idx)
+    .sort((a, b) => (degree[b] ?? 0) - (degree[a] ?? 0) || a - b)
+    .slice(0, DSM_RENDER_BUDGET)
+    .sort((a, b) => a - b); // restore original axis order among the kept ones
+
+  const axis = selected.map((idx) => matrix.axis[idx] ?? "");
+  const labels = selected.map((idx) => matrix.labels[idx] ?? "");
+  const cells = selected.map((i) => selected.map((j) => matrix.cells[i]![j]!));
+
+  return { matrix: { axis, labels, cells }, total };
+}
+
 function cellBackground(cell: DsmCell, isDiagonal: boolean, role?: NodeRole): string {
   if (isDiagonal) {
     // The diagonal is a service vs itself — repurpose it to surface the
@@ -74,6 +119,11 @@ export function DsmMatrixView({ matrix, metrics, onSelectCell }: DsmMatrixViewPr
     return m;
   }, [metrics]);
 
+  // The grid renders from the budgeted matrix; the counts strip above stays on
+  // the full matrix (it is a data summary, not a view of what's drawn).
+  const { matrix: view, total } = useMemo(() => budgetMatrix(matrix), [matrix]);
+  const budgeted = total > view.axis.length;
+
   if (matrix.axis.length === 0) {
     return (
       <EmptyState
@@ -83,7 +133,7 @@ export function DsmMatrixView({ matrix, metrics, onSelectCell }: DsmMatrixViewPr
     );
   }
 
-  const n = matrix.axis.length;
+  const n = view.axis.length;
 
   return (
     <div>
@@ -97,12 +147,20 @@ export function DsmMatrixView({ matrix, metrics, onSelectCell }: DsmMatrixViewPr
         }}
       >
         <span>
-          <strong style={{ color: "var(--color-text-secondary)" }}>{n}</strong> services
+          <strong style={{ color: "var(--color-text-secondary)" }}>{total}</strong> services
         </span>
         <span>
           <strong style={{ color: "var(--color-text-secondary)" }}>{counts.present}</strong>{" "}
           dependencies
         </span>
+        {budgeted && (
+          <span
+            title="The matrix is capped for readability and rendering cost; the most-connected services are shown."
+            style={{ fontSize: 12, color: "var(--color-text-tertiary)" }}
+          >
+            showing top {n} of {total} services by connectivity
+          </span>
+        )}
         {metrics && (
           <span title="Deterministic 1-10 architecture score (higher = lower coupling)">
             score <strong style={{ color: "var(--color-text-secondary)" }}>{metrics.score.toFixed(1)}</strong>
@@ -142,10 +200,10 @@ export function DsmMatrixView({ matrix, metrics, onSelectCell }: DsmMatrixViewPr
         >
           {/* Top-left corner + column headers */}
           <div style={{ position: "sticky", left: 0, zIndex: 2, background: "var(--color-bg-canvas)" }} />
-          {matrix.labels.map((label, j) => (
+          {view.labels.map((label, j) => (
             <div
-              key={`col-${matrix.axis[j]}`}
-              title={matrix.axis[j]}
+              key={`col-${view.axis[j]}`}
+              title={view.axis[j]}
               style={{
                 height: HEADER,
                 display: "flex",
@@ -168,14 +226,14 @@ export function DsmMatrixView({ matrix, metrics, onSelectCell }: DsmMatrixViewPr
           ))}
 
           {/* Rows */}
-          {matrix.cells.map((row, i) => (
+          {view.cells.map((row, i) => (
             <RowCells
-              key={`row-${matrix.axis[i]}`}
+              key={`row-${view.axis[i]}`}
               i={i}
               row={row}
-              label={matrix.labels[i] ?? ""}
-              axisId={matrix.axis[i] ?? ""}
-              axis={matrix.axis}
+              label={view.labels[i] ?? ""}
+              axisId={view.axis[i] ?? ""}
+              axis={view.axis}
               rolesByNodeId={rolesByNodeId}
               hover={hover}
               onHover={setHover}
