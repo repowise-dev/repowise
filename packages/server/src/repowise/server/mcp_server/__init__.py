@@ -58,6 +58,7 @@ from repowise.server.mcp_server.tool_dependency import get_dependency_path
 from repowise.server.mcp_server.tool_flows import get_execution_flows
 from repowise.server.mcp_server.tool_health import get_health
 from repowise.server.mcp_server.tool_overview import get_overview
+from repowise.server.mcp_server.tool_refactoring import generate_refactoring_code
 from repowise.server.mcp_server.tool_repos import list_repos
 from repowise.server.mcp_server.tool_risk import get_risk
 from repowise.server.mcp_server.tool_search import search_codebase
@@ -137,6 +138,7 @@ __all__ = [
     "get_dependency_path",
     "get_execution_flows",
     "get_health",
+    "generate_refactoring_code",
     "get_overview",
     "get_risk",
     "get_symbol",

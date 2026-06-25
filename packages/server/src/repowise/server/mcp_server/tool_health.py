@@ -74,6 +74,9 @@ def _serialize_refactoring(r: Any) -> dict[str, Any]:
             return {}
 
     return {
+        # The persisted row id — pass it to ``generate_refactoring_code`` to
+        # turn this plan into actual code + a diff (opt-in).
+        "id": getattr(r, "id", None),
         "refactoring_type": r.refactoring_type,
         "file_path": r.file_path,
         "target_symbol": r.target_symbol,

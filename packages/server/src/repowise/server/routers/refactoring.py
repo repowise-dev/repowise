@@ -14,6 +14,7 @@ checkout — the same property the C4 endpoints rely on.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -29,6 +30,8 @@ def blast_files(sug: RefactoringSuggestion) -> list[str]:
     carries — used to scope the detail endpoint's centrality lookup."""
     files = (sug.blast_radius or {}).get("files")
     return [f for f in files if isinstance(f, str)] if isinstance(files, list) else []
+
+
 from repowise.core.persistence import crud
 from repowise.server.deps import get_db_session, verify_api_key
 
@@ -121,7 +124,9 @@ def _row_to_suggestion(row: Any) -> RefactoringSuggestion:
     return sug
 
 
-def _to_response(sug: RefactoringSuggestion, centrality: dict[str, float]) -> RefactoringPlanResponse:
+def _to_response(
+    sug: RefactoringSuggestion, centrality: dict[str, float]
+) -> RefactoringPlanResponse:
     return RefactoringPlanResponse(
         id=getattr(sug, "id", ""),
         refactoring_type=sug.refactoring_type,
@@ -158,7 +163,8 @@ async def _centrality_map(session: AsyncSession, repo_id: str) -> dict[str, floa
 async def get_refactoring_targets(
     repo_id: str,
     refactoring_type: str | None = Query(
-        None, description="Filter to one type: extract_class | extract_helper | move_method | break_cycle"
+        None,
+        description="Filter to one type: extract_class | extract_helper | move_method | break_cycle",
     ),
     min_confidence: str | None = Query(None, description="low | medium | high"),
     session: AsyncSession = Depends(get_db_session),
@@ -223,3 +229,90 @@ async def get_refactoring_plan(
     # carries the caller rollup the list ranked on.
     rank_suggestions([sug], centrality=centrality)
     return _to_response(sug, centrality)
+
+
+# ---------------------------------------------------------------------------
+# Opt-in LLM enrichment — plan -> generated code + diff
+# ---------------------------------------------------------------------------
+
+
+class GenerateCodeRequest(BaseModel):
+    """Optional per-call overrides for the enrichment provider/model."""
+
+    provider: str | None = None
+    model: str | None = None
+
+
+class GenerateCodeResponse(BaseModel):
+    """Generated refactored code + diff for one plan, with the self-check."""
+
+    suggestion_id: str | None = None
+    refactoring_type: str
+    file_path: str
+    target_symbol: str
+    content: str
+    diff: str
+    provider: str
+    model: str
+    cached: bool
+    input_tokens: int
+    output_tokens: int
+    validation: dict[str, Any] = Field(default_factory=dict)
+    spans: list[dict[str, Any]] = Field(default_factory=list)
+
+
+@router.post(
+    "/{repo_id}/refactoring/{suggestion_id}/generate-code",
+    response_model=GenerateCodeResponse,
+)
+async def generate_refactoring_code(
+    repo_id: str,
+    suggestion_id: str,
+    body: GenerateCodeRequest | None = None,
+    session: AsyncSession = Depends(get_db_session),
+) -> GenerateCodeResponse:
+    """Generate the refactored code + a unified diff for one plan, on demand.
+
+    Strictly opt-in: returns 403 unless ``refactoring.llm.enabled`` is set in the
+    repo's ``.repowise/config.yaml``. Needs the working tree on disk (it reads
+    the plan's real source spans), so this is a local-``serve`` capability, not a
+    hosted one — it returns 404 when the repo has no accessible checkout.
+    """
+    from repowise.core.analysis.health.refactoring.llm import (
+        build_enrichment_provider,
+        enrich_suggestion,
+        llm_enrichment_enabled,
+    )
+    from repowise.core.repo_config import load_repo_config
+
+    repo = await crud.get_repository(session, repo_id)
+    if repo is None or not repo.local_path:
+        raise HTTPException(status_code=404, detail=f"repository not found: {repo_id}")
+    repo_path = Path(repo.local_path)
+    if not repo_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="repository checkout not accessible on this server",
+        )
+
+    if not llm_enrichment_enabled(load_repo_config(repo_path)):
+        raise HTTPException(
+            status_code=403,
+            detail="refactoring code generation is disabled (set refactoring.llm.enabled)",
+        )
+
+    row = await crud.get_refactoring_suggestion(session, repo_id, suggestion_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"refactoring plan not found: {suggestion_id}")
+    sug = _row_to_suggestion(row)
+
+    body = body or GenerateCodeRequest()
+    try:
+        provider = build_enrichment_provider(
+            repo_path, provider_name=body.provider, model=body.model
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    result = await enrich_suggestion(sug, provider=provider, repo_path=repo_path)
+    return GenerateCodeResponse(**result.to_dict())

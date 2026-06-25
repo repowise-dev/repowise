@@ -225,3 +225,84 @@ async def test_min_confidence_filters(client: AsyncClient, app) -> None:
     # Only the two high-confidence plans survive (extract_class, extract_helper).
     assert body["summary"]["total"] == 2
     assert {p["refactoring_type"] for p in body["plans"]} == {"extract_class", "extract_helper"}
+
+
+# ---------------------------------------------------------------------------
+# POST /generate-code (opt-in LLM enrichment)
+# ---------------------------------------------------------------------------
+
+
+async def _seed_enrich_repo(client: AsyncClient, app, *, enabled: bool) -> tuple[str, str]:
+    """A repo with a real checkout (config + one source file) and one plan.
+
+    Uses the ``mock`` provider so ``build_enrichment_provider`` resolves a
+    MockProvider with no API key. Returns ``(repo_id, suggestion_id)``."""
+    repo_dir = Path(tempfile.mkdtemp()) / "enrich-repo"
+    (repo_dir / "pkg").mkdir(parents=True, exist_ok=True)
+    (repo_dir / ".git").mkdir(exist_ok=True)
+    (repo_dir / ".repowise").mkdir(exist_ok=True)
+    cfg = "provider: mock\n"
+    if enabled:
+        cfg += "refactoring:\n  llm:\n    enabled: true\n"
+    (repo_dir / ".repowise" / "config.yaml").write_text(cfg, encoding="utf-8")
+    (repo_dir / "pkg" / "leaf.py").write_text(
+        "class GodClass:\n" + "".join(f"    def m{i}(self):\n        return {i}\n" for i in range(6)),
+        encoding="utf-8",
+    )
+
+    resp = await client.post(
+        "/api/repos",
+        json={
+            "name": "enrich-repo",
+            "local_path": str(repo_dir),
+            "url": "https://github.com/example/enrich-repo",
+        },
+    )
+    assert resp.status_code == 201
+    repo_id = resp.json()["id"]
+
+    async with app.state.session_factory() as session:
+        await crud.save_refactoring_suggestions(session, repo_id, [
+            {
+                "refactoring_type": "extract_class",
+                "file_path": "pkg/leaf.py",
+                "target_symbol": "GodClass",
+                "line_start": 1,
+                "line_end": 12,
+                "plan": {"groups": [{"name": None, "methods": ["m0"], "fields": []}]},
+                "evidence": {"lcom4": 2, "method_count": 6, "field_count": 0, "wmc": 6},
+                "impact_delta": 2.5,
+                "effort_bucket": "L",
+                "blast_radius": {"dependents_count": 0},
+                "confidence": "high",
+                "source_biomarker": "low_cohesion",
+            },
+        ])
+        await session.commit()
+        rows = await crud.get_refactoring_suggestions(session, repo_id)
+        suggestion_id = rows[0].id
+    return repo_id, suggestion_id
+
+
+async def test_generate_code_happy_path(client: AsyncClient, app) -> None:
+    repo_id, sid = await _seed_enrich_repo(client, app, enabled=True)
+    resp = await client.post(f"/api/repos/{repo_id}/refactoring/{sid}/generate-code", json={})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["refactoring_type"] == "extract_class"
+    assert body["target_symbol"] == "GodClass"
+    assert body["provider"] == "mock"
+    assert body["content"]  # the mock returned something
+    assert body["spans"] and body["spans"][0]["file"] == "pkg/leaf.py"
+
+
+async def test_generate_code_disabled_returns_403(client: AsyncClient, app) -> None:
+    repo_id, sid = await _seed_enrich_repo(client, app, enabled=False)
+    resp = await client.post(f"/api/repos/{repo_id}/refactoring/{sid}/generate-code", json={})
+    assert resp.status_code == 403
+
+
+async def test_generate_code_unknown_id_404(client: AsyncClient, app) -> None:
+    repo_id, _ = await _seed_enrich_repo(client, app, enabled=True)
+    resp = await client.post(f"/api/repos/{repo_id}/refactoring/deadbeef/generate-code", json={})
+    assert resp.status_code == 404
