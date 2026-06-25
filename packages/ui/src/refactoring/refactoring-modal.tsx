@@ -1,8 +1,9 @@
 "use client";
 
-import { Layers, Sparkles, TrendingUp } from "lucide-react";
+import { Layers, Sparkles, TrendingUp, Wand2 } from "lucide-react";
 import { Dialog, DialogContent, DialogTitle } from "../ui/dialog";
 import { PlanComparison } from "./plan-comparison";
+import { GenerateCodePanel } from "./generate-code-panel";
 import { CONFIDENCE_LABEL, EFFORT_LABEL, typeAccent, typeMeta } from "./meta";
 import {
   blastCount,
@@ -11,6 +12,7 @@ import {
   planWins,
   type Confidence,
   type EffortBucket,
+  type GeneratedCode,
   type RefactoringPlan,
 } from "./types";
 
@@ -19,6 +21,13 @@ export interface RefactoringModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onAiPrompt?: ((plan: RefactoringPlan) => void) | undefined;
+  /** Opt-in LLM code generation. When provided, a "Generate code" section
+   *  renders a diff for the plan; omit it (e.g. on hosted / when disabled) to
+   *  hide the action entirely. Host owns the API call. */
+  onGenerateCode?: ((plan: RefactoringPlan) => Promise<GeneratedCode>) | undefined;
+  /** Link to the repo settings (provider/model). Renders a quiet link beside
+   *  the Generate code action when set. */
+  settingsHref?: string | undefined;
   fileHref?: ((path: string, line?: number | null) => string | undefined) | undefined;
 }
 
@@ -40,13 +49,21 @@ export function RefactoringModal({
   open,
   onOpenChange,
   onAiPrompt,
+  onGenerateCode,
+  settingsHref,
   fileHref,
 }: RefactoringModalProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[90vh] w-[calc(100%-1.5rem)] max-w-4xl gap-0 overflow-y-auto p-0">
         {plan ? (
-          <ModalBody plan={plan} onAiPrompt={onAiPrompt} fileHref={fileHref} />
+          <ModalBody
+            plan={plan}
+            onAiPrompt={onAiPrompt}
+            onGenerateCode={onGenerateCode}
+            settingsHref={settingsHref}
+            fileHref={fileHref}
+          />
         ) : (
           <DialogTitle className="sr-only">Refactoring plan</DialogTitle>
         )}
@@ -58,10 +75,14 @@ export function RefactoringModal({
 function ModalBody({
   plan,
   onAiPrompt,
+  onGenerateCode,
+  settingsHref,
   fileHref,
 }: {
   plan: RefactoringPlan;
   onAiPrompt?: ((plan: RefactoringPlan) => void) | undefined;
+  onGenerateCode?: ((plan: RefactoringPlan) => Promise<GeneratedCode>) | undefined;
+  settingsHref?: string | undefined;
   fileHref?: ((path: string, line?: number | null) => string | undefined) | undefined;
 }) {
   const meta = typeMeta(plan.refactoring_type);
@@ -131,6 +152,27 @@ function ModalBody({
           </h4>
           <PlanComparison plan={plan} fileHref={fileHref} />
         </section>
+
+        {/* generate code — opt-in LLM enrichment (plan -> diff) */}
+        {onGenerateCode ? (
+          <section>
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <h4 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-[var(--color-text-tertiary)]">
+                <Wand2 className="h-3.5 w-3.5" />
+                Generate the code
+              </h4>
+              {settingsHref ? (
+                <a
+                  href={settingsHref}
+                  className="text-[11px] text-[var(--color-text-tertiary)] underline-offset-2 transition-colors hover:text-[var(--color-text-secondary)] hover:underline"
+                >
+                  Change model
+                </a>
+              ) : null}
+            </div>
+            <GenerateCodePanel plan={plan} onGenerate={onGenerateCode} />
+          </section>
+        ) : null}
 
         {/* what you gain */}
         {wins.length > 0 ? (

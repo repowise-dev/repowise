@@ -7,7 +7,14 @@ import { RefactoringPlanCard } from "./refactoring-plan-card";
 import { RefactoringQuadrant } from "./refactoring-quadrant";
 import { RefactoringModal } from "./refactoring-modal";
 import { typeAccent, typeMeta, CONFIDENCE_LABEL, TYPE_ORDER } from "./meta";
-import { blastCount, type Confidence, type EffortBucket, type RefactoringPlan, type RefactoringSummary } from "./types";
+import {
+  blastCount,
+  type Confidence,
+  type EffortBucket,
+  type GeneratedCode,
+  type RefactoringPlan,
+  type RefactoringSummary,
+} from "./types";
 
 const PAGE_SIZE = 60;
 
@@ -30,6 +37,11 @@ export interface RefactoringBoardProps {
   summary?: RefactoringSummary;
   /** Open the AI-prompt modal for a plan (host owns the modal + flavor). */
   onAiPrompt?: ((plan: RefactoringPlan) => void) | undefined;
+  /** Opt-in LLM code generation for a plan (host owns the API call). Passed
+   *  through to the inspector modal; omit to hide the action. */
+  onGenerateCode?: ((plan: RefactoringPlan) => Promise<GeneratedCode>) | undefined;
+  /** Link to repo settings (provider/model), shown beside the Generate action. */
+  settingsHref?: string | undefined;
   fileHref?: ((path: string, line?: number | null) => string | undefined) | undefined;
   /** Show the priority×effort quadrant centerpiece (default true). */
   showQuadrant?: boolean;
@@ -47,6 +59,8 @@ export function RefactoringBoard({
   plans,
   summary,
   onAiPrompt,
+  onGenerateCode,
+  settingsHref,
   fileHref,
   showQuadrant = true,
   emptyTitle = "No refactoring plans",
@@ -301,6 +315,8 @@ export function RefactoringBoard({
         open={modalOpen}
         onOpenChange={setModalOpen}
         onAiPrompt={onAiPrompt}
+        onGenerateCode={onGenerateCode}
+        settingsHref={settingsHref}
         fileHref={fileHref}
       />
     </div>

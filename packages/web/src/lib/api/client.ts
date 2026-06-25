@@ -106,6 +106,21 @@ export async function apiPost<T>(
   return handleResponse<T>(res);
 }
 
+export async function apiPut<T>(
+  path: string,
+  body?: unknown,
+  fetchOptions?: RequestInit,
+): Promise<T> {
+  const url = `${BASE_URL}${path}`;
+  const res = await fetch(url, {
+    method: "PUT",
+    headers: buildHeaders(),
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+    ...fetchOptions,
+  });
+  return handleResponse<T>(res);
+}
+
 export async function apiPatch<T>(
   path: string,
   body?: unknown,
