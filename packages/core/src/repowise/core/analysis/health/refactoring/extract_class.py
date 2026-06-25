@@ -109,6 +109,7 @@ class ExtractClassDetector(RefactoringDetector):
                         "method_count": cls.method_count,
                         "field_count": cls.field_count,
                         "wmc": wmc,
+                        "tcc": round(float(getattr(cls, "tcc", 1.0)), 3),
                     },
                     impact_delta=round(float(impact_delta), 3),
                     effort_bucket=effort_bucket(cls.total_nloc),

@@ -11,7 +11,7 @@ import {
   deltaColor,
 } from "./tokens";
 import { Sparkline } from "./sparkline";
-import { SeverityDistribution, type SeverityBreakdown } from "./severity-distribution";
+import { type SeverityBreakdown } from "./severity-distribution";
 import { HealthDistributionBar } from "./health-distribution-bar";
 
 export interface HealthSummary {
@@ -62,7 +62,6 @@ export function HealthKpiCards({
   distribution,
   averageHistory,
   hotspotHistory,
-  worstHistory,
   averageDelta,
   hotspotDelta,
   onSelectPillar,
@@ -116,46 +115,89 @@ export function HealthKpiCards({
         />
       </div>
 
-      {/* ── Operational stats: the supporting strip, visually quieter ── */}
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-        <StatCard label="Files Analyzed">
-          <p className="text-xl font-semibold text-[var(--color-text-primary)] tabular-nums">
-            {formatNumber(summary.file_count)}
-          </p>
-        </StatCard>
-        <StatCard
-          label="Hotspot Health"
-          sparkline={hotspotHistory}
+      {/* ── Operational stats: one quiet inline strip, not a second card grid ── */}
+      <div className="flex flex-wrap items-center gap-x-6 gap-y-2 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-4 py-2.5">
+        <InlineStat label="Files" value={formatNumber(summary.file_count)} />
+        <InlineStat
+          label="Hotspot health"
+          value={summary.hotspot_health == null ? "—" : summary.hotspot_health.toFixed(1)}
+          suffix={summary.hotspot_health == null ? undefined : "/10"}
+          valueClass={scoreTextColor(summary.hotspot_health ?? null)}
           delta={hotspotDelta}
+          sparkline={hotspotHistory}
           hint="The health score averaged over the repo's churn hotspots only (NLOC-weighted) — how healthy is the code you touch most?"
-        >
-          <p className={`text-xl font-semibold tabular-nums ${scoreTextColor(summary.hotspot_health ?? null)}`}>
-            {summary.hotspot_health == null ? "—" : summary.hotspot_health.toFixed(1)}
-            {summary.hotspot_health == null ? null : (
-              <span className="text-sm font-normal text-[var(--color-text-secondary)]">/10</span>
-            )}
-          </p>
-        </StatCard>
-        <StatCard label="Worst Performer" sparkline={worstHistory}>
-          <p className={`text-xl font-semibold tabular-nums ${scoreTextColor(summary.worst_performer_score)}`}>
-            {summary.worst_performer_score?.toFixed(1) ?? "—"}
-            <span className="text-sm font-normal text-[var(--color-text-secondary)]">/10</span>
-          </p>
-          <p className="text-xs text-[var(--color-text-tertiary)] mt-1 truncate font-mono">
-            {summary.worst_performer_path ?? "no data"}
-          </p>
-        </StatCard>
-        <StatCard label="Open Findings">
-          <p className="text-xl font-semibold text-[var(--color-text-primary)] tabular-nums">
-            {formatNumber(summary.open_findings)}
-          </p>
-          {summary.severity_breakdown ? (
-            <div className="mt-2">
-              <SeverityDistribution breakdown={summary.severity_breakdown} showCounts={false} />
-            </div>
-          ) : null}
-        </StatCard>
+        />
+        <InlineStat
+          label="Worst performer"
+          value={summary.worst_performer_score?.toFixed(1) ?? "—"}
+          suffix={summary.worst_performer_score == null ? undefined : "/10"}
+          valueClass={scoreTextColor(summary.worst_performer_score)}
+          sub={
+            summary.worst_performer_path
+              ? summary.worst_performer_path.split("/").pop() ?? summary.worst_performer_path
+              : undefined
+          }
+          subTitle={summary.worst_performer_path ?? undefined}
+        />
+        <InlineStat label="Open findings" value={formatNumber(summary.open_findings)} />
       </div>
+    </div>
+  );
+}
+
+/** A compact horizontal stat — tiny label, value, optional /10 suffix, sub-line,
+ *  delta, and sparkline. Several sit in one slim strip below the signal tiles. */
+function InlineStat({
+  label,
+  value,
+  suffix,
+  valueClass,
+  sub,
+  subTitle,
+  delta,
+  sparkline,
+  hint,
+}: {
+  label: string;
+  value: string;
+  suffix?: string | undefined;
+  valueClass?: string | undefined;
+  sub?: string | undefined;
+  subTitle?: string | undefined;
+  delta?: number | null | undefined;
+  sparkline?: number[] | undefined;
+  hint?: string | undefined;
+}) {
+  return (
+    <div className="flex flex-col">
+      <span className="inline-flex items-center gap-1 text-[11px] font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
+        {label}
+        {hint ? <InfoTip content={hint} label={`About ${label}`} /> : null}
+      </span>
+      <span className="flex items-baseline gap-1.5">
+        <span className={`text-base font-semibold tabular-nums ${valueClass ?? "text-[var(--color-text-primary)]"}`}>
+          {value}
+          {suffix ? (
+            <span className="text-xs font-normal text-[var(--color-text-secondary)]">{suffix}</span>
+          ) : null}
+        </span>
+        {delta != null && Math.abs(delta) >= 0.005 ? (
+          <span className={`text-[11px] tabular-nums ${deltaColor(delta)}`}>{formatDelta(delta)}</span>
+        ) : null}
+        {sparkline && sparkline.length > 1 ? (
+          <span className="text-[var(--color-text-tertiary)]">
+            <Sparkline values={sparkline} width={44} height={12} />
+          </span>
+        ) : null}
+        {sub ? (
+          <span
+            className="max-w-[16rem] truncate font-mono text-xs text-[var(--color-text-tertiary)]"
+            title={subTitle}
+          >
+            {sub}
+          </span>
+        ) : null}
+      </span>
     </div>
   );
 }
@@ -245,7 +287,7 @@ function TileShell({
   children: React.ReactNode;
 }) {
   const cls =
-    "flex w-full flex-col rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-5 text-left transition-colors";
+    "flex w-full flex-col rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-4 text-left transition-colors";
   if (onClick) {
     return (
       <button
@@ -327,40 +369,4 @@ function PerformanceTile({
     </>
   );
   return <TileShell onClick={interactive ? onClick : undefined}>{inner}</TileShell>;
-}
-
-function StatCard({
-  label,
-  children,
-  sparkline,
-  delta,
-  hint,
-}: {
-  label: string;
-  children: React.ReactNode;
-  sparkline?: number[] | undefined;
-  delta?: number | null | undefined;
-  hint?: string | undefined;
-}) {
-  return (
-    <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-4">
-      <div className="flex items-start justify-between gap-2 mb-1">
-        <p className="inline-flex items-center gap-1 text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
-          {label}
-          {hint ? <InfoTip content={hint} label={`About ${label}`} /> : null}
-        </p>
-        {sparkline && sparkline.length > 0 ? (
-          <div className="text-[var(--color-text-tertiary)]">
-            <Sparkline values={sparkline} width={56} height={16} />
-          </div>
-        ) : null}
-      </div>
-      {children}
-      {delta != null ? (
-        <p className={`mt-1 text-xs tabular-nums ${deltaColor(delta)}`}>
-          {formatDelta(delta)} vs. prior
-        </p>
-      ) : null}
-    </div>
-  );
 }

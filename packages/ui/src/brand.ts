@@ -43,13 +43,13 @@ export const LIGHT = {
 
 /** Dark-mode surface/text values. */
 export const DARK = {
-  bgRoot: "#17131d",
-  bgSurface: "#211b29",
-  bgElevated: "#2a2335",
-  bgInset: "#110d17",
-  textPrimary: "#eeeaf4",
-  textSecondary: "#a79db3",
-  textTertiary: "#786f84",
+  bgRoot: "#1a1a1b",
+  bgSurface: "#232325",
+  bgElevated: "#2b2c2e",
+  bgInset: "#141415",
+  textPrimary: "#ececed",
+  textSecondary: "#a2a2a6",
+  textTertiary: "#717176",
   accentPrimary: "#f59520",
   accentFill: "#f59520",
   accentSecondary: "#a98fc4",

@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 520" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="a2" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#94A3B8"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1200" height="520" rx="16" fill="#FFFFFF"/>
+  <rect x="0.5" y="0.5" width="1199" height="519" rx="16" fill="none" stroke="#E5E7EB"/>
+
+  <!-- one index -->
+  <rect x="400" y="26" width="400" height="50" rx="25" fill="#F8FAFC" stroke="#E2E8F0"/>
+  <text x="600" y="49" text-anchor="middle" fill="#0F172A" font-size="16" font-weight="700">One index &#183; <tspan fill="#64748B" font-weight="400">repowise init</tspan></text>
+  <text x="600" y="67" text-anchor="middle" fill="#94A3B8" font-size="12">indexed once, kept in sync on every commit</text>
+
+  <!-- fan-out to five layers -->
+  <path d="M600,76 L600,92 M230,92 L980,92 M230,92 L230,108 M417.5,92 L417.5,108 M600,92 L600,108 M782.5,92 L782.5,108 M980,92 L980,108" fill="none" stroke="#CBD5E1" stroke-width="1.5" marker-end="url(#a2)"/>
+
+  <!-- five layer cards -->
+  <g>
+    <!-- Graph -->
+    <rect x="140" y="112" width="180" height="168" rx="12" fill="#F8FAFC" stroke="#E2E8F0"/>
+    <text x="160" y="143" fill="#2563EB" font-size="18" font-weight="700">&#9672;</text>
+    <text x="184" y="143" fill="#0F172A" font-size="17" font-weight="700">Graph</text>
+    <text x="160" y="172" fill="#64748B" font-size="12.5">Dependency + call</text>
+    <text x="160" y="190" fill="#64748B" font-size="12.5">graph, 15 languages.</text>
+    <text x="160" y="208" fill="#64748B" font-size="12.5">Communities,</text>
+    <text x="160" y="226" fill="#64748B" font-size="12.5">centrality, flows.</text>
+
+    <!-- Git -->
+    <rect x="327.5" y="112" width="180" height="168" rx="12" fill="#F8FAFC" stroke="#E2E8F0"/>
+    <text x="347.5" y="143" fill="#2563EB" font-size="18" font-weight="700">&#9672;</text>
+    <text x="371.5" y="143" fill="#0F172A" font-size="17" font-weight="700">Git</text>
+    <text x="347.5" y="172" fill="#64748B" font-size="12.5">Hotspots, ownership,</text>
+    <text x="347.5" y="190" fill="#64748B" font-size="12.5">co-change coupling,</text>
+    <text x="347.5" y="208" fill="#64748B" font-size="12.5">bus factor &#8212; signals</text>
+    <text x="347.5" y="226" fill="#64748B" font-size="12.5">statics can't see.</text>
+
+    <!-- Docs -->
+    <rect x="515" y="112" width="180" height="168" rx="12" fill="#F8FAFC" stroke="#E2E8F0"/>
+    <text x="535" y="143" fill="#2563EB" font-size="18" font-weight="700">&#9672;</text>
+    <text x="559" y="143" fill="#0F172A" font-size="17" font-weight="700">Docs</text>
+    <text x="535" y="172" fill="#64748B" font-size="12.5">LLM wiki per file,</text>
+    <text x="535" y="190" fill="#64748B" font-size="12.5">rebuilt every commit.</text>
+    <text x="535" y="208" fill="#64748B" font-size="12.5">Hybrid RAG search,</text>
+    <text x="535" y="226" fill="#64748B" font-size="12.5">freshness scoring.</text>
+
+    <!-- Decisions -->
+    <rect x="702.5" y="112" width="180" height="168" rx="12" fill="#F8FAFC" stroke="#E2E8F0"/>
+    <text x="722.5" y="143" fill="#2563EB" font-size="18" font-weight="700">&#9672;</text>
+    <text x="746.5" y="143" fill="#0F172A" font-size="17" font-weight="700">Decisions</text>
+    <text x="722.5" y="172" fill="#64748B" font-size="12.5">Architectural</text>
+    <text x="722.5" y="190" fill="#64748B" font-size="12.5">decisions mined from</text>
+    <text x="722.5" y="208" fill="#64748B" font-size="12.5">8 sources, evidence-</text>
+    <text x="722.5" y="226" fill="#64748B" font-size="12.5">backed, linked.</text>
+
+    <!-- Code Health (highlight) -->
+    <rect x="890" y="112" width="180" height="168" rx="12" fill="#FEF6EC" stroke="#F59520" stroke-opacity="0.8"/>
+    <text x="910" y="143" fill="#F59520" font-size="18" font-weight="700">&#9733;</text>
+    <text x="934" y="143" fill="#0F172A" font-size="17" font-weight="700">Code Health</text>
+    <text x="910" y="172" fill="#B45309" font-size="12.5">Defect-validated.</text>
+    <text x="910" y="190" fill="#64748B" font-size="12.5">3 signals + concrete</text>
+    <text x="910" y="208" fill="#64748B" font-size="12.5">refactoring plans.</text>
+    <text x="910" y="226" fill="#64748B" font-size="12.5">Zero LLM, under 30s.</text>
+
+    <!-- per-card subtle footer rule + signature tool -->
+    <line x1="160" y1="252" x2="300" y2="252" stroke="#E2E8F0"/>
+    <line x1="347.5" y1="252" x2="487.5" y2="252" stroke="#E2E8F0"/>
+    <line x1="535" y1="252" x2="675" y2="252" stroke="#E2E8F0"/>
+    <line x1="722.5" y1="252" x2="862.5" y2="252" stroke="#E2E8F0"/>
+    <line x1="910" y1="252" x2="1050" y2="252" stroke="#F59520" stroke-opacity="0.35"/>
+    <text x="160" y="271" fill="#94A3B8" font-size="11" font-family="monospace">get_context</text>
+    <text x="347.5" y="271" fill="#94A3B8" font-size="11" font-family="monospace">get_risk</text>
+    <text x="535" y="271" fill="#94A3B8" font-size="11" font-family="monospace">get_answer</text>
+    <text x="722.5" y="271" fill="#94A3B8" font-size="11" font-family="monospace">get_why</text>
+    <text x="910" y="271" fill="#B45309" font-size="11" font-family="monospace">get_health</text>
+  </g>
+
+  <!-- converge to delivery -->
+  <path d="M230,280 L230,308 L600,308 M417.5,280 L417.5,308 M600,280 L600,308 M782.5,280 L782.5,308 L600,308 M980,280 L980,308 L600,308 M600,308 L600,332" fill="none" stroke="#CBD5E1" stroke-width="1.5" marker-end="url(#a2)"/>
+
+  <!-- delivery surfaces -->
+  <rect x="140" y="340" width="930" height="68" rx="12" fill="#F0F7FF" stroke="#BFDBFE"/>
+  <text x="605" y="368" text-anchor="middle" fill="#1E3A8A" font-size="15" font-weight="600">Delivered everywhere your work happens</text>
+  <text x="605" y="390" text-anchor="middle" fill="#64748B" font-size="13">9 task-shaped MCP tools &#183; CLI &#183; local dashboard &#183; auto-generated CLAUDE.md / AGENTS.md &#183; PR bot</text>
+
+  <text x="600" y="452" text-anchor="middle" fill="#94A3B8" font-size="13" font-style="italic">Each layer compounds the others &#8212; the graph locates what git flags, health scores it, decisions explain it.</text>
+</svg>

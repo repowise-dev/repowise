@@ -258,9 +258,9 @@ export function FileHealthTab({
             rows={blameRows}
             rowKey={(b) => b.row.symbol_id}
             estimateRowHeight={BLAME_ROW_ESTIMATE}
-            className="overflow-x-auto rounded-md border border-[var(--color-border-default)]"
+            className="overflow-x-auto overflow-hidden border border-[var(--color-border-default)]"
             tableClassName="text-xs"
-            headerClassName="bg-transparent"
+            headerClassName="bg-[var(--color-bg-surface)]"
             header={
               <tr className="border-b border-[var(--color-border-default)] text-left text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)]">
                 <th className="px-3 py-2 font-medium">Function</th>
@@ -274,7 +274,7 @@ export function FileHealthTab({
               <tr
                 ref={measureRef}
                 data-index={index}
-                className="border-b border-[var(--color-border-default)] last:border-0"
+                className="border-b border-[var(--color-table-divider)] last:border-0 hover:bg-[var(--color-bg-elevated)]"
               >
                 <td className="px-3 py-1.5 text-[var(--color-text-primary)]">
                   {symbolHref ? (

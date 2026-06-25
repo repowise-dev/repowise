@@ -105,13 +105,23 @@ const components: Components = {
       <table className="text-xs w-full border-collapse">{children}</table>
     </div>
   ),
+  thead: ({ children }) => (
+    <thead className="bg-[var(--color-bg-surface)] border-b border-[var(--color-border-default)]">
+      {children}
+    </thead>
+  ),
   th: ({ children }) => (
-    <th className="text-left px-2 py-1 border-b border-[var(--color-border-default)] text-[var(--color-text-tertiary)] font-medium uppercase tracking-wider text-[10px]">
+    <th className="text-left px-3 py-2.5 text-[11px] font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
       {children}
     </th>
   ),
+  tr: ({ children }) => (
+    <tr className="border-t border-[var(--color-table-divider)] transition-colors hover:bg-[var(--color-bg-elevated)]">
+      {children}
+    </tr>
+  ),
   td: ({ children }) => (
-    <td className="px-2 py-1 border-b border-[var(--color-border-default)] text-[var(--color-text-secondary)]">
+    <td className="px-3 py-2.5 text-[var(--color-text-secondary)]">
       {children}
     </td>
   ),

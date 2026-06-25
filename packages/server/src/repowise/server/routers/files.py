@@ -10,6 +10,7 @@ decisions, and dead-code findings for the file.
 
 from __future__ import annotations
 
+import bisect
 import json
 from typing import Any
 
@@ -78,6 +79,99 @@ def _symbol_slim(s: WikiSymbol) -> dict:
     }
 
 
+def _percentile_map(values: dict[str, float]) -> dict[str, float]:
+    """Map each key to the percentile rank (0-100) of its value within the set.
+
+    Ties share the same rank. Returns an empty map for an empty input. O(n log n)
+    via a single sort — never the O(n²) of per-row `percentile_rank` scans.
+    """
+    if not values:
+        return {}
+    ordered = sorted(values.values())
+    n = len(ordered)
+    if n == 1:
+        return {k: 100.0 for k in values}
+    # For each distinct value, the share of entries strictly below it.
+    out: dict[str, float] = {}
+    for key, v in values.items():
+        below = bisect.bisect_left(ordered, v)
+        out[key] = round(below / (n - 1) * 100.0, 1)
+    return out
+
+
+@router.get("/{repo_id}/files")
+async def files_index(
+    repo_id: str,
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+) -> dict:
+    """Slim per-file rows for the browsable Files index + treemap.
+
+    One row per indexed file node, joined in-memory from four batch reads
+    (graph nodes, materialized degree metrics, health metrics, git metadata).
+    Percentiles for importance (pagerank) and churn are computed once over the
+    full set so the client can rank without refetching.
+    """
+    repo = await crud.get_repository(session, repo_id)
+    if repo is None:
+        raise HTTPException(status_code=404, detail="Repository not found")
+
+    nodes = await crud.get_all_file_metrics(session, repo_id)
+    degrees = await crud.get_graph_metrics(session, repo_id)
+    metrics_by_path = {m.file_path: m for m in await crud.get_health_metrics(session, repo_id)}
+    git_by_path = await crud.get_all_git_metadata(session, repo_id)
+
+    pagerank_pct = _percentile_map({n.node_id: (n.pagerank or 0.0) for n in nodes})
+
+    files: list[dict] = []
+    lang_counts: dict[str, int] = {}
+    for n in nodes:
+        path = n.node_id
+        metric = metrics_by_path.get(path)
+        git = git_by_path.get(path)
+        deg = degrees.get(path)
+        lang = n.language or ""
+        if lang:
+            lang_counts[lang] = lang_counts.get(lang, 0) + 1
+        # `score` is the overall surfaced number (== defect); prefer the explicit
+        # `defect_score` when the three-signal split populated it.
+        defect = None
+        if metric is not None:
+            defect = metric.defect_score if metric.defect_score is not None else metric.score
+        files.append(
+            {
+                "file_path": path,
+                "language": lang,
+                "loc": metric.nloc if metric else None,
+                "symbol_count": n.symbol_count,
+                "pagerank_pct": pagerank_pct.get(path, 0.0),
+                "in_degree": deg["in_degree"] if deg else 0,
+                "out_degree": deg["out_degree"] if deg else 0,
+                "defect_score": defect,
+                "maintainability_score": metric.maintainability_score if metric else None,
+                "performance_score": metric.performance_score if metric else None,
+                "churn_pct": round((git.churn_percentile or 0.0) * 100.0, 1) if git else None,
+                "commit_count": git.commit_count_total if git else None,
+                "last_commit_at": (
+                    git.last_commit_at.isoformat() if git and git.last_commit_at else None
+                ),
+                "coverage_pct": metric.line_coverage_pct if metric else None,
+                "is_test": n.is_test,
+                "is_entry_point": n.is_entry_point,
+                "community_id": n.community_id,
+            }
+        )
+
+    languages = [
+        {"language": lang, "count": count}
+        for lang, count in sorted(lang_counts.items(), key=lambda kv: -kv[1])
+    ]
+    return {
+        "files": files,
+        "total": len(files),
+        "languages": languages,
+    }
+
+
 @router.get("/{repo_id}/files/{file_path:path}")
 async def file_detail(
     repo_id: str,
@@ -96,9 +190,7 @@ async def file_detail(
     # Degree is read once (graph node only) and shared by the health-signals
     # block below and the graph-context block further down.
     degrees = (
-        await crud.get_node_degree_counts(session, repo_id, file_path)
-        if node is not None
-        else None
+        await crud.get_node_degree_counts(session, repo_id, file_path) if node is not None else None
     )
 
     if node is None and git_meta is None and metric is None:

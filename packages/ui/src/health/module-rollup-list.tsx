@@ -63,9 +63,9 @@ export function ModuleRollupList({
   };
 
   return (
-    <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] overflow-hidden">
+    <div className="border border-[var(--color-border-default)] overflow-hidden">
       <table className="w-full text-sm">
-        <thead className="bg-[var(--color-bg-elevated)] text-[var(--color-text-tertiary)] text-xs uppercase tracking-wider">
+        <thead className="border-b border-[var(--color-border-default)] bg-[var(--color-bg-surface)] text-[var(--color-text-tertiary)] text-[11px] uppercase tracking-wider">
           <tr>
             <Th label="Module" active={sort === "module"} order={order} onClick={() => toggle("module")} />
             <Th label="Files" active={sort === "file_count"} order={order} onClick={() => toggle("file_count")} />
@@ -78,10 +78,12 @@ export function ModuleRollupList({
           {visible.map((m) => (
             <tr
               key={m.module}
-              className={`border-t border-[var(--color-border-default)] ${onSelect ? "cursor-pointer hover:bg-[var(--color-bg-elevated)]" : ""}`}
+              className={`group border-t border-[var(--color-table-divider)] ${onSelect ? "cursor-pointer hover:bg-[var(--color-bg-elevated)]" : ""}`}
               onClick={onSelect ? () => onSelect(m) : undefined}
             >
-              <td className="px-3 py-2 font-medium text-[var(--color-text-primary)]">{m.module}</td>
+              <td className="px-3 py-2 font-medium text-[var(--color-text-primary)]">
+                <span className="group-hover:underline underline-offset-2">{m.module}</span>
+              </td>
               <td className="px-3 py-2 tabular-nums text-[var(--color-text-secondary)]">{m.file_count}</td>
               <td className="px-3 py-2 tabular-nums text-[var(--color-text-secondary)]">{m.nloc.toLocaleString()}</td>
               <td className="px-3 py-2">

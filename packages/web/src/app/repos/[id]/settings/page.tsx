@@ -3,6 +3,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Settings } from "lucide-react";
 import { WebhookSection } from "@/components/settings/webhook-section";
+import { RefactoringSettingsSection } from "@/components/repos/refactoring-settings-section";
 import { getRepo } from "@/lib/api/repos";
 import { getCoordinatorHealth } from "@/lib/api/health";
 import { RepoSettingsFormWrapper as RepoSettingsForm } from "@/components/repos/repo-settings-form-wrapper";
@@ -63,6 +64,18 @@ export default async function RepoSettingsPage({ params }: Props) {
         </CardHeader>
         <CardContent className="pt-0">
           <OperationsPanel repoId={id} repoName={repo.name} />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-sm font-medium">Refactoring code generation</CardTitle>
+          <CardDescription>
+            Opt in to turning refactoring plans into reviewable diffs with your configured model
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="pt-0">
+          <RefactoringSettingsSection repoId={id} />
         </CardContent>
       </Card>
 

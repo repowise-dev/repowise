@@ -143,12 +143,38 @@ def _collect_self_members(method_node: Node, lmap: LanguageNodeMap) -> set[str]:
     return members
 
 
+def _tcc(field_sets: list[set[str]]) -> float:
+    """Tight Class Cohesion (Bieman-Kang): the fraction of method pairs that
+    share at least one instance field, in ``[0, 1]``.
+
+    *field_sets* is the per-method set of instance fields (method names already
+    excluded). Returns ``1.0`` ("no signal") when there are fewer than two
+    methods, so an unparsed/fieldless class never reads as low-cohesion — the
+    same posture as the LCOM4 safety valve.
+    """
+    n = len(field_sets)
+    if n < 2:
+        return 1.0
+    possible = n * (n - 1) // 2
+    if possible == 0:
+        return 1.0
+    connected = 0
+    for i in range(n):
+        fi = field_sets[i]
+        if not fi:
+            continue
+        for j in range(i + 1, n):
+            if fi & field_sets[j]:
+                connected += 1
+    return connected / possible
+
+
 def _compute_lcom4(
     method_nodes: list[Node],
     method_fcs: list[FunctionComplexity],
     lmap: LanguageNodeMap,
-) -> tuple[int, int, list[CohesionGroup]]:
-    """Return ``(lcom4, field_count, components)`` for a class.
+) -> tuple[int, int, list[CohesionGroup], float]:
+    """Return ``(lcom4, field_count, components, tcc)`` for a class.
 
     LCOM4 = number of connected components over the methods, where two
     methods are connected if they share an instance member or one calls
@@ -167,7 +193,7 @@ def _compute_lcom4(
     """
     n = len(method_nodes)
     if n == 0:
-        return 1, 0, []
+        return 1, 0, [], 1.0
 
     members_per_method: list[set[str]] = [
         _collect_self_members(node, lmap) for node in method_nodes
@@ -177,8 +203,12 @@ def _compute_lcom4(
     all_members: set[str] = set().union(*members_per_method) if members_per_method else set()
     field_count = len(all_members - method_names)
 
+    # TCC over instance fields only (method-call edges don't count toward it),
+    # so it complements LCOM4 rather than restating it.
+    tcc = _tcc([members - method_names for members in members_per_method])
+
     if total_refs == 0:
-        return 1, field_count, []
+        return 1, field_count, [], tcc
 
     # Union-find over method indices.
     parent = list(range(n))
@@ -243,7 +273,7 @@ def _compute_lcom4(
         )
     indexed_groups.sort(key=lambda pair: _pos(pair[0]))
     groups = [g for _, g in indexed_groups]
-    return len(components), field_count, groups
+    return len(components), field_count, groups, tcc
 
 
 def _collect_classes(
@@ -262,7 +292,7 @@ def _collect_classes(
         # Keep nodes and FCs aligned (a method missing from the function
         # pass — unusual — drops out of both).
         aligned_nodes = [m for m in method_nodes if m.id in fc_by_node_id]
-        lcom4, field_count, components = _compute_lcom4(aligned_nodes, method_fcs, lmap)
+        lcom4, field_count, components, tcc = _compute_lcom4(aligned_nodes, method_fcs, lmap)
         classes.append(
             ClassComplexity(
                 name=_class_name(class_node),
@@ -275,6 +305,7 @@ def _collect_classes(
                 max_method_ccn=max((fc.ccn for fc in method_fcs), default=0),
                 field_count=field_count,
                 components=components,
+                tcc=tcc,
             )
         )
     return classes

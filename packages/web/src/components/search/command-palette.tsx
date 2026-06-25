@@ -3,9 +3,11 @@
 import { useEffect, useState, useCallback, useMemo } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { Command } from "cmdk";
-import { Search, LayoutDashboard, Settings, BookOpen, Layers, Link2, GitMerge, MessageSquare } from "lucide-react";
+import useSWR from "swr";
+import { Search, LayoutDashboard, Settings, BookOpen, FileCode, Layers, Link2, GitMerge, MessageSquare } from "lucide-react";
 import { useSearch } from "@/lib/hooks/use-search";
 import { truncatePath } from "@repowise-dev/ui/lib/format";
+import { getFilesIndex } from "@/lib/api/files";
 import { repoNavItems } from "@/components/layout/nav-items";
 import { pageHref } from "@/lib/utils/page-href";
 import type { RepoResponse, WorkspaceResponse } from "@/lib/api/types";
@@ -35,6 +37,33 @@ export function CommandPalette({ repos, workspace }: CommandPaletteProps) {
     () => (activeRepo ? repoNavItems(activeRepo.id) : []),
     [activeRepo],
   );
+
+  // File jump — fetched lazily (only once the palette is open with a repo in
+  // scope) and cached; the Files page shares the same SWR key so this is warm
+  // after a visit there. We do our own ranking and cap the rendered set so the
+  // palette never mounts thousands of cmdk items.
+  const { data: filesData } = useSWR(
+    open && activeRepo ? `files-index:${activeRepo.id}` : null,
+    () => getFilesIndex(activeRepo!.id),
+    { revalidateOnFocus: false },
+  );
+
+  const fileMatches = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!activeRepo || q.length < 2 || !filesData) return [];
+    const scored: { path: string; score: number }[] = [];
+    for (const f of filesData.files) {
+      const path = f.file_path.toLowerCase();
+      const idx = path.indexOf(q);
+      if (idx === -1) continue;
+      const base = f.file_path.split("/").pop()?.toLowerCase() ?? "";
+      // Rank: basename match beats mid-path; earlier match beats later.
+      const score = (base.includes(q) ? 0 : 1000) + idx;
+      scored.push({ path: f.file_path, score });
+    }
+    scored.sort((a, b) => a.score - b.score || a.path.length - b.path.length);
+    return scored.slice(0, 12).map((s) => s.path);
+  }, [query, activeRepo, filesData]);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -78,7 +107,7 @@ export function CommandPalette({ repos, workspace }: CommandPaletteProps) {
           <Command.Input
             value={query}
             onValueChange={setQuery}
-            placeholder="Search pages, navigate repos…"
+            placeholder="Jump to a file, search pages, navigate repos…"
             className="flex-1 bg-transparent text-sm text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-tertiary)]"
           />
           <kbd className="hidden sm:inline-flex items-center rounded border border-[var(--color-border-default)] px-1.5 py-0.5 text-xs text-[var(--color-text-tertiary)] font-mono">
@@ -206,6 +235,41 @@ export function CommandPalette({ repos, workspace }: CommandPaletteProps) {
                   {repo.name}
                 </Command.Item>
               ))}
+            </Command.Group>
+          )}
+
+          {/* File jump */}
+          {activeRepo && fileMatches.length > 0 && (
+            <Command.Group heading="Files" className="px-2 pb-1">
+              {fileMatches.map((path) => {
+                const name = path.split("/").pop() ?? path;
+                const dir = path.slice(0, path.length - name.length);
+                return (
+                  <Command.Item
+                    // Embed the query so cmdk's own filter keeps our pre-ranked
+                    // matches visible instead of re-filtering them out.
+                    key={path}
+                    value={`file ${path} ${query}`}
+                    onSelect={() =>
+                      navigate(
+                        `/repos/${activeRepo.id}/files/${path
+                          .split("/")
+                          .map(encodeURIComponent)
+                          .join("/")}`,
+                      )
+                    }
+                    className="flex items-center gap-2.5 rounded-md px-3 py-2 text-sm cursor-pointer hover:bg-[var(--color-bg-elevated)] data-[selected=true]:bg-[var(--color-bg-elevated)]"
+                  >
+                    <FileCode className="h-4 w-4 shrink-0 text-[var(--color-text-tertiary)]" />
+                    <span className="min-w-0 truncate font-mono text-[13px]">
+                      <span className="text-[var(--color-text-tertiary)]">
+                        {truncatePath(dir, 36)}
+                      </span>
+                      <span className="text-[var(--color-text-primary)]">{name}</span>
+                    </span>
+                  </Command.Item>
+                );
+              })}
             </Command.Group>
           )}
 

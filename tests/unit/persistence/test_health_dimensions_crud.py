@@ -119,3 +119,43 @@ async def test_save_health_findings_persists_dimension(async_session):
     by_type = {r.biomarker_type: r for r in rows}
     assert by_type["low_cohesion"].dimension == "maintainability"
     assert by_type["change_entropy"].dimension == "defect"
+
+
+@pytest.mark.asyncio
+async def test_get_health_findings_accepts_comma_separated_biomarker_types(async_session):
+    """One request can pull several biomarker types (the panels batch this way);
+    a single value with no comma still matches exactly."""
+    repo = await insert_repo(async_session)
+    findings = [
+        HealthFindingData(
+            biomarker_type=bt,
+            severity=Severity.HIGH,
+            file_path="a.py",
+            function_name=None,
+            line_start=1,
+            line_end=10,
+            details={},
+            health_impact=1.0,
+            dimension="defect",
+        )
+        for bt in ("function_hotspot", "code_age_volatility", "hidden_coupling", "change_entropy")
+    ]
+    await save_health_findings(async_session, repo.id, findings)
+    await async_session.commit()
+
+    multi = await get_health_findings(
+        async_session,
+        repo.id,
+        biomarker_type="function_hotspot,code_age_volatility,hidden_coupling",
+    )
+    assert {r.biomarker_type for r in multi} == {
+        "function_hotspot",
+        "code_age_volatility",
+        "hidden_coupling",
+    }
+
+    # Single value still behaves as an exact match.
+    single = await get_health_findings(
+        async_session, repo.id, biomarker_type="change_entropy"
+    )
+    assert {r.biomarker_type for r in single} == {"change_entropy"}

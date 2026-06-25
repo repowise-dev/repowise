@@ -9,6 +9,16 @@ recent defect history, test-quality smells, and more. **No LLM calls, no cloud r
 Python over tree-sitter + git data, designed to finish in under 30 seconds on a
 3 000-file repo.
 
+<div align="center">
+<img src="../.github/assets/health-loop.svg" alt="repowise code-health loop — 25 deterministic biomarkers fan into three signals (defect risk, maintainability, performance), the graph and git history locate where risk concentrates, and refactoring intelligence emits concrete plans (Extract Class, Extract Helper, Move Method, Break Cycle) your agent executes" width="100%" />
+</div>
+
+Code health runs as a loop: **measure** every file across three signals,
+**locate** where the risk concentrates through the dependency graph and git
+history, then **fix** it with a concrete refactoring plan an agent can execute
+(see [Refactoring targets](#refactoring-targets) and
+[docs/REFACTORING.md](REFACTORING.md)).
+
 ## Quick start
 
 ```bash
@@ -547,17 +557,47 @@ fraction), and shows up on the `/repos/<id>/health/coverage` dashboard.
 repowise health --refactoring-targets
 ```
 
-Ranks candidates by `total_impact / effort_bucket` so the biggest wins for
-the least work surface first. Each row carries a deterministic, rule-based
-suggestion (`"Split this function. It carries high cyclomatic complexity..."`).
+A health score tells you a file is in trouble; a refactoring target names the
+**specific** fix. Repowise emits one structured `RefactoringSuggestion` per
+opportunity, computed deterministically during the health pass from data it has
+already produced — the call graph, the class cohesion model, the clone pairs, and
+git co-change. No re-parse, no LLM, inside the same <30s budget. Four detectors
+ship today:
+
+| Type | What it names | Built from |
+|------|---------------|------------|
+| **Extract Class** | The cohesion groups an incohesive / god class should split into — the exact methods + fields per group. | LCOM4 union-find components; god-class shape confirmed by Lanza-Marinescu (WMC = Σ McCabe, TCC). |
+| **Extract Helper** | A clone's exact occurrences and where the shared helper should live. | Rabin–Karp clone pairs (line ranges + token count + co-change); extraction site = community centroid of the files. Transitive clones are clustered into one suggestion, not pairwise nags. |
+| **Move Method** | A feature-envy method and the class it actually belongs to. | Jaccard distance of the method's entity set (fields/methods it touches) to each class over the call graph; fires only when a foreign class is clearly nearer than its own. |
+| **Break Cycle** | The minimal set of import edges to invert to break a dependency cycle. | Strongly-connected component → greedy minimum feedback arc set over the real import edges. |
+
+Each suggestion is **structured data, not a string**: a `plan` (the split groups,
+the move target, the cut edges), the `evidence` that justifies it (LCOM4=3, the
+clone ranges, the cycle size), the `impact_delta` (the health deduction it
+recovers), an `effort_bucket` (`S`/`M`/`L`/`XL`), and a **`blast_radius`** — the
+callers and co-changing files that must move with it. Human-readable text is
+rendered from the structure at the edges (CLI / MCP / web); the structure is the
+source of truth.
+
+**Ranking is graph-aware.** Suggestions sort by `impact_delta × call-graph
+centrality × blast_radius`, so a plan on a central hub file outranks the same plan
+on a leaf — not the churn-only sort other tools use. The default surface honors a
+`min_confidence` gate (`low` / `medium` / `high`, default `medium`).
 
 For agentic workflows, the same data is one MCP call away:
 
 ```python
-get_health(include=["refactoring"])           # dashboard + suggestions
+get_health(include=["refactoring"])           # ranked structured plans
 get_health(targets=["src/api/server.py"])     # one file in detail
 get_health(targets=["module:src.api"])        # everything in a module
 ```
+
+The web **Refactoring** tab renders each plan as a card (split groups as a tree,
+move arrow, clone occurrences with line links) with a **copy-to-agent** prompt and
+an opt-in **Generate code** action that expands a plan into generated code plus a
+unified diff. Code generation is strictly opt-in (`refactoring.llm.enabled`) and
+never runs in the indexing hot path. Full reference:
+**[docs/REFACTORING.md](REFACTORING.md)**.
 
 ## Trends
 
@@ -759,6 +799,7 @@ Health: 7.4 (avg) · 6.2 (hotspots) · 2.1 (worst: payments/processor.ts) · 7.0
 | Health trend tracking            | ✅ | ✅ | ❌ | ❌ |
 | Declining health alerts          | ✅ | ✅ | ❌ | ❌ |
 | Refactoring recommendations      | ✅ deterministic | ✅ | ❌ | ❌ |
+| Concrete cross-file refactoring plans | ✅ Extract Class / Helper / Move Method / Break Cycle, graph-aware + blast radius | ⚠️ within-function only | ❌ | ✅ within-file |
 | Free for internal use            | ✅ AGPL-3.0 | ❌ $15–30/author | ✅ public repos | ❌ |
 
 ## See also

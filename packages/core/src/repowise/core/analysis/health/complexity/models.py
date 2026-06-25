@@ -106,6 +106,13 @@ class ClassComplexity:
     max_method_ccn: int = 0
     field_count: int = 0
     components: list[CohesionGroup] = field(default_factory=list)
+    # Tight Class Cohesion (Bieman-Kang): the fraction of method pairs that
+    # share at least one instance field, in ``[0, 1]`` — higher is more
+    # cohesive. ``1.0`` is the "no signal" default (fewer than two methods, or
+    # a language whose member access we do not map), mirroring the ``lcom4``
+    # safety valve. A cohesive Extract Class split raises the worst split
+    # class's TCC toward ``1``; the enrich self-check reads it before/after.
+    tcc: float = 1.0
 
 
 @dataclass(frozen=True)

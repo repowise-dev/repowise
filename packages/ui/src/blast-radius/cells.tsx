@@ -3,7 +3,7 @@ import { cn } from "../lib/cn";
 
 export function Th({ children }: { children: ReactNode }) {
   return (
-    <th className="text-left text-xs font-medium text-[var(--color-text-tertiary)] py-1.5 pr-4 whitespace-nowrap">
+    <th className="text-left text-[11px] font-medium uppercase tracking-wider text-[var(--color-text-tertiary)] py-1.5 pr-4 whitespace-nowrap">
       {children}
     </th>
   );

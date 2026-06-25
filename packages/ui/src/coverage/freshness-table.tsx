@@ -106,23 +106,24 @@ export function FreshnessTable({ pages, onRegenerate }: FreshnessTableProps) {
           rowKey={(page) => page.id}
           estimateRowHeight={56}
           aria-label="Documentation freshness"
-          className="rounded-lg border border-[var(--color-border-default)]"
+          className="border border-[var(--color-border-default)]"
           tableClassName="w-full text-sm"
+          headerClassName="bg-[var(--color-bg-surface)]"
           header={
-            <tr className="border-b border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]">
-              <th scope="col" className="px-4 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
+            <tr className="border-b border-[var(--color-border-default)] bg-[var(--color-bg-surface)]">
+              <th scope="col" className="px-4 py-2.5 text-left text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
                 Page
               </th>
-              <th scope="col" className="px-4 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-24">
+              <th scope="col" className="px-4 py-2.5 text-left text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-24">
                 Status
               </th>
-              <th scope="col" className="px-4 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-24">
+              <th scope="col" className="px-4 py-2.5 text-left text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-24">
                 Confidence
               </th>
-              <th scope="col" className="px-4 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider hidden md:table-cell">
+              <th scope="col" className="px-4 py-2.5 text-left text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider hidden md:table-cell">
                 Model
               </th>
-              <th scope="col" className="px-4 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-28 hidden md:table-cell">
+              <th scope="col" className="px-4 py-2.5 text-left text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-28 hidden md:table-cell">
                 Updated
               </th>
               <th scope="col" className="px-4 py-2.5 w-24">
@@ -134,10 +135,10 @@ export function FreshnessTable({ pages, onRegenerate }: FreshnessTableProps) {
             const status = page.freshness_status as FreshnessStatus;
             return (
               <tr
-                className="border-b border-[var(--color-border-default)] hover:bg-[var(--color-bg-elevated)] transition-colors last:border-0"
+                className="group border-b border-[var(--color-table-divider)] hover:bg-[var(--color-bg-elevated)] transition-colors last:border-0"
               >
                 <td className="px-4 py-2.5 font-mono text-xs text-[var(--color-text-primary)] min-w-[220px] max-w-[480px]">
-                  <div className="truncate" title={page.target_path}>{page.target_path}</div>
+                  <div className="truncate group-hover:underline underline-offset-2" title={page.target_path}>{page.target_path}</div>
                   {(() => { const TypeIcon = getPageTypeIcon(page.page_type); return (
                     <div className="flex items-center gap-1 truncate text-[var(--color-text-tertiary)]" title={page.page_type}>
                       <TypeIcon className="h-3 w-3 shrink-0" />

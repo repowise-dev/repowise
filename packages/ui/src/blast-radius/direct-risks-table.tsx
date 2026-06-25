@@ -49,7 +49,7 @@ export function DirectRisksTable({ rows }: DirectRisksTableProps) {
       <table className="w-full">
         <caption className="sr-only">Direct risks for the changed files</caption>
         <thead>
-          <tr className="text-left text-xs font-medium text-[var(--color-text-tertiary)]">
+          <tr className="border-b border-[var(--color-border-default)] text-left text-[11px] font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
             <th className="py-1.5 pr-4">File</th>
             <th className="w-[28%] py-1.5 pr-4">Risk (0–10)</th>
             <th className="w-[24%] py-1.5 pr-4">Temporal hotspot</th>
@@ -58,10 +58,13 @@ export function DirectRisksTable({ rows }: DirectRisksTableProps) {
         </thead>
         <tbody>
           {sorted.map((r) => (
-            <tr key={r.path} className="border-t border-[var(--color-border-default)]">
+            <tr
+              key={r.path}
+              className="group border-t border-[var(--color-table-divider)] hover:bg-[var(--color-bg-elevated)]"
+            >
               <td className="py-2 pr-4 align-middle">
                 <span
-                  className="block max-w-[280px] truncate font-mono text-xs text-[var(--color-text-secondary)]"
+                  className="block max-w-[280px] truncate font-mono text-xs text-[var(--color-text-secondary)] group-hover:underline underline-offset-2"
                   title={r.path}
                 >
                   {r.path}

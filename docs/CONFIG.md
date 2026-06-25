@@ -117,6 +117,33 @@ mcp:
   `get_architecture`) are added automatically in workspace mode and ignored if
   named in single-repo mode. See [MCP_TOOLS.md](MCP_TOOLS.md#configuring-the-tool-surface).
 
+### The `refactoring:` block
+
+Controls the refactoring-intelligence layer — the structured Extract Class /
+Extract Helper / Move Method / Break Cycle plans surfaced by `repowise health
+--refactoring-targets`, `get_health(include=["refactoring"])`, and the web
+Refactoring tab. The deterministic detectors run inside the normal health pass;
+this block only tunes which fire and the opt-in code-generation step.
+
+```yaml
+refactoring:
+  enabled: true               # the deterministic plans (zero LLM, in the health pass)
+  detectors:
+    disabled: []              # e.g. [move_method] to silence one detector
+  min_confidence: medium      # low | medium | high — the surface gate
+  llm:
+    enabled: false            # opt-in code generation; gates the generate-code endpoint
+    provider: null            # falls back to the repo's configured LLM provider
+    model: null
+```
+
+- The deterministic layer is **zero-LLM** and runs in the `init` / `update`
+  health pass; only `llm.enabled` ever calls a provider, and only on demand
+  (never in the indexing hot path).
+- Per-path disables reuse the `.repowise/health-rules.json` glob mechanism (the
+  same one biomarkers use).
+- Full reference: [REFACTORING.md](REFACTORING.md).
+
 ---
 
 ## LLM providers

@@ -101,7 +101,7 @@ export function ResponsiveTable<T>({
   const table = (
     <div className={cn("overflow-x-auto", stacked && STACKED_TABLE_CLS[stacked])}>
       <table className="w-full text-sm">
-        <thead className="bg-[var(--color-bg-elevated)] text-[var(--color-text-tertiary)] text-xs uppercase tracking-wider sticky top-0 z-10">
+        <thead className="bg-[var(--color-bg-surface)] text-[var(--color-text-tertiary)] text-[11px] uppercase tracking-wider sticky top-0 z-10 border-b border-[var(--color-border-default)]">
           <tr>
             {columns.map((c) => {
               const isActive = c.sortable && c.key === sortField;
@@ -109,7 +109,7 @@ export function ResponsiveTable<T>({
                 <th
                   key={c.key}
                   className={cn(
-                    "px-3 py-2 font-medium whitespace-nowrap",
+                    "px-3 py-2.5 font-medium whitespace-nowrap",
                     alignCls(c.align),
                     PRIORITY_CELL_CLS[c.priority ?? 1],
                     c.sortable && onSort && "cursor-pointer select-none",
@@ -143,7 +143,7 @@ export function ResponsiveTable<T>({
               <tr
                 key={key}
                 className={cn(
-                  "border-t border-[var(--color-border-default)] hover:bg-[var(--color-bg-elevated)]",
+                  "border-t border-[var(--color-table-divider)] hover:bg-[var(--color-bg-elevated)]",
                   isSelected && "bg-[var(--color-accent-muted)]/30",
                   onRowClick && "cursor-pointer",
                 )}
@@ -153,7 +153,7 @@ export function ResponsiveTable<T>({
                   <td
                     key={c.key}
                     className={cn(
-                      "px-3 py-2",
+                      "px-3 py-2.5",
                       alignCls(c.align),
                       PRIORITY_CELL_CLS[c.priority ?? 1],
                       c.cellClassName,
@@ -171,7 +171,7 @@ export function ResponsiveTable<T>({
   );
 
   const cards = stacked ? (
-    <ul className={cn("divide-y divide-[var(--color-border-default)]", STACKED_CARDS_CLS[stacked])}>
+    <ul className={cn("divide-y divide-[var(--color-table-divider)]", STACKED_CARDS_CLS[stacked])}>
       {rows.map((row) => {
         const key = rowKey(row);
         const isSelected = selectedKey != null && selectedKey === key;
@@ -213,8 +213,7 @@ export function ResponsiveTable<T>({
   return (
     <div
       className={cn(
-        !bare &&
-          "rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)]",
+        !bare && "overflow-hidden border border-[var(--color-border-default)]",
         className,
       )}
     >

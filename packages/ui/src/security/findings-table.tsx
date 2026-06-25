@@ -92,23 +92,23 @@ export function SecurityFindingsTable({ findings, onSelect, onGeneratePrompt }: 
         </div>
       </div>
 
-      <div className="rounded-lg border border-[var(--color-border-default)] overflow-x-auto">
+      <div className="border border-[var(--color-border-default)] overflow-hidden overflow-x-auto">
         <table className="w-full min-w-[560px] text-sm">
-          <thead className="sticky top-0 z-10 bg-[var(--color-bg-elevated)]">
-            <tr className="border-b border-[var(--color-border-default)]">
-              <th className="px-3 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-20">
+          <thead className="sticky top-0 z-10 bg-[var(--color-bg-surface)]">
+            <tr className="border-b border-[var(--color-border-default)] bg-[var(--color-bg-surface)]">
+              <th className="px-3 py-2.5 text-left text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-20">
                 Severity
               </th>
-              <th className="px-3 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
+              <th className="px-3 py-2.5 text-left text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
                 File
               </th>
-              <th className="px-3 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-40">
+              <th className="px-3 py-2.5 text-left text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-40">
                 Kind
               </th>
-              <th className="px-3 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
+              <th className="px-3 py-2.5 text-left text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
                 Snippet
               </th>
-              <th className="px-3 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-28">
+              <th className="px-3 py-2.5 text-left text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-28">
                 Detected
               </th>
               {onGeneratePrompt && <th className="px-3 py-2.5 w-10" />}
@@ -120,7 +120,7 @@ export function SecurityFindingsTable({ findings, onSelect, onGeneratePrompt }: 
                 key={f.id}
                 onClick={onSelect ? () => onSelect(f) : undefined}
                 className={
-                  "border-b border-[var(--color-border-default)] last:border-0 hover:bg-[var(--color-bg-elevated)] transition-colors" +
+                  "group border-b border-[var(--color-table-divider)] last:border-0 hover:bg-[var(--color-bg-elevated)] transition-colors" +
                   (onSelect ? " cursor-pointer" : "")
                 }
               >
@@ -130,7 +130,7 @@ export function SecurityFindingsTable({ findings, onSelect, onGeneratePrompt }: 
                   </Badge>
                 </td>
                 <td className="px-3 py-2 font-mono text-xs text-[var(--color-text-primary)] max-w-[280px]">
-                  <span className="block truncate" title={f.file_path}>{f.file_path}</span>
+                  <span className="block truncate group-hover:underline underline-offset-2" title={f.file_path}>{f.file_path}</span>
                 </td>
                 <td className="px-3 py-2 text-xs text-[var(--color-text-secondary)]">{f.kind}</td>
                 <td className="px-3 py-2 font-mono text-xs text-[var(--color-text-tertiary)] max-w-[320px]">

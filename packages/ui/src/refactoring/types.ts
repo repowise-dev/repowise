@@ -215,6 +215,84 @@ export interface PlanWin {
   label: string;
 }
 
+// ── Generated code (the opt-in LLM enrichment result) ─────────────────────
+
+export interface GeneratedSpan {
+  file: string;
+  line_start: number;
+  line_end: number;
+}
+
+/**
+ * The result of the "Generate code" action — mirrors the backend
+ * `GenerateCodeResponse` (POST `…/refactoring/{id}/generate-code`). `diff` is a
+ * unified diff; `validation` is the per-type self-check (open dict, read
+ * defensively via {@link generatedVerdict}).
+ */
+export interface GeneratedCode {
+  suggestion_id: string | null;
+  refactoring_type: string;
+  file_path: string;
+  target_symbol: string;
+  content: string;
+  diff: string;
+  provider: string;
+  model: string;
+  cached: boolean;
+  input_tokens: number;
+  output_tokens: number;
+  validation: Record<string, unknown>;
+  spans: GeneratedSpan[];
+}
+
+export type VerdictTone = "pass" | "fail" | "neutral";
+
+export interface GeneratedVerdict {
+  tone: VerdictTone;
+  /** Short headline, e.g. "Cohesion improved" / "Self-check skipped". */
+  label: string;
+  /** Optional supporting detail (the metric deltas, or the skip reason). */
+  detail?: string;
+}
+
+function fmtMetric(value: unknown): string | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  return Number.isInteger(value) ? String(value) : value.toFixed(2);
+}
+
+/**
+ * Read the Extract Class self-check (LCOM4 + TCC before/after) into a single
+ * verdict for the UI. Other types — and any skipped/absent check — return a
+ * neutral note rather than a false pass.
+ */
+export function generatedVerdict(result: GeneratedCode): GeneratedVerdict | null {
+  const v = result.validation;
+  if (!v || typeof v !== "object") return null;
+  const status = v.status;
+  if (status === "skipped") {
+    const reason = typeof v.reason === "string" ? v.reason : null;
+    return { tone: "neutral", label: "Self-check skipped", ...(reason ? { detail: reason } : {}) };
+  }
+  if (status !== "checked") return null;
+
+  const improved = v.improved === true;
+  const parts: string[] = [];
+  const beforeL = fmtMetric(v.before_lcom4);
+  const afterL = fmtMetric(v.after_max_lcom4);
+  if (beforeL !== null && afterL !== null) parts.push(`LCOM4 ${beforeL} → ${afterL}`);
+  const beforeT = fmtMetric(v.before_tcc);
+  const afterT = fmtMetric(v.after_min_tcc);
+  if (beforeT !== null && afterT !== null) parts.push(`TCC ${beforeT} → ${afterT}`);
+  const classes = fmtMetric(v.class_count);
+  if (classes !== null) parts.push(`${classes} classes`);
+
+  return {
+    tone: improved ? "pass" : "fail",
+    label: improved ? "Cohesion improved" : "Cohesion not improved",
+    ...(parts.length ? { detail: parts.join(" · ") } : {}),
+  };
+}
+
 /** The concrete payoff of applying a plan, framed as wins for the "what you
  *  gain" band. The health delta (if any) leads as the hero. */
 export function planWins(plan: RefactoringPlan): PlanWin[] {

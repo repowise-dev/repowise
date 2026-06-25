@@ -14,6 +14,7 @@ checkout — the same property the C4 endpoints rely on.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -29,6 +30,8 @@ def blast_files(sug: RefactoringSuggestion) -> list[str]:
     carries — used to scope the detail endpoint's centrality lookup."""
     files = (sug.blast_radius or {}).get("files")
     return [f for f in files if isinstance(f, str)] if isinstance(files, list) else []
+
+
 from repowise.core.persistence import crud
 from repowise.server.deps import get_db_session, verify_api_key
 
@@ -121,7 +124,9 @@ def _row_to_suggestion(row: Any) -> RefactoringSuggestion:
     return sug
 
 
-def _to_response(sug: RefactoringSuggestion, centrality: dict[str, float]) -> RefactoringPlanResponse:
+def _to_response(
+    sug: RefactoringSuggestion, centrality: dict[str, float]
+) -> RefactoringPlanResponse:
     return RefactoringPlanResponse(
         id=getattr(sug, "id", ""),
         refactoring_type=sug.refactoring_type,
@@ -158,7 +163,8 @@ async def _centrality_map(session: AsyncSession, repo_id: str) -> dict[str, floa
 async def get_refactoring_targets(
     repo_id: str,
     refactoring_type: str | None = Query(
-        None, description="Filter to one type: extract_class | extract_helper | move_method | break_cycle"
+        None,
+        description="Filter to one type: extract_class | extract_helper | move_method | break_cycle",
     ),
     min_confidence: str | None = Query(None, description="low | medium | high"),
     session: AsyncSession = Depends(get_db_session),
@@ -201,6 +207,107 @@ async def get_refactoring_targets(
     )
 
 
+# ---------------------------------------------------------------------------
+# Code-gen settings — read/write the refactoring.llm config block. Declared
+# before the dynamic /{suggestion_id} GET so the static `settings` path wins.
+# ---------------------------------------------------------------------------
+
+
+class RefactoringSettings(BaseModel):
+    """The opt-in code-generation switches, mirrored from ``refactoring.llm``."""
+
+    enabled: bool = False
+    provider: str | None = None
+    model: str | None = None
+
+
+def _read_refactoring_settings(config: dict[str, Any]) -> RefactoringSettings:
+    """Project ``refactoring.llm`` out of a loaded config, tolerant of shape.
+
+    ``enabled`` defaults to ``True`` when unset, matching
+    :func:`llm_enrichment_enabled` — an untouched repo shows the toggle on.
+    """
+    refactoring = config.get("refactoring")
+    llm = refactoring.get("llm") if isinstance(refactoring, dict) else None
+    if not isinstance(llm, dict):
+        return RefactoringSettings(enabled=True)
+    provider = llm.get("provider")
+    model = llm.get("model")
+    return RefactoringSettings(
+        enabled=bool(llm.get("enabled", True)),
+        provider=provider if isinstance(provider, str) and provider else None,
+        model=model if isinstance(model, str) and model else None,
+    )
+
+
+async def _local_repo_path(session: AsyncSession, repo_id: str) -> Path:
+    """The repo's on-disk checkout, or a 404 — code-gen settings are a
+    local-``serve`` capability (they live in the repo's ``.repowise``)."""
+    repo = await crud.get_repository(session, repo_id)
+    if repo is None or not repo.local_path:
+        raise HTTPException(status_code=404, detail=f"repository not found: {repo_id}")
+    repo_path = Path(repo.local_path)
+    if not repo_path.exists():
+        raise HTTPException(
+            status_code=404, detail="repository checkout not accessible on this server"
+        )
+    return repo_path
+
+
+@router.get("/{repo_id}/refactoring/settings", response_model=RefactoringSettings)
+async def get_refactoring_settings(
+    repo_id: str,
+    session: AsyncSession = Depends(get_db_session),
+) -> RefactoringSettings:
+    """Current ``refactoring.llm`` settings for the repo (enabled + provider/model)."""
+    from repowise.core.repo_config import load_repo_config
+
+    repo_path = await _local_repo_path(session, repo_id)
+    return _read_refactoring_settings(load_repo_config(repo_path))
+
+
+@router.put("/{repo_id}/refactoring/settings", response_model=RefactoringSettings)
+async def update_refactoring_settings(
+    repo_id: str,
+    body: RefactoringSettings,
+    session: AsyncSession = Depends(get_db_session),
+) -> RefactoringSettings:
+    """Persist the ``refactoring.llm`` block to the repo's ``.repowise/config.yaml``.
+
+    Round-trips through the loaded config so unrelated keys are preserved, then
+    writes only the ``refactoring.llm.{enabled,provider,model}`` sub-tree. A
+    blank provider/model clears that key rather than writing an empty string.
+    """
+    from repowise.core.repo_config import load_repo_config, save_repo_config
+
+    repo_path = await _local_repo_path(session, repo_id)
+    config = load_repo_config(repo_path)
+
+    refactoring = config.get("refactoring")
+    if not isinstance(refactoring, dict):
+        refactoring = {}
+        config["refactoring"] = refactoring
+    llm = refactoring.get("llm")
+    if not isinstance(llm, dict):
+        llm = {}
+        refactoring["llm"] = llm
+
+    llm["enabled"] = bool(body.enabled)
+    provider = (body.provider or "").strip()
+    model = (body.model or "").strip()
+    if provider:
+        llm["provider"] = provider
+    else:
+        llm.pop("provider", None)
+    if model:
+        llm["model"] = model
+    else:
+        llm.pop("model", None)
+
+    save_repo_config(repo_path, config)
+    return _read_refactoring_settings(config)
+
+
 @router.get("/{repo_id}/refactoring/{suggestion_id}", response_model=RefactoringPlanResponse)
 async def get_refactoring_plan(
     repo_id: str,
@@ -223,3 +330,90 @@ async def get_refactoring_plan(
     # carries the caller rollup the list ranked on.
     rank_suggestions([sug], centrality=centrality)
     return _to_response(sug, centrality)
+
+
+# ---------------------------------------------------------------------------
+# Opt-in LLM enrichment — plan -> generated code + diff
+# ---------------------------------------------------------------------------
+
+
+class GenerateCodeRequest(BaseModel):
+    """Optional per-call overrides for the enrichment provider/model."""
+
+    provider: str | None = None
+    model: str | None = None
+
+
+class GenerateCodeResponse(BaseModel):
+    """Generated refactored code + diff for one plan, with the self-check."""
+
+    suggestion_id: str | None = None
+    refactoring_type: str
+    file_path: str
+    target_symbol: str
+    content: str
+    diff: str
+    provider: str
+    model: str
+    cached: bool
+    input_tokens: int
+    output_tokens: int
+    validation: dict[str, Any] = Field(default_factory=dict)
+    spans: list[dict[str, Any]] = Field(default_factory=list)
+
+
+@router.post(
+    "/{repo_id}/refactoring/{suggestion_id}/generate-code",
+    response_model=GenerateCodeResponse,
+)
+async def generate_refactoring_code(
+    repo_id: str,
+    suggestion_id: str,
+    body: GenerateCodeRequest | None = None,
+    session: AsyncSession = Depends(get_db_session),
+) -> GenerateCodeResponse:
+    """Generate the refactored code + a unified diff for one plan, on demand.
+
+    Strictly opt-in: returns 403 unless ``refactoring.llm.enabled`` is set in the
+    repo's ``.repowise/config.yaml``. Needs the working tree on disk (it reads
+    the plan's real source spans), so this is a local-``serve`` capability, not a
+    hosted one — it returns 404 when the repo has no accessible checkout.
+    """
+    from repowise.core.analysis.health.refactoring.llm import (
+        build_enrichment_provider,
+        enrich_suggestion,
+        llm_enrichment_enabled,
+    )
+    from repowise.core.repo_config import load_repo_config
+
+    repo = await crud.get_repository(session, repo_id)
+    if repo is None or not repo.local_path:
+        raise HTTPException(status_code=404, detail=f"repository not found: {repo_id}")
+    repo_path = Path(repo.local_path)
+    if not repo_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="repository checkout not accessible on this server",
+        )
+
+    if not llm_enrichment_enabled(load_repo_config(repo_path)):
+        raise HTTPException(
+            status_code=403,
+            detail="refactoring code generation is disabled (set refactoring.llm.enabled)",
+        )
+
+    row = await crud.get_refactoring_suggestion(session, repo_id, suggestion_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"refactoring plan not found: {suggestion_id}")
+    sug = _row_to_suggestion(row)
+
+    body = body or GenerateCodeRequest()
+    try:
+        provider = build_enrichment_provider(
+            repo_path, provider_name=body.provider, model=body.model
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    result = await enrich_suggestion(sug, provider=provider, repo_path=repo_path)
+    return GenerateCodeResponse(**result.to_dict())

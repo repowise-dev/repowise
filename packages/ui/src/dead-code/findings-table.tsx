@@ -200,11 +200,11 @@ export function FindingsTable({ findings, repoId, onPatch, onBulkResolve, isLoad
                 description="No open findings for this category with current filters."
               />
             ) : (
-              <div className="rounded-lg border border-[var(--color-border-default)] overflow-x-auto mt-2">
+              <div className="border border-[var(--color-border-default)] overflow-x-auto overflow-hidden mt-2">
                 <table className="w-full text-sm">
                   <caption className="sr-only">Dead code findings</caption>
-                  <thead className="sticky top-0 z-10 bg-[var(--color-bg-elevated)]">
-                    <tr className="border-b border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]">
+                  <thead className="sticky top-0 z-10 bg-[var(--color-bg-surface)]">
+                    <tr className="border-b border-[var(--color-border-default)] bg-[var(--color-bg-surface)]">
                       <th scope="col" className="px-4 py-2.5 w-8">
                         <input
                           type="checkbox"
@@ -214,16 +214,16 @@ export function FindingsTable({ findings, repoId, onPatch, onBulkResolve, isLoad
                           className="rounded border-[var(--color-border-default)]"
                         />
                       </th>
-                      <th scope="col" className="px-4 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
+                      <th scope="col" className="px-4 py-2.5 text-left text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
                         File / Symbol
                       </th>
-                      <th scope="col" className="px-4 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-24">
+                      <th scope="col" className="px-4 py-2.5 text-left text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-24">
                         Confidence
                       </th>
-                      <th scope="col" className="px-4 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider hidden md:table-cell">
+                      <th scope="col" className="px-4 py-2.5 text-left text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider hidden md:table-cell">
                         Owner
                       </th>
-                      <th scope="col" className="px-4 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-16 hidden md:table-cell">
+                      <th scope="col" className="px-4 py-2.5 text-left text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-16 hidden md:table-cell">
                         Lines
                       </th>
                       <th scope="col" className="px-4 py-2.5 w-20 hidden sm:table-cell">

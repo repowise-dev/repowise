@@ -1,5 +1,10 @@
-import type { FileDetailResponse } from "@repowise-dev/types/files";
+import type { FileDetailResponse, FilesIndexResponse } from "@repowise-dev/types/files";
 import { apiGet, BASE_URL, buildHeaders } from "./client";
+
+/** Slim per-file rows for the browsable Files index + treemap. */
+export async function getFilesIndex(repoId: string): Promise<FilesIndexResponse> {
+  return apiGet<FilesIndexResponse>(`/api/repos/${repoId}/files`);
+}
 
 /** Canonical file-detail aggregate for the file entity page. */
 export async function getFileDetail(

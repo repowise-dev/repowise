@@ -352,7 +352,7 @@ Compute per-file code-health scores from 25 deterministic biomarkers (McCabe com
 |------|-------------|
 | `--file <path>` | Deep-dive a single file (relative path) |
 | `--module <prefix>` | Restrict the report to files whose path starts with this prefix |
-| `--refactoring-targets` | Print top refactoring candidates ranked by impact / effort |
+| `--refactoring-targets` | Print structured, graph-aware refactoring plans (Extract Class / Helper / Move Method / Break Cycle), ranked `impact × centrality × blast radius`. See [REFACTORING.md](REFACTORING.md) |
 | `--trend` | Print the last 10 health snapshots + any active alerts (declining / predicted decline) |
 | `--coverage <path>` | Ingest a coverage report (LCOV / Cobertura / Clover). Repeat for multiple files |
 | `--coverage-format` | Override coverage-format auto-detection: `lcov`, `cobertura`, `clover` |

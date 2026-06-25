@@ -4,6 +4,14 @@ repowise indexes your codebase **once**, builds five intelligence layers, then
 keeps them in sync on every commit. This document is the deep dive — the README
 gives the one-paragraph version of each layer and links here for the detail.
 
+<div align="center">
+<img src="../.github/assets/intelligence-layers.svg" alt="repowise's five intelligence layers — one index (repowise init) fans into Graph, Git, Docs, Decisions, and Code Health, each surfaced through its signature MCP tool and delivered through 9 task-shaped tools, the CLI, the local dashboard, auto-generated CLAUDE.md/AGENTS.md, and the PR bot" width="100%" />
+</div>
+
+The layers are not a menu — they **compound**. The graph locates what git flags,
+code health scores it, decisions explain why it is shaped that way, and the docs
+make all of it searchable in natural language.
+
 1. [Graph Intelligence](#graph-intelligence)
 2. [Git Intelligence](#git-intelligence)
 3. [Documentation Intelligence](#documentation-intelligence)
@@ -172,6 +180,12 @@ an L2-logistic regression — with NLOC as an explicit control — fits each
 biomarker's defect lift *beyond* file size. Only the learned constants ship; the
 runtime stays fully deterministic.
 
+The same biomarker stream produces **three orthogonal signals** — **defect risk**
+(the calibrated headline number), **maintainability**, and **performance risk** —
+co-equal views never blended into one number. And it does not stop at scoring:
+the layer **closes the loop** into concrete, graph-aware **refactoring plans**
+(see below) an agent can execute.
+
 ```bash
 repowise health                       # KPIs + lowest-scoring files
 repowise health --coverage cov.lcov   # ingest coverage, light up untested-hotspot
@@ -185,8 +199,14 @@ repowise status                       # one-line summary in the status report
   `coverage_gradient`).
 - **Trend tracking** — a rolling 50-row snapshot history powers `Declining
   Health` and `Predicted Decline` alerts.
-- **Refactoring suggestions** — deterministic, rule-based, ranked by
-  impact / effort, on the dashboard and via `get_health(include=["refactoring"])`.
+- **Refactoring plans** — deterministic, structured, **graph-aware**: Extract
+  Class (LCOM4 cohesion split), Extract Helper (clone dedup), Move Method (feature
+  envy), and Break Cycle (minimum feedback arc set), each carrying its concrete
+  plan, recovered impact, and blast radius. Ranked by `impact × centrality ×
+  blast radius`, on the dashboard **Refactoring** tab, via `repowise health
+  --refactoring-targets`, and via `get_health(include=["refactoring"])`. An opt-in
+  LLM pass expands any plan into generated code + a diff. See
+  [`docs/REFACTORING.md`](REFACTORING.md).
 - **Per-file overrides** via `.repowise/health-rules.json`.
 
 Validated against real defect history — see

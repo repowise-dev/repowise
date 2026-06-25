@@ -19,7 +19,12 @@ import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
 import { RefactoringBoard, TYPE_ORDER, typeMeta } from "@repowise-dev/ui/refactoring";
 import type { RefactoringPlan, RefactoringTargets } from "@repowise-dev/ui/refactoring";
 import { AiPromptModal, buildRefactoringPlanPrompt } from "@repowise-dev/ui/health";
-import { getRefactoringTargets } from "@/lib/api/refactoring";
+import {
+  generateRefactoringCode,
+  getRefactoringSettings,
+  getRefactoringTargets,
+  type RefactoringSettings,
+} from "@/lib/api/refactoring";
 
 const TYPE_VALUES = ["all", ...TYPE_ORDER] as const;
 type TypeFilter = (typeof TYPE_VALUES)[number];
@@ -48,6 +53,22 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
   // AI-prompt modal (flavor picker + copy) — same UX as the health surface.
   const [promptPlan, setPromptPlan] = useState<RefactoringPlan | null>(null);
   const onAiPrompt = useCallback((plan: RefactoringPlan) => setPromptPlan(plan), []);
+
+  // Opt-in code generation. Enabled only when the repo's config turns it on
+  // (a local-`serve` capability); the settings call 404s on hosted backends,
+  // which simply leaves the action hidden.
+  const { data: settings } = useSWR<RefactoringSettings>(
+    `refactoring-settings:${repoId}`,
+    () => getRefactoringSettings(repoId),
+    { revalidateOnFocus: false, shouldRetryOnError: false },
+  );
+  const onGenerateCode = useMemo(
+    () =>
+      settings?.enabled
+        ? (plan: RefactoringPlan) => generateRefactoringCode(repoId, plan.id)
+        : undefined,
+    [settings?.enabled, repoId],
+  );
 
   const counts = new Map((data?.summary.by_type ?? []).map((c) => [c.type, c.count]));
   const tabs = [
@@ -101,6 +122,8 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
             plans={filtered}
             summary={data?.summary}
             onAiPrompt={onAiPrompt}
+            onGenerateCode={onGenerateCode}
+            settingsHref={`${prefix}/settings`}
             fileHref={fileHref}
           />
         )}

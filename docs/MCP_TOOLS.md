@@ -436,7 +436,7 @@ code-health merge-gate judges it on.
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `targets` | list[string] | No | File paths, or `module:foo` to expand a module's file set. Empty → dashboard mode. |
-| `include` | list[string] | No | Opt-in blocks (default response stays lean): `"biomarkers"` (findings in dashboard mode), `"refactoring"` (rule-based suggestions per finding), `"trend"` (snapshot diff + declining / predicted-decline alerts), `"coverage"`, `"accuracy"` (the "does the score find the bugs?" stat, dashboard mode), `"signals"` (per-file process / people / topology signals, targeted mode), `"churn_complexity"` (churn × complexity quadrant points, dashboard mode), and a dimension name — `"performance"` / `"defect"` / `"maintainability"` — to filter findings to that pillar. |
+| `include` | list[string] | No | Opt-in blocks (default response stays lean): `"biomarkers"` (findings in dashboard mode), `"refactoring"` (structured, graph-aware refactoring plans — see below), `"trend"` (snapshot diff + declining / predicted-decline alerts), `"coverage"`, `"accuracy"` (the "does the score find the bugs?" stat, dashboard mode), `"signals"` (per-file process / people / topology signals, targeted mode), `"churn_complexity"` (churn × complexity quadrant points, dashboard mode), and a dimension name — `"performance"` / `"defect"` / `"maintainability"` — to filter findings to that pillar. |
 | `repo` | string | No | *(workspace only)* Target repo alias |
 | `limit` | int | No | Max rows in the lowest-scoring file list (default 20, capped at 50) |
 
@@ -460,6 +460,13 @@ The opt-in enrichments:
 - **`churn_complexity`** → `churn_complexity` points (one per recently-changed
   file: 90-day commit count, max CCN, NLOC, score, churn percentile) — the
   refactor zone where volatility and tangle collide.
+- **`refactoring`** → ranked, structured refactoring plans (not template
+  strings): `extract_class` (the cohesion `groups` to split into), `extract_helper`
+  (clone `occurrences` + `suggested_site`), `move_method` (`{method, from_class,
+  to_class}`), and `break_cycle` (the import `cut_edges`). Each plan carries its
+  `evidence`, `impact_delta`, `effort_bucket`, and `blast_radius`, ranked
+  `impact × centrality × blast radius`. Full shapes in
+  [`docs/REFACTORING.md`](REFACTORING.md).
 - **dimension filter** → narrows the returned findings to one pillar. Pair with
   `"biomarkers"` for the full (uncapped) finding set, e.g.
   `include=["biomarkers", "performance"]`.
