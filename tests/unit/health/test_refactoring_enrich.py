@@ -15,6 +15,7 @@ from repowise.core.analysis.health.refactoring.llm import (
     llm_enrichment_enabled,
 )
 from repowise.core.analysis.health.refactoring.llm.enrich import (
+    _MAX_IMPORT_HEAD_LINES,
     _build_user_prompt,
     _extract_diff,
     _gather_spans,
@@ -43,6 +44,42 @@ def _extract_class_suggestion() -> RefactoringSuggestion:
         blast_radius={"dependents_count": 0},
         confidence="high",
         source_biomarker="low_cohesion",
+    )
+
+
+def _split_file_suggestion() -> RefactoringSuggestion:
+    return RefactoringSuggestion(
+        refactoring_type="split_file",
+        file_path="pkg/big.py",
+        target_symbol="big.py -> 2 files",
+        line_start=None,
+        line_end=None,
+        plan={
+            "groups": [
+                {
+                    "name": "parsing",
+                    "symbols": ["parse_a", "parse_b"],
+                    "suggested_file": "pkg/parsing.py",
+                },
+                {
+                    "name": "rendering",
+                    "symbols": ["render_a", "render_b"],
+                    "suggested_file": "pkg/rendering.py",
+                },
+            ],
+            "residual": {"symbols": ["shared_helper"]},
+            "shim_required": True,
+        },
+        evidence={"file_nloc": 400, "symbol_count": 8, "group_count": 2, "modularity": 0.5},
+        impact_delta=0.0,
+        effort_bucket="L",
+        blast_radius={
+            "dependent_files": ["pkg/user.py"],
+            "dependent_count": 1,
+            "import_rewrites": 1,
+        },
+        confidence="high",
+        source_biomarker="",
     )
 
 
@@ -93,6 +130,26 @@ def test_gather_spans_extract_helper_reads_every_occurrence(tmp_path: Path) -> N
     spans = _gather_spans(sug, tmp_path)
     files = {s.file for s in spans}
     assert files == {"pkg/a.py", "pkg/b.py"}
+
+
+def test_gather_spans_split_file_reads_whole_module_and_dependent_heads(tmp_path: Path) -> None:
+    _write_source(tmp_path, "pkg/big.py", "\n".join(f"line{i} = {i}" for i in range(1, 401)))
+    _write_source(tmp_path, "pkg/user.py", "\n".join(f"u{i}" for i in range(1, 100)))
+    spans = _gather_spans(_split_file_suggestion(), tmp_path)
+    by_file = {s.file: s for s in spans}
+    assert set(by_file) == {"pkg/big.py", "pkg/user.py"}
+    # The whole module is read — well past the 240-line default span cap.
+    assert by_file["pkg/big.py"].end_line == 400
+    # The dependent contributes only its import header.
+    assert by_file["pkg/user.py"].end_line <= _MAX_IMPORT_HEAD_LINES
+
+
+def test_user_prompt_split_file_carries_instruction_and_groups(tmp_path: Path) -> None:
+    _write_source(tmp_path, "pkg/big.py", "def parse_a():\n    return 1\n")
+    spans = _gather_spans(_split_file_suggestion(), tmp_path)
+    prompt = _build_user_prompt(_split_file_suggestion(), spans)
+    assert "SPLIT FILE" in prompt
+    assert "parsing" in prompt and "pkg/parsing.py" in prompt
 
 
 def test_gather_spans_skips_path_escape(tmp_path: Path) -> None:
@@ -209,6 +266,90 @@ async def test_self_check_skipped_when_no_code_blocks(tmp_path: Path) -> None:
     provider = MockProvider(responses=[GeneratedResponse("prose only, no code", 5, 5)])
     result = await enrich_suggestion(
         _extract_class_suggestion(), provider=provider, repo_path=tmp_path
+    )
+    assert result.validation["status"] == "skipped"
+
+
+# ---------------------------------------------------------------------------
+# Size + partition self-check (Split File)
+# ---------------------------------------------------------------------------
+
+
+_TWO_PARTITIONED_FILES = """\
+Split done.
+
+```python
+def parse_a():
+    return 1
+
+
+def parse_b():
+    return 2
+```
+
+```python
+def render_a():
+    return 3
+
+
+def render_b():
+    return 4
+```
+"""
+
+
+_DUPLICATED_FILES = """\
+```python
+def parse_a():
+    return 1
+```
+
+```python
+def parse_a():
+    return 1
+
+
+def render_a():
+    return 3
+```
+"""
+
+
+async def test_split_file_self_check_reports_clean_partition(tmp_path: Path) -> None:
+    _write_source(tmp_path, "pkg/big.py", "def parse_a():\n    return 1\n" + "x = 1\n" * 400)
+    provider = MockProvider(responses=[GeneratedResponse(_TWO_PARTITIONED_FILES, 10, 50)])
+    result = await enrich_suggestion(
+        _split_file_suggestion(), provider=provider, repo_path=tmp_path
+    )
+    v = result.validation
+    assert v["status"] == "checked"
+    assert v["file_count"] == 2
+    assert v["partitioned"] is True
+    assert v["duplicated_symbols"] == []
+    assert v["all_below_floor"] is True
+    assert v["improved"] is True
+
+
+async def test_split_file_self_check_flags_duplicated_symbol(tmp_path: Path) -> None:
+    _write_source(tmp_path, "pkg/big.py", "def parse_a():\n    return 1\n")
+    provider = MockProvider(responses=[GeneratedResponse(_DUPLICATED_FILES, 10, 50)])
+    result = await enrich_suggestion(
+        _split_file_suggestion(), provider=provider, repo_path=tmp_path
+    )
+    v = result.validation
+    assert v["status"] == "checked"
+    assert "parse_a" in v["duplicated_symbols"]
+    assert v["partitioned"] is False
+    assert v["improved"] is False
+
+
+async def test_split_file_self_check_skipped_for_single_block(tmp_path: Path) -> None:
+    _write_source(tmp_path, "pkg/big.py", "def parse_a():\n    return 1\n")
+    provider = MockProvider(
+        responses=[GeneratedResponse("```python\ndef parse_a():\n    return 1\n```", 5, 5)]
+    )
+    result = await enrich_suggestion(
+        _split_file_suggestion(), provider=provider, repo_path=tmp_path
     )
     assert result.validation["status"] == "skipped"
 

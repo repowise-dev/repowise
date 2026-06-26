@@ -106,6 +106,17 @@
   --color-info: #3f6ea5; /* muted blue — distinct from the plum accent-secondary */
   --color-caution: #a8821f; /* between warning and success; medium severity / fair score band */
 
+  /* Refactoring type accents — a qualitative palette (NOT semantic). Five
+     well-separated hues so the types stay distinguishable as dots / rails /
+     chips across the Refactoring surface. Don't fold these back into the
+     amber-family semantic vars (accent-primary / caution / warning) — that is
+     exactly what made extract-class / move-method / break-cycle indistinct. */
+  --color-refactor-extract-class: #b9651b; /* amber */
+  --color-refactor-extract-helper: #1d8155; /* green */
+  --color-refactor-move-method: #6d4aa6; /* purple */
+  --color-refactor-break-cycle: #b5396f; /* magenta */
+  --color-refactor-split-file: #3f6ea5; /* blue */
+
   /* Aliases — short names used in component class strings. Keep in sync. */
   --color-fresh: var(--color-confidence-fresh);
   --color-stale: var(--color-confidence-stale);
@@ -332,6 +343,13 @@
   --color-error: #e06a5a;
   --color-info: #7da7d9; /* muted blue — distinct from the plum accent-secondary */
   --color-caution: #d9b04a;
+
+  /* Refactoring type accents — qualitative palette (dark theme, brighter). */
+  --color-refactor-extract-class: #f59520; /* amber */
+  --color-refactor-extract-helper: #34d399; /* green */
+  --color-refactor-move-method: #b58cf0; /* purple */
+  --color-refactor-break-cycle: #ec6fa6; /* magenta */
+  --color-refactor-split-file: #7da7d9; /* blue */
 
   --color-node-undocumented: #6f6678;
   --viz-node-stroke: rgba(222, 210, 235, 0.22);

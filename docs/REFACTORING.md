@@ -5,9 +5,10 @@ the specific fix.** Every other tool stops at the score, or prints the same
 static sentence for every god class in every repo. repowise emits one structured
 plan per opportunity — *split `GraphBuilder` into these three cohesive groups*,
 *move `resolve_call` to the `resolvers` class where its calls actually land*,
-*break the `pipeline ↔ update` import cycle by inverting this one edge* — computed
-deterministically from the same graph, class model, and git data the score is
-built on.
+*break the `pipeline ↔ update` import cycle by inverting this one edge*,
+*decompose this 900-line module into these four files and rewrite the imports in
+the six that depend on it* — computed deterministically from the same graph,
+class model, and git data the score is built on.
 
 ```bash
 repowise health --refactoring-targets            # ranked plans, biggest win for least effort
@@ -22,7 +23,7 @@ LLM layer (code generation) is a separate, strictly opt-in step ([below](#opt-in
 <img src="../.github/assets/health-loop.svg" alt="repowise code-health loop — biomarkers fan into three signals, the graph and git history locate risk, and refactoring intelligence emits concrete plans an agent executes" width="100%" />
 </div>
 
-## The four detectors
+## The five detectors
 
 Each detector is a self-contained module registered into a registry (adding a
 refactoring type is a new file + a registry entry, like the biomarker registry).
@@ -35,10 +36,18 @@ one** — and produces stable-sorted, deterministic output.
 | **Extract Helper** | A clone's exact occurrences and where the shared helper belongs. | Rabin–Karp clone pairs (line ranges, token count, co-change). The extraction site is the community centroid of the involved files; transitive clones (A↔B, B↔C) are clustered into one suggestion, not pairwise nags. |
 | **Move Method** | A feature-envy method and the class it actually belongs to. | The method's entity set (fields/methods it touches, class-qualified) is built from the call graph; Jaccard distance to each class. Fires only when a foreign class is clearly nearer than its own. |
 | **Break Cycle** | The minimal set of import edges to invert to break a dependency cycle. | A strongly-connected component in the import graph → greedy minimum feedback arc set (MFAS) over the real edges picks the smallest cut. |
+| **Split File** | The cohesive files an oversized module should decompose into — which top-level symbols move to each new file, plus the import edits in every dependent. | Community detection (Leiden, Louvain fallback) over a weighted intra-file symbol graph (direct calls, shared local helpers, shared foreign modules); emits only when the partition's **modularity** clears a decomposability gate. The file-level analog of Extract Class. |
 
 The algorithms are derived from public academic literature (Fokaefs-Tsantalis
-HAC for class splitting, Bavota feature-envy distance, MFAS for cycle breaking),
-not from any product.
+HAC for class splitting, Bavota feature-envy distance, MFAS for cycle breaking,
+Newman-Girvan modularity for module decomposition), not from any product.
+
+**Split File is the cross-file wedge made concrete.** It is language-agnostic —
+it reads only the already-built graph (`defines` / `calls` edges), so it works
+the same on every language with call resolution, and it covers the gap LCOM4
+leaves for Go (top-level functions, not class methods). Splitting Go files in the
+same package is near-zero blast radius (no import edits); Python/TS get a
+back-compat re-export shim, surfaced as `shim_required` on the plan.
 
 ## Anatomy of a suggestion
 
@@ -48,10 +57,10 @@ web).
 
 | Field | Meaning |
 |-------|---------|
-| `refactoring_type` | `extract_class` \| `extract_helper` \| `move_method` \| `break_cycle` |
+| `refactoring_type` | `extract_class` \| `extract_helper` \| `move_method` \| `break_cycle` \| `split_file` |
 | `file_path`, `target_symbol`, `line_start`, `line_end` | What the refactoring acts on. |
-| `plan` | The concrete, type-specific plan: the split `groups` (methods + fields), the move `{method, from_class, to_class}`, the clone `occurrences` + `suggested_site`, or the cycle + `cut_edges`. |
-| `evidence` | The signals that justify it: `lcom4`, `wmc`, clone token/line counts + `co_change_count`, Jaccard distances, cycle size. |
+| `plan` | The concrete, type-specific plan: the split `groups` (methods + fields), the move `{method, from_class, to_class}`, the clone `occurrences` + `suggested_site`, the cycle + `cut_edges`, or the file-split `groups` (`{name, symbols, suggested_file}`) + `residual` core + `shim_required`. |
+| `evidence` | The signals that justify it: `lcom4`, `wmc`, clone token/line counts + `co_change_count`, Jaccard distances, cycle size, or the split's `modularity` + `symbol_count` + `group_count` + intra/cut edge counts. |
 | `impact_delta` | The health score the refactoring would recover (the deduction of the biomarker it answers); `0` for the graph-native types that answer no biomarker. |
 | `effort_bucket` | `S` \| `M` \| `L` \| `XL`, from the target's size. |
 | `blast_radius` | What else must move: the callers, co-change partners, and importing files. |
@@ -76,8 +85,8 @@ score = (1 + impact_delta)
 ```
 
 A plan on a **central hub file outranks the same plan on a leaf**. Because the
-impact-free graph-native types (Move Method, Break Cycle) still rank via
-centrality and blast radius, they interleave fairly with the impact-bearing
+impact-free graph-native types (Move Method, Break Cycle, Split File) still rank
+via centrality and blast radius, they interleave fairly with the impact-bearing
 types rather than sinking below them. Ties break on type → file → target, so the
 order is fully deterministic.
 
@@ -107,10 +116,12 @@ GET /api/repos/{repo_id}/refactoring/{suggestion_id}        # one plan + blast-r
 ```
 
 The web **Refactoring** tab renders each plan as a card — the split groups as a
-small tree, the move arrow, the clone occurrences with line links — over an
-impact/effort quadrant, with per-type filter chips (URL-synced). Each card has a
-**copy-to-agent** button that exports the structured plan + source spans + blast
-radius as a prompt a coding agent can execute.
+small tree, the move arrow, the clone occurrences with line links, the file-split
+groups tree with its residual core and import-rewrite list — over an impact/effort
+quadrant, with per-type filter chips (URL-synced) and a distinct accent color per
+type carried consistently across the quadrant dots, card rails, and chips. Each
+card has a **copy-to-agent** button that exports the structured plan + source
+spans + blast radius as a prompt a coding agent can execute.
 
 ## Opt-in code generation
 
@@ -134,10 +145,12 @@ With `llm.enabled` set, the **Generate code** action on a plan card (or the
 endpoint below) gathers the plan's real source spans off the working tree, builds
 a behavior-preservation prompt carrying the structured plan **plus the
 graph/co-change context** a bare codegen tool throws away, and returns the
-refactored code and a unified diff. For Extract Class it runs an **LCOM4
-before/after self-check** (re-walking the generated classes) to report whether the
-split actually improved cohesion. Results are cached on disk by a content hash
-(plan + source + model), so the same plan never pays twice.
+refactored code and a unified diff. Where a self-check is cheap and meaningful it
+runs one: Extract Class re-walks the generated classes for an **LCOM4 before/after
+delta**, and Split File re-walks the generated files to assert each is **below the
+size floor** and the symbols are **partitioned with no duplication**. Results are
+cached on disk by a content hash (plan + source + model), so the same plan never
+pays twice.
 
 ```text
 POST /api/repos/{repo_id}/refactoring/{suggestion_id}/generate-code

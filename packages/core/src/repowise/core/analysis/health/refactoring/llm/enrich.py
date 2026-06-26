@@ -12,9 +12,11 @@ the indexing hot path:
    source + the graph/co-change context the deterministic layer already
    computed, and ask the configured provider for the refactored code and a
    unified diff.
-3. For Extract Class, self-check the result with an LCOM4 before/after delta
-   (re-walk the generated classes) so we can say whether the split actually
-   improved cohesion. Other types skip validation gracefully.
+3. Self-check the result where it is cheap and meaningful: Extract Class with an
+   LCOM4 before/after delta (re-walk the generated classes), and Split File by
+   re-walking the generated files to assert each is below the size floor and the
+   symbols are partitioned with no duplication. Other types skip validation
+   gracefully.
 
 Results are cached on disk by a content hash (plan + source + model), so the
 same plan never pays for the same generation twice.
@@ -25,6 +27,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -39,6 +42,11 @@ log = structlog.get_logger(__name__)
 # total source-line caps, and a hard ceiling on how many spans we read.
 _MAX_SPAN_LINES = 240
 _MAX_SPANS = 12
+# Split File feeds the whole module (every symbol, so the model can partition
+# them) — a larger cap than a single class/method span. A dependent file only
+# contributes its import header, so it reads just the file head.
+_MAX_FILE_SPAN_LINES = 1500
+_MAX_IMPORT_HEAD_LINES = 60
 # Cache lives next to the other repo-local refactoring artifacts.
 _CACHE_SUBDIR = ("refactoring", "enrich")
 
@@ -90,7 +98,8 @@ class EnrichmentResult:
     cached: bool
     input_tokens: int
     output_tokens: int
-    # LCOM4 before/after self-check (Extract Class only); ``{}`` when skipped.
+    # Per-type self-check (Extract Class LCOM4 delta / Split File size+partition);
+    # ``{}`` when the type has no check or it was skipped.
     validation: dict[str, Any] = field(default_factory=dict)
     # The spans fed to the model, so a surface can show what was grounded on.
     spans: list[dict[str, Any]] = field(default_factory=list)
@@ -190,11 +199,14 @@ def build_enrichment_provider(
 # ---------------------------------------------------------------------------
 
 
-def _read_span(repo_path: Path, file: str, start: int, end: int) -> SourceSpan | None:
+def _read_span(
+    repo_path: Path, file: str, start: int, end: int, max_lines: int = _MAX_SPAN_LINES
+) -> SourceSpan | None:
     """Read a 1-indexed inclusive line range off the working tree, capped.
 
     Guards against reading outside the repo root and degrades to ``None`` on
-    any read error (the caller simply omits the span).
+    any read error (the caller simply omits the span). *max_lines* bounds the
+    span length (larger for a whole-module read, smaller for an import header).
     """
     abs_path = (repo_path / file).resolve()
     try:
@@ -213,36 +225,41 @@ def _read_span(repo_path: Path, file: str, start: int, end: int) -> SourceSpan |
         return None
     s = max(1, min(start, total))
     e = max(s, min(end, total))
-    if (e - s + 1) > _MAX_SPAN_LINES:
-        e = s + _MAX_SPAN_LINES - 1
+    if (e - s + 1) > max_lines:
+        e = s + max_lines - 1
     return SourceSpan(file=file, start_line=s, end_line=e, source="\n".join(lines[s - 1 : e]))
 
 
-def _span_requests(suggestion: Any) -> list[tuple[str, int, int]]:
-    """Per-type (file, start, end) requests, derived from the plan.
+def _span_requests(suggestion: Any) -> list[tuple[str, int, int, int]]:
+    """Per-type (file, start, end, max_lines) requests, derived from the plan.
 
     The target span (``file_path`` + ``line_start``/``line_end``) is the spine;
     each type adds the extra spans its plan references (clone occurrences, the
-    move source/target files, the files on each cut edge). Bounded to
-    ``_MAX_SPANS``; missing line info falls back to the file head.
+    move source/target files, the files on each cut edge, the dependent files of
+    a split). Bounded to ``_MAX_SPANS``; missing line info falls back to the
+    file head.
     """
     plan = suggestion.plan or {}
     rtype = suggestion.refactoring_type
-    requests: list[tuple[str, int, int]] = []
+    requests: list[tuple[str, int, int, int]] = []
 
-    def _add(file: str | None, start: Any, end: Any) -> None:
+    def _add(file: str | None, start: Any, end: Any, max_lines: int = _MAX_SPAN_LINES) -> None:
         if not file or len(requests) >= _MAX_SPANS:
             return
         try:
             s = int(start) if start is not None else 1
-            e = int(end) if end is not None else s + _MAX_SPAN_LINES - 1
+            e = int(end) if end is not None else s + max_lines - 1
         except (TypeError, ValueError):
-            s, e = 1, _MAX_SPAN_LINES
-        requests.append((file, s, e))
+            s, e = 1, max_lines
+        requests.append((file, s, e, max_lines))
 
-    # The headline target span (the class / method / site).
+    # The headline target span. Split File needs the whole module (every symbol,
+    # so the model can partition them); the others have a precise target span.
     if suggestion.file_path:
-        _add(suggestion.file_path, suggestion.line_start, suggestion.line_end)
+        if rtype == "split_file":
+            _add(suggestion.file_path, 1, _MAX_FILE_SPAN_LINES, _MAX_FILE_SPAN_LINES)
+        else:
+            _add(suggestion.file_path, suggestion.line_start, suggestion.line_end)
 
     if rtype == "extract_helper":
         for occ in plan.get("occurrences", []) or []:
@@ -258,10 +275,17 @@ def _span_requests(suggestion: Any) -> list[tuple[str, int, int]]:
             if isinstance(edge, dict):
                 # The "from" file holds the import to invert/abstract.
                 _add(edge.get("from"), 1, _MAX_SPAN_LINES)
+    elif rtype == "split_file":
+        # Each dependent file's import header, so the model can rewrite the
+        # imports (and write the back-compat shim) precisely.
+        blast = suggestion.blast_radius or {}
+        for dep in (blast.get("dependent_files") or [])[:_MAX_SPANS]:
+            if isinstance(dep, str):
+                _add(dep, 1, _MAX_IMPORT_HEAD_LINES, _MAX_IMPORT_HEAD_LINES)
 
-    # De-dup identical (file, start, end) requests while preserving order.
-    seen: set[tuple[str, int, int]] = set()
-    unique: list[tuple[str, int, int]] = []
+    # De-dup identical (file, start, end, max_lines) requests, order preserved.
+    seen: set[tuple[str, int, int, int]] = set()
+    unique: list[tuple[str, int, int, int]] = []
     for req in requests:
         if req not in seen:
             seen.add(req)
@@ -271,8 +295,8 @@ def _span_requests(suggestion: Any) -> list[tuple[str, int, int]]:
 
 def _gather_spans(suggestion: Any, repo_path: Path) -> list[SourceSpan]:
     spans: list[SourceSpan] = []
-    for file, start, end in _span_requests(suggestion):
-        span = _read_span(repo_path, file, start, end)
+    for file, start, end, max_lines in _span_requests(suggestion):
+        span = _read_span(repo_path, file, start, end, max_lines)
         if span is not None:
             spans.append(span)
     return spans
@@ -329,6 +353,18 @@ _TYPE_INSTRUCTIONS: dict[str, str] = {
         "inversion, a shared interface/protocol module, or a local import as a "
         "last resort). Do not merge the files."
     ),
+    "split_file": (
+        "Refactoring: SPLIT FILE. The module is too large and partitions into "
+        "the cohesive groups in the plan. Create one new file per group at its "
+        "'suggested_file' path, containing exactly that group's symbols, and "
+        "remove them from the original. Keep the residual 'core' symbols in the "
+        "original file. When 'shim_required' is true, leave a back-compat "
+        "re-export shim in the original path (import and re-export the moved "
+        "symbols) so existing imports keep working; when false (same-package "
+        "languages such as Go) no import edits are needed. Never duplicate a "
+        "symbol across files — each moves to exactly one place. Emit one fenced "
+        "code block per file you create or change."
+    ),
 }
 
 
@@ -381,15 +417,16 @@ def _extract_diff(content: str) -> str:
     return match.group(1).strip() if match else ""
 
 
-def _extract_code_blocks(content: str, language: str | None) -> str:
-    """Concatenate non-diff fenced code blocks (best-effort) for the self-check.
+def _code_block_list(content: str, language: str | None) -> list[str]:
+    """Non-diff fenced code blocks (best-effort), one entry per block.
 
     Prefers blocks tagged with the target language but accepts untagged blocks;
-    always skips ``diff`` blocks (those are not parseable source).
+    always skips ``diff`` blocks (those are not parseable source). Split File's
+    self-check needs the blocks kept separate (one new file each).
     """
     wanted = {language} if language else set()
     # Accept common aliases so a "py"-tagged block still counts as python, etc.
-    aliases = {"py": "python", "ts": "typescript", "tsx": "typescript"}
+    aliases = {"py": "python", "ts": "typescript", "tsx": "typescript", "js": "javascript"}
     blocks: list[str] = []
     for tag, body in _CODE_FENCE.findall(content):
         norm = aliases.get(tag.lower(), tag.lower())
@@ -397,8 +434,15 @@ def _extract_code_blocks(content: str, language: str | None) -> str:
             continue
         if wanted and norm and norm not in wanted:
             continue
-        blocks.append(body.strip())
-    return "\n\n".join(blocks)
+        stripped = body.strip()
+        if stripped:
+            blocks.append(stripped)
+    return blocks
+
+
+def _extract_code_blocks(content: str, language: str | None) -> str:
+    """Concatenate non-diff fenced code blocks (best-effort) for the self-check."""
+    return "\n\n".join(_code_block_list(content, language))
 
 
 def _language_for(file_path: str) -> str | None:
@@ -516,6 +560,83 @@ def _validate_extract_class(
 
 
 # ---------------------------------------------------------------------------
+# Validation — size + partition self-check (Split File)
+# ---------------------------------------------------------------------------
+
+
+def _validate_split_file(content: str, file_path: str, plan: dict[str, Any]) -> dict[str, Any]:
+    """Re-walk the generated files and assert the split is sound.
+
+    A real Split File (1) yields >= 2 files, (2) each below the module-size
+    floor that triggered the split, and (3) partitions the planned symbols with
+    no duplication — a symbol moves to exactly one file. Best-effort: any
+    parse/walk failure degrades to ``status="skipped"`` rather than raising.
+    """
+    language = _language_for(file_path)
+    if language is None:
+        return {"status": "skipped", "reason": f"no walker for {Path(file_path).suffix}"}
+
+    blocks = _code_block_list(content, language)
+    if len(blocks) < 2:
+        return {"status": "skipped", "reason": "fewer than two code blocks in response"}
+
+    try:
+        from repowise.core.analysis.health.complexity import walk_file
+
+        # Single source of truth for the size floor the detector gated on.
+        from ..split_file import _MIN_FILE_NLOC as _FLOOR
+    except Exception as exc:
+        return {"status": "skipped", "reason": f"import failed: {exc}"}
+
+    floor = _FLOOR
+
+    # The top-level symbols the deterministic plan partitioned. Restricting the
+    # duplication check to these excludes dunders / nested helpers that share a
+    # name across files for legitimate reasons.
+    planned: set[str] = set()
+    for group in plan.get("groups", []) or []:
+        if isinstance(group, dict):
+            planned.update(str(s) for s in group.get("symbols", []) or [])
+    residual = plan.get("residual") or {}
+    if isinstance(residual, dict):
+        planned.update(str(s) for s in residual.get("symbols", []) or [])
+
+    suffix = Path(file_path).suffix
+    per_file_nloc: list[int] = []
+    name_files: dict[str, set[int]] = defaultdict(set)
+    for idx, code in enumerate(blocks):
+        try:
+            fc = walk_file(f"generated_{idx}{suffix}", language, code.encode())
+        except Exception:
+            continue
+        names = {
+            sym.name for sym in list(fc.functions) + list(fc.classes) if getattr(sym, "name", None)
+        }
+        per_file_nloc.append(int(getattr(fc, "file_nloc", 0) or 0))
+        for nm in names & planned:
+            name_files[nm].add(idx)
+
+    if not per_file_nloc:
+        return {"status": "skipped", "reason": "no parseable code blocks in response"}
+
+    max_nloc = max(per_file_nloc, default=0)
+    all_below_floor = all(n < floor for n in per_file_nloc)
+    duplicated = sorted(nm for nm, files in name_files.items() if len(files) > 1)
+    partitioned = not duplicated
+    improved = len(per_file_nloc) >= 2 and all_below_floor and partitioned
+    return {
+        "status": "checked",
+        "file_count": len(per_file_nloc),
+        "max_file_nloc": max_nloc,
+        "size_floor": floor,
+        "all_below_floor": all_below_floor,
+        "duplicated_symbols": duplicated,
+        "partitioned": partitioned,
+        "improved": bool(improved),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -565,6 +686,8 @@ async def enrich_suggestion(
         validation = _validate_extract_class(
             content, suggestion.file_path, suggestion.evidence or {}
         )
+    elif validate and suggestion.refactoring_type == "split_file":
+        validation = _validate_split_file(content, suggestion.file_path, suggestion.plan or {})
 
     result = EnrichmentResult(
         refactoring_type=suggestion.refactoring_type,

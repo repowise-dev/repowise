@@ -201,11 +201,12 @@ repowise status                       # one-line summary in the status report
   Health` and `Predicted Decline` alerts.
 - **Refactoring plans** — deterministic, structured, **graph-aware**: Extract
   Class (LCOM4 cohesion split), Extract Helper (clone dedup), Move Method (feature
-  envy), and Break Cycle (minimum feedback arc set), each carrying its concrete
-  plan, recovered impact, and blast radius. Ranked by `impact × centrality ×
-  blast radius`, on the dashboard **Refactoring** tab, via `repowise health
-  --refactoring-targets`, and via `get_health(include=["refactoring"])`. An opt-in
-  LLM pass expands any plan into generated code + a diff. See
+  envy), Break Cycle (minimum feedback arc set), and Split File (modularity-gated
+  module decomposition with the import-rewrite blast radius), each carrying its
+  concrete plan, recovered impact, and blast radius. Ranked by `impact ×
+  centrality × blast radius`, on the dashboard **Refactoring** tab, via `repowise
+  health --refactoring-targets`, and via `get_health(include=["refactoring"])`. An
+  opt-in LLM pass expands any plan into generated code + a diff. See
   [`docs/REFACTORING.md`](REFACTORING.md).
 - **Per-file overrides** via `.repowise/health-rules.json`.
 

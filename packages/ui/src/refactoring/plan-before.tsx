@@ -7,6 +7,8 @@ import {
   extractClassGroups,
   extractHelperOccurrences,
   moveTarget,
+  splitGroups,
+  splitResidual,
   type RefactoringPlan,
 } from "./types";
 
@@ -152,6 +154,46 @@ export function PlanBefore({ plan }: PlanBeforeProps) {
 
   if (plan.refactoring_type === "break_cycle") {
     return <CycleGraph plan={plan} accent={accent} />;
+  }
+
+  if (plan.refactoring_type === "split_file") {
+    const symbols = [...splitGroups(plan).flatMap((g) => g.symbols), ...splitResidual(plan)];
+    const nloc = Number(plan.evidence?.file_nloc ?? 0);
+    const count = Number(plan.evidence?.symbol_count ?? symbols.length);
+    const shown = symbols.slice(0, 18);
+    return (
+      <div className="rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-3.5">
+        <div className="mb-2.5 flex items-center justify-between gap-2">
+          <code className="truncate text-xs font-semibold text-[var(--color-text-primary)]">
+            {baseName(plan.file_path)}
+          </code>
+          {nloc > 0 ? (
+            <span className="shrink-0 rounded-full bg-[var(--color-error)]/10 px-2 py-0.5 text-[10px] font-semibold tabular-nums text-[var(--color-error)]">
+              {nloc} NLOC
+            </span>
+          ) : null}
+        </div>
+        <p className="mb-2 text-[11px] text-[var(--color-text-tertiary)]">
+          {count} top-level symbol{count === 1 ? "" : "s"} in one module — loosely related, no clear
+          seams.
+        </p>
+        <div className="flex flex-wrap gap-1">
+          {shown.map((s) => (
+            <code
+              key={s}
+              className="rounded bg-[var(--color-bg-elevated)] px-1.5 py-0.5 text-[11px] text-[var(--color-text-tertiary)]"
+            >
+              {s}
+            </code>
+          ))}
+          {symbols.length > shown.length ? (
+            <span className="px-1 py-0.5 text-[11px] text-[var(--color-text-tertiary)]">
+              +{symbols.length - shown.length} more
+            </span>
+          ) : null}
+        </div>
+      </div>
+    );
   }
 
   return null;

@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { ArrowRightLeft, CopyMinus, Split, Unlink } from "lucide-react";
+import { ArrowRightLeft, CopyMinus, FileStack, Split, Unlink } from "lucide-react";
 import type { Confidence, EffortBucket, RefactoringType } from "./types";
 
 export interface RefactoringTypeMeta {
@@ -18,25 +18,31 @@ export const TYPE_META: Record<string, RefactoringTypeMeta> = {
     label: "Extract Class",
     blurb: "Split a low-cohesion class into focused, single-responsibility classes.",
     Icon: Split,
-    accentVar: "--color-accent-primary",
+    accentVar: "--color-refactor-extract-class",
   },
   extract_helper: {
     label: "Extract Helper",
     blurb: "Dedupe a repeated block into one shared helper.",
     Icon: CopyMinus,
-    accentVar: "--color-success",
+    accentVar: "--color-refactor-extract-helper",
   },
   move_method: {
     label: "Move Method",
     blurb: "Move a method to the class it actually belongs to.",
     Icon: ArrowRightLeft,
-    accentVar: "--color-caution",
+    accentVar: "--color-refactor-move-method",
   },
   break_cycle: {
     label: "Break Cycle",
     blurb: "Cut the minimal import edge that closes a dependency cycle.",
     Icon: Unlink,
-    accentVar: "--color-warning",
+    accentVar: "--color-refactor-break-cycle",
+  },
+  split_file: {
+    label: "Split File",
+    blurb: "Decompose an oversized module into cohesive files along its natural seams.",
+    Icon: FileStack,
+    accentVar: "--color-refactor-split-file",
   },
 };
 
@@ -80,4 +86,5 @@ export const TYPE_ORDER: RefactoringType[] = [
   "extract_helper",
   "move_method",
   "break_cycle",
+  "split_file",
 ];
