@@ -227,6 +227,8 @@ def _build_cargo_workspace_index(ctx) -> CargoWorkspaceIndex | None:
                 continue
             if member_path in excluded_paths:
                 continue
+            if member_path == repo and root_pkg.get("name"):
+                continue
             try:
                 member_rel = member_path.relative_to(repo).as_posix()
             except ValueError:

@@ -79,6 +79,22 @@ class TestExportsWildcardEntries:
         second = get_or_build_ts_index(ctx)
         assert first is second
 
+    def test_root_workspace_dot(self, tmp_path: Path) -> None:
+        """workspaces: ["."] should not crash on Python 3.14+.
+
+        Python 3.14+ rejects pathlib.Path.glob(".") with ValueError.
+        Entry-point resolution for the root package is a separate concern.
+        """
+        _write(
+            tmp_path,
+            "package.json",
+            '{"name":"root","workspaces":["."],"main":"./src/index.ts"}',
+        )
+        _write(tmp_path, "src/index.ts", "export const x = 1;\n")
+        ctx = _ctx(tmp_path, ["src/index.ts"])
+        index = build_ts_workspace_index(ctx)
+        assert "root" in index.packages
+
 
 class TestVitestIncludeScanner:
     def test_runtime_tests_glob_matches(self, tmp_path: Path) -> None:
