@@ -50,6 +50,21 @@ For Break Cycle:
   "cut_count": int}`` — the SCC size, total intra-cycle edges, and cut size.
 - ``blast_radius`` = ``{"files": [...], "file_count": int}`` — every file in
   the cycle (breaking it is a multi-file change).
+
+For Split File:
+
+- ``plan`` = ``{"groups": [{"name": str | None, "symbols": [str, ...],
+  "suggested_file": str}], "residual": {"symbols": [...]} | None,
+  "shim_required": bool}`` — the cohesive groups the file should split into
+  (each with a suggested filename), the shared-utility ``core`` left behind,
+  and whether a back-compat re-export shim is needed (false for same-package
+  Go, true for Python/TS).
+- ``evidence`` = ``{"file_nloc": int, "symbol_count": int, "group_count": int,
+  "modularity": float, "intra_edges": int, "cut_edges": int}`` — the size and
+  decomposability signals that justify (and gate) the split.
+- ``blast_radius`` = ``{"dependent_files": [str, ...], "dependent_count": int,
+  "import_rewrites": int}`` — the external files referencing the split
+  symbols and how many import edits the split implies.
 """
 
 from __future__ import annotations

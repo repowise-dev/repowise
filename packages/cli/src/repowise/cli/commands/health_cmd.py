@@ -673,6 +673,7 @@ def _render_refactoring_targets(
         _render_extract_helper_plans_md(ranked_plans)
         _render_move_method_plans_md(ranked_plans)
         _render_break_cycle_plans_md(ranked_plans)
+        _render_split_file_plans_md(ranked_plans)
         return
 
     table = Table(title=f"Refactoring targets ({len(targets)})")
@@ -696,6 +697,7 @@ def _render_refactoring_targets(
     _render_extract_helper_plans_console(ranked_plans)
     _render_move_method_plans_console(ranked_plans)
     _render_break_cycle_plans_console(ranked_plans)
+    _render_split_file_plans_console(ranked_plans)
 
 
 def _render_extract_class_plans_console(plans: list[dict]) -> None:
@@ -850,6 +852,58 @@ def _render_break_cycle_plans_md(plans: list[dict]) -> None:
         click.echo(f"- **Import cycle of {ev.get('cycle_size')} files** — cut {len(cuts)} edge(s):")
         for e in cuts:
             click.echo(f"  - invert {e['from']} -> {e['to']}")
+
+
+def _render_split_file_plans_console(plans: list[dict]) -> None:
+    """Print the concrete Split File (module decomposition) plans below the table."""
+    sf_plans = [p for p in plans if p["refactoring_type"] == "split_file"]
+    if not sf_plans:
+        return
+    console.print(f"\n[bold]Split File plans ({len(sf_plans)})[/bold]")
+    for p in sf_plans:
+        pl = p["plan"]
+        ev = p["evidence"]
+        groups = pl.get("groups", [])
+        br = p["blast_radius"]
+        shim = " [dim]+shim[/dim]" if pl.get("shim_required") else ""
+        console.print(
+            f"\n[cyan]{p['file_path']}[/cyan] — "
+            f"{ev.get('symbol_count')} symbols, {ev.get('file_nloc')} NLOC, "
+            f"modularity {ev.get('modularity')} → split into {len(groups)} files{shim} "
+            f"[dim](effort {p['effort_bucket']}, {p['confidence']} confidence, "
+            f"{br.get('import_rewrites', 0)} import rewrites in "
+            f"{br.get('dependent_count', 0)} files)[/dim]"
+        )
+        for i, g in enumerate(groups, 1):
+            console.print(
+                f"  [bold]{i}.[/bold] [green]{g.get('suggested_file')}[/green]: "
+                f"{', '.join(g.get('symbols', []))}"
+            )
+        residual = pl.get("residual")
+        if residual and residual.get("symbols"):
+            console.print(f"  [dim]core (shared):[/dim] {', '.join(residual['symbols'])}")
+
+
+def _render_split_file_plans_md(plans: list[dict]) -> None:
+    sf_plans = [p for p in plans if p["refactoring_type"] == "split_file"]
+    if not sf_plans:
+        return
+    click.echo("\n## Split File plans\n")
+    for p in sf_plans:
+        pl = p["plan"]
+        ev = p["evidence"]
+        groups = pl.get("groups", [])
+        click.echo(
+            f"- **{p['file_path']}** — {ev.get('symbol_count')} symbols, "
+            f"modularity {ev.get('modularity')}, split into {len(groups)} files:"
+        )
+        for i, g in enumerate(groups, 1):
+            click.echo(
+                f"  {i}. `{g.get('suggested_file')}`: {', '.join(g.get('symbols', []))}"
+            )
+        residual = pl.get("residual")
+        if residual and residual.get("symbols"):
+            click.echo(f"  - core (shared): {', '.join(residual['symbols'])}")
 
 
 def _render_trend(repo_path: object, *, fmt: str) -> None:

@@ -18,6 +18,7 @@ from . import (
     extract_class,  # noqa: F401  (import-for-side-effect)
     extract_helper,  # noqa: F401  (import-for-side-effect)
     move_method,  # noqa: F401  (import-for-side-effect)
+    split_file,  # noqa: F401  (import-for-side-effect)
 )
 from .graph_signals import build_file_scc_index
 from .models import (
