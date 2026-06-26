@@ -262,9 +262,11 @@ def build_workspace_info(repo_path: Path | None) -> dict[str, dict[str, Any]]:
 
     result: dict[str, dict[str, Any]] = {}
     for pattern in patterns:
-        # Glob each pattern relative to the repo root. ``pathlib.Path.glob``
-        # already understands ``*`` and ``**``.
-        for ws_dir in repo_path.glob(pattern):
+        if pattern == ".":
+            ws_dirs = [repo_path]
+        else:
+            ws_dirs = repo_path.glob(pattern)
+        for ws_dir in ws_dirs:
             if not ws_dir.is_dir():
                 continue
             ws_pkg = ws_dir / "package.json"
