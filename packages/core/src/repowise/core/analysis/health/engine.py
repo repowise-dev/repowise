@@ -855,6 +855,7 @@ class HealthAnalyzer:
             graph=self.graph,
             file_scc=(file_scc_index or {}).get(file_path),
             function_analyses=self._extract_method_analyses(pf, findings),
+            blame_index=blame_index,
         )
         suggestions = detect_refactorings(rctx, disabled=disabled_refactorings or ())
         return metric, findings, suggestions

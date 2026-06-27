@@ -61,7 +61,10 @@ For Split File:
   Go, true for Python/TS).
 - ``evidence`` = ``{"file_nloc": int, "symbol_count": int, "group_count": int,
   "modularity": float, "intra_edges": int, "cut_edges": int}`` — the size and
-  decomposability signals that justify (and gate) the split.
+  decomposability signals that justify (and gate) the split. Two optional keys
+  are added only when the richer cohesion signals fired:
+  ``"cochange_edges": int`` (symbol pairs joined by a git co-change edge) and
+  ``"import_edges": int`` (pairs joined by a shared imported-name surface).
 - ``blast_radius`` = ``{"dependent_files": [str, ...], "dependent_count": int,
   "import_rewrites": int}`` — the external files referencing the split
   symbols and how many import edits the split implies.
@@ -130,6 +133,14 @@ class RefactoringContext:
     # a re-parse of its own. Empty for files with no such finding -- the
     # detector then yields nothing.
     function_analyses: list[Any] = field(default_factory=list)
+    # This file's per-line blame index (``git_indexer.function_blame.BlameIndex``,
+    # typed ``Any`` to avoid importing the ingestion layer into the model). A
+    # shared read-only reference the engine already materialised for the
+    # function-level biomarkers; Split File projects each top-level symbol's line
+    # range through it for a co-change "keep-together" edge. ``None`` (or an empty
+    # index) is the documented "no signal" outcome — the detector degrades to its
+    # call/import signals only.
+    blame_index: Any = None
 
 
 @dataclass

@@ -17,11 +17,18 @@ Algorithm (all signals from ``ctx.graph`` for v1):
   functions roll up into their owner.
 - **Edges (weighted, strongest -> weakest):**
   1. direct intra-file call (A calls B) -> ``w = 3`` — they belong together;
-  2. shared local helper (A and B both call a third local symbol) ->
+  2. co-change affinity (A and B's line ranges are touched by overlapping
+     commits) -> ``w = 2 x Jaccard(commits_a, commits_b)`` — "these always
+     change together, keep them together". Read from the file's blame index
+     at zero index cost; absent when no ``blame_index`` is threaded in.
+  3. shared local helper (A and B both call a third local symbol) ->
      ``w = 2`` per shared helper — cohesion without a direct A<->B edge;
-  3. cross-module affinity proxy (A and B both call into the same *foreign*
-     module) -> ``w = 1`` per shared module — the graph-derived stand-in for
-     "same responsibility".
+  4. shared external-import surface (A and B lean on the same *imported
+     names*) -> ``w = 1`` per shared imported name — true "same dependency
+     surface", recovered from the file's ``imports`` edges at zero index cost.
+     Falls back to the older cross-module affinity proxy (A and B both call
+     into the same *foreign module* -> ``w = 1`` per shared module) when a
+     symbol's imported-name surface is empty (lightweight-tier languages).
 - **Partition:** community detection (Leiden via the shared
   ``communities`` module, Louvain fallback) on this weighted subgraph. A
   shared-utility *spine* (a local helper most symbols call) is collapsed
@@ -49,7 +56,15 @@ from .registry import RefactoringDetector, effort_bucket, register
 
 # Edge weights over the intra-file symbol graph (see module docstring).
 _DIRECT_CALL_WEIGHT = 3.0
+# Co-change weight is scaled by the commit-set Jaccard (0..1), so it peaks at
+# this value for two symbols that always change together and decays smoothly to
+# nothing. Sits between the direct-call (3.0) and shared-helper (2.0) weights at
+# full overlap. Tunable on dogfood evidence.
+_COCHANGE_WEIGHT = 2.0
 _SHARED_HELPER_WEIGHT = 2.0
+# Per shared imported name (the true dependency-surface signal) and, as the
+# fallback when a symbol has no imported-name surface, per shared foreign module.
+_SHARED_IMPORT_WEIGHT = 1.0
 _SHARED_MODULE_WEIGHT = 1.0
 
 # Floors — gate on decomposability, not size, but a tiny or short file is
@@ -292,7 +307,7 @@ class SplitFileDetector(RefactoringDetector):
             ):
                 return []
 
-        local_pairs, callers_of, foreign_of = self._intra_file_signals(
+        local_pairs, callers_of, foreign_of, imports_of = self._intra_file_signals(
             graph, ctx, defined, owner_of, node_set
         )
 
@@ -308,7 +323,15 @@ class SplitFileDetector(RefactoringDetector):
         if len(cluster_nodes) < _MIN_SYMBOLS // 2:
             return []
 
-        wg = self._build_weighted_graph(cluster_nodes, spine, local_pairs, callers_of, foreign_of)
+        wg, signal_counts = self._build_weighted_graph(
+            cluster_nodes,
+            spine,
+            local_pairs,
+            callers_of,
+            foreign_of,
+            imports_of,
+            commits_of=self._commit_sets(ctx, defined, cluster_nodes),
+        )
         if wg is None:
             return []
 
@@ -359,6 +382,17 @@ class SplitFileDetector(RefactoringDetector):
                     "modularity": round(modularity, 3),
                     "intra_edges": intra_edges,
                     "cut_edges": cut_edges,
+                    # Optional: present only when the richer signals fired, so
+                    # the surface layers can show "kept together by co-change /
+                    # shared imports" without breaking older plan records.
+                    **{
+                        k: v
+                        for k, v in (
+                            ("cochange_edges", signal_counts["cochange_edges"]),
+                            ("import_edges", signal_counts["import_edges"]),
+                        )
+                        if v
+                    },
                 },
                 impact_delta=0.0,
                 effort_bucket=effort_bucket(ctx.nloc),
@@ -416,13 +450,21 @@ class SplitFileDetector(RefactoringDetector):
         defined: dict[str, dict],
         owner_of: dict[str, str],
         node_set: set[str],
-    ) -> tuple[set[tuple[str, str]], dict[str, set[str]], dict[str, set[str]]]:
-        """Walk ``calls`` edges once and derive the three cohesion signals:
-        direct local-call pairs, who-calls-each-local-helper, and each node's
-        set of foreign module labels."""
+    ) -> tuple[
+        set[tuple[str, str]],
+        dict[str, set[str]],
+        dict[str, set[str]],
+        dict[str, set[str]],
+    ]:
+        """Walk ``calls`` edges once and derive the cohesion signals: direct
+        local-call pairs, who-calls-each-local-helper, each node's set of
+        foreign module labels (the affinity-proxy fallback), and each node's
+        external-import surface (the imported names it leans on, read off the
+        file's ``imports`` edges)."""
         local_pairs: set[tuple[str, str]] = set()
         callers_of: dict[str, set[str]] = defaultdict(set)
         foreign_of: dict[str, set[str]] = defaultdict(set)
+        imports_of: dict[str, set[str]] = defaultdict(set)
 
         for sid, owner in owner_of.items():
             if owner not in node_set:
@@ -442,7 +484,55 @@ class SplitFileDetector(RefactoringDetector):
                     if fpath and fpath != ctx.file_path:
                         label = ctx.module_map.get(fpath) or fpath
                         foreign_of[owner].add(label)
-        return local_pairs, callers_of, foreign_of
+                        # The imported names this file pulls from the callee's
+                        # file approximate the dependency surface this symbol
+                        # actually leans on (file-edge granularity; the precise
+                        # per-call binding-name variant is a deferred index
+                        # change). Empty on lightweight-tier languages -> the
+                        # foreign-module proxy carries the signal instead.
+                        names = self._imported_names(graph, ctx.file_path, fpath)
+                        if names:
+                            imports_of[owner] |= names
+        return local_pairs, callers_of, foreign_of, imports_of
+
+    @staticmethod
+    def _imported_names(graph: Any, src_file: str, dst_file: str) -> set[str]:
+        """Imported names on the ``imports`` edge ``src_file -> dst_file`` (the
+        ``imported_names`` payload ``builder.py`` aggregates). Empty when the
+        edge is missing or carries no names (e.g. lightweight-tier languages)."""
+        edata = graph.get_edge_data(src_file, dst_file)
+        if not edata or edata.get("edge_type") != "imports":
+            return set()
+        return {n for n in edata.get("imported_names", ()) if n}
+
+    def _commit_sets(
+        self,
+        ctx: RefactoringContext,
+        defined: dict[str, dict],
+        cluster_nodes: list[str],
+    ) -> dict[str, set[str]]:
+        """Project each node's ``(start_line, end_line)`` through the file's
+        blame index to its set of touching commits — the raw material for the
+        co-change edge. Empty (the documented "no signal" outcome) when no
+        ``blame_index`` was threaded in or the index has no coverage."""
+        idx = ctx.blame_index
+        if idx is None or not getattr(idx, "lines", None):
+            return {}
+        try:
+            from repowise.core.ingestion.git_indexer.function_blame import (
+                distinct_commits_in_range,
+            )
+        except Exception:
+            return {}
+        out: dict[str, set[str]] = {}
+        for nid in cluster_nodes:
+            data = defined.get(nid, {})
+            start, end = data.get("start_line"), data.get("end_line")
+            if isinstance(start, int) and isinstance(end, int) and end >= start:
+                commits = distinct_commits_in_range(idx, start, end)
+                if commits:
+                    out[nid] = commits
+        return out
 
     def _build_weighted_graph(
         self,
@@ -451,11 +541,15 @@ class SplitFileDetector(RefactoringDetector):
         local_pairs: set[tuple[str, str]],
         callers_of: dict[str, set[str]],
         foreign_of: dict[str, set[str]],
-    ) -> Any:
+        imports_of: dict[str, set[str]],
+        *,
+        commits_of: dict[str, set[str]],
+    ) -> tuple[Any, dict[str, int]]:
+        counts = {"cochange_edges": 0, "import_edges": 0}
         try:
             import networkx as nx
         except Exception:
-            return None
+            return None, counts
 
         weights: Counter[tuple[str, str]] = Counter()
 
@@ -467,7 +561,19 @@ class SplitFileDetector(RefactoringDetector):
         # 1. direct intra-file call
         for a, b in local_pairs:
             _add(a, b, _DIRECT_CALL_WEIGHT)
-        # 2. shared local helper (callers of a common, non-spine local symbol)
+        # 2. co-change affinity (overlapping commit sets keep symbols together)
+        cc_nodes = sorted(n for n in commits_of if n not in spine)
+        for i in range(len(cc_nodes)):
+            for j in range(i + 1, len(cc_nodes)):
+                a, b = cc_nodes[i], cc_nodes[j]
+                ca, cb = commits_of[a], commits_of[b]
+                inter = len(ca & cb)
+                if not inter:
+                    continue
+                jaccard = inter / len(ca | cb)
+                _add(a, b, _COCHANGE_WEIGHT * jaccard)
+                counts["cochange_edges"] += 1
+        # 3. shared local helper (callers of a common, non-spine local symbol)
         for callee, callers in callers_of.items():
             if callee in spine:
                 continue
@@ -475,19 +581,27 @@ class SplitFileDetector(RefactoringDetector):
             for i in range(len(members)):
                 for j in range(i + 1, len(members)):
                     _add(members[i], members[j], _SHARED_HELPER_WEIGHT)
-        # 3. cross-module affinity proxy (shared foreign modules)
+        # 4. shared external-import surface, with the foreign-module proxy as
+        #    the fallback when a symbol carries no imported-name surface.
         for i in range(len(cluster_nodes)):
             for j in range(i + 1, len(cluster_nodes)):
                 a, b = cluster_nodes[i], cluster_nodes[j]
-                shared = foreign_of.get(a, set()) & foreign_of.get(b, set())
-                if shared:
-                    _add(a, b, _SHARED_MODULE_WEIGHT * len(shared))
+                a_names, b_names = imports_of.get(a), imports_of.get(b)
+                if a_names and b_names:
+                    shared_names = a_names & b_names
+                    if shared_names:
+                        _add(a, b, _SHARED_IMPORT_WEIGHT * len(shared_names))
+                        counts["import_edges"] += 1
+                    continue
+                shared_mod = foreign_of.get(a, set()) & foreign_of.get(b, set())
+                if shared_mod:
+                    _add(a, b, _SHARED_MODULE_WEIGHT * len(shared_mod))
 
         wg = nx.Graph()
         wg.add_nodes_from(sorted(cluster_nodes))
         for (a, b), w in weights.items():
             wg.add_edge(a, b, weight=w)
-        return wg
+        return wg, counts
 
     @staticmethod
     def _modularity(wg: Any, groups_map: dict[int, list[str]]) -> float:
