@@ -448,6 +448,51 @@ without touching the shared pipeline files:
   false perf findings. Adding a language's perf support is one module plus a
   `call_kinds` line on its `LanguageNodeMap` and its
   `external_systems/io_kind.py` ecosystem rows --- no walker edits.
+- `analysis/health/dataflow/dialects/` --- the **dataflow** layer
+  (intra-procedural CFG + def/use + reaching definitions, powering the
+  **Extract Method** refactoring) is driven by a per-language `DefUseDialect`
+  plugin, registered in `DEFUSE_DIALECTS` exactly like `perf/dialects/`. A
+  dialect owns the read-vs-write classification of each statement (the
+  per-grammar seam: which node is an assignment / declaration / destructuring
+  target, which is a member or index target that binds no local, how a loop's
+  binder reads and writes) and the parameter binders (including a Go method
+  receiver). The CFG builder, the reaching-definitions fixpoint, and the
+  Extract Method slicer stay language-agnostic: the control-flow grammar they
+  branch on (`if_kinds` / `block_kinds` / `return_kinds` / `raise_kinds` /
+  `break_kinds` / `continue_kinds`, alongside the existing
+  `branch_kinds` / `loop_kinds` / `try_kinds`) lives on the `LanguageNodeMap`,
+  so the same builder serves Python's clause-style `elif` / `else` and the
+  C-family's `alternative`-field `else if` without a per-language branch. Every
+  facet has a safe "no signal" default, so a language without a dialect (or one
+  whose map omits the control-flow kinds) produces no def/use and therefore no
+  Extract Method suggestion --- never a wrong one. Adding a language is one
+  module plus the `assignment_kinds` / `local_decl_kinds` and control-flow
+  lines on its `LanguageNodeMap` --- no core edits. The full dataflow pass runs
+  only for functions a structural biomarker already flagged
+  (`large_method` / `brain_method` / `complex_method`), so it stays within the
+  health-pass budget.
+
+#### Dataflow / Extract Method coverage
+
+The dataflow layer needs a `DefUseDialect` (plus the `assignment_kinds` /
+`local_decl_kinds` and control-flow kinds on the language's `LanguageNodeMap`);
+it is independent of the perf / class / assertion tiers. A language without a
+dialect emits no Extract Method suggestions. Coverage rolls out in value order
+(the high-yield set first), degrading to silence elsewhere.
+
+| Language | CFG + def/use | Extract Method | Notes |
+|----------|:---:|:---:|---|
+| Python | Y | Y | assignment, augmented, walrus, tuple-unpack, `for` / `with`-as / comprehension targets |
+| Go | Y | Y | `:=` / `var`, `=` vs `+=` (operator-sniffed), `x++`, `range` binders, selector / index targets; method `receiver` seeded as a param |
+| TypeScript / JavaScript | Y | Y | `let` / `const` / `var`, `=` / `+=`, `++`, array / object destructuring, `for...of` / `for...in` binders, member / subscript targets |
+| Java / Rust | --- | --- | next (high-yield tail) |
+| Kotlin / C++ / C# | --- | --- | later |
+
+Validated on real code (flagged-only, the production path): Go fires on
+`gorilla/mux` (e.g. `setMatch` sheds ccn 15); TS/JS fires across the hosted
+Next.js frontend. The flagged-only gate held in both runs (Go 8 / 108
+functions, TS 212 / 1172), keeping the per-file cost in the low single-digit
+milliseconds.
 
 #### Performance-signal coverage
 
