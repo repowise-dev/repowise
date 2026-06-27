@@ -21,6 +21,7 @@ from repowise.core.analysis.health.refactoring.split_file import (
     _dominant_token,
     _shim_required,
 )
+from repowise.core.ingestion.git_indexer.function_blame import BlameIndex
 
 
 def _add_func(g: nx.DiGraph, file_path: str, name: str, *, start: int = 1, end: int = 30) -> str:
@@ -64,9 +65,45 @@ def _call(g: nx.DiGraph, src: str, dst: str) -> None:
 
 
 def _ctx(
-    g: nx.DiGraph, file_path: str, *, nloc: int = 600, language: str = "python"
+    g: nx.DiGraph,
+    file_path: str,
+    *,
+    nloc: int = 600,
+    language: str = "python",
+    blame_index: BlameIndex | None = None,
+    module_map: dict[str, str] | None = None,
 ) -> RefactoringContext:
-    return RefactoringContext(file_path=file_path, language=language, nloc=nloc, graph=g)
+    return RefactoringContext(
+        file_path=file_path,
+        language=language,
+        nloc=nloc,
+        graph=g,
+        blame_index=blame_index,
+        module_map=module_map or {},
+    )
+
+
+def _add_foreign_call(g: nx.DiGraph, src: str, foreign_file: str, callee_name: str) -> None:
+    """Make *src* (a local symbol id) call a symbol living in *foreign_file*."""
+    if foreign_file not in g:
+        g.add_node(foreign_file, node_type="file")
+    cid = f"{foreign_file}::{callee_name}"
+    if cid not in g:
+        g.add_node(cid, node_type="symbol", kind="function", name=callee_name, file_path=foreign_file)
+    g.add_edge(src, cid, edge_type="calls")
+
+
+def _imports(g: nx.DiGraph, src_file: str, dst_file: str, names: list[str]) -> None:
+    g.add_edge(src_file, dst_file, edge_type="imports", imported_names=list(names))
+
+
+def _blame_index(ranges: list[tuple[int, int, str]]) -> BlameIndex:
+    """Blame index where every line in ``[start, end]`` is attributed to ``sha``."""
+    lines: dict[int, tuple[str, int]] = {}
+    for start, end, sha in ranges:
+        for ln in range(start, end + 1):
+            lines[ln] = (sha, 0)
+    return BlameIndex(lines=lines, authors={})
 
 
 def _detect(g: nx.DiGraph, file_path: str, **kw) -> list:
@@ -239,3 +276,95 @@ def test_shim_required_helper():
     assert _shim_required("python") is True
     assert _shim_required("typescript") is True
     assert _shim_required(None) is True
+
+
+def _disconnected_blocks(file_path: str = "big.py") -> nx.DiGraph:
+    """Eight top-level functions with NO call edges and distinct 10-line ranges.
+    On its own this yields no split (every node is its own community); the
+    co-change / import-name signals are what create the partition."""
+    g = nx.DiGraph()
+    for i in range(8):
+        _add_func(g, file_path, f"fn_{i}", start=10 * i + 1, end=10 * i + 10)
+    return g
+
+
+def test_cochange_edge_groups_commit_coupled_symbols():
+    # No call edges; the only cohesion is git co-change. Lines of fn_0..3 are
+    # all touched by commit "ca", fn_4..7 by "cb" -> two co-change cliques.
+    g = _disconnected_blocks()
+    blame = _blame_index(
+        [(10 * i + 1, 10 * i + 10, "ca" if i < 4 else "cb") for i in range(8)]
+    )
+    out = _detect(g, "big.py", blame_index=blame)
+    assert len(out) == 1
+    s = out[0]
+    assert s.evidence["group_count"] == 2
+    assert s.evidence["cochange_edges"] > 0
+    assert "import_edges" not in s.evidence  # no foreign calls in this fixture
+    groups = [set(grp["symbols"]) for grp in s.plan["groups"]]
+    block_a = {f"fn_{i}" for i in range(4)}
+    block_b = {f"fn_{i}" for i in range(4, 8)}
+    assert any(grp == block_a for grp in groups)
+    assert any(grp == block_b for grp in groups)
+
+
+def test_cochange_absent_without_blame_index():
+    # Same graph, no blame index -> no co-change edges -> nothing to partition.
+    assert _detect(_disconnected_blocks(), "big.py") == []
+
+
+def test_import_name_signal_separates_distinct_dependencies():
+    # fn_0..3 lean on ext/a.py, fn_4..7 on ext/b.py. Both foreign files map to
+    # the SAME module label, so the old foreign-module proxy would glue all
+    # eight together; the imported-name surface (distinct names per file)
+    # correctly keeps the two dependency clusters apart.
+    g = _disconnected_blocks()
+    for i in range(4):
+        _add_foreign_call(g, f"big.py::fn_{i}", "ext/a.py", "alpha_dep")
+    for i in range(4, 8):
+        _add_foreign_call(g, f"big.py::fn_{i}", "ext/b.py", "beta_dep")
+    _imports(g, "big.py", "ext/a.py", ["alpha_dep"])
+    _imports(g, "big.py", "ext/b.py", ["beta_dep"])
+    module_map = {"ext/a.py": "extpkg", "ext/b.py": "extpkg"}
+    out = _detect(g, "big.py", module_map=module_map)
+    assert len(out) == 1
+    s = out[0]
+    assert s.evidence["group_count"] == 2
+    assert s.evidence["import_edges"] > 0
+    groups = [set(grp["symbols"]) for grp in s.plan["groups"]]
+    assert any(grp == {f"fn_{i}" for i in range(4)} for grp in groups)
+    assert any(grp == {f"fn_{i}" for i in range(4, 8)} for grp in groups)
+
+
+def test_foreign_module_proxy_is_used_when_imported_names_empty():
+    # Lightweight-tier shape: foreign calls but the import edges carry no names.
+    # The detector degrades to the foreign-module affinity proxy (today's
+    # behavior) -> the two distinct-module clusters still separate.
+    g = _disconnected_blocks()
+    for i in range(4):
+        _add_foreign_call(g, f"big.py::fn_{i}", "ext/a.py", "alpha_dep")
+    for i in range(4, 8):
+        _add_foreign_call(g, f"big.py::fn_{i}", "ext/b.py", "beta_dep")
+    module_map = {"ext/a.py": "moda", "ext/b.py": "modb"}
+    out = _detect(g, "big.py", module_map=module_map)
+    assert len(out) == 1
+    s = out[0]
+    assert s.evidence["group_count"] == 2
+    assert "import_edges" not in s.evidence  # proxy fired, not the name signal
+
+
+def test_signals_are_deterministic():
+    g = _disconnected_blocks()
+    blame = _blame_index(
+        [(10 * i + 1, 10 * i + 10, "ca" if i < 4 else "cb") for i in range(8)]
+    )
+    first = _detect(g, "big.py", blame_index=blame)
+    second = _detect(g, "big.py", blame_index=blame)
+    assert first[0].plan["groups"] == second[0].plan["groups"]
+    assert first[0].evidence == second[0].evidence
+
+
+def test_empty_blame_index_is_silent():
+    # An empty index (the documented "no signal" outcome) must not raise and
+    # must not invent co-change edges.
+    assert _detect(_disconnected_blocks(), "big.py", blame_index=BlameIndex()) == []
