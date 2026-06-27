@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.25.0] — 2026-06-27
+
+### Added
+- **Split File refactoring.** Code Health now detects files that should be decomposed into smaller modules and proposes a concrete split. A new detector identifies low-cohesion modules and groups their members into coherent target files (#607), with richer cohesion signals driving the grouping (#614). Each plan is browsable in the web Refactoring tab and can be turned into real code via the deterministic code-gen path (#608).
+- **Extract Method refactoring.** Long, complex functions get an Extract Method suggestion computed over a real dataflow layer: an intra-procedural control-flow graph for flagged functions (#612), def/use chains and reaching definitions over that CFG (#613), and the Extract Method planner built on top (#615). The refactoring is available for Python, Go, and TypeScript/JavaScript (#616).
+- **Coverage report ingestion.** Indexing can now ingest test-coverage reports, folding coverage into the code-health picture during a run. (#604)
+
+### Changed
+- **"Biomarker" is now "marker" in the UI.** Code Health display copy renames the user-facing "biomarker" term to "marker" across the web app and plugin surfaces; internal identifiers are unchanged. (#619)
+
+### Fixed
+- **`.` works as a glob pattern on Python 3.14+.** Passing `.` as a path/glob no longer errors on newer Python. (#609)
+- **Decision harvest skips title-only records.** The decision harvester no longer emits empty records that carry only a title. (#605)
+
+### Documentation
+- Strengthened the code-health validation story and fixed stale references across the docs. (#617)
+- Tightened the code-health docs, named CodeScene explicitly, and moved deeper internals into the architecture doc. (#618)
+
+---
+
 ## [0.24.1] — 2026-06-25
 
 ### Changed
