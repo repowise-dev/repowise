@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { ArrowRightLeft, CopyMinus, FileStack, Split, Unlink } from "lucide-react";
+import { ArrowRightLeft, CopyMinus, FileStack, Scissors, Split, Unlink } from "lucide-react";
 import type { Confidence, EffortBucket, RefactoringType } from "./types";
 
 export interface RefactoringTypeMeta {
@@ -25,6 +25,12 @@ export const TYPE_META: Record<string, RefactoringTypeMeta> = {
     blurb: "Dedupe a repeated block into one shared helper.",
     Icon: CopyMinus,
     accentVar: "--color-refactor-extract-helper",
+  },
+  extract_method: {
+    label: "Extract Method",
+    blurb: "Lift a cohesive slice of a long function into a focused helper.",
+    Icon: Scissors,
+    accentVar: "--color-refactor-extract-method",
   },
   move_method: {
     label: "Move Method",
@@ -84,6 +90,7 @@ export const CONFIDENCE_DOT: Record<Confidence, string> = {
 export const TYPE_ORDER: RefactoringType[] = [
   "extract_class",
   "extract_helper",
+  "extract_method",
   "move_method",
   "break_cycle",
   "split_file",

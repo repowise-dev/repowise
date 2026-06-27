@@ -10,6 +10,7 @@
 export type RefactoringType =
   | "extract_class"
   | "extract_helper"
+  | "extract_method"
   | "move_method"
   | "break_cycle"
   | "split_file";
@@ -134,6 +135,30 @@ export function cutEdges(plan: RefactoringPlan): CutEdge[] {
   });
 }
 
+export interface ExtractMethodPlan {
+  /** The line span (1-indexed, inclusive) to lift into a helper. */
+  span: { start: number; end: number } | null;
+  /** Inferred IN parameters and OUT return(s). */
+  params: string[];
+  returns: string[];
+  suggested_name: string | null;
+}
+
+export function extractMethodPlan(plan: RefactoringPlan): ExtractMethodPlan {
+  const p = (plan.plan ?? {}) as Record<string, unknown>;
+  const rawSpan = p.span as Record<string, unknown> | undefined;
+  const span =
+    rawSpan && typeof rawSpan === "object"
+      ? { start: Number(rawSpan.start ?? 0), end: Number(rawSpan.end ?? 0) }
+      : null;
+  return {
+    span: span && span.start && span.end ? span : null,
+    params: Array.isArray(p.params) ? (p.params as string[]) : [],
+    returns: Array.isArray(p.returns) ? (p.returns as string[]) : [],
+    suggested_name: typeof p.suggested_name === "string" ? p.suggested_name : null,
+  };
+}
+
 export interface SplitGroup {
   name: string | null;
   symbols: string[];
@@ -199,6 +224,11 @@ export function planSynopsis(plan: RefactoringPlan): string {
         lines ? ` · ${lines} lines` : ""
       }`;
     }
+    case "extract_method": {
+      const em = extractMethodPlan(plan);
+      const lines = em.span ? em.span.end - em.span.start + 1 : 0;
+      return lines ? `Extract ${lines} line${lines === 1 ? "" : "s"} into a helper` : "Extract a helper method";
+    }
     case "move_method": {
       const mv = moveTarget(plan);
       return mv ? `${mv.from_class} → ${mv.to_class}` : "Move method";
@@ -260,6 +290,8 @@ export const EVIDENCE_LABELS: Record<string, string> = {
   modularity: "Modularity",
   intra_edges: "Cohesive edges",
   cut_edges: "Cut edges",
+  slice_nloc: "Extracted lines",
+  ccn_removed: "Complexity removed",
 };
 
 export function evidenceRows(plan: RefactoringPlan): { label: string; value: string }[] {
@@ -341,6 +373,21 @@ export function generatedVerdict(result: GeneratedCode): GeneratedVerdict | null
   }
   if (status !== "checked") return null;
 
+  if (result.refactoring_type === "extract_method") {
+    const improved = v.improved === true;
+    const parts: string[] = [];
+    const before = fmtMetric(v.original_ccn);
+    const after = fmtMetric(v.residual_ccn);
+    if (before !== null && after !== null) parts.push(`CCN ${before} → ${after}`);
+    const fns = fmtMetric(v.function_count);
+    if (fns !== null) parts.push(`${fns} functions`);
+    return {
+      tone: improved ? "pass" : "fail",
+      label: improved ? "Complexity reduced" : "Complexity not reduced",
+      ...(parts.length ? { detail: parts.join(" · ") } : {}),
+    };
+  }
+
   if (result.refactoring_type === "split_file") {
     const improved = v.improved === true;
     const parts: string[] = [];
@@ -395,6 +442,16 @@ export function planWins(plan: RefactoringPlan): PlanWin[] {
       const lines = Number(plan.evidence?.duplicated_lines ?? 0);
       if (occ) wins.push({ label: `${occ} duplicate cop${occ === 1 ? "y" : "ies"} collapsed to one` });
       if (lines) wins.push({ label: `~${lines} duplicated lines removed` });
+      break;
+    }
+    case "extract_method": {
+      const em = extractMethodPlan(plan);
+      const ccn = Number(plan.evidence?.ccn_removed ?? 0);
+      if (em.span) {
+        const lines = em.span.end - em.span.start + 1;
+        wins.push({ label: `${lines} line${lines === 1 ? "" : "s"} lifted into a focused helper` });
+      }
+      if (ccn) wins.push({ label: `-${ccn} cyclomatic complexity on the original method` });
       break;
     }
     case "move_method": {

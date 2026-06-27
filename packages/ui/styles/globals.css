@@ -113,6 +113,7 @@
      exactly what made extract-class / move-method / break-cycle indistinct. */
   --color-refactor-extract-class: #b9651b; /* amber */
   --color-refactor-extract-helper: #1d8155; /* green */
+  --color-refactor-extract-method: #0e7490; /* teal */
   --color-refactor-move-method: #6d4aa6; /* purple */
   --color-refactor-break-cycle: #b5396f; /* magenta */
   --color-refactor-split-file: #3f6ea5; /* blue */
@@ -347,6 +348,7 @@
   /* Refactoring type accents — qualitative palette (dark theme, brighter). */
   --color-refactor-extract-class: #f59520; /* amber */
   --color-refactor-extract-helper: #34d399; /* green */
+  --color-refactor-extract-method: #22d3ee; /* cyan */
   --color-refactor-move-method: #b58cf0; /* purple */
   --color-refactor-break-cycle: #ec6fa6; /* magenta */
   --color-refactor-split-file: #7da7d9; /* blue */

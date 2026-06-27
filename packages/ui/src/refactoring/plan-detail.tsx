@@ -8,6 +8,7 @@ import {
   cycleMembers,
   extractClassGroups,
   extractHelperOccurrences,
+  extractMethodPlan,
   helperSite,
   moveTarget,
   splitBlast,
@@ -249,6 +250,70 @@ export function PlanDetail({ plan, fileHref, hideIntro = false }: PlanDetailProp
               Cycle: {members.map(shortFile).join(" → ")}
             </div>
           ) : null}
+        </div>
+      </div>
+    );
+  }
+
+  if (plan.refactoring_type === "extract_method") {
+    const em = extractMethodPlan(plan);
+    const lines = em.span ? em.span.end - em.span.start + 1 : 0;
+    const ccn = Number(plan.evidence?.ccn_removed ?? 0);
+    const helperName = em.suggested_name ?? "helper";
+    const sig = `${helperName}(${em.params.join(", ")})${
+      em.returns.length ? ` -> ${em.returns.join(", ")}` : ""
+    }`;
+    return (
+      <div className="space-y-3">
+        {hideIntro ? null : (
+          <p className="text-xs text-[var(--color-text-tertiary)]">
+            Lift {lines} line{lines === 1 ? "" : "s"} out of{" "}
+            <span className="font-mono">{plan.target_symbol}</span> into a focused helper
+            {ccn ? `, shedding ${ccn} decision point${ccn === 1 ? "" : "s"}` : ""}.
+          </p>
+        )}
+
+        {em.span ? (
+          <div className="flex items-center gap-2 rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-3.5">
+            <Scissors className="h-4 w-4 shrink-0" style={{ color: accent }} aria-hidden />
+            <div className="min-w-0">
+              <div className="text-[10px] uppercase tracking-wide text-[var(--color-text-tertiary)]">
+                Extract span
+              </div>
+              <FileRef
+                path={plan.file_path}
+                line={em.span.start}
+                fileHref={fileHref}
+                className="block truncate"
+              />
+            </div>
+            <span className="ml-auto shrink-0 font-mono text-xs text-[var(--color-text-secondary)]">
+              lines {em.span.start}–{em.span.end}
+            </span>
+          </div>
+        ) : null}
+
+        <div className="rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-3.5">
+          <div className="mb-1.5 text-[10px] uppercase tracking-wide text-[var(--color-text-tertiary)]">
+            Inferred signature
+          </div>
+          <code className="block break-all font-mono text-xs text-[var(--color-text-primary)]">
+            {sig}
+          </code>
+          <div className="mt-2 flex flex-wrap gap-3 text-[11px] text-[var(--color-text-tertiary)]">
+            <span>
+              In (params):{" "}
+              <span className="text-[var(--color-text-secondary)]">
+                {em.params.length ? em.params.join(", ") : "none"}
+              </span>
+            </span>
+            <span>
+              Out (return):{" "}
+              <span className="text-[var(--color-text-secondary)]">
+                {em.returns.length ? em.returns.join(", ") : "none"}
+              </span>
+            </span>
+          </div>
         </div>
       </div>
     );

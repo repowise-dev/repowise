@@ -20,6 +20,7 @@ import {
   cycleMembers,
   extractClassGroups,
   extractHelperOccurrences,
+  extractMethodPlan,
   helperSite,
   moveTarget,
   type RefactoringPlan,
@@ -1273,6 +1274,21 @@ function refactoringPlanSteps(plan: RefactoringPlan): string {
         lines.join("\n"),
         "",
         "Define the helper once, replace every occurrence with a call to it, and confirm the behavior is identical at each site (watch for small per-site differences that need a parameter).",
+      ].join("\n");
+    }
+    case "extract_method": {
+      const em = extractMethodPlan(plan);
+      if (!em.span) return "Extract the indicated slice into a helper method.";
+      const params = em.params.length ? em.params.join(", ") : "(none)";
+      const returns = em.returns.length ? em.returns.join(", ") : "(nothing)";
+      const name = em.suggested_name ?? "a clearly named helper";
+      return [
+        `Extract lines ${em.span.start}–${em.span.end} of \`${plan.target_symbol}\` into ${name}:`,
+        "",
+        `- **Parameters (in):** ${params}`,
+        `- **Returns (out):** ${returns}`,
+        "",
+        "Move exactly those lines into the new helper in the same scope, pass the parameters above, return the value(s) above, and replace the original lines with a single call to it. Preserve behavior exactly: change nothing outside the span and that one call site.",
       ].join("\n");
     }
     case "move_method": {
