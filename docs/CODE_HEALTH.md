@@ -60,23 +60,18 @@ Twenty-five biomarkers across the categories above. `function_hotspot` and
 are tier-aware and stay silent on ESSENTIAL-tier repos until the per-line blame
 index is built.
 
-Per-biomarker weight multipliers (see `scoring._BIOMARKER_WEIGHT_MULTIPLIER`)
-let the strongest empirical predictors deduct more than the uniform severity
-table alone allows. These weights are calibrated offline against a defect
-corpus, not hand-tuned: each file is scored at the pre-window commit (T0, no
-leakage) and an L2-logistic regression (with NLOC as an explicit control) fits
-each biomarker's defect lift beyond file size. The runtime stays deterministic;
-only the learned constants ship. The strongest calibrated predictors are
-`co_change_scatter` (1.8), `change_entropy` (1.51), `ownership_risk` (1.38), and
-`nested_complexity` (1.34); the remaining structural complexity and size
-biomarkers land around 1.1 to 1.33. Biomarkers that fire widely but proved weak
-under leakage-free scoring (`developer_congestion`, `dry_violation`,
-`low_cohesion`, `brain_method`, `primitive_obsession`, `bumpy_road`) are floored
-to 0.5, kept as maintainability and parity signals rather than disabled, and
-`knowledge_loss` stays de-rated at 0.4. Coverage-dependent and rarely-firing
-biomarkers (`untested_hotspot` 1.3, `code_age_volatility` 1.1, `churn_risk` 1.2)
-keep prior weights the corpus could not fairly measure. The full calibration,
-with confidence intervals, is published in the [benchmark report](https://github.com/repowise-dev/repowise-bench/blob/master/health-defect/BENCHMARK_REPORT.md).
+Per-biomarker weight multipliers let the strongest empirical predictors deduct
+more than the uniform severity table alone allows. The weights are **calibrated
+offline against a defect corpus, not hand-tuned**: each file is scored at the
+pre-window commit (T0, no leakage) and a logistic regression with NLOC as an
+explicit control fits each biomarker's defect lift beyond file size. The runtime
+stays deterministic; only the learned constants ship. The strongest predictors
+are `co_change_scatter`, `change_entropy`, `ownership_risk`, and
+`nested_complexity`; widely-firing smells that proved weak under leakage-free
+scoring are floored. The full per-biomarker table lives in the
+[architecture doc](architecture/code-health.md#61-calibrated-weight-multipliers),
+and the calibration with confidence intervals is in the
+[benchmark report](https://github.com/repowise-dev/repowise-bench/blob/master/health-defect/BENCHMARK_REPORT.md).
 
 The final score is clamped to `[1.0, 10.0]`. The three repo-level KPIs:
 

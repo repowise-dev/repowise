@@ -42,7 +42,7 @@
 
 <p align="center">
   <strong>measure, locate, and fix what your AI ships</strong><br/>
-  <strong>code health that predicts real bugs</strong> &nbsp;·&nbsp; <strong>ROC AUC 0.74 across 21 repos</strong> &nbsp;·&nbsp; <strong>2.3×</strong> the commercial market leader under a fixed review budget<br/>
+  <strong>code health that predicts real bugs</strong> &nbsp;·&nbsp; <strong>ROC AUC 0.74 across 21 repos</strong> &nbsp;·&nbsp; <strong>2.3×</strong> CodeScene's defects under a fixed review budget<br/>
   <strong>graph-aware refactoring plans</strong> your agent can execute &nbsp;·&nbsp; <strong>up to −96% context tokens</strong> &nbsp;·&nbsp; <strong>−70% agent tool calls</strong> at answer-quality parity
 </p>
 
@@ -117,13 +117,12 @@ scatter, prior-defect history, test-quality smells, and more.
 **Three signals, one index.** The headline 1–10 is **defect risk**: the
 defect-calibrated, bug-predictive score in the table below. From the same
 biomarker stream, repowise surfaces two co-equal companion views:
-**maintainability** (cohesion, brain methods, primitive obsession, DRY and
-god-class smells that raise change-cost without predicting bugs) and
-**performance** (static I/O-in-loop / N+1 risk, including cross-function cases
-caught through the call graph that file-local linters miss: standard linters
-found 0 of those cross-function cases on a 12k-file benchmark where repowise
-surfaced 557). The two companions are separate lenses, never blended into the
-defect headline, so the bug-predictive number stays clean.
+**maintainability** (cohesion, brain methods, DRY and god-class smells that
+raise change-cost without predicting bugs) and **performance** (static N+1 /
+I/O-in-loop risk, followed across files through the call graph: file-local
+linters found 0 of those cross-function cases on a 12k-file benchmark where
+repowise surfaced 557). They are separate lenses, never blended into the defect
+headline, so the bug-predictive number stays clean.
 
 > **Zero LLM calls. Zero cloud requirement. Zero new runtime dependencies.**
 > Pure Python over tree-sitter + git data, finishing in **under 30 seconds** on
@@ -144,20 +143,21 @@ in the terminal and on the dashboard: *"16/20 lowest-health files had a bug fix
 in the last 6 months, 3.3x the 24% baseline"*. See
 [Does the score find the bugs?](docs/CODE_HEALTH.md#does-the-score-find-the-bugs).
 
-**Does the score actually find bugs? Yes, and it out-ranks the leading
-commercial code-health tool.** On the **same 2,770 files across 9 languages**,
-scored at the same leakage-free commit against the same defect labels:
+**Does the score actually find bugs? Yes, and it out-ranks CodeScene**, the
+leading commercial code-health tool. On the **same 2,770 files across 9
+languages**, scored at the same leakage-free commit against the same defect
+labels:
 
-| Axis (head-to-head, paired tests) | repowise | Leading commercial tool |
+| Axis (head-to-head, paired tests) | repowise | CodeScene |
 |---|---:|---:|
 | **Recall @ 20%-of-lines budget** | **0.173** | 0.074 |
 | **Effort-aware ranking (Popt)** | **0.607** | 0.462 |
 | **Defect density, size-normalized (defects/KLOC, Alert:Healthy)** | **2.18×** | 0.56× |
-| Discrimination (ROC AUC) | **0.731** | 0.705 |
+| Discrimination (ROC AUC) | 0.731 | 0.705 |
 
 Ranking by repowise health surfaces **2.3× the defects under a fixed review
-budget** (Popt Δ +0.144, recall Δ +0.098, density Δ p = 0.003, all paired and
-significant). [Full methodology & CIs →](https://github.com/repowise-dev/repowise-bench/blob/master/health-defect/COMPARISON_REPORT.md)
+budget** (Popt Δ +0.144, recall Δ +0.098, density Δ all p = 0.003, paired and
+significant; the ROC AUC edge is marginal). [Full methodology & CIs →](https://github.com/repowise-dev/repowise-bench/blob/master/health-defect/COMPARISON_REPORT.md)
 
 User guide & per-biomarker reference: **[docs/CODE_HEALTH.md](docs/CODE_HEALTH.md)**
 
@@ -166,42 +166,27 @@ User guide & per-biomarker reference: **[docs/CODE_HEALTH.md](docs/CODE_HEALTH.m
 A health score tells you a file is in trouble. Every other tool stops there, or
 prints the same static sentence for every god class in every repo. repowise names
 the **specific** fix, computed deterministically from the graph, the class model,
-and git co-change, the same data the score is built on:
+and git co-change: **Extract Class**, **Extract Helper**, **Move Method**,
+**Break Cycle**, and **Split File**. Each plan names the exact methods, edges, or
+symbols that move, and carries its **blast radius** (the callers and co-changing
+files that must move with it). Ranking is **graph-aware** (`impact × call-graph
+centrality × blast radius`), so a fix on a central hub outranks the same fix on a
+leaf. That is the wedge: CodeScene's AI refactoring stays within a single
+function, where repowise names the cross-file move and the dependents it ripples
+to.
 
-- **Extract Class**: split an incohesive class along its real cohesion groups
-  (LCOM4 components): *"these methods + these fields belong together; these don't."*
-- **Extract Helper**: dedup a clone across its exact occurrences, with the
-  shared helper placed at the community centroid of the files involved.
-- **Move Method**: relocate a feature-envy method to the class it actually talks
-  to (Jaccard distance over the call graph), not the one it lives in.
-- **Break Cycle**: name the minimal set of import edges to invert to break a
-  dependency cycle (greedy minimum feedback arc set over the real import graph).
-- **Split File**: decompose an oversized module into cohesive files (community
-  detection over its intra-file symbol graph), naming the symbols that move to
-  each new file and the import edits in every dependent.
-
-Every plan carries its **blast radius** (the callers and co-changing files that
-must move with it) and is ranked **graph-aware**: `impact × call-graph centrality
-× blast radius`, so a fix on a central hub outranks the same fix on a leaf. That
-is the wedge: the leading commercial tool ranks by churn alone, stays
-within-function, and ignores its own coupling signal when it generates code.
-
-The deterministic plan is the product; the optional LLM code-gen step never runs
-during indexing and fires only on an explicit request. Any plan can then be
-expanded into generated code plus a unified diff, fed the graph and co-change
-context a bare codegen tool throws away.
+The deterministic plan is the product; an optional LLM step (never in the
+indexing path, only on explicit request) expands any plan into generated code
+plus a unified diff, fed the graph and co-change context a bare codegen tool
+throws away.
 
 ```bash
-repowise health --refactoring-targets        # ranked plans, biggest win for least effort
+repowise health --refactoring-targets    # ranked plans; get_health(include=["refactoring"]) over MCP
 ```
 
-```python
-get_health(include=["refactoring"])           # the same structured plans over MCP
-```
-
-The web **Refactoring** tab renders each plan as a card (the split groups as a
-tree, the move arrow, the clone occurrences with line links) with a
-**copy-to-agent** button and the opt-in **Generate code** diff view. Full
+The web **Refactoring** tab renders each plan as a card with a **copy-to-agent**
+button and the opt-in **Generate code** diff view. Per-detector mechanics:
+**[docs/CODE_HEALTH.md](docs/CODE_HEALTH.md#refactoring-targets)** · full
 reference: **[docs/REFACTORING.md](docs/REFACTORING.md)**
 
 ---

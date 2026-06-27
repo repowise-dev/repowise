@@ -138,8 +138,8 @@ core/alembic/versions/
 
 ```
 core/pipeline/
-├── orchestrator.py                 # _run_health_analysis() — builds module_map, runs analyzer
-└── persist.py                      # persist_pipeline_result() — writes findings/metrics/snapshot
+├── orchestrator.py                 # _run_health_analysis(): builds module_map, runs analyzer
+└── persist.py                      # persist_pipeline_result(): writes findings/metrics/snapshot
 ```
 
 ### CLI
@@ -206,7 +206,7 @@ tests/unit/health/                  # 99+ tests
 ├── test_duplication.py             # tokenizer, hash, detector
 ├── test_coverage_parsers.py        # LCOV/Cobertura/Clover/JSON
 ├── test_scoring.py                 # category caps, clamping
-├── test_scoring_snapshot.py        # stability snapshot — locks caps + deductions
+├── test_scoring_snapshot.py        # stability snapshot: locks caps + deductions
 ├── test_health_config.py           # .repowise/health-rules.json
 ├── test_trends.py                  # diff_snapshots, declining/predicted alerts
 ├── test_signals.py                 # file_signals join + no-signal/normalization
@@ -223,128 +223,70 @@ tests/integration/
 ## 3. The pipeline (init path)
 
 `repowise init` runs `run_pipeline()` in `core/pipeline/orchestrator.py`.
-Health analysis is a phase in that orchestrator, called between
-`_run_dead_code_analysis()` and `_run_decision_extraction()`:
+`_run_health_analysis()` is a phase in that orchestrator, called between
+`_run_dead_code_analysis()` and `_run_decision_extraction()`. It does four
+things:
 
-```python
-# orchestrator.py — simplified
-async def _run_health_analysis(graph_builder, git_meta_map, parsed_files, *, repo_path, progress):
-    # 1. Build a {file_path → community label} map from the graph.
-    #    Used to populate HealthFileMetric.module so module rollups
-    #    aren't NULL.
-    cd = graph_builder.community_detection()
-    ci = graph_builder.community_info()
-    module_map = {nid: ci[cid].label for nid, cid in cd.items() if ci.get(cid)}
+1. Builds a `{file_path: community label}` map from the graph's community
+   detection so `HealthFileMetric.module` is populated (module rollups are
+   never NULL).
+2. Loads per-file override rules from `.repowise/health-rules.json` via
+   `HealthConfig.load(repo_path)` (a no-op when the file is absent) and
+   resolves them to per-file disabled sets with `to_analyzer_config()`.
+3. Constructs the `HealthAnalyzer` with everything it needs: the NetworkX
+   graph (for dependents), `git_meta_map` (hotspot bit, owners, co-change, bus
+   factor), the `parsed_files` from the AST phase, and the module map.
+4. Picks the sync or parallel path by repo size. tree-sitter releases the GIL
+   during parsing, so on repos with `>= 500` parsed files `analyze_async()`
+   (asyncio gather over worker threads) gives a real wall-clock speedup;
+   smaller repos run `analyze()` on a single thread.
 
-    # 2. Load per-file override rules from .repowise/health-rules.json
-    #    (empty / no-op when the file doesn't exist).
-    cfg = HealthConfig.load(repo_path)
-    analyzer_config = cfg.to_analyzer_config([pf.file_info.path for pf in parsed_files])
-
-    # 3. Construct the analyzer with all inputs it needs.
-    analyzer = HealthAnalyzer(
-        graph_builder.graph(),       # NetworkX DiGraph for dependents
-        git_meta_map=git_meta_map,   # hotspot bit, owners, co-change, bus factor
-        parsed_files=parsed_files,   # ParsedFile objects from the AST phase
-        module_map=module_map,       # community labels
-    )
-
-    # 4. Pick sync vs parallel based on repo size. Tree-sitter releases the
-    #    GIL during parsing, so asyncio.gather + asyncio.to_thread gives
-    #    real wall-clock speedup on large repos.
-    if len(parsed_files) >= 500:
-        report = await analyzer.analyze_async(analyzer_config)
-    else:
-        report = await asyncio.to_thread(analyzer.analyze, analyzer_config)
-
-    return report                    # carried on PipelineResult.health_report
-```
-
-Then `core/pipeline/persist.py` writes everything in one session:
-
-```python
-# persist.py — simplified
-if result.health_report:
-    hr = result.health_report
-    await save_health_metrics(session, repo_id, hr.metrics)
-    if hr.findings:
-        await save_health_findings(session, repo_id, hr.findings)
-    # Snapshot for trend tracking — rolling 50-row window per repo.
-    await save_health_snapshot(
-        session,
-        repo_id,
-        hotspot_health=hr.kpis["hotspot_health"],
-        average_health=hr.kpis["average_health"],
-        worst_performer_path=hr.kpis["worst_performer_path"],
-        worst_performer_score=hr.kpis["worst_performer_score"],
-        per_file_scores={m.file_path: round(m.score, 2) for m in hr.metrics},
-    )
-```
+The returned report rides on `PipelineResult.health_report`. Then
+`core/pipeline/persist.py` writes it in one session: `save_health_metrics`,
+`save_health_findings` (only when there are findings), and a
+`save_health_snapshot` carrying the three KPIs plus a `{path: score}` map for
+trend tracking (rolling 50-row window per repo).
 
 ---
 
 ## 4. Inside `HealthAnalyzer.analyze()`
 
-Single pass over the parsed file list. For each file:
+A single pass over the parsed file list. For each file the analyzer:
 
-```python
-# engine.py — pseudocode
-1. _walk(pf):
-   source = read_bytes(pf.file_info.abs_path)
-   walk_file(language, source) → FileComplexity(functions, classes)
-   # Each FunctionComplexity carries: name, line range, nloc, ccn,
-   # max_nesting, cognitive, bumps, param_count.
-   # Each ClassComplexity carries: name, line range, method_count,
-   # total_nloc, methods, lcom4, max_method_ccn, field_count.
+1. **Walks the AST** (`_walk`): `walk_file(language, source)` returns a
+   `FileComplexity` of functions and classes. Each `FunctionComplexity` carries
+   name, line range, nloc, ccn, max nesting, cognitive complexity, bumps, and
+   param count; each `ClassComplexity` carries method count, total nloc, the
+   method list, LCOM4, max method ccn, and field count.
+2. **Populates symbol complexity** (`_populate_symbol_complexity`): writes
+   `max(ccn)` into `Symbol.complexity_estimate` as a side effect, so the
+   `ContextAssembler` symbol ranker benefits even when a caller never touches
+   the health tables.
+3. **Evaluates the file** (`_evaluate_file`): builds a `FileContext` (nloc,
+   `has_test_file`, module, per-function and per-class metrics, the per-file
+   `git_meta`, graph in-degree as `dependents_count`, the repo-wide p80 of
+   in-degree used as the `brain_method` floor, coverage fields when ingested,
+   and the file's clone slice), runs `detect_all()`, scores with `score_file()`,
+   and attaches per-finding impacts.
 
-2. _populate_symbol_complexity(pf, fcx.functions):
-   # Side effect: write max(ccn) into Symbol.complexity_estimate so
-   # the ContextAssembler symbol ranker benefits even when callers
-   # don't query the health tables directly.
+After the loop, `compute_kpis()` runs over the metrics and the set of hotspot
+paths (`git_meta_map[path]["is_hotspot"]`), and the analyzer returns a
+`HealthReport(findings, metrics, kpis)`.
 
-3. _evaluate_file(pf, fcx, ...):
-   # Build a FileContext with:
-   #   - nloc, has_test_file, module
-   #   - function_metrics: dict[symbol_name → FunctionComplexity]
-   #   - class_metrics: list[ClassComplexity]  (LCOM4 / god-class)
-   #   - git_meta: per-file dict (hotspot, owners, bus factor, ...)
-   #   - dependents_count: in_degree on the graph
-   #   - repo_dependents_p80: repo-wide p80 of in-degree (brain_method floor)
-   #   - line_coverage_pct, branch_coverage_pct, covered_lines (when ingested)
-   #   - clones, duplication_pct (from cross-file detect_clones())
-   results = detect_all(ctx, disabled=file_disabled)
-   score, deductions = score_file(results)
-   findings = attach_impacts(results, deductions)
-   metric = HealthFileMetricData(...)
-```
-
-After the loop:
-
-```python
-hotspot_paths = {p for p, meta in git_meta_map.items() if meta.get("is_hotspot")}
-kpis = compute_kpis(metrics, hotspot_paths)
-return HealthReport(findings=..., metrics=..., kpis=kpis)
-```
-
-Duplication runs **once up-front** (cross-file by nature). Each `FileContext`
-gets a slice of the global clone report. The `dry_violation` biomarker
-reads `ctx.clones` to rank pairs by co-change frequency from
-`git_meta_map[path]["co_change_partners_json"]`: active clones rank
-higher than dormant ones.
+Duplication runs **once up-front** (it is cross-file by nature); each
+`FileContext` gets a slice of the global clone report. The `dry_violation`
+biomarker reads `ctx.clones` and ranks pairs by co-change frequency from
+`git_meta_map[path]["co_change_partners_json"]`, so active clones rank higher
+than dormant ones.
 
 ---
 
 ## 5. The 26 biomarkers and their categories
 
-Each biomarker is a stateless class implementing the `Biomarker` Protocol
-from `biomarkers/base.py`:
-
-```python
-class Biomarker(Protocol):
-    name: str       # "brain_method", "nested_complexity", ...
-    category: str   # see scoring.CATEGORY_CAPS
-    def detect(self, ctx: FileContext) -> list[BiomarkerResult]: ...
-```
+Each biomarker is a stateless class implementing the `Biomarker` Protocol from
+`biomarkers/base.py`: a `name` (`"brain_method"`, `"nested_complexity"`, ...), a
+`category` (see `scoring.CATEGORY_CAPS`), and a `detect(ctx: FileContext)` method
+returning a list of `BiomarkerResult`s.
 
 | Category               | Cap  | Biomarkers |
 |------------------------|------|------------|
@@ -490,19 +432,14 @@ via `registered_biomarkers(extra=...)`.
 ## 6. Scoring (`scoring.py`)
 
 Every file starts at **10.0**. Each finding contributes a per-severity
-deduction (`low=0.3, medium=0.7, high=1.2, critical=2.0`). Deductions are
-**capped per category**, so even ten critical structural findings can
-drive structural complexity down by at most 3.5 points, not 20.
-
-```python
-# scoring.py — score_file()
-1. Group findings by category.
-2. Sum raw deductions per category.
-3. If sum ≤ cap, accept; else scale every per-finding deduction
-   proportionally so the total equals the cap. This keeps the UI
-   "this finding cost you X points" honest after capping.
-4. Clamp the final score to [1.0, 10.0].
-```
+deduction (`low=0.3, medium=0.7, high=1.2, critical=2.0`), scaled by the
+biomarker's calibrated weight multiplier (§6.1). `score_file()` then groups the
+weighted findings by category, sums the raw deductions per category, and either
+accepts the sum or, when it exceeds the cap, scales every per-finding deduction
+in that category proportionally so the total equals the cap. This keeps the
+UI's "this finding cost you X points" honest after capping. The final score is
+clamped to `[1.0, 10.0]`. So even ten critical structural findings can drive
+structural complexity down by at most 3.5 points, not 20.
 
 The per-finding scaled deduction lands on `HealthFinding.health_impact`
 via `attach_impacts()`: that's what the dashboard's "−2.0" badge shows.
@@ -511,6 +448,38 @@ Snapshot tests in `tests/unit/health/test_scoring_snapshot.py` lock the
 category caps, severity deductions, biomarker-to-category mapping, and two
 known-fixture scores. A retune intentionally requires updating the
 snapshot in the same PR.
+
+### 6.1 Calibrated weight multipliers
+
+`scoring._BIOMARKER_WEIGHT_MULTIPLIER` lets the strongest empirical predictors
+deduct more than the uniform severity table alone allows. The multipliers are
+**calibrated offline against a defect corpus, not hand-tuned**: each file is
+scored at the pre-window commit (T0, no leakage) and an L2-logistic regression,
+with NLOC as an explicit control, fits each biomarker's defect lift beyond file
+size. The runtime stays deterministic; only the learned constants ship. The
+full calibration, with confidence intervals, is published in the
+[benchmark report](https://github.com/repowise-dev/repowise-bench/blob/master/health-defect/BENCHMARK_REPORT.md)
+and reproduced by `local-stash/calibrate_health_weights.py`.
+
+| Weight | Biomarkers | Rationale |
+|---|---|---|
+| 1.8 | `co_change_scatter` | Strongest calibrated predictor. |
+| 1.51 | `change_entropy` | History Complexity Metric; second strongest. |
+| 1.38 | `ownership_risk` | Long-run minor-contributor dispersion. |
+| 1.34 | `nested_complexity` | Strongest structural predictor. |
+| 1.1–1.33 | remaining structural complexity / size biomarkers | Moderate calibrated lift. |
+| 1.3 / 1.2 / 1.1 | `untested_hotspot` / `churn_risk` / `code_age_volatility` | Coverage-dependent and rarely-firing; keep prior weights the corpus could not fairly measure. |
+| 1.0 | `prior_defect` | Neutral by design: largely redundant with the other process signals, kept for its explanatory value. |
+| 0.5 (floored) | `developer_congestion`, `dry_violation`, `low_cohesion`, `brain_method`, `primitive_obsession`, `bumpy_road` | Fire widely but proved weak under leakage-free scoring; kept as maintainability and parity signals, not disabled. |
+| 0.4 (de-rated) | `knowledge_loss` | Weakest of the floored set. |
+
+The same biomarker stream feeds the **maintainability** signal under an
+independent, expert-set weight table (the floored smells deduct at full weight
+there), and the **performance** signal under its own bounded `performance`
+category. The three signals share one scoring kernel against separate
+weight/category/cap tables and never feed back into each other; see the
+[user guide](../CODE_HEALTH.md#three-health-signals-defect-risk-maintainability-and-performance)
+for what each signal surfaces and why the overall score stays the defect score.
 
 ---
 
@@ -587,34 +556,20 @@ as `FileSignals` in `@repowise-dev/types/health`; rendered by the shared
 
 ## 9. Incremental analysis: the `repowise update` path
 
-Full re-analysis would be wasteful on commit-sized diffs. `HealthAnalyzer`
-accepts `changed_files`:
-
-```python
-# engine.py
-def analyze(self, config=None, *, changed_files=None):
-    # 1. Duplication still runs full-repo (a changed file's clone
-    #    partner may be unchanged).
-    # 2. The per-file loop skips files not in changed_files.
-    # 3. KPIs are NOT recomputed on incremental runs — they'd be biased
-    #    by the subset. The dashboard recomputes from the merged DB rows.
-```
+Full re-analysis would be wasteful on commit-sized diffs, so
+`HealthAnalyzer.analyze()` accepts a `changed_files` set. When it is present:
+duplication still runs full-repo (a changed file's clone partner may be
+unchanged); the per-file loop skips files not in `changed_files`; and the KPIs
+are **not** recomputed, since the subset would bias them. The dashboard
+recomputes KPIs from the merged DB rows instead.
 
 `update_cmd.py` builds the changed-files set from
-`change_detector.get_changed_files()`, runs the analyzer, and calls a
-helper that uses the **upsert** variants (`upsert_health_findings`,
-`upsert_health_metrics`) so unchanged files keep their existing rows:
-
-```python
-async def _persist_partial_health(session, repo_id, report):
-    changed_paths = sorted({m.file_path for m in report.metrics})
-    await upsert_health_metrics(session, repo_id, report.metrics)
-    await upsert_health_findings(session, repo_id, report.findings, file_paths=changed_paths)
-```
-
-The full-init writers (`save_health_findings`, `save_health_metrics`)
-still use delete-then-insert: simpler, and the cost is amortised across
-the whole `repowise init`.
+`change_detector.get_changed_files()`, runs the analyzer, and persists through a
+helper that uses the **upsert** variants (`upsert_health_metrics`,
+`upsert_health_findings`, scoped to the changed paths) so unchanged files keep
+their existing rows. The full-init writers (`save_health_findings`,
+`save_health_metrics`) still use delete-then-insert: simpler, and the cost is
+amortised across the whole `repowise init`.
 
 ---
 
@@ -809,29 +764,14 @@ agent in noise. The Jinja stanza lives in
 
 ## 16. Configuration: `.repowise/health-rules.json`
 
-User-authored (the **only** JSON file in the layer). Loaded by
-`HealthConfig.load(repo_path)`:
-
-```json
-{
-  "disabled_biomarkers": ["primitive_obsession"],
-  "rules": [
-    {
-      "path": "tests/**/*.py",
-      "disabled_biomarkers": ["large_method", "complex_method"]
-    },
-    {
-      "path": "src/legacy/**",
-      "disabled_biomarkers": ["dry_violation"]
-    }
-  ]
-}
-```
-
-`path` is an fnmatch glob over the repo-relative POSIX path; `path_glob`
-and `glob` are accepted aliases. `to_analyzer_config(file_paths)` resolves
-globs to per-file disabled sets, which the engine honors in
-`_evaluate_file()`.
+`.repowise/health-rules.json` is user-authored (the **only** JSON file in the
+layer) and is loaded by `HealthConfig.load(repo_path)`. It carries repo-wide and
+per-path `disabled_biomarkers` and `severity_overrides`, keyed by an fnmatch
+glob over the repo-relative POSIX path (`path`, with `path_glob` and `glob` as
+accepted aliases). `to_analyzer_config(file_paths)` resolves the globs to
+per-file disabled sets, which the engine honors in `_evaluate_file()`. The
+schema and examples are in the
+[user guide](../CODE_HEALTH.md#configuration).
 
 ---
 
