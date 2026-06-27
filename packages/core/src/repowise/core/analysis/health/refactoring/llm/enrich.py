@@ -13,10 +13,11 @@ the indexing hot path:
    computed, and ask the configured provider for the refactored code and a
    unified diff.
 3. Self-check the result where it is cheap and meaningful: Extract Class with an
-   LCOM4 before/after delta (re-walk the generated classes), and Split File by
+   LCOM4 before/after delta (re-walk the generated classes), Split File by
    re-walking the generated files to assert each is below the size floor and the
-   symbols are partitioned with no duplication. Other types skip validation
-   gracefully.
+   symbols are partitioned with no duplication, and Extract Method by confirming
+   the residual function's cyclomatic complexity dropped below the original's.
+   Other types skip validation gracefully.
 
 Results are cached on disk by a content hash (plan + source + model), so the
 same plan never pays for the same generation twice.
@@ -353,6 +354,15 @@ _TYPE_INSTRUCTIONS: dict[str, str] = {
         "inversion, a shared interface/protocol module, or a local import as a "
         "last resort). Do not merge the files."
     ),
+    "extract_method": (
+        "Refactoring: EXTRACT METHOD. The target is one long function; the plan's "
+        "'span' gives the line range to lift into a new helper method in the same "
+        "scope. Move exactly those lines into the helper, give it a clear name "
+        "(use 'suggested_name' if set), pass the plan's 'params' as its arguments "
+        "and return the plan's 'returns' value(s), and replace the original lines "
+        "with a call to it. Preserve behaviour exactly; change nothing outside the "
+        "span and the single call site."
+    ),
     "split_file": (
         "Refactoring: SPLIT FILE. The module is too large and partitions into "
         "the cohesive groups in the plan. Create one new file per group at its "
@@ -637,6 +647,70 @@ def _validate_split_file(content: str, file_path: str, plan: dict[str, Any]) -> 
 
 
 # ---------------------------------------------------------------------------
+# Validation — residual-CCN self-check (Extract Method)
+# ---------------------------------------------------------------------------
+
+
+def _validate_extract_method(
+    content: str, file_path: str, spans: list[SourceSpan], target_symbol: str
+) -> dict[str, Any]:
+    """Re-walk the generated code and confirm the extraction did its job.
+
+    A real Extract Method (1) yields >= 2 functions (the residual plus the new
+    helper) and (2) lowers the residual method's cyclomatic complexity below the
+    original function's. The original CCN is recovered by walking the function
+    span that was fed to the model, so the check needs no extra inputs.
+    Best-effort: any parse/walk failure degrades to ``status="skipped"``.
+    """
+    language = _language_for(file_path)
+    if language is None:
+        return {"status": "skipped", "reason": f"no walker for {Path(file_path).suffix}"}
+
+    code = _extract_code_blocks(content, language)
+    if not code.strip():
+        return {"status": "skipped", "reason": "no parseable code blocks in response"}
+
+    try:
+        from repowise.core.analysis.health.complexity import walk_file
+    except Exception as exc:
+        return {"status": "skipped", "reason": f"import failed: {exc}"}
+
+    suffix = Path(file_path).suffix
+    try:
+        generated = walk_file(f"generated{suffix}", language, code.encode())
+    except Exception as exc:
+        return {"status": "skipped", "reason": f"walk failed: {exc}"}
+
+    functions = list(generated.functions)
+    if len(functions) < 2:
+        return {
+            "status": "checked",
+            "function_count": len(functions),
+            "improved": False,
+            "reason": "expected the residual method plus a new helper",
+        }
+
+    original_ccn: int | None = None
+    if spans:
+        try:
+            original = walk_file(f"original{suffix}", language, spans[0].source.encode())
+            original_ccn = max((f.ccn for f in original.functions), default=None)
+        except Exception:
+            original_ccn = None
+
+    residual = next((f for f in functions if f.name == target_symbol), None)
+    residual_ccn = residual.ccn if residual is not None else max(f.ccn for f in functions)
+    improved = original_ccn is not None and residual_ccn < original_ccn and len(functions) >= 2
+    return {
+        "status": "checked",
+        "function_count": len(functions),
+        "original_ccn": original_ccn,
+        "residual_ccn": residual_ccn,
+        "improved": bool(improved),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -688,6 +762,10 @@ async def enrich_suggestion(
         )
     elif validate and suggestion.refactoring_type == "split_file":
         validation = _validate_split_file(content, suggestion.file_path, suggestion.plan or {})
+    elif validate and suggestion.refactoring_type == "extract_method":
+        validation = _validate_extract_method(
+            content, suggestion.file_path, spans, suggestion.target_symbol
+        )
 
     result = EnrichmentResult(
         refactoring_type=suggestion.refactoring_type,

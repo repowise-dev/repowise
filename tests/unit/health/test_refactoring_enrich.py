@@ -16,9 +16,11 @@ from repowise.core.analysis.health.refactoring.llm import (
 )
 from repowise.core.analysis.health.refactoring.llm.enrich import (
     _MAX_IMPORT_HEAD_LINES,
+    SourceSpan,
     _build_user_prompt,
     _extract_diff,
     _gather_spans,
+    _validate_extract_method,
 )
 from repowise.core.analysis.health.refactoring.models import RefactoringSuggestion
 from repowise.core.providers.llm.base import GeneratedResponse
@@ -389,3 +391,42 @@ def test_llm_enrichment_enabled_gate() -> None:
     assert llm_enrichment_enabled({"refactoring": {"llm": {"enabled": False}}}) is False
     assert llm_enrichment_enabled({"refactoring": {}}) is True
     assert llm_enrichment_enabled({}) is True
+
+
+def test_validate_extract_method_detects_ccn_drop():
+    # The original function (high CCN) is the span fed to the model; the
+    # generated response splits it into a low-CCN residual plus a helper.
+    original = (
+        "def process(items, t):\n"
+        "    total = 0\n"
+        "    for v in items:\n"
+        "        if v > t:\n"
+        "            total += v\n"
+        "        elif v < 0:\n"
+        "            total -= v\n"
+        "    return total\n"
+    )
+    spans = [SourceSpan(file="m.py", start_line=1, end_line=8, source=original)]
+    content = (
+        "Summary.\n\n"
+        "```python\n"
+        "def _accumulate(items, t):\n"
+        "    total = 0\n"
+        "    for v in items:\n"
+        "        if v > t:\n"
+        "            total += v\n"
+        "        elif v < 0:\n"
+        "            total -= v\n"
+        "    return total\n\n"
+        "def process(items, t):\n"
+        "    return _accumulate(items, t)\n"
+        "```\n"
+    )
+    result = _validate_extract_method(content, "m.py", spans, "process")
+    if result.get("status") == "skipped":
+        import pytest
+
+        pytest.skip("tree-sitter python pack missing")
+    assert result["function_count"] >= 2
+    assert result["residual_ccn"] < result["original_ccn"]
+    assert result["improved"] is True

@@ -671,6 +671,7 @@ def _render_refactoring_targets(
             )
         _render_extract_class_plans_md(ranked_plans)
         _render_extract_helper_plans_md(ranked_plans)
+        _render_extract_method_plans_md(ranked_plans)
         _render_move_method_plans_md(ranked_plans)
         _render_break_cycle_plans_md(ranked_plans)
         _render_split_file_plans_md(ranked_plans)
@@ -695,6 +696,7 @@ def _render_refactoring_targets(
     console.print(table)
     _render_extract_class_plans_console(ranked_plans)
     _render_extract_helper_plans_console(ranked_plans)
+    _render_extract_method_plans_console(ranked_plans)
     _render_move_method_plans_console(ranked_plans)
     _render_break_cycle_plans_console(ranked_plans)
     _render_split_file_plans_console(ranked_plans)
@@ -778,6 +780,46 @@ def _render_extract_helper_plans_md(plans: list[dict]) -> None:
         )
         for o in occ:
             click.echo(f"  - {o['file']}:{o['line_start']}-{o['line_end']}")
+
+
+def _render_extract_method_plans_console(plans: list[dict]) -> None:
+    """Print the concrete Extract Method (long-function split) plans below the table."""
+    em_plans = [p for p in plans if p["refactoring_type"] == "extract_method"]
+    if not em_plans:
+        return
+    console.print(f"\n[bold]Extract Method plans ({len(em_plans)})[/bold]")
+    for p in em_plans:
+        pl = p["plan"]
+        ev = p["evidence"]
+        span = pl.get("span", {}) or {}
+        params = ", ".join(pl.get("params", [])) or "—"
+        returns = ", ".join(pl.get("returns", [])) or "none"
+        console.print(
+            f"\n[cyan]{p['target_symbol']}[/cyan] [dim]({p['file_path']})[/dim] — "
+            f"extract lines {span.get('start')}-{span.get('end')} "
+            f"[dim]({ev.get('slice_nloc')} lines, -{ev.get('ccn_removed')} CCN, "
+            f"recover ~{p['impact_delta']:.2f}, effort {p['effort_bucket']}, "
+            f"{p['confidence']} confidence)[/dim]"
+        )
+        console.print(f"  [dim]params (in):[/dim] {params}    [dim]returns (out):[/dim] {returns}")
+
+
+def _render_extract_method_plans_md(plans: list[dict]) -> None:
+    em_plans = [p for p in plans if p["refactoring_type"] == "extract_method"]
+    if not em_plans:
+        return
+    click.echo("\n## Extract Method plans\n")
+    for p in em_plans:
+        pl = p["plan"]
+        ev = p["evidence"]
+        span = pl.get("span", {}) or {}
+        params = ", ".join(pl.get("params", [])) or "—"
+        returns = ", ".join(pl.get("returns", [])) or "none"
+        click.echo(
+            f"- **{p['target_symbol']}** ({p['file_path']}) — extract lines "
+            f"{span.get('start')}-{span.get('end')} ({ev.get('slice_nloc')} lines, "
+            f"-{ev.get('ccn_removed')} CCN)  ·  in: {params}  ·  out: {returns}"
+        )
 
 
 def _render_move_method_plans_console(plans: list[dict]) -> None:
@@ -898,9 +940,7 @@ def _render_split_file_plans_md(plans: list[dict]) -> None:
             f"modularity {ev.get('modularity')}, split into {len(groups)} files:"
         )
         for i, g in enumerate(groups, 1):
-            click.echo(
-                f"  {i}. `{g.get('suggested_file')}`: {', '.join(g.get('symbols', []))}"
-            )
+            click.echo(f"  {i}. `{g.get('suggested_file')}`: {', '.join(g.get('symbols', []))}")
         residual = pl.get("residual")
         if residual and residual.get("symbols"):
             click.echo(f"  - core (shared): {', '.join(residual['symbols'])}")
