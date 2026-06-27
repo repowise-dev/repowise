@@ -92,8 +92,10 @@ def compute_def_use(
         bdu.defs.append(definition)
         definitions.append(definition)
 
-    # Parameters reach the body: seed them at the entry block.
-    params = dialect.parameter_defs(fn_node.child_by_field_name("parameters"))
+    # Parameters reach the body: seed them at the entry block. The dialect is
+    # given the whole function node so languages that bind names outside the
+    # ``parameters`` field (Go's method ``receiver``) can seed those too.
+    params = dialect.parameter_defs(fn_node)
     blocks.setdefault(cfg.entry_id, BlockDefUse(cfg.entry_id))
     for occ in params:
         _add_def(occ, cfg.entry_id)

@@ -18,8 +18,11 @@ Member                            What it answers
                                   dialect inspects only the condition / loop
                                   clause, not the body (which lives in other
                                   CFG blocks).
-``parameter_defs(params_node)``   the parameter names a function signature
-                                  binds -- seeded as defs at the CFG entry.
+``parameter_defs(fn_node)``       the parameter names a function signature
+                                  binds -- seeded as defs at the CFG entry. The
+                                  whole function node is passed so a language can
+                                  also seed names bound outside the
+                                  ``parameters`` field (a Go method receiver).
 ================================  ============================================
 
 :class:`BaseDefUseDialect` carries the language-agnostic machinery a concrete
@@ -76,7 +79,7 @@ class DefUseDialect(Protocol):
         self, node: Node, lmap: LanguageNodeMap, *, head_only: bool
     ) -> StatementDefUse: ...
 
-    def parameter_defs(self, params_node: Node | None) -> tuple[Occurrence, ...]: ...
+    def parameter_defs(self, fn_node: Node) -> tuple[Occurrence, ...]: ...
 
 
 class BaseDefUseDialect:
@@ -156,8 +159,9 @@ class BaseDefUseDialect:
 
     # -- defaults a subclass may override -------------------------------------
 
-    def parameter_defs(self, params_node: Node | None) -> tuple[Occurrence, ...]:
-        """Parameter names bound by a signature, as entry defs. Default: none."""
+    def parameter_defs(self, fn_node: Node) -> tuple[Occurrence, ...]:
+        """Parameter names bound by *fn_node*'s signature, as entry defs.
+        Default: none (a language with no override seeds no parameters)."""
         return ()
 
     def statement_def_use(

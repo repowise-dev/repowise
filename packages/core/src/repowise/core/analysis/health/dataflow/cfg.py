@@ -25,9 +25,15 @@ therefore yields byte-identical block ids and edges across runs -- a
 prerequisite for stable trends and cache hits downstream.
 
 **Language scope.** The block-structure logic is language-agnostic over
-``LanguageNodeMap``; only the jump classification (``return`` / ``raise`` /
-``break`` / ``continue``) is Python-specific in this phase. A later phase lifts
-that into a per-language dialect alongside the other ``DefUseDialect`` work.
+``LanguageNodeMap``: the conditional node kind (``if_kinds``), the statement-
+container kinds (``block_kinds``), and the jump kinds (``return`` / ``raise`` /
+``break`` / ``continue``) all come from the node-map, so the same builder serves
+every full-tier language whose map populates them. Two grammar families are
+handled transparently: Python encodes ``elif`` / ``else`` as sibling *clause*
+children, while the C-family (Go / TS / Java / Rust) hangs the else arm off an
+``alternative`` field -- the builder recognises both. A language that maps no
+``if_kinds`` / ``block_kinds`` simply yields a straight-line CFG (degrade to
+silence), the same precision-first default as the def/use dialect.
 """
 
 from __future__ import annotations
@@ -39,15 +45,6 @@ from ..complexity.languages import LanguageNodeMap
 
 if TYPE_CHECKING:
     from tree_sitter import Node
-
-# Python jump node types. The layer is Python-only for now; a later pass generalises
-# these behind a dialect (mirroring ``perf/dialects/`` and the ``DefUseDialect``
-# pattern). Each set degrades to "no special handling" for a language that does
-# not map it -- the statement is then recorded as a plain straight-line node.
-_RETURN_KINDS: frozenset[str] = frozenset({"return_statement"})
-_RAISE_KINDS: frozenset[str] = frozenset({"raise_statement"})
-_BREAK_KINDS: frozenset[str] = frozenset({"break_statement"})
-_CONTINUE_KINDS: frozenset[str] = frozenset({"continue_statement"})
 
 # Upper bound on basic blocks per function. A structured CFG has roughly one
 # block per branch/loop arm, so a few hundred is already an extreme function;
@@ -240,25 +237,30 @@ class _CFGBuilder:
 
     # -- block / clause access ------------------------------------------------
 
-    @staticmethod
-    def _block_of(node: Node | None) -> Node | None:
-        """The ``block`` body of a clause (``consequence`` / ``body`` field, or
-        the first child of type ``block`` for clauses with no body field)."""
+    def _block_of(self, node: Node | None) -> Node | None:
+        """The statement-container body of a clause (``consequence`` / ``body``
+        field, or the first child whose kind is a ``block_kind`` for clauses with
+        no body field, e.g. a Python ``except_clause``)."""
         if node is None:
             return None
         body = node.child_by_field_name("consequence") or node.child_by_field_name("body")
         if body is not None:
             return body
         for child in node.children:
-            if child.type == "block":
+            if child.type in self.lmap.block_kinds:
                 return child
         return None
 
-    @staticmethod
-    def _body_stmts(block: Node | None) -> list[Node]:
+    def _body_stmts(self, block: Node | None) -> list[Node]:
+        """The statement sequence inside a container, unwrapping a single nested
+        statement-container (Go wraps a ``block``'s statements in a
+        ``statement_list``; Python/TS expose them directly)."""
         if block is None:
             return []
-        return [c for c in block.named_children]
+        kids = list(block.named_children)
+        while len(kids) == 1 and kids[0].type in self.lmap.block_kinds:
+            kids = list(kids[0].named_children)
+        return kids
 
     # -- the recursive walk ---------------------------------------------------
 
@@ -288,22 +290,22 @@ class _CFGBuilder:
                 # silently dropped, but it is reachable from nothing.
                 cur = self._new("unreachable")
             t = st.type
-            if t == "if_statement":
+            if t in self.lmap.if_kinds:
                 cur = self._build_if(st, cur)
             elif t in self.lmap.loop_kinds:
                 cur = self._build_loop(st, cur)
             elif t in self.lmap.try_kinds:
                 cur = self._build_try(st, cur)
-            elif t in _RETURN_KINDS or t in _RAISE_KINDS:
+            elif t in self.lmap.return_kinds or t in self.lmap.raise_kinds:
                 self._record_stmt(cur, st)
                 self._edge(cur, self.exit_block)
                 cur = None
-            elif t in _BREAK_KINDS:
+            elif t in self.lmap.break_kinds:
                 self._record_stmt(cur, st)
                 if self._loops:
                     self._edge(cur, self._loops[-1].break_target)
                 cur = None
-            elif t in _CONTINUE_KINDS:
+            elif t in self.lmap.continue_kinds:
                 self._record_stmt(cur, st)
                 if self._loops:
                     self._edge(cur, self._loops[-1].continue_target)
@@ -326,9 +328,24 @@ class _CFGBuilder:
         if then_out is not None:
             self._edge(then_out, join)
 
-        # elif / else chain. Each ``elif`` hangs off the previous test's false
-        # edge as a nested branch; ``else`` consumes the final false edge.
-        alts = [c for c in if_node.children if c.type in ("elif_clause", "else_clause")]
+        # Two grammar families for the false arm:
+        #  - Python's *flat* ``elif`` chain: sibling ``elif_clause`` (and a final
+        #    ``else_clause``) children, all converging on one join.
+        #  - everything else (a plain ``else``, or the C-family's nested
+        #    ``else if``): a single else arm reached via the ``alternative`` field
+        #    or an ``else_clause`` child. ``else_clause`` is shared between Python
+        #    and TS, so the discriminator is specifically an ``elif_clause``.
+        if any(c.type == "elif_clause" for c in if_node.children):
+            alts = [c for c in if_node.children if c.type in ("elif_clause", "else_clause")]
+            self._build_py_else_chain(alts, cur, join)
+        else:
+            self._build_c_alternative(if_node, cur, join)
+        return join
+
+    def _build_py_else_chain(
+        self, alts: list[Node], cur: BasicBlock, join: BasicBlock
+    ) -> None:
+        """Python ``elif`` / ``else`` clause chain off *cur*'s false edge."""
         false_src: BasicBlock | None = cur
         for alt in alts:
             if alt.type == "elif_clause":
@@ -350,11 +367,38 @@ class _CFGBuilder:
                 if else_out is not None:
                     self._edge(else_out, join)
                 false_src = None
-
         # No ``else``: the last test's false edge falls straight through.
         if false_src is not None:
             self._edge(false_src, join)
-        return join
+
+    def _build_c_alternative(self, if_node: Node, cur: BasicBlock, join: BasicBlock) -> None:
+        """The single else arm off *cur*'s false edge (non-flat-``elif`` case).
+
+        Covers a plain ``else`` (Python / Go / TS), a TS / Python ``else_clause``
+        wrapping that block or a nested ``if``, and the C-family ``else if``
+        chain. A nested ``if`` is threaded through :meth:`_process_seq` so it
+        recurses into :meth:`_build_if` and converges on the same *join*; a plain
+        block is unwrapped to its statements. No alternative => the false edge
+        falls straight through to *join*."""
+        alt = if_node.child_by_field_name("alternative")
+        if alt is None:  # Python's else arm is an ``else_clause`` child, no field
+            alt = next((c for c in if_node.children if c.type == "else_clause"), None)
+        if alt is None:
+            self._edge(cur, join)
+            return
+        if alt.type == "else_clause":  # Python / TS wrap the else arm in a clause
+            inner = next((c for c in alt.named_children), None)
+            if inner is None:
+                self._edge(cur, join)
+                return
+            alt = inner
+        else_entry = self._new()
+        self._edge(cur, else_entry)
+        # ``else if`` -> a nested branch; a plain else block -> its statements.
+        stmts = [alt] if alt.type in self.lmap.if_kinds else self._body_stmts(alt)
+        else_out = self._process_seq(stmts, else_entry)
+        if else_out is not None:
+            self._edge(else_out, join)
 
     def _build_loop(self, loop_node: Node, cur: BasicBlock) -> BasicBlock:
         header = self._new("loop_header")

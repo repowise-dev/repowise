@@ -19,8 +19,10 @@ matter, and has at most one return and a small parameter list. Everything else
 is suppressed -- ten great extractions, not two hundred maybes.
 
 Line-based liveness over D2's def/use occurrences realises the IN/OUT inference;
-the CFG/jump scan realises the single-exit predicate. Python only for now;
-the jump classification is the sole language-specific piece.
+the CFG/jump scan realises the single-exit predicate. The jump and nested-scope
+node kinds come from the language's ``LanguageNodeMap`` (the same source the CFG
+builder uses), so every full-tier language whose map populates them is served by
+this one slicer.
 """
 
 from __future__ import annotations
@@ -35,16 +37,6 @@ if TYPE_CHECKING:
     from ..complexity.languages import LanguageNodeMap
     from .analyze import FunctionAnalysis
     from .defuse import FunctionDefUse
-
-# Python jump node types (a span containing any of these is not single-exit).
-# The sole language-specific set here; generalised behind a dialect later.
-_JUMP_KINDS: frozenset[str] = frozenset(
-    {"return_statement", "raise_statement", "break_statement", "continue_statement"}
-)
-# Nested scopes whose statements/jumps belong to a different function.
-_SCOPE_BOUNDARIES: frozenset[str] = frozenset(
-    {"lambda", "function_definition", "async_function_definition"}
-)
 
 # Gates (precision-first; tuned to suppress trivial or unwieldy extractions).
 _MIN_STMTS = 2  # at least two statements
@@ -88,6 +80,9 @@ def find_extractions(analysis: FunctionAnalysis, lmap: LanguageNodeMap) -> list[
     body = fn_node.child_by_field_name("body")
     if body is None:
         return []
+    # The statement container of the body (Go nests it in a ``statement_list``
+    # inside the ``block``); spans covering it whole are not extractions.
+    body_container = _unwrap_container(body, lmap.block_kinds)
 
     def_lines, use_lines = _var_lines(analysis.def_use)
     decision_kinds = (
@@ -97,13 +92,15 @@ def find_extractions(analysis: FunctionAnalysis, lmap: LanguageNodeMap) -> list[
         | lmap.catch_kinds
         | lmap.boolean_operator_kinds
     )
+    jump_kinds = lmap.return_kinds | lmap.raise_kinds | lmap.break_kinds | lmap.continue_kinds
+    scope_kinds = lmap.function_kinds | lmap.lambda_kinds
 
     out: list[Extraction] = []
     evaluated = 0
-    for block in _all_blocks(fn_node):
+    for block in _all_blocks(fn_node, lmap.block_kinds, scope_kinds):
         stmts = block.named_children
         n = len(stmts)
-        is_body = block.id == body.id
+        is_body = block.id == body_container.id
         for i in range(n):
             for j in range(i, n):
                 evaluated += 1
@@ -116,7 +113,7 @@ def find_extractions(analysis: FunctionAnalysis, lmap: LanguageNodeMap) -> list[
                 if is_body and length == n:
                     continue
                 span = stmts[i : j + 1]
-                decisions, has_jump = _span_metrics(span, decision_kinds)
+                decisions, has_jump = _span_metrics(span, decision_kinds, jump_kinds, scope_kinds)
                 if has_jump or decisions < _MIN_CCN_REMOVED:
                     continue
                 slice_nloc = sum(st.end_point[0] - st.start_point[0] + 1 for st in span)
@@ -203,8 +200,23 @@ def _infer_in_out(
     return tuple(params), tuple(returns)
 
 
-def _all_blocks(fn_node: Node) -> list[Node]:
-    """Every statement ``block`` in the function (body + nested), excluding the
+def _unwrap_container(node: Node, block_kinds: frozenset[str]) -> Node:
+    """Descend through a single nested statement-container (Go's
+    ``block`` -> ``statement_list``) to the node whose named children are the
+    actual statements; returns *node* unchanged when it is already that node."""
+    cur = node
+    while True:
+        named = cur.named_children
+        if len(named) == 1 and named[0].type in block_kinds:
+            cur = named[0]
+        else:
+            return cur
+
+
+def _all_blocks(
+    fn_node: Node, block_kinds: frozenset[str], scope_kinds: frozenset[str]
+) -> list[Node]:
+    """Every statement container in the function (body + nested), excluding the
     bodies of nested functions / lambdas."""
     body = fn_node.child_by_field_name("body")
     if body is None:
@@ -213,16 +225,21 @@ def _all_blocks(fn_node: Node) -> list[Node]:
     stack: list[Node] = [body]
     while stack:
         node = stack.pop()
-        if node.type == "block":
+        if node.type in block_kinds:
             blocks.append(node)
         for child in node.children:
-            if child.type in _SCOPE_BOUNDARIES:
+            if child.type in scope_kinds:
                 continue
             stack.append(child)
     return blocks
 
 
-def _span_metrics(span: list[Node], decision_kinds: frozenset[str]) -> tuple[int, bool]:
+def _span_metrics(
+    span: list[Node],
+    decision_kinds: frozenset[str],
+    jump_kinds: frozenset[str],
+    scope_kinds: frozenset[str],
+) -> tuple[int, bool]:
     """Decision-point count and jump presence within *span* (nested scopes are
     not descended into)."""
     decisions = 0
@@ -232,12 +249,12 @@ def _span_metrics(span: list[Node], decision_kinds: frozenset[str]) -> tuple[int
         while stack:
             node = stack.pop()
             t = node.type
-            if t in _JUMP_KINDS:
+            if t in jump_kinds:
                 has_jump = True
             if t in decision_kinds:
                 decisions += 1
             for child in node.children:
-                if child.type in _SCOPE_BOUNDARIES:
+                if child.type in scope_kinds:
                     continue
                 stack.append(child)
     return decisions, has_jump

@@ -63,7 +63,8 @@ class PythonDefUseDialect(BaseDefUseDialect):
             self._process(node, defs, uses)
         return StatementDefUse(defs=tuple(defs), uses=tuple(uses))
 
-    def parameter_defs(self, params_node: Node | None) -> tuple[Occurrence, ...]:
+    def parameter_defs(self, fn_node: Node) -> tuple[Occurrence, ...]:
+        params_node = fn_node.child_by_field_name("parameters")
         if params_node is None:
             return ()
         out: list[Occurrence] = []
