@@ -76,6 +76,16 @@ class Statement:
     kind: str
     start_line: int  # 1-indexed
     end_line: int  # 1-indexed
+    # True when this records a compound construct's *head* (an ``if`` / ``while``
+    # / ``for`` test) rather than a whole simple statement. Downstream def/use
+    # extraction reads only the condition / loop clause for a head, since the
+    # construct's body lives in successor blocks.
+    is_head: bool = False
+    # The originating tree-sitter node, kept for in-memory passes that need to
+    # re-inspect the statement (def/use classification). Excluded from equality
+    # and repr so block serialization and the determinism tests stay stable, and
+    # because nodes are only valid while their parse tree is alive.
+    node: Node | None = field(default=None, compare=False, repr=False)
 
 
 @dataclass
@@ -218,7 +228,7 @@ class _CFGBuilder:
 
     def _record_stmt(self, block: BasicBlock, node: Node) -> None:
         block.statements.append(
-            Statement(node.type, node.start_point[0] + 1, node.end_point[0] + 1)
+            Statement(node.type, node.start_point[0] + 1, node.end_point[0] + 1, node=node)
         )
 
     def _record_head(self, block: BasicBlock, node: Node) -> None:
@@ -226,7 +236,7 @@ class _CFGBuilder:
         cond = node.child_by_field_name("condition")
         line = node.start_point[0] + 1
         end = (cond.end_point[0] + 1) if cond is not None else line
-        block.statements.append(Statement(node.type, line, end))
+        block.statements.append(Statement(node.type, line, end, is_head=True, node=node))
 
     # -- block / clause access ------------------------------------------------
 

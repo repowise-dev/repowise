@@ -131,6 +131,29 @@ class LanguageNodeMap:
     call_kinds: frozenset[str] = frozenset()
     async_function_kinds: frozenset[str] = frozenset()
 
+    # ------------------------------------------------------------------
+    # Dataflow def/use pass (intra-procedural CFG + reaching definitions).
+    # All three default to empty, making the read-vs-write distinction
+    # OPT-IN per language: a language that maps none produces no def/use
+    # signal (and so no reaching definitions), the safe "no signal" default.
+    # The per-language ``DefUseDialect`` (``dataflow/dialects/``) consumes
+    # these to recognise the assignment shapes whose targets are writes.
+    #
+    #   * ``assignment_kinds`` — node type(s) for a plain assignment whose
+    #     ``left`` field is the write target (Python ``assignment``; TS/JS
+    #     ``assignment_expression``).
+    #   * ``augmented_assign_kinds`` — compound-assignment node type(s)
+    #     (``x += 1``) whose target is BOTH read and written.
+    #   * ``local_decl_kinds`` — node type(s) that introduce a fresh local
+    #     binding distinct from assignment (Go ``short_var_declaration``,
+    #     Rust ``let_declaration``). Empty for languages such as Python where
+    #     assignment is the only binding form; the dialect handles the
+    #     remaining Python def sites (``for`` target, ``with ... as``, walrus,
+    #     comprehension target) structurally.
+    assignment_kinds: frozenset[str] = frozenset()
+    augmented_assign_kinds: frozenset[str] = frozenset()
+    local_decl_kinds: frozenset[str] = frozenset()
+
 
 _PY = LanguageNodeMap(
     function_kinds=frozenset({"function_definition", "async_function_definition"}),
@@ -151,6 +174,8 @@ _PY = LanguageNodeMap(
     assert_call_kinds=frozenset({"call"}),
     call_kinds=frozenset({"call"}),
     async_function_kinds=frozenset({"async_function_definition"}),
+    assignment_kinds=frozenset({"assignment"}),
+    augmented_assign_kinds=frozenset({"augmented_assignment"}),
 )
 
 _TS = LanguageNodeMap(

@@ -25,10 +25,8 @@ import structlog
 from ..biomarkers.complex_method import ComplexMethodDetector
 from ..biomarkers.large_method import LargeMethodDetector
 from ..complexity.ast_utils import _collect_function_nodes, _find_function_entry_name
-from ..complexity.cyclomatic import _walk_function_body
-from ..complexity.languages import get_language_map
-from ..complexity.nloc import _count_nloc
 from .cfg import CFG, CFGGuardTrippedError, build_cfg
+from .parsing import function_metrics, parse_source
 
 log = structlog.get_logger(__name__)
 
@@ -112,38 +110,17 @@ def build_cfgs_for_file(
     default and the only production-intended mode is ``True``.
     """
     result = FileCFGResult()
-    lmap = get_language_map(language)
-    if lmap is None:
+    parsed = parse_source(abs_path, language, source)
+    if parsed is None:
         return result
+    root, lmap = parsed
 
-    try:
-        from tree_sitter import Parser
-
-        from repowise.core.ingestion.parser import _get_language
-    except Exception as exc:
-        log.debug("dataflow_cfg_import_failed", error=str(exc))
-        return result
-
-    grammar = _get_language(language)
-    if grammar is None:
-        return result
-
-    try:
-        parser = Parser(grammar)
-        tree = parser.parse(source)
-    except Exception as exc:
-        log.debug("dataflow_cfg_parse_failed", path=abs_path, error=str(exc))
-        return result
-
-    for fn_node in _collect_function_nodes(tree.root_node, lmap):
+    for fn_node in _collect_function_nodes(root, lmap):
         result.stats.functions_seen += 1
-        body = fn_node.child_by_field_name("body") or fn_node
-        try:
-            ccn, _max_nest, _cog, _bumps, _conds = _walk_function_body(body, lmap)
-            nloc = _count_nloc(body, source)
-        except Exception as exc:
-            log.debug("dataflow_cfg_metrics_failed", path=abs_path, error=str(exc))
+        metrics = function_metrics(fn_node, lmap, source)
+        if metrics is None:
             continue
+        ccn, nloc = metrics
 
         if flagged_only and not is_flagged(ccn=ccn, nloc=nloc):
             continue
