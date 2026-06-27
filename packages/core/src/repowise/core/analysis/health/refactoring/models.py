@@ -122,6 +122,14 @@ class RefactoringContext:
     # engine precomputes the repo's SCC index once and threads the per-file
     # slice in, so Break Cycle never recomputes SCCs per file.
     file_scc: tuple[str, ...] | None = None
+    # Per-flagged-function dataflow analyses (``dataflow.FunctionAnalysis``
+    # records, typed ``Any`` to avoid importing the dataflow layer into the
+    # model). The engine builds these only for files carrying a method-level
+    # smell (``large_method`` / ``brain_method`` / ``complex_method``), so the
+    # Extract Method detector reads CFG + def/use + reaching definitions without
+    # a re-parse of its own. Empty for files with no such finding -- the
+    # detector then yields nothing.
+    function_analyses: list[Any] = field(default_factory=list)
 
 
 @dataclass

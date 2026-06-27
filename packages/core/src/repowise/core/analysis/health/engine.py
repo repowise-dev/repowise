@@ -35,6 +35,7 @@ from .biomarkers import FileContext, detect_all
 from .biomarkers.base import HasEdge
 from .complexity import FileComplexity, FunctionComplexity, walk_file
 from .coverage import is_test_file as _coverage_is_test_file
+from .dataflow import analyze_file
 from .duplication import DuplicationReport, detect_clones
 from .models import HealthFileMetricData, HealthFindingData, HealthReport, Severity
 from .perf import (
@@ -54,6 +55,10 @@ from .refactoring.graph_signals import build_file_scc_index
 from .scoring import attach_impacts, compute_kpis, remap_severities, score_file
 
 log = structlog.get_logger(__name__)
+
+# Method-level smells that make the dataflow / Extract Method pass worthwhile.
+# Only files carrying one of these get a CFG + def/use + reaching pass built.
+_EXTRACT_METHOD_SOURCES = frozenset({"large_method", "brain_method", "complex_method"})
 
 
 def _log_duplication_diagnostics(report: DuplicationReport) -> None:
@@ -694,6 +699,26 @@ class HealthAnalyzer:
             return FileComplexity(functions=[], classes=[])
         return walk_file(path, language, source)
 
+    def _extract_method_analyses(self, pf: Any, findings: list[HealthFindingData]) -> list[Any]:
+        """Dataflow analyses for the Extract Method detector, gated to files
+        that already carry a method-level smell.
+
+        Building a CFG + def/use + reaching definitions is only useful where a
+        ``large_method`` / ``brain_method`` / ``complex_method`` finding fired,
+        so the dataflow pass (and its re-parse) runs for that small subset of
+        files only -- everything else pays nothing. Degrades to ``[]`` on any
+        read or analysis failure; the detector then yields no suggestion.
+        """
+        if not any(getattr(f, "biomarker_type", "") in _EXTRACT_METHOD_SOURCES for f in findings):
+            return []
+        path = pf.file_info.abs_path
+        language = pf.file_info.language
+        try:
+            source = Path(path).read_bytes()
+        except OSError:
+            return []
+        return analyze_file(path, language, source).functions
+
     def _populate_symbol_complexity(self, pf: Any, fc_list: list[FunctionComplexity]) -> None:
         if not fc_list:
             return
@@ -829,6 +854,7 @@ class HealthAnalyzer:
             module_map=self.module_map,
             graph=self.graph,
             file_scc=(file_scc_index or {}).get(file_path),
+            function_analyses=self._extract_method_analyses(pf, findings),
         )
         suggestions = detect_refactorings(rctx, disabled=disabled_refactorings or ())
         return metric, findings, suggestions

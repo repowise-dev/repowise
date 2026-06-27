@@ -55,6 +55,7 @@ from .gating import (
     is_flagged_function,
 )
 from .reaching import ReachingDefinitions, compute_reaching
+from .slice import Extraction, find_extractions
 
 __all__ = [
     "CFG",
@@ -64,6 +65,7 @@ __all__ = [
     "CFGPassStats",
     "DefUseDialect",
     "Definition",
+    "Extraction",
     "FileAnalysisResult",
     "FileAnalysisStats",
     "FileCFGResult",
@@ -80,6 +82,7 @@ __all__ = [
     "build_cfgs_for_file",
     "compute_def_use",
     "compute_reaching",
+    "find_extractions",
     "get_defuse_dialect",
     "is_flagged",
     "is_flagged_function",

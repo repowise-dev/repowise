@@ -16,7 +16,7 @@ function, never a raise.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
@@ -48,6 +48,11 @@ class FunctionAnalysis:
     cfg: CFG
     def_use: FunctionDefUse
     reaching: ReachingDefinitions
+    # The function's tree-sitter node, retained so dataflow consumers (the
+    # Extract Method slicer) can re-walk its statement structure. Typed ``Any``
+    # to keep the model free of a tree-sitter import; the node keeps its parse
+    # tree alive while referenced, so it stays valid after analysis returns.
+    fn_node: Any = None
 
 
 @dataclass
@@ -153,6 +158,7 @@ def analyze_file(
                 cfg=cfg,
                 def_use=def_use,
                 reaching=reaching,
+                fn_node=fn_node,
             )
         )
 
