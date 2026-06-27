@@ -18,8 +18,7 @@ Tier-aware: when ``ctx.blame_index`` is ``None`` (ESSENTIAL git tier),
 or empty, the detector emits zero findings. Function-level no-op is the
 documented "no signal" outcome until ``backfill_blame()`` runs.
 
-Severity (calibrated against the 1-year / 2-year ages used in CodeScene
-case studies):
+Severity (calibrated against the 1-year / 2-year age boundaries):
 
 * MEDIUM   ``median_age >= 365d`` and ``recent_mod_count >= 2``.
 * HIGH     ``median_age >= 730d`` OR ``recent_mod_count >= 5`` (with

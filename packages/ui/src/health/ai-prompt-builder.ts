@@ -279,8 +279,8 @@ export function buildAiPrompt({
   const completionContract = [
     "1. A short plan (3–6 bullets) describing the structural change before any edits.",
     "2. The edits themselves, scoped to the file above (plus tests / direct helpers if needed).",
-    "3. A diff-style summary of what changed and why each change reduces a specific biomarker.",
-    "4. An estimate of the new biomarker state for that file: which findings should disappear, which remain.",
+    "3. A diff-style summary of what changed and why each change reduces a specific marker.",
+    "4. An estimate of the new marker state for that file: which findings should disappear, which remain.",
   ];
 
   return [

@@ -20,13 +20,13 @@ computed with no re-parse, **no LLM, no network**, inside the same <30s budget. 
 LLM layer (code generation) is a separate, strictly opt-in step ([below](#opt-in-code-generation)).
 
 <div align="center">
-<img src="../.github/assets/health-loop.svg" alt="repowise code-health loop: biomarkers fan into three signals, the graph and git history locate risk, and refactoring intelligence emits concrete plans an agent executes" width="100%" />
+<img src="../.github/assets/health-loop.svg" alt="repowise code-health loop: markers fan into three signals, the graph and git history locate risk, and refactoring intelligence emits concrete plans an agent executes" width="100%" />
 </div>
 
 ## The five detectors
 
 Each detector is a self-contained module registered into a registry (adding a
-refactoring type is a new file + a registry entry, like the biomarker registry).
+refactoring type is a new file + a registry entry, like the marker registry).
 A detector degrades to **"no suggestion" on any missing signal, never a wrong
 one**, and produces stable-sorted, deterministic output.
 
@@ -61,7 +61,7 @@ web).
 | `file_path`, `target_symbol`, `line_start`, `line_end` | What the refactoring acts on. |
 | `plan` | The concrete, type-specific plan: the split `groups` (methods + fields), the move `{method, from_class, to_class}`, the clone `occurrences` + `suggested_site`, the cycle + `cut_edges`, or the file-split `groups` (`{name, symbols, suggested_file}`) + `residual` core + `shim_required`. |
 | `evidence` | The signals that justify it: `lcom4`, `wmc`, clone token/line counts + `co_change_count`, Jaccard distances, cycle size, or the split's `modularity` + `symbol_count` + `group_count` + intra/cut edge counts. |
-| `impact_delta` | The health score the refactoring would recover (the deduction of the biomarker it answers); `0` for the graph-native types that answer no biomarker. |
+| `impact_delta` | The health score the refactoring would recover (the deduction of the marker it answers); `0` for the graph-native types that answer no marker. |
 | `effort_bucket` | `S` \| `M` \| `L` \| `XL`, from the target's size. |
 | `blast_radius` | What else must move: the callers, co-change partners, and importing files. |
 | `confidence` | `low` \| `medium` \| `high` (drives the `min_confidence` surface gate). |
@@ -167,7 +167,7 @@ the plan and the reviewable diff, not auto-applied edits.
 
 Per-path disables reuse the existing `.repowise/health-rules.json` glob
 mechanism, so a refactoring type can be silenced for generated or vendored paths
-the same way a biomarker is:
+the same way a marker is:
 
 ```json
 {
@@ -179,7 +179,7 @@ the same way a biomarker is:
 
 ## See also
 
-- [`docs/CODE_HEALTH.md`](CODE_HEALTH.md): the biomarkers and the three health
+- [`docs/CODE_HEALTH.md`](CODE_HEALTH.md): the markers and the three health
   signals the suggestions are built on.
 - [`docs/INTELLIGENCE_LAYERS.md`](INTELLIGENCE_LAYERS.md): how code health fits
   the five-layer index.

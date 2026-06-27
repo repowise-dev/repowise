@@ -1,4 +1,4 @@
-"""MCP tool: get_health — code-health biomarkers and per-file scores."""
+"""MCP tool: get_health — code-health markers and per-file scores."""
 
 from __future__ import annotations
 
@@ -216,15 +216,15 @@ async def get_health(
     repo: str | None = None,
     limit: int = 20,
 ) -> dict:
-    """Code-health biomarkers and per-file scores.
+    """Code-health markers and per-file scores.
 
     Dashboard mode (no ``targets``) returns repo-level KPIs + the
     lowest-scoring files. Targeted mode returns per-file findings and
     metrics for each path in ``targets``.
 
-    Biomarkers in v1: ``brain_method``, ``nested_complexity``,
-    ``complex_method``. Phase 2 adds coverage biomarkers; Phase 3 adds
-    duplication + organizational biomarkers.
+    Markers in v1: ``brain_method``, ``nested_complexity``,
+    ``complex_method``. Phase 2 adds coverage markers; Phase 3 adds
+    duplication + organizational markers.
 
     Three-signal health: every file metric carries per-dimension scores. ``score``
     is the overall, defect-calibrated number surfaced everywhere (== ``defect_score``);

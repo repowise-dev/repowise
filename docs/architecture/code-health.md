@@ -3,10 +3,10 @@
 Companion to the user-facing [`docs/CODE_HEALTH.md`](../CODE_HEALTH.md). This
 document is for contributors: where every piece lives, how data flows from
 parsed source to the dashboard, and the extension points for adding
-biomarkers, languages, coverage formats, or alerts.
+markers, languages, coverage formats, or alerts.
 
 > **TL;DR.** Health analysis is a deterministic, zero-LLM Python pipeline:
-> tree-sitter walks every file once -> biomarkers vote -> scores aggregate per
+> tree-sitter walks every file once -> markers vote -> scores aggregate per
 > category -> results land in four SQLAlchemy tables. The MCP server, CLI,
 > and Next.js dashboard all read from those tables: no JSON cache, no
 > intermediate files, no LLM in the loop.
@@ -45,7 +45,7 @@ them. Its only writes are to its own four tables.
 
 Three architectural rules govern the whole layer:
 
-1. **Zero LLM.** Every biomarker is AST, git, or coverage math.
+1. **Zero LLM.** Every marker is AST, git, or coverage math.
 2. **No JSON caches.** SQLite is the single source of truth; everything
    else reads from it.
 3. **No new runtime dependencies.** Pure Python over tree-sitter (already
@@ -275,20 +275,20 @@ paths (`git_meta_map[path]["is_hotspot"]`), and the analyzer returns a
 
 Duplication runs **once up-front** (it is cross-file by nature); each
 `FileContext` gets a slice of the global clone report. The `dry_violation`
-biomarker reads `ctx.clones` and ranks pairs by co-change frequency from
+marker reads `ctx.clones` and ranks pairs by co-change frequency from
 `git_meta_map[path]["co_change_partners_json"]`, so active clones rank higher
 than dormant ones.
 
 ---
 
-## 5. The 26 biomarkers and their categories
+## 5. The 26 markers and their categories
 
-Each biomarker is a stateless class implementing the `Biomarker` Protocol from
+Each marker is a stateless class implementing the `Biomarker` Protocol from
 `biomarkers/base.py`: a `name` (`"brain_method"`, `"nested_complexity"`, ...), a
 `category` (see `scoring.CATEGORY_CAPS`), and a `detect(ctx: FileContext)` method
 returning a list of `BiomarkerResult`s.
 
-| Category               | Cap  | Biomarkers |
+| Category               | Cap  | Markers |
 |------------------------|------|------------|
 | Organizational         | −3.5 | developer_congestion, knowledge_loss, hidden_coupling, function_hotspot, code_age_volatility, ownership_risk, churn_risk, change_entropy, co_change_scatter, prior_defect |
 | Structural complexity  | −2.5 | brain_method, low_cohesion, god_class, nested_complexity, bumpy_road, complex_conditional |
@@ -373,7 +373,7 @@ and decayed with the same τ=180d half-life as co-change. The decay-weighted sum
 per file is `git_meta["change_entropy"]`. `enrich.compute_percentiles` then
 derives `change_entropy_pct` by ranking **only files with positive entropy**
 (zero-entropy files, the ESSENTIAL tier or files only ever changed alone,
-keep pct 0.0 so the biomarker stays silent). Both fields are persisted on
+keep pct 0.0 so the marker stays silent). Both fields are persisted on
 `git_metadata` (migration `0025`) and the additive-reconcile path back-fills
 them on legacy DBs.
 
@@ -391,7 +391,7 @@ references (a static utility, or an unmapped language) reports `lcom4 = 1`
 turn signal on, never produce a false-positive flood. See
 `complexity/README.md` for the full heuristic and its limits.
 
-`error_handling` is the **advisory maintainability** biomarker: swallowed
+`error_handling` is the **advisory maintainability** marker: swallowed
 catches (an empty/comment-only `catch` / `except: pass` body), Python
 catch-all `except:` / `except Exception:`, Rust `.unwrap()` / `.expect()` /
 panic-family macros, and Go's empty `if err != nil {}` or blank-identifier
@@ -399,7 +399,7 @@ discard of a call's error. The walker collects each occurrence (with its
 line) in a whole-tree pass (module-level code included) reusing the
 `LanguageNodeMap` catch kinds for the seven catch-shaped languages and
 dedicated recognizers for Rust/Go; an unsupported language or parse failure
-yields no hits ("no signal", never a guess). The biomarker emits one LOW
+yields no hits ("no signal", never a guess). The marker emits one LOW
 finding per occurrence (0.15 after its floored 0.5 weight) in its own
 `error_handling` category capped at −0.5, mirroring `test_quality`'s
 advisory framing. It is deliberately **excluded from the defect-weight
@@ -433,7 +433,7 @@ via `registered_biomarkers(extra=...)`.
 
 Every file starts at **10.0**. Each finding contributes a per-severity
 deduction (`low=0.3, medium=0.7, high=1.2, critical=2.0`), scaled by the
-biomarker's calibrated weight multiplier (§6.1). `score_file()` then groups the
+marker's calibrated weight multiplier (§6.1). `score_file()` then groups the
 weighted findings by category, sums the raw deductions per category, and either
 accepts the sum or, when it exceeds the cap, scales every per-finding deduction
 in that category proportionally so the total equals the cap. This keeps the
@@ -445,7 +445,7 @@ The per-finding scaled deduction lands on `HealthFinding.health_impact`
 via `attach_impacts()`: that's what the dashboard's "−2.0" badge shows.
 
 Snapshot tests in `tests/unit/health/test_scoring_snapshot.py` lock the
-category caps, severity deductions, biomarker-to-category mapping, and two
+category caps, severity deductions, marker-to-category mapping, and two
 known-fixture scores. A retune intentionally requires updating the
 snapshot in the same PR.
 
@@ -455,25 +455,25 @@ snapshot in the same PR.
 deduct more than the uniform severity table alone allows. The multipliers are
 **calibrated offline against a defect corpus, not hand-tuned**: each file is
 scored at the pre-window commit (T0, no leakage) and an L2-logistic regression,
-with NLOC as an explicit control, fits each biomarker's defect lift beyond file
+with NLOC as an explicit control, fits each marker's defect lift beyond file
 size. The runtime stays deterministic; only the learned constants ship. The
 full calibration, with confidence intervals, is published in the
 [benchmark report](https://github.com/repowise-dev/repowise-bench/blob/master/health-defect/BENCHMARK_REPORT.md)
 and reproduced by `local-stash/calibrate_health_weights.py`.
 
-| Weight | Biomarkers | Rationale |
+| Weight | Markers | Rationale |
 |---|---|---|
 | 1.8 | `co_change_scatter` | Strongest calibrated predictor. |
 | 1.51 | `change_entropy` | History Complexity Metric; second strongest. |
 | 1.38 | `ownership_risk` | Long-run minor-contributor dispersion. |
 | 1.34 | `nested_complexity` | Strongest structural predictor. |
-| 1.1–1.33 | remaining structural complexity / size biomarkers | Moderate calibrated lift. |
+| 1.1–1.33 | remaining structural complexity / size markers | Moderate calibrated lift. |
 | 1.3 / 1.2 / 1.1 | `untested_hotspot` / `churn_risk` / `code_age_volatility` | Coverage-dependent and rarely-firing; keep prior weights the corpus could not fairly measure. |
 | 1.0 | `prior_defect` | Neutral by design: largely redundant with the other process signals, kept for its explanatory value. |
 | 0.5 (floored) | `developer_congestion`, `dry_violation`, `low_cohesion`, `brain_method`, `primitive_obsession`, `bumpy_road` | Fire widely but proved weak under leakage-free scoring; kept as maintainability and parity signals, not disabled. |
 | 0.4 (de-rated) | `knowledge_loss` | Weakest of the floored set. |
 
-The same biomarker stream feeds the **maintainability** signal under an
+The same marker stream feeds the **maintainability** signal under an
 independent, expert-set weight table (the floored smells deduct at full weight
 there), and the **performance** signal under its own bounded `performance`
 category. The three signals share one scoring kernel against separate
@@ -536,7 +536,7 @@ health-breakdown response, and the standalone trend route (§13).
 ### Per-file signals (`signals.py`)
 
 The same state-free pattern, applied to the git-layer + topology fields we
-already persist but only buried inside biomarker detail cards (or omitted
+already persist but only buried inside marker detail cards (or omitted
 entirely). `file_signals(git_meta, degrees)` joins one `GitMetadata` row with
 the file's graph degree into a `FileSignals` grouped as **Process**
 (`prior_defect_count`, `change_entropy_pct` normalized 0-100, 90-day line
@@ -580,7 +580,7 @@ Four tables, all in the repo's `.repowise/wiki.db`. Foreign-keyed to
 
 ### `health_findings`
 
-One row per biomarker hit. Lifecycle: `open → acknowledged | resolved |
+One row per marker hit. Lifecycle: `open → acknowledged | resolved |
 false_positive` (matches Dead Code). Bulk-deleted-and-rewritten on full
 init; selectively upserted on `repowise update`.
 
@@ -593,7 +593,7 @@ init; selectively upserted on `repowise update`.
 | `severity` | `low` / `medium` / `high` / `critical` |
 | `function_name` | nullable for file-level findings |
 | `line_start`, `line_end` | nullable |
-| `details_json` | per-biomarker evidence (CCN values, clone span, etc.) |
+| `details_json` | per-marker evidence (CCN values, clone span, etc.) |
 | `health_impact` | per-finding scaled deduction |
 | `reason` | one-line summary string |
 | `status` | lifecycle |
@@ -622,7 +622,7 @@ KPI + per-file score history. Rolling delete on insert keeps the latest
 ### `coverage_files`
 
 Per-file coverage, overwritten on every `--coverage` run. Carries the
-explicit `covered_lines_json` array so the `coverage_gap` biomarker can
+explicit `covered_lines_json` array so the `coverage_gap` marker can
 flag the exact uncovered surface, not just the percent.
 
 ---
@@ -686,7 +686,7 @@ Defined in `tool_health.py`. Modes:
   `top_biomarkers`, `coverage_pct`, `branch_coverage_pct`.
 - `get_context(targets, include=["health"])`: per-file `score`,
   `max_ccn`, `max_nesting`, `nloc`, `module`, `duplication_pct`, top
-  2 biomarkers (each with a `suggestion` string), a coverage block, and a
+  2 markers (each with a `suggestion` string), a coverage block, and a
   null-dropped `signals` block (process/people/topology, see §8).
 - `get_overview()`: adds a `code_health` block: avg, repo `band`, hotspot,
   worst performer, open finding count, and the NLOC-weighted `distribution`.
@@ -729,7 +729,7 @@ Three routes under `/repos/[id]/health/`:
 |---|---|
 | `/health` | KPI cards, lowest-scoring file table, top findings, **per-module rollup** (added in Phase 4) |
 | `/health/coverage` | Coverage summary, untested-hotspot warnings, module-level bars, per-file drill-down |
-| `/health/refactoring-targets` | Cards sorted by impact-per-effort, each with severity, biomarker, score, NLOC, effort bucket, **deterministic suggestion** |
+| `/health/refactoring-targets` | Cards sorted by impact-per-effort, each with severity, marker, score, NLOC, effort bucket, **deterministic suggestion** |
 
 Plus a sidecar `HealthRisksPanel` on the Hotspots, Ownership, and Graph
 pages: surfaces the lowest-scoring files inline without touching the
@@ -804,11 +804,11 @@ Other perf notes:
 | Suite | What it locks |
 |---|---|
 | `tests/unit/health/test_complexity_walker.py` | Per-language CCN, nesting, cognitive assertions on handcrafted fixtures |
-| `tests/unit/health/test_<biomarker>.py` | Each biomarker: positive in two languages + one negative |
+| `tests/unit/health/test_<biomarker>.py` | Each marker: positive in two languages + one negative |
 | `tests/unit/health/test_duplication.py` | Tokenizer normalization, rolling-hash determinism, co-change weighting |
 | `tests/unit/health/test_coverage_parsers.py` | LCOV / Cobertura / Clover / repowise-JSON happy paths + edge cases |
 | `tests/unit/health/test_scoring.py` | Deduction caps, clamping, KPI math |
-| `tests/unit/health/test_scoring_snapshot.py` | **Stability guard**: caps, severity table, biomarker-to-category mapping, two known fixture scores |
+| `tests/unit/health/test_scoring_snapshot.py` | **Stability guard**: caps, severity table, marker-to-category mapping, two known fixture scores |
 | `tests/unit/health/test_trends.py` | Declining + predicted alerts, ordering, per-file series + `file_trend` |
 | `tests/unit/health/test_signals.py` | `file_signals` join: no-signal vs real-zero, entropy 0-1 to 0-100, owner handoff |
 | `tests/unit/health/test_churn_complexity.py` | `churn_complexity_points`: no-churn omission, complexity never filters, danger-product sort, percentile scaling |
@@ -824,11 +824,11 @@ Other perf notes:
 
 ## 19. Extension points
 
-### Add a biomarker
+### Add a marker
 
 1. New file under `biomarkers/` implementing the `Biomarker` Protocol.
 2. Append to `_DETECTOR_FACTORIES` in `biomarkers/registry.py`.
-3. Add the biomarker-to-category mapping in
+3. Add the marker-to-category mapping in
    `scoring._BIOMARKER_CATEGORY`.
 4. Add a suggestion template in `suggestions._TEMPLATES`.
 5. Add at least three test cases (two positive in different languages,
@@ -892,8 +892,8 @@ phases may revisit; the constraints kept v1 shippable.
 |---|---|
 | Tweak a category cap | `scoring.CATEGORY_CAPS` (snapshot test will fail; update it) |
 | Tweak a severity deduction | `scoring._SEVERITY_DEDUCTION` (ditto) |
-| Add a new biomarker | `biomarkers/*.py`, `registry.py`, `scoring.py`, `suggestions.py` |
-| Change the suggestion text for a biomarker | `suggestions._TEMPLATES` |
+| Add a new marker | `biomarkers/*.py`, `registry.py`, `scoring.py`, `suggestions.py` |
+| Change the suggestion text for a marker | `suggestions._TEMPLATES` |
 | Adjust the trend-alert threshold | `trends.DECLINE_THRESHOLD` / `DECLINE_LOOKBACK` |
 | Change snapshot retention | `crud.HEALTH_SNAPSHOT_RETENTION` |
 | Add a new MCP `include` flag | `tool_health.py`: append handling near the existing `"coverage"` / `"refactoring"` branches |

@@ -277,11 +277,11 @@ export function FindingsView({ adapter }: { adapter: CodeHealthAdapter }) {
           <>
             <div className="flex flex-wrap items-center gap-2">
               <FilterSelect
-                label="Biomarker"
+                label="Marker"
                 value={biomarker}
                 onChange={setBiomarker}
                 options={[
-                  { value: "all", label: "All biomarkers" },
+                  { value: "all", label: "All markers" },
                   ...biomarkerOptions.map((b) => ({ value: b, label: biomarkerLabel(b) })),
                 ]}
               />
@@ -325,7 +325,7 @@ export function FindingsView({ adapter }: { adapter: CodeHealthAdapter }) {
                 onChange={(v) => setGroupBy(v as GroupBy)}
                 options={[
                   { value: "none", label: "Flat list" },
-                  { value: "biomarker", label: "By biomarker" },
+                  { value: "biomarker", label: "By marker" },
                   { value: "module", label: "By module" },
                   { value: "effort", label: "By effort" },
                 ]}
@@ -497,7 +497,7 @@ export function FindingsView({ adapter }: { adapter: CodeHealthAdapter }) {
         }}
         filePath={promptTarget?.file_path ?? null}
         title="AI fix prompt"
-        description="A ready-to-paste prompt that gives your AI coding agent every biomarker, line range, score deduction, and constraint needed to refactor this file in one focused pass."
+        description="A ready-to-paste prompt that gives your AI coding agent every marker, line range, score deduction, and constraint needed to refactor this file in one focused pass."
         getPrompt={
           promptTarget
             ? (flavor) => buildAiPrompt({ target: promptTarget, flavor })

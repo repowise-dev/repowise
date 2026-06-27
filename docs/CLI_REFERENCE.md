@@ -355,7 +355,7 @@ See [`docs/CHANGE_RISK.md`](./CHANGE_RISK.md) for the scoring model.
 
 ### `repowise health [PATH]`
 
-Compute per-file code-health scores from 25 deterministic biomarkers (McCabe complexity, nesting, brain methods, LCOM4 cohesion, god classes, native clone detection, untested hotspots, coverage gradient, function/ownership/churn/change-entropy organizational risk, test-quality smells, and more). Zero LLM calls — pure Python over tree-sitter + git data. See [`docs/CODE_HEALTH.md`](./CODE_HEALTH.md) for the user guide and [`docs/architecture/code-health.md`](./architecture/code-health.md) for the internals.
+Compute per-file code-health scores from 25 deterministic markers (McCabe complexity, nesting, brain methods, LCOM4 cohesion, god classes, native clone detection, untested hotspots, coverage gradient, function/ownership/churn/change-entropy organizational risk, test-quality smells, and more). Zero LLM calls — pure Python over tree-sitter + git data. See [`docs/CODE_HEALTH.md`](./CODE_HEALTH.md) for the user guide and [`docs/architecture/code-health.md`](./architecture/code-health.md) for the internals.
 
 **Options:**
 
@@ -368,7 +368,7 @@ Compute per-file code-health scores from 25 deterministic biomarkers (McCabe com
 | `--coverage <path>` | Ingest a coverage report (LCOV / Cobertura / Clover). Repeat for multiple files |
 | `--coverage-format` | Override coverage-format auto-detection: `lcov`, `cobertura`, `clover` |
 | `--format` | Output: `table` (default), `json`, `md` |
-| `--safe-only` | Confidence ≥ 0.8 only (placeholder for v1 biomarkers) |
+| `--safe-only` | Confidence ≥ 0.8 only (placeholder for v1 markers) |
 | `--repo` | In workspace mode, target a specific repo (defaults to primary) |
 | `--no-workspace` | Force single-repo mode |
 

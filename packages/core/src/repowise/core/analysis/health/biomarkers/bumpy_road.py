@@ -3,12 +3,11 @@
 A "bumpy road" function is one with several distinct nesting humps —
 not one deep block (that's `nested_complexity`) and not one big linear
 list of branches (that's `complex_method`) but multiple medium-depth
-blocks sitting side by side. SonarSource's terminology.
+blocks sitting side by side.
 
 We use the walker's ``bumps`` metric — the count of top-level body
 statements that reach nesting depth ≥ 2 — and fire when it crosses a
-configurable threshold while CCN is also non-trivial. Threshold pair
-matches CodeScene's documented defaults.
+configurable threshold while CCN is also non-trivial.
 """
 
 from __future__ import annotations

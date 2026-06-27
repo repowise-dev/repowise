@@ -165,7 +165,7 @@ codebase.
 ## Code Health Intelligence
 
 repowise computes a **1–10 health score for every file** from **25 deterministic
-biomarkers**: McCabe complexity, deep nesting, brain methods, class cohesion
+markers**: McCabe complexity, deep nesting, brain methods, class cohesion
 (LCOM4), god classes, native Rabin–Karp clone detection, untested hotspots,
 function-level churn, code-age volatility, ownership dispersion, change entropy,
 co-change scatter, prior-defect history, test-quality smells, and more.
@@ -174,13 +174,13 @@ co-change scatter, prior-defect history, test-quality smells, and more.
 pure Python over tree-sitter and git data, designed to finish in under 30
 seconds on a 3,000-file repo.
 
-The biomarker **weights are calibrated offline against a real defect corpus, not
+The marker **weights are calibrated offline against a real defect corpus, not
 hand-tuned**: each file is scored at the pre-window commit (T0, no leakage) and
 an L2-logistic regression (with NLOC as an explicit control) fits each
-biomarker's defect lift *beyond* file size. Only the learned constants ship; the
+marker's defect lift *beyond* file size. Only the learned constants ship; the
 runtime stays fully deterministic.
 
-The same biomarker stream produces three orthogonal signals: defect risk
+The same marker stream produces three orthogonal signals: defect risk
 (the calibrated headline number), maintainability, and performance risk. These
 are co-equal views, never blended into one number. It does not stop at scoring:
 the layer closes the loop into concrete, graph-aware refactoring plans
@@ -195,7 +195,7 @@ repowise status                       # one-line summary in the status report
 ```
 
 - **Coverage ingestion**: LCOV, Cobertura, Clover, or normalized JSON light up
-  the test-coverage biomarkers (`untested_hotspot`, `coverage_gap`,
+  the test-coverage markers (`untested_hotspot`, `coverage_gap`,
   `coverage_gradient`).
 - **Trend tracking**: a rolling 50-row snapshot history powers `Declining
   Health` and `Predicted Decline` alerts.
@@ -211,7 +211,7 @@ repowise status                       # one-line summary in the status report
 - **Per-file overrides** via `.repowise/health-rules.json`.
 
 Validated against real defect history; see
-[`docs/CODE_HEALTH.md`](CODE_HEALTH.md) for the full user guide, the per-biomarker
+[`docs/CODE_HEALTH.md`](CODE_HEALTH.md) for the full user guide, the per-marker
 reference, and the calibration story, and
 [repowise-bench](https://github.com/repowise-dev/repowise-bench) for the
 reproducible defect-prediction and head-to-head benchmarks.

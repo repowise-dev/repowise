@@ -4,8 +4,7 @@ A proxy for the OOP smell: when a function signature carries 5+ raw
 parameters, the call sites usually pass strings/ints/bools that *should*
 be a value object. We don't try to inspect parameter *types* (too much
 language-specific machinery) — the raw count is a strong-enough
-correlation in practice and matches CodeScene's "Primitive Obsession"
-default.
+correlation in practice.
 
 Constructors (`__init__`, `init`) get a small grace allowance — wide
 dataclass-style ctors are an idiomatic pattern, not a smell.

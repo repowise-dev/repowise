@@ -1,7 +1,7 @@
 """Brain Method — long, complex, and central in one symbol.
 
-CodeScene's signature biomarker: a function that does too much. We flag
-when **all three** conditions hold:
+A function that does too much. We flag when **all three** conditions
+hold:
 
 - NLOC ≥ 70 (the function is long)
 - CCN ≥ 9  (it has many decision paths)

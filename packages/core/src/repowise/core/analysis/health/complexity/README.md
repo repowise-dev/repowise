@@ -36,7 +36,7 @@ Tree-sitter AST walker. Single AST pass per file computes:
 - **nloc** — non-comment lines of code per function.
 - **assertion_blocks** — runs of ≥ 2 consecutive assertion statements,
   each `(start_line, end_line, count)`. Opt-in per language via
-  `assert_kinds` / `assert_call_kinds`. Feeds the test-quality biomarkers
+  `assert_kinds` / `assert_call_kinds`. Feeds the test-quality markers
   (`large_assertion_block`, `duplicated_assertion_block`).
 
 It also emits **class-level** aggregates (`ClassComplexity`) for languages

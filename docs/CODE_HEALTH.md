@@ -1,7 +1,7 @@
 # Code Health
 
 Repowise computes a 1-10 health score for every file in your repo from twenty-five
-deterministic biomarkers: McCabe complexity, deep nesting, brain methods,
+deterministic markers: McCabe complexity, deep nesting, brain methods,
 class cohesion (LCOM4), god classes, clone detection, untested hotspots,
 function-level churn, code-age volatility, ownership dispersion, relative churn,
 change entropy, co-change scatter, recent defect history, test-quality smells,
@@ -9,7 +9,7 @@ and more. **No LLM calls, no cloud requirement.** Pure Python over tree-sitter
 and git data, designed to finish in under 30 seconds on a 3,000-file repo.
 
 <div align="center">
-<img src="../.github/assets/health-loop.svg" alt="repowise code-health loop: 25 deterministic biomarkers fan into three signals (defect risk, maintainability, performance), the graph and git history locate where risk concentrates, and refactoring intelligence emits concrete plans (Extract Class, Extract Helper, Move Method, Break Cycle, Split File) your agent executes" width="100%" />
+<img src="../.github/assets/health-loop.svg" alt="repowise code-health loop: 25 deterministic markers fan into three signals (defect risk, maintainability, performance), the graph and git history locate where risk concentrates, and refactoring intelligence emits concrete plans (Extract Class, Extract Helper, Move Method, Break Cycle, Split File) your agent executes" width="100%" />
 </div>
 
 Code health runs as a loop: **measure** every file across three signals,
@@ -40,11 +40,11 @@ local server is running (`repowise serve`).
 
 ## The score
 
-Each file starts at 10.0. Biomarker findings deduct from the score; deductions
+Each file starts at 10.0. Marker findings deduct from the score; deductions
 are capped per category so any one category can drive the score down by at
 most:
 
-| Category               | Cap   | Biomarkers |
+| Category               | Cap   | Markers |
 |------------------------|-------|------------|
 | Organizational         | −3.5  | developer_congestion, knowledge_loss, hidden_coupling, function_hotspot, code_age_volatility, ownership_risk, churn_risk, change_entropy, co_change_scatter, prior_defect |
 | Structural complexity  | −2.5  | brain_method, low_cohesion, god_class, nested_complexity, bumpy_road, complex_conditional |
@@ -55,20 +55,20 @@ most:
 | Test quality           | −0.5  | large_assertion_block, duplicated_assertion_block |
 | Error handling         | −0.5  | error_handling |
 
-Twenty-five biomarkers across the categories above. `function_hotspot` and
+Twenty-five markers across the categories above. `function_hotspot` and
 `code_age_volatility` are blame-based and sit in the organizational bucket: both
 are tier-aware and stay silent on ESSENTIAL-tier repos until the per-line blame
 index is built.
 
-Per-biomarker weight multipliers let the strongest empirical predictors deduct
+Per-marker weight multipliers let the strongest empirical predictors deduct
 more than the uniform severity table alone allows. The weights are **calibrated
 offline against a defect corpus, not hand-tuned**: each file is scored at the
 pre-window commit (T0, no leakage) and a logistic regression with NLOC as an
-explicit control fits each biomarker's defect lift beyond file size. The runtime
+explicit control fits each marker's defect lift beyond file size. The runtime
 stays deterministic; only the learned constants ship. The strongest predictors
 are `co_change_scatter`, `change_entropy`, `ownership_risk`, and
 `nested_complexity`; widely-firing smells that proved weak under leakage-free
-scoring are floored. The full per-biomarker table lives in the
+scoring are floored. The full per-marker table lives in the
 [architecture doc](architecture/code-health.md#61-calibrated-weight-multipliers),
 and the calibration with confidence intervals is in the
 [benchmark report](https://github.com/repowise-dev/repowise-bench/blob/master/health-defect/BENCHMARK_REPORT.md).
@@ -84,7 +84,7 @@ The final score is clamped to `[1.0, 10.0]`. The three repo-level KPIs:
 ## Three health signals: defect risk, maintainability, and performance
 
 Repowise surfaces three orthogonal health signals computed from the same
-biomarker stream by one shared scoring kernel: **defect risk** (the calibrated,
+marker stream by one shared scoring kernel: **defect risk** (the calibrated,
 overall number), **maintainability**, and **performance**. They are co-equal
 views, never blended into one number (the section on the overall score below
 explains why).
@@ -92,7 +92,7 @@ explains why).
 The score above is the defect-risk signal: it is calibrated against a defect
 corpus, the bands are calibrated to it (Alert files carry roughly 17x the defect
 rate of Healthy files), and it is the overall number surfaced everywhere. But
-not every code smell predicts bugs. A handful of biomarkers fire widely and
+not every code smell predicts bugs. A handful of markers fire widely and
 matter a lot for how hard code is to read and change, yet proved weak as defect
 predictors under leakage-free scoring, so the defect calibration floors them to
 0.5 (`low_cohesion`, `brain_method`, `primitive_obsession`, `dry_violation`,
@@ -102,7 +102,7 @@ calibrated signal) and they get no credit for the real problem they describe
 (maintainability).
 
 Repowise therefore computes a second, parallel signal, maintainability, from the
-same biomarker stream:
+same marker stream:
 
 - The floored smells above deduct at full weight (1.0) in maintainability
   instead of the 0.5 the defect calibration imposes. The defect calibration does
@@ -371,7 +371,7 @@ last 6 months, 3.3x the 24% baseline (80% vs 24%).
 
 It ranks every file by health score, takes the 20 lowest, and counts how many
 were touched by a `fix:` commit in the trailing ~180-day window (the same
-signal the `prior_defect` biomarker uses). That precision is contrasted with the
+signal the `prior_defect` marker uses). That precision is contrasted with the
 repo-wide base rate (the fraction of all files with a recent fix) to give the
 lift. The same number appears on the web `health` and `overview` dashboards,
 where it expands into a per-K table (worst 10/20/30), a concentration stat (what
@@ -404,7 +404,7 @@ checked against what actually broke:
   is perfect. It beats raw churn by 0.10 AUC and a prior-defects baseline by 0.117
   AUC (DeLong p < 1e-9).
 - On the public PROMISE/jEdit defect dataset, which played no part in
-  calibration, the same biomarkers score AUC **0.76 to 0.78**. That held-out
+  calibration, the same markers score AUC **0.76 to 0.78**. That held-out
   result is the main evidence the signal is not overfit.
 - The limits ship with the wins. Among files of similar size the signal is weak
   (within-size-band AUC near 0.49), so part of the headline is simply that larger
@@ -414,7 +414,7 @@ checked against what actually broke:
 Full methodology, confidence intervals, and the named head-to-head against
 CodeScene are in the [benchmark hub](https://github.com/repowise-dev/repowise-bench).
 
-## The biomarkers
+## The markers
 
 **brain_method**: A single function that is simultaneously long, deeply
 nested, highly complex, and central to the dependency graph. The strongest
@@ -762,7 +762,7 @@ still shows in the bottom-right ("changes constantly but stays simple").
 The file's Health tab lists its functions ranked by modification count, with
 the 90-day recent-mod count, median age, and blame owner per function, the
 same `git_function_blame` rollup the symbol page uses. It promotes per-function
-ownership and volatility out of the buried biomarker cards into a first-class
+ownership and volatility out of the buried marker cards into a first-class
 table, so "which function in this file is the actual hotspot" is one glance away.
 
 ## Configuration
@@ -809,10 +809,10 @@ Accepted severity values are `low`, `medium`, `high`, `critical`. The named
 noisier structural signals a 1-3 person repo can't support; an explicit
 `severity_overrides` key always wins over the preset.
 
-Only the severity label is tunable. The per-biomarker weight multipliers and
+Only the severity label is tunable. The per-marker weight multipliers and
 the category caps are the calibrated constants the benchmark numbers rest on
 and are deliberately not overridable, so a team's local policy never changes
-what the published accuracy claims mean. Biomarkers that carry a continuous
+what the published accuracy claims mean. Markers that carry a continuous
 deduction (`coverage_gradient`) are unaffected by severity remaps.
 
 ## Incremental updates
@@ -839,7 +839,7 @@ real strengths repowise does not claim to beat, noted under the table.
 
 | Capability | Repowise | CodeScene | SonarQube | Code Climate / Qlty¹ | Codacy |
 |---|---|---|---|---|---|
-| Per-file health / maintainability score | ✅ 1-10, 25 biomarkers | ✅ 1-10 Code Health | ⚠️ A-E ratings from rule counts | ✅ A-F grade | ✅ A-F grade |
+| Per-file health / maintainability score | ✅ 1-10, 25 markers | ✅ 1-10 Code Health | ⚠️ A-E ratings from rule counts | ✅ A-F grade | ✅ A-F grade |
 | Score uses git / behavioral signals (churn, ownership, co-change, hotspots) | ✅ | ✅ its core | ❌ static rules only | ⚠️ churn-vs-complexity, no co-change | ❌ |
 | Cross-file / call-graph analysis | ✅ interprocedural call graph | ⚠️ git temporal coupling, not a static call graph | ⚠️ cross-file taint (security only) | ❌ file-local | ❌ file-local |
 | Defect-validated score vs a real bug corpus (published numbers) | ✅ mean ROC AUC 0.737, held-out 0.76-0.78 | ⚠️ "Code Red" study (defect density / cycle time), no per-file AUC | ❌ | ❌ | ❌ |

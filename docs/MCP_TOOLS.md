@@ -26,7 +26,7 @@ repowise mcp --transport sse --port 7338 # legacy SSE transport
 | `get_risk` | Modification risk | Before changing hotspot files |
 | `get_why` | Architectural decisions | Before structural changes |
 | `get_dead_code` | Unreachable code | Cleanup tasks |
-| `get_health` | Code-health biomarker scores | Before refactoring, find the worst files |
+| `get_health` | Code-health marker scores | Before refactoring, find the worst files |
 | `list_repos` | List the repos a server is serving | Discovering workspace repo aliases |
 | `get_blast_radius` | Cross-repo downstream impact (workspace only) | Before changing a service other repos consume |
 | `get_conformance` | Architecture rule violations + cycles (workspace only) | Auditing or before changing service boundaries |
@@ -425,7 +425,7 @@ get_dead_code(min_confidence=0.8, include_internals=true)
 
 ## `get_health`
 
-Code-health biomarker scores: the same deterministic biomarkers the
+Code-health marker scores: the same deterministic markers the
 `repowise health` CLI computes, across three signals (defect risk,
 maintainability, performance), exposed for agentic workflows. Zero LLM calls.
 Use it to **self-check a change before opening a PR**: the same signals a
@@ -443,7 +443,7 @@ code-health merge-gate judges it on.
 **Returns:** Dashboard mode (no `targets`) returns repo-level KPIs (hotspot
 health, average health, worst performer, maintainability / performance pillar
 averages), the lowest-scoring files, and a per-module NLOC-weighted rollup.
-Targeted mode returns per-file biomarker findings with severity, per-dimension
+Targeted mode returns per-file marker findings with severity, per-dimension
 scores, and the score breakdown. Each finding carries a `dimension`
 (`defect` / `maintainability` / `performance`).
 

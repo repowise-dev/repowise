@@ -34,7 +34,7 @@ report = detect_clones(parsed_files, git_meta_map)
 5. **Co-change correlation** — for each surviving pair we look up
    `git_meta_map[file_a]['co_change_partners_json']` (and the reverse
    direction). The max count attaches to `ClonePair.co_change_count`
-   so the `dry_violation` biomarker can rank *active* duplicates
+   so the `dry_violation` marker can rank *active* duplicates
    higher than dormant ones — the Phase-3 hard constraint.
 
 ## Inputs
@@ -51,14 +51,14 @@ report = detect_clones(parsed_files, git_meta_map)
   - `duplication_pct`: per-file duplicate-line percentage — the union
     of clone-pair line ranges over file NLOC, so overlapping pairs
     don't double-count the same physical lines.
-  - `pairs_by_file`: lookup map used by the `dry_violation` biomarker.
+  - `pairs_by_file`: lookup map used by the `dry_violation` marker.
 
 ## Extension points
 
 - **Tunables** — `DEFAULT_WINDOW_TOKENS` (sensitivity) and
   `DEFAULT_MIN_LINES` (output filter) are arguments to `detect_clones`.
   Future `HealthConfig` knobs can be threaded through here without
-  touching biomarker code.
+  touching marker code.
 - **Tokenizer** — to support a new language with different identifier
   / literal node types, extend the kind sets in `tokenizer.py`. The
   rolling hash is language-agnostic.

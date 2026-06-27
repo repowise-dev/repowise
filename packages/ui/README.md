@@ -22,7 +22,7 @@ src/
   git/           hotspot-table, ownership-table/treemap, churn viz, …
   graph/         graph-flow (Sigma), toolbar, legend, panels (+ sigma/)
   graph-primitives/
-  health/        file-table, kpi-cards, biomarkers, score tokens
+  health/        file-table, kpi-cards, markers, score tokens
   hooks/         use-debounce, …
   jobs/          generation-progress, job-log
   modules/       module health detail

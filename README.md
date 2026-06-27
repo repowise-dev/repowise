@@ -60,7 +60,7 @@ enough: you need to know **where** the risk concentrates and **how** to fix it.
 
 repowise closes that loop. It indexes your codebase once and scores **every file
 for defect risk, maintainability, and performance** from 25 deterministic
-biomarkers, calibrated against a real defect corpus, no LLM, in under 30 seconds
+markers, calibrated against a real defect corpus, no LLM, in under 30 seconds
 ([the proof ↓](#-code-health-the-layer-nobody-else-nails)). The same index then
 **locates** the risk through a real dependency graph and git history, and
 **generates the fix**: concrete, graph-aware refactoring plans (split this god
@@ -89,7 +89,7 @@ Each layer is queryable from the CLI, the MCP tools, and the local dashboard.
 | **◈ Git** | hotspots (churn × complexity) · ownership % · co-change pairs (hidden coupling) · bus factor · contributor profiles · module health · reviewer suggestions | Behavioral signals static analysis can't see |
 | **◈ Docs** | LLM-generated wiki per module/file · incremental on every commit · freshness + confidence scoring · hybrid RAG search (FTS + vector via RRF) · selectable wiki styles (comprehensive / reference / tutorial / caveman) | Stays current, rebuilt every commit |
 | **◈ Decisions** | architectural decisions mined from **8 sources**, evidence-backed (verified / fuzzy / unverified), linked to graph nodes, connected by `supersedes`/`refines`/`conflicts_with` edges, tracked for staleness | **★ Captured nowhere else** |
-| **★ Code Health** | **25 deterministic biomarkers**, 1–10 per file · **three signals: defect risk · maintainability · performance** · coverage ingestion · trend alerts · **concrete graph-aware refactoring plans** (Extract Class / Helper / Move Method / Break Cycle / Split File) · **zero LLM, <30s** | **★ Defect-validated, with the fix attached. Our edge** |
+| **★ Code Health** | **25 deterministic markers**, 1–10 per file · **three signals: defect risk · maintainability · performance** · coverage ingestion · trend alerts · **concrete graph-aware refactoring plans** (Extract Class / Helper / Move Method / Break Cycle / Split File) · **zero LLM, <30s** | **★ Defect-validated, with the fix attached. Our edge** |
 
 Full deep-dive on every layer (graph, git, docs, decisions, hooks, auto-sync,
 dead code, CLAUDE.md generation): **[docs/INTELLIGENCE_LAYERS.md →](docs/INTELLIGENCE_LAYERS.md)**
@@ -105,10 +105,10 @@ concentrates through the graph and git history, then **fix** it with a concrete
 refactoring plan your agent can execute.
 
 <div align="center">
-<img src=".github/assets/health-loop.svg" alt="repowise code-health loop: 25 deterministic biomarkers fan into three signals (defect risk, maintainability, performance), the graph and git history locate where risk concentrates, and refactoring intelligence emits concrete plans (Extract Class, Extract Helper, Move Method, Break Cycle, Split File) your agent executes" width="100%" />
+<img src=".github/assets/health-loop.svg" alt="repowise code-health loop: 25 deterministic markers fan into three signals (defect risk, maintainability, performance), the graph and git history locate where risk concentrates, and refactoring intelligence emits concrete plans (Extract Class, Extract Helper, Move Method, Break Cycle, Split File) your agent executes" width="100%" />
 </div>
 
-repowise scores **every file 1–10** from **25 deterministic biomarkers**:
+repowise scores **every file 1–10** from **25 deterministic markers**:
 McCabe complexity, deep nesting, brain methods, class cohesion (LCOM4), god
 classes, native Rabin–Karp clone detection, untested hotspots, function-level
 churn, code-age volatility, ownership dispersion, change entropy, co-change
@@ -116,7 +116,7 @@ scatter, prior-defect history, test-quality smells, and more.
 
 **Three signals, one index.** The headline 1–10 is **defect risk**: the
 defect-calibrated, bug-predictive score in the table below. From the same
-biomarker stream, repowise surfaces two co-equal companion views:
+marker stream, repowise surfaces two co-equal companion views:
 **maintainability** (cohesion, brain methods, DRY and god-class smells that
 raise change-cost without predicting bugs) and **performance** (static N+1 /
 I/O-in-loop risk, followed across files through the call graph: file-local
@@ -126,7 +126,7 @@ headline, so the bug-predictive number stays clean.
 
 > **Zero LLM calls. Zero cloud requirement. Zero new runtime dependencies.**
 > Pure Python over tree-sitter + git data, finishing in **under 30 seconds** on
-> a 3,000-file repo. The biomarker weights are **calibrated against a real defect
+> a 3,000-file repo. The marker weights are **calibrated against a real defect
 > corpus, not hand-tuned**; only the learned constants ship and the runtime
 > stays fully deterministic.
 
@@ -159,7 +159,7 @@ Ranking by repowise health surfaces **2.3× the defects under a fixed review
 budget** (Popt Δ +0.144, recall Δ +0.098, density Δ all p = 0.003, paired and
 significant; the ROC AUC edge is marginal). [Full methodology & CIs →](https://github.com/repowise-dev/repowise-bench/blob/master/health-defect/COMPARISON_REPORT.md)
 
-User guide & per-biomarker reference: **[docs/CODE_HEALTH.md](docs/CODE_HEALTH.md)**
+User guide & per-marker reference: **[docs/CODE_HEALTH.md](docs/CODE_HEALTH.md)**
 
 ### Refactoring intelligence
 
@@ -337,7 +337,7 @@ pattern scan) · **Costs** · **Workspace**
 
 | Tier | Languages | What works |
 |------|-----------|------------|
-| **Full** | Python · TypeScript · JavaScript · Java · Kotlin · Go · Rust · C++ · C# | AST parsing, import resolution, named bindings, call resolution, heritage extraction, docstrings; multi-project workspace resolvers; framework-aware edges; per-language dynamic-hint extractors; **code-health biomarkers** |
+| **Full** | Python · TypeScript · JavaScript · Java · Kotlin · Go · Rust · C++ · C# | AST parsing, import resolution, named bindings, call resolution, heritage extraction, docstrings; multi-project workspace resolvers; framework-aware edges; per-language dynamic-hint extractors; **code-health markers** |
 | **Good** | C · Ruby · Swift · Scala · PHP | AST parsing, import resolution, named bindings, call resolution, heritage (mixins / derive / extensions / traits), docstrings; dedicated workspace-aware resolvers; Rails / Laravel / TYPO3 framework edges; dynamic-hint extractors |
 | **Config / data** | OpenAPI · Protobuf · GraphQL · Dockerfile · Makefile · YAML · JSON · TOML · SQL · Terraform · Markdown · Shell | Included in the file tree; special handlers extract endpoints / targets where applicable |
 | **Git-blame only** | Objective-C · Elixir · Erlang · Dart · Zig · Julia · Clojure · Haskell · OCaml · F# · … | Tracked in git history (blame, hotspots, co-change); no AST parsing yet |
@@ -445,7 +445,7 @@ diverges from live `.git/HEAD`.
 | `get_risk(targets, changed_files?)` | Hotspot scores, dependents, co-change partners, ownership, test gaps, security signals. Pass `changed_files` for PR mode → a `directive` block (`will_break`, `missing_cochanges`, `missing_tests`, `governance_risk`). |
 | `get_why(query?, targets?)` | Architectural decision records, status, evidence spans, and the supersession **lineage chain**. Falls back to git archaeology when no ADRs exist. |
 | `get_dead_code(...)` | Unreachable code by confidence tier with cleanup-impact estimates; cross-repo consumer detection in workspace mode. |
-| `get_health(targets?, include?)` | Biomarker scores per file across three signals (defect · maintainability · performance). Dashboard mode → KPIs + lowest-scoring files + module rollup; targeted mode → per-file findings. Self-check before a PR via `include`: `accuracy` (does the score find the bugs), `signals` (per-file churn / owners / prior defects), `churn_complexity`, a dimension name to filter findings, plus `coverage`, `trend`, and `refactoring` → **structured, graph-aware refactoring plans** (split groups, move target, cut edges + blast radius), not template strings. |
+| `get_health(targets?, include?)` | Marker scores per file across three signals (defect · maintainability · performance). Dashboard mode → KPIs + lowest-scoring files + module rollup; targeted mode → per-file findings. Self-check before a PR via `include`: `accuracy` (does the score find the bugs), `signals` (per-file churn / owners / prior defects), `churn_complexity`, a dimension name to filter findings, plus `coverage`, `trend`, and `refactoring` → **structured, graph-aware refactoring plans** (split groups, move target, cut edges + blast radius), not template strings. |
 
 Worked example (*"Add rate limiting to all API endpoints"* in 5 calls instead of
 ~30 greps+reads) and the full reference: **[docs/MCP_TOOLS.md →](docs/MCP_TOOLS.md)**
@@ -462,7 +462,7 @@ Worked example (*"Add rate limiting to all API endpoints"* in 5 calls instead of
 | MCP server for AI agents | ✅ 9 tools | ❌ | ✅ 3 tools | ✅ | ✅ |
 | Proactive agent hooks | ✅ Claude + Codex hooks | ❌ | ❌ | ❌ | ❌ |
 | Auto-generated AI instructions (`CLAUDE.md`, `AGENTS.md`) | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Code health score (1–10) | ✅ 25 biomarkers | ❌ | ❌ | ❌ | ✅ 25–30 |
+| Code health score (1–10) | ✅ 25 markers | ❌ | ❌ | ❌ | ✅ 25–30 |
 | Brain Method / LCOM4 / god class | ✅ | ❌ | ❌ | ❌ | ✅ |
 | Test-coverage intelligence | ✅ LCOV/Cobertura/Clover | ❌ | ❌ | ❌ | ❌ |
 | Untested-hotspot detection | ✅ coverage × hotspot | ❌ | ❌ | ❌ | ❌ |

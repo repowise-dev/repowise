@@ -206,8 +206,8 @@ def recent_kpis(history: list[Any], limit: int = 10) -> list[dict[str, Any]]:
 #
 # The snapshot writer stores a compact ``{path: score}`` map per snapshot
 # (``HealthSnapshot.per_file_scores_json``). These helpers turn that rolling
-# window into a single file's score-over-time series — CodeScene's signature
-# view. Like the repo-level helpers above they are intentionally state-free:
+# window into a single file's score-over-time series. Like the repo-level
+# helpers above they are intentionally state-free:
 # callers pass the snapshot history (oldest → newest) and get plain data back,
 # so the logic stays unit-testable without a DB and is reused verbatim by the
 # PR bot's in-comment sparkline.

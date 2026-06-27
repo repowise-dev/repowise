@@ -41,7 +41,7 @@ If `get_risk` shows:
 Call `get_context(targets=["file.py"])` first to understand the full context: what uses this file, what decisions govern it, and why it's structured this way. This prevents accidentally violating architectural decisions.
 
 For a heavy refactor, also call `get_health(targets=["file.py"])` — the
-biomarker findings (complexity, deep nesting, low cohesion, duplication) tell
+marker findings (complexity, deep nesting, low cohesion, duplication) tell
 you *what* to improve while you're in there, and give you a before/after score.
 
 ## Error handling

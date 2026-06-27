@@ -1,4 +1,4 @@
-"""``repowise health`` — code-health biomarker report.
+"""``repowise health`` — code-health marker report.
 
 Mirrors the dead-code CLI: ingest → analyze → render. Reads from
 ``HealthFileMetric`` / ``HealthFinding`` if a fresh index exists, falls
@@ -43,7 +43,7 @@ from repowise.cli.helpers import (
     "--safe-only",
     is_flag=True,
     default=False,
-    help="Phase-3 placeholder — currently a no-op for v1 biomarkers.",
+    help="Phase-3 placeholder — currently a no-op for v1 markers.",
 )
 @click.option(
     "--repo",
@@ -124,7 +124,7 @@ def health_command(
     trend_view: bool,
     badge_view: bool,
 ) -> None:
-    """Compute code-health scores from biomarkers (CCN, nesting, brain-method).
+    """Compute code-health scores from markers (CCN, nesting, brain-method).
 
     Runs in-process — no LLM, no network. Re-uses the repowise ingestion
     parser, graph builder, and git indexer.
@@ -414,10 +414,10 @@ def health_command(
     console.print(table)
 
     if findings:
-        console.print(f"\n[bold]{len(findings)}[/bold] biomarker findings:")
+        console.print(f"\n[bold]{len(findings)}[/bold] marker findings:")
         f_table = Table()
         f_table.add_column("Severity", style="magenta")
-        f_table.add_column("Biomarker", style="cyan")
+        f_table.add_column("Marker", style="cyan")
         f_table.add_column("File")
         f_table.add_column("Function")
         f_table.add_column("Impact", justify="right")
@@ -683,7 +683,7 @@ def _render_refactoring_targets(
     table.add_column("Impact", justify="right")
     table.add_column("Effort", justify="center")
     table.add_column("Ratio", justify="right")
-    table.add_column("Primary biomarker")
+    table.add_column("Primary marker")
     for t in targets:
         table.add_row(
             t["file_path"],

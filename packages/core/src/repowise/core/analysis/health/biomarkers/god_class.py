@@ -1,7 +1,7 @@
 """God Class — a class that is large, has many methods, and hides a brain.
 
-CodeScene's structural module smell: a single class that has accreted too
-many responsibilities. We flag when **all three** hold:
+A structural module smell: a single class that has accreted too many
+responsibilities. We flag when **all three** hold:
 
 - ``total_nloc ≥ 200``   — the class is large
 - ``method_count ≥ 15``  — it has many methods

@@ -8,7 +8,7 @@ through its body, accumulating:
   loop / case / catch / boolean operator.
 - **max_nesting** — deepest stack of nesting-contributing nodes within
   the function body.
-- **cognitive** — SonarSource-style weighted score: each nesting node
+- **cognitive** — a weighted nesting score: each nesting node
   adds ``1 + current_depth`` (so deeper nesting hurts more); boolean
   operators add a flat +1; jumps (``return``/``break``/``continue``)
   do not contribute (kept simple in v1).

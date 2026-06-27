@@ -145,7 +145,7 @@ export default function CodeHealthPage() {
     <PageShell
       title="Code Health"
       icon={<HeartPulse className="h-5 w-5 text-[var(--color-success)]" />}
-      description="Per-file health scores from complexity, duplication, coverage, churn, and ownership biomarkers — ranked into a fix-next queue."
+      description="Per-file health scores from complexity, duplication, coverage, churn, and ownership markers — ranked into a fix-next queue."
       maxWidth="wide"
       actions={
         <Button size="sm" variant="outline" onClick={() => mutate()}>

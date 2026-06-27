@@ -64,7 +64,7 @@ Note: hand-editing `wiki_style` here and running `update` does not regenerate
 existing pages, use `restyle`.
 
 > **Code-health rules** are configured separately in
-> `.repowise/health-rules.json` (per-file biomarker overrides); see
+> `.repowise/health-rules.json` (per-file marker overrides); see
 > [CODE_HEALTH.md](CODE_HEALTH.md#configuration).
 
 ### The `distill:` block
@@ -142,7 +142,7 @@ refactoring:
   by default but never runs during indexing, only on an explicit request (set
   `llm.enabled: false` to disable it).
 - Per-path disables reuse the `.repowise/health-rules.json` glob mechanism (the
-  same one biomarkers use).
+  same one markers use).
 - Full reference: [REFACTORING.md](REFACTORING.md).
 
 ---
