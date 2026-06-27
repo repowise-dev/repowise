@@ -10,7 +10,7 @@ Python over tree-sitter + git data, designed to finish in under 30 seconds on a
 3 000-file repo.
 
 <div align="center">
-<img src="../.github/assets/health-loop.svg" alt="repowise code-health loop — 25 deterministic biomarkers fan into three signals (defect risk, maintainability, performance), the graph and git history locate where risk concentrates, and refactoring intelligence emits concrete plans (Extract Class, Extract Helper, Move Method, Break Cycle, Split File) your agent executes" width="100%" />
+<img src="../.github/assets/health-loop.svg" alt="repowise code-health loop — 25 deterministic biomarkers fan into three signals (defect risk, maintainability, performance), the graph and git history locate where risk concentrates, and refactoring intelligence emits concrete plans (Extract Class, Extract Helper, Extract Method, Move Method, Break Cycle, Split File) your agent executes" width="100%" />
 </div>
 
 Code health runs as a loop: **measure** every file across three signals,
@@ -568,6 +568,7 @@ ship today:
 |------|---------------|------------|
 | **Extract Class** | The cohesion groups an incohesive / god class should split into — the exact methods + fields per group. | LCOM4 union-find components; god-class shape confirmed by Lanza-Marinescu (WMC = Σ McCabe, TCC). |
 | **Extract Helper** | A clone's exact occurrences and where the shared helper should live. | Rabin–Karp clone pairs (line ranges + token count + co-change); extraction site = community centroid of the files. Transitive clones are clustered into one suggestion, not pairwise nags. |
+| **Extract Method** | A cohesive slice of a long function to lift into a helper, with the inferred parameter (in) and return (out) signature. | Intra-procedural dataflow (CFG + def/use + reaching definitions) over functions a method biomarker already flagged; a single-exit span with a real decision point and no partial branch, `in`/`out` inferred by liveness. Python first. |
 | **Move Method** | A feature-envy method and the class it actually belongs to. | Jaccard distance of the method's entity set (fields/methods it touches) to each class over the call graph; fires only when a foreign class is clearly nearer than its own. |
 | **Break Cycle** | The minimal set of import edges to invert to break a dependency cycle. | Strongly-connected component → greedy minimum feedback arc set over the real import edges. |
 | **Split File** | The cohesive files an oversized module should decompose into — which symbols move where, plus the import edits in every dependent. | Community detection (Leiden/Louvain) over a weighted intra-file symbol graph, gated on partition **modularity**. Language-agnostic (reads `defines`/`calls` edges); the file-level analog of Extract Class. |
@@ -801,7 +802,7 @@ Health: 7.4 (avg) · 6.2 (hotspots) · 2.1 (worst: payments/processor.ts) · 7.0
 | Health trend tracking            | ✅ | ✅ | ❌ | ❌ |
 | Declining health alerts          | ✅ | ✅ | ❌ | ❌ |
 | Refactoring recommendations      | ✅ deterministic | ✅ | ❌ | ❌ |
-| Concrete cross-file refactoring plans | ✅ Extract Class / Helper / Move Method / Break Cycle / Split File, graph-aware + blast radius | ⚠️ within-function only | ❌ | ✅ within-file |
+| Concrete cross-file refactoring plans | ✅ Extract Class / Helper / Method / Move Method / Break Cycle / Split File, graph-aware + blast radius | ⚠️ within-function only | ❌ | ✅ within-file |
 | Free for internal use            | ✅ AGPL-3.0 | ❌ $15–30/author | ✅ public repos | ❌ |
 
 ## See also

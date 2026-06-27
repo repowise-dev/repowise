@@ -23,7 +23,7 @@ LLM layer (code generation) is a separate, strictly opt-in step ([below](#opt-in
 <img src="../.github/assets/health-loop.svg" alt="repowise code-health loop — biomarkers fan into three signals, the graph and git history locate risk, and refactoring intelligence emits concrete plans an agent executes" width="100%" />
 </div>
 
-## The five detectors
+## The six detectors
 
 Each detector is a self-contained module registered into a registry (adding a
 refactoring type is a new file + a registry entry, like the biomarker registry).
@@ -34,6 +34,7 @@ one** — and produces stable-sorted, deterministic output.
 |------|---------------|---------------------------|
 | **Extract Class** | The cohesion groups an incohesive / god class should split into — the exact methods + fields per group. | LCOM4 union-find components (each disconnected component is a candidate class), with the god-class shape confirmed via Lanza-Marinescu (WMC = Σ McCabe, TCC). |
 | **Extract Helper** | A clone's exact occurrences and where the shared helper belongs. | Rabin–Karp clone pairs (line ranges, token count, co-change). The extraction site is the community centroid of the involved files; transitive clones (A↔B, B↔C) are clustered into one suggestion, not pairwise nags. |
+| **Extract Method** | A cohesive slice of a long function to lift into a helper, with the inferred parameter (in) and return (out) signature. | An intra-procedural dataflow pass (CFG + def/use + reaching definitions) over functions a method biomarker already flagged. A candidate span cuts at statement boundaries within one block (no partial branch / mid-`try`), carries no control-flow jump (single clean exit) and a real decision point, and infers `in`/`out` by line-based liveness over the def/use facts. Python first. |
 | **Move Method** | A feature-envy method and the class it actually belongs to. | The method's entity set (fields/methods it touches, class-qualified) is built from the call graph; Jaccard distance to each class. Fires only when a foreign class is clearly nearer than its own. |
 | **Break Cycle** | The minimal set of import edges to invert to break a dependency cycle. | A strongly-connected component in the import graph → greedy minimum feedback arc set (MFAS) over the real edges picks the smallest cut. |
 | **Split File** | The cohesive files an oversized module should decompose into — which top-level symbols move to each new file, plus the import edits in every dependent. | Community detection (Leiden, Louvain fallback) over a weighted intra-file symbol graph (direct calls, shared local helpers, shared foreign modules); emits only when the partition's **modularity** clears a decomposability gate. The file-level analog of Extract Class. |
@@ -147,7 +148,9 @@ a behavior-preservation prompt carrying the structured plan **plus the
 graph/co-change context** a bare codegen tool throws away, and returns the
 refactored code and a unified diff. Where a self-check is cheap and meaningful it
 runs one: Extract Class re-walks the generated classes for an **LCOM4 before/after
-delta**, and Split File re-walks the generated files to assert each is **below the
+delta**, Extract Method re-walks the generated code to confirm the **residual
+method's cyclomatic complexity dropped** below the original's, and Split File
+re-walks the generated files to assert each is **below the
 size floor** and the symbols are **partitioned with no duplication**. Results are
 cached on disk by a content hash (plan + source + model), so the same plan never
 pays twice.
