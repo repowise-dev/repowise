@@ -57,10 +57,19 @@ from .registry import RefactoringDetector, effort_bucket, register
 # Edge weights over the intra-file symbol graph (see module docstring).
 _DIRECT_CALL_WEIGHT = 3.0
 # Co-change weight is scaled by the commit-set Jaccard (0..1), so it peaks at
-# this value for two symbols that always change together and decays smoothly to
-# nothing. Sits between the direct-call (3.0) and shared-helper (2.0) weights at
-# full overlap. Tunable on dogfood evidence.
+# this value for two symbols that always change together and decays toward the
+# floor below. Tunable on dogfood evidence.
 _COCHANGE_WEIGHT = 2.0
+# Only symbols whose commit sets overlap by at least this Jaccard get a
+# co-change edge. Same-file symbols share commit history freely, so an unfloored
+# (or low-floored) edge densifies the graph into a uniform glue that depresses
+# the partition modularity without sharpening any group. "These always change
+# together" means sharing the majority of their history, so the floor sits at
+# half. Dogfood on .repowise: an unfloored edge dropped mean modularity 0.42 ->
+# 0.40 and cut high-confidence splits from 14 to 6; at 0.5 the mean returns to
+# 0.42 (within noise of the call-only baseline) while co-change still reshapes
+# the strongly-coupled files.
+_COCHANGE_MIN_JACCARD = 0.5
 _SHARED_HELPER_WEIGHT = 2.0
 # Per shared imported name (the true dependency-surface signal) and, as the
 # fallback when a symbol has no imported-name surface, per shared foreign module.
@@ -571,6 +580,8 @@ class SplitFileDetector(RefactoringDetector):
                 if not inter:
                     continue
                 jaccard = inter / len(ca | cb)
+                if jaccard < _COCHANGE_MIN_JACCARD:
+                    continue
                 _add(a, b, _COCHANGE_WEIGHT * jaccard)
                 counts["cochange_edges"] += 1
         # 3. shared local helper (callers of a common, non-spine local symbol)

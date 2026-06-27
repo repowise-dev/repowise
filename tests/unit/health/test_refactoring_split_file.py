@@ -106,6 +106,18 @@ def _blame_index(ranges: list[tuple[int, int, str]]) -> BlameIndex:
     return BlameIndex(lines=lines, authors={})
 
 
+def _blame_from_sets(node_shas: dict[int, list[str]]) -> BlameIndex:
+    """Blame index for the ``_disconnected_blocks`` layout: ``fn_i`` spans lines
+    ``10*i+1..10*i+10``; spread its list of shas across those lines so
+    ``distinct_commits_in_range`` recovers exactly that set."""
+    lines: dict[int, tuple[str, int]] = {}
+    for i, shas in node_shas.items():
+        base = 10 * i + 1
+        for offset in range(10):
+            lines[base + offset] = (shas[offset % len(shas)], 0)
+    return BlameIndex(lines=lines, authors={})
+
+
 def _detect(g: nx.DiGraph, file_path: str, **kw) -> list:
     return [
         s
@@ -311,6 +323,20 @@ def test_cochange_edge_groups_commit_coupled_symbols():
 def test_cochange_absent_without_blame_index():
     # Same graph, no blame index -> no co-change edges -> nothing to partition.
     assert _detect(_disconnected_blocks(), "big.py") == []
+
+
+def test_cochange_floor_suppresses_weak_coupling():
+    # Each symbol shares only a minority (Jaccard well below 0.5) of its commit
+    # set with the others -> incidental coupling, below the floor -> no edges ->
+    # nothing to partition. Guards against same-file co-change densifying the
+    # graph into a uniform glue.
+    g = _disconnected_blocks()
+    blame = _blame_from_sets(
+        {i: ["shared", f"own_{i}_a", f"own_{i}_b", f"own_{i}_c"] for i in range(8)}
+    )
+    # Every symbol's set is {shared, own_i_a, own_i_b, own_i_c}; any two overlap
+    # on just {shared} -> Jaccard = 1/7 < 0.5.
+    assert _detect(g, "big.py", blame_index=blame) == []
 
 
 def test_import_name_signal_separates_distinct_dependencies():
