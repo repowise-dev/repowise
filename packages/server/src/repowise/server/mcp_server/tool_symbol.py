@@ -63,8 +63,13 @@ from repowise.server.mcp_server._verify import check_symbol_bounds, heal_symbol_
 _log = __import__("logging").getLogger("repowise.mcp.symbol")
 
 # Safety cap so a misconfigured WikiSymbol row pointing at a giant file
-# can never blow up the agent's context window. Tuned to ~12 KB of source.
-_MAX_SOURCE_LINES = 400
+# can never blow up the agent's context window. Set to ~18 KB of source:
+# on a real index 99.93% of symbols are <600 lines, so a single get_symbol
+# serves the WHOLE body in one call for all but a handful of monster
+# functions — round-trip count, not payload size, is what dominates agent
+# token cost (S1 dogfood). The rare overflow gets a clean `continuation`
+# token rather than a guessed range read.
+_MAX_SOURCE_LINES = 600
 
 # Omission-ref dispatch: "repowise#<12-hex>" never collides with a
 # "{path}::{name}" symbol_id. Also tolerates a pasted whole marker.
@@ -199,6 +204,7 @@ async def _resolve_range_read(
 
     if end < start:
         start, end = end, start
+    requested_end = end
     requested_truncated = (end - start + 1) > _MAX_RANGE_LINES
     if requested_truncated:
         end = start + _MAX_RANGE_LINES - 1
@@ -222,6 +228,15 @@ async def _resolve_range_read(
         "verified": True,
         "_meta": _build_meta(timing_ms=(time.perf_counter() - t0) * 1000, repository=repository),
     }
+    remainder_end = min(requested_end, total)
+    if range_truncated and e < remainder_end:
+        # Same clean-continuation contract as a truncated symbol read: name the
+        # exact next range instead of leaving the agent to guess it.
+        response["continuation"] = f"{path}:{e + 1}-{remainder_end}"
+        response["note"] = (
+            f"Range capped at {_MAX_RANGE_LINES} lines; served {s}-{e}. "
+            f"Continue in one call: get_symbol({response['continuation']!r})."
+        )
     from repowise.server.mcp_server._savings import declare_replaced
 
     declare_replaced(response, full_tokens)
@@ -485,13 +500,15 @@ async def get_symbol(
 ) -> dict:
     """Read one function/class/constant with live-verified line bounds.
 
-    Raw source of one indexed symbol, bounded (~400 lines) — cheaper than
+    Raw source of one indexed symbol, bounded (~600 lines) — cheaper than
     Read+offset math. ``verified: true`` = bounds checked (or corrected)
     against the live file: no follow-up Read needed. ``bounds:
     "approximate"`` = the symbol moved and re-location failed. Also serves
     live range reads ("path.py:140-180", ≤200 lines, always verified) and
     omission refs ("repowise#<12-hex>"). Index misses grep the live file
-    and return fallback_lines instead of a dead end.
+    and return fallback_lines instead of a dead end. When ``truncated`` is
+    true the response carries a ``continuation`` token — the exact range read
+    that fetches the remainder; pass it straight back to get_symbol.
 
     Args:
         symbol_id: "path/to/file.py::Name" (from get_context),
@@ -649,6 +666,17 @@ async def get_symbol(
             repository=repository,
         ),
     }
+    if truncated and not check.approximate and end < check.end_line:
+        # The body exceeds the serve cap. Hand back the exact range read that
+        # fetches the remainder so the agent never has to guess the next span
+        # (the S1 dogfood found it would otherwise grub-around with a guessed
+        # range, doubling the call cost).
+        response["continuation"] = f"{row.file_path}:{end + 1}-{check.end_line}"
+        response["note"] = (
+            f"Symbol body ({check.start_line}-{check.end_line}) exceeds the "
+            f"{_MAX_SOURCE_LINES}-line serve cap; served {start}-{end}. Fetch "
+            f"the remainder in one call: get_symbol({response['continuation']!r})."
+        )
     if check.approximate:
         response["bounds"] = "approximate"
         response["note"] = (

@@ -574,36 +574,30 @@ async def _resolve_one_target(
         triage_meta = triage_meta_res.scalar_one_or_none()
         result_data["hotspot"] = bool(triage_meta) if triage_meta is not None else False
 
-        # Bounded graph-link query — replaces full Python scan over all rows.
-        governing: list[DecisionRecord] = []
-        seen_ids: set[str] = set()
-        for lookup_node in dict.fromkeys(
-            [triage_path, target] if triage_path != target else [triage_path]
-        ):
-            if not lookup_node:
-                continue
-            for dr in await get_governing_decisions(session, repo_id, lookup_node):
-                if dr.id not in seen_ids:
-                    seen_ids.add(dr.id)
-                    governing.append(dr)
-        if governing:
-            result_data["decision_records"] = [dr.title for dr in governing[:5]]
-            result_data["decision_records_hint"] = (
-                "Decisions touch this file. Call get_why(targets=[...]) for rationale."
-            )
-            # Compact enriched list — highest-confidence first, capped at 5.
-            governing_sorted = sorted(governing, key=lambda d: -(d.confidence or 0.0))
-            result_data["governing_decisions"] = [
-                {
-                    "id": dr.id,
-                    "title": dr.title,
-                    "status": dr.status,
-                    "staleness_score": dr.staleness_score,
-                    "verification": dr.verification,
-                    "stale": bool(dr.status == "active" and (dr.staleness_score or 0.0) >= 0.5),
-                }
-                for dr in governing_sorted[:5]
-            ]
+        # Governing decisions — opt-in only (``include=["decisions"]``).
+        # The default triage card omits them: the rich form
+        # (id/staleness/verification) is low-signal for an agent's next move and
+        # the per-call graph query isn't worth the latency or the cached-prefix
+        # weight. Agents that want rationale call get_why directly; opting in
+        # here returns a lightweight titles list (no enriched objects).
+        if include and "decisions" in include:
+            governing: list[DecisionRecord] = []
+            seen_ids: set[str] = set()
+            for lookup_node in dict.fromkeys(
+                [triage_path, target] if triage_path != target else [triage_path]
+            ):
+                if not lookup_node:
+                    continue
+                for dr in await get_governing_decisions(session, repo_id, lookup_node):
+                    if dr.id not in seen_ids:
+                        seen_ids.add(dr.id)
+                        governing.append(dr)
+            if governing:
+                governing_sorted = sorted(governing, key=lambda d: -(d.confidence or 0.0))
+                result_data["decision_records"] = [dr.title for dr in governing_sorted[:3]]
+                result_data["decision_records_hint"] = (
+                    "Decisions touch this file. Call get_why(targets=[...]) for rationale."
+                )
 
     # --- Ownership ---
     if include is None or "ownership" in include:

@@ -54,6 +54,45 @@ async def test_skeleton_requires_file_target(setup_mcp, tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_skeleton_for_symbol_target_renders_defining_file(
+    setup_mcp, session, tmp_path, monkeypatch
+):
+    """A "file.py::Symbol" target must skeleton the DEFINING FILE, not fail
+    with an opaque read error on the literal "::"-path (S2 dogfood bug)."""
+    from repowise.core.persistence.models import GraphNode, Repository
+    from repowise.server.mcp_server import _state, get_context
+
+    _write_source(tmp_path)
+    monkeypatch.setattr(_state, "_repo_path", str(tmp_path))
+
+    # get_context resolves a "::Symbol" target via its symbol graph node; the
+    # base fixture only has file nodes, so add one for login.
+    repo = (await session.execute(__import__("sqlalchemy").select(Repository))).scalars().first()
+    target_id = "src/auth/service.py::login"
+    session.add(
+        GraphNode(
+            id="sk_login",
+            repository_id=repo.id,
+            node_id=target_id,
+            node_type="symbol",
+            name="login",
+            file_path="src/auth/service.py",
+            kind="method",
+            start_line=20,
+            end_line=40,
+        )
+    )
+    await session.flush()
+
+    result = await get_context([target_id], include=["skeleton"])
+    sk = result["targets"][target_id]["skeleton"]
+    assert "error" not in sk
+    assert "class AuthService:" in sk["text"]  # whole file, not just the symbol
+    assert sk["of_file"] == "src/auth/service.py"
+    assert "get_symbol" in sk["symbol_hint"]
+
+
+@pytest.mark.asyncio
 async def test_skeleton_missing_source_file(setup_mcp, tmp_path, monkeypatch):
     from repowise.server.mcp_server import _state, get_context
 

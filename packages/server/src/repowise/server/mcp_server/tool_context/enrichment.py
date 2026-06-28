@@ -12,7 +12,7 @@ import json
 from dataclasses import asdict
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.health.signals import file_signals
@@ -28,6 +28,7 @@ from repowise.core.persistence.crud import (
 )
 from repowise.core.persistence.models import (
     CoverageFile,
+    GraphEdge,
     GraphNode,
     HealthFileMetric,
     HealthFinding,
@@ -37,6 +38,30 @@ from repowise.server.mcp_server._helpers import filter_dicts_by_key, filter_path
 
 # Minimum confidence for call edges to filter false positives
 _MIN_CALL_CONFIDENCE = 0.7
+
+# Edge types that count as a "caller"/"callee" relationship.
+_CALL_EDGE_TYPES = ["calls", "extends", "implements"]
+
+
+async def _count_call_neighbors(
+    session: AsyncSession, repo_id: str, node_id: str, *, inbound: bool
+) -> int:
+    """Count distinct caller (inbound) / callee (outbound) symbols above the
+    confidence floor — the TRUE total, independent of the display limit.
+
+    Without this the callers list capped silently at the limit and reported
+    ``truncated: false``, which misled an agent doing a find-all-callers sweep
+    on a high-fan-in symbol into thinking 20 was the whole set (S2 dogfood).
+    """
+    matched = GraphEdge.target_node_id if inbound else GraphEdge.source_node_id
+    other = GraphEdge.source_node_id if inbound else GraphEdge.target_node_id
+    stmt = select(func.count(distinct(other))).where(
+        GraphEdge.repository_id == repo_id,
+        matched == node_id,
+        GraphEdge.edge_type.in_(_CALL_EDGE_TYPES),
+        GraphEdge.confidence >= _MIN_CALL_CONFIDENCE,
+    )
+    return int((await session.execute(stmt)).scalar() or 0)
 
 
 async def _resolve_call_graph(
@@ -52,7 +77,9 @@ async def _resolve_call_graph(
 ) -> None:
     """Resolve callers/callees for a symbol and attach to result_data."""
     repo_id = repository.id
-    limit = 20
+    # 99.56% of symbols have <=50 callers (p99=31); the rare hub gets an
+    # explicit `*_truncated` + `*_total` signal below rather than a silent cut.
+    limit = 50
 
     # Resolve to a graph node (symbol)
     node = await get_graph_node(session, repo_id, target)
@@ -102,7 +129,7 @@ async def _resolve_call_graph(
         repo_id,
         node.node_id,
         direction=direction,
-        edge_types=["calls", "extends", "implements"],
+        edge_types=_CALL_EDGE_TYPES,
         limit=limit,
     )
 
@@ -133,6 +160,10 @@ async def _resolve_call_graph(
             "file": other_node.file_path
             if other_node
             else (other_id.split("::")[0] if "::" in other_id else other_id),
+            # Definition line of the other symbol — lets the agent jump
+            # straight to the call-site neighbourhood instead of grepping
+            # for it (the S1 dogfood's most common follow-up).
+            "line": other_node.start_line if other_node else None,
             "confidence": e.confidence,
             "edge_type": e.edge_type,
         }
@@ -150,8 +181,21 @@ async def _resolve_call_graph(
 
     if want_callers:
         result_data["callers"] = callers
+        total = await _count_call_neighbors(session, repo_id, node.node_id, inbound=True)
+        if total > len(callers):
+            result_data["callers_total"] = total
+            result_data["callers_truncated"] = True
+            result_data["_callers_note"] = (
+                f"Showing top {len(callers)} of {total} callers by confidence. The "
+                f"graph view caps here; for the complete set (e.g. a signature change) "
+                f"grep '{node.name}('."
+            )
     if want_callees:
         result_data["callees"] = callees
+        total = await _count_call_neighbors(session, repo_id, node.node_id, inbound=False)
+        if total > len(callees):
+            result_data["callees_total"] = total
+            result_data["callees_truncated"] = True
 
 
 async def _resolve_file_level_callers(
@@ -458,7 +502,14 @@ async def _resolve_skeleton(
     a symbol's "skeleton" is just its signature, which the triage card
     already carries.
     """
-    if target_type != "file":
+    # A "file.py::Symbol" target still has a useful skeleton — the file that
+    # defines the symbol. Strip the suffix and skeleton that file rather than
+    # failing on a literal path containing "::" (which surfaced as the opaque
+    # "Source file could not be read" in the S2 dogfood). Module/other
+    # non-file targets with no "::" have no file to render.
+    is_symbol_target = "::" in target
+    file_target = target.split("::", 1)[0] if is_symbol_target else target
+    if not is_symbol_target and target_type != "file":
         result_data["skeleton"] = {"error": "skeleton requires a file target; pass the file path."}
         return
     if not repo_root:
@@ -474,7 +525,7 @@ async def _resolve_skeleton(
     res = await session.execute(
         select(WikiSymbol).where(
             WikiSymbol.repository_id == repo_id,
-            WikiSymbol.file_path == target,
+            WikiSymbol.file_path == file_target,
         )
     )
     rows = list(res.scalars().all())
@@ -484,13 +535,13 @@ async def _resolve_skeleton(
         select(GraphNode.name, GraphNode.pagerank).where(
             GraphNode.repository_id == repo_id,
             GraphNode.node_type == "symbol",
-            GraphNode.file_path == target,
+            GraphNode.file_path == file_target,
         )
     )
     pagerank = {name: pr or 0.0 for name, pr in pr_res.all() if name}
 
     repo_path = Path(str(repo_root))
-    abs_path = (repo_path / target).resolve()
+    abs_path = (repo_path / file_target).resolve()
     try:
         abs_path.relative_to(repo_path.resolve())
         source = abs_path.read_text(encoding="utf-8", errors="replace")
@@ -529,6 +580,14 @@ async def _resolve_skeleton(
         # a verified response never needs a follow-up Read.
         "verified": True,
     }
+    if is_symbol_target:
+        # The caller passed "file.py::Symbol"; tell them this is the whole
+        # file's skeleton, and how to get just the symbol's body.
+        result_data["skeleton"]["of_file"] = file_target
+        result_data["skeleton"]["symbol_hint"] = (
+            f"Skeleton of the file defining '{target.split('::', 1)[1]}'. For that "
+            f"symbol's full body call get_symbol('{target}')."
+        )
     if result.mode == "raw":
         result_data["skeleton"]["note"] = (
             "No usable symbol bounds for this file — returned source as-is."

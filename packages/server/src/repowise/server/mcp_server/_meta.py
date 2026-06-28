@@ -122,10 +122,9 @@ def freshness_from_repo(repository: Any | None) -> dict[str, Any]:
     if live_full and indexed_full:
         if live_full != indexed_full:
             out["live_head"] = live_full[:12]
-            out["stale_warning"] = (
-                f"Index built at {indexed_full[:12]} but HEAD is at "
-                f"{live_full[:12]} — code has moved on. Run `repowise update`."
-            )
+            # The two SHAs are already in ``indexed_commit`` / ``live_head`` —
+            # don't repeat them in prose. Just the directive.
+            out["stale_warning"] = "Index is behind live HEAD — run `repowise update`."
         # Match: deliberately emit nothing extra. Silence is the signal.
     elif live_full is None and age_days is not None and age_days > _STALE_AGE_FLOOR_DAYS:
         # No git signal available and the index is genuinely old.
