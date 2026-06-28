@@ -17,6 +17,7 @@ from repowise.core.persistence.models import (
     GitMetadata,
 )
 from repowise.core.registry import mcp_tool_registry as mcp
+from repowise.server.mcp_server._code_rationale import mine_rationale as _mine_rationale
 from repowise.server.mcp_server._helpers import (
     _build_origin_story,
     _compute_alignment,
@@ -234,6 +235,11 @@ async def _why_path(query: str, repo: str | None) -> dict:
                 all_git_meta,
                 repository,
             )
+            # Decisions and git history both silent → the "why" may live in a
+            # code comment. Mine this file's rationale comments directly.
+            rationale = _mine_rationale(ctx.path, [query], None)
+            if rationale:
+                result_data["code_rationale"] = rationale
 
         result_data["_meta"] = _build_meta(repository=repository)
         return result_data
@@ -464,6 +470,12 @@ async def _why_search(query: str, targets: list[str] | None, repo: str | None) -
         result_data["target_context"] = await _build_target_context(
             ctx, repository, all_decisions, target_git, targets
         )
+        # When the decision corpus is thin, the rationale for the anchored
+        # files may be in their comments — mine them against the question.
+        if not merged_decisions:
+            rationale = _mine_rationale(ctx.path, targets, query)
+            if rationale:
+                result_data["code_rationale"] = rationale
 
     result_data["_meta"] = _build_meta(repository=repository)
     return result_data

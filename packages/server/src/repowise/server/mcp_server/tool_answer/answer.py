@@ -61,6 +61,7 @@ from repowise.server.mcp_server._answer_pipeline import (
     hybrid_retrieve as _hybrid_retrieve,
 )
 from repowise.server.mcp_server._answer_pipeline import hydrate_hits as _hydrate_hits
+from repowise.server.mcp_server._code_rationale import mine_rationale as _mine_rationale
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
     _get_repo,
@@ -135,6 +136,39 @@ def _cache_entry_expired(created_at) -> bool:
 
     ts = created_at if created_at.tzinfo else created_at.replace(tzinfo=UTC)
     return (datetime.now(UTC) - ts) > timedelta(days=_ANSWER_CACHE_TTL_DAYS)
+
+
+def _gather_code_rationale(ctx, hits: list[dict], fallback_targets: list[str], question: str):
+    """Mine in-code rationale comments for a low-confidence answer.
+
+    The wiki/decision corpus failed to ground the question; the "why" may be a
+    plain code comment instead (the unbiased A/B's one durable loss). Scan the
+    already-relevant files — anchored/matched-symbol files lead, with a near-
+    line boost on their definition, then fallback_targets fill the rest — for
+    comment blocks carrying a rationale marker overlapping the question.
+    Best-effort: returns [] on any failure, never raises into the tool path.
+    """
+    repo_root = getattr(ctx, "path", None)
+    if not repo_root:
+        return []
+    candidates: list[str] = []
+    near_lines: dict[str, int] = {}
+    for h in hits or []:
+        path = h.get("target_path")
+        if not path:
+            continue
+        for s in (h.get("_anchor_symbols") or []) + [
+            s for s in (h.get("symbols") or []) if s.get("_matched")
+        ]:
+            candidates.append(path)
+            sl = s.get("start_line")
+            if sl and path not in near_lines:
+                near_lines[path] = sl
+    candidates.extend(p for p in (fallback_targets or []) if p)
+    try:
+        return _mine_rationale(repo_root, candidates, question, near_lines=near_lines)
+    except Exception:  # best-effort enrichment, never break the response
+        return []
 
 
 @mcp.tool()
@@ -393,7 +427,10 @@ async def get_answer(
                 for h in hits[:_GATED_RETURN_HITS]
                 if h.get("target_path")
             ]
-            return {
+            # Mine source comments for rationale the wiki/decision corpus
+            # missed — turns "go Read these 5 files" into a cited why.
+            code_rationale = _gather_code_rationale(ctx, hits, fallback_targets, question)
+            gated: dict = {
                 "answer": "",
                 "citations": [],
                 "confidence": "low",
@@ -412,12 +449,19 @@ async def get_answer(
                     "avoid anchoring on a wrong frame. Each best_guess entry "
                     "names why that file is in the running."
                 ),
-                "_meta": _build_meta(
-                    timing_ms=(time.perf_counter() - t0) * 1000,
-                    hint=_answer_hint("low", len(hits)),
-                    repository=repository,
-                ),
             }
+            if code_rationale:
+                gated["code_rationale"] = code_rationale
+                gated["note"] += (
+                    " code_rationale carries rationale comments mined from the "
+                    "candidate source — they may already answer the question."
+                )
+            gated["_meta"] = _build_meta(
+                timing_ms=(time.perf_counter() - t0) * 1000,
+                hint=_answer_hint("low", len(hits)),
+                repository=repository,
+            )
+            return gated
 
     # Confidence is the only axis we gate on. We deliberately do NOT add a
     # second gate keyed on question shape (e.g. relational questions
@@ -748,6 +792,16 @@ async def get_answer(
             payload["note"] = (
                 "Synthesis hedged, but symbol_bodies carries the live body of "
                 "the symbol(s) you named — read that to answer."
+            )
+        # The hedge often means the rationale isn't in the wiki at all — it's a
+        # code comment. Mine the candidate source for it before sending the
+        # agent off to Read.
+        code_rationale = _gather_code_rationale(ctx, hits, fallback_targets, question)
+        if code_rationale:
+            payload["code_rationale"] = code_rationale
+            payload["note"] += (
+                " code_rationale carries rationale comments mined from the "
+                "cited source — they may already answer the question."
             )
     else:
         # Confidence-conditional retrieval block: the block exists so the

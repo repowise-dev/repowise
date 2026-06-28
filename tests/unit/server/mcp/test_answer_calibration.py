@@ -458,3 +458,80 @@ async def test_anchor_boosts_existing_hit_without_duplicating():
     anchored = next(h for h in out if h["target_path"] == "mcp/tool_symbol.py")
     assert anchored["_symbol_anchored"] is True
     assert anchored["score"] >= 9.4
+
+
+# ---------------------------------------------------------------------------
+# code_rationale — the T4 lever: in-code rationale recovered when the wiki /
+# decision corpus could not ground the question (low-confidence exits).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_hedged_answer_surfaces_code_rationale(setup_mcp, monkeypatch, tmp_path):
+    """Hedged synthesis → mine the cited source for the rationale comment."""
+    import repowise.server.mcp_server as mcp_mod
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    _patch_pipeline(monkeypatch, answer_mod, with_symbols=True, symbol=_FN_SYMBOL)
+    _patch_provider(
+        monkeypatch,
+        answer_mod,
+        "The provided excerpts do not include the body of min_count_policy.",
+    )
+    (tmp_path / "pkg" / "alpha").mkdir(parents=True)
+    (tmp_path / "pkg" / "alpha" / "one.py").write_text(
+        "# min_count_policy defaults to 2 because the retry budget assumes\n"
+        "# at least two attempts before giving up.\n"
+        "MIN_COUNT = 2\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(mcp_mod, "_repo_path", str(tmp_path))
+
+    result = await get_answer("What is the default value of min_count_policy?")
+    assert result["confidence"] == "low"
+    assert "code_rationale" in result
+    assert any("retry budget" in r["comment"] for r in result["code_rationale"])
+    assert result["code_rationale"][0]["path"] == "pkg/alpha/one.py"
+
+
+@pytest.mark.asyncio
+async def test_gated_answer_surfaces_code_rationale(setup_mcp, monkeypatch, tmp_path):
+    """Ambiguous retrieval (gated, no synthesis) → still mine source rationale."""
+    import repowise.server.mcp_server as mcp_mod
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    # Two near-tied hits (4.0 vs 3.8) → dominance gate fails → best_guesses path.
+    async def _fake_retrieve(question, ctx):
+        return [
+            {"page_id": "file_page:pkg/alpha/one.py", "score": 4.0},
+            {"page_id": "file_page:pkg/alpha/two.py", "score": 3.8},
+        ]
+
+    async def _fake_hydrate(hits, ctx, *, scope=None):
+        for h in hits:
+            h["target_path"] = h["page_id"].removeprefix("file_page:")
+            h["title"] = h["target_path"]
+            h["summary"] = "Module summary."
+            h["snippet"] = ""
+            h["page_type"] = "file_page"
+        return hits
+
+    monkeypatch.setattr(answer_mod, "_hybrid_retrieve", _fake_retrieve)
+    monkeypatch.setattr(answer_mod, "_hydrate_hits", _fake_hydrate)
+
+    (tmp_path / "pkg" / "alpha").mkdir(parents=True)
+    (tmp_path / "pkg" / "alpha" / "one.py").write_text(
+        "# We chunk uploads at 8MB instead of streaming because the gateway\n"
+        "# buffers the whole body and OOMs on larger payloads.\n"
+        "CHUNK = 8\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(mcp_mod, "_repo_path", str(tmp_path))
+
+    result = await get_answer("why do uploads chunk at 8mb")
+    assert result["confidence"] == "low"
+    assert "best_guesses" in result  # confirms we hit the gated path
+    assert "code_rationale" in result
+    assert any("OOMs" in r["comment"] for r in result["code_rationale"])
