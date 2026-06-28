@@ -371,9 +371,16 @@ async def _hydrate_symbols_for_hits(
         syms = by_file[path]
         syms.sort(key=lambda s: (not s["_matched"], s["start_line"]))
         cap = _MAX_SYMBOLS_TOP_HIT if i == 0 else _MAX_SYMBOLS_PER_HIT
-        # Guarantee at least one matched symbol survives the cap, even if
-        # the file has more than `cap` symbols before it.
-        kept: list[dict] = [s for s in syms if s["_matched"]][:cap]
+        # Force-include the exact symbol the question named (via anchoring) so a
+        # class-name flood — where every sibling method "matches" through the
+        # parent's qualified name — can't evict the method the user asked about
+        # from the synthesis context. Without this the LLM never sees the body
+        # and hedges, which is exactly the failure anchoring exists to prevent.
+        anchor_names = {a.get("name") for a in (h.get("_anchor_symbols") or [])}
+        kept: list[dict] = [s for s in syms if s["name"] in anchor_names][:cap]
+        # Then the rest of the matched symbols, then unmatched, up to the cap.
+        kept.extend(s for s in syms if s["_matched"] and s not in kept)
+        kept = kept[:cap]
         for s in syms:
             if s in kept:
                 continue

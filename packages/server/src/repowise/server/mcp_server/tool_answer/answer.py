@@ -740,6 +740,15 @@ async def get_answer(
                 "the indexed wiki. Read one of fallback_targets to answer."
             ),
         }
+        # Even on a hedge, hand over any question-named symbol bodies we
+        # resolved — the agent can read the body directly instead of the
+        # fallback_targets file, which is the whole point of anchoring.
+        if symbol_bodies:
+            payload["symbol_bodies"] = symbol_bodies
+            payload["note"] = (
+                "Synthesis hedged, but symbol_bodies carries the live body of "
+                "the symbol(s) you named — read that to answer."
+            )
     else:
         # Confidence-conditional retrieval block: the block exists so the
         # agent can ground when the answer alone isn't trustworthy. At high
