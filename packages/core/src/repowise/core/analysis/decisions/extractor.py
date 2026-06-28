@@ -1587,13 +1587,52 @@ class DecisionExtractor:
     # Helpers
     # ------------------------------------------------------------------
 
+    def _tracked_files(self) -> set[Path] | None:
+        """Resolved paths git tracks under ``repo_path``, or ``None``.
+
+        ``None`` means "no git scoping available" (not a git repo, git missing,
+        or the command failed) — callers then fall back to walking the tree.
+        Restricting to tracked files keeps untracked / gitignored / git-excluded
+        working directories (``local-stash/``, vendored dumps, scratch folders)
+        out of the harvest: their comments are not part of the indexed codebase
+        and must not become decision records.
+        """
+        import subprocess
+
+        try:
+            proc = subprocess.run(
+                ["git", "-C", str(self._repo_path), "ls-files", "-z"],
+                capture_output=True,
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if proc.returncode != 0 or not proc.stdout:
+            return None
+        out = proc.stdout.decode("utf-8", errors="replace")
+        tracked: set[Path] = set()
+        for rel in out.split("\0"):
+            if not rel:
+                continue
+            try:
+                tracked.add((self._repo_path / rel).resolve())
+            except OSError:
+                continue
+        return tracked or None
+
     def _iter_source_files(self):
         """Yield source files under repo_path, skipping irrelevant dirs.
 
         Uses os.walk so we can prune entire subtrees (nested git repos,
-        node_modules, etc.) without descending into them.
+        node_modules, etc.) without descending into them. When the repo is a git
+        checkout, the walk is further restricted to git-tracked files so
+        untracked / excluded working directories never contribute decisions;
+        gitless indexes fall back to the full walk.
         """
         import os
+
+        tracked = self._tracked_files()
 
         for dirpath, dirnames, filenames in os.walk(self._repo_path):
             # Prune skip-listed directories in-place so os.walk won't descend
@@ -1613,8 +1652,15 @@ class DecisionExtractor:
 
             for fname in filenames:
                 fpath = Path(dirpath) / fname
-                if fpath.suffix.lower() not in _BINARY_EXTENSIONS:
-                    yield fpath
+                if fpath.suffix.lower() in _BINARY_EXTENSIONS:
+                    continue
+                if tracked is not None:
+                    try:
+                        if fpath.resolve() not in tracked:
+                            continue
+                    except OSError:
+                        continue
+                yield fpath
 
     def _get_neighbors(self, file_path: str) -> list[str]:
         """Get 1-hop graph neighbors for a file."""

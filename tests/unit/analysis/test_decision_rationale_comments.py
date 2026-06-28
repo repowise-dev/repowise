@@ -225,3 +225,40 @@ async def test_code_comment_records_pass_the_gate_in_extract_all(tmp_path):
     assert len(cc) == 1
     # Verbatim comment → the substring gate stamps it exact, never rejects it.
     assert cc[0].verification == "exact"
+
+
+async def test_harvest_skips_untracked_files_in_a_git_repo(tmp_path):
+    """In a git checkout the harvest scopes to tracked files: untracked /
+    excluded working dirs (local-stash, scratch dumps) must not produce records.
+    Gitless repos fall back to the full walk (the tmp_path tests above)."""
+    import subprocess
+
+    def _git(*args: str) -> None:
+        subprocess.run(
+            ["git", "-C", str(tmp_path), *args],
+            check=True,
+            capture_output=True,
+        )
+
+    _git("init")
+    _git("config", "user.email", "t@t.t")
+    _git("config", "user.name", "t")
+
+    (tmp_path / "tracked.py").write_text(_RATIONALE_PY, encoding="utf-8")
+    _git("add", "tracked.py")
+    _git("commit", "-m", "add tracked")
+
+    # An untracked file carrying a textbook rationale comment.
+    (tmp_path / "untracked.py").write_text(
+        "def f():\n"
+        "    # We special-case this because the upstream API double-encodes.\n"
+        "    return 1\n",
+        encoding="utf-8",
+    )
+
+    ex = DecisionExtractor(repo_path=tmp_path)
+    decisions = await ex.harvest_rationale_comments()
+
+    files = {d.evidence_file for d in decisions}
+    assert "tracked.py" in files
+    assert "untracked.py" not in files
