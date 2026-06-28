@@ -488,7 +488,7 @@ def mine_rationale(
             ordered.append(p)
     ordered = ordered[:max_files]
 
-    scored: list[tuple[float, dict]] = []
+    scored: list[tuple[float, bool, dict]] = []
     for path in ordered:
         ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
         text = _read_text(root, path)
@@ -513,6 +513,7 @@ def mine_rationale(
             scored.append(
                 (
                     score,
+                    has_marker,
                     {
                         "path": path,
                         "lines": [start, end],
@@ -522,5 +523,13 @@ def mine_rationale(
                 )
             )
 
+    # Precision: a comment with an explicit rationale marker IS the "why". When
+    # any survive, drop the marker-less blocks that only cleared the >=2-term
+    # gate — on a query with generic terms (lines / source / one) those are
+    # usually plain docstrings that read as noise next to the real rationale.
+    # The term-only blocks remain the recall fallback when nothing has a marker.
+    if any(m for _, m, _ in scored):
+        scored = [t for t in scored if t[1]]
+
     scored.sort(key=lambda t: t[0], reverse=True)
-    return [entry for _, entry in scored[:max_results]]
+    return [entry for _, _, entry in scored[:max_results]]

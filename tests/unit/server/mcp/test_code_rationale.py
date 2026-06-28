@@ -132,6 +132,35 @@ def test_mine_is_bounded_and_safe(tmp_path):
     assert mine_rationale(str(tmp_path), [], "x") == []
 
 
+def test_mine_drops_markerless_docstrings_when_a_marker_block_wins(tmp_path):
+    """Generic query terms (lines/source/one) drag in plain docstrings; once a
+    real rationale-marker block is found, the marker-less ones are dropped."""
+    src = (
+        '"""Slice text to source lines; one indexed symbol per call."""\n'
+        "MAX = 1\n"
+        "# The source line cap is 600 because round-trip count, not payload\n"
+        "# size, dominates agent token cost.\n"
+        "LIMIT = 600\n"
+    )
+    p = tmp_path / "s.py"
+    p.write_text(src, encoding="utf-8")
+    out = mine_rationale(str(tmp_path), ["s.py"], "why source lines cap one")
+    assert out, "expected the rationale block to survive"
+    # The marker block (has 'because') is the only one kept.
+    assert all("because" in r["comment"] for r in out)
+    assert any("round-trip count" in r["comment"] for r in out)
+
+
+def test_mine_keeps_term_only_blocks_when_no_marker_exists(tmp_path):
+    """Recall fallback: if nothing carries a marker, strong term overlap still
+    surfaces (so a marker-less but on-topic comment isn't lost)."""
+    src = "# configures the source line buffer for one pass\nBUF = 1\n"
+    p = tmp_path / "s.py"
+    p.write_text(src, encoding="utf-8")
+    out = mine_rationale(str(tmp_path), ["s.py"], "source line buffer pass")
+    assert any("source line buffer" in r["comment"] for r in out)
+
+
 def test_mine_caps_result_count(tmp_path):
     # Many rationale comments → result list is capped (<= _MAX_RESULTS=6).
     lines = [f"# reason {i}: we avoid path {i} because it deadlocks\n" for i in range(40)]
