@@ -61,6 +61,37 @@ def _is_value_question(question: str) -> bool:
     return bool(_VALUE_QUESTION_RE.search(question or ""))
 
 
+def _retrieval_corpus(hits: list[dict], *, include_paths: bool = False) -> str:
+    """All text the LLM was shown for *hits*, joined for a grounding check.
+
+    Titles, summaries, snippets, and every hydrated symbol field (name,
+    signature, docstring, source body). ``include_paths`` adds the file paths
+    and anchored-symbol names — useful when grounding identifier-shaped terms
+    (which often live in a path) but deliberately OFF for the number check,
+    where a digit inside a path would falsely ground an asserted value.
+    """
+    parts: list[str] = []
+    for h in hits or []:
+        keys = ("title", "summary", "snippet", "excerpt")
+        if include_paths:
+            keys = (*keys, "target_path")
+        for key in keys:
+            v = h.get(key)
+            if v:
+                parts.append(str(v))
+        for s in h.get("symbols") or []:
+            for key in ("name", "signature", "docstring", "source_excerpt"):
+                v = s.get(key)
+                if v:
+                    parts.append(str(v))
+        if include_paths:
+            for a in h.get("_anchor_symbols") or []:
+                v = a.get("name")
+                if v:
+                    parts.append(str(v))
+    return "\n".join(parts)
+
+
 def _ungrounded_numbers(answer_text: str, hits: list[dict]) -> list[str]:
     """Numbers the answer asserts that appear nowhere in the retrieval material.
 
@@ -75,16 +106,58 @@ def _ungrounded_numbers(answer_text: str, hits: list[dict]) -> list[str]:
     if not asserted:
         return []
 
-    corpus_parts: list[str] = []
-    for h in hits or []:
-        for key in ("title", "summary", "snippet", "excerpt"):
-            v = h.get(key)
-            if v:
-                corpus_parts.append(str(v))
-        for s in h.get("symbols") or []:
-            for key in ("name", "signature", "docstring", "source_excerpt"):
-                v = s.get(key)
-                if v:
-                    corpus_parts.append(str(v))
-    grounded = _numbers_in("\n".join(corpus_parts))
+    grounded = _numbers_in(_retrieval_corpus(hits))
     return sorted(asserted - grounded)
+
+
+# Identifier-shaped tokens an answer uses to NAME a mechanism: CamelCase
+# (``PageRank``), snake_case (``apply_pagerank_bias``), dotted paths
+# (``Foo.bar``), or anything bearing a digit. Pure-lowercase English
+# (``centrality``, ``fallback``, ``cache``) is intentionally excluded —
+# only distinctive, code-like terms are strong enough signal that a wrong
+# "why" frame imported a foreign name. Mirrors the question-identifier
+# shape rule in ``symbols._extract_question_identifiers``.
+_FRAME_TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*")
+
+
+def _distinctive_terms(text: str) -> set[str]:
+    """Identifier-shaped terms in *text* (≥4 chars, CamelCase/snake/digit)."""
+    terms: set[str] = set()
+    for tok in _FRAME_TOKEN_RE.findall(text or ""):
+        for c in (tok, *tok.split(".")):
+            if len(c) < 4:
+                continue
+            if any(ch.isupper() for ch in c) or "_" in c or any(ch.isdigit() for ch in c):
+                terms.add(c)
+    return terms
+
+
+def _frame_term_grounding(
+    answer_text: str, question: str, hits: list[dict]
+) -> tuple[list[str], int]:
+    """Split the answer's mechanism-naming terms by whether retrieval grounds them.
+
+    Returns ``(ungrounded, grounded_count)``. A wrong "why" frame betrays
+    itself by importing a distinctive code-like term — a class, a function,
+    a module — that the cited material never contained, while the surface
+    facts (the number, the file) can be right. This surfaces the absent
+    terms so the gate can downgrade when they are not outweighed by grounded
+    ones. Terms the question itself named are excluded: echoing the user's
+    own framing is not a synthesised frame.
+    """
+    answer_terms = _distinctive_terms(answer_text)
+    if not answer_terms:
+        return [], 0
+    q_lower = (question or "").lower()
+    corpus = _retrieval_corpus(hits, include_paths=True).lower()
+    ungrounded: list[str] = []
+    grounded = 0
+    for t in answer_terms:
+        tl = t.lower()
+        if tl in q_lower:
+            continue
+        if tl in corpus:
+            grounded += 1
+        else:
+            ungrounded.append(t)
+    return sorted(ungrounded), grounded

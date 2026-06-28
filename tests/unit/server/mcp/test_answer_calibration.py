@@ -18,6 +18,8 @@ import pytest
 
 from repowise.server.mcp_server.tool_answer.confidence import (
     _answer_is_hedged,
+    _distinctive_terms,
+    _frame_term_grounding,
     _is_value_question,
     _ungrounded_numbers,
 )
@@ -99,6 +101,70 @@ class TestUngroundedNumbers:
         # as ungrounded against ``100_000`` in source.
         hits = [{"symbols": [{"name": "MAX", "signature": "MAX = 100_000", "docstring": ""}]}]
         assert _ungrounded_numbers("The cap is 100,000 tokens.", hits) == []
+
+
+class TestDistinctiveTerms:
+    def test_camelcase_kept(self) -> None:
+        assert "PageRank" in _distinctive_terms("ordered by the PageRank centrality score")
+
+    def test_snake_case_kept(self) -> None:
+        assert "apply_pagerank_bias" in _distinctive_terms("calls apply_pagerank_bias on the set")
+
+    def test_plain_lowercase_dropped(self) -> None:
+        # Common technical English is too broad to gate on.
+        assert _distinctive_terms("the centrality computation caps neighbors") == set()
+
+    def test_short_tokens_dropped(self) -> None:
+        assert _distinctive_terms("py id db v2") == set()  # all <4 chars
+
+    def test_citation_path_yields_no_term(self) -> None:
+        # A lowercase dotted filename is not a distinctive mechanism term.
+        assert _distinctive_terms("see pkg/alpha/one.py for details") == set()
+
+
+class TestFrameTermGrounding:
+    HITS = [
+        {
+            "title": "enrichment",
+            "summary": "Caller/callee rollup for symbol context.",
+            "snippet": "",
+            "target_path": "mcp/enrichment.py",
+            "symbols": [
+                {
+                    "name": "_count_call_neighbors",
+                    "signature": "def _count_call_neighbors(...)",
+                    "docstring": "Counts distinct caller neighbors above confidence.",
+                }
+            ],
+        }
+    ]
+
+    def test_foreign_frame_term_is_ungrounded(self) -> None:
+        ungrounded, grounded = _frame_term_grounding(
+            "The caller list is limited because the PageRank cap bounds neighbors.",
+            "why is the caller list limited",
+            self.HITS,
+        )
+        assert ungrounded == ["PageRank"]
+        assert grounded == 0
+
+    def test_grounded_frame_term_is_not_flagged(self) -> None:
+        ungrounded, grounded = _frame_term_grounding(
+            "The list is bounded by _count_call_neighbors (mcp/enrichment.py).",
+            "why is the caller list limited",
+            self.HITS,
+        )
+        assert ungrounded == []
+        assert grounded == 1
+
+    def test_question_named_term_is_excluded(self) -> None:
+        # Echoing the user's own framing is not an invented frame.
+        ungrounded, _ = _frame_term_grounding(
+            "It uses PageRank ordering.",
+            "why does the caller list use PageRank ordering",
+            self.HITS,
+        )
+        assert ungrounded == []
 
 
 # ---------------------------------------------------------------------------
@@ -535,3 +601,100 @@ async def test_gated_answer_surfaces_code_rationale(setup_mcp, monkeypatch, tmp_
     assert "best_guesses" in result  # confirms we hit the gated path
     assert "code_rationale" in result
     assert any("OOMs" in r["comment"] for r in result["code_rationale"])
+
+
+# ---------------------------------------------------------------------------
+# Frame-grounding gate — a why-answer naming a mechanism term absent from the
+# retrieved source is downgraded from high to medium (conflated rationale).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_why_answer_with_unsupported_frame_downgrades_to_medium(setup_mcp, monkeypatch):
+    """High-dominance why-answer whose 'because X' names a term retrieval never
+    showed → medium, not high."""
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    _patch_pipeline(monkeypatch, answer_mod, with_symbols=True)
+    _patch_provider(
+        monkeypatch,
+        answer_mod,
+        "The caller list is limited because the PageRank centrality cap "
+        "bounds neighbors (pkg/alpha/one.py).",
+    )
+
+    result = await get_answer("why is the caller list limited the way it is")
+    assert result["confidence"] == "medium"
+    assert "PageRank" in result["note"]
+    assert "Frame-grounding" in result["note"]
+    assert "next_action_hint" in result
+
+
+@pytest.mark.asyncio
+async def test_why_answer_with_grounded_frame_stays_high(setup_mcp, monkeypatch):
+    """The same why-shape, but the named mechanism (MIN_COUNT) IS in the
+    retrieved symbols → confidence stays high."""
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    _patch_pipeline(monkeypatch, answer_mod, with_symbols=True)
+    _patch_provider(
+        monkeypatch,
+        answer_mod,
+        "The caller list is limited because MIN_COUNT bounds the retries "
+        "(pkg/alpha/one.py).",
+    )
+
+    result = await get_answer("why is the caller list limited the way it is")
+    assert result["confidence"] == "high"
+    assert "High confidence" in result["note"]
+
+
+@pytest.mark.asyncio
+async def test_frame_gate_scoped_to_why_questions(setup_mcp, monkeypatch):
+    """A mechanism (non-why) question with the same ungrounded term is NOT
+    gated — only rationale claims get the frame check."""
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    _patch_pipeline(monkeypatch, answer_mod, with_symbols=True)
+    _patch_provider(
+        monkeypatch,
+        answer_mod,
+        "The caller list is bounded by the PageRank centrality cap "
+        "(pkg/alpha/one.py).",
+    )
+
+    result = await get_answer("how does the caller list get bounded")
+    assert result["confidence"] == "high"
+
+
+@pytest.mark.asyncio
+async def test_frame_gated_answer_surfaces_code_rationale(setup_mcp, monkeypatch, tmp_path):
+    """When the frame gate trips, mine the candidate source for the real
+    rationale comment so the downgrade ships a lead."""
+    import repowise.server.mcp_server as mcp_mod
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    _patch_pipeline(monkeypatch, answer_mod, with_symbols=True)
+    _patch_provider(
+        monkeypatch,
+        answer_mod,
+        "The caller list is limited because the PageRank cap applies "
+        "(pkg/alpha/one.py).",
+    )
+    (tmp_path / "pkg" / "alpha").mkdir(parents=True)
+    (tmp_path / "pkg" / "alpha" / "one.py").write_text(
+        "# The caller list is limited to 50 because beyond that the rollup\n"
+        "# floods the synthesis context and the agent loses the signal.\n"
+        "CALLER_LIMIT = 50\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(mcp_mod, "_repo_path", str(tmp_path))
+
+    result = await get_answer("why is the caller list limited the way it is")
+    assert result["confidence"] == "medium"
+    assert "code_rationale" in result
+    assert any("floods the synthesis context" in r["comment"] for r in result["code_rationale"])

@@ -212,7 +212,10 @@ _HIGH_CONFIDENCE_SCORE_FLOOR = 1.5
 # and can carry confidently-asserted ungrounded values.
 # v5: `symbol_bodies` field — inline full bodies of question-named symbols so
 # the consumer skips the get_symbol follow-up. Cached v4 payloads lack it.
-_ANSWER_SCHEMA_VERSION = 5
+# v6: frame-grounding gate — why-answers naming a mechanism term absent from
+# the retrieval corpus downgrade high→medium. Cached v5 payloads predate the
+# gate and can carry a confidently-asserted, conflated "because X" frame.
+_ANSWER_SCHEMA_VERSION = 6
 
 # Hard TTL on answer-cache rows. Commit-based invalidation (the payload's
 # stamped ``_indexed_commit`` vs the repo's current head) is the primary
