@@ -34,6 +34,13 @@ _MATCHED_SYMBOL_SOURCE_LINES = 40
 # "how does X work" / "explain method Y" questions (the agent gets X's body in
 # the same call). Bounded so the body block can't dominate the cached prefix.
 _INLINE_BODY_MAX_SYMBOLS = 2
+# Line cap for an inlined symbol_bodies block. Larger than the synthesis
+# excerpt (_MATCHED_SYMBOL_SOURCE_LINES) because this body is for the agent,
+# not the LLM prompt: a docstring-heavy definition (e.g. get_symbol) burns the
+# 40-line synthesis cap on docstring and truncates the actual logic, forcing
+# the get_symbol follow-up the field exists to remove. 120 serves the whole
+# body of ~99% of symbols in one shot; the rest carry a continuation token.
+_INLINE_BODY_MAX_LINES = 120
 
 # Sort priority by symbol kind. Classes first because "what does X do" /
 # "which class inherits from Y" questions resolve at the class level. Then

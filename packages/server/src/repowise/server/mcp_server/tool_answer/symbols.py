@@ -15,6 +15,7 @@ from sqlalchemy import select
 from repowise.core.persistence.models import WikiSymbol
 from repowise.server.mcp_server.tool_answer.config import (
     _ENRICH_TOP_N_HITS,
+    _HIGH_CONFIDENCE_SCORE_FLOOR,
     _MATCHED_SYMBOL_SOURCE_LINES,
     _MAX_RICH_SIG_LINES,
     _MAX_SYMBOLS_PER_HIT,
@@ -176,6 +177,102 @@ def _extract_value_answer(hits: list[dict], question_ids: set[str]) -> dict | No
                 return entry
             candidates.append(entry)
     return candidates[0] if candidates else None
+
+
+async def _anchor_symbol_hits(
+    session,
+    repo_id: str,
+    question_ids: set[str],
+    hits: list[dict],
+) -> list[dict]:
+    """Inject the defining file of a question-named indexed symbol into hits.
+
+    BM25 / vector retrieval misses deep-path files even when the named symbol
+    is indexed — "explain DecisionExtractor.extract_all" ranks the pipeline
+    orchestrators above ``analysis/decisions/extractor.py`` and never surfaces
+    the definition, so synthesis hedges and ``symbol_bodies`` can't fire. When
+    a question identifier resolves to a single indexed function / method /
+    class, prepend (or boost) its defining file as the dominant hit so the
+    answer grounds in the actual definition. Homonyms are kept only when the
+    question also names the parent (``DecisionExtractor``) — never guessed.
+
+    Returns ``hits`` re-sorted by score (mutated in place).
+    """
+    if not question_ids:
+        return hits
+    qids_lower = {q.lower() for q in question_ids}
+    res = await session.execute(
+        select(WikiSymbol).where(
+            WikiSymbol.repository_id == repo_id,
+            WikiSymbol.name.in_(list(question_ids)),
+            WikiSymbol.kind.in_(("function", "method", "class", "interface")),
+        )
+    )
+    by_name: dict[str, list] = {}
+    for row in res.scalars().all():
+        by_name.setdefault(row.name, []).append(row)
+
+    chosen: list = []
+    for cands in by_name.values():
+        if len(cands) == 1:
+            chosen.append(cands[0])
+            continue
+        # Disambiguate a homonym only when the question names its parent or
+        # the parent appears in the qualified name. Otherwise skip — a wrong
+        # anchor is worse than no anchor.
+        narrowed = [
+            c
+            for c in cands
+            if (c.parent_name or "").lower() in qids_lower
+            or any(
+                q in (c.qualified_name or "").lower()
+                for q in qids_lower
+                if len(q) >= 4 and q != (c.name or "").lower()
+            )
+        ]
+        if len(narrowed) == 1:
+            chosen.append(narrowed[0])
+
+    if not chosen:
+        return hits
+
+    by_path = {h.get("target_path"): h for h in hits}
+    top_score = max((h.get("score", 0.0) for h in hits), default=0.0)
+    # Above the current top so an exact symbol match dominates the dominance
+    # gate (an exact name+parent hit is stronger evidence than a prose match).
+    anchor_score = max(top_score + 2.0, _HIGH_CONFIDENCE_SCORE_FLOOR + 1.0)
+    for sym in chosen:
+        fp = sym.file_path
+        target = by_path.get(fp)
+        if target is None:
+            target = {
+                "page_id": f"file_page:{fp}",
+                "target_path": fp,
+                "title": fp,
+                "summary": "",
+                "snippet": "",
+                "page_type": "file_page",
+                "score": anchor_score,
+                "_symbol_anchored": True,
+            }
+            hits.insert(0, target)
+            by_path[fp] = target
+        else:
+            target["score"] = max(target.get("score", 0.0), anchor_score)
+            target["_symbol_anchored"] = True
+        # Stash the exact symbol the question named so symbol_bodies serves it
+        # directly — the fuzzy hydration cap drops a far-down method when the
+        # parent class name floods every sibling's qualified-name match.
+        target.setdefault("_anchor_symbols", []).append(
+            {
+                "name": sym.name,
+                "kind": sym.kind,
+                "start_line": sym.start_line,
+                "end_line": sym.end_line,
+            }
+        )
+    hits.sort(key=lambda h: h.get("score", 0.0), reverse=True)
+    return hits
 
 
 async def _hydrate_symbols_for_hits(

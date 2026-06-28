@@ -34,6 +34,7 @@ import contextlib
 import json as _json
 import logging
 import time
+from pathlib import Path
 
 from sqlalchemy import delete, select
 
@@ -82,6 +83,7 @@ from repowise.server.mcp_server.tool_answer.config import (
     _ENRICH_TOP_N_HITS,
     _GATED_RETURN_HITS,
     _HIGH_CONFIDENCE_SCORE_FLOOR,
+    _INLINE_BODY_MAX_LINES,
     _INLINE_BODY_MAX_SYMBOLS,
     _SYSTEM_PROMPT,
     _USER_TEMPLATE,
@@ -97,9 +99,11 @@ from repowise.server.mcp_server.tool_answer.retrieval import (
     serialize_hits as _serialize_hits,
 )
 from repowise.server.mcp_server.tool_answer.symbols import (
+    _anchor_symbol_hits,
     _extract_question_identifiers,
     _extract_value_answer,
     _hydrate_symbols_for_hits,
+    _read_symbol_source,
 )
 from repowise.server.mcp_server.tool_answer.synthesis import (
     _hash_question,
@@ -274,6 +278,10 @@ async def get_answer(
     # they never enter ranking, citations, or fallback_targets.
     hits = filter_dicts_by_key(hits, "target_path", exclude_spec)
 
+    # Identifiers the question names explicitly — drives symbol anchoring
+    # (below) and question-aware symbol promotion (during hydration).
+    question_ids = _extract_question_identifiers(question)
+
     # Term-coverage re-rank before any graph-aware bias so conjunctive
     # matches survive the merge.
     hits = _rerank_by_coverage(hits, question)
@@ -298,6 +306,15 @@ async def get_answer(
     # Re-filter: graph expansion can pull excluded neighbors back in (before the
     # cap, so an excluded neighbor can't occupy a top-5 slot).
     hits = filter_dicts_by_key(hits, "target_path", exclude_spec)
+    # Symbol anchoring: when the question names an indexed function / method /
+    # class, force its defining file into the candidate set as a dominant hit.
+    # Fuzzy retrieval misses deep-path definitions even when the symbol is
+    # indexed; this makes "explain X" one-shot-complete instead of degrading
+    # to best_guesses on plausible-but-wrong neighbors.
+    if question_ids:
+        with contextlib.suppress(Exception):
+            async with get_session(ctx.session_factory) as session:
+                hits = await _anchor_symbol_hits(session, repo_id, question_ids, hits)
     # Always cap retrieval hits at 5 for the response payload.
     hits = hits[:5]
 
@@ -305,7 +322,6 @@ async def get_answer(
     # aware: identifiers extracted from the question promote matching
     # symbols and attach a source-body excerpt — the difference between a
     # hedged answer on a specific-method question and a grounded one.
-    question_ids = _extract_question_identifiers(question)
     if hits:
         with contextlib.suppress(Exception):
             async with get_session(ctx.session_factory) as session:
@@ -565,40 +581,71 @@ async def get_answer(
     # from get_symbol's `verified` contract. When the indexed body is longer
     # than the hydrator's line cap, a `continuation` names the exact range
     # read for the remainder (mirrors get_symbol).
-    symbol_bodies: list[dict] = []
+    # Gather eligible definitions across the top hits, ranked so the most
+    # relevant body leads. Tier 0 = the exact symbol the question named, as
+    # resolved by symbol anchoring (survives the fuzzy hydration cap that a
+    # parent class name otherwise floods). Tier 1 = question-matched hydrated
+    # symbols. Within a tier, a function/method outranks a class container, so
+    # "explain the extract_all method of DecisionExtractor" serves extract_all,
+    # not the 1,300-line class head. Then document order.
+    _body_candidates: list[tuple[int, int, int, str, dict]] = []
     for h in hits[:_ENRICH_TOP_N_HITS]:
         path = h.get("target_path")
         if not path:
             continue
+        for s in h.get("_anchor_symbols") or []:
+            name = s.get("name")
+            if not name or name not in answer_text:
+                continue
+            kind = s.get("kind")
+            kind_rank = 0 if kind in ("function", "method") else 1
+            _body_candidates.append((0, kind_rank, s.get("start_line") or 0, path, s))
         for s in h.get("symbols") or []:
-            if len(symbol_bodies) >= _INLINE_BODY_MAX_SYMBOLS:
-                break
             name = s.get("name")
             if not name or len(name) < 3 or not s.get("_matched"):
                 continue
             if name not in answer_text:
                 continue
-            if s.get("kind") not in ("function", "method", "class", "interface"):
+            kind = s.get("kind")
+            if kind not in ("function", "method", "class", "interface"):
                 continue
-            body = s.get("source_excerpt")
-            if not body:
-                continue
-            start = s.get("start_line") or 0
-            served = body.count("\n") + 1
-            end_served = start + served - 1
-            sym_end = s.get("end_line") or end_served
-            entry: dict = {
-                "path": path,
-                "name": name,
-                "lines": [start, end_served],
-                "source": body,
-            }
-            if sym_end > end_served:
-                entry["truncated"] = True
-                entry["continuation"] = f"{path}:{end_served + 1}-{sym_end}"
-            symbol_bodies.append(entry)
+            kind_rank = 0 if kind in ("function", "method") else 1
+            _body_candidates.append((1, kind_rank, s.get("start_line") or 0, path, s))
+    _body_candidates.sort(key=lambda t: (t[0], t[1], t[2]))
+
+    symbol_bodies: list[dict] = []
+    _seen_bodies: set[tuple[str, str]] = set()
+    repo_root = Path(str(ctx.path)) if getattr(ctx, "path", None) else None
+    for _tier, _kind_rank, start, path, s in _body_candidates:
         if len(symbol_bodies) >= _INLINE_BODY_MAX_SYMBOLS:
             break
+        name = s["name"]
+        if (path, name) in _seen_bodies:
+            continue
+        sym_end = s.get("end_line") or 0
+        # Re-read a fuller body than the synthesis excerpt: this block is for
+        # the agent, so a docstring-heavy def shouldn't spend its whole window
+        # on docstring and truncate the logic the question asked about. Falls
+        # back to the hydrator's excerpt if the re-read fails.
+        body = _read_symbol_source(
+            repo_root, path, start, sym_end, max_lines=_INLINE_BODY_MAX_LINES
+        ) or s.get("source_excerpt")
+        if not body:
+            continue
+        served = body.count("\n") + 1
+        end_served = start + served - 1
+        sym_end = sym_end or end_served
+        entry: dict = {
+            "path": path,
+            "name": name,
+            "lines": [start, end_served],
+            "source": body,
+        }
+        if sym_end > end_served:
+            entry["truncated"] = True
+            entry["continuation"] = f"{path}:{end_served + 1}-{sym_end}"
+        symbol_bodies.append(entry)
+        _seen_bodies.add((path, name))
 
     # Compute confidence from the dominance ratio (top hit vs second hit).
     # The dominance ratio is a more reliable separator than absolute BM25

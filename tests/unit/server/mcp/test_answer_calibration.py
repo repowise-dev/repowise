@@ -341,3 +341,120 @@ async def test_inline_body_truncation_emits_continuation(setup_mcp, monkeypatch)
     [b] = result["symbol_bodies"]
     assert b["truncated"] is True
     assert b["continuation"] == "pkg/alpha/one.py:13-60"
+
+
+# ---------------------------------------------------------------------------
+# Symbol anchoring — force the defining file of a question-named symbol into
+# the candidate set when fuzzy retrieval missed it.
+# ---------------------------------------------------------------------------
+
+
+class _Sym:
+    def __init__(
+        self,
+        name,
+        file_path,
+        kind="method",
+        parent_name=None,
+        qualified_name=None,
+        start_line=1,
+        end_line=10,
+    ):
+        self.name = name
+        self.file_path = file_path
+        self.kind = kind
+        self.parent_name = parent_name
+        self.qualified_name = qualified_name or name
+        self.start_line = start_line
+        self.end_line = end_line
+
+
+class _FakeResult:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def scalars(self):
+        return self
+
+    def all(self):
+        return self._rows
+
+
+class _FakeSession:
+    def __init__(self, rows):
+        self._rows = rows
+
+    async def execute(self, *a, **k):
+        return _FakeResult(self._rows)
+
+
+@pytest.mark.asyncio
+async def test_anchor_injects_defining_file_as_dominant_hit():
+    from repowise.server.mcp_server.tool_answer.symbols import _anchor_symbol_hits
+
+    rows = [
+        _Sym(
+            "extract_all",
+            "core/decisions/extractor.py",
+            parent_name="DecisionExtractor",
+            qualified_name="DecisionExtractor.extract_all",
+        )
+    ]
+    hits = [{"target_path": "core/pipeline/incremental.py", "score": 3.6}]
+    out = await _anchor_symbol_hits(
+        _FakeSession(rows), "repo1", {"extract_all", "DecisionExtractor"}, hits
+    )
+    assert out[0]["target_path"] == "core/decisions/extractor.py"
+    assert out[0]["_symbol_anchored"] is True
+    assert out[0]["score"] > 3.6  # dominates the fuzzy top hit
+
+
+@pytest.mark.asyncio
+async def test_anchor_skips_ambiguous_homonym():
+    from repowise.server.mcp_server.tool_answer.symbols import _anchor_symbol_hits
+
+    rows = [
+        _Sym("extract_all", "a/x.py", parent_name="A", qualified_name="A.extract_all"),
+        _Sym("extract_all", "b/y.py", parent_name="B", qualified_name="B.extract_all"),
+    ]
+    hits = [{"target_path": "c/z.py", "score": 2.0}]
+    out = await _anchor_symbol_hits(_FakeSession(rows), "r", {"extract_all"}, hits)
+    assert all(not h.get("_symbol_anchored") for h in out)
+    assert out[0]["target_path"] == "c/z.py"  # nothing injected
+
+
+@pytest.mark.asyncio
+async def test_anchor_disambiguates_homonym_by_named_parent():
+    from repowise.server.mcp_server.tool_answer.symbols import _anchor_symbol_hits
+
+    rows = [
+        _Sym("extract_all", "a/x.py", parent_name="Alpha", qualified_name="Alpha.extract_all"),
+        _Sym(
+            "extract_all",
+            "b/y.py",
+            parent_name="DecisionExtractor",
+            qualified_name="DecisionExtractor.extract_all",
+        ),
+    ]
+    hits = [{"target_path": "c/z.py", "score": 2.0}]
+    out = await _anchor_symbol_hits(
+        _FakeSession(rows), "r", {"extract_all", "DecisionExtractor"}, hits
+    )
+    assert out[0]["target_path"] == "b/y.py"
+
+
+@pytest.mark.asyncio
+async def test_anchor_boosts_existing_hit_without_duplicating():
+    from repowise.server.mcp_server.tool_answer.symbols import _anchor_symbol_hits
+
+    rows = [_Sym("get_symbol", "mcp/tool_symbol.py", kind="function", qualified_name="get_symbol")]
+    hits = [
+        {"target_path": "mcp/tool_symbol.py", "score": 9.4},
+        {"target_path": "other.py", "score": 7.9},
+    ]
+    out = await _anchor_symbol_hits(_FakeSession(rows), "r", {"get_symbol"}, hits)
+    paths = [h["target_path"] for h in out]
+    assert paths.count("mcp/tool_symbol.py") == 1  # boosted, not duplicated
+    anchored = next(h for h in out if h["target_path"] == "mcp/tool_symbol.py")
+    assert anchored["_symbol_anchored"] is True
+    assert anchored["score"] >= 9.4
