@@ -258,9 +258,9 @@ async def _run_decision_extraction(
     try:
         from repowise.core.analysis.decision_extractor import DecisionExtractor
 
-        # Seven sources run concurrently inside extract_all(); drive a
+        # Eight sources run concurrently inside extract_all(); drive a
         # determinate bar so users see live progress.
-        decision_steps = 7
+        decision_steps = 8
         if progress:
             progress.on_phase_start("decisions", decision_steps)
 
@@ -293,6 +293,7 @@ async def _run_decision_extraction(
                 f"{bs.get('pr', 0)} PR · "
                 f"{bs.get('git_archaeology', 0)} git · "
                 f"{bs.get('comment', 0)} comments · "
+                f"{bs.get('code_comment', 0)} code-comments · "
                 f"{bs.get('readme_mining', 0)} docs",
             )
 

@@ -43,8 +43,9 @@ SOURCE_RANK: dict[str, int] = {
     "git_archaeology": 6,  # alias for commit-mined decisions
     "changelog": 5,  # keep-a-changelog Changed/Removed/Deprecated
     "inline_marker": 4,  # # WHY: / # DECISION: code markers
-    "comment": 3,  # rationale prose in block comments / docstrings
+    "comment": 3,  # LLM-curated rationale prose on high-centrality code
     "readme_mining": 3,  # implicit decisions in README/docs prose
+    "code_comment": 2,  # deterministic rationale-marker comment harvest (heuristic)
     "test_name": 2,  # placeholder — behaviour asserted by a test name
     "inferred": 1,  # placeholder — purely inferred, no verbatim source
     "llm_inferred": 1,  # Phase 2 LLM-docs harvest
