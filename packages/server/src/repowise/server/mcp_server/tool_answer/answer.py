@@ -10,6 +10,11 @@ search → context → read loop with one tool call that returns:
       "fallback_targets":  list  — top retrieval hits the agent should Read
                                    to verify (always present)
       "retrieval":         list  — raw top-N hits with snippets
+      "symbol_bodies":     list  — full live body of each question-named
+                                   definition (collapses the get_symbol
+                                   follow-up); present only when the answer
+                                   names a function/method/class that was
+                                   hydrated
     }
 
 When no LLM provider is configured, the tool degrades to retrieval-only
@@ -77,6 +82,7 @@ from repowise.server.mcp_server.tool_answer.config import (
     _ENRICH_TOP_N_HITS,
     _GATED_RETURN_HITS,
     _HIGH_CONFIDENCE_SCORE_FLOOR,
+    _INLINE_BODY_MAX_SYMBOLS,
     _SYSTEM_PROMPT,
     _USER_TEMPLATE,
 )
@@ -140,6 +146,8 @@ async def get_answer(
     cite it directly, no verification Read needed. Low confidence returns
     best_guesses with one-line justifications instead of an empty answer.
     retrieval_quality separately rates the retrieval that fed synthesis.
+    When the answer names a function/method/class, ``symbol_bodies`` carries
+    its full live body — read that instead of a follow-up get_symbol.
 
     Args:
         question: developer question.
@@ -546,6 +554,52 @@ async def get_answer(
         if len(quotes) >= 5:
             break
 
+    # Inline symbol bodies: for the multi-line definitions (function / method
+    # / class) the answer actually names, surface the full body the hydrator
+    # already read live for synthesis. This collapses the get_answer ->
+    # get_symbol drill-down — the agent that asked "how does X work" gets X's
+    # body in the same call instead of a follow-up read. Constants stay in
+    # `quotes` (their body IS the one-line assignment); only definitions with
+    # a real body earn a block. `source` is the live body sliced at the
+    # indexed bounds; it is NOT bounds-verified, so the field stays distinct
+    # from get_symbol's `verified` contract. When the indexed body is longer
+    # than the hydrator's line cap, a `continuation` names the exact range
+    # read for the remainder (mirrors get_symbol).
+    symbol_bodies: list[dict] = []
+    for h in hits[:_ENRICH_TOP_N_HITS]:
+        path = h.get("target_path")
+        if not path:
+            continue
+        for s in h.get("symbols") or []:
+            if len(symbol_bodies) >= _INLINE_BODY_MAX_SYMBOLS:
+                break
+            name = s.get("name")
+            if not name or len(name) < 3 or not s.get("_matched"):
+                continue
+            if name not in answer_text:
+                continue
+            if s.get("kind") not in ("function", "method", "class", "interface"):
+                continue
+            body = s.get("source_excerpt")
+            if not body:
+                continue
+            start = s.get("start_line") or 0
+            served = body.count("\n") + 1
+            end_served = start + served - 1
+            sym_end = s.get("end_line") or end_served
+            entry: dict = {
+                "path": path,
+                "name": name,
+                "lines": [start, end_served],
+                "source": body,
+            }
+            if sym_end > end_served:
+                entry["truncated"] = True
+                entry["continuation"] = f"{path}:{end_served + 1}-{sym_end}"
+            symbol_bodies.append(entry)
+        if len(symbol_bodies) >= _INLINE_BODY_MAX_SYMBOLS:
+            break
+
     # Compute confidence from the dominance ratio (top hit vs second hit).
     # The dominance ratio is a more reliable separator than absolute BM25
     # thresholds, which tend to label most retrievals "high" indiscriminately.
@@ -665,6 +719,8 @@ async def get_answer(
         }
         if quotes:
             payload["quotes"] = quotes
+        if symbol_bodies:
+            payload["symbol_bodies"] = symbol_bodies
         if ungrounded_values:
             payload["note"] = (
                 f"Value-grounding gate: the answer asserts {ungrounded_values} "

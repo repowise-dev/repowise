@@ -28,6 +28,13 @@ _MAX_SYMBOLS_PER_HIT = 4
 _MATCHED_SYMBOL_DOC_CHARS = 400
 _MATCHED_SYMBOL_SOURCE_LINES = 40
 
+# How many question-named symbol bodies get_answer inlines in `symbol_bodies`.
+# The hydrator already reads these bodies live for synthesis; surfacing them
+# in the response collapses the get_answer -> get_symbol drill-down on
+# "how does X work" / "explain method Y" questions (the agent gets X's body in
+# the same call). Bounded so the body block can't dominate the cached prefix.
+_INLINE_BODY_MAX_SYMBOLS = 2
+
 # Sort priority by symbol kind. Classes first because "what does X do" /
 # "which class inherits from Y" questions resolve at the class level. Then
 # top-level functions, then methods (which usually only matter once the
@@ -196,7 +203,9 @@ _HIGH_CONFIDENCE_SCORE_FLOOR = 1.5
 # v4: confidence calibration gates (value-grounding, citation-source,
 # expanded hedge markers). Cached v3 confidence values predate the gates
 # and can carry confidently-asserted ungrounded values.
-_ANSWER_SCHEMA_VERSION = 4
+# v5: `symbol_bodies` field — inline full bodies of question-named symbols so
+# the consumer skips the get_symbol follow-up. Cached v4 payloads lack it.
+_ANSWER_SCHEMA_VERSION = 5
 
 # Hard TTL on answer-cache rows. Commit-based invalidation (the payload's
 # stamped ``_indexed_commit`` vs the repo's current head) is the primary

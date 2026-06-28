@@ -279,3 +279,65 @@ async def test_synthesized_answer_carries_grounded_quotes(setup_mcp, monkeypatch
     assert q["path"] == "pkg/alpha/one.py"
     assert q["lines"][0] == 10
     assert "MIN_COUNT = 2" in q["quote"]
+    # A constant's body IS its one-line assignment — it belongs in `quotes`,
+    # never the `symbol_bodies` definition block.
+    assert not result.get("symbol_bodies")
+
+
+_FN_BODY_SYMBOL = {
+    "name": "min_count_policy",
+    "kind": "function",
+    "signature": "def min_count_policy() -> int",
+    "docstring": "Returns the default minimum count.",
+    "start_line": 10,
+    "end_line": 12,
+    "_matched": True,
+    "source_excerpt": "def min_count_policy() -> int:\n    # gate retries\n    return MIN_COUNT",
+}
+
+
+@pytest.mark.asyncio
+async def test_named_function_carries_inline_body(setup_mcp, monkeypatch):
+    """A named function symbol surfaces its full body in symbol_bodies so the
+    agent skips the get_symbol follow-up."""
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    _patch_pipeline(monkeypatch, answer_mod, with_symbols=True, symbol=_FN_BODY_SYMBOL)
+    _patch_provider(
+        monkeypatch,
+        answer_mod,
+        "min_count_policy gates the retry loop (pkg/alpha/one.py).",
+    )
+
+    result = await get_answer("How does min_count_policy work?")
+    bodies = result.get("symbol_bodies")
+    assert bodies, "a named function symbol must carry an inline body"
+    [b] = bodies
+    assert b["path"] == "pkg/alpha/one.py"
+    assert b["name"] == "min_count_policy"
+    assert "return MIN_COUNT" in b["source"]
+    assert b["lines"] == [10, 12]
+    # Body served whole → no continuation pointer.
+    assert "truncated" not in b
+
+
+@pytest.mark.asyncio
+async def test_inline_body_truncation_emits_continuation(setup_mcp, monkeypatch):
+    """When the indexed body is longer than the hydrated excerpt, the body
+    block names the exact range read for the remainder."""
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    big = dict(_FN_BODY_SYMBOL, end_line=60)  # excerpt covers 10-12, body ends at 60
+    _patch_pipeline(monkeypatch, answer_mod, with_symbols=True, symbol=big)
+    _patch_provider(
+        monkeypatch,
+        answer_mod,
+        "min_count_policy gates the retry loop (pkg/alpha/one.py).",
+    )
+
+    result = await get_answer("How does min_count_policy work?")
+    [b] = result["symbol_bodies"]
+    assert b["truncated"] is True
+    assert b["continuation"] == "pkg/alpha/one.py:13-60"
