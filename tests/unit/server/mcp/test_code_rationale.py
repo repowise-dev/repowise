@@ -7,8 +7,13 @@ get_why's decision/git search nor get_answer's wiki retrieval can find.
 
 from __future__ import annotations
 
+import subprocess
+from pathlib import Path
+
 from repowise.server.mcp_server._code_rationale import (
+    _salient_numbers,
     extract_comment_blocks,
+    grep_comment_candidates,
     mine_rationale,
 )
 
@@ -128,7 +133,7 @@ def test_mine_is_bounded_and_safe(tmp_path):
     # Path escape: a file outside the root is refused, not read.
     _write(tmp_path, "mod.py", PY_SOURCE)
     assert mine_rationale(str(tmp_path), ["../../etc/passwd"], None) == []
-    # No repo root → empty, no raise.
+    # No repo root -> empty, no raise.
     assert mine_rationale(None, ["mod.py"], "x") == []
     # Empty file list → empty.
     assert mine_rationale(str(tmp_path), [], "x") == []
@@ -169,3 +174,152 @@ def test_mine_caps_result_count(tmp_path):
     _write(tmp_path, "big.py", "".join(lines))
     out = mine_rationale(str(tmp_path), ["big.py"], None)
     assert 0 < len(out) <= 6
+
+
+# --- Number-aware scoring (concept anchoring, piece 1) ----------------------
+
+
+def test_salient_numbers_extracts_whole_tokens():
+    assert _salient_numbers("why is the caller list capped at 50") == ["50"]
+    assert _salient_numbers("cap symbols at 40 not 600") == ["40", "600"]
+    # No number, version-dotted ignored as one float token, no bare words.
+    assert _salient_numbers("why is this limited") == []
+
+
+def test_mine_number_disambiguates_two_caps(tmp_path):
+    """The literal question number picks the right cap comment - the cap-40 vs
+    cap-600 mis-rank the prototype surfaced: _content_terms drops '50', so
+    without number scoring both 'because'-marked caps tie."""
+    src = (
+        "# The caller list cap is 50 because the median fan-in is 2.\n"
+        "CALLER_CAP = 50\n"
+        "# The source line cap is 600 because round-trip count dominates.\n"
+        "SOURCE_CAP = 600\n"
+    )
+    _write(tmp_path, "s.py", src)
+    out = mine_rationale(str(tmp_path), ["s.py"], "why is the caller list capped at 50")
+    assert out
+    assert "50" in out[0]["comment"] and "600" not in out[0]["comment"]
+    assert "50" in out[0]["matched_terms"]
+
+
+def test_mine_number_match_is_whole_token(tmp_path):
+    """'40' must not match '400' / '0.40' - a substring match would re-introduce
+    the very mis-rank number scoring exists to fix."""
+    src = (
+        "# We page in batches of 400 because the API rejects larger requests.\n"
+        "BATCH = 400\n"
+        "# The symbol cap is 40 because dense files flood the context window.\n"
+        "SYMBOL_CAP = 40\n"
+    )
+    _write(tmp_path, "s.py", src)
+    out = mine_rationale(str(tmp_path), ["s.py"], "why does it cap symbols at 40")
+    assert out
+    assert "40" in out[0]["comment"] and "400" not in out[0]["comment"]
+
+
+def _git_repo(tmp_path: Path, files: dict[str, str]) -> Path:
+    """Create a committed git repo so ``git grep`` (tracked-files-only) works."""
+    for name, content in files.items():
+        p = tmp_path / name
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content, encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.email=t@t.dev",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-qm",
+            "init",
+        ],
+        cwd=tmp_path,
+        check=True,
+    )
+    return tmp_path
+
+
+_CALLER_CAP_FILES = {
+    "enrichment.py": (
+        "def neighbors():\n"
+        "    # Cap the caller list at 50 because the median fan-in is 2 and\n"
+        "    # 50 covers 99.5% of symbols in a single call.\n"
+        "    limit = 50\n"
+    ),
+    # A boilerplate call site: number, but no rationale comment-leading line.
+    "pager.py": "PAGE = 50  # default page size\n",
+    "other.py": "# unrelated note about caching\nX = 1\n",
+}
+
+
+def test_grep_comment_candidates_ranks_number_bearing_file(tmp_path):
+    repo = _git_repo(tmp_path, _CALLER_CAP_FILES)
+    cands = grep_comment_candidates(str(repo), "why is the caller list capped at 50")
+    assert cands, "expected at least one grep candidate"
+    # The file whose COMMENT explains the 50 wins; the boilerplate call site
+    # (trailing comment, not comment-leading) is not matched.
+    assert cands[0] == "enrichment.py"
+    assert "pager.py" not in cands
+
+
+def test_grep_comment_candidates_needs_a_noun(tmp_path):
+    # Numbers but no content noun (all stopwords) -> nothing to anchor on.
+    repo = _git_repo(tmp_path, _CALLER_CAP_FILES)
+    assert grep_comment_candidates(str(repo), "why is it at 50") == []
+    # No repo root -> empty, no raise.
+    assert grep_comment_candidates(None, "why is the caller list capped at 50") == []
+
+
+# --- Concept anchoring hit injection (piece 3) ------------------------------
+
+
+async def test_concept_anchor_injects_winner_as_dominant(tmp_path):
+    from repowise.server.mcp_server.tool_answer.symbols import _concept_anchor_hits
+
+    repo = _git_repo(tmp_path, _CALLER_CAP_FILES)
+    # Retrieval missed enrichment.py - it led with the boilerplate pager file.
+    hits = [
+        {"target_path": "pager.py", "page_type": "file_page", "score": 2.0},
+        {"target_path": "other.py", "page_type": "file_page", "score": 1.0},
+    ]
+    out = await _concept_anchor_hits(
+        Path(str(repo)), "why is the caller list capped at 50", hits
+    )
+    assert out[0]["target_path"] == "enrichment.py"
+    assert out[0]["_concept_anchored"] is True
+    # Dominates the prior top so the dominance gate passes.
+    assert out[0]["score"] > 2.0
+    # The mined comment + its line are stashed for code_rationale surfacing.
+    assert out[0]["_concept_near_line"] >= 1
+    assert "50" in out[0]["_concept_rationale"]["comment"]
+
+
+async def test_concept_anchor_skips_without_a_number(tmp_path):
+    from repowise.server.mcp_server.tool_answer.symbols import _concept_anchor_hits
+
+    repo = _git_repo(tmp_path, _CALLER_CAP_FILES)
+    hits = [{"target_path": "pager.py", "page_type": "file_page", "score": 2.0}]
+    out = await _concept_anchor_hits(
+        Path(str(repo)), "why is the caller list capped", hits
+    )
+    assert all(not h.get("_concept_anchored") for h in out)
+
+
+async def test_concept_anchor_skips_when_retrieval_already_led_with_winner(tmp_path):
+    from repowise.server.mcp_server.tool_answer.symbols import _concept_anchor_hits
+
+    repo = _git_repo(tmp_path, _CALLER_CAP_FILES)
+    # Retrieval already ranked enrichment.py top - leave the confidence label to
+    # the existing machinery; do not force it past the dominance gate.
+    hits = [
+        {"target_path": "enrichment.py", "page_type": "file_page", "score": 2.0},
+        {"target_path": "other.py", "page_type": "file_page", "score": 1.95},
+    ]
+    out = await _concept_anchor_hits(
+        Path(str(repo)), "why is the caller list capped at 50", hits
+    )
+    assert all(not h.get("_concept_anchored") for h in out)

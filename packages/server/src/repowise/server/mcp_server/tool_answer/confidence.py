@@ -20,8 +20,13 @@ def _answer_is_hedged(answer_text: str) -> bool:
     usable answer — the underlying model happily admits insufficiency even
     on a top-scoring hit. Treat an admitted non-answer as low confidence,
     regardless of how dominant retrieval was.
+
+    Typographic apostrophes are normalized to ASCII first: the markers use
+    plain "can't" / "i can't", but the LLM routinely emits the curly U+2019,
+    which would slip every apostrophe-bearing marker and let a hedged answer
+    ride through as high confidence.
     """
-    low = (answer_text or "").lower()
+    low = (answer_text or "").lower().replace("\u2019", "'").replace("\u02bc", "'")
     return any(marker in low for marker in _HEDGE_MARKERS)
 
 
@@ -84,6 +89,14 @@ def _retrieval_corpus(hits: list[dict], *, include_paths: bool = False) -> str:
                 v = s.get(key)
                 if v:
                     parts.append(str(v))
+        # A concept-anchored hit carries a rationale comment mined live from the
+        # source. It grounds the question's number (the comment was selected
+        # because it contains it) and is surfaced to the agent as code_rationale.
+        # Without it the value/frame gates would flag the (correct) number the
+        # answer echoes from the question as if synthesis invented it.
+        cr = h.get("_concept_rationale")
+        if isinstance(cr, dict) and cr.get("comment"):
+            parts.append(str(cr["comment"]))
         if include_paths:
             for a in h.get("_anchor_symbols") or []:
                 v = a.get("name")

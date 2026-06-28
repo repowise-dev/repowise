@@ -46,6 +46,11 @@ class TestHedgeMarkers:
     def test_direct_answer_not_hedged(self) -> None:
         assert not _answer_is_hedged("The default is 2, set in git_indexer/_constants.py.")
 
+    def test_curly_apostrophe_hedge_detected(self) -> None:
+        # LLMs routinely emit the curly U+2019; the markers use plain ASCII.
+        # Without normalization this hedged answer rides through as high.
+        assert _answer_is_hedged("I can\u2019t determine why the threshold is 1.2 from the excerpts.")
+
 
 class TestValueQuestionShape:
     def test_default_question_is_value_shaped(self) -> None:

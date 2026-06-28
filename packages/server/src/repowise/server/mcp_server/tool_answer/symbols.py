@@ -275,6 +275,105 @@ async def _anchor_symbol_hits(
     return hits
 
 
+async def _concept_anchor_hits(
+    repo_root: Path | None,
+    question: str,
+    hits: list[dict],
+) -> list[dict]:
+    """Anchor the file whose rationale COMMENT explains a number-bearing question.
+
+    The symbol anchor above rescues questions that NAME an indexed symbol. This
+    rescues the other retrieval-miss class: a why/value question that pins a
+    literal number to a *described behaviour* (a cap / limit / batch size) but
+    names no symbol. Fuzzy retrieval lands on a same-vocabulary file and never
+    surfaces the one whose comment justifies the number, so it never enters the
+    candidate set and the agent re-reads. We grep tracked source for comment
+    lines carrying the number + a content noun, score the candidates with the
+    existing rationale miner, and inject the winner so retrieval includes it and
+    its comment reaches ``code_rationale``.
+
+    Fires only when the question pins a literal number (the high-precision case;
+    the prototype showed naive number-free grep is too noisy) and the winning
+    file is not already the top retrieval hit (i.e. retrieval genuinely missed
+    it). When the winner is already top, the existing confidence machinery decides
+    the label - we deliberately do NOT force it past the dominance gate, which
+    generalized only to the questions it was tuned on. The mined rationale + its
+    line are stashed on the hit so the downstream ``code_rationale`` surfacing
+    serves the exact comment without a second grep.
+
+    Returns ``hits`` re-sorted by score (mutated in place). Best-effort: any
+    failure leaves ``hits`` untouched.
+    """
+    import asyncio
+
+    from repowise.server.mcp_server._code_rationale import (
+        _salient_numbers,
+        grep_comment_candidates,
+        mine_rationale,
+    )
+
+    if repo_root is None or not question:
+        return hits
+    # Precision gate: only number-bearing questions. A bare "why is X limited"
+    # would grep the whole cap-family vocabulary and over-fire.
+    if not _salient_numbers(question):
+        return hits
+
+    # The grep spawns a subprocess and mine reads files off disk - both blocking.
+    # Run them in a worker thread so they never stall the server's event loop
+    # (this can run inside a stdio MCP server driving the JSON-RPC transport).
+    def _grep_and_mine() -> dict | None:
+        candidates = grep_comment_candidates(repo_root, question)
+        if not candidates:
+            return None
+        mined = mine_rationale(repo_root, candidates, question)
+        return mined[0] if mined else None
+
+    winner = await asyncio.to_thread(_grep_and_mine)
+    if not winner:
+        return hits
+    winner_path = winner.get("path")
+    if not winner_path:
+        return hits
+    # Retrieval-miss gate: only anchor when retrieval did NOT already lead with
+    # the winner. If it is already the top hit, leave the confidence label to the
+    # existing dominance/confidence machinery - forcing it past the gate only ever
+    # helped the questions it was tuned against. The mined comment still reaches
+    # the agent via the gated path's code_rationale.
+    if hits and hits[0].get("target_path") == winner_path:
+        return hits
+
+    near_line = (winner.get("lines") or [0])[0]
+    by_path = {h.get("target_path"): h for h in hits}
+    top_score = max((h.get("score", 0.0) for h in hits), default=0.0)
+    # Above the current top so the comment-justified file dominates the
+    # dominance gate and synthesis runs instead of gating low.
+    anchor_score = max(top_score + 1.5, _HIGH_CONFIDENCE_SCORE_FLOOR + 0.5)
+    target = by_path.get(winner_path)
+    if target is None:
+        target = {
+            "page_id": f"file_page:{winner_path}",
+            "target_path": winner_path,
+            "title": winner_path,
+            "summary": "",
+            "snippet": "",
+            "page_type": "file_page",
+            "score": anchor_score,
+        }
+        hits.insert(0, target)
+        by_path[winner_path] = target
+    else:
+        target["score"] = max(target.get("score", 0.0), anchor_score)
+    target["_concept_anchored"] = True
+    target["_concept_near_line"] = near_line
+    # Stash the mined comment so the code_rationale surfacing can serve it
+    # verbatim on any exit path - including the high path, where the comment IS
+    # the answer the agent would otherwise re-read for.
+    target["_concept_rationale"] = winner
+    hits.sort(key=lambda h: h.get("score", 0.0), reverse=True)
+    return hits
+
+
 async def _hydrate_symbols_for_hits(
     session,
     repo_id: str,
