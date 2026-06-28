@@ -326,15 +326,42 @@ def _is_separator(body: str) -> bool:
     return len(s) >= 3 and all(c in _SEPARATOR_CHARS for c in s)
 
 
-def extract_comment_blocks(text: str, ext: str) -> list[CommentBlock]:
+def _trailing_comment(line: str, prefixes: tuple[str, ...]) -> str | None:
+    """Recover a trailing inline comment (``x = 1  # because ...``).
+
+    Conservative: requires whitespace before the marker so we don't trip on
+    ``//`` inside a URL or ``#`` inside a string literal. Only the query-time
+    MCP recall miner enables this (``include_trailing=True``); the index-time
+    harvest leaves it off because trailing comments are almost always labels.
+    """
+    best: str | None = None
+    best_idx = len(line) + 1
+    for p in prefixes:
+        idx = line.find(" " + p + " ")
+        if idx == -1:
+            idx = line.find("\t" + p)
+        if idx != -1 and idx < best_idx:
+            head = line[:idx].strip()
+            if head:
+                best_idx = idx
+                best = line[idx:].lstrip()[len(p) :].lstrip()
+    return best
+
+
+def extract_comment_blocks(
+    text: str, ext: str, *, include_trailing: bool = False
+) -> list[CommentBlock]:
     """Return every comment block in ``text`` for a file of extension ``ext``.
 
     Consecutive full-line comments coalesce into one block (a multi-line
     rationale paragraph stays intact). Also recovers C-style ``/* */`` blocks
-    and Python triple-quoted docstrings. Trailing inline comments are NOT
-    captured: at index time they are almost always labels, not rationale, and
-    skipping them avoids a large false-positive class. Best-effort tokenizing,
-    not a real parser.
+    and Python triple-quoted docstrings.
+
+    Trailing inline comments (``x = 1  # because ...``) are captured only when
+    ``include_trailing`` is set. At index time they are almost always labels,
+    not rationale, so the decision harvest leaves it off (the default); the
+    query-time MCP recall miner sets it ``True`` for maximum recall.
+    Best-effort tokenizing, not a real parser.
     """
     ext = ext.lower()
     prefixes = LINE_PREFIXES.get(ext, ())
@@ -448,6 +475,12 @@ def extract_comment_blocks(text: str, ext: str) -> list[CommentBlock]:
                     block_start = i
                     block_parts = [rest.strip()]
                 continue
+
+        # --- trailing inline comment (recall miner only) ---
+        if include_trailing and prefixes:
+            tail = _trailing_comment(raw, prefixes)
+            if tail:
+                blocks.append(CommentBlock(i, i, tail, (tail,), "line"))
 
     _flush()
     return blocks

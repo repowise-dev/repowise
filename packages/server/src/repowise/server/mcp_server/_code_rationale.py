@@ -13,12 +13,16 @@ comments. The unbiased A/B (task T4) confirmed the gap — when the rationale
 was a code comment, get_answer returned low confidence and the agent fell
 back to Read+Grep, losing on tokens AND round-trips.
 
-This module closes that gap with a *best-effort* miner (same spirit as the
-git-archaeology fallback in tool_why): given a handful of already-relevant
-files and the question terms, scan their comment blocks for ones that carry a
-rationale marker ("because", "instead of", "workaround", "to avoid", "HACK",
-"NOTE", …) overlapping the question, and return them as grounded
-``{path, lines, comment}`` evidence the agent can cite without a Read.
+This module is the **query-time recall backstop**. The durable fix is the
+index-time decision harvest (Source 8,
+:meth:`repowise.core.analysis.decisions.extractor.DecisionExtractor.harvest_rationale_comments`)
+which lands these comments in the queryable decision corpus. This miner only
+earns its keep for what the index can't cover: files edited since the last
+index, and comment shapes the index-time gate drops (trailing inline comments,
+intent-only markers, docstrings). The comment tokenizer and the rationale
+marker list are shared with that harvest — both import from
+:mod:`repowise.core.analysis.decisions.rationale_comments` so the two paths
+never drift.
 
 It is deliberately wired only into the LOW-confidence exits (get_answer's
 gated / hedged paths, get_why's no-decision fallback): when the confident
@@ -34,141 +38,12 @@ import re
 from pathlib import Path
 from typing import Any
 
+from repowise.core.analysis.decisions.rationale_comments import (
+    RATIONALE_MARKERS,
+    extract_comment_blocks,
+)
+
 _log = logging.getLogger("repowise.mcp.code_rationale")
-
-# --- Rationale markers --------------------------------------------------------
-# A comment earns surfacing only if it reads like a *reason*, not a label.
-# These are the causal / intent connectives and the well-known intent tags.
-# Matched as lowercased substrings against the comment text. Curated to favor
-# precision: a URL or a boilerplate header won't contain "because"/"instead".
-_RATIONALE_MARKERS: tuple[str, ...] = (
-    "because",
-    "instead of",
-    "rather than",
-    "to avoid",
-    "avoids ",
-    "avoid ",
-    "work around",
-    "workaround",
-    "so that",
-    "otherwise",
-    "due to",
-    "to prevent",
-    "prevents ",
-    "the reason",
-    "reason:",
-    "intentional",
-    "intentionally",
-    "deliberate",
-    "deliberately",
-    "on purpose",
-    "we use ",
-    "we don't",
-    "we do not",
-    "we can't",
-    "we cannot",
-    "must not",
-    "never ",
-    "always ",
-    "fall back",
-    "fallback",
-    "legacy",
-    "historical",
-    "backward compat",
-    "backwards compat",
-    "for performance",
-    "perf:",
-    "hot path",
-    "deadlock",
-    "race condition",
-    "thread-safe",
-    "thread safe",
-    "this is why",
-    "the trick",
-    "subtle",
-    "tricky",
-    "gotcha",
-    "caveat",
-    "hack",
-    "fixme",
-    "xxx:",
-    "note:",
-    "nb:",
-    "important:",
-    "warning:",
-    "defense in depth",
-    "edge case",
-    "do not remove",
-    "don't remove",
-)
-
-# --- Comment syntax per file extension ---------------------------------------
-# Line-comment prefixes keyed by extension. Kept pragmatic: covers the
-# languages that make up the overwhelming majority of indexed source.
-_LINE_PREFIXES: dict[str, tuple[str, ...]] = {
-    "py": ("#",),
-    "pyi": ("#",),
-    "sh": ("#",),
-    "bash": ("#",),
-    "rb": ("#",),
-    "yaml": ("#",),
-    "yml": ("#",),
-    "toml": ("#",),
-    "r": ("#",),
-    "pl": ("#",),
-    "js": ("//",),
-    "jsx": ("//",),
-    "ts": ("//",),
-    "tsx": ("//",),
-    "mjs": ("//",),
-    "cjs": ("//",),
-    "go": ("//",),
-    "rs": ("//",),
-    "c": ("//",),
-    "h": ("//",),
-    "cc": ("//",),
-    "cpp": ("//",),
-    "hpp": ("//",),
-    "java": ("//",),
-    "kt": ("//",),
-    "kts": ("//",),
-    "swift": ("//",),
-    "scala": ("//",),
-    "cs": ("//",),
-    "php": ("//", "#"),
-    "dart": ("//",),
-    "sql": ("--",),
-    "lua": ("--",),
-    "hs": ("--",),
-    "elm": ("--",),
-}
-
-# Extensions that use C-style /* ... */ block comments.
-_C_BLOCK_EXTS: frozenset[str] = frozenset(
-    {
-        "js",
-        "jsx",
-        "ts",
-        "tsx",
-        "mjs",
-        "cjs",
-        "go",
-        "rs",
-        "c",
-        "h",
-        "cc",
-        "cpp",
-        "hpp",
-        "java",
-        "kt",
-        "kts",
-        "swift",
-        "scala",
-        "cs",
-        "php",
-        "dart",
-    }
-)
 
 # Stopwords stripped from the question before term overlap. Short, generic
 # interrogatives that would match almost any comment.
@@ -254,159 +129,15 @@ def _content_terms(query: str | None) -> set[str]:
     return {t for t in raw if len(t) >= 3 and t not in _STOPWORDS}
 
 
-def _strip_comment_open(stripped: str, prefixes: tuple[str, ...]) -> str | None:
-    """If ``stripped`` begins with a line-comment prefix, return the text
-    after it; else None. Handles ``# x``, ``// x``, ``-- x`` and bare ``#``."""
-    for p in prefixes:
-        if stripped.startswith(p):
-            return stripped[len(p) :].lstrip()
-    return None
-
-
-def _trailing_comment(line: str, prefixes: tuple[str, ...]) -> str | None:
-    """Recover a trailing inline comment (``x = 1  # because ...``).
-
-    Conservative: requires whitespace before the marker so we don't trip on
-    ``//`` inside a URL or ``#`` inside a string literal. The downstream
-    rationale-marker gate is the real safety net — a comment with no causal
-    word is dropped regardless.
-    """
-    best: str | None = None
-    best_idx = len(line) + 1
-    for p in prefixes:
-        idx = line.find(" " + p + " ")
-        if idx == -1:
-            idx = line.find("\t" + p)
-        if idx != -1 and idx < best_idx:
-            # Skip if the whole line is already a full-line comment (handled
-            # elsewhere) — i.e. there is non-comment text before the marker.
-            head = line[:idx].strip()
-            if head:
-                best_idx = idx
-                best = line[idx:].lstrip()[len(p) :].lstrip()
-    return best
-
-
-def extract_comment_blocks(text: str, ext: str) -> list[tuple[int, int, str]]:
-    """Return ``(start_line, end_line, comment_text)`` for every comment block.
-
-    Consecutive full-line comments coalesce into one block (a multi-line
-    rationale paragraph stays intact). Also recovers C-style ``/* */`` blocks,
-    Python triple-quoted docstrings, and trailing inline comments. 1-indexed,
-    inclusive. Best-effort tokenizing — not a real parser.
-    """
-    prefixes = _LINE_PREFIXES.get(ext, ())
-    lines = text.splitlines()
-    blocks: list[tuple[int, int, str]] = []
-
-    cur_start = 0
-    cur_parts: list[str] = []
-
-    def _flush() -> None:
-        nonlocal cur_start, cur_parts
-        if cur_parts:
-            joined = " ".join(p for p in cur_parts if p).strip()
-            if joined:
-                blocks.append((cur_start, cur_start + len(cur_parts) - 1, joined))
-        cur_start = 0
-        cur_parts = []
-
-    in_c_block = False
-    in_pydoc = False
-    pydoc_delim = ""
-    block_start = 0
-    block_parts: list[str] = []
-    has_c_block = ext in _C_BLOCK_EXTS
-    has_pydoc = ext in ("py", "pyi")
-
-    for i, raw in enumerate(lines, start=1):
-        stripped = raw.strip()
-
-        # --- inside a /* ... */ block ---
-        if in_c_block:
-            end = stripped.find("*/")
-            seg = stripped[: end if end != -1 else len(stripped)]
-            block_parts.append(seg.lstrip("*").strip())
-            if end != -1:
-                in_c_block = False
-                joined = " ".join(p for p in block_parts if p).strip()
-                if joined:
-                    blocks.append((block_start, i, joined))
-                block_parts = []
-            continue
-
-        # --- inside a python docstring ---
-        if in_pydoc:
-            end = stripped.find(pydoc_delim)
-            seg = stripped[: end if end != -1 else len(stripped)]
-            block_parts.append(seg.strip())
-            if end != -1:
-                in_pydoc = False
-                joined = " ".join(p for p in block_parts if p).strip()
-                if joined:
-                    blocks.append((block_start, i, joined))
-                block_parts = []
-            continue
-
-        # --- full-line comment ---
-        body = _strip_comment_open(stripped, prefixes) if prefixes else None
-        if body is not None:
-            if not cur_parts:
-                cur_start = i
-            cur_parts.append(body)
-            continue
-
-        # not a full-line comment → flush any pending run
-        _flush()
-
-        # --- start of a /* ... */ block ---
-        if has_c_block and "/*" in stripped:
-            open_idx = stripped.find("/*")
-            close_idx = stripped.find("*/", open_idx + 2)
-            if close_idx != -1:
-                seg = stripped[open_idx + 2 : close_idx].strip()
-                if seg:
-                    blocks.append((i, i, seg))
-            else:
-                in_c_block = True
-                block_start = i
-                block_parts = [stripped[open_idx + 2 :].lstrip("*").strip()]
-            continue
-
-        # --- start of a python docstring (standalone, e.g. module/class doc) ---
-        if has_pydoc:
-            m = re.match(r'^[rbRB]?("""|\'\'\')', stripped)
-            if m:
-                pydoc_delim = m.group(1)
-                rest = stripped[m.end() :]
-                close = rest.find(pydoc_delim)
-                if close != -1:
-                    seg = rest[:close].strip()
-                    if seg:
-                        blocks.append((i, i, seg))
-                else:
-                    in_pydoc = True
-                    block_start = i
-                    block_parts = [rest.strip()]
-                continue
-
-        # --- trailing inline comment ---
-        if prefixes:
-            tail = _trailing_comment(raw, prefixes)
-            if tail:
-                blocks.append((i, i, tail))
-
-    _flush()
-    return blocks
-
-
 def _score_block(comment: str, terms: set[str]) -> tuple[float, list[str], bool]:
     """Score a comment block. Returns (score, matched_terms, has_marker).
 
-    Rationale marker = 2.0; each distinct query term present = 1.0.
+    Rationale marker = 2.0; each distinct query term present = 1.0. Uses the
+    broad ``RATIONALE_MARKERS`` set (intent + causal) shared with the index-time
+    harvest — recall mode, so intent-only markers ("never", "always") count.
     """
     low = comment.lower()
-    has_marker = any(m in low for m in _RATIONALE_MARKERS)
+    has_marker = any(m in low for m in RATIONALE_MARKERS)
     matched = sorted(t for t in terms if t in low)
     score = (2.0 if has_marker else 0.0) + float(len(matched))
     return score, matched, has_marker
@@ -467,6 +198,11 @@ def mine_rationale(
 
     Returns a ranked list of ``{path, lines: [start, end], comment,
     matched_terms}`` — at most ``max_results``. Best-effort: never raises.
+
+    Recall mode: docstrings (``kind == "doc"``) and trailing inline comments
+    are kept (``include_trailing=True``), using the broad ``RATIONALE_MARKERS``
+    set. The index-time harvest deliberately drops both — this miner is the
+    backstop for exactly that material.
     """
     if not repo_root or not file_paths:
         return []
@@ -496,11 +232,12 @@ def mine_rationale(
             continue
         near = near_lines.get(path)
         try:
-            blocks = extract_comment_blocks(text, ext)
+            blocks = extract_comment_blocks(text, ext, include_trailing=True)
         except Exception as exc:  # never let a tokenizer bug break a tool
             _log.debug("comment extraction failed for %s: %s", path, exc)
             continue
-        for start, end, comment in blocks:
+        for block in blocks:
+            start, end, comment = block.start_line, block.end_line, block.text
             score, matched, has_marker = _score_block(comment, terms)
             if not _keep(score, matched, has_marker, has_terms):
                 continue

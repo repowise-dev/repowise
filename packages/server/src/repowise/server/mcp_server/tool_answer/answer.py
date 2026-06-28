@@ -171,6 +171,44 @@ def _gather_code_rationale(ctx, hits: list[dict], fallback_targets: list[str], q
         return []
 
 
+def _drop_already_surfaced(rationale: list[dict], *surfaced: list[dict]) -> list[dict]:
+    """Drop mined rationale comments already shown elsewhere in the response.
+
+    Track B harvests rationale comments into ``code_comment`` decision records at
+    index time; Track A mines them live here. Once both ship, the same comment
+    can appear twice — once as material already in the payload (a ``symbol_bodies``
+    block whose body contains the comment, a quote, or a line-ranged citation /
+    decision) and once as a ``code_rationale`` entry. Suppress the duplicate:
+    drop any mined comment whose ``(path, line-range)`` overlaps an entry already
+    surfaced. Entries without a ``(path, lines)`` pair are ignored.
+    """
+    occupied: list[tuple[str, int, int]] = []
+    for entries in surfaced:
+        for e in entries or []:
+            path = e.get("path")
+            lines = e.get("lines")
+            if path and isinstance(lines, (list, tuple)) and len(lines) == 2:
+                occupied.append((path, lines[0], lines[1]))
+    if not occupied:
+        return rationale
+    kept: list[dict] = []
+    for r in rationale:
+        path = r.get("path")
+        lines = r.get("lines")
+        if (
+            path
+            and isinstance(lines, (list, tuple))
+            and len(lines) == 2
+            and any(
+                p == path and not (lines[1] < s or lines[0] > e)
+                for p, s, e in occupied
+            )
+        ):
+            continue
+        kept.append(r)
+    return kept
+
+
 @mcp.tool()
 async def get_answer(
     question: str,
@@ -797,6 +835,8 @@ async def get_answer(
         # code comment. Mine the candidate source for it before sending the
         # agent off to Read.
         code_rationale = _gather_code_rationale(ctx, hits, fallback_targets, question)
+        # A comment already visible in symbol_bodies must not surface twice.
+        code_rationale = _drop_already_surfaced(code_rationale, symbol_bodies)
         if code_rationale:
             payload["code_rationale"] = code_rationale
             payload["note"] += (

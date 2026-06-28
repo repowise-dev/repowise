@@ -54,12 +54,14 @@ def _write(tmp_path, name, content):
 
 
 def test_extract_coalesces_multiline_python_comment():
-    blocks = extract_comment_blocks(PY_SOURCE, "py")
-    texts = [b[2] for b in blocks]
+    # Shared core tokenizer returns CommentBlock dataclasses; trailing inline
+    # comments are recall-only (include_trailing=True), matching mine_rationale.
+    blocks = extract_comment_blocks(PY_SOURCE, "py", include_trailing=True)
+    texts = [b.text for b in blocks]
     # The two-line # comment becomes one block spanning lines 3-4.
-    enc = next(b for b in blocks if "PYTHONIOENCODING" in b[2])
-    assert enc[0] == 3 and enc[1] == 4
-    assert "checkmark glyph crashes" in enc[2]
+    enc = next(b for b in blocks if "PYTHONIOENCODING" in b.text)
+    assert enc.start_line == 3 and enc.end_line == 4
+    assert "checkmark glyph crashes" in enc.text
     # Trailing inline comment recovered.
     assert any("divide-by-zero" in t for t in texts)
     # Docstring recovered.
@@ -68,7 +70,7 @@ def test_extract_coalesces_multiline_python_comment():
 
 def test_extract_handles_c_style_block_and_line_comments():
     blocks = extract_comment_blocks(TS_SOURCE, "ts")
-    texts = [b[2] for b in blocks]
+    texts = [b.text for b in blocks]
     assert any("debounce" in t.lower() and "rate-limits" in t.lower() for t in texts)
     assert any("workaround for a Safari layout bug" in t for t in texts)
 
