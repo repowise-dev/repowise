@@ -114,6 +114,19 @@ class TestDistinctiveTerms:
         # Common technical English is too broad to gate on.
         assert _distinctive_terms("the centrality computation caps neighbors") == set()
 
+    def test_capitalized_prose_dropped(self) -> None:
+        # Sentence-initial / markdown-header words are prose, not mechanisms.
+        # A leading capital alone must not register as a frame term (the live
+        # over-fire that flagged Because/Determine/Mechanism/Short/Since/What).
+        assert _distinctive_terms(
+            "## What happens. Because the Mechanism is Short, Determine it Since When."
+        ) == set()
+
+    def test_internal_caps_and_acronyms_kept(self) -> None:
+        terms = _distinctive_terms("It wraps WikiSymbol over an HTTP transport.")
+        assert "WikiSymbol" in terms
+        assert "HTTP" in terms  # >=4-char all-caps acronym (internal upper)
+
     def test_short_tokens_dropped(self) -> None:
         assert _distinctive_terms("py id db v2") == set()  # all <4 chars
 

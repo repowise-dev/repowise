@@ -121,13 +121,25 @@ _FRAME_TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*
 
 
 def _distinctive_terms(text: str) -> set[str]:
-    """Identifier-shaped terms in *text* (≥4 chars, CamelCase/snake/digit)."""
+    """Identifier-shaped terms in *text*: internal-caps, snake_case, or digit.
+
+    A LEADING capital alone is NOT enough. Sentence-initial words and markdown
+    headers (``Because``, ``Determine``, ``Mechanism``, ``Short``, ``Since``,
+    ``What``) are prose, not mechanisms — they never appear verbatim in source,
+    so an "any uppercase" rule flags them as ungrounded frame terms and the gate
+    over-fires on the answer's own formatting. Requiring an *internal* uppercase
+    letter keeps real code names (``PageRank``, ``WikiSymbol``, ``AnswerCache``,
+    ``API``) while dropping capitalized English. A single leading-cap class name
+    (``Repository``) is conservatively skipped too: missing a frame term only
+    weakens the gate, whereas over-firing on prose breaks it.
+    """
     terms: set[str] = set()
     for tok in _FRAME_TOKEN_RE.findall(text or ""):
         for c in (tok, *tok.split(".")):
             if len(c) < 4:
                 continue
-            if any(ch.isupper() for ch in c) or "_" in c or any(ch.isdigit() for ch in c):
+            has_internal_upper = any(ch.isupper() for ch in c[1:])
+            if has_internal_upper or "_" in c or any(ch.isdigit() for ch in c):
                 terms.add(c)
     return terms
 
