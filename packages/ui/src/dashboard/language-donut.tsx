@@ -16,8 +16,14 @@ const LANG_COLORS: Record<string, string> = {
   config: "var(--color-lang-config)",
 };
 
+const HIDDEN_LANGUAGE_USAGE_FORMATS = new Set(["json", "yaml", "toml"]);
+
 function getLangColor(lang: string): string {
   return LANG_COLORS[lang.toLowerCase()] ?? "var(--color-lang-other)";
+}
+
+function shouldShowLanguageUsage(name: string): boolean {
+  return !HIDDEN_LANGUAGE_USAGE_FORMATS.has(name.trim().toLowerCase());
 }
 
 interface LanguageDonutProps {
@@ -29,6 +35,7 @@ interface LanguageDonutProps {
 
 export function LanguageDonut({ distribution, viewAllHref }: LanguageDonutProps) {
   const entries = Object.entries(distribution)
+    .filter(([name]) => shouldShowLanguageUsage(name))
     .map(([name, value]) => ({ name, value }))
     .sort((a, b) => b.value - a.value);
 
