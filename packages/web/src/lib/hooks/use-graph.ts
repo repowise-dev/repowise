@@ -1,5 +1,6 @@
 "use client";
 
+import type { ZoomMap } from "@repowise-dev/ui/zoom";
 import useSWR from "swr";
 import {
   getArchitecture,
@@ -14,6 +15,7 @@ import {
   getGraphMetrics,
   getHotFilesGraph,
   getModuleGraph,
+  getZoomMap,
 } from "@/lib/api/graph";
 import type {
   ArchitectureGraphResponse,
@@ -30,6 +32,21 @@ import type {
 } from "@/lib/api/types";
 
 const SWR_OPTS = { revalidateOnFocus: false, revalidateOnReconnect: false };
+
+export function useZoomMap(
+  repoId: string | null,
+  params?: { max_depth?: number; focus?: string },
+) {
+  const key = repoId
+    ? `zoom-map:${repoId}:${params?.max_depth ?? ""}:${params?.focus ?? ""}`
+    : null;
+  const { data, error, isLoading } = useSWR<ZoomMap>(
+    key,
+    () => getZoomMap(repoId!, params),
+    SWR_OPTS,
+  );
+  return { zoomMap: data, error, isLoading };
+}
 
 export function useGraph(repoId: string | null, limit?: number) {
   const { data, error, isLoading } = useSWR<GraphExportResponse>(

@@ -5,6 +5,7 @@ describe("getRepoBreadcrumbSegmentLabel", () => {
   it("keeps configured route segment labels", () => {
     expect(getRepoBreadcrumbSegmentLabel("dead-code")).toBe("Dead Code");
     expect(getRepoBreadcrumbSegmentLabel("knowledge-graph")).toBe("Knowledge Graph");
+    expect(getRepoBreadcrumbSegmentLabel("zoom")).toBe("Zoom Map");
   });
 
   it("decodes dynamic path segments for display", () => {

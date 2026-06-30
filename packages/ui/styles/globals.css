@@ -157,6 +157,21 @@
   --color-diagram-cluster-border: #826aa0; /* plum-400 */
   --color-diagram-grid: rgba(245, 149, 32, 0.10); /* faint orange grid */
 
+  /* Zoom canvas — premium "floating card" surfaces (Linear/Stripe idiom):
+     clean cards on a faint dot-grid, hairline borders + soft shadow for depth,
+     role shown as a small status dot (not a colored frame). Kept separate from
+     the kg-node "blueprint" tokens so the C4 view that consumes those is
+     untouched. LIGHT: white cards on warm paper; DARK overrides below. */
+  --color-zoom-card-fill: #ffffff; /* leaf (file) card */
+  --color-zoom-card-fill-2: #fbf4ee; /* container (folder/group/layer) card */
+  --color-zoom-card-text: #241b2c;
+  --color-zoom-card-border: rgba(88, 67, 108, 0.14); /* hairline */
+  --color-zoom-card-border-hover: rgba(88, 67, 108, 0.28);
+  --color-zoom-card-shadow: rgba(36, 27, 44, 0.10); /* soft elevation */
+  --color-zoom-edge: rgba(36, 27, 44, 0.20); /* neutral connector */
+  --color-zoom-edge-strong: rgba(36, 27, 44, 0.38); /* tight coupling */
+  --color-zoom-card-rule: rgba(36, 27, 44, 0.05); /* faint notebook ruled lines */
+
   /* Language colors (canonical brand hues — theme-independent) */
   --color-lang-python: #3776ab;
   --color-lang-typescript: #3178c6;
@@ -381,6 +396,17 @@
   --color-diagram-edge: #b3a6c4; /* lavender line, dashed */
   --color-diagram-cluster-border: #a98fc4;
   --color-diagram-grid: rgba(222, 210, 235, 0.05);
+
+  /* Zoom canvas — dark: elevated graphite cards on the near-black canvas. */
+  --color-zoom-card-fill: #2b2c2e; /* leaf card (bg-elevated) */
+  --color-zoom-card-fill-2: #232325; /* container card (bg-surface) */
+  --color-zoom-card-text: #ececed;
+  --color-zoom-card-border: rgba(255, 255, 255, 0.10);
+  --color-zoom-card-border-hover: rgba(255, 255, 255, 0.20);
+  --color-zoom-card-shadow: rgba(0, 0, 0, 0.45);
+  --color-zoom-edge: rgba(255, 255, 255, 0.16);
+  --color-zoom-edge-strong: rgba(255, 255, 255, 0.30);
+  --color-zoom-card-rule: rgba(255, 255, 255, 0.06);
 
   /* C4 / graph canvas surfaces — dark variants (the var()-derived aliases
      flip on their own; only the explicit rgbas need a dark override). */

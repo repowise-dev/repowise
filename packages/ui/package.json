@@ -86,6 +86,8 @@
     "./onboarding/*": "./src/onboarding/*.tsx",
     "./present": "./src/present/index.ts",
     "./present/*": "./src/present/*.tsx",
+    "./zoom": "./src/zoom/index.ts",
+    "./zoom/*": "./src/zoom/*.tsx",
     "./settings": "./src/settings/index.ts",
     "./settings/*": "./src/settings/*.tsx",
     "./shared": "./src/shared/index.ts",
