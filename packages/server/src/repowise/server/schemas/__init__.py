@@ -34,6 +34,13 @@ from .c4 import (
     C4RelationResponse,
     C4SystemResponse,
 )
+from .zoom import (
+    ZoomMapResponse,
+    ZoomMetricsResponse,
+    ZoomNodeResponse,
+    ZoomRectResponse,
+    ZoomRelationResponse,
+)
 from .chat import (
     ChatMessageResponse,
     ChatRequest,
@@ -355,4 +362,9 @@ __all__ = [
     "WorkspaceSystemGraphResponse",
     "WorkspaceSystemNode",
     "WorkspaceUnmatchedConsumer",
+    "ZoomMapResponse",
+    "ZoomMetricsResponse",
+    "ZoomNodeResponse",
+    "ZoomRectResponse",
+    "ZoomRelationResponse",
 ]

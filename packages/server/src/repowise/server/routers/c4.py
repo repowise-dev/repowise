@@ -27,8 +27,14 @@ from repowise.server.schemas import (
     C4PersonResponse,
     C4RelationResponse,
     C4SystemResponse,
+    ZoomMapResponse,
+    ZoomMetricsResponse,
+    ZoomNodeResponse,
+    ZoomRectResponse,
+    ZoomRelationResponse,
 )
 from repowise.server.services import c4_builder
+from repowise.server.services.zoom_builder import ZoomMap, build_zoom_map
 from repowise.server.services.c4_builder.mermaid import (
     to_mermaid_l1,
     to_mermaid_l2,
@@ -193,4 +199,86 @@ async def get_architecture_view(
 ) -> ArchitectureViewResponse:
     return await build_architecture_view_response(
         session, repo_id, include_symbols=include_symbols
+    )
+
+
+@router.get("/{repo_id}/zoom-map", response_model=ZoomMapResponse)
+async def get_zoom_map(
+    repo_id: str,
+    max_depth: int | None = Query(
+        None, ge=1, description="Cap levels served below the (focus) root; omit for full"
+    ),
+    focus: str | None = Query(
+        None, description="Node id to scope the served subtree to (lazy drill-down)"
+    ),
+    session: AsyncSession = Depends(get_db_session),
+) -> ZoomMapResponse:
+    """The continuous-zoom containment tree (system -> layer -> ... -> file).
+
+    Derived on demand from the persisted graph, like the C4 views. ``focus`` +
+    ``max_depth`` let the canvas fetch deeper subtrees lazily for large repos.
+    """
+    zoom = await build_zoom_map(session, repo_id, max_depth=max_depth, focus=focus)
+    return _zoom_response(zoom)
+
+
+def _zoom_response(zoom: ZoomMap) -> ZoomMapResponse:
+    return ZoomMapResponse(
+        root_id=zoom.root_id,
+        project_name=zoom.project_name,
+        total_files=zoom.total_files,
+        max_depth=zoom.max_depth,
+        truncated=zoom.truncated,
+        nodes=[
+            ZoomNodeResponse(
+                id=n.id,
+                parent_id=n.parent_id,
+                level=n.level,
+                kind=n.kind,
+                name=n.name,
+                path=n.path,
+                children=list(n.children),
+                importance=round(n.importance, 4),
+                sibling_rank=n.sibling_rank,
+                metrics=ZoomMetricsResponse(
+                    file_count=n.metrics.file_count,
+                    descendant_count=n.metrics.descendant_count,
+                    hotspot_count=n.metrics.hotspot_count,
+                    dead_count=n.metrics.dead_count,
+                    entry_point_count=n.metrics.entry_point_count,
+                    on_flow_count=n.metrics.on_flow_count,
+                ),
+                layout=(
+                    ZoomRectResponse(
+                        x=round(n.layout.x, 6),
+                        y=round(n.layout.y, 6),
+                        w=round(n.layout.w, 6),
+                        h=round(n.layout.h, 6),
+                    )
+                    if n.layout is not None
+                    else None
+                ),
+                summary=n.summary,
+                language=n.language,
+                is_entry_point=n.is_entry_point,
+                is_hotspot=n.is_hotspot,
+                is_dead=n.is_dead,
+                is_test=n.is_test,
+                on_flow=n.on_flow,
+            )
+            # Stable order so the response is deterministic regardless of the
+            # builder's internal insertion order.
+            for n in sorted(zoom.nodes.values(), key=lambda node: node.id)
+        ],
+        relations=[
+            ZoomRelationResponse(
+                parent_id=r.parent_id,
+                source_id=r.source_id,
+                target_id=r.target_id,
+                label=r.label,
+                edge_count=r.edge_count,
+                coupling=r.coupling,
+            )
+            for r in zoom.relations
+        ],
     )
