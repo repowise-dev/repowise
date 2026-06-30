@@ -360,67 +360,71 @@ the contributor recipe: **[docs/LANGUAGE_SUPPORT.md →](docs/LANGUAGE_SUPPORT.m
 
 ---
 
-## Quickstart
+<a id="quickstart"></a>
+
+## Quick start (under 5 minutes, no API key)
+
+*Index once, and give your agent the dependency graph + git history + code-health
+— not 40 greps.*
+
+**1. Install**
 
 ```bash
-pip install repowise          # or: uv tool install repowise
+pip install repowise          # Windows: python -m pip install repowise
+repowise --version            # -> repowise, version 0.25.x
 ```
 
-### Single repo
+**2. Index your repo — no LLM, no key**
 
 ```bash
-cd your-project
-repowise init        # builds all five intelligence layers (one-time)
-repowise serve       # starts MCP server + local dashboard
+cd /path/to/your/repo
+repowise init --index-only -y
 ```
 
-### Multi-repo workspace
+Builds the dependency graph, git history, code-health score, and dead-code findings
+in seconds. (Want the generated wiki + semantic search? Use
+`repowise init --provider gemini|anthropic|openai` with the matching key.)
+
+**3. Connect your agent** — the MCP server is `repowise mcp`, served from the repo dir.
+
+<details><summary><b>Claude Code</b></summary>
 
 ```bash
-cd my-workspace/     # parent dir containing backend/, frontend/, shared-libs/
-repowise init .      # scans for git repos, indexes each, runs cross-repo analysis
-repowise serve       # workspace dashboard, Live System Map + per-repo pages
-```
-
-The workspace **Live System Map** renders your services and their typed
-relationships (HTTP / gRPC / events / package deps / co-change) as a
-code-derived, always-current diagram, health-colored, filterable, with
-drill-down to the underlying contracts. See
-[Workspaces](docs/WORKSPACES.md#live-system-map).
-
-`repowise init` automatically registers the MCP server, installs a PostToolUse
-hook in `~/.claude/settings.json`, generates `.mcp.json` at the project root, and
-offers a post-commit hook that keeps everything in sync. If the Codex CLI is
-installed and logged in, interactive runs also offer to write project-local
-`.codex/config.toml`, `.codex/hooks.json`, and a managed `AGENTS.md`;
-non-interactive runs require `--codex`. Skip Codex setup with `--no-codex`; force or
-skip `AGENTS.md` with `--agents` / `--no-agents`.
-
-**Claude Code plugin.** Prefer a one-command setup? Install the plugin from the
-marketplace: it registers the MCP server and hook and adds `/repowise:*` slash
-commands (`init`, `health`, `risk`, `dead-code`, `decision`, …):
-
-```text
+# Plugin (adds 9 tools + slash commands + skills):
 /plugin marketplace add repowise-dev/repowise
 /plugin install repowise@repowise
+
+# …or wire the MCP server directly:
+claude mcp add repowise -- repowise mcp
 ```
-
-To add the MCP server to another editor manually:
-
+Or commit a project `.mcp.json`:
 ```json
-{
-  "mcpServers": {
-    "repowise": { "command": "repowise", "args": ["mcp", "/path/to/your/project"] }
-  }
-}
+{ "mcpServers": { "repowise": { "command": "repowise", "args": ["mcp"] } } }
 ```
+</details>
 
-> **Init time:** the graph, git, dead-code, and code-health layers build in
-> minutes with **zero LLM calls**; run `repowise init --index-only` for a
-> queryable index almost immediately. The one-time cost is the documentation
-> layer (LLM-generated wiki pages, can run in the background). After that, every
-> commit-triggered update takes **under 30 seconds** and only regenerates the
-> pages your change touched.
+<details><summary><b>Codex CLI</b></summary>
+
+Add to `~/.codex/config.toml`:
+```toml
+[mcp_servers.repowise]
+command = "repowise"
+args = ["mcp"]
+```
+Or: `codex mcp add repowise -- repowise mcp`
+</details>
+
+**4. First real call.** Ask your agent: *"Use repowise `get_overview` to summarize this
+repo,"* or *"`get_context` for `src/auth.py`."* You get graph-grounded architecture and
+per-file triage instead of a flurry of greps. ✅
+
+> `get_overview` / `get_context` work in **index-only mode** (no key) — they synthesize
+> from the graph/git/health layers. `search_codebase` / `get_answer` / `get_why` need
+> full mode (the generated wiki).
+
+Ready for the full picture? Run `repowise init --provider …` for the generated wiki +
+semantic search, or skip key management entirely with the hosted tier at
+[repowise.dev](https://www.repowise.dev). Full walkthrough: [docs/QUICKSTART.md](docs/QUICKSTART.md).
 
 **Docs:** [Quickstart](docs/QUICKSTART.md) · [User Guide](docs/USER_GUIDE.md) · [CLI Reference](docs/CLI_REFERENCE.md) · [Codex](docs/CODEX.md) · [MCP Tools](docs/MCP_TOOLS.md) · [Distill](docs/DISTILL.md) · [Workspaces](docs/WORKSPACES.md) · [Auto-Sync](docs/AUTO_SYNC.md) · [Upgrading](docs/UPGRADING.md) · [Config](docs/CONFIG.md)
 
