@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.dead_code.risk_factors import effective_safe_to_delete
@@ -22,6 +23,7 @@ from ..models import (
     HealthFinding,
     HealthSnapshot,
     RefactoringSuggestion,
+    Repository,
     _new_uuid,
     _now_utc,
 )
@@ -420,6 +422,50 @@ async def save_health_metrics(
         await session.flush()
 
 
+async def _health_exclude_spec(session: AsyncSession, repository_id: str) -> Any:
+    repo = await session.get(Repository, repository_id)
+    if repo is None:
+        return None
+
+    patterns: list[str] = []
+
+    def _add(values: Any) -> None:
+        if not isinstance(values, list):
+            return
+        for value in values:
+            if isinstance(value, str) and value not in patterns:
+                patterns.append(value)
+
+    try:
+        settings = json.loads(getattr(repo, "settings_json", "") or "{}")
+        if isinstance(settings, dict):
+            _add(settings.get("exclude_patterns"))
+    except (TypeError, ValueError):
+        pass
+
+    try:
+        from repowise.core.repo_config import load_repo_config
+
+        cfg = load_repo_config(Path(repo.local_path))
+        if isinstance(cfg, dict):
+            _add(cfg.get("exclude_patterns"))
+    except Exception:
+        pass
+
+    if not patterns:
+        return None
+
+    import pathspec
+
+    return pathspec.PathSpec.from_lines("gitwildmatch", patterns)
+
+
+def _filter_excluded_paths(rows: list[Any], spec: Any) -> list[Any]:
+    if spec is None:
+        return rows
+    return [row for row in rows if not spec.match_file(getattr(row, "file_path", ""))]
+
+
 async def get_health_findings(
     session: AsyncSession,
     repository_id: str,
@@ -458,7 +504,10 @@ async def get_health_findings(
         q = q.where(HealthFinding.severity.in_(allowed))
     q = q.order_by(HealthFinding.health_impact.desc())
     result = await session.execute(q)
-    return list(result.scalars().all())
+    return _filter_excluded_paths(
+        list(result.scalars().all()),
+        await _health_exclude_spec(session, repository_id),
+    )
 
 
 async def get_health_metrics(
@@ -472,7 +521,10 @@ async def get_health_metrics(
         q = q.where(HealthFileMetric.file_path.in_(file_paths))
     q = q.order_by(HealthFileMetric.score.asc())
     result = await session.execute(q)
-    return list(result.scalars().all())
+    return _filter_excluded_paths(
+        list(result.scalars().all()),
+        await _health_exclude_spec(session, repository_id),
+    )
 
 
 async def get_health_summary(session: AsyncSession, repository_id: str) -> dict:
@@ -541,27 +593,17 @@ async def get_health_summary(session: AsyncSession, repository_id: str) -> dict:
             worst_performance_path = perf_worst.file_path
             worst_performance_score = round(perf_worst.performance_score, 2)
 
-    # Open-finding counts split by home dimension (NULL homes under "defect"),
-    # so each pillar can show its own actionable count.
-    dim_rows = await session.execute(
-        select(HealthFinding.dimension, func.count())
-        .where(
-            HealthFinding.repository_id == repository_id,
-            HealthFinding.status == "open",
-        )
-        .group_by(HealthFinding.dimension)
-    )
+    findings = await get_health_findings(session, repository_id)
     by_dim: dict[str, int] = {}
-    for dim, count in dim_rows.all():
-        by_dim[dim or "defect"] = by_dim.get(dim or "defect", 0) + int(count)
-    open_findings = sum(by_dim.values())
-
+    for finding in findings:
+        dim = finding.dimension or "defect"
+        by_dim[dim] = by_dim.get(dim, 0) + 1
     return {
         "file_count": len(metrics),
         "average_health": round(avg, 2),
         "worst_performer_path": worst.file_path,
         "worst_performer_score": round(worst.score, 2),
-        "open_findings": open_findings,
+        "open_findings": len(findings),
         "maintainability_average": (
             round(maintainability_average, 2) if maintainability_average is not None else None
         ),
