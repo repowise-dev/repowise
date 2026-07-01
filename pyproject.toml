@@ -211,3 +211,8 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 addopts = "-v --tb=short"
 pythonpath = ["."]
+filterwarnings = [
+    "ignore:.*scipy.sparse.construct.*:DeprecationWarning",
+    "ignore:Tensorflow not installed:ImportWarning",
+    "ignore:.*nopython=False.*:DeprecationWarning",
+]

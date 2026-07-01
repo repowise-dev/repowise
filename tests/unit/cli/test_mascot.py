@@ -138,9 +138,10 @@ def test_repo_name_with_markup_is_escaped() -> None:
     assert "evil[/bold]name" in console.export_text()
 
 
-def test_banner_at_wide_width_stays_compact_with_long_tagline() -> None:
+def test_banner_at_wide_width_stays_compact_with_long_tagline(monkeypatch: pytest.MonkeyPatch) -> None:
     # The banner art is always the compact variant; only the tagline grows
     # on wide terminals.
+    monkeypatch.setenv("TERM", "xterm")
     console = Console(width=100, record=True, force_terminal=True)
     print_banner(console, repo_name="my-cool-repo")
     out = console.export_text()

@@ -215,9 +215,15 @@ async def _run_ingestion(
                 progress.on_item_done("traverse")
     finally:
         # shutdown(wait=True) is blocking — run in a thread to keep the
-        # event loop responsive.  All submitted futures have already
-        # completed by the time we reach here (the for-loop awaited them).
-        await asyncio.to_thread(io_pool.shutdown, wait=True)
+        # event loop responsive if running; otherwise do it synchronously.
+        try:
+            _loop = asyncio.get_running_loop()
+        except RuntimeError:
+            _loop = None
+        if _loop is not None and _loop.is_running():
+            await asyncio.to_thread(io_pool.shutdown, wait=True)
+        else:
+            io_pool.shutdown(wait=True)
 
     repo_structure = traverser.get_repo_structure(file_infos)
     _phase_done(progress, "traverse")
@@ -522,7 +528,14 @@ async def reparse_for_resume(
             if progress:
                 progress.on_item_done("traverse")
     finally:
-        await asyncio.to_thread(io_pool.shutdown, wait=True)
+        try:
+            _loop = asyncio.get_running_loop()
+        except RuntimeError:
+            _loop = None
+        if _loop is not None and _loop.is_running():
+            await asyncio.to_thread(io_pool.shutdown, wait=True)
+        else:
+            io_pool.shutdown(wait=True)
 
     repo_structure = traverser.get_repo_structure(file_infos)
     _phase_done(progress, "traverse")

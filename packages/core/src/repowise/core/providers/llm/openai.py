@@ -70,7 +70,7 @@ def _model_leaf(model: str) -> str:
 
 def _supports_openai_reasoning_effort(model: str) -> bool:
     leaf = _model_leaf(model)
-    return leaf.startswith(("gpt-5", "o1", "o3", "o4"))
+    return leaf.startswith(("gpt-5", "o1", "o3", "o4")) or "codex-max" in leaf
 
 
 def _supports_chat_template_thinking_toggle(model: str) -> bool:
