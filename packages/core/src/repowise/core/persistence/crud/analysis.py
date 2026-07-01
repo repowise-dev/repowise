@@ -426,12 +426,14 @@ async def _health_exclude_spec(session: AsyncSession, repository_id: str) -> Any
         return None
 
     patterns: list[str] = []
+    seen: set[str] = set()
 
     def _add(values: Any) -> None:
         if not isinstance(values, list):
             return
         for value in values:
-            if isinstance(value, str) and value not in patterns:
+            if isinstance(value, str) and value not in seen:
+                seen.add(value)
                 patterns.append(value)
 
     try:

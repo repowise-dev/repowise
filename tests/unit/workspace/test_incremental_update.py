@@ -90,6 +90,11 @@ def _add_commit(repo: Path, filename: str = "b.py") -> str:
     return _git(repo, "rev-parse", "HEAD")
 
 
+def _assert_full_pipeline_fallback(result, calls: list[dict]) -> None:
+    assert len(calls) == 1
+    assert result.updated is True
+
+
 @pytest.fixture
 def forbid_full_pipeline(monkeypatch):
     """Make the full pipeline unreachable so tests prove the incremental
@@ -179,8 +184,7 @@ def test_deleted_file_falls_back_to_full_pipeline(tmp_path, stub_full_pipeline):
 
     result = asyncio.run(update_single_repo_index(repo))
 
-    assert len(stub_full_pipeline) == 1
-    assert result.updated is True
+    _assert_full_pipeline_fallback(result, stub_full_pipeline)
 
 
 def test_renamed_file_falls_back_to_full_pipeline(tmp_path, stub_full_pipeline):
@@ -194,8 +198,7 @@ def test_renamed_file_falls_back_to_full_pipeline(tmp_path, stub_full_pipeline):
 
     result = asyncio.run(update_single_repo_index(repo))
 
-    assert len(stub_full_pipeline) == 1
-    assert result.updated is True
+    _assert_full_pipeline_fallback(result, stub_full_pipeline)
 
 
 def test_never_indexed_repo_runs_full_pipeline(tmp_path, stub_full_pipeline):
@@ -203,8 +206,7 @@ def test_never_indexed_repo_runs_full_pipeline(tmp_path, stub_full_pipeline):
 
     result = asyncio.run(update_single_repo_index(repo))
 
-    assert len(stub_full_pipeline) == 1
-    assert result.updated is True
+    _assert_full_pipeline_fallback(result, stub_full_pipeline)
     assert result.file_count == 7
 
 
@@ -217,8 +219,7 @@ def test_unresolvable_base_commit_falls_back_to_full_pipeline(tmp_path, stub_ful
 
     result = asyncio.run(update_single_repo_index(repo))
 
-    assert len(stub_full_pipeline) == 1
-    assert result.updated is True
+    _assert_full_pipeline_fallback(result, stub_full_pipeline)
 
 
 def test_incremental_failure_falls_back_to_full_pipeline(tmp_path, stub_full_pipeline, monkeypatch):
@@ -236,8 +237,7 @@ def test_incremental_failure_falls_back_to_full_pipeline(tmp_path, stub_full_pip
 
     result = asyncio.run(update_single_repo_index(repo))
 
-    assert len(stub_full_pipeline) == 1
-    assert result.updated is True
+    _assert_full_pipeline_fallback(result, stub_full_pipeline)
     assert result.error is None
 
 
@@ -319,8 +319,7 @@ def test_full_pipeline_merges_repo_settings_excludes(tmp_path, stub_full_pipelin
 
     result = asyncio.run(update_single_repo_index(repo))
 
-    assert len(stub_full_pipeline) == 1
-    assert result.updated is True
+    _assert_full_pipeline_fallback(result, stub_full_pipeline)
     assert stub_full_pipeline[0]["exclude_patterns"] == ["tools/"]
 
 
