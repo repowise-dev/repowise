@@ -1,0 +1,220 @@
+{
+  "name": "repowise",
+  "displayName": "Repowise",
+  "description": "Code health, architecture, and git intelligence from one local index, in your editor and in your AI agent via MCP.",
+  "version": "0.1.0",
+  "publisher": "repowise-dev",
+  "license": "AGPL-3.0-or-later",
+  "homepage": "https://www.repowise.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/repowise-dev/repowise",
+    "directory": "packages/vscode"
+  },
+  "bugs": {
+    "url": "https://github.com/repowise-dev/repowise/issues"
+  },
+  "engines": {
+    "vscode": "^1.101.0",
+    "node": ">=20.0.0"
+  },
+  "categories": ["AI", "Chat", "Visualization", "Linters", "Other"],
+  "keywords": [
+    "mcp",
+    "ai agent",
+    "copilot",
+    "code health",
+    "technical debt",
+    "refactoring",
+    "code analysis",
+    "architecture",
+    "dependency graph",
+    "hotspots",
+    "knowledge graph",
+    "documentation",
+    "codebase intelligence"
+  ],
+  "icon": "media/icon.png",
+  "main": "./dist/extension.js",
+  "extensionKind": ["workspace"],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "Repowise runs the local repowise CLI and connects to a local analysis server, so it is enabled only in trusted workspaces."
+    }
+  },
+  "activationEvents": [
+    "onStartupFinished",
+    "workspaceContains:**/.repowise/**",
+    "workspaceContains:**/.repowise-workspace/**"
+  ],
+  "contributes": {
+    "configuration": {
+      "title": "Repowise",
+      "properties": {
+        "repowise.server.port": {
+          "type": ["number", "null"],
+          "default": null,
+          "markdownDescription": "Port the local Repowise server listens on. Leave empty to discover it from the running server's lockfile."
+        },
+        "repowise.server.autoStart": {
+          "type": "string",
+          "enum": ["ask", "always", "never"],
+          "enumDescriptions": [
+            "Ask before starting the local server.",
+            "Start the local server automatically when a Repowise index is present.",
+            "Never start the local server automatically."
+          ],
+          "default": "ask",
+          "description": "Whether to start the local Repowise server automatically."
+        },
+        "repowise.cliPath": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path to the repowise CLI executable. Leave empty to use 'repowise' from your PATH."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "repowise.startServer",
+        "title": "Start Server",
+        "category": "Repowise"
+      },
+      {
+        "command": "repowise.stopServer",
+        "title": "Stop Server",
+        "category": "Repowise"
+      },
+      {
+        "command": "repowise.showLog",
+        "title": "Show Log",
+        "category": "Repowise"
+      },
+      {
+        "command": "repowise.configureMcp",
+        "title": "Configure MCP for this Workspace",
+        "category": "Repowise"
+      },
+      {
+        "command": "repowise.runInit",
+        "title": "Set Up This Repository",
+        "category": "Repowise"
+      },
+      {
+        "command": "repowise.checkSetup",
+        "title": "Check Setup",
+        "category": "Repowise"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "repowise",
+          "title": "Repowise",
+          "icon": "media/repowise.svg"
+        }
+      ]
+    },
+    "views": {
+      "repowise": [
+        {
+          "id": "repowise.home",
+          "name": "Overview"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "repowise.home",
+        "when": "!isWorkspaceTrusted",
+        "contents": "Repowise is disabled in untrusted workspaces because it runs a local CLI and connects to a local server.\n\n[Manage Workspace Trust](command:workbench.trust.manage)"
+      },
+      {
+        "view": "repowise.home",
+        "when": "isWorkspaceTrusted && repowise.state == 'not-installed'",
+        "contents": "The repowise CLI was not found on your PATH.\n\nInstall it, then set it up for this repository.\n\n[Check Setup](command:repowise.checkSetup)\n\nIf the CLI lives at a custom location, set `repowise.cliPath` in settings."
+      },
+      {
+        "view": "repowise.home",
+        "when": "isWorkspaceTrusted && repowise.state == 'no-index'",
+        "contents": "This repository is not indexed yet.\n\nSet up Repowise to build the index and unlock codebase intelligence.\n\n[Set Up This Repository](command:repowise.runInit)"
+      },
+      {
+        "view": "repowise.home",
+        "when": "isWorkspaceTrusted && repowise.state == 'server-down'",
+        "contents": "The local Repowise server is not running.\n\nStart it to browse the index and connect your AI agent.\n\n[Start Server](command:repowise.startServer)\n[Check Setup](command:repowise.checkSetup)"
+      }
+    ],
+    "mcpServerDefinitionProviders": [
+      {
+        "id": "repowise.mcp",
+        "label": "Repowise"
+      }
+    ],
+    "walkthroughs": [
+      {
+        "id": "repowise.gettingStarted",
+        "title": "Get Started with Repowise",
+        "description": "Index your repository and connect it to your editor and AI agent.",
+        "steps": [
+          {
+            "id": "installCli",
+            "title": "Install the CLI",
+            "description": "Install the repowise command line tool so the extension can index and serve your repository.\n[Check Setup](command:repowise.checkSetup)",
+            "media": {
+              "markdown": "media/walkthrough/install-cli.md"
+            }
+          },
+          {
+            "id": "indexRepo",
+            "title": "Index the repository",
+            "description": "Build the Repowise index for this workspace.\n[Set Up This Repository](command:repowise.runInit)",
+            "media": {
+              "markdown": "media/walkthrough/index-repo.md"
+            },
+            "completionEvents": ["onCommand:repowise.runInit"]
+          },
+          {
+            "id": "connectServer",
+            "title": "Connect the server",
+            "description": "Start the local server so the extension can read your index.\n[Start Server](command:repowise.startServer)",
+            "media": {
+              "markdown": "media/walkthrough/connect-server.md"
+            },
+            "completionEvents": ["onCommand:repowise.startServer"]
+          },
+          {
+            "id": "connectMcp",
+            "title": "MCP for your AI agent",
+            "description": "Expose the Repowise tools to your AI agent over MCP.\n[Configure MCP for this Workspace](command:repowise.configureMcp)",
+            "media": {
+              "markdown": "media/walkthrough/connect-mcp.md"
+            },
+            "completionEvents": ["onCommand:repowise.configureMcp"]
+          }
+        ]
+      }
+    ]
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "type-check": "tsc --noEmit",
+    "pretest": "npm run build && tsc -p tsconfig.test.json",
+    "test": "vscode-test",
+    "package": "vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@repowise-dev/api-client": "*",
+    "@repowise-dev/types": "*",
+    "@types/mocha": "^10.0.0",
+    "@types/node": "^20",
+    "@types/vscode": "~1.101.0",
+    "@vscode/test-cli": "^0.0.10",
+    "@vscode/test-electron": "^3.0.0",
+    "@vscode/vsce": "^3.0.0",
+    "esbuild": "^0.28.0",
+    "typescript": "^5.7.2"
+  }
+}
