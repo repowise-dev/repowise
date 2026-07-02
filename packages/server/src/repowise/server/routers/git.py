@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 from collections import Counter
+from dataclasses import replace
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -13,6 +16,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from repowise.core.analysis.change_risk import (
     ChangeFeatures,
     RiskNormalizer,
+    baseline_scores,
+    extract_range_features,
     score_change,
 )
 from repowise.core.ingestion.git_indexer._constants import (
@@ -20,12 +25,13 @@ from repowise.core.ingestion.git_indexer._constants import (
     classify_commit_category,
 )
 from repowise.core.persistence import crud
-from repowise.core.persistence.models import GitCommit, GitMetadata
+from repowise.core.persistence.models import GitCommit, GitMetadata, Repository
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.mcp_server.tool_risk import _check_test_gap
 from repowise.server.schemas import (
     AgentTrendBucket,
     AgentTrendResponse,
+    ChangeFeaturesResponse,
     CommitDetailResponse,
     CommitEvolutionBucket,
     CommitEvolutionResponse,
@@ -38,8 +44,13 @@ from repowise.server.schemas import (
     Paginated,
     ReviewerSuggestionsResponse,
     RiskDriverResponse,
+    RiskRangeResponse,
 )
 from repowise.server.services.reviewer_suggestions import suggest_reviewers
+
+# Below this many sampled commits a percentile isn't worth showing; mirrors
+# the CLI's ``repowise risk`` threshold so the two surfaces agree.
+_MIN_BASELINE = 8
 
 router = APIRouter(
     prefix="/api/repos",
@@ -315,9 +326,7 @@ async def get_commit_evolution(
     buckets to show how the development emphasis shifts as the repo matures.
     """
     result = await session.execute(
-        select(GitCommit.committed_at, GitCommit.subject).where(
-            GitCommit.repository_id == repo_id
-        )
+        select(GitCommit.committed_at, GitCommit.subject).where(GitCommit.repository_id == repo_id)
     )
     rows = [(ts, subj) for ts, subj in result.all() if ts is not None]
 
@@ -557,6 +566,107 @@ async def get_reviewer_suggestions(
 
     suggestions = await suggest_reviewers(session, repo_id, paths, limit=limit)
     return ReviewerSuggestionsResponse(paths=paths, suggestions=suggestions)
+
+
+async def _resolve_local_repo(
+    repo_id: str,
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+) -> Repository:
+    """Resolve a repository with a usable local checkout, or raise 404."""
+    repo = await crud.get_repository(session, repo_id)
+    if repo is None or not repo.local_path or not os.path.isdir(repo.local_path):
+        raise HTTPException(status_code=404, detail="Repository not found")
+    return repo
+
+
+def _revision_exists(repo_path: str, rev: str) -> bool:
+    # Reject option-shaped input outright; git refuses ref names starting
+    # with "-", so this loses no legitimate revision and keeps user input
+    # from ever being parsed as a git flag here or downstream.
+    if not rev or rev.startswith("-"):
+        return False
+    result = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"{rev}^{{commit}}"],
+        cwd=repo_path,
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0
+
+
+@router.get("/{repo_id}/risk/range", response_model=RiskRangeResponse)
+def get_risk_range(
+    repo_id: str,
+    base: str = Query(..., description="Base revision of the range"),
+    head: str = Query("HEAD", description="Head revision of the range"),
+    baseline: int = Query(
+        200,
+        ge=0,
+        description="Recent commits to sample for the repo-relative percentile (0 skips it)",
+    ),
+    repo: Repository = Depends(_resolve_local_repo),  # noqa: B008
+) -> RiskRangeResponse:
+    """Score a ``base..head`` git range's defect risk from its live diff shape.
+
+    Mirrors ``repowise risk <base>..<head> --format json``: same Kamei
+    change-risk model, scored on demand against the working tree instead of
+    the indexed commit table, so it also covers ranges that haven't been
+    indexed yet (an open PR branch). Runs sync so FastAPI dispatches it to
+    the threadpool, since it shells out to git.
+    """
+    local_path = repo.local_path
+    if not _revision_exists(local_path, base) or not _revision_exists(local_path, head):
+        raise HTTPException(status_code=400, detail=f"Unknown revision in range {base!r}..{head!r}")
+
+    try:
+        features = extract_range_features(local_path, base, head)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=400, detail=f"Could not read range {base!r}..{head!r}: {exc}"
+        ) from exc
+
+    risk = score_change(features)
+
+    percentile: float | None = None
+    priority: str | None = None
+    if baseline:
+        scores = baseline_scores(local_path, head, baseline, (), "")
+        if len(scores) >= _MIN_BASELINE:
+            normalizer = RiskNormalizer.from_scores(scores)
+            # Rank with experience unknown, matching the baseline (diff-shape
+            # percentile within the repo), keeping the comparison like-with-like.
+            rank_score = score_change(replace(features, exp=None)).score
+            percentile = normalizer.percentile(rank_score)
+            priority = normalizer.priority(rank_score)
+
+    return RiskRangeResponse(
+        base=base,
+        head=head,
+        score=risk.score,
+        probability=risk.probability,
+        level=risk.level,
+        risk_percentile=percentile,
+        review_priority=priority,
+        is_fix=features.is_fix,
+        features=ChangeFeaturesResponse(
+            la=features.la,
+            ld=features.ld,
+            nf=features.nf,
+            nd=features.nd,
+            ns=features.ns,
+            entropy=features.entropy,
+            exp=features.exp,
+        ),
+        drivers=[
+            RiskDriverResponse(
+                feature=d.feature,
+                value=None if d.value != d.value else d.value,  # drop NaN (unknown feature)
+                contribution=d.contribution,
+                label=d.label,
+            )
+            for d in risk.top_drivers
+        ],
+    )
 
 
 @router.get("/{repo_id}/git-summary", response_model=GitSummaryResponse)

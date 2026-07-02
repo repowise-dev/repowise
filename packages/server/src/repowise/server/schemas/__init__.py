@@ -71,6 +71,7 @@ from .external_systems import (
 from .git import (
     AgentTrendBucket,
     AgentTrendResponse,
+    ChangeFeaturesResponse,
     CommitDetailResponse,
     CommitEvolutionBucket,
     CommitEvolutionResponse,
@@ -81,6 +82,7 @@ from .git import (
     HotspotResponse,
     OwnershipEntry,
     RiskDriverResponse,
+    RiskRangeResponse,
 )
 from .graph import (
     ArchitectureEdgeResponse,
@@ -235,6 +237,7 @@ __all__ = [
     "C4SystemResponse",
     "CallerCalleeEntry",
     "CallersCalleesResponse",
+    "ChangeFeaturesResponse",
     "ChangelogEntryModel",
     "ChangelogResponse",
     "ChangelogSectionModel",
@@ -320,6 +323,7 @@ __all__ = [
     "ReviewerSuggestion",
     "ReviewerSuggestionsResponse",
     "RiskDriverResponse",
+    "RiskRangeResponse",
     "SearchRequest",
     "SearchResultResponse",
     "SecurityFindingResponse",
