@@ -40,7 +40,10 @@ class RefactoringTreeProvider extends RepowiseTreeProvider {
     const targets = await this.cached(PLANS_KEY, () =>
       getRefactoringTargets(repoId, { minConfidence: "medium" }),
     );
-    this.setBadge(targets.summary.total, `${targets.summary.total} refactoring targets`);
+    // Badge what the tree actually lists (medium+ confidence, top-N), not the
+    // server's global total: a four-digit badge on the activity bar is noise.
+    const listed = Math.min(targets.plans.length, MAX_PLANS);
+    this.setBadge(listed, `${listed} ranked refactoring plans`);
 
     if (targets.plans.length === 0) {
       return [this.messageNode("No refactoring targets")];
