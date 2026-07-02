@@ -233,7 +233,9 @@ function SignalTile({
         <span className="inline-flex items-center gap-1.5 text-xs font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
           <span className="text-[var(--color-text-secondary)]">{icon}</span>
           {label}
-          <InfoTip content={hint} label={`About ${label}`} />
+          {/* z-10 keeps this info button clickable above the tile's stretched
+              click target (which is a sibling, never a wrapping button). */}
+          <InfoTip content={hint} label={`About ${label}`} className="relative z-10" />
         </span>
         {sparkline && sparkline.length > 1 ? (
           <span className="text-[var(--color-text-tertiary)]">
@@ -274,29 +276,40 @@ function SignalTile({
       {children}
     </>
   );
-  return <TileShell onClick={onClick}>{inner}</TileShell>;
+  return (
+    <TileShell onClick={onClick} ariaLabel={`View ${label} findings`}>
+      {inner}
+    </TileShell>
+  );
 }
 
-/** Shared chrome for a hero signal tile — a static card, or a button when an
- *  `onClick` makes it a jump into the pillar-filtered view. */
+/** Shared chrome for a hero signal tile: a static card, or a card with a
+ *  stretched click target when an `onClick` makes it a jump into the
+ *  pillar-filtered view. The click target is a sibling button covering the
+ *  card rather than a button wrapping the content, so the header's info button
+ *  is not an (invalid) interactive descendant of another button. */
 function TileShell({
   onClick,
+  ariaLabel,
   children,
 }: {
   onClick?: (() => void) | undefined;
+  ariaLabel?: string | undefined;
   children: React.ReactNode;
 }) {
   const cls =
-    "flex w-full flex-col rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-4 text-left transition-colors";
+    "relative flex w-full flex-col rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-4 text-left transition-colors";
   if (onClick) {
     return (
-      <button
-        type="button"
-        onClick={onClick}
-        className={`${cls} cursor-pointer hover:border-[var(--color-border-strong)]`}
-      >
+      <div className={`${cls} hover:border-[var(--color-border-strong)]`}>
         {children}
-      </button>
+        <button
+          type="button"
+          aria-label={ariaLabel}
+          onClick={onClick}
+          className="absolute inset-0 cursor-pointer rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+        />
+      </div>
     );
   }
   return <div className={cls}>{children}</div>;
@@ -324,7 +337,7 @@ function PerformanceTile({
           <Gauge className="h-4 w-4" />
         </span>
         Performance
-        <InfoTip content={PERF_HINT} label="About Performance" />
+        <InfoTip content={PERF_HINT} label="About Performance" className="relative z-10" />
       </span>
 
       {score == null ? (
@@ -368,5 +381,9 @@ function PerformanceTile({
       )}
     </>
   );
-  return <TileShell onClick={interactive ? onClick : undefined}>{inner}</TileShell>;
+  return (
+    <TileShell onClick={interactive ? onClick : undefined} ariaLabel="View Performance findings">
+      {inner}
+    </TileShell>
+  );
 }

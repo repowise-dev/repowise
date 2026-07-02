@@ -22,14 +22,21 @@ export default defineConfig({
   root: here,
   plugins: [react(), tailwindcss()],
   resolve: {
-    alias: {
+    alias: [
       // The shared UI package peers on next-themes; inside a webview the
       // editor owns the theme, so the hook is served by a local shim.
-      "next-themes": path.resolve(here, "src/shims/next-themes.ts"),
+      { find: "next-themes", replacement: path.resolve(here, "src/shims/next-themes.ts") },
       // The Lottie loader fetches WASM + JSON at runtime; both are blocked by
       // the webview CSP, so loading states render a CSS spinner instead.
-      "@lottiefiles/dotlottie-react": path.resolve(here, "src/shims/dotlottie-react.tsx"),
-    },
+      {
+        find: "@lottiefiles/dotlottie-react",
+        replacement: path.resolve(here, "src/shims/dotlottie-react.tsx"),
+      },
+      // The bare `shiki` meta bundle ships every grammar; the shim narrows it
+      // to a curated language set. Anchored regex so `shiki/core` and the
+      // fine-grained subpaths the shim itself imports still resolve normally.
+      { find: /^shiki$/, replacement: path.resolve(here, "src/shims/shiki.ts") },
+    ],
   },
   build: {
     outDir: path.resolve(here, "../dist/webview"),

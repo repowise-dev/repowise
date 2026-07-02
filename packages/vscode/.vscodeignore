@@ -11,3 +11,5 @@ esbuild.mjs
 **/*.map
 **/.gitkeep
 .gitignore
+RELEASING.md
+*.vsix

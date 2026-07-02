@@ -35,6 +35,11 @@
     "codebase intelligence"
   ],
   "icon": "media/icon.png",
+  "pricing": "Free",
+  "galleryBanner": {
+    "color": "#1e1b2e",
+    "theme": "dark"
+  },
   "main": "./dist/extension.js",
   "extensionKind": ["workspace"],
   "capabilities": {
@@ -315,6 +320,15 @@
               "markdown": "media/walkthrough/connect-server.md"
             },
             "completionEvents": ["onCommand:repowise.startServer"]
+          },
+          {
+            "id": "firstInsight",
+            "title": "See your first insight",
+            "description": "Open the health dashboard for a first look at your repository.\n[Show Health Dashboard](command:repowise.showHealthDashboard)",
+            "media": {
+              "markdown": "media/walkthrough/first-insight.md"
+            },
+            "completionEvents": ["onCommand:repowise.showHealthDashboard"]
           },
           {
             "id": "connectMcp",

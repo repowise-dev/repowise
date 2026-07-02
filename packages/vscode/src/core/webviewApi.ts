@@ -10,12 +10,15 @@ import { getFileContent, getFileDetail } from "@repowise-dev/api-client/files";
 import {
   getArchitectureCommunityGraph,
   getCommunities,
+  getCommunityDetail,
   getCommunitySlice,
   getDeadCodeGraph,
   getExecutionFlows,
   getGraph,
+  getGraphPath,
   getHotFilesGraph,
   getModuleGraph,
+  searchNodes,
 } from "@repowise-dev/api-client/graph";
 import {
   getRefactoringPlan,
@@ -165,6 +168,12 @@ export function createHostApi(ctx: RepowiseContext, epoch: () => number): HostAp
     communities: () => cached("graph:communities", (id) => getCommunities(id)),
     communitySlice: (communityId) =>
       cached(`graph:slice:${communityId}`, (id) => getCommunitySlice(id, communityId)),
+    communityDetail: (communityId) =>
+      cached(`graph:community:${communityId}`, (id) => getCommunityDetail(id, communityId)),
+    graphPath: (from, to) =>
+      cached(`graph:path:${from}|${to}`, (id) => getGraphPath(id, from, to)),
+    // Autocomplete over an unbounded query space: live, never cached.
+    searchNodes: (query, limit) => searchNodes(repoId(), query, limit),
     deadCodeGraph: () => cached("graph:dead", (id) => getDeadCodeGraph(id)),
     hotFilesGraph: () => cached("graph:hot", (id) => getHotFilesGraph(id)),
     executionFlows: () => cached("graph:flows", (id) => getExecutionFlows(id)),

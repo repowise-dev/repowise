@@ -18,14 +18,17 @@ import type {
 import type { FileDetailResponse } from "@repowise-dev/types/files";
 import type {
   ArchitectureGraphResponse,
+  CommunityDetailResponse,
   CommunitySliceResponse,
   CommunitySummaryItem,
   DeadCodeGraphResponse,
   DecisionRecordResponse,
   ExecutionFlowsResponse,
   GraphExportResponse,
+  GraphPathResponse,
   HotFilesGraphResponse,
   ModuleGraphResponse,
+  NodeSearchResult,
   PageResponse,
 } from "@repowise-dev/api-client/types";
 import type { RiskRangeResponse } from "@repowise-dev/api-client/risk";
@@ -93,6 +96,11 @@ export interface HostApi {
   architectureCommunityGraph(): Promise<ArchitectureGraphResponse>;
   communities(): Promise<CommunitySummaryItem[]>;
   communitySlice(communityId: number): Promise<CommunitySliceResponse>;
+  communityDetail(communityId: number): Promise<CommunityDetailResponse>;
+  /** Shortest path between two graph nodes (path finder panel). */
+  graphPath(from: string, to: string): Promise<GraphPathResponse>;
+  /** Node-name autocomplete for the path finder inputs. */
+  searchNodes(query: string, limit?: number): Promise<NodeSearchResult[]>;
   deadCodeGraph(): Promise<DeadCodeGraphResponse>;
   hotFilesGraph(): Promise<HotFilesGraphResponse>;
   executionFlows(): Promise<ExecutionFlowsResponse>;

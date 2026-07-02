@@ -5,19 +5,25 @@
  * back into the lazy data hook so scope changes fetch just what they render.
  */
 
-import { useCallback } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   GraphFlow,
   type GraphFlowProps as GraphFlowShellProps,
 } from "@repowise-dev/ui/graph/graph-flow";
+import { PathFinderPanel } from "@repowise-dev/ui/graph/path-finder-panel";
+import { GraphCommunityPanel } from "@repowise-dev/ui/graph/graph-community-panel";
 import type {
   ArchitectureGraph,
+  CommunityDetail,
   CommunitySlice,
   CommunitySummaryItem,
   ExecutionFlows,
   GraphExport,
+  GraphPath,
   ModuleGraph,
+  NodeSearchResult,
 } from "@repowise-dev/types/graph";
+import type { WebviewHost } from "../../runtime/rpc";
 import type { ViewProps } from "../../runtime/mount";
 import { useGraphData } from "./use-graph-data";
 import { GraphHeader } from "./graph-header";
@@ -89,9 +95,83 @@ export function App({ host, params, repo, refreshToken }: ViewProps<"graph">) {
             }
             onNodeClick={handleNodeClick}
             onNodeViewDocs={openIfFile}
+            renderPathFinder={(p) => (
+              <PathFinderPanel
+                searchNodes={(q, l) =>
+                  host.api.searchNodes(q, l) as Promise<NodeSearchResult[]>
+                }
+                findPath={(from, to) =>
+                  host.api.graphPath(from, to) as Promise<GraphPath>
+                }
+                onPathFound={p.onPathFound}
+                onClear={p.onClear}
+                onClose={p.onClose}
+                initialFrom={p.initialFrom}
+                initialTo={p.initialTo}
+              />
+            )}
+            renderCommunityPanel={(p) => (
+              <CommunityPanel
+                host={host}
+                communityId={p.communityId}
+                onClose={p.onClose}
+                onExpandOnCanvas={p.onExpandOnCanvas}
+              />
+            )}
           />
         )}
       </div>
     </div>
+  );
+}
+
+/**
+ * Fetches one community's detail on open and feeds the shared panel shell.
+ * The shell expects pre-fetched data + a loading flag (it does no fetching of
+ * its own), so this thin wrapper owns the host call, mirroring the web app's
+ * SWR wrapper. Member links open the file in an editor column.
+ */
+function CommunityPanel({
+  host,
+  communityId,
+  onClose,
+  onExpandOnCanvas,
+}: {
+  host: WebviewHost;
+  communityId: number;
+  onClose: () => void;
+  onExpandOnCanvas: () => void;
+}) {
+  const [community, setCommunity] = useState<CommunityDetail | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    setIsLoading(true);
+    setCommunity(null);
+    host.api
+      .communityDetail(communityId)
+      .then((detail) => {
+        if (!cancelled) setCommunity(detail as CommunityDetail);
+      })
+      .catch(() => {
+        if (!cancelled) setCommunity(null);
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [host, communityId]);
+
+  return (
+    <GraphCommunityPanel
+      communityId={communityId}
+      community={community}
+      isLoading={isLoading}
+      onClose={onClose}
+      onExpandOnCanvas={onExpandOnCanvas}
+    />
   );
 }

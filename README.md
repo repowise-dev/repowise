@@ -308,6 +308,21 @@ pattern scan) · **Costs** · **Workspace**
 
 ---
 
+## VS Code extension
+
+The **Repowise** extension puts the index where code gets written: inline health
+diagnostics and gutter heat on the files you open, refactoring plans as CodeLens,
+branch risk before you push, and the same dashboards (health, architecture,
+knowledge graph, decisions, docs) inside the editor. One install also registers
+the Repowise MCP server with VS Code, so the same local index serves both you and
+your AI agent.
+
+Install from the Marketplace (search **Repowise**) or Open VSX, then run
+**Repowise: Set Up This Repository**. Full guide in
+[docs/VSCODE.md →](docs/VSCODE.md).
+
+---
+
 ## Supported languages
 
 **15 languages parsed to AST · 9 at the Full tier · framework-aware across all of them.**
