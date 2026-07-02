@@ -13,6 +13,20 @@ export interface RunOptions {
   cwd?: string;
   /** Kill the process after this many ms. */
   timeoutMs?: number;
+  /**
+   * Receives each complete stdout line as it arrives, for commands that
+   * stream newline-delimited progress. The full stdout is still collected in
+   * the result. Callback errors are swallowed so a bad consumer cannot kill
+   * the run.
+   */
+  onStdoutLine?: (line: string) => void;
+  /**
+   * Runs immediately instead of waiting in the serialized queue. For
+   * long-running streams (an index update can take many minutes) that would
+   * otherwise make every queued short call appear frozen. The caller is
+   * responsible for its own single-flight guard.
+   */
+  bypassQueue?: boolean;
 }
 
 /** Structured payload of `repowise doctor --format json`. */
@@ -69,8 +83,27 @@ export function createCliRunner(
         reject(new Error(`CLI timed out after ${timeoutMs}ms`));
       }, timeoutMs);
 
+      let lineBuffer = "";
+      const emitLines = (text: string, flush: boolean): void => {
+        const onLine = options.onStdoutLine;
+        if (!onLine) return;
+        lineBuffer += text;
+        const lines = lineBuffer.split(/\r?\n/);
+        lineBuffer = flush ? "" : (lines.pop() ?? "");
+        for (const line of lines) {
+          if (!line) continue;
+          try {
+            onLine(line);
+          } catch (err) {
+            log.debug(`stdout line handler failed: ${String(err)}`);
+          }
+        }
+      };
+
       child.stdout.on("data", (chunk: Buffer) => {
-        stdout += chunk.toString();
+        const text = chunk.toString();
+        stdout += text;
+        emitLines(text, false);
       });
       child.stderr.on("data", (chunk: Buffer) => {
         stderr += chunk.toString();
@@ -85,12 +118,15 @@ export function createCliRunner(
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        // A final line without a trailing newline is still a line.
+        emitLines("", true);
         resolve({ code, stdout, stderr });
       });
     });
   }
 
   function run(args: string[], options: RunOptions = {}): Promise<CliResult> {
+    if (options.bypassQueue) return exec(args, options);
     // Chain onto the queue so only one child runs at a time. Failures do not
     // poison the queue: the next call runs regardless.
     const result = queue.then(

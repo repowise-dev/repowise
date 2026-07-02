@@ -111,12 +111,14 @@ export function registerServerManager(ctx: RepowiseContext): vscode.Disposable {
       return;
     }
 
-    // A missing repo id is not fatal: staying connected still serves the
-    // workspace, so log it and carry on.
-    const repoId = await ctx.api.resolveRepoId(repoRoot);
-    if (!repoId) {
+    // A missing repo record is not fatal: staying connected still serves the
+    // workspace, so log it and carry on. Set before the ready flip so state
+    // listeners read a settled repo.
+    const repo = await ctx.api.resolveRepo(repoRoot);
+    if (!repo) {
       ctx.log.warn(`Could not resolve a repo id for ${repoRoot}; staying connected.`);
     }
+    ctx.setRepo(repo);
     ctx.setExtensionState("ready");
     ctx.setStatusBarState("connected", { version: health.version, url });
   }

@@ -28,6 +28,8 @@ describe("Repowise extension", () => {
     const start = Date.now();
     await ext.activate();
     const elapsed = Date.now() - start;
+    // Surfaced in the test output so perf runs can read the measured value.
+    console.log(`activation: ${elapsed}ms`);
     assert.strictEqual(ext.isActive, true);
     assert.ok(
       elapsed < 2000,

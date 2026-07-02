@@ -23,6 +23,30 @@ export const Commands = {
   configureMcp: "repowise.configureMcp",
   runInit: "repowise.runInit",
   checkSetup: "repowise.checkSetup",
+  checkBranchRisk: "repowise.checkBranchRisk",
+  updateIndex: "repowise.updateIndex",
+  showFileHealth: "repowise.showFileHealth",
+  openDocs: "repowise.openDocs",
+} as const;
+
+/**
+ * Command ids registered at runtime but not surfaced in the palette (they
+ * take arguments from a CodeLens or tree item). Not contributed in
+ * package.json on purpose.
+ */
+export const InternalCommands = {
+  copyRefactoringPrompt: "repowise.copyRefactoringPrompt",
+  openRefactoringPlan: "repowise.openRefactoringPlan",
+} as const;
+
+/** Tree view ids, mirrored from package.json `contributes.views`. */
+export const Views = {
+  home: "repowise.home",
+  health: "repowise.healthView",
+  refactoring: "repowise.refactoringView",
+  hotspots: "repowise.hotspotsView",
+  deadCode: "repowise.deadCodeView",
+  decisions: "repowise.decisionsView",
 } as const;
 
 /** Context key the welcome views gate on. */

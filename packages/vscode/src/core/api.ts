@@ -2,6 +2,7 @@ import * as path from "node:path";
 import { realpathSync } from "node:fs";
 import { configureApiClient } from "@repowise-dev/api-client";
 import { listRepos } from "@repowise-dev/api-client/repos";
+import type { RepoResponse } from "@repowise-dev/api-client/types";
 import type { Logger } from "./log";
 
 /** Result of a successful `/health` probe. */
@@ -28,11 +29,13 @@ export interface RepowiseApi {
    */
   checkHealth(baseUrl: string, timeoutMs?: number): Promise<HealthResult | null>;
   /**
-   * Maps a workspace folder to its indexed repo id by matching `local_path`
+   * Maps a workspace folder to its indexed repo by matching `local_path`
    * against the server's repo list. There is no path-lookup endpoint. Returns
-   * null when no repo matches or the server is unreachable.
+   * null when no repo matches or the server is unreachable. The full repo
+   * object is returned because features need more than the id: the indexed
+   * `head_commit` (cache tag, staleness) and `default_branch` (risk base).
    */
-  resolveRepoId(repoRoot: string): Promise<string | null>;
+  resolveRepo(repoRoot: string): Promise<RepoResponse | null>;
 }
 
 const DEFAULT_HEALTH_TIMEOUT_MS = 800;
@@ -85,7 +88,7 @@ export function createApi(log: Logger): RepowiseApi {
       }
     },
 
-    async resolveRepoId(repoRoot: string): Promise<string | null> {
+    async resolveRepo(repoRoot: string): Promise<RepoResponse | null> {
       if (!baseUrl) return null;
       try {
         const target = canonicalPath(repoRoot);
@@ -93,9 +96,9 @@ export function createApi(log: Logger): RepowiseApi {
         const match = repos.find(
           (repo) => repo.local_path && canonicalPath(repo.local_path) === target,
         );
-        return match?.id ?? null;
+        return match ?? null;
       } catch (err) {
-        log.debug(`resolveRepoId failed: ${String(err)}`);
+        log.debug(`resolveRepo failed: ${String(err)}`);
         return null;
       }
     },

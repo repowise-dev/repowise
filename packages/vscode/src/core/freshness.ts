@@ -59,9 +59,19 @@ export function createFreshnessWatcher(
     new vscode.RelativePattern(repoRoot, `${markerDir}/**`),
   );
   const onIndexEvent = (uri: vscode.Uri): void => {
-    emitDebounced(
-      uri.path.endsWith(LOCKFILE_NAME) ? "lockfileChanged" : "indexChanged",
-    );
+    const base = uri.path.slice(uri.path.lastIndexOf("/") + 1);
+    if (base === LOCKFILE_NAME) {
+      emitDebounced("lockfileChanged");
+      return;
+    }
+    // Only deliberate update artifacts count as "the index changed". The
+    // marker dir also churns on every served READ (SQLite WAL checkpoints
+    // rewrite the db as request connections close), and treating that churn
+    // as a change creates a feedback loop: fetch -> db write -> event ->
+    // refetch, pinning the extension host.
+    if (base === "state.json" || base === ".update.log") {
+      emitDebounced("indexChanged");
+    }
   };
   indexWatcher.onDidChange(onIndexEvent);
   indexWatcher.onDidCreate(onIndexEvent);
