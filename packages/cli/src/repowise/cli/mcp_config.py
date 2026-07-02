@@ -379,6 +379,83 @@ def save_root_mcp_config(repo_path: Path) -> Path:
     return config_path
 
 
+def generate_vscode_mcp_server_entry(repo_path: Path) -> dict:
+    """Generate the VS Code ``.vscode/mcp.json`` server entry for repowise.
+
+    VS Code keys stdio servers under a top-level ``servers`` map and expects a
+    ``type`` field. The command and path convention mirror the repo-shared
+    ``.mcp.json`` exactly (bare ``repowise`` command, absolute repo path,
+    ``--transport stdio``) so a committed workspace config resolves the same
+    server on every contributor's checkout.
+    """
+    entry = generate_mcp_config(repo_path)["mcpServers"]["repowise"]
+    return {"type": "stdio", **entry}
+
+
+def save_vscode_mcp_config(repo_path: Path) -> Path:
+    """Merge the repowise server into ``.vscode/mcp.json`` and return the path.
+
+    Only the ``repowise`` entry under ``servers`` is added or refreshed; other
+    servers and unknown keys are preserved, and user-added per-server keys (an
+    ``env`` block carrying provider keys) survive re-registration. Raises
+    ``ValueError`` when an existing file is not strict JSON (VS Code allows
+    JSONC comments) or is not shaped as expected, so callers can skip the merge
+    without destroying the file.
+    """
+    config_path = repo_path / ".vscode" / "mcp.json"
+    new_entry = {"repowise": generate_vscode_mcp_server_entry(repo_path)}
+
+    if config_path.exists():
+        existing = json.loads(config_path.read_text(encoding="utf-8"))
+        if not isinstance(existing, dict):
+            raise ValueError("mcp.json must contain a JSON object")
+        servers = existing.get("servers", {})
+        if not isinstance(servers, dict):
+            raise ValueError("mcp.json 'servers' must be a JSON object")
+        servers = dict(servers)
+        _merge_server_entries(servers, new_entry)
+        existing["servers"] = servers
+        merged = existing
+    else:
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        merged = {"servers": new_entry}
+
+    config_path.write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
+    return config_path
+
+
+def save_vscode_extensions_config(repo_path: Path) -> Path:
+    """Recommend the repowise extension in ``.vscode/extensions.json``.
+
+    Appends ``repowise-dev.repowise`` to ``recommendations`` if absent,
+    preserving existing entries and unknown keys; running twice changes
+    nothing. Raises ``ValueError`` when an existing file is not strict JSON
+    (VS Code allows JSONC comments) or is not shaped as expected, so callers
+    can skip the merge without destroying the file.
+    """
+    config_path = repo_path / ".vscode" / "extensions.json"
+    extension_id = "repowise-dev.repowise"
+
+    if config_path.exists():
+        existing = json.loads(config_path.read_text(encoding="utf-8"))
+        if not isinstance(existing, dict):
+            raise ValueError("extensions.json must contain a JSON object")
+        recommendations = existing.get("recommendations", [])
+        if not isinstance(recommendations, list):
+            raise ValueError("extensions.json 'recommendations' must be a JSON array")
+        recommendations = list(recommendations)
+        if extension_id not in recommendations:
+            recommendations.append(extension_id)
+        existing["recommendations"] = recommendations
+        merged = existing
+    else:
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        merged = {"recommendations": [extension_id]}
+
+    config_path.write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
+    return config_path
+
+
 def merge_mcp_entry(config_path: Path, new_entry: dict) -> bool:
     """Merge *new_entry* into the mcpServers block of *config_path*.
 
