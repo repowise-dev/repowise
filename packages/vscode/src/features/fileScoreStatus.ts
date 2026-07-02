@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import { Commands, Views } from "../constants";
+import { Commands } from "../constants";
 import { getBulkHealth, type FileScores } from "../core/bulkHealth";
 import type { RepowiseContext } from "../core/context";
 import { repoRelativePath } from "../core/fileSignals";
@@ -109,10 +109,9 @@ export function registerFileScoreStatus(ctx: RepowiseContext): vscode.Disposable
     }
   });
 
-  // The health tree view auto-generates a `<viewId>.focus` command; reuse it so
-  // clicking the score reveals the fuller breakdown.
+  // Clicking the score opens the full health dashboard panel.
   const commandSub = vscode.commands.registerCommand(Commands.showFileHealth, () => {
-    void vscode.commands.executeCommand(`${Views.health}.focus`);
+    void vscode.commands.executeCommand(Commands.showHealthDashboard);
   });
 
   if (ctx.getExtensionState() === "ready") {

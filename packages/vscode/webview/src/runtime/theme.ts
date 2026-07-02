@@ -7,11 +7,15 @@
  * (the next-themes shim, canvas renderers).
  */
 
+import type { ThemePreference } from "../../../src/shared/webviewMessages";
+
 export type ThemeKind = "light" | "dark";
 
 const subscribers = new Set<(kind: ThemeKind) => void>();
 let current: ThemeKind = "light";
 let started = false;
+/** Pinned scheme from the Home switcher; "auto" follows the editor. */
+let preference: ThemePreference = "auto";
 
 function compute(): ThemeKind {
   const cls = document.body.classList;
@@ -30,13 +34,31 @@ function apply(kind: ThemeKind): void {
   for (const cb of subscribers) cb(kind);
 }
 
+/** The effective kind under the current preference. */
+function resolve(): ThemeKind {
+  return preference === "auto" ? compute() : preference;
+}
+
 /** Idempotent; called by the mount helper before first render. */
 export function initTheme(): void {
   if (started) return;
   started = true;
-  apply(compute());
-  const observer = new MutationObserver(() => apply(compute()));
+  apply(resolve());
+  const observer = new MutationObserver(() => apply(resolve()));
   observer.observe(document.body, { attributes: true, attributeFilter: ["class"] });
+}
+
+/**
+ * Applies the persisted preference pushed by the host (init and theme-changed
+ * messages). A pinned value wins over the editor theme until set back to auto.
+ */
+export function setThemePreference(pref: ThemePreference): void {
+  preference = pref;
+  apply(resolve());
+}
+
+export function getThemePreference(): ThemePreference {
+  return preference;
 }
 
 export function getThemeKind(): ThemeKind {

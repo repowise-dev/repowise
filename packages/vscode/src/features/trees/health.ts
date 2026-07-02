@@ -1,11 +1,8 @@
 import * as vscode from "vscode";
 import { listHealthFiles } from "@repowise-dev/api-client/code-health";
 import type { HealthFileMetric } from "@repowise-dev/api-client/code-health";
-import { Views } from "../../constants";
-import type { RepowiseContext } from "../../core/context";
 import {
   baseName,
-  mountView,
   openFileCommand,
   RepowiseTreeProvider,
   type RepoTreeNode,
@@ -27,7 +24,7 @@ function score(value: number | null | undefined): string {
  * order yields both worst-first files and worst-first modules for free. The
  * badge counts failing files (a separate one-row query for its `total`).
  */
-class HealthTreeProvider extends RepowiseTreeProvider {
+export class HealthTreeProvider extends RepowiseTreeProvider {
   protected readonly name = "Health";
 
   protected async loadRoots(repoId: string): Promise<RepoTreeNode[]> {
@@ -81,9 +78,4 @@ class HealthTreeProvider extends RepowiseTreeProvider {
       this.ctx.log.debug(`Health badge load failed: ${String(err)}`);
     }
   }
-}
-
-/** Registers the Health tree view. */
-export function registerHealthTree(ctx: RepowiseContext): vscode.Disposable {
-  return mountView(ctx, Views.health, new HealthTreeProvider(ctx));
 }

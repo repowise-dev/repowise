@@ -33,8 +33,8 @@ import type { ArchitectureView } from "@repowise-dev/ui/c4";
 import type { RefactoringPlan, RefactoringTargets } from "@repowise-dev/ui/refactoring/types";
 import type { AiPromptFlavor } from "@repowise-dev/ui/health/ai-prompt-builder";
 
-/** Every webview panel the extension can open. */
-export type WebviewViewId =
+/** Every editor-tab webview panel the extension can open. */
+export type PanelViewId =
   | "health"
   | "architecture"
   | "graph"
@@ -42,6 +42,9 @@ export type WebviewViewId =
   | "decisions"
   | "docs"
   | "risk";
+
+/** Panels plus the sidebar Home view (a WebviewView, never a tab). */
+export type WebviewViewId = PanelViewId | "home";
 
 /** Per-view open parameters, carried in the init message. */
 export interface ViewParams {
@@ -52,7 +55,15 @@ export interface ViewParams {
   decisions: Record<string, never>;
   docs: { pageId?: string; filePath?: string };
   risk: Record<string, never>;
+  home: Record<string, never>;
 }
+
+/**
+ * Webview color scheme. "auto" follows the editor theme; a fixed value pins
+ * every Repowise webview regardless of the editor. Persisted host-side so all
+ * views (and future opens) agree.
+ */
+export type ThemePreference = "auto" | "light" | "dark";
 
 /** Repo facts the webview needs for labels and cache-busting. */
 export interface RepoInit {
@@ -98,6 +109,41 @@ export interface HostApi {
   fileDetail(relPath: string): Promise<FileDetailResponse>;
   // Branch risk
   riskRange(): Promise<RiskRangeReport>;
+  // Sidebar home
+  homeSummary(): Promise<HomeSummary>;
+}
+
+/**
+ * The sidebar Home payload, aggregated host-side so one RPC serves the whole
+ * view and only compact numbers cross the postMessage boundary. Sections are
+ * independently nullable: one failing endpoint degrades its card, not the view.
+ */
+export interface HomeSummary {
+  health: {
+    /** Headline: NLOC-weighted health of the hotspot files. */
+    hotspot: number | null;
+    average: number | null;
+    fileCount: number;
+    openFindings: number;
+    band: string | null;
+    hotspotDelta: number | null;
+    /** Hotspot-health history, oldest first, for the hero sparkline. */
+    history: number[];
+  } | null;
+  counts: {
+    refactoringPlans: number | null;
+    decisions: number | null;
+  };
+  freshness: {
+    /** Commit the index was built from (null when the server has none). */
+    indexedCommit: string | null;
+    /** Checked-out commit, or null when git cannot serve it. */
+    liveCommit: string | null;
+    /** True only when both commits are known and differ. */
+    stale: boolean;
+    branch: string | null;
+    lastIndexedAt: string | null;
+  };
 }
 
 /** Branch risk payload: the endpoint response plus the refs it compared. */
@@ -143,6 +189,7 @@ export interface InitMessage<V extends WebviewViewId = WebviewViewId> {
   view: V;
   repo: RepoInit;
   params: ViewParams[V];
+  theme: ThemePreference;
 }
 
 /**
@@ -177,11 +224,51 @@ export interface OpenExternalMessage {
   url: string;
 }
 
+/** Webview -> host: open (or reveal) an editor-tab panel. Sent by Home. */
+export interface OpenViewMessage {
+  kind: "open-view";
+  view: PanelViewId;
+  params?: ViewParams[PanelViewId];
+}
+
+/** Webview -> host: run an incremental index update. Sent by Home. */
+export interface UpdateIndexMessage {
+  kind: "update-index";
+}
+
+/** Webview -> host: persist a theme preference. Sent by Home's switcher. */
+export interface SetThemeMessage {
+  kind: "set-theme";
+  theme: ThemePreference;
+}
+
+/** Host -> webview: the theme preference changed; every open view applies it. */
+export interface ThemeChangedMessage {
+  kind: "theme-changed";
+  theme: ThemePreference;
+}
+
+/**
+ * Host -> webview: the requested index update finished (either way). The view
+ * refetches its summary; a successful update also arrives as a refresh.
+ */
+export interface UpdateDoneMessage {
+  kind: "update-done";
+}
+
 export type WebviewToHostMessage =
   | ReadyMessage
   | RpcRequestMessage
   | OpenFileMessage
   | CopyTextMessage
-  | OpenExternalMessage;
+  | OpenExternalMessage
+  | OpenViewMessage
+  | UpdateIndexMessage
+  | SetThemeMessage;
 
-export type HostToWebviewMessage = InitMessage | RefreshMessage | RpcResponseMessage;
+export type HostToWebviewMessage =
+  | InitMessage
+  | RefreshMessage
+  | RpcResponseMessage
+  | UpdateDoneMessage
+  | ThemeChangedMessage;

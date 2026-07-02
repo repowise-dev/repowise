@@ -4,11 +4,8 @@ import type {
   HotspotResponse,
   OwnershipEntry,
 } from "@repowise-dev/api-client/types";
-import { Views } from "../../constants";
-import type { RepowiseContext } from "../../core/context";
 import {
   baseName,
-  mountView,
   openFileCommand,
   RepowiseTreeProvider,
   type RepoTreeNode,
@@ -23,7 +20,7 @@ const OWNERSHIP_KEY = "ownership:page";
  * shown). Hotspots are the highest-churn files; Ownership rolls up who owns
  * each module and flags single-owner silos.
  */
-class HotspotsTreeProvider extends RepowiseTreeProvider {
+export class HotspotsTreeProvider extends RepowiseTreeProvider {
   protected readonly name = "Hotspots";
 
   protected loadRoots(): Promise<RepoTreeNode[]> {
@@ -33,7 +30,8 @@ class HotspotsTreeProvider extends RepowiseTreeProvider {
     ]);
   }
 
-  private async loadHotspots(): Promise<RepoTreeNode[]> {
+  /** Public: the Findings composite mounts these as its own sections. */
+  async loadHotspots(): Promise<RepoTreeNode[]> {
     const repoId = this.ctx.repoId;
     if (!repoId) return [];
     const page = await this.cached(HOTSPOTS_KEY, () =>
@@ -61,7 +59,7 @@ class HotspotsTreeProvider extends RepowiseTreeProvider {
     };
   }
 
-  private async loadOwnership(): Promise<RepoTreeNode[]> {
+  async loadOwnership(): Promise<RepoTreeNode[]> {
     const repoId = this.ctx.repoId;
     if (!repoId) return [];
     const page = await this.cached(OWNERSHIP_KEY, () =>
@@ -88,9 +86,4 @@ class HotspotsTreeProvider extends RepowiseTreeProvider {
       collapsibleState: vscode.TreeItemCollapsibleState.None,
     };
   }
-}
-
-/** Registers the Hotspots & Ownership tree view. */
-export function registerHotspotsTree(ctx: RepowiseContext): vscode.Disposable {
-  return mountView(ctx, Views.hotspots, new HotspotsTreeProvider(ctx));
 }

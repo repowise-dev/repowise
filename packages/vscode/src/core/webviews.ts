@@ -1,16 +1,24 @@
 import * as vscode from "vscode";
 import * as path from "node:path";
 import { randomBytes } from "node:crypto";
+import { Commands, Views } from "../constants";
 import type { RepowiseContext } from "./context";
 import { createHostApi } from "./webviewApi";
 import type {
   HostApi,
   HostToWebviewMessage,
+  PanelViewId,
   RepoInit,
+  ThemePreference,
   ViewParams,
   WebviewToHostMessage,
   WebviewViewId,
 } from "../shared/webviewMessages";
+
+/** Workspace-state key for the persisted webview theme preference. */
+const THEME_STATE_KEY = "repowise.webviewTheme";
+
+const THEME_VALUES: readonly ThemePreference[] = ["auto", "light", "dark"];
 
 interface ViewMeta {
   title: string;
@@ -22,7 +30,7 @@ interface ViewMeta {
   retainContextWhenHidden: boolean;
 }
 
-const VIEW_META: Record<WebviewViewId, ViewMeta> = {
+const VIEW_META: Record<PanelViewId, ViewMeta> = {
   health: { title: "Repowise Health", retainContextWhenHidden: false },
   architecture: { title: "Repowise Architecture", retainContextWhenHidden: false },
   graph: { title: "Repowise Knowledge Graph", retainContextWhenHidden: false },
@@ -32,6 +40,11 @@ const VIEW_META: Record<WebviewViewId, ViewMeta> = {
   risk: { title: "Repowise Branch Risk", retainContextWhenHidden: false },
 };
 
+/** Tab title for a panel; the sidebar Home view's title lives in the manifest. */
+function viewTitle(view: WebviewViewId): string {
+  return view === "home" ? "Repowise" : VIEW_META[view].title;
+}
+
 /** Singleton wired by registerWebviews(); features open panels through it. */
 let manager: WebviewManager | null = null;
 
@@ -40,7 +53,7 @@ let manager: WebviewManager | null = null;
  * fresh params are pushed as a new init message so e.g. a different
  * refactoring plan replaces the current one instead of spawning a second tab.
  */
-export function openViewPanel<V extends WebviewViewId>(
+export function openViewPanel<V extends PanelViewId>(
   ctx: RepowiseContext,
   view: V,
   params?: ViewParams[V],
@@ -58,14 +71,22 @@ export function openViewPanel<V extends WebviewViewId>(
   manager.open(view, params ?? ({} as ViewParams[V]));
 }
 
-/** Registers the panel infrastructure. Idle until the first open. */
+/**
+ * Registers the panel infrastructure and the sidebar Home webview view. Idle
+ * until the first panel open or until the sidebar resolves the Home view.
+ */
 export function registerWebviews(
   ctx: RepowiseContext,
   extensionUri: vscode.Uri,
 ): vscode.Disposable {
-  manager = new WebviewManager(ctx, extensionUri);
+  const created = new WebviewManager(ctx, extensionUri);
+  manager = created;
+  const homeProvider = vscode.window.registerWebviewViewProvider(Views.homeDashboard, {
+    resolveWebviewView: (view) => created.resolveHome(view),
+  });
   return {
     dispose(): void {
+      homeProvider.dispose();
       manager?.dispose();
       manager = null;
     },
@@ -73,8 +94,10 @@ export function registerWebviews(
 }
 
 class WebviewManager {
-  private readonly panels = new Map<WebviewViewId, vscode.WebviewPanel>();
-  private readonly params = new Map<WebviewViewId, unknown>();
+  private readonly panels = new Map<PanelViewId, vscode.WebviewPanel>();
+  private readonly params = new Map<PanelViewId, unknown>();
+  /** The sidebar Home view, while resolved. */
+  private homeView: vscode.WebviewView | null = null;
   private readonly hostApi: HostApi;
   private freshnessSub: vscode.Disposable | null = null;
   private readonly disposables: vscode.Disposable[] = [];
@@ -102,24 +125,50 @@ class WebviewManager {
 
   private broadcastRefresh(): void {
     const repo = this.repoInit();
+    const message = { kind: "refresh", repo } satisfies HostToWebviewMessage;
     for (const panel of this.panels.values()) {
-      void panel.webview.postMessage({ kind: "refresh", repo } satisfies HostToWebviewMessage);
+      void panel.webview.postMessage(message);
     }
+    if (this.homeView) void this.homeView.webview.postMessage(message);
   }
 
-  open(view: WebviewViewId, params: unknown): void {
+  /**
+   * Wires the sidebar Home webview view. VS Code resolves it when the view
+   * first becomes visible; with context retention off the webview content is
+   * torn down while hidden and re-runs its script (a fresh ready/init
+   * handshake) on every reveal, so no visibility handling is needed here.
+   */
+  resolveHome(view: vscode.WebviewView): void {
+    this.homeView = view;
+    view.webview.options = {
+      enableScripts: true,
+      localResourceRoots: [vscode.Uri.joinPath(this.extensionUri, "dist", "webview")],
+    };
+    view.webview.html = this.renderHtml("home", view.webview);
+    const msgSub = view.webview.onDidReceiveMessage((msg: WebviewToHostMessage) =>
+      void this.onMessage("home", view.webview, msg),
+    );
+    const dispSub = view.onDidDispose(() => {
+      if (this.homeView === view) this.homeView = null;
+      msgSub.dispose();
+      dispSub.dispose();
+    });
+    this.ensureFreshness();
+  }
+
+  open(view: PanelViewId, params: unknown): void {
     this.params.set(view, params);
     const existing = this.panels.get(view);
     if (existing) {
       existing.reveal(undefined, false);
-      this.postInit(view, existing);
+      this.postInit(view, existing.webview);
       return;
     }
 
     const meta = VIEW_META[view];
     const panel = vscode.window.createWebviewPanel(
       `repowise.${view}`,
-      meta.title,
+      viewTitle(view),
       vscode.ViewColumn.Active,
       {
         enableScripts: true,
@@ -132,7 +181,7 @@ class WebviewManager {
     // Per-panel subscriptions are released with the panel, not the manager,
     // so open/close cycles never accumulate dead listeners.
     const msgSub = panel.webview.onDidReceiveMessage((msg: WebviewToHostMessage) =>
-      void this.onMessage(view, panel, msg),
+      void this.onMessage(view, panel.webview, msg),
     );
     const dispSub = panel.onDidDispose(() => {
       this.panels.delete(view);
@@ -166,23 +215,30 @@ class WebviewManager {
     };
   }
 
-  private postInit(view: WebviewViewId, panel: vscode.WebviewPanel): void {
+  private themePref(): ThemePreference {
+    const stored = this.ctx.state.get<ThemePreference>(THEME_STATE_KEY);
+    return stored && THEME_VALUES.includes(stored) ? stored : "auto";
+  }
+
+  private postInit(view: WebviewViewId, webview: vscode.Webview): void {
+    const params = view === "home" ? {} : (this.params.get(view) ?? {});
     const message = {
       kind: "init",
       view,
       repo: this.repoInit(),
-      params: (this.params.get(view) ?? {}) as ViewParams[typeof view],
+      params: params as ViewParams[typeof view],
+      theme: this.themePref(),
     } satisfies HostToWebviewMessage;
-    void panel.webview.postMessage(message);
+    void webview.postMessage(message);
   }
 
   private async onMessage(
     view: WebviewViewId,
-    panel: vscode.WebviewPanel,
+    webview: vscode.Webview,
     msg: WebviewToHostMessage,
   ): Promise<void> {
     try {
-      await this.handleMessage(view, panel, msg);
+      await this.handleMessage(view, webview, msg);
     } catch (err) {
       // Webview payloads are untrusted input; a malformed one is logged, never
       // an unhandled rejection.
@@ -192,12 +248,12 @@ class WebviewManager {
 
   private async handleMessage(
     view: WebviewViewId,
-    panel: vscode.WebviewPanel,
+    webview: vscode.Webview,
     msg: WebviewToHostMessage,
   ): Promise<void> {
     switch (msg.kind) {
       case "ready":
-        this.postInit(view, panel);
+        this.postInit(view, webview);
         return;
       case "rpc-request": {
         let response: HostToWebviewMessage;
@@ -215,7 +271,36 @@ class WebviewManager {
           this.ctx.log.warn(`webview ${view} ${String(msg.method)} failed: ${message}`);
           response = { kind: "rpc-response", id: msg.id, ok: false, error: message };
         }
-        void panel.webview.postMessage(response);
+        void webview.postMessage(response);
+        return;
+      }
+      case "open-view": {
+        // The view id is untrusted input from the webview; validate against
+        // the panel table before opening anything.
+        if (typeof msg.view !== "string" || !Object.hasOwn(VIEW_META, msg.view)) return;
+        const params =
+          msg.params && typeof msg.params === "object" ? msg.params : undefined;
+        openViewPanel(this.ctx, msg.view, params);
+        return;
+      }
+      case "update-index":
+        // Resolves when the update finishes (the command returns its promise).
+        // A successful update also lands as a refresh broadcast; this ack is
+        // what lets the view stop its spinner when the update fails.
+        await vscode.commands.executeCommand(Commands.updateIndex);
+        void webview.postMessage({ kind: "update-done" } satisfies HostToWebviewMessage);
+        return;
+      case "set-theme": {
+        if (!THEME_VALUES.includes(msg.theme)) return;
+        await this.ctx.state.update(THEME_STATE_KEY, msg.theme);
+        const message = {
+          kind: "theme-changed",
+          theme: msg.theme,
+        } satisfies HostToWebviewMessage;
+        for (const panel of this.panels.values()) {
+          void panel.webview.postMessage(message);
+        }
+        if (this.homeView) void this.homeView.webview.postMessage(message);
         return;
       }
       case "open-file": {
@@ -277,7 +362,7 @@ class WebviewManager {
       `<meta http-equiv="Content-Security-Policy" content="${csp}" />`,
       `<meta name="viewport" content="width=device-width, initial-scale=1.0" />`,
       `<link rel="stylesheet" href="${styleUri.toString()}" />`,
-      `<title>${VIEW_META[view].title}</title>`,
+      `<title>${viewTitle(view)}</title>`,
       "</head>",
       "<body>",
       `<div id="root"></div>`,
@@ -292,6 +377,9 @@ class WebviewManager {
     this.freshnessSub = null;
     for (const panel of this.panels.values()) panel.dispose();
     this.panels.clear();
+    // The sidebar view is owned by VS Code; dropping the reference is all the
+    // cleanup available (its own onDidDispose releases the subscriptions).
+    this.homeView = null;
     for (const d of this.disposables) d.dispose();
     this.disposables.length = 0;
   }

@@ -32,10 +32,15 @@ function makeHost(riskRange: WebviewHost["api"]["riskRange"]): WebviewHost {
     api: { riskRange } as WebviewHost["api"],
     onInit: () => () => {},
     onRefresh: () => () => {},
+    onUpdateDone: () => () => {},
+    onThemeChanged: () => () => {},
     ready: () => {},
     openFile: () => {},
     copyText: () => {},
     openExternal: () => {},
+    openView: () => {},
+    updateIndex: () => {},
+    setTheme: () => {},
   };
 }
 

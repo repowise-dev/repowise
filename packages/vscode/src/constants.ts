@@ -43,14 +43,15 @@ export const InternalCommands = {
   openRefactoringPlan: "repowise.openRefactoringPlan",
 } as const;
 
-/** Tree view ids, mirrored from package.json `contributes.views`. */
+/** Sidebar view ids, mirrored from package.json `contributes.views`. */
 export const Views = {
+  /** Welcome/onboarding tree shown until the server is ready. */
   home: "repowise.home",
-  health: "repowise.healthView",
+  /** The Home webview view (hero score, freshness, dashboard launcher). */
+  homeDashboard: "repowise.homeView",
+  /** Consolidated findings tree: health, hotspots and ownership, dead code. */
+  findings: "repowise.findingsView",
   refactoring: "repowise.refactoringView",
-  hotspots: "repowise.hotspotsView",
-  deadCode: "repowise.deadCodeView",
-  decisions: "repowise.decisionsView",
 } as const;
 
 /** Context key the welcome views gate on. */

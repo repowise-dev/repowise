@@ -1,18 +1,14 @@
 import * as vscode from "vscode";
-import { getDeadCodeSummary, listDeadCode } from "@repowise-dev/api-client/dead-code";
+import { listDeadCode } from "@repowise-dev/api-client/dead-code";
 import type { DeadCodeFindingResponse } from "@repowise-dev/api-client/types";
-import { Views } from "../../constants";
-import type { RepowiseContext } from "../../core/context";
 import {
   baseName,
-  mountView,
   openFileCommand,
   RepowiseTreeProvider,
   type RepoTreeNode,
 } from "./shared";
 
 const FINDINGS_KEY = "deadcode:findings";
-const SUMMARY_KEY = "deadcode:summary";
 
 /** Confidence tiers, most-confident first, with their inclusive lower bounds. */
 const TIERS: Array<{ key: string; label: string; min: number }> = [
@@ -22,20 +18,19 @@ const TIERS: Array<{ key: string; label: string; min: number }> = [
 ];
 
 /**
- * Dead Code view: findings grouped into High / Medium / Low confidence tiers.
+ * Dead Code roots: findings grouped into High / Medium / Low confidence tiers.
  * Empty tiers are dropped. Findings use `start_line`/`end_line` (distinct from
  * the health findings' `line_start`/`line_end`); a click jumps to `start_line`
- * when present. The badge is the summary's total finding count.
+ * when present. Mounted as a section of the Findings composite, which owns the
+ * view badge (failing health files, deliberately not dead-code counts).
  */
-class DeadCodeTreeProvider extends RepowiseTreeProvider {
+export class DeadCodeTreeProvider extends RepowiseTreeProvider {
   protected readonly name = "Dead Code";
 
   protected async loadRoots(repoId: string): Promise<RepoTreeNode[]> {
     const findings = await this.cached(FINDINGS_KEY, () =>
       listDeadCode(repoId, { limit: 500 }),
     );
-    void this.loadBadge(repoId);
-
     if (findings.length === 0) return [this.messageNode("No dead code")];
 
     const roots: RepoTreeNode[] = [];
@@ -68,17 +63,6 @@ class DeadCodeTreeProvider extends RepowiseTreeProvider {
       command: openFileCommand(this.ctx, row.file_path, row.start_line),
     };
   }
-
-  private async loadBadge(repoId: string): Promise<void> {
-    try {
-      const summary = await this.cached(SUMMARY_KEY, () =>
-        getDeadCodeSummary(repoId),
-      );
-      this.setBadge(summary.total_findings, `${summary.total_findings} dead-code findings`);
-    } catch (err) {
-      this.ctx.log.debug(`Dead Code badge load failed: ${String(err)}`);
-    }
-  }
 }
 
 /** Maps a 0-1 confidence to its tier key. */
@@ -87,9 +71,4 @@ function tierOf(confidence: number): string {
     if (confidence >= tier.min) return tier.key;
   }
   return "low";
-}
-
-/** Registers the Dead Code tree view. */
-export function registerDeadCodeTree(ctx: RepowiseContext): vscode.Disposable {
-  return mountView(ctx, Views.deadCode, new DeadCodeTreeProvider(ctx));
 }

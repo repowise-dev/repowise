@@ -25,10 +25,15 @@ function mockHost(): { host: WebviewHost; api: Record<string, ReturnType<typeof 
     api: api as unknown as WebviewHost["api"],
     onInit: () => () => {},
     onRefresh: () => () => {},
+    onUpdateDone: () => () => {},
+    onThemeChanged: () => () => {},
     ready: () => {},
     openFile: vi.fn(),
     copyText: vi.fn(),
     openExternal: vi.fn(),
+    openView: vi.fn(),
+    updateIndex: vi.fn(),
+    setTheme: vi.fn(),
   } satisfies WebviewHost;
   return { host, api };
 }

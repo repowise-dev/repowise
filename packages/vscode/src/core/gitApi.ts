@@ -1,4 +1,6 @@
 import * as vscode from "vscode";
+import { readFile } from "node:fs/promises";
+import * as path from "node:path";
 
 /**
  * Guarded adapter over the built-in `vscode.git` extension. We deliberately do
@@ -97,6 +99,46 @@ export async function getCurrentBranchName(
 export async function getHeadCommit(repoRoot: string): Promise<string | null> {
   const repo = await getRepository(repoRoot);
   return repo?.state.HEAD?.commit ?? null;
+}
+
+/**
+ * Checked-out commit, preferring the git extension and falling back to reading
+ * `.git/HEAD` from disk. Null when neither side can resolve it.
+ */
+export async function resolveLiveHead(repoRoot: string): Promise<string | null> {
+  const viaGit = await getHeadCommit(repoRoot);
+  if (viaGit) return viaGit;
+  return readHeadFromDisk(repoRoot);
+}
+
+/**
+ * Reads the checked-out commit from `.git` when the git extension is
+ * unavailable. Resolves a symbolic ref to its loose ref file. Packed refs are
+ * not read here; that path degrades to null (no false staleness) and the git
+ * extension covers it when enabled.
+ */
+async function readHeadFromDisk(root: string): Promise<string | null> {
+  try {
+    const raw = (await readFile(path.join(root, ".git", "HEAD"), "utf8")).trim();
+    if (raw.startsWith("ref:")) {
+      const ref = raw.slice(4).trim();
+      const refPath = path.join(root, ".git", ...ref.split("/"));
+      const sha = (await readFile(refPath, "utf8")).trim();
+      return sha || null;
+    }
+    // Detached HEAD: the file holds the commit id directly.
+    return raw || null;
+  } catch {
+    return null;
+  }
+}
+
+/** True when two commit ids refer to the same commit (tolerates short shas). */
+export function commitsMatch(a: string, b: string): boolean {
+  if (a === b) return true;
+  const shorter = a.length < b.length ? a : b;
+  const longer = a.length < b.length ? b : a;
+  return shorter.length > 0 && longer.startsWith(shorter);
 }
 
 /**

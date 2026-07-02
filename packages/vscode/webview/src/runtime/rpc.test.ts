@@ -16,6 +16,7 @@ const INIT: InitMessage = {
   view: "health",
   repo: { id: "r1", name: "repo", headCommit: "abc", defaultBranch: "main" },
   params: {},
+  theme: "auto",
 };
 
 function postToWebview(msg: HostToWebviewMessage): void {
@@ -93,6 +94,31 @@ describe("webview rpc round trip", () => {
     expect(received).toContainEqual({ kind: "open-file", path: "src/a.py", line: 12 });
     expect(received).toContainEqual({ kind: "copy-text", text: "hello", toast: "Copied." });
     expect(received).toContainEqual({ kind: "open-external", url: "https://example.com" });
+  });
+
+  it("routes home-view services and delivers update-done", async () => {
+    const received = installHost();
+    const { createHost } = await import("./rpc");
+    const host = createHost();
+
+    host.openView("health");
+    host.openView("refactoring", { planId: "p1" });
+    host.updateIndex();
+    host.setTheme("dark");
+    expect(received).toContainEqual({ kind: "open-view", view: "health", params: undefined });
+    expect(received).toContainEqual({ kind: "open-view", view: "refactoring", params: { planId: "p1" } });
+    expect(received).toContainEqual({ kind: "update-index" });
+    expect(received).toContainEqual({ kind: "set-theme", theme: "dark" });
+
+    const done = vi.fn();
+    host.onUpdateDone(done);
+    postToWebview({ kind: "update-done" });
+    expect(done).toHaveBeenCalledTimes(1);
+
+    const themed = vi.fn();
+    host.onThemeChanged(themed);
+    postToWebview({ kind: "theme-changed", theme: "light" });
+    expect(themed).toHaveBeenCalledWith("light");
   });
 
   it("ignores garbage messages without breaking pending calls", async () => {

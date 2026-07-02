@@ -6,8 +6,9 @@ import tailwindcss from "@tailwindcss/vite";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
-/** One entry per panel; the host HTML loads dist/webview/<view>.js. */
+/** One entry per view; the host HTML loads dist/webview/<view>.js. */
 const VIEWS = [
+  "home",
   "health",
   "architecture",
   "graph",

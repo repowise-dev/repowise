@@ -26,9 +26,9 @@ import { getPageById, listAllPages } from "@repowise-dev/api-client/pages";
 import { getRiskRange } from "@repowise-dev/api-client/risk";
 import { buildRefactoringPlanPrompt } from "@repowise-dev/ui/health/ai-prompt-builder";
 import { CONFIG_SECTION } from "../constants";
-import type { HostApi, RiskRangeReport } from "../shared/webviewMessages";
+import type { HomeSummary, HostApi, RiskRangeReport } from "../shared/webviewMessages";
 import type { RepowiseContext } from "./context";
-import { getCurrentBranchName } from "./gitApi";
+import { commitsMatch, getCurrentBranchName, resolveLiveHead } from "./gitApi";
 
 /** Thrown by the dispatcher when a request arrives while disconnected. */
 class NotReadyError extends Error {
@@ -78,6 +78,69 @@ export function createHostApi(ctx: RepowiseContext, epoch: () => number): HostAp
       });
     inFlight.set(flightKey, request);
     return request;
+  }
+
+  /**
+   * Aggregates the sidebar Home payload. Sub-fetches go through the same
+   * cached() keys the dashboards use (limits included), so opening a dashboard
+   * after the sidebar costs nothing extra. Refactoring uses the lighter
+   * medium-confidence query, not the panel's unfiltered multi-megabyte one.
+   * allSettled: one failing endpoint degrades its section to null.
+   */
+  async function homeSummary(): Promise<HomeSummary> {
+    const id = repoId();
+    const [overview, trend, refactor, decisions, liveCommit, branch] =
+      await Promise.allSettled([
+        cached("health:overview:25", () => getHealthOverview(id, 25)),
+        cached("health:trend:20", () => getHealthTrend(id, 20)),
+        cached("home:refactor", () =>
+          getRefactoringTargets(id, { minConfidence: "medium" }),
+        ),
+        cached("decisions:timeline", () =>
+          listDecisions(id, { include_proposed: true, limit: 500 }),
+        ),
+        resolveLiveHead(ctx.workspace.repoRoot ?? ""),
+        getCurrentBranchName(ctx.workspace.repoRoot ?? ""),
+      ]);
+
+    const summary = overview.status === "fulfilled" ? overview.value.summary : null;
+    const trendVal = trend.status === "fulfilled" ? trend.value : null;
+    const indexedCommit =
+      (overview.status === "fulfilled" ? overview.value.meta?.head_commit : null) ??
+      ctx.repo?.head_commit ??
+      null;
+    const live = liveCommit.status === "fulfilled" ? liveCommit.value : null;
+    return {
+      health: summary
+        ? {
+            hotspot: summary.hotspot_health ?? null,
+            average: summary.average_health ?? null,
+            fileCount: summary.file_count,
+            openFindings: summary.open_findings,
+            band: summary.band ?? null,
+            hotspotDelta: trendVal?.summary?.hotspot_delta ?? null,
+            history: (trendVal?.history ?? [])
+              .slice()
+              .reverse()
+              .map((p) => p.hotspot_health),
+          }
+        : null,
+      counts: {
+        refactoringPlans:
+          refactor.status === "fulfilled" ? refactor.value.plans.length : null,
+        decisions: decisions.status === "fulfilled" ? decisions.value.length : null,
+      },
+      freshness: {
+        indexedCommit,
+        liveCommit: live,
+        stale: Boolean(indexedCommit && live && !commitsMatch(indexedCommit, live)),
+        branch: branch.status === "fulfilled" ? branch.value : null,
+        lastIndexedAt:
+          overview.status === "fulfilled"
+            ? (overview.value.meta?.last_indexed_at ?? null)
+            : null,
+      },
+    };
   }
 
   return {
@@ -142,5 +205,8 @@ export function createHostApi(ctx: RepowiseContext, epoch: () => number): HostAp
       const branch = await getCurrentBranchName(ctx.workspace.repoRoot ?? "");
       return { base, branch, result };
     },
+
+    // Sidebar home
+    homeSummary,
   };
 }

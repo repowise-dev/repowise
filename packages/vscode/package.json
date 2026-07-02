@@ -216,12 +216,7 @@
         {
           "command": "repowise.showHealthDashboard",
           "group": "navigation",
-          "when": "view == repowise.healthView"
-        },
-        {
-          "command": "repowise.showDecisionTimeline",
-          "group": "navigation",
-          "when": "view == repowise.decisionsView"
+          "when": "view == repowise.findingsView"
         }
       ]
     },
@@ -242,29 +237,22 @@
           "when": "repowise.state != 'ready'"
         },
         {
-          "id": "repowise.healthView",
-          "name": "Health",
+          "id": "repowise.homeView",
+          "type": "webview",
+          "name": "Home",
           "when": "repowise.state == 'ready'"
+        },
+        {
+          "id": "repowise.findingsView",
+          "name": "Findings",
+          "when": "repowise.state == 'ready'",
+          "visibility": "collapsed"
         },
         {
           "id": "repowise.refactoringView",
           "name": "Refactoring",
-          "when": "repowise.state == 'ready'"
-        },
-        {
-          "id": "repowise.hotspotsView",
-          "name": "Hotspots & Ownership",
-          "when": "repowise.state == 'ready'"
-        },
-        {
-          "id": "repowise.deadCodeView",
-          "name": "Dead Code",
-          "when": "repowise.state == 'ready'"
-        },
-        {
-          "id": "repowise.decisionsView",
-          "name": "Decisions",
-          "when": "repowise.state == 'ready'"
+          "when": "repowise.state == 'ready'",
+          "visibility": "collapsed"
         }
       ]
     },

@@ -45,10 +45,15 @@ function makeHost(list: DecisionRecordResponse[]): WebviewHost {
     api: { decisionsList: vi.fn().mockResolvedValue(list) } as unknown as WebviewHost["api"],
     onInit: () => () => {},
     onRefresh: () => () => {},
+    onUpdateDone: () => () => {},
+    onThemeChanged: () => () => {},
     ready: () => {},
     openFile: () => {},
     copyText: () => {},
     openExternal: () => {},
+    openView: () => {},
+    updateIndex: () => {},
+    setTheme: () => {},
   };
 }
 

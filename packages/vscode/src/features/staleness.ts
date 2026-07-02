@@ -1,9 +1,7 @@
 import * as vscode from "vscode";
-import { readFile } from "node:fs/promises";
-import * as path from "node:path";
 import { Commands } from "../constants";
 import type { RepowiseContext } from "../core/context";
-import { getHeadCommit } from "../core/gitApi";
+import { commitsMatch, resolveLiveHead } from "../core/gitApi";
 
 /** Update runs can be long on a large repo; well above the default timeout. */
 const UPDATE_TIMEOUT_MS = 30 * 60_000;
@@ -39,13 +37,6 @@ export function registerStaleness(ctx: RepowiseContext): vscode.Disposable {
   /** True while an update is in flight, to enforce single-flight. */
   let updating = false;
 
-  /** Live checked-out commit, preferring the git extension over disk reads. */
-  async function liveHead(root: string): Promise<string | null> {
-    const viaGit = await getHeadCommit(root);
-    if (viaGit) return viaGit;
-    return readHeadFromDisk(root);
-  }
-
   async function evaluate(): Promise<void> {
     const indexed = ctx.repo?.head_commit;
     const root = ctx.workspace.repoRoot;
@@ -55,7 +46,7 @@ export function registerStaleness(ctx: RepowiseContext): vscode.Disposable {
       item.hide();
       return;
     }
-    const live = await liveHead(root);
+    const live = await resolveLiveHead(root);
     if (!live) {
       item.hide();
       return;
@@ -202,7 +193,9 @@ export function registerStaleness(ctx: RepowiseContext): vscode.Disposable {
 
   const disposables: vscode.Disposable[] = [
     item,
-    vscode.commands.registerCommand(Commands.updateIndex, () => void updateIndex()),
+    // Returns the promise so `executeCommand` callers (the sidebar Home view)
+    // resolve when the update actually finishes, not when it starts.
+    vscode.commands.registerCommand(Commands.updateIndex, () => updateIndex()),
     ctx.onDidChangeExtensionState((state) => {
       if (state === "ready") {
         ensureWatcher();
@@ -230,36 +223,6 @@ export function registerStaleness(ctx: RepowiseContext): vscode.Disposable {
       for (const d of disposables) d.dispose();
     },
   };
-}
-
-/** True when two commit ids refer to the same commit (tolerates short shas). */
-function commitsMatch(a: string, b: string): boolean {
-  if (a === b) return true;
-  const shorter = a.length < b.length ? a : b;
-  const longer = a.length < b.length ? b : a;
-  return shorter.length > 0 && longer.startsWith(shorter);
-}
-
-/**
- * Reads the checked-out commit from `.git` when the git extension is
- * unavailable. Resolves a symbolic ref to its loose ref file. Packed refs are
- * not read here; that path degrades to null (no false staleness) and the git
- * extension covers it when enabled.
- */
-async function readHeadFromDisk(root: string): Promise<string | null> {
-  try {
-    const raw = (await readFile(path.join(root, ".git", "HEAD"), "utf8")).trim();
-    if (raw.startsWith("ref:")) {
-      const ref = raw.slice(4).trim();
-      const refPath = path.join(root, ".git", ...ref.split("/"));
-      const sha = (await readFile(refPath, "utf8")).trim();
-      return sha || null;
-    }
-    // Detached HEAD: the file holds the commit id directly.
-    return raw || null;
-  } catch {
-    return null;
-  }
 }
 
 /** Turns a snake_case stage name into a readable progress message. */

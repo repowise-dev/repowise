@@ -13,7 +13,7 @@ import type {
   WebviewViewId,
 } from "../../../src/shared/webviewMessages";
 import { createHost, type WebviewHost } from "./rpc";
-import { initTheme } from "./theme";
+import { initTheme, setThemePreference } from "./theme";
 
 /** Everything a view component receives. */
 export interface ViewProps<V extends WebviewViewId> {
@@ -30,6 +30,10 @@ export function mountView<V extends WebviewViewId>(
 ): void {
   initTheme();
   const host = createHost();
+  // Registered before render so the persisted preference is applied by the
+  // time the view component first mounts (init subscribers fire in order).
+  host.onInit((msg) => setThemePreference(msg.theme ?? "auto"));
+  host.onThemeChanged((theme) => setThemePreference(theme));
   const container = document.getElementById("root");
   if (!container) throw new Error("Webview root element missing");
   createRoot(container).render(

@@ -52,6 +52,15 @@ export abstract class RepowiseTreeProvider
   /** Builds the root nodes for a resolved repo. Throws are caught upstream. */
   protected abstract loadRoots(repoId: string): Promise<RepoTreeNode[]>;
 
+  /**
+   * Public window onto `loadRoots` for composite providers that nest this
+   * provider's roots under a section of their own tree. Bypasses this
+   * provider's root cache and watcher on purpose: the composite owns both.
+   */
+  rootsFor(repoId: string): Promise<RepoTreeNode[]> {
+    return this.loadRoots(repoId);
+  }
+
   getTreeItem(node: RepoTreeNode): vscode.TreeItem {
     const item = new vscode.TreeItem(node.label, node.collapsibleState);
     if (node.description !== undefined) item.description = node.description;
