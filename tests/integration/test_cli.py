@@ -310,9 +310,7 @@ class TestUpdateConfigChangeDetection:
 
         return json.loads((repo / ".repowise" / "state.json").read_text(encoding="utf-8"))
 
-    def test_init_stores_fingerprint_and_update_detects_config_change(
-        self, runner, git_work_repo
-    ):
+    def test_init_stores_fingerprint_and_update_detects_config_change(self, runner, git_work_repo):
         """init records a config_fingerprint; an update with no file changes
         skips rescore when config is unchanged but triggers one when
         health-rules.json changes (#296, issue 3)."""
@@ -342,11 +340,8 @@ class TestUpdateConfigChangeDetection:
 
     def test_dry_run_does_not_rescore_or_advance_fingerprint(self, runner, git_work_repo):
         """`update --dry-run` after a config change must not mutate state/DB."""
-        import json
 
-        runner.invoke(
-            cli, ["init", str(git_work_repo), "--index-only"], catch_exceptions=False
-        )
+        runner.invoke(cli, ["init", str(git_work_repo), "--index-only"], catch_exceptions=False)
         fp_before = self._state(git_work_repo)["config_fingerprint"]
 
         (git_work_repo / ".repowise" / "health-rules.json").write_text(
@@ -366,9 +361,7 @@ class TestUpdateConfigChangeDetection:
     def test_config_change_with_source_diffs_runs_full_rescore(self, runner, git_work_repo):
         """A config change must take the full re-score path even when there are
         also source-file commits (not the partial update)."""
-        runner.invoke(
-            cli, ["init", str(git_work_repo), "--index-only"], catch_exceptions=False
-        )
+        runner.invoke(cli, ["init", str(git_work_repo), "--index-only"], catch_exceptions=False)
 
         # New source commit AND a config change in the same update window.
         (git_work_repo / "new_module.py").write_text("def f():\n    return 1\n", encoding="utf-8")
@@ -392,9 +385,7 @@ class TestUpdatePreservesDeadCode:
         unchanged files keep their findings (regression guard for #295)."""
         import sqlite3
 
-        runner.invoke(
-            cli, ["init", str(git_work_repo), "--index-only"], catch_exceptions=False
-        )
+        runner.invoke(cli, ["init", str(git_work_repo), "--index-only"], catch_exceptions=False)
 
         db = git_work_repo / ".repowise" / "wiki.db"
 
@@ -475,3 +466,190 @@ class TestUpdateNoChanges:
         )
         assert r1.exit_code == 0, r1.output
         assert "Already up to date" in r1.output
+
+
+class TestInitSeedFrom:
+    def test_seeds_from_base_branch(self, git_work_repo):
+        """
+        Tests the 'slightly stale but valid base' case.
+        The base repo is initialized at commit A.
+        The worktree branch advances to commit B.
+        Seeding the worktree from the base repo works because A is an ancestor of B.
+        """
+        from click.testing import CliRunner
+
+        # 1. Initialize the base "main" branch
+        runner1 = CliRunner()
+        r0 = runner1.invoke(
+            cli, ["init", str(git_work_repo), "--index-only"], catch_exceptions=False
+        )
+        assert r0.exit_code == 0
+
+        # 2. Simulate branching and making a commit
+        import subprocess
+
+        subprocess.check_call(
+            ["git", "checkout", "-b", "feature"], cwd=git_work_repo, stdout=subprocess.DEVNULL
+        )
+        (git_work_repo / "new_file.py").write_text("print('hello')\n", encoding="utf-8")
+        subprocess.check_call(
+            ["git", "add", "new_file.py"], cwd=git_work_repo, stdout=subprocess.DEVNULL
+        )
+        subprocess.check_call(
+            ["git", "commit", "-m", "feature commit"], cwd=git_work_repo, stdout=subprocess.DEVNULL
+        )
+
+        # 3. Create a worktree for the feature branch
+        worktree_dir = git_work_repo.parent / "feature-worktree"
+        subprocess.check_call(
+            ["git", "worktree", "add", "-b", "feature2", str(worktree_dir), "feature"],
+            cwd=git_work_repo,
+            stdout=subprocess.DEVNULL,
+        )
+
+        try:
+            # 4. Initialize the worktree by seeding from the base repo
+            runner2 = CliRunner()
+            r1 = runner2.invoke(
+                cli,
+                ["init", str(worktree_dir), "--seed-from", str(git_work_repo), "--index-only"],
+                catch_exceptions=False,
+            )
+            assert r1.exit_code == 0, r1.output
+            assert "Worktree index seeded successfully" in r1.output
+            assert "Delegating to update..." in r1.output
+
+            # Verify the worktree state is initialized correctly
+            assert (worktree_dir / ".repowise" / "state.json").exists()
+            assert (worktree_dir / ".repowise" / "wiki.db").exists()
+
+            import json
+
+            state = json.loads(
+                (worktree_dir / ".repowise" / "state.json").read_text(encoding="utf-8")
+            )
+            # update_cmd would have advanced last_sync_commit to the feature commit
+            feature_head = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], cwd=worktree_dir, text=True
+            ).strip()
+            assert state["last_sync_commit"] == feature_head
+
+        finally:
+            import shutil
+
+            shutil.rmtree(worktree_dir, ignore_errors=True)
+            subprocess.check_call(
+                ["git", "worktree", "remove", "--force", str(worktree_dir)],
+                cwd=git_work_repo,
+                stderr=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+            )
+
+    def test_unrelated_repo_fallback(self, git_work_repo, tmp_path):
+        import subprocess
+
+        from click.testing import CliRunner
+
+        # 1. Init first repo
+        runner1 = CliRunner()
+        r0 = runner1.invoke(
+            cli, ["init", str(git_work_repo), "--index-only"], catch_exceptions=False
+        )
+        assert r0.exit_code == 0
+
+        # 2. Create unrelated repo
+        unrelated_repo = tmp_path / "unrelated"
+        unrelated_repo.mkdir()
+        subprocess.check_call(["git", "init"], cwd=unrelated_repo, stdout=subprocess.DEVNULL)
+        (unrelated_repo / "main.py").write_text("x = 1\n", encoding="utf-8")
+        subprocess.check_call(["git", "add", "."], cwd=unrelated_repo, stdout=subprocess.DEVNULL)
+        subprocess.check_call(
+            ["git", "commit", "-m", "init"], cwd=unrelated_repo, stdout=subprocess.DEVNULL
+        )
+
+        # 3. Seed unrelated repo from git_work_repo (should fallback to full init)
+        runner2 = CliRunner()
+        r1 = runner2.invoke(
+            cli,
+            ["init", str(unrelated_repo), "--seed-from", str(git_work_repo), "--index-only"],
+            catch_exceptions=False,
+        )
+        assert r1.exit_code == 0
+        assert "does not share the same initial commit" in r1.output
+        assert "Falling back to full init" in r1.output
+
+    def test_unreachable_commit_fallback(self, git_work_repo):
+        import subprocess
+
+        from click.testing import CliRunner
+
+        # 1. Create diverging branches feature1 and feature2
+        subprocess.check_call(
+            ["git", "checkout", "-b", "feature1"], cwd=git_work_repo, stdout=subprocess.DEVNULL
+        )
+        (git_work_repo / "f1.py").write_text("x = 1\n", encoding="utf-8")
+        subprocess.check_call(["git", "add", "f1.py"], cwd=git_work_repo, stdout=subprocess.DEVNULL)
+        subprocess.check_call(
+            ["git", "commit", "-m", "f1"], cwd=git_work_repo, stdout=subprocess.DEVNULL
+        )
+
+        subprocess.check_call(
+            ["git", "checkout", "main"], cwd=git_work_repo, stdout=subprocess.DEVNULL
+        )
+        subprocess.check_call(
+            ["git", "checkout", "-b", "feature2"], cwd=git_work_repo, stdout=subprocess.DEVNULL
+        )
+        (git_work_repo / "f2.py").write_text("y = 2\n", encoding="utf-8")
+        subprocess.check_call(["git", "add", "f2.py"], cwd=git_work_repo, stdout=subprocess.DEVNULL)
+        subprocess.check_call(
+            ["git", "commit", "-m", "f2"], cwd=git_work_repo, stdout=subprocess.DEVNULL
+        )
+
+        # 2. Init feature1 (seed source)
+        subprocess.check_call(
+            ["git", "checkout", "feature1"], cwd=git_work_repo, stdout=subprocess.DEVNULL
+        )
+        runner1 = CliRunner()
+        r0 = runner1.invoke(
+            cli, ["init", str(git_work_repo), "--index-only"], catch_exceptions=False
+        )
+        assert r0.exit_code == 0
+
+        # 3. Create worktree for feature2 (target)
+        worktree_dir = git_work_repo.parent / "f2-worktree"
+        subprocess.check_call(
+            ["git", "worktree", "add", "-b", "feature2-wt", str(worktree_dir), "feature2"],
+            cwd=git_work_repo,
+            stdout=subprocess.DEVNULL,
+        )
+
+        try:
+            # 4. Seed feature2 from feature1. Ancestry check should fail since feature1 is not an ancestor of feature2.
+            runner2 = CliRunner()
+            r1 = runner2.invoke(
+                cli,
+                ["init", str(worktree_dir), "--seed-from", str(git_work_repo), "--index-only"],
+                catch_exceptions=False,
+            )
+            assert r1.exit_code == 0
+            assert "is not an ancestor of worktree HEAD" in r1.output
+            assert "Falling back to full init" in r1.output
+        finally:
+            import shutil
+
+            shutil.rmtree(worktree_dir, ignore_errors=True)
+            subprocess.check_call(
+                ["git", "worktree", "remove", "--force", str(worktree_dir)],
+                cwd=git_work_repo,
+                stderr=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+            )
+
+    def test_seed_from_self_fails(self, git_work_repo):
+        from click.testing import CliRunner
+
+        runner = CliRunner()
+        # Should raise an error if attempting to seed from the same directory
+        r = runner.invoke(cli, ["init", str(git_work_repo), "--seed-from", str(git_work_repo)])
+        assert r.exit_code != 0
+        assert "--seed-from cannot be the same as the target directory" in r.output

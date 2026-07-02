@@ -166,7 +166,17 @@ def _is_git_repo(path: Path) -> bool:
 
 def _is_submodule(path: Path) -> bool:
     """A submodule has ``.git`` as a file pointing to the parent's modules dir."""
-    return (path / ".git").is_file()
+    git_file = path / ".git"
+    if not git_file.is_file():
+        return False
+
+    try:
+        # Distinguish submodules from git worktrees (which also use a .git file)
+        # by checking if the gitdir points to a worktrees directory.
+        content = git_file.read_text(encoding="utf-8")
+        return "/worktrees/" not in content
+    except OSError:
+        return True
 
 
 def _prune_dirs(
