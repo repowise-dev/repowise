@@ -44,7 +44,8 @@ export type PanelViewId =
   | "refactoring"
   | "decisions"
   | "docs"
-  | "risk";
+  | "risk"
+  | "settings";
 
 /** Panels plus the sidebar Home view (a WebviewView, never a tab). */
 export type WebviewViewId = PanelViewId | "home";
@@ -58,8 +59,38 @@ export interface ViewParams {
   decisions: Record<string, never>;
   docs: { pageId?: string; filePath?: string };
   risk: Record<string, never>;
+  settings: Record<string, never>;
   home: Record<string, never>;
 }
+
+/**
+ * The settings the Settings panel can read and write. Kept in lockstep with
+ * the `repowise.*` keys contributed in package.json (the extension-side source
+ * of truth); the panel offers a friendlier grouped surface over the same keys,
+ * and the host validates every write against this allowlist.
+ */
+export const SETTING_KEYS = [
+  "diagnostics.enabled",
+  "diagnostics.minSeverity",
+  "diagnostics.dimensions",
+  "gutterHeat.enabled",
+  "fileDecorations.enabled",
+  "fileDecorations.maxScore",
+  "codeLens.enabled",
+  "hover.enabled",
+  "server.autoStart",
+  "server.port",
+  "cliPath",
+  "risk.baseBranch",
+] as const;
+
+export type SettingKey = (typeof SETTING_KEYS)[number];
+
+/** The value shapes a setting can hold across the whole allowlist. */
+export type SettingValue = boolean | number | string | string[] | null;
+
+/** Current value of every allowlisted setting, keyed by its `repowise.*` tail. */
+export type SettingsValues = Record<SettingKey, SettingValue>;
 
 /**
  * Webview color scheme. "auto" follows the editor theme; a fixed value pins
@@ -119,6 +150,11 @@ export interface HostApi {
   riskRange(): Promise<RiskRangeReport>;
   // Sidebar home
   homeSummary(): Promise<HomeSummary>;
+  // Settings panel
+  /** Current value of every allowlisted setting. */
+  getSettings(): Promise<SettingsValues>;
+  /** Persist one setting, then echo the full fresh value map back. */
+  updateSetting(key: SettingKey, value: SettingValue): Promise<SettingsValues>;
 }
 
 /**

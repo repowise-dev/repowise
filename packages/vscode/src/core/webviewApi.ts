@@ -29,7 +29,15 @@ import { getPageById, listAllPages } from "@repowise-dev/api-client/pages";
 import { getRiskRange } from "@repowise-dev/api-client/risk";
 import { buildRefactoringPlanPrompt } from "@repowise-dev/ui/health/ai-prompt-builder";
 import { CONFIG_SECTION } from "../constants";
-import type { HomeSummary, HostApi, RiskRangeReport } from "../shared/webviewMessages";
+import {
+  SETTING_KEYS,
+  type HomeSummary,
+  type HostApi,
+  type RiskRangeReport,
+  type SettingKey,
+  type SettingsValues,
+  type SettingValue,
+} from "../shared/webviewMessages";
 import type { RepowiseContext } from "./context";
 import { commitsMatch, getCurrentBranchName, resolveLiveHead } from "./gitApi";
 
@@ -38,6 +46,88 @@ class NotReadyError extends Error {
   constructor() {
     super("The Repowise server is not connected.");
   }
+}
+
+/** Defaults mirrored from the package.json contribution, for a robust read. */
+const SETTING_DEFAULTS: SettingsValues = {
+  "diagnostics.enabled": true,
+  "diagnostics.minSeverity": "high",
+  "diagnostics.dimensions": ["defect", "maintainability", "performance"],
+  "gutterHeat.enabled": true,
+  "fileDecorations.enabled": true,
+  "fileDecorations.maxScore": 4,
+  "codeLens.enabled": true,
+  "hover.enabled": true,
+  "server.autoStart": "ask",
+  "server.port": null,
+  "cliPath": "",
+  "risk.baseBranch": "",
+};
+
+const SEVERITIES = ["critical", "high", "medium", "low"];
+const DIMENSIONS = ["defect", "maintainability", "performance"];
+
+/**
+ * Per-key validator for writes. The webview is untrusted input, so an out-of-
+ * shape value is rejected before it reaches config.update rather than trusting
+ * VS Code to coerce it. Returns the value to write, or throws.
+ */
+const SETTING_VALIDATORS: Record<SettingKey, (v: SettingValue) => SettingValue> = {
+  "diagnostics.enabled": expectBoolean,
+  "diagnostics.minSeverity": (v) => expectEnum(v, SEVERITIES),
+  "diagnostics.dimensions": (v) => expectStringSubset(v, DIMENSIONS),
+  "gutterHeat.enabled": expectBoolean,
+  "fileDecorations.enabled": expectBoolean,
+  "fileDecorations.maxScore": (v) => expectNumberInRange(v, 0, 10),
+  "codeLens.enabled": expectBoolean,
+  "hover.enabled": expectBoolean,
+  "server.autoStart": (v) => expectEnum(v, ["ask", "always", "never"]),
+  "server.port": expectNullablePort,
+  "cliPath": expectString,
+  "risk.baseBranch": expectString,
+};
+
+function expectBoolean(v: SettingValue): boolean {
+  if (typeof v !== "boolean") throw new Error("Expected a boolean.");
+  return v;
+}
+function expectString(v: SettingValue): string {
+  if (typeof v !== "string") throw new Error("Expected a string.");
+  return v;
+}
+function expectEnum(v: SettingValue, allowed: string[]): string {
+  if (typeof v !== "string" || !allowed.includes(v)) throw new Error("Value not allowed.");
+  return v;
+}
+function expectStringSubset(v: SettingValue, allowed: string[]): string[] {
+  if (!Array.isArray(v) || v.some((x) => !allowed.includes(x))) {
+    throw new Error("Value not allowed.");
+  }
+  // De-dupe and preserve the canonical order so the array stays stable.
+  return allowed.filter((x) => v.includes(x));
+}
+function expectNumberInRange(v: SettingValue, min: number, max: number): number {
+  if (typeof v !== "number" || !Number.isFinite(v) || v < min || v > max) {
+    throw new Error(`Expected a number in [${min}, ${max}].`);
+  }
+  return v;
+}
+function expectNullablePort(v: SettingValue): number | null {
+  if (v === null) return null;
+  if (typeof v !== "number" || !Number.isInteger(v) || v < 1 || v > 65535) {
+    throw new Error("Expected a port in [1, 65535] or null.");
+  }
+  return v;
+}
+
+/** Reads every allowlisted setting into a plain value map (defaults applied). */
+function readSettings(): SettingsValues {
+  const cfg = vscode.workspace.getConfiguration(CONFIG_SECTION);
+  const out = {} as SettingsValues;
+  for (const key of SETTING_KEYS) {
+    out[key] = cfg.get<SettingValue>(key, SETTING_DEFAULTS[key]);
+  }
+  return out;
 }
 
 /**
@@ -217,5 +307,19 @@ export function createHostApi(ctx: RepowiseContext, epoch: () => number): HostAp
 
     // Sidebar home
     homeSummary,
+
+    // Settings panel
+    getSettings: async () => readSettings(),
+    updateSetting: async (key, value) => {
+      if (!SETTING_KEYS.includes(key)) throw new Error(`Unknown setting: ${String(key)}`);
+      const validated = SETTING_VALIDATORS[key](value);
+      // Workspace scope when a folder is open (the common case, so the choice
+      // travels with the repo); user scope otherwise so the write still lands.
+      const target = vscode.workspace.workspaceFolders?.length
+        ? vscode.ConfigurationTarget.Workspace
+        : vscode.ConfigurationTarget.Global;
+      await vscode.workspace.getConfiguration(CONFIG_SECTION).update(key, validated, target);
+      return readSettings();
+    },
   };
 }
