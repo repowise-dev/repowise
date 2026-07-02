@@ -124,3 +124,46 @@ async def test_gitlab_webhook_invalid_token(client: AsyncClient) -> None:
         assert resp.status_code == 401
     finally:
         wh_mod._GITLAB_TOKEN = original_token
+
+@pytest.mark.asyncio
+async def test_gitea_webhook_no_token(client: AsyncClient) -> None:
+    """Without token configured, Gitea push payloads are accepted."""
+    payload = {
+        "ref": "refs/heads/main",
+        "repository": {"clone_url": "https://git.example.com/example/test-repo.git"},
+    }
+    resp = await client.post(
+        "/api/webhooks/gitea",
+        content=json.dumps(payload),
+        headers={
+            "X-Gitea-Event": "push",
+            "X-Gitea-Delivery": "test-delivery-1",
+            "Content-Type": "application/json",
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "event_id" in data
+    assert data["status"] == "accepted"
+
+
+@pytest.mark.asyncio
+async def test_gitea_webhook_invalid_token(client: AsyncClient) -> None:
+    """When a token is configured, mismatched Gitea tokens are rejected."""
+    import repowise.server.routers.webhooks as wh_mod
+
+    original_token = wh_mod._GITEA_TOKEN
+    wh_mod._GITEA_TOKEN = "correct-token"
+    try:
+        resp = await client.post(
+            "/api/webhooks/gitea",
+            content=json.dumps({"ref": "refs/heads/main"}),
+            headers={
+                "X-Gitea-Event": "push",
+                "X-Gitea-Token": "wrong-token",
+                "Content-Type": "application/json",
+            },
+        )
+        assert resp.status_code == 401
+    finally:
+        wh_mod._GITEA_TOKEN = original_token

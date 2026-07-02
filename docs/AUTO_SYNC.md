@@ -9,7 +9,8 @@ method that fits your setup.
 | [File watcher](#2-file-watcher) | Local development, rapid iteration | No |
 | [GitHub webhook](#3-github-webhook) | Teams, CI/CD, hosted repos | Yes |
 | [GitLab webhook](#4-gitlab-webhook) | Teams, CI/CD, hosted repos | Yes |
-| [Polling fallback](#5-polling-fallback) | Safety net for missed webhooks | Yes |
+| [Gitea webhook](#5-gitea-webhook) | Self-hosted Gitea repos | Yes |
+| [Polling fallback](#6-polling-fallback) | Safety net for missed webhooks | Yes |
 
 ---
 
@@ -156,7 +157,37 @@ rejected with `401 Unauthorized`.
 
 ---
 
-## 5. Polling Fallback
+## 5. Gitea Webhook
+
+For self-hosted Gitea deployments. Gitea sends push events to the repowise
+server, which triggers incremental updates for the repository default branch.
+
+### Configure webhook token
+
+```bash
+export REPOWISE_GITEA_WEBHOOK_TOKEN="your-token-here"
+```
+
+### Add webhook in Gitea
+
+1. Go project **Settings > Webhooks**
+2. Add a **Gitea** webhook
+3. **Target URL:** `https://your-server.example.com/api/webhooks/gitea`
+4. **HTTP Method:** `POST`
+5. **POST Content Type:** `application/json`
+6. **Secret token:** same value you set in `REPOWISE_GITEA_WEBHOOK_TOKEN`
+7. **Trigger:** enable **Push Events**
+8. Click **Add Webhook**
+
+### Security
+
+When `REPOWISE_GITEA_WEBHOOK_TOKEN` is set, server compares the
+`X-Gitea-Token` header using constant-time comparison. Invalid tokens are
+rejected `401 Unauthorized`.
+
+---
+
+## 6. Polling Fallback
 
 When the server is running, a background job polls all registered repositories
 every 15 minutes. If new commits are detected that weren't caught by webhooks
@@ -241,6 +272,7 @@ repowise watch --workspace             # auto-update all workspace repos on file
 | `ANTHROPIC_API_KEY` | CLI | API key for Anthropic LLM provider |
 | `REPOWISE_GITHUB_WEBHOOK_SECRET` | Server | HMAC secret for GitHub webhook verification |
 | `REPOWISE_GITLAB_WEBHOOK_TOKEN` | Server | Token for GitLab webhook verification |
+| `REPOWISE_GITEA_WEBHOOK_TOKEN` | Server | Token for Gitea webhook verification |
 | `REPOWISE_DB_URL` | Server | Database URL (default: local SQLite) |
 | `REPOWISE_API_KEY` | Server | Bearer token for API authentication |
 

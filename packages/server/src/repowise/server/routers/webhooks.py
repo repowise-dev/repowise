@@ -1,4 +1,4 @@
-"""/api/webhooks — GitHub and GitLab webhook handlers."""
+"""/api/webhooks — GitHub, GitLab, and Gitea webhook handlers."""
 
 from __future__ import annotations
 
@@ -7,9 +7,9 @@ import hmac
 import json
 import os
 
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from fastapi import APIRouter, Depends, HTTPException, Request
 from repowise.core.persistence import crud
 from repowise.server.deps import get_db_session
 from repowise.server.schemas import WebhookResponse
@@ -18,6 +18,7 @@ router = APIRouter(prefix="/api/webhooks", tags=["webhooks"])
 
 _GITHUB_SECRET = os.environ.get("REPOWISE_GITHUB_WEBHOOK_SECRET", "")
 _GITLAB_TOKEN = os.environ.get("REPOWISE_GITLAB_WEBHOOK_TOKEN", "")
+_GITEA_TOKEN = os.environ.get("REPOWISE_GITEA_WEBHOOK_TOKEN", "")
 
 
 def _verify_github_signature(body: bytes, signature_header: str) -> None:
@@ -44,6 +45,16 @@ def _verify_gitlab_token(token_header: str) -> None:
         return  # No token configured — skip verification (dev mode)
 
     if not hmac.compare_digest(token_header, _GITLAB_TOKEN):
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+
+
+def _verify_gitea_token(token_header: str) -> None:
+    """Verify Gitea webhook token."""
+    if not _GITEA_TOKEN:
+        return  # No token configured skip verification (dev mode)
+
+    if not hmac.compare_digest(token_header, _GITEA_TOKEN):
         raise HTTPException(status_code=401, detail="Invalid token")
 
 
@@ -171,6 +182,66 @@ async def gitlab_webhook(
 
             result = await session.execute(
                 select(Repository).where(Repository.url.contains(project_url[:50]))
+            )
+            repo = result.scalar_one_or_none()
+            if repo and branch == repo.default_branch:
+                job = await crud.upsert_generation_job(
+                    session,
+                    repository_id=repo.id,
+                    status="pending",
+                    config={
+                        "mode": "incremental",
+                        "trigger": "webhook",
+                        "before": payload.get("before", ""),
+                        "after": payload.get("after", ""),
+                    },
+                )
+                await crud.mark_webhook_processed(session, event.id, job_id=job.id)
+                await session.commit()
+                _launch_webhook_job(request, job.id)
+
+    return WebhookResponse(event_id=event.id)
+
+@router.post("/gitea", response_model=WebhookResponse)
+async def gitea_webhook(
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+) -> WebhookResponse:
+    """Receive and process Gitea webhook events.
+
+    Verifies X-Gitea-Token when configured, stores the event, and enqueues an
+    incremental sync job for push events on the repository default branch.
+    """
+    token = request.headers.get("X-Gitea-Token", "")
+    _verify_gitea_token(token)
+
+    body = await request.body()
+    payload = json.loads(body)
+    event_type = request.headers.get("X-Gitea-Event", "unknown")
+    delivery_id = request.headers.get("X-Gitea-Delivery", "")
+
+    event = await crud.store_webhook_event(
+        session,
+        provider="gitea",
+        event_type=event_type,
+        payload=payload,
+        delivery_id=delivery_id,
+    )
+
+    # Push events: create sync job when the default branch changed.
+    if event_type == "push":
+        ref = payload.get("ref", "")
+        if ref.startswith("refs/heads/"):
+            branch = ref[len("refs/heads/") :]
+            repo_payload = payload.get("repository", {})
+            repo_url = repo_payload.get("clone_url", "") or repo_payload.get("html_url", "")
+
+            from sqlalchemy import select
+
+            from repowise.core.persistence.models import Repository
+
+            result = await session.execute(
+                select(Repository).where(Repository.url.contains(repo_url[:50]))
             )
             repo = result.scalar_one_or_none()
             if repo and branch == repo.default_branch:
