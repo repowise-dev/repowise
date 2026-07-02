@@ -87,12 +87,13 @@ class VectorStore(ABC):
         cap; each text is capped at :data:`EMBED_TEXT_MAX_CHARS`.
         """
         embedder = getattr(self, "_embedder", None)
-        if embedder is None or not texts:
-            return None if embedder is None else []
+        if embedder is None:
+            return None  # backend can't embed directly — caller falls back
+        if not texts:
+            return []
         out: list[list[float]] = []
-        for start in range(0, len(texts), EMBED_BATCH_MAX_ITEMS):
-            chunk = [t[:EMBED_TEXT_MAX_CHARS] for t in texts[start : start + EMBED_BATCH_MAX_ITEMS]]
-            out.extend(await embedder.embed(chunk))
+        for _chunk, capped_texts in iter_embed_chunks([("", t, {}) for t in texts]):
+            out.extend(await embedder.embed(capped_texts))
         return out
 
     async def search_by_vector(

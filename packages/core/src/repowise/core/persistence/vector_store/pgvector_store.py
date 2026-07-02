@@ -91,6 +91,12 @@ class PgVectorStore(VectorStore):
                 await session.commit()
 
     async def upsert_vectors(self, items: list[tuple[str, list[float], dict]]) -> bool:
+        """Raw-vector counterpart of :meth:`embed_and_upsert`, same semantics:
+        UPDATE-only against ``wiki_pages``, so ids without a row (e.g. the
+        synthetic ``decision:`` namespace) are silently skipped — this backend
+        stores embeddings on page rows, not as standalone vectors. Returning
+        True means the statement ran, not that every id matched a row.
+        """
         if not items:
             return True
 

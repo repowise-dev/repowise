@@ -328,15 +328,21 @@ async def detect_supersessions_and_conflicts(
     # Avoid recording both (A supersedes B) and (B supersedes A) within one run.
     handled_pairs: set[frozenset[str]] = set()
 
-    # Load the touched records first, then resolve every "same topic" band in
-    # one batched store call — the per-record search embedded its query over
-    # the network, so N touched decisions cost N serial round-trips.
-    recs: list[Any] = []
-    for tid in touched_ids:
-        rec = await session.get(DecisionRecord, tid)
-        if rec is None or rec.repository_id != repository_id:
-            continue
-        recs.append(rec)
+    # Load the touched records first (one SELECT, not one session.get per id),
+    # then resolve every "same topic" band in one batched store call — the
+    # per-record search embedded its query over the network, so N touched
+    # decisions cost N serial round-trips.
+    from sqlalchemy import select
+
+    unique_ids = list(dict.fromkeys(touched_ids))
+    rows = await session.execute(
+        select(DecisionRecord).where(
+            DecisionRecord.id.in_(unique_ids),
+            DecisionRecord.repository_id == repository_id,
+        )
+    )
+    by_id = {rec.id: rec for rec in rows.scalars().all()}
+    recs: list[Any] = [by_id[tid] for tid in unique_ids if tid in by_id]
     related_lists = await find_related_decisions_many(
         vector_store,
         [(rec.title, rec.decision or "", {rec.id}) for rec in recs],

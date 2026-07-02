@@ -32,9 +32,11 @@ __all__ = [
     "DECISION_VECTOR_PREFIX",
     "DEFAULT_DEDUP_TAU",
     "SEARCH_FETCH",
+    "PendingDecisionIndex",
     "decision_match_text",
     "decision_vector_item",
     "find_duplicate_decision",
+    "find_duplicate_decision_by_vector",
     "find_related_decisions",
     "find_related_decisions_many",
     "nearest_decision_hit",
@@ -62,7 +64,6 @@ DECISION_PAGE_TYPE = "decision_record"
 # Public: the batched dedup path in ``crud.bulk_upsert_decisions`` issues its
 # own vector searches and must use the same window.
 SEARCH_FETCH = 50
-_SEARCH_FETCH = SEARCH_FETCH
 
 
 def decision_match_text(title: str, decision: str = "") -> str:
@@ -133,26 +134,157 @@ def nearest_decision_hit(
     return None
 
 
-async def upsert_decision_vectors(store: Any, items: list[tuple[str, str, dict]]) -> None:
+class PendingDecisionIndex:
+    """Nearest-neighbour index over decision vectors not yet written to the store.
+
+    Backs the in-batch side of dedup in ``bulk_upsert_decisions``: records
+    touched this batch are only matchable here until the deferred store write
+    lands. Scoring uses numpy when available (it ships with every bundled
+    persistent backend) so the per-group scan doesn't burn O(groups² · dim)
+    pure-Python CPU on a large first index; without numpy it falls back to a
+    norm-free dot loop over pre-normalised vectors.
+    """
+
+    def __init__(self) -> None:
+        self._ids: list[str] = []
+        self._id_set: set[str] = set()
+        try:
+            import numpy as np
+        except ImportError:
+            np = None  # type: ignore[assignment]
+        self._np = np
+        self._buf: Any = None  # numpy (capacity, dim) buffer of normalised rows
+        self._vecs: list[list[float]] = []  # pure-Python fallback, normalised
+        self._n = 0
+
+    @property
+    def ids(self) -> set[str]:
+        return self._id_set
+
+    def _normalise(self, vector: list[float]) -> Any:
+        if self._np is not None:
+            v = self._np.asarray(vector, dtype=self._np.float64)
+            norm = float(self._np.linalg.norm(v))
+            return v / norm if norm > 0 else None
+        norm = sum(x * x for x in vector) ** 0.5
+        return [x / norm for x in vector] if norm > 0 else None
+
+    def add(self, decision_id: str, vector: list[float]) -> None:
+        v = self._normalise(vector)
+        if v is None:
+            return
+        if self._np is not None:
+            if self._buf is None:
+                self._buf = self._np.empty((64, len(vector)), dtype=self._np.float64)
+            elif self._n == len(self._buf):
+                grown = self._np.empty((len(self._buf) * 2, self._buf.shape[1]))
+                grown[: self._n] = self._buf[: self._n]
+                self._buf = grown
+            self._buf[self._n] = v
+        else:
+            self._vecs.append(v)
+        self._ids.append(decision_id)
+        self._id_set.add(decision_id)
+        self._n += 1
+
+    def best(self, vector: list[float]) -> tuple[str, float] | None:
+        """The ``(decision_id, cosine)`` of the nearest pending vector, or None."""
+        if self._n == 0:
+            return None
+        q = self._normalise(vector)
+        if q is None:
+            return None
+        if self._np is not None:
+            scores = self._buf[: self._n] @ q
+            i = int(scores.argmax())
+            return self._ids[i], float(scores[i])
+        best_i, best_score = 0, float("-inf")
+        for i, v in enumerate(self._vecs):
+            score = sum(x * y for x, y in zip(v, q, strict=True))
+            if score > best_score:
+                best_i, best_score = i, score
+        return self._ids[best_i], best_score
+
+
+async def find_duplicate_decision_by_vector(
+    store: Any,
+    vector: list[float],
+    *,
+    pending: PendingDecisionIndex | None = None,
+    tau: float = DEFAULT_DEDUP_TAU,
+    exclude_ids: set[str] | None = None,
+) -> str | None:
+    """Vector-side twin of :func:`find_duplicate_decision` for batched dedup.
+
+    Searches the store by a precomputed query *vector* and, when *pending* is
+    given, also scores against vectors touched earlier in the same batch that
+    haven't been written to the store yet. Store hits whose ids appear in
+    *pending* are skipped — the pending index holds a fresher vector for them
+    than the store's stale row. Same policy as the text twin: the overall
+    nearest decision decides, thresholded at *tau*; store errors degrade to
+    the pending-only comparison.
+    """
+    best: tuple[str, float] | None = None
+    try:
+        results = await store.search_by_vector(vector, limit=SEARCH_FETCH)
+    except Exception:
+        results = None
+    if results:
+        exclude = set(exclude_ids or set())
+        if pending is not None:
+            exclude |= pending.ids
+        best = nearest_decision_hit(results, exclude)
+    if pending is not None:
+        local = pending.best(vector)
+        if local is not None and (best is None or local[1] > best[1]):
+            best = local
+    if best is None:
+        return None
+    decision_id, score = best
+    return decision_id if score >= tau else None
+
+
+async def upsert_decision_vectors(
+    store: Any,
+    items: list[tuple[str, str, dict]],
+    *,
+    vectors_by_text: dict[str, list[float]] | None = None,
+) -> None:
     """Batched, best-effort embed+upsert of decision items into the store.
 
-    One :meth:`embed_texts` round instead of one embedder call per decision;
-    falls back to :meth:`embed_batch` (still chunked, never per-item) when the
-    store can't hand back raw vectors. Failures are swallowed like the
-    per-item path: search visibility is an enhancement, never a reason to
-    abort the SQL upsert that already happened.
+    One :meth:`embed_texts` round instead of one embedder call per decision,
+    skipping texts whose vectors the caller already computed
+    (*vectors_by_text* — the dedup pass embeds the same texts minutes
+    earlier). Falls back to :meth:`embed_batch` when the store can't take raw
+    vectors OR when the vector path raises, so a transient store error can't
+    silently drop the whole batch. Failures of the fallback itself are
+    swallowed like the per-item path: search visibility is an enhancement,
+    never a reason to abort the SQL upsert that already happened.
     """
     if not items:
         return
-    with contextlib.suppress(Exception):
-        vectors = await store.embed_texts([text for _pid, text, _meta in items])
-        if vectors is not None and len(vectors) == len(items):
-            written = await store.upsert_vectors(
-                [(pid, vec, meta) for (pid, _text, meta), vec in zip(items, vectors, strict=True)]
+    known = vectors_by_text or {}
+    wrote = False
+    try:
+        to_embed = [(pid, text, meta) for pid, text, meta in items if text not in known]
+        vectors = await store.embed_texts([text for _pid, text, _meta in to_embed])
+        if vectors is not None and len(vectors) == len(to_embed):
+            embedded = {
+                text: vec for (_pid, text, _meta), vec in zip(to_embed, vectors, strict=True)
+            }
+            wrote = bool(
+                await store.upsert_vectors(
+                    [
+                        (pid, known[text] if text in known else embedded[text], meta)
+                        for pid, text, meta in items
+                    ]
+                )
             )
-            if written:
-                return
-        await store.embed_batch(items)
+    except Exception:
+        wrote = False
+    if not wrote:
+        with contextlib.suppress(Exception):
+            await store.embed_batch(items)
 
 
 async def upsert_decision_vector(
@@ -199,7 +331,7 @@ async def find_duplicate_decision(
     if not query:
         return None
     try:
-        results = await store.search(query, limit=_SEARCH_FETCH)
+        results = await store.search(query, limit=SEARCH_FETCH)
     except Exception:
         return None
 
@@ -237,7 +369,7 @@ async def find_related_decisions(
     if not query:
         return []
     try:
-        results = await store.search(query, limit=_SEARCH_FETCH)
+        results = await store.search(query, limit=SEARCH_FETCH)
     except Exception:
         return []
     return _related_from_results(results, lo=lo, hi=hi, exclude_ids=exclude_ids, limit=limit)
@@ -290,8 +422,12 @@ async def find_related_decisions_many(
     try:
         # Empty query texts still occupy their slot (keeps results aligned)
         # but must not reach the embedder — some providers reject "".
-        all_results = await store.search_many([q or " " for q in queries], limit=_SEARCH_FETCH)
+        all_results = await store.search_many([q or " " for q in queries], limit=SEARCH_FETCH)
     except Exception:
+        return [[] for _ in items]
+    if len(all_results) != len(items):
+        # A store that drops or pads result slots would desync the zip below;
+        # degrade the whole call to empty like any other store error.
         return [[] for _ in items]
     return [
         _related_from_results(results, lo=lo, hi=hi, exclude_ids=exclude, limit=limit)

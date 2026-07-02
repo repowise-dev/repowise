@@ -23,7 +23,7 @@ from repowise.cli.ui import BRAND_STYLE, OWL_SPINNER
     default="auto",
     help="Embedder to use. 'auto' detects from env vars / config.",
 )
-@click.option("--batch-size", type=int, default=20, help="Pages per embedding batch.")
+@click.option("--batch-size", type=int, default=32, help="Pages per embedding batch.")
 def reindex_command(path: str | None, embedder: str, batch_size: int) -> None:
     """Rebuild vector search index from existing wiki pages.
 
@@ -94,10 +94,7 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
         pages = list(result.scalars().all())
 
     # --- Load decision records ---
-    from repowise.core.analysis.decision_semantic_match import (
-        decision_vector_item,
-        upsert_decision_vectors,
-    )
+    from repowise.core.analysis.decision_semantic_match import decision_vector_item
     from repowise.core.persistence.models import DecisionRecord
 
     async with factory() as session:
@@ -128,36 +125,62 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
     ) as progress:
         task = progress.add_task("Indexing pages...", total=total)
 
+        warned = 0
+
+        async def _embed_slice(items: list[tuple[str, str, dict]]) -> None:
+            """Embed one slice batched; on failure retry per item.
+
+            The batched call is the fast path (one embedder request per
+            chunk). A raised error falls back to per-item embedding so one
+            poison item can't sink its neighbours, and the indexed/failed
+            counters stay per-item accurate.
+            """
+            nonlocal indexed, failed, warned
+            try:
+                await vector_store.embed_batch(items)
+                indexed += len(items)
+                return
+            except Exception:
+                pass
+            for page_id, text, meta in items:
+                try:
+                    await vector_store.embed_and_upsert(page_id, text, meta)
+                    indexed += 1
+                except Exception as exc:
+                    failed += 1
+                    warned += 1
+                    if warned <= 3:
+                        console.print(
+                            f"[yellow]  Warning: failed to embed {page_id}: {exc}[/yellow]"
+                        )
+
         # Pages — one batched embed per slice instead of one embedder
         # round-trip per page (a large wiki paid thousands of serial calls).
         for i in range(0, len(pages), batch_size):
             batch = pages[i : i + batch_size]
-            items = [
-                (
-                    page.id,
-                    f"{page.title}\n{page.content}" if page.content else page.title or "",
-                    {
-                        "title": page.title or "",
-                        "page_type": page.page_type or "",
-                        "target_path": page.target_path or "",
-                    },
-                )
-                for page in batch
-            ]
-            try:
-                await vector_store.embed_batch(items)
-                indexed += len(batch)
-            except Exception as exc:
-                failed += len(batch)
-                if failed <= 3 * batch_size:
-                    console.print(
-                        f"[yellow]  Warning: failed to embed a batch of "
-                        f"{len(batch)} pages: {exc}[/yellow]"
+            items = []
+            for page in batch:
+                text = f"{page.title}\n{page.content}" if page.content else page.title or ""
+                if not text.strip():
+                    continue  # embedders reject empty input; nothing to index
+                items.append(
+                    (
+                        page.id,
+                        text,
+                        {
+                            "title": page.title or "",
+                            "page_type": page.page_type or "",
+                            "target_path": page.target_path or "",
+                        },
                     )
+                )
+            await _embed_slice(items)
             progress.advance(task, advance=len(batch))
 
         # Decision records — embedded into the shared page store under the
-        # decision: namespace, batched like the pages.
+        # decision: namespace, batched like the pages. Uses embed_batch
+        # directly (which raises on failure) rather than the ingest-side
+        # best-effort wrapper, so the indexed/failed counters stay honest.
         progress.update(task, description="Indexing decisions...")
         for i in range(0, len(decisions), batch_size):
             batch = decisions[i : i + batch_size]
@@ -174,16 +197,7 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
                 )
                 is not None
             ]
-            try:
-                await upsert_decision_vectors(vector_store, items)
-                indexed += len(batch)
-            except Exception as exc:
-                failed += len(batch)
-                if failed <= 3 * batch_size:
-                    console.print(
-                        f"[yellow]  Warning: failed to embed a batch of "
-                        f"{len(batch)} decisions: {exc}[/yellow]"
-                    )
+            await _embed_slice(items)
             progress.advance(task, advance=len(batch))
 
     await vector_store.close()
