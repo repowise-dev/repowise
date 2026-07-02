@@ -80,6 +80,8 @@ interface GraphToolbarProps {
   onFitView: () => void;
   showPathFinder: boolean;
   onTogglePathFinder: () => void;
+  /** Hosts without a path-finder implementation hide the toggle entirely. */
+  pathFinderAvailable?: boolean;
   showFlows: boolean;
   onToggleFlows: () => void;
   searchQuery: string;
@@ -141,6 +143,7 @@ export const GraphToolbar = memo(function GraphToolbar({
   onFitView,
   showPathFinder,
   onTogglePathFinder,
+  pathFinderAvailable = true,
   showFlows,
   onToggleFlows,
   searchQuery,
@@ -333,7 +336,7 @@ export const GraphToolbar = memo(function GraphToolbar({
           </Button>
           {/* Path finder / execution flows operate on file-level nodes and
               don't apply to the community constellation — hidden there. */}
-          {!isConstellation && (
+          {!isConstellation && pathFinderAvailable && (
           <Button
             size="sm"
             variant="ghost"

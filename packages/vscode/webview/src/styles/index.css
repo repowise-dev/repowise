@@ -1,0 +1,10 @@
+/*
+ * Single stylesheet for every webview (cssCodeSplit is off; the host HTML
+ * links dist/webview/webview.css). The shared UI stylesheet carries the
+ * Tailwind v4 setup, the full design-token palette, and an @source directive
+ * that scans the ui package's own sources for utility classes; the @source
+ * below adds this package's webview sources to that scan.
+ */
+@import "@repowise-dev/ui/styles.css";
+@source "../**/*.{ts,tsx}";
+@import "./theme-bridge.css";

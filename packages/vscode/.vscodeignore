@@ -3,6 +3,7 @@
 .vscode-test.mjs
 out-test/**
 src/**
+webview/**
 node_modules/**
 tsconfig.json
 tsconfig.test.json

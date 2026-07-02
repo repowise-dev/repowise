@@ -1,0 +1,30 @@
+/*
+ * Editor integration layer. The shared palette ships its own light and dark
+ * values keyed off a `.dark` root class, which the theme runtime toggles from
+ * the editor's theme; the panels deliberately keep that brand palette instead
+ * of remapping every token onto --vscode-* (a full remap flattens the data
+ * visualizations into editor grays). Only the pieces that must match the
+ * editor chrome are bridged here: typography and the page background seam.
+ */
+
+:root {
+  --font-sans: var(--vscode-font-family, ui-sans-serif, system-ui, sans-serif);
+  --font-mono: var(--vscode-editor-font-family, ui-monospace, monospace);
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+body {
+  background: var(--color-bg-root);
+  color: var(--color-text-primary);
+  font-family: var(--font-sans);
+}
+
+#root {
+  height: 100%;
+}

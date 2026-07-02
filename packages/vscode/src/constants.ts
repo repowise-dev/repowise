@@ -27,6 +27,10 @@ export const Commands = {
   updateIndex: "repowise.updateIndex",
   showFileHealth: "repowise.showFileHealth",
   openDocs: "repowise.openDocs",
+  showHealthDashboard: "repowise.showHealthDashboard",
+  showArchitecture: "repowise.showArchitecture",
+  showKnowledgeGraph: "repowise.showKnowledgeGraph",
+  showDecisionTimeline: "repowise.showDecisionTimeline",
 } as const;
 
 /**

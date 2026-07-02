@@ -21,6 +21,8 @@ import { registerBranchRisk } from "./features/branchRisk";
 import { registerStaleness } from "./features/staleness";
 import { registerRefactoringLens } from "./features/refactoringLens";
 import { registerDocs } from "./features/docs";
+import { registerWebviews } from "./core/webviews";
+import { registerDashboards } from "./features/dashboards";
 
 let rootContext: RepowiseContext | undefined;
 
@@ -89,6 +91,8 @@ export function activate(extCtx: vscode.ExtensionContext): void {
     registerStaleness(ctx),
     registerRefactoringLens(ctx),
     registerDocs(ctx),
+    registerWebviews(ctx, extCtx.extensionUri),
+    registerDashboards(ctx),
   );
 
   // Workspace-folder changes are handled by the server manager, which owns
