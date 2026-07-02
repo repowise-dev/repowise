@@ -20,6 +20,8 @@ export interface GenerateCodeOverrides {
 export interface RefactoringTargetsParams {
   refactoringType?: string;
   minConfidence?: string;
+  /** Repo-relative path; narrows plans to one file (summary stays global). */
+  filePath?: string;
 }
 
 export async function getRefactoringTargets(
@@ -29,6 +31,7 @@ export async function getRefactoringTargets(
   return apiGet<RefactoringTargets>(`/api/repos/${repoId}/refactoring/targets`, {
     refactoring_type: params.refactoringType,
     min_confidence: params.minConfidence,
+    file_path: params.filePath,
   });
 }
 

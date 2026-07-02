@@ -34,6 +34,7 @@
     "./providers": "./src/providers.ts",
     "./refactoring": "./src/refactoring.ts",
     "./repos": "./src/repos.ts",
+    "./risk": "./src/risk.ts",
     "./search": "./src/search.ts",
     "./security": "./src/security.ts",
     "./stats": "./src/stats.ts",
