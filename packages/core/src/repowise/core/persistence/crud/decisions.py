@@ -10,6 +10,7 @@ import json
 from datetime import datetime
 from typing import Any
 
+import structlog
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -441,31 +442,105 @@ async def bulk_upsert_decisions(
     # record, and is grown as records are created so paraphrases *within* one
     # batch also collapse.
     id_to_rec: dict[str, DecisionRecord] = {rec.id: rec for rec in existing_by_norm.values()}
+
+    # Headline candidate per group: highest source rank, tie-break by
+    # confidence. Hoisted so the batched embedding below can see every
+    # group's match text before the loop runs.
+    headline_by_norm: dict[str, dict] = {
+        norm: max(
+            members,
+            key=lambda d: (rank_for_source(d.get("source", "")), d.get("confidence", 0.0)),
+        )
+        for norm, members in groups.items()
+    }
+
+    # Batched embedding for dedup. The per-item path embeds one query per
+    # residual group and one upsert per touched record — thousands of serial
+    # network round-trips on a first index. Instead: embed every group's
+    # match text in a few chunked requests up front, search the store by raw
+    # vector, dedup *within* the batch by local cosine, and defer the store
+    # writes to one batched upsert after the loop. Stores that can't hand
+    # back vectors (embed_texts/search_by_vector return None) keep the
+    # per-item flow unchanged.
+    batch_mode = False
+    group_vecs: dict[str, list[float]] = {}
     if vector_store is not None:
         from repowise.core.analysis.decision_semantic_match import (
+            DEFAULT_DEDUP_TAU,
+            SEARCH_FETCH,
+            decision_match_text,
+            decision_vector_item,
             find_duplicate_decision,
+            nearest_decision_hit,
             upsert_decision_vector,
+            upsert_decision_vectors,
         )
+        from repowise.core.persistence.vector_store import cosine_similarity
+
+        ordered = [
+            (norm, decision_match_text(h.get("title", ""), h.get("decision") or ""))
+            for norm, h in headline_by_norm.items()
+        ]
+        ordered = [(norm, text) for norm, text in ordered if text]
+        if ordered:
+            try:
+                vecs = await vector_store.embed_texts([text for _, text in ordered])
+            except Exception:
+                vecs = None
+            if vecs is not None and len(vecs) == len(ordered):
+                # Probe vector search support once; None means the store can't
+                # search by raw vector and the per-item path must run instead.
+                try:
+                    probe = await vector_store.search_by_vector(vecs[0], limit=1)
+                except Exception:
+                    probe = None
+                if probe is not None:
+                    group_vecs = dict(zip((n for n, _ in ordered), vecs, strict=True))
+                    batch_mode = True
+
+        structlog.get_logger(__name__).info(
+            "decision_dedup_embedding",
+            groups=len(groups),
+            batched=batch_mode,
+        )
+
+    # Vectors of records touched this batch but not yet written to the store —
+    # the in-batch side of dedup in batch mode. Approximated by the group's
+    # headline vector (exact for created records; near-exact for merges).
+    batch_touched_vecs: dict[str, list[float]] = {}
 
     touched_ids: list[str] = []
 
     for norm, members in groups.items():
-        # Headline candidate: highest source rank, tie-break by confidence.
-        headline = max(
-            members,
-            key=lambda d: (rank_for_source(d.get("source", "")), d.get("confidence", 0.0)),
-        )
+        headline = headline_by_norm[norm]
         rec = existing_by_norm.get(norm)
 
         # No title match → ask the store whether a semantically-equivalent
         # decision already exists, and fold into it if so (cheap title dedup
         # stays the first pass; this only runs on the residual).
         if rec is None and vector_store is not None:
-            match_id = await find_duplicate_decision(
-                vector_store,
-                title=headline.get("title", ""),
-                decision=headline.get("decision") or "",
-            )
+            match_id = None
+            q_vec = group_vecs.get(norm)
+            if batch_mode and q_vec is not None:
+                best: tuple[str, float] | None = None
+                try:
+                    results = await vector_store.search_by_vector(q_vec, limit=SEARCH_FETCH)
+                except Exception:
+                    results = None
+                if results:
+                    best = nearest_decision_hit(results)
+                for rid, r_vec in batch_touched_vecs.items():
+                    score = cosine_similarity(q_vec, r_vec)
+                    if best is None or score > best[1]:
+                        best = (rid, score)
+                if best is not None and best[1] >= DEFAULT_DEDUP_TAU:
+                    match_id = best[0]
+            else:
+                match_id = await find_duplicate_decision(
+                    vector_store,
+                    title=headline.get("title", ""),
+                    decision=headline.get("decision") or "",
+                )
             if match_id is not None and match_id in id_to_rec:
                 rec = id_to_rec[match_id]
                 existing_by_norm[norm] = rec
@@ -553,15 +628,40 @@ async def bulk_upsert_decisions(
 
         # (Re-)embed the record into the shared store so it's matchable by
         # later groups in this batch + future runs, and discoverable via
-        # search_codebase. Best-effort — never blocks the SQL upsert.
+        # search_codebase. Best-effort — never blocks the SQL upsert. In
+        # batch mode the write is deferred to one batched upsert after the
+        # loop; the group vector stands in for the record until then.
         if vector_store is not None:
-            await upsert_decision_vector(
-                vector_store,
+            if batch_mode:
+                q_vec = group_vecs.get(norm)
+                if q_vec is not None:
+                    batch_touched_vecs[rec.id] = q_vec
+            else:
+                await upsert_decision_vector(
+                    vector_store,
+                    rec.id,
+                    title=rec.title,
+                    decision=rec.decision or "",
+                    evidence_file=rec.evidence_file,
+                )
+
+    # Batched store write: embed every touched record's *final* text (post
+    # merge/promotion) in chunked requests and upsert the vectors in one go.
+    if vector_store is not None and batch_mode and touched_ids:
+        items: list[tuple[str, str, dict]] = []
+        for rid in dict.fromkeys(touched_ids):
+            rec = id_to_rec.get(rid)
+            if rec is None:
+                continue
+            item = decision_vector_item(
                 rec.id,
                 title=rec.title,
                 decision=rec.decision or "",
                 evidence_file=rec.evidence_file,
             )
+            if item is not None:
+                items.append(item)
+        await upsert_decision_vectors(vector_store, items)
 
     await session.flush()
     return touched_ids

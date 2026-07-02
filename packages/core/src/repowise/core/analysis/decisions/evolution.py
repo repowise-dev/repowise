@@ -41,7 +41,7 @@ from repowise.core.analysis.decisions.gate import apply_substring_gate
 from repowise.core.analysis.decisions.provenance import normalize_text
 from repowise.core.analysis.decisions.semantic_match import (
     DEFAULT_DEDUP_TAU,
-    find_related_decisions,
+    find_related_decisions_many,
 )
 
 logger = structlog.get_logger(__name__)
@@ -328,18 +328,23 @@ async def detect_supersessions_and_conflicts(
     # Avoid recording both (A supersedes B) and (B supersedes A) within one run.
     handled_pairs: set[frozenset[str]] = set()
 
+    # Load the touched records first, then resolve every "same topic" band in
+    # one batched store call — the per-record search embedded its query over
+    # the network, so N touched decisions cost N serial round-trips.
+    recs: list[Any] = []
     for tid in touched_ids:
         rec = await session.get(DecisionRecord, tid)
         if rec is None or rec.repository_id != repository_id:
             continue
-        related = await find_related_decisions(
-            vector_store,
-            title=rec.title,
-            decision=rec.decision or "",
-            lo=RELATED_TAU,
-            hi=DEFAULT_DEDUP_TAU,
-            exclude_ids={rec.id},
-        )
+        recs.append(rec)
+    related_lists = await find_related_decisions_many(
+        vector_store,
+        [(rec.title, rec.decision or "", {rec.id}) for rec in recs],
+        lo=RELATED_TAU,
+        hi=DEFAULT_DEDUP_TAU,
+    )
+
+    for rec, related in zip(recs, related_lists, strict=True):
         for other_id, sim in related:
             pair = frozenset({rec.id, other_id})
             if pair in handled_pairs:

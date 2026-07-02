@@ -76,6 +76,48 @@ class VectorStore(ABC):
         for page_id, text, metadata in items:
             await self.embed_and_upsert(page_id, text, metadata)
 
+    async def embed_texts(self, texts: list[str]) -> list[list[float]] | None:
+        """Embed *texts* in batched embedder requests, without upserting.
+
+        Lets a caller that needs the raw vectors (e.g. decision dedup, which
+        searches *and* upserts the same text) pay for one batched embedding
+        instead of one round-trip per item. Returns ``None`` when the backend
+        holds no embedder — callers must fall back to the per-item text APIs.
+        Chunked so a large input can't blow the embedder's per-request token
+        cap; each text is capped at :data:`EMBED_TEXT_MAX_CHARS`.
+        """
+        embedder = getattr(self, "_embedder", None)
+        if embedder is None or not texts:
+            return None if embedder is None else []
+        out: list[list[float]] = []
+        for start in range(0, len(texts), EMBED_BATCH_MAX_ITEMS):
+            chunk = [t[:EMBED_TEXT_MAX_CHARS] for t in texts[start : start + EMBED_BATCH_MAX_ITEMS]]
+            out.extend(await embedder.embed(chunk))
+        return out
+
+    async def search_by_vector(
+        self, vector: list[float], limit: int = 10
+    ) -> list[SearchResult] | None:
+        """Return the *limit* nearest pages to a precomputed query *vector*.
+
+        Batching hook for callers that already embedded their queries via
+        :meth:`embed_texts`. Returns ``None`` when the backend can't search by
+        raw vector (callers fall back to :meth:`search`), never raises for
+        that reason.
+        """
+        return None
+
+    async def upsert_vectors(self, items: list[tuple[str, list[float], dict]]) -> bool:
+        """Upsert many ``(page_id, vector, metadata)`` items without embedding.
+
+        The write-side counterpart of :meth:`search_by_vector`: callers that
+        computed vectors once via :meth:`embed_texts` can persist them without
+        a second embedder round-trip per item. Returns ``False`` when the
+        backend doesn't support raw-vector writes (callers fall back to
+        :meth:`embed_batch`), ``True`` after a successful write.
+        """
+        return False
+
     @abstractmethod
     async def search(self, query: str, limit: int = 10) -> list[SearchResult]:
         """Embed *query* and return the *limit* nearest pages."""

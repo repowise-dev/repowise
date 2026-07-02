@@ -94,7 +94,10 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
         pages = list(result.scalars().all())
 
     # --- Load decision records ---
-    from repowise.core.analysis.decision_semantic_match import upsert_decision_vector
+    from repowise.core.analysis.decision_semantic_match import (
+        decision_vector_item,
+        upsert_decision_vectors,
+    )
     from repowise.core.persistence.models import DecisionRecord
 
     async with factory() as session:
@@ -125,51 +128,63 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
     ) as progress:
         task = progress.add_task("Indexing pages...", total=total)
 
-        # Pages
+        # Pages — one batched embed per slice instead of one embedder
+        # round-trip per page (a large wiki paid thousands of serial calls).
         for i in range(0, len(pages), batch_size):
             batch = pages[i : i + batch_size]
-            for page in batch:
-                try:
-                    text = f"{page.title}\n{page.content}" if page.content else page.title or ""
-                    await vector_store.embed_and_upsert(
-                        page.id,
-                        text,
-                        {
-                            "title": page.title or "",
-                            "page_type": page.page_type or "",
-                            "target_path": page.target_path or "",
-                        },
+            items = [
+                (
+                    page.id,
+                    f"{page.title}\n{page.content}" if page.content else page.title or "",
+                    {
+                        "title": page.title or "",
+                        "page_type": page.page_type or "",
+                        "target_path": page.target_path or "",
+                    },
+                )
+                for page in batch
+            ]
+            try:
+                await vector_store.embed_batch(items)
+                indexed += len(batch)
+            except Exception as exc:
+                failed += len(batch)
+                if failed <= 3 * batch_size:
+                    console.print(
+                        f"[yellow]  Warning: failed to embed a batch of "
+                        f"{len(batch)} pages: {exc}[/yellow]"
                     )
-                    indexed += 1
-                except Exception as exc:
-                    failed += 1
-                    if failed <= 3:
-                        console.print(
-                            f"[yellow]  Warning: failed to embed {page.id}: {exc}[/yellow]"
-                        )
-                progress.advance(task)
+            progress.advance(task, advance=len(batch))
 
-        # Decision records — embedded into the shared page store under the decision: namespace
+        # Decision records — embedded into the shared page store under the
+        # decision: namespace, batched like the pages.
         progress.update(task, description="Indexing decisions...")
         for i in range(0, len(decisions), batch_size):
             batch = decisions[i : i + batch_size]
-            for d in batch:
-                try:
-                    await upsert_decision_vector(
-                        vector_store,
+            items = [
+                item
+                for d in batch
+                if (
+                    item := decision_vector_item(
                         d.id,
                         title=d.title or "",
                         decision=d.decision or "",
                         evidence_file=getattr(d, "evidence_file", None),
                     )
-                    indexed += 1
-                except Exception as exc:
-                    failed += 1
-                    if failed <= 3:
-                        console.print(
-                            f"[yellow]  Warning: failed to embed decision {d.id}: {exc}[/yellow]"
-                        )
-                progress.advance(task)
+                )
+                is not None
+            ]
+            try:
+                await upsert_decision_vectors(vector_store, items)
+                indexed += len(batch)
+            except Exception as exc:
+                failed += len(batch)
+                if failed <= 3 * batch_size:
+                    console.print(
+                        f"[yellow]  Warning: failed to embed a batch of "
+                        f"{len(batch)} decisions: {exc}[/yellow]"
+                    )
+            progress.advance(task, advance=len(batch))
 
     await vector_store.close()
     await engine.dispose()
