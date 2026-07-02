@@ -25,7 +25,6 @@ const CATEGORY_ICON_KIND: Record<string, string> = {
 
 export function NodeTypeCategoryFilters() {
   const nodeTypeFilters = useArchitectureStore((s) => s.nodeTypeFilters);
-  const setNodeTypeFilter = useArchitectureStore((s) => s.setNodeTypeFilter);
 
   const handleToggle = useCallback(
     (category: string) => {

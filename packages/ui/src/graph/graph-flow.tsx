@@ -1139,6 +1139,7 @@ export function GraphFlow(props: GraphFlowProps) {
             }}
             onFitView={handleFitView}
             showPathFinder={showPathFinder}
+            pathFinderAvailable={Boolean(renderPathFinder)}
             onTogglePathFinder={() => {
               // Path finder and flows share the same overlay slot — opening
               // one always closes the other.
