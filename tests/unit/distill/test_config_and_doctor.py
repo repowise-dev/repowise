@@ -149,17 +149,17 @@ def no_real_hook(monkeypatch):
     monkeypatch.setattr(ClaudeCodeAdapter, "rewrite_hook_installed", lambda self: False)
 
 
-def _rows(repo: Path) -> dict[str, tuple[str, str]]:
-    return {name: (status, detail) for name, status, detail in _distill_checks(repo)}
+def _rows(repo: Path) -> dict[str, tuple[bool, str]]:
+    return {check.name: (check.ok, check.detail) for check in _distill_checks(repo)}
 
 
 def test_doctor_defaults_all_ok(repo: Path, no_real_hook) -> None:
     rows = _rows(repo)
-    assert "OK" in rows["Distill config"][0]
+    assert rows["Distill config"][0] is True
     assert rows["Distill config"][1] == "defaults (no block)"
-    assert "OK" in rows["Omission store"][0]
+    assert rows["Omission store"][0] is True
     assert rows["Omission store"][1] == "not created yet"
-    assert "OK" in rows["Distill rewrite hook"][0]
+    assert rows["Distill rewrite hook"][0] is True
     assert "not installed" in rows["Distill rewrite hook"][1]
 
 
@@ -168,7 +168,7 @@ def test_doctor_flags_invalid_config(repo: Path, no_real_hook) -> None:
         "distill:\n  commands:\n    permission: always\n", encoding="utf-8"
     )
     rows = _rows(repo)
-    assert "FAIL" in rows["Distill config"][0]
+    assert rows["Distill config"][0] is False
     assert "permission" in rows["Distill config"][1]
 
 
@@ -177,7 +177,7 @@ def test_doctor_store_within_cap(repo: Path, no_real_hook) -> None:
     store.put("some content", source="cli:logs", original_tokens=10, kept_tokens=2)
     store.close()
     rows = _rows(repo)
-    assert "OK" in rows["Omission store"][0]
+    assert rows["Omission store"][0] is True
     assert "cap" in rows["Omission store"][1]
 
 
@@ -191,7 +191,7 @@ def test_doctor_store_over_cap_fails(repo: Path, no_real_hook) -> None:
     store.put("x" * 200_000, source="cli:logs", original_tokens=10, kept_tokens=2)
     store.close()
     rows = _rows(repo)
-    assert "FAIL" in rows["Omission store"][0]
+    assert rows["Omission store"][0] is False
     assert "over cap" in rows["Omission store"][1]
 
 
