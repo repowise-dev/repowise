@@ -217,6 +217,18 @@ class LanceDBVectorStore(VectorStore):
             for r in raw
         ]
 
+    async def upsert_vectors(self, items: list[tuple[str, list[float], dict]]) -> bool:
+        if not items:
+            return True
+        await self._ensure_connected()
+        await self._ensure_table([float(v) for v in items[0][1]])
+        rows = [
+            self._row(page_id, [float(v) for v in vector], metadata)
+            for page_id, vector, metadata in items
+        ]
+        await self._upsert_rows(rows)
+        return True
+
     async def search(self, query: str, limit: int = 10) -> list[SearchResult]:
         await self._ensure_connected()
         if self._table is None:
@@ -224,6 +236,12 @@ class LanceDBVectorStore(VectorStore):
 
         q_vecs = await self._embedder.embed([query])
         return await self._search_by_vector([float(v) for v in q_vecs[0]], limit)
+
+    async def search_by_vector(self, vector: list[float], limit: int = 10) -> list[SearchResult]:
+        await self._ensure_connected()
+        if self._table is None:
+            return []
+        return await self._search_by_vector([float(v) for v in vector], limit)
 
     async def search_many(self, queries: list[str], limit: int = 10) -> list[list[SearchResult]]:
         """One embedder call for all queries; the vector lookups are local."""

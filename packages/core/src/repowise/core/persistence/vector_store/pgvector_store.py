@@ -90,9 +90,34 @@ class PgVectorStore(VectorStore):
                 await session.execute(stmt, params)
                 await session.commit()
 
+    async def upsert_vectors(self, items: list[tuple[str, list[float], dict]]) -> bool:
+        """Raw-vector counterpart of :meth:`embed_and_upsert`, same semantics:
+        UPDATE-only against ``wiki_pages``, so ids without a row (e.g. the
+        synthetic ``decision:`` namespace) are silently skipped — this backend
+        stores embeddings on page rows, not as standalone vectors. Returning
+        True means the statement ran, not that every id matched a row.
+        """
+        if not items:
+            return True
+
+        from sqlalchemy.sql import text as sa_text
+
+        stmt = sa_text("UPDATE wiki_pages SET embedding = CAST(:emb AS vector) WHERE id = :pid")
+        params = [
+            {"emb": _encode([float(v) for v in vector]), "pid": page_id}
+            for page_id, vector, _meta in items
+        ]
+        async with self._session_factory() as session:
+            await session.execute(stmt, params)
+            await session.commit()
+        return True
+
     async def search(self, query: str, limit: int = 10) -> list[SearchResult]:
         q_vecs = await self._embedder.embed([query])
-        vec_str = _encode(q_vecs[0])
+        return await self.search_by_vector(q_vecs[0], limit)
+
+    async def search_by_vector(self, vector: list[float], limit: int = 10) -> list[SearchResult]:
+        vec_str = _encode([float(v) for v in vector])
 
         from sqlalchemy.sql import text as sa_text
 
