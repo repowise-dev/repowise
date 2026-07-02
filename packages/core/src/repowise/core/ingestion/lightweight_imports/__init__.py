@@ -20,6 +20,7 @@ from .elixir import extract_elixir_imports
 from .erlang import extract_erlang_imports
 from .fsharp import extract_fsharp_imports
 from .haskell import extract_haskell_imports
+from .lean import extract_lean_imports
 
 ExtractorFn = Callable[[str], list[Import]]
 
@@ -28,6 +29,7 @@ _EXTRACTORS: dict[str, ExtractorFn] = {
     "dart": extract_dart_imports,
     "clojure": extract_clojure_imports,
     "haskell": extract_haskell_imports,
+    "lean": extract_lean_imports,
     "erlang": extract_erlang_imports,
     "fsharp": extract_fsharp_imports,
 }

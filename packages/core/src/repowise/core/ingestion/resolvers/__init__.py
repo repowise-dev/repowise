@@ -17,6 +17,7 @@ from .go import resolve_go_import
 from .haskell import resolve_haskell_import
 from .java import resolve_java_import
 from .kotlin import resolve_kotlin_import
+from .lean import resolve_lean_import
 from .luau import resolve_luau_import
 from .php import resolve_php_import
 from .python import resolve_python_import
@@ -49,6 +50,7 @@ _RESOLVERS: dict[str, ResolverFn] = {
     "dart": resolve_dart_import,
     "clojure": resolve_clojure_import,
     "haskell": resolve_haskell_import,
+    "lean": resolve_lean_import,
     "erlang": resolve_erlang_import,
     "fsharp": resolve_fsharp_import,
 }

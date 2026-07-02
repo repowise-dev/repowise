@@ -32,6 +32,7 @@ from .javascript import SPEC as _JAVASCRIPT
 from .json import SPEC as _JSON
 from .julia import SPEC as _JULIA
 from .kotlin import SPEC as _KOTLIN
+from .lean import SPEC as _LEAN
 from .luau import SPEC as _LUAU
 from .makefile import SPEC as _MAKEFILE
 from .markdown import SPEC as _MARKDOWN
@@ -119,6 +120,7 @@ ALL_SPECS: tuple[LanguageSpec, ...] = (
     _CLOJURE,
     _ELM,
     _HASKELL,
+    _LEAN,
     _OCAML,
     _FSHARP,
     _CRYSTAL,
