@@ -178,6 +178,30 @@
         "command": "repowise.openDocs",
         "title": "Open Docs for This File",
         "category": "Repowise"
+      },
+      {
+        "command": "repowise.showHealthDashboard",
+        "title": "Show Health Dashboard",
+        "category": "Repowise",
+        "icon": "$(dashboard)"
+      },
+      {
+        "command": "repowise.showArchitecture",
+        "title": "Show Architecture Map",
+        "category": "Repowise",
+        "icon": "$(layers)"
+      },
+      {
+        "command": "repowise.showKnowledgeGraph",
+        "title": "Show Knowledge Graph",
+        "category": "Repowise",
+        "icon": "$(type-hierarchy)"
+      },
+      {
+        "command": "repowise.showDecisionTimeline",
+        "title": "Show Decision Timeline",
+        "category": "Repowise",
+        "icon": "$(milestone)"
       }
     ],
     "menus": {
@@ -186,6 +210,18 @@
           "command": "repowise.checkBranchRisk",
           "group": "navigation",
           "when": "scmProvider == git && repowise.state == 'ready'"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "repowise.showHealthDashboard",
+          "group": "navigation",
+          "when": "view == repowise.healthView"
+        },
+        {
+          "command": "repowise.showDecisionTimeline",
+          "group": "navigation",
+          "when": "view == repowise.decisionsView"
         }
       ]
     },
@@ -307,23 +343,38 @@
   },
   "scripts": {
     "build": "node esbuild.mjs",
+    "build:webview": "vite build --config webview/vite.config.mts",
     "watch": "node esbuild.mjs --watch",
-    "type-check": "tsc --noEmit",
-    "pretest": "npm run build && tsc -p tsconfig.test.json",
+    "type-check": "tsc --noEmit && tsc -p webview/tsconfig.json",
+    "pretest": "npm run build && npm run build:webview && tsc -p tsconfig.test.json",
     "test": "vscode-test",
+    "test:webview": "vitest run --config webview/vitest.config.mts",
     "package": "vsce package --no-dependencies"
   },
   "devDependencies": {
     "@repowise-dev/api-client": "*",
     "@repowise-dev/types": "*",
     "@repowise-dev/ui": "*",
+    "@tailwindcss/typography": "^0.5.15",
+    "@tailwindcss/vite": "^4.0.0",
+    "@testing-library/react": "^16.1.0",
     "@types/mocha": "^10.0.0",
     "@types/node": "^20",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
     "@types/vscode": "~1.101.0",
+    "@vitejs/plugin-react": "^5.0.0",
     "@vscode/test-cli": "^0.0.10",
     "@vscode/test-electron": "^3.0.0",
     "@vscode/vsce": "^3.0.0",
     "esbuild": "^0.28.0",
-    "typescript": "^5.7.2"
+    "jsdom": "^26.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "swr": "^2.2.5",
+    "tailwindcss": "^4.0.0",
+    "typescript": "^5.7.2",
+    "vite": "^7.0.0",
+    "vitest": "^3.0.0"
   }
 }

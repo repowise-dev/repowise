@@ -127,6 +127,12 @@ jobs:
       - name: Build (asserts bundle size budget)
         run: npm run build --workspace packages/vscode
 
+      - name: Build webviews (reports chunk sizes)
+        run: npm run build:webview --workspace packages/vscode
+
+      - name: Webview unit tests
+        run: npm run test:webview --workspace packages/vscode
+
       - name: Smoke test under a virtual display
         run: xvfb-run -a npm run test --workspace packages/vscode
 
