@@ -222,6 +222,30 @@ async def test_type_filter_narrows_plans_but_keeps_summary(client: AsyncClient, 
     assert body["summary"]["total"] == 4
 
 
+async def test_file_path_filter_narrows_plans_but_keeps_summary(
+    client: AsyncClient, app
+) -> None:
+    repo_id = await _seed(client, app)
+    resp = await client.get(
+        f"/api/repos/{repo_id}/refactoring/targets",
+        params={"file_path": "pkg/a.py"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert {p["refactoring_type"] for p in body["plans"]} == {"move_method", "break_cycle"}
+    assert all(p["file_path"] == "pkg/a.py" for p in body["plans"])
+    # Summary stays global, matching the type filter's semantics.
+    assert body["summary"]["total"] == 4
+
+    # An unknown path filters everything out rather than erroring.
+    empty = await client.get(
+        f"/api/repos/{repo_id}/refactoring/targets",
+        params={"file_path": "pkg/nope.py"},
+    )
+    assert empty.status_code == 200
+    assert empty.json()["plans"] == []
+
+
 async def test_plan_detail_by_id(client: AsyncClient, app) -> None:
     repo_id = await _seed(client, app)
     listed = (await client.get(f"/api/repos/{repo_id}/refactoring/targets")).json()["plans"]
