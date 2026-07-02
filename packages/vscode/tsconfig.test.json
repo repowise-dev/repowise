@@ -1,0 +1,15 @@
+{
+  // The integration tests run inside a real VS Code (Electron) process, which
+  // loads plain CommonJS from disk. This config emits the compiled test files
+  // (and any source they import) to out-test/ so the test runner can require
+  // them; the main tsconfig stays noEmit for type checking only.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "out-test",
+    "rootDir": "src",
+    "module": "CommonJS",
+    "moduleResolution": "Node10"
+  },
+  "include": ["src/test/**/*.ts", "src/constants.ts"]
+}
