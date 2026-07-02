@@ -37,6 +37,8 @@ async def _insert_dead_code(session_factory, repo_id: str) -> str:
                     "confidence": 0.5,
                     "reason": "No callers",
                     "lines": 10,
+                    "start_line": 42,
+                    "end_line": 51,
                     "safe_to_delete": False,
                     "primary_owner": "Bob",
                     "age_days": 90,
@@ -67,6 +69,24 @@ async def test_list_dead_code_with_data(client: AsyncClient, app) -> None:
     assert resp.status_code == 200
     data = resp.json()
     assert len(data) == 2
+
+
+@pytest.mark.asyncio
+async def test_list_dead_code_line_spans(client: AsyncClient, app) -> None:
+    repo = await create_test_repo(client)
+    await _insert_dead_code(app.state.session_factory, repo["id"])
+
+    resp = await client.get(f"/api/repos/{repo['id']}/dead-code")
+    assert resp.status_code == 200
+    data = resp.json()
+
+    unreachable = next(f for f in data if f["kind"] == "unreachable_file")
+    assert unreachable["start_line"] is None
+    assert unreachable["end_line"] is None
+
+    unused_export = next(f for f in data if f["kind"] == "unused_export")
+    assert unused_export["start_line"] == 42
+    assert unused_export["end_line"] == 51
 
 
 @pytest.mark.asyncio

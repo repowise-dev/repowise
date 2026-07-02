@@ -46,17 +46,19 @@ from .risk_factors import RISK_CAP_CONFIDENCE, path_risk_factors, risk_evidence
 # namespace. C# auto-properties land in the graph as ``variable``;
 # fields / enum members / type aliases / namespace anchors share the
 # same property.
-_UNIVERSAL_NON_IMPORTABLE: frozenset[str] = frozenset({
-    "method",
-    "variable",
-    "field",
-    "property",
-    "enum_member",
-    "constant",
-    "type_alias",
-    "namespace",
-    "module",
-})
+_UNIVERSAL_NON_IMPORTABLE: frozenset[str] = frozenset(
+    {
+        "method",
+        "variable",
+        "field",
+        "property",
+        "enum_member",
+        "constant",
+        "type_alias",
+        "namespace",
+        "module",
+    }
+)
 
 # Additional kinds skipped only for languages where the graph cannot yet
 # observe interface usage. In practice these are DI-heavy languages
@@ -103,132 +105,136 @@ _NON_IMPORTABLE_SYMBOL_KINDS: frozenset[str] = _UNIVERSAL_NON_IMPORTABLE | froze
 # so "no callers" is not evidence of deadness. Such types are still subject
 # to the *unused-export* pass (which reasons over import names / type_use),
 # so genuinely-dead exported types are still surfaced there.
-_UNCALLABLE_TYPE_KINDS: frozenset[str] = frozenset({
-    "struct",
-    "interface",
-    "enum",
-    "type_alias",
-})
+_UNCALLABLE_TYPE_KINDS: frozenset[str] = frozenset(
+    {
+        "struct",
+        "interface",
+        "enum",
+        "type_alias",
+    }
+)
 
 # Symbol names that are language-runtime entry points or compiler-implicit
 # anchors — never invoked by user-authored callers, never dead.
-_ENTRY_POINT_SYMBOL_NAMES: frozenset[str] = frozenset({
-    "Main",                # C#, Java, Kotlin, Go, Rust, Swift, Scala
-    "main",                # most others
-    # ---- Go runtime / test conventions ------------------------------
-    # ``func init`` is run by the Go runtime when the package is linked —
-    # never called by name, so it has no inbound call edge. ``TestMain``
-    # is the test-binary entry the ``go test`` runner invokes by reflection.
-    "init",
-    "TestMain",
-    "MauiProgram",         # .NET MAUI
-    "Program",             # C# top-level / classic console
-    "Startup",             # ASP.NET Core legacy
-    "__module__",          # synthetic per-file module anchor
-    "_start",              # C runtime
-    # ---- Python WSGI / ASGI / app-factory conventions ---------------
-    # Loaded by external servers (uvicorn / gunicorn / hypercorn /
-    # Tornado / aiohttp / Django) via dotted-path string such as
-    # ``module:create_app`` or ``module:application``. The graph never
-    # sees a call edge from the launching server, so without this
-    # allowlist every web entry point shows up as an unused public
-    # symbol with 1.0 confidence.
-    "create_app",
-    "make_app",
-    "create_application",
-    "make_application",
-    "application",
-    "asgi_app",
-    "wsgi_app",
-    "asgi_application",
-    "wsgi_application",
-    "get_asgi_application",
-    "get_wsgi_application",
-    # ---- Windows DLL / COM entry points -----------------------------
-    # Invoked by the Windows loader or COM runtime; never referenced
-    # statically from user code.
-    "DllMain",
-    "DllGetClassObject",
-    "DllCanUnloadNow",
-    "DllRegisterServer",
-    "DllUnregisterServer",
-    "DllGetActivationFactory",
-    "DllInstall",          # legacy MSI custom-action entry
-    # ---- Win32 GUI / console entry points ---------------------------
-    "wWinMain",            # Unicode WinMain
-    "WinMain",             # ANSI WinMain
-    "wmain",               # Unicode console main
-    "ServiceMain",         # Win32 service entry
-    # ---- libFuzzer / Honggfuzz / AFL fuzz harness entries ------------
-    # The fuzzer driver invokes these by name via dlsym; no static
-    # caller will ever exist.
-    "LLVMFuzzerTestOneInput",
-    "LLVMFuzzerInitialize",
-    # ---- Windows hook / ETW callbacks invoked by macros / runtime ----
-    "LowLevelKeyboardProc",
-    "LowLevelMouseProc",
-    "RegisterProvider",    # ETW provider registration (macro-invoked)
-    # ---- MSTest unit-test macro --------------------------------------
-    # ``TEST_METHOD(Name)`` expands into a public static function with
-    # ``TEST_METHOD`` as the captured symbol name; the runner finds it
-    # by attribute reflection. Same shape on every C++ unit test file.
-    "TEST_METHOD",
-    "TEST_CLASS",
-    "TEST_METHOD_INITIALIZE",
-    "TEST_METHOD_CLEANUP",
-    "TEST_CLASS_INITIALIZE",
-    "TEST_CLASS_CLEANUP",
-    "BEGIN_TEST_METHOD_PROPERTIES",
-    "END_TEST_METHOD_PROPERTIES",
-    # ---- Next.js (app + pages router) convention exports -------------
-    # Loaded by the Next.js runtime by name; never appear as user-code
-    # imports. The convention file globs already cover ``page.tsx``/
-    # ``route.ts``/``layout.tsx``, so this set only catches the long
-    # tail of route exports that escape file-glob protection (e.g.
-    # routes placed in non-standard paths). Limited to names that are
-    # distinctive enough not to risk masking dead code in unrelated
-    # files; common identifiers (``load``, ``action``, ``metadata``,
-    # ``config``, ``headers``, ``meta``, ``links``, ``runtime``) are
-    # deliberately omitted — they get file-level protection via the
-    # convention globs in :data:`_NEVER_FLAG_PATTERNS`.
-    "generateStaticParams",
-    "generateMetadata",
-    "generateViewport",
-    "generateImageMetadata",
-    "generateSitemaps",
-    "dynamicParams",
-    "fetchCache",
-    "preferredRegion",
-    "maxDuration",
-    "getStaticProps",
-    "getStaticPaths",
-    "getServerSideProps",
-    "getInitialProps",
-    "reportWebVitals",
-    # ---- Remix route module exports (distinctive names only) ---------
-    "shouldRevalidate",
-    "ErrorBoundary",
-    "CatchBoundary",
-    "HydrateFallback",
-    "clientLoader",
-    "clientAction",
-    # ---- SvelteKit page/layout module exports (distinctive names) ----
-    "trailingSlash",
-    # ---- JVM (Java + Kotlin) runtime / serialization / contract anchors ----
-    # ``main`` is already covered above; these are the rest of the names
-    # the JVM resolves through reflection / serialization / Lombok-equivalent
-    # generation, never through static call edges. ``INSTANCE`` is the
-    # Kotlin ``object Foo`` singleton field; the JVM accesses it directly.
-    "serialVersionUID",
-    "readObject",
-    "writeObject",
-    "readObjectNoData",
-    "readResolve",
-    "writeReplace",
-    "canEqual",                    # Lombok-equivalent generated method
-    "INSTANCE",                    # Kotlin object singleton field
-    "Companion",                   # Kotlin companion-object accessor
-})
+_ENTRY_POINT_SYMBOL_NAMES: frozenset[str] = frozenset(
+    {
+        "Main",  # C#, Java, Kotlin, Go, Rust, Swift, Scala
+        "main",  # most others
+        # ---- Go runtime / test conventions ------------------------------
+        # ``func init`` is run by the Go runtime when the package is linked —
+        # never called by name, so it has no inbound call edge. ``TestMain``
+        # is the test-binary entry the ``go test`` runner invokes by reflection.
+        "init",
+        "TestMain",
+        "MauiProgram",  # .NET MAUI
+        "Program",  # C# top-level / classic console
+        "Startup",  # ASP.NET Core legacy
+        "__module__",  # synthetic per-file module anchor
+        "_start",  # C runtime
+        # ---- Python WSGI / ASGI / app-factory conventions ---------------
+        # Loaded by external servers (uvicorn / gunicorn / hypercorn /
+        # Tornado / aiohttp / Django) via dotted-path string such as
+        # ``module:create_app`` or ``module:application``. The graph never
+        # sees a call edge from the launching server, so without this
+        # allowlist every web entry point shows up as an unused public
+        # symbol with 1.0 confidence.
+        "create_app",
+        "make_app",
+        "create_application",
+        "make_application",
+        "application",
+        "asgi_app",
+        "wsgi_app",
+        "asgi_application",
+        "wsgi_application",
+        "get_asgi_application",
+        "get_wsgi_application",
+        # ---- Windows DLL / COM entry points -----------------------------
+        # Invoked by the Windows loader or COM runtime; never referenced
+        # statically from user code.
+        "DllMain",
+        "DllGetClassObject",
+        "DllCanUnloadNow",
+        "DllRegisterServer",
+        "DllUnregisterServer",
+        "DllGetActivationFactory",
+        "DllInstall",  # legacy MSI custom-action entry
+        # ---- Win32 GUI / console entry points ---------------------------
+        "wWinMain",  # Unicode WinMain
+        "WinMain",  # ANSI WinMain
+        "wmain",  # Unicode console main
+        "ServiceMain",  # Win32 service entry
+        # ---- libFuzzer / Honggfuzz / AFL fuzz harness entries ------------
+        # The fuzzer driver invokes these by name via dlsym; no static
+        # caller will ever exist.
+        "LLVMFuzzerTestOneInput",
+        "LLVMFuzzerInitialize",
+        # ---- Windows hook / ETW callbacks invoked by macros / runtime ----
+        "LowLevelKeyboardProc",
+        "LowLevelMouseProc",
+        "RegisterProvider",  # ETW provider registration (macro-invoked)
+        # ---- MSTest unit-test macro --------------------------------------
+        # ``TEST_METHOD(Name)`` expands into a public static function with
+        # ``TEST_METHOD`` as the captured symbol name; the runner finds it
+        # by attribute reflection. Same shape on every C++ unit test file.
+        "TEST_METHOD",
+        "TEST_CLASS",
+        "TEST_METHOD_INITIALIZE",
+        "TEST_METHOD_CLEANUP",
+        "TEST_CLASS_INITIALIZE",
+        "TEST_CLASS_CLEANUP",
+        "BEGIN_TEST_METHOD_PROPERTIES",
+        "END_TEST_METHOD_PROPERTIES",
+        # ---- Next.js (app + pages router) convention exports -------------
+        # Loaded by the Next.js runtime by name; never appear as user-code
+        # imports. The convention file globs already cover ``page.tsx``/
+        # ``route.ts``/``layout.tsx``, so this set only catches the long
+        # tail of route exports that escape file-glob protection (e.g.
+        # routes placed in non-standard paths). Limited to names that are
+        # distinctive enough not to risk masking dead code in unrelated
+        # files; common identifiers (``load``, ``action``, ``metadata``,
+        # ``config``, ``headers``, ``meta``, ``links``, ``runtime``) are
+        # deliberately omitted — they get file-level protection via the
+        # convention globs in :data:`_NEVER_FLAG_PATTERNS`.
+        "generateStaticParams",
+        "generateMetadata",
+        "generateViewport",
+        "generateImageMetadata",
+        "generateSitemaps",
+        "dynamicParams",
+        "fetchCache",
+        "preferredRegion",
+        "maxDuration",
+        "getStaticProps",
+        "getStaticPaths",
+        "getServerSideProps",
+        "getInitialProps",
+        "reportWebVitals",
+        # ---- Remix route module exports (distinctive names only) ---------
+        "shouldRevalidate",
+        "ErrorBoundary",
+        "CatchBoundary",
+        "HydrateFallback",
+        "clientLoader",
+        "clientAction",
+        # ---- SvelteKit page/layout module exports (distinctive names) ----
+        "trailingSlash",
+        # ---- JVM (Java + Kotlin) runtime / serialization / contract anchors ----
+        # ``main`` is already covered above; these are the rest of the names
+        # the JVM resolves through reflection / serialization / Lombok-equivalent
+        # generation, never through static call edges. ``INSTANCE`` is the
+        # Kotlin ``object Foo`` singleton field; the JVM accesses it directly.
+        "serialVersionUID",
+        "readObject",
+        "writeObject",
+        "readObjectNoData",
+        "readResolve",
+        "writeReplace",
+        "canEqual",  # Lombok-equivalent generated method
+        "INSTANCE",  # Kotlin object singleton field
+        "Companion",  # Kotlin companion-object accessor
+    }
+)
 
 
 # Compiler-intrinsic preprocessor macros C/C++ libraries redefine as a
@@ -238,25 +244,32 @@ _ENTRY_POINT_SYMBOL_NAMES: frozenset[str] = frozenset({
 # preprocessor ``#if __has_include(...)`` directives, which the static
 # graph cannot observe — so without this skip every such fallback flags
 # as an unused export.
-_CPP_BUILTIN_MACROS: frozenset[str] = frozenset({
-    "__has_include",
-    "__has_include_next",
-    "__has_feature",
-    "__has_extension",
-    "__has_attribute",
-    "__has_cpp_attribute",
-    "__has_c_attribute",
-    "__has_declspec_attribute",
-    "__has_builtin",
-    "__has_warning",
-    "__builtin_expect",
-    "__builtin_unreachable",
-    "__builtin_assume",
-    "__builtin_constant_p",
-    "__is_identifier",
-    "__FILE__", "__LINE__", "__DATE__", "__TIME__",
-    "__func__", "__FUNCTION__", "__PRETTY_FUNCTION__",
-})
+_CPP_BUILTIN_MACROS: frozenset[str] = frozenset(
+    {
+        "__has_include",
+        "__has_include_next",
+        "__has_feature",
+        "__has_extension",
+        "__has_attribute",
+        "__has_cpp_attribute",
+        "__has_c_attribute",
+        "__has_declspec_attribute",
+        "__has_builtin",
+        "__has_warning",
+        "__builtin_expect",
+        "__builtin_unreachable",
+        "__builtin_assume",
+        "__builtin_constant_p",
+        "__is_identifier",
+        "__FILE__",
+        "__LINE__",
+        "__DATE__",
+        "__TIME__",
+        "__func__",
+        "__FUNCTION__",
+        "__PRETTY_FUNCTION__",
+    }
+)
 from .dynamic_markers import find_dynamic_edge_files, find_dynamic_import_files
 from .models import DeadCodeFindingData, DeadCodeKind, DeadCodeReport
 
@@ -268,17 +281,19 @@ logger = structlog.get_logger(__name__)
 # ``exports``/``main``), so a barrel with no inbound graph edge is not dead.
 # They are NOT skipped in the unused-export pass — a genuine symbol defined
 # in a barrel that nobody imports should still be flagged.
-_BARREL_FILENAMES: frozenset[str] = frozenset({
-    "__init__.py",
-    "index.ts",
-    "index.tsx",
-    "index.js",
-    "index.jsx",
-    "index.mts",
-    "index.cts",
-    "index.mjs",
-    "index.cjs",
-})
+_BARREL_FILENAMES: frozenset[str] = frozenset(
+    {
+        "__init__.py",
+        "index.ts",
+        "index.tsx",
+        "index.js",
+        "index.jsx",
+        "index.mts",
+        "index.cts",
+        "index.mjs",
+        "index.cjs",
+    }
+)
 
 
 def _find_jsx_namespace_files(parsed_files: dict) -> set[str]:
@@ -368,9 +383,7 @@ class DeadCodeAnalyzer:
         self._dynamic_import_files = find_dynamic_import_files(
             parsed_files or {}
         ) | find_dynamic_edge_files(graph)
-        self._jsx_namespace_files: set[str] = _find_jsx_namespace_files(
-            parsed_files or {}
-        )
+        self._jsx_namespace_files: set[str] = _find_jsx_namespace_files(parsed_files or {})
         # Lazily-built ``.go`` package-directory → file-node map, used by the
         # Go package-granular reachability hook (see ``go_reachability``).
         self._go_package_files: dict[str, list[str]] | None = None
@@ -887,8 +900,7 @@ class DeadCodeAnalyzer:
                 # Kotlin sealed parents, Scala typeclass traits).
                 if self.graph.has_node(sym_id) and any(
                     self.graph[pred][sym_id].get("edge_type")
-                    in ("calls", "method_implements", "reads",
-                        "extends", "implements", "type_use")
+                    in ("calls", "method_implements", "reads", "extends", "implements", "type_use")
                     for pred in self.graph.predecessors(sym_id)
                 ):
                     continue
@@ -918,9 +930,7 @@ class DeadCodeAnalyzer:
                 # edge will ever land in the graph. Clamp below the
                 # safe-to-delete threshold so we never ship them as
                 # confident dead code on Windows / COM-heavy C++ repos.
-                if is_contract_method(
-                    sym_name, sym.get("kind"), sym.get("language", "unknown")
-                ):
+                if is_contract_method(sym_name, sym.get("kind"), sym.get("language", "unknown")):
                     confidence = min(confidence, 0.4)
 
                 # Runtime-load risk factors for the defining file (config /
@@ -953,6 +963,9 @@ class DeadCodeAnalyzer:
                         else None,
                         commit_count_90d=git_meta.get("commit_count_90d", 0),
                         lines=sym.get("end_line", 0) - sym.get("start_line", 0),
+                        # Both-or-neither: a half-known span is worse than none.
+                        start_line=(sym.get("start_line") or None) if sym.get("end_line") else None,
+                        end_line=(sym.get("end_line") or None) if sym.get("start_line") else None,
                         package=self._get_package(str(node)),
                         evidence=evidence,
                         safe_to_delete=safe,
@@ -1030,6 +1043,7 @@ class DeadCodeAnalyzer:
             # method is invoked by the container, not by a source call.
             decorators = node_data.get("decorators") or []
             if decorators:
+
                 def _dec_base(d: str) -> str:
                     stripped = d.lstrip("@")
                     paren = stripped.find("(")
@@ -1089,6 +1103,13 @@ class DeadCodeAnalyzer:
                     else None,
                     commit_count_90d=git_meta.get("commit_count_90d", 0),
                     lines=node_data.get("end_line", 0) - node_data.get("start_line", 0),
+                    # Both-or-neither: a half-known span is worse than none.
+                    start_line=(node_data.get("start_line") or None)
+                    if node_data.get("end_line")
+                    else None,
+                    end_line=(node_data.get("end_line") or None)
+                    if node_data.get("start_line")
+                    else None,
                     package=self._get_package(file_path),
                     evidence=[f"No CALL edges to '{sym_name}'"],
                     safe_to_delete=False,
@@ -1133,8 +1154,7 @@ class DeadCodeAnalyzer:
             # every file under the candidate dir is config/data (YAML,
             # JSON, MD, TOML), it is not a package — it is metadata.
             has_code_file = any(
-                self.graph.nodes.get(f, {}).get("language", "unknown")
-                not in _NON_CODE_LANGUAGES
+                self.graph.nodes.get(f, {}).get("language", "unknown") not in _NON_CODE_LANGUAGES
                 for f in files
             )
             if not has_code_file:

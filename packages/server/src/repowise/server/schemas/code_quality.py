@@ -22,6 +22,8 @@ class DeadCodeFindingResponse(BaseModel):
     confidence: float
     reason: str
     lines: int
+    start_line: int | None
+    end_line: int | None
     # Effective deletion-readiness — re-derived from confidence + path risk
     # factors, not the raw persisted boolean. A config/bootstrap/database/
     # environment/script file is never deletion-ready even when stored safe.
@@ -55,6 +57,8 @@ class DeadCodeFindingResponse(BaseModel):
             confidence=confidence,
             reason=obj.reason,  # type: ignore[attr-defined]
             lines=obj.lines,  # type: ignore[attr-defined]
+            start_line=obj.start_line,  # type: ignore[attr-defined]
+            end_line=obj.end_line,  # type: ignore[attr-defined]
             safe_to_delete=effective_safe_to_delete(confidence, file_path, stored_safe),
             risk_factors=list(path_risk_factors(file_path)),
             evidence=evidence,
