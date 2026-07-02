@@ -11,6 +11,16 @@ import { registerStatusBar } from "./features/statusBar";
 import { registerOnboarding } from "./features/onboarding";
 import { registerServerManager } from "./features/serverManager";
 import { registerMcp } from "./features/mcp";
+import { registerDiagnostics } from "./features/diagnostics";
+import { registerGutterHeat } from "./features/gutterHeat";
+import { registerHovers } from "./features/hovers";
+import { registerFileDecorations } from "./features/fileDecorations";
+import { registerFileScoreStatus } from "./features/fileScoreStatus";
+import { registerTrees } from "./features/trees";
+import { registerBranchRisk } from "./features/branchRisk";
+import { registerStaleness } from "./features/staleness";
+import { registerRefactoringLens } from "./features/refactoringLens";
+import { registerDocs } from "./features/docs";
 
 let rootContext: RepowiseContext | undefined;
 
@@ -61,12 +71,24 @@ export function activate(extCtx: vscode.ExtensionContext): void {
     vscode.commands.registerCommand(Commands.checkSetup, () => checkSetup(ctx)),
   );
 
-  // Features. Each returns a Disposable and owns its own commands.
+  // Features. Each returns a Disposable and owns its own commands. All data
+  // features are event-driven: registration only wires providers and
+  // listeners; nothing fetches until a surface becomes visible while ready.
   extCtx.subscriptions.push(
     registerStatusBar(ctx),
     registerOnboarding(ctx),
     registerServerManager(ctx),
     registerMcp(ctx),
+    registerDiagnostics(ctx),
+    registerGutterHeat(ctx),
+    registerHovers(ctx),
+    registerFileDecorations(ctx),
+    registerFileScoreStatus(ctx),
+    registerTrees(ctx),
+    registerBranchRisk(ctx),
+    registerStaleness(ctx),
+    registerRefactoringLens(ctx),
+    registerDocs(ctx),
   );
 
   // Workspace-folder changes are handled by the server manager, which owns

@@ -22,6 +22,12 @@ const options = {
   format: "cjs",
   target: "node20",
   external: ["vscode"],
+  // Prefer each dependency's ESM ("module") entry over its CommonJS one so
+  // esbuild can tree-shake barrel packages. Without this, a package pulled in
+  // for one helper (e.g. lucide-react, reached transitively through a shared
+  // UI module) resolves to its non-tree-shakeable CJS bundle and drags its
+  // entire icon set into the host bundle.
+  mainFields: ["module", "main"],
   minify: production,
   sourcemap: !production,
   logLevel: "info",
