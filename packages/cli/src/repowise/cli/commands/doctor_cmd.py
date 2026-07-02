@@ -3,24 +3,37 @@
 from __future__ import annotations
 
 import contextlib
+import json
 from pathlib import Path as _DoctorPath
+from typing import NamedTuple
 
 import click
 from rich.table import Table
 
 from repowise.cli.helpers import (
     console,
+    err_console,
     get_db_url_for_repo,
     get_repowise_dir,
     load_state,
     resolve_command_target,
     run_async,
+    silence_logs_for_machine_output,
 )
 
 
-def _check(name: str, ok: bool, detail: str = "") -> tuple[str, str, str]:
-    status = "[green]OK[/green]" if ok else "[red]FAIL[/red]"
-    return (name, status, detail)
+class DoctorCheck(NamedTuple):
+    name: str
+    ok: bool
+    detail: str = ""
+
+
+def _check(name: str, ok: bool, detail: str = "") -> DoctorCheck:
+    return DoctorCheck(name, ok, detail)
+
+
+def _status_markup(ok: bool) -> str:
+    return "[green]OK[/green]" if ok else "[red]FAIL[/red]"
 
 
 def _claude_md_stamp_status(repo_path, state: dict) -> tuple[bool, str] | None:
@@ -146,14 +159,18 @@ def _print_cli_version_status() -> None:
         console.print("  [dim]Restart Claude/Codex/Cursor or any MCP client after updating.[/dim]")
 
 
-def _run_repo_checks(repo_path: _DoctorPath, repair: bool) -> bool:
-    """Run the standard health checks against one repo. Returns ``True`` if
-    all checks passed.
+def _run_repo_checks(
+    repo_path: _DoctorPath, repair: bool, *, fmt: str = "table"
+) -> tuple[bool, list[DoctorCheck]]:
+    """Run the standard health checks against one repo.
 
-    Extracted so workspace mode can iterate over every repo without
-    duplicating the full check body.
+    Returns ``(all_ok, checks)``. Extracted so workspace mode can iterate
+    over every repo without duplicating the full check body. When
+    ``fmt != "table"`` the table and advisory lines are not printed (repair
+    is also skipped; callers must not pass ``repair=True`` with a
+    non-table format).
     """
-    checks: list[tuple[str, str, str]] = []
+    checks: list[DoctorCheck] = []
 
     # 1. Git repository?
     try:
@@ -236,7 +253,6 @@ def _run_repo_checks(repo_path: _DoctorPath, repair: bool) -> bool:
     config_ok = len(config_warnings) == 0
     config_detail = "All required API keys configured" if config_ok else "; ".join(config_warnings)
     checks.append(_check("Provider config", config_ok, config_detail))
-
 
     # 7. Stale page count
     stale_count = 0
@@ -366,6 +382,8 @@ def _run_repo_checks(repo_path: _DoctorPath, repair: bool) -> bool:
     coord_drift: float | None = None
     coord_sql_pages: int | None = None
     coord_vector_count: int | None = None
+    coord_drift_color = "white"
+    coord_drift_pct = "N/A"
     if db_ok:
         try:
 
@@ -452,25 +470,37 @@ def _run_repo_checks(repo_path: _DoctorPath, repair: bool) -> bool:
                 if coord_vector_count != -1 and coord_vector_count is not None
                 else "unknown"
             )
-            drift_detail = (
-                f"SQL={coord_sql_pages}, Vector={vec_display}, "
-                f"Drift=[{drift_color}]{drift_pct}[/{drift_color}]"
-            )
+            drift_detail = f"SQL={coord_sql_pages}, Vector={vec_display}, Drift={drift_pct}"
             coord_ok = coord_drift is None or coord_drift < 0.05
             checks.append(_check("Coordinator drift", coord_ok, drift_detail))
+            coord_drift_color = drift_color
+            coord_drift_pct = drift_pct
         except Exception as exc:
             checks.append(_check("Coordinator drift", True, f"Could not check: {exc}"))
 
     # 11. Distill — config block, omission store, rewrite hook (advisory)
     checks.extend(_distill_checks(repo_path))
 
-    # Display
+    all_ok = all(c.ok for c in checks)
+
+    if fmt != "table":
+        return all_ok, checks
+
+    # Display: the "Coordinator drift" row's detail gets its drift
+    # percentage colored here, since that highlight is orthogonal to the
+    # row's own OK/FAIL status.
     table = Table(title=f"repowise Doctor — {repo_path.name}")
     table.add_column("Check", style="cyan")
     table.add_column("Status")
     table.add_column("Detail")
-    for name, status, detail in checks:
-        table.add_row(name, status, detail)
+    for c in checks:
+        detail = c.detail
+        if c.name == "Coordinator drift":
+            detail = detail.replace(
+                f"Drift={coord_drift_pct}",
+                f"Drift=[{coord_drift_color}]{coord_drift_pct}[/{coord_drift_color}]",
+            )
+        table.add_row(c.name, _status_markup(c.ok), detail)
     console.print(table)
 
     # CLAUDE.md freshness stamp — advisory, never fails the run. The managed
@@ -479,7 +509,6 @@ def _run_repo_checks(repo_path: _DoctorPath, repair: bool) -> bool:
     # on and agents reading the stale "Last indexed" line distrust the tools.
     _advise_claude_md_stamp(repo_path, state)
 
-    all_ok = all("[green]OK[/green]" in status for _, status, _ in checks)
     if all_ok:
         console.print("[bold green]All checks passed![/bold green]")
     else:
@@ -574,17 +603,17 @@ def _run_repo_checks(repo_path: _DoctorPath, repair: bool) -> bool:
     elif repair and not has_mismatches:
         console.print("[green]Nothing to repair.[/green]")
 
-    return all_ok
+    return all_ok, checks
 
 
-def _distill_checks(repo_path: _DoctorPath) -> list[tuple[str, str, str]]:
+def _distill_checks(repo_path: _DoctorPath) -> list[DoctorCheck]:
     """Distill feature health: config validity, store sizing, rewrite hook.
 
     The rewrite hook is opt-in, so its absence is informational, never a
     failure. Any unexpected error degrades to an advisory OK row — distill
     problems must not break doctor.
     """
-    checks: list[tuple[str, str, str]] = []
+    checks: list[DoctorCheck] = []
 
     # Config block valid?
     distill_cfg = None
@@ -668,11 +697,20 @@ def _distill_checks(repo_path: _DoctorPath) -> list[tuple[str, str, str]]:
     default=False,
     help="Force single-repo mode even when invoked from a workspace.",
 )
+@click.option(
+    "--format",
+    "fmt",
+    default="table",
+    type=click.Choice(["table", "json"]),
+    help="Output format. json is read-only (incompatible with --repair) and exits "
+    "1 when any check fails.",
+)
 def doctor_command(
     path: str | None,
     repair: bool,
     workspace: bool,
     no_workspace: bool,
+    fmt: str,
 ) -> None:
     """Run health checks on the wiki setup.
 
@@ -680,19 +718,35 @@ def doctor_command(
     workspace mode, runs the full check battery against each indexed repo
     and prints a per-repo table plus a workspace-level summary.
     """
+    if fmt != "table" and repair:
+        raise click.UsageError(
+            "--repair is not supported with --format json (json mode is read-only)."
+        )
+
+    if fmt != "table":
+        silence_logs_for_machine_output()
+
+    status = err_console if fmt != "table" else console
+
     target = resolve_command_target(
         path=path,
         workspace_flag=workspace,
         no_workspace_flag=no_workspace,
     )
-    target.notice(console, command="doctor")
+    target.notice(status, command="doctor")
 
-    # Advisory CLI update check — printed once, above the repo check table(s).
-    _print_cli_version_status()
+    if fmt == "table":
+        # Advisory CLI update check, printed once above the repo check table(s).
+        _print_cli_version_status()
 
     if not target.is_workspace:
         assert target.repo_path is not None
-        _run_repo_checks(target.repo_path, repair)
+        all_ok, checks = _run_repo_checks(target.repo_path, repair, fmt=fmt)
+        if fmt != "table":
+            payload = {"ok": all_ok, "checks": [c._asdict() for c in checks]}
+            click.echo(json.dumps(payload, indent=2))
+            if not all_ok:
+                raise SystemExit(1)
         return
 
     # Workspace mode — iterate over every entry, run workspace-level
@@ -702,10 +756,11 @@ def doctor_command(
     ws_root = target.ws_root
     ws_config = target.ws_config
 
-    ws_issues = _run_workspace_checks(ws_root, ws_config, repair=repair)
+    ws_issues = _run_workspace_checks(ws_root, ws_config, repair=repair, fmt=fmt)
 
     overall_ok = True
     not_indexed: list[str] = []
+    all_checks: list[DoctorCheck] = []
     for entry in ws_config.repos:
         abs_path = (ws_root / entry.path).resolve()
         if not abs_path.is_dir():
@@ -713,18 +768,36 @@ def doctor_command(
         if not (abs_path / ".repowise").is_dir():
             not_indexed.append(entry.alias)
             continue
-        console.print()
-        console.print(
-            f"[bold]── {entry.alias}[/bold]  "
-            f"[dim]({entry.path})[/dim]"
-            + (
-                "  [bold cyan](primary)[/bold cyan]"
-                if entry.alias == ws_config.default_repo
-                else ""
+        if fmt == "table":
+            console.print()
+            console.print(
+                f"[bold]── {entry.alias}[/bold]  "
+                f"[dim]({entry.path})[/dim]"
+                + (
+                    "  [bold cyan](primary)[/bold cyan]"
+                    if entry.alias == ws_config.default_repo
+                    else ""
+                )
             )
-        )
-        ok = _run_repo_checks(abs_path, repair)
+        ok, checks = _run_repo_checks(abs_path, repair, fmt=fmt)
         overall_ok = overall_ok and ok
+        all_checks.extend(DoctorCheck(f"{entry.alias}: {c.name}", c.ok, c.detail) for c in checks)
+
+    if fmt != "table":
+        all_ok = overall_ok and not ws_issues and not not_indexed
+        payload = {
+            "ok": all_ok,
+            "checks": [c._asdict() for c in all_checks],
+            "workspace": {
+                "checked": True,
+                "issues": list(ws_issues),
+                "not_indexed": not_indexed,
+            },
+        }
+        click.echo(json.dumps(payload, indent=2))
+        if not all_ok:
+            raise SystemExit(1)
+        return
 
     console.print()
     if not_indexed:
@@ -750,6 +823,7 @@ def _run_workspace_checks(
     ws_config,
     *,
     repair: bool,
+    fmt: str = "table",
 ) -> list[str]:
     """Run workspace-level validation. Returns a list of issue strings.
 
@@ -759,7 +833,8 @@ def _run_workspace_checks(
         each repo's ``.repowise/state.json``.
       - MCP server registration (best-effort detection in claude config).
       - ``--repair``: rebuild missing ``state.json``, drop dead workspace
-        entries (with a notice).
+        entries (with a notice). Skipped when ``fmt != "table"``; callers
+        must not pass ``repair=True`` with a non-table format.
     """
     from repowise.core.workspace.update import (
         read_state_commit,
@@ -816,16 +891,17 @@ def _run_workspace_checks(
         else:
             rows.append((entry.alias, "[green]OK[/green]", entry.path))
 
-    table = Table(title="repowise Workspace Doctor")
-    table.add_column("Repo", style="cyan")
-    table.add_column("Status")
-    table.add_column("Detail")
-    for r in rows:
-        table.add_row(*r)
-    console.print(table)
+    if fmt == "table":
+        table = Table(title="repowise Workspace Doctor")
+        table.add_column("Repo", style="cyan")
+        table.add_column("Status")
+        table.add_column("Detail")
+        for r in rows:
+            table.add_row(*r)
+        console.print(table)
 
-    # MCP server registration — best-effort, advisory only.
-    _check_mcp_registered(ws_root)
+        # MCP server registration: best-effort, advisory only.
+        _check_mcp_registered(ws_root)
 
     # --repair: sync the workspace config from disk and drop dead entries.
     if repair:
