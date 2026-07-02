@@ -207,6 +207,12 @@
         "title": "Show Decision Timeline",
         "category": "Repowise",
         "icon": "$(milestone)"
+      },
+      {
+        "command": "repowise.showSettings",
+        "title": "Open Settings",
+        "category": "Repowise",
+        "icon": "$(gear)"
       }
     ],
     "menus": {
@@ -222,6 +228,11 @@
           "command": "repowise.showHealthDashboard",
           "group": "navigation",
           "when": "view == repowise.findingsView"
+        },
+        {
+          "command": "repowise.showSettings",
+          "group": "navigation",
+          "when": "view == repowise.homeView"
         }
       ]
     },

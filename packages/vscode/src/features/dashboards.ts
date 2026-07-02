@@ -23,6 +23,9 @@ export function registerDashboards(ctx: RepowiseContext): vscode.Disposable {
     vscode.commands.registerCommand(Commands.showDecisionTimeline, () =>
       openViewPanel(ctx, "decisions"),
     ),
+    vscode.commands.registerCommand(Commands.showSettings, () =>
+      openViewPanel(ctx, "settings"),
+    ),
   ];
   return {
     dispose(): void {
