@@ -81,12 +81,12 @@ dependencies = [
     "uvicorn[standard]>=0.32,<1",
     "mcp>=1.0,<2",
     "apscheduler>=3.10,<4",
-    "cryptography>=43,<47",
+    "cryptography>=48.0.1,<49",
     # LLM providers (bundled — no extras needed)
     "anthropic>=0.40,<1",
     "openai>=1.50,<3",
     "google-genai>=1.0,<2",
-    "litellm>=1.83.0,<2",
+    "litellm>=1.84.0,<2",
 ]
 
 [project.optional-dependencies]
