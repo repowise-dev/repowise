@@ -84,10 +84,19 @@ jobs:
           cache-dependency-path: package-lock.json
 
       - name: Install dependencies
-        run: npm ci --workspace packages/web
+        run: npm ci
 
       - name: Type check
         run: npm run type-check --workspace packages/web
 
       - name: Lint
         run: npm run lint --workspace packages/web
+
+      - name: Lint shared packages (no framework imports)
+        run: npm run lint:shared
+
+      - name: Type check api-client
+        run: npm run type-check --workspace @repowise-dev/api-client
+
+      - name: Test api-client
+        run: npm run test --workspace @repowise-dev/api-client

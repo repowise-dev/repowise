@@ -13,6 +13,8 @@ export interface DeadCodeFindingResponse {
   confidence: number;
   reason: string;
   lines: number;
+  start_line: number | null;
+  end_line: number | null;
   /** Effective deletion-readiness — re-derived from confidence + risk factors. */
   safe_to_delete: boolean;
   /** Runtime-load risk factors that make this a review candidate, not a delete. */

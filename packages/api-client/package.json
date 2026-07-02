@@ -1,0 +1,61 @@
+{
+  "name": "@repowise-dev/api-client",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Framework-free TypeScript client for the repowise REST API, shared by packages/web and downstream consumers.",
+  "type": "module",
+  "files": ["src"],
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./types": "./src/types.ts",
+    "./blast-radius": "./src/blast-radius.ts",
+    "./c4": "./src/c4.ts",
+    "./chat": "./src/chat.ts",
+    "./code-health": "./src/code-health.ts",
+    "./costs": "./src/costs.ts",
+    "./coupling": "./src/coupling.ts",
+    "./dead-code": "./src/dead-code.ts",
+    "./decisions": "./src/decisions.ts",
+    "./external-systems": "./src/external-systems.ts",
+    "./files": "./src/files.ts",
+    "./git": "./src/git.ts",
+    "./graph": "./src/graph.ts",
+    "./health": "./src/health.ts",
+    "./jobs": "./src/jobs.ts",
+    "./knowledge-map": "./src/knowledge-map.ts",
+    "./mcp-tools": "./src/mcp-tools.ts",
+    "./meta": "./src/meta.ts",
+    "./modules": "./src/modules.ts",
+    "./overview": "./src/overview.ts",
+    "./owners": "./src/owners.ts",
+    "./pages": "./src/pages.ts",
+    "./providers": "./src/providers.ts",
+    "./refactoring": "./src/refactoring.ts",
+    "./repos": "./src/repos.ts",
+    "./search": "./src/search.ts",
+    "./security": "./src/security.ts",
+    "./stats": "./src/stats.ts",
+    "./symbols": "./src/symbols.ts",
+    "./workspace": "./src/workspace.ts"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com",
+    "access": "restricted"
+  },
+  "scripts": {
+    "type-check": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@repowise-dev/types": "*"
+  },
+  "devDependencies": {
+    "@repowise-dev/ui": "*",
+    "@types/react": "^19.0.0",
+    "react": "^19.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "^4.1.5"
+  }
+}
