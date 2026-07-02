@@ -9,6 +9,7 @@ rendering (:mod:`.reporting`).
 
 from __future__ import annotations
 
+import sys
 import time
 
 import click
@@ -33,6 +34,7 @@ from repowise.cli.helpers import (
     rotate_update_log_if_needed,
     run_async,
     save_state,
+    silence_logs_for_machine_output,
     write_update_pending,
 )
 from repowise.core.reasoning import REASONING_MODES
@@ -50,6 +52,7 @@ from .persistence import (
     _run_full_health_rescore,
 )
 from .reporting import (
+    JsonProgressEmitter,
     _render_update_report,
     make_generation_progress,
     render_changed_files,
@@ -194,6 +197,17 @@ def _surface_release_news(*, written_by: str | None) -> None:
         "warnings, and the detailed generation report)."
     ),
 )
+@click.option(
+    "--progress",
+    type=click.Choice(["rich", "json"]),
+    default="rich",
+    help=(
+        "Progress output. 'rich' (default) shows the interactive owl-spinner "
+        "progress bar. 'json' silences it and prints one newline-delimited "
+        "JSON event per line to stdout instead, for driving this from "
+        "another process."
+    ),
+)
 def update_command(
     path: str | None,
     provider_name: str | None,
@@ -212,6 +226,7 @@ def update_command(
     concurrency: int = 10,
     no_cost_tracking: bool = False,
     verbose: bool = False,
+    progress: str = "rich",
 ) -> None:
     """Incrementally update wiki pages for files changed since last sync.
 
@@ -220,6 +235,28 @@ def update_command(
     force single-repo mode and --workspace to force workspace mode.
     """
     start = time.monotonic()
+
+    # --- Machine-readable progress (--progress json) --------------------
+    # Silence structlog/stdlib logging and redirect the shared Rich console
+    # (used throughout this module and its sibling helpers via `log=console.print`
+    # callbacks) to stderr, so stdout carries nothing but the JSON event
+    # stream below. Emitter is None in the default 'rich' mode, so every call
+    # site below is a no-op there. The redirect is undone when the command's
+    # click context closes (success or error), since `console` is a
+    # process-wide singleton and leaving it pointed at stderr would bleed
+    # into whatever runs next in the same process.
+    emitter: JsonProgressEmitter | None = None
+    if progress == "json":
+        silence_logs_for_machine_output()
+        console.file = sys.stderr
+        # Restore to None (rather than a captured file object) so `console`
+        # goes back to resolving sys.stdout dynamically on each print, its
+        # default behavior. Capturing `console.file` here would instead
+        # snapshot whatever stdout happens to be at this instant (e.g. a
+        # test runner's isolated buffer) and pin the shared console to it.
+        click.get_current_context().call_on_close(lambda: setattr(console, "file", None))
+        emitter = JsonProgressEmitter()
+        emitter.start(repo=str(path or "."), since=since)
 
     # --- Resolve target up front (single repo or workspace) ---
     target = resolve_command_target(
@@ -236,7 +273,16 @@ def update_command(
                 "--full is single-repo only. Run it inside a specific repo "
                 "(or pass --no-workspace / --repo <alias>)."
             )
-        _workspace_update(target, dry_run=dry_run, agents_md=agents_md, verbose=verbose)
+        try:
+            _workspace_update(target, dry_run=dry_run, agents_md=agents_md, verbose=verbose)
+        except Exception as exc:
+            if emitter is not None:
+                emitter.error(str(exc))
+            raise
+        if emitter is not None:
+            emitter.done(
+                ok=True, pages_generated=0, cost_usd=0.0, duration_s=time.monotonic() - start
+            )
         return
 
     # --- Single-repo path from here on. ---
@@ -258,13 +304,24 @@ def update_command(
     if full:
         from repowise.cli.commands.upgrade_flow import upgrade_to_full
 
-        upgrade_to_full(
-            repo_path,
-            provider_name=provider_name,
-            model=model,
-            reasoning=reasoning,
-            concurrency=concurrency,
-        )
+        if emitter is not None:
+            emitter.stage("full_upgrade")
+        try:
+            upgrade_to_full(
+                repo_path,
+                provider_name=provider_name,
+                model=model,
+                reasoning=reasoning,
+                concurrency=concurrency,
+            )
+        except Exception as exc:
+            if emitter is not None:
+                emitter.error(str(exc))
+            raise
+        if emitter is not None:
+            emitter.done(
+                ok=True, pages_generated=0, cost_usd=0.0, duration_s=time.monotonic() - start
+            )
         return
     # Truncate the hook-managed log if it has grown past the cap. The hook
     # appends each run unconditionally — without this opportunistic rotation
@@ -293,10 +350,13 @@ def update_command(
                 f"\nA workspace was detected at {upstream_ws}. "
                 "Did you mean: repowise update --workspace?"
             )
-        raise click.ClickException(
+        message = (
             f"No previous sync found for {repo_path}. "
             "Run 'repowise init' there first, or pass --since <ref>." + hint
         )
+        if emitter is not None:
+            emitter.error(message)
+        raise click.ClickException(message)
 
     # A config.yaml / health-rules.json change warrants a full health re-score
     # even when git is unchanged. A missing prior fingerprint is backfilled, not
@@ -311,6 +371,10 @@ def update_command(
         console.print("[green]Already up to date.[/green]")
         if prev_config_fp is None and not dry_run:
             save_state(repo_path, {**state, "config_fingerprint": curr_config_fp})
+        if emitter is not None:
+            emitter.done(
+                ok=True, pages_generated=0, cost_usd=0.0, duration_s=time.monotonic() - start
+            )
         return
 
     # --- Single-flight check ------------------------------------------------
@@ -338,6 +402,10 @@ def update_command(
             f"[dim]HEAD {head[:8] if head else 'HEAD'} marked as pending; "
             "the running update will roll forward to it.[/dim]"
         )
+        if emitter is not None:
+            emitter.done(
+                ok=True, pages_generated=0, cost_usd=0.0, duration_s=time.monotonic() - start
+            )
         return
 
     # Backfill docs_enabled on legacy state files using the same
@@ -397,12 +465,15 @@ def update_command(
         # so the background post-commit hook never spams output. The store's
         # ``written_by`` (read before this run re-stamps it) bounds the panel to
         # releases the user has actually crossed.
-        if console.is_terminal:
+        if console.is_terminal and emitter is None:
             _surface_release_news(written_by=verdict.written_by)
     except Exception as exc:  # never block a routine update on the upgrade layer
         log.debug("store_upgrade_skipped", error=str(exc))
 
     render_header(repo_path, base_ref, head)
+
+    if emitter is not None:
+        emitter.stage("detect_changes")
 
     from repowise.core.ingestion import ChangeDetector
 
@@ -415,6 +486,10 @@ def update_command(
             repo_path,
             {**state, "last_sync_commit": head, "config_fingerprint": curr_config_fp},
         )
+        if emitter is not None:
+            emitter.done(
+                ok=True, pages_generated=0, cost_usd=0.0, duration_s=time.monotonic() - start
+            )
         return
 
     if config_changed:
@@ -423,10 +498,25 @@ def update_command(
         console.print("[yellow]Config files changed — re-running health analysis.[/yellow]")
         if dry_run:
             console.print("[yellow]Dry run — health would be re-scored. No changes made.[/yellow]")
+            if emitter is not None:
+                emitter.done(
+                    ok=True, pages_generated=0, cost_usd=0.0, duration_s=time.monotonic() - start
+                )
             return
         cfg = load_config(repo_path)
         exclude_patterns = list(cfg.get("exclude_patterns") or [])
-        _run_full_health_rescore(repo_path, exclude_patterns, state, head, curr_config_fp)
+        if emitter is not None:
+            emitter.stage("rescore_health")
+        try:
+            _run_full_health_rescore(repo_path, exclude_patterns, state, head, curr_config_fp)
+        except Exception as exc:
+            if emitter is not None:
+                emitter.error(str(exc))
+            raise
+        if emitter is not None:
+            emitter.done(
+                ok=True, pages_generated=0, cost_usd=0.0, duration_s=time.monotonic() - start
+            )
         return
 
     render_changed_files(file_diffs, verbose=verbose)
@@ -436,6 +526,9 @@ def update_command(
 
     # Read exclude patterns from config (set during init or via web UI)
     exclude_patterns: list[str] = list(cfg.get("exclude_patterns") or [])
+
+    if emitter is not None:
+        emitter.stage("rebuild_graph")
 
     parsed_files, source_map, graph_builder, repo_structure, file_count, git_meta_map = (
         _rebuild_graph_and_git(
@@ -448,6 +541,9 @@ def update_command(
             include_nested_repos=bool(state.get("include_nested_repos", False)),
         )
     )
+
+    if emitter is not None:
+        emitter.stage("plan_pages")
 
     # Determine affected pages (auto-scale budget if not explicitly set)
     if cascade_budget is None:
@@ -464,6 +560,10 @@ def update_command(
 
     if dry_run:
         console.print("[yellow]Dry run — no pages regenerated.[/yellow]")
+        if emitter is not None:
+            emitter.done(
+                ok=True, pages_generated=0, cost_usd=0.0, duration_s=time.monotonic() - start
+            )
         return
 
     partial_health_report, dead_code_report = _run_partial_analysis(
@@ -478,18 +578,29 @@ def update_command(
     drop_transient_git_signals(list(git_meta_map.values()))
 
     if index_only:
-        _persist_index_only_update(
-            repo_path,
-            graph_builder,
-            git_meta_map,
-            dead_code_report,
-            partial_health_report,
-            state,
-            head,
-            start,
-            [fd.path for fd in file_diffs],
-            file_diffs=file_diffs,
-        )
+        if emitter is not None:
+            emitter.stage("persist")
+        try:
+            _persist_index_only_update(
+                repo_path,
+                graph_builder,
+                git_meta_map,
+                dead_code_report,
+                partial_health_report,
+                state,
+                head,
+                start,
+                [fd.path for fd in file_diffs],
+                file_diffs=file_diffs,
+            )
+        except Exception as exc:
+            if emitter is not None:
+                emitter.error(str(exc))
+            raise
+        if emitter is not None:
+            emitter.done(
+                ok=True, pages_generated=0, cost_usd=0.0, duration_s=time.monotonic() - start
+            )
         return
 
     # The generation/LLM layer is only needed past this point — importing it
@@ -685,31 +796,62 @@ def update_command(
     )
     repo_name = repo_path.name
 
+    if emitter is not None:
+        emitter.stage("generate")
+
     # Drive a live progress bar (owl spinner + running cost) off generate_all's
     # page callbacks, matching init's generation phase. Cost is read from the
-    # tracker as each page lands so the readout ticks up in real time.
-    with make_generation_progress() as gen_progress:
-        gen_task = gen_progress.add_task("Generating pages...", total=None, cost=0.0)
+    # tracker as each page lands so the readout ticks up in real time. In
+    # json progress mode there is no bar, so the same callbacks emit
+    # total_known / page_done events on stdout instead.
+    from contextlib import nullcontext
 
-        def _on_total_known(total: int) -> None:
+    completed_pages = 0
+    total_pages: int | None = None
+
+    def _on_total_known(total: int) -> None:
+        nonlocal total_pages
+        total_pages = total
+        if emitter is not None:
+            emitter.total_known(total)
+        else:
             gen_progress.update(gen_task, total=total)
 
-        def _on_page_done(_page_id: str) -> None:
+    def _on_page_done(_page_id: str) -> None:
+        nonlocal completed_pages
+        completed_pages += 1
+        if emitter is not None:
+            emitter.page_done(
+                completed=completed_pages, total=total_pages, cost_usd=cost_tracker.session_cost
+            )
+        else:
             gen_progress.update(gen_task, advance=1, cost=cost_tracker.session_cost)
 
-        generated_pages = run_async(
-            generator.generate_all(
-                affected_parsed,
-                affected_source,
-                graph_builder,
-                repo_structure,
-                repo_name,
-                on_page_done=_on_page_done,
-                on_total_known=_on_total_known,
-                git_meta_map=git_meta_map,
-                repo_path=repo_path,
-            )
+    with (make_generation_progress() if emitter is None else nullcontext()) as gen_progress:
+        gen_task = (
+            gen_progress.add_task("Generating pages...", total=None, cost=0.0)
+            if gen_progress is not None
+            else None
         )
+
+        try:
+            generated_pages = run_async(
+                generator.generate_all(
+                    affected_parsed,
+                    affected_source,
+                    graph_builder,
+                    repo_structure,
+                    repo_name,
+                    on_page_done=_on_page_done,
+                    on_total_known=_on_total_known,
+                    git_meta_map=git_meta_map,
+                    repo_path=repo_path,
+                )
+            )
+        except Exception as exc:
+            if emitter is not None:
+                emitter.error(str(exc))
+            raise
 
     # Flush the buffered LLM cost rows now that generation is done — a single
     # transaction outside the contended generation window (issue #326).
@@ -913,7 +1055,14 @@ def update_command(
 
         await engine.dispose()
 
-    run_async(_persist())
+    if emitter is not None:
+        emitter.stage("persist")
+    try:
+        run_async(_persist())
+    except Exception as exc:
+        if emitter is not None:
+            emitter.error(str(exc))
+        raise
 
     # ---- Editor project files (best-effort) ----
     try:
@@ -978,6 +1127,14 @@ def update_command(
         pass  # cross-repo hooks must never fail the update
 
     elapsed = time.monotonic() - start
+    if emitter is not None:
+        emitter.done(
+            ok=True,
+            pages_generated=len(generated_pages),
+            cost_usd=cost_tracker.session_cost,
+            duration_s=elapsed,
+        )
+        return
     show_full_completion(
         generated_pages=generated_pages,
         decay_count=len(affected.decay_only),

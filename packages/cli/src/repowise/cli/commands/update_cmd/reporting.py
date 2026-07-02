@@ -9,8 +9,11 @@ happens here.
 
 from __future__ import annotations
 
+import json
+import sys
 from typing import Any
 
+import click
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
 from repowise.cli.helpers import console
@@ -85,6 +88,54 @@ def make_generation_progress() -> Progress:
         TextColumn("[green]${task.fields[cost]:.3f}[/green]"),
         console=console,
     )
+
+
+# ---------------------------------------------------------------------------
+# Machine-readable progress (--progress json)
+# ---------------------------------------------------------------------------
+
+
+class JsonProgressEmitter:
+    """Emits newline-delimited JSON progress events to stdout.
+
+    One JSON object per line, flushed immediately, so a supervising process
+    can stream ``repowise update`` progress without parsing Rich's terminal
+    output. Pairs with ``silence_logs_for_machine_output`` and redirecting
+    the Rich ``console`` to stderr, so stdout carries nothing but these
+    events.
+    """
+
+    def _emit(self, event: dict[str, Any]) -> None:
+        click.echo(json.dumps(event))
+        sys.stdout.flush()
+
+    def start(self, *, repo: str, since: str | None) -> None:
+        self._emit({"event": "start", "repo": repo, "since": since})
+
+    def stage(self, name: str) -> None:
+        self._emit({"event": "stage", "name": name})
+
+    def total_known(self, total: int) -> None:
+        self._emit({"event": "total_known", "total": total})
+
+    def page_done(self, *, completed: int, total: int | None, cost_usd: float) -> None:
+        self._emit(
+            {"event": "page_done", "completed": completed, "total": total, "cost_usd": cost_usd}
+        )
+
+    def done(self, *, ok: bool, pages_generated: int, cost_usd: float, duration_s: float) -> None:
+        self._emit(
+            {
+                "event": "done",
+                "ok": ok,
+                "pages_generated": pages_generated,
+                "cost_usd": cost_usd,
+                "duration_s": duration_s,
+            }
+        )
+
+    def error(self, message: str) -> None:
+        self._emit({"event": "error", "message": message})
 
 
 # ---------------------------------------------------------------------------
