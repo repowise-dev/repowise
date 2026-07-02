@@ -16,6 +16,7 @@ const VIEWS = [
   "decisions",
   "docs",
   "risk",
+  "settings",
 ] as const;
 
 export default defineConfig({

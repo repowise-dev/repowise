@@ -31,6 +31,7 @@ export const Commands = {
   showArchitecture: "repowise.showArchitecture",
   showKnowledgeGraph: "repowise.showKnowledgeGraph",
   showDecisionTimeline: "repowise.showDecisionTimeline",
+  showSettings: "repowise.showSettings",
 } as const;
 
 /**

@@ -38,6 +38,7 @@ const VIEW_META: Record<PanelViewId, ViewMeta> = {
   decisions: { title: "Repowise Decisions", retainContextWhenHidden: false },
   docs: { title: "Repowise Docs", retainContextWhenHidden: false },
   risk: { title: "Repowise Branch Risk", retainContextWhenHidden: false },
+  settings: { title: "Repowise Settings", retainContextWhenHidden: false },
 };
 
 /** Tab title for a panel; the sidebar Home view's title lives in the manifest. */

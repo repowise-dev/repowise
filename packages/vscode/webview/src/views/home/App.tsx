@@ -18,6 +18,7 @@ import {
   Moon,
   RefreshCw,
   Scale,
+  Settings2,
   Share2,
   Sun,
   Wrench,
@@ -194,6 +195,24 @@ export function App({ host, repo, refreshToken }: ViewProps<"home">) {
           />
         ))}
       </nav>
+      <button
+        type="button"
+        onClick={() => host.openView("settings")}
+        className="group flex w-full items-center gap-3 rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-2.5 text-left transition-colors hover:border-[var(--color-border-hover)] hover:bg-[var(--color-bg-elevated)]"
+      >
+        <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-[var(--color-bg-inset)] text-[var(--color-text-secondary)]">
+          <Settings2 className="h-4 w-4" />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-[13px] font-medium text-[var(--color-text-primary)]">
+            Settings
+          </span>
+          <span className="block truncate text-[11px] text-[var(--color-text-tertiary)]">
+            Toggle editor signals, server, and more
+          </span>
+        </span>
+        <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[var(--color-text-tertiary)] opacity-0 transition-opacity group-hover:opacity-100" />
+      </button>
       <Footer host={host} />
     </div>
   );
