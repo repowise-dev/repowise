@@ -4,17 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from repowise.core.workspace.scanner import (
-    DiscoveredRepo,
-    ScanResult,
     _generate_aliases,
     _is_git_repo,
     _is_submodule,
     scan_for_repos,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -90,7 +85,11 @@ class TestScanForRepos:
         result = scan_for_repos(tmp_path)
         aliases = {r.alias for r in result.repos}
         assert len(result.repos) == 3
-        assert tmp_path.name in aliases or "." in aliases or tmp_path.resolve() in {r.path for r in result.repos}
+        assert (
+            tmp_path.name in aliases
+            or "." in aliases
+            or tmp_path.resolve() in {r.path for r in result.repos}
+        )
         assert "backend" in aliases
         assert "frontend" in aliases
 
@@ -281,6 +280,10 @@ class TestHelpers:
 
     def test_is_not_submodule(self, tmp_path: Path) -> None:
         (tmp_path / ".git").mkdir()
+        assert _is_submodule(tmp_path) is False
+
+    def test_is_worktree_not_submodule(self, tmp_path: Path) -> None:
+        (tmp_path / ".git").write_text("gitdir: /path/to/repo/.git/worktrees/feature-branch")
         assert _is_submodule(tmp_path) is False
 
     def test_generate_aliases_no_collision(self) -> None:

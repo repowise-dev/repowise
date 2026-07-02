@@ -8,9 +8,14 @@ respectively, and are shared by both flows.
 
 from __future__ import annotations
 
+import json
 import os
+import shutil
+import subprocess
 import sys
+import tempfile
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -398,6 +403,11 @@ def _run_generation_phase(
         "an interactive full run you'll be prompted; otherwise comprehensive."
     ),
 )
+@click.option(
+    "--seed-from",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=str),
+    help="Seed the index from an existing base-branch checkout to skip indexing unmodified files.",
+)
 def init_command(
     path: str | None,
     provider_name: str | None,
@@ -418,6 +428,7 @@ def init_command(
     commit_limit: int | None,
     follow_renames: bool,
     no_claude_md: bool,
+    seed_from: str | None,
     agents_md: bool | None,
     codex_setup: bool | None,
     distill_hook: bool | None,
@@ -454,6 +465,151 @@ def init_command(
     from repowise.core.workspace import scan_for_repos
 
     scan = scan_for_repos(repo_path, include_submodules=include_submodules)
+
+    # Startup Cleanup: sweep and remove any stale .repowise.bak.* directories.
+    for r in scan.repos:
+        for p in r.path.glob(".repowise.bak.*"):
+            if p.is_dir():
+                shutil.rmtree(p, ignore_errors=True)
+    for p in repo_path.glob(".repowise.bak.*"):
+        if p.is_dir():
+            shutil.rmtree(p, ignore_errors=True)
+
+    if seed_from:
+        seed_base = Path(seed_from).resolve()
+        if seed_base == repo_path.resolve():
+            raise click.ClickException("--seed-from cannot be the same as the target directory.")
+
+        temp_dirs = []
+        success = True
+
+        def _get_initial_commit(p: Path) -> str:
+            try:
+                return subprocess.check_output(
+                    ["git", "rev-list", "--max-parents=0", "HEAD"],
+                    cwd=p,
+                    text=True,
+                    stderr=subprocess.DEVNULL,
+                ).strip()
+            except subprocess.CalledProcessError:
+                return ""
+
+        for r in scan.repos:
+            r_rel = (
+                r.path.relative_to(scan.root)
+                if getattr(scan, "root", None)
+                else r.path.relative_to(repo_path)
+            )
+            src_repo = seed_base / r_rel
+
+            if (
+                not (src_repo / ".repowise" / "state.json").exists()
+                or not (src_repo / ".repowise" / "wiki.db").exists()
+            ):
+                console.print(
+                    f"[yellow]Seed source {src_repo} is missing .repowise state/db. Falling back to full init.[/yellow]"
+                )
+                success = False
+                break
+
+            if _get_initial_commit(src_repo) != _get_initial_commit(
+                r.path
+            ) or not _get_initial_commit(src_repo):
+                console.print(
+                    f"[yellow]Seed source {src_repo} does not share the same initial commit as worktree. Falling back to full init.[/yellow]"
+                )
+                success = False
+                break
+
+            state_data = json.loads(
+                (src_repo / ".repowise" / "state.json").read_text(encoding="utf-8")
+            )
+            last_sync_commit = state_data.get("last_sync_commit")
+            if not last_sync_commit:
+                console.print(
+                    f"[yellow]Seed source {src_repo} has no last_sync_commit. Falling back to full init.[/yellow]"
+                )
+                success = False
+                break
+
+            try:
+                subprocess.check_call(
+                    ["git", "merge-base", "--is-ancestor", last_sync_commit, "HEAD"],
+                    cwd=r.path,
+                    stderr=subprocess.DEVNULL,
+                )
+            except subprocess.CalledProcessError:
+                console.print(
+                    f"[yellow]Seed source {src_repo} last_sync_commit {last_sync_commit[:8]} is not an ancestor of worktree HEAD. Falling back to full init.[/yellow]"
+                )
+                success = False
+                break
+
+            try:
+                source_head = subprocess.check_output(
+                    ["git", "rev-parse", "HEAD"], cwd=src_repo, text=True, stderr=subprocess.DEVNULL
+                ).strip()
+                if source_head and last_sync_commit != source_head:
+                    console.print(
+                        f"[dim]Note: Seed source {src_repo} is behind its HEAD, seeding from last synced commit {last_sync_commit[:8]}.[/dim]"
+                    )
+            except subprocess.CalledProcessError:
+                pass
+
+            temp_dir = Path(tempfile.mkdtemp(prefix=".repowise-seed-", dir=r.path))
+            temp_dirs.append((r.path, temp_dir))
+
+            shutil.copy2(src_repo / ".repowise" / "wiki.db", temp_dir / "wiki.db")
+            shutil.copy2(src_repo / ".repowise" / "state.json", temp_dir / "state.json")
+
+            st_data = json.loads((temp_dir / "state.json").read_text(encoding="utf-8"))
+            st_data.pop("config_fingerprint", None)
+            (temp_dir / "state.json").write_text(json.dumps(st_data, indent=2), encoding="utf-8")
+
+        if not success:
+            for _, temp_dir in temp_dirs:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+        else:
+            # Stage 2: Rename
+            for r_path, temp_dir in temp_dirs:
+                target = r_path / ".repowise"
+                backup = None
+                if target.exists():
+                    backup = r_path / f".repowise.bak.{uuid.uuid4().hex[:8]}"
+                    target.rename(backup)
+                temp_dir.rename(target)
+                if backup:
+                    shutil.rmtree(backup, ignore_errors=True)
+
+            console.print(
+                "[green]Worktree index seeded successfully. Delegating to update...[/green]"
+            )
+            from repowise.cli.commands.update_cmd.command import run_update
+
+            is_workspace = len(scan.repos) > 1 and not no_workspace
+
+            # Delegate to update
+            run_update(
+                path=str(repo_path),
+                provider_name=provider_name,
+                model=model,
+                since=None,
+                reasoning=reasoning,
+                cascade_budget=None,
+                dry_run=dry_run,
+                workspace=is_workspace,
+                no_workspace=no_workspace,
+                repo_alias=None,
+                index_only=index_only,
+                docs_flag=None,
+                full=force,
+                agents_md=agents_md,
+                concurrency=concurrency,
+                no_cost_tracking=False,
+                verbose=False,
+                progress="rich",
+            )
+            return
     if len(scan.repos) > 1 and not no_workspace:
         _workspace_init(
             scan=scan,
@@ -510,9 +666,7 @@ def init_command(
     # ---- Interactive mode (TTY, no explicit flags) ----
     # --yes forces non-interactive even on a TTY (mirrors the workspace path),
     # so a scripted `init -y` never blocks on the mode-selection menu.
-    is_interactive = (
-        sys.stdin.isatty() and provider_name is None and not index_only and not yes
-    )
+    is_interactive = sys.stdin.isatty() and provider_name is None and not index_only and not yes
 
     # Tiered doc generation cap (set in advanced mode); None = every selected
     # file page is a full-LLM tier-1 page (unchanged behaviour).
@@ -602,9 +756,7 @@ def init_command(
             if (
                 run_mode != "fast"
                 and should_offer_fast_mode(scan_info)
-                and interactive_fast_mode_offer(
-                    console, scan_info, default_fast=not generate_docs
-                )
+                and interactive_fast_mode_offer(console, scan_info, default_fast=not generate_docs)
             ):
                 run_mode = "fast"
                 index_only = True
