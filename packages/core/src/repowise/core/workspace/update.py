@@ -257,6 +257,50 @@ def check_repo_staleness(
     return True, current_head, behind
 
 
+async def reconcile_repo_head_commit(repo_path: Path, head: str | None) -> None:
+    """Advance the DB freshness for *repo_path* after a sync-check to *head*.
+
+    The "up to date" skip and the no-relevant-changes incremental path bump
+    ``state.json``'s ``last_sync_commit`` but never re-run the DB persistence
+    that stamps the ``repositories`` row. The server reads both the indexed
+    commit (``/api/repos``, MCP ``_meta``) and the "indexed at" time (the health
+    overview's ``last_indexed_at`` fallback) from that row, not from
+    ``state.json`` — so an un-reconciled row keeps the "index behind checkout"
+    signal stuck and the freshness timestamp frozen at the last full index even
+    after a successful update.
+
+    Stamps ``head_commit`` only on drift (avoids needless churn), but always
+    advances ``updated_at`` so the freshness time reflects the latest
+    sync-check — a routine ``repowise update`` that finds nothing to do still
+    counts as "verified current now". A no-op when the repo row is absent.
+    """
+    if not head or not (repo_path / ".repowise" / "wiki.db").is_file():
+        return
+    from ..persistence import (
+        create_engine,
+        create_session_factory,
+        get_session,
+        init_db,
+    )
+    from ..persistence.crud import get_repository_by_path
+    from ..persistence.database import resolve_db_url
+
+    url = resolve_db_url(repo_path)
+    engine = create_engine(url)
+    try:
+        await init_db(engine)
+        sf = create_session_factory(engine)
+        async with get_session(sf) as session:
+            repo = await get_repository_by_path(session, str(repo_path))
+            if repo is not None:
+                if repo.head_commit != head:
+                    repo.head_commit = head
+                repo.updated_at = datetime.now(timezone.utc)
+                await session.flush()
+    finally:
+        await engine.dispose()
+
+
 # ---------------------------------------------------------------------------
 # Single-repo update (index-only)
 # ---------------------------------------------------------------------------
@@ -542,6 +586,10 @@ async def update_workspace(
         )
 
         if not is_stale:
+            # Nothing to regenerate, but the DB freshness stamp can still be
+            # behind (e.g. a row left drifted by a pre-fix run). Reconcile it so
+            # the server's /api/repos no longer reports "index behind checkout".
+            await reconcile_repo_head_commit(abs_path, current_head)
             results.append(
                 RepoUpdateResult(
                     alias=entry.alias,
@@ -641,6 +689,11 @@ async def update_workspace(
                     _json.dumps(state, indent=2),
                     encoding="utf-8",
                 )
+                # Keep the DB freshness stamp in lockstep with last_sync_commit.
+                # The no-relevant-changes incremental path returns updated=True
+                # without re-running DB persistence, so the row would otherwise
+                # lag HEAD; a no-op when persistence already stamped it.
+                await reconcile_repo_head_commit(path, new_head)
 
             # Update workspace config entry
             if result.updated:

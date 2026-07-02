@@ -91,6 +91,16 @@ async def list_repos(
     repos.sort(key=lambda r: r.updated_at or r.created_at, reverse=True)
     responses = [RepoResponse.from_orm(r) for r in repos]
 
+    # Self-heal the freshness stamp on read: prefer each repo's state.json
+    # last_sync_commit over a possibly-stale DB head_commit, so a row left
+    # un-stamped by an older build doesn't make the extension report "index
+    # behind checkout". The DB row is repaired for good on the next update.
+    from repowise.server.mcp_server._meta import resolve_indexed_commit
+
+    for resp in responses:
+        if resp.local_path:
+            resp.head_commit = resolve_indexed_commit(resp.head_commit, resp.local_path)
+
     # Augment with workspace metadata. We do this in a second pass (rather
     # than during from_orm) because the workspace context lives on
     # app.state, not on the Repository row.

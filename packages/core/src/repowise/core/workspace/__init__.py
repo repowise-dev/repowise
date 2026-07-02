@@ -27,6 +27,7 @@ from .registry import (
 from .update import (
     RepoUpdateResult,
     check_repo_staleness,
+    reconcile_repo_head_commit,
     run_cross_repo_hooks,
     update_single_repo_index,
     update_workspace,
@@ -96,6 +97,7 @@ __all__ = [
     # Update
     "RepoUpdateResult",
     "check_repo_staleness",
+    "reconcile_repo_head_commit",
     "run_cross_repo_hooks",
     "update_single_repo_index",
     "update_workspace",

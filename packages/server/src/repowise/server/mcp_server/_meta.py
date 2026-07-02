@@ -76,6 +76,43 @@ def _read_live_head(local_path: str | None) -> str | None:
     return head or None
 
 
+def read_state_sync_commit(local_path: str | None) -> str | None:
+    """Return ``last_sync_commit`` from ``<local_path>/.repowise/state.json``.
+
+    This is the commit the most recent sync advanced to — written by every
+    ``repowise update`` path, including the fast paths ("already up to date",
+    "no changed files") that don't rebuild the DB. It is the authoritative
+    freshness marker; the ``repositories`` row can lag it when an older build's
+    fast path skipped the DB stamp. Returns ``None`` for hosted/ephemeral
+    indexes with no state file.
+    """
+    if not local_path:
+        return None
+    try:
+        import json
+
+        state_path = Path(local_path) / ".repowise" / "state.json"
+        data = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    commit = data.get("last_sync_commit")
+    return commit if isinstance(commit, str) and commit else None
+
+
+def resolve_indexed_commit(head_commit: str | None, local_path: str | None) -> str | None:
+    """Best available "commit the index reflects" for a repo.
+
+    Prefers the on-disk ``state.json`` ``last_sync_commit`` over the DB
+    ``head_commit`` so the freshness signal stays honest even when an older
+    build left the ``repositories`` row un-stamped — a read-time self-heal that
+    needs no ``repowise update`` first. The row is repaired for good on the next
+    update; until then this keeps ``/api/repos`` and the MCP ``_meta`` staleness
+    check from falsely reporting "index behind checkout". Falls back to the DB
+    value when there is no state file (hosted indexes).
+    """
+    return read_state_sync_commit(local_path) or head_commit
+
+
 def freshness_from_repo(repository: Any | None) -> dict[str, Any]:
     """Return a minimal freshness dict for the given Repository row.
 
@@ -112,11 +149,15 @@ def freshness_from_repo(repository: Any | None) -> dict[str, Any]:
         age_days = max(0, (datetime.now(timezone.utc) - ua).days)
         out["index_age_days"] = age_days
 
-    indexed_full = getattr(repository, "head_commit", None) or None
+    local_path = getattr(repository, "local_path", None)
+    # Prefer state.json's last_sync_commit over a possibly-stale DB head_commit
+    # so freshness self-heals on read (see resolve_indexed_commit).
+    indexed_full = resolve_indexed_commit(
+        getattr(repository, "head_commit", None) or None, local_path
+    )
     if indexed_full:
         out["indexed_commit"] = indexed_full[:12] if isinstance(indexed_full, str) else indexed_full
 
-    local_path = getattr(repository, "local_path", None)
     live_full = _read_live_head(local_path)
 
     if live_full and indexed_full:

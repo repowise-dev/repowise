@@ -98,6 +98,46 @@ async def _persist_incremental_commits(session: Any, repo_id: str, repo_path: An
     await persist_incremental_commits(session, repo_id, repo_path)
 
 
+def stamp_head_commit(repo_path: Any, head: str | None) -> None:
+    """Advance the persisted ``repositories.head_commit`` to *head*.
+
+    The "no changed files" and "already up to date" fast paths in
+    ``update_command`` write ``state.json`` and return without touching the DB.
+    But the server's ``/repos`` endpoint and the MCP ``_meta`` freshness check
+    read the indexed commit from the ``repositories`` row, not from
+    ``state.json`` — so skipping this write pinned the freshness signal at the
+    last full index, keeping "index behind checkout" stuck after a successful
+    update. Keep the DB stamp in lockstep with ``state.json``. Also self-heals
+    a row left stale by a pre-fix run: any later update re-stamps it.
+    """
+    if not head:
+        return
+
+    async def _stamp() -> None:
+        from repowise.cli.helpers import get_db_url_for_repo
+        from repowise.core.persistence import (
+            create_engine,
+            create_session_factory,
+            get_session,
+            init_db,
+            upsert_repository,
+        )
+
+        url = get_db_url_for_repo(repo_path)
+        engine = create_engine(url)
+        await init_db(engine)
+        sf = create_session_factory(engine)
+        async with get_session(sf) as session:
+            await upsert_repository(
+                session,
+                name=Path(repo_path).name,
+                local_path=str(repo_path),
+                head_commit=head,
+            )
+
+    run_async(_stamp())
+
+
 def _persist_index_only_update(
     repo_path: Any,
     graph_builder: Any,

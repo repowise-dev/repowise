@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
@@ -38,6 +39,7 @@ from repowise.core.analysis.health.trends import (
 from repowise.core.persistence import crud
 from repowise.core.persistence.models import WikiSymbol
 from repowise.server.deps import get_db_session, verify_api_key
+from repowise.server.mcp_server._meta import resolve_indexed_commit
 
 router = APIRouter(
     tags=["code-health"],
@@ -270,6 +272,25 @@ def _biomarker_breakdown(findings: list[Any]) -> list[dict]:
     return rows
 
 
+def _resolve_last_indexed_at(
+    snapshot_taken_at: datetime | None, repo_updated_at: datetime | None
+) -> str | None:
+    """Newest "index brought current" time as an ISO string, or ``None``.
+
+    ``last_indexed_at`` should track the last time the index was synced to the
+    checkout, not just the last health snapshot. A no-change ``repowise update``
+    advances ``repositories.updated_at`` but takes no new snapshot, so a
+    snapshot-only value would report the index as hours stale right after a
+    refresh. Prefer whichever timestamp is newer (mirrors the overview router's
+    sync fallback). Both inputs come from the same DB, so their tz-awareness
+    matches and the comparison is safe.
+    """
+    newest = snapshot_taken_at
+    if repo_updated_at is not None and (newest is None or repo_updated_at > newest):
+        newest = repo_updated_at
+    return newest.isoformat() if newest else None
+
+
 @router.get("/api/repos/{repo_id}/health/overview")
 async def health_overview(
     repo_id: str,
@@ -288,11 +309,13 @@ async def health_overview(
     # Pull hotspot_health from the latest snapshot (KPIs aren't recomputed
     # on every overview hit — the snapshot is authoritative).
     hotspot_health: float | None = None
-    last_indexed_at: str | None = None
+    snapshot_taken_at = None
     if snapshots:
         latest = snapshots[-1]
         hotspot_health = round(float(latest.hotspot_health), 2)
-        last_indexed_at = latest.taken_at.isoformat() if latest.taken_at else None
+        snapshot_taken_at = latest.taken_at
+
+    last_indexed_at = _resolve_last_indexed_at(snapshot_taken_at, repo.updated_at)
 
     metric_dicts = [_metric_to_dict(m) for m in metrics]
 
@@ -329,7 +352,10 @@ async def health_overview(
         "biomarkers": _biomarker_breakdown(findings),
         "meta": {
             "last_indexed_at": last_indexed_at,
-            "head_commit": repo.head_commit,
+            # Prefer state.json's last_sync_commit over a possibly-stale DB row
+            # so the freshness signal self-heals on read (see the /api/repos
+            # overlay). This is the extension's primary indexed-commit source.
+            "head_commit": resolve_indexed_commit(repo.head_commit, repo.local_path),
             "snapshot_count": len(snapshots),
         },
     }

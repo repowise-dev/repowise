@@ -50,6 +50,7 @@ from .persistence import (
     _persist_index_only_update,
     _persist_partial_health,
     _run_full_health_rescore,
+    stamp_head_commit,
 )
 from .reporting import (
     JsonProgressEmitter,
@@ -371,6 +372,10 @@ def update_command(
         console.print("[green]Already up to date.[/green]")
         if prev_config_fp is None and not dry_run:
             save_state(repo_path, {**state, "config_fingerprint": curr_config_fp})
+        # Self-heal a row a pre-fix run left behind: state.json can already be
+        # current here while the DB head_commit is still the last full index.
+        if not dry_run:
+            stamp_head_commit(repo_path, head)
         if emitter is not None:
             emitter.done(
                 ok=True, pages_generated=0, cost_usd=0.0, duration_s=time.monotonic() - start
@@ -486,6 +491,9 @@ def update_command(
             repo_path,
             {**state, "last_sync_commit": head, "config_fingerprint": curr_config_fp},
         )
+        # Keep the DB freshness stamp in lockstep with state.json: the server's
+        # /repos endpoint reads head_commit from the row, not the state file.
+        stamp_head_commit(repo_path, head)
         if emitter is not None:
             emitter.done(
                 ok=True, pages_generated=0, cost_usd=0.0, duration_s=time.monotonic() - start
