@@ -15,10 +15,15 @@ def _embedder_kwargs(embedder_name: str) -> dict[str, Any]:
         dimensions = os.environ.get("OLLAMA_EMBEDDING_DIMS") or os.environ.get(
             "REPOWISE_EMBEDDING_DIMS"
         )
+        timeout = os.environ.get("OLLAMA_EMBEDDING_TIMEOUT") or os.environ.get(
+            "REPOWISE_EMBEDDING_TIMEOUT"
+        )
         if base_url:
             kwargs["base_url"] = base_url
         if dimensions:
             kwargs["dimensions"] = int(dimensions)
+        if timeout:
+            kwargs["timeout"] = float(timeout)
     elif embedder_name == "gemini":
         dimensions = os.environ.get("REPOWISE_EMBEDDING_DIMS")
         if dimensions:

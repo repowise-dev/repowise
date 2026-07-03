@@ -229,6 +229,7 @@ The embedder is separate from the LLM provider.
 |----------|---------|-------|
 | `gemini` | `GEMINI_API_KEY` | Default when key is present |
 | `openai` | `OPENAI_API_KEY` | OpenAI `text-embedding-3-small` |
+| `ollama` | `OLLAMA_EMBEDDING_MODEL` | Local Ollama embeddings, no API key |
 | `mock` | n/a | Dummy embeddings, no semantic search |
 
 ```bash
@@ -258,6 +259,9 @@ The `.repowise/.env` file is gitignored automatically.
 | `OPENAI_API_KEY` | OpenAI API key |
 | `GEMINI_API_KEY` / `GOOGLE_API_KEY` | Google Gemini API key |
 | `OLLAMA_BASE_URL` | Ollama server URL (default: `http://localhost:11434`) |
+| `OLLAMA_EMBEDDING_MODEL` | Ollama embedding model (also selects the `ollama` embedder) |
+| `OLLAMA_EMBEDDING_DIMS` | Ollama embedding output dimensions (optional; inferred from the model otherwise) |
+| `OLLAMA_EMBEDDING_TIMEOUT` | Ollama embed request timeout in seconds (default: `30`); raise it for long pages on slow local models |
 | `LITELLM_API_KEY` | LiteLLM proxy key |
 | `REPOWISE_PROVIDER` | Override provider (skips auto-detection) |
 | `REPOWISE_EMBEDDER` | Embedder: `gemini`, `openai`, or `mock` |
