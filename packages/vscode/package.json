@@ -2,7 +2,7 @@
   "name": "repowise",
   "displayName": "Repowise",
   "description": "Code health, architecture, and git intelligence from one local index, in your editor and in your AI agent via MCP.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "repowise-dev",
   "license": "AGPL-3.0-or-later",
   "homepage": "https://www.repowise.dev",
