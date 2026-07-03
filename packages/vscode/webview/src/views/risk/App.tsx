@@ -90,7 +90,7 @@ export function App({ host, repo, refreshToken }: ViewProps<"risk">) {
       </header>
 
       {loading && !report ? (
-        <LoadingCard base={base} />
+        <RiskSkeleton base={base} />
       ) : error ? (
         <EmptyState
           icon={<ShieldCheck className="h-8 w-8" />}
@@ -105,16 +105,43 @@ export function App({ host, repo, refreshToken }: ViewProps<"risk">) {
   );
 }
 
-function LoadingCard({ base }: { base: string }) {
+/** Skeleton matching the report layout (score hero + driver bars) so the panel
+ *  holds its shape while the working tree is scored. */
+function RiskSkeleton({ base }: { base: string }) {
   return (
-    <Card>
-      <CardContent className="flex flex-col items-center gap-3 py-16 text-center">
-        <RotateCw className="h-6 w-6 animate-spin text-[var(--color-accent-primary)]" />
-        <p className="text-sm text-[var(--color-text-secondary)]">
-          Scoring the working tree{base ? ` against ${base}` : ""}
-        </p>
-      </CardContent>
-    </Card>
+    <div className="space-y-5">
+      <Card>
+        <CardContent className="flex flex-wrap items-center gap-6 py-6" aria-hidden>
+          <div className="h-24 w-24 shrink-0 animate-pulse rounded-2xl bg-[var(--color-bg-inset)]" />
+          <div className="min-w-0 flex-1 space-y-3">
+            <div className="h-5 w-24 animate-pulse rounded bg-[var(--color-bg-inset)]" />
+            <div className="h-4 w-48 animate-pulse rounded bg-[var(--color-bg-inset)]" />
+            <div className="flex gap-2 pt-1">
+              <div className="h-5 w-20 animate-pulse rounded bg-[var(--color-bg-inset)]" />
+              <div className="h-5 w-28 animate-pulse rounded bg-[var(--color-bg-inset)]" />
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm">What moves the score</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3" aria-hidden>
+          {Array.from({ length: 5 }).map((_, i) => (
+            <div key={i} className="flex items-center gap-3">
+              <div className="h-3 w-40 shrink-0 animate-pulse rounded bg-[var(--color-bg-inset)]" />
+              <div className="h-2 flex-1 animate-pulse rounded-full bg-[var(--color-bg-inset)]" />
+              <div className="h-3 w-14 shrink-0 animate-pulse rounded bg-[var(--color-bg-inset)]" />
+            </div>
+          ))}
+        </CardContent>
+      </Card>
+      <p className="flex items-center justify-center gap-2 text-xs text-[var(--color-text-tertiary)]">
+        <RotateCw className="h-3.5 w-3.5 animate-spin" />
+        Scoring the working tree{base ? ` against ${base}` : ""}
+      </p>
+    </div>
   );
 }
 

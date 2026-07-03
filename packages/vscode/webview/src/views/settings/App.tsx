@@ -8,7 +8,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { RotateCcw, Settings2 } from "lucide-react";
+import { ExternalLink, RotateCcw, Settings2 } from "lucide-react";
 import type {
   SettingKey,
   SettingsValues,
@@ -47,7 +47,7 @@ const GROUPS: Group[] = [
         key: "diagnostics.enabled",
         label: "Problems panel findings",
         description:
-          "Show health findings for visible files in the Problems panel (the squiggles under flagged code, and the matching colors on files in the explorer).",
+          "Show health findings for visible files in the Problems panel (the squiggles under flagged code). Off by default to keep the panel quiet; the gutter, explorer badges, and hovers surface findings either way.",
         kind: "toggle",
       },
       {
@@ -199,19 +199,19 @@ export function App({ host, refreshToken }: ViewProps<"settings">) {
 
   if (!values) {
     return (
-      <div className="flex h-screen items-center justify-center text-[var(--color-text-tertiary)]">
+      <div className="flex h-full items-center justify-center text-[var(--color-text-tertiary)]">
         {error ?? "Loading settings…"}
       </div>
     );
   }
 
   return (
-    <div className="mx-auto min-h-screen max-w-3xl space-y-6 bg-[var(--color-bg-root)] px-6 py-6">
+    <div className="mx-auto min-h-full max-w-3xl space-y-6 bg-[var(--color-bg-root)] px-6 py-6">
       <header className="flex items-center gap-2.5">
         <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)]">
           <Settings2 className="h-4 w-4" />
         </span>
-        <div>
+        <div className="min-w-0 flex-1">
           <h1 className="text-base font-semibold text-[var(--color-text-primary)]">
             Repowise Settings
           </h1>
@@ -219,6 +219,15 @@ export function App({ host, refreshToken }: ViewProps<"settings">) {
             Saved to this workspace. Changes apply immediately.
           </p>
         </div>
+        <button
+          type="button"
+          onClick={() => host.openNativeSettings()}
+          title="Open these settings in the VS Code Settings editor (search, sync, per-scope overrides)"
+          className="flex shrink-0 items-center gap-1.5 rounded-lg border border-[var(--color-border-default)] px-2.5 py-1.5 text-[11px] font-medium text-[var(--color-text-secondary)] transition-colors hover:border-[var(--color-border-hover)] hover:text-[var(--color-text-primary)]"
+        >
+          <ExternalLink className="h-3.5 w-3.5" />
+          Open in Settings editor
+        </button>
       </header>
 
       {error ? (
@@ -271,8 +280,23 @@ function SettingRow({
 }) {
   const value = values[row.key];
   const controlId = `set-${row.key.replace(/\./g, "-")}`;
+  // Rows gated by a parent toggle are indented under it with an elbow connector,
+  // so a dimmed child reads as "controlled by the switch above", not broken.
+  const indented = row.needs != null;
   return (
-    <div className={disabled ? "flex items-start gap-4 px-4 py-3 opacity-50" : "flex items-start gap-4 px-4 py-3"}>
+    <div
+      className={
+        (disabled ? "opacity-50 " : "") +
+        "flex items-start gap-3 py-3 pr-4 " +
+        (indented ? "pl-8" : "pl-4")
+      }
+    >
+      {indented ? (
+        <span
+          aria-hidden
+          className="mt-1 h-3 w-3 shrink-0 rounded-bl border-b border-l border-[var(--color-border-default)]"
+        />
+      ) : null}
       <div className="min-w-0 flex-1">
         <label htmlFor={controlId} className="block text-[13px] font-medium text-[var(--color-text-primary)]">
           {row.label}
@@ -383,14 +407,18 @@ function Toggle({
       disabled={disabled}
       onClick={() => onChange(!checked)}
       className={
-        "relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors disabled:cursor-not-allowed " +
-        (checked ? "bg-[var(--color-accent-primary)]" : "bg-[var(--color-bg-inset)]")
+        // The off state carries a border and a filled knob so the switch stays
+        // visible on a light card, where bg-inset alone is nearly the surface color.
+        "relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border transition-colors disabled:cursor-not-allowed " +
+        (checked
+          ? "border-[var(--color-accent-primary)] bg-[var(--color-accent-primary)]"
+          : "border-[var(--color-border-default)] bg-[var(--color-bg-inset)]")
       }
     >
       <span
         className={
-          "inline-block h-4 w-4 transform rounded-full bg-white transition-transform " +
-          (checked ? "translate-x-4" : "translate-x-0.5")
+          "inline-block h-4 w-4 transform rounded-full shadow-sm transition-transform " +
+          (checked ? "translate-x-4 bg-white" : "translate-x-0.5 bg-[var(--color-text-tertiary)]")
         }
       />
     </button>

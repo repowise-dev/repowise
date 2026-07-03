@@ -39,6 +39,8 @@ function makeHost(riskRange: WebviewHost["api"]["riskRange"]): WebviewHost {
     copyText: () => {},
     openExternal: () => {},
     openView: () => {},
+    focusHome: () => {},
+    openNativeSettings: () => {},
     updateIndex: () => {},
     setTheme: () => {},
   };

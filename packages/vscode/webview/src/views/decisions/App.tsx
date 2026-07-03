@@ -41,6 +41,53 @@ function recencyKey(d: DecisionRecordResponse): number {
   return Number.isNaN(t) ? 0 : t;
 }
 
+/** Loading placeholder that matches the master-detail layout so the panel does
+ *  not reflow when the decisions land. */
+function DecisionsSkeleton() {
+  return (
+    <div className="flex h-full flex-col" aria-hidden>
+      <header className="border-b border-[var(--color-border-default)] px-6 py-4">
+        <div className="h-6 w-32 animate-pulse rounded bg-[var(--color-bg-inset)]" />
+        <div className="mt-3 flex gap-2">
+          {[56, 64, 72, 60].map((w, i) => (
+            <div
+              key={i}
+              className="h-7 animate-pulse rounded-full bg-[var(--color-bg-inset)]"
+              style={{ width: w }}
+            />
+          ))}
+        </div>
+      </header>
+      <div className="flex min-h-0 flex-1">
+        <div className="w-80 shrink-0 space-y-2 border-r border-[var(--color-border-default)] p-3">
+          {Array.from({ length: 7 }).map((_, i) => (
+            <div
+              key={i}
+              className="space-y-2 rounded-lg border border-[var(--color-border-default)] p-3"
+            >
+              <div className="h-4 w-3/4 animate-pulse rounded bg-[var(--color-bg-inset)]" />
+              <div className="h-3 w-1/2 animate-pulse rounded bg-[var(--color-bg-inset)]" />
+            </div>
+          ))}
+        </div>
+        <div className="min-w-0 flex-1 space-y-4 p-6">
+          <div className="h-6 w-2/3 animate-pulse rounded bg-[var(--color-bg-inset)]" />
+          <div className="h-4 w-1/3 animate-pulse rounded bg-[var(--color-bg-inset)]" />
+          <div className="space-y-2 pt-2">
+            {Array.from({ length: 7 }).map((_, i) => (
+              <div
+                key={i}
+                className="h-3 animate-pulse rounded bg-[var(--color-bg-inset)]"
+                style={{ width: `${92 - i * 7}%` }}
+              />
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function App({ host, refreshToken }: ViewProps<"decisions">) {
   const [decisions, setDecisions] = useState<DecisionRecordResponse[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -98,11 +145,7 @@ export function App({ host, refreshToken }: ViewProps<"decisions">) {
   }
 
   if (decisions === null) {
-    return (
-      <div className="flex h-screen items-center justify-center text-[var(--color-text-tertiary)]">
-        Loading decisions…
-      </div>
-    );
+    return <DecisionsSkeleton />;
   }
 
   if (decisions.length === 0) {
@@ -127,7 +170,7 @@ export function App({ host, refreshToken }: ViewProps<"decisions">) {
   ];
 
   return (
-    <div className="flex h-screen flex-col">
+    <div className="flex h-full flex-col">
       <header className="border-b border-[var(--color-border-default)] px-6 py-4">
         <h1 className="flex items-center gap-2 text-lg font-semibold text-[var(--color-text-primary)]">
           <Landmark className="h-5 w-5 text-[var(--color-text-secondary)]" />

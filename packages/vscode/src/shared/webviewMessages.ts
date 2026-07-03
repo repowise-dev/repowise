@@ -52,7 +52,8 @@ export type WebviewViewId = PanelViewId | "home";
 
 /** Per-view open parameters, carried in the init message. */
 export interface ViewParams {
-  health: Record<string, never>;
+  /** selectPath focuses the dashboard on one file (from the status-bar score). */
+  health: { selectPath?: string };
   architecture: { selectPath?: string };
   graph: { selectNode?: string };
   refactoring: { planId?: string; filePath?: string };
@@ -275,6 +276,16 @@ export interface OpenViewMessage {
   params?: ViewParams[PanelViewId];
 }
 
+/** Webview -> host: reveal the sidebar Home view. Sent by a panel's chrome. */
+export interface FocusHomeMessage {
+  kind: "focus-home";
+}
+
+/** Webview -> host: open the native Settings editor filtered to the extension. */
+export interface OpenNativeSettingsMessage {
+  kind: "open-native-settings";
+}
+
 /** Webview -> host: run an incremental index update. Sent by Home. */
 export interface UpdateIndexMessage {
   kind: "update-index";
@@ -307,6 +318,8 @@ export type WebviewToHostMessage =
   | CopyTextMessage
   | OpenExternalMessage
   | OpenViewMessage
+  | FocusHomeMessage
+  | OpenNativeSettingsMessage
   | UpdateIndexMessage
   | SetThemeMessage;
 

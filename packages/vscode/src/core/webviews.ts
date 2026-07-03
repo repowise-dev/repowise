@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import * as path from "node:path";
 import { randomBytes } from "node:crypto";
-import { Commands, Views } from "../constants";
+import { Commands, EXTENSION_ID, Views } from "../constants";
 import type { RepowiseContext } from "./context";
 import { createHostApi } from "./webviewApi";
 import type {
@@ -284,6 +284,18 @@ class WebviewManager {
         openViewPanel(this.ctx, msg.view, params);
         return;
       }
+      case "focus-home":
+        // Reveal the sidebar Home view (its auto-generated focus command).
+        await vscode.commands.executeCommand(`${Views.homeDashboard}.focus`);
+        return;
+      case "open-native-settings":
+        // Hand off to the native Settings editor, prefiltered to this extension
+        // (search, sync, and per-scope overrides the custom panel does not offer).
+        await vscode.commands.executeCommand(
+          "workbench.action.openSettings",
+          `@ext:${EXTENSION_ID}`,
+        );
+        return;
       case "update-index":
         // Resolves when the update finishes (the command returns its promise).
         // A successful update also lands as a refresh broadcast; this ack is

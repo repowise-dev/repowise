@@ -34,6 +34,10 @@ export interface WebviewHost {
   openExternal(url: string): void;
   /** Open (or reveal) an editor-tab panel. Used by the sidebar Home view. */
   openView<V extends PanelViewId>(view: V, params?: ViewParams[V]): void;
+  /** Reveal the sidebar Home view. Used by a panel's navigation chrome. */
+  focusHome(): void;
+  /** Open the native Settings editor filtered to Repowise. Used by Settings. */
+  openNativeSettings(): void;
   /** Run an incremental index update; completion arrives via onUpdateDone. */
   updateIndex(): void;
   /** Persist a theme preference; every open view gets onThemeChanged. */
@@ -125,6 +129,8 @@ export function createHost(): WebviewHost {
     copyText: (text, toast) => vscode.postMessage({ kind: "copy-text", text, toast }),
     openExternal: (url) => vscode.postMessage({ kind: "open-external", url }),
     openView: (view, params) => vscode.postMessage({ kind: "open-view", view, params }),
+    focusHome: () => vscode.postMessage({ kind: "focus-home" }),
+    openNativeSettings: () => vscode.postMessage({ kind: "open-native-settings" }),
     updateIndex: () => vscode.postMessage({ kind: "update-index" }),
     setTheme: (theme) => vscode.postMessage({ kind: "set-theme", theme }),
   };

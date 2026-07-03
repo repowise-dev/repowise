@@ -52,7 +52,7 @@ export function App({ host, params, repo, refreshToken }: ViewProps<"graph">) {
   );
 
   return (
-    <div className="flex h-screen flex-col">
+    <div className="flex h-full flex-col">
       <GraphHeader repoName={repo.name} stats={data.stats} />
       <div className="relative min-h-0 flex-1">
         {data.error ? (

@@ -80,8 +80,8 @@
         },
         "repowise.diagnostics.enabled": {
           "type": "boolean",
-          "default": true,
-          "description": "Show health findings for visible files in the Problems panel."
+          "default": false,
+          "description": "Show health findings for visible files in the Problems panel. Off by default to keep the panel quiet; the gutter, explorer badges, and hovers still surface findings."
         },
         "repowise.diagnostics.minSeverity": {
           "type": "string",

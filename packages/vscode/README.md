@@ -9,7 +9,7 @@ This extension brings that index into VS Code, for both halves of how code gets 
 
 ## What you get
 
-- **Inline health signals** on the files you open: findings in the Problems panel (quiet by default, high severity only), a gutter heat strip for the full set, and file health scores in the status bar.
+- **Inline health signals** on the files you open: a gutter heat strip for the full set of findings, file health scores in the status bar, and an optional Problems panel surface (off by default, opt in from Settings) for high-severity findings.
 - **Refactoring plans as CodeLens** above the symbols they target, with one click to copy the plan as a prompt for your agent.
 - **Branch risk before you push**: score a branch against its base from the SCM title bar, with the drivers behind the score.
 - **Hovers and tree views** for ownership, hotspots, dead code, and architectural decisions, all lazy and refreshed only when the index moves.

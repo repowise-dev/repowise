@@ -5,15 +5,24 @@
  */
 
 import { useMemo, useState } from "react";
+import { ExternalLink } from "lucide-react";
 import { HealthKpiCards } from "@repowise-dev/ui/health/kpi-cards";
 import { CodeHealthMap, type CodeHealthOverlay } from "@repowise-dev/ui/health/code-health-map";
 import { ChurnComplexityQuadrant } from "@repowise-dev/ui/health/churn-complexity-quadrant";
-import type { HealthDimension } from "@repowise-dev/types/health";
+import type { HealthDimension, HealthFileMetric } from "@repowise-dev/types/health";
 import type { ViewProps } from "../../runtime/mount";
 import { useDashboardData, type DashboardData } from "./useDashboardData";
 import { DashboardError, DashboardSkeleton, SectionHeading } from "./chrome";
 
 type HeroTab = "map" | "quadrant";
+
+/** 0-10 health score to its band color; matches the sidebar Home hero. */
+function scoreColor(score: number | null): string {
+  if (score == null) return "var(--color-text-tertiary)";
+  if (score >= 7.5) return "var(--color-success)";
+  if (score >= 5) return "var(--color-warning)";
+  return "var(--color-error)";
+}
 
 /** The KPI pillar tiles map onto the code map's lenses (defect is "health"). */
 const PILLAR_TO_OVERLAY: Record<HealthDimension, CodeHealthOverlay> = {
@@ -22,7 +31,7 @@ const PILLAR_TO_OVERLAY: Record<HealthDimension, CodeHealthOverlay> = {
   performance: "performance",
 };
 
-export function App({ host, repo, refreshToken }: ViewProps<"health">) {
+export function App({ host, repo, params, refreshToken }: ViewProps<"health">) {
   const { data, error, loading } = useDashboardData(host, refreshToken);
 
   if (error) {
@@ -32,19 +41,31 @@ export function App({ host, repo, refreshToken }: ViewProps<"health">) {
     return <DashboardSkeleton />;
   }
 
-  return <Dashboard host={host} repo={repo} data={data} />;
+  return <Dashboard host={host} repo={repo} data={data} selectPath={params.selectPath ?? null} />;
 }
 
 function Dashboard({
   host,
   repo,
   data,
+  selectPath,
 }: {
   host: ViewProps<"health">["host"];
   repo: ViewProps<"health">["repo"];
   data: DashboardData;
+  selectPath: string | null;
 }) {
   const { overview, files, trend, churn } = data;
+
+  // When the dashboard is opened from the status-bar score, lead with a card
+  // for that file so the two surfaces read as one. The map file set is large
+  // (nloc desc), so the active file is almost always present; if not, the card
+  // still offers a way to open it.
+  const focused = useMemo(() => {
+    if (!selectPath) return null;
+    const entry = files.files.find((f) => f.file_path === selectPath) ?? null;
+    return { path: selectPath, entry };
+  }, [selectPath, files.files]);
   const [overlay, setOverlay] = useState<CodeHealthOverlay>("health");
   const [tab, setTab] = useState<HeroTab>("map");
 
@@ -85,6 +106,14 @@ function Dashboard({
           ) : null}
         </p>
       </header>
+
+      {focused ? (
+        <FocusedFile
+          path={focused.path}
+          entry={focused.entry}
+          onOpen={() => host.openFile(focused.path)}
+        />
+      ) : null}
 
       <section aria-label="Health signals">
         <HealthKpiCards
@@ -127,6 +156,63 @@ function Dashboard({
           />
         )}
       </section>
+    </div>
+  );
+}
+
+/** The file the dashboard was opened for (from the status-bar score), pinned
+ *  above the repo-wide views with its three scores and a jump-to-file action. */
+function FocusedFile({
+  path,
+  entry,
+  onOpen,
+}: {
+  path: string;
+  entry: HealthFileMetric | null;
+  onOpen: () => void;
+}) {
+  const name = path.split("/").pop() ?? path;
+  return (
+    <section
+      aria-label="Current file"
+      className="flex items-center justify-between gap-4 rounded-xl border border-[var(--color-accent-muted)] bg-[var(--color-bg-surface)] px-4 py-3"
+    >
+      <div className="min-w-0">
+        <p className="text-[10px] font-semibold uppercase tracking-wide text-[var(--color-text-tertiary)]">
+          Current file
+        </p>
+        <button
+          type="button"
+          onClick={onOpen}
+          className="flex max-w-full items-center gap-1.5 truncate font-mono text-sm text-[var(--color-text-primary)] transition-colors hover:text-[var(--color-accent-primary)]"
+          title={path}
+        >
+          <span className="truncate">{name}</span>
+          <ExternalLink className="h-3 w-3 shrink-0 opacity-70" />
+        </button>
+      </div>
+      {entry ? (
+        <div className="flex shrink-0 items-center gap-4 text-right">
+          <FocusedScore label="Defect" value={entry.defect_score ?? entry.score} />
+          <FocusedScore label="Maint" value={entry.maintainability_score ?? null} />
+          <FocusedScore label="Perf" value={entry.performance_score ?? null} />
+        </div>
+      ) : (
+        <span className="shrink-0 text-[11px] text-[var(--color-text-tertiary)]">
+          Not among the mapped files
+        </span>
+      )}
+    </section>
+  );
+}
+
+function FocusedScore({ label, value }: { label: string; value: number | null }) {
+  return (
+    <div>
+      <p className="text-[10px] uppercase tracking-wide text-[var(--color-text-tertiary)]">{label}</p>
+      <p className="font-mono text-sm tabular-nums" style={{ color: scoreColor(value) }}>
+        {value == null ? "-" : value.toFixed(1)}
+      </p>
     </div>
   );
 }

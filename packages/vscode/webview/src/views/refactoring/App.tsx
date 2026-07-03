@@ -33,8 +33,10 @@ import type { WebviewHost } from "../../runtime/rpc";
  * `host.openFile`.
  */
 export function App({ host, params, refreshToken }: ViewProps<"refactoring">) {
-  // A plan opened directly is the initial (and only) selection. A card click
-  // sets its own; Back clears it, but only when we arrived via the list.
+  // A plan opened directly (CodeLens/tree) is the initial selection; a card
+  // click sets its own. Back always returns to the list so an entry from a
+  // lens or tree is never a dead end: the list is the file's plans when a
+  // filePath came along, otherwise every ranked plan.
   const [selectedId, setSelectedId] = useState<string | null>(params.planId ?? null);
 
   // The host can push new params into an already-open panel; honor them.
@@ -42,15 +44,13 @@ export function App({ host, params, refreshToken }: ViewProps<"refactoring">) {
     setSelectedId(params.planId ?? null);
   }, [params.planId]);
 
-  const rootIsDetail = params.planId != null;
-
   if (selectedId != null) {
     return (
       <PlanDetailView
         host={host}
         planId={selectedId}
         refreshToken={refreshToken}
-        onBack={rootIsDetail ? undefined : () => setSelectedId(null)}
+        onBack={() => setSelectedId(null)}
       />
     );
   }
@@ -139,7 +139,7 @@ interface PlanDetailViewProps {
   host: WebviewHost;
   planId: string;
   refreshToken: number;
-  /** Present only when a plan list exists to return to. */
+  /** Returns to the plan list; always provided so a detail is never a dead end. */
   onBack?: (() => void) | undefined;
 }
 
@@ -464,7 +464,7 @@ function Badge({
 
 function CenteredNote({ children }: { children: ReactNode }) {
   return (
-    <div className="flex h-screen items-center justify-center px-6 text-center text-sm text-[var(--color-text-tertiary)]">
+    <div className="flex h-full items-center justify-center px-6 text-center text-sm text-[var(--color-text-tertiary)]">
       {children}
     </div>
   );

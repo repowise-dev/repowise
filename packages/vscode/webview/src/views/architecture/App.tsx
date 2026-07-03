@@ -175,7 +175,7 @@ function ArchitectureMap({ host, repo, params, refreshToken }: ViewProps<"archit
   return (
     <div
       data-testid="architecture-shell"
-      className="flex h-screen flex-col bg-[var(--color-bg-root)] text-[var(--color-text-primary)]"
+      className="flex h-full flex-col bg-[var(--color-bg-root)] text-[var(--color-text-primary)]"
     >
       <header className="shrink-0 border-b border-[var(--color-border-default)] px-4 py-3">
         <div className="flex items-center justify-between gap-3">
