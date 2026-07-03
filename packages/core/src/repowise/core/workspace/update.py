@@ -322,7 +322,7 @@ async def reconcile_repo_head_commit(repo_path: Path, head: str | None) -> None:
             if repo is not None:
                 if repo.head_commit != head:
                     repo.head_commit = head
-                repo.updated_at = datetime.now(timezone.utc)
+                repo.updated_at = datetime.now(UTC)
                 await session.flush()
     finally:
         await engine.dispose()
