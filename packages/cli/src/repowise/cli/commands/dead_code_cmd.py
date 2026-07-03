@@ -153,6 +153,15 @@ def dead_code_command(
             graph_builder.add_file(parsed)
         except Exception:
             pass
+
+    from repowise.core.ingestion import wire_tsconfig_resolver
+
+    wire_tsconfig_resolver(
+        graph_builder,
+        repo_path,
+        include_submodules=include_submodules,
+        include_nested_repos=include_nested_repos,
+    )
     graph_builder.build()
 
     # Framework-aware synthetic edges (Django, Laravel, TYPO3, ...). Without
