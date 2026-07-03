@@ -13,7 +13,7 @@ export const CONFIG_SECTION = "repowise";
  * Lowest server version this build understands. Older servers may serve a
  * store shape this extension cannot read, so the status bar flags them.
  */
-export const MIN_SERVER_VERSION = "0.25.0";
+export const MIN_SERVER_VERSION = "0.26.0";
 
 /** Command ids contributed by the extension, mirrored from package.json. */
 export const Commands = {

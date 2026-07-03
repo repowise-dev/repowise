@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.26.0] — 2026-07-03
+
+### Added
+- **VS Code extension.** Repowise now runs inside your editor. The extension manages the local server lifecycle, walks you through install to first insight, and registers the Repowise MCP tools for agent mode (#643, #644). Low-health files surface as diagnostics with gutter heat, and editor-native signals include live range risk scoring, a refactoring lens, dead-code line spans, and inline docs (#642, #644). A sidebar Home dashboard shows index freshness, a theme switcher, and consolidated trees (#650), and the shared visualization panels (graph, C4, health, blast radius) render directly in webviews (#649, #653). A settings panel configures editor signals and the server connection (#654), and the latest pass adds panel navigation and quieter defaults for an editor-native feel (#660). Install it from the VS Code Marketplace or Open VSX.
+- **Continuous-zoom architecture view.** The server builds a zoom-map artifact that drives a smooth, execution-aware zoom across the architecture graph. (#626)
+- **Configurable Ollama embedding timeout.** The Ollama embedding request timeout can now be set via environment variable for slower local models. (#656)
+
+### Changed
+- **Sharper `get_answer` grounding.** The `get_answer` MCP tool gained a frame-grounding gate and anchors rationale to in-code comments, with retrieval tuning across `get_answer` and `get_context`. (#621, #622)
+- **Faster decision embeddings.** Decision embeddings are batched during persistence and reindex, cutting indexing work on decision-heavy repos. (#641)
+
+### Fixed
+- **Config languages no longer inflate language usage.** Configuration-file languages are hidden from the language-usage breakdown. (#623)
+- **Index freshness stamp stays current on no-op syncs.** An `update` that finds no changes still refreshes the freshness stamp, so agents don't distrust a current index. (#652)
+
+### Dependencies
+- Cleared high and critical CVEs across the npm and Python dependency trees. (#645)
+
+---
+
 ## [0.25.0] — 2026-06-27
 
 ### Added
