@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from ..languages.python_modules import build_python_module_index
 from .context import ResolverContext
@@ -67,6 +68,24 @@ def resolve_python_import(module_path: str, importer_path: str, ctx: ResolverCon
         if c in ctx.path_set:
             return c
 
-    # Stem-only fallback
+# Stem-only fallback
     stem = module_path.split(".")[-1].lower()
     return ctx.stem_lookup(stem)
+
+
+def resolve_python_import_all(imp: Any, importer_path: str, ctx: ResolverContext) -> tuple[str, ...]:
+    """Resolve a Python import, additionally probing submodules for package imports."""
+    targets = []
+    base = resolve_python_import(imp.module_path, importer_path, ctx)
+    if base:
+        targets.append(base)
+        if base.endswith("__init__.py"):
+            base_dir = Path(base).parent.as_posix()
+            for name in (imp.imported_names or []):
+                c1 = f"{base_dir}/{name}.py"
+                c2 = f"{base_dir}/{name}/__init__.py"
+                if c1 in ctx.path_set:
+                    targets.append(c1)
+                elif c2 in ctx.path_set:
+                    targets.append(c2)
+    return tuple(targets)
