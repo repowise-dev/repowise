@@ -18,6 +18,7 @@ import { registerFileDecorations } from "./features/fileDecorations";
 import { registerFileScoreStatus } from "./features/fileScoreStatus";
 import { registerTrees } from "./features/trees";
 import { registerBranchRisk } from "./features/branchRisk";
+import { registerChangeIntel } from "./features/changeIntel";
 import { registerStaleness } from "./features/staleness";
 import { registerRefactoringLens } from "./features/refactoringLens";
 import { registerDocs } from "./features/docs";
@@ -88,6 +89,7 @@ export function activate(extCtx: vscode.ExtensionContext): void {
     registerFileScoreStatus(ctx),
     registerTrees(ctx),
     registerBranchRisk(ctx),
+    registerChangeIntel(ctx),
     registerStaleness(ctx),
     registerRefactoringLens(ctx),
     registerDocs(ctx),

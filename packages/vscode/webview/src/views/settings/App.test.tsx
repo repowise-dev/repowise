@@ -22,6 +22,8 @@ const DEFAULTS: SettingsValues = {
   "server.port": null,
   "cliPath": "",
   "risk.baseBranch": "",
+  "changeIntel.cochangeNudge": true,
+  "changeIntel.cochangeMinScore": 4,
 };
 
 /** Host whose updateSetting echoes the merged map back, like the real one. */

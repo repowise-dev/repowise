@@ -128,7 +128,19 @@
         "repowise.risk.baseBranch": {
           "type": "string",
           "default": "",
-          "description": "Base branch for branch risk scoring. Leave empty to use the repository's default branch."
+          "description": "Base branch for change risk scoring. Leave empty to use the repository's default branch."
+        },
+        "repowise.changeIntel.cochangeNudge": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a quiet status-bar hint when files you are editing usually change together with a file you have not touched. Advisory and dismissible; never interrupts."
+        },
+        "repowise.changeIntel.cochangeMinScore": {
+          "type": "number",
+          "default": 4,
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Minimum historical co-change count before a related file is surfaced by the nudge. Higher values mean fewer, stronger hints."
         }
       }
     },
@@ -165,7 +177,7 @@
       },
       {
         "command": "repowise.checkBranchRisk",
-        "title": "Check Branch Risk",
+        "title": "Analyze Change Risk",
         "category": "Repowise",
         "icon": "$(pulse)"
       },

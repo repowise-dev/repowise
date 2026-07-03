@@ -32,6 +32,8 @@ import type {
   PageResponse,
 } from "@repowise-dev/api-client/types";
 import type { RiskRangeResponse } from "@repowise-dev/api-client/risk";
+import type { ReviewerSuggestion } from "@repowise-dev/api-client/types";
+import type { BlastRadiusResponse } from "@repowise-dev/types/blast-radius";
 import type { ArchitectureView } from "@repowise-dev/ui/c4";
 import type { RefactoringPlan, RefactoringTargets } from "@repowise-dev/ui/refactoring/types";
 import type { AiPromptFlavor } from "@repowise-dev/ui/health/ai-prompt-builder";
@@ -83,6 +85,8 @@ export const SETTING_KEYS = [
   "server.port",
   "cliPath",
   "risk.baseBranch",
+  "changeIntel.cochangeNudge",
+  "changeIntel.cochangeMinScore",
 ] as const;
 
 export type SettingKey = (typeof SETTING_KEYS)[number];
@@ -147,8 +151,10 @@ export interface HostApi {
   pagesList(): Promise<PageResponse[]>;
   pageById(pageId: string): Promise<PageResponse>;
   fileDetail(relPath: string): Promise<FileDetailResponse>;
-  // Branch risk
+  // Change risk
   riskRange(): Promise<RiskRangeReport>;
+  /** Impact of the current change set (uncommitted + unpushed). */
+  changeImpact(): Promise<ChangeImpactReport>;
   // Sidebar home
   homeSummary(): Promise<HomeSummary>;
   // Settings panel
@@ -196,6 +202,31 @@ export interface RiskRangeReport {
   base: string;
   branch: string | null;
   result: RiskRangeResponse;
+}
+
+/**
+ * Impact of the working change set, assembled host-side from the blast-radius
+ * and reviewer-suggestion endpoints. Shared verbatim by the Change Risk panel
+ * and the ambient co-change nudge so there is one analysis, not two.
+ */
+export interface ChangeImpactReport {
+  /** Repo-relative paths analyzed, sorted (the change-set signature source). */
+  changed: string[];
+  /** How many of the changed paths are staged / unstaged (working tree). */
+  stagedCount: number;
+  workingCount: number;
+  /**
+   * "branch" includes committed-but-unpushed changes (base..HEAD); "working"
+   * is the uncommitted tree only. The panel asks for branch scope; the nudge
+   * asks for working scope so it speaks to the file being edited right now.
+   */
+  scope: "branch" | "working";
+  /** Blast analysis, or null when git is unavailable or nothing changed. */
+  blast: BlastRadiusResponse | null;
+  /** Reviewer suggestions for the changed set (names + reasons). */
+  reviewers: ReviewerSuggestion[];
+  /** True when git could not be read at all (distinct from a clean tree). */
+  gitUnavailable: boolean;
 }
 
 export type HostApiMethod = keyof HostApi;

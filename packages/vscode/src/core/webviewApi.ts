@@ -39,6 +39,7 @@ import {
   type SettingValue,
 } from "../shared/webviewMessages";
 import type { RepowiseContext } from "./context";
+import { analyzeChange } from "./changeAnalysis";
 import { commitsMatch, getCurrentBranchName, resolveLiveHead } from "./gitApi";
 
 /** Thrown by the dispatcher when a request arrives while disconnected. */
@@ -62,6 +63,8 @@ const SETTING_DEFAULTS: SettingsValues = {
   "server.port": null,
   "cliPath": "",
   "risk.baseBranch": "",
+  "changeIntel.cochangeNudge": true,
+  "changeIntel.cochangeMinScore": 4,
 };
 
 const SEVERITIES = ["critical", "high", "medium", "low"];
@@ -85,6 +88,8 @@ const SETTING_VALIDATORS: Record<SettingKey, (v: SettingValue) => SettingValue> 
   "server.port": expectNullablePort,
   "cliPath": expectString,
   "risk.baseBranch": expectString,
+  "changeIntel.cochangeNudge": expectBoolean,
+  "changeIntel.cochangeMinScore": (v) => expectNumberInRange(v, 0, 100),
 };
 
 function expectBoolean(v: SettingValue): boolean {
@@ -304,6 +309,11 @@ export function createHostApi(ctx: RepowiseContext, epoch: () => number): HostAp
       const branch = await getCurrentBranchName(ctx.workspace.repoRoot ?? "");
       return { base, branch, result };
     },
+
+    // Change impact: reads the working tree, so it tracks the live change set
+    // rather than the indexed commit. analyzeChange owns caching by change-set
+    // signature, so this never re-fetches for an unchanged file set.
+    changeImpact: () => analyzeChange(ctx, "branch"),
 
     // Sidebar home
     homeSummary,

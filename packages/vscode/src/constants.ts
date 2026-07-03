@@ -42,6 +42,8 @@ export const Commands = {
 export const InternalCommands = {
   copyRefactoringPrompt: "repowise.copyRefactoringPrompt",
   openRefactoringPlan: "repowise.openRefactoringPlan",
+  /** Opens the co-change nudge QuickPick; bound to the status-bar item only. */
+  reviewCochanges: "repowise.reviewCochanges",
 } as const;
 
 /** Sidebar view ids, mirrored from package.json `contributes.views`. */

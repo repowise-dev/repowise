@@ -34,8 +34,17 @@ under `.repowise/`, or offers to start one when you first need data.
   **Copy plan for agent** (the same payload the web Refactoring tab produces).
 - **Hovers** with file health, hotspot flag, primary owner, and governing
   decisions.
-- **Branch risk** from the SCM title bar: score the current branch against its
-  base, with the drivers behind the score.
+- **Change risk** from the SCM title bar: score your change against its base and
+  see what it touches. The panel shows the drivers behind the score plus, for the
+  files you have changed, what is downstream of them, which files your history
+  says usually change alongside them, any changed file with no test, and the best
+  reviewers (ownership x co-change), with a one-click copy for the PR.
+- **A quiet co-change nudge**: when the files you are editing have a strong
+  history of changing together with a file you have not touched, a subtle
+  status-bar item offers to show you. It is advisory and dismissible per change
+  set, never a popup, and off or tunable from Settings
+  (`repowise.changeIntel.*`). Plenty of edits legitimately touch only part of a
+  cluster, so this informs without nagging.
 
 ### Tree views
 
@@ -71,7 +80,9 @@ for this Workspace** to write `.vscode/mcp.json`.
 | `repowise.fileDecorations.enabled` | `true` | Badge the worst-health files in the explorer |
 | `repowise.codeLens.enabled` | `true` | Show refactoring plan lenses |
 | `repowise.hover.enabled` | `true` | Show file health context on hover |
-| `repowise.risk.baseBranch` | default branch | Base branch for branch risk scoring |
+| `repowise.risk.baseBranch` | default branch | Base branch change risk is scored against |
+| `repowise.changeIntel.cochangeNudge` | `true` | Show the quiet "usually change together" status-bar hint |
+| `repowise.changeIntel.cochangeMinScore` | `4` | Minimum historical co-change count before a related file is surfaced |
 
 ## Privacy
 

@@ -1,9 +1,22 @@
 import { useCallback, useEffect, useState } from "react";
-import { GitCompare, RotateCw, ShieldCheck } from "lucide-react";
+import {
+  Copy,
+  GitCompare,
+  GitPullRequest,
+  Network,
+  RotateCw,
+  ShieldCheck,
+  TestTube,
+  Users,
+} from "lucide-react";
 import { Badge, Button, Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui";
 import { EmptyState } from "@repowise-dev/ui/shared";
 import type { ViewProps } from "../../runtime/mount";
-import type { RiskRangeReport } from "../../../../src/shared/webviewMessages";
+import type { WebviewHost } from "../../runtime/rpc";
+import type {
+  ChangeImpactReport,
+  RiskRangeReport,
+} from "../../../../src/shared/webviewMessages";
 
 /** Human labels for the raw change features the endpoint returns, in report order. */
 const FEATURE_LABELS: ReadonlyArray<readonly [string, string]> = [
@@ -42,26 +55,32 @@ function formatFeatureValue(value: number): string {
 
 export function App({ host, repo, refreshToken }: ViewProps<"risk">) {
   const [report, setReport] = useState<RiskRangeReport | null>(null);
+  const [impact, setImpact] = useState<ChangeImpactReport | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [impactLoading, setImpactLoading] = useState(true);
 
   const load = useCallback(() => {
     setLoading(true);
+    setImpactLoading(true);
     setError(null);
     host.api
       .riskRange()
-      .then((r) => {
-        setReport(r);
-        setLoading(false);
-      })
-      .catch((err: unknown) => {
-        setError(err instanceof Error ? err.message : "Could not score branch risk.");
-        setLoading(false);
-      });
+      .then((r) => setReport(r))
+      .catch((err: unknown) =>
+        setError(err instanceof Error ? err.message : "Could not score change risk."),
+      )
+      .finally(() => setLoading(false));
+    // Impact is independent: a git-less workspace still shows the risk score.
+    host.api
+      .changeImpact()
+      .then((r) => setImpact(r))
+      .catch(() => setImpact(null))
+      .finally(() => setImpactLoading(false));
   }, [host]);
 
-  // Refetch on mount and whenever the index moves under the panel. Risk
-  // reflects the working HEAD, so there is no cache to reuse.
+  // Refetch on mount and whenever the index moves under the panel. Both scopes
+  // reflect the working tree, so there is no cache to reuse here.
   useEffect(() => {
     load();
   }, [load, refreshToken]);
@@ -73,7 +92,7 @@ export function App({ host, repo, refreshToken }: ViewProps<"risk">) {
     <div className="mx-auto max-w-3xl space-y-5 p-6">
       <header className="flex items-start justify-between gap-4">
         <div className="min-w-0">
-          <h1 className="text-lg font-semibold text-[var(--color-text-primary)]">Branch risk</h1>
+          <h1 className="text-lg font-semibold text-[var(--color-text-primary)]">Change risk</h1>
           <p className="mt-1 flex items-center gap-2 text-sm text-[var(--color-text-secondary)]">
             <GitCompare className="h-4 w-4 shrink-0" />
             <span className="truncate">
@@ -94,12 +113,16 @@ export function App({ host, repo, refreshToken }: ViewProps<"risk">) {
       ) : error ? (
         <EmptyState
           icon={<ShieldCheck className="h-8 w-8" />}
-          title="Could not score branch risk"
+          title="Could not score change risk"
           description={error}
           action={{ label: "Try again", onClick: load }}
         />
       ) : report ? (
-        <Report report={report} />
+        <>
+          <ScoreHero report={report} />
+          <ChangeImpact impact={impact} loading={impactLoading} host={host} />
+          <RiskBreakdown report={report} />
+        </>
       ) : null}
     </div>
   );
@@ -145,77 +168,75 @@ function RiskSkeleton({ base }: { base: string }) {
   );
 }
 
-function Report({ report }: { report: RiskRangeReport }) {
+/** The Kamei diff-shape risk score for the committed range (base..HEAD). */
+function ScoreHero({ report }: { report: RiskRangeReport }) {
   const r = report.result;
   const tone = scoreTone(r.score);
   const color = TONE_VAR[tone];
+  return (
+    <Card>
+      <CardContent className="flex flex-wrap items-center gap-6 py-6">
+        <div
+          className="flex h-24 w-24 shrink-0 flex-col items-center justify-center rounded-2xl border"
+          style={{
+            borderColor: `color-mix(in srgb, ${color} 45%, transparent)`,
+            backgroundColor: `color-mix(in srgb, ${color} 12%, transparent)`,
+          }}
+        >
+          <span className="text-3xl font-bold leading-none" style={{ color }}>
+            {r.score.toFixed(1)}
+          </span>
+          <span className="mt-1 text-[11px] text-[var(--color-text-tertiary)]">out of 10</span>
+        </div>
+        <div className="min-w-0 flex-1 space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <span
+              className="inline-flex items-center rounded border px-2 py-0.5 text-xs font-medium capitalize"
+              style={{ color, borderColor: `color-mix(in srgb, ${color} 40%, transparent)` }}
+            >
+              {r.level} risk
+            </span>
+            {r.is_fix && (
+              <Badge variant="outline" title="Classified as a fix change">
+                fix
+              </Badge>
+            )}
+          </div>
+          <p className="text-sm text-[var(--color-text-secondary)]">
+            Estimated defect probability{" "}
+            <span className="font-semibold text-[var(--color-text-primary)]">
+              {(r.probability * 100).toFixed(1)}%
+            </span>
+          </p>
+          <div className="flex flex-wrap gap-2 pt-1">
+            {r.risk_percentile != null && (
+              <Badge variant="default">{r.risk_percentile.toFixed(0)}th percentile</Badge>
+            )}
+            {r.review_priority && (
+              <Badge variant="accent" className="capitalize">
+                {r.review_priority} review priority
+              </Badge>
+            )}
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
 
+/** The statistical breakdown: what moves the score, and the raw change shape. */
+function RiskBreakdown({ report }: { report: RiskRangeReport }) {
+  const r = report.result;
   const drivers = [...r.drivers].sort(
     (a, b) => Math.abs(b.contribution) - Math.abs(a.contribution),
   );
   const maxDriver = drivers.reduce((m, d) => Math.max(m, Math.abs(d.contribution)), 0);
-
   const featureRows = FEATURE_LABELS.filter(
     ([key]) => r.features[key] != null,
   ) as ReadonlyArray<readonly [string, string]>;
 
   return (
-    <div className="space-y-5">
-      {/* Score hero */}
-      <Card>
-        <CardContent className="flex flex-wrap items-center gap-6 py-6">
-          <div
-            className="flex h-24 w-24 shrink-0 flex-col items-center justify-center rounded-2xl border"
-            style={{
-              borderColor: `color-mix(in srgb, ${color} 45%, transparent)`,
-              backgroundColor: `color-mix(in srgb, ${color} 12%, transparent)`,
-            }}
-          >
-            <span className="text-3xl font-bold leading-none" style={{ color }}>
-              {r.score.toFixed(1)}
-            </span>
-            <span className="mt-1 text-[11px] text-[var(--color-text-tertiary)]">out of 10</span>
-          </div>
-          <div className="min-w-0 flex-1 space-y-2">
-            <div className="flex flex-wrap items-center gap-2">
-              <span
-                className="inline-flex items-center rounded border px-2 py-0.5 text-xs font-medium capitalize"
-                style={{
-                  color,
-                  borderColor: `color-mix(in srgb, ${color} 40%, transparent)`,
-                }}
-              >
-                {r.level} risk
-              </span>
-              {r.is_fix && (
-                <Badge variant="outline" title="Classified as a fix change">
-                  fix
-                </Badge>
-              )}
-            </div>
-            <p className="text-sm text-[var(--color-text-secondary)]">
-              Estimated defect probability{" "}
-              <span className="font-semibold text-[var(--color-text-primary)]">
-                {(r.probability * 100).toFixed(1)}%
-              </span>
-            </p>
-            <div className="flex flex-wrap gap-2 pt-1">
-              {r.risk_percentile != null && (
-                <Badge variant="default">
-                  {r.risk_percentile.toFixed(0)}th percentile
-                </Badge>
-              )}
-              {r.review_priority && (
-                <Badge variant="accent" className="capitalize">
-                  {r.review_priority} review priority
-                </Badge>
-              )}
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Drivers */}
+    <>
       {drivers.length > 0 && (
         <Card>
           <CardHeader className="pb-3">
@@ -250,7 +271,6 @@ function Report({ report }: { report: RiskRangeReport }) {
         </Card>
       )}
 
-      {/* Change features */}
       {featureRows.length > 0 && (
         <Card>
           <CardHeader className="pb-3">
@@ -273,6 +293,295 @@ function Report({ report }: { report: RiskRangeReport }) {
           </CardContent>
         </Card>
       )}
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Change impact (blast radius + reviewers for the working change set)
+// ---------------------------------------------------------------------------
+
+/** One missing co-change partner, grouped from the per-pair warnings. */
+interface GroupedCochange {
+  partner: string;
+  score: number;
+  withChanged: string;
+}
+
+function groupCochanges(
+  warnings: ReadonlyArray<{ changed: string; missing_partner: string; score: number }>,
+): GroupedCochange[] {
+  const map = new Map<string, GroupedCochange>();
+  for (const w of warnings) {
+    const e = map.get(w.missing_partner);
+    if (e) {
+      if (w.score > e.score) {
+        e.score = w.score;
+        e.withChanged = w.changed;
+      }
+    } else {
+      map.set(w.missing_partner, {
+        partner: w.missing_partner,
+        score: w.score,
+        withChanged: w.changed,
+      });
+    }
+  }
+  return [...map.values()].sort((a, b) => b.score - a.score);
+}
+
+function ChangeImpact({
+  impact,
+  loading,
+  host,
+}: {
+  impact: ChangeImpactReport | null;
+  loading: boolean;
+  host: WebviewHost;
+}) {
+  if (loading && !impact) {
+    return (
+      <Card>
+        <CardContent className="space-y-3 py-5" aria-hidden>
+          <div className="h-4 w-40 animate-pulse rounded bg-[var(--color-bg-inset)]" />
+          <div className="h-3 w-full animate-pulse rounded bg-[var(--color-bg-inset)]" />
+          <div className="h-3 w-2/3 animate-pulse rounded bg-[var(--color-bg-inset)]" />
+        </CardContent>
+      </Card>
+    );
+  }
+  if (!impact) return null;
+
+  if (impact.gitUnavailable) {
+    return (
+      <Card>
+        <CardContent className="py-4 text-sm text-[var(--color-text-tertiary)]">
+          Enable Git for this workspace to see what your change touches, who
+          usually changes it with you, and who could review it.
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (impact.changed.length === 0) {
+    return (
+      <EmptyState
+        icon={<Network className="h-8 w-8" />}
+        title="No pending changes"
+        description="There are no uncommitted or unpushed changes to analyze. Impact appears here as soon as you edit or commit."
+      />
+    );
+  }
+
+  const blast = impact.blast;
+  const downstream = blast?.transitive_affected ?? [];
+  const cochanges = groupCochanges(blast?.cochange_warnings ?? []);
+  const testGaps = blast?.test_gaps ?? [];
+  const reviewers = impact.reviewers;
+  const overall = blast?.overall_risk_score ?? null;
+
+  const scopeLabel =
+    impact.scope === "branch" ? "uncommitted and unpushed" : "uncommitted";
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-sm font-semibold text-[var(--color-text-primary)]">
+          What this change touches
+        </h2>
+        <span className="text-xs text-[var(--color-text-tertiary)]">
+          {impact.changed.length} {scopeLabel} file{impact.changed.length === 1 ? "" : "s"}
+          {overall != null && (
+            <>
+              {" · "}
+              <span className="font-medium text-[var(--color-text-secondary)]">
+                impact {overall.toFixed(1)}/10
+              </span>
+            </>
+          )}
+        </span>
+      </div>
+
+      {downstream.length > 0 && (
+        <ImpactCard
+          icon={<Network className="h-4 w-4" />}
+          title="Downstream of your changes"
+          hint="These files depend on what you changed. Verify they still work."
+        >
+          {downstream.slice(0, 10).map((t) => (
+            <PathRow
+              key={t.path}
+              path={t.path}
+              trailing={`depth ${t.depth}`}
+              onOpen={() => host.openFile(t.path)}
+            />
+          ))}
+          <MoreRow count={downstream.length - 10} />
+        </ImpactCard>
+      )}
+
+      {cochanges.length > 0 && (
+        <ImpactCard
+          icon={<GitPullRequest className="h-4 w-4" />}
+          title="Usually changes together"
+          hint="History suggests these often change with your edits. Advisory, not a rule."
+        >
+          {cochanges.slice(0, 8).map((c) => (
+            <PathRow
+              key={c.partner}
+              path={c.partner}
+              trailing={`${c.score}×`}
+              onOpen={() => host.openFile(c.partner)}
+            />
+          ))}
+          <MoreRow count={cochanges.length - 8} />
+        </ImpactCard>
+      )}
+
+      {testGaps.length > 0 && (
+        <ImpactCard
+          icon={<TestTube className="h-4 w-4" />}
+          title="Changed without a test"
+          hint="These changed files have no associated test file."
+        >
+          {testGaps.slice(0, 8).map((p) => (
+            <PathRow key={p} path={p} onOpen={() => host.openFile(p)} />
+          ))}
+          <MoreRow count={testGaps.length - 8} />
+        </ImpactCard>
+      )}
+
+      {reviewers.length > 0 && <Reviewers reviewers={reviewers} host={host} />}
     </div>
+  );
+}
+
+function ImpactCard({
+  icon,
+  title,
+  hint,
+  children,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  hint: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="flex items-center gap-2 text-sm">
+          <span className="text-[var(--color-text-tertiary)]">{icon}</span>
+          {title}
+        </CardTitle>
+        <p className="text-xs text-[var(--color-text-tertiary)]">{hint}</p>
+      </CardHeader>
+      <CardContent className="space-y-0.5">{children}</CardContent>
+    </Card>
+  );
+}
+
+function PathRow({
+  path,
+  trailing,
+  onOpen,
+}: {
+  path: string;
+  trailing?: string;
+  onOpen: () => void;
+}) {
+  const name = path.split("/").pop() || path;
+  const dir = path.slice(0, path.length - name.length);
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      title={`Open ${path}`}
+      className="flex w-full items-center gap-2 rounded px-1.5 py-1 text-left text-sm transition-colors hover:bg-[var(--color-bg-surface)]"
+    >
+      <span className="min-w-0 flex-1 truncate">
+        {dir && <span className="text-[var(--color-text-tertiary)]">{dir}</span>}
+        <span className="text-[var(--color-text-primary)]">{name}</span>
+      </span>
+      {trailing && (
+        <span className="shrink-0 text-xs tabular-nums text-[var(--color-text-tertiary)]">
+          {trailing}
+        </span>
+      )}
+    </button>
+  );
+}
+
+function MoreRow({ count }: { count: number }) {
+  if (count <= 0) return null;
+  return (
+    <p className="px-1.5 pt-1 text-xs text-[var(--color-text-tertiary)]">+{count} more</p>
+  );
+}
+
+function Reviewers({
+  reviewers,
+  host,
+}: {
+  reviewers: ChangeImpactReport["reviewers"];
+  host: WebviewHost;
+}) {
+  const top = reviewers.slice(0, 5);
+  const copy = () => {
+    const text = top
+      .map((r) => (r.email ? `${r.name} <${r.email}>` : r.name))
+      .join(", ");
+    host.copyText(`Suggested reviewers: ${text}`, "Reviewers copied to clipboard.");
+  };
+  const maxScore = top.reduce((m, r) => Math.max(m, r.score), 0);
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between gap-2 pb-2">
+        <div>
+          <CardTitle className="flex items-center gap-2 text-sm">
+            <span className="text-[var(--color-text-tertiary)]">
+              <Users className="h-4 w-4" />
+            </span>
+            Suggested reviewers
+          </CardTitle>
+          <p className="text-xs text-[var(--color-text-tertiary)]">
+            Ranked by ownership and co-change history of the changed files.
+          </p>
+        </div>
+        <Button variant="outline" size="sm" onClick={copy}>
+          <Copy className="h-3.5 w-3.5" />
+          Copy
+        </Button>
+      </CardHeader>
+      <CardContent className="space-y-2.5">
+        {top.map((r) => {
+          const pct = maxScore > 0 ? (r.score / maxScore) * 100 : 0;
+          return (
+            <div key={r.email ?? r.name} className="space-y-1">
+              <div className="flex items-center justify-between gap-3 text-sm">
+                <span className="min-w-0 truncate font-medium text-[var(--color-text-primary)]">
+                  {r.name}
+                </span>
+                <span className="shrink-0 text-xs text-[var(--color-text-tertiary)]">
+                  {r.recent_commits} recent commit{r.recent_commits === 1 ? "" : "s"}
+                </span>
+              </div>
+              <div className="h-1.5 overflow-hidden rounded-full bg-[var(--color-bg-elevated)]">
+                <div
+                  className="h-full rounded-full bg-[var(--color-accent-primary)]"
+                  style={{ width: `${pct}%` }}
+                />
+              </div>
+              {r.reasons.length > 0 && (
+                <p className="truncate text-xs text-[var(--color-text-tertiary)]">
+                  {r.reasons.join(" · ")}
+                </p>
+              )}
+            </div>
+          );
+        })}
+      </CardContent>
+    </Card>
   );
 }

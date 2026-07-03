@@ -11,7 +11,8 @@ This extension brings that index into VS Code, for both halves of how code gets 
 
 - **Inline health signals** on the files you open: a gutter heat strip for the full set of findings, file health scores in the status bar, and an optional Problems panel surface (off by default, opt in from Settings) for high-severity findings.
 - **Refactoring plans as CodeLens** above the symbols they target, with one click to copy the plan as a prompt for your agent.
-- **Branch risk before you push**: score a branch against its base from the SCM title bar, with the drivers behind the score.
+- **Change risk before you push**: from the SCM title bar, score your change against its base and see what it touches - the files downstream of your edits, the files your history says usually change alongside them, changed files with no test, and who is best placed to review. Suggested reviewers copy to the clipboard in one click.
+- **A quiet "did you forget a file?" hint**: when the files you are editing have a strong history of changing together with a file you have not touched, a subtle status-bar item offers to show you. It is advisory and dismissible, never a popup, and tunable or off from Settings.
 - **Hovers and tree views** for ownership, hotspots, dead code, and architectural decisions, all lazy and refreshed only when the index moves.
 - **Dashboards inside the editor**: health overview, C4 architecture, knowledge graph, refactoring plans, decision timeline, and a docs browser, rendered from the same visualizations the web app uses.
 
@@ -31,7 +32,7 @@ This extension brings that index into VS Code, for both halves of how code gets 
 | Repowise: Set Up This Repository | Build the index for this workspace |
 | Repowise: Start Server / Stop Server | Manage the local API server |
 | Repowise: Configure MCP for this Workspace | Write `.vscode/mcp.json` for MCP clients |
-| Repowise: Check Branch Risk | Score the current branch against its base |
+| Repowise: Analyze Change Risk | Score your change and show what it touches, who should review it, and any missing co-changes or tests |
 | Repowise: Update Index | Sync the index with your latest commits |
 | Repowise: Show Health Dashboard | Open the health overview |
 | Repowise: Show Architecture Map | Open the C4 architecture view |
@@ -48,6 +49,9 @@ This extension brings that index into VS Code, for both halves of how code gets 
 | `repowise.server.autoStart` | `ask` | Start the local server automatically, ask first, or never |
 | `repowise.server.port` | discover | Override the server port instead of using lockfile discovery |
 | `repowise.cliPath` | PATH | Absolute path to the `repowise` executable |
+| `repowise.risk.baseBranch` | default branch | Base branch change risk is scored against |
+| `repowise.changeIntel.cochangeNudge` | `true` | Show the quiet "usually change together" status-bar hint |
+| `repowise.changeIntel.cochangeMinScore` | `4` | Minimum historical co-change count before a related file is surfaced |
 
 ## Privacy
 
