@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.25.0] — 2026-06-27
 
 ### Added
+- **Seed worktree index.** `repowise init --seed-from <base>` lets you seed the index from an existing base-branch checkout. It copies the vector store, config, and state, delegating to `update` to only embed files changed in the worktree.
 - **Split File refactoring.** Code Health now detects files that should be decomposed into smaller modules and proposes a concrete split. A new detector identifies low-cohesion modules and groups their members into coherent target files (#607), with richer cohesion signals driving the grouping (#614). Each plan is browsable in the web Refactoring tab and can be turned into real code via the deterministic code-gen path (#608).
 - **Extract Method refactoring.** Long, complex functions get an Extract Method suggestion computed over a real dataflow layer: an intra-procedural control-flow graph for flagged functions (#612), def/use chains and reaching definitions over that CFG (#613), and the Extract Method planner built on top (#615). The refactoring is available for Python, Go, and TypeScript/JavaScript (#616).
 - **Coverage report ingestion.** Indexing can now ingest test-coverage reports, folding coverage into the code-health picture during a run. (#604)

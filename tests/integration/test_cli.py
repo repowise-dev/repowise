@@ -524,6 +524,7 @@ class TestInitSeedFrom:
             assert (worktree_dir / ".repowise" / "wiki.db").exists()
 
             import json
+            import sqlite3
 
             state = json.loads(
                 (worktree_dir / ".repowise" / "state.json").read_text(encoding="utf-8")
@@ -533,6 +534,11 @@ class TestInitSeedFrom:
                 ["git", "rev-parse", "HEAD"], cwd=worktree_dir, text=True
             ).strip()
             assert state["last_sync_commit"] == feature_head
+            with sqlite3.connect(worktree_dir / ".repowise" / "wiki.db") as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT COUNT(*) FROM wiki_pages WHERE target_path != 'new_file.py'")
+                count = cursor.fetchone()[0]
+                assert count > 0, "Unchanged files should have survived the seed"
 
         finally:
             import shutil
@@ -653,3 +659,76 @@ class TestInitSeedFrom:
         r = runner.invoke(cli, ["init", str(git_work_repo), "--seed-from", str(git_work_repo)])
         assert r.exit_code != 0
         assert "--seed-from cannot be the same as the target directory" in r.output
+
+    def test_seeds_from_base_branch_with_provider(self, git_work_repo, tmp_path):
+        import subprocess
+        import json
+        from click.testing import CliRunner
+
+        # 1. Initialize the base "main" branch WITH a provider (mock)
+        runner1 = CliRunner()
+        r0 = runner1.invoke(
+            cli,
+            ["init", str(git_work_repo), "--provider", "mock", "--yes"],
+            catch_exceptions=False,
+        )
+        assert r0.exit_code == 0
+
+        # Check config has mock provider
+        config_path = git_work_repo / ".repowise" / "config.yaml"
+        assert config_path.exists()
+        assert "provider: mock" in config_path.read_text()
+
+        # 2. Simulate branching and making a commit
+        subprocess.check_call(
+            ["git", "checkout", "-b", "feature"], cwd=git_work_repo, stdout=subprocess.DEVNULL
+        )
+        (git_work_repo / "new_file.py").write_text("print('hello')\n", encoding="utf-8")
+        subprocess.check_call(
+            ["git", "add", "new_file.py"], cwd=git_work_repo, stdout=subprocess.DEVNULL
+        )
+        subprocess.check_call(
+            ["git", "commit", "-m", "feature commit"], cwd=git_work_repo, stdout=subprocess.DEVNULL
+        )
+
+        # 3. Create a worktree for the feature branch
+        worktree_dir = git_work_repo.parent / "feature-worktree-provider"
+        subprocess.check_call(
+            ["git", "worktree", "add", "-b", "feature2", str(worktree_dir), "feature"],
+            cwd=git_work_repo,
+            stdout=subprocess.DEVNULL,
+        )
+
+        try:
+            # 4. Initialize the worktree by seeding from the base repo (no --index-only this time)
+            runner2 = CliRunner()
+            r1 = runner2.invoke(
+                cli,
+                ["init", str(worktree_dir), "--seed-from", str(git_work_repo)],
+                catch_exceptions=False,
+            )
+            assert r1.exit_code == 0
+            assert "Delegating to update" in r1.output
+
+            # Verify the worktree state is initialized correctly
+            # It should have copied config.yaml and the vector db directory (lancedb)
+            assert (worktree_dir / ".repowise" / "config.yaml").exists()
+            assert (worktree_dir / ".repowise" / "lancedb").exists()
+            
+            # verify we can read the db.
+            import sqlite3
+            with sqlite3.connect(worktree_dir / ".repowise" / "wiki.db") as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT target_path FROM wiki_pages")
+                paths = [row[0] for row in cursor.fetchall()]
+                assert any("new_file.py" in p for p in paths), f"The new file should have generated a page via delegated update. Paths found: {paths}"
+
+        finally:
+            import shutil
+            shutil.rmtree(worktree_dir, ignore_errors=True)
+            subprocess.check_call(
+                ["git", "worktree", "remove", "--force", str(worktree_dir)],
+                cwd=git_work_repo,
+                stderr=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+            )

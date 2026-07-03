@@ -557,3 +557,7 @@ Currently, cross-repo analysis runs automatically during `repowise init .` and `
 ### Does the MCP server handle multiple repos?
 
 Yes. A single MCP server instance serves all workspace repos. It uses lazy-loading with LRU eviction (max 5 repos loaded simultaneously) to manage memory. The default repo is always kept in memory.
+
+### Can I use `repowise` with git worktrees?
+
+Yes. If you use `git worktree` to check out branches into separate directories, you don't need to re-index the entire project from scratch. You can seed the new worktree's index from your base checkout using `repowise init --seed-from <path-to-base>`. This copies the vector store, config, and state, then incrementally updates only the files that differ in the worktree.

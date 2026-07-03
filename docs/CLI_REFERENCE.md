@@ -84,6 +84,7 @@ All three reach the indexing knobs; the LLM-only knobs appear only when docs are
 | `--distill-hook / --no-distill-hook` | Install or skip the Distill command-rewrite hook (Claude Code PreToolUse). Strictly opt-in: interactive runs prompt (default No); `--no-distill-hook` also gates the repo off in config so a globally installed hook stays inert here. In workspace mode the verdict (prompt or flag) applies to every selected repo. See [DISTILL.md](DISTILL.md). |
 | `--agents / --no-agents` | Generate or skip managed `AGENTS.md` for Codex. Persists the preference. |
 | `--codex / --no-codex` | Generate or skip project-local Codex MCP/hooks setup. Interactive runs prompt when Codex CLI is installed and logged in; non-interactive runs require `--codex`. |
+| `--seed-from` | Seed the index from an existing base-branch checkout to skip indexing unmodified files. |
 | `--yes / -y` | Skip confirmation prompts. |
 
 **Examples:**

@@ -408,6 +408,25 @@ def _run_generation_phase(
     type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=str),
     help="Seed the index from an existing base-branch checkout to skip indexing unmodified files.",
 )
+@click.option(
+    "--no-cost-tracking",
+    is_flag=True,
+    default=False,
+    help="Skip DB-backed LLM cost tracking for this run.",
+)
+@click.option(
+    "--verbose",
+    "-v",
+    is_flag=True,
+    default=False,
+    help="Show the full changed-file list and per-phase internals.",
+)
+@click.option(
+    "--progress",
+    type=click.Choice(["rich", "json"]),
+    default="rich",
+    help="Progress output style.",
+)
 def init_command(
     path: str | None,
     provider_name: str | None,
@@ -440,6 +459,9 @@ def init_command(
     coverage_report: tuple[str, ...],
     harvest_decisions: bool,
     wiki_style: str | None,
+    no_cost_tracking: bool,
+    verbose: bool,
+    progress: str,
 ) -> None:
     """Generate wiki documentation for a codebase.
 
@@ -466,16 +488,16 @@ def init_command(
 
     scan = scan_for_repos(repo_path, include_submodules=include_submodules)
 
-    # Startup Cleanup: sweep and remove any stale .repowise.bak.* directories.
-    for r in scan.repos:
-        for p in r.path.glob(".repowise.bak.*"):
+    if seed_from:
+        # Startup Cleanup: sweep and remove any stale .repowise.bak.* directories from previous disrupted setups.
+        for r in scan.repos:
+            for p in r.path.glob(".repowise.bak.*"):
+                if p.is_dir():
+                    shutil.rmtree(p, ignore_errors=True)
+        for p in repo_path.glob(".repowise.bak.*"):
             if p.is_dir():
                 shutil.rmtree(p, ignore_errors=True)
-    for p in repo_path.glob(".repowise.bak.*"):
-        if p.is_dir():
-            shutil.rmtree(p, ignore_errors=True)
 
-    if seed_from:
         seed_base = Path(seed_from).resolve()
         if seed_base == repo_path.resolve():
             raise click.ClickException("--seed-from cannot be the same as the target directory.")
@@ -559,11 +581,15 @@ def init_command(
             temp_dir = Path(tempfile.mkdtemp(prefix=".repowise-seed-", dir=r.path))
             temp_dirs.append((r.path, temp_dir))
 
-            shutil.copy2(src_repo / ".repowise" / "wiki.db", temp_dir / "wiki.db")
-            shutil.copy2(src_repo / ".repowise" / "state.json", temp_dir / "state.json")
+            shutil.copytree(src_repo / ".repowise", temp_dir, dirs_exist_ok=True)
 
+            # Since config.yaml is copied atomically alongside state.json, the config_fingerprint remains valid.
             st_data = json.loads((temp_dir / "state.json").read_text(encoding="utf-8"))
-            st_data.pop("config_fingerprint", None)
+
+            state_include = st_data.get("include_submodules", False)
+            if include_submodules != state_include:
+                console.print(f"[yellow]Warning: --include-submodules={include_submodules} conflicts with copied state ({state_include}). Seeded state will take precedence.[/yellow]")
+
             (temp_dir / "state.json").write_text(json.dumps(st_data, indent=2), encoding="utf-8")
 
         if not success:
@@ -605,9 +631,9 @@ def init_command(
                 full=force,
                 agents_md=agents_md,
                 concurrency=concurrency,
-                no_cost_tracking=False,
-                verbose=False,
-                progress="rich",
+                no_cost_tracking=no_cost_tracking,
+                verbose=verbose,
+                progress=progress,
             )
             return
     if len(scan.repos) > 1 and not no_workspace:
