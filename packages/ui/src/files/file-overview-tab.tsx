@@ -106,15 +106,25 @@ export function FileOverviewTab({ data, symbolHref, fileHref }: FileOverviewTabP
               </p>
               {data.graph.dependencies.slice(0, 5).map((n) => {
                 const isSymbol = n.node_type === "symbol" || n.node_id.includes("::");
-                return (
+                const isExternal = n.node_id.startsWith("external:");
+                const href = isExternal ? null : isSymbol ? symbolHref(n.node_id) : fileHref(n.node_id);
+                return href ? (
                   <a
                     key={`out-${n.node_id}`}
-                    href={isSymbol ? symbolHref(n.node_id) : fileHref(n.node_id)}
+                    href={href}
                     className="block truncate font-mono text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-accent-primary)]"
                     title={n.node_id}
                   >
                     {truncatePath(n.node_id, 30)}
                   </a>
+                ) : (
+                  <span
+                    key={`out-${n.node_id}`}
+                    className="block truncate font-mono text-xs text-[var(--color-text-tertiary)]"
+                    title={n.node_id}
+                  >
+                    {truncatePath(n.node_id, 30)}
+                  </span>
                 );
               })}
             </div>

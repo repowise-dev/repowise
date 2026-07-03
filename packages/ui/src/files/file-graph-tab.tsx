@@ -43,9 +43,11 @@ function NeighborList({
           <ul className="space-y-2">
             {neighbors.map((n) => {
               const isSymbol = n.node_type === "symbol" || n.node_id.includes("::");
-              const href = isSymbol ? symbolHref(n.node_id) : fileHref(n.node_id);
+              const isExternal = n.node_id.startsWith("external:");
+              const href = isExternal ? null : isSymbol ? symbolHref(n.node_id) : fileHref(n.node_id);
               return (
                 <li key={`${n.node_id}-${n.edge_type}`}>
+                  {href ? (
                   <a
                     href={href}
                     className="flex items-center gap-2 -mx-2 px-2 py-1 rounded hover:bg-[var(--color-bg-elevated)] transition-colors"
@@ -57,6 +59,18 @@ function NeighborList({
                       {n.edge_type}
                     </span>
                   </a>
+                  ) : (
+                  <span
+                    className="flex items-center gap-2 -mx-2 px-2 py-1 rounded"
+                  >
+                    <span className="font-mono text-xs text-[var(--color-text-tertiary)] truncate flex-1 min-w-0" title={n.node_id}>
+                      {truncatePath(n.node_id, 48)}
+                    </span>
+                    <span className="text-[10px] text-[var(--color-text-tertiary)] shrink-0">
+                      {n.edge_type}
+                    </span>
+                  </span>
+                  )}
                   {n.imported_names.length > 0 && (
                     <p
                       className="pl-1 text-[10px] text-[var(--color-text-tertiary)] truncate"
