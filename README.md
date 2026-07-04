@@ -310,13 +310,15 @@ pattern scan) · **Costs** · **Workspace**
 
 ## VS Code extension
 
-The **Repowise** extension puts the index where code gets written: inline health
-diagnostics and gutter heat on the files you open, refactoring plans as CodeLens,
-change risk before you push (what your change touches, who should review it, and
-any missing co-changes or tests), and the same dashboards (health, architecture,
+The **Repowise** extension puts the index where code gets written: know what
+your change breaks before you push (your riskiest files ranked, what is
+downstream, forgotten companion files, missing tests, suggested reviewers),
+health signals in the gutter and status bar, callers and ownership on hover,
+refactoring plans as CodeLens, and the full dashboards (health, architecture,
 knowledge graph, decisions, docs) inside the editor. One install also registers
-the Repowise MCP server with VS Code, so the same local index serves both you and
-your AI agent.
+the Repowise MCP server with VS Code, so the same local index serves both you
+and your AI agent. Quiet by default, everything toggleable, nothing leaves your
+machine.
 
 Install from the Marketplace (search **Repowise**) or Open VSX, then run
 **Repowise: Set Up This Repository**. Full guide in

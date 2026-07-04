@@ -1,57 +1,91 @@
 # Repowise for VS Code
 
-Repowise is the codebase intelligence layer for you and your AI coding agent. It indexes your repository once and builds five layers on top: a real dependency graph, git history signals (hotspots, ownership, hidden coupling), always-current architecture docs, mined architectural decisions, and defect-validated code health with concrete refactoring plans. Everything is computed locally and served from a local server.
+**Know your codebase. Know your change. Before you push.**
 
-This extension brings that index into VS Code, for both halves of how code gets written today:
+Repowise indexes your repository once, locally, and turns its structure and history into answers: which files are risky, what your edit touches downstream, who should review it, and why the code is shaped the way it is. This extension puts those answers where you already are: the gutter, the status bar, a hover, the Source Control view.
 
-- **For you:** discover or start the local Repowise server for the current workspace, see connection and setup state at a glance, and get guided from a fresh clone to a fully indexed repository without leaving the editor.
-- **For your AI agent:** one install registers the Repowise MCP server with VS Code, so agent-mode assistants query the index through task-shaped tools and answer "why does auth work this way?" from grounded architecture, history, and health data instead of guessing from open files.
+And because modern code is written by two of you, one install also wires the same intelligence into your AI agent through MCP. Your assistant answers "why does auth work this way?" from your real architecture, history, and health data instead of guessing from open files.
 
-## What you get
+Everything runs on your machine. Everything is free.
 
-- **Inline health signals** on the files you open: a gutter heat strip for the full set of findings, file health scores in the status bar, and an optional Problems panel surface (off by default, opt in from Settings) for high-severity findings.
-- **Refactoring plans as CodeLens** above the symbols they target, with one click to copy the plan as a prompt for your agent.
-- **Change risk before you push**: from the SCM title bar, score your change against its base and see what it touches - the files downstream of your edits, the files your history says usually change alongside them, changed files with no test, and who is best placed to review. Suggested reviewers copy to the clipboard in one click.
-- **A quiet "did you forget a file?" hint**: when the files you are editing have a strong history of changing together with a file you have not touched, a subtle status-bar item offers to show you. It is advisory and dismissible, never a popup, and tunable or off from Settings.
-- **Hovers and tree views** for ownership, hotspots, dead code, and architectural decisions, all lazy and refreshed only when the index moves.
-- **Dashboards inside the editor**: health overview, C4 architecture, knowledge graph, refactoring plans, decision timeline, and a docs browser, rendered from the same visualizations the web app uses.
+## Know before you push
+
+Click **Analyze Change Risk** in the Source Control view and get the full picture of your uncommitted work in seconds:
+
+- A risk score for the change, with the exact factors that move it.
+- **The riskiest files in your change**, ranked, so you know where to focus your own review first.
+- **What is downstream**: the files that depend on what you touched.
+- **What you might have forgotten**: files that historically change together with yours but are untouched, and changed files with no associated test.
+- **Who should review it**, from ownership and history, with one-click copy for your PR.
+
+While you edit, a quiet status-bar hint appears if you are missing a file that usually travels with your change. It never pops up, never interrupts, and is one click to dismiss or turn off.
+
+## See health as you work
+
+- **Gutter heat** marks the lines with findings in the file you have open. Glanceable, not shouty.
+- **Status bar scores** show the active file's health across defect risk, maintainability, and performance.
+- **Explorer badges** flag only the files most worth your attention.
+- **Hover any symbol** for instant context: how many things call it, who owns the file, and the architectural decisions that govern it.
+- **Refactoring plans appear as a CodeLens** right above the code they target. Open the full plan, or copy it as a ready-to-paste prompt for your agent.
+- Prefer the Problems panel? Turn it on in settings. It stays off by default because your problems list belongs to you.
+
+## Explore the big picture
+
+Full dashboards open right in an editor tab, no browser needed:
+
+- **Health overview**: where the risk concentrates, at a glance.
+- **Architecture map**: zoomable views of your system, from services down to components.
+- **Knowledge graph**: how everything connects, with search and path finding.
+- **Refactoring plans**: ranked, with the impact of each.
+- **Decision timeline**: the "why" behind your codebase, mined from its history.
+- **Docs browser**: always-current documentation for the file you are in.
+
+## One install, two brains
+
+VS Code agent mode sees the Repowise tools automatically after install: no config, no copy-pasting JSON. For other editors and MCP clients, one command writes the config for your workspace. The signal you see in the gutter and the context your agent reasons with come from the same index, so you are never debugging two different opinions about your code.
+
+## Quiet by design
+
+Nothing polls, nothing scans in the background, and nothing interrupts you. Data loads when you look at it and is cached until your index changes. Activation adds zero measurable startup time. Every surface is individually toggleable, either in VS Code settings or in the built-in Repowise settings panel.
 
 <!-- Screenshots / GIFs: drop captures under media/screenshots and link them here before the stable Marketplace release. -->
 
 ## Getting started
 
 1. Install the CLI: `pip install repowise` (or `uv tool install repowise`).
-2. Open your repository and run **Repowise: Set Up This Repository** to build the index, or follow the Get Started walkthrough.
-3. The extension finds the running server automatically, or offers to start one when you need it.
-4. Run **Repowise: Configure MCP for this Workspace** to expose the tools to MCP clients through `.vscode/mcp.json`. In VS Code itself, the MCP server is registered automatically.
+2. Open your repository and run **Repowise: Set Up This Repository**, or follow the Get Started walkthrough.
+3. That's it. The extension finds your local server automatically, or offers to start one when you first need it.
 
 ## Commands
 
 | Command | What it does |
 |---|---|
 | Repowise: Set Up This Repository | Build the index for this workspace |
-| Repowise: Start Server / Stop Server | Manage the local API server |
-| Repowise: Configure MCP for this Workspace | Write `.vscode/mcp.json` for MCP clients |
-| Repowise: Analyze Change Risk | Score your change and show what it touches, who should review it, and any missing co-changes or tests |
-| Repowise: Update Index | Sync the index with your latest commits |
+| Repowise: Analyze Change Risk | Score your change and see what it touches, what is missing, and who should review |
 | Repowise: Show Health Dashboard | Open the health overview |
-| Repowise: Show Architecture Map | Open the C4 architecture view |
-| Repowise: Show Knowledge Graph | Open the dependency constellation |
+| Repowise: Show Architecture Map | Open the architecture view |
+| Repowise: Show Knowledge Graph | Open the dependency graph |
 | Repowise: Show Decision Timeline | Browse mined architectural decisions |
 | Repowise: Open Docs for This File | Open the generated docs for the active file |
+| Repowise: Update Index | Sync the index with your latest commits |
+| Repowise: Configure MCP for this Workspace | Write `.vscode/mcp.json` for MCP clients |
+| Repowise: Start Server / Stop Server | Manage the local server |
+| Repowise: Open Settings | Tune every surface from one panel |
 | Repowise: Check Setup | Diagnose install, keys, and index state |
 | Repowise: Show Log | Open the extension log |
 
 ## Settings
 
+The quickest way to tune Repowise is **Repowise: Open Settings**, a friendly panel covering every surface. The most useful knobs:
+
 | Setting | Default | Purpose |
 |---|---|---|
 | `repowise.server.autoStart` | `ask` | Start the local server automatically, ask first, or never |
-| `repowise.server.port` | discover | Override the server port instead of using lockfile discovery |
-| `repowise.cliPath` | PATH | Absolute path to the `repowise` executable |
 | `repowise.risk.baseBranch` | default branch | Base branch change risk is scored against |
-| `repowise.changeIntel.cochangeNudge` | `true` | Show the quiet "usually change together" status-bar hint |
-| `repowise.changeIntel.cochangeMinScore` | `4` | Minimum historical co-change count before a related file is surfaced |
+| `repowise.hover.symbolDetail` | `true` | Callers, ownership, and decisions on symbol hover |
+| `repowise.changeIntel.cochangeNudge` | `true` | The quiet "usually change together" status-bar hint |
+| `repowise.changeIntel.cochangeMinScore` | `4` | How strong the history has to be before a related file is suggested |
+| `repowise.diagnostics.enabled` | `false` | Also publish high-severity findings to the Problems panel |
 
 ## Privacy
 
