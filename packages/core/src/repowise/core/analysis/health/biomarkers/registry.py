@@ -53,6 +53,10 @@ from .primitive_obsession import PrimitiveObsessionDetector
 from .prior_defect import PriorDefectDetector
 from .resource_construction_in_loop import ResourceConstructionInLoopDetector
 from .serial_await_in_loop import SerialAwaitInLoopDetector
+from .sql_cartesian_join import SqlCartesianJoinDetector
+from .sql_high_complexity import SqlHighComplexityDetector
+from .sql_select_star import SqlSelectStarDetector
+from .sql_update_delete_without_where import SqlUpdateDeleteWithoutWhereDetector
 from .string_concat_in_loop import StringConcatInLoopDetector
 from .untested_hotspot import UntestedHotspotDetector
 
@@ -104,6 +108,12 @@ _DETECTOR_FACTORIES: list[type[Biomarker]] = [
     JsonParseInLoopDetector,  # type: ignore[list-item]
     ArraySpreadInReduceDetector,  # type: ignore[list-item]
     GoroutineInUnboundedLoopDetector,  # type: ignore[list-item]
+    # SQL markers (from the sqlglot-backed SQL walker; maintainability and
+    # performance only, never the defect headline).
+    SqlHighComplexityDetector,  # type: ignore[list-item]
+    SqlSelectStarDetector,  # type: ignore[list-item]
+    SqlUpdateDeleteWithoutWhereDetector,  # type: ignore[list-item]
+    SqlCartesianJoinDetector,  # type: ignore[list-item]
 ]
 
 

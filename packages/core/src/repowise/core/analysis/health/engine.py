@@ -713,6 +713,12 @@ class HealthAnalyzer:
             source = Path(path).read_bytes()
         except OSError:
             return FileComplexity(functions=[], classes=[])
+        if language == "sql":
+            # SQL has no tree-sitter grammar here; the sqlglot-backed walker
+            # produces routine CCN + the sql_* smell hits instead.
+            from .sql_complexity import walk_sql_file
+
+            return walk_sql_file(pf.file_info, source)
         return walk_file(path, language, source)
 
     def _extract_method_analyses(self, pf: Any, findings: list[HealthFindingData]) -> list[Any]:
@@ -770,7 +776,13 @@ class HealthAnalyzer:
         file_path = pf.file_info.path
 
         fc_list = fcx.functions
-        fn_metrics: dict[str, FunctionComplexity] = {fc.name: fc for fc in fc_list}
+        # SQL routine metrics are text-counted and defect-uncalibrated; they
+        # exist for symbol stamping and the sql_high_complexity marker
+        # (maintainability). Keeping them out of function_metrics keeps the
+        # calibrated method biomarkers (defect dimension) from firing on SQL.
+        fn_metrics: dict[str, FunctionComplexity] = (
+            {} if pf.file_info.language == "sql" else {fc.name: fc for fc in fc_list}
+        )
         max_ccn = max((fc.ccn for fc in fc_list), default=1)
         max_nesting = max((fc.max_nesting for fc in fc_list), default=0)
         nloc = fcx.file_nloc

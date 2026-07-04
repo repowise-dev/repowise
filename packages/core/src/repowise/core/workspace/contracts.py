@@ -1,4 +1,4 @@
-"""Contract extraction — HTTP routes, gRPC services, message topics.
+"""Contract extraction: HTTP routes, gRPC services, message topics, database tables.
 
 Write path: runs during ``repowise update --workspace``.
 Results read by ``CrossRepoEnricher`` in the MCP server (read path).
@@ -45,8 +45,8 @@ class Contract:
     """A single API contract extracted from source code."""
 
     repo: str  # repo alias
-    contract_id: str  # e.g. "http::GET::/api/users/{param}"
-    contract_type: str  # "http" | "grpc" | "topic"
+    contract_id: str  # e.g. "http::GET::/api/users/{param}", "data::orders"
+    contract_type: str  # "http" | "grpc" | "topic" | "data"
     role: str  # "provider" | "consumer"
     file_path: str  # relative to repo root
     symbol_name: str  # handler name, service.method, etc.
@@ -91,7 +91,7 @@ class ContractLink:
     """A matched provider↔consumer pair across repos."""
 
     contract_id: str
-    contract_type: str  # "http" | "grpc" | "topic"
+    contract_type: str  # "http" | "grpc" | "topic" | "data"
     match_type: str  # "exact" | "candidate" | "manual"
     confidence: float
     provider_repo: str
@@ -167,6 +167,9 @@ def normalize_contract_id(contract_id: str) -> str:
     - ``http::GET::/Api/Users/`` → ``http::GET::/api/users``
     - ``grpc::PKG.Service/Method`` → ``grpc::pkg.service/Method``
     - ``topic::Orders`` → ``topic::orders``
+    - ``data::Orders`` → ``data::orders`` (via the lowercase fallback; table
+      quoting/schema rules are applied at extraction time in
+      ``extractors.data.names``)
     """
     parts = contract_id.split("::", 2)
     if len(parts) < 2:
@@ -677,6 +680,7 @@ async def run_contract_extraction(
     6. Save ``contracts.json``
     """
     from .extractors import (
+        DataExtractor,
         GrpcExtractor,
         HttpExtractor,
         TopicExtractor,
@@ -715,6 +719,8 @@ async def run_contract_extraction(
             extractors.append(GrpcExtractor())
         if contract_config.detect_topics:
             extractors.append(TopicExtractor())
+        if contract_config.detect_data:
+            extractors.append(DataExtractor())
 
         for extractor in extractors:
             found = await asyncio.to_thread(extractor.extract, repo_path, alias, exclude)

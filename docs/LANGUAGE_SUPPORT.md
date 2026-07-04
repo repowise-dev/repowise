@@ -182,7 +182,7 @@ honest file-to-file dependencies, no symbol-level claims.
 
 SQL is parsed by a dedicated special handler (sqlglot, multi-dialect and
 error-tolerant) rather than tree-sitter, plus the lightweight import tier
-for dbt lineage. Two independent capabilities:
+for dbt lineage. Four independent capabilities:
 
 **DDL symbols (any `.sql` file).** `CREATE TABLE` / `VIEW` /
 `MATERIALIZED VIEW` -> class-kind symbols with columns in the signature;
@@ -206,6 +206,29 @@ declare the same model name, the importer's own project wins; two-arg
 refs prefer the project whose declared `name` matches. Everything that
 rides the import graph falls out free: model-level lineage, hotspots,
 co-change, ownership, and Leiden communities of the DAG.
+
+**App-to-database contracts (workspace mode).** The workspace contract
+extractor pairs table *providers* (DDL `CREATE`/`ALTER` in `.sql` files,
+Alembic `op.create_table`, and ORM entities: SQLAlchemy `__tablename__`,
+SQLModel `table=True`, Django `db_table`, JPA `@Entity`/`@Table`, EF Core
+`DbSet<T>`/`[Table]`, ActiveRecord, Eloquent `$table`) with table
+*consumers* (SQL string literals in app code, parsed with sqlglot when the
+literal parses, recovered by a verb-anchored regex when interpolation
+breaks it). Matched pairs become `data` contracts rendered as `db` edges
+on the Live System Map: "which services touch table X" across repos.
+Table names are normalized in one place (quoting, `public`/`dbo`
+prefixes, case), and an interpolated table target emits nothing rather
+than a guess.
+
+**Health markers (maintainability/performance pillars only).** Stored
+routines get cyclomatic complexity counted from the decision keywords in
+the body (`sql_high_complexity`; procedural bodies do not parse into an
+AST, so nesting is deliberately not reported). Three statement smells
+ride the sqlglot AST: `sql_select_star` (a bare `*` in a view or
+routine), `sql_update_delete_without_where`, and `sql_cartesian_join`
+(comma-join with no predicate). All four are uncalibrated by construction
+and never move the defect headline; dbt/Jinja templates and garbled
+parses emit nothing. See `docs/CODE_HEALTH.md`.
 
 ### Structural (git + file tree only)
 
@@ -676,4 +699,4 @@ edits. The current coverage:
 | Dart | Good | Lightweight tier shipped; AST upgrade planned (`tree-sitter-dart` available) |
 | Elixir | Good | Lightweight tier shipped; AST upgrade planned (`tree-sitter-elixir` available) |
 | F# | Good | Lightweight tier shipped; AST upgrade planned (`tree-sitter-f-sharp` available) |
-| SQL / dbt | -- | DDL symbols (sqlglot) + dbt lineage shipped; next: app-to-database contracts (workspace data extractor), then precision-gated SQL health markers |
+| SQL / dbt | -- | DDL symbols, dbt lineage, app-to-database contracts (workspace `data` extractor), and precision-gated health markers all shipped; next: column-level blast radius |
