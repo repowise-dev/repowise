@@ -1,7 +1,7 @@
 {
   "name": "repowise",
   "displayName": "Repowise",
-  "description": "Code health, architecture, and git intelligence from one local index, in your editor and in your AI agent via MCP.",
+  "description": "Know what your change breaks before you push. Health signals, architecture maps, and refactoring plans in your editor, and the same intelligence for your AI agent via MCP. Local and free.",
   "version": "0.2.0",
   "publisher": "repowise-dev",
   "license": "AGPL-3.0-or-later",
@@ -124,6 +124,11 @@
           "type": "boolean",
           "default": true,
           "description": "Show file health, ownership, and decision context on hover."
+        },
+        "repowise.hover.symbolDetail": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enrich symbol hovers with caller/callee counts, ownership, and governing decisions from the index. Fetched only when you hover, then cached."
         },
         "repowise.risk.baseBranch": {
           "type": "string",

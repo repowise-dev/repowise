@@ -81,6 +81,7 @@ export const SETTING_KEYS = [
   "fileDecorations.maxScore",
   "codeLens.enabled",
   "hover.enabled",
+  "hover.symbolDetail",
   "server.autoStart",
   "server.port",
   "cliPath",

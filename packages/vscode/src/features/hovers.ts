@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import { CONFIG_SECTION, Commands } from "../constants";
 import { getHealthFileBreakdown } from "@repowise-dev/api-client/code-health";
 import { listDecisions } from "@repowise-dev/api-client/decisions";
-import { listSymbols } from "@repowise-dev/api-client/symbols";
+import { getSymbolDetail, listSymbols } from "@repowise-dev/api-client/symbols";
 import type { RepowiseContext } from "../core/context";
 import { getFileFindings, repoRelativePath } from "../core/fileSignals";
 import type {
@@ -11,9 +11,13 @@ import type {
 } from "@repowise-dev/types/health";
 import type { DecisionRecordResponse } from "@repowise-dev/api-client/types";
 import type { SymbolResponse } from "@repowise-dev/api-client/types";
+import type { SymbolDetailResponse } from "@repowise-dev/types/symbols";
 
 /** Max governing decisions surfaced on a file hover. */
 const MAX_DECISIONS = 3;
+
+/** Max governing decisions surfaced on a symbol hover. */
+const MAX_SYMBOL_DECISIONS = 2;
 
 /** Renders a score, or a dash when the dimension is absent from the payload. */
 function fmt(value: number | null | undefined): string {
@@ -31,14 +35,21 @@ function covers(finding: HealthFinding, line: number): boolean {
 /**
  * Provides health context on hover. Hovering line 0 of a file with health data
  * shows the three scores, its primary owner, and the decisions that govern it;
- * hovering a symbol body shows the symbol name and a link to a matching finding.
- * Every other position returns nothing, so hovering stays cheap.
+ * hovering a symbol body shows the symbol name, optionally a compact detail
+ * card (kind, caller/callee counts, owner, governing decisions), and a link to
+ * a matching finding. Every other position returns nothing, so hovering stays
+ * cheap.
  */
 export function registerHovers(ctx: RepowiseContext): vscode.Disposable {
   const enabled = (): boolean =>
     vscode.workspace
       .getConfiguration(CONFIG_SECTION)
       .get<boolean>("hover.enabled", true);
+
+  const symbolDetailEnabled = (): boolean =>
+    vscode.workspace
+      .getConfiguration(CONFIG_SECTION)
+      .get<boolean>("hover.symbolDetail", true);
 
   /** Reads through the shared cache under the current head commit. */
   async function cached<T>(
@@ -112,6 +123,7 @@ export function registerHovers(ctx: RepowiseContext): vscode.Disposable {
   async function symbolHover(
     relPath: string,
     position: vscode.Position,
+    token: vscode.CancellationToken,
   ): Promise<vscode.Hover | undefined> {
     const repoId = ctx.repoId;
     if (!repoId) return undefined;
@@ -121,6 +133,7 @@ export function registerHovers(ctx: RepowiseContext): vscode.Disposable {
       () => listSymbols({ repo_id: repoId, file_path: relPath, limit: 1000 }),
       [],
     );
+    if (token.isCancellationRequested) return undefined;
     const line1 = position.line + 1;
     // Innermost symbol covering the line: smallest span among those that match.
     let match: SymbolResponse | undefined;
@@ -132,12 +145,57 @@ export function registerHovers(ctx: RepowiseContext): vscode.Disposable {
       }
     }
     if (!match) return undefined;
+    const symbol = match;
+
+    // One lazy detail fetch per hover, cached per symbol under the head
+    // commit. Failures cache as null so a dead symbol id is asked once per
+    // index version, and the hover degrades to the minimal name-only card.
+    const detailPromise: Promise<SymbolDetailResponse | null> =
+      symbolDetailEnabled()
+        ? cached<SymbolDetailResponse | null>(
+            `symbolDetail:${symbol.symbol_id}`,
+            async () => {
+              try {
+                return await getSymbolDetail(repoId, symbol.symbol_id);
+              } catch (err) {
+                ctx.log.debug(`symbol detail ${symbol.symbol_id}: ${String(err)}`);
+                return null;
+              }
+            },
+            null,
+          )
+        : Promise.resolve(null);
+    const [detail, findings] = await Promise.all([
+      detailPromise,
+      getFileFindings(ctx, relPath),
+    ]);
+    if (token.isCancellationRequested) return undefined;
 
     const md = new vscode.MarkdownString();
-    md.isTrusted = true;
-    md.appendMarkdown(`**${match.name}**\n\n`);
+    // Trusted only for our own command link below; index-derived strings
+    // (titles, owners) must not be able to smuggle arbitrary command URIs.
+    md.isTrusted = { enabledCommands: [Commands.showFileHealth] };
+    if (detail) {
+      md.appendMarkdown(`**${match.name}** · ${detail.symbol.kind}\n\n`);
+      const callers = detail.graph.in_degree;
+      const callees = detail.graph.out_degree;
+      md.appendMarkdown(`${callers} callers · ${callees} callees\n\n`);
+      const owner = detail.file_context?.primary_owner;
+      if (owner) {
+        md.appendMarkdown(`Owner: ${owner}\n\n`);
+      }
+      const governing = detail.governing_decisions.slice(0, MAX_SYMBOL_DECISIONS);
+      if (governing.length > 0) {
+        md.appendMarkdown("Decisions:\n\n");
+        for (const decision of governing) {
+          md.appendMarkdown(`- ${decision.title}\n`);
+        }
+        md.appendMarkdown("\n");
+      }
+    } else {
+      md.appendMarkdown(`**${match.name}**\n\n`);
+    }
 
-    const findings = await getFileFindings(ctx, relPath);
     const finding = findings.find((f) => covers(f, position.line));
     if (finding) {
       md.appendMarkdown(
@@ -150,7 +208,7 @@ export function registerHovers(ctx: RepowiseContext): vscode.Disposable {
   const provider = vscode.languages.registerHoverProvider(
     { scheme: "file" },
     {
-      provideHover: async (document, position) => {
+      provideHover: async (document, position, token) => {
         if (!enabled() || ctx.getExtensionState() !== "ready" || !ctx.repoId) {
           return undefined;
         }
@@ -158,7 +216,7 @@ export function registerHovers(ctx: RepowiseContext): vscode.Disposable {
         if (!rel) return undefined;
         return position.line === 0
           ? fileHover(rel)
-          : symbolHover(rel, position);
+          : symbolHover(rel, position, token);
       },
     },
   );

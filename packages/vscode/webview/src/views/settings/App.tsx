@@ -111,6 +111,38 @@ const GROUPS: Group[] = [
         description: "Show file health, ownership, and decision context on hover.",
         kind: "toggle",
       },
+      {
+        key: "hover.symbolDetail",
+        label: "Symbol details on hover",
+        description:
+          "Enrich symbol hovers with caller/callee counts, ownership, and governing decisions. Fetched only when you hover, then cached.",
+        kind: "toggle",
+        needs: "hover.enabled",
+      },
+    ],
+  },
+  {
+    title: "Change intelligence",
+    blurb: "Quiet hints drawn from how this repository's files change together.",
+    rows: [
+      {
+        key: "changeIntel.cochangeNudge",
+        label: "Co-change nudge",
+        description:
+          "Show a quiet status-bar hint when files you are editing usually change together with a file you have not touched. Advisory and dismissible; never interrupts.",
+        kind: "toggle",
+      },
+      {
+        key: "changeIntel.cochangeMinScore",
+        label: "Minimum co-change count",
+        description:
+          "Minimum historical co-change count before a related file is surfaced by the nudge. Higher values mean fewer, stronger hints.",
+        kind: "number",
+        needs: "changeIntel.cochangeNudge",
+        min: 0,
+        max: 100,
+        step: 1,
+      },
     ],
   },
   {

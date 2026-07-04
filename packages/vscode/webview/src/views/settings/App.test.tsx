@@ -18,6 +18,7 @@ const DEFAULTS: SettingsValues = {
   "fileDecorations.maxScore": 4,
   "codeLens.enabled": true,
   "hover.enabled": true,
+  "hover.symbolDetail": true,
   "server.autoStart": "ask",
   "server.port": null,
   "cliPath": "",
@@ -93,5 +94,17 @@ describe("settings App", () => {
 
     const severity = (await screen.findByLabelText("Minimum severity")) as HTMLSelectElement;
     expect(severity.disabled).toBe(true);
+  });
+
+  it("renders the change intelligence group and gates symbol details under hover cards", async () => {
+    const { host } = makeHost({ "hover.enabled": false });
+    renderApp(host);
+
+    expect(await screen.findByText("Change intelligence")).toBeTruthy();
+    expect(screen.getByLabelText("Co-change nudge")).toBeTruthy();
+    expect(screen.getByLabelText("Minimum co-change count")).toBeTruthy();
+
+    const symbolDetail = screen.getByLabelText("Symbol details on hover") as HTMLButtonElement;
+    expect(symbolDetail.disabled).toBe(true);
   });
 });
