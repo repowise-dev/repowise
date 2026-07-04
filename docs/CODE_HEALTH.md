@@ -284,6 +284,14 @@ measured performance, and never fold it into the defect score. The
 commit-agreement precision study and its caveats are published in the
 [perf-detection methodology](https://github.com/repowise-dev/repowise-bench/blob/master/perf-detection/METHODOLOGY.md).
 
+**Verified findings.** `serial_await_in_loop` and `nested_loop_quadratic` are
+advisory because a quick scan cannot tell whether a loop's iterations depend on
+each other. When a deeper analysis can prove they do not, the finding is marked
+verified: it asserts the fix (fan out the awaits, or a genuine quadratic scan)
+instead of hedging, and carries `dataflow_verified: true`. The check is
+conservative (anything it cannot prove stays advisory) and only touches
+Python, TypeScript, JavaScript, and Go. It changes the wording, not the score.
+
 Performance surfaces exactly where maintainability does: a `performance_average`
 on the overview summary and MCP `kpis`, a per-file `performance_score`, a
 Performance KPI card and per-pillar finding filter on the dashboard, the

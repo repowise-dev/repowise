@@ -21,6 +21,7 @@ from .crossfn import collect_crossfn_io_in_loop
 from .dialects import PERF_DIALECTS, BasePerfDialect
 from .gated import collect_blocking_io_under_lock, collect_centrality_gated
 from .io_boundaries import collect_io_names
+from .promotion import apply_perf_promotions
 from .ranking import PerfRanker
 from .reachability import ReachInfo, path_to_sink, reachable_to_sink
 
@@ -30,6 +31,7 @@ __all__ = [
     "CallGraphIndex",
     "PerfRanker",
     "ReachInfo",
+    "apply_perf_promotions",
     "collect_blocking_io_under_lock",
     "collect_centrality_gated",
     "collect_crossfn_io_in_loop",

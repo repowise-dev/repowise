@@ -130,7 +130,7 @@ refactoring:
   enabled: true               # the deterministic plans (zero LLM, in the health pass)
   detectors:
     disabled: []              # e.g. [move_method] to silence one detector
-  min_confidence: medium      # low | medium | high (the surface gate)
+  min_confidence: low         # low | medium | high (confidence floor)
   llm:
     enabled: true             # code generation, on by default; set false to disable
     provider: null            # falls back to the repo's configured LLM provider
@@ -141,6 +141,12 @@ refactoring:
   health pass. Code generation is the only part that calls a provider: it is on
   by default but never runs during indexing, only on an explicit request (set
   `llm.enabled: false` to disable it).
+- `enabled: false` skips the whole deterministic detector pass; `detectors.disabled`
+  silences named detectors (`extract_class`, `split_file`, ...) while the rest run.
+- `min_confidence` is a floor applied when the plans are detected, so a plan below it
+  is never persisted (just like a disabled marker). Changing it takes effect on the
+  next `init` / `update`. Surfaces that accept a `min_confidence` query parameter can
+  only narrow further from this floor, not below it.
 - Per-path disables reuse the `.repowise/health-rules.json` glob mechanism (the
   same one markers use).
 - Full reference: [REFACTORING.md](REFACTORING.md).

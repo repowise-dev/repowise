@@ -41,6 +41,7 @@ from .models import HealthFileMetricData, HealthFindingData, HealthReport, Sever
 from .perf import (
     CallGraphIndex,
     PerfRanker,
+    apply_perf_promotions,
     collect_blocking_io_under_lock,
     collect_centrality_gated,
     collect_crossfn_io_in_loop,
@@ -361,6 +362,8 @@ class HealthAnalyzer:
                 dup_report = DuplicationReport()
 
         disabled_refactorings: list[str] = list(cfg.get("disabled_refactorings", ()))
+        refactoring_enabled: bool = bool(cfg.get("refactoring_enabled", True))
+        refactoring_min_confidence: str | None = cfg.get("refactoring_min_confidence")
         # Repo-wide SCC index (import cycles), computed once and threaded into
         # each file's RefactoringContext so Break Cycle never recomputes it.
         file_scc_index = build_file_scc_index(self.graph)
@@ -392,6 +395,10 @@ class HealthAnalyzer:
 
         # Cross-function N+1: augment perf_hits before the biomarker stage.
         self._apply_crossfn_perf(walked)
+        # Dataflow promotion: mark advisory perf hits whose loop is provably
+        # iteration-independent (runs after the graph passes so the
+        # centrality-gated nested-loop hits are present to promote).
+        apply_perf_promotions(walked)
 
         for pf, fcx in walked:
             # Side-effect: bump Symbol.complexity_estimate when we can
@@ -420,6 +427,8 @@ class HealthAnalyzer:
                 repo_active_contributors_90d=repo_active_contributors,
                 severity_overrides=file_severity_overrides or None,
                 disabled_refactorings=disabled_refactorings,
+                refactoring_enabled=refactoring_enabled,
+                refactoring_min_confidence=refactoring_min_confidence,
                 file_scc_index=file_scc_index,
             )
             metrics.append(file_metric)
@@ -553,8 +562,13 @@ class HealthAnalyzer:
         # Cross-function N+1: augment perf_hits before the biomarker stage.
         walked = list(walked)
         self._apply_crossfn_perf(walked)
+        # Dataflow promotion: mark advisory perf hits whose loop is provably
+        # iteration-independent (after the graph passes populate the hits).
+        apply_perf_promotions(walked)
 
         disabled_refactorings: list[str] = list(cfg.get("disabled_refactorings", ()))
+        refactoring_enabled: bool = bool(cfg.get("refactoring_enabled", True))
+        refactoring_min_confidence: str | None = cfg.get("refactoring_min_confidence")
         file_scc_index = build_file_scc_index(self.graph)
         findings: list[HealthFindingData] = []
         metrics: list[HealthFileMetricData] = []
@@ -582,6 +596,8 @@ class HealthAnalyzer:
                 repo_active_contributors_90d=repo_active_contributors,
                 severity_overrides=file_severity_overrides or None,
                 disabled_refactorings=disabled_refactorings,
+                refactoring_enabled=refactoring_enabled,
+                refactoring_min_confidence=refactoring_min_confidence,
                 file_scc_index=file_scc_index,
             )
             metrics.append(file_metric)
@@ -747,6 +763,8 @@ class HealthAnalyzer:
         repo_active_contributors_90d: int | None = None,
         severity_overrides: dict[str, Severity] | None = None,
         disabled_refactorings: list[str] | None = None,
+        refactoring_enabled: bool = True,
+        refactoring_min_confidence: str | None = None,
         file_scc_index: dict[str, tuple[str, ...]] | None = None,
     ) -> tuple[HealthFileMetricData, list[HealthFindingData], list[RefactoringSuggestion]]:
         file_path = pf.file_info.path
@@ -843,6 +861,10 @@ class HealthAnalyzer:
         # Refactoring layer: reuse the data just computed (class cohesion
         # components + this file's findings) to emit structured suggestions.
         # Fault-isolated per detector; degrades to [] on any missing signal.
+        # Disabled outright from config => skip the whole pass (and its
+        # dataflow re-parse) for this file.
+        if not refactoring_enabled:
+            return metric, findings, []
         rctx = RefactoringContext(
             file_path=file_path,
             language=pf.file_info.language,
@@ -857,7 +879,11 @@ class HealthAnalyzer:
             function_analyses=self._extract_method_analyses(pf, findings),
             blame_index=blame_index,
         )
-        suggestions = detect_refactorings(rctx, disabled=disabled_refactorings or ())
+        suggestions = detect_refactorings(
+            rctx,
+            disabled=disabled_refactorings or (),
+            min_confidence=refactoring_min_confidence,
+        )
         return metric, findings, suggestions
 
     def _is_hotspot(self, meta: dict | object) -> bool:

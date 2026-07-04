@@ -203,6 +203,14 @@ class PerfHit:
     # chain ``A -> B -> ... -> sink`` (PR4). Empty for same-function hits —
     # its emptiness is what distinguishes the two cases downstream.
     path: tuple[str, ...] = ()
+    # Set by the dataflow promotion pass (``perf.promotion``) when intra-
+    # procedural reaching definitions PROVE the enclosing loop carries no data
+    # dependence between iterations, turning an advisory "if the iterations are
+    # independent" hedge into an asserted finding. Only ever flipped for the
+    # advisory markers the promotion pass targets; left ``False`` everywhere the
+    # proof is unavailable (no dialect, guard trip, non-convergence) or the loop
+    # genuinely carries a dependence. The biomarker sharpens its message when set.
+    promoted: bool = False
 
 
 @dataclass(frozen=True)

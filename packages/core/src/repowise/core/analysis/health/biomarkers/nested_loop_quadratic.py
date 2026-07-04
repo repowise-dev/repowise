@@ -31,6 +31,24 @@ class NestedLoopQuadraticDetector:
         for hit in ctx.perf_hits:
             if hit.kind != _KIND:
                 continue
+            if hit.promoted:
+                # Dataflow proved the loop's iterations are independent, so the
+                # inner loop is a genuine full scan (not an early-terminating or
+                # accumulating search), a real O(n^2) pass.
+                details = {"dataflow_verified": True}
+                reason = (
+                    "a loop nested inside another loop (O(n^2)) sits in a "
+                    "hot/central function; its iterations are independent, so "
+                    "this is a full quadratic scan; replace the inner loop with "
+                    "a set/map lookup if it is a search"
+                )
+            else:
+                details = {}
+                reason = (
+                    "a loop nested inside another loop (O(n^2)) sits in a "
+                    "hot/central function; check the inner bound or use a "
+                    "set/map lookup if it is a search"
+                )
             out.append(
                 BiomarkerResult(
                     biomarker_type=self.name,
@@ -38,12 +56,8 @@ class NestedLoopQuadraticDetector:
                     function_name=hit.function,
                     line_start=hit.line,
                     line_end=hit.line,
-                    details={},
-                    reason=(
-                        "a loop nested inside another loop (O(n^2)) sits in a "
-                        "hot/central function; check the inner bound or use a "
-                        "set/map lookup if it is a search"
-                    ),
+                    details=details,
+                    reason=reason,
                 )
             )
         return out

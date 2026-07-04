@@ -289,7 +289,7 @@ def run_partial_analysis(
             _hcfg = HealthConfig.load(repo_path)
             _analyzer_config = (
                 _hcfg.to_analyzer_config([pf.file_info.path for pf in parsed_files])
-                if (_hcfg.disabled_biomarkers or _hcfg.rules)
+                if _hcfg.has_overrides()
                 else None
             )
             partial_health_report = _health_analyzer.analyze(

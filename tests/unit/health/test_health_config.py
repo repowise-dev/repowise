@@ -167,3 +167,70 @@ def test_malformed_file_falls_back_silently(tmp_path: Path):
     cfg = HealthConfig.load(tmp_path)
     assert cfg.disabled_biomarkers == []
     assert cfg.rules == []
+
+
+# -- refactoring block (config.yaml) --------------------------------------
+
+
+def _write_config_yaml(tmp_path: Path, body: str) -> Path:
+    repowise = tmp_path / ".repowise"
+    repowise.mkdir(exist_ok=True)
+    (repowise / "config.yaml").write_text(body, encoding="utf-8")
+    return tmp_path
+
+
+def test_refactoring_defaults_when_no_config(tmp_path: Path):
+    cfg = HealthConfig.load(tmp_path)
+    assert cfg.refactoring_enabled is True
+    assert cfg.disabled_refactorings == []
+    assert cfg.refactoring_min_confidence is None
+    assert cfg.has_overrides() is False
+
+
+def test_refactoring_block_round_trips(tmp_path: Path):
+    _write_config_yaml(
+        tmp_path,
+        "refactoring:\n"
+        "  enabled: true\n"
+        "  detectors:\n"
+        "    disabled:\n"
+        "      - split_file\n"
+        "      - move_method\n"
+        "  min_confidence: high\n",
+    )
+    cfg = HealthConfig.load(tmp_path)
+    assert cfg.refactoring_enabled is True
+    assert cfg.disabled_refactorings == ["split_file", "move_method"]
+    assert cfg.refactoring_min_confidence == "high"
+    assert cfg.has_overrides() is True
+    out = cfg.to_analyzer_config([])
+    assert out["refactoring_enabled"] is True
+    assert out["disabled_refactorings"] == ["split_file", "move_method"]
+    assert out["refactoring_min_confidence"] == "high"
+
+
+def test_refactoring_disabled_flag(tmp_path: Path):
+    _write_config_yaml(tmp_path, "refactoring:\n  enabled: false\n")
+    cfg = HealthConfig.load(tmp_path)
+    assert cfg.refactoring_enabled is False
+    assert cfg.has_overrides() is True
+
+
+def test_refactoring_min_confidence_normalized_and_validated(tmp_path: Path):
+    _write_config_yaml(tmp_path, "refactoring:\n  min_confidence: MEDIUM\n")
+    cfg = HealthConfig.load(tmp_path)
+    assert cfg.refactoring_min_confidence == "medium"
+    # An out-of-range floor is dropped (degrade to no floor), never raised.
+    _write_config_yaml(tmp_path, "refactoring:\n  min_confidence: bogus\n")
+    cfg = HealthConfig.load(tmp_path)
+    assert cfg.refactoring_min_confidence is None
+
+
+def test_refactoring_block_coexists_with_health_rules(tmp_path: Path):
+    _write(tmp_path, {"disabled_biomarkers": ["dry_violation"]})
+    _write_config_yaml(
+        tmp_path, "refactoring:\n  detectors:\n    disabled:\n      - extract_class\n"
+    )
+    cfg = HealthConfig.load(tmp_path)
+    assert cfg.disabled_biomarkers == ["dry_violation"]
+    assert cfg.disabled_refactorings == ["extract_class"]
