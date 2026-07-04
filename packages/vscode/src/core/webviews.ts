@@ -60,9 +60,34 @@ export function openViewPanel<V extends PanelViewId>(
   params?: ViewParams[V],
 ): void {
   if (ctx.getExtensionState() !== "ready" || !ctx.repoId) {
-    void vscode.window.showWarningMessage(
-      "Connect to the Repowise server to open this view.",
-    );
+    if (ctx.getExtensionState() === "server-down") {
+      void vscode.window
+        .showWarningMessage(
+          "The local Repowise server is not running.",
+          "Start Server",
+        )
+        .then((choice) => {
+          if (choice === "Start Server") {
+            void vscode.commands.executeCommand(Commands.startServer);
+          }
+        });
+    } else if (ctx.getExtensionState() === "ready" && !ctx.repoId) {
+      // Connected, but the server has no record of this folder.
+      void vscode.window
+        .showWarningMessage(
+          "The connected Repowise server has no index for this folder.",
+          "Check Setup",
+        )
+        .then((choice) => {
+          if (choice === "Check Setup") {
+            void vscode.commands.executeCommand(Commands.checkSetup);
+          }
+        });
+    } else {
+      void vscode.window.showWarningMessage(
+        "Connect to the Repowise server to open this view.",
+      );
+    }
     return;
   }
   if (!manager) {

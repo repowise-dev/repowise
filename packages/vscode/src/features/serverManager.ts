@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import { spawn, type ChildProcess } from "node:child_process";
 import { Commands, MIN_SERVER_VERSION } from "../constants";
 import type { RepowiseContext } from "../core/context";
-import { readLockfile } from "../core/lockfile";
+import { isPidAlive, readLockfile } from "../core/lockfile";
 import type { HealthResult } from "../core/api";
 
 /**
@@ -155,13 +155,17 @@ export function registerServerManager(ctx: RepowiseContext): vscode.Disposable {
 
     ensureWatcher();
 
+    // The pid gate is not redundant with the probe: a dead writer's port can
+    // be re-bound by an unrelated server that answers /health convincingly.
     const lock = await readLockfile(ws.lockfilePath);
-    if (lock) {
+    if (lock && isPidAlive(lock.pid)) {
       const health = await ctx.api.checkHealth(lock.url);
       if (health) {
         await onConnected(ws.repoRoot, lock.url, health);
         return;
       }
+    } else if (lock) {
+      ctx.log.debug(`Ignoring stale lockfile (pid ${lock.pid} is gone).`);
     }
 
     // No lockfile, or a present-but-stale one whose server no longer answers.
@@ -188,8 +192,10 @@ export function registerServerManager(ctx: RepowiseContext): vscode.Disposable {
     let delay = POLL_START_MS;
     while (Date.now() < deadline) {
       if (disposed || aborted()) return null;
+      // Pid-gated so the poll cannot adopt a stale lockfile (and whatever
+      // re-bound its port) in the window before our child overwrites it.
       const lock = await readLockfile(lockfilePath);
-      if (lock) {
+      if (lock && isPidAlive(lock.pid)) {
         const health = await ctx.api.checkHealth(lock.url);
         if (health) return { url: lock.url, health };
       }
@@ -238,9 +244,10 @@ export function registerServerManager(ctx: RepowiseContext): vscode.Disposable {
     }
 
     // A healthy server may already be up (started outside the editor, or by a
-    // prior session). Adopt it instead of spawning a second one.
+    // prior session). Adopt it instead of spawning a second one. Pid-gated:
+    // never adopt through a dead writer's lockfile.
     const existing = await readLockfile(ws.lockfilePath);
-    if (existing) {
+    if (existing && isPidAlive(existing.pid)) {
       const health = await ctx.api.checkHealth(existing.url);
       if (health) {
         await onConnected(ws.repoRoot, existing.url, health);
@@ -405,6 +412,35 @@ export function registerServerManager(ctx: RepowiseContext): vscode.Disposable {
     ctx.setStatusBarState("server-down");
     ctx.log.info("Stopped the local Repowise server.");
   }
+
+  /** In-flight guard and cooldown for connection-failure rechecks. */
+  let rechecking = false;
+  let lastRecheckAt = 0;
+
+  /**
+   * A data request failed at the network level while we believed we were
+   * connected. Re-probe once (cooldown-limited): a healthy probe means a
+   * transient blip; a dead one re-runs discovery, which settles into
+   * server-down and restores the Start Server affordances.
+   */
+  async function recheckConnection(): Promise<void> {
+    if (disposed || rechecking || !isConnected()) return;
+    const now = Date.now();
+    if (now - lastRecheckAt < 5_000) return;
+    rechecking = true;
+    lastRecheckAt = now;
+    try {
+      const url = ctx.api.getBaseUrl();
+      if (!url) return;
+      const health = await ctx.api.checkHealth(url);
+      if (health || disposed) return;
+      ctx.log.info("Server stopped answering; re-running discovery.");
+      await discover({ rescan: false });
+    } finally {
+      rechecking = false;
+    }
+  }
+  ctx.api.onConnectionFailure(() => void recheckConnection());
 
   const disposables: vscode.Disposable[] = [
     vscode.commands.registerCommand(Commands.startServer, () =>
