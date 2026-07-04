@@ -515,14 +515,17 @@ dialect emits no Extract Method suggestions. Coverage rolls out in value order
 | Python | Y | Y | assignment, augmented, walrus, tuple-unpack, `for` / `with`-as / comprehension targets |
 | Go | Y | Y | `:=` / `var`, `=` vs `+=` (operator-sniffed), `x++`, `range` binders, selector / index targets; method `receiver` seeded as a param |
 | TypeScript / JavaScript | Y | Y | `let` / `const` / `var`, `=` / `+=`, `++`, array / object destructuring, `for...of` / `for...in` binders, member / subscript targets |
-| Java / Rust | --- | --- | next (high-yield tail) |
+| Java | Y | Y | declarations (multi-declarator), `=` vs `+=` (operator-sniffed), `x++`, enhanced-`for` binders, try-with-resources bindings, field / array targets; `switch`-arm writes are conservative may-defs |
+| Rust | Y | Y | `let` with destructuring patterns (tuple / slice / struct / ref), `=` vs `+=` (distinct node kinds), `for` / `if let` / `while let` binders, field / index / deref targets, `self` receiver seeded as a param; `?` counts as an early exit (no span containing one is offered); `match`-arm writes are conservative may-defs; a block's tail expression is never extracted over |
 | Kotlin / C++ / C# | --- | --- | later |
 
 Validated on real code (flagged-only, the production path): Go fires on
 `gorilla/mux` (e.g. `setMatch` sheds ccn 15); TS/JS fires across the hosted
-Next.js frontend. The flagged-only gate held in both runs (Go 8 / 108
-functions, TS 212 / 1172), keeping the per-file cost in the low single-digit
-milliseconds.
+Next.js frontend; Java fires on `google/gson` (e.g. `JsonTreeReader.getPath`
+sheds ccn 7); Rust fires on `sharkdp/fd` (e.g. `FormatTemplate::parse` sheds
+ccn 6). The flagged-only gate held in every run (Go 8 / 108 functions,
+TS 212 / 1172, Java 53 / 1082, Rust 8 / 217), keeping the per-file cost in the
+low single-digit milliseconds.
 
 #### Performance-signal coverage
 

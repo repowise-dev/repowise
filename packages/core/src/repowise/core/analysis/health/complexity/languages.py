@@ -186,6 +186,17 @@ class LanguageNodeMap:
     raise_kinds: frozenset[str] = frozenset()
     break_kinds: frozenset[str] = frozenset()
     continue_kinds: frozenset[str] = frozenset()
+    #   * ``statement_wrapper_kinds`` -- statement node(s) that merely wrap the
+    #     node the CFG builder should classify, as their last named child.
+    #     Expression-oriented grammars need this: tree-sitter-rust parses every
+    #     statement-position control-flow expression (``for`` / ``if`` /
+    #     ``return`` / ``break``) inside an ``expression_statement``, so without
+    #     unwrapping the builder would see one opaque statement and produce a
+    #     straight-line CFG. A nonempty set is therefore also the slicer's
+    #     expression-oriented-language marker: it then refuses spans ending on a
+    #     block's tail expression (the implicit value an extraction would
+    #     silently drop), so only truly expression-oriented grammars may map it.
+    statement_wrapper_kinds: frozenset[str] = frozenset()
 
 
 _PY = LanguageNodeMap(
@@ -334,6 +345,19 @@ _JAVA = LanguageNodeMap(
     # The perf pass needs both forms: ``repo.find()`` (method_invocation) and
     # ``new FileInputStream()`` (object_creation_expression).
     call_kinds=frozenset({"method_invocation", "object_creation_expression"}),
+    # ``x = ...`` and ``x += ...`` are both ``assignment_expression`` (the
+    # dialect tells them apart by the operator token, as in Go), so the
+    # augmented set stays empty. ``int x = 1, y = 2;`` is a
+    # ``local_variable_declaration`` nesting one ``variable_declarator`` per
+    # bound name.
+    assignment_kinds=frozenset({"assignment_expression"}),
+    local_decl_kinds=frozenset({"local_variable_declaration"}),
+    if_kinds=frozenset({"if_statement"}),
+    block_kinds=frozenset({"block"}),
+    return_kinds=frozenset({"return_statement"}),
+    raise_kinds=frozenset({"throw_statement"}),
+    break_kinds=frozenset({"break_statement"}),
+    continue_kinds=frozenset({"continue_statement"}),
 )
 
 _RUST = LanguageNodeMap(
@@ -365,6 +389,28 @@ _RUST = LanguageNodeMap(
     # ``function_modifiers`` child — so ``async_function_kinds`` stays empty and
     # ``RustPerfDialect.is_async_fn`` sniffs the modifier instead.
     call_kinds=frozenset({"call_expression"}),
+    # ``x = ...`` is an ``assignment_expression``; ``x += ...`` a dedicated
+    # ``compound_assignment_expr``. ``let`` (with any pattern) is the fresh-
+    # binding form. ``if_let_expression`` / ``while_let_expression`` only exist
+    # in older tree-sitter-rust grammars (current ones parse ``if let`` as an
+    # ``if_expression`` with a ``let_condition``); listing them is harmless.
+    assignment_kinds=frozenset({"assignment_expression"}),
+    augmented_assign_kinds=frozenset({"compound_assignment_expr"}),
+    local_decl_kinds=frozenset({"let_declaration"}),
+    if_kinds=frozenset({"if_expression", "if_let_expression"}),
+    block_kinds=frozenset({"block"}),
+    return_kinds=frozenset({"return_expression"}),
+    # ``?`` (``try_expression``) propagates an error out of the function -- an
+    # early exit the CFG treats as a terminator and the Extract Method slicer
+    # treats as a jump, so no span containing one is ever offered.
+    raise_kinds=frozenset({"try_expression"}),
+    break_kinds=frozenset({"break_expression"}),
+    continue_kinds=frozenset({"continue_expression"}),
+    # Rust parses every statement-position control-flow expression inside an
+    # ``expression_statement``; the CFG builder unwraps it to classify the real
+    # node, and the slicer uses this as the expression-oriented marker for
+    # tail-expression suppression.
+    statement_wrapper_kinds=frozenset({"expression_statement"}),
 )
 
 

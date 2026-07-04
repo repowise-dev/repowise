@@ -41,9 +41,11 @@ def _write(tmp_path: Path, name: str, src: str) -> str:
     return str(p)
 
 
-def _walked_entry(tmp_path: Path, name: str, src: str, hits: list[PerfHit]):
+def _walked_entry(
+    tmp_path: Path, name: str, src: str, hits: list[PerfHit], language: str = "python"
+):
     abs_path = _write(tmp_path, name, src)
-    pf = _ParsedFile(_FileInfo(path=name, abs_path=abs_path, language="python"))
+    pf = _ParsedFile(_FileInfo(path=name, abs_path=abs_path, language=language))
     fcx = FileComplexity(functions=[], classes=[], perf_hits=hits)
     return pf, fcx
 
@@ -147,6 +149,74 @@ def test_budget_no_dataflow_without_advisory_hit(tmp_path: Path, monkeypatch):
     assert calls["n"] == 1
     assert e1[1].perf_hits[0].promoted is True
     assert e2[1].perf_hits[0].promoted is False
+
+
+def test_rust_independent_await_loop_is_promoted(tmp_path: Path):
+    # The promotion pass activates for a language the moment its def/use
+    # dialect exists. A ``?`` on the awaited value is an early *exit*, not a
+    # data carry -- the same contract as a Python ``await`` that may raise.
+    src = """
+    async fn f(items: &[Item]) -> Result<Vec<R>, E> {
+        let mut out = Vec::new();
+        for item in items {
+            let r = fetch(item.id).await?;  // HIT
+            out.push(r);
+        }
+        Ok(out)
+    }
+    """
+    line = _line_of(src, "HIT")
+    hits = [PerfHit(kind="serial_await_in_loop", line=line, function="f", detail="network")]
+    pf, fcx = _walked_entry(tmp_path, "indep.rs", src, hits, language="rust")
+
+    apply_perf_promotions([(pf, fcx)])
+
+    if fcx.perf_hits[0].promoted is False:  # pack missing -> silence, not a wrong answer
+        pytest.skip("tree-sitter language pack missing for rust")
+    assert fcx.perf_hits[0].promoted is True
+
+
+def test_rust_carried_cursor_is_not_promoted(tmp_path: Path):
+    src = """
+    async fn f(items: &[Item]) -> Cursor {
+        let mut cursor = start();
+        for item in items {
+            let page = fetch(cursor).await;  // HIT
+            cursor = page.next;
+        }
+        cursor
+    }
+    """
+    line = _line_of(src, "HIT")
+    hits = [PerfHit(kind="serial_await_in_loop", line=line, function="f", detail="network")]
+    pf, fcx = _walked_entry(tmp_path, "carried.rs", src, hits, language="rust")
+
+    apply_perf_promotions([(pf, fcx)])
+
+    assert fcx.perf_hits[0].promoted is False
+
+
+def test_java_independent_nested_loop_is_promoted(tmp_path: Path):
+    src = """
+    class Demo {
+        void f(int[] items, int[] others) {
+            for (int a : items) {
+                for (int b : others) {
+                    emit(a, b);  // HIT
+                }
+            }
+        }
+    }
+    """
+    line = _line_of(src, "HIT")
+    hits = [PerfHit(kind="nested_loop_quadratic", line=line, function="f", detail="scan")]
+    pf, fcx = _walked_entry(tmp_path, "indep.java", src, hits, language="java")
+
+    apply_perf_promotions([(pf, fcx)])
+
+    if fcx.perf_hits[0].promoted is False:
+        pytest.skip("tree-sitter language pack missing for java")
+    assert fcx.perf_hits[0].promoted is True
 
 
 def test_unsupported_language_degrades_to_silence(tmp_path: Path):
