@@ -38,6 +38,7 @@ def test_facade_reexports_public_surface() -> None:
         "build_analysis_summary_panel",
         "build_completion_panel",
         "build_contextual_next_steps",
+        "format_bytes",
         "format_elapsed",
         "LARGE_REPO_FILE_THRESHOLD",
         # owl mascot additions (additive — everything above is the original surface)
@@ -53,6 +54,14 @@ def test_facade_reexports_public_surface() -> None:
 def test_format_elapsed_unchanged() -> None:
     assert ui.format_elapsed(5.0) == "5.0s"
     assert ui.format_elapsed(125.0) == "2m 5s"
+
+
+def test_format_bytes() -> None:
+    assert ui.format_bytes(0) == "0 B"
+    assert ui.format_bytes(512) == "512 B"
+    assert ui.format_bytes(1536) == "1.5 KB"
+    assert ui.format_bytes(1_048_576) == "1.0 MB"
+    assert ui.format_bytes(-1) == "—"
 
 
 def test_should_offer_fast_mode_threshold() -> None:
