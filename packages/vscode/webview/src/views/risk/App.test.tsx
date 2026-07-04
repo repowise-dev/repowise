@@ -47,7 +47,10 @@ const IMPACT: ChangeImpactReport = {
   workingCount: 1,
   scope: "branch",
   blast: {
-    direct_risks: [],
+    direct_risks: [
+      { path: "src/a.ts", risk_score: 0.3, temporal_hotspot: 0.1, centrality: 0.8 },
+      { path: "src/b.ts", risk_score: 0.82, temporal_hotspot: 0.9, centrality: 0.1 },
+    ],
     transitive_affected: [{ path: "src/consumer.ts", depth: 1 }],
     cochange_warnings: [
       { changed: "src/a.ts", missing_partner: "src/a.test.ts", score: 8 },
@@ -78,7 +81,11 @@ function makeHost(
   overrides: Partial<WebviewHost> = {},
 ): WebviewHost {
   return {
-    api: { riskRange, changeImpact } as WebviewHost["api"],
+    api: {
+      riskRange,
+      changeImpact,
+      getSettings: vi.fn().mockResolvedValue({ "changeIntel.cochangeMinScore": 4 }),
+    } as unknown as WebviewHost["api"],
     onInit: () => () => {},
     onRefresh: () => () => {},
     onUpdateDone: () => () => {},
@@ -159,6 +166,58 @@ describe("risk App", () => {
       "Suggested reviewers: Ada Lovelace <ada@example.com>",
       expect.any(String),
     );
+  });
+
+  it("ranks the riskiest files with markers and opens a file on click", async () => {
+    const riskRange = vi.fn().mockResolvedValue(REPORT);
+    const changeImpact = vi.fn().mockResolvedValue(IMPACT);
+    const openFile = vi.fn();
+    render(
+      <App
+        host={makeHost(riskRange, changeImpact, { openFile })}
+        repo={REPO}
+        params={{}}
+        refreshToken={0}
+      />,
+    );
+
+    expect(await screen.findByText("Riskiest files in this change")).toBeTruthy();
+    expect(screen.getByText("hotspot")).toBeTruthy();
+    const bars = screen.getAllByTitle("Risk relative to the riskiest file in this change");
+    expect(bars).toHaveLength(2);
+    // Sorted riskiest first: b.ts (0.82) gets the full bar, a.ts a partial one.
+    expect((bars[0]!.firstElementChild as HTMLElement).style.width).toBe("100%");
+
+    // b.ts also appears in the test-gap card; the riskiest row renders first.
+    fireEvent.click(screen.getAllByTitle("Open src/b.ts")[0]!);
+    expect(openFile).toHaveBeenCalledWith("src/b.ts");
+  });
+
+  it("renders verdict chips that scroll to their sections", async () => {
+    const riskRange = vi.fn().mockResolvedValue(REPORT);
+    const changeImpact = vi.fn().mockResolvedValue(IMPACT);
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    render(
+      <App host={makeHost(riskRange, changeImpact)} repo={REPO} params={{}} refreshToken={0} />,
+    );
+
+    expect(await screen.findByText("may affect 1 downstream file")).toBeTruthy();
+    expect(screen.getByText("1 co-change partner untouched")).toBeTruthy();
+    expect(screen.getByText("1 changed file has no associated test")).toBeTruthy();
+
+    fireEvent.click(screen.getByText("may affect 1 downstream file"));
+    expect(scrollIntoView).toHaveBeenCalled();
+  });
+
+  it("renders no verdict chips on a clean tree", async () => {
+    const riskRange = vi.fn().mockResolvedValue(REPORT);
+    render(<App host={makeHost(riskRange)} repo={REPO} params={{}} refreshToken={0} />);
+
+    await screen.findByText("7.4");
+    expect(screen.queryByText(/downstream file/)).toBeNull();
+    expect(screen.queryByText(/untouched/)).toBeNull();
+    expect(screen.queryByText(/associated test/)).toBeNull();
   });
 
   it("shows a clean-tree empty state when nothing changed", async () => {

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   Copy,
+  Gauge,
   GitCompare,
   GitPullRequest,
   Network,
@@ -17,6 +18,8 @@ import type {
   ChangeImpactReport,
   RiskRangeReport,
 } from "../../../../src/shared/webviewMessages";
+import { selectMissingCochanges } from "../../../../src/shared/changeImpact";
+import { selectDirectRisks, type RankedDirectRisk } from "./selectors";
 
 /** Human labels for the raw change features the endpoint returns, in report order. */
 const FEATURE_LABELS: ReadonlyArray<readonly [string, string]> = [
@@ -44,6 +47,22 @@ const TONE_VAR: Record<Tone, string> = {
   high: "var(--color-risk-high)",
 };
 
+/** Fallback co-change floor when settings cannot be read; mirrors the
+ *  changeIntel.cochangeMinScore default. */
+const COCHANGE_MIN_SCORE = 4;
+
+/** Anchors the verdict chips scroll to; each id sits on its impact card. */
+const SECTION_IDS = {
+  directRisks: "impact-direct-risks",
+  downstream: "impact-downstream",
+  cochanges: "impact-cochanges",
+  testGaps: "impact-test-gaps",
+} as const;
+
+function scrollToSection(id: string) {
+  document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
 /** Formats a contribution with an explicit sign (positive raises risk). */
 function signed(value: number): string {
   return `${value >= 0 ? "+" : "−"}${Math.abs(value).toFixed(2)}`;
@@ -59,11 +78,20 @@ export function App({ host, repo, refreshToken }: ViewProps<"risk">) {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [impactLoading, setImpactLoading] = useState(true);
+  const [cochangeFloor, setCochangeFloor] = useState(COCHANGE_MIN_SCORE);
 
   const load = useCallback(() => {
     setLoading(true);
     setImpactLoading(true);
     setError(null);
+    // Keep the panel's co-change floor in step with the nudge's setting.
+    host.api
+      .getSettings()
+      .then((s) => {
+        const floor = s["changeIntel.cochangeMinScore"];
+        if (typeof floor === "number") setCochangeFloor(floor);
+      })
+      .catch(() => undefined);
     host.api
       .riskRange()
       .then((r) => setReport(r))
@@ -120,7 +148,13 @@ export function App({ host, repo, refreshToken }: ViewProps<"risk">) {
       ) : report ? (
         <>
           <ScoreHero report={report} />
-          <ChangeImpact impact={impact} loading={impactLoading} host={host} />
+          <VerdictStrip impact={impact} cochangeFloor={cochangeFloor} />
+          <ChangeImpact
+            impact={impact}
+            loading={impactLoading}
+            host={host}
+            cochangeFloor={cochangeFloor}
+          />
           <RiskBreakdown report={report} />
         </>
       ) : null}
@@ -224,6 +258,62 @@ function ScoreHero({ report }: { report: RiskRangeReport }) {
   );
 }
 
+/** Quiet one-line summary of the blast data. Each chip anchors its section;
+ *  zero counts render no chip, and a clean tree renders nothing at all. */
+function VerdictStrip({
+  impact,
+  cochangeFloor,
+}: {
+  impact: ChangeImpactReport | null;
+  cochangeFloor: number;
+}) {
+  const blast = impact?.blast;
+  if (!impact || !blast || impact.gitUnavailable) return null;
+
+  const downstream = blast.transitive_affected.length;
+  const cochanges = selectMissingCochanges(impact, cochangeFloor).length;
+  const gaps = blast.test_gaps.length;
+
+  const chips: Array<{ id: string; label: string }> = [];
+  if (downstream > 0) {
+    chips.push({
+      id: SECTION_IDS.downstream,
+      label: `may affect ${downstream} downstream file${downstream === 1 ? "" : "s"}`,
+    });
+  }
+  if (cochanges > 0) {
+    chips.push({
+      id: SECTION_IDS.cochanges,
+      label: `${cochanges} co-change partner${cochanges === 1 ? "" : "s"} untouched`,
+    });
+  }
+  if (gaps > 0) {
+    chips.push({
+      id: SECTION_IDS.testGaps,
+      label:
+        gaps === 1
+          ? "1 changed file has no associated test"
+          : `${gaps} changed files have no associated test`,
+    });
+  }
+  if (chips.length === 0) return null;
+
+  return (
+    <div className="flex flex-wrap gap-2">
+      {chips.map((c) => (
+        <button
+          key={c.id}
+          type="button"
+          onClick={() => scrollToSection(c.id)}
+          className="inline-flex items-center rounded-full border border-[var(--color-border-default)] px-2.5 py-1 text-xs text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-surface)]"
+        >
+          {c.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 /** The statistical breakdown: what moves the score, and the raw change shape. */
 function RiskBreakdown({ report }: { report: RiskRangeReport }) {
   const r = report.result;
@@ -301,53 +391,39 @@ function RiskBreakdown({ report }: { report: RiskRangeReport }) {
 // Change impact (blast radius + reviewers for the working change set)
 // ---------------------------------------------------------------------------
 
-/** One missing co-change partner, grouped from the per-pair warnings. */
-interface GroupedCochange {
-  partner: string;
-  score: number;
-  withChanged: string;
-}
-
-function groupCochanges(
-  warnings: ReadonlyArray<{ changed: string; missing_partner: string; score: number }>,
-): GroupedCochange[] {
-  const map = new Map<string, GroupedCochange>();
-  for (const w of warnings) {
-    const e = map.get(w.missing_partner);
-    if (e) {
-      if (w.score > e.score) {
-        e.score = w.score;
-        e.withChanged = w.changed;
-      }
-    } else {
-      map.set(w.missing_partner, {
-        partner: w.missing_partner,
-        score: w.score,
-        withChanged: w.changed,
-      });
-    }
-  }
-  return [...map.values()].sort((a, b) => b.score - a.score);
-}
-
 function ChangeImpact({
   impact,
   loading,
   host,
+  cochangeFloor,
 }: {
   impact: ChangeImpactReport | null;
   loading: boolean;
   host: WebviewHost;
+  cochangeFloor: number;
 }) {
   if (loading && !impact) {
     return (
-      <Card>
-        <CardContent className="space-y-3 py-5" aria-hidden>
-          <div className="h-4 w-40 animate-pulse rounded bg-[var(--color-bg-inset)]" />
-          <div className="h-3 w-full animate-pulse rounded bg-[var(--color-bg-inset)]" />
-          <div className="h-3 w-2/3 animate-pulse rounded bg-[var(--color-bg-inset)]" />
-        </CardContent>
-      </Card>
+      <>
+        <Card>
+          <CardContent className="space-y-3 py-5" aria-hidden>
+            <div className="h-4 w-40 animate-pulse rounded bg-[var(--color-bg-inset)]" />
+            {Array.from({ length: 3 }).map((_, i) => (
+              <div key={i} className="flex items-center gap-2">
+                <div className="h-3 flex-1 animate-pulse rounded bg-[var(--color-bg-inset)]" />
+                <div className="h-1.5 w-16 shrink-0 animate-pulse rounded-full bg-[var(--color-bg-inset)]" />
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="space-y-3 py-5" aria-hidden>
+            <div className="h-4 w-40 animate-pulse rounded bg-[var(--color-bg-inset)]" />
+            <div className="h-3 w-full animate-pulse rounded bg-[var(--color-bg-inset)]" />
+            <div className="h-3 w-2/3 animate-pulse rounded bg-[var(--color-bg-inset)]" />
+          </CardContent>
+        </Card>
+      </>
     );
   }
   if (!impact) return null;
@@ -374,8 +450,9 @@ function ChangeImpact({
   }
 
   const blast = impact.blast;
+  const directRisks = selectDirectRisks(impact);
   const downstream = blast?.transitive_affected ?? [];
-  const cochanges = groupCochanges(blast?.cochange_warnings ?? []);
+  const cochanges = selectMissingCochanges(impact, cochangeFloor);
   const testGaps = blast?.test_gaps ?? [];
   const reviewers = impact.reviewers;
   const overall = blast?.overall_risk_score ?? null;
@@ -402,8 +479,23 @@ function ChangeImpact({
         </span>
       </div>
 
+      {directRisks.length > 0 && (
+        <ImpactCard
+          id={SECTION_IDS.directRisks}
+          icon={<Gauge className="h-4 w-4" />}
+          title="Riskiest files in this change"
+          hint="Per-file risk from history and structure. Start your review here."
+        >
+          {directRisks.slice(0, 10).map((f) => (
+            <DirectRiskRow key={f.path} risk={f} onOpen={() => host.openFile(f.path)} />
+          ))}
+          <MoreRow count={directRisks.length - 10} />
+        </ImpactCard>
+      )}
+
       {downstream.length > 0 && (
         <ImpactCard
+          id={SECTION_IDS.downstream}
           icon={<Network className="h-4 w-4" />}
           title="Downstream of your changes"
           hint="These files depend on what you changed. Verify they still work."
@@ -422,6 +514,7 @@ function ChangeImpact({
 
       {cochanges.length > 0 && (
         <ImpactCard
+          id={SECTION_IDS.cochanges}
           icon={<GitPullRequest className="h-4 w-4" />}
           title="Usually changes together"
           hint="History suggests these often change with your edits. Advisory, not a rule."
@@ -440,6 +533,7 @@ function ChangeImpact({
 
       {testGaps.length > 0 && (
         <ImpactCard
+          id={SECTION_IDS.testGaps}
           icon={<TestTube className="h-4 w-4" />}
           title="Changed without a test"
           hint="These changed files have no associated test file."
@@ -457,18 +551,21 @@ function ChangeImpact({
 }
 
 function ImpactCard({
+  id,
   icon,
   title,
   hint,
   children,
 }: {
+  /** Anchor for the verdict chips; omitted for cards without a chip. */
+  id?: string;
   icon: React.ReactNode;
   title: string;
   hint: string;
   children: React.ReactNode;
 }) {
   return (
-    <Card>
+    <Card id={id}>
       <CardHeader className="pb-2">
         <CardTitle className="flex items-center gap-2 text-sm">
           <span className="text-[var(--color-text-tertiary)]">{icon}</span>
@@ -508,6 +605,47 @@ function PathRow({
           {trailing}
         </span>
       )}
+    </button>
+  );
+}
+
+/** A clickable file row with a quiet relative risk bar and a hotspot marker. */
+function DirectRiskRow({ risk, onOpen }: { risk: RankedDirectRisk; onOpen: () => void }) {
+  const name = risk.path.split("/").pop() || risk.path;
+  const dir = risk.path.slice(0, risk.path.length - name.length);
+  const pct = Math.min(100, Math.max(0, risk.share * 100));
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      title={`Open ${risk.path}`}
+      className="flex w-full items-center gap-2 rounded px-1.5 py-1 text-left text-sm transition-colors hover:bg-[var(--color-bg-surface)]"
+    >
+      <span className="min-w-0 flex-1 truncate">
+        {dir && <span className="text-[var(--color-text-tertiary)]">{dir}</span>}
+        <span className="text-[var(--color-text-primary)]">{name}</span>
+      </span>
+      {risk.hotspot && (
+        <span
+          className="shrink-0 text-xs text-[var(--color-text-tertiary)]"
+          title="Changes often in recent history"
+        >
+          hotspot
+        </span>
+      )}
+      <span
+        className="h-1.5 w-16 shrink-0 overflow-hidden rounded-full bg-[var(--color-bg-elevated)]"
+        title="Risk relative to the riskiest file in this change"
+      >
+        <span
+          className="block h-full rounded-full"
+          style={{
+            width: `${pct}%`,
+            backgroundColor:
+              "color-mix(in srgb, var(--color-text-secondary) 45%, transparent)",
+          }}
+        />
+      </span>
     </button>
   );
 }

@@ -8,11 +8,11 @@
 
 export interface DirectRiskEntry {
   path: string;
-  /** 0–1 normalised. UI multiplies by 10 for display. */
+  /** centrality * (1 + temporal_hotspot); unbounded, compare within a change set. */
   risk_score: number;
-  /** 0–1 normalised. */
+  /** 0-1 normalised. */
   temporal_hotspot: number;
-  /** 0–1 centrality fraction. */
+  /** Raw graph centrality (pagerank); typically well below 1. */
   centrality: number;
 }
 
