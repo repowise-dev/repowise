@@ -29,6 +29,7 @@
     "./meta": "./src/meta.ts",
     "./modules": "./src/modules.ts",
     "./overview": "./src/overview.ts",
+    "./pagination": "./src/pagination.ts",
     "./owners": "./src/owners.ts",
     "./pages": "./src/pages.ts",
     "./providers": "./src/providers.ts",
