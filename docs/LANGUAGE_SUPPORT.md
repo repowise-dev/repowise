@@ -141,7 +141,7 @@ endpoints or targets where applicable.
 | **TOML** | `.toml` | -- |
 | **Markdown** | `.md` `.mdx` `.markdown` `.mdown` | -- |
 | **AsciiDoc** | `.adoc` `.asciidoc` | -- |
-| **SQL** | `.sql` | -- |
+| **SQL** | `.sql` | Graduated: DDL symbols + dbt lineage, see [SQL + dbt](#sql--dbt) |
 | **Shell** | `.sh` `.bash` `.zsh` | -- |
 
 ### Partial (Luau, Roblox)
@@ -178,6 +178,35 @@ honest file-to-file dependencies, no symbol-level claims.
 | **Erlang** | `.erl` `.hrl` | `-include` / `-include_lib` / `-behaviour` + module-qualified calls (`mod:fun(`) -> `-module()` index; qualified calls are strict local-hit-or-drop (never mint externals) |
 | **F#** | `.fs` `.fsi` `.fsx` | `open` -> file-level `namespace`/`module` index (unambiguous single-file declarations only), plus the fsproj `<Compile Include>` compile-order dependency spine (a real F# constraint: files may only reference earlier files) |
 
+### SQL + dbt
+
+SQL is parsed by a dedicated special handler (sqlglot, multi-dialect and
+error-tolerant) rather than tree-sitter, plus the lightweight import tier
+for dbt lineage. Two independent capabilities:
+
+**DDL symbols (any `.sql` file).** `CREATE TABLE` / `VIEW` /
+`MATERIALIZED VIEW` -> class-kind symbols with columns in the signature;
+`CREATE FUNCTION` / `PROCEDURE` -> function-kind symbols. Tables get wiki
+pages, search hits, and `get_symbol` lookups (`schema.sql::public.users`).
+Indexes and triggers are deliberately not symbols. Dialect is sqlglot's
+permissive default; set `sql_dialect` in `.repowise/config.yaml`
+(`postgres`, `mysql`, `tsql`, `clickhouse`, ...) for dialect-specific
+syntax like PL/pgSQL `$$` bodies. Any parse problem degrades the file to
+plain passthrough: no symbols, never a crash, never a guess.
+
+**dbt lineage (gated on `dbt_project.yml`).** `{{ ref('model') }}`,
+`{{ ref('package', 'model') }}`, and `{{ source('schema', 'table') }}`
+become real import edges: refs resolve against a per-project model-name
+index built from `dbt_project.yml`'s `model-paths` / `seed-paths` /
+`snapshot-paths` (defaults `models/` `seeds/` `snapshots/`; `.csv` seeds
+are ref-able), sources become typed `external:source:<schema>.<table>`
+nodes marking the warehouse boundary, and refs to uninstalled packages
+become `external:dbt:<package>.<model>`. When two projects in a monorepo
+declare the same model name, the importer's own project wins; two-arg
+refs prefer the project whose declared `name` matches. Everything that
+rides the import graph falls out free: model-level lineage, hotspots,
+co-change, ownership, and Leiden communities of the DAG.
+
 ### Structural (git + file tree only)
 
 These languages are tracked in git history (blame, hotspot analysis,
@@ -200,7 +229,7 @@ File discovered by FileTraverser
 Extension/filename -> LanguageTag  (via LanguageRegistry)
         |
         +-- Config/data language?  -> empty ParsedFile (passthrough)
-        +-- Special format?        -> special_handlers.py (OpenAPI/Dockerfile/Makefile)
+        +-- Special format?        -> special_handlers.py (OpenAPI/Dockerfile/Makefile/SQL)
         +-- Has grammar?           -> tree-sitter AST parsing
                 |
                 v
@@ -226,8 +255,9 @@ Extension/filename -> LanguageTag  (via LanguageRegistry)
           Go:     go.mod module path stripping
           Rust:   crate::/self::/super::, mod.rs probing
           C/C++:  compile_commands.json include directories
-          Lightweight tier (Elixir/Dart/Clojure/Haskell/Erlang/F#):
+          Lightweight tier (Elixir/Dart/Clojure/Haskell/Erlang/F#/dbt SQL):
                   regex-extracted imports vs a declared-module-name index
+                  (dbt: ref()/source() vs a per-project model-name index)
           Other:  stem-map fallback (filename matching)
                 |
                 v
@@ -643,3 +673,4 @@ edits. The current coverage:
 | Dart | Good | Lightweight tier shipped; AST upgrade planned (`tree-sitter-dart` available) |
 | Elixir | Good | Lightweight tier shipped; AST upgrade planned (`tree-sitter-elixir` available) |
 | F# | Good | Lightweight tier shipped; AST upgrade planned (`tree-sitter-f-sharp` available) |
+| SQL / dbt | -- | DDL symbols (sqlglot) + dbt lineage shipped; next: app-to-database contracts (workspace data extractor), then precision-gated SQL health markers |

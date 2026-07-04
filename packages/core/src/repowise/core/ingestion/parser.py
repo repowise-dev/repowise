@@ -69,6 +69,7 @@ from .parser_helpers import (
     _run_query,
 )
 from .python_local_refs import extract_python_local_refs
+from .special_handlers import SPECIAL_HANDLER_LANGUAGES, parse_special
 
 log = structlog.get_logger(__name__)
 
@@ -226,6 +227,14 @@ class ASTParser:
     def parse_file(self, file_info: FileInfo, source: bytes) -> ParsedFile:
         """Parse *source* bytes and return a fully populated ParsedFile."""
         lang = file_info.language
+
+        # Non-tree-sitter formats (OpenAPI, Dockerfile, Makefile, SQL) parse
+        # via dedicated handlers. Checked before the grammar lookup: none of
+        # these tags carry a LanguageConfig, so the no-grammar fallback below
+        # would otherwise swallow them.
+        if lang in SPECIAL_HANDLER_LANGUAGES:
+            return parse_special(file_info, source, lang)
+
         config = LANGUAGE_CONFIGS.get(lang)
         # .tsx files need the JSX-aware grammar; tree-sitter-typescript's
         # default `language_typescript` errors out on every `<Component />`
@@ -254,12 +263,6 @@ class ASTParser:
                 docstring=None,
                 parse_errors=[],
             )
-
-        # Delegate to special handlers for non-tree-sitter formats
-        if lang in ("openapi", "dockerfile", "makefile"):
-            from .special_handlers import parse_special
-
-            return parse_special(file_info, source, lang)
 
         parser = Parser(language)
         tree = parser.parse(source)

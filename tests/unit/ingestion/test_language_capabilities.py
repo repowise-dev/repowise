@@ -154,6 +154,8 @@ _PARTIAL = {
     "haskell",
     "erlang",
     "fsharp",
+    # dbt ref()/source() lineage (model-name index gated on dbt_project.yml).
+    "sql",
 }
 
 

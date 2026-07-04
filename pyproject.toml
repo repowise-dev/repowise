@@ -49,6 +49,8 @@ dependencies = [
     "tree-sitter-scala>=0.23,<1",
     "tree-sitter-php>=0.23,<1",
     "tree-sitter-luau>=1.2,<2",
+    # SQL parsing (multi-dialect, error-tolerant, pure Python)
+    "sqlglot>=26,<28",
     # Dependency graph
     "networkx>=3.3,<4",
     "scipy>=1.11,<2",
