@@ -16,6 +16,7 @@ const TYPE_OPTIONS = [
   { value: "http", label: "HTTP" },
   { value: "grpc", label: "gRPC" },
   { value: "topic", label: "Topic" },
+  { value: "data", label: "Table" },
 ];
 
 const ROLE_OPTIONS = [

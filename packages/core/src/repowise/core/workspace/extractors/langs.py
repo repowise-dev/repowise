@@ -12,6 +12,8 @@ from repowise.core.ingestion.languages.registry import REGISTRY as _REGISTRY
 JS_TS = _REGISTRY.extensions_for(["javascript", "typescript"])
 PYTHON = _REGISTRY.extensions_for(["python"])
 JAVA = _REGISTRY.extensions_for(["java"])
+KOTLIN = _REGISTRY.extensions_for(["kotlin"])
+RUBY = _REGISTRY.extensions_for(["ruby"])
 PHP = _REGISTRY.extensions_for(["php"])
 GO = _REGISTRY.extensions_for(["go"])
 CSHARP = _REGISTRY.extensions_for(["csharp"])
