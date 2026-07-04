@@ -38,18 +38,104 @@ router = APIRouter(
 @router.post("", response_model=RepoResponse, status_code=201)
 async def create_repo(
     body: RepoCreate,
+    request: Request,
     session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> RepoResponse:
-    """Register a new repository (or update if same local_path exists)."""
-    repo = await crud.upsert_repository(
-        session,
-        name=body.name,
+    """Register a new repository (or update if same local_path exists).
+
+    The repository's data lives in its own ``<repo>/.repowise/wiki.db`` (the
+    same store the CLI uses); the server's primary database only keeps a
+    registry row so the repo stays listed across restarts. With ``index``
+    (the default) the first full index — docs included, when a provider is
+    configured — is enqueued immediately; the created job's id is returned
+    as ``initial_job_id`` so clients can attach to its progress stream.
+    """
+    if not body.index:
+        # Metadata-only registration (kept for API compatibility and tests):
+        # the row lands in the ambient DB; per-repo storage is established
+        # when the repo is first indexed (here with index=true, or later via
+        # POST /api/repos/{id}/index).
+        repo = await crud.upsert_repository(
+            session,
+            name=body.name,
+            local_path=body.local_path,
+            url=body.url,
+            default_branch=body.default_branch,
+            settings=body.settings,
+        )
+        return RepoResponse.from_orm(repo)
+
+    from repowise.server.repo_db import ensure_repo_registration, upsert_registry_row
+
+    app_state = request.app.state
+
+    # Canonical row in the repo-local DB; the factory routes all later access.
+    repo_factory, repo_id = await ensure_repo_registration(
+        app_state,
         local_path=body.local_path,
+        name=body.name,
         url=body.url,
         default_branch=body.default_branch,
         settings=body.settings,
     )
-    return RepoResponse.from_orm(repo)
+
+    # Apply any metadata updates to the canonical row (registration itself
+    # never clobbers an existing row).
+    async with get_session(repo_factory) as repo_session:
+        repo = await crud.get_repository(repo_session, repo_id)
+        if repo is not None:
+            repo.name = body.name
+            repo.url = body.url
+            repo.default_branch = body.default_branch
+            if body.settings is not None:
+                import json as _json
+
+                repo.settings_json = _json.dumps(body.settings)
+            await repo_session.flush()
+            response = RepoResponse.from_orm(repo)
+        else:  # pragma: no cover — the row was created two lines above
+            raise HTTPException(status_code=500, detail="Repository registration failed")
+
+    # Registry row in the primary DB (skip when the repo IS the primary DB).
+    if repo_factory is not app_state.session_factory:
+        await upsert_registry_row(
+            session,
+            repo_id=repo_id,
+            name=body.name,
+            local_path=body.local_path,
+            url=body.url,
+            default_branch=body.default_branch,
+            settings=body.settings,
+        )
+        await session.commit()
+
+    response.initial_job_id = await _enqueue_index_job(request, repo_factory, repo_id)
+    return response
+
+
+async def _enqueue_index_job(request: Request, session_factory, repo_id: str) -> str | None:
+    """Create and launch an ``initial_index`` job unless one is already active."""
+    async with get_session(session_factory) as session:
+        active = await session.execute(
+            select(GenerationJob.id)
+            .where(GenerationJob.repository_id == repo_id)
+            .where(GenerationJob.status.in_(["pending", "running"]))
+            .limit(1)
+        )
+        if active.scalar_one_or_none() is not None:
+            return None
+        job = await crud.upsert_generation_job(
+            session,
+            repository_id=repo_id,
+            status="pending",
+            config={"mode": "initial_index"},
+        )
+        # Commit (not just flush) so the background task's separate session
+        # can see the job row.
+        await session.commit()
+        job_id = job.id
+    _launch_job_task(request, job_id, repo_id)
+    return job_id
 
 
 @router.get("", response_model=list[RepoResponse])
@@ -229,6 +315,7 @@ async def update_repo(
 @router.delete("/{repo_id}")
 async def delete_repo(
     repo_id: str,
+    request: Request,
     session: AsyncSession = Depends(get_db_session),  # noqa: B008
     fts=Depends(get_fts),  # noqa: B008
 ) -> dict:
@@ -240,14 +327,29 @@ async def delete_repo(
     # Collect page IDs before CASCADE deletes the Page rows
     page_ids = await crud.list_page_ids(session, repo_id)
 
-    # Clean up FTS index (FTS5 virtual table has no FK cascade).
-    # fts is always initialized in the lifespan before the server accepts
-    # requests, so this guard is purely defensive.
-    if fts is not None:
-        await fts.delete_many(page_ids)
+    # Clean up FTS index (FTS5 virtual table has no FK cascade). Use the
+    # repo's own FTS instance when it lives in a per-repo database.
+    repo_fts = getattr(request.app.state, "workspace_fts", {}).get(repo_id) or fts
+    if repo_fts is not None:
+        await repo_fts.delete_many(page_ids)
 
     # Delete repository — CASCADE handles all child ORM tables
     await crud.delete_repository(session, repo_id)
+
+    # Drop per-repo routing and the primary-DB registry row, if any, so the
+    # repo neither lingers in listings nor resurrects on the next restart.
+    app_state = request.app.state
+    ws_sessions = getattr(app_state, "workspace_sessions", None) or {}
+    if repo_id in ws_sessions:
+        ws_sessions.pop(repo_id, None)
+        getattr(app_state, "workspace_fts", {}).pop(repo_id, None)
+        try:
+            async with get_session(app_state.session_factory) as primary:
+                registry = await crud.get_repository(primary, repo_id)
+                if registry is not None:
+                    await crud.delete_repository(primary, repo_id)
+        except Exception:
+            logger.debug("registry_row_delete_failed", extra={"repo_id": repo_id})
 
     return {"ok": True, "deleted_pages": len(page_ids)}
 
@@ -401,6 +503,133 @@ async def full_resync(
     return {"job_id": job.id, "status": "accepted"}
 
 
+@router.post("/{repo_id}/index", status_code=202)
+async def index_repo(
+    repo_id: str,
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+) -> dict:
+    """Run the first full index (docs included) for a registered repository.
+
+    Unlike ``/sync`` and ``/full-resync``, this endpoint also establishes the
+    repo-local database and writes the ``repowise init`` baseline
+    (``state.json``, ``config.yaml``), so a repo that was merely registered
+    becomes fully indexed and CLI-compatible. Safe to call on an already
+    indexed repo — it behaves like a full rebuild.
+    """
+    from repowise.server.repo_db import ensure_repo_registration
+
+    repo = await crud.get_repository(session, repo_id)
+    if repo is None:
+        raise HTTPException(status_code=404, detail="Repository not found")
+
+    factory, canonical_id = await ensure_repo_registration(
+        request.app.state,
+        local_path=repo.local_path,
+        name=repo.name,
+        url=repo.url,
+        default_branch=repo.default_branch,
+        repo_id=repo.id,
+    )
+    job_id = await _enqueue_index_job(request, factory, canonical_id)
+    if job_id is None:
+        raise HTTPException(
+            status_code=409, detail="A job is already in progress for this repository"
+        )
+    return {"job_id": job_id, "status": "accepted"}
+
+
+@router.post("/{repo_id}/preflight")
+async def preflight_index(
+    repo_id: str,
+    request: Request,
+    coverage_pct: float = Query(0.20, ge=0.0, le=1.0),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+) -> dict:
+    """Pre-index readiness check: provider connectivity + rough cost estimate.
+
+    Mirrors the CLI's pre-generation gate — a live provider smoke test plus a
+    page-count/cost estimate — so the UI can surface the expected spend and a
+    broken API key *before* launching an index job. The estimate is derived
+    from a fast file walk (no parsing), so page counts are approximate; the
+    reported range absorbs the variance.
+    """
+    repo = await crud.get_repository(session, repo_id)
+    if repo is None:
+        raise HTTPException(status_code=404, detail="Repository not found")
+
+    repo_path = repo.local_path
+    from repowise.server.job_executor import _repo_exclude_patterns
+
+    exclude_patterns = _repo_exclude_patterns(repo, repo_path)
+
+    # ---- Provider smoke test (same probe the CLI uses at init) ----
+    provider_ok = False
+    provider_name: str | None = None
+    model_name: str | None = None
+    provider_error: str | None = None
+    llm_client = None
+    try:
+        from repowise.server.provider_config import get_chat_provider_instance
+
+        llm_client = get_chat_provider_instance(repo_path=repo_path)
+        provider_name = getattr(llm_client, "provider_name", None)
+        model_name = getattr(llm_client, "model_name", None)
+    except Exception as exc:
+        provider_error = str(exc)
+
+    if llm_client is not None:
+        try:
+            await llm_client.generate("You are a test.", "Reply with OK.", max_tokens=50)
+            provider_ok = True
+        except Exception as exc:
+            provider_error = str(exc)
+
+    # ---- File count + cost estimate ----
+    def _count_files() -> int:
+        from repowise.core.ingestion import FileTraverser
+
+        traverser = FileTraverser(
+            Path(repo_path),
+            extra_exclude_patterns=exclude_patterns or None,
+        )
+        return sum(1 for _ in traverser.traverse())
+
+    try:
+        file_count = await asyncio.to_thread(_count_files)
+    except Exception:
+        logger.exception("preflight_file_count_failed", extra={"repo_id": repo_id})
+        file_count = 0
+
+    estimate: dict | None = None
+    if provider_name and model_name:
+        from repowise.core.cost_estimator import approximate_generation_plan, estimate_cost
+
+        plans = approximate_generation_plan(file_count, coverage_pct=coverage_pct)
+        est = estimate_cost(plans, provider_name, model_name, repo_path=repo_path)
+        estimate = {
+            "total_pages": est.total_pages,
+            "estimated_cost_usd": round(est.estimated_cost_usd, 4),
+            "cost_low_usd": round(est.cost_range.low, 4) if est.cost_range else None,
+            "cost_high_usd": round(est.cost_range.high, 4) if est.cost_range else None,
+            "estimated_input_tokens": est.estimated_input_tokens,
+            "estimated_output_tokens": est.estimated_output_tokens,
+            "is_calibrated": est.is_calibrated,
+            "coverage_pct": coverage_pct,
+        }
+
+    return {
+        "provider": {
+            "ok": provider_ok,
+            "name": provider_name,
+            "model": model_name,
+            "error": provider_error,
+        },
+        "file_count": file_count,
+        "estimate": estimate,
+    }
+
+
 def _resolve_repo_session_factory(app_state, repo_id: str):
     """Backward-compatible alias for :func:`deps.resolve_session_factory`.
 
@@ -431,7 +660,7 @@ def _launch_job_task(request: Request, job_id: str, repo_id: str) -> None:
     app_state = request.app.state
     session_factory = _resolve_repo_session_factory(app_state, repo_id)
 
-    async def _mark_failed(reason: str) -> None:
+    async def _mark_terminal(status: str, reason: str) -> None:
         try:
             from repowise.core.persistence.crud import update_job_status
 
@@ -439,7 +668,7 @@ def _launch_job_task(request: Request, job_id: str, repo_id: str) -> None:
                 await update_job_status(
                     session,
                     job_id,
-                    "failed",
+                    status,
                     error_message=reason[:500],
                 )
         except Exception:
@@ -454,16 +683,25 @@ def _launch_job_task(request: Request, job_id: str, repo_id: str) -> None:
         logger.exception("create_task_failed", extra={"job_id": job_id})
         # Schedule the failure-marking on the running loop; we're already in
         # an async request handler so a fresh task is fine.
-        asyncio.create_task(_mark_failed(f"Failed to launch background task: {exc}"))
+        asyncio.create_task(_mark_terminal("failed", f"Failed to launch background task: {exc}"))
         return
 
     bg_tasks: set[asyncio.Task] = app_state.background_tasks  # type: ignore[assignment]
     bg_tasks.add(task)
+    # Track by job id so the cancel endpoint can interrupt the task itself.
+    job_tasks = getattr(app_state, "job_tasks", None)
+    if job_tasks is None:
+        job_tasks = {}
+        app_state.job_tasks = job_tasks
+    job_tasks[job_id] = task
 
     def _on_done(t: asyncio.Task) -> None:
         bg_tasks.discard(t)
+        job_tasks.pop(job_id, None)
         if t.cancelled():
-            asyncio.create_task(_mark_failed("Job task was cancelled"))
+            # execute_job normally records "cancelled" itself; this covers a
+            # cancel that landed before its try block was entered.
+            asyncio.create_task(_mark_terminal("cancelled", "Cancelled by user"))
             return
         exc = t.exception()
         if exc is not None:
@@ -471,7 +709,7 @@ def _launch_job_task(request: Request, job_id: str, repo_id: str) -> None:
             # execute_job already tries to mark failed in its except block,
             # but if that itself raised we must still ensure the row is
             # not left in pending/running.
-            asyncio.create_task(_mark_failed(f"Background task crashed: {exc}"))
+            asyncio.create_task(_mark_terminal("failed", f"Background task crashed: {exc}"))
 
     task.add_done_callback(_on_done)
 

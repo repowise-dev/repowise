@@ -16,6 +16,12 @@ from typing import Any
 
 import structlog
 
+from repowise.core.cancellation import (
+    CancellationToken,
+    PipelineCancelled,
+    get_active_token,
+    set_active_token,
+)
 from repowise.core.persistence.crud import (
     get_generation_job,
     get_repository,
@@ -23,6 +29,7 @@ from repowise.core.persistence.crud import (
 )
 from repowise.core.persistence.database import get_session
 from repowise.core.pipeline import persist_pipeline_result, run_pipeline
+from repowise.server.job_events import JobEventBuffer, create_event_buffer
 
 logger = structlog.get_logger(__name__)
 
@@ -119,9 +126,15 @@ class JobProgressCallback:
     is sufficient to push live progress to the frontend.
     """
 
-    def __init__(self, job_id: str, session_factory: Any) -> None:
+    def __init__(
+        self,
+        job_id: str,
+        session_factory: Any,
+        events: JobEventBuffer | None = None,
+    ) -> None:
         self._job_id = job_id
         self._session_factory = session_factory
+        self._events = events
         self._completed = 0
         self._total: int | None = None
         self._phase = ""
@@ -142,6 +155,8 @@ class JobProgressCallback:
 
     def on_phase_start(self, phase: str, total: int | None) -> None:
         self._phase = phase
+        if self._events is not None:
+            self._events.set_phase(phase, total)
         # Reset per-phase counters so the bar shows progress within the current phase
         self._completed = 0
         self._total = total
@@ -159,6 +174,8 @@ class JobProgressCallback:
             self._sync_job_status()
 
     def on_message(self, level: str, text: str) -> None:
+        if self._events is not None:
+            self._events.add(level, text)
         getattr(logger, level, logger.info)(text, job_id=self._job_id, phase=self._phase)
 
     def _sync_job_status(self, *, force: bool = False) -> None:
@@ -236,6 +253,15 @@ class JobProgressCallback:
                 logger.debug("progress_update_failed", job_id=self._job_id, exc_info=True)
 
 
+def get_cancel_tokens(app_state: Any) -> dict[str, CancellationToken]:
+    """Per-job cancellation tokens, keyed by job id (created on demand)."""
+    tokens = getattr(app_state, "job_cancel_tokens", None)
+    if tokens is None:
+        tokens = {}
+        app_state.job_cancel_tokens = tokens
+    return tokens
+
+
 async def execute_job(
     job_id: str,
     app_state: Any,
@@ -250,7 +276,15 @@ async def execute_job(
     2. Resolves the LLM provider from server config
     3. Runs ``run_pipeline()``
     4. Persists all results via ``persist_pipeline_result()``
-    5. Marks the job as ``completed`` (or ``failed`` on error)
+    5. Marks the job as ``completed`` (or ``failed`` on error,
+       ``cancelled`` on a user cancel)
+
+    Job modes (``config_json.mode``): ``sync`` (default) indexes then
+    regenerates only changed pages; ``full_resync`` regenerates all docs;
+    ``initial_index`` is the first-ever index of a repo triggered from the
+    API — full pipeline with docs plus the ``state.json``/``config.yaml``
+    baseline the CLI writes at ``repowise init``; ``index_only`` refreshes
+    the index/analysis without any LLM work.
 
     In workspace mode, each repo has its own ``wiki.db`` and the route
     handler that created this job committed it to a per-repo session
@@ -262,6 +296,18 @@ async def execute_job(
     start = time.monotonic()
     progress: JobProgressCallback | None = None
     session_factory = None
+
+    # Cooperative cancellation: the cancel endpoint flips this token (which
+    # unwinds the CPU-bound loops that poll check_cancelled) and cancels the
+    # asyncio task (which interrupts the awaits in between). The core token
+    # slot is a process global, so when two jobs overlap the later one's token
+    # occupies it and the earlier job's CPU loops poll the wrong token — its
+    # async awaits still cancel, only an in-flight to_thread worker runs on.
+    # Acceptable for the single-active-job norm; worker isolation is the
+    # upgrade path.
+    cancel_token = CancellationToken()
+    get_cancel_tokens(app_state)[job_id] = cancel_token
+    set_active_token(cancel_token)
 
     try:
         # Resolve required app_state attributes inside the try block so a
@@ -295,37 +341,56 @@ async def execute_job(
             # Resolve the wiki style while ``repo`` is still session-attached.
             wiki_style = _repo_wiki_style(repo, repo_path)
             config = json.loads(job.config_json) if job.config_json else {}
-            is_full_resync = config.get("mode") == "full_resync"
+            mode = config.get("mode") or "sync"
+            is_full_resync = mode == "full_resync"
+            is_initial_index = mode == "initial_index"
+            is_index_only = mode == "index_only"
 
             # Mark running
             await update_job_status(session, job_id, "running")
 
-        logger.info(
-            "job_started",
-            job_id=job_id,
-            repo_path=repo_path,
-            mode="full_resync" if is_full_resync else "sync",
-        )
+        logger.info("job_started", job_id=job_id, repo_path=repo_path, mode=mode)
 
         # ---- Resolve LLM provider -----------------------------------------
         llm_client = None
-        try:
-            from repowise.server.provider_config import get_chat_provider_instance
+        docs_skip_reason: str | None = None
+        if not is_index_only:
+            try:
+                from repowise.server.provider_config import get_chat_provider_instance
 
-            # Pass the repo path so the job reuses the provider/model/key the
-            # repo was configured with (``.repowise/config.yaml`` + ``.env``)
-            # rather than the server-global default.
-            llm_client = get_chat_provider_instance(repo_path=repo_path)
-        except Exception as exc:
-            logger.warning("no_provider_configured", error=str(exc))
-            # Continue without LLM — ingestion + analysis still work
+                # Pass the repo path so the job reuses the provider/model/key the
+                # repo was configured with (``.repowise/config.yaml`` + ``.env``)
+                # rather than the server-global default.
+                llm_client = get_chat_provider_instance(repo_path=repo_path)
+            except Exception as exc:
+                docs_skip_reason = f"no provider configured: {exc}"
+                logger.warning("no_provider_configured", error=str(exc))
+                # Continue without LLM — ingestion + analysis still work
 
         # ---- Run pipeline --------------------------------------------------
-        progress = JobProgressCallback(job_id, session_factory)
+        events = create_event_buffer(app_state, job_id)
+        progress = JobProgressCallback(job_id, session_factory, events)
+
+        generate_docs = (
+            (is_full_resync or is_initial_index)
+            and llm_client is not None
+            and bool(config.get("generate_docs", True))
+        )
+        if is_initial_index:
+            # First index of an API-registered repo: make sure the repo-local
+            # data directory exists before the pipeline writes artifacts.
+            (Path(repo_path) / ".repowise").mkdir(parents=True, exist_ok=True)
+            if llm_client is None and config.get("generate_docs", True):
+                progress.on_message(
+                    "warning",
+                    "No LLM provider configured; indexing without documentation "
+                    "generation. Configure a provider and run a full resync to "
+                    "generate docs.",
+                )
 
         result = await run_pipeline(
             Path(repo_path),
-            generate_docs=is_full_resync and llm_client is not None,
+            generate_docs=generate_docs,
             llm_client=llm_client,
             vector_store=vector_store,
             progress=progress,
@@ -338,7 +403,7 @@ async def execute_job(
         # then regenerates only the wiki pages affected by recent changes.
         # This keeps docs fresh without the cost of a full re-index.
         incremental_pages: list = []
-        if not is_full_resync and llm_client is not None:
+        if mode == "sync" and llm_client is not None:
             incremental_pages = await _incremental_page_regen(
                 Path(repo_path),
                 result,
@@ -414,26 +479,22 @@ async def execute_job(
                 total_pages=pages_generated if pages_generated else result.file_count,
             )
 
-        # Update state.json so CLI incremental updates know the new baseline
+        # Update state.json so CLI incremental updates know the new baseline.
+        # An initial index also persists the full baseline (docs flags, run
+        # mode, config) that `repowise init` would have written.
         try:
-            _state_path = Path(repo_path) / ".repowise" / "state.json"
-            import subprocess as _sp
-
-            _head_result = _sp.run(
-                ["git", "rev-parse", "HEAD"],
-                cwd=repo_path,
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            if _head_result.returncode == 0:
-                _head_sha = _head_result.stdout.strip()
-                _state_data: dict = {}
-                if _state_path.is_file():
-                    _state_data = json.loads(_state_path.read_text(encoding="utf-8"))
-                _state_data["last_sync_commit"] = _head_sha
-                _state_path.parent.mkdir(parents=True, exist_ok=True)
-                _state_path.write_text(json.dumps(_state_data, indent=2), encoding="utf-8")
+            if is_initial_index:
+                _persist_initial_index_state(
+                    Path(repo_path),
+                    llm_client=llm_client,
+                    docs_enabled=generate_docs,
+                    docs_skip_reason=docs_skip_reason,
+                    total_pages=len(all_pages),
+                    wiki_style=wiki_style,
+                    exclude_patterns=exclude_patterns,
+                )
+            else:
+                _stamp_last_sync_commit(Path(repo_path))
         except Exception:
             logger.debug("state_json_update_failed", job_id=job_id, exc_info=True)
 
@@ -454,31 +515,191 @@ async def execute_job(
             pages=pages_generated,
         )
 
+    except (PipelineCancelled, asyncio.CancelledError):
+        # User-requested cancel: the endpoint flipped our token and/or
+        # cancelled the task. Record the terminal state and swallow — this is
+        # the top of a background task, nothing above us awaits the result.
+        logger.info("job_cancelled", job_id=job_id)
+        await _finalize_job_status(
+            app_state,
+            session_factory,
+            progress,
+            job_id,
+            status="cancelled",
+            error_message="Cancelled by user",
+        )
     except Exception as exc:
         logger.exception("job_failed", job_id=job_id, error=str(exc))
-        # Drain progress updates before writing final "failed" status to prevent
-        # a late fire-and-forget progress update from overwriting it with "running".
-        if progress is not None:
-            try:
-                await progress.drain_and_stop()
-            except Exception:
-                logger.debug("drain_failed_on_error_path", job_id=job_id, exc_info=True)
-        # If we failed before resolving session_factory, fall back to the one
-        # on app_state (best-effort) so the row never stays stuck in pending.
-        recovery_factory = session_factory or getattr(app_state, "session_factory", None)
-        if recovery_factory is not None:
-            try:
-                async with get_session(recovery_factory) as session:
-                    await update_job_status(
-                        session,
-                        job_id,
-                        "failed",
-                        error_message=str(exc)[:500],
-                    )
-            except Exception:
-                logger.exception("job_status_update_failed", job_id=job_id)
-        else:
-            logger.error("job_status_update_skipped_no_session", job_id=job_id)
+        await _finalize_job_status(
+            app_state,
+            session_factory,
+            progress,
+            job_id,
+            status="failed",
+            error_message=str(exc)[:500],
+        )
+    finally:
+        get_cancel_tokens(app_state).pop(job_id, None)
+        # Disarm only if the global slot still holds our token; a later job
+        # may have replaced it, and its token must not be clobbered. Reset to
+        # None rather than the captured previous token — that one may belong
+        # to a job that already finished (possibly cancelled), and re-arming
+        # it would poison the next check_cancelled() poll.
+        if get_active_token() is cancel_token:
+            set_active_token(None)
+
+
+async def _finalize_job_status(
+    app_state: Any,
+    session_factory: Any,
+    progress: JobProgressCallback | None,
+    job_id: str,
+    *,
+    status: str,
+    error_message: str,
+) -> None:
+    """Best-effort terminal status write shared by the failure and cancel paths.
+
+    Drains in-flight progress updates first so a late fire-and-forget write
+    can't overwrite the terminal status with "running". Falls back to the
+    app-level session factory when the job's own factory was never resolved,
+    so the row never stays stuck in pending.
+    """
+    if progress is not None:
+        try:
+            await progress.drain_and_stop()
+        except Exception:
+            logger.debug("drain_failed_on_error_path", job_id=job_id, exc_info=True)
+    recovery_factory = session_factory or getattr(app_state, "session_factory", None)
+    if recovery_factory is None:
+        logger.error("job_status_update_skipped_no_session", job_id=job_id)
+        return
+    try:
+        async with get_session(recovery_factory) as session:
+            await update_job_status(
+                session,
+                job_id,
+                status,
+                error_message=error_message,
+            )
+    except Exception:
+        logger.exception("job_status_update_failed", job_id=job_id)
+
+
+# ---------------------------------------------------------------------------
+# state.json / config.yaml writers
+# ---------------------------------------------------------------------------
+
+
+def _read_head_sha(repo_path: Path) -> str | None:
+    import subprocess as _sp
+
+    try:
+        result = _sp.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(repo_path),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception:
+        return None
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def _load_state(repo_path: Path) -> dict:
+    state_path = repo_path / ".repowise" / "state.json"
+    if state_path.is_file():
+        return json.loads(state_path.read_text(encoding="utf-8"))
+    return {}
+
+
+def _save_state(repo_path: Path, state: dict) -> None:
+    state_path = repo_path / ".repowise" / "state.json"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+
+def _stamp_last_sync_commit(repo_path: Path) -> None:
+    """Record the synced HEAD so CLI incremental updates know the baseline."""
+    head = _read_head_sha(repo_path)
+    if not head:
+        return
+    state = _load_state(repo_path)
+    state["last_sync_commit"] = head
+    _save_state(repo_path, state)
+
+
+def _persist_initial_index_state(
+    repo_path: Path,
+    *,
+    llm_client: Any,
+    docs_enabled: bool,
+    docs_skip_reason: str | None,
+    total_pages: int,
+    wiki_style: str,
+    exclude_patterns: list[str],
+) -> None:
+    """Write the ``repowise init`` baseline after a first API-driven index.
+
+    Mirrors what the CLI persists at the end of ``init``: a complete
+    ``state.json`` (sync baseline, docs flags, run mode, store-format stamp,
+    config fingerprint) and a ``config.yaml`` recording the provider/model
+    and style the run used, so later CLI ``update`` runs and server jobs
+    resolve the same configuration.
+    """
+    from repowise.core.generation.styles import DEFAULT_STYLE
+    from repowise.core.repo_config import (
+        config_fingerprint,
+        load_repo_config,
+        save_repo_config,
+    )
+
+    # ---- config.yaml (written first: the fingerprint below covers it) ----
+    config = load_repo_config(repo_path)
+    if llm_client is not None:
+        config["provider"] = getattr(llm_client, "provider_name", "") or config.get("provider")
+        config["model"] = getattr(llm_client, "model_name", "") or config.get("model")
+    if wiki_style and wiki_style != DEFAULT_STYLE and not config.get("wiki_style"):
+        config["wiki_style"] = wiki_style
+    if exclude_patterns and not config.get("exclude_patterns"):
+        config["exclude_patterns"] = exclude_patterns
+    try:
+        save_repo_config(repo_path, config)
+    except Exception:
+        logger.debug("config_yaml_write_failed", repo_path=str(repo_path), exc_info=True)
+
+    # ---- state.json ----
+    state = _load_state(repo_path)
+    head = _read_head_sha(repo_path)
+    if head:
+        state["last_sync_commit"] = head
+    state["docs_enabled"] = docs_enabled
+    if docs_skip_reason and not docs_enabled:
+        state["docs_skip_reason"] = docs_skip_reason
+    state["run_mode"] = "standard"
+    state["git_tier"] = "full"
+    state["include_submodules"] = False
+    state["total_pages"] = total_pages
+    if llm_client is not None:
+        state["provider"] = getattr(llm_client, "provider_name", "")
+        state["model"] = getattr(llm_client, "model_name", "")
+
+    try:
+        from importlib.metadata import version as _dist_version
+
+        from repowise.core.upgrade import stamp as _stamp_store_version
+
+        try:
+            _pkg_version: str | None = _dist_version("repowise")
+        except Exception:
+            _pkg_version = None
+        _stamp_store_version(state, package_version=_pkg_version)
+    except Exception:
+        logger.debug("store_version_stamp_failed", repo_path=str(repo_path), exc_info=True)
+
+    state["config_fingerprint"] = config_fingerprint(repo_path)
+    _save_state(repo_path, state)
 
 
 # ---------------------------------------------------------------------------

@@ -120,13 +120,15 @@ async def get_job(job_id: str, request: Request) -> JobResponse:
 async def cancel_job(job_id: str, request: Request) -> JobResponse:
     """Cancel a pending or running generation job.
 
-    Marks the job as ``failed`` with a cancellation message. The background
-    task itself is not interrupted — but in practice this unblocks the
-    active-job guard in /repos/{id}/sync so the user can start a new sync
-    immediately. Useful when a job is stuck in ``pending`` because the
-    background task crashed before it could record a failure.
+    Actually stops the work: flips the job's cooperative cancellation token
+    (unwinding the CPU-bound pipeline phases) and cancels the background
+    asyncio task (interrupting in-flight awaits, including LLM calls), then
+    marks the job ``cancelled``. Also unblocks the active-job guard in
+    /repos/{id}/sync when a job is stuck in ``pending`` because its
+    background task never started.
     """
-    factory, job = await _find_job_factory(request.app.state, job_id)
+    app_state = request.app.state
+    factory, job = await _find_job_factory(app_state, job_id)
     if job is None or factory is None:
         raise HTTPException(status_code=404, detail="Job not found")
     if job.status not in ("pending", "running"):
@@ -134,11 +136,22 @@ async def cancel_job(job_id: str, request: Request) -> JobResponse:
             status_code=409,
             detail=f"Cannot cancel a job in '{job.status}' state",
         )
+
+    # Signal the running pipeline first, then record the terminal state. The
+    # executor also writes "cancelled" when it unwinds; both writes are
+    # idempotent.
+    token = getattr(app_state, "job_cancel_tokens", {}).get(job_id)
+    if token is not None:
+        token.cancel()
+    task = getattr(app_state, "job_tasks", {}).get(job_id)
+    if task is not None and not task.done():
+        task.cancel()
+
     async with get_session(factory) as session:
         await crud.update_job_status(
             session,
             job_id,
-            "failed",
+            "cancelled",
             error_message="Cancelled by user",
         )
         job = await crud.get_generation_job(session, job_id)
@@ -150,8 +163,12 @@ async def cancel_job(job_id: str, request: Request) -> JobResponse:
 async def stream_job(job_id: str, request: Request) -> StreamingResponse:
     """SSE progress stream for a generation job.
 
-    Emits ``event: progress`` every second until the job completes or fails,
-    then emits ``event: done`` and closes.
+    Emits ``event: progress`` every second until the job reaches a terminal
+    state, then emits ``event: done`` and closes. Pipeline messages recorded
+    by the executor (phase starts, per-file warnings) are interleaved as
+    ``event: message`` frames, and each progress frame carries the current
+    ``phase`` label, so clients can render "Parsing files 1200/4000" instead
+    of bare numbers.
     """
     factory, _ = await _find_job_factory(request.app.state, job_id)
     if factory is None:
@@ -160,6 +177,7 @@ async def stream_job(job_id: str, request: Request) -> StreamingResponse:
         factory = request.app.state.session_factory
 
     async def event_generator():
+        next_seq = 0
         while True:
             # Check if client disconnected
             if await request.is_disconnected():
@@ -183,6 +201,14 @@ async def stream_job(job_id: str, request: Request) -> StreamingResponse:
                 async with get_session(factory) as cost_session:
                     actual_cost_usd = await cost_session.scalar(cost_q)
 
+            # Drain any new pipeline messages from the in-memory buffer.
+            buffer = getattr(request.app.state, "job_events", {}).get(job_id)
+            phase = buffer.phase if buffer is not None else ""
+            if buffer is not None:
+                for event in buffer.since(next_seq):
+                    next_seq = event["seq"] + 1
+                    yield f"event: message\ndata: {json.dumps(event)}\n\n"
+
             progress = {
                 "job_id": job.id,
                 "status": job.status,
@@ -190,12 +216,14 @@ async def stream_job(job_id: str, request: Request) -> StreamingResponse:
                 "total_pages": job.total_pages,
                 "failed_pages": job.failed_pages,
                 "current_level": job.current_level,
+                "phase": phase,
                 "actual_cost_usd": actual_cost_usd,
+                "error_message": job.error_message,
             }
             data = json.dumps(progress)
             yield f"event: progress\ndata: {data}\n\n"
 
-            if job.status in ("completed", "failed"):
+            if job.status in ("completed", "failed", "cancelled"):
                 yield f"event: done\ndata: {data}\n\n"
                 return
 

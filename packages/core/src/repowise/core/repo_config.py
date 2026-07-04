@@ -57,6 +57,26 @@ def save_repo_config(repo_path: Path | str, config: dict[str, Any]) -> None:
     )
 
 
+def config_fingerprint(repo_path: Path | str) -> str:
+    """SHA-256 hex of ``.repowise/config.yaml`` + ``health-rules.json`` content.
+
+    Used by ``repowise update`` and the index writers (CLI init, server jobs)
+    to detect config changes across runs without relying on filesystem
+    timestamps. Missing files are skipped, so an absent config still yields a
+    stable hash.
+    """
+    import hashlib
+
+    rw_dir = get_repowise_dir(repo_path)
+    h = hashlib.sha256()
+    for name in ("config.yaml", "health-rules.json"):
+        p = rw_dir / name
+        if p.exists():
+            h.update(name.encode())
+            h.update(p.read_bytes())
+    return h.hexdigest()
+
+
 def _read_flat_scalar(text: str, key: str) -> str | None:
     """Read a top-level scalar from config text before YAML bool coercion."""
     for line in text.splitlines():

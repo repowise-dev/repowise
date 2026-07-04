@@ -15,6 +15,10 @@ class RepoCreate(BaseModel):
     url: str = ""
     default_branch: str = "main"
     settings: dict | None = None
+    # Enqueue the first full index immediately after registration. On by
+    # default so adding a repo from the UI takes it straight to indexed;
+    # pass false to register metadata only.
+    index: bool = True
 
     @field_validator("local_path")
     @classmethod
@@ -56,6 +60,9 @@ class RepoResponse(BaseModel):
     is_primary: bool | None = None
     docs_enabled: bool | None = None
     docs_skip_reason: str | None = None
+    # Set on POST /api/repos responses when registration auto-enqueued the
+    # first index; clients attach to /api/jobs/{id}/stream with it.
+    initial_job_id: str | None = None
 
     @classmethod
     def from_orm(cls, obj: object) -> RepoResponse:

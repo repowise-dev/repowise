@@ -133,11 +133,30 @@ async def test_dead_code_summary(client: AsyncClient, app) -> None:
 
 
 @pytest.mark.asyncio
-async def test_analyze_dead_code(client: AsyncClient) -> None:
+async def test_analyze_dead_code(client: AsyncClient, monkeypatch) -> None:
+    # Stub the executor: this test covers the endpoint contract, not the pipeline.
+    async def _noop_execute(job_id, app_state, session_factory_override=None):
+        return None
+
+    from repowise.server.routers import repos as repos_module
+
+    monkeypatch.setattr(repos_module, "execute_job", _noop_execute)
+
     repo = await create_test_repo(client)
     resp = await client.post(f"/api/repos/{repo['id']}/dead-code/analyze")
     assert resp.status_code == 202
-    assert resp.json()["status"] == "analyzing"
+    data = resp.json()
+    assert data["status"] == "accepted"
+    assert data["job_id"]
+
+    # The analysis runs as an index-only job through the normal job machinery.
+    job_resp = await client.get(f"/api/jobs/{data['job_id']}")
+    assert job_resp.status_code == 200
+    assert job_resp.json()["config"]["mode"] == "index_only"
+
+    # A second trigger while the job is still pending is rejected.
+    resp2 = await client.post(f"/api/repos/{repo['id']}/dead-code/analyze")
+    assert resp2.status_code == 409
 
 
 @pytest.mark.asyncio
