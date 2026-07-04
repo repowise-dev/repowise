@@ -21,6 +21,7 @@ import { Badge } from "@repowise-dev/ui/ui/badge";
 import { EmptyState } from "@repowise-dev/ui/shared/empty-state";
 import { formatRelativeTime, formatNumber } from "@repowise-dev/ui/lib/format";
 import { DeleteRepoButton } from "@/components/repos/delete-repo-button";
+import { EmptyReposState } from "@/components/repos/empty-repos-state";
 import { LiveJobProgress } from "@/components/jobs/live-job-progress";
 
 export const metadata: Metadata = { title: "Dashboard" };
@@ -122,24 +123,8 @@ export default async function DashboardPage() {
           </CardHeader>
           <CardContent className="p-0">
             {repoList.length === 0 ? (
-              <div className="px-6 pb-6 space-y-2">
-                <EmptyState
-                  title="No repositories yet"
-                  description="Run repowise init on a repository to get started."
-                  icon={<FileText className="h-8 w-8" />}
-                />
-                <p className="text-center text-xs text-[var(--color-text-tertiary)]">
-                  New here? See the{" "}
-                  <a
-                    href="https://github.com/repowise-dev/repowise#quick-start"
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-[var(--color-accent-primary)] hover:underline"
-                  >
-                    setup guide
-                  </a>
-                  .
-                </p>
+              <div className="px-6 pb-6">
+                <EmptyReposState />
               </div>
             ) : (
               <ul className="divide-y divide-[var(--color-border-default)]">
@@ -217,7 +202,7 @@ export default async function DashboardPage() {
               <div className="px-6 pb-6">
                 <EmptyState
                   title="No jobs yet"
-                  description="Jobs appear after running repowise init or sync."
+                  description="Indexing and sync runs show up here, with live progress."
                   icon={<Activity className="h-8 w-8" />}
                 />
               </div>

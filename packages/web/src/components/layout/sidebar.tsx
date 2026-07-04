@@ -74,6 +74,18 @@ export function Sidebar({ repos = [], activeRepoId, workspace }: SidebarProps) {
     }
   }, [isDocsRoute]);
 
+  // Workspace group: collapsed unless the user is on a workspace route, so
+  // the (more used) per-repo navigation leads. Tracks route changes in both
+  // directions; manual toggles win while the route type is unchanged.
+  const isWorkspaceRoute = pathname?.startsWith("/workspace") ?? false;
+  const [workspaceNavOpen, setWorkspaceNavOpen] = React.useState(isWorkspaceRoute);
+  const wasWorkspaceRoute = React.useRef(isWorkspaceRoute);
+  React.useEffect(() => {
+    if (isWorkspaceRoute === wasWorkspaceRoute.current) return;
+    wasWorkspaceRoute.current = isWorkspaceRoute;
+    setWorkspaceNavOpen(isWorkspaceRoute);
+  }, [isWorkspaceRoute]);
+
   const toggleRepo = (id: string) => {
     setExpandedRepos((prev) => {
       const next = new Set(prev);
@@ -135,28 +147,42 @@ export function Sidebar({ repos = [], activeRepoId, workspace }: SidebarProps) {
             <SidebarSearchButton iconOnly={isIconOnly} />
           </nav>
 
-          {/* Workspace nav — only shown in workspace mode */}
+          {/* Workspace nav — only shown in workspace mode. Collapsed by
+              default: per-repo navigation is the primary surface, so the
+              cross-repo views tuck behind a toggle unless one is active. */}
           {isWorkspace && (
             <>
+              <Separator className="my-4" />
               {!isIconOnly && (
-                <>
-                  <Separator className="my-4" />
-                  <p className="mb-2 px-2 text-xs font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
-                    Workspace
-                  </p>
-                </>
+                <button
+                  onClick={() => setWorkspaceNavOpen((v) => !v)}
+                  aria-expanded={workspaceNavOpen}
+                  aria-controls="sidebar-workspace-nav"
+                  className="mb-1 flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium uppercase tracking-wider text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-secondary)]"
+                >
+                  <span className="flex-1 truncate text-left">Workspace</span>
+                  {workspaceNavOpen ? (
+                    <ChevronDown className="h-3.5 w-3.5 shrink-0 opacity-60" />
+                  ) : (
+                    <ChevronRight className="h-3.5 w-3.5 shrink-0 opacity-60" />
+                  )}
+                </button>
               )}
-              {isIconOnly && <Separator className="my-4" />}
-              <nav className="space-y-1">
-                {WORKSPACE_NAV.map((item) => (
-                  <SidebarNavItem
-                    key={item.href}
-                    item={item}
-                    isActive={item.exact ? pathname === item.href : pathname.startsWith(`${item.href}`)}
-                    iconOnly={isIconOnly}
-                  />
-                ))}
-              </nav>
+              {(isIconOnly || workspaceNavOpen) && (
+                <nav className="space-y-1" id="sidebar-workspace-nav">
+                  {(isIconOnly && !isWorkspaceRoute
+                    ? WORKSPACE_NAV.slice(0, 1)
+                    : WORKSPACE_NAV
+                  ).map((item) => (
+                    <SidebarNavItem
+                      key={item.href}
+                      item={item}
+                      isActive={item.exact ? pathname === item.href : pathname.startsWith(`${item.href}`)}
+                      iconOnly={isIconOnly}
+                    />
+                  ))}
+                </nav>
+              )}
             </>
           )}
 
@@ -342,8 +368,9 @@ export function Sidebar({ repos = [], activeRepoId, workspace }: SidebarProps) {
           {repos.length === 0 && !isIconOnly && (
             <>
               <Separator className="my-4" />
+              {/* First run: no repos to list, so the add action carries the sidebar. */}
               <div className="px-0.5">
-                <AddRepoDialog variant="sidebar" />
+                <AddRepoDialog />
               </div>
             </>
           )}

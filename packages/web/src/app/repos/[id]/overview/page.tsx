@@ -14,6 +14,8 @@ import { KpiStrip, kpiDelta, type KpiItem } from "@repowise-dev/ui/dashboard/kpi
 import { OverviewGrid } from "@repowise-dev/ui/dashboard/overview-grid";
 import { SavingsMini } from "@repowise-dev/ui/dashboard/savings-mini";
 import { LanguageDonut } from "@repowise-dev/ui/dashboard/language-donut";
+import { KnowledgeGraphCard } from "@repowise-dev/ui/dashboard/explore-cards";
+import { AskAnythingCardWrapper } from "@/components/overview/ask-anything-card-wrapper";
 import { QuickActionsWrapper as QuickActions } from "@/components/dashboard/quick-actions-wrapper";
 import { OverviewTabs } from "@/components/overview/overview-tabs";
 import { ContributorsStripCard } from "@/components/overview/contributors-strip-card";
@@ -131,7 +133,7 @@ export default async function OverviewPage({ params }: Props) {
               ? `Indexed ${formatRelativeTime(lastActivityAt)} — nothing to show yet`
               : "This repo hasn't been indexed yet"
           }
-          description="Run a sync (above) or `repowise init` in the repo to populate the overview. Stats, attention items, and activity appear as soon as the first index lands."
+          description="Start a sync above to build the index. Stats, attention items, and activity appear as soon as the first index lands."
         />
       ) : (
         <>
@@ -168,15 +170,17 @@ export default async function OverviewPage({ params }: Props) {
             decisions={summary.recent_decisions}
           />
 
-          {/* ── Languages (single canonical donut) ── */}
-          {summary.languages.length > 0 && (
-            <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+          {/* ── Languages + explore: donut alongside the graph and chat front-doors ── */}
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+            {summary.languages.length > 0 && (
               <LanguageDonut
                 distribution={langDistribution}
                 viewAllHref={`/repos/${id}/architecture?view=graph&colorMode=language`}
               />
-            </div>
-          )}
+            )}
+            <KnowledgeGraphCard href={`/repos/${id}/knowledge-graph`} />
+            <AskAnythingCardWrapper repoId={id} />
+          </div>
         </>
       )}
     </PageShell>

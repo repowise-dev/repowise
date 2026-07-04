@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { getWorkspace, getWorkspaceCoChanges } from "@/lib/api/workspace";
 import { StatCard } from "@repowise-dev/ui/shared/stat-card";
+import { EmptyState } from "@repowise-dev/ui/shared/empty-state";
 import { Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui/card";
 import { RepoCard } from "@repowise-dev/ui/workspace/repo-card";
 import { CrossRepoSummary } from "@repowise-dev/ui/workspace/cross-repo-summary";
@@ -159,6 +160,13 @@ export default async function WorkspaceDashboardPage() {
         <h2 className="text-sm font-medium text-[var(--color-text-primary)] mb-3">
           Repositories
         </h2>
+        {wsRepos.length === 0 && (
+          <EmptyState
+            title="No repositories discovered yet"
+            description="Run `repowise init .` in the workspace root to scan for git repositories and index them. They show up here as soon as the scan lands."
+            icon={<Layers className="h-8 w-8" />}
+          />
+        )}
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {wsRepos.map((wsRepo) => {
             const status = wsRepo.status ?? (wsRepo.repo_id ? "indexed" : "needs_index");

@@ -1,7 +1,9 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { Plus } from "lucide-react";
+import { toast } from "sonner";
 import { useSWRConfig } from "swr";
 import { createRepo } from "@/lib/api/repos";
 import { Button } from "@repowise-dev/ui/ui/button";
@@ -18,11 +20,24 @@ import { Input } from "@repowise-dev/ui/ui/input";
 interface Props {
   /** Render as a sidebar button (icon + label) vs standalone button */
   variant?: "sidebar" | "default";
+  /** Controlled open state — pass both to drive the dialog from an external trigger. */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  /** Hide the built-in trigger button (for externally-triggered use). */
+  showTrigger?: boolean;
 }
 
-export function AddRepoDialog({ variant = "default" }: Props) {
+export function AddRepoDialog({
+  variant = "default",
+  open: controlledOpen,
+  onOpenChange,
+  showTrigger = true,
+}: Props) {
   const { mutate } = useSWRConfig();
-  const [open, setOpen] = useState(false);
+  const router = useRouter();
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
+  const open = controlledOpen ?? uncontrolledOpen;
+  const setOpen = onOpenChange ?? setUncontrolledOpen;
   const [name, setName] = useState("");
   const [localPath, setLocalPath] = useState("");
   const [url, setUrl] = useState("");
@@ -44,7 +59,7 @@ export function AddRepoDialog({ variant = "default" }: Props) {
     setSubmitting(true);
     setError(null);
     try {
-      await createRepo({
+      const repo = await createRepo({
         name: name.trim(),
         local_path: localPath.trim(),
         url: url.trim() || undefined,
@@ -54,6 +69,10 @@ export function AddRepoDialog({ variant = "default" }: Props) {
       await mutate("/api/repos");
       setOpen(false);
       reset();
+      toast.success(`Added ${repo.name}`);
+      // Land on the new repo's overview, where the sync actions live.
+      router.push(`/repos/${repo.id}/overview`);
+      router.refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to add repository");
     } finally {
@@ -63,7 +82,7 @@ export function AddRepoDialog({ variant = "default" }: Props) {
 
   return (
     <>
-      {variant === "sidebar" ? (
+      {!showTrigger ? null : variant === "sidebar" ? (
         <button
           type="button"
           onClick={() => setOpen(true)}
