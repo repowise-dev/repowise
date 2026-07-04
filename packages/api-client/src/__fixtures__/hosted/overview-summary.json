@@ -1,0 +1,117 @@
+{
+  "repo": {
+    "id": "d8ea204a-6325-438c-a805-fbdb029ffd11",
+    "name": "flask",
+    "owner": "pallets",
+    "is_public": true,
+    "local_path": "github.com/pallets/flask",
+    "updated_at": "2026-07-03T19:00:28.037767+00:00",
+    "head_commit": "36e4a824f340fdee7ed50937ba8e7f6bc7d17f81",
+    "default_branch": "main"
+  },
+  "sync": {
+    "page_count": 0,
+    "last_sync_at": "2026-07-03T19:00:28.037767+00:00",
+    "active_job_id": null,
+    "last_resync_at": null,
+    "last_sync_model": null
+  },
+  "stats": {
+    "deltas": {
+      "file_count": null,
+      "average_health": null,
+      "hotspot_health": null
+    },
+    "file_count": 108,
+    "silo_count": 4,
+    "module_count": 24,
+    "symbol_count": 1060,
+    "hotspot_count": 0,
+    "freshness_score": 0,
+    "doc_coverage_pct": 0,
+    "dead_export_count": 12,
+    "entry_point_count": 5
+  },
+  "health": {
+    "history": [
+      {
+        "taken_at": "2026-07-03T19:00:45.142832+00:00",
+        "average_health": 6.94,
+        "hotspot_health": 10
+      }
+    ],
+    "open_findings": 209,
+    "average_health": 6.94,
+    "hotspot_health": 10,
+    "snapshot_count": 1,
+    "last_indexed_at": "2026-07-03T19:00:45.142832+00:00",
+    "severity_breakdown": {
+      "low": 85,
+      "high": 32,
+      "medium": 84,
+      "critical": 8
+    },
+    "performance_average": 9.96,
+    "performance_findings": 4,
+    "worst_performer_path": "src/flask/app.py",
+    "worst_performer_score": 1.07,
+    "worst_performance_path": "src/flask/app.py",
+    "maintainability_average": 7.71,
+    "worst_performance_score": 9.7
+  },
+  "savings": {
+    "available": false
+  },
+  "attention": [
+    {
+      "id": "proposed-9827083f96ad4d149c9d983a7e59a9bc",
+      "type": "proposed_decision",
+      "title": "Windows env var keys are always uppercase.",
+      "severity": "medium",
+      "target_id": "9827083f96ad4d149c9d983a7e59a9bc",
+      "description": "Auto-proposed decision awaiting review"
+    },
+    {
+      "id": "proposed-d4175eb5203c426abeb80cd320a55136",
+      "type": "proposed_decision",
+      "title": "do this instead of startswith for nicer pytest output",
+      "severity": "medium",
+      "target_id": "d4175eb5203c426abeb80cd320a55136",
+      "description": "Auto-proposed decision awaiting review"
+    }
+  ],
+  "languages": [
+    {
+      "language": "python",
+      "file_count": 83
+    },
+    {
+      "language": "yaml",
+      "file_count": 8
+    },
+    {
+      "language": "markdown",
+      "file_count": 6
+    }
+  ],
+  "top_hotspots": [],
+  "recent_decisions": [
+    {
+      "id": "9827083f96ad4d149c9d983a7e59a9bc",
+      "title": "Windows env var keys are always uppercase.",
+      "source": "code_comment",
+      "status": "proposed",
+      "created_at": null,
+      "staleness_score": 0
+    },
+    {
+      "id": "d4175eb5203c426abeb80cd320a55136",
+      "title": "do this instead of startswith for nicer pytest output",
+      "source": "code_comment",
+      "status": "proposed",
+      "created_at": null,
+      "staleness_score": 0
+    }
+  ],
+  "onboarding_targets": []
+}

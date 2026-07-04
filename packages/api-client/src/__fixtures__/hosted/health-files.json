@@ -1,0 +1,182 @@
+[
+  {
+    "file_path": "src/flask/app.py",
+    "score": 1.07,
+    "band": "alert",
+    "max_ccn": 16,
+    "max_nesting": 5,
+    "nloc": 1235,
+    "duplication_pct": 10.42,
+    "has_test_file": false,
+    "line_coverage_pct": null,
+    "branch_coverage_pct": null,
+    "module": "flask",
+    "defect_score": 1.07,
+    "maintainability_score": 3.1,
+    "performance_score": 9.7,
+    "top_biomarkers": [
+      {
+        "id": "1633695362c7ee2ec41d4144",
+        "biomarker_type": "untested_hotspot",
+        "severity": "high",
+        "file_path": "src/flask/app.py",
+        "function_name": null,
+        "line_start": null,
+        "line_end": null,
+        "details": {
+          "line_coverage_pct": null,
+          "branch_coverage_pct": null,
+          "dependents_count": 6,
+          "commit_count_90d": 0,
+          "has_test_file": false
+        },
+        "health_impact": 1.56,
+        "reason": "Hotspot with no paired test file and no coverage data — 6 dependents",
+        "status": "open",
+        "suggestion": "Hot file with low/no coverage — add tests against the most-changed methods first.",
+        "dimension": "defect",
+        "symbol_id": null
+      },
+      {
+        "id": "a636c1b680c14f66696424f2",
+        "biomarker_type": "function_hotspot",
+        "severity": "high",
+        "file_path": "src/flask/app.py",
+        "function_name": "make_response",
+        "line_start": 1224,
+        "line_end": 1364,
+        "details": {
+          "modification_count": 6,
+          "repo_p80": 5,
+          "ccn": 16,
+          "max_nesting": 5
+        },
+        "health_impact": 1.392,
+        "reason": "make_response has been modified across 6 commits (repo p80=5) and carries CCN=16 / nesting=5",
+        "status": "open",
+        "suggestion": "Review and refactor according to the biomarker details.",
+        "dimension": "defect",
+        "symbol_id": null
+      }
+    ]
+  },
+  {
+    "file_path": "src/flask/sansio/app.py",
+    "score": 1.35,
+    "band": "alert",
+    "max_ccn": 12,
+    "max_nesting": 4,
+    "nloc": 678,
+    "duplication_pct": 14.3,
+    "has_test_file": false,
+    "line_coverage_pct": null,
+    "branch_coverage_pct": null,
+    "module": "flask/sansio",
+    "defect_score": 1.35,
+    "maintainability_score": 4.8,
+    "performance_score": 10,
+    "top_biomarkers": [
+      {
+        "id": "cb2c376ceb485261bac68091",
+        "biomarker_type": "untested_hotspot",
+        "severity": "high",
+        "file_path": "src/flask/sansio/app.py",
+        "function_name": null,
+        "line_start": null,
+        "line_end": null,
+        "details": {
+          "line_coverage_pct": null,
+          "branch_coverage_pct": null,
+          "dependents_count": 7,
+          "commit_count_90d": 1,
+          "has_test_file": false
+        },
+        "health_impact": 1.56,
+        "reason": "Hotspot with no paired test file and no coverage data — 7 dependents",
+        "status": "open",
+        "suggestion": "Hot file with low/no coverage — add tests against the most-changed methods first.",
+        "dimension": "defect",
+        "symbol_id": null
+      },
+      {
+        "id": "25e5ed47ef2620733ce4d61b",
+        "biomarker_type": "function_hotspot",
+        "severity": "high",
+        "file_path": "src/flask/sansio/app.py",
+        "function_name": "add_url_rule",
+        "line_start": 605,
+        "line_end": 661,
+        "details": {
+          "modification_count": 19,
+          "repo_p80": 5,
+          "ccn": 12,
+          "max_nesting": 2
+        },
+        "health_impact": 1.18,
+        "reason": "add_url_rule has been modified across 19 commits (repo p80=5) and carries CCN=12 / nesting=2",
+        "status": "open",
+        "suggestion": "Review and refactor according to the biomarker details.",
+        "dimension": "defect",
+        "symbol_id": null
+      }
+    ]
+  },
+  {
+    "file_path": "src/flask/cli.py",
+    "score": 2.05,
+    "band": "alert",
+    "max_ccn": 13,
+    "max_nesting": 5,
+    "nloc": 822,
+    "duplication_pct": null,
+    "has_test_file": true,
+    "line_coverage_pct": null,
+    "branch_coverage_pct": null,
+    "module": "flask",
+    "defect_score": 2.05,
+    "maintainability_score": 3.6,
+    "performance_score": 9.85,
+    "top_biomarkers": [
+      {
+        "id": "3c7b89ff0c13fa0b1123901b",
+        "biomarker_type": "nested_complexity",
+        "severity": "high",
+        "file_path": "src/flask/cli.py",
+        "function_name": "convert",
+        "line_start": 791,
+        "line_end": 825,
+        "details": {
+          "max_nesting": 5,
+          "ccn": 6,
+          "cognitive": 21
+        },
+        "health_impact": 0.605,
+        "reason": "convert nests 5 levels deep",
+        "status": "open",
+        "suggestion": "Flatten nested control flow with early returns or guard clauses.",
+        "dimension": "defect",
+        "symbol_id": null
+      },
+      {
+        "id": "d9c8ad9cb0af754e7a5a0a54",
+        "biomarker_type": "nested_complexity",
+        "severity": "high",
+        "file_path": "src/flask/cli.py",
+        "function_name": "find_best_app",
+        "line_start": 41,
+        "line_end": 91,
+        "details": {
+          "max_nesting": 5,
+          "ccn": 10,
+          "cognitive": 25
+        },
+        "health_impact": 0.605,
+        "reason": "find_best_app nests 5 levels deep",
+        "status": "open",
+        "suggestion": "Flatten nested control flow with early returns or guard clauses.",
+        "dimension": "defect",
+        "symbol_id": null
+      }
+    ]
+  }
+]

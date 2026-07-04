@@ -1,0 +1,106 @@
+{
+  "total_found": 32,
+  "decisions": [
+    {
+      "id": "9827083f96ad4d149c9d983a7e59a9bc",
+      "title": "Windows env var keys are always uppercase.",
+      "context": "In `tests.test_config.test_from_prefixed_env_nested` (tests/test_config.py:97)",
+      "decision": "Windows env var keys are always uppercase.",
+      "rationale": "",
+      "alternatives": [],
+      "consequences": [],
+      "affected_files": [
+        "tests/test_config.py"
+      ],
+      "affected_modules": [
+        "tests"
+      ],
+      "tags": [],
+      "source": "code_comment",
+      "evidence_commits": [],
+      "evidence_file": "tests/test_config.py",
+      "evidence_line": 97,
+      "confidence": 0.511,
+      "status": "proposed",
+      "verification": "exact",
+      "source_quote": "Windows env var keys are always uppercase.",
+      "staleness_score": 0,
+      "superseded_by": null,
+      "last_code_change": null,
+      "evidence": [
+        {
+          "source": "code_comment",
+          "source_rank": 2,
+          "evidence_file": "tests/test_config.py",
+          "evidence_line": 97,
+          "evidence_commit": null,
+          "source_quote": "Windows env var keys are always uppercase.",
+          "confidence": 0.3,
+          "verification": "exact"
+        }
+      ],
+      "evidence_count": 1,
+      "evidence_preview": {
+        "source": "code_comment",
+        "source_quote": "Windows env var keys are always uppercase.",
+        "verification": "exact",
+        "evidence_file": "tests/test_config.py",
+        "evidence_line": 97
+      }
+    },
+    {
+      "id": "d4175eb5203c426abeb80cd320a55136",
+      "title": "do this instead of startswith for nicer pytest output",
+      "context": "In `tests.test_cli.TestRoutes.expect_order` (tests/test_cli.py:466)",
+      "decision": "do this instead of startswith for nicer pytest output",
+      "rationale": "",
+      "alternatives": [],
+      "consequences": [],
+      "affected_files": [
+        "tests/test_cli.py"
+      ],
+      "affected_modules": [
+        "tests"
+      ],
+      "tags": [
+        "testing"
+      ],
+      "source": "code_comment",
+      "evidence_commits": [],
+      "evidence_file": "tests/test_cli.py",
+      "evidence_line": 466,
+      "confidence": 0.511,
+      "status": "proposed",
+      "verification": "exact",
+      "source_quote": "do this instead of startswith for nicer pytest output",
+      "staleness_score": 0,
+      "superseded_by": null,
+      "last_code_change": null,
+      "evidence": [
+        {
+          "source": "code_comment",
+          "source_rank": 2,
+          "evidence_file": "tests/test_cli.py",
+          "evidence_line": 466,
+          "evidence_commit": null,
+          "source_quote": "do this instead of startswith for nicer pytest output",
+          "confidence": 0.3,
+          "verification": "exact"
+        }
+      ],
+      "evidence_count": 1,
+      "evidence_preview": {
+        "source": "code_comment",
+        "source_quote": "do this instead of startswith for nicer pytest output",
+        "verification": "exact",
+        "evidence_file": "tests/test_cli.py",
+        "evidence_line": 466
+      }
+    }
+  ],
+  "by_source": {
+    "code_comment": 24,
+    "comment": 4,
+    "pr": 4
+  }
+}

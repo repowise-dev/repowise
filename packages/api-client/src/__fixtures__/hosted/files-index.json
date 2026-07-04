@@ -1,0 +1,78 @@
+{
+  "files": [
+    {
+      "file_path": ".pre-commit-config.yaml",
+      "language": "yaml",
+      "loc": 23,
+      "symbol_count": 0,
+      "pagerank_pct": 0,
+      "in_degree": 0,
+      "out_degree": 1,
+      "defect_score": 10,
+      "maintainability_score": 10,
+      "performance_score": 10,
+      "churn_pct": null,
+      "commit_count": null,
+      "last_commit_at": null,
+      "coverage_pct": null,
+      "is_test": false,
+      "is_entry_point": false,
+      "community_id": 14
+    },
+    {
+      "file_path": ".readthedocs.yaml",
+      "language": "yaml",
+      "loc": 10,
+      "symbol_count": 0,
+      "pagerank_pct": 0,
+      "in_degree": 0,
+      "out_degree": 1,
+      "defect_score": 10,
+      "maintainability_score": 10,
+      "performance_score": 10,
+      "churn_pct": null,
+      "commit_count": null,
+      "last_commit_at": null,
+      "coverage_pct": null,
+      "is_test": false,
+      "is_entry_point": false,
+      "community_id": 15
+    },
+    {
+      "file_path": "README.md",
+      "language": "markdown",
+      "loc": 38,
+      "symbol_count": 0,
+      "pagerank_pct": 0,
+      "in_degree": 0,
+      "out_degree": 1,
+      "defect_score": 10,
+      "maintainability_score": 10,
+      "performance_score": 10,
+      "churn_pct": null,
+      "commit_count": null,
+      "last_commit_at": null,
+      "coverage_pct": null,
+      "is_test": false,
+      "is_entry_point": false,
+      "community_id": 16
+    }
+  ],
+  "language_counts": {
+    "yaml": 8,
+    "markdown": 6,
+    "toml": 5,
+    "shell": 1,
+    "json": 2,
+    "makefile": 1,
+    "python": 83,
+    "sql": 2
+  },
+  "totals": {
+    "files": 108,
+    "loc": 14043
+  },
+  "state": "ready",
+  "reason": null,
+  "items": []
+}

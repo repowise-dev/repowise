@@ -4,7 +4,9 @@
   "private": true,
   "description": "Framework-free TypeScript client for the repowise REST API, shared by packages/web and downstream consumers.",
   "type": "module",
-  "files": ["src"],
+  "files": [
+    "src"
+  ],
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "exports": {
@@ -23,6 +25,7 @@
     "./git": "./src/git.ts",
     "./graph": "./src/graph.ts",
     "./health": "./src/health.ts",
+    "./hosted": "./src/hosted.ts",
     "./jobs": "./src/jobs.ts",
     "./knowledge-map": "./src/knowledge-map.ts",
     "./mcp-tools": "./src/mcp-tools.ts",
@@ -54,6 +57,7 @@
   },
   "devDependencies": {
     "@repowise-dev/ui": "*",
+    "@types/node": "^26.1.0",
     "@types/react": "^19.0.0",
     "react": "^19.0.0",
     "typescript": "^5.6.0",
