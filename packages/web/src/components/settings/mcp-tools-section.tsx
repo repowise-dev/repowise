@@ -133,8 +133,7 @@ export function McpToolsSection() {
       <CardContent className="space-y-4">
         {repos.length === 0 && !loading && (
           <p className="text-sm text-[var(--color-text-tertiary)]">
-            No indexed repos found. Run <code className="font-mono">repowise init</code>{" "}
-            first.
+            No indexed repos found. Add and index a repository first.
           </p>
         )}
 

@@ -277,8 +277,8 @@ export function HealthOverviewCard({
       <CardContent className="p-0">
         {!hasData ? (
           <p className="px-4 pb-4 text-sm text-[var(--color-text-secondary)]">
-            Run <code className="font-mono text-xs">repowise health</code> to score complexity,
-            duplication, coverage, churn, and ownership across the repo.
+            Health scores land with the first index: complexity, duplication,
+            coverage, churn, and ownership across the repo.
           </p>
         ) : (
           <>

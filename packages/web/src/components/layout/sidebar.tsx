@@ -202,25 +202,32 @@ export function Sidebar({ repos = [], activeRepoId, workspace }: SidebarProps) {
                   const isExpanded = expandedRepos.has(repo.id);
                   const isActive = derivedActiveRepoId === repo.id;
                   const navGroups = repoNavGroups(repo.id);
+                  // The server flags never-indexed repos (workspace members
+                  // and plain registrations alike) with "needs_index";
+                  // synthetic workspace entries additionally have "ws:" ids.
+                  const isSynthetic = repo.id.startsWith("ws:");
                   const needsIndex =
-                    repo.workspace_status === "needs_index" ||
-                    repo.id.startsWith("ws:");
+                    repo.workspace_status === "needs_index" || isSynthetic;
                   const isMissing = repo.workspace_status === "missing_dir";
 
                   if (needsIndex || isMissing) {
-                    // Synthetic / unindexed workspace entry — show as a
-                    // disabled row with a status hint. The Index/Sync
-                    // CTA lives in the Workspace dashboard.
+                    // Unindexed entry: a status pill that routes to where
+                    // the Index CTA lives, the Workspace dashboard for
+                    // synthetic entries and the repo overview otherwise.
+                    const indexHref = isSynthetic || isMissing
+                      ? "/workspace"
+                      : `/repos/${repo.id}/overview`;
                     if (isIconOnly) {
                       return (
                         <Tooltip key={repo.id}>
                           <TooltipTrigger asChild>
-                            <div
-                              className="flex w-full items-center justify-center rounded-md p-2 text-[var(--color-text-tertiary)] opacity-60"
+                            <Link
+                              href={indexHref}
+                              className="flex w-full items-center justify-center rounded-md p-2 text-[var(--color-text-tertiary)] opacity-60 transition-colors hover:bg-[var(--color-bg-elevated)]"
                               aria-label={`${repo.name} (${isMissing ? "missing" : "needs index"})`}
                             >
                               <Circle className="h-2.5 w-2.5 stroke-current" />
-                            </div>
+                            </Link>
                           </TooltipTrigger>
                           <TooltipContent side="right">
                             {repo.workspace_alias ?? repo.name}
@@ -233,12 +240,14 @@ export function Sidebar({ repos = [], activeRepoId, workspace }: SidebarProps) {
                     return (
                       <Link
                         key={repo.id}
-                        href="/workspace"
+                        href={indexHref}
                         className="flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-sm text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-elevated)]"
                         title={
                           isMissing
                             ? "Directory missing — open Workspace to remove or fix"
-                            : "Not indexed yet — open Workspace to index"
+                            : isSynthetic
+                              ? "Not indexed yet. Open Workspace to index."
+                              : "Not indexed yet. Open the repo to index."
                         }
                       >
                         <Circle className="h-2 w-2 shrink-0 stroke-current" />

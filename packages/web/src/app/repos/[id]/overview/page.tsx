@@ -7,7 +7,8 @@ import { getProviders } from "@/lib/api/providers";
 import { getStatsHighlights } from "@/lib/api/stats";
 import { StatsTeaserCard } from "@/components/overview/stats-teaser-card";
 import { Badge } from "@repowise-dev/ui/ui/badge";
-import { EmptyState, PageShell } from "@repowise-dev/ui/shared";
+import { PageShell } from "@repowise-dev/ui/shared";
+import { FirstIndexExperience } from "@/components/repos/first-index-experience";
 import { HealthOverviewCard } from "@repowise-dev/ui/dashboard/health-overview-card";
 import { AttentionPanel } from "@repowise-dev/ui/dashboard/attention-panel";
 import { KpiStrip, kpiDelta, type KpiItem } from "@repowise-dev/ui/dashboard/kpi-strip";
@@ -117,24 +118,21 @@ export default async function OverviewPage({ params }: Props) {
 
   return (
     <PageShell title={repo.name} description={repo.local_path} actions={headerMeta} maxWidth="wide">
-      <QuickActions
-        repoId={id}
-        repoName={repo.name}
-        pageCount={sync.page_count || stats.file_count}
-        modelName={providers?.active.model ?? sync.last_sync_model ?? ""}
-        lastSyncAt={sync.last_sync_at}
-        lastResyncAt={sync.last_resync_at}
-      />
+      {/* Fresh repos get one prominent index action instead of the sync
+          toolbar; everything else appears once the first index lands. */}
+      {!isFresh && (
+        <QuickActions
+          repoId={id}
+          repoName={repo.name}
+          pageCount={sync.page_count || stats.file_count}
+          modelName={providers?.active.model ?? sync.last_sync_model ?? ""}
+          lastSyncAt={sync.last_sync_at}
+          lastResyncAt={sync.last_resync_at}
+        />
+      )}
 
       {isFresh ? (
-        <EmptyState
-          title={
-            lastActivityAt
-              ? `Indexed ${formatRelativeTime(lastActivityAt)} — nothing to show yet`
-              : "This repo hasn't been indexed yet"
-          }
-          description="Start a sync above to build the index. Stats, attention items, and activity appear as soon as the first index lands."
-        />
+        <FirstIndexExperience repoId={id} repoName={repo.name} />
       ) : (
         <>
           {/* ── KPI bar leads ── */}

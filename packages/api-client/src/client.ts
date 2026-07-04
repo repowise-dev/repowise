@@ -62,12 +62,30 @@ export class ApiClientError extends Error {
   }
 }
 
+/** Flatten a FastAPI error `detail` into a readable string. Plain strings
+ * pass through; 422 validation errors arrive as a list of objects whose
+ * useful text lives in `msg`. */
+function stringifyDetail(detail: unknown): string | null {
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    const msgs = detail
+      .map((d) =>
+        d && typeof d === "object" && "msg" in d ? String((d as { msg: unknown }).msg) : null,
+      )
+      .filter((m): m is string => !!m)
+      // Pydantic prefixes custom validator messages with "Value error, ".
+      .map((m) => m.replace(/^Value error, /, ""));
+    if (msgs.length > 0) return msgs.join("; ");
+  }
+  return null;
+}
+
 async function handleResponse<T>(res: Response): Promise<T> {
   if (!res.ok) {
     let detail = res.statusText;
     try {
       const json = (await res.json()) as ApiError;
-      detail = json.detail ?? detail;
+      detail = stringifyDetail(json.detail) ?? detail;
     } catch {
       // response body is not JSON
     }

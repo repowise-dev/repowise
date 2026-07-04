@@ -232,5 +232,8 @@ async def stream_job(job_id: str, request: Request) -> StreamingResponse:
     return StreamingResponse(
         event_generator(),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        # no-transform matters: the web app fronts this API through a Next.js
+        # rewrite whose compression middleware would otherwise gzip-buffer the
+        # stream, so no event ever reaches the browser until the job ends.
+        headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"},
     )

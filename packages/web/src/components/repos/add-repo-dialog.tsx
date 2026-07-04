@@ -1,21 +1,17 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Plus } from "lucide-react";
 import { toast } from "sonner";
 import { useSWRConfig } from "swr";
-import { createRepo } from "@/lib/api/repos";
+import { createRepo, preflightIndex, startIndexJob } from "@/lib/api/repos";
+import { getProviders } from "@/lib/api/providers";
 import { Button } from "@repowise-dev/ui/ui/button";
 import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogFooter,
-} from "@repowise-dev/ui/ui/dialog";
-import { Label } from "@repowise-dev/ui/ui/label";
-import { Input } from "@repowise-dev/ui/ui/input";
+  AddRepoWizard,
+  type AddRepoWizardAdapter,
+} from "@repowise-dev/ui/onboarding/add-repo-wizard";
 
 interface Props {
   /** Render as a sidebar button (icon + label) vs standalone button */
@@ -38,47 +34,38 @@ export function AddRepoDialog({
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const open = controlledOpen ?? uncontrolledOpen;
   const setOpen = onOpenChange ?? setUncontrolledOpen;
-  const [name, setName] = useState("");
-  const [localPath, setLocalPath] = useState("");
-  const [url, setUrl] = useState("");
-  const [branch, setBranch] = useState("main");
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
-  function reset() {
-    setName("");
-    setLocalPath("");
-    setUrl("");
-    setBranch("main");
-    setError(null);
-  }
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!name.trim() || !localPath.trim()) return;
-    setSubmitting(true);
-    setError(null);
-    try {
-      const repo = await createRepo({
-        name: name.trim(),
-        local_path: localPath.trim(),
-        url: url.trim() || undefined,
-        default_branch: branch.trim() || "main",
-      });
-      // Invalidate the repos list so sidebar/dashboard refresh
-      await mutate("/api/repos");
-      setOpen(false);
-      reset();
-      toast.success(`Added ${repo.name}`);
-      // Land on the new repo's overview, where the sync actions live.
-      router.push(`/repos/${repo.id}/overview`);
-      router.refresh();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to add repository");
-    } finally {
-      setSubmitting(false);
-    }
-  }
+  const adapter: AddRepoWizardAdapter = useMemo(
+    () => ({
+      createRepo: async (input) => {
+        const repo = await createRepo({
+          name: input.name,
+          local_path: input.local_path,
+          url: input.url,
+          default_branch: input.default_branch,
+          settings: input.wiki_style ? { wiki_style: input.wiki_style } : undefined,
+          // Register first; the wizard runs preflight (provider check + cost
+          // estimate) before committing to generation spend.
+          index: false,
+        });
+        await mutate("/api/repos");
+        return { id: repo.id, name: repo.name };
+      },
+      preflight: (repoId) => preflightIndex(repoId),
+      startIndex: (repoId) => startIndexJob(repoId),
+      getProviderStatus: async () => {
+        const res = await getProviders();
+        return res.active;
+      },
+      settingsHref: "/settings",
+      onDone: (repoId, jobId) => {
+        toast.success(jobId ? "Repository added, indexing started" : "Repository added");
+        router.push(`/repos/${repoId}/overview`);
+        router.refresh();
+      },
+    }),
+    [mutate, router],
+  );
 
   return (
     <>
@@ -98,78 +85,7 @@ export function AddRepoDialog({
         </Button>
       )}
 
-      <Dialog open={open} onOpenChange={(v) => { setOpen(v); if (!v) reset(); }}>
-        <DialogContent className="sm:max-w-md w-[calc(100vw-2rem)]">
-          <DialogHeader>
-            <DialogTitle>Add Repository</DialogTitle>
-          </DialogHeader>
-
-          <form onSubmit={handleSubmit} className="space-y-4 py-2">
-            <div className="space-y-1.5">
-              <Label htmlFor="repo-name">Name</Label>
-              <Input
-                id="repo-name"
-                placeholder="my-project"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                required
-              />
-            </div>
-
-            <div className="space-y-1.5">
-              <Label htmlFor="repo-path">Local Path</Label>
-              <Input
-                id="repo-path"
-                placeholder="C:\Users\you\projects\my-project"
-                value={localPath}
-                onChange={(e) => setLocalPath(e.target.value)}
-                className="font-mono"
-                required
-              />
-            </div>
-
-            <div className="space-y-1.5">
-              <Label htmlFor="repo-url">
-                Remote URL{" "}
-                <span className="font-normal text-[var(--color-text-tertiary)]">(optional)</span>
-              </Label>
-              <Input
-                id="repo-url"
-                placeholder="https://github.com/org/repo"
-                value={url}
-                onChange={(e) => setUrl(e.target.value)}
-              />
-            </div>
-
-            <div className="space-y-1.5">
-              <Label htmlFor="repo-branch">Default Branch</Label>
-              <Input
-                id="repo-branch"
-                placeholder="main"
-                value={branch}
-                onChange={(e) => setBranch(e.target.value)}
-              />
-            </div>
-
-            {error && (
-              <p className="text-sm text-[var(--color-outdated)]">{error}</p>
-            )}
-
-            <DialogFooter>
-              <Button
-                type="button"
-                variant="ghost"
-                onClick={() => { setOpen(false); reset(); }}
-              >
-                Cancel
-              </Button>
-              <Button type="submit" disabled={submitting || !name.trim() || !localPath.trim()}>
-                {submitting ? "Adding…" : "Add Repository"}
-              </Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
+      <AddRepoWizard adapter={adapter} open={open} onOpenChange={setOpen} />
     </>
   );
 }

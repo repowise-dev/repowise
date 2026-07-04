@@ -18,8 +18,13 @@ export async function listDeadCode(
   return apiGet<DeadCodeFindingResponse[]>(`/api/repos/${repoId}/dead-code`, opts);
 }
 
-export async function analyzeDeadCode(repoId: string): Promise<{ job_id: string }> {
-  return apiPost<{ job_id: string }>(`/api/repos/${repoId}/dead-code/analyze`);
+/** Launch an index-only refresh job (no LLM spend). 409 when a job is active. */
+export async function analyzeDeadCode(
+  repoId: string,
+): Promise<{ job_id: string; status: string }> {
+  return apiPost<{ job_id: string; status: string }>(
+    `/api/repos/${repoId}/dead-code/analyze`,
+  );
 }
 
 export async function getDeadCodeSummary(repoId: string): Promise<DeadCodeSummaryResponse> {

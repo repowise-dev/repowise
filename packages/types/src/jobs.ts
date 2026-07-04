@@ -6,7 +6,13 @@
  * family. Hosted-side hooks resolve and forward into these contracts.
  */
 
-export type JobStatus = "pending" | "running" | "completed" | "failed" | "paused";
+export type JobStatus =
+  | "pending"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "paused";
 
 export interface Job {
   id: string;

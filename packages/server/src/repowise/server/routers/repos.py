@@ -187,6 +187,21 @@ async def list_repos(
         if resp.local_path:
             resp.head_commit = resolve_indexed_commit(resp.head_commit, resp.local_path)
 
+    # Flag registered-but-never-indexed repos. head_commit can't signal this
+    # (registration stamps it from the live git HEAD), so the honest check is
+    # the repo-local store: since the initial-index path always establishes
+    # <repo>/.repowise/wiki.db, its absence means the first index hasn't run.
+    # Reuses the workspace "needs_index" contract the sidebar already renders.
+    from pathlib import Path as _Path
+
+    for resp in responses:
+        if resp.workspace_status is None and resp.local_path:
+            try:
+                if not (_Path(resp.local_path) / ".repowise" / "wiki.db").is_file():
+                    resp.workspace_status = "needs_index"
+            except OSError:
+                pass
+
     # Augment with workspace metadata. We do this in a second pass (rather
     # than during from_orm) because the workspace context lives on
     # app.state, not on the Repository row.
@@ -523,12 +538,23 @@ async def index_repo(
     if repo is None:
         raise HTTPException(status_code=404, detail="Repository not found")
 
+    # Carry settings (e.g. a wiki_style chosen at registration) into the
+    # repo-local row this call may be creating; an existing row is never
+    # clobbered by registration.
+    import json as _json
+
+    try:
+        settings = _json.loads(repo.settings_json) or None
+    except (TypeError, ValueError):
+        settings = None
+
     factory, canonical_id = await ensure_repo_registration(
         request.app.state,
         local_path=repo.local_path,
         name=repo.name,
         url=repo.url,
         default_branch=repo.default_branch,
+        settings=settings,
         repo_id=repo.id,
     )
     job_id = await _enqueue_index_job(request, factory, canonical_id)

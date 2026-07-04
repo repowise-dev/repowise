@@ -147,7 +147,7 @@ export function HealthFileDrawer({
             <div className="text-sm text-[var(--color-text-tertiary)]">Loading…</div>
           ) : !metric ? (
             <div className="rounded border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] p-4 text-sm text-[var(--color-text-secondary)]">
-              No metric for this file yet. Run <code>repowise init</code> or <code>repowise health</code>.
+              No metric for this file yet. It appears after the next index or sync.
             </div>
           ) : (
             <>

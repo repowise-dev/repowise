@@ -14,8 +14,8 @@ export async function getJob(jobId: string): Promise<JobResponse> {
   return apiGet<JobResponse>(`/api/jobs/${jobId}`);
 }
 
-/** Cancel a pending or running job. Marks it failed so the active-job
- * guard releases and a new sync can be started. */
+/** Cancel a pending or running job. Actually stops the pipeline and marks
+ * the job `cancelled`, releasing the active-job guard. */
 export async function cancelJob(jobId: string): Promise<JobResponse> {
   return apiPost<JobResponse>(`/api/jobs/${jobId}/cancel`);
 }

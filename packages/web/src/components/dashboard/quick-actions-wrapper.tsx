@@ -62,7 +62,8 @@ export function QuickActionsWrapper({
         setActiveJobId(job.id);
         toast.info(`Full resync started${repoName ? ` — ${repoName}` : ""}`);
       } else if (key === "dead-code") {
-        await analyzeDeadCode(repoId);
+        const { job_id } = await analyzeDeadCode(repoId);
+        setActiveJobId(job_id);
         toast.info("Dead code analysis started");
       }
     } catch (e) {

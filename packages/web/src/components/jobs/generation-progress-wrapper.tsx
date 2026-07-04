@@ -1,25 +1,28 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { GenerationProgress } from "@repowise-dev/ui/jobs/generation-progress";
 import { useJob } from "@/lib/hooks/use-job";
 import { cancelJob } from "@/lib/api/jobs";
 import { formatNumber } from "@repowise-dev/ui/lib/format";
-import type { JobProgressEvent } from "@/lib/api/types";
 import { computeElapsedMs } from "@/lib/jobs/progress";
 
 interface Props {
   jobId: string;
   repoName?: string;
   onDone?: () => void;
+  /** Start a fresh run after a failure or cancellation. */
+  onRetry?: () => void;
+  /** Suppress the completion/failure toasts (when the host surface renders
+   * its own completion moment). */
+  quiet?: boolean;
 }
 
 const PENDING_STUCK_THRESHOLD_MS = 30_000;
 
-export function GenerationProgressWrapper({ jobId, repoName, onDone }: Props) {
-  const { job, sse } = useJob(jobId);
-  const [log, setLog] = useState<Array<{ text: string }>>([]);
+export function GenerationProgressWrapper({ jobId, repoName, onDone, onRetry, quiet }: Props) {
+  const { job, sse, messages, phase } = useJob(jobId);
   const [elapsed, setElapsed] = useState(0);
   const [actualCost, setActualCost] = useState<number | null>(null);
   const [cancelling, setCancelling] = useState(false);
@@ -33,35 +36,43 @@ export function GenerationProgressWrapper({ jobId, repoName, onDone }: Props) {
   }, [job]);
 
   useEffect(() => {
-    if (!sse.data) return;
-    const ev = sse.data as JobProgressEvent;
-    if (ev.current_page) {
-      setLog((prev) => [
-        ...prev,
-        { text: `[L${ev.current_level ?? "?"}] ${ev.current_page}` },
-      ]);
-    }
-    if (ev.actual_cost_usd != null) {
-      setActualCost(ev.actual_cost_usd);
-    }
+    const cost = sse.data?.actual_cost_usd;
+    if (cost != null) setActualCost(cost);
   }, [sse.data]);
+
+  const log = useMemo(
+    () => messages.map((m) => ({ text: m.text, level: m.level })),
+    [messages],
+  );
 
   useEffect(() => {
     if (notifiedRef.current) return;
     if (job?.status === "completed") {
       notifiedRef.current = true;
-      toast.success(`Documentation updated${repoName ? ` — ${repoName}` : ""}`, {
-        description: `${formatNumber(job.completed_pages)} pages generated`,
-      });
+      if (!quiet) {
+        toast.success(`Documentation updated${repoName ? ` — ${repoName}` : ""}`, {
+          description: `${formatNumber(job.completed_pages)} pages generated`,
+        });
+      }
       onDone?.();
     } else if (job?.status === "failed") {
       notifiedRef.current = true;
-      toast.error("Generation failed", {
-        description: job.error_message ?? "Unknown error",
-      });
+      if (!quiet) {
+        toast.error("Generation failed", {
+          description: job.error_message ?? "Unknown error",
+        });
+      }
+      onDone?.();
+    } else if (job?.status === "cancelled") {
+      notifiedRef.current = true;
+      if (!quiet) {
+        toast.info("Job cancelled", {
+          description: "The pipeline was stopped before completion.",
+        });
+      }
       onDone?.();
     }
-  }, [job?.status, job?.completed_pages, job?.error_message, repoName, onDone]);
+  }, [job?.status, job?.completed_pages, job?.error_message, repoName, onDone, quiet]);
 
   const isPending = job?.status === "pending";
   const stuckPending =
@@ -74,8 +85,8 @@ export function GenerationProgressWrapper({ jobId, repoName, onDone }: Props) {
     setCancelling(true);
     try {
       await cancelJob(job.id);
-      toast.success("Job cancelled");
-      onDone?.();
+      // The stream/poll flips the job to "cancelled"; the status effect above
+      // owns the toast so cancel-from-button and cancel-from-elsewhere match.
     } catch (e) {
       toast.error("Couldn't cancel job", {
         description: e instanceof Error ? e.message : "Unknown error",
@@ -94,7 +105,9 @@ export function GenerationProgressWrapper({ jobId, repoName, onDone }: Props) {
       stuckPending={stuckPending}
       cancelling={cancelling}
       onCancel={handleCancel}
+      phase={phase}
+      onRetry={onRetry}
+      settingsHref="/settings"
     />
   );
 }
-

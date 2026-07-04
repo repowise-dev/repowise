@@ -5,6 +5,7 @@ import {
   FileText,
   CheckCircle2,
   AlertCircle,
+  Ban,
   Skull,
   Activity,
   RefreshCw,
@@ -236,6 +237,8 @@ export default async function DashboardPage() {
                               ? "outdated"
                               : job.status === "running"
                               ? "accent"
+                              : job.status === "cancelled"
+                              ? "stale"
                               : "default"
                           }
                         >
@@ -269,6 +272,9 @@ function JobStatusIcon({ status }: { status: string }) {
   }
   if (status === "failed") {
     return <AlertCircle className="h-4 w-4 shrink-0 text-[var(--color-error)]" />;
+  }
+  if (status === "cancelled") {
+    return <Ban className="h-4 w-4 shrink-0 text-[var(--color-text-tertiary)]" />;
   }
   return <Clock className="h-4 w-4 shrink-0 text-[var(--color-text-tertiary)]" />;
 }

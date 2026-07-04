@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { toast } from "sonner";
-import { RefreshCw, Zap, ChevronDown, ChevronUp, AlertTriangle, Download } from "lucide-react";
+import { RefreshCw, Zap, AlertTriangle, Download } from "lucide-react";
 import { syncRepo, fullResyncRepo } from "@/lib/api/repos";
 import { Button } from "@repowise-dev/ui/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui/card";
@@ -13,7 +13,6 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@repowise-dev/ui/ui/dialog";
-import { RunConfigForm, type RunConfig } from "./run-config-form";
 import { GenerationProgressWrapper as GenerationProgress } from "@/components/jobs/generation-progress-wrapper";
 
 interface Props {
@@ -21,17 +20,7 @@ interface Props {
   repoName: string;
 }
 
-const DEFAULT_CONFIG: RunConfig = {
-  provider: "litellm",
-  model: "",
-  skipTests: false,
-  skipInfra: false,
-  concurrency: 4,
-};
-
 export function OperationsPanel({ repoId, repoName }: Props) {
-  const [open, setOpen] = useState(false);
-  const [runConfig, setRunConfig] = useState<RunConfig>(DEFAULT_CONFIG);
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [confirmResync, setConfirmResync] = useState(false);
   const [loading, setLoading] = useState<"sync" | "resync" | null>(null);
@@ -75,18 +64,7 @@ export function OperationsPanel({ repoId, repoName }: Props) {
     <>
       <Card>
         <CardHeader className="pb-2">
-          <div className="flex items-center justify-between">
-            <CardTitle className="text-sm">Operations</CardTitle>
-            <button
-              onClick={() => setOpen((v) => !v)}
-              aria-expanded={open}
-              aria-controls="operations-panel-content"
-              className="flex items-center gap-1 text-xs text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)] transition-colors cursor-pointer"
-            >
-              {open ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
-              {open ? "Collapse" : "Configure"}
-            </button>
-          </div>
+          <CardTitle className="text-sm">Operations</CardTitle>
         </CardHeader>
 
         <CardContent id="operations-panel-content" className="space-y-4">
@@ -97,11 +75,6 @@ export function OperationsPanel({ repoId, repoName }: Props) {
               repoName={repoName}
               onDone={handleJobDone}
             />
-          )}
-
-          {/* Config form (collapsible) */}
-          {open && !activeJobId && (
-            <RunConfigForm value={runConfig} onChange={setRunConfig} />
           )}
 
           {/* Action buttons */}

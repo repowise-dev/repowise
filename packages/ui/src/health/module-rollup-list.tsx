@@ -24,7 +24,7 @@ type SortKey = "average_health" | "file_count" | "nloc" | "module";
 
 export function ModuleRollupList({
   modules,
-  emptyMessage = "No modules detected yet — community labels populate after the first `repowise init`.",
+  emptyMessage = "No modules detected yet. Community labels populate after the first index.",
   onSelect,
   pageSize = 15,
 }: ModuleRollupListProps) {

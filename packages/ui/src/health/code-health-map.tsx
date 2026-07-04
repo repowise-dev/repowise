@@ -412,7 +412,7 @@ export function CodeHealthMap({
         className="flex w-full items-center justify-center rounded-xl border border-dashed border-[var(--color-border-default)] bg-[var(--color-bg-canvas)] text-sm text-[var(--color-text-tertiary)]"
         style={{ minHeight }}
       >
-        No files to map yet — run <code className="mx-1 font-mono">repowise init</code> to populate health.
+        No files to map yet. Index this repo to populate health.
       </div>
     );
   }
