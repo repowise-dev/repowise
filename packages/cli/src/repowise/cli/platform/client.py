@@ -1,10 +1,11 @@
 """Central client for the Repowise hosted platform (``api.repowise.dev``).
 
-This is the single seam between the OSS CLI and the hosted product. Today its
-only consumer is anonymous telemetry; tomorrow it will carry authenticated
-calls (login, account, cross-machine sync). Keeping *all* hosted connectivity
-here means a new hosted feature adds a method, not another ad-hoc ``httpx``
-call scattered across the CLI.
+This is the single seam between the OSS CLI and the hosted product. It
+carries anonymous telemetry and, once a user runs ``repowise login``, the
+authenticated account calls (whoami, OAuth token exchange, connection
+management). Keeping *all* hosted connectivity here means a new hosted
+feature adds a method, not another ad-hoc ``httpx`` call scattered across
+the CLI.
 
 Design rules:
 
@@ -13,9 +14,9 @@ Design rules:
   shipped CLI always talks to ``https://api.repowise.dev``.
 * **Fail-silent.** The OSS CLI must work fully offline, so every method
   swallows network/parse errors and returns a sentinel instead of raising.
-* **Auth-ready.** :meth:`PlatformClient._auth_headers` is the one place a future
-  bearer token gets attached, so every platform call becomes authenticated at
-  once when login lands.
+* **One auth seam.** :meth:`PlatformClient._auth_headers` is the one place the
+  ``repowise login`` bearer token gets attached, so every platform call is
+  authenticated uniformly (and stays anonymous when signed out).
 """
 
 from __future__ import annotations
@@ -60,12 +61,17 @@ class PlatformClient:
     def _auth_headers(self) -> dict[str, str]:
         """Return auth headers for an authenticated platform call.
 
-        Empty today: the OSS CLI makes only anonymous calls. When the pip
-        package gains login this reads the stored bearer token from the
-        credential store, and every platform call is authenticated uniformly
-        without touching individual call sites.
+        Reads the stored login (``repowise login``) via the auth module,
+        which transparently refreshes an expired access token. Signed-out,
+        offline, or revoked all degrade to ``{}`` — the call proceeds
+        anonymously. Lazy import: most commands never touch credentials.
         """
-        return {}
+        try:
+            from repowise.cli.platform import auth
+
+            return auth.auth_headers()
+        except Exception:
+            return {}
 
     def _headers(self, extra: dict[str, str] | None = None) -> dict[str, str]:
         headers = {
@@ -101,6 +107,63 @@ class PlatformClient:
             return True
         except Exception:
             # Network, JSON, HTTP-status — all advisory. The CLI works offline.
+            return False
+
+    def post_form(
+        self,
+        path: str,
+        form: dict[str, str],
+        *,
+        timeout: float | None = None,
+    ) -> tuple[int, dict[str, Any]]:
+        """POST form-encoded data and return ``(status_code, parsed_body)``.
+
+        For OAuth endpoints (RFC 6749 wants form encoding and meaningful
+        error bodies), so unlike :meth:`post` this surfaces the status and
+        body instead of collapsing to a bool. Deliberately anonymous: the
+        token endpoint authenticates by grant, and attaching
+        :meth:`_auth_headers` here would recurse through token refresh.
+        Network failures return ``(0, {})``.
+        """
+        url = f"{self.base_url}/{path.lstrip('/')}"
+        try:
+            import httpx
+
+            resp = httpx.post(
+                url,
+                data=form,
+                headers={"User-Agent": _user_agent()},
+                timeout=timeout or self.timeout,
+            )
+            try:
+                body = resp.json()
+            except Exception:
+                body = {}
+            return resp.status_code, body if isinstance(body, dict) else {}
+        except Exception:
+            return 0, {}
+
+    def delete(
+        self,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        timeout: float | None = None,
+    ) -> bool:
+        """DELETE ``path``. Returns success, never raises."""
+        url = f"{self.base_url}/{path.lstrip('/')}"
+        try:
+            import httpx
+
+            resp = httpx.delete(
+                url,
+                params=params,
+                headers=self._headers(),
+                timeout=timeout or self.timeout,
+            )
+            resp.raise_for_status()
+            return True
+        except Exception:
             return False
 
     def get(

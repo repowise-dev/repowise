@@ -254,6 +254,29 @@ def _run_repo_checks(
     config_detail = "All required API keys configured" if config_ok else "; ".join(config_warnings)
     checks.append(_check("Provider config", config_ok, config_detail))
 
+    # 6b. Hosted account (informational: signed out is not a failure).
+    try:
+        from repowise.cli.platform import auth, credentials
+
+        creds = credentials.load()
+        if creds is None:
+            checks.append(
+                _check("Hosted account", True, "Not signed in (optional: repowise login)")
+            )
+        elif creds.get("stale"):
+            checks.append(
+                _check("Hosted account", False, "Session expired or revoked; run repowise login")
+            )
+        else:
+            account = auth.fetch_account()
+            cached = (account or creds.get("account") or {}) or {}
+            who = cached.get("github_username") or cached.get("email") or "unknown"
+            tier = cached.get("tier") or "free"
+            suffix = "" if account else " (offline, using cached identity)"
+            checks.append(_check("Hosted account", True, f"{who} ({tier}){suffix}"))
+    except Exception as e:
+        checks.append(_check("Hosted account", False, str(e)))
+
     # 7. Stale page count
     stale_count = 0
     if db_ok and page_count > 0:
