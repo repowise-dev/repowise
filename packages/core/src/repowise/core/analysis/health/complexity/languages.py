@@ -441,6 +441,50 @@ _KOTLIN = LanguageNodeMap(
     assert_call_kinds=frozenset({"call_expression"}),
 )
 
+_DART = LanguageNodeMap(
+    # Dart splits a function into a ``function_signature`` node whose body is
+    # a SIBLING ``function_body`` node (members wrap the signature in
+    # ``method_signature``). Keying ``function_kinds`` on the body measures
+    # complexity/NLOC exactly right with the shared walker; the entry name
+    # and parameter count come from the preceding signature sibling (see the
+    # ``function_body`` handling in ``ast_utils`` / ``perf_walk``).
+    function_kinds=frozenset({"function_body"}),
+    lambda_kinds=frozenset({"function_expression"}),
+    # ``if_element`` is the collection-literal ``if`` (``[if (x) y]``);
+    # ``conditional_expression`` is the ternary.
+    branch_kinds=frozenset({"if_statement", "conditional_expression", "if_element"}),
+    loop_kinds=frozenset(
+        {"for_statement", "while_statement", "do_statement", "for_element"}
+    ),
+    try_kinds=frozenset({"try_statement"}),
+    # A bare ``on FormatException {}`` arm without ``catch`` has no
+    # catch_clause node (the block hangs off try_statement directly), so it
+    # is undercounted — the safe direction.
+    catch_kinds=frozenset({"catch_clause"}),
+    switch_kinds=frozenset({"switch_statement", "switch_expression"}),
+    case_kinds=frozenset(
+        {"switch_statement_case", "switch_statement_default", "switch_expression_case"}
+    ),
+    # The grammar exposes dedicated operator nodes inside
+    # logical_and_expression / logical_or_expression — one node per operator
+    # occurrence, so no binary-node text sniffing is needed.
+    boolean_operator_kinds=frozenset({"logical_and_operator", "logical_or_operator"}),
+    # Method/size/CCN class facts only. Dart has no wrapper node for
+    # ``this.member`` (receiver and ``.member`` selector are flat siblings)
+    # and idiomatic Dart omits ``this.`` anyway, so member access stays
+    # unmapped and LCOM4 sits at its "no signal" safety valve rather than
+    # mis-firing on every class.
+    class_kinds=frozenset({"class_definition", "mixin_declaration"}),
+    self_identifiers=frozenset({"this"}),
+    # ``assert(...)`` is a real statement in Dart. package:test ``expect()``
+    # calls have no call-expression node type to key on (calls are selector
+    # chains), so assertion-call runs are not counted — under-signal, safe.
+    assert_kinds=frozenset({"assert_statement"}),
+    # Calls are ``selector`` nodes carrying an ``argument_part``; the Dart
+    # perf dialect's callee extraction filters out the non-call selectors.
+    call_kinds=frozenset({"selector"}),
+)
+
 _CPP = LanguageNodeMap(
     function_kinds=frozenset({"function_definition"}),
     lambda_kinds=frozenset({"lambda_expression"}),
@@ -504,6 +548,7 @@ LANGUAGE_MAPS: dict[str, LanguageNodeMap] = {
     "kotlin": _KOTLIN,
     "cpp": _CPP,
     "csharp": _CSHARP,
+    "dart": _DART,
 }
 
 

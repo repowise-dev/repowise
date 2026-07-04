@@ -82,6 +82,7 @@ ALL_SPECS: tuple[LanguageSpec, ...] = (
     _PHP,
     _SWIFT,
     _SCALA,
+    _DART,
     # -----------------------------------------------------------------
     # Config / data / markup languages (passthrough — no AST)
     # -----------------------------------------------------------------
@@ -113,7 +114,6 @@ ALL_SPECS: tuple[LanguageSpec, ...] = (
     _ERLANG,
     _LUAU,
     _R,
-    _DART,
     _ZIG,
     _JULIA,
     _CLOJURE,

@@ -42,6 +42,7 @@ dependencies = [
     "tree-sitter-rust>=0.23,<1",
     "tree-sitter-java>=0.23,<1",
     "tree-sitter-cpp>=0.23,<1",
+    "tree-sitter-dart>=0.1,<1",
     "tree-sitter-kotlin>=1,<2",
     "tree-sitter-ruby>=0.23,<1",
     "tree-sitter-c-sharp>=0.23,<1",

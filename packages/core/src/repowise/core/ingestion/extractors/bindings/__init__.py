@@ -23,6 +23,7 @@ from tree_sitter import Node
 from ...models import NamedBinding
 from .cpp import extract_cpp_bindings
 from .csharp import extract_csharp_bindings
+from .dart import extract_dart_bindings
 from .go import extract_go_bindings
 from .java import extract_java_bindings
 from .kotlin import extract_kotlin_bindings
@@ -47,6 +48,7 @@ _DISPATCH: dict[str, Callable[[Node, str], tuple[list[str], list[NamedBinding]]]
     "kotlin": extract_kotlin_bindings,
     "ruby": extract_ruby_bindings,
     "csharp": extract_csharp_bindings,
+    "dart": extract_dart_bindings,
     "swift": extract_swift_bindings,
     "scala": extract_scala_bindings,
     "php": extract_php_bindings,
@@ -66,6 +68,7 @@ def extract_import_bindings(
 __all__ = [
     "extract_cpp_bindings",
     "extract_csharp_bindings",
+    "extract_dart_bindings",
     "extract_go_bindings",
     "extract_import_bindings",
     "extract_java_bindings",

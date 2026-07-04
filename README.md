@@ -347,6 +347,7 @@ Install from the Marketplace (search **Repowise**) or Open VSX, then run
   <img src="https://img.shields.io/badge/Swift-F05138?style=flat-square&logo=swift&logoColor=white" alt="Swift" />
   <img src="https://img.shields.io/badge/Scala-DC322F?style=flat-square&logo=scala&logoColor=white" alt="Scala" />
   <img src="https://img.shields.io/badge/PHP-777BB4?style=flat-square&logo=php&logoColor=white" alt="PHP" />
+  <img src="https://img.shields.io/badge/Dart-0175C2?style=flat-square&logo=dart&logoColor=white" alt="Dart" />
   &nbsp;<strong>· Partial &nbsp;</strong>
   <img src="https://img.shields.io/badge/Luau-00A2FF?style=flat-square&logo=lua&logoColor=white" alt="Luau" />
 </p>
@@ -354,10 +355,10 @@ Install from the Marketplace (search **Repowise**) or Open VSX, then run
 | Tier | Languages | What works |
 |------|-----------|------------|
 | **Full** | Python · TypeScript · JavaScript · Java · Kotlin · Go · Rust · C++ · C# | AST parsing, import resolution, named bindings, call resolution, heritage extraction, docstrings; multi-project workspace resolvers; framework-aware edges; per-language dynamic-hint extractors; **code-health markers** |
-| **Good** | C · Ruby · Swift · Scala · PHP | AST parsing, import resolution, named bindings, call resolution, heritage (mixins / derive / extensions / traits), docstrings; dedicated workspace-aware resolvers; Rails / Laravel / TYPO3 framework edges; dynamic-hint extractors |
+| **Good** | C · Ruby · Swift · Scala · PHP · Dart | AST parsing, import resolution, named bindings, call resolution, heritage (mixins / derive / extensions / traits), docstrings; dedicated workspace-aware resolvers; Rails / Laravel / TYPO3 / Flutter framework edges; dynamic-hint extractors; Dart adds code-health + perf markers |
 | **SQL / dbt** | `.sql` via sqlglot (postgres, mysql, tsql, clickhouse, ...) | Tables / views / functions / procedures as symbols with wiki pages; dbt projects get real `ref()` / `source()` lineage edges: model-level DAG, hotspots, co-change, ownership |
 | **Config / data** | OpenAPI · Protobuf · GraphQL · Dockerfile · Makefile · YAML · JSON · TOML · Terraform · Markdown · Shell | Included in the file tree; special handlers extract endpoints / targets where applicable |
-| **Git-blame only** | Objective-C · Elixir · Erlang · Dart · Zig · Julia · Clojure · Haskell · OCaml · F# · … | Tracked in git history (blame, hotspots, co-change); no AST parsing yet |
+| **Git-blame only** | Objective-C · Elixir · Erlang · Zig · Julia · Clojure · Haskell · OCaml · F# · … | Tracked in git history (blame, hotspots, co-change); no AST parsing yet |
 
 Adding a language needs **one `.scm` query file and one config entry**, with no
 changes to the parser core. Full per-language matrix, code-health checklist, and

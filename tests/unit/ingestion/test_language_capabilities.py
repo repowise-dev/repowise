@@ -132,6 +132,9 @@ _FULL = {
     "c",
     "cpp",
     "csharp",
+    # dart promoted with the tree-sitter grammar (the regex tier stays as
+    # the no-grammar fallback).
+    "dart",
     "go",
     "java",
     "javascript",
@@ -149,7 +152,6 @@ _PARTIAL = {
     "scala",
     # Lightweight regex-tier resolvers (module-name index + import regexes).
     "elixir",
-    "dart",
     "clojure",
     "haskell",
     "erlang",

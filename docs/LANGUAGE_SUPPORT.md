@@ -107,6 +107,7 @@ fixture under `tests/fixtures/lang_samples/<lang>/` + a walker test):
 | Rust | Y | Y | Y | Y |
 | C++ | Y | Y | Y | Y |
 | C# | Y | Y | Y | Y |
+| Dart | Y | Y | n/a | Y (`assert` statements only; `expect()` calls have no call-node type to key on) |
 
 ### Good
 
@@ -122,6 +123,7 @@ resolvers for each language.
 | **Swift** | `.swift` | `main.swift` `App.swift` | `import Foundation` with SPM `Package.swift` `targets:` -> directory mapping; intra-module type references link same-target files (Swift has no intra-module imports by design); `@main` / `@UIApplicationMain` / `@NSApplicationMain` flag entry points; `@_exported import` marks re-exports |
 | **Scala** | `.scala` | `Main.scala` `App.scala` | `import pkg.Foo`, brace imports `{A, B => C}` (expanded per selected name, hidden imports skipped), wildcards (`pkg._` / Scala 3 `pkg.*`), and package imports, resolved through the shared JVM workspace index (chained package clauses, Scala ↔ Java cross-language, same-package implicit identifiers) with SBT `build.sbt` / Mill `build.sc` multi-project parsing as fallback; `scala.` and JDK namespaces filtered |
 | **PHP** | `.php` | `index.php` `public/index.php` | `use Foo\Bar\Baz` with composer.json `autoload.psr-4` longest-prefix resolution |
+| **Dart** | `.dart` | `main.dart` | `import` / `export` (re-export) / `part` / `part of` URIs; `package:` URIs via every `pubspec.yaml` `name:` (monorepos included); `dart:` SDK URIs filtered; `as` prefixes and `show` combinators become named bindings; heritage covers `extends` / `with` (mixin) / `implements` / mixin `on` constraints; Flutter route tables (`MaterialApp(routes:)`, `GoRoute` / `MaterialPageRoute` builders) and `runApp()` emit framework edges; the regex tier below stays as the no-grammar fallback |
 
 ### Config / Data
 
@@ -172,7 +174,6 @@ honest file-to-file dependencies, no symbol-level claims.
 | Language | Extensions | Import Forms Resolved |
 |----------|-----------|----------------------|
 | **Elixir** | `.ex` `.exs` | `alias` / `import` / `use` / `require` (incl. `Foo.{Bar, Baz}` brace groups) -> `defmodule` index + Mix `lib/` path convention (umbrella `apps/*/lib` included); Elixir/OTP stdlib filtered after local-miss |
-| **Dart** | `.dart` | `import` / `export` (re-export) / `part` / `part of` URIs; `package:` URIs via every `pubspec.yaml` `name:` (monorepos included); `dart:` SDK URIs filtered; foreign packages -> `external:pub:<name>` |
 | **Clojure** | `.clj` `.cljc` `.cljs` | `(:require …)` / `(:use …)` vectors and bare specs (string/comment-safe) -> `(ns …)` index + classpath convention (dashes ↔ underscores); `clojure.*`/`cljs.*` filtered |
 | **Haskell** | `.hs` `.lhs` | `import [safe] [qualified] ["pkg"] Foo.Bar` -> `module` declaration index + trailing-PascalCase path inverse (handles any hs-source-dirs without parsing `.cabal`); base-ish namespaces filtered after local-miss |
 | **Erlang** | `.erl` `.hrl` | `-include` / `-include_lib` / `-behaviour` + module-qualified calls (`mod:fun(`) -> `-module()` index; qualified calls are strict local-hit-or-drop (never mint externals) |
@@ -278,7 +279,9 @@ Extension/filename -> LanguageTag  (via LanguageRegistry)
           Go:     go.mod module path stripping
           Rust:   crate::/self::/super::, mod.rs probing
           C/C++:  compile_commands.json include directories
-          Lightweight tier (Elixir/Dart/Clojure/Haskell/Erlang/F#/dbt SQL):
+          Dart:   package:/dart:/relative URIs via the pubspec name map +
+                  library-name index (dotted part-of)
+          Lightweight tier (Elixir/Clojure/Haskell/Erlang/F#/dbt SQL):
                   regex-extracted imports vs a declared-module-name index
                   (dbt: ref()/source() vs a per-project model-name index)
           Other:  stem-map fallback (filename matching)
@@ -565,6 +568,7 @@ findings.
 | Go | Y | Y | resource_construction, lock | `defer_in_loop`, `regex_compile_in_loop` | --- (goroutines) |
 | C# | Y | Y | resource_construction, lock, serial_await | --- (.NET caches regexes) | `blocking_sync_in_async` (`.Result` / `.Wait()` / `.GetResult()`) |
 | Rust | Y | --- (`String` is amortized) | resource_construction, serial_await | `regex_compile_in_loop` (`Regex::new`) | `blocking_sync_in_async` (`block_on` / `std::thread::sleep` / sync `std::fs` in `async fn`) |
+| Dart | Y | Y | resource_construction, serial_await | --- | --- |
 | Kotlin / C++ | --- | --- | --- | --- | --- |
 
 The Rust dialect classifies `sqlx` executor verbs (db), `reqwest::get` /
@@ -696,7 +700,7 @@ edits. The current coverage:
 
 | Language | Target Tier | Status |
 |----------|------------|--------|
-| Dart | Good | Lightweight tier shipped; AST upgrade planned (`tree-sitter-dart` available) |
+| Dart | Good | Shipped: tree-sitter AST (symbols, calls, bindings, heritage), health control-flow + class facts, perf dialect (io/await/concat/resource in loop), Flutter route + `runApp` framework edges; next: riverpod/get_it dynamic hints, dataflow dialect |
 | Elixir | Good | Lightweight tier shipped; AST upgrade planned (`tree-sitter-elixir` available) |
 | F# | Good | Lightweight tier shipped; AST upgrade planned (`tree-sitter-f-sharp` available) |
 | SQL / dbt | -- | DDL symbols, dbt lineage, app-to-database contracts (workspace `data` extractor), and precision-gated health markers all shipped; next: column-level blast radius |

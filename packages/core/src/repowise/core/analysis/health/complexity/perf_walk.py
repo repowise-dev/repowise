@@ -89,6 +89,14 @@ _LOCK_BODY_KINDS = frozenset({"block", "statement_block", "compound_statement"})
 
 
 def _perf_func_name(node: Node) -> str | None:
+    if node.type == "function_body":
+        # Dart: the name lives on the preceding signature sibling.
+        from .ast_utils import _dart_signature_sibling, _find_name
+
+        sig = _dart_signature_sibling(node)
+        if sig is not None:
+            name = _find_name(sig)
+            return name if name and name != "<anonymous>" else None
     nm = node.child_by_field_name("name")
     if nm is not None and nm.text:
         return nm.text.decode("utf-8", "replace")

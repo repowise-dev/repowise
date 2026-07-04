@@ -405,6 +405,36 @@ class ASTParser:
             ):
                 kind = refine_kotlin_class_kind(def_node)
 
+            # Dart: a function is a ``function_signature`` whose BODY is a
+            # sibling ``function_body`` node (members wrap the signature in
+            # ``method_signature``). Two consequences the generic path can't
+            # see: local functions nested inside another function's body have
+            # no callable *ancestor* (the enclosing signature is a sibling),
+            # so filter them here; and the symbol's line range must extend to
+            # the trailing body sibling or call-site attribution stops at the
+            # signature line.
+            end_line = def_node.end_point[0] + 1
+            if file_info.language == "dart" and node_type in (
+                "function_signature",
+                "getter_signature",
+                "setter_signature",
+            ):
+                ancestor = def_node.parent
+                is_local = False
+                while ancestor is not None:
+                    if ancestor.type in ("function_body", "function_expression"):
+                        is_local = True
+                        break
+                    ancestor = ancestor.parent
+                if is_local:
+                    continue
+                anchor = def_node
+                if def_node.parent is not None and def_node.parent.type == "method_signature":
+                    anchor = def_node.parent
+                body_sibling = anchor.next_named_sibling
+                if body_sibling is not None and body_sibling.type == "function_body":
+                    end_line = body_sibling.end_point[0] + 1
+
             # Refine module-level assignments: SCREAMING_CASE names are
             # constants by convention; the rest are module variables
             # (singletons like ``app = FastAPI()``, registries, caches).
@@ -450,6 +480,20 @@ class ASTParser:
             # Parent class detection
             parent_name = self._find_parent(def_node, config, receiver_nodes, src)
 
+            # Dart mixin_declaration exposes no ``name`` field, so
+            # ``_find_parent``'s field lookup misses mixin members.
+            if parent_name is None and file_info.language == "dart":
+                ancestor = def_node.parent
+                while ancestor is not None:
+                    if ancestor.type == "mixin_declaration":
+                        ident = next((c for c in ancestor.children if c.type == "identifier"), None)
+                        if ident is not None:
+                            parent_name = _node_text(ident, src)
+                        break
+                    if ancestor.type in config.parent_class_types:
+                        break
+                    ancestor = ancestor.parent
+
             # C/C++ qualified definitions: ``void Foo::method() { … }``
             # carries the class as the scope of a ``qualified_identifier``
             # parent of the name node. Without this resolution, every
@@ -486,7 +530,7 @@ class ASTParser:
                     kind=kind,  # type: ignore[arg-type]
                     signature=signature,
                     start_line=start_line,
-                    end_line=def_node.end_point[0] + 1,
+                    end_line=end_line,
                     docstring=docstring,
                     decorators=[m for m in modifier_texts if m.startswith("@")] + rust_attrs,
                     visibility=visibility,  # type: ignore[arg-type]
@@ -598,6 +642,31 @@ class ASTParser:
                             is_reexport=False,
                         )
                     )
+                continue
+
+            # Dart: URIs are relative unless schemed (``package:``/``dart:``),
+            # ``export`` directives are barrel re-exports, and the legacy
+            # dotted ``part of library.name;`` form resolves through the
+            # library-name index (the ``library:`` prefix is the resolver's
+            # contract, shared with the lightweight regex tier).
+            if file_info.language == "dart":
+                module_path = module_text
+                if module_nodes[0].type == "dotted_identifier_list":
+                    module_path = f"library:{module_text}"
+                imported_names, bindings = extract_import_bindings(
+                    stmt_node, src, file_info.language
+                )
+                imports.append(
+                    Import(
+                        raw_statement=raw,
+                        module_path=module_path,
+                        imported_names=imported_names,
+                        is_relative=not module_path.startswith(("package:", "dart:", "library:")),
+                        resolved_file=None,
+                        bindings=bindings,
+                        is_reexport=stmt_node.type == "library_export",
+                    )
+                )
                 continue
 
             # CommonJS assignment / Object.assign shapes: the query captures
