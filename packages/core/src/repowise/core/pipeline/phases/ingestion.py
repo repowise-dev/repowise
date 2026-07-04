@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import multiprocessing
 import os
 import time
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
@@ -59,6 +60,17 @@ async def _timed_step(
 # ---------------------------------------------------------------------------
 # Process-pool worker (module-level — must be picklable)
 # ---------------------------------------------------------------------------
+
+# Force ``spawn`` for the parse pool instead of the POSIX default ``fork``.
+# A workspace init generates docs for one repo (which imports and connects
+# LanceDB) before ingesting the next, and ``lance`` is not fork-safe — it
+# registers an ``os.register_at_fork`` hook that resets its native async
+# runtime in the child but can still deadlock. Forking the parse workers
+# after LanceDB is live is exactly what hung multi-repo inits at "Parsing
+# files" (issue #678). ``spawn`` starts clean workers that never inherit the
+# runtime; it is already the default on Windows/macOS, so ``_parse_one`` and
+# its picklable args are known to work under it.
+_MP_SPAWN = multiprocessing.get_context("spawn")
 
 # Module-level process-local parser cache (one per worker process).
 _WORKER_PARSER: Any = None
@@ -262,7 +274,7 @@ async def _run_ingestion(
 
     if to_parse:
         try:
-            with ProcessPoolExecutor(max_workers=workers) as pool:
+            with ProcessPoolExecutor(max_workers=workers, mp_context=_MP_SPAWN) as pool:
                 tasks = [
                     loop.run_in_executor(pool, _parse_one, item) for _idx, item, _h in to_parse
                 ]
@@ -551,7 +563,7 @@ async def reparse_for_resume(
 
     if to_parse:
         try:
-            with ProcessPoolExecutor(max_workers=workers) as pool:
+            with ProcessPoolExecutor(max_workers=workers, mp_context=_MP_SPAWN) as pool:
                 tasks = [
                     loop.run_in_executor(pool, _parse_one, item) for _idx, item, _h in to_parse
                 ]
