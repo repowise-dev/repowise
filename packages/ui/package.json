@@ -99,6 +99,7 @@
     "./ui/*": "./src/ui/*.tsx",
     "./lib/cn": "./src/lib/cn.ts",
     "./lib/confidence": "./src/lib/confidence.ts",
+    "./lib/errors": "./src/lib/errors.ts",
     "./lib/format": "./src/lib/format.ts",
     "./lib/page-types": "./src/lib/page-types.ts"
   },
@@ -116,6 +117,7 @@
     "@radix-ui/react-dialog": "^1.1.15",
     "@radix-ui/react-hover-card": "^1.1.15",
     "@radix-ui/react-label": "^2.1.8",
+    "@radix-ui/react-popover": "^1.1.18",
     "@radix-ui/react-progress": "^1.1.8",
     "@radix-ui/react-scroll-area": "^1.2.10",
     "@radix-ui/react-select": "^2.2.6",

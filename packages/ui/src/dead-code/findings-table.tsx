@@ -3,7 +3,9 @@
 import { useMemo, useState } from "react";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "../ui/tabs";
 import { Button } from "../ui/button";
-import { Skeleton } from "../ui/skeleton";
+import { Slider } from "../ui/slider";
+import { Switch } from "../ui/switch";
+import { TableSkeleton } from "../shared/loading-skeletons";
 import { ConfirmDialog } from "../ui/confirm-dialog";
 import { EmptyState } from "../shared/empty-state";
 import { FindingRow } from "./finding-row";
@@ -120,25 +122,19 @@ export function FindingsTable({ findings, repoId, onPatch, onBulkResolve, isLoad
           <label htmlFor="min-confidence" className="text-xs text-[var(--color-text-secondary)]">
             Min confidence: {Math.round(minConfidence * 100)}%
           </label>
-          <input
+          <Slider
             id="min-confidence"
-            type="range"
-            min="0.4"
-            max="1"
-            step="0.05"
-            value={minConfidence}
-            onChange={(e) => setMinConfidence(Number(e.target.value))}
-            aria-valuetext={`${Math.round(minConfidence * 100)} percent`}
-            className="w-28 accent-[var(--color-accent-primary)]"
+            min={0.4}
+            max={1}
+            step={0.05}
+            value={[minConfidence]}
+            onValueChange={([v]) => setMinConfidence(v ?? 0.4)}
+            aria-label="Minimum confidence"
+            className="w-28"
           />
         </div>
         <label className="flex items-center gap-1.5 text-xs text-[var(--color-text-secondary)] cursor-pointer select-none">
-          <input
-            type="checkbox"
-            checked={safeOnly}
-            onChange={(e) => setSafeOnly(e.target.checked)}
-            className="rounded border-[var(--color-border-default)]"
-          />
+          <Switch checked={safeOnly} onCheckedChange={setSafeOnly} />
           Cleanup-ready only
         </label>
 
@@ -189,11 +185,7 @@ export function FindingsTable({ findings, repoId, onPatch, onBulkResolve, isLoad
         {TABS.map((t) => (
           <TabsContent key={t.value} value={t.value}>
             {isLoading && current.length === 0 ? (
-              <div className="space-y-2 mt-2">
-                {Array.from({ length: 6 }).map((_, i) => (
-                  <Skeleton key={i} className="h-10 w-full" />
-                ))}
-              </div>
+              <TableSkeleton className="mt-2" />
             ) : current.length === 0 ? (
               <EmptyState
                 title="No findings"

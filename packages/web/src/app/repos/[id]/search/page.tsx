@@ -8,6 +8,7 @@ import { SearchResultCard } from "@/components/search/search-result-card";
 import { EmptyState } from "@repowise-dev/ui/shared/empty-state";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 import { useSearch } from "@/lib/hooks/use-search";
+import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
 
 type SearchType = "fulltext" | "semantic";
 
@@ -85,7 +86,7 @@ export default function SearchPage() {
 
       {showResults && error && (
         <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] p-4 text-sm text-[var(--color-outdated)]">
-          Couldn&apos;t run search: {error instanceof Error ? error.message : "unknown error"}
+          Couldn&apos;t run search: {toFriendlyMessage(error)}
         </div>
       )}
 

@@ -4,6 +4,7 @@ import useSWR from "swr";
 import { TopSymbolsRow } from "@repowise-dev/ui/symbols/top-symbols-row";
 import { listSymbolsPage } from "@/lib/api/symbols";
 import type { SymbolResponse } from "@/lib/api/types";
+import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
 
 interface Props {
   repoId: string;
@@ -36,7 +37,7 @@ export function HotspotTopSymbolsHost({ repoId, filePath, onSelectSymbol }: Prop
     <TopSymbolsRow
       symbols={data?.items}
       loading={isLoading}
-      error={error instanceof Error ? error.message : error ? String(error) : undefined}
+      error={error ? toFriendlyMessage(error) : undefined}
       onSelect={onSelectSymbol}
       seeAllHref={seeAllHref}
     />

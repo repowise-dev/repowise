@@ -8,6 +8,7 @@ import { fullResyncRepo, updateRepo } from "@/lib/api/repos";
 import type { RepoResponse } from "@/lib/api/types";
 import { DEFAULT_WIKI_STYLE } from "@repowise-dev/types";
 import type { RepoSettingsValue, WikiStyle } from "@repowise-dev/types/settings";
+import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
 
 interface Props {
   repo: RepoResponse;
@@ -49,7 +50,7 @@ export function RepoSettingsFormWrapper({ repo }: Props) {
         setRegenOpen(true);
       }
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to save settings");
+      toast.error(toFriendlyMessage(err, "Failed to save settings"));
       throw err;
     }
   }
@@ -62,7 +63,7 @@ export function RepoSettingsFormWrapper({ repo }: Props) {
       setRegenOpen(false);
     } catch (err) {
       toast.error(
-        err instanceof Error ? err.message : "Failed to queue regeneration",
+        toFriendlyMessage(err, "Failed to queue regeneration"),
       );
     } finally {
       setRegenLoading(false);

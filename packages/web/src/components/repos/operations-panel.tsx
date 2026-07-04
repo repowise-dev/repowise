@@ -14,6 +14,7 @@ import {
   DialogFooter,
 } from "@repowise-dev/ui/ui/dialog";
 import { GenerationProgressWrapper as GenerationProgress } from "@/components/jobs/generation-progress-wrapper";
+import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
 
 interface Props {
   repoId: string;
@@ -33,7 +34,7 @@ export function OperationsPanel({ repoId, repoName }: Props) {
       toast.info(`Sync started — ${repoName}`);
     } catch (e) {
       toast.error("Sync failed", {
-        description: e instanceof Error ? e.message : "Unknown error",
+        description: toFriendlyMessage(e),
       });
     } finally {
       setLoading(null);
@@ -49,7 +50,7 @@ export function OperationsPanel({ repoId, repoName }: Props) {
       toast.info(`Full resync started — ${repoName}`);
     } catch (e) {
       toast.error("Resync failed", {
-        description: e instanceof Error ? e.message : "Unknown error",
+        description: toFriendlyMessage(e),
       });
     } finally {
       setLoading(null);

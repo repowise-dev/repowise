@@ -10,6 +10,7 @@ import { syncRepo, fullResyncRepo } from "@/lib/api/repos";
 import { listJobs } from "@/lib/api/jobs";
 import { analyzeDeadCode } from "@/lib/api/dead-code";
 import { GenerationProgressWrapper } from "@/components/jobs/generation-progress-wrapper";
+import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
 
 interface Props {
   repoId: string;
@@ -67,7 +68,7 @@ export function QuickActionsWrapper({
         toast.info("Dead code analysis started");
       }
     } catch (e) {
-      const msg = e instanceof Error ? e.message : "Unknown error";
+      const msg = toFriendlyMessage(e);
       if (/already in progress/i.test(msg)) {
         try {
           const [running, pending] = await Promise.all([

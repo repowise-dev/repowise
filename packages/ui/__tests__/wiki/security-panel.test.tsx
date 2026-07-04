@@ -18,9 +18,10 @@ describe("SecurityPanel", () => {
     expect(screen.getByText(/no security signals/i)).toBeInTheDocument();
   });
 
-  it("renders nothing while loading", () => {
+  it("renders a skeleton while loading", () => {
     const { container } = render(<SecurityPanel findings={undefined} isLoading />);
-    expect(container).toBeEmptyDOMElement();
+    expect(container.querySelector(".animate-pulse")).toBeInTheDocument();
+    expect(screen.queryByText(/no security signals/i)).not.toBeInTheDocument();
   });
 
   it("renders a finding with severity badge and kind", () => {

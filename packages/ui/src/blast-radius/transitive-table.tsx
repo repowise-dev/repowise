@@ -1,40 +1,38 @@
+"use client";
+
 import type { TransitiveEntry } from "@repowise-dev/types/blast-radius";
-import { Th, Td } from "./cells";
+import { ResponsiveTable, type ResponsiveColumn } from "../shared/responsive-table";
 
 interface TransitiveTableProps {
   rows: TransitiveEntry[];
 }
 
+const COLUMNS: ResponsiveColumn<TransitiveEntry>[] = [
+  {
+    key: "path",
+    header: "File",
+    render: (r) => (
+      <span className="font-mono text-xs break-all" title={r.path}>
+        {r.path}
+      </span>
+    ),
+  },
+  {
+    key: "depth",
+    header: "Depth",
+    align: "right",
+    render: (r) => <span className="tabular-nums">{r.depth}</span>,
+  },
+];
+
 export function TransitiveTable({ rows }: TransitiveTableProps) {
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full">
-        <caption className="sr-only">Transitively affected files</caption>
-        <thead>
-          <tr className="border-b border-[var(--color-border-default)]">
-            <Th>File</Th>
-            <Th>Depth</Th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r) => (
-            <tr
-              key={r.path}
-              className="group border-t border-[var(--color-table-divider)] hover:bg-[var(--color-bg-elevated)]"
-            >
-              <Td>
-                <span
-                  className="font-mono break-all group-hover:underline underline-offset-2"
-                  title={r.path}
-                >
-                  {r.path}
-                </span>
-              </Td>
-              <Td className="text-right tabular-nums">{r.depth}</Td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+    <ResponsiveTable
+      columns={COLUMNS}
+      rows={rows}
+      rowKey={(r) => r.path}
+      caption="Transitively affected files"
+      bare
+    />
   );
 }

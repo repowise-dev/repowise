@@ -7,6 +7,7 @@ import type {
   ChatUIToolCall as ChatToolCall,
   ChatUIMessage as ChatMessage,
 } from "@repowise-dev/types/chat";
+import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
 
 export type { ChatToolCall, ChatMessage };
 
@@ -104,7 +105,7 @@ export function useChat(repoId: string) {
           setState((prev) => ({
             ...prev,
             isStreaming: false,
-            error: err instanceof Error ? err.message : String(err),
+            error: toFriendlyMessage(err),
             messages: prev.messages.map((m) =>
               m.id === asstMsgId ? { ...m, isStreaming: false } : m,
             ),
@@ -206,7 +207,7 @@ export function useChat(repoId: string) {
       } catch (err) {
         setState((prev) => ({
           ...prev,
-          error: err instanceof Error ? err.message : String(err),
+          error: toFriendlyMessage(err),
         }));
       }
     },

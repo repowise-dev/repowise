@@ -16,7 +16,7 @@ import { listJobs } from "@/lib/api/jobs";
 import { getGitSummary } from "@/lib/api/git";
 import { getWorkspace } from "@/lib/api/workspace";
 import type { RepoStatsResponse, GitSummaryResponse } from "@/lib/api/types";
-import { StatCard } from "@repowise-dev/ui/shared/stat-card";
+import { MetricCard } from "@repowise-dev/ui/shared/metric-card";
 import { Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui/card";
 import { Badge } from "@repowise-dev/ui/ui/badge";
 import { EmptyState } from "@repowise-dev/ui/shared/empty-state";
@@ -91,24 +91,24 @@ export default async function DashboardPage() {
 
       {/* Stat Cards */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <StatCard
+        <MetricCard
           label="Total Pages"
           value={formatNumber(totalPages)}
           icon={<FileText className="h-4 w-4" />}
         />
-        <StatCard
+        <MetricCard
           label="Fresh Pages"
           value={formatNumber(freshPages)}
           description="Confidence ≥ 80%"
           icon={<CheckCircle2 className="h-4 w-4 text-[var(--color-success)]" />}
         />
-        <StatCard
+        <MetricCard
           label="Stale Pages"
           value={formatNumber(stalePages)}
           description="Need regeneration"
           icon={<AlertCircle className="h-4 w-4 text-[var(--color-warning)]" />}
         />
-        <StatCard
+        <MetricCard
           label="Dead Code"
           value={deadCode > 0 ? formatNumber(deadCode) : "—"}
           description={deadCode > 0 ? "Unused exports" : "Analyze to detect"}

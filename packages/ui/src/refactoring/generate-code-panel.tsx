@@ -9,6 +9,7 @@ import {
   type RefactoringPlan,
   type VerdictTone,
 } from "./types";
+import { toFriendlyMessage } from "../lib/errors";
 
 /**
  * Run the opt-in LLM code generation for one plan: takes a deterministic plan,
@@ -55,7 +56,7 @@ export function GenerateCodePanel({ plan, onGenerate }: GenerateCodePanelProps) 
       setState({ status: "done", result });
     } catch (err) {
       const message =
-        err instanceof Error ? err.message : "Code generation failed. Check the provider config.";
+        toFriendlyMessage(err, "Code generation failed. Check the provider config.");
       setState({ status: "error", message });
     }
   }, [onGenerate, plan]);

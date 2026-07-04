@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { ArrowDown, ArrowUp } from "lucide-react";
+import { ResponsiveTable, type ResponsiveColumn } from "../shared/responsive-table";
 import { HealthBadge } from "./health-badge";
 
 export interface ModuleRollupRow {
@@ -21,6 +21,60 @@ export interface ModuleRollupListProps {
 }
 
 type SortKey = "average_health" | "file_count" | "nloc" | "module";
+
+const SORT_KEYS: SortKey[] = ["average_health", "file_count", "nloc", "module"];
+
+const COLUMNS: ResponsiveColumn<ModuleRollupRow>[] = [
+  {
+    key: "module",
+    header: "Module",
+    sortable: true,
+    render: (m) => (
+      <span className="font-medium text-[var(--color-text-primary)]">{m.module}</span>
+    ),
+  },
+  {
+    key: "file_count",
+    header: "Files",
+    sortable: true,
+    render: (m) => (
+      <span className="tabular-nums text-[var(--color-text-secondary)]">{m.file_count}</span>
+    ),
+  },
+  {
+    key: "nloc",
+    header: "NLOC",
+    sortable: true,
+    priority: 2,
+    render: (m) => (
+      <span className="tabular-nums text-[var(--color-text-secondary)]">
+        {m.nloc.toLocaleString()}
+      </span>
+    ),
+  },
+  {
+    key: "average_health",
+    header: "Avg health",
+    sortable: true,
+    render: (m) => <HealthBadge score={m.average_health} />,
+  },
+  {
+    key: "worst_performer_path",
+    header: "Worst file",
+    priority: 3,
+    render: (m) => (
+      <span
+        className="block truncate max-w-[280px] font-mono text-xs text-[var(--color-text-secondary)]"
+        title={m.worst_performer_path}
+      >
+        {m.worst_performer_path}{" "}
+        <span className="text-[var(--color-text-tertiary)]">
+          ({m.worst_performer_score.toFixed(1)})
+        </span>
+      </span>
+    ),
+  },
+];
 
 export function ModuleRollupList({
   modules,
@@ -54,49 +108,29 @@ export function ModuleRollupList({
   }
 
   const visible = expanded ? sorted : sorted.slice(0, pageSize);
-  const toggle = (key: SortKey) => {
+  const toggle = (key: string) => {
+    if (!SORT_KEYS.includes(key as SortKey)) return;
     if (sort === key) setOrder((o) => (o === "asc" ? "desc" : "asc"));
     else {
-      setSort(key);
+      setSort(key as SortKey);
       setOrder(key === "average_health" ? "asc" : "desc");
     }
   };
 
   return (
     <div className="border border-[var(--color-border-default)] overflow-hidden">
-      <table className="w-full text-sm">
-        <thead className="border-b border-[var(--color-border-default)] bg-[var(--color-bg-surface)] text-[var(--color-text-tertiary)] text-[11px] uppercase tracking-wider">
-          <tr>
-            <Th label="Module" active={sort === "module"} order={order} onClick={() => toggle("module")} />
-            <Th label="Files" active={sort === "file_count"} order={order} onClick={() => toggle("file_count")} />
-            <Th label="NLOC" active={sort === "nloc"} order={order} onClick={() => toggle("nloc")} />
-            <Th label="Avg health" active={sort === "average_health"} order={order} onClick={() => toggle("average_health")} />
-            <th className="text-left px-3 py-2">Worst file</th>
-          </tr>
-        </thead>
-        <tbody>
-          {visible.map((m) => (
-            <tr
-              key={m.module}
-              className={`group border-t border-[var(--color-table-divider)] ${onSelect ? "cursor-pointer hover:bg-[var(--color-bg-elevated)]" : ""}`}
-              onClick={onSelect ? () => onSelect(m) : undefined}
-            >
-              <td className="px-3 py-2 font-medium text-[var(--color-text-primary)]">
-                <span className="group-hover:underline underline-offset-2">{m.module}</span>
-              </td>
-              <td className="px-3 py-2 tabular-nums text-[var(--color-text-secondary)]">{m.file_count}</td>
-              <td className="px-3 py-2 tabular-nums text-[var(--color-text-secondary)]">{m.nloc.toLocaleString()}</td>
-              <td className="px-3 py-2">
-                <HealthBadge score={m.average_health} />
-              </td>
-              <td className="px-3 py-2 font-mono text-xs text-[var(--color-text-secondary)] truncate max-w-[280px]" title={m.worst_performer_path}>
-                {m.worst_performer_path}{" "}
-                <span className="text-[var(--color-text-tertiary)]">({m.worst_performer_score.toFixed(1)})</span>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <ResponsiveTable
+        columns={COLUMNS}
+        rows={visible}
+        rowKey={(m) => m.module}
+        caption="Module health rollup"
+        sortField={sort}
+        sortOrder={order}
+        onSort={toggle}
+        {...(onSelect ? { onRowClick: onSelect } : {})}
+        stacked="sm"
+        bare
+      />
       {modules.length > pageSize ? (
         <div className="border-t border-[var(--color-border-default)] px-3 py-2 text-xs text-[var(--color-text-tertiary)]">
           <button
@@ -109,29 +143,5 @@ export function ModuleRollupList({
         </div>
       ) : null}
     </div>
-  );
-}
-
-function Th({
-  label,
-  active,
-  order,
-  onClick,
-}: {
-  label: string;
-  active: boolean;
-  order: "asc" | "desc";
-  onClick: () => void;
-}) {
-  return (
-    <th
-      className="text-left px-3 py-2 font-medium cursor-pointer select-none"
-      onClick={onClick}
-    >
-      <span className="inline-flex items-center gap-1">
-        {label}
-        {active ? (order === "asc" ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />) : null}
-      </span>
-    </th>
   );
 }

@@ -3,6 +3,7 @@
 import { toast } from "sonner";
 import { HumanNotes as HumanNotesShell } from "@repowise-dev/ui/wiki/human-notes";
 import { updatePageNotes } from "@/lib/api/pages";
+import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
 
 /**
  * Web data wrapper around the presentational ``HumanNotes`` ui shell — owns the
@@ -25,7 +26,7 @@ export function HumanNotes({
           return updated.human_notes;
         } catch (e) {
           toast.error("Couldn't save note", {
-            description: e instanceof Error ? e.message : undefined,
+            description: toFriendlyMessage(e),
           });
           throw e;
         }

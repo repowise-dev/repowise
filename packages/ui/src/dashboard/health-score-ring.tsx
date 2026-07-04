@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { HelpCircle } from "lucide-react";
+import { healthInk100 } from "../health/tokens";
 
 export interface HealthScoreComponent {
   key: string;
@@ -25,12 +26,6 @@ interface HealthScoreRingProps {
   note?: string;
 }
 
-function getScoreColor(score: number): string {
-  if (score >= 75) return "var(--color-success)";
-  if (score >= 50) return "var(--color-warning)";
-  return "var(--color-error)";
-}
-
 function getScoreLabel(score: number): string {
   if (score >= 80) return "Excellent";
   if (score >= 65) return "Good";
@@ -48,7 +43,7 @@ export function HealthScoreRing({ score, size = 160, components, note }: HealthS
   const radius = (size - strokeWidth) / 2;
   const circumference = 2 * Math.PI * radius;
   const progress = mounted ? (score / 100) * circumference : 0;
-  const color = getScoreColor(score);
+  const color = healthInk100(score);
   const hasBreakdown = components && components.length > 0;
 
   return (
@@ -122,12 +117,7 @@ export function HealthScoreRing({ score, size = 160, components, note }: HealthS
           )}
           <ul className="space-y-2">
             {components.map((c) => {
-              const barColor =
-                c.score >= 75
-                  ? "var(--color-success)"
-                  : c.score >= 50
-                    ? "var(--color-warning)"
-                    : "var(--color-error)";
+              const barColor = healthInk100(c.score);
               return (
                 <li key={c.key} className="space-y-1">
                   <div className="flex items-baseline justify-between gap-3">

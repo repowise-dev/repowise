@@ -5,6 +5,7 @@ import { ApiError } from "@repowise-dev/ui/shared/api-error";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 import { getCoupling } from "@/lib/api/coupling";
 import { CouplingView } from "@/components/coupling/coupling-view";
+import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
 
 /**
  * Self-fetching host for the change-coupling Architecture tab. The Architecture
@@ -24,7 +25,7 @@ export function CouplingTab({ repoId }: { repoId: string }) {
       {error ? (
         <ApiError
           title="Couldn't load change coupling"
-          message={error instanceof Error ? error.message : String(error)}
+          message={toFriendlyMessage(error)}
           onRetry={() => void mutate()}
         />
       ) : isLoading || !data ? (

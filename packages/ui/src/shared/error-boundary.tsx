@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import { ApiError } from "./api-error";
+import { toFriendlyMessage } from "../lib/errors";
 
 /**
  * ErrorBoundary — catches render errors in a subtree and shows a recoverable
@@ -41,7 +42,7 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
       return (
         <ApiError
           title={this.props.title ?? "Something went wrong"}
-          message={error.message}
+          message={toFriendlyMessage(error)}
           onRetry={this.reset}
         />
       );

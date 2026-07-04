@@ -4,7 +4,6 @@ import { useState } from "react";
 import useSWR from "swr";
 import { useParams } from "next/navigation";
 import { DollarSign } from "lucide-react";
-import { StatCard } from "@repowise-dev/ui/shared/stat-card";
 import { MetricCard } from "@repowise-dev/ui/shared/metric-card";
 import { PageShell } from "@repowise-dev/ui/shared/page-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui/card";
@@ -180,23 +179,23 @@ export default function CostsPage() {
           </div>
         ) : summary ? (
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <StatCard
+            <MetricCard
               label="Indexing cost"
               value={formatCost(summary.total_cost_usd)}
               description="across all generation runs"
               icon={<DollarSign className="h-4 w-4 text-[var(--color-success)]" />}
             />
-            <StatCard
+            <MetricCard
               label="Total Calls"
               value={formatNumber(summary.total_calls)}
               description="LLM API calls"
             />
-            <StatCard
+            <MetricCard
               label="Input Tokens"
               value={formatTokens(summary.total_input_tokens)}
               description="prompt tokens"
             />
-            <StatCard
+            <MetricCard
               label="Output Tokens"
               value={formatTokens(summary.total_output_tokens)}
               description="completion tokens"

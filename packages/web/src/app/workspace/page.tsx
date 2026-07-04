@@ -11,7 +11,7 @@ import {
   ArrowRight,
 } from "lucide-react";
 import { getWorkspace, getWorkspaceCoChanges } from "@/lib/api/workspace";
-import { StatCard } from "@repowise-dev/ui/shared/stat-card";
+import { MetricCard } from "@repowise-dev/ui/shared/metric-card";
 import { EmptyState } from "@repowise-dev/ui/shared/empty-state";
 import { Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui/card";
 import { RepoCard } from "@repowise-dev/ui/workspace/repo-card";
@@ -128,27 +128,27 @@ export default async function WorkspaceDashboardPage() {
 
       {/* Aggregate Stats */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
-        <StatCard
+        <MetricCard
           label="Total Files"
           value={formatNumber(totalFiles)}
           icon={<FileText className="h-4 w-4" />}
         />
-        <StatCard
+        <MetricCard
           label="Total Symbols"
           value={formatNumber(totalSymbols)}
           icon={<Code2 className="h-4 w-4" />}
         />
-        <StatCard
+        <MetricCard
           label="Avg Coverage"
           value={`${avgCoverage}%`}
           icon={<BarChart3 className="h-4 w-4" />}
         />
-        <StatCard
+        <MetricCard
           label="Hotspots"
           value={totalHotspots}
           icon={<Flame className="h-4 w-4 text-[var(--color-warning)]" />}
         />
-        <StatCard
+        <MetricCard
           label="Pages"
           value={formatNumber(wsRepos.reduce((a, r) => a + r.page_count, 0))}
           icon={<Code2 className="h-4 w-4 text-[var(--color-text-tertiary)]" />}

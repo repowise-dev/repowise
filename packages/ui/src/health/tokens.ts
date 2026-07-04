@@ -7,7 +7,7 @@
  * caution/success) so the surface themes correctly in both modes.
  */
 
-import type { HealthBand } from "@repowise-dev/types/health";
+import { bandForScore, type HealthBand } from "@repowise-dev/types/health";
 
 export type Severity = "critical" | "high" | "medium" | "low";
 
@@ -118,6 +118,44 @@ export function scoreBadgeClass(score: number): string {
 /** Borderless compact variant (inline HealthBadge next to file paths). */
 export function scoreSoftBadgeClass(score: number): string {
   return BAND_BADGE_SOFT[scoreBand(score)];
+}
+
+/* Raw CSS custom-property references per canonical band, for SVG/canvas
+ * fills and inline styles where a class string cannot be used. */
+const HEALTH_BAND_INK: Record<HealthBand, string> = {
+  alert: "var(--color-error)",
+  warning: "var(--color-warning)",
+  healthy: "var(--color-success)",
+};
+
+/**
+ * Canonical banding for a higher-is-better health score on the 0-10 scale,
+ * as an ink color usable in `style`/SVG attributes. Thresholds come from the
+ * shared `bandForScore` mirror so every surface agrees on what counts as red.
+ */
+export function healthInk(score10: number): string {
+  return HEALTH_BAND_INK[bandForScore(score10)];
+}
+
+/** `healthInk` for scores expressed on a 0-100 scale. */
+export function healthInk100(score100: number): string {
+  return healthInk(score100 / 10);
+}
+
+/** `bandForScore` for scores expressed on a 0-100 scale. */
+export function healthBand100(score100: number): HealthBand {
+  return bandForScore(score100 / 10);
+}
+
+/**
+ * Banding for a higher-is-worse risk value on the 0-1 scale, as an ink
+ * color. Matches the impact-graph node banding (>=0.66 alert, >=0.33
+ * warning) so risk reads the same across tables, charts, and graphs.
+ */
+export function riskInk(risk01: number): string {
+  if (risk01 >= 0.66) return "var(--color-error)";
+  if (risk01 >= 0.33) return "var(--color-warning)";
+  return "var(--color-success)";
 }
 
 export function coverageColor(pct: number): string {

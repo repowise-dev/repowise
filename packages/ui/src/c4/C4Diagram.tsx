@@ -39,6 +39,7 @@ import type {
   C4Level,
   C4NodeData,
 } from "./types";
+import { toFriendlyMessage } from "../lib/errors";
 
 export interface C4DiagramProps {
   level: C4Level;
@@ -193,7 +194,7 @@ function C4DiagramInner({
 
       {/* Canvas */}
       <div style={{ position: "relative", flex: 1, minHeight: 0 }}>
-        {error && <CenteredMessage tone="error" text={error.message} />}
+        {error && <CenteredMessage tone="error" text={toFriendlyMessage(error)} />}
         {!error && isLoading && nodes.length === 0 && (
           <CenteredMessage tone="info" text="Loading knowledge graph…" />
         )}

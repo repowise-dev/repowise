@@ -7,6 +7,7 @@ import { useJob } from "@/lib/hooks/use-job";
 import { cancelJob } from "@/lib/api/jobs";
 import { formatNumber } from "@repowise-dev/ui/lib/format";
 import { computeElapsedMs } from "@/lib/jobs/progress";
+import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
 
 interface Props {
   jobId: string;
@@ -89,7 +90,7 @@ export function GenerationProgressWrapper({ jobId, repoName, onDone, onRetry, qu
       // owns the toast so cancel-from-button and cancel-from-elsewhere match.
     } catch (e) {
       toast.error("Couldn't cancel job", {
-        description: e instanceof Error ? e.message : "Unknown error",
+        description: toFriendlyMessage(e),
       });
     } finally {
       setCancelling(false);

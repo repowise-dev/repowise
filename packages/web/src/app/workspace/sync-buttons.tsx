@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { RefreshCw } from "lucide-react";
 import { syncWorkspace } from "@/lib/api/workspace";
 import type { WorkspaceSyncResult } from "@/lib/api/types";
+import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
 
 type SyncState =
   | { kind: "idle" }
@@ -46,7 +47,7 @@ export function SyncButton({
     } catch (e) {
       setState({
         kind: "error",
-        message: e instanceof Error ? e.message : "unknown error",
+        message: toFriendlyMessage(e),
       });
     }
   };

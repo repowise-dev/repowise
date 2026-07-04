@@ -1,41 +1,42 @@
+"use client";
+
 import type { ReviewerEntry } from "@repowise-dev/types/blast-radius";
-import { Th, Td } from "./cells";
+import { ResponsiveTable, type ResponsiveColumn } from "../shared/responsive-table";
 
 interface ReviewersTableProps {
   rows: ReviewerEntry[];
 }
 
+const COLUMNS: ResponsiveColumn<ReviewerEntry>[] = [
+  {
+    key: "email",
+    header: "Email",
+    render: (r) => r.email,
+  },
+  {
+    key: "files",
+    header: "Files Owned",
+    align: "right",
+    render: (r) => <span className="tabular-nums">{r.files}</span>,
+  },
+  {
+    key: "ownership_pct",
+    header: "Avg Ownership %",
+    align: "right",
+    render: (r) => (
+      <span className="tabular-nums">{(r.ownership_pct * 100).toFixed(1)}%</span>
+    ),
+  },
+];
+
 export function ReviewersTable({ rows }: ReviewersTableProps) {
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full">
-        <caption className="sr-only">Recommended reviewers</caption>
-        <thead>
-          <tr className="border-b border-[var(--color-border-default)]">
-            <Th>Email</Th>
-            <Th>Files Owned</Th>
-            <Th>Avg Ownership %</Th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r) => (
-            <tr
-              key={r.email}
-              className="group border-t border-[var(--color-table-divider)] hover:bg-[var(--color-bg-elevated)]"
-            >
-              <Td>
-                <span className="group-hover:underline underline-offset-2">
-                  {r.email}
-                </span>
-              </Td>
-              <Td className="text-right tabular-nums">{r.files}</Td>
-              <Td className="text-right tabular-nums">
-                {(r.ownership_pct * 100).toFixed(1)}%
-              </Td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+    <ResponsiveTable
+      columns={COLUMNS}
+      rows={rows}
+      rowKey={(r) => r.email}
+      caption="Recommended reviewers"
+      bare
+    />
   );
 }

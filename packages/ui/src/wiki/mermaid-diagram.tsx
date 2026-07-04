@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Maximize2, X, ZoomIn, ZoomOut, RotateCcw } from "lucide-react";
 import { resolveToken, useThemeVersion } from "../shared/use-theme-tokens";
+import { toFriendlyMessage } from "../lib/errors";
 
 type MermaidSecurityLevel = "strict" | "loose";
 
@@ -158,7 +159,7 @@ function useMermaidRender(
           setRenderTick((t) => t + 1);
         })
         .catch((e: unknown) => {
-          if (!cancelled) setError(e instanceof Error ? e.message : "Diagram render failed");
+          if (!cancelled) setError(toFriendlyMessage(e, "Diagram render failed"));
         });
     });
     return () => {

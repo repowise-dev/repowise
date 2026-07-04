@@ -13,6 +13,7 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@repowise-dev/ui/ui/dialog";
+import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
 
 interface DeleteRepoButtonProps {
   repoId: string;
@@ -43,7 +44,7 @@ export function DeleteRepoButton({
         router.refresh();
       }
     } catch (err) {
-      toast.error(`Failed to delete: ${err instanceof Error ? err.message : "Unknown error"}`);
+      toast.error(`Failed to delete: ${toFriendlyMessage(err)}`);
     } finally {
       setDeleting(false);
     }

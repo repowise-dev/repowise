@@ -5,6 +5,8 @@ import { Card, CardContent } from "../ui/card";
 export interface MetricCardProps {
   label: string;
   value: React.ReactNode;
+  /** One-line context rendered beneath the value. */
+  description?: string;
   /**
    * Signed change indicator. `positive` is a good-vs-bad flag (drives
    * success/error colouring), not up-vs-down. Set `neutral` to render the
@@ -27,13 +29,14 @@ export interface MetricCardProps {
 }
 
 /**
- * The canonical stat tile: label + value with optional delta, sparkline, and
- * distribution-bar slots. Built on `Card`; the future single replacement for
- * the near-identical summary-card variants across views.
+ * The canonical stat tile: label + value with optional description, delta,
+ * sparkline, and distribution-bar slots. Built on `Card`. Use this for every
+ * summary card; `StatTile` remains the deliberately denser inline-grid cell.
  */
 export function MetricCard({
   label,
   value,
+  description,
   delta,
   sparkline,
   distBar,
@@ -75,6 +78,9 @@ export function MetricCard({
                 </span>
               )}
             </div>
+            {description && (
+              <p className="text-xs text-[var(--color-text-secondary)]">{description}</p>
+            )}
           </div>
           {icon && (
             <div className="shrink-0 rounded-md bg-[var(--color-bg-elevated)] p-2 text-[var(--color-text-secondary)]">
