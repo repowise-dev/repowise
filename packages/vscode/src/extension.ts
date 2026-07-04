@@ -21,6 +21,8 @@ import { registerBranchRisk } from "./features/branchRisk";
 import { registerChangeIntel } from "./features/changeIntel";
 import { registerStaleness } from "./features/staleness";
 import { registerRefactoringLens } from "./features/refactoringLens";
+import { registerAgentHandoff } from "./features/agentHandoff";
+import { registerLmTools } from "./features/lmTools";
 import { registerDocs } from "./features/docs";
 import { registerWebviews } from "./core/webviews";
 import { registerDashboards } from "./features/dashboards";
@@ -92,6 +94,8 @@ export function activate(extCtx: vscode.ExtensionContext): void {
     registerChangeIntel(ctx),
     registerStaleness(ctx),
     registerRefactoringLens(ctx),
+    registerAgentHandoff(ctx),
+    registerLmTools(ctx),
     registerDocs(ctx),
     registerWebviews(ctx, extCtx.extensionUri),
     registerDashboards(ctx),

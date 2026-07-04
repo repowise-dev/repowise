@@ -88,6 +88,8 @@ export const SETTING_KEYS = [
   "risk.baseBranch",
   "changeIntel.cochangeNudge",
   "changeIntel.cochangeMinScore",
+  "agentHandoff.enabled",
+  "agentTools.enabled",
 ] as const;
 
 export type SettingKey = (typeof SETTING_KEYS)[number];

@@ -146,6 +146,26 @@ const GROUPS: Group[] = [
     ],
   },
   {
+    title: "Agent integration",
+    blurb: "How Repowise shares its index and plans with your AI agent.",
+    rows: [
+      {
+        key: "agentHandoff.enabled",
+        label: "Agent handoff actions",
+        description:
+          "Offer lightbulb code actions that hand a detected refactoring plan to your AI agent, alongside the copy-to-clipboard action.",
+        kind: "toggle",
+      },
+      {
+        key: "agentTools.enabled",
+        label: "Chat tools",
+        description:
+          "Expose Repowise index lookups (search, health, plans, risk, symbols, docs) as native tools your editor's AI chat can call.",
+        kind: "toggle",
+      },
+    ],
+  },
+  {
     title: "Server",
     blurb: "How the extension connects to the local Repowise server.",
     rows: [

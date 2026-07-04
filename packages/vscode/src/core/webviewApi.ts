@@ -66,6 +66,8 @@ const SETTING_DEFAULTS: SettingsValues = {
   "risk.baseBranch": "",
   "changeIntel.cochangeNudge": true,
   "changeIntel.cochangeMinScore": 4,
+  "agentHandoff.enabled": true,
+  "agentTools.enabled": true,
 };
 
 const SEVERITIES = ["critical", "high", "medium", "low"];
@@ -92,6 +94,8 @@ const SETTING_VALIDATORS: Record<SettingKey, (v: SettingValue) => SettingValue> 
   "risk.baseBranch": expectString,
   "changeIntel.cochangeNudge": expectBoolean,
   "changeIntel.cochangeMinScore": (v) => expectNumberInRange(v, 0, 100),
+  "agentHandoff.enabled": expectBoolean,
+  "agentTools.enabled": expectBoolean,
 };
 
 function expectBoolean(v: SettingValue): boolean {
