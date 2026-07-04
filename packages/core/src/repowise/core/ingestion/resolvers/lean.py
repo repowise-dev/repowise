@@ -20,11 +20,10 @@ from .module_name_index import get_or_build_module_index, lookup_module
 if TYPE_CHECKING:
     from .context import ResolverContext
 
+# Lean modules are path-derived, so this never-match sentinel disables declaration hits.
 _MODULE_DECL_RE = re.compile(r"(?!x)x")
 
-_STDLIB_PREFIXES = frozenset(
-    {"Init", "Std", "Lean", "Mathlib", "Batteries", "Aesop", "Qq"}
-)
+_STDLIB_PREFIXES = frozenset({"Init", "Std", "Lean", "Mathlib", "Batteries", "Aesop", "Qq"})
 
 
 def _path_to_module(path: str) -> str | None:
@@ -45,9 +44,7 @@ def _get_index(ctx: ResolverContext) -> dict[str, list[str]]:
     )
 
 
-def resolve_lean_import(
-    module_path: str, importer_path: str, ctx: ResolverContext
-) -> str | None:
+def resolve_lean_import(module_path: str, importer_path: str, ctx: ResolverContext) -> str | None:
     hit = lookup_module(_get_index(ctx), module_path)
     if hit and hit != importer_path:
         return hit

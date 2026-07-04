@@ -12,6 +12,7 @@ from pathlib import Path
 
 import networkx as nx
 
+from repowise.core.ingestion.graph import GraphBuilder
 from repowise.core.ingestion.lightweight_imports import (
     LIGHTWEIGHT_IMPORT_LANGUAGES,
     extract_lightweight_imports,
@@ -23,6 +24,7 @@ from repowise.core.ingestion.lightweight_imports.erlang import extract_erlang_im
 from repowise.core.ingestion.lightweight_imports.haskell import extract_haskell_imports
 from repowise.core.ingestion.lightweight_imports.lean import extract_lean_imports
 from repowise.core.ingestion.models import FileInfo
+from repowise.core.ingestion.parser import ASTParser
 from repowise.core.ingestion.resolvers import resolve_import
 from repowise.core.ingestion.resolvers.clojure import resolve_clojure_import
 from repowise.core.ingestion.resolvers.context import ResolverContext
@@ -31,6 +33,8 @@ from repowise.core.ingestion.resolvers.elixir import resolve_elixir_import
 from repowise.core.ingestion.resolvers.erlang import resolve_erlang_import
 from repowise.core.ingestion.resolvers.haskell import resolve_haskell_import
 from repowise.core.ingestion.resolvers.lean import resolve_lean_import
+
+LANG_SAMPLE_FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "lang_samples"
 
 
 def _ctx(repo: Path | None, files: dict[str, str]) -> ResolverContext:
@@ -460,13 +464,25 @@ class TestLeanExtraction:
     def test_import_and_open_forms(self) -> None:
         src = (
             "import Init\n"
+            "import all All.Theorems\n"
+            "public import Public.Visible\n"
+            "private import Private.Hidden\n"
+            "meta import Meta.Tools\n"
+            "public import all Public.All\n"
             "import Mathlib.Data.Nat.Basic\n"
             "open Foo.Bar\n"
+            "open scoped Nat\n"
         )
         assert _modules(extract_lean_imports(src)) == [
             "Init",
+            "All.Theorems",
+            "Public.Visible",
+            "Private.Hidden",
+            "Meta.Tools",
+            "Public.All",
             "Mathlib.Data.Nat.Basic",
             "Foo.Bar",
+            "Nat",
         ]
 
     def test_comment_and_indented_not_captured(self) -> None:
@@ -503,6 +519,30 @@ class TestLeanResolution:
     def test_self_reference_returns_none(self, tmp_path: Path) -> None:
         ctx = _ctx(tmp_path, {"Foo/Bar.lean": ""})
         assert resolve_lean_import("Foo.Bar", "Foo/Bar.lean", ctx) is None
+
+    def test_fixture_parses_and_resolves_graph_edges(self) -> None:
+        root = LANG_SAMPLE_FIXTURES / "lean"
+        parser = ASTParser()
+        builder = GraphBuilder(repo_path=root)
+        main_modules: list[str] = []
+
+        for path in sorted(root.rglob("*.lean")):
+            rel = path.relative_to(root).as_posix()
+            source = path.read_bytes()
+            info = _file_info(rel, "lean")
+            info.abs_path = str(path)
+            info.size_bytes = len(source)
+            parsed = parser.parse_file(info, source)
+            if rel == "Main.lean":
+                main_modules = _modules(parsed.imports)
+            builder.add_file(parsed)
+
+        graph = builder.build()
+        assert main_modules == ["Public.Visible", "Plain.Local", "BigOperators"]
+        assert graph.has_edge("Main.lean", "Public/Visible.lean")
+        assert graph.has_edge("Main.lean", "Plain/Local.lean")
+        assert graph.has_edge("Main.lean", "BigOperators.lean")
+        assert not graph.has_node("external:scoped")
 
 
 # ---------------------------------------------------------------------------

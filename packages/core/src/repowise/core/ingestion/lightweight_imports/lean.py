@@ -3,7 +3,12 @@
 Captured forms:
 
     import Foo.Bar
+    import all Foo.Bar
+    public import Foo.Bar
+    private import Foo.Bar
+    meta import Foo.Bar
     open Foo.Bar
+    open scoped Foo
     open Foo.Bar Baz.Qux
 
 For ``open`` statements, only the first dotted namespace is captured. The file
@@ -17,14 +22,19 @@ import re
 
 from ..models import Import
 
-_IMPORT_RE = re.compile(r"^(?:import|open)[ \t]+([A-Za-z_][A-Za-z0-9_'.]*)", re.M)
+_IMPORT_RE = re.compile(
+    r"^(?:(?:public|private|meta)[ \t]+)?import[ \t]+(?:all[ \t]+)?"
+    r"([A-Za-z_][A-Za-z0-9_'.]*)"
+    r"|^open[ \t]+(?:scoped[ \t]+)?([A-Za-z_][A-Za-z0-9_'.]*)",
+    re.M,
+)
 
 
 def extract_lean_imports(text: str) -> list[Import]:
     imports: list[Import] = []
     seen: set[str] = set()
     for match in _IMPORT_RE.finditer(text):
-        module = match.group(1)
+        module = match.group(1) or match.group(2)
         if module in seen:
             continue
         seen.add(module)
