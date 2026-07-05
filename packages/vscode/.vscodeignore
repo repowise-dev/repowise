@@ -10,6 +10,8 @@ tsconfig.test.json
 esbuild.mjs
 **/*.map
 **/.gitkeep
+media/gifs/**
+media/screenshots/**
 .gitignore
 RELEASING.md
 *.vsix
