@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
+import useSWR from "swr";
 import useSWRInfinite from "swr/infinite";
 import { Users } from "lucide-react";
 import {
@@ -10,10 +11,13 @@ import {
 } from "@repowise-dev/ui/owners/owner-directory";
 import { PageShell } from "@repowise-dev/ui/shared/page-shell";
 import { useDebounce } from "@/lib/hooks/use-debounce";
-import { listOwnersPage } from "@/lib/api/owners";
+import { listAllOwners, listOwnersPage } from "@/lib/api/owners";
 import type { OwnerListEntry, Paginated } from "@/lib/api/types";
 
 const LIMIT = 30;
+/** When contributor count is at or below this, prefetch everyone for an
+ *  accurate ownership distribution bar via fetchAllPaginated. */
+const DISTRIBUTION_PREFETCH_CAP = 120;
 
 export default function OwnersDirectoryPage() {
   const { id } = useParams<{ id: string }>();
@@ -53,6 +57,14 @@ export default function OwnersDirectoryPage() {
   const total = data && data.length > 0 ? data[0].total : 0;
   const hasMore = data ? data[data.length - 1].has_more : false;
 
+  const shouldPrefetchDistribution =
+    debouncedQ === "" && total > 0 && total <= DISTRIBUTION_PREFETCH_CAP;
+  const { data: distributionOwners } = useSWR(
+    shouldPrefetchDistribution ? `owners-all:${id}:${filters.sort}` : null,
+    () => listAllOwners({ repoId: id, sort: filters.sort, maxItems: DISTRIBUTION_PREFETCH_CAP }),
+    { revalidateOnFocus: false },
+  );
+
   return (
     <PageShell
       maxWidth="wide"
@@ -62,6 +74,7 @@ export default function OwnersDirectoryPage() {
     >
       <OwnerDirectory
         owners={items}
+        distributionOwners={distributionOwners}
         isLoading={isLoading}
         isValidating={isValidating}
         total={total}

@@ -12,6 +12,8 @@ export interface FetchAllPaginatedOptions<T> {
   pageSize?: number;
   /** Optional hard cap on the number of items collected. */
   maxItems?: number;
+  /** Safety cap on page fetches — guards against misbehaving endpoints. */
+  maxPages?: number;
 }
 
 /**
@@ -22,11 +24,18 @@ export async function fetchAllPaginated<T>({
   fetchPage,
   pageSize = 100,
   maxItems,
+  maxPages = 1000,
 }: FetchAllPaginatedOptions<T>): Promise<T[]> {
   const items: T[] = [];
   let offset = 0;
+  let pages = 0;
 
   while (true) {
+    pages += 1;
+    if (pages > maxPages) {
+      break;
+    }
+
     const page = await fetchPage(offset, pageSize);
     items.push(...page.items);
 
@@ -34,6 +43,10 @@ export async function fetchAllPaginated<T>({
       return items.slice(0, maxItems);
     }
     if (!page.has_more || page.next_offset == null) {
+      break;
+    }
+    // Guard against endpoints that claim more pages but never advance.
+    if (page.items.length === 0 || page.next_offset <= offset) {
       break;
     }
     offset = page.next_offset;

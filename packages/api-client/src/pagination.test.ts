@@ -43,4 +43,22 @@ describe("fetchAllPaginated", () => {
 
     await expect(fetchAllPaginated({ fetchPage })).resolves.toEqual([]);
   });
+
+  it("stops when has_more is true but next_offset does not advance", async () => {
+    const fetchPage = vi
+      .fn<(offset: number, limit: number) => Promise<Paginated<number>>>()
+      .mockResolvedValueOnce(page([1], 10, true, 0));
+
+    await expect(fetchAllPaginated({ fetchPage })).resolves.toEqual([1]);
+    expect(fetchPage).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops on an empty page that still claims has_more", async () => {
+    const fetchPage = vi
+      .fn<(offset: number, limit: number) => Promise<Paginated<number>>>()
+      .mockResolvedValueOnce(page([], 10, true, 5));
+
+    await expect(fetchAllPaginated({ fetchPage })).resolves.toEqual([]);
+    expect(fetchPage).toHaveBeenCalledTimes(1);
+  });
 });
