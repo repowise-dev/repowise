@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.27.0] — 2026-07-05
+
+### Added
+- **VS Code extension 0.3.0.** The editor experience grew up this cycle. Refactoring plans can now be handed straight to an AI agent, and the extension exposes native chat tools so agents can query Repowise from inside the editor (#694). The SCM view gained change intelligence, per-file change risk, and symbol hover detail, alongside more reliable server discovery (#664, #691). The listing now leads with a hero walkthrough GIF and screenshots, and the extension icon reads correctly on dark themes (#696, #697).
+- **Dart support.** A Dart AST tier brings symbol extraction plus health and performance markers to Dart codebases. (#689)
+- **SQL and dbt intelligence.** Indexing now extracts SQL DDL symbols and dbt lineage (#683), models app-to-database contracts, and surfaces SQL-specific health markers (#687).
+- **Java and Rust dataflow.** The Extract Method dataflow layer now understands def/use chains in Java and Rust, extending refactoring analysis to those languages. (#686)
+- **`repowise login`, `logout`, and `whoami`.** New CLI commands to connect the CLI to your Repowise account. (#690)
+- **Storage footprint in `status`.** `repowise status` now reports the on-disk size of the index. (#681)
+- **Add-repo wizard.** The web app gained a guided add-repo flow with a cost preflight and a live first-index experience, plus first-run polish across the app icon, explore cards, and a collapsible workspace nav (#692, #685).
+- **Accurate coverage tab.** The Coverage tab now paginates, sorts, and reports coverage accurately on large repos. (#665)
+
+### Changed
+- **One consistent UI.** A design pass unified how the dashboard renders tables, stat tiles, row banding, loading skeletons, error states, and tooltips, so every view behaves the same way. (#695)
+- **Dataflow-verified performance findings.** Advisory performance findings are now verified against the dataflow layer, cutting false positives, with refactoring config wired through. (#684)
+
+### Fixed
+- **Health sync honors repo excludes.** Workspace health sync now respects the repo's configured excludes. (#638)
+- **External dependencies no longer masquerade as files.** The Files view stops linking external dependency nodes as if they were source files. (#673)
+- **More robust parallelism.** Parse and betweenness process pools now use `spawn`, avoiding fork-related instability on some platforms. (#679)
+
+### Dependencies
+- Added `sqlglot` (SQL parsing) and `tree-sitter-dart` (Dart grammar).
+
+---
+
 ## [0.26.0] — 2026-07-03
 
 ### Added
