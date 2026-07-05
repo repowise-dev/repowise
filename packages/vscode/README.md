@@ -8,6 +8,10 @@ And because modern code is written by two of you, one install also wires the sam
 
 Everything runs on your machine. Everything is free.
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/repowise-dev/repowise/main/packages/vscode/media/gifs/hero.gif" alt="Repowise for VS Code: the knowledge graph and health dashboard in an editor tab, gutter heat and a refactoring plan copied to your agent, and a change-risk read before you push, all from one local index" width="100%" />
+</p>
+
 ## Know before you push
 
 Click **Analyze Change Risk** in the Source Control view and get the full picture of your uncommitted work in seconds:
@@ -20,6 +24,10 @@ Click **Analyze Change Risk** in the Source Control view and get the full pictur
 
 While you edit, a quiet status-bar hint appears if you are missing a file that usually travels with your change. It never pops up, never interrupts, and is one click to dismiss or turn off.
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/repowise-dev/repowise/main/packages/vscode/media/screenshots/change-risk-panel.png" alt="The Change Risk panel: an 8.8/10 score, downstream and missing-test chips, and the riskiest files in the change ranked by hotspot" width="90%" />
+</p>
+
 ## See health as you work
 
 - **Gutter heat** marks the lines with findings in the file you have open. Glanceable, not shouty.
@@ -28,6 +36,13 @@ While you edit, a quiet status-bar hint appears if you are missing a file that u
 - **Hover any symbol** for instant context: how many things call it, who owns the file, and the architectural decisions that govern it.
 - **Refactoring plans appear as a CodeLens** right above the code they target. Open the full plan, or copy it as a ready-to-paste prompt for your agent.
 - Prefer the Problems panel? Turn it on in settings. It stays off by default because your problems list belongs to you.
+
+<table>
+  <tr>
+    <td width="50%"><img src="https://raw.githubusercontent.com/repowise-dev/repowise/main/packages/vscode/media/screenshots/gutter-and-score.png" width="100%" alt="Gutter heat strip and the file's health score in the status bar" /><br><sub><b>Gutter heat + status-bar score.</b> Every finding, right where the line is.</sub></td>
+    <td width="50%"><img src="https://raw.githubusercontent.com/repowise-dev/repowise/main/packages/vscode/media/screenshots/refactoring-codelens.png" width="100%" alt="A refactoring plan shown as a CodeLens above the class it targets, with a copy-for-agent action" /><br><sub><b>Refactoring plan as a CodeLens.</b> One click copies it as a prompt for your agent.</sub></td>
+  </tr>
+</table>
 
 ## Explore the big picture
 
@@ -40,6 +55,14 @@ Full dashboards open right in an editor tab, no browser needed:
 - **Decision timeline**: the "why" behind your codebase, mined from its history.
 - **Docs browser**: always-current documentation for the file you are in.
 
+<table>
+  <tr>
+    <td width="33%"><img src="https://raw.githubusercontent.com/repowise-dev/repowise/main/packages/vscode/media/screenshots/health-dashboard.png" width="100%" alt="The code-health dashboard with defect, maintainability, and performance signals and a health map" /><br><sub><b>Health overview</b></sub></td>
+    <td width="33%"><img src="https://raw.githubusercontent.com/repowise-dev/repowise/main/packages/vscode/media/screenshots/knowledge-graph.png" width="100%" alt="The interactive knowledge graph of files and their dependencies" /><br><sub><b>Knowledge graph</b></sub></td>
+    <td width="33%"><img src="https://raw.githubusercontent.com/repowise-dev/repowise/main/packages/vscode/media/screenshots/docs-browser.png" width="100%" alt="The docs browser rendering the generated wiki for the repository" /><br><sub><b>Docs browser</b></sub></td>
+  </tr>
+</table>
+
 ## One install, two brains
 
 VS Code agent mode sees the Repowise tools automatically after install: no config, no copy-pasting JSON. For other editors and MCP clients, one command writes the config for your workspace. The signal you see in the gutter and the context your agent reasons with come from the same index, so you are never debugging two different opinions about your code.
@@ -47,8 +70,6 @@ VS Code agent mode sees the Repowise tools automatically after install: no confi
 ## Quiet by design
 
 Nothing polls, nothing scans in the background, and nothing interrupts you. Data loads when you look at it and is cached until your index changes. Activation adds zero measurable startup time. Every surface is individually toggleable, either in VS Code settings or in the built-in Repowise settings panel.
-
-<!-- Screenshots / GIFs: drop captures under media/screenshots and link them here before the stable Marketplace release. -->
 
 ## Getting started
 

@@ -6,6 +6,10 @@ same index serves both you and your AI coding agent. It is a thin client over
 the local `repowise` CLI and server: everything is computed on your machine and
 nothing about your code leaves it through the extension.
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/repowise-dev/repowise/main/packages/vscode/media/gifs/hero.gif" alt="Repowise for VS Code: the knowledge graph and health dashboard in an editor tab, gutter heat and a refactoring plan copied to your agent, and a change-risk read before you push, all from one local index" width="100%" />
+</p>
+
 ## Install
 
 1. Install the CLI: `pip install repowise` (or `uv tool install repowise`).
@@ -42,6 +46,10 @@ you have not opened. It is dismissible per change set, never a popup, and
 tunable or off in settings (`repowise.changeIntel.*`). Plenty of edits
 legitimately touch only part of a cluster, so it informs without nagging.
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/repowise-dev/repowise/main/packages/vscode/media/screenshots/change-risk-panel.png" alt="The Change Risk panel: an 8.8/10 score, downstream and missing-test chips, and the riskiest files in the change ranked by hotspot" width="90%" />
+</p>
+
 ## Editor-native signals
 
 - **Gutter heat**: a severity-tiered strip next to lines with findings in the
@@ -60,6 +68,13 @@ legitimately touch only part of a cluster, so it informs without nagging.
   the Problems panel (`repowise.diagnostics.enabled`). The quieter surfaces
   above carry the full detail either way.
 
+<table>
+  <tr>
+    <td width="50%"><img src="https://raw.githubusercontent.com/repowise-dev/repowise/main/packages/vscode/media/screenshots/gutter-and-score.png" width="100%" alt="Gutter heat strip and the file's health score in the status bar" /><br><sub><b>Gutter heat + status-bar score</b></sub></td>
+    <td width="50%"><img src="https://raw.githubusercontent.com/repowise-dev/repowise/main/packages/vscode/media/screenshots/refactoring-codelens.png" width="100%" alt="A refactoring plan shown as a CodeLens above the class it targets, with a copy-for-agent action" /><br><sub><b>Refactoring plan as a CodeLens, copy-for-agent</b></sub></td>
+  </tr>
+</table>
+
 ## Tree views
 
 A single Repowise activity-bar container with a **Home** overview, a
@@ -75,6 +90,14 @@ app uses (no duplicated components): **health overview**, **architecture map**,
 **refactoring plans**, **decision timeline**, and a **docs browser**. A theme
 switcher in the Home view keeps them matched to your editor or pinned light or
 dark.
+
+<table>
+  <tr>
+    <td width="33%"><img src="https://raw.githubusercontent.com/repowise-dev/repowise/main/packages/vscode/media/screenshots/health-dashboard.png" width="100%" alt="The code-health dashboard with defect, maintainability, and performance signals and a health map" /><br><sub><b>Health overview</b></sub></td>
+    <td width="33%"><img src="https://raw.githubusercontent.com/repowise-dev/repowise/main/packages/vscode/media/screenshots/knowledge-graph.png" width="100%" alt="The interactive knowledge graph of files and their dependencies" /><br><sub><b>Knowledge graph</b></sub></td>
+    <td width="33%"><img src="https://raw.githubusercontent.com/repowise-dev/repowise/main/packages/vscode/media/screenshots/docs-browser.png" width="100%" alt="The docs browser rendering the generated wiki for the repository" /><br><sub><b>Docs browser</b></sub></td>
+  </tr>
+</table>
 
 ## MCP for your AI agent
 
