@@ -123,6 +123,8 @@ export interface OverviewSyncStatus {
   last_sync_model: string | null;
   active_job_id: string | null;
   page_count: number;
+  /** Total on-disk size of the repo's `.repowise/` directory (bytes). */
+  index_storage_bytes?: number;
 }
 
 export interface OverviewSummaryResponse {
