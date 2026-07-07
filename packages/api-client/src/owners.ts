@@ -38,8 +38,8 @@ export async function listAllOwners(
   const { repoId, pageSize, maxItems, ...rest } = params;
   return fetchAllPaginated({
     fetchPage: (offset, limit) => listOwnersPage({ repoId, ...rest, offset, limit }),
-    pageSize,
-    maxItems,
+    ...(pageSize !== undefined ? { pageSize } : {}),
+    ...(maxItems !== undefined ? { maxItems } : {}),
   });
 }
 
