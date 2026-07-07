@@ -301,7 +301,7 @@ def _resolve_go_type_refs(
 
     if same_file_refs and graph.has_node(from_path):
         existing = graph.nodes[from_path].get("local_type_uses")
-        if not existing:
+        if existing is None:
             graph.nodes[from_path]["local_type_uses"] = same_file_refs
         else:
             existing.update(same_file_refs)

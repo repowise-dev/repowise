@@ -243,7 +243,10 @@ class TestGoSameFileTypeUseFallback:
             "// Widget is exported and used only as a return type within\n"
             "// this same file — no cross-file or cross-package reference.\n"
             "type Widget struct{}\n\n"
-            "func NewWidget() *Widget { return &Widget{} }\n"
+            "func NewWidget() *Widget { return &Widget{} }\n\n"
+            "// DeadWidget is exported and never referenced anywhere — a true\n"
+            "// positive that must survive the same-file rescue.\n"
+            "type DeadWidget struct{}\n"
         ),
     }
 
@@ -282,6 +285,26 @@ class TestGoSameFileTypeUseFallback:
             f.symbol_name for f in report.findings if f.kind == DeadCodeKind.UNUSED_EXPORT
         }
         assert "Widget" not in unused_exports
+
+    def test_single_file_dead_export_still_flagged(self, tmp_path: Path) -> None:
+        # True-positive guard: the same-file rescue must not turn into a
+        # blanket "never flag single-file exports." DeadWidget lives in the
+        # same single-file, no-import package that hits the rescue path, but
+        # is never referenced — it must still be flagged unused_export.
+        graph = self._build_graph(tmp_path)
+        analyzer = DeadCodeAnalyzer(graph, git_meta_map={})
+        report = analyzer.analyze(
+            {
+                "detect_unreachable_files": False,
+                "detect_zombie_packages": False,
+                "detect_unused_internals": True,
+                "min_confidence": 0.0,
+            }
+        )
+        unused_exports = {
+            f.symbol_name for f in report.findings if f.kind == DeadCodeKind.UNUSED_EXPORT
+        }
+        assert "DeadWidget" in unused_exports
 
 
 class TestGoDeadCodeOutcome:
