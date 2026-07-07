@@ -61,7 +61,13 @@ export default function OwnersDirectoryPage() {
     debouncedQ === "" && total > 0 && total <= DISTRIBUTION_PREFETCH_CAP;
   const { data: distributionOwners } = useSWR(
     shouldPrefetchDistribution ? `owners-all:${id}:${filters.sort}` : null,
-    () => listAllOwners({ repoId: id, sort: filters.sort, maxItems: DISTRIBUTION_PREFETCH_CAP }),
+    () =>
+      listAllOwners({
+        repoId: id,
+        sort: filters.sort,
+        maxItems: DISTRIBUTION_PREFETCH_CAP,
+        pageSize: DISTRIBUTION_PREFETCH_CAP,
+      }),
     { revalidateOnFocus: false },
   );
 
