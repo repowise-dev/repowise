@@ -475,7 +475,6 @@ def _run_index_for_repo(
         save_config,
         save_state,
     )
-    from repowise.core.pipeline.orchestrator import run_pipeline
     from repowise.core.workspace.update import run_cross_repo_hooks
 
     console.print(f"  Indexing [cyan]{alias}[/cyan]…")
@@ -519,47 +518,17 @@ def _run_index_for_repo(
     _inherit_distill_verdict(repo_path, primary_cfg)
 
     async def _do_index() -> tuple[int, int, int]:
-        result = await run_pipeline(
+        # Shared full-index step (run pipeline, persist, export the curated KG
+        # artifact so doc generation can load curated module grouping) — the
+        # same helper the workspace updater's first-time indexing uses.
+        from repowise.core.pipeline.full_index import index_repo_full
+
+        result = await index_repo_full(
             repo_path,
             commit_depth=int(commit_limit) if commit_limit else 500,
-            exclude_patterns=exclude_patterns or None,
-            generate_docs=False,
+            exclude_patterns=exclude_patterns,
         )
-
-        from repowise.core.persistence import (
-            create_engine,
-            create_session_factory,
-            get_session,
-            init_db,
-            upsert_repository,
-        )
-        from repowise.core.persistence.database import resolve_db_url
-        from repowise.core.pipeline import persist_pipeline_result
-
-        url = resolve_db_url(repo_path)
-        engine = create_engine(url)
-        await init_db(engine)
-        sf = create_session_factory(engine)
-        page_count = 0
-        async with get_session(sf) as session:
-            repo = await upsert_repository(
-                session, name=result.repo_name, local_path=str(repo_path)
-            )
-            await persist_pipeline_result(result, session, repo.id)
-
-        await engine.dispose()
-
-        # Save the curated KG artifact so doc generation can load curated
-        # module grouping (matches the `repowise init` idiom in
-        # init_cmd/command.py). Without it, generation falls back to raw
-        # community grouping and emits wrong module pages.
-        from repowise.cli.state_persistence import save_knowledge_graph_json
-
-        kg = getattr(result, "knowledge_graph_result", None)
-        if kg is not None:
-            save_knowledge_graph_json(repo_path, kg)
-
-        return result.file_count, result.symbol_count, page_count
+        return result.file_count, result.symbol_count, 0
 
     try:
         file_count, symbol_count, _ = run_async(_do_index())

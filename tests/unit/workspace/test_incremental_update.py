@@ -3,9 +3,10 @@
 ``update_single_repo_index`` previously re-ran the full init pipeline for
 every stale repo. Already-indexed repos (persisted ``last_sync_commit`` that
 still resolves + existing ``wiki.db``) now take the incremental update path —
-changed-files diff, partial analysis, upsert persistence — and inherit the
-persisted state flags (``git_tier``, ``include_submodules``,
-``include_nested_repos``). Never-indexed repos and incremental failures fall
+changed-files diff, partial analysis, upsert persistence (including prune +
+tombstone for deletions/renames) — and inherit the persisted state flags
+(``git_tier``, ``include_submodules``, ``include_nested_repos``).
+Never-indexed repos, config-fingerprint drift, and incremental failures fall
 back to the full pipeline.
 """
 
@@ -170,10 +171,10 @@ def test_no_relevant_changes_still_reports_updated(tmp_path, forbid_full_pipelin
     assert result.file_count == 0
 
 
-def test_deleted_file_falls_back_to_full_pipeline(tmp_path, stub_full_pipeline):
-    """Incremental persistence is upsert-only — it can't prune rows for
-    removed paths. A diff containing deletions must run the full pipeline
-    (delete-then-insert) so stale graph/health rows are cleaned up."""
+def test_deleted_file_stays_on_incremental_path(tmp_path, forbid_full_pipeline):
+    """Deletions are handled incrementally: the persistence pass prunes rows
+    against the rebuilt graph and tombstones pages for removed paths, same as
+    the single-repo update — no more full-pipeline fallback."""
     repo = _make_git_repo(tmp_path)
     _add_commit(repo, "b.py")
     base = get_head_commit(repo)
@@ -184,17 +185,33 @@ def test_deleted_file_falls_back_to_full_pipeline(tmp_path, stub_full_pipeline):
 
     result = asyncio.run(update_single_repo_index(repo))
 
-    _assert_full_pipeline_fallback(result, stub_full_pipeline)
+    assert result.error is None
+    assert result.updated is True
 
 
-def test_renamed_file_falls_back_to_full_pipeline(tmp_path, stub_full_pipeline):
-    """Renames leave the old path behind in upsert-only persistence —
-    same prune requirement as deletions."""
+def test_renamed_file_stays_on_incremental_path(tmp_path, forbid_full_pipeline):
+    """Renames prune the old path and index the new one incrementally —
+    same handling as deletions."""
     repo = _make_git_repo(tmp_path)
     base = get_head_commit(repo)
     _mark_indexed(repo, base)
     _git(repo, "mv", "a.py", "renamed.py")
     _git(repo, "commit", "-m", "rename a.py")
+
+    result = asyncio.run(update_single_repo_index(repo))
+
+    assert result.error is None
+    assert result.updated is True
+
+
+def test_config_drift_runs_full_reindex(tmp_path, stub_full_pipeline):
+    """A stored config fingerprint that no longer matches the on-disk config
+    invalidates every persisted health score — the repo must take the full
+    pipeline, not the changed-files-only path."""
+    repo = _make_git_repo(tmp_path)
+    base = get_head_commit(repo)
+    _mark_indexed(repo, base, config_fingerprint="0" * 64)
+    _add_commit(repo, "b.py")
 
     result = asyncio.run(update_single_repo_index(repo))
 

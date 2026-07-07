@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import sys
 import time
+from typing import Any
 
 import click
 import structlog
@@ -64,6 +65,28 @@ from .reporting import (
 from .workspace import _workspace_update
 
 log = structlog.get_logger(__name__)
+
+
+def _refresh_editor_stamp(repo_path: Any, agents_md: bool | None) -> None:
+    """Re-stamp managed editor files (CLAUDE.md / AGENTS.md), best-effort.
+
+    Runs on every update outcome — including the "already up to date" and
+    "no changed files" fast paths, matching the workspace flow — so the
+    "Last indexed" stamp always reflects the latest successful sync check
+    instead of freezing at the last content-changing run.
+    """
+    try:
+        from repowise.cli.editor_integrations.defaults import get_default_project_file_overrides
+        from repowise.cli.editor_setup import EditorSetupOptions, refresh_editor_project_files
+
+        options = None
+        if agents_md is not None:
+            options = EditorSetupOptions(
+                project_file_overrides=get_default_project_file_overrides(agents_md=agents_md),
+            )
+        refresh_editor_project_files(console, repo_path, options=options)
+    except Exception:
+        pass  # editor project-file refresh must never fail the update command
 
 
 def _surface_release_news(*, written_by: str | None) -> None:
@@ -377,6 +400,7 @@ def update_command(
         # current here while the DB head_commit is still the last full index.
         if not dry_run:
             stamp_head_commit(repo_path, head)
+            _refresh_editor_stamp(repo_path, agents_md)
         if emitter is not None:
             emitter.done(
                 ok=True, pages_generated=0, cost_usd=0.0, duration_s=time.monotonic() - start
@@ -495,6 +519,7 @@ def update_command(
         # Keep the DB freshness stamp in lockstep with state.json: the server's
         # /repos endpoint reads head_commit from the row, not the state file.
         stamp_head_commit(repo_path, head)
+        _refresh_editor_stamp(repo_path, agents_md)
         if emitter is not None:
             emitter.done(
                 ok=True, pages_generated=0, cost_usd=0.0, duration_s=time.monotonic() - start
@@ -522,6 +547,7 @@ def update_command(
             if emitter is not None:
                 emitter.error(str(exc))
             raise
+        _refresh_editor_stamp(repo_path, agents_md)
         if emitter is not None:
             emitter.done(
                 ok=True, pages_generated=0, cost_usd=0.0, duration_s=time.monotonic() - start
@@ -621,6 +647,7 @@ def update_command(
             if emitter is not None:
                 emitter.error(str(exc))
             raise
+        _refresh_editor_stamp(repo_path, agents_md)
         if emitter is not None:
             emitter.done(
                 ok=True, pages_generated=0, cost_usd=0.0, duration_s=time.monotonic() - start
@@ -851,7 +878,7 @@ def update_command(
         else:
             gen_progress.update(gen_task, advance=1, cost=cost_tracker.session_cost)
 
-    with (make_generation_progress() if emitter is None else nullcontext()) as gen_progress:
+    with make_generation_progress() if emitter is None else nullcontext() as gen_progress:
         gen_task = (
             gen_progress.add_task("Generating pages...", total=None, cost=0.0)
             if gen_progress is not None
@@ -1121,24 +1148,7 @@ def update_command(
         raise
 
     # ---- Editor project files (best-effort) ----
-    try:
-        from repowise.cli.editor_integrations.defaults import get_default_project_file_overrides
-        from repowise.cli.editor_setup import EditorSetupOptions, refresh_editor_project_files
-
-        editor_options = None
-        if agents_md is not None:
-            editor_options = EditorSetupOptions(
-                project_file_overrides=get_default_project_file_overrides(
-                    agents_md=agents_md,
-                ),
-            )
-        refresh_editor_project_files(
-            console,
-            repo_path,
-            options=editor_options,
-        )
-    except Exception:
-        pass  # Editor project-file refresh must never fail the update command
+    _refresh_editor_stamp(repo_path, agents_md)
 
     # Update state
     from repowise.cli.helpers import config_fingerprint

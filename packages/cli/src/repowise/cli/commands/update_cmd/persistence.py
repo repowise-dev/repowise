@@ -113,29 +113,14 @@ def stamp_head_commit(repo_path: Any, head: str | None) -> None:
     if not head:
         return
 
-    async def _stamp() -> None:
-        from repowise.cli.helpers import get_db_url_for_repo
-        from repowise.core.persistence import (
-            create_engine,
-            create_session_factory,
-            get_session,
-            init_db,
-            upsert_repository,
-        )
+    # One stamper for both update paths: delegate to the core implementation
+    # the workspace updater uses. It touches only head_commit/updated_at on an
+    # existing row (the old upsert here clobbered url/default_branch with
+    # defaults), creates the row when missing from an existing wiki.db, and
+    # no-ops when wiki.db itself is absent instead of conjuring an empty DB.
+    from repowise.core.workspace.update import reconcile_repo_head_commit
 
-        url = get_db_url_for_repo(repo_path)
-        engine = create_engine(url)
-        await init_db(engine)
-        sf = create_session_factory(engine)
-        async with get_session(sf) as session:
-            await upsert_repository(
-                session,
-                name=Path(repo_path).name,
-                local_path=str(repo_path),
-                head_commit=head,
-            )
-
-    run_async(_stamp())
+    run_async(reconcile_repo_head_commit(Path(repo_path), head))
 
 
 def _persist_index_only_update(
