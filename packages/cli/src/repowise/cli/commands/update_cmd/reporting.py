@@ -123,7 +123,15 @@ class JsonProgressEmitter:
             {"event": "page_done", "completed": completed, "total": total, "cost_usd": cost_usd}
         )
 
-    def done(self, *, ok: bool, pages_generated: int, cost_usd: float, duration_s: float) -> None:
+    def done(
+        self,
+        *,
+        ok: bool,
+        pages_generated: int,
+        cost_usd: float,
+        duration_s: float,
+        degraded: list[str] | None = None,
+    ) -> None:
         self._emit(
             {
                 "event": "done",
@@ -131,6 +139,7 @@ class JsonProgressEmitter:
                 "pages_generated": pages_generated,
                 "cost_usd": cost_usd,
                 "duration_s": duration_s,
+                "degraded": degraded or [],
             }
         )
 
@@ -141,6 +150,26 @@ class JsonProgressEmitter:
 # ---------------------------------------------------------------------------
 # Completion panels
 # ---------------------------------------------------------------------------
+
+
+def render_degraded(degraded: list[str] | None) -> None:
+    """Warn about best-effort steps that failed during this update.
+
+    These used to be swallowed (``except Exception: pass``), so the update
+    claimed clean success while, say, git metadata or graph nodes silently
+    stayed at the previous commit. The run still exits 0 — every listed step
+    is retried by the next update — but the panel must not say "complete"
+    without this block when something was skipped.
+    """
+    if not degraded:
+        return
+    console.print()
+    console.print(
+        f"[yellow]Update completed with {len(degraded)} degraded step(s) "
+        "(will retry on the next update):[/yellow]"
+    )
+    for entry in degraded:
+        console.print(f"  [yellow]-[/yellow] {entry}")
 
 
 def _dead_code_counts(dead_code_report: Any) -> tuple[int, int]:
@@ -160,9 +189,13 @@ def show_full_completion(
     cost: float,
     tokens: int,
     elapsed: float,
+    degraded: list[str] | None = None,
 ) -> None:
     """Render the completion panel for a full (LLM-regenerating) update."""
+    render_degraded(degraded)
     metrics: list[tuple[str, str]] = [("Pages updated", str(len(generated_pages)))]
+    if degraded:
+        metrics.append(("Degraded", f"{len(degraded)} step(s)"))
     if decay_count:
         metrics.append(("Pages decayed", str(decay_count)))
     if decisions_changed:
@@ -191,8 +224,10 @@ def show_index_only_completion(
     changed_count: int,
     git_files: int,
     elapsed: float,
+    degraded: list[str] | None = None,
 ) -> None:
     """Render the completion panel for an index-only update (no LLM regen)."""
+    render_degraded(degraded)
     graph = graph_builder.graph()
     unreachable, unused = _dead_code_counts(dead_code_report)
 
@@ -201,6 +236,8 @@ def show_index_only_completion(
         ("Graph", f"{graph.number_of_nodes():,} nodes · {graph.number_of_edges():,} edges"),
         ("Dead code", f"{unreachable} unreachable · {unused} unused exports"),
     ]
+    if degraded:
+        metrics.append(("Degraded", f"{len(degraded)} step(s)"))
     if git_files:
         metrics.append(("Git history", f"{git_files} files refreshed"))
     metrics.append(("Elapsed", format_elapsed(elapsed)))

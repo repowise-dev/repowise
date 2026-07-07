@@ -539,12 +539,17 @@ async def persist_incremental_index(
     file_diffs: list[Any] | None = None,
     knowledge_graph_result: Any | None = None,
     log: LogFn | None = None,
+    degraded: list[str] | None = None,
 ) -> None:
     """Persist an incremental index refresh (graph + git + dead-code + health).
 
     Upsert-only: unchanged files keep their existing rows, unlike
     ``persist_pipeline_result``'s delete-then-insert. State-file updates stay
     with the caller — this writes the DB only.
+
+    ``degraded`` (when supplied) collects a one-line entry for every
+    best-effort step that failed, so the caller can render an honest
+    completion report instead of silently claiming success.
     """
     from repowise.core.persistence import (
         create_engine,
@@ -556,6 +561,11 @@ async def persist_incremental_index(
     from repowise.core.persistence.database import resolve_db_url
 
     log = log or _noop_log
+
+    def _skip(step: str, exc: Exception) -> None:
+        log(f"[yellow]{step} skipped: {exc}[/yellow]")
+        if degraded is not None:
+            degraded.append(f"{step}: {exc}")
 
     url = resolve_db_url(repo_path)
     engine = create_engine(url)
@@ -573,7 +583,7 @@ async def persist_incremental_index(
 
                     await _prune_stale_file_rows(session, repo_id, current_graph_file_paths, set())
                 except Exception as exc:
-                    log(f"[yellow]Stale row prune skipped: {exc}[/yellow]")
+                    _skip("Stale row prune", exc)
 
             # Tombstone pages for deleted/renamed files FIRST — a fresh page
             # for a file that no longer exists misleads every retrieval
@@ -587,7 +597,7 @@ async def persist_incremental_index(
 
                     await mark_tombstone_pages(session, repo_id, tombstone_candidates(file_diffs))
                 except Exception as exc:
-                    log(f"[yellow]Tombstone marking skipped: {exc}[/yellow]")
+                    _skip("Tombstone marking", exc)
 
             if git_meta_map:
                 try:
@@ -599,12 +609,12 @@ async def persist_incremental_index(
                     await upsert_git_metadata_bulk(session, repo_id, list(git_meta_map.values()))
                     await recompute_git_percentiles(session, repo_id)
                 except Exception as exc:
-                    log(f"[yellow]Git persist skipped: {exc}[/yellow]")
+                    _skip("Git persist", exc)
 
                 try:
                     await persist_incremental_commits(session, repo_id, repo_path)
                 except Exception as exc:
-                    log(f"[yellow]Commit capture skipped: {exc}[/yellow]")
+                    _skip("Commit capture", exc)
 
             if dead_code_report is not None:
                 try:
@@ -616,13 +626,13 @@ async def persist_incremental_index(
                         session, repo_id, dead_code_report.findings, file_paths=changed_paths
                     )
                 except Exception as exc:
-                    log(f"[yellow]Dead-code persist skipped: {exc}[/yellow]")
+                    _skip("Dead-code persist", exc)
 
             if partial_health_report is not None:
                 try:
                     await persist_partial_health(session, repo_id, partial_health_report)
                 except Exception as exc:
-                    log(f"[yellow]Health persist skipped: {exc}[/yellow]")
+                    _skip("Health persist", exc)
 
             # Re-persist graph_nodes so symbol-level PageRank /
             # betweenness / community ids stay in sync with the
@@ -635,7 +645,7 @@ async def persist_incremental_index(
 
                 await persist_graph_nodes(session, repo_id, graph_builder)
             except Exception as exc:
-                log(f"[yellow]Graph nodes persist skipped: {exc}[/yellow]")
+                _skip("Graph nodes persist", exc)
 
             if knowledge_graph_result is not None:
                 try:
@@ -643,6 +653,6 @@ async def persist_incremental_index(
 
                     await persist_kg(knowledge_graph_result, session, repo_id)
                 except Exception as exc:
-                    log(f"[yellow]Knowledge-graph persist skipped: {exc}[/yellow]")
+                    _skip("Knowledge-graph persist", exc)
     finally:
         await engine.dispose()
