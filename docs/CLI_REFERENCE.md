@@ -117,6 +117,13 @@ plus the exported `knowledge-graph.json`. In docs mode it also regenerates the
 affected wiki pages. Index-only updates carry forward the previously generated
 layer names and node summaries, so no LLM call is ever made without docs mode.
 
+If any best-effort step fails (git metadata, decisions, dead code, ...), the
+run still exits 0 but lists the degraded steps in the completion panel (and in
+the `done` event's `degraded` array with `--progress json`); the next update
+retries them. In docs mode each regenerated page is persisted as it completes,
+so an interrupted run never pays for the finished pages again — the rerun's
+prompt-hash check skips them.
+
 **Options:**
 
 | Flag | Description |
@@ -133,6 +140,7 @@ layer names and node summaries, so no LLM call is ever made without docs mode.
 | `--full` | Upgrade a fast (`--mode fast`) index to a full one — see below. Single-repo only. |
 | `--agents / --no-agents` | Generate or skip managed `AGENTS.md` after update. Persists the preference. |
 | `-v`, `--verbose` | Show the full changed-file list and per-phase internals (cascade budget, decision-marker/evolution counts, best-effort skip warnings, detailed generation report). Off by default for a compact summary. |
+| `--progress` | `rich` (default) for the interactive progress bar, or `json` for newline-delimited JSON events on stdout (for driving update from another process) |
 
 **First-time indexing:** as of v0.8, `update --workspace` now runs full first-time indexing for workspace entries that have no `.repowise/` dir yet (previously skipped with `"not_indexed"`). The pipeline runs index-only — no LLM cost — and writes a state.json marker so `repowise update --repo <alias> --docs` later picks up doc generation cleanly.
 
