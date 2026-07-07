@@ -12,7 +12,7 @@
  *                    inferred dotted) — see `matchTypeDash`.
  */
 
-import { ArrowRight, Boxes, Database, Link2, Radio, Zap, type LucideIcon } from "lucide-react";
+import { ArrowRight, Boxes, Database, Link2, Radio, Signal, Zap, type LucideIcon } from "lucide-react";
 import type { SystemEdgeKind, SystemEdgeMatchType } from "@repowise-dev/types";
 
 /** Whether an edge reflects a structural contract/dependency or behavioral co-change. */
@@ -36,6 +36,7 @@ export interface SystemEdgeKindStyle {
 export const SYSTEM_EDGE_KINDS: Record<SystemEdgeKind, SystemEdgeKindStyle> = {
   http: { kind: "http", label: "HTTP", color: "var(--color-accent-secondary)", icon: ArrowRight, category: "structural" },
   grpc: { kind: "grpc", label: "gRPC", color: "var(--color-accent-fill)", icon: Zap, category: "structural" },
+  socket: { kind: "socket", label: "Socket", color: "var(--color-info)", icon: Signal, category: "structural" },
   event: { kind: "event", label: "Event", color: "var(--color-warning)", icon: Radio, category: "structural" },
   package: { kind: "package", label: "Package", color: "var(--color-accent-primary)", icon: Boxes, category: "structural" },
   db: { kind: "db", label: "Database", color: "var(--color-text-tertiary)", icon: Database, category: "structural" },
@@ -56,7 +57,7 @@ export function edgeKindStyle(kind: string): SystemEdgeKindStyle {
 }
 
 /** Every edge kind, in legend/display order (structural first, behavioral last). */
-export const EDGE_KIND_ORDER: SystemEdgeKind[] = ["http", "grpc", "event", "package", "db", "co_change"];
+export const EDGE_KIND_ORDER: SystemEdgeKind[] = ["http", "grpc", "socket", "event", "package", "db", "co_change"];
 
 /**
  * Stroke dash by match confidence: exact / manual links are solid (we trust

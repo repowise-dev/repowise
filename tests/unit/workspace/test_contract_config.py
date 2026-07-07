@@ -15,6 +15,7 @@ class TestContractConfig:
         cfg = ContractConfig()
         assert cfg.detect_http is True
         assert cfg.detect_grpc is True
+        assert cfg.detect_socket is True
         assert cfg.detect_topics is True
         assert cfg.manual_links == []
 
@@ -22,12 +23,14 @@ class TestContractConfig:
         cfg = ContractConfig.from_dict({"detect_http": False})
         assert cfg.detect_http is False
         assert cfg.detect_grpc is True
+        assert cfg.detect_socket is True
         assert cfg.detect_topics is True
 
     def test_round_trip(self) -> None:
         cfg = ContractConfig(
             detect_http=True,
             detect_grpc=False,
+            detect_socket=True,
             detect_topics=True,
             manual_links=[
                 ManualContractLink(
@@ -99,11 +102,13 @@ class TestWorkspaceConfigWithContracts:
             "contracts": {
                 "detect_http": True,
                 "detect_grpc": False,
+                "detect_socket": False,
                 "detect_topics": True,
             },
         }
         cfg = WorkspaceConfig.from_dict(data)
         assert cfg.contracts.detect_grpc is False
+        assert cfg.contracts.detect_socket is False
 
     def test_round_trip_with_manual_links(self, tmp_path) -> None:
         cfg = WorkspaceConfig(
@@ -113,6 +118,7 @@ class TestWorkspaceConfigWithContracts:
             contracts=ContractConfig(
                 detect_http=True,
                 detect_grpc=True,
+                detect_socket=False,
                 detect_topics=False,
                 manual_links=[
                     ManualContractLink(
@@ -126,6 +132,7 @@ class TestWorkspaceConfigWithContracts:
         )
         cfg.save(tmp_path)
         loaded = WorkspaceConfig.load(tmp_path)
+        assert loaded.contracts.detect_socket is False
         assert loaded.contracts.detect_topics is False
         assert len(loaded.contracts.manual_links) == 1
         assert loaded.contracts.manual_links[0].contract_id == "http::GET::/jobs"

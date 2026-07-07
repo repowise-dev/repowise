@@ -72,7 +72,7 @@ class ManualContractLink:
 
     from_repo: str
     to_repo: str
-    contract_type: str  # "http" | "grpc" | "topic" | "data"
+    contract_type: str  # "http" | "grpc" | "socket" | "topic" | "data"
     contract_id: str  # normalized contract ID
     from_role: str = "consumer"  # the from_repo's role
 
@@ -102,6 +102,7 @@ class ContractConfig:
 
     detect_http: bool = True
     detect_grpc: bool = True
+    detect_socket: bool = True
     detect_topics: bool = True
     detect_data: bool = True
     manual_links: list[ManualContractLink] = field(default_factory=list)
@@ -118,6 +119,7 @@ class ContractConfig:
         d: dict[str, Any] = {
             "detect_http": self.detect_http,
             "detect_grpc": self.detect_grpc,
+            "detect_socket": self.detect_socket,
             "detect_topics": self.detect_topics,
             "detect_data": self.detect_data,
         }
@@ -135,6 +137,7 @@ class ContractConfig:
         return cls(
             detect_http=bool(data.get("detect_http", True)),
             detect_grpc=bool(data.get("detect_grpc", True)),
+            detect_socket=bool(data.get("detect_socket", True)),
             detect_topics=bool(data.get("detect_topics", True)),
             detect_data=bool(data.get("detect_data", True)),
             manual_links=manual,
@@ -234,6 +237,7 @@ class WorkspaceConfig:
                 [
                     self.contracts.detect_http,
                     self.contracts.detect_grpc,
+                    self.contracts.detect_socket,
                     self.contracts.detect_topics,
                     self.contracts.detect_data,
                 ]

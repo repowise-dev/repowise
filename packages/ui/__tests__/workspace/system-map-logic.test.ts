@@ -162,7 +162,7 @@ describe("applyView", () => {
 
 describe("edge-kind registry", () => {
   it("covers every kind in the union and display order", () => {
-    expect(EDGE_KIND_ORDER).toHaveLength(6);
+    expect(EDGE_KIND_ORDER).toHaveLength(7);
     for (const kind of EDGE_KIND_ORDER) {
       const s = edgeKindStyle(kind);
       expect(s.label).toBeTruthy();

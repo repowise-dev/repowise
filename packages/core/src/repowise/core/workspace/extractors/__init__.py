@@ -1,5 +1,5 @@
-"""Contract extractors: HTTP routes, gRPC services, message topics, database
-tables, service boundaries."""
+"""Contract extractors: HTTP routes, gRPC services, sockets, message topics,
+database tables, service boundaries."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from .service_boundary import (
     assign_service,
     detect_service_boundaries,
 )
+from .socket_extractor import SocketExtractor
 from .topic_extractor import TopicExtractor
 
 __all__ = [
@@ -18,6 +19,7 @@ __all__ = [
     "GrpcExtractor",
     "HttpExtractor",
     "ServiceBoundary",
+    "SocketExtractor",
     "TopicExtractor",
     "assign_service",
     "detect_service_boundaries",

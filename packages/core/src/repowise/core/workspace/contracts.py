@@ -1,4 +1,4 @@
-"""Contract extraction: HTTP routes, gRPC services, message topics, database tables.
+"""Contract extraction: HTTP routes, gRPC services, sockets, message topics, database tables.
 
 Write path: runs during ``repowise update --workspace``.
 Results read by ``CrossRepoEnricher`` in the MCP server (read path).
@@ -46,7 +46,7 @@ class Contract:
 
     repo: str  # repo alias
     contract_id: str  # e.g. "http::GET::/api/users/{param}", "data::orders"
-    contract_type: str  # "http" | "grpc" | "topic" | "data"
+    contract_type: str  # "http" | "grpc" | "socket" | "topic" | "data"
     role: str  # "provider" | "consumer"
     file_path: str  # relative to repo root
     symbol_name: str  # handler name, service.method, etc.
@@ -91,7 +91,7 @@ class ContractLink:
     """A matched provider↔consumer pair across repos."""
 
     contract_id: str
-    contract_type: str  # "http" | "grpc" | "topic" | "data"
+    contract_type: str  # "http" | "grpc" | "socket" | "topic" | "data"
     match_type: str  # "exact" | "candidate" | "manual"
     confidence: float
     provider_repo: str
@@ -166,6 +166,7 @@ def normalize_contract_id(contract_id: str) -> str:
 
     - ``http::GET::/Api/Users/`` → ``http::GET::/api/users``
     - ``grpc::PKG.Service/Method`` → ``grpc::pkg.service/Method``
+    - ``socket::/Game/State/`` → ``socket::/game/state``
     - ``topic::Orders`` → ``topic::orders``
     - ``data::Orders`` → ``data::orders`` (via the lowercase fallback; table
       quoting/schema rules are applied at extraction time in
@@ -193,6 +194,12 @@ def normalize_contract_id(contract_id: str) -> str:
             method = value[slash_idx:]  # includes the /
             return f"grpc::{prefix}{method}"
         return f"grpc::{value.lower()}"
+
+    if ctype == "socket" and len(parts) == 2:
+        path = parts[1].lower().rstrip("/")
+        if not path:
+            path = "/"
+        return f"socket::{path}"
 
     if ctype == "topic" and len(parts) == 2:
         return f"topic::{parts[1].lower()}"
@@ -683,6 +690,7 @@ async def run_contract_extraction(
         DataExtractor,
         GrpcExtractor,
         HttpExtractor,
+        SocketExtractor,
         TopicExtractor,
         assign_service,
         detect_service_boundaries,
@@ -717,6 +725,8 @@ async def run_contract_extraction(
             extractors.append(HttpExtractor())
         if contract_config.detect_grpc:
             extractors.append(GrpcExtractor())
+        if contract_config.detect_socket:
+            extractors.append(SocketExtractor())
         if contract_config.detect_topics:
             extractors.append(TopicExtractor())
         if contract_config.detect_data:

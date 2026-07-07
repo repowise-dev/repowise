@@ -5,6 +5,7 @@ import { cn } from "../lib/cn";
 const TYPE_STYLES: Record<string, { bg: string; text: string; label: string }> = {
   http: { bg: "bg-blue-500/10", text: "text-blue-400", label: "HTTP" },
   grpc: { bg: "bg-purple-500/10", text: "text-purple-400", label: "gRPC" },
+  socket: { bg: "bg-cyan-500/10", text: "text-cyan-400", label: "Socket" },
   topic: { bg: "bg-orange-500/10", text: "text-orange-400", label: "Topic" },
   data: { bg: "bg-teal-500/10", text: "text-teal-400", label: "Table" },
 };

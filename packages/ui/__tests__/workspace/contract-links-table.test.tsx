@@ -44,6 +44,11 @@ describe("ContractLinksTable (virtualized)", () => {
     expect(screen.getByText("75%")).toBeInTheDocument();
   });
 
+  it("renders the socket contract type badge", () => {
+    render(<ContractLinksTable links={[link({ contract_type: "socket" })]} />);
+    expect(screen.getByText("Socket")).toBeInTheDocument();
+  });
+
   it("shows the provider and consumer file paths", () => {
     render(<ContractLinksTable links={[link()]} />);
     expect(screen.getByText("src/routes/users.ts")).toBeInTheDocument();

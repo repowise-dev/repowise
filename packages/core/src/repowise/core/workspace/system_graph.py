@@ -64,13 +64,14 @@ SYSTEM_GRAPH_FILENAME = "system_graph.json"
 _CONTRACT_TYPE_TO_EDGE_KIND: dict[str, str] = {
     "http": "http",
     "grpc": "grpc",
+    "socket": "socket",
     "topic": "event",
     "data": "db",
 }
 
 #: All edge kinds the graph can carry. ``db`` carries the shared-table
 #: (``data``) contracts; the taxonomy is fixed so views render consistently.
-EDGE_KINDS: tuple[str, ...] = ("http", "grpc", "event", "package", "co_change", "db")
+EDGE_KINDS: tuple[str, ...] = ("http", "grpc", "socket", "event", "package", "co_change", "db")
 
 #: ``match_type`` precedence when several links collapse onto one edge — the most
 #: authoritative wins for display. Higher is stronger.
@@ -89,7 +90,7 @@ MAX_EDGE_REFS = 50
 #: Structural edges assert a real dependency; behavioral (co-change) edges only
 #: assert correlated change. Kept distinct so reachability and the map never
 #: conflate "call each other" with "change together".
-_STRUCTURAL_KINDS: frozenset[str] = frozenset({"http", "grpc", "event", "package", "db"})
+_STRUCTURAL_KINDS: frozenset[str] = frozenset({"http", "grpc", "socket", "event", "package", "db"})
 
 
 def edge_kind_for_contract_type(contract_type: str) -> str:

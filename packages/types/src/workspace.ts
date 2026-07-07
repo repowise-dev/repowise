@@ -67,8 +67,15 @@ export interface WorkspacePackageDepEntry {
 // uniform: `source` depends on / calls `target`.
 // ---------------------------------------------------------------------------
 
-/** Transport of a system-graph edge. `db` is reserved for a future transport. */
-export type SystemEdgeKind = "http" | "grpc" | "event" | "package" | "co_change" | "db";
+/** Transport of a system-graph edge. */
+export type SystemEdgeKind =
+  | "http"
+  | "grpc"
+  | "socket"
+  | "event"
+  | "package"
+  | "co_change"
+  | "db";
 
 /** How confidently an edge was matched. Behavioral co-change edges are `inferred`. */
 export type SystemEdgeMatchType = "exact" | "candidate" | "manual" | "inferred";

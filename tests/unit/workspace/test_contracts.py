@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
-
-import pytest
 
 from repowise.core.workspace.contracts import (
     CONTRACTS_FILENAME,
@@ -18,21 +15,18 @@ from repowise.core.workspace.contracts import (
     normalize_contract_id,
     save_contract_store,
 )
+from repowise.core.workspace.extractors.grpc_extractor import GrpcExtractor
 from repowise.core.workspace.extractors.http_extractor import (
     HttpExtractor,
     normalize_http_path,
 )
-from repowise.core.workspace.extractors.grpc_extractor import (
-    GrpcExtractor,
-    _extract_service_blocks,
-)
-from repowise.core.workspace.extractors.topic_extractor import TopicExtractor
 from repowise.core.workspace.extractors.service_boundary import (
     ServiceBoundary,
     assign_service,
     detect_service_boundaries,
 )
-
+from repowise.core.workspace.extractors.socket_extractor import SocketExtractor
+from repowise.core.workspace.extractors.topic_extractor import TopicExtractor
 
 # ---------------------------------------------------------------------------
 # normalize_http_path
@@ -841,8 +835,122 @@ class TestNormalizeContractId:
         result = normalize_contract_id("grpc::PKG.Service/GetUser")
         assert result == "grpc::pkg.service/GetUser"
 
+    def test_socket_normalizes(self) -> None:
+        assert normalize_contract_id("socket::/Game/State/") == "socket::/game/state"
+
     def test_topic_lowercases(self) -> None:
         assert normalize_contract_id("topic::Orders") == "topic::orders"
+
+class TestSocketExtractor:
+    def _write_file(self, repo: Path, rel: str, content: str) -> None:
+        fpath = repo / rel
+        fpath.parent.mkdir(parents=True, exist_ok=True)
+        fpath.write_text(content, encoding="utf-8")
+
+    def test_csharp_clientwebsocket_consumer(self, tmp_path: Path) -> None:
+        self._write_file(tmp_path, "Net.cs", """
+            using System.Net.WebSockets;
+            var socket = new ClientWebSocket();
+            await socket.ConnectAsync(new Uri("wss://backend.example.com/game/state"), token);
+        """)
+        consumers = [c for c in SocketExtractor().extract(tmp_path, "unity") if c.role == "consumer"]
+        assert len(consumers) == 1
+        assert consumers[0].contract_id == "socket::/game/state"
+        assert consumers[0].meta["transport"] == "clientwebsocket"
+
+    def test_signalr_consumer_strips_base_expr(self, tmp_path: Path) -> None:
+        self._write_file(tmp_path, "HubClient.cs", """
+            using Microsoft.AspNetCore.SignalR.Client;
+            var connection = new HubConnectionBuilder()
+                .WithUrl($"{baseUrl}/hubs/game")
+                .Build();
+        """)
+        consumers = [c for c in SocketExtractor().extract(tmp_path, "unity") if c.role == "consumer"]
+        assert len(consumers) == 1
+        assert consumers[0].contract_id == "socket::/hubs/game"
+        assert consumers[0].meta["transport"] == "signalr"
+
+    def test_native_websocket_consumer_requires_context(self, tmp_path: Path) -> None:
+        self._write_file(tmp_path, "SocketClient.cs", """
+            using NativeWebSocket;
+            var ws = new WebSocket($"{baseUrl}/ws/lobby");
+        """)
+        consumers = [c for c in SocketExtractor().extract(tmp_path, "unity") if c.role == "consumer"]
+        assert len(consumers) == 1
+        assert consumers[0].contract_id == "socket::/ws/lobby"
+        assert consumers[0].meta["transport"] == "nativewebsocket"
+
+    def test_websocketsharp_fully_qualified_constructor(self, tmp_path: Path) -> None:
+        self._write_file(tmp_path, "SocketClient.cs", """
+            using WebSocketSharp;
+            var ws = new WebSocketSharp.WebSocket("wss://backend.example.com/ws/lobby");
+        """)
+        consumers = [c for c in SocketExtractor().extract(tmp_path, "unity") if c.role == "consumer"]
+        assert len(consumers) == 1
+        assert consumers[0].contract_id == "socket::/ws/lobby"
+        assert consumers[0].meta["transport"] == "websocketsharp"
+
+    def test_signalr_provider(self, tmp_path: Path) -> None:
+        self._write_file(tmp_path, "Program.cs", """
+            app.MapHub<GameHub>("/hubs/game");
+        """)
+        providers = [c for c in SocketExtractor().extract(tmp_path, "backend") if c.role == "provider"]
+        assert len(providers) == 1
+        assert providers[0].contract_id == "socket::/hubs/game"
+        assert providers[0].meta["transport"] == "signalr"
+
+    def test_fastapi_websocket_provider(self, tmp_path: Path) -> None:
+        self._write_file(tmp_path, "main.py", """
+            @app.websocket("/ws/chat/{room_id}")
+            async def room_socket(): ...
+        """)
+        providers = [c for c in SocketExtractor().extract(tmp_path, "backend") if c.role == "provider"]
+        assert len(providers) == 1
+        assert providers[0].contract_id == "socket::/ws/chat/{param}"
+
+    def test_fastapi_unknown_websocket_decorator_not_a_provider(self, tmp_path: Path) -> None:
+        self._write_file(tmp_path, "main.py", """
+            @metrics.websocket("/ws/chat/{room_id}")
+            async def room_socket(): ...
+        """)
+        providers = [c for c in SocketExtractor().extract(tmp_path, "backend") if c.role == "provider"]
+        assert providers == []
+
+    def test_signalr_provider_file_does_not_emit_consumer_from_unrelated_withurl(self, tmp_path: Path) -> None:
+        self._write_file(tmp_path, "Program.cs", """
+            app.MapHub<GameHub>("/hubs/game");
+            client.WithUrl("/not-a-socket-provider");
+        """)
+        consumers = [c for c in SocketExtractor().extract(tmp_path, "backend") if c.role == "consumer"]
+        providers = [c for c in SocketExtractor().extract(tmp_path, "backend") if c.role == "provider"]
+        assert consumers == []
+        assert len(providers) == 1
+        assert providers[0].contract_id == "socket::/hubs/game"
+
+    def test_same_path_matches_exactly(self) -> None:
+        contracts = [
+            Contract(
+                repo="backend",
+                contract_id="socket::/hubs/game",
+                contract_type="socket",
+                role="provider",
+                file_path="Program.cs",
+                symbol_name="MapHub",
+                confidence=0.85,
+            ),
+            Contract(
+                repo="unity",
+                contract_id="socket::/hubs/game",
+                contract_type="socket",
+                role="consumer",
+                file_path="HubClient.cs",
+                symbol_name="WithUrl",
+                confidence=0.8,
+            ),
+        ]
+        links = match_contracts(contracts)
+        assert len(links) == 1
+        assert links[0].contract_type == "socket"
 
 
 # ---------------------------------------------------------------------------

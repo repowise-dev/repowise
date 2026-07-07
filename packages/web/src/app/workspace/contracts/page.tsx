@@ -20,6 +20,7 @@ const TYPE_OPTIONS = [
   { value: "", label: "All Types" },
   { value: "http", label: "HTTP" },
   { value: "grpc", label: "gRPC" },
+  { value: "socket", label: "Socket" },
   { value: "topic", label: "Topic" },
   { value: "data", label: "Table" },
 ];
@@ -117,7 +118,7 @@ export default function ContractsPage() {
           </h1>
         </div>
         <p className="text-sm text-[var(--color-text-secondary)]">
-          HTTP routes, gRPC services, and message topics detected across repositories.
+          HTTP routes, gRPC services, socket endpoints, and message topics detected across repositories.
         </p>
       </div>
 

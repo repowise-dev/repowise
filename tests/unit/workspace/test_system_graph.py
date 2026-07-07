@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from repowise.core.workspace.contracts import Contract, ContractLink, ContractStore
+from repowise.core.workspace.contracts import Contract, ContractLink
 from repowise.core.workspace.cross_repo import (
     CrossRepoCoChange,
     CrossRepoOverlay,
@@ -121,6 +121,7 @@ def test_monorepo_yields_multiple_service_nodes():
 def test_contract_type_to_edge_kind():
     assert edge_kind_for_contract_type("http") == "http"
     assert edge_kind_for_contract_type("grpc") == "grpc"
+    assert edge_kind_for_contract_type("socket") == "socket"
     assert edge_kind_for_contract_type("topic") == "event"
     assert edge_kind_for_contract_type("unknown") == "unknown"
 
@@ -150,6 +151,16 @@ def test_topic_contract_becomes_event_edge():
     links = [_link("topic::orders", "a", "a/pub.py", "b", "b/sub.py", ctype="topic")]
     graph = build_system_graph(contracts, links, CrossRepoOverlay(), {})
     assert graph.edges[0].kind == "event"
+
+
+def test_socket_contract_becomes_socket_edge():
+    contracts = [
+        _provider("api", "socket::/hubs/game", ctype="socket", file="api/hub.cs"),
+        _consumer("unity", "socket::/hubs/game", ctype="socket", file="unity/net.cs"),
+    ]
+    links = [_link("socket::/hubs/game", "api", "api/hub.cs", "unity", "unity/net.cs", ctype="socket")]
+    graph = build_system_graph(contracts, links, CrossRepoOverlay(), {})
+    assert graph.edges[0].kind == "socket"
 
 
 def test_parallel_links_aggregate_into_one_weighted_edge():
