@@ -36,6 +36,7 @@ from .function_blame import (
     build_blame_index,
     ownership_from_blame,
 )
+from .identity import canonicalize_author_email
 from .records import (
     _LOG_FORMAT,
     _RECORD_SEP,
@@ -300,8 +301,18 @@ def index_file(
             if c.ts >= thirty_days_ago_ts:
                 meta["commit_count_30d"] += 1
             author_counts[c.author_name] += 1
-            if c.author_name not in author_emails and c.author_email:
-                author_emails[c.author_name] = c.author_email
+            if c.author_email:
+                # Group by name, but pick a stable email per person: fold GitHub
+                # noreply variants together and prefer a real address over a
+                # noreply one, so a contributor who committed both ways doesn't
+                # split into two buckets downstream (owner_profile keys on email).
+                canon = canonicalize_author_email(c.author_email) or c.author_email
+                existing = author_emails.get(c.author_name)
+                if existing is None or (
+                    existing.endswith("@users.noreply.github.com")
+                    and not canon.endswith("@users.noreply.github.com")
+                ):
+                    author_emails[c.author_name] = canon
             if c.ts > 0:
                 prev_last = author_last_ts.get(c.author_name)
                 if prev_last is None or c.ts > prev_last:

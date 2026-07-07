@@ -191,6 +191,65 @@ async def test_last_commit_uses_authors_own_timestamp(client: AsyncClient, app) 
 
 
 @pytest.mark.asyncio
+async def test_noreply_and_real_email_collapse_to_one_contributor(
+    client: AsyncClient, app
+) -> None:
+    """One person who committed with a real email on one file and a GitHub
+    noreply email on another (same display name) is a single contributor —
+    not two."""
+    repo = await create_test_repo(client)
+    async with get_session(app.state.session_factory) as session:
+        # File A: Jane with her real email.
+        await crud.upsert_git_metadata(
+            session,
+            repository_id=repo["id"],
+            file_path="src/a.py",
+            commit_count_total=10,
+            primary_owner_name="Jane Doe",
+            primary_owner_email="jane@company.com",
+            top_authors_json=json.dumps(
+                [{"name": "Jane Doe", "email": "jane@company.com", "commit_count": 10}]
+            ),
+            contributor_count=1,
+        )
+        # File B: same Jane, but a squash-merge stamped a noreply email.
+        await crud.upsert_git_metadata(
+            session,
+            repository_id=repo["id"],
+            file_path="src/b.py",
+            commit_count_total=4,
+            primary_owner_name="Jane Doe",
+            primary_owner_email="12345+jane@users.noreply.github.com",
+            top_authors_json=json.dumps(
+                [
+                    {
+                        "name": "Jane Doe",
+                        "email": "12345+jane@users.noreply.github.com",
+                        "commit_count": 4,
+                    }
+                ]
+            ),
+            contributor_count=1,
+        )
+
+    async with get_session(app.state.session_factory) as session:
+        accs, _ = await aggregate_owners(session, repo["id"])
+
+    # Exactly one bucket, keyed on the real email, crediting both files.
+    people = [a for a in accs.values() if a.key]
+    assert len(people) == 1
+    jane = people[0]
+    assert jane.key == "jane@company.com"
+    assert jane.name == "Jane Doe"
+    assert set(jane.files_touched) == {"src/a.py", "src/b.py"}
+
+    # The directory endpoint agrees: one contributor.
+    resp = await client.get(f"/api/repos/{repo['id']}/owners")
+    assert resp.status_code == 200
+    assert resp.json()["total"] == 1
+
+
+@pytest.mark.asyncio
 async def test_get_owner_profile_not_found(client: AsyncClient) -> None:
     repo = await create_test_repo(client)
     resp = await client.get(f"/api/repos/{repo['id']}/owners/ghost@nowhere")

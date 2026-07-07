@@ -36,6 +36,7 @@ from .enrich import (
     meets_hotspot_floors,
 )
 from .file_history import index_file
+from .identity import build_identity_resolver, canonicalize_author_email
 from .indexer import GitIndexer
 from .prior_defects import compute_prior_defects
 from .records import (
@@ -67,6 +68,8 @@ __all__ = [
     "_parse_commit_record",
     "_should_skip_index",
     "backfill_full_tier",
+    "build_identity_resolver",
+    "canonicalize_author_email",
     "classifier_from_repo_config",
     "compute_co_changes",
     "compute_co_changes_and_entropy",
