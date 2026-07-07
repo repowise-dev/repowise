@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.28.0] — 2026-07-07
+
+### Added
+- **Lean 4 support.** A lightweight regex tier brings symbol extraction to Lean 4 codebases. (#600)
+
+### Changed
+- **Reliable incremental updates.** `repowise update` was reworked this cycle. Incremental runs now rebuild the knowledge graph, so an updated index stays as fresh as a full one instead of serving a stale graph (#702). The store is persisted and locked atomically with honest failure reporting, so an interrupted update rolls back cleanly rather than leaving a torn store behind (#706). The workspace and single-repo update paths were reconciled onto one code path (#703).
+
+### Fixed
+- **Cleaner code-health flagging.** Resolved false-flag presentation in Code Health across grouping, dominant-cause attribution, and floor magnitude. (#700)
+- **Contributors counted once.** GitHub noreply emails are folded together, so one person no longer shows up as two contributors. (#701)
+- **Fewer Go dead-code false positives.** Same-file type references are rescued from unused-export false positives in Go. (#629)
+
+### Documentation
+- **No-key quickstart.** Published a verified no-API-key quickstart in the README and on repowise.dev. (#627)
+
+---
+
 ## [0.27.0] — 2026-07-05
 
 ### Added
