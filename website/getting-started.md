@@ -28,7 +28,7 @@ The 60-second path to codebase intelligence.
 
 ```bash
 pip install repowise          # Windows: python -m pip install repowise
-repowise --version            # -> repowise, version 0.25.x
+repowise --version            # -> repowise, version 0.27.x
 ```
 
 **2. Index your repo — no LLM, no key**
