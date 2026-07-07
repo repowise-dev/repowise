@@ -510,3 +510,93 @@ def test_ts_array_spread_in_reduce_vs_push():
     push = "function f(xs){ return xs.reduce((acc, x) => { acc.push(x); return acc; }, []); }"
     assert ("array_spread_in_reduce", "") in _hits("typescript", spread)
     assert not any(k == "array_spread_in_reduce" for k, _ in _hits("typescript", push))
+
+
+# ---------------------------------------------------------------------------
+# Dart
+# ---------------------------------------------------------------------------
+
+
+def test_dart_fixture_counts():
+    fc = _walk("dart/perf_io_in_loop.dart", "dart")
+    counts = _kinds(fc.perf_hits)
+    assert counts["io_in_loop"] == 3
+    assert {h.detail for h in fc.perf_hits if h.kind == "io_in_loop"} == {
+        "db",
+        "filesystem",
+        "network",
+    }
+    assert counts["serial_await_in_loop"] == 3
+    assert counts["string_concat_in_loop"] == 1
+    assert counts["resource_construction_in_loop"] == 1
+
+
+_DART_CASES = [
+    (
+        "import 'package:http/http.dart' as http;\n"
+        "Future<void> f(List<Uri> urls) async {\n"
+        "  for (final u in urls) { final r = await http.get(u); }\n"
+        "}\n",
+        [("io_in_loop", "network"), ("serial_await_in_loop", "network")],
+        "an awaited http verb in a for-in loop is a serial network round-trip",
+    ),
+    (
+        "Future<void> f(List<dynamic> files) async {\n"
+        "  for (final x in files) { final t = await x.readAsString(); }\n"
+        "}\n",
+        [("io_in_loop", "filesystem"), ("serial_await_in_loop", "filesystem")],
+        "readAsString is a File round-trip regardless of receiver name",
+    ),
+    (
+        "String f(List<String> parts) {\n"
+        "  var s = '';\n"
+        "  for (final p in parts) { s += 'x'; }\n"
+        "  return s;\n"
+        "}\n",
+        [("string_concat_in_loop", "")],
+        "immutable-string += accumulation in a loop is O(n^2)",
+    ),
+    (
+        "void f(List<int> xs) {\n"
+        "  for (final x in xs) { final d = Dio(); }\n"
+        "}\n",
+        [("resource_construction_in_loop", "")],
+        "a Dio client constructed per-iteration",
+    ),
+    (
+        "import 'package:http/http.dart' as http;\n"
+        "void f() {\n"
+        "  for (var i = 0; i < 3; i++) { http.get(Uri.parse('u')); }\n"
+        "}\n",
+        [],
+        "a constant-bound loop is not data-dependent N+1",
+    ),
+    (
+        "void f(List<String> parts) {\n"
+        "  var s = '';\n"
+        "  for (final p in parts) { s = ''; s += p; }\n"
+        "}\n",
+        [],
+        "opaque-variable += is not provably string concat (precision-first)",
+    ),
+]
+
+
+@pytest.mark.parametrize("src,expected,note", _DART_CASES, ids=[c[2] for c in _DART_CASES])
+def test_dart_cases(src, expected, note):
+    assert _hits("dart", src) == sorted(expected), note
+
+
+def test_dart_string_concat_reset_per_iteration_not_flagged():
+    # ``name`` is declared fresh inside the loop body, so ``name += '/'``
+    # is not a cross-iteration accumulator (shelf directory_listing FP).
+    src = (
+        "void f(List<String> xs) {\n"
+        "  for (final x in xs) {\n"
+        "    var name = x;\n"
+        "    name += '/';\n"
+        "    use(name);\n"
+        "  }\n"
+        "}\n"
+    )
+    assert not any(k == "string_concat_in_loop" for k, _ in _hits("dart", src))

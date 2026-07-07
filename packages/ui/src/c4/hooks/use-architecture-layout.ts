@@ -22,7 +22,6 @@ import {
   type ContainerAtom,
   type PortalSpec,
 } from "../layout/two-stage-layout";
-import { THEME, edgeColor } from "../theme/theme-variables";
 
 export interface ArchitectureLayoutResult {
   nodes: Node[];

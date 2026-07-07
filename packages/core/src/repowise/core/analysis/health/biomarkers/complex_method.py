@@ -1,7 +1,7 @@
 """Complex Method — high cyclomatic complexity.
 
-Flags functions with CCN ≥ 9. Conservative threshold; CodeScene defaults
-to 9 as the boundary between "ok" and "complex".
+Flags functions with CCN ≥ 9. A conservative threshold for the boundary
+between "ok" and "complex".
 """
 
 from __future__ import annotations

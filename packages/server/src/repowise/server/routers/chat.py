@@ -355,7 +355,9 @@ async def chat_messages(repo_id: str, body: ChatRequest, request: Request):
         event_stream(),
         media_type="text/event-stream",
         headers={
-            "Cache-Control": "no-cache",
+            # no-transform keeps the Next.js rewrite proxy's compression
+            # middleware from gzip-buffering the stream (see jobs stream).
+            "Cache-Control": "no-cache, no-transform",
             "X-Accel-Buffering": "no",
             "Connection": "keep-alive",
         },

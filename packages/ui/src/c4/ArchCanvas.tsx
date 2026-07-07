@@ -18,6 +18,7 @@ import { ArchLegend } from "./panels";
 import { KEYFRAMES } from "./theme/theme-variables";
 import { EmptyState } from "../shared/empty-state";
 import { OwlLoader } from "../shared/owl-loader";
+import { toFriendlyMessage } from "../lib/errors";
 
 export interface ArchCanvasProps {
   nodes: Node[];
@@ -74,7 +75,7 @@ export function ArchCanvas({
             <EmptyState
               icon={<AlertTriangle className="h-5 w-5" aria-hidden />}
               title={errorTitle}
-              description={error.message}
+              description={toFriendlyMessage(error)}
               className="max-w-md p-8"
             />
           </div>

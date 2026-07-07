@@ -38,6 +38,10 @@ def test_unreachable_file_detected():
     paths = [f.file_path for f in unreachable]
     assert "pkg/orphan.py" in paths
 
+    finding = next(f for f in unreachable if f.file_path == "pkg/orphan.py")
+    assert finding.start_line is None
+    assert finding.end_line is None
+
 
 def test_entry_point_not_flagged():
     """A file marked as is_entry_point=True should NOT be flagged even with in_degree=0."""

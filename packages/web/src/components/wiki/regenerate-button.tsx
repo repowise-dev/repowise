@@ -9,6 +9,7 @@ import { formatTokens } from "@repowise-dev/ui/lib/format";
 import { getPageById, regeneratePage } from "@/lib/api/pages";
 import { GenerationProgressWrapper as GenerationProgress } from "@/components/jobs/generation-progress-wrapper";
 import { WIKI_STYLES } from "@repowise-dev/types";
+import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
 
 interface Props {
   pageId: string;
@@ -50,7 +51,7 @@ export function RegenerateButtonWrapper({ pageId }: Props) {
       toast.info("Regeneration queued");
     } catch (e) {
       toast.error("Failed to queue regeneration", {
-        description: e instanceof Error ? e.message : undefined,
+        description: toFriendlyMessage(e),
       });
     } finally {
       setLoading(false);

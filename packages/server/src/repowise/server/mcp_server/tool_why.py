@@ -17,9 +17,11 @@ from repowise.core.persistence.models import (
     GitMetadata,
 )
 from repowise.core.registry import mcp_tool_registry as mcp
+from repowise.server.mcp_server._code_rationale import mine_rationale as _mine_rationale
 from repowise.server.mcp_server._helpers import (
     _build_origin_story,
     _compute_alignment,
+    _decision_body,
     _get_exclude_spec,
     _get_repo,
     _is_path,
@@ -91,7 +93,7 @@ async def _why_workspace_search(query: str) -> dict:
                             "id": d.id,
                             "title": d.title,
                             "status": d.status,
-                            "decision": d.decision,
+                            "decision": _decision_body(d),
                             "rationale": d.rationale,
                             "source": d.source,
                             "confidence": d.confidence,
@@ -161,7 +163,7 @@ def _governing_decision_entry(d: Any, affected_files: list, lineage: list[dict])
         "title": d.title,
         "status": d.status,
         "context": d.context,
-        "decision": d.decision,
+        "decision": _decision_body(d),
         "rationale": d.rationale,
         "alternatives": json.loads(d.alternatives_json),
         "consequences": json.loads(d.consequences_json),
@@ -233,6 +235,11 @@ async def _why_path(query: str, repo: str | None) -> dict:
                 all_git_meta,
                 repository,
             )
+            # Decisions and git history both silent → the "why" may live in a
+            # code comment. Mine this file's rationale comments directly.
+            rationale = _mine_rationale(ctx.path, [query], None)
+            if rationale:
+                result_data["code_rationale"] = rationale
 
         result_data["_meta"] = _build_meta(repository=repository)
         return result_data
@@ -347,7 +354,7 @@ def _merge_decisions(
                 "id": d.id,
                 "title": d.title,
                 "status": d.status,
-                "decision": d.decision,
+                "decision": _decision_body(d),
                 "rationale": d.rationale,
                 "context": d.context,
                 "consequences": json.loads(d.consequences_json),
@@ -463,6 +470,12 @@ async def _why_search(query: str, targets: list[str] | None, repo: str | None) -
         result_data["target_context"] = await _build_target_context(
             ctx, repository, all_decisions, target_git, targets
         )
+        # When the decision corpus is thin, the rationale for the anchored
+        # files may be in their comments — mine them against the question.
+        if not merged_decisions:
+            rationale = _mine_rationale(ctx.path, targets, query)
+            if rationale:
+                result_data["code_rationale"] = rationale
 
     result_data["_meta"] = _build_meta(repository=repository)
     return result_data

@@ -15,6 +15,7 @@ import { listSecurityFindings, type SecurityFinding } from "@/lib/api/security";
 import { syncRepo } from "@/lib/api/repos";
 import { useFileCardHost } from "@/components/shared/file-card-host";
 import type { FileCardData } from "@repowise-dev/ui/shared/file-card";
+import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
 
 export function SecurityTab({ repoId }: { repoId: string }) {
   const { data: findings, isLoading, error } = useSWR<SecurityFinding[]>(
@@ -31,7 +32,7 @@ export function SecurityTab({ repoId }: { repoId: string }) {
       await syncRepo(repoId);
       toast.success("Sync started — findings refresh when it completes");
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Couldn't start a sync");
+      toast.error(toFriendlyMessage(err, "Couldn't start a sync"));
     } finally {
       setRescanning(false);
     }

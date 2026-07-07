@@ -24,6 +24,7 @@ async def _create_repo(client: AsyncClient) -> dict:
     resp = await client.post(
         "/api/repos",
         json={
+            "index": False,
             "name": "test-repo",
             "local_path": str(repo_dir),
             "url": "https://github.com/example/test-repo",

@@ -34,6 +34,7 @@ LanguageTag = Literal[
     "kotlin",
     "scala",
     "luau",
+    "dart",
     # Passthrough code languages (no AST parser yet — empty ParsedFile,
     # files enter the graph via the generic resolver). Before these tags
     # existed the traverser silently skipped such files as unknown, so e.g.
@@ -41,7 +42,6 @@ LanguageTag = Literal[
     "elixir",
     "erlang",
     "clojure",
-    "dart",
     "haskell",
     "lean",
     "ocaml",

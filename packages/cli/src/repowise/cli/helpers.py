@@ -632,20 +632,12 @@ def save_distill_commands_enabled(repo_path: Path, *, enabled: bool) -> None:
 def config_fingerprint(repo_path: Path) -> str:
     """SHA-256 hex of ``.repowise/config.yaml`` + ``health-rules.json`` content.
 
-    Used by ``repowise update`` and ``repowise init`` to detect config changes
-    across runs without relying on filesystem timestamps. Missing files are
-    skipped, so an absent config still yields a stable hash.
+    Delegates to the shared core implementation so CLI runs and server jobs
+    compute identical fingerprints for the same on-disk config.
     """
-    import hashlib
+    from repowise.core.repo_config import config_fingerprint as _core_fingerprint
 
-    rw_dir = get_repowise_dir(repo_path)
-    h = hashlib.sha256()
-    for name in ("config.yaml", "health-rules.json"):
-        p = rw_dir / name
-        if p.exists():
-            h.update(name.encode())
-            h.update(p.read_bytes())
-    return h.hexdigest()
+    return _core_fingerprint(repo_path)
 
 
 # ---------------------------------------------------------------------------

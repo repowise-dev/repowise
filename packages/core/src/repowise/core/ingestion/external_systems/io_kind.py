@@ -64,6 +64,9 @@ _DB_NAMES: frozenset[str] = frozenset({
     # is already listed under the Go section above.
     "diesel", "sea-orm", "sea_orm", "tokio-postgres", "tokio_postgres",
     "rusqlite", "deadpool-postgres", "deadpool_postgres", "scylla", "bb8",
+    # Dart / Flutter (pub package names; ``package:sqflite/...`` resolves via
+    # the interior segment).
+    "sqflite", "postgres", "mysql1", "mongo_dart", "drift",
 })
 
 _NETWORK_NAMES: frozenset[str] = frozenset({
@@ -82,6 +85,9 @@ _NETWORK_NAMES: frozenset[str] = frozenset({
     "system.net.http", "grpc.net.client", "restsharp", "flurl",
     # Rust (HTTP / gRPC client crates as imported).
     "reqwest", "hyper", "isahc", "surf", "ureq", "awc", "tonic",
+    # Dart / Flutter (``package:http`` doubles as Node's stdlib ``http`` —
+    # both are network boundaries).
+    "http", "dio", "chopper",
 })
 
 _FILESYSTEM_NAMES: frozenset[str] = frozenset({
@@ -95,6 +101,9 @@ _FILESYSTEM_NAMES: frozenset[str] = frozenset({
     "io/ioutil",
     # .NET
     "system.io",
+    # Dart (``dart:io`` hosts File/Directory; Process is method-gated in the
+    # perf dialect rather than classified wholesale as subprocess).
+    "dart:io",
 })
 
 _SUBPROCESS_NAMES: frozenset[str] = frozenset({

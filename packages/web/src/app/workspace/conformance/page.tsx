@@ -6,7 +6,7 @@ import { ShieldCheck, ShieldAlert, RefreshCw, Waypoints, ListChecks, Gauge } fro
 import { buildDsm, DsmMatrixView } from "@repowise-dev/ui/workspace/dsm";
 import { AiPromptButton, AiPromptModal, buildConformanceAiPrompt } from "@repowise-dev/ui/health";
 import { Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui/card";
-import { StatCard } from "@repowise-dev/ui/shared/stat-card";
+import { MetricCard } from "@repowise-dev/ui/shared/metric-card";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 import {
   useWorkspaceSystemGraph,
@@ -47,7 +47,7 @@ export default function ConformancePage() {
       </div>
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <StatCard
+        <MetricCard
           label="Architecture score"
           value={metrics ? `${metrics.score.toFixed(1)} / 10` : "—"}
           description={
@@ -57,18 +57,18 @@ export default function ConformancePage() {
           }
           icon={<Gauge className="h-4 w-4 text-[var(--color-accent-primary)]" />}
         />
-        <StatCard
+        <MetricCard
           label="Rules evaluated"
           value={isLoading ? "—" : (report?.rules_evaluated ?? 0)}
           icon={<ListChecks className="h-4 w-4 text-[var(--color-accent-secondary)]" />}
         />
-        <StatCard
+        <MetricCard
           label="Violations"
           value={isLoading ? "—" : violations.length}
           description="Dependencies that break a declared rule"
           icon={<ShieldAlert className="h-4 w-4 text-[var(--color-risk-high)]" />}
         />
-        <StatCard
+        <MetricCard
           label="Dependency cycles"
           value={isLoading ? "—" : cycles.length}
           description="Circular service dependencies"

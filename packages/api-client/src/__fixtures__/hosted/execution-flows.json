@@ -1,0 +1,406 @@
+{
+  "total_entry_points": 39,
+  "flows": [
+    {
+      "entry_point": "src/flask/app.py::Flask::do_teardown_request",
+      "entry_point_name": "do_teardown_request",
+      "entry_point_score": 0.8383,
+      "trace": [
+        "src/flask/app.py::Flask::do_teardown_request",
+        "src/flask/app.py::Flask::ensure_sync",
+        "src/flask/app.py::Flask::async_to_sync"
+      ],
+      "depth": 2,
+      "crosses_community": false,
+      "communities_visited": [
+        0
+      ]
+    },
+    {
+      "entry_point": "src/flask/app.py::Flask::do_teardown_appcontext",
+      "entry_point_name": "do_teardown_appcontext",
+      "entry_point_score": 0.8383,
+      "trace": [
+        "src/flask/app.py::Flask::do_teardown_appcontext",
+        "src/flask/app.py::Flask::ensure_sync",
+        "src/flask/app.py::Flask::async_to_sync"
+      ],
+      "depth": 2,
+      "crosses_community": false,
+      "communities_visited": [
+        0
+      ]
+    },
+    {
+      "entry_point": "src/flask/app.py::Flask::__init_subclass__",
+      "entry_point_name": "__init_subclass__",
+      "entry_point_score": 0.7483,
+      "trace": [
+        "src/flask/app.py::Flask::__init_subclass__",
+        "src/flask/app.py::add_ctx",
+        "src/flask/globals.py::ProxyMixin::_get_current_object"
+      ],
+      "depth": 2,
+      "crosses_community": false,
+      "communities_visited": [
+        12
+      ]
+    },
+    {
+      "entry_point": "src/flask/templating.py::DispatchingJinjaLoader::get_source",
+      "entry_point_name": "get_source",
+      "entry_point_score": 0.7433,
+      "trace": [
+        "src/flask/templating.py::DispatchingJinjaLoader::get_source",
+        "src/flask/templating.py::DispatchingJinjaLoader::_get_source_explained",
+        "src/flask/debughelpers.py::explain_template_loading_attempts",
+        "src/flask/debughelpers.py::_dump_loader_info"
+      ],
+      "depth": 3,
+      "crosses_community": false,
+      "communities_visited": [
+        17
+      ]
+    },
+    {
+      "entry_point": "src/flask/blueprints.py::Blueprint::send_static_file",
+      "entry_point_name": "send_static_file",
+      "entry_point_score": 0.7433,
+      "trace": [
+        "src/flask/blueprints.py::Blueprint::send_static_file",
+        "src/flask/helpers.py::send_from_directory",
+        "src/flask/helpers.py::_prepare_send_file_kwargs",
+        "src/flask/globals.py::ProxyMixin::_get_current_object"
+      ],
+      "depth": 3,
+      "crosses_community": true,
+      "communities_visited": [
+        7,
+        12
+      ]
+    },
+    {
+      "entry_point": "src/flask/testing.py::FlaskClient::open",
+      "entry_point_name": "open",
+      "entry_point_score": 0.7275,
+      "trace": [
+        "src/flask/testing.py::FlaskClient::open",
+        "src/flask/testing.py::FlaskClient::_request_from_builder_args",
+        "src/flask/testing.py::FlaskClient::_copy_environ"
+      ],
+      "depth": 2,
+      "crosses_community": false,
+      "communities_visited": [
+        9
+      ]
+    },
+    {
+      "entry_point": "src/flask/testing.py::FlaskClient::__init__",
+      "entry_point_name": "__init__",
+      "entry_point_score": 0.6983,
+      "trace": [
+        "src/flask/testing.py::FlaskClient::__init__",
+        "src/flask/testing.py::FlaskCliRunner::__init__",
+        "src/flask/app.py::Flask::__init__",
+        "src/flask/app.py::Flask::send_static_file",
+        "src/flask/helpers.py::send_from_directory",
+        "src/flask/helpers.py::_prepare_send_file_kwargs",
+        "src/flask/globals.py::ProxyMixin::_get_current_object"
+      ],
+      "depth": 6,
+      "crosses_community": true,
+      "communities_visited": [
+        9,
+        0,
+        12
+      ]
+    },
+    {
+      "entry_point": "src/flask/sessions.py::SecureCookieSessionInterface::save_session",
+      "entry_point_name": "save_session",
+      "entry_point_score": 0.6983,
+      "trace": [
+        "src/flask/sessions.py::SecureCookieSessionInterface::save_session",
+        "src/flask/json/tag.py::TaggedJSONSerializer::dumps",
+        "src/flask/json/__init__.py::dumps"
+      ],
+      "depth": 2,
+      "crosses_community": true,
+      "communities_visited": [
+        11,
+        5
+      ]
+    },
+    {
+      "entry_point": "src/flask/json/tag.py::TaggedJSONSerializer::loads",
+      "entry_point_name": "loads",
+      "entry_point_score": 0.6983,
+      "trace": [
+        "src/flask/json/tag.py::TaggedJSONSerializer::loads",
+        "src/flask/json/tag.py::TaggedJSONSerializer::_untag_scan",
+        "src/flask/json/tag.py::TaggedJSONSerializer::untag"
+      ],
+      "depth": 2,
+      "crosses_community": false,
+      "communities_visited": [
+        5
+      ]
+    },
+    {
+      "entry_point": "src/flask/templating.py::stream_template_string",
+      "entry_point_name": "stream_template_string",
+      "entry_point_score": 0.6983,
+      "trace": [
+        "src/flask/templating.py::stream_template_string",
+        "src/flask/templating.py::_stream",
+        "src/flask/helpers.py::stream_with_context"
+      ],
+      "depth": 2,
+      "crosses_community": false,
+      "communities_visited": [
+        12
+      ]
+    },
+    {
+      "entry_point": "src/flask/sansio/blueprints.py::Blueprint::register",
+      "entry_point_name": "register",
+      "entry_point_score": 0.6983,
+      "trace": [
+        "src/flask/sansio/blueprints.py::Blueprint::register",
+        "src/flask/sansio/blueprints.py::Blueprint::make_setup_state",
+        "src/flask/sansio/blueprints.py::BlueprintSetupState"
+      ],
+      "depth": 2,
+      "crosses_community": false,
+      "communities_visited": [
+        8
+      ]
+    },
+    {
+      "entry_point": "src/flask/app.py::Flask::handle_exception",
+      "entry_point_name": "handle_exception",
+      "entry_point_score": 0.69,
+      "trace": [
+        "src/flask/app.py::Flask::handle_exception",
+        "src/flask/app.py::Flask::finalize_request",
+        "src/flask/app.py::Flask::process_response",
+        "src/flask/app.py::Flask::ensure_sync",
+        "src/flask/app.py::Flask::async_to_sync"
+      ],
+      "depth": 4,
+      "crosses_community": false,
+      "communities_visited": [
+        0
+      ]
+    },
+    {
+      "entry_point": "src/flask/app.py::Flask::dispatch_request",
+      "entry_point_name": "dispatch_request",
+      "entry_point_score": 0.69,
+      "trace": [
+        "src/flask/app.py::Flask::dispatch_request",
+        "src/flask/app.py::Flask::raise_routing_exception",
+        "src/flask/debughelpers.py::FormDataRoutingRedirect"
+      ],
+      "depth": 2,
+      "crosses_community": true,
+      "communities_visited": [
+        0,
+        7
+      ]
+    },
+    {
+      "entry_point": "src/flask/app.py::Flask::handle_user_exception",
+      "entry_point_name": "handle_user_exception",
+      "entry_point_score": 0.655,
+      "trace": [
+        "src/flask/app.py::Flask::handle_user_exception",
+        "src/flask/app.py::Flask::handle_http_exception",
+        "src/flask/app.py::Flask::ensure_sync",
+        "src/flask/app.py::Flask::async_to_sync"
+      ],
+      "depth": 3,
+      "crosses_community": false,
+      "communities_visited": [
+        0
+      ]
+    },
+    {
+      "entry_point": "src/flask/app.py::Flask::full_dispatch_request",
+      "entry_point_name": "full_dispatch_request",
+      "entry_point_score": 0.6233,
+      "trace": [
+        "src/flask/app.py::Flask::full_dispatch_request",
+        "src/flask/app.py::Flask::dispatch_request",
+        "src/flask/app.py::Flask::raise_routing_exception",
+        "src/flask/debughelpers.py::FormDataRoutingRedirect"
+      ],
+      "depth": 3,
+      "crosses_community": true,
+      "communities_visited": [
+        0,
+        7
+      ]
+    },
+    {
+      "entry_point": "src/flask/app.py::Flask::send_static_file",
+      "entry_point_name": "send_static_file",
+      "entry_point_score": 0.61,
+      "trace": [
+        "src/flask/app.py::Flask::send_static_file",
+        "src/flask/helpers.py::send_from_directory",
+        "src/flask/helpers.py::_prepare_send_file_kwargs",
+        "src/flask/globals.py::ProxyMixin::_get_current_object"
+      ],
+      "depth": 3,
+      "crosses_community": true,
+      "communities_visited": [
+        0,
+        12
+      ]
+    },
+    {
+      "entry_point": "src/flask/app.py::Flask::wsgi_app",
+      "entry_point_name": "wsgi_app",
+      "entry_point_score": 0.6,
+      "trace": [
+        "src/flask/app.py::Flask::wsgi_app",
+        "src/flask/app.py::Flask::full_dispatch_request",
+        "src/flask/app.py::Flask::dispatch_request",
+        "src/flask/app.py::Flask::raise_routing_exception",
+        "src/flask/debughelpers.py::FormDataRoutingRedirect"
+      ],
+      "depth": 4,
+      "crosses_community": true,
+      "communities_visited": [
+        0,
+        7
+      ]
+    },
+    {
+      "entry_point": "src/flask/cli.py::ScriptInfo::load_app",
+      "entry_point_name": "load_app",
+      "entry_point_score": 0.5733,
+      "trace": [
+        "src/flask/cli.py::ScriptInfo::load_app",
+        "src/flask/cli.py::locate_app",
+        "src/flask/cli.py::find_best_app",
+        "src/flask/cli.py::NoAppException"
+      ],
+      "depth": 3,
+      "crosses_community": false,
+      "communities_visited": [
+        3
+      ]
+    },
+    {
+      "entry_point": "src/flask/app.py::Flask::test_request_context",
+      "entry_point_name": "test_request_context",
+      "entry_point_score": 0.565,
+      "trace": [
+        "src/flask/app.py::Flask::test_request_context",
+        "src/flask/app.py::Flask::request_context",
+        "src/flask/ctx.py::AppContext::from_environ"
+      ],
+      "depth": 2,
+      "crosses_community": false,
+      "communities_visited": [
+        0
+      ]
+    },
+    {
+      "entry_point": "src/flask/templating.py::stream_template",
+      "entry_point_name": "stream_template",
+      "entry_point_score": 0.515,
+      "trace": [
+        "src/flask/templating.py::stream_template",
+        "src/flask/templating.py::_stream",
+        "src/flask/helpers.py::stream_with_context"
+      ],
+      "depth": 2,
+      "crosses_community": false,
+      "communities_visited": [
+        12
+      ]
+    },
+    {
+      "entry_point": "src/flask/app.py::Flask::__init__",
+      "entry_point_name": "__init__",
+      "entry_point_score": 0.44,
+      "trace": [
+        "src/flask/app.py::Flask::__init__",
+        "src/flask/app.py::Flask::send_static_file",
+        "src/flask/helpers.py::send_from_directory",
+        "src/flask/helpers.py::_prepare_send_file_kwargs",
+        "src/flask/globals.py::ProxyMixin::_get_current_object"
+      ],
+      "depth": 4,
+      "crosses_community": true,
+      "communities_visited": [
+        0,
+        12
+      ]
+    },
+    {
+      "entry_point": "src/flask/app.py::Flask::finalize_request",
+      "entry_point_name": "finalize_request",
+      "entry_point_score": 0.405,
+      "trace": [
+        "src/flask/app.py::Flask::finalize_request",
+        "src/flask/app.py::Flask::process_response",
+        "src/flask/app.py::Flask::ensure_sync",
+        "src/flask/app.py::Flask::async_to_sync"
+      ],
+      "depth": 3,
+      "crosses_community": false,
+      "communities_visited": [
+        0
+      ]
+    },
+    {
+      "entry_point": "src/flask/cli.py::locate_app",
+      "entry_point_name": "locate_app",
+      "entry_point_score": 0.3463,
+      "trace": [
+        "src/flask/cli.py::locate_app",
+        "src/flask/cli.py::find_best_app",
+        "src/flask/cli.py::NoAppException"
+      ],
+      "depth": 2,
+      "crosses_community": false,
+      "communities_visited": [
+        3
+      ]
+    },
+    {
+      "entry_point": "src/flask/wrappers.py::Request::_load_form_data",
+      "entry_point_name": "_load_form_data",
+      "entry_point_score": 0.315,
+      "trace": [
+        "src/flask/wrappers.py::Request::_load_form_data",
+        "src/flask/debughelpers.py::attach_enctype_error_multidict",
+        "src/flask/debughelpers.py::DebugFilesKeyError"
+      ],
+      "depth": 2,
+      "crosses_community": false,
+      "communities_visited": [
+        13
+      ]
+    },
+    {
+      "entry_point": "src/flask/templating.py::DispatchingJinjaLoader::_get_source_explained",
+      "entry_point_name": "_get_source_explained",
+      "entry_point_score": 0.315,
+      "trace": [
+        "src/flask/templating.py::DispatchingJinjaLoader::_get_source_explained",
+        "src/flask/debughelpers.py::explain_template_loading_attempts",
+        "src/flask/debughelpers.py::_dump_loader_info"
+      ],
+      "depth": 2,
+      "crosses_community": false,
+      "communities_visited": [
+        17
+      ]
+    }
+  ]
+}

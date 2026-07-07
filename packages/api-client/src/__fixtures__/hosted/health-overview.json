@@ -1,0 +1,1707 @@
+{
+  "kpis": {
+    "hotspot_health": 10,
+    "average_health": 6.94,
+    "worst_performer_path": "src/flask/app.py",
+    "worst_performer_score": 1.07,
+    "file_count": 108,
+    "maintainability_average": 7.71,
+    "performance_average": 9.96,
+    "maintainability_findings": 73,
+    "performance_findings": 4
+  },
+  "files": [
+    {
+      "file_path": "src/flask/app.py",
+      "score": 1.07,
+      "band": "alert",
+      "max_ccn": 16,
+      "max_nesting": 5,
+      "nloc": 1235,
+      "duplication_pct": 10.42,
+      "has_test_file": false,
+      "line_coverage_pct": null,
+      "branch_coverage_pct": null,
+      "module": "flask",
+      "defect_score": 1.07,
+      "maintainability_score": 3.1,
+      "performance_score": 9.7,
+      "top_biomarkers": [
+        {
+          "id": "1633695362c7ee2ec41d4144",
+          "biomarker_type": "untested_hotspot",
+          "severity": "high",
+          "file_path": "src/flask/app.py",
+          "function_name": null,
+          "line_start": null,
+          "line_end": null,
+          "details": {
+            "line_coverage_pct": null,
+            "branch_coverage_pct": null,
+            "dependents_count": 6,
+            "commit_count_90d": 0,
+            "has_test_file": false
+          },
+          "health_impact": 1.56,
+          "reason": "Hotspot with no paired test file and no coverage data — 6 dependents",
+          "status": "open",
+          "suggestion": "Hot file with low/no coverage — add tests against the most-changed methods first.",
+          "dimension": "defect",
+          "symbol_id": null
+        },
+        {
+          "id": "a636c1b680c14f66696424f2",
+          "biomarker_type": "function_hotspot",
+          "severity": "high",
+          "file_path": "src/flask/app.py",
+          "function_name": "make_response",
+          "line_start": 1224,
+          "line_end": 1364,
+          "details": {
+            "modification_count": 6,
+            "repo_p80": 5,
+            "ccn": 16,
+            "max_nesting": 5
+          },
+          "health_impact": 1.392,
+          "reason": "make_response has been modified across 6 commits (repo p80=5) and carries CCN=16 / nesting=5",
+          "status": "open",
+          "suggestion": "Review and refactor according to the biomarker details.",
+          "dimension": "defect",
+          "symbol_id": null
+        }
+      ]
+    },
+    {
+      "file_path": "src/flask/sansio/app.py",
+      "score": 1.35,
+      "band": "alert",
+      "max_ccn": 12,
+      "max_nesting": 4,
+      "nloc": 678,
+      "duplication_pct": 14.3,
+      "has_test_file": false,
+      "line_coverage_pct": null,
+      "branch_coverage_pct": null,
+      "module": "flask/sansio",
+      "defect_score": 1.35,
+      "maintainability_score": 4.8,
+      "performance_score": 10,
+      "top_biomarkers": [
+        {
+          "id": "cb2c376ceb485261bac68091",
+          "biomarker_type": "untested_hotspot",
+          "severity": "high",
+          "file_path": "src/flask/sansio/app.py",
+          "function_name": null,
+          "line_start": null,
+          "line_end": null,
+          "details": {
+            "line_coverage_pct": null,
+            "branch_coverage_pct": null,
+            "dependents_count": 7,
+            "commit_count_90d": 1,
+            "has_test_file": false
+          },
+          "health_impact": 1.56,
+          "reason": "Hotspot with no paired test file and no coverage data — 7 dependents",
+          "status": "open",
+          "suggestion": "Hot file with low/no coverage — add tests against the most-changed methods first.",
+          "dimension": "defect",
+          "symbol_id": null
+        },
+        {
+          "id": "25e5ed47ef2620733ce4d61b",
+          "biomarker_type": "function_hotspot",
+          "severity": "high",
+          "file_path": "src/flask/sansio/app.py",
+          "function_name": "add_url_rule",
+          "line_start": 605,
+          "line_end": 661,
+          "details": {
+            "modification_count": 19,
+            "repo_p80": 5,
+            "ccn": 12,
+            "max_nesting": 2
+          },
+          "health_impact": 1.18,
+          "reason": "add_url_rule has been modified across 19 commits (repo p80=5) and carries CCN=12 / nesting=2",
+          "status": "open",
+          "suggestion": "Review and refactor according to the biomarker details.",
+          "dimension": "defect",
+          "symbol_id": null
+        }
+      ]
+    },
+    {
+      "file_path": "src/flask/cli.py",
+      "score": 2.05,
+      "band": "alert",
+      "max_ccn": 13,
+      "max_nesting": 5,
+      "nloc": 822,
+      "duplication_pct": null,
+      "has_test_file": true,
+      "line_coverage_pct": null,
+      "branch_coverage_pct": null,
+      "module": "flask",
+      "defect_score": 2.05,
+      "maintainability_score": 3.6,
+      "performance_score": 9.85,
+      "top_biomarkers": [
+        {
+          "id": "3c7b89ff0c13fa0b1123901b",
+          "biomarker_type": "nested_complexity",
+          "severity": "high",
+          "file_path": "src/flask/cli.py",
+          "function_name": "convert",
+          "line_start": 791,
+          "line_end": 825,
+          "details": {
+            "max_nesting": 5,
+            "ccn": 6,
+            "cognitive": 21
+          },
+          "health_impact": 0.605,
+          "reason": "convert nests 5 levels deep",
+          "status": "open",
+          "suggestion": "Flatten nested control flow with early returns or guard clauses.",
+          "dimension": "defect",
+          "symbol_id": null
+        },
+        {
+          "id": "d9c8ad9cb0af754e7a5a0a54",
+          "biomarker_type": "nested_complexity",
+          "severity": "high",
+          "file_path": "src/flask/cli.py",
+          "function_name": "find_best_app",
+          "line_start": 41,
+          "line_end": 91,
+          "details": {
+            "max_nesting": 5,
+            "ccn": 10,
+            "cognitive": 25
+          },
+          "health_impact": 0.605,
+          "reason": "find_best_app nests 5 levels deep",
+          "status": "open",
+          "suggestion": "Flatten nested control flow with early returns or guard clauses.",
+          "dimension": "defect",
+          "symbol_id": null
+        }
+      ]
+    },
+    {
+      "file_path": "src/flask/sansio/blueprints.py",
+      "score": 3.53,
+      "band": "alert",
+      "max_ccn": 22,
+      "max_nesting": 3,
+      "nloc": 557,
+      "duplication_pct": 20.63,
+      "has_test_file": true,
+      "line_coverage_pct": null,
+      "branch_coverage_pct": null,
+      "module": "flask/sansio",
+      "defect_score": 3.53,
+      "maintainability_score": 5.4,
+      "performance_score": 10,
+      "top_biomarkers": [
+        {
+          "id": "c2d2eaab3a7919f76340c959",
+          "biomarker_type": "function_hotspot",
+          "severity": "critical",
+          "file_path": "src/flask/sansio/blueprints.py",
+          "function_name": "register",
+          "line_start": 273,
+          "line_end": 377,
+          "details": {
+            "modification_count": 23,
+            "repo_p80": 5,
+            "ccn": 22,
+            "max_nesting": 3
+          },
+          "health_impact": 2.32,
+          "reason": "register has been modified across 23 commits (repo p80=5) and carries CCN=22 / nesting=3",
+          "status": "open",
+          "suggestion": "Review and refactor according to the biomarker details.",
+          "dimension": "defect",
+          "symbol_id": null
+        },
+        {
+          "id": "54354aebd028ccbd8c7730bc",
+          "biomarker_type": "god_class",
+          "severity": "critical",
+          "file_path": "src/flask/sansio/blueprints.py",
+          "function_name": "Blueprint",
+          "line_start": 119,
+          "line_end": 692,
+          "details": {
+            "class_name": "Blueprint",
+            "total_nloc": 473,
+            "method_count": 28,
+            "max_method_ccn": 22
+          },
+          "health_impact": 1.657,
+          "reason": "Blueprint is a god class: 473 lines across 28 methods, including a brain method (max method CCN 22)",
+          "status": "open",
+          "suggestion": "Review and refactor according to the biomarker details.",
+          "dimension": "defect",
+          "symbol_id": null
+        }
+      ]
+    },
+    {
+      "file_path": "src/flask/config.py",
+      "score": 5.15,
+      "band": "warning",
+      "max_ccn": 7,
+      "max_nesting": 3,
+      "nloc": 282,
+      "duplication_pct": null,
+      "has_test_file": true,
+      "line_coverage_pct": null,
+      "branch_coverage_pct": null,
+      "module": "tests",
+      "defect_score": 5.15,
+      "maintainability_score": 6.7,
+      "performance_score": 10,
+      "top_biomarkers": [
+        {
+          "id": "6d907c7224823a792f775870",
+          "biomarker_type": "function_hotspot",
+          "severity": "high",
+          "file_path": "src/flask/config.py",
+          "function_name": "from_file",
+          "line_start": 256,
+          "line_end": 302,
+          "details": {
+            "modification_count": 12,
+            "repo_p80": 5,
+            "ccn": 5,
+            "max_nesting": 3
+          },
+          "health_impact": 1.392,
+          "reason": "from_file has been modified across 12 commits (repo p80=5) and carries CCN=5 / nesting=3",
+          "status": "open",
+          "suggestion": "Review and refactor according to the biomarker details.",
+          "dimension": "defect",
+          "symbol_id": null
+        },
+        {
+          "id": "a526153466bab14f9dfa6193",
+          "biomarker_type": "function_hotspot",
+          "severity": "high",
+          "file_path": "src/flask/config.py",
+          "function_name": "from_pyfile",
+          "line_start": 187,
+          "line_end": 216,
+          "details": {
+            "modification_count": 10,
+            "repo_p80": 5,
+            "ccn": 4,
+            "max_nesting": 3
+          },
+          "health_impact": 1.392,
+          "reason": "from_pyfile has been modified across 10 commits (repo p80=5) and carries CCN=4 / nesting=3",
+          "status": "open",
+          "suggestion": "Review and refactor according to the biomarker details.",
+          "dimension": "defect",
+          "symbol_id": null
+        }
+      ]
+    }
+  ],
+  "biomarkers": [
+    {
+      "id": "24ee1f24b481e78e25d7b1aa",
+      "biomarker_type": "primitive_obsession",
+      "severity": "medium",
+      "file_path": "docs/conf.py",
+      "function_name": "github_link",
+      "line_start": 72,
+      "line_end": 97,
+      "details": {
+        "param_count": 7
+      },
+      "health_impact": 0.35,
+      "reason": "github_link takes 7 parameters",
+      "status": "open",
+      "suggestion": null,
+      "dimension": "maintainability",
+      "symbol_id": null
+    },
+    {
+      "id": "7fc2bfb45bd876adac3926a2",
+      "biomarker_type": "ownership_risk",
+      "severity": "low",
+      "file_path": "docs/conf.py",
+      "function_name": null,
+      "line_start": null,
+      "line_end": null,
+      "details": {
+        "minor_contributors": 6,
+        "top_owner_share": 0.771,
+        "contributor_count": 8,
+        "total_commits": 48,
+        "small_team": true
+      },
+      "health_impact": 0.414,
+      "reason": "6 minor contributors (each <5% of commits); top owner holds 77% (informational: small team, 1 active contributors in 90d)",
+      "status": "open",
+      "suggestion": null,
+      "dimension": "defect",
+      "symbol_id": null
+    },
+    {
+      "id": "09d0b47644642dd7b41fd9c1",
+      "biomarker_type": "nested_complexity",
+      "severity": "medium",
+      "file_path": "examples/tutorial/flaskr/auth.py",
+      "function_name": "register",
+      "line_start": 47,
+      "line_end": 81,
+      "details": {
+        "max_nesting": 4,
+        "ccn": 6,
+        "cognitive": 15
+      },
+      "health_impact": 0.938,
+      "reason": "register nests 4 levels deep",
+      "status": "open",
+      "suggestion": null,
+      "dimension": "defect",
+      "symbol_id": null
+    },
+    {
+      "id": "845765e86a8dc67f7be0f099",
+      "biomarker_type": "dry_violation",
+      "severity": "medium",
+      "file_path": "examples/tutorial/flaskr/blog.py",
+      "function_name": null,
+      "line_start": 64,
+      "line_end": 77,
+      "details": {
+        "duplication_pct": 28,
+        "clone_pair_count": 1,
+        "worst_clone_lines": 14,
+        "worst_clone_partner": "examples/tutorial/flaskr/blog.py",
+        "worst_clone_co_change": 0
+      },
+      "health_impact": 0.35,
+      "reason": "28% of file duplicated; worst clone shares 14 lines with examples/tutorial/flaskr/blog.py",
+      "status": "open",
+      "suggestion": null,
+      "dimension": "maintainability",
+      "symbol_id": null
+    },
+    {
+      "id": "a254a623ca40c0367121f788",
+      "biomarker_type": "dry_violation",
+      "severity": "medium",
+      "file_path": "src/flask/__init__.py",
+      "function_name": null,
+      "line_start": 1,
+      "line_end": 38,
+      "details": {
+        "duplication_pct": 100,
+        "clone_pair_count": 1,
+        "worst_clone_lines": 38,
+        "worst_clone_partner": "src/flask/__init__.py",
+        "worst_clone_co_change": 0
+      },
+      "health_impact": 0.35,
+      "reason": "100% of file duplicated; worst clone shares 38 lines with src/flask/__init__.py",
+      "status": "open",
+      "suggestion": null,
+      "dimension": "maintainability",
+      "symbol_id": null
+    },
+    {
+      "id": "8510993cad8a38502173828e",
+      "biomarker_type": "ownership_risk",
+      "severity": "low",
+      "file_path": "src/flask/__init__.py",
+      "function_name": null,
+      "line_start": null,
+      "line_end": null,
+      "details": {
+        "minor_contributors": 6,
+        "top_owner_share": 0.9,
+        "contributor_count": 7,
+        "total_commits": 70,
+        "small_team": true
+      },
+      "health_impact": 0.414,
+      "reason": "6 minor contributors (each <5% of commits); top owner holds 90% (informational: small team, 1 active contributors in 90d)",
+      "status": "open",
+      "suggestion": null,
+      "dimension": "defect",
+      "symbol_id": null
+    },
+    {
+      "id": "3d05bc5d79a01696d298014f",
+      "biomarker_type": "low_cohesion",
+      "severity": "medium",
+      "file_path": "src/flask/cli.py",
+      "function_name": "FlaskGroup",
+      "line_start": 531,
+      "line_end": 688,
+      "details": {
+        "class_name": "FlaskGroup",
+        "lcom4": 2,
+        "method_count": 6,
+        "field_count": 8
+      },
+      "health_impact": 0.132,
+      "reason": "FlaskGroup has low cohesion (LCOM4=2): its 6 methods split into 2 groups that share no fields or calls",
+      "status": "open",
+      "suggestion": null,
+      "dimension": "maintainability",
+      "symbol_id": null
+    },
+    {
+      "id": "3c7b89ff0c13fa0b1123901b",
+      "biomarker_type": "nested_complexity",
+      "severity": "high",
+      "file_path": "src/flask/cli.py",
+      "function_name": "convert",
+      "line_start": 791,
+      "line_end": 825,
+      "details": {
+        "max_nesting": 5,
+        "ccn": 6,
+        "cognitive": 21
+      },
+      "health_impact": 0.605,
+      "reason": "convert nests 5 levels deep",
+      "status": "open",
+      "suggestion": null,
+      "dimension": "defect",
+      "symbol_id": null
+    },
+    {
+      "id": "6b2d945db56c1c1a84bc1b61",
+      "biomarker_type": "nested_complexity",
+      "severity": "medium",
+      "file_path": "src/flask/cli.py",
+      "function_name": "load_app",
+      "line_start": 333,
+      "line_end": 372,
+      "details": {
+        "max_nesting": 4,
+        "ccn": 8,
+        "cognitive": 13
+      },
+      "health_impact": 0.353,
+      "reason": "load_app nests 4 levels deep",
+      "status": "open",
+      "suggestion": null,
+      "dimension": "defect",
+      "symbol_id": null
+    },
+    {
+      "id": "14513497430140aabebfc2fe",
+      "biomarker_type": "nested_complexity",
+      "severity": "medium",
+      "file_path": "src/flask/cli.py",
+      "function_name": "find_app_by_string",
+      "line_start": 120,
+      "line_end": 197,
+      "details": {
+        "max_nesting": 4,
+        "ccn": 11,
+        "cognitive": 30
+      },
+      "health_impact": 0.353,
+      "reason": "find_app_by_string nests 4 levels deep",
+      "status": "open",
+      "suggestion": null,
+      "dimension": "defect",
+      "symbol_id": null
+    },
+    {
+      "id": "d9c8ad9cb0af754e7a5a0a54",
+      "biomarker_type": "nested_complexity",
+      "severity": "high",
+      "file_path": "src/flask/cli.py",
+      "function_name": "find_best_app",
+      "line_start": 41,
+      "line_end": 91,
+      "details": {
+        "max_nesting": 5,
+        "ccn": 10,
+        "cognitive": 25
+      },
+      "health_impact": 0.605,
+      "reason": "find_best_app nests 5 levels deep",
+      "status": "open",
+      "suggestion": null,
+      "dimension": "defect",
+      "symbol_id": null
+    },
+    {
+      "id": "d5bc5211e56aca8f359d5826",
+      "biomarker_type": "complex_method",
+      "severity": "medium",
+      "file_path": "src/flask/cli.py",
+      "function_name": "routes_command",
+      "line_start": 1061,
+      "line_end": 1107,
+      "details": {
+        "ccn": 13,
+        "cognitive": 18,
+        "nloc": 35
+      },
+      "health_impact": 0.237,
+      "reason": "routes_command has cyclomatic complexity 13",
+      "status": "open",
+      "suggestion": null,
+      "dimension": "defect",
+      "symbol_id": null
+    },
+    {
+      "id": "cbb603900f1a645cb7015dca",
+      "biomarker_type": "complex_method",
+      "severity": "medium",
+      "file_path": "src/flask/cli.py",
+      "function_name": "_validate_key",
+      "line_start": 828,
+      "line_end": 864,
+      "details": {
+        "ccn": 9,
+        "cognitive": 14,
+        "nloc": 29
+      },
+      "health_impact": 0.237,
+      "reason": "_validate_key has cyclomatic complexity 9",
+      "status": "open",
+      "suggestion": null,
+      "dimension": "defect",
+      "symbol_id": null
+    },
+    {
+      "id": "ca167abaa1b0f1c1158ea66b",
+      "biomarker_type": "complex_method",
+      "severity": "medium",
+      "file_path": "src/flask/cli.py",
+      "function_name": "load_dotenv",
+      "line_start": 698,
+      "line_end": 763,
+      "details": {
+        "ccn": 13,
+        "cognitive": 20,
+        "nloc": 47
+      },
+      "health_impact": 0.237,
+      "reason": "load_dotenv has cyclomatic complexity 13",
+      "status": "open",
+      "suggestion": null,
+      "dimension": "defect",
+      "symbol_id": null
+    },
+    {
+      "id": "57ab482435ea9ed4a56a87bc",
+      "biomarker_type": "complex_method",
+      "severity": "medium",
+      "file_path": "src/flask/cli.py",
+      "function_name": "find_app_by_string",
+      "line_start": 120,
+      "line_end": 197,
+      "details": {
+        "ccn": 11,
+        "cognitive": 30,
+        "nloc": 68
+      },
+      "health_impact": 0.237,
+      "reason": "find_app_by_string has cyclomatic complexity 11",
+      "status": "open",
+      "suggestion": null,
+      "dimension": "defect",
+      "symbol_id": null
+    },
+    {
+      "id": "f22e456d7508251a6d18b2e9",
+      "biomarker_type": "complex_method",
+      "severity": "medium",
+      "file_path": "src/flask/cli.py",
+      "function_name": "find_best_app",
+      "line_start": 41,
+      "line_end": 91,
+      "details": {
+        "ccn": 10,
+        "cognitive": 25,
+        "nloc": 41
+      },
+      "health_impact": 0.237,
+      "reason": "find_best_app has cyclomatic complexity 10",
+      "status": "open",
+      "suggestion": null,
+      "dimension": "defect",
+      "symbol_id": null
+    },
+    {
+      "id": "7206560799f1a29b8bd7c4ac",
+      "biomarker_type": "bumpy_road",
+      "severity": "low",
+      "file_path": "src/flask/cli.py",
+      "function_name": "routes_command",
+      "line_start": 1061,
+      "line_end": 1107,
+      "details": {
+        "bumps": 3,
+        "ccn": 13,
+        "max_nesting": 3
+      },
+      "health_impact": 0.056,
+      "reason": "routes_command has 3 nested blocks at the same level (bumpy road)",
+      "status": "open",
+      "suggestion": null,
+      "dimension": "defect",
+      "symbol_id": null
+    },
+    {
+      "id": "913c5f0126bcd903c916922e",
+      "biomarker_type": "bumpy_road",
+      "severity": "low",
+      "file_path": "src/flask/cli.py",
+      "function_name": "load_dotenv",
+      "line_start": 698,
+      "line_end": 763,
+      "details": {
+        "bumps": 3,
+        "ccn": 13,
+        "max_nesting": 3
+      },
+      "health_impact": 0.056,
+      "reason": "load_dotenv has 3 nested blocks at the same level (bumpy road)",
+      "status": "open",
+      "suggestion": null,
+      "dimension": "defect",
+      "symbol_id": null
+    },
+    {
+      "id": "0c5715dc8398bb9ecd57b830",
+      "biomarker_type": "bumpy_road",
+      "severity": "medium",
+      "file_path": "src/flask/cli.py",
+      "function_name": "find_app_by_string",
+      "line_start": 120,
+      "line_end": 197,
+      "details": {
+        "bumps": 4,
+        "ccn": 11,
+        "max_nesting": 4
+      },
+      "health_impact": 0.132,
+      "reason": "find_app_by_string has 4 nested blocks at the same level (bumpy road)",
+      "status": "open",
+      "suggestion": null,
+      "dimension": "defect",
+      "symbol_id": null
+    },
+    {
+      "id": "cc5c719dea8b6a80d1476727",
+      "biomarker_type": "bumpy_road",
+      "severity": "low",
+      "file_path": "src/flask/cli.py",
+      "function_name": "find_best_app",
+      "line_start": 41,
+      "line_end": 91,
+      "details": {
+        "bumps": 3,
+        "ccn": 10,
+        "max_nesting": 5
+      },
+      "health_impact": 0.056,
+      "reason": "find_best_app has 3 nested blocks at the same level (bumpy road)",
+      "status": "open",
+      "suggestion": null,
+      "dimension": "defect",
+      "symbol_id": null
+    },
+    {
+      "id": "dd0194f456cad899e68c5882",
+      "biomarker_type": "large_method",
+      "severity": "low",
+      "file_path": "src/flask/cli.py",
+      "function_name": "find_app_by_string",
+      "line_start": 120,
+      "line_end": 197,
+      "details": {
+        "nloc": 68,
+        "ccn": 11
+      },
+      "health_impact": 0.105,
+      "reason": "find_app_by_string is 68 lines long",
+      "status": "open",
+      "suggestion": null,
+      "dimension": "defect",
+      "symbol_id": null
+    },
+    {
+      "id": "35e3b26a20e7b8469cf29305",
+      "biomarker_type": "primitive_obsession",
+      "severity": "high",
+      "file_path": "src/flask/cli.py",
+      "function_name": "run_command",
+      "line_start": 935,
+      "line_end": 993,
+      "details": {
+        "param_count": 9
+      },
+      "health_impact": 0.168,
+      "reason": "run_command takes 9 parameters",
+      "status": "open",
+      "suggestion": null,
+      "dimension": "maintainability",
+      "symbol_id": null
+    },
+    {
+      "id": "692f1eafa18fac253c10a7cd",
+      "biomarker_type": "primitive_obsession",
+      "severity": "low",
+      "file_path": "src/flask/cli.py",
+      "function_name": "make_context",
+      "line_start": 657,
+      "line_end": 676,
+      "details": {
+        "param_count": 5
+      },
+      "health_impact": 0.042,
+      "reason": "make_context takes 5 parameters",
+      "status": "open",
+      "suggestion": null,
+      "dimension": "maintainability",
+      "symbol_id": null
+    },
+    {
+      "id": "928db1374c4f29d5737fac2d",
+      "biomarker_type": "complex_conditional",
+      "severity": "low",
+      "file_path": "src/flask/cli.py",
+      "function_name": "parse_args",
+      "line_start": 679,
+      "line_end": 679,
+      "details": {
+        "operator_count": 3,
+        "enclosing_construct": "if"
+      },
+      "health_impact": 0.15,
+      "reason": "if condition combines 3 boolean operators",
+      "status": "open",
+      "suggestion": null,
+      "dimension": "defect",
+      "symbol_id": null
+    },
+    {
+      "id": "6def7c58d9285973cbd6f39d",
+      "biomarker_type": "function_hotspot",
+      "severity": "medium",
+      "file_path": "src/flask/cli.py",
+      "function_name": "routes_command",
+      "line_start": 1061,
+      "line_end": 1107,
+      "details": {
+        "modification_count": 6,
+        "repo_p80": 5,
+        "ccn": 13,
+        "max_nesting": 3
+      },
+      "health_impact": 0.29,
+      "reason": "routes_command has been modified across 6 commits (repo p80=5) and carries CCN=13 / nesting=3",
+      "status": "open",
+      "suggestion": null,
+      "dimension": "defect",
+      "symbol_id": null
+    },
+    {
+      "id": "59d987fdc3c5b86b84f15d0f",
+      "biomarker_type": "function_hotspot",
+      "severity": "high",
+      "file_path": "src/flask/cli.py",
+      "function_name": "shell_command",
+      "line_start": 1001,
+      "line_end": 1045,
+      "details": {
+        "modification_count": 13,
+        "repo_p80": 5,
+        "ccn": 5,
+        "max_nesting": 3
+      },
+      "health_impact": 0.497,
+      "reason": "shell_command has been modified across 13 commits (repo p80=5) and carries CCN=5 / nesting=3",
+      "status": "open",
+      "suggestion": null,
+      "dimension": "defect",
+      "symbol_id": null
+    },
+    {
+      "id": "b3c8a05d6fcfdb41ae13cefb",
+      "biomarker_type": "function_hotspot",
+      "severity": "high",
+      "file_path": "src/flask/cli.py",
+      "function_name": "run_command",
+      "line_start": 935,
+      "line_end": 993,
+      "details": {
+        "modification_count": 11,
+        "repo_p80": 5,
+        "ccn": 5,
+        "max_nesting": 3
+      },
+      "health_impact": 0.497,
+      "reason": "run_command has been modified across 11 commits (repo p80=5) and carries CCN=5 / nesting=3",
+      "status": "open",
+      "suggestion": null,
+      "dimension": "defect",
+      "symbol_id": null
+    },
+    {
+      "id": "e1908844bfa38cece9505c6f",
+      "biomarker_type": "function_hotspot",
+      "severity": "medium",
+      "file_path": "src/flask/cli.py",
+      "function_name": "convert",
+      "line_start": 791,
+      "line_end": 825,
+      "details": {
+        "modification_count": 9,
+        "repo_p80": 5,
+        "ccn": 6,
+        "max_nesting": 5
+      },
+      "health_impact": 0.29,
+      "reason": "convert has been modified across 9 commits (repo p80=5) and carries CCN=6 / nesting=5",
+      "status": "open",
+      "suggestion": null,
+      "dimension": "defect",
+      "symbol_id": null
+    },
+    {
+      "id": "58266b29c997afce37748eda",
+      "biomarker_type": "function_hotspot",
+      "severity": "medium",
+      "file_path": "src/flask/cli.py",
+      "function_name": "load_dotenv",
+      "line_start": 698,
+      "line_end": 763,
+      "details": {
+        "modification_count": 9,
+        "repo_p80": 5,
+        "ccn": 13,
+        "max_nesting": 3
+      },
+      "health_impact": 0.29,
+      "reason": "load_dotenv has been modified across 9 commits (repo p80=5) and carries CCN=13 / nesting=3",
+      "status": "open",
+      "suggestion": null,
+      "dimension": "defect",
+      "symbol_id": null
+    },
+    {
+      "id": "f0ae5435d4f75d89f63cfa86",
+      "biomarker_type": "function_hotspot",
+      "severity": "high",
+      "file_path": "src/flask/cli.py",
+      "function_name": "load_app",
+      "line_start": 333,
+      "line_end": 372,
+      "details": {
+        "modification_count": 15,
+        "repo_p80": 5,
+        "ccn": 8,
+        "max_nesting": 4
+      },
+      "health_impact": 0.497,
+      "reason": "load_app has been modified across 15 commits (repo p80=5) and carries CCN=8 / nesting=4",
+      "status": "open",
+      "suggestion": null,
+      "dimension": "defect",
+      "symbol_id": null
+    },
+    {
+      "id": "aee5b1828c3883a30621c4de",
+      "biomarker_type": "function_hotspot",
+      "severity": "high",
+      "file_path": "src/flask/cli.py",
+      "function_name": "find_app_by_string",
+      "line_start": 120,
+      "line_end": 197,
+      "details": {
+        "modification_count": 13,
+        "repo_p80": 5,
+        "ccn": 11,
+        "max_nesting": 4
+      },
+      "health_impact": 0.497,
+      "reason": "find_app_by_string has been modified across 13 commits (repo p80=5) and carries CCN=11 / nesting=4",
+      "status": "open",
+      "suggestion": null,
+      "dimension": "defect",
+      "symbol_id": null
+    },
+    {
+      "id": "6ac160cd46a9479d6d2263b1",
+      "biomarker_type": "function_hotspot",
+      "severity": "high",
+      "file_path": "src/flask/cli.py",
+      "function_name": "find_best_app",
+      "line_start": 41,
+      "line_end": 91,
+      "details": {
+        "modification_count": 17,
+        "repo_p80": 5,
+        "ccn": 10,
+        "max_nesting": 5
+      },
+      "health_impact": 0.497,
+      "reason": "find_best_app has been modified across 17 commits (repo p80=5) and carries CCN=10 / nesting=5",
+      "status": "open",
+      "suggestion": null,
+      "dimension": "defect",
+      "symbol_id": null
+    },
+    {
+      "id": "fb1070635166396549df3d9d",
+      "biomarker_type": "ownership_risk",
+      "severity": "low",
+      "file_path": "src/flask/cli.py",
+      "function_name": null,
+      "line_start": null,
+      "line_end": null,
+      "details": {
+        "minor_contributors": 16,
+        "top_owner_share": 0.697,
+        "contributor_count": 18,
+        "total_commits": 66,
+        "small_team": true
+      },
+      "health_impact": 0.148,
+      "reason": "16 minor contributors (each <5% of commits); top owner holds 70% (informational: small team, 1 active contributors in 90d)",
+      "status": "open",
+      "suggestion": null,
+      "dimension": "defect",
+      "symbol_id": null
+    },
+    {
+      "id": "19efd878bb50fe44398161e7",
+      "biomarker_type": "error_handling",
+      "severity": "low",
+      "file_path": "src/flask/cli.py",
+      "function_name": null,
+      "line_start": 650,
+      "line_end": 650,
+      "details": {
+        "kind": "bare_except"
+      },
+      "health_impact": 0.15,
+      "reason": "catch-all except hides every error, including KeyboardInterrupt",
+      "status": "open",
+      "suggestion": null,
+      "dimension": "maintainability",
+      "symbol_id": null
+    },
+    {
+      "id": "db511e524f8430078dc806c9",
+      "biomarker_type": "error_handling",
+      "severity": "low",
+      "file_path": "src/flask/cli.py",
+      "function_name": null,
+      "line_start": 1036,
+      "line_end": 1036,
+      "details": {
+        "kind": "swallowed_catch"
+      },
+      "health_impact": 0.15,
+      "reason": "caught exception is swallowed without any handling",
+      "status": "open",
+      "suggestion": null,
+      "dimension": "maintainability",
+      "symbol_id": null
+    },
+    {
+      "id": "1c5ab929fed77ec9ae5d3bf3",
+      "biomarker_type": "error_handling",
+      "severity": "low",
+      "file_path": "src/flask/cli.py",
+      "function_name": null,
+      "line_start": 1098,
+      "line_end": 1098,
+      "details": {
+        "kind": "swallowed_catch"
+      },
+      "health_impact": 0.15,
+      "reason": "caught exception is swallowed without any handling",
+      "status": "open",
+      "suggestion": null,
+      "dimension": "maintainability",
+      "symbol_id": null
+    },
+    {
+      "id": "21e7656ae601236104f81d2e",
+      "biomarker_type": "hot_path_sync_io",
+      "severity": "low",
+      "file_path": "src/flask/cli.py",
+      "function_name": "shell_command",
+      "line_start": 1022,
+      "line_end": 1022,
+      "details": {
+        "boundary_kind": "filesystem"
+      },
+      "health_impact": 0,
+      "reason": "a blocking filesystem call runs on a hot, request-reachable path; its latency is paid on every call through this function",
+      "status": "open",
+      "suggestion": null,
+      "dimension": "performance",
+      "symbol_id": null
+    },
+    {
+      "id": "866b5edd940c2fd3c736feb8",
+      "biomarker_type": "dry_violation",
+      "severity": "low",
+      "file_path": "src/flask/globals.py",
+      "function_name": null,
+      "line_start": 18,
+      "line_end": 28,
+      "details": {
+        "duplication_pct": 22.41,
+        "clone_pair_count": 1,
+        "worst_clone_lines": 11,
+        "worst_clone_partner": "src/flask/globals.py",
+        "worst_clone_co_change": 0
+      },
+      "health_impact": 0.15,
+      "reason": "22% of file duplicated; worst clone shares 11 lines with src/flask/globals.py",
+      "status": "open",
+      "suggestion": null,
+      "dimension": "maintainability",
+      "symbol_id": null
+    },
+    {
+      "id": "dd3381c1030aed17697543ea",
+      "biomarker_type": "complex_method",
+      "severity": "medium",
+      "file_path": "src/flask/helpers.py",
+      "function_name": "get_root_path",
+      "line_start": 587,
+      "line_end": 641,
+      "details": {
+        "ccn": 9,
+        "cognitive": 12,
+        "nloc": 45
+      },
+      "health_impact": 0.821,
+      "reason": "get_root_path has cyclomatic complexity 9",
+      "status": "open",
+      "suggestion": null,
+      "dimension": "defect",
+      "symbol_id": null
+    },
+    {
+      "id": "0da42a3887baa307c4485598",
+      "biomarker_type": "primitive_obsession",
+      "severity": "medium",
+      "file_path": "src/flask/helpers.py",
+      "function_name": "send_file",
+      "line_start": 417,
+      "line_end": 540,
+      "details": {
+        "param_count": 8
+      },
+      "health_impact": 0.339,
+      "reason": "send_file takes 8 parameters",
+      "status": "open",
+      "suggestion": null,
+      "dimension": "maintainability",
+      "symbol_id": null
+    },
+    {
+      "id": "1894a1e4e5d886fb52cbcbcf",
+      "biomarker_type": "primitive_obsession",
+      "severity": "medium",
+      "file_path": "src/flask/helpers.py",
+      "function_name": "url_for",
+      "line_start": 200,
+      "line_end": 251,
+      "details": {
+        "param_count": 7
+      },
+      "health_impact": 0.339,
+      "reason": "url_for takes 7 parameters",
+      "status": "open",
+      "suggestion": null,
+      "dimension": "maintainability",
+      "symbol_id": null
+    },
+    {
+      "id": "818bb7c32b8a0ac81c3afe7d",
+      "biomarker_type": "ownership_risk",
+      "severity": "low",
+      "file_path": "src/flask/helpers.py",
+      "function_name": null,
+      "line_start": null,
+      "line_end": null,
+      "details": {
+        "minor_contributors": 20,
+        "top_owner_share": 0.636,
+        "contributor_count": 22,
+        "total_commits": 88,
+        "small_team": true
+      },
+      "health_impact": 0.414,
+      "reason": "20 minor contributors (each <5% of commits); top owner holds 64% (informational: small team, 1 active contributors in 90d)",
+      "status": "open",
+      "suggestion": null,
+      "dimension": "defect",
+      "symbol_id": null
+    },
+    {
+      "id": "e3e3a4f918437a70cfea06c5",
+      "biomarker_type": "complex_method",
+      "severity": "medium",
+      "file_path": "src/flask/debughelpers.py",
+      "function_name": "explain_template_loading_attempts",
+      "line_start": 124,
+      "line_end": 179,
+      "details": {
+        "ccn": 13,
+        "cognitive": 18,
+        "nloc": 37
+      },
+      "health_impact": 0.847,
+      "reason": "explain_template_loading_attempts has cyclomatic complexity 13",
+      "status": "open",
+      "suggestion": null,
+      "dimension": "defect",
+      "symbol_id": null
+    },
+    {
+      "id": "fcb77b4c8e501e308d016f2b",
+      "biomarker_type": "function_hotspot",
+      "severity": "medium",
+      "file_path": "src/flask/debughelpers.py",
+      "function_name": "explain_template_loading_attempts",
+      "line_start": 124,
+      "line_end": 179,
+      "details": {
+        "modification_count": 8,
+        "repo_p80": 5,
+        "ccn": 13,
+        "max_nesting": 3
+      },
+      "health_impact": 0.812,
+      "reason": "explain_template_loading_attempts has been modified across 8 commits (repo p80=5) and carries CCN=13 / nesting=3",
+      "status": "open",
+      "suggestion": null,
+      "dimension": "defect",
+      "symbol_id": null
+    },
+    {
+      "id": "ec30edc0a31e12eaa4c24baa",
+      "biomarker_type": "function_hotspot",
+      "severity": "medium",
+      "file_path": "src/flask/debughelpers.py",
+      "function_name": "_dump_loader_info",
+      "line_start": 107,
+      "line_end": 121,
+      "details": {
+        "modification_count": 6,
+        "repo_p80": 5,
+        "ccn": 7,
+        "max_nesting": 3
+      },
+      "health_impact": 0.812,
+      "reason": "_dump_loader_info has been modified across 6 commits (repo p80=5) and carries CCN=7 / nesting=3",
+      "status": "open",
+      "suggestion": null,
+      "dimension": "defect",
+      "symbol_id": null
+    },
+    {
+      "id": "a268d5af746390e327d8c3e2",
+      "biomarker_type": "brain_method",
+      "severity": "high",
+      "file_path": "src/flask/app.py",
+      "function_name": "make_response",
+      "line_start": 1224,
+      "line_end": 1364,
+      "details": {
+        "ccn": 16,
+        "nloc": 119,
+        "max_nesting": 5,
+        "dependents_count": 6,
+        "centrality_floor": 5
+      },
+      "health_impact": 0.141,
+      "reason": "Brain Method: make_response is 119 lines, CCN 16, in a file imported by 6 others",
+      "status": "open",
+      "suggestion": null,
+      "dimension": "maintainability",
+      "symbol_id": null
+    },
+    {
+      "id": "bce878892996951400e98fad",
+      "biomarker_type": "brain_method",
+      "severity": "medium",
+      "file_path": "src/flask/app.py",
+      "function_name": "url_for",
+      "line_start": 1102,
+      "line_end": 1222,
+      "details": {
+        "ccn": 13,
+        "nloc": 94,
+        "max_nesting": 3,
+        "dependents_count": 6,
+        "centrality_floor": 5
+      },
+      "health_impact": 0.082,
+      "reason": "Brain Method: url_for is 94 lines, CCN 13, in a file imported by 6 others",
+      "status": "open",
+      "suggestion": null,
+      "dimension": "maintainability",
+      "symbol_id": null
+    },
+    {
+      "id": "5aba56e5bbdd42c6154c3f8b",
+      "biomarker_type": "brain_method",
+      "severity": "medium",
+      "file_path": "src/flask/app.py",
+      "function_name": "run",
+      "line_start": 632,
+      "line_end": 753,
+      "details": {
+        "ccn": 12,
+        "nloc": 91,
+        "max_nesting": 2,
+        "dependents_count": 6,
+        "centrality_floor": 5
+      },
+      "health_impact": 0.082,
+      "reason": "Brain Method: run is 91 lines, CCN 12, in a file imported by 6 others",
+      "status": "open",
+      "suggestion": null,
+      "dimension": "maintainability",
+      "symbol_id": null
+    },
+    {
+      "id": "b947e6b2fbf89f86347697af",
+      "biomarker_type": "low_cohesion",
+      "severity": "critical",
+      "file_path": "src/flask/app.py",
+      "function_name": "Flask",
+      "line_start": 109,
+      "line_end": 1625,
+      "details": {
+        "class_name": "Flask",
+        "lcom4": 6,
+        "method_count": 35,
+        "field_count": 36
+      },
+      "health_impact": 0.234,
+      "reason": "Flask has low cohesion (LCOM4=6): its 35 methods split into 6 groups that share no fields or calls",
+      "status": "open",
+      "suggestion": null,
+      "dimension": "maintainability",
+      "symbol_id": null
+    },
+    {
+      "id": "352bff6fdeba1bb9c11a3be3",
+      "biomarker_type": "god_class",
+      "severity": "critical",
+      "file_path": "src/flask/app.py",
+      "function_name": "Flask",
+      "line_start": 109,
+      "line_end": 1625,
+      "details": {
+        "class_name": "Flask",
+        "total_nloc": 1238,
+        "method_count": 35,
+        "max_method_ccn": 16
+      },
+      "health_impact": 0.53,
+      "reason": "Flask is a god class: 1238 lines across 35 methods, including a brain method (max method CCN 16)",
+      "status": "open",
+      "suggestion": null,
+      "dimension": "defect",
+      "symbol_id": null
+    }
+  ],
+  "modules": [
+    {
+      "module": "flask",
+      "file_count": 11,
+      "average_health": 7.35,
+      "worst_file_path": "src/flask/app.py",
+      "worst_file_score": 1.07,
+      "nloc_weighted_health": 3.93,
+      "critical_finding_count": 3,
+      "warning_finding_count": 0
+    },
+    {
+      "module": "flask/sansio",
+      "file_count": 9,
+      "average_health": 7.79,
+      "worst_file_path": "src/flask/sansio/app.py",
+      "worst_file_score": 1.35,
+      "nloc_weighted_health": 5.62,
+      "critical_finding_count": 5,
+      "warning_finding_count": 0
+    },
+    {
+      "module": "flask (6)",
+      "file_count": 6,
+      "average_health": 8.45,
+      "worst_file_path": "src/flask/testing.py",
+      "worst_file_score": 5.5,
+      "nloc_weighted_health": 8.23,
+      "critical_finding_count": 0,
+      "warning_finding_count": 0
+    },
+    {
+      "module": "tests",
+      "file_count": 53,
+      "average_health": 9.66,
+      "worst_file_path": "src/flask/config.py",
+      "worst_file_score": 5.15,
+      "nloc_weighted_health": 8.61,
+      "critical_finding_count": 0,
+      "warning_finding_count": 0
+    },
+    {
+      "module": "docs (1)",
+      "file_count": 1,
+      "average_health": 9.24,
+      "worst_file_path": "docs/conf.py",
+      "worst_file_score": 9.24,
+      "nloc_weighted_health": 9.24,
+      "critical_finding_count": 0,
+      "warning_finding_count": 0
+    },
+    {
+      "module": "config",
+      "file_count": 1,
+      "average_health": 10,
+      "worst_file_path": ".pre-commit-config.yaml",
+      "worst_file_score": 10,
+      "nloc_weighted_health": 10,
+      "critical_finding_count": 0,
+      "warning_finding_count": 0
+    },
+    {
+      "module": ".readthedocs",
+      "file_count": 1,
+      "average_health": 10,
+      "worst_file_path": ".readthedocs.yaml",
+      "worst_file_score": 10,
+      "nloc_weighted_health": 10,
+      "critical_finding_count": 0,
+      "warning_finding_count": 0
+    },
+    {
+      "module": "readme",
+      "file_count": 1,
+      "average_health": 10,
+      "worst_file_path": "README.md",
+      "worst_file_score": 10,
+      "nloc_weighted_health": 10,
+      "critical_finding_count": 0,
+      "warning_finding_count": 0
+    },
+    {
+      "module": "pyproject",
+      "file_count": 1,
+      "average_health": 10,
+      "worst_file_path": "pyproject.toml",
+      "worst_file_score": 10,
+      "nloc_weighted_health": 10,
+      "critical_finding_count": 0,
+      "warning_finding_count": 0
+    },
+    {
+      "module": "on-create-command",
+      "file_count": 1,
+      "average_health": 10,
+      "worst_file_path": ".devcontainer/on-create-command.sh",
+      "worst_file_score": 10,
+      "nloc_weighted_health": 10,
+      "critical_finding_count": 0,
+      "warning_finding_count": 0
+    },
+    {
+      "module": "pull_request_template",
+      "file_count": 1,
+      "average_health": 10,
+      "worst_file_path": ".github/pull_request_template.md",
+      "worst_file_score": 10,
+      "nloc_weighted_health": 10,
+      "critical_finding_count": 0,
+      "warning_finding_count": 0
+    },
+    {
+      "module": "issue_template",
+      "file_count": 1,
+      "average_health": 10,
+      "worst_file_path": ".github/ISSUE_TEMPLATE/bug-report.md",
+      "worst_file_score": 10,
+      "nloc_weighted_health": 10,
+      "critical_finding_count": 0,
+      "warning_finding_count": 0
+    },
+    {
+      "module": "issue_template (1)",
+      "file_count": 2,
+      "average_health": 10,
+      "worst_file_path": ".github/ISSUE_TEMPLATE/config.yml",
+      "worst_file_score": 10,
+      "nloc_weighted_health": 10,
+      "critical_finding_count": 0,
+      "warning_finding_count": 0
+    },
+    {
+      "module": "workflows",
+      "file_count": 1,
+      "average_health": 10,
+      "worst_file_path": ".github/workflows/lock.yaml",
+      "worst_file_score": 10,
+      "nloc_weighted_health": 10,
+      "critical_finding_count": 0,
+      "warning_finding_count": 0
+    },
+    {
+      "module": "devcontainer",
+      "file_count": 1,
+      "average_health": 10,
+      "worst_file_path": ".devcontainer/devcontainer.json",
+      "worst_file_score": 10,
+      "nloc_weighted_health": 10,
+      "critical_finding_count": 0,
+      "warning_finding_count": 0
+    },
+    {
+      "module": "workflows (1)",
+      "file_count": 3,
+      "average_health": 10,
+      "worst_file_path": ".github/workflows/pre-commit.yaml",
+      "worst_file_score": 10,
+      "nloc_weighted_health": 10,
+      "critical_finding_count": 0,
+      "warning_finding_count": 0
+    },
+    {
+      "module": "tests/test_apps",
+      "file_count": 7,
+      "average_health": 10,
+      "worst_file_path": ".github/workflows/tests.yaml",
+      "worst_file_score": 10,
+      "nloc_weighted_health": 10,
+      "critical_finding_count": 0,
+      "warning_finding_count": 0
+    },
+    {
+      "module": "docs",
+      "file_count": 1,
+      "average_health": 10,
+      "worst_file_path": "docs/Makefile",
+      "worst_file_score": 10,
+      "nloc_weighted_health": 10,
+      "critical_finding_count": 0,
+      "warning_finding_count": 0
+    },
+    {
+      "module": "examples/celery",
+      "file_count": 1,
+      "average_health": 10,
+      "worst_file_path": "examples/celery/README.md",
+      "worst_file_score": 10,
+      "nloc_weighted_health": 10,
+      "critical_finding_count": 0,
+      "warning_finding_count": 0
+    },
+    {
+      "module": "examples/celery (1)",
+      "file_count": 1,
+      "average_health": 10,
+      "worst_file_path": "examples/celery/pyproject.toml",
+      "worst_file_score": 10,
+      "nloc_weighted_health": 10,
+      "critical_finding_count": 0,
+      "warning_finding_count": 0
+    },
+    {
+      "module": "examples/javascript",
+      "file_count": 1,
+      "average_health": 10,
+      "worst_file_path": "examples/javascript/pyproject.toml",
+      "worst_file_score": 10,
+      "nloc_weighted_health": 10,
+      "critical_finding_count": 0,
+      "warning_finding_count": 0
+    },
+    {
+      "module": "examples/tutorial (1)",
+      "file_count": 1,
+      "average_health": 10,
+      "worst_file_path": "examples/tutorial/pyproject.toml",
+      "worst_file_score": 10,
+      "nloc_weighted_health": 10,
+      "critical_finding_count": 0,
+      "warning_finding_count": 0
+    },
+    {
+      "module": "examples/tutorial",
+      "file_count": 1,
+      "average_health": 10,
+      "worst_file_path": "examples/tutorial/flaskr/schema.sql",
+      "worst_file_score": 10,
+      "nloc_weighted_health": 10,
+      "critical_finding_count": 0,
+      "warning_finding_count": 0
+    },
+    {
+      "module": "flask/sansio (1)",
+      "file_count": 1,
+      "average_health": 10,
+      "worst_file_path": "src/flask/sansio/README.md",
+      "worst_file_score": 10,
+      "nloc_weighted_health": 10,
+      "critical_finding_count": 0,
+      "warning_finding_count": 0
+    }
+  ],
+  "defect_accuracy": {
+    "k": 20,
+    "hits": 5,
+    "precision": 0.25,
+    "base_rate": 0.0556,
+    "lift": 4.5,
+    "window_days": 180,
+    "scored_files": 108,
+    "defect_files": 6,
+    "concentration_file_fraction": 0.2,
+    "concentration_defect_share": 0.8333,
+    "precision_table": [
+      {
+        "k": 10,
+        "hits": 3
+      },
+      {
+        "k": 20,
+        "hits": 5
+      },
+      {
+        "k": 30,
+        "hits": 5
+      }
+    ],
+    "flagged_files": [
+      {
+        "file_path": "src/flask/app.py",
+        "score": 1.07,
+        "recent_fixes": 1
+      },
+      {
+        "file_path": "src/flask/sansio/app.py",
+        "score": 1.35,
+        "recent_fixes": 1
+      },
+      {
+        "file_path": "src/flask/cli.py",
+        "score": 2.05,
+        "recent_fixes": 0
+      },
+      {
+        "file_path": "src/flask/sansio/blueprints.py",
+        "score": 3.53,
+        "recent_fixes": 0
+      },
+      {
+        "file_path": "src/flask/config.py",
+        "score": 5.15,
+        "recent_fixes": 0
+      },
+      {
+        "file_path": "src/flask/testing.py",
+        "score": 5.5,
+        "recent_fixes": 0
+      },
+      {
+        "file_path": "src/flask/ctx.py",
+        "score": 6.51,
+        "recent_fixes": 0
+      },
+      {
+        "file_path": "src/flask/templating.py",
+        "score": 7.15,
+        "recent_fixes": 0
+      },
+      {
+        "file_path": "src/flask/sansio/scaffold.py",
+        "score": 7.16,
+        "recent_fixes": 0
+      },
+      {
+        "file_path": "tests/test_basic.py",
+        "score": 7.49,
+        "recent_fixes": 1
+      },
+      {
+        "file_path": "src/flask/debughelpers.py",
+        "score": 7.53,
+        "recent_fixes": 0
+      },
+      {
+        "file_path": "src/flask/helpers.py",
+        "score": 8.09,
+        "recent_fixes": 0
+      },
+      {
+        "file_path": "tests/test_blueprints.py",
+        "score": 8.14,
+        "recent_fixes": 1
+      },
+      {
+        "file_path": "tests/test_cli.py",
+        "score": 8.19,
+        "recent_fixes": 1
+      },
+      {
+        "file_path": "src/flask/wrappers.py",
+        "score": 8.59,
+        "recent_fixes": 0
+      },
+      {
+        "file_path": "src/flask/blueprints.py",
+        "score": 8.64,
+        "recent_fixes": 0
+      },
+      {
+        "file_path": "tests/test_templating.py",
+        "score": 8.74,
+        "recent_fixes": 0
+      },
+      {
+        "file_path": "tests/test_appctx.py",
+        "score": 8.94,
+        "recent_fixes": 0
+      },
+      {
+        "file_path": "tests/test_reqctx.py",
+        "score": 8.94,
+        "recent_fixes": 0
+      },
+      {
+        "file_path": "tests/test_testing.py",
+        "score": 8.94,
+        "recent_fixes": 0
+      }
+    ]
+  },
+  "meta": {
+    "last_indexed_at": "2026-07-03T19:00:28.037767+00:00",
+    "head_commit": "36e4a824f340fdee7ed50937ba8e7f6bc7d17f81",
+    "snapshot_count": 1
+  },
+  "state": "ready",
+  "reason": null
+}

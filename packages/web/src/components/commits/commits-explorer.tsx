@@ -4,7 +4,7 @@ import { useState } from "react";
 import useSWR from "swr";
 import { useQueryState } from "nuqs";
 import { AlertTriangle, Bug, GitCommitHorizontal } from "lucide-react";
-import { StatCard } from "@repowise-dev/ui/shared/stat-card";
+import { MetricCard } from "@repowise-dev/ui/shared/metric-card";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 import {
   Sheet,
@@ -127,25 +127,25 @@ export function CommitsExplorer({ repoId }: { repoId: string }) {
       )}
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <StatCard
+        <MetricCard
           label="Commits"
           value={total}
           description="with change-risk"
           icon={<GitCommitHorizontal className="h-4 w-4 text-[var(--color-text-tertiary)]" />}
         />
-        <StatCard
+        <MetricCard
           label="High priority"
           value={highCount}
           description="top risk tercile"
           icon={<AlertTriangle className="h-4 w-4 text-[var(--color-error)]" />}
         />
-        <StatCard
+        <MetricCard
           label="Fix commits"
           value={fixCount}
           description="bug-fix subjects"
           icon={<Bug className="h-4 w-4 text-[var(--color-warning)]" />}
         />
-        <StatCard
+        <MetricCard
           label="Avg entropy"
           value={avgEntropy.toFixed(2)}
           description="change diffusion"

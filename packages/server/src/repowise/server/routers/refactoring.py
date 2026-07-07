@@ -167,14 +167,18 @@ async def get_refactoring_targets(
         description="Filter to one type: extract_class | extract_helper | move_method | break_cycle",
     ),
     min_confidence: str | None = Query(None, description="low | medium | high"),
+    file_path: str | None = Query(
+        None, description="Filter plans to one repo-relative file path"
+    ),
     session: AsyncSession = Depends(get_db_session),
 ) -> RefactoringTargetsResponse:
-    """Ranked refactoring plans for the repo, filterable by type and confidence.
+    """Ranked refactoring plans for the repo, filterable by type, confidence,
+    and file.
 
-    The summary ignores the *type* filter (so the per-type chips always show
-    every type's total, even while one type is selected) but does honor
-    *min_confidence* — so the summary and the plan list stay consistent under a
-    confidence filter.
+    The summary ignores the *type* and *file* filters (so the per-type chips
+    always show every type's total, even while one type is selected) but does
+    honor *min_confidence* — so the summary and the plan list stay consistent
+    under a confidence filter.
     """
     centrality = await _centrality_map(session, repo_id)
 
@@ -199,6 +203,8 @@ async def get_refactoring_targets(
         if refactoring_type is None
         else [r for r in all_rows if r.refactoring_type == refactoring_type]
     )
+    if file_path is not None:
+        rows = [r for r in rows if r.file_path == file_path]
     suggestions = [_row_to_suggestion(r) for r in rows]
     ranked = rank_suggestions(suggestions, centrality=centrality)
     return RefactoringTargetsResponse(

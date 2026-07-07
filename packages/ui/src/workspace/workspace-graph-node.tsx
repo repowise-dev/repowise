@@ -4,6 +4,7 @@ import { memo } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import { FileText, BarChart3 } from "lucide-react";
 import { languageColor } from "../lib/confidence";
+import { healthInk100 } from "../health/tokens";
 
 export interface WorkspaceGraphNodeData {
   repoId: string;
@@ -16,9 +17,7 @@ export interface WorkspaceGraphNodeData {
 }
 
 export function healthColor(score: number): string {
-  if (score >= 70) return "var(--color-risk-low)";
-  if (score >= 40) return "var(--color-risk-medium)";
-  return "var(--color-risk-high)";
+  return healthInk100(score);
 }
 
 export function HealthRing({

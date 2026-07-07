@@ -66,7 +66,7 @@ export function StructureTab({ repoId }: StructureTabProps) {
       ) : (
         <EmptyState
           title="No module graph yet"
-          description="Module structure appears once indexing completes. Run repowise update to refresh."
+          description="Module structure appears once indexing completes. Sync the repo to refresh."
         />
       )}
 

@@ -1,46 +1,51 @@
+"use client";
+
 import type { CochangeWarning } from "@repowise-dev/types/blast-radius";
-import { Th, Td } from "./cells";
+import { ResponsiveTable, type ResponsiveColumn } from "../shared/responsive-table";
 
 interface CochangeTableProps {
   rows: CochangeWarning[];
 }
 
+const COLUMNS: ResponsiveColumn<CochangeWarning>[] = [
+  {
+    key: "changed",
+    header: "Changed File",
+    render: (r) => (
+      <span className="font-mono text-xs break-all" title={r.changed}>
+        {r.changed}
+      </span>
+    ),
+  },
+  {
+    key: "missing_partner",
+    header: "Missing Partner",
+    render: (r) => (
+      <span className="font-mono text-xs break-all" title={r.missing_partner}>
+        {r.missing_partner}
+      </span>
+    ),
+  },
+  {
+    key: "score",
+    header: "Co-change Count",
+    align: "right",
+    render: (r) => <span className="tabular-nums">{r.score}</span>,
+  },
+];
+
 export function CochangeTable({ rows }: CochangeTableProps) {
+  const keyed = rows.map((row, i) => ({
+    ...row,
+    _key: `${row.changed}|${row.missing_partner}|${i}`,
+  }));
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full">
-        <caption className="sr-only">Co-change warnings</caption>
-        <thead>
-          <tr className="border-b border-[var(--color-border-default)]">
-            <Th>Changed File</Th>
-            <Th>Missing Partner</Th>
-            <Th>Co-change Count</Th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r, i) => (
-            <tr
-              key={`${r.changed}|${r.missing_partner}|${i}`}
-              className="group border-t border-[var(--color-table-divider)] hover:bg-[var(--color-bg-elevated)]"
-            >
-              <Td>
-                <span
-                  className="font-mono break-all group-hover:underline underline-offset-2"
-                  title={r.changed}
-                >
-                  {r.changed}
-                </span>
-              </Td>
-              <Td>
-                <span className="font-mono break-all" title={r.missing_partner}>
-                  {r.missing_partner}
-                </span>
-              </Td>
-              <Td className="text-right tabular-nums">{r.score}</Td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+    <ResponsiveTable<CochangeWarning & { _key: string }>
+      columns={COLUMNS}
+      rows={keyed}
+      rowKey={(r) => r._key}
+      caption="Co-change warnings"
+      bare
+    />
   );
 }

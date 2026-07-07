@@ -245,7 +245,7 @@ async def get_workspace(
 async def get_contracts(
     ws_config=Depends(get_workspace_config),
     enricher=Depends(get_cross_repo_enricher),
-    contract_type: str | None = Query(None, description="Filter: http, grpc, or topic"),
+    contract_type: str | None = Query(None, description="Filter: http, grpc, topic, or data"),
     repo: str | None = Query(None, description="Filter by repo alias"),
     role: str | None = Query(None, description="Filter: provider or consumer"),
     limit: int = Query(200, ge=1, le=1000),
@@ -782,18 +782,36 @@ async def sync_workspace(
         repo_path = (ws_root_path / entry.path).resolve()
         db_path = repo_path / ".repowise" / "wiki.db"
 
-        # Not indexed yet → no row to write a job against. Surface this
-        # as "skipped" so the UI can show a clear "run `repowise update
-        # --repo <alias>` from the CLI" hint. (A future enhancement is
-        # to support remote first-time indexing; see Phase C.)
+        # Not indexed yet → establish the repo-local database and run the
+        # first full index through the same job machinery, instead of
+        # bouncing the user to the CLI.
         if not db_path.exists():
+            try:
+                from repowise.server.repo_db import ensure_repo_registration
+                from repowise.server.routers.repos import _enqueue_index_job
+
+                factory, new_repo_id = await ensure_repo_registration(
+                    request.app.state,
+                    local_path=str(repo_path),
+                    name=entry.alias,
+                )
+                job_id = await _enqueue_index_job(request, factory, new_repo_id)
+            except Exception as exc:
+                results.append(
+                    WorkspaceSyncResult(
+                        alias=entry.alias,
+                        status="error",
+                        reason=f"first-time index failed to start: {exc}",
+                    )
+                )
+                continue
             results.append(
                 WorkspaceSyncResult(
                     alias=entry.alias,
-                    status="skipped",
-                    reason="not indexed yet (run `repowise update --repo "
-                    + entry.alias
-                    + "` from the CLI)",
+                    repo_id=new_repo_id,
+                    status="accepted" if job_id else "skipped",
+                    reason=None if job_id else "a job is already running for this repo",
+                    job_id=job_id,
                 )
             )
             continue

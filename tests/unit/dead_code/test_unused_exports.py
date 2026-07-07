@@ -54,6 +54,10 @@ def test_unused_export_detected():
     sym_names = [f.symbol_name for f in unused]
     assert "helper_func" in sym_names
 
+    finding = next(f for f in unused if f.symbol_name == "helper_func")
+    assert finding.start_line == 1
+    assert finding.end_line == 10
+
 
 def test_unused_export_skipped_when_symbol_has_incoming_calls():
     """A public symbol with no file-level importers but at least one

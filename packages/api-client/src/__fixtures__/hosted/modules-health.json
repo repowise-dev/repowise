@@ -1,0 +1,58 @@
+{
+  "items": [
+    {
+      "module_path": "docs",
+      "file_count": 1,
+      "symbol_count": 24,
+      "hotspot_count": 0,
+      "dead_code_count": 2,
+      "dead_code_lines": 241,
+      "avg_churn_percentile": 61.904761904761905,
+      "median_bus_factor": 2,
+      "min_bus_factor": 2,
+      "primary_owner": "David Lord",
+      "primary_owner_pct": 1,
+      "is_silo": true,
+      "decision_count": 0,
+      "doc_coverage_pct": 0,
+      "health_score": 25.714285714285715
+    },
+    {
+      "module_path": "examples",
+      "file_count": 17,
+      "symbol_count": 62,
+      "hotspot_count": 0,
+      "dead_code_count": 2,
+      "dead_code_lines": 40,
+      "avg_churn_percentile": 35.22408963585434,
+      "median_bus_factor": 1,
+      "min_bus_factor": 1,
+      "primary_owner": "David Lord",
+      "primary_owner_pct": 1,
+      "is_silo": true,
+      "decision_count": 0,
+      "doc_coverage_pct": 32.25806451612903,
+      "health_score": 61.613919761452976
+    },
+    {
+      "module_path": "src",
+      "file_count": 24,
+      "symbol_count": 495,
+      "hotspot_count": 0,
+      "dead_code_count": 9,
+      "dead_code_lines": 76,
+      "avg_churn_percentile": 73.26388888888889,
+      "median_bus_factor": 2,
+      "min_bus_factor": 1,
+      "primary_owner": "David Lord",
+      "primary_owner_pct": 0.8333333333333334,
+      "is_silo": true,
+      "decision_count": 21,
+      "doc_coverage_pct": 51.515151515151516,
+      "health_score": 72.3626893939394
+    }
+  ],
+  "total": 5,
+  "has_more": true,
+  "next_offset": 3
+}

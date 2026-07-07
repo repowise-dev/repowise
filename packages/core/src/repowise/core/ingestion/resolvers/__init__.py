@@ -24,6 +24,7 @@ from .python import resolve_python_import
 from .ruby import resolve_ruby_import
 from .rust import resolve_rust_import
 from .scala import resolve_scala_import
+from .sql import resolve_dbt_import
 from .swift import resolve_swift_import
 from .typescript import resolve_ts_js_import
 
@@ -53,6 +54,8 @@ _RESOLVERS: dict[str, ResolverFn] = {
     "lean": resolve_lean_import,
     "erlang": resolve_erlang_import,
     "fsharp": resolve_fsharp_import,
+    # dbt ref()/source(), gated on dbt_project.yml via the model index.
+    "sql": resolve_dbt_import,
 }
 
 

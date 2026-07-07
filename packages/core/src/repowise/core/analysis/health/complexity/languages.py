@@ -131,6 +131,73 @@ class LanguageNodeMap:
     call_kinds: frozenset[str] = frozenset()
     async_function_kinds: frozenset[str] = frozenset()
 
+    # ------------------------------------------------------------------
+    # Dataflow def/use pass (intra-procedural CFG + reaching definitions).
+    # All three default to empty, making the read-vs-write distinction
+    # OPT-IN per language: a language that maps none produces no def/use
+    # signal (and so no reaching definitions), the safe "no signal" default.
+    # The per-language ``DefUseDialect`` (``dataflow/dialects/``) consumes
+    # these to recognise the assignment shapes whose targets are writes.
+    #
+    #   * ``assignment_kinds`` — node type(s) for a plain assignment whose
+    #     ``left`` field is the write target (Python ``assignment``; TS/JS
+    #     ``assignment_expression``).
+    #   * ``augmented_assign_kinds`` — compound-assignment node type(s)
+    #     (``x += 1``) whose target is BOTH read and written.
+    #   * ``local_decl_kinds`` — node type(s) that introduce a fresh local
+    #     binding distinct from assignment (Go ``short_var_declaration``,
+    #     Rust ``let_declaration``). Empty for languages such as Python where
+    #     assignment is the only binding form; the dialect handles the
+    #     remaining Python def sites (``for`` target, ``with ... as``, walrus,
+    #     comprehension target) structurally.
+    assignment_kinds: frozenset[str] = frozenset()
+    augmented_assign_kinds: frozenset[str] = frozenset()
+    local_decl_kinds: frozenset[str] = frozenset()
+
+    # ------------------------------------------------------------------
+    # Dataflow control-flow grammar (CFG builder + Extract Method slicer).
+    # These name the structured-statement node kinds the language-agnostic
+    # CFG builder (``dataflow/cfg.py``) and the slicer (``dataflow/slice.py``)
+    # branch on, so the structural pass needs no per-language ``if`` chain.
+    # All default to empty: a language that maps none builds a degenerate
+    # (straight-line) CFG and so produces no Extract Method signal -- the same
+    # precision-first "no signal" default the def/use dialect uses. They sit on
+    # the node-map (next to ``branch_kinds`` / ``loop_kinds`` / ``try_kinds``,
+    # which already drive the CFG) rather than on the ``DefUseDialect`` so the
+    # CFG builder keeps taking only an ``lmap`` -- additive and registry-
+    # dispatched exactly like the control-flow kinds above it.
+    #
+    #   * ``if_kinds`` -- the *statement-level* conditional node(s) that open a
+    #     CFG branch (Python ``if_statement``; Rust ``if_expression``). Narrower
+    #     than ``branch_kinds``, which also carries expression-level conditionals
+    #     (ternary / ``conditional_expression``) that are NOT block boundaries.
+    #   * ``block_kinds`` -- statement-container node(s) whose named children are
+    #     a flat statement sequence (Python/Go/Java ``block``; TS
+    #     ``statement_block``; Go additionally nests a ``statement_list`` inside
+    #     its ``block``, so it maps both and the builder unwraps the wrapper).
+    #   * ``return_kinds`` / ``raise_kinds`` / ``break_kinds`` /
+    #     ``continue_kinds`` -- the jump statements. ``return`` / ``raise``
+    #     (``throw``) edge to the function exit; ``break`` / ``continue`` edge to
+    #     the enclosing loop's exit / header. A language that omits one simply
+    #     records that statement as a plain straight-line node (no special edge).
+    if_kinds: frozenset[str] = frozenset()
+    block_kinds: frozenset[str] = frozenset()
+    return_kinds: frozenset[str] = frozenset()
+    raise_kinds: frozenset[str] = frozenset()
+    break_kinds: frozenset[str] = frozenset()
+    continue_kinds: frozenset[str] = frozenset()
+    #   * ``statement_wrapper_kinds`` -- statement node(s) that merely wrap the
+    #     node the CFG builder should classify, as their last named child.
+    #     Expression-oriented grammars need this: tree-sitter-rust parses every
+    #     statement-position control-flow expression (``for`` / ``if`` /
+    #     ``return`` / ``break``) inside an ``expression_statement``, so without
+    #     unwrapping the builder would see one opaque statement and produce a
+    #     straight-line CFG. A nonempty set is therefore also the slicer's
+    #     expression-oriented-language marker: it then refuses spans ending on a
+    #     block's tail expression (the implicit value an extraction would
+    #     silently drop), so only truly expression-oriented grammars may map it.
+    statement_wrapper_kinds: frozenset[str] = frozenset()
+
 
 _PY = LanguageNodeMap(
     function_kinds=frozenset({"function_definition", "async_function_definition"}),
@@ -151,6 +218,14 @@ _PY = LanguageNodeMap(
     assert_call_kinds=frozenset({"call"}),
     call_kinds=frozenset({"call"}),
     async_function_kinds=frozenset({"async_function_definition"}),
+    assignment_kinds=frozenset({"assignment"}),
+    augmented_assign_kinds=frozenset({"augmented_assignment"}),
+    if_kinds=frozenset({"if_statement"}),
+    block_kinds=frozenset({"block"}),
+    return_kinds=frozenset({"return_statement"}),
+    raise_kinds=frozenset({"raise_statement"}),
+    break_kinds=frozenset({"break_statement"}),
+    continue_kinds=frozenset({"continue_statement"}),
 )
 
 _TS = LanguageNodeMap(
@@ -190,6 +265,19 @@ _TS = LanguageNodeMap(
     # TS/JS async is a modifier token, not a distinct node type; the walker
     # sniffs the ``async`` child token instead, so this stays empty.
     async_function_kinds=frozenset(),
+    # ``x = ...`` is an ``assignment_expression``; ``x += ...`` a dedicated
+    # ``augmented_assignment_expression``. ``let`` / ``const`` declare via
+    # ``lexical_declaration``, ``var`` via ``variable_declaration`` (both nest a
+    # ``variable_declarator``); the dialect reads their ``name`` binding.
+    assignment_kinds=frozenset({"assignment_expression"}),
+    augmented_assign_kinds=frozenset({"augmented_assignment_expression"}),
+    local_decl_kinds=frozenset({"lexical_declaration", "variable_declaration"}),
+    if_kinds=frozenset({"if_statement"}),
+    block_kinds=frozenset({"statement_block"}),
+    return_kinds=frozenset({"return_statement"}),
+    raise_kinds=frozenset({"throw_statement"}),
+    break_kinds=frozenset({"break_statement"}),
+    continue_kinds=frozenset({"continue_statement"}),
 )
 
 _JS = _TS  # identical control-flow nodes; tree-sitter-javascript shares shape.
@@ -212,6 +300,20 @@ _GO = LanguageNodeMap(
     # ``assert.Equal(t, ...)`` (testify) — best-effort call detection.
     assert_call_kinds=frozenset({"call_expression"}),
     call_kinds=frozenset({"call_expression"}),
+    # ``x = ...`` and ``x += ...`` are both ``assignment_statement`` (the dialect
+    # tells them apart by the operator token), so the augmented set stays empty.
+    # ``:=`` is a ``short_var_declaration``; ``var x = ...`` a ``var_declaration``
+    # (nesting ``var_spec``) -- both introduce fresh locals.
+    assignment_kinds=frozenset({"assignment_statement"}),
+    local_decl_kinds=frozenset({"short_var_declaration", "var_declaration"}),
+    if_kinds=frozenset({"if_statement"}),
+    # A Go ``block`` wraps its statements in a ``statement_list`` child; both are
+    # mapped so the CFG builder unwraps the wrapper to reach the statements.
+    block_kinds=frozenset({"block", "statement_list"}),
+    return_kinds=frozenset({"return_statement"}),
+    # Go has no exceptions (``panic`` is an ordinary call), so no raise kind.
+    break_kinds=frozenset({"break_statement"}),
+    continue_kinds=frozenset({"continue_statement"}),
 )
 
 _JAVA = LanguageNodeMap(
@@ -243,6 +345,19 @@ _JAVA = LanguageNodeMap(
     # The perf pass needs both forms: ``repo.find()`` (method_invocation) and
     # ``new FileInputStream()`` (object_creation_expression).
     call_kinds=frozenset({"method_invocation", "object_creation_expression"}),
+    # ``x = ...`` and ``x += ...`` are both ``assignment_expression`` (the
+    # dialect tells them apart by the operator token, as in Go), so the
+    # augmented set stays empty. ``int x = 1, y = 2;`` is a
+    # ``local_variable_declaration`` nesting one ``variable_declarator`` per
+    # bound name.
+    assignment_kinds=frozenset({"assignment_expression"}),
+    local_decl_kinds=frozenset({"local_variable_declaration"}),
+    if_kinds=frozenset({"if_statement"}),
+    block_kinds=frozenset({"block"}),
+    return_kinds=frozenset({"return_statement"}),
+    raise_kinds=frozenset({"throw_statement"}),
+    break_kinds=frozenset({"break_statement"}),
+    continue_kinds=frozenset({"continue_statement"}),
 )
 
 _RUST = LanguageNodeMap(
@@ -274,6 +389,28 @@ _RUST = LanguageNodeMap(
     # ``function_modifiers`` child — so ``async_function_kinds`` stays empty and
     # ``RustPerfDialect.is_async_fn`` sniffs the modifier instead.
     call_kinds=frozenset({"call_expression"}),
+    # ``x = ...`` is an ``assignment_expression``; ``x += ...`` a dedicated
+    # ``compound_assignment_expr``. ``let`` (with any pattern) is the fresh-
+    # binding form. ``if_let_expression`` / ``while_let_expression`` only exist
+    # in older tree-sitter-rust grammars (current ones parse ``if let`` as an
+    # ``if_expression`` with a ``let_condition``); listing them is harmless.
+    assignment_kinds=frozenset({"assignment_expression"}),
+    augmented_assign_kinds=frozenset({"compound_assignment_expr"}),
+    local_decl_kinds=frozenset({"let_declaration"}),
+    if_kinds=frozenset({"if_expression", "if_let_expression"}),
+    block_kinds=frozenset({"block"}),
+    return_kinds=frozenset({"return_expression"}),
+    # ``?`` (``try_expression``) propagates an error out of the function -- an
+    # early exit the CFG treats as a terminator and the Extract Method slicer
+    # treats as a jump, so no span containing one is ever offered.
+    raise_kinds=frozenset({"try_expression"}),
+    break_kinds=frozenset({"break_expression"}),
+    continue_kinds=frozenset({"continue_expression"}),
+    # Rust parses every statement-position control-flow expression inside an
+    # ``expression_statement``; the CFG builder unwraps it to classify the real
+    # node, and the slicer uses this as the expression-oriented marker for
+    # tail-expression suppression.
+    statement_wrapper_kinds=frozenset({"expression_statement"}),
 )
 
 
@@ -302,6 +439,50 @@ _KOTLIN = LanguageNodeMap(
     # ``assertTrue(...)`` are plain calls placed directly in the statement
     # list (no ``expression_statement`` wrapper).
     assert_call_kinds=frozenset({"call_expression"}),
+)
+
+_DART = LanguageNodeMap(
+    # Dart splits a function into a ``function_signature`` node whose body is
+    # a SIBLING ``function_body`` node (members wrap the signature in
+    # ``method_signature``). Keying ``function_kinds`` on the body measures
+    # complexity/NLOC exactly right with the shared walker; the entry name
+    # and parameter count come from the preceding signature sibling (see the
+    # ``function_body`` handling in ``ast_utils`` / ``perf_walk``).
+    function_kinds=frozenset({"function_body"}),
+    lambda_kinds=frozenset({"function_expression"}),
+    # ``if_element`` is the collection-literal ``if`` (``[if (x) y]``);
+    # ``conditional_expression`` is the ternary.
+    branch_kinds=frozenset({"if_statement", "conditional_expression", "if_element"}),
+    loop_kinds=frozenset(
+        {"for_statement", "while_statement", "do_statement", "for_element"}
+    ),
+    try_kinds=frozenset({"try_statement"}),
+    # A bare ``on FormatException {}`` arm without ``catch`` has no
+    # catch_clause node (the block hangs off try_statement directly), so it
+    # is undercounted — the safe direction.
+    catch_kinds=frozenset({"catch_clause"}),
+    switch_kinds=frozenset({"switch_statement", "switch_expression"}),
+    case_kinds=frozenset(
+        {"switch_statement_case", "switch_statement_default", "switch_expression_case"}
+    ),
+    # The grammar exposes dedicated operator nodes inside
+    # logical_and_expression / logical_or_expression — one node per operator
+    # occurrence, so no binary-node text sniffing is needed.
+    boolean_operator_kinds=frozenset({"logical_and_operator", "logical_or_operator"}),
+    # Method/size/CCN class facts only. Dart has no wrapper node for
+    # ``this.member`` (receiver and ``.member`` selector are flat siblings)
+    # and idiomatic Dart omits ``this.`` anyway, so member access stays
+    # unmapped and LCOM4 sits at its "no signal" safety valve rather than
+    # mis-firing on every class.
+    class_kinds=frozenset({"class_definition", "mixin_declaration"}),
+    self_identifiers=frozenset({"this"}),
+    # ``assert(...)`` is a real statement in Dart. package:test ``expect()``
+    # calls have no call-expression node type to key on (calls are selector
+    # chains), so assertion-call runs are not counted — under-signal, safe.
+    assert_kinds=frozenset({"assert_statement"}),
+    # Calls are ``selector`` nodes carrying an ``argument_part``; the Dart
+    # perf dialect's callee extraction filters out the non-call selectors.
+    call_kinds=frozenset({"selector"}),
 )
 
 _CPP = LanguageNodeMap(
@@ -367,6 +548,7 @@ LANGUAGE_MAPS: dict[str, LanguageNodeMap] = {
     "kotlin": _KOTLIN,
     "cpp": _CPP,
     "csharp": _CSHARP,
+    "dart": _DART,
 }
 
 

@@ -1,7 +1,7 @@
 """The CCN / cognitive / max-nesting engine.
 
 ``_walk_function_body`` is the recursive per-function walk: it accumulates
-McCabe cyclomatic complexity, SonarSource cognitive complexity, max nesting
+McCabe cyclomatic complexity, cognitive complexity, max nesting
 depth, ``bumps`` (independent heavy branches), and a side-channel of compound
 boolean conditions. The helpers above it classify branch / loop / case / catch
 nodes and pull condition subtrees out for the boolean-operator tally.
@@ -180,8 +180,7 @@ def _walk_function_body(
 
     ``bumps`` counts how many *direct* children of the function body
     contain nested control flow that reaches a depth of ≥ 2. A function
-    with several heavy independent branches is "bumpy" in
-    CodeScene/SonarSource terminology.
+    with several heavy independent branches is "bumpy".
 
     ``complex_conditions`` is an additive side-channel — collected for
     every branch/loop/case construct encountered. The CCN / cognitive
@@ -269,7 +268,7 @@ def _walk_function_body(
         ccn += ccn_increment
         new_depth = depth + nesting_increment
         if nesting_increment:
-            # SonarSource cognitive: each nesting node adds (1 + depth).
+            # Cognitive complexity: each nesting node adds (1 + depth).
             cognitive += 1 + depth
         elif ccn_increment:
             # Flat +1 for boolean operators (no nesting impact).

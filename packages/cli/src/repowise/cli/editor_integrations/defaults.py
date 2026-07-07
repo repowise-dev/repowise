@@ -6,12 +6,13 @@ from repowise.cli.editor_setup import EditorSetupIntegration
 
 from .claude import ClaudeCodeSetup
 from .codex import CodexSetup
+from .vscode import VSCodeSetup
 
 
 def get_default_editor_integrations() -> tuple[EditorSetupIntegration, ...]:
     """Return the editor integrations enabled by default today."""
 
-    return (ClaudeCodeSetup(), CodexSetup())
+    return (ClaudeCodeSetup(), CodexSetup(), VSCodeSetup())
 
 
 def get_default_disabled_project_files(*, no_claude_md: bool = False) -> tuple[str, ...]:

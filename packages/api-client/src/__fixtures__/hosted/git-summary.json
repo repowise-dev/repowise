@@ -1,0 +1,23 @@
+{
+  "total_files": 84,
+  "hotspot_count": 0,
+  "stable_count": 35,
+  "average_churn_percentile": 49.404761904761905,
+  "top_owners": [
+    {
+      "name": "David Lord",
+      "file_count": 58,
+      "pct": 0.6904761904761905
+    },
+    {
+      "name": "Markus Unterwaditzer",
+      "file_count": 5,
+      "pct": 0.05952380952380952
+    },
+    {
+      "name": "pgjones",
+      "file_count": 4,
+      "pct": 0.047619047619047616
+    }
+  ]
+}

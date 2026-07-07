@@ -199,12 +199,7 @@ export function ArchNodeInfo(props: ArchNodeInfoProps) {
         </Section>
       )}
 
-      {props.health && (
-        <HealthSection
-          health={props.health}
-          node={node}
-        />
-      )}
+      {props.health && <HealthSection health={props.health} />}
 
       <OwnershipSection
         primaryOwner={node.primary_owner}
@@ -319,13 +314,7 @@ function HeaderSection({
   );
 }
 
-function HealthSection({
-  health,
-  node,
-}: {
-  health: ArchNodeHealth;
-  node: { primary_owner: string | null; bus_factor: number | null };
-}) {
+function HealthSection({ health }: { health: ArchNodeHealth }) {
   return (
     <Section title="Health">
       <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>

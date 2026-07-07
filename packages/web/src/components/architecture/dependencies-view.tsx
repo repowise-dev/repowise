@@ -8,6 +8,7 @@ import { ApiError } from "@repowise-dev/ui/shared/api-error";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
 import { getExternalSystems } from "@/lib/api/external-systems";
+import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
 
 export function DependenciesView({ repoId }: { repoId: string }) {
   const { data, error, isLoading, mutate } = useSWR(
@@ -31,7 +32,7 @@ export function DependenciesView({ repoId }: { repoId: string }) {
       {error ? (
         <ApiError
           title="Couldn't load the dependency registry"
-          message={error instanceof Error ? error.message : String(error)}
+          message={toFriendlyMessage(error)}
           onRetry={() => void mutate()}
         />
       ) : isLoading || !data ? (

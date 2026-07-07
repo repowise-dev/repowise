@@ -161,7 +161,7 @@ export function TriageView({
         </div>
       ) : error ? (
         <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] p-4 text-sm text-[var(--color-text-secondary)] flex items-center justify-between gap-2">
-          <span>Couldn&apos;t load health data. Run <code>repowise init</code> to populate.</span>
+          <span>Couldn&apos;t load health data. Index this repo to populate it.</span>
           <Button size="sm" variant="outline" onClick={() => mutate()}>Retry</Button>
         </div>
       ) : overview ? (

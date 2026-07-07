@@ -10,8 +10,10 @@
 export type RefactoringType =
   | "extract_class"
   | "extract_helper"
+  | "extract_method"
   | "move_method"
-  | "break_cycle";
+  | "break_cycle"
+  | "split_file";
 
 export type EffortBucket = "S" | "M" | "L" | "XL";
 export type Confidence = "low" | "medium" | "high";
@@ -133,6 +135,79 @@ export function cutEdges(plan: RefactoringPlan): CutEdge[] {
   });
 }
 
+export interface ExtractMethodPlan {
+  /** The line span (1-indexed, inclusive) to lift into a helper. */
+  span: { start: number; end: number } | null;
+  /** Inferred IN parameters and OUT return(s). */
+  params: string[];
+  returns: string[];
+  suggested_name: string | null;
+}
+
+export function extractMethodPlan(plan: RefactoringPlan): ExtractMethodPlan {
+  const p = (plan.plan ?? {}) as Record<string, unknown>;
+  const rawSpan = p.span as Record<string, unknown> | undefined;
+  const span =
+    rawSpan && typeof rawSpan === "object"
+      ? { start: Number(rawSpan.start ?? 0), end: Number(rawSpan.end ?? 0) }
+      : null;
+  return {
+    span: span && span.start && span.end ? span : null,
+    params: Array.isArray(p.params) ? (p.params as string[]) : [],
+    returns: Array.isArray(p.returns) ? (p.returns as string[]) : [],
+    suggested_name: typeof p.suggested_name === "string" ? p.suggested_name : null,
+  };
+}
+
+export interface SplitGroup {
+  name: string | null;
+  symbols: string[];
+  suggested_file: string;
+}
+
+export function splitGroups(plan: RefactoringPlan): SplitGroup[] {
+  const groups = plan.plan?.groups;
+  if (!Array.isArray(groups)) return [];
+  return groups.map((g) => {
+    const rec = (g ?? {}) as Record<string, unknown>;
+    return {
+      name: typeof rec.name === "string" ? rec.name : null,
+      symbols: Array.isArray(rec.symbols) ? (rec.symbols as string[]) : [],
+      suggested_file: String(rec.suggested_file ?? ""),
+    };
+  });
+}
+
+/** The shared "core" symbols that stay in the original file (spine + leftovers).
+ *  Empty when the plan carries no residual group. */
+export function splitResidual(plan: RefactoringPlan): string[] {
+  const residual = plan.plan?.residual as Record<string, unknown> | null | undefined;
+  if (!residual || typeof residual !== "object") return [];
+  const symbols = residual.symbols;
+  return Array.isArray(symbols) ? (symbols as string[]) : [];
+}
+
+/** Whether the original path needs a back-compat re-export shim (Python/TS/…);
+ *  false for same-package languages like Go where sibling files share scope. */
+export function splitShimRequired(plan: RefactoringPlan): boolean {
+  return (plan.plan as Record<string, unknown>)?.shim_required === true;
+}
+
+export interface SplitBlast {
+  dependent_files: string[];
+  dependent_count: number;
+  import_rewrites: number;
+}
+
+export function splitBlast(plan: RefactoringPlan): SplitBlast {
+  const br = (plan.blast_radius ?? {}) as Record<string, unknown>;
+  return {
+    dependent_files: Array.isArray(br.dependent_files) ? (br.dependent_files as string[]) : [],
+    dependent_count: Number(br.dependent_count ?? 0),
+    import_rewrites: Number(br.import_rewrites ?? 0),
+  };
+}
+
 /** A one-line synopsis for the compact card — what the plan does, at a glance. */
 export function planSynopsis(plan: RefactoringPlan): string {
   switch (plan.refactoring_type) {
@@ -149,6 +224,11 @@ export function planSynopsis(plan: RefactoringPlan): string {
         lines ? ` · ${lines} lines` : ""
       }`;
     }
+    case "extract_method": {
+      const em = extractMethodPlan(plan);
+      const lines = em.span ? em.span.end - em.span.start + 1 : 0;
+      return lines ? `Extract ${lines} line${lines === 1 ? "" : "s"} into a helper` : "Extract a helper method";
+    }
     case "move_method": {
       const mv = moveTarget(plan);
       return mv ? `${mv.from_class} → ${mv.to_class}` : "Move method";
@@ -158,6 +238,10 @@ export function planSynopsis(plan: RefactoringPlan): string {
       const edges = cutEdges(plan).length;
       return `${members} files · cut ${edges} edge${edges === 1 ? "" : "s"}`;
     }
+    case "split_file": {
+      const n = splitGroups(plan).length;
+      return `Split into ${n} module${n === 1 ? "" : "s"}`;
+    }
     default:
       return "";
   }
@@ -166,13 +250,17 @@ export function planSynopsis(plan: RefactoringPlan): string {
 /** The files this refactoring drags along, read from whichever blast-radius
  *  shape the type carries. */
 export function blastFiles(plan: RefactoringPlan): string[] {
-  const files = plan.blast_radius?.files;
-  return Array.isArray(files) ? (files as string[]) : [];
+  const br = plan.blast_radius ?? {};
+  for (const key of ["files", "dependent_files"] as const) {
+    const v = br[key];
+    if (Array.isArray(v)) return v as string[];
+  }
+  return [];
 }
 
 export function blastCount(plan: RefactoringPlan): number {
   const br = plan.blast_radius ?? {};
-  for (const key of ["file_count", "dependents_count", "callers"] as const) {
+  for (const key of ["file_count", "dependents_count", "dependent_count", "callers"] as const) {
     const v = br[key];
     if (typeof v === "number" && v) return v;
   }
@@ -196,6 +284,14 @@ export const EVIDENCE_LABELS: Record<string, string> = {
   cycle_size: "Cycle size",
   edge_count: "Edges in cycle",
   cut_count: "Edges to cut",
+  file_nloc: "File NLOC",
+  symbol_count: "Symbols",
+  group_count: "Groups",
+  modularity: "Modularity",
+  intra_edges: "Cohesive edges",
+  cut_edges: "Cut edges",
+  slice_nloc: "Extracted lines",
+  ccn_removed: "Complexity removed",
 };
 
 export function evidenceRows(plan: RefactoringPlan): { label: string; value: string }[] {
@@ -261,9 +357,11 @@ function fmtMetric(value: unknown): string | null {
 }
 
 /**
- * Read the Extract Class self-check (LCOM4 + TCC before/after) into a single
- * verdict for the UI. Other types — and any skipped/absent check — return a
- * neutral note rather than a false pass.
+ * Read a generation self-check into a single verdict for the UI. Extract Class
+ * reports an LCOM4 + TCC before/after delta; Split File reports whether the
+ * generated files are below the size floor and the symbols are cleanly
+ * partitioned. Any skipped/absent check — and any type without a self-check —
+ * returns a neutral note rather than a false pass.
  */
 export function generatedVerdict(result: GeneratedCode): GeneratedVerdict | null {
   const v = result.validation;
@@ -274,6 +372,37 @@ export function generatedVerdict(result: GeneratedCode): GeneratedVerdict | null
     return { tone: "neutral", label: "Self-check skipped", ...(reason ? { detail: reason } : {}) };
   }
   if (status !== "checked") return null;
+
+  if (result.refactoring_type === "extract_method") {
+    const improved = v.improved === true;
+    const parts: string[] = [];
+    const before = fmtMetric(v.original_ccn);
+    const after = fmtMetric(v.residual_ccn);
+    if (before !== null && after !== null) parts.push(`CCN ${before} → ${after}`);
+    const fns = fmtMetric(v.function_count);
+    if (fns !== null) parts.push(`${fns} functions`);
+    return {
+      tone: improved ? "pass" : "fail",
+      label: improved ? "Complexity reduced" : "Complexity not reduced",
+      ...(parts.length ? { detail: parts.join(" · ") } : {}),
+    };
+  }
+
+  if (result.refactoring_type === "split_file") {
+    const improved = v.improved === true;
+    const parts: string[] = [];
+    const files = fmtMetric(v.file_count);
+    if (files !== null) parts.push(`${files} files`);
+    const maxN = fmtMetric(v.max_file_nloc);
+    if (maxN !== null) parts.push(`max ${maxN} NLOC`);
+    const dups = Array.isArray(v.duplicated_symbols) ? v.duplicated_symbols.length : 0;
+    if (dups) parts.push(`${dups} symbol${dups === 1 ? "" : "s"} duplicated`);
+    return {
+      tone: improved ? "pass" : "fail",
+      label: improved ? "Cleanly partitioned" : "Partition incomplete",
+      ...(parts.length ? { detail: parts.join(" · ") } : {}),
+    };
+  }
 
   const improved = v.improved === true;
   const parts: string[] = [];
@@ -315,6 +444,16 @@ export function planWins(plan: RefactoringPlan): PlanWin[] {
       if (lines) wins.push({ label: `~${lines} duplicated lines removed` });
       break;
     }
+    case "extract_method": {
+      const em = extractMethodPlan(plan);
+      const ccn = Number(plan.evidence?.ccn_removed ?? 0);
+      if (em.span) {
+        const lines = em.span.end - em.span.start + 1;
+        wins.push({ label: `${lines} line${lines === 1 ? "" : "s"} lifted into a focused helper` });
+      }
+      if (ccn) wins.push({ label: `-${ccn} cyclomatic complexity on the original method` });
+      break;
+    }
     case "move_method": {
       const mv = moveTarget(plan);
       if (mv) wins.push({ label: `${mv.method} lives with the data it uses` });
@@ -325,6 +464,25 @@ export function planWins(plan: RefactoringPlan): PlanWin[] {
       const edges = cutEdges(plan).length;
       if (members) wins.push({ label: `${members} files untangled` });
       if (edges) wins.push({ label: `${edges} import edge${edges === 1 ? "" : "s"} cut` });
+      break;
+    }
+    case "split_file": {
+      const n = splitGroups(plan).length;
+      const blast = splitBlast(plan);
+      if (n) wins.push({ label: `${n} focused module${n === 1 ? "" : "s"} from one file` });
+      if (blast.import_rewrites > 0) {
+        wins.push({
+          label: `${blast.import_rewrites} dependent file${
+            blast.import_rewrites === 1 ? "" : "s"
+          } to re-point`,
+        });
+      } else if (blast.dependent_count > 0) {
+        wins.push({
+          label: `${blast.dependent_count} dependent${
+            blast.dependent_count === 1 ? "" : "s"
+          }, zero import edits`,
+        });
+      }
       break;
     }
   }

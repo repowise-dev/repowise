@@ -26,7 +26,16 @@ const MAX_DOTS = 120;
 export function RefactoringQuadrant({ plans, onSelect, height = 400 }: RefactoringQuadrantProps) {
   const [hovered, setHovered] = useState<RefactoringPlan | null>(null);
   const scored = useMemo(() => plans.filter((p) => p.rank_score > 0), [plans]);
-  const data = useMemo(() => scored.slice(0, MAX_DOTS), [scored]);
+  // The dot budget is limited, and one high-volume type (Extract Helper / clone
+  // dedup often numbers in the hundreds) must not consume it all and hide the
+  // rest. Seat every other type first, in rank order, then let Extract Helper
+  // fill whatever capacity remains — so Split File / Move Method / Break Cycle /
+  // Extract Class always get plotted.
+  const data = useMemo(() => {
+    const primary = scored.filter((p) => p.refactoring_type !== "extract_helper");
+    const helpers = scored.filter((p) => p.refactoring_type === "extract_helper");
+    return [...primary, ...helpers].slice(0, MAX_DOTS);
+  }, [scored]);
   const capped = scored.length > MAX_DOTS;
 
   if (data.length === 0) {
@@ -69,7 +78,8 @@ export function RefactoringQuadrant({ plans, onSelect, height = 400 }: Refactori
     <div className="rounded-2xl border border-[var(--color-border-default)] bg-gradient-to-br from-[var(--color-bg-surface)] to-[var(--color-bg-elevated)]/30 p-2 text-[var(--color-text-primary)]">
       {capped ? (
         <p className="px-2 pt-1 text-[11px] text-[var(--color-text-tertiary)]">
-          Showing the top {MAX_DOTS} of {scored.length} by priority
+          Plotting {data.length} of {scored.length} plans — Extract Helper yields space so every
+          type stays visible
         </p>
       ) : null}
       <div className="relative">

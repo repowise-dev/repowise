@@ -34,6 +34,13 @@ from .c4 import (
     C4RelationResponse,
     C4SystemResponse,
 )
+from .zoom import (
+    ZoomMapResponse,
+    ZoomMetricsResponse,
+    ZoomNodeResponse,
+    ZoomRectResponse,
+    ZoomRelationResponse,
+)
 from .chat import (
     ChatMessageResponse,
     ChatRequest,
@@ -64,6 +71,7 @@ from .external_systems import (
 from .git import (
     AgentTrendBucket,
     AgentTrendResponse,
+    ChangeFeaturesResponse,
     CommitDetailResponse,
     CommitEvolutionBucket,
     CommitEvolutionResponse,
@@ -74,6 +82,7 @@ from .git import (
     HotspotResponse,
     OwnershipEntry,
     RiskDriverResponse,
+    RiskRangeResponse,
 )
 from .graph import (
     ArchitectureEdgeResponse,
@@ -228,6 +237,7 @@ __all__ = [
     "C4SystemResponse",
     "CallerCalleeEntry",
     "CallersCalleesResponse",
+    "ChangeFeaturesResponse",
     "ChangelogEntryModel",
     "ChangelogResponse",
     "ChangelogSectionModel",
@@ -313,6 +323,7 @@ __all__ = [
     "ReviewerSuggestion",
     "ReviewerSuggestionsResponse",
     "RiskDriverResponse",
+    "RiskRangeResponse",
     "SearchRequest",
     "SearchResultResponse",
     "SecurityFindingResponse",
@@ -355,4 +366,9 @@ __all__ = [
     "WorkspaceSystemGraphResponse",
     "WorkspaceSystemNode",
     "WorkspaceUnmatchedConsumer",
+    "ZoomMapResponse",
+    "ZoomMetricsResponse",
+    "ZoomNodeResponse",
+    "ZoomRectResponse",
+    "ZoomRelationResponse",
 ]

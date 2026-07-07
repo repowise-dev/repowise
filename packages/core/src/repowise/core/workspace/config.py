@@ -72,7 +72,7 @@ class ManualContractLink:
 
     from_repo: str
     to_repo: str
-    contract_type: str  # "http" | "grpc" | "topic"
+    contract_type: str  # "http" | "grpc" | "topic" | "data"
     contract_id: str  # normalized contract ID
     from_role: str = "consumer"  # the from_repo's role
 
@@ -103,6 +103,7 @@ class ContractConfig:
     detect_http: bool = True
     detect_grpc: bool = True
     detect_topics: bool = True
+    detect_data: bool = True
     manual_links: list[ManualContractLink] = field(default_factory=list)
     # Map a consumer base token or absolute host to the repo alias it targets,
     # so a ``fetch(`${API_BASE}/users`)`` whose base resolves to ``backend`` links
@@ -118,6 +119,7 @@ class ContractConfig:
             "detect_http": self.detect_http,
             "detect_grpc": self.detect_grpc,
             "detect_topics": self.detect_topics,
+            "detect_data": self.detect_data,
         }
         if self.manual_links:
             d["manual_links"] = [ml.to_dict() for ml in self.manual_links]
@@ -134,6 +136,7 @@ class ContractConfig:
             detect_http=bool(data.get("detect_http", True)),
             detect_grpc=bool(data.get("detect_grpc", True)),
             detect_topics=bool(data.get("detect_topics", True)),
+            detect_data=bool(data.get("detect_data", True)),
             manual_links=manual,
             service_bases={str(k): str(v) for k, v in data.get("service_bases", {}).items()},
             exclude_globs=[str(g) for g in data.get("exclude_globs", [])],
@@ -232,6 +235,7 @@ class WorkspaceConfig:
                     self.contracts.detect_http,
                     self.contracts.detect_grpc,
                     self.contracts.detect_topics,
+                    self.contracts.detect_data,
                 ]
             )
         ):

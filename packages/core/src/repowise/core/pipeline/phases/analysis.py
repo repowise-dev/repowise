@@ -68,12 +68,88 @@ async def _run_dead_code_analysis(
         return None
 
 
+def _build_pipeline_coverage(
+    repo_path: Path,
+    parsed_files: list[Any],
+    explicit_paths: list[Path] | None,
+    *,
+    progress: ProgressCallback | None,
+) -> tuple[dict[str, dict], list[Any], str | None]:
+    """Discover/parse/resolve coverage reports for an indexing run.
+
+    Returns ``(coverage_map, resolved_files, source_format)``. Best-effort:
+    any failure logs and yields an empty map so health analysis proceeds
+    without coverage. Unmatched report files are surfaced via *progress* so
+    "coverage didn't show up" is never silent.
+    """
+    try:
+        from repowise.core.analysis.health.coverage import (
+            CoverageConfig,
+            build_coverage_map,
+            discover_artifacts,
+        )
+        from repowise.core.repo_config import load_repo_config
+
+        cfg = CoverageConfig.from_repo_config(load_repo_config(repo_path))
+
+        if explicit_paths:
+            report_paths = list(explicit_paths)
+        elif cfg.paths:
+            report_paths = [repo_path / p for p in cfg.paths if (repo_path / p).is_file()]
+        elif cfg.auto_discover:
+            report_paths = discover_artifacts(
+                repo_path, globs=cfg.artifacts or None
+            )
+        else:
+            return {}, [], None
+
+        if not report_paths:
+            return {}, [], None
+
+        repo_keys = {pf.file_info.path for pf in parsed_files}
+        resolved, errors = build_coverage_map(
+            repo_path,
+            report_paths,
+            repo_keys,
+            coverage_format=cfg.format,
+            strip_prefix=cfg.strip_prefix,
+            path_prefix=cfg.path_prefix,
+        )
+
+        if progress:
+            names = ", ".join(p.name for p in report_paths[:3])
+            more = f" (+{len(report_paths) - 3} more)" if len(report_paths) > 3 else ""
+            progress.on_message(
+                "info",
+                f"→ coverage: {resolved.matched} files matched from {names}{more}",
+            )
+            skipped = len(resolved.unmatched) + len(resolved.ambiguous)
+            if skipped:
+                sample = ", ".join((resolved.unmatched + resolved.ambiguous)[:3])
+                progress.on_message(
+                    "warning",
+                    f"  ↳ {skipped} report file(s) did not map to the repo tree "
+                    f"(e.g. {sample}). Set coverage.strip_prefix in "
+                    f".repowise/config.yaml if paths are off.",
+                )
+            for path, err in errors:
+                progress.on_message("warning", f"  ↳ coverage {path.name}: {err}")
+
+        return resolved.coverage_map, resolved.files, resolved.source_format
+    except Exception as exc:
+        if progress:
+            progress.on_message("warning", f"Coverage ingestion skipped: {exc}")
+        logger.debug("pipeline_coverage_failed", error=str(exc))
+        return {}, [], None
+
+
 async def _run_health_analysis(
     graph_builder: Any,
     git_meta_map: dict[str, dict],
     parsed_files: list[Any],
     *,
     repo_path: Path | None = None,
+    coverage_report_paths: list[Path] | None = None,
     progress: ProgressCallback | None,
 ) -> Any | None:
     """Run code-health analysis (complexity + biomarkers + scoring)."""
@@ -104,11 +180,22 @@ async def _run_health_analysis(
         except Exception as exc:
             logger.debug("health_module_map_failed", error=str(exc))
 
+        # Ingest coverage (auto-discovered or explicitly passed) so biomarkers
+        # see real line/branch coverage instead of the has_test_file fallback.
+        coverage_map: dict[str, dict] = {}
+        coverage_files: list[Any] = []
+        coverage_format: str | None = None
+        if repo_path is not None:
+            coverage_map, coverage_files, coverage_format = _build_pipeline_coverage(
+                repo_path, parsed_files, coverage_report_paths, progress=progress
+            )
+
         analyzer = HealthAnalyzer(
             graph_builder.graph(),
             git_meta_map=git_meta_map,
             parsed_files=parsed_files,
             module_map=module_map,
+            coverage_map=coverage_map,
             duplication_cache_dir=(repo_path / ".repowise") if repo_path is not None else None,
         )
 
@@ -117,7 +204,7 @@ async def _run_health_analysis(
         analyzer_config: dict[str, object] | None = None
         if repo_path is not None:
             cfg = HealthConfig.load(repo_path)
-            if cfg.disabled_biomarkers or cfg.rules:
+            if cfg.has_overrides():
                 file_paths = [pf.file_info.path for pf in parsed_files]
                 analyzer_config = cfg.to_analyzer_config(file_paths)
 
@@ -133,6 +220,12 @@ async def _run_health_analysis(
             report = await analyzer.analyze_async(analyzer_config, on_step=_step)
         else:
             report = await asyncio.to_thread(analyzer.analyze, analyzer_config, on_step=_step)
+
+        # Carry resolved coverage onto the report so the persister can write
+        # the coverage_files table alongside the health metrics.
+        if coverage_files:
+            report.coverage_files = coverage_files
+            report.coverage_format = coverage_format
 
         if progress:
             findings_count = len(report.findings)
@@ -165,9 +258,9 @@ async def _run_decision_extraction(
     try:
         from repowise.core.analysis.decision_extractor import DecisionExtractor
 
-        # Seven sources run concurrently inside extract_all(); drive a
+        # Eight sources run concurrently inside extract_all(); drive a
         # determinate bar so users see live progress.
-        decision_steps = 7
+        decision_steps = 8
         if progress:
             progress.on_phase_start("decisions", decision_steps)
 
@@ -200,6 +293,7 @@ async def _run_decision_extraction(
                 f"{bs.get('pr', 0)} PR · "
                 f"{bs.get('git_archaeology', 0)} git · "
                 f"{bs.get('comment', 0)} comments · "
+                f"{bs.get('code_comment', 0)} code-comments · "
                 f"{bs.get('readme_mining', 0)} docs",
             )
 

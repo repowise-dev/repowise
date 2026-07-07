@@ -10,7 +10,7 @@ user-invocable: false
 
 # Code Health with Repowise
 
-Repowise scores **every file 1–10** from deterministic biomarkers — McCabe
+Repowise scores **every file 1–10** from deterministic markers — McCabe
 complexity, deep nesting, brain methods, class cohesion (LCOM4), god classes,
 clone detection, untested hotspots, function-level churn, ownership dispersion,
 and more. Zero LLM calls; pure local analysis. The weights are calibrated
@@ -23,7 +23,7 @@ not just *bigger*.
   lowest-scoring files. Start here for "how healthy is this codebase?" or "what
   should we clean up?".
 - **Targeted** — `get_health(targets=["src/x.py", "src/y.py"])`: per-file score
-  and the specific biomarker findings driving it. Use before/after a refactor,
+  and the specific marker findings driving it. Use before/after a refactor,
   or to explain *why* a file is flagged.
 
 ## Useful `include` flags
@@ -39,11 +39,11 @@ not just *bigger*.
 1. For "what should I refactor?" → dashboard mode, then
    `get_health(targets=[worst files], include=["refactoring"])` and present the
    ranked suggestions, not just the scores.
-2. For a specific file → report the score, the top 2–3 biomarker findings, and
+2. For a specific file → report the score, the top 2–3 marker findings, and
    what each one means in plain language. Avoid dumping the raw payload.
 3. Before editing a flagged file → cross-check `get_risk(targets=[...])`; a file
    that is both low-health *and* a churn hotspot deserves the most care.
-4. Untested-hotspot / coverage questions → tell the user coverage biomarkers
+4. Untested-hotspot / coverage questions → tell the user coverage markers
    light up once they ingest a report: `repowise health --coverage cov.lcov`
    (LCOV / Cobertura / Clover).
 

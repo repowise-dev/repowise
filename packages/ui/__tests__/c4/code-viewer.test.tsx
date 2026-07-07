@@ -115,7 +115,7 @@ describe("CodeViewer", () => {
   });
 
   it("shows error state with retry", async () => {
-    mockFetchContent.mockRejectedValue(new Error("Network error"));
+    mockFetchContent.mockRejectedValue(new Error("File not found in the index"));
     act(() => {
       store.getState().setView(mockView);
       store.getState().openCodeViewer("src/app.py");
@@ -124,7 +124,7 @@ describe("CodeViewer", () => {
     await waitFor(() => {
       expect(screen.getByRole("alert")).toBeInTheDocument();
     });
-    expect(screen.getByText("Network error")).toBeInTheDocument();
+    expect(screen.getByText("File not found in the index")).toBeInTheDocument();
     expect(screen.getByText("Retry")).toBeInTheDocument();
   });
 });

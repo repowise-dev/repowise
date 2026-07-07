@@ -10,6 +10,7 @@ import { Label } from "@repowise-dev/ui/ui/label";
 import { Input } from "@repowise-dev/ui/ui/input";
 import { Button } from "@repowise-dev/ui/ui/button";
 import type { HealthResponse } from "@/lib/api/types";
+import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
 
 export function ConnectionSection() {
   const [apiUrl, setApiUrl] = useState("");
@@ -52,7 +53,7 @@ export function ConnectionSection() {
       const h = await getHealth();
       setHealth(h);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Connection failed");
+      setError(toFriendlyMessage(e, "Connection failed"));
     } finally {
       setTesting(false);
     }

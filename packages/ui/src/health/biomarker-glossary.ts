@@ -16,7 +16,8 @@ export type BiomarkerCategory =
   | "test_quality"
   | "error_handling"
   | "performance"
-  | "organizational";
+  | "organizational"
+  | "sql";
 
 export interface BiomarkerInfo {
   label: string;
@@ -34,6 +35,7 @@ export const CATEGORY_LABEL: Record<BiomarkerCategory, string> = {
   error_handling: "Error handling",
   performance: "Performance",
   organizational: "Organizational",
+  sql: "SQL",
 };
 
 export const CATEGORY_CAP: Record<BiomarkerCategory, number> = {
@@ -49,6 +51,9 @@ export const CATEGORY_CAP: Record<BiomarkerCategory, number> = {
   // in scoring.py): the whole performance pillar deducts at most 1.0, keeping it
   // advisory.
   performance: 1.0,
+  // SQL smells deduct on the maintainability pillar only, bounded by the `sql`
+  // cap in `_MAINTAINABILITY_CATEGORY_CAPS` (scoring.py).
+  sql: 2.0,
 };
 
 export const BIOMARKER_GLOSSARY: Record<string, BiomarkerInfo> = {
@@ -292,6 +297,30 @@ export const BIOMARKER_GLOSSARY: Record<string, BiomarkerInfo> = {
     description:
       "A data-dependent loop nested inside another (O(n^2)) in a hot, central function. Advisory / informational — surfaced only where centrality ranking says it is worth a look; check the inner bound or use a set/map lookup if it is a search.",
   },
+  sql_high_complexity: {
+    label: "Complex SQL routine",
+    category: "sql",
+    description:
+      "A stored procedure or function with high cyclomatic complexity, counted from the decision keywords (IF / WHEN / WHILE / LOOP and boolean operators) in its body. Procedural SQL this branchy is hard to test and usually hides business logic that belongs in the application layer.",
+  },
+  sql_select_star: {
+    label: "SELECT * in a view",
+    category: "sql",
+    description:
+      "A bare * projection inside a view, materialized view, or routine. When the source table gains a column the relation silently changes shape, breaking downstream consumers at a distance. Ad-hoc scripts are not flagged.",
+  },
+  sql_update_delete_without_where: {
+    label: "UPDATE/DELETE without WHERE",
+    category: "sql",
+    description:
+      "A checked-in UPDATE or DELETE with no WHERE clause touches every row in the table. Sometimes intentional (seed resets), always worth a reviewer's attention.",
+  },
+  sql_cartesian_join: {
+    label: "Cartesian join",
+    category: "performance",
+    description:
+      "A comma-join (FROM a, b) with no join predicate anywhere in the statement produces the full cross product: O(n·m) rows. An explicit CROSS JOIN states intent and is not flagged; a comma-join with a WHERE clause is old-style join syntax and is not flagged either.",
+  },
 };
 
 export function biomarkerInfo(name: string): BiomarkerInfo {
@@ -332,6 +361,9 @@ export const MAINTAINABILITY_HOME_BIOMARKERS: ReadonlySet<string> = new Set([
   "primitive_obsession",
   "dry_violation",
   "error_handling",
+  "sql_high_complexity",
+  "sql_select_star",
+  "sql_update_delete_without_where",
 ]);
 
 /**
@@ -352,6 +384,13 @@ export const PERFORMANCE_HOME_BIOMARKERS: ReadonlySet<string> = new Set([
   "nested_loop_quadratic",
   "hot_path_sync_io",
   "blocking_io_under_lock",
+  "list_insert_zero_in_loop",
+  "pd_concat_in_loop",
+  "pandas_iterrows_in_loop",
+  "json_parse_in_loop",
+  "array_spread_in_reduce",
+  "goroutine_in_unbounded_loop",
+  "sql_cartesian_join",
 ]);
 
 /**

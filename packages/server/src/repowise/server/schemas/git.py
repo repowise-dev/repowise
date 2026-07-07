@@ -251,6 +251,39 @@ class CommitEvolutionResponse(BaseModel):
     last_commit_at: str | None = None
 
 
+class ChangeFeaturesResponse(BaseModel):
+    """The Kamei change-shape features the risk model scores."""
+
+    la: int
+    ld: int
+    nf: int
+    nd: int
+    ns: int
+    entropy: float
+    exp: int | None
+
+
+class RiskRangeResponse(BaseModel):
+    """Change-risk score for a live ``base..head`` git range.
+
+    Scored on demand from the working tree rather than the indexed commit
+    table, so it works for ranges that haven't been indexed yet (an open PR
+    branch). Mirrors ``repowise risk <base>..<head> --format json`` field for
+    field.
+    """
+
+    base: str
+    head: str
+    score: float
+    probability: float
+    level: str
+    risk_percentile: float | None
+    review_priority: str | None
+    is_fix: bool
+    features: ChangeFeaturesResponse
+    drivers: list[RiskDriverResponse]
+
+
 class CommitStatsResponse(BaseModel):
     """Repo-wide commit aggregates for the commits-page headline stat cards.
 

@@ -1,0 +1,89 @@
+{
+  "available": true,
+  "pages": [
+    {
+      "page_id": "api_contract:packages/core/src/repowise/core/ingestion/languages/specs/openapi.py",
+      "page_type": "api_contract",
+      "title": "API Contract: packages/core/src/repowise/core/ingestion/languages/specs/openapi.py",
+      "content": "## Overview\n\nThis API contract defines a **language specification** for **OpenAPI** within the Repowise ingestion system. It does **not** declare any HTTP endpoints or data schemas itself; instead, it configures how the ingestion pipeline should treat OpenAPI inputs.\n\nKey characteristics of this lan",
+      "target_path": "packages/core/src/repowise/core/ingestion/languages/specs/openapi.py",
+      "freshness_status": "fresh",
+      "source_hash": "8edc971707061718d2ed7ead86300977b3bb4d843f3af13938d665c26f8ff35b",
+      "model_name": "gpt-5.4-nano",
+      "provider_name": "openai",
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "generation_level": 0,
+      "confidence": 1,
+      "created_at": "2026-07-04T15:16:00.959140+00:00",
+      "updated_at": "2026-07-04T15:16:00.959140+00:00",
+      "summary": "This API contract defines a **language specification** for **OpenAPI** within the Repowise ingestion system. It does **not** declare any HTTP endpoints or data schemas itself; instead, it configures how the ingestion pipeline should treat OpenAPI inputs.",
+      "metadata": {
+        "wiki_links": [],
+        "backlinks": [
+          {
+            "source_page_id": "file_page:packages/core/src/repowise/core/ingestion/languages/specs/__init__.py",
+            "source_title": "File: packages/core/src/repowise/core/ingestion/languages/specs/__init__.py",
+            "source_page_type": "file_page",
+            "anchor": "SPEC"
+          },
+          {
+            "source_page_id": "module_page:packages/core/src/repowise/core/ingestion/languages",
+            "source_title": "Module: ingestion/languages",
+            "source_page_type": "module_page",
+            "anchor": "SPEC"
+          },
+          {
+            "source_page_id": "layer_page:layer:service",
+            "source_title": "Layer: Service",
+            "source_page_type": "layer_page",
+            "anchor": "SPEC"
+          },
+          {
+            "source_page_id": "onboarding:onboarding/key_concepts",
+            "source_title": "Key Concepts",
+            "source_page_type": "onboarding",
+            "anchor": "SPEC"
+          }
+        ]
+      },
+      "id": "api_contract:packages/core/src/repowise/core/ingestion/languages/specs/openapi.py"
+    },
+    {
+      "page_id": "symbol_spotlight:tests/conftest.py::repo_root",
+      "page_type": "symbol_spotlight",
+      "title": "Symbol: tests.conftest.repo_root",
+      "content": "## Purpose\n\n`repo_root` is a session-scoped pytest fixture that returns the absolute filesystem path to the repository’s root directory. It is used throughout the test suite to reliably locate files and resources relative to the project root, regardless of the current working directory.\n\n## Signatur",
+      "target_path": "tests/conftest.py::repo_root",
+      "freshness_status": "fresh",
+      "source_hash": "b71ffe24c2c9096841740a4a0274f75603afc2a879e7a694cbf6a1450a464b9e",
+      "model_name": "gpt-5.4-nano",
+      "provider_name": "openai",
+      "input_tokens": 6808,
+      "output_tokens": 152,
+      "generation_level": 1,
+      "confidence": 1,
+      "created_at": "2026-07-04T15:16:04.157142+00:00",
+      "updated_at": "2026-07-04T15:16:04.157142+00:00",
+      "summary": "`repo_root` is a session-scoped pytest fixture that returns the absolute filesystem path to the repository’s root directory. It is used throughout the test suite to reliably locate files and resources relative to the project root, regardless of the current working directory.",
+      "metadata": {
+        "wiki_links": [
+          {
+            "anchor": "repo_root",
+            "target_page_id": "file_page:tests/conftest.py",
+            "kind": "symbol"
+          }
+        ],
+        "backlinks": []
+      },
+      "id": "symbol_spotlight:tests/conftest.py::repo_root"
+    }
+  ],
+  "docs_status": "ready",
+  "pages_ready": 523,
+  "pages_total": 523,
+  "authoritative_page_types": [
+    "module_page",
+    "layer_page"
+  ]
+}

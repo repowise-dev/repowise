@@ -5,6 +5,7 @@ import { Check, Loader2, TriangleAlert, Wand2 } from "lucide-react";
 import { Switch } from "../ui/switch";
 import { Input } from "../ui/input";
 import { Label } from "../ui/label";
+import { toFriendlyMessage } from "../lib/errors";
 
 export interface RefactoringSettingsValue {
   enabled: boolean;
@@ -70,7 +71,7 @@ export function RefactoringSettingsCard({
       window.setTimeout(() => setSave("idle"), 1800);
     } catch (err) {
       setSave("error");
-      setError(err instanceof Error ? err.message : "Could not save settings.");
+      setError(toFriendlyMessage(err, "Could not save settings."));
     }
   }, [enabled, provider, model, onSave]);
 

@@ -4,7 +4,8 @@
  * Refactoring — `/repos/[id]/refactoring`.
  *
  * A first-class surface for the deterministic refactoring plans the health
- * pass writes (Extract Class, Extract Helper, Move Method, Break Cycle). The
+ * pass writes (Extract Class, Extract Helper, Move Method, Break Cycle, Split
+ * File). The
  * card board is the primary view; a priority×effort quadrant heads it. Type
  * filters are URL-synced via `?type=` (nuqs), mirroring the architecture view.
  */

@@ -23,6 +23,7 @@ from ...models import HeritageRelation
 from ..helpers import node_text
 from .cpp import _extract_cpp_heritage
 from .csharp import _extract_csharp_heritage
+from .dart import _extract_dart_heritage
 from .go import _extract_go_heritage
 from .java import _extract_java_heritage
 from .kotlin import _extract_kotlin_heritage
@@ -53,6 +54,7 @@ HERITAGE_EXTRACTORS: dict[str, Callable[..., None]] = {
     "kotlin": _extract_kotlin_heritage,
     "ruby": _extract_ruby_heritage,
     "csharp": _extract_csharp_heritage,
+    "dart": _extract_dart_heritage,
     "swift": _extract_swift_heritage,
     "scala": _extract_scala_heritage,
     "php": _extract_php_heritage,

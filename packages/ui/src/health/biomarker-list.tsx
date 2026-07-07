@@ -101,7 +101,7 @@ export function BiomarkerList({
   if (filtered.length === 0) {
     return (
       <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-6 text-sm text-[var(--color-text-secondary)]">
-        No biomarker findings match the current filters.
+        No marker findings match the current filters.
       </div>
     );
   }

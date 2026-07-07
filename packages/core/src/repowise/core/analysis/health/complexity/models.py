@@ -203,6 +203,14 @@ class PerfHit:
     # chain ``A -> B -> ... -> sink`` (PR4). Empty for same-function hits —
     # its emptiness is what distinguishes the two cases downstream.
     path: tuple[str, ...] = ()
+    # Set by the dataflow promotion pass (``perf.promotion``) when intra-
+    # procedural reaching definitions PROVE the enclosing loop carries no data
+    # dependence between iterations, turning an advisory "if the iterations are
+    # independent" hedge into an asserted finding. Only ever flipped for the
+    # advisory markers the promotion pass targets; left ``False`` everywhere the
+    # proof is unavailable (no dialect, guard trip, non-convergence) or the loop
+    # genuinely carries a dependence. The biomarker sharpens its message when set.
+    promoted: bool = False
 
 
 @dataclass(frozen=True)
@@ -277,3 +285,10 @@ class FileComplexity:
     # function holds a bare (non-loop) I/O sink. Empty when the language opts
     # out of the perf pass. Consumed by ``perf.crossfn``, not by a biomarker.
     perf_fn_facts: list[PerfFnFacts] = field(default_factory=list)
+    # True when the file carries co-located tests that the filename/dir
+    # heuristic cannot see — e.g. Rust ``#[cfg(test)] mod tests`` blocks,
+    # which live inside the source file itself. OR'd into ``has_test_file``
+    # so well-tested inline-test files aren't flagged as untested. Only ever
+    # flips a file from "untested" to "tested", so it can silence a finding
+    # but never invent one.
+    has_inline_tests: bool = False

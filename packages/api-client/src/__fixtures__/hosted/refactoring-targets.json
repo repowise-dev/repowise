@@ -1,0 +1,204 @@
+{
+  "targets": [
+    {
+      "file_path": "src/flask/__init__.py",
+      "score": 9.24,
+      "impact": 0.76,
+      "effort": 0.2,
+      "biomarkers": [
+        {
+          "id": "a254a623ca40c0367121f788",
+          "biomarker_type": "dry_violation",
+          "severity": "medium",
+          "file_path": "src/flask/__init__.py",
+          "function_name": null,
+          "line_start": 1,
+          "line_end": 38,
+          "details": {
+            "duplication_pct": 100,
+            "clone_pair_count": 1,
+            "worst_clone_lines": 38,
+            "worst_clone_partner": "src/flask/__init__.py",
+            "worst_clone_co_change": 0
+          },
+          "health_impact": 0.35,
+          "reason": "100% of file duplicated; worst clone shares 38 lines with src/flask/__init__.py",
+          "status": "open",
+          "suggestion": "Duplicated logic detected — extract the shared code path.",
+          "dimension": "maintainability",
+          "symbol_id": null
+        },
+        {
+          "id": "8510993cad8a38502173828e",
+          "biomarker_type": "ownership_risk",
+          "severity": "low",
+          "file_path": "src/flask/__init__.py",
+          "function_name": null,
+          "line_start": null,
+          "line_end": null,
+          "details": {
+            "minor_contributors": 6,
+            "top_owner_share": 0.9,
+            "contributor_count": 7,
+            "total_commits": 70,
+            "small_team": true
+          },
+          "health_impact": 0.414,
+          "reason": "6 minor contributors (each <5% of commits); top owner holds 90% (informational: small team, 1 active contributors in 90d)",
+          "status": "open",
+          "suggestion": "Review and refactor according to the biomarker details.",
+          "dimension": "defect",
+          "symbol_id": null
+        }
+      ]
+    },
+    {
+      "file_path": "src/flask/testing.py",
+      "score": 5.5,
+      "impact": 4.5,
+      "effort": 1.91,
+      "biomarkers": [
+        {
+          "id": "5a4894573329adb5f7f26a2e",
+          "biomarker_type": "complex_method",
+          "severity": "medium",
+          "file_path": "src/flask/testing.py",
+          "function_name": "__init__",
+          "line_start": 49,
+          "line_end": 86,
+          "details": {
+            "ccn": 12,
+            "cognitive": 14,
+            "nloc": 22
+          },
+          "health_impact": 0.847,
+          "reason": "__init__ has cyclomatic complexity 12",
+          "status": "open",
+          "suggestion": "Reduce cyclomatic complexity by extracting decision points into helper functions.",
+          "dimension": "defect",
+          "symbol_id": null
+        },
+        {
+          "id": "b5d910a7b0b8ffd956e186ab",
+          "biomarker_type": "primitive_obsession",
+          "severity": "low",
+          "file_path": "src/flask/testing.py",
+          "function_name": "invoke",
+          "line_start": 275,
+          "line_end": 298,
+          "details": {
+            "param_count": 5
+          },
+          "health_impact": 0.15,
+          "reason": "invoke takes 5 parameters",
+          "status": "open",
+          "suggestion": "Replace cluster of primitive parameters with a small value-object.",
+          "dimension": "maintainability",
+          "symbol_id": null
+        },
+        {
+          "id": "0f932e1ea251b154a4eec694",
+          "biomarker_type": "primitive_obsession",
+          "severity": "low",
+          "file_path": "src/flask/testing.py",
+          "function_name": "__init__",
+          "line_start": 49,
+          "line_end": 86,
+          "details": {
+            "param_count": 8
+          },
+          "health_impact": 0.15,
+          "reason": "__init__ takes 8 parameters",
+          "status": "open",
+          "suggestion": "Replace cluster of primitive parameters with a small value-object.",
+          "dimension": "maintainability",
+          "symbol_id": null
+        },
+        {
+          "id": "2592aedd72c16c25e33e2318",
+          "biomarker_type": "primitive_obsession",
+          "severity": "low",
+          "file_path": "src/flask/testing.py",
+          "function_name": "open",
+          "line_start": 204,
+          "line_end": 247,
+          "details": {
+            "param_count": 5
+          },
+          "health_impact": 0.15,
+          "reason": "open takes 5 parameters",
+          "status": "open",
+          "suggestion": "Replace cluster of primitive parameters with a small value-object.",
+          "dimension": "maintainability",
+          "symbol_id": null
+        },
+        {
+          "id": "239a78b51ac69856aa1c46fa",
+          "biomarker_type": "function_hotspot",
+          "severity": "high",
+          "file_path": "src/flask/testing.py",
+          "function_name": "__init__",
+          "line_start": 49,
+          "line_end": 86,
+          "details": {
+            "modification_count": 10,
+            "repo_p80": 5,
+            "ccn": 12,
+            "max_nesting": 2
+          },
+          "health_impact": 1.392,
+          "reason": "__init__ has been modified across 10 commits (repo p80=5) and carries CCN=12 / nesting=2",
+          "status": "open",
+          "suggestion": "Review and refactor according to the biomarker details.",
+          "dimension": "defect",
+          "symbol_id": null
+        },
+        {
+          "id": "7e881daa9d798d7b9228b510",
+          "biomarker_type": "function_hotspot",
+          "severity": "high",
+          "file_path": "src/flask/testing.py",
+          "function_name": "open",
+          "line_start": 204,
+          "line_end": 247,
+          "details": {
+            "modification_count": 12,
+            "repo_p80": 5,
+            "ccn": 7,
+            "max_nesting": 3
+          },
+          "health_impact": 1.392,
+          "reason": "open has been modified across 12 commits (repo p80=5) and carries CCN=7 / nesting=3",
+          "status": "open",
+          "suggestion": "Review and refactor according to the biomarker details.",
+          "dimension": "defect",
+          "symbol_id": null
+        },
+        {
+          "id": "7bb853f727b7391545d28836",
+          "biomarker_type": "ownership_risk",
+          "severity": "low",
+          "file_path": "src/flask/testing.py",
+          "function_name": null,
+          "line_start": null,
+          "line_end": null,
+          "details": {
+            "minor_contributors": 3,
+            "top_owner_share": 0.868,
+            "contributor_count": 5,
+            "total_commits": 38,
+            "small_team": true
+          },
+          "health_impact": 0.414,
+          "reason": "3 minor contributors (each <5% of commits); top owner holds 87% (informational: small team, 1 active contributors in 90d)",
+          "status": "open",
+          "suggestion": "Review and refactor according to the biomarker details.",
+          "dimension": "defect",
+          "symbol_id": null
+        }
+      ]
+    }
+  ],
+  "state": "ready",
+  "reason": null
+}

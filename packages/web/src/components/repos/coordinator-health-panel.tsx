@@ -4,6 +4,7 @@ import { useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { Button } from "@repowise-dev/ui/ui/button";
 import { getCoordinatorHealth, type CoordinatorHealth } from "@/lib/api/health";
+import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
 
 interface Props {
   repoId: string;
@@ -42,7 +43,7 @@ export function CoordinatorHealthPanel({ repoId, initial }: Props) {
       const result = await getCoordinatorHealth(repoId);
       setData(result);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to fetch health");
+      setError(toFriendlyMessage(e, "Failed to fetch health"));
     } finally {
       setLoading(false);
     }

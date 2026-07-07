@@ -196,9 +196,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Store on app state (before scheduler, so scheduler can reference app_state)
     app.state.engine = engine
     app.state.session_factory = session_factory
+    app.state.db_url = db_url
     app.state.fts = fts
     app.state.vector_store = vector_store
     app.state.background_tasks: set = set()  # Strong refs to prevent GC of asyncio tasks
+    app.state.job_tasks = {}  # job_id → asyncio.Task (cancel endpoint)
+    app.state.job_cancel_tokens = {}  # job_id → CancellationToken
+    app.state.job_events = {}  # job_id → JobEventBuffer (SSE message frames)
 
     # Background scheduler (pass app.state so polling can launch jobs)
     scheduler = setup_scheduler(session_factory, app_state=app.state)
@@ -344,6 +348,24 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 logger.info("repowise_workspace_detected", extra={"repos": len(ws_config.repos)})
     except Exception:
         logger.debug("Workspace detection skipped", exc_info=True)
+
+    # Re-register per-repo databases for repos added via the API (their data
+    # lives in <repo>/.repowise/wiki.db; the primary DB only holds a registry
+    # row). Runs after workspace detection so already-registered workspace
+    # repos are skipped.
+    try:
+        from repowise.server.repo_db import rediscover_repo_dbs
+
+        rediscovered = await rediscover_repo_dbs(app.state)
+        if rediscovered:
+            logger.info("repo_dbs_rediscovered", extra={"count": rediscovered})
+            # Jobs interrupted by the restart live in those per-repo DBs; the
+            # earlier resets only covered the primary and workspace DBs.
+            stale = await reset_workspace_stale_jobs(app.state)
+            if stale:
+                logger.warning("reset_stale_jobs", extra={"count": stale})
+    except Exception:
+        logger.debug("repo_db_rediscovery_skipped", exc_info=True)
 
     logger.info("repowise_server_started", extra={"version": __version__})
     yield

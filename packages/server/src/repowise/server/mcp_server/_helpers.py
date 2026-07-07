@@ -221,6 +221,23 @@ def _meaningful_words(text: str) -> set[str]:
     return set(text.lower().split()) - _ORIGIN_STOP_WORDS
 
 
+def _decision_body(record: object) -> str:
+    """Effective one-line body for a decision record.
+
+    The anti-hallucination gate clears a paraphrased ``decision`` that is not a
+    verbatim substring of the source while a survivor's evidence quote keeps the
+    record alive, which historically left ``llm_inferred`` records with an empty
+    ``decision`` and only a title to show. The harvest path now promotes the
+    title into ``decision`` at write time; this fall back covers records stored
+    before that fix so read surfaces never emit a body-less decision. The title
+    is the model's own canonical one-line summary of the choice and is always
+    present.
+    """
+    return (getattr(record, "decision", "") or "").strip() or (
+        getattr(record, "title", "") or ""
+    ).strip()
+
+
 def _commits_matching_decision(decision: dict, commits: list[dict]) -> list[dict]:
     """Return commits whose messages share at least one keyword with *decision*."""
     decision_text = (

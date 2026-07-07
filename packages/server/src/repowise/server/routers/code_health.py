@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
@@ -38,6 +39,7 @@ from repowise.core.analysis.health.trends import (
 from repowise.core.persistence import crud
 from repowise.core.persistence.models import WikiSymbol
 from repowise.server.deps import get_db_session, verify_api_key
+from repowise.server.mcp_server._meta import resolve_indexed_commit
 
 router = APIRouter(
     tags=["code-health"],
@@ -77,7 +79,40 @@ def _round_opt(v: Any) -> float | None:
     return round(v, 2) if v is not None else None
 
 
-def _metric_to_dict(m: Any) -> dict:
+def _primary_and_magnitude(findings: list[Any]) -> dict:
+    """Dominant cause + pre-clamp deduction magnitude for one file's findings.
+
+    Two presentation signals the score alone can't carry:
+
+    - ``primary_biomarker`` / ``primary_reason`` — the single worst finding, so a
+      low file can lead with "the one reason" instead of a wall of markers.
+    - ``total_deduction`` — the summed (pre-floor) ``health_impact``. Equal to
+      the breakdown endpoint's ``total_deduction`` (each finding's stored impact
+      is already the applied, capped value), so it distinguishes two files that
+      both floor at 1.0 (a -25 file from a -9 one) without touching ``score``.
+
+    All-null on an empty list: a clean file has no lead and no magnitude.
+    """
+    if not findings:
+        return {"primary_biomarker": None, "primary_reason": None, "total_deduction": None}
+    primary = max(findings, key=lambda x: x.health_impact)
+    total = sum(float(x.health_impact or 0.0) for x in findings)
+    return {
+        "primary_biomarker": primary.biomarker_type,
+        "primary_reason": primary.reason,
+        "total_deduction": round(total, 3),
+    }
+
+
+def _leads_by_file(findings: list[Any]) -> dict[str, dict]:
+    """Group findings by file and reduce each group to its dominant-cause lead."""
+    by_file: dict[str, list[Any]] = {}
+    for f in findings:
+        by_file.setdefault(f.file_path, []).append(f)
+    return {path: _primary_and_magnitude(fs) for path, fs in by_file.items()}
+
+
+def _metric_to_dict(m: Any, lead: dict | None = None) -> dict:
     return {
         "file_path": m.file_path,
         "score": round(m.score, 2),
@@ -94,6 +129,11 @@ def _metric_to_dict(m: Any) -> dict:
         "defect_score": _round_opt(getattr(m, "defect_score", None)),
         "maintainability_score": _round_opt(getattr(m, "maintainability_score", None)),
         "performance_score": _round_opt(getattr(m, "performance_score", None)),
+        # Dominant-cause lead + pre-clamp magnitude (null when findings weren't
+        # loaded for this row, or the file is clean). Additive; readers degrade.
+        "primary_biomarker": lead.get("primary_biomarker") if lead else None,
+        "primary_reason": lead.get("primary_reason") if lead else None,
+        "total_deduction": lead.get("total_deduction") if lead else None,
     }
 
 
@@ -270,6 +310,25 @@ def _biomarker_breakdown(findings: list[Any]) -> list[dict]:
     return rows
 
 
+def _resolve_last_indexed_at(
+    snapshot_taken_at: datetime | None, repo_updated_at: datetime | None
+) -> str | None:
+    """Newest "index brought current" time as an ISO string, or ``None``.
+
+    ``last_indexed_at`` should track the last time the index was synced to the
+    checkout, not just the last health snapshot. A no-change ``repowise update``
+    advances ``repositories.updated_at`` but takes no new snapshot, so a
+    snapshot-only value would report the index as hours stale right after a
+    refresh. Prefer whichever timestamp is newer (mirrors the overview router's
+    sync fallback). Both inputs come from the same DB, so their tz-awareness
+    matches and the comparison is safe.
+    """
+    newest = snapshot_taken_at
+    if repo_updated_at is not None and (newest is None or repo_updated_at > newest):
+        newest = repo_updated_at
+    return newest.isoformat() if newest else None
+
+
 @router.get("/api/repos/{repo_id}/health/overview")
 async def health_overview(
     repo_id: str,
@@ -288,13 +347,16 @@ async def health_overview(
     # Pull hotspot_health from the latest snapshot (KPIs aren't recomputed
     # on every overview hit — the snapshot is authoritative).
     hotspot_health: float | None = None
-    last_indexed_at: str | None = None
+    snapshot_taken_at = None
     if snapshots:
         latest = snapshots[-1]
         hotspot_health = round(float(latest.hotspot_health), 2)
-        last_indexed_at = latest.taken_at.isoformat() if latest.taken_at else None
+        snapshot_taken_at = latest.taken_at
 
-    metric_dicts = [_metric_to_dict(m) for m in metrics]
+    last_indexed_at = _resolve_last_indexed_at(snapshot_taken_at, repo.updated_at)
+
+    leads = _leads_by_file(findings)
+    metric_dicts = [_metric_to_dict(m, leads.get(m.file_path)) for m in metrics]
 
     # Repo-level band (from the NLOC-weighted average) + the per-band file
     # distribution. Both derive purely from the existing score — no new data.
@@ -329,7 +391,10 @@ async def health_overview(
         "biomarkers": _biomarker_breakdown(findings),
         "meta": {
             "last_indexed_at": last_indexed_at,
-            "head_commit": repo.head_commit,
+            # Prefer state.json's last_sync_commit over a possibly-stale DB row
+            # so the freshness signal self-heals on read (see the /api/repos
+            # overlay). This is the extension's primary indexed-commit source.
+            "head_commit": resolve_indexed_commit(repo.head_commit, repo.local_path),
             "snapshot_count": len(snapshots),
         },
     }
@@ -538,11 +603,16 @@ async def list_health_files(
 
     total = len(filtered)
     page = filtered[offset : offset + limit]
+    # Leads only for the page's files — enough to carry the top-reason chip and
+    # the magnitude tiebreak without loading every finding for every row.
+    page_paths = {m.file_path for m in page}
+    findings = await crud.get_health_findings(session, repo_id)
+    leads = _leads_by_file([f for f in findings if f.file_path in page_paths])
     return {
         "total": total,
         "offset": offset,
         "limit": limit,
-        "files": [_metric_to_dict(m) for m in page],
+        "files": [_metric_to_dict(m, leads.get(m.file_path)) for m in page],
     }
 
 
@@ -659,7 +729,7 @@ async def file_score_breakdown(
     snapshots = await crud.list_health_snapshots(session, repo_id)
     return {
         "file_path": file_path,
-        "metric": _metric_to_dict(metric) if metric else None,
+        "metric": _metric_to_dict(metric, _primary_and_magnitude(findings)) if metric else None,
         "breakdown": breakdown,
         "findings": finding_dicts,
         "suggestions": {b: _suggestion_for(b) for b in {f.biomarker_type for f in findings}},

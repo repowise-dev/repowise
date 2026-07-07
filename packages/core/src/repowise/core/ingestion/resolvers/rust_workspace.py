@@ -206,12 +206,18 @@ def _build_cargo_workspace_index(ctx) -> CargoWorkspaceIndex | None:
     excluded_paths: set[Path] = set()
     for pattern in exclude_patterns:
         if isinstance(pattern, str):
-            excluded_paths.update(p.resolve() for p in repo.glob(pattern))
+            if pattern == ".":
+                excluded_paths.add(repo)
+            else:
+                excluded_paths.update(p.resolve() for p in repo.glob(pattern))
 
     for member_pattern in members:
         if not isinstance(member_pattern, str):
             continue
-        matched_paths = sorted(repo.glob(member_pattern))
+        if member_pattern == ".":
+            matched_paths = [repo]
+        else:
+            matched_paths = sorted(repo.glob(member_pattern))
         if not matched_paths:
             # Fallback to literal path for backward compat
             matched_paths = [(repo / member_pattern).resolve()]
@@ -220,6 +226,8 @@ def _build_cargo_workspace_index(ctx) -> CargoWorkspaceIndex | None:
             if not member_path.is_dir():
                 continue
             if member_path in excluded_paths:
+                continue
+            if member_path == repo and root_pkg.get("name"):
                 continue
             try:
                 member_rel = member_path.relative_to(repo).as_posix()

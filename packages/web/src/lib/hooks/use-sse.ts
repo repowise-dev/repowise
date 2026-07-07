@@ -4,10 +4,17 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 export interface SSEState<T> {
   data: T | null;
+  /** Accumulated default-type frames (`event: message`); the job streams
+   * use these for pipeline log lines, interleaved with progress frames. */
+  messages: unknown[];
   error: Error | null;
   isConnected: boolean;
   isDone: boolean;
 }
+
+// Matches the server's per-job ring buffer so a pathological stream can't
+// grow client memory unbounded.
+const MAX_MESSAGES = 500;
 
 /**
  * Generic Server-Sent Events hook.
@@ -20,6 +27,7 @@ export function useSSE<T>(
 ): SSEState<T> & { close: () => void } {
   const [state, setState] = useState<SSEState<T>>({
     data: null,
+    messages: [],
     error: null,
     isConnected: false,
     isDone: false,
@@ -49,10 +57,16 @@ export function useSSE<T>(
         retriesRef.current = 0;
       };
 
+      // `event: message` is the default SSE event type, so it arrives here
+      // rather than via addEventListener. These frames are log lines, not
+      // progress snapshots; collect them instead of overwriting `data`.
       es.onmessage = (event) => {
         try {
-          const parsed = JSON.parse(event.data) as T;
-          setState((s) => ({ ...s, data: parsed }));
+          const parsed = JSON.parse(event.data) as unknown;
+          setState((s) => ({
+            ...s,
+            messages: [...s.messages, parsed].slice(-MAX_MESSAGES),
+          }));
         } catch {
           // non-JSON message, ignore
         }

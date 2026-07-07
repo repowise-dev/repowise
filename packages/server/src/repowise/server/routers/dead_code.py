@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.dead_code.risk_factors import effective_safe_to_delete
@@ -53,16 +53,45 @@ async def list_dead_code(
 @router.post("/api/repos/{repo_id}/dead-code/analyze", status_code=202)
 async def analyze_dead_code(
     repo_id: str,
+    request: Request,
     session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> dict:
     """Trigger a fresh dead code analysis.
 
-    Returns 202 immediately. The analysis runs asynchronously.
+    Runs an index-only pipeline job (no LLM work) — dead-code detection is
+    part of the analysis stage, so a re-index refreshes the findings. Returns
+    202 with the job id; poll or stream it like any other job.
     """
+    from sqlalchemy import select
+
+    from repowise.core.persistence.models import GenerationJob
+    from repowise.server.routers.repos import _launch_job_task
+
     repo = await crud.get_repository(session, repo_id)
     if repo is None:
         raise HTTPException(status_code=404, detail="Repository not found")
-    return {"status": "analyzing", "repository_id": repo_id}
+
+    active = await session.execute(
+        select(GenerationJob.id)
+        .where(GenerationJob.repository_id == repo_id)
+        .where(GenerationJob.status.in_(["pending", "running"]))
+        .limit(1)
+    )
+    if active.scalar_one_or_none() is not None:
+        raise HTTPException(
+            status_code=409, detail="A job is already in progress for this repository"
+        )
+
+    job = await crud.upsert_generation_job(
+        session,
+        repository_id=repo_id,
+        status="pending",
+        config={"mode": "index_only", "source": "dead_code_analyze"},
+    )
+    # Commit so the background task's separate session can see the row.
+    await session.commit()
+    _launch_job_task(request, job.id, repo_id)
+    return {"job_id": job.id, "status": "accepted", "repository_id": repo_id}
 
 
 @router.get(

@@ -1,0 +1,449 @@
+{
+  "system": {
+    "id": "sys:291eda74d214461487a07d63c4276cb3",
+    "name": "flask",
+    "description": ""
+  },
+  "people": [
+    {
+      "id": "person:cli",
+      "name": "CLI user",
+      "description": "Runs commands from a terminal",
+      "kind": "cli"
+    },
+    {
+      "id": "person:api",
+      "name": "API client",
+      "description": "Calls the HTTP API",
+      "kind": "api"
+    }
+  ],
+  "external_systems": [
+    {
+      "id": "ext:amqp",
+      "name": "amqp",
+      "display_name": "Amqp",
+      "category": "library",
+      "ecosystem": "pypi",
+      "version": "==5.1.1",
+      "io_kind": null
+    },
+    {
+      "id": "ext:asgiref",
+      "name": "asgiref",
+      "display_name": "Asgiref",
+      "category": "library",
+      "ecosystem": "pypi",
+      "version": ">=3.2",
+      "io_kind": null
+    },
+    {
+      "id": "ext:async-timeout",
+      "name": "async-timeout",
+      "display_name": "Async Timeout",
+      "category": "library",
+      "ecosystem": "pypi",
+      "version": "==4.0.2",
+      "io_kind": null
+    },
+    {
+      "id": "ext:billiard",
+      "name": "billiard",
+      "display_name": "Billiard",
+      "category": "library",
+      "ecosystem": "pypi",
+      "version": "==3.6.4.0",
+      "io_kind": null
+    },
+    {
+      "id": "ext:blinker",
+      "name": "blinker",
+      "display_name": "Blinker",
+      "category": "library",
+      "ecosystem": "pypi",
+      "version": ">=1.9.0",
+      "io_kind": null
+    },
+    {
+      "id": "ext:celery",
+      "name": "celery",
+      "display_name": "Celery",
+      "category": "library",
+      "ecosystem": "pypi",
+      "version": null,
+      "io_kind": null
+    },
+    {
+      "id": "ext:click",
+      "name": "click",
+      "display_name": "Click",
+      "category": "library",
+      "ecosystem": "pypi",
+      "version": ">=8.1.3",
+      "io_kind": null
+    },
+    {
+      "id": "ext:click-didyoumean",
+      "name": "click-didyoumean",
+      "display_name": "Click Didyoumean",
+      "category": "library",
+      "ecosystem": "pypi",
+      "version": "==0.3.0",
+      "io_kind": null
+    },
+    {
+      "id": "ext:click-plugins",
+      "name": "click-plugins",
+      "display_name": "Click Plugins",
+      "category": "library",
+      "ecosystem": "pypi",
+      "version": "==1.1.1",
+      "io_kind": null
+    },
+    {
+      "id": "ext:click-repl",
+      "name": "click-repl",
+      "display_name": "Click Repl",
+      "category": "library",
+      "ecosystem": "pypi",
+      "version": "==0.2.0",
+      "io_kind": null
+    },
+    {
+      "id": "ext:flask",
+      "name": "flask",
+      "display_name": "Flask",
+      "category": "framework",
+      "ecosystem": "pypi",
+      "version": null,
+      "io_kind": null
+    },
+    {
+      "id": "ext:itsdangerous",
+      "name": "itsdangerous",
+      "display_name": "Itsdangerous",
+      "category": "library",
+      "ecosystem": "pypi",
+      "version": ">=2.2.0",
+      "io_kind": null
+    },
+    {
+      "id": "ext:jinja2",
+      "name": "jinja2",
+      "display_name": "Jinja2",
+      "category": "library",
+      "ecosystem": "pypi",
+      "version": ">=3.1.2",
+      "io_kind": null
+    },
+    {
+      "id": "ext:kombu",
+      "name": "kombu",
+      "display_name": "Kombu",
+      "category": "library",
+      "ecosystem": "pypi",
+      "version": "==5.2.4",
+      "io_kind": null
+    },
+    {
+      "id": "ext:markupsafe",
+      "name": "markupsafe",
+      "display_name": "Markupsafe",
+      "category": "library",
+      "ecosystem": "pypi",
+      "version": ">=2.1.1",
+      "io_kind": null
+    },
+    {
+      "id": "ext:prompt-toolkit",
+      "name": "prompt-toolkit",
+      "display_name": "Prompt Toolkit",
+      "category": "library",
+      "ecosystem": "pypi",
+      "version": "==3.0.38",
+      "io_kind": null
+    },
+    {
+      "id": "ext:pytest",
+      "name": "pytest",
+      "display_name": "Pytest",
+      "category": "tool",
+      "ecosystem": "pypi",
+      "version": null,
+      "io_kind": null
+    },
+    {
+      "id": "ext:python-dotenv",
+      "name": "python-dotenv",
+      "display_name": "Python Dotenv",
+      "category": "library",
+      "ecosystem": "pypi",
+      "version": null,
+      "io_kind": null
+    },
+    {
+      "id": "ext:pytz",
+      "name": "pytz",
+      "display_name": "Pytz",
+      "category": "library",
+      "ecosystem": "pypi",
+      "version": "==2023.3",
+      "io_kind": null
+    },
+    {
+      "id": "ext:redis",
+      "name": "redis",
+      "display_name": "Redis",
+      "category": "service",
+      "ecosystem": "pypi",
+      "version": "==4.5.4",
+      "io_kind": "db"
+    },
+    {
+      "id": "ext:six",
+      "name": "six",
+      "display_name": "Six",
+      "category": "library",
+      "ecosystem": "pypi",
+      "version": "==1.16.0",
+      "io_kind": null
+    },
+    {
+      "id": "ext:vine",
+      "name": "vine",
+      "display_name": "Vine",
+      "category": "library",
+      "ecosystem": "pypi",
+      "version": "==5.0.0",
+      "io_kind": null
+    },
+    {
+      "id": "ext:wcwidth",
+      "name": "wcwidth",
+      "display_name": "Wcwidth",
+      "category": "library",
+      "ecosystem": "pypi",
+      "version": "==0.2.6",
+      "io_kind": null
+    },
+    {
+      "id": "ext:werkzeug",
+      "name": "werkzeug",
+      "display_name": "Werkzeug",
+      "category": "library",
+      "ecosystem": "pypi",
+      "version": ">=3.1.0",
+      "io_kind": null
+    }
+  ],
+  "relations": [
+    {
+      "source_id": "person:cli",
+      "target_id": "sys:291eda74d214461487a07d63c4276cb3",
+      "label": "runs",
+      "edge_count": 1,
+      "edge_types": [],
+      "coupling": ""
+    },
+    {
+      "source_id": "person:api",
+      "target_id": "sys:291eda74d214461487a07d63c4276cb3",
+      "label": "calls",
+      "edge_count": 1,
+      "edge_types": [],
+      "coupling": ""
+    },
+    {
+      "source_id": "sys:291eda74d214461487a07d63c4276cb3",
+      "target_id": "ext:amqp",
+      "label": "library",
+      "edge_count": 1,
+      "edge_types": [],
+      "coupling": ""
+    },
+    {
+      "source_id": "sys:291eda74d214461487a07d63c4276cb3",
+      "target_id": "ext:asgiref",
+      "label": "library",
+      "edge_count": 1,
+      "edge_types": [],
+      "coupling": ""
+    },
+    {
+      "source_id": "sys:291eda74d214461487a07d63c4276cb3",
+      "target_id": "ext:async-timeout",
+      "label": "library",
+      "edge_count": 1,
+      "edge_types": [],
+      "coupling": ""
+    },
+    {
+      "source_id": "sys:291eda74d214461487a07d63c4276cb3",
+      "target_id": "ext:billiard",
+      "label": "library",
+      "edge_count": 1,
+      "edge_types": [],
+      "coupling": ""
+    },
+    {
+      "source_id": "sys:291eda74d214461487a07d63c4276cb3",
+      "target_id": "ext:blinker",
+      "label": "library",
+      "edge_count": 1,
+      "edge_types": [],
+      "coupling": ""
+    },
+    {
+      "source_id": "sys:291eda74d214461487a07d63c4276cb3",
+      "target_id": "ext:celery",
+      "label": "library",
+      "edge_count": 1,
+      "edge_types": [],
+      "coupling": ""
+    },
+    {
+      "source_id": "sys:291eda74d214461487a07d63c4276cb3",
+      "target_id": "ext:click",
+      "label": "library",
+      "edge_count": 1,
+      "edge_types": [],
+      "coupling": ""
+    },
+    {
+      "source_id": "sys:291eda74d214461487a07d63c4276cb3",
+      "target_id": "ext:click-didyoumean",
+      "label": "library",
+      "edge_count": 1,
+      "edge_types": [],
+      "coupling": ""
+    },
+    {
+      "source_id": "sys:291eda74d214461487a07d63c4276cb3",
+      "target_id": "ext:click-plugins",
+      "label": "library",
+      "edge_count": 1,
+      "edge_types": [],
+      "coupling": ""
+    },
+    {
+      "source_id": "sys:291eda74d214461487a07d63c4276cb3",
+      "target_id": "ext:click-repl",
+      "label": "library",
+      "edge_count": 1,
+      "edge_types": [],
+      "coupling": ""
+    },
+    {
+      "source_id": "sys:291eda74d214461487a07d63c4276cb3",
+      "target_id": "ext:flask",
+      "label": "framework",
+      "edge_count": 1,
+      "edge_types": [],
+      "coupling": ""
+    },
+    {
+      "source_id": "sys:291eda74d214461487a07d63c4276cb3",
+      "target_id": "ext:itsdangerous",
+      "label": "library",
+      "edge_count": 1,
+      "edge_types": [],
+      "coupling": ""
+    },
+    {
+      "source_id": "sys:291eda74d214461487a07d63c4276cb3",
+      "target_id": "ext:jinja2",
+      "label": "library",
+      "edge_count": 1,
+      "edge_types": [],
+      "coupling": ""
+    },
+    {
+      "source_id": "sys:291eda74d214461487a07d63c4276cb3",
+      "target_id": "ext:kombu",
+      "label": "library",
+      "edge_count": 1,
+      "edge_types": [],
+      "coupling": ""
+    },
+    {
+      "source_id": "sys:291eda74d214461487a07d63c4276cb3",
+      "target_id": "ext:markupsafe",
+      "label": "library",
+      "edge_count": 1,
+      "edge_types": [],
+      "coupling": ""
+    },
+    {
+      "source_id": "sys:291eda74d214461487a07d63c4276cb3",
+      "target_id": "ext:prompt-toolkit",
+      "label": "library",
+      "edge_count": 1,
+      "edge_types": [],
+      "coupling": ""
+    },
+    {
+      "source_id": "sys:291eda74d214461487a07d63c4276cb3",
+      "target_id": "ext:pytest",
+      "label": "tool",
+      "edge_count": 1,
+      "edge_types": [],
+      "coupling": ""
+    },
+    {
+      "source_id": "sys:291eda74d214461487a07d63c4276cb3",
+      "target_id": "ext:python-dotenv",
+      "label": "library",
+      "edge_count": 1,
+      "edge_types": [],
+      "coupling": ""
+    },
+    {
+      "source_id": "sys:291eda74d214461487a07d63c4276cb3",
+      "target_id": "ext:pytz",
+      "label": "library",
+      "edge_count": 1,
+      "edge_types": [],
+      "coupling": ""
+    },
+    {
+      "source_id": "sys:291eda74d214461487a07d63c4276cb3",
+      "target_id": "ext:redis",
+      "label": "service",
+      "edge_count": 1,
+      "edge_types": [],
+      "coupling": ""
+    },
+    {
+      "source_id": "sys:291eda74d214461487a07d63c4276cb3",
+      "target_id": "ext:six",
+      "label": "library",
+      "edge_count": 1,
+      "edge_types": [],
+      "coupling": ""
+    },
+    {
+      "source_id": "sys:291eda74d214461487a07d63c4276cb3",
+      "target_id": "ext:vine",
+      "label": "library",
+      "edge_count": 1,
+      "edge_types": [],
+      "coupling": ""
+    },
+    {
+      "source_id": "sys:291eda74d214461487a07d63c4276cb3",
+      "target_id": "ext:wcwidth",
+      "label": "library",
+      "edge_count": 1,
+      "edge_types": [],
+      "coupling": ""
+    },
+    {
+      "source_id": "sys:291eda74d214461487a07d63c4276cb3",
+      "target_id": "ext:werkzeug",
+      "label": "library",
+      "edge_count": 1,
+      "edge_types": [],
+      "coupling": ""
+    }
+  ]
+}

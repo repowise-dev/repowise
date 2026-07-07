@@ -42,7 +42,7 @@ from pathlib import Path
 
 import structlog
 
-from repowise.core.repo_config import get_repowise_dir
+from repowise.core.repo_config import get_repowise_dir, load_repo_config
 
 from .models import Severity
 
@@ -50,6 +50,11 @@ log = structlog.get_logger(__name__)
 
 
 HEALTH_RULES_FILENAME = "health-rules.json"
+
+# Confidence floor labels a repo may set under ``refactoring.min_confidence``.
+# Ordered low -> high; mirrors ``refactoring.models.CONFIDENCE_LEVELS`` without
+# importing the refactoring package (which triggers detector registration).
+_CONFIDENCE_LEVELS: tuple[str, ...] = ("low", "medium", "high")
 
 # Accepted severity labels for ``severity_overrides`` values, normalized to
 # the ``Severity`` enum. Anything else is dropped with a warning on load.
@@ -109,23 +114,97 @@ class HealthConfig:
     # preset (explicit keys win). Per-path remaps live on each ``HealthRule``.
     severity_overrides: dict[str, Severity] = field(default_factory=dict)
     profile: str | None = None
+    # Refactoring-layer knobs, sourced from the ``refactoring:`` block of
+    # ``.repowise/config.yaml`` (the same file the ``refactoring.llm.*`` keys
+    # already round-trip through). ``refactoring_enabled`` gates the whole
+    # deterministic detector pass; ``disabled_refactorings`` silences named
+    # detectors (``extract_class`` / ``split_file`` / ...); ``refactoring_
+    # min_confidence`` is the confidence floor applied at detection time, so a
+    # repo can suppress low-confidence plans exactly as it can disable a
+    # biomarker. Defaults keep every detector on with no floor.
+    refactoring_enabled: bool = True
+    disabled_refactorings: list[str] = field(default_factory=list)
+    refactoring_min_confidence: str | None = None
 
     @classmethod
     def load(cls, repo_path: Path | str) -> HealthConfig:
         """Load `.repowise/health-rules.json` for *repo_path*.
 
-        Missing file → empty config. Malformed file → empty config + a
-        single warning log. Never raises.
+        The per-file biomarker overrides come from ``health-rules.json``; the
+        refactoring-layer knobs come from the ``refactoring:`` block of
+        ``.repowise/config.yaml`` (loaded here and merged onto the same config
+        object). Missing file → empty config. Malformed file → empty config +
+        a single warning log. Never raises.
         """
+        cfg = cls._load_refactoring(repo_path)
         rules_path = get_repowise_dir(repo_path) / HEALTH_RULES_FILENAME
         if not rules_path.exists():
-            return cls()
+            return cfg
         try:
             raw = json.loads(rules_path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
             log.warning("health_rules_load_failed", path=str(rules_path), error=str(exc))
+            return cfg
+        rules_cfg = cls.from_dict(raw)
+        rules_cfg.refactoring_enabled = cfg.refactoring_enabled
+        rules_cfg.disabled_refactorings = cfg.disabled_refactorings
+        rules_cfg.refactoring_min_confidence = cfg.refactoring_min_confidence
+        return rules_cfg
+
+    @classmethod
+    def _load_refactoring(cls, repo_path: Path | str) -> HealthConfig:
+        """Read the ``refactoring:`` block from ``.repowise/config.yaml``.
+
+        Returns a config carrying only the refactoring knobs (biomarker fields
+        left at their defaults). Never raises: a missing/malformed file or an
+        unexpected shape degrades to the defaults (everything on, no floor).
+        """
+        try:
+            raw = load_repo_config(repo_path)
+        except Exception as exc:  # defensive: config.yaml read must never break load
+            log.debug("refactoring_config_load_failed", error=str(exc))
             return cls()
-        return cls.from_dict(raw)
+        return cls._from_refactoring_block(
+            raw.get("refactoring") if isinstance(raw, dict) else None
+        )
+
+    @classmethod
+    def _from_refactoring_block(cls, block: object) -> HealthConfig:
+        """Parse the ``refactoring`` mapping into refactoring-knob fields."""
+        if not isinstance(block, dict):
+            return cls()
+        enabled = block.get("enabled")
+        detectors = block.get("detectors")
+        disabled_raw = detectors.get("disabled") if isinstance(detectors, dict) else None
+        disabled = [str(d) for d in disabled_raw or [] if isinstance(d, str)]
+        floor_raw = block.get("min_confidence")
+        floor = None
+        if isinstance(floor_raw, str) and floor_raw.strip().lower() in _CONFIDENCE_LEVELS:
+            floor = floor_raw.strip().lower()
+        elif floor_raw is not None:
+            log.warning("refactoring_config_bad_min_confidence", value=floor_raw)
+        return cls(
+            refactoring_enabled=bool(enabled) if isinstance(enabled, bool) else True,
+            disabled_refactorings=disabled,
+            refactoring_min_confidence=floor,
+        )
+
+    def has_overrides(self) -> bool:
+        """True when this config carries any analysis-time override.
+
+        The pipeline only bothers building an analyzer-config dict when
+        something here would change the analysis: a disabled/severity-remapped
+        biomarker, or any refactoring-layer knob set away from its default.
+        """
+        return bool(
+            self.disabled_biomarkers
+            or self.rules
+            or self.severity_overrides
+            or self.profile
+            or not self.refactoring_enabled
+            or self.disabled_refactorings
+            or self.refactoring_min_confidence
+        )
 
     @classmethod
     def from_dict(cls, raw: object) -> HealthConfig:
@@ -218,4 +297,7 @@ class HealthConfig:
             "per_file_disabled": self.per_file_disabled(file_paths),
             "severity_overrides": dict(self._repo_severity_overrides()),
             "per_file_severity_overrides": self.per_file_severity_overrides(file_paths),
+            "refactoring_enabled": self.refactoring_enabled,
+            "disabled_refactorings": list(self.disabled_refactorings),
+            "refactoring_min_confidence": self.refactoring_min_confidence,
         }

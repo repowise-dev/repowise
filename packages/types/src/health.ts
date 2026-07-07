@@ -178,6 +178,20 @@ export interface HealthFileMetric {
   defect_score?: number | null;
   maintainability_score?: number | null;
   performance_score?: number | null;
+  /**
+   * Dominant-cause lead: the biomarker + reason of this file's worst finding, so
+   * a low file can headline "the one reason" instead of a wall of markers. Null
+   * when the row carries no findings or the payload predates this field.
+   */
+  primary_biomarker?: string | null;
+  primary_reason?: string | null;
+  /**
+   * Summed (pre-floor) `health_impact` across the file's findings — the score's
+   * deduction magnitude. Distinguishes two files that both clamp to `1.0` (a −25
+   * from a −9) so they can be ranked by depth. The calibrated `score` is
+   * unchanged; this is a display-only secondary distinguisher.
+   */
+  total_deduction?: number | null;
 }
 
 export interface HealthFinding {

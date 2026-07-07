@@ -9,6 +9,7 @@ and is a natural pre-merge / PR gate.
 
 from __future__ import annotations
 
+from .baseline import baseline_scores
 from .features import (
     ChangeFeatures,
     extract_commit_features,
@@ -23,6 +24,7 @@ __all__ = [
     "ChangeRisk",
     "RiskDriver",
     "RiskNormalizer",
+    "baseline_scores",
     "extract_commit_features",
     "extract_range_features",
     "features_from_file_changes",

@@ -11,7 +11,7 @@ repo root on first `init`.
 
 ```
 .repowise/
-├── wiki.db          # SQLite database — all pages, symbols, graph, git metadata, decisions
+├── wiki.db          # SQLite database: all pages, symbols, graph, git metadata, decisions
 ├── lancedb/         # Vector search index (LanceDB)
 ├── omissions/       # Distill omission store + savings ledger (omissions.db)
 ├── config.yaml      # Provider, model, embedder, exclude patterns
@@ -21,7 +21,7 @@ repo root on first `init`.
 ```
 
 repowise adds `.repowise/` to your `.gitignore` automatically. The directory
-should not be committed — it's a local cache, not a source of truth.
+should not be committed; it's a local cache, not a source of truth.
 
 ---
 
@@ -61,10 +61,10 @@ or models that cannot translate an explicit mode fail before making an API call.
 regenerates the wiki). Power users can define their own style under
 `.repowise/styles/<name>/style.yaml`. Full guide: [WIKI_STYLES.md](WIKI_STYLES.md).
 Note: hand-editing `wiki_style` here and running `update` does not regenerate
-existing pages — use `restyle`.
+existing pages, use `restyle`.
 
 > **Code-health rules** are configured separately in
-> `.repowise/health-rules.json` (per-file biomarker overrides) — see
+> `.repowise/health-rules.json` (per-file marker overrides); see
 > [CODE_HEALTH.md](CODE_HEALTH.md#configuration).
 
 ### The `distill:` block
@@ -77,7 +77,7 @@ distill:
   enabled: true                  # master switch for this repo
   commands:
     enabled: true                # the command path (CLI + hook rewrites)
-    permission: ask              # ask | allow | off — rewrite-hook posture
+    permission: ask              # ask | allow | off (rewrite-hook posture)
     families:                    # per-filter overrides
       test_output: allow         #   auto-allow rewrites for test runs
       git_diff: deny             #   never rewrite git diff here
@@ -119,29 +119,36 @@ mcp:
 
 ### The `refactoring:` block
 
-Controls the refactoring-intelligence layer — the structured Extract Class /
-Extract Helper / Move Method / Break Cycle plans surfaced by `repowise health
+Controls the refactoring-intelligence layer: the structured Extract Class /
+Extract Helper / Move Method / Break Cycle / Split File plans surfaced by `repowise health
 --refactoring-targets`, `get_health(include=["refactoring"])`, and the web
 Refactoring tab. The deterministic detectors run inside the normal health pass;
-this block only tunes which fire and the opt-in code-generation step.
+this block only tunes which fire and the optional code-generation step.
 
 ```yaml
 refactoring:
   enabled: true               # the deterministic plans (zero LLM, in the health pass)
   detectors:
     disabled: []              # e.g. [move_method] to silence one detector
-  min_confidence: medium      # low | medium | high — the surface gate
+  min_confidence: low         # low | medium | high (confidence floor)
   llm:
-    enabled: false            # opt-in code generation; gates the generate-code endpoint
+    enabled: true             # code generation, on by default; set false to disable
     provider: null            # falls back to the repo's configured LLM provider
     model: null
 ```
 
 - The deterministic layer is **zero-LLM** and runs in the `init` / `update`
-  health pass; only `llm.enabled` ever calls a provider, and only on demand
-  (never in the indexing hot path).
+  health pass. Code generation is the only part that calls a provider: it is on
+  by default but never runs during indexing, only on an explicit request (set
+  `llm.enabled: false` to disable it).
+- `enabled: false` skips the whole deterministic detector pass; `detectors.disabled`
+  silences named detectors (`extract_class`, `split_file`, ...) while the rest run.
+- `min_confidence` is a floor applied when the plans are detected, so a plan below it
+  is never persisted (just like a disabled marker). Changing it takes effect on the
+  next `init` / `update`. Surfaces that accept a `min_confidence` query parameter can
+  only narrow further from this floor, not below it.
 - Per-path disables reuse the `.repowise/health-rules.json` glob mechanism (the
-  same one biomarkers use).
+  same one markers use).
 - Full reference: [REFACTORING.md](REFACTORING.md).
 
 ---
@@ -156,7 +163,7 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 
 | Model | Notes |
 |-------|-------|
-| `claude-sonnet-4-6` | Default — best balance of quality and cost |
+| `claude-sonnet-4-6` | Default, best balance of quality and cost |
 | `claude-opus-4-6` | Highest quality, higher cost |
 | `claude-haiku-4-5-20251001` | Fastest, lowest cost |
 
@@ -194,7 +201,7 @@ repowise init --provider gemini
 
 Gemini is also the default embedding provider when `GEMINI_API_KEY` is set.
 
-### Ollama (local — no API key)
+### Ollama (local, no API key)
 
 ```bash
 export OLLAMA_BASE_URL="http://localhost:11434"
@@ -228,7 +235,8 @@ The embedder is separate from the LLM provider.
 |----------|---------|-------|
 | `gemini` | `GEMINI_API_KEY` | Default when key is present |
 | `openai` | `OPENAI_API_KEY` | OpenAI `text-embedding-3-small` |
-| `mock` | — | Dummy embeddings, no semantic search |
+| `ollama` | `OLLAMA_EMBEDDING_MODEL` | Local Ollama embeddings, no API key |
+| `mock` | n/a | Dummy embeddings, no semantic search |
 
 ```bash
 repowise init --embedder openai
@@ -241,9 +249,9 @@ repowise reindex --embedder gemini   # switch embedder and rebuild index
 
 API keys are resolved in this order:
 
-1. **Environment variable** — set before running repowise
-2. **`.repowise/.env`** — persisted from interactive setup, loaded automatically
-3. **Interactive prompt** — repowise asks during `init` if no key is found, then saves to `.repowise/.env`
+1. **Environment variable**: set before running repowise
+2. **`.repowise/.env`**: persisted from interactive setup, loaded automatically
+3. **Interactive prompt**: repowise asks during `init` if no key is found, then saves to `.repowise/.env`
 
 The `.repowise/.env` file is gitignored automatically.
 
@@ -257,6 +265,9 @@ The `.repowise/.env` file is gitignored automatically.
 | `OPENAI_API_KEY` | OpenAI API key |
 | `GEMINI_API_KEY` / `GOOGLE_API_KEY` | Google Gemini API key |
 | `OLLAMA_BASE_URL` | Ollama server URL (default: `http://localhost:11434`) |
+| `OLLAMA_EMBEDDING_MODEL` | Ollama embedding model (also selects the `ollama` embedder) |
+| `OLLAMA_EMBEDDING_DIMS` | Ollama embedding output dimensions (optional; inferred from the model otherwise) |
+| `OLLAMA_EMBEDDING_TIMEOUT` | Ollama embed request timeout in seconds (default: `30`); raise it for long pages on slow local models |
 | `LITELLM_API_KEY` | LiteLLM proxy key |
 | `REPOWISE_PROVIDER` | Override provider (skips auto-detection) |
 | `REPOWISE_EMBEDDER` | Embedder: `gemini`, `openai`, or `mock` |
@@ -264,18 +275,18 @@ The `.repowise/.env` file is gitignored automatically.
 | `REPOWISE_HOST` | API server host (default: `127.0.0.1`) |
 | `REPOWISE_PORT` | API server port (default: `7337`) |
 | `REPOWISE_MCP_PORT` | MCP SSE server port (default: `7338`) |
-| `REPOWISE_API_URL` | Frontend only — backend URL for the web UI (default: `http://localhost:7337`) |
+| `REPOWISE_API_URL` | Frontend only; backend URL for the web UI (default: `http://localhost:7337`) |
 
 ---
 
 ## Exclude patterns
 
 repowise respects your `.gitignore` automatically (same `gitwildmatch` format git
-uses). Like git, it reads **nested `.gitignore` files** too — a `.gitignore` in
+uses). Like git, it reads **nested `.gitignore` files** too, so a `.gitignore` in
 any subdirectory applies to that directory's contents. This matters for
 monorepos and yarn/npm workspaces, where a package keeps its own `.gitignore`
 excluding that package's build output (e.g. `dist/`, `coverage/`, generated
-bundles) — those exclusions are now honoured without duplicating them at the
+bundles), so those exclusions are now honoured without duplicating them at the
 repo root.
 
 On top of that, add extra patterns via `--exclude` / `-x`:
@@ -350,9 +361,9 @@ conformance:
       target: db                # matcher
       allow: false              # optional, default false (deny). true = exception
       description: "..."        # optional, shown in reports
-    - source: "tag:ui"          # matcher: tag:<name> — repos carrying that tag
+    - source: "tag:ui"          # matcher: tag:<name> (repos carrying that tag)
       target: "tag:data"
-    - source: "*"               # matcher: * — any service
+    - source: "*"               # matcher: * (any service)
       target: legacy-payments
 ```
 

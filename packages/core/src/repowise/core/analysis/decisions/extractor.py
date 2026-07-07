@@ -7,7 +7,8 @@ Capture sources (see ``decision_provenance.SOURCE_RANK`` for the trust ladder):
     4. ADR auto-discovery (Nygard/MADR records — deterministic parse first)
     5. CHANGELOG mining   (keep-a-changelog Changed/Removed/Deprecated)
     6. PR / squash-body mining (commit bodies captured in git indexing)
-    7. Comment archaeology (rationale prose on high-centrality code)
+    7. Comment archaeology (LLM rationale prose on high-centrality code)
+    8. In-code rationale harvest (deterministic, repo-wide comment markers)
     + CLI capture (manual entry)
 
 Determinism-first: ADR/CHANGELOG are parsed structurally before any LLM call.
@@ -31,6 +32,10 @@ from typing import Any
 import structlog
 
 from repowise.core.analysis.decisions.gate import apply_substring_gate
+from repowise.core.analysis.decisions.rationale_comments import (
+    CODE_EXTENSIONS,
+    harvest_file_rationale,
+)
 
 from .prompts import (
     _SYSTEM_PROMPT,
@@ -258,6 +263,20 @@ _COMMENT_RATIONALE_CUES = (
     "intentionally",
 )
 _MAX_COMMENT_NODES = 30
+
+# Deterministic in-code rationale harvest (Source 8). Unlike comment
+# archaeology (LLM, top-30 central files, leading prose only) this is a
+# repo-wide, LLM-free scan of every comment block for rationale markers. It is
+# the index-time complement to the MCP live-grep miner: the same heuristics,
+# but harvested into the queryable decision corpus rather than mined per query.
+# Capped hard so a verbose file (or repo) can't flood the corpus, and emitted
+# at low confidence / ``proposed`` so these rank below real ADRs.
+_MAX_RATIONALE_PER_FILE = 3
+# Generous safety bound for a pathological repo — not a target. Causal-marker
+# gating keeps a typical repo well under this; if it is ever hit we LOG the
+# truncation rather than silently dropping the tail.
+_MAX_RATIONALE_TOTAL = 1500
+_RATIONALE_HARVEST_CONFIDENCE = 0.3
 
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
@@ -1096,6 +1115,159 @@ class DecisionExtractor:
                 decisions.extend(result)
         return decisions
 
+    # ------------------------------------------------------------------
+    # Source 8: In-code rationale harvest (deterministic, repo-wide)
+    # ------------------------------------------------------------------
+
+    async def harvest_rationale_comments(self) -> list[ExtractedDecision]:
+        """Harvest rationale-bearing code comments into proposed decisions.
+
+        Deterministic (no LLM, no graph required): scans every indexed source
+        file for comment blocks carrying a rationale marker (``because``,
+        ``instead of``, ``workaround``, ``NOTE:`` …) and emits each as a
+        low-confidence ``proposed`` ``code_comment`` decision grounded by the
+        verbatim comment. Shares its heuristics with the MCP live-grep miner
+        (:mod:`repowise.core.analysis.decisions.rationale_comments`) so the
+        index-time and query-time paths never drift.
+
+        Hard precision guardrails live in ``harvest_file_rationale`` (marker
+        required, license / shebang headers dropped, commented-out code
+        dropped, thin comments dropped, per-file cap). The records are emitted
+        ``proposed`` at low confidence so they rank below real ADRs and stay
+        opt-in on high-signal surfaces. The substring gate is a no-op here —
+        every gated field is the verbatim comment — but the records still flow
+        through it for uniform verification stamping.
+        """
+        symbol_index = self._build_symbol_index()
+        decisions: list[ExtractedDecision] = []
+        truncated = False
+
+        for file_path in self._iter_source_files():
+            if len(decisions) >= _MAX_RATIONALE_TOTAL:
+                truncated = True
+                break
+            ext = file_path.suffix.lower().lstrip(".")
+            if ext not in CODE_EXTENSIONS:
+                continue
+            if not file_path.is_file():
+                continue
+            try:
+                text = file_path.read_text(encoding="utf-8", errors="replace")
+            except (OSError, UnicodeDecodeError):
+                continue
+
+            # require_causal=False: the guardrail wants any causal/INTENT
+            # connective (the broad RATIONALE_MARKERS set), not only textbook
+            # causal connectives. The canonical T4 comment that motivated this
+            # feature (tool_symbol.py "…can never blow up… round-trip count is
+            # what dominates token cost") is phrased with an intent marker, not
+            # "because"/"so that" — a causal-only gate would drop the very
+            # comment this exists to catch. Precision is held by the structural
+            # guardrails (no docstrings/license/code/thin + per-file cap).
+            harvested = harvest_file_rationale(
+                text,
+                ext,
+                max_per_file=_MAX_RATIONALE_PER_FILE,
+                require_causal=False,
+            )
+            if not harvested:
+                continue
+
+            try:
+                rel_path = str(file_path.relative_to(self._repo_path)).replace("\\", "/")
+            except ValueError:
+                rel_path = str(file_path)
+
+            for hc in harvested:
+                if len(decisions) >= _MAX_RATIONALE_TOTAL:
+                    truncated = True
+                    break
+                symbol = self._enclosing_symbol(symbol_index, rel_path, hc.start_line)
+                if symbol:
+                    context = f"In `{symbol}` ({rel_path}:{hc.start_line})"
+                else:
+                    context = f"{rel_path}:{hc.start_line}"
+                decisions.append(
+                    ExtractedDecision(
+                        # Title is the model-free one-line summary; ungated, so
+                        # always survives. decision/source_quote are the verbatim
+                        # comment, so the gate stamps them ``exact``.
+                        title=self._comment_title(hc.text),
+                        context=context,
+                        decision=hc.text,
+                        source="code_comment",
+                        status="proposed",
+                        confidence=_RATIONALE_HARVEST_CONFIDENCE,
+                        evidence_file=rel_path,
+                        evidence_line=hc.start_line,
+                        affected_files=[rel_path],
+                        affected_modules=self._infer_modules([rel_path]),
+                        tags=self._infer_tags(hc.text),
+                        source_quote=hc.text,
+                        source_text=hc.text,
+                    )
+                )
+
+        if truncated:
+            logger.warning(
+                "decision_extractor.code_comment_harvest_truncated",
+                cap=_MAX_RATIONALE_TOTAL,
+                note="rationale-comment harvest hit its safety cap; tail dropped",
+            )
+        return decisions
+
+    @staticmethod
+    def _comment_title(text: str) -> str:
+        """A short, single-line title for a harvested comment."""
+        first = text.strip().splitlines()[0] if text.strip() else text
+        first = re.sub(r"\s+", " ", first).strip()
+        return first[:100]
+
+    def _build_symbol_index(self) -> dict[str, list[tuple[int, int, str]]]:
+        """Map each file's rel path → its symbols' ``(start, end, label)``.
+
+        Built once per harvest from ``parsed_files`` (empty when unavailable).
+        ``label`` is the qualified name when present, else the bare name.
+        """
+        index: dict[str, list[tuple[int, int, str]]] = {}
+        for pf in self._parsed_files:
+            fi = getattr(pf, "file_info", None)
+            path = getattr(fi, "path", None)
+            symbols = getattr(pf, "symbols", None)
+            if not path or not symbols:
+                continue
+            rel = str(path).replace("\\", "/")
+            entries: list[tuple[int, int, str]] = []
+            for sym in symbols:
+                start = getattr(sym, "start_line", None)
+                end = getattr(sym, "end_line", None)
+                if not isinstance(start, int) or not isinstance(end, int):
+                    continue
+                label = getattr(sym, "qualified_name", "") or getattr(sym, "name", "")
+                if label:
+                    entries.append((start, end, label))
+            if entries:
+                index[rel] = entries
+        return index
+
+    @staticmethod
+    def _enclosing_symbol(
+        index: dict[str, list[tuple[int, int, str]]],
+        rel_path: str,
+        line: int,
+    ) -> str | None:
+        """Return the innermost symbol whose line range contains ``line``."""
+        entries = index.get(rel_path)
+        if not entries:
+            return None
+        best: tuple[int, str] | None = None  # (span_width, label) — smallest wins
+        for start, end, label in entries:
+            if start <= line <= end:
+                width = end - start
+                if best is None or width < best[0]:
+                    best = (width, label)
+        return best[1] if best else None
+
     # Above this node count, skip the iterative PageRank solve and use degree
     # centrality (O(nodes)) instead — comment archaeology only needs a rough
     # "most depended-on files" ranking, not exact PageRank, and the iterative
@@ -1354,8 +1526,8 @@ class DecisionExtractor:
 
         *on_step* is an optional callable invoked with the source name as each
         sub-extractor finishes (``inline_marker``, ``git_archaeology``,
-        ``readme_mining``, ``adr``, ``changelog``, ``pr``, ``comment``). Used by
-        the CLI to surface per-source progress.
+        ``readme_mining``, ``adr``, ``changelog``, ``pr``, ``comment``,
+        ``code_comment``). Used by the CLI to surface per-source progress.
 
         Every extracted decision is then put through the anti-hallucination
         substring gate (:meth:`_apply_substring_gate`) before being returned —
@@ -1384,6 +1556,7 @@ class DecisionExtractor:
             ("changelog", self.mine_changelog),
             ("pr", self.mine_pr_bodies),
             ("comment", self.mine_comment_archaeology),
+            ("code_comment", self.harvest_rationale_comments),
         ]
 
         logger.info("decision_extractor.extract_all_start")
@@ -1414,13 +1587,52 @@ class DecisionExtractor:
     # Helpers
     # ------------------------------------------------------------------
 
+    def _tracked_files(self) -> set[Path] | None:
+        """Resolved paths git tracks under ``repo_path``, or ``None``.
+
+        ``None`` means "no git scoping available" (not a git repo, git missing,
+        or the command failed) — callers then fall back to walking the tree.
+        Restricting to tracked files keeps untracked / gitignored / git-excluded
+        working directories (``local-stash/``, vendored dumps, scratch folders)
+        out of the harvest: their comments are not part of the indexed codebase
+        and must not become decision records.
+        """
+        import subprocess
+
+        try:
+            proc = subprocess.run(
+                ["git", "-C", str(self._repo_path), "ls-files", "-z"],
+                capture_output=True,
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if proc.returncode != 0 or not proc.stdout:
+            return None
+        out = proc.stdout.decode("utf-8", errors="replace")
+        tracked: set[Path] = set()
+        for rel in out.split("\0"):
+            if not rel:
+                continue
+            try:
+                tracked.add((self._repo_path / rel).resolve())
+            except OSError:
+                continue
+        return tracked or None
+
     def _iter_source_files(self):
         """Yield source files under repo_path, skipping irrelevant dirs.
 
         Uses os.walk so we can prune entire subtrees (nested git repos,
-        node_modules, etc.) without descending into them.
+        node_modules, etc.) without descending into them. When the repo is a git
+        checkout, the walk is further restricted to git-tracked files so
+        untracked / excluded working directories never contribute decisions;
+        gitless indexes fall back to the full walk.
         """
         import os
+
+        tracked = self._tracked_files()
 
         for dirpath, dirnames, filenames in os.walk(self._repo_path):
             # Prune skip-listed directories in-place so os.walk won't descend
@@ -1440,8 +1652,15 @@ class DecisionExtractor:
 
             for fname in filenames:
                 fpath = Path(dirpath) / fname
-                if fpath.suffix.lower() not in _BINARY_EXTENSIONS:
-                    yield fpath
+                if fpath.suffix.lower() in _BINARY_EXTENSIONS:
+                    continue
+                if tracked is not None:
+                    try:
+                        if fpath.resolve() not in tracked:
+                            continue
+                    except OSError:
+                        continue
+                yield fpath
 
     def _get_neighbors(self, file_path: str) -> list[str]:
         """Get 1-hop graph neighbors for a file."""

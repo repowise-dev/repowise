@@ -2,6 +2,38 @@
 
 All notable changes to the Repowise Claude Code plugin are documented here.
 
+## 0.27.0
+
+### Changed
+- Version bump to track the repowise 0.27.0 release. No command, skill, or MCP
+  tool-surface changes this cycle.
+
+## 0.26.0
+
+### Changed
+- Version bump to track the repowise 0.26.0 release. No command, skill, or MCP
+  tool-surface changes this cycle.
+
+## 0.25.0
+
+### Changed
+- Version bump to track the repowise 0.25.0 release.
+- Renamed the user-facing "biomarker" term to "marker" across the README and the
+  code-health / pre-modification skills, matching the Code Health UI copy change.
+  No MCP tool-surface or command-flag changes this cycle.
+
+## 0.24.1
+
+### Changed
+- Version bump to track the repowise 0.24.1 release. No command, skill, or MCP
+  tool-surface changes this cycle.
+
+## 0.24.0
+
+### Changed
+- Version bump to track the repowise 0.24.0 release. No command, skill, or MCP
+  tool-surface changes this cycle.
+
 ## 0.23.0
 
 ### Changed

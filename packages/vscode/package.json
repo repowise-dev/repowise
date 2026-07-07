@@ -1,0 +1,555 @@
+{
+  "name": "repowise",
+  "displayName": "Repowise",
+  "description": "Know what your change breaks before you push. Health signals, architecture maps, and refactoring plans in your editor, and the same intelligence for your AI agent via MCP. Local and free.",
+  "version": "0.3.0",
+  "publisher": "repowise-dev",
+  "license": "AGPL-3.0-or-later",
+  "homepage": "https://www.repowise.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/repowise-dev/repowise",
+    "directory": "packages/vscode"
+  },
+  "bugs": {
+    "url": "https://github.com/repowise-dev/repowise/issues"
+  },
+  "engines": {
+    "vscode": "^1.101.0",
+    "node": ">=20.0.0"
+  },
+  "categories": ["AI", "Chat", "Visualization", "Linters", "Other"],
+  "keywords": [
+    "mcp",
+    "ai agent",
+    "copilot",
+    "code health",
+    "technical debt",
+    "refactoring",
+    "code analysis",
+    "architecture",
+    "dependency graph",
+    "hotspots",
+    "knowledge graph",
+    "documentation",
+    "codebase intelligence"
+  ],
+  "icon": "media/icon.png",
+  "pricing": "Free",
+  "galleryBanner": {
+    "color": "#1e1b2e",
+    "theme": "dark"
+  },
+  "main": "./dist/extension.js",
+  "extensionKind": ["workspace"],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "Repowise runs the local repowise CLI and connects to a local analysis server, so it is enabled only in trusted workspaces."
+    }
+  },
+  "activationEvents": [
+    "onStartupFinished",
+    "workspaceContains:**/.repowise/**",
+    "workspaceContains:**/.repowise-workspace/**"
+  ],
+  "contributes": {
+    "configuration": {
+      "title": "Repowise",
+      "properties": {
+        "repowise.server.port": {
+          "type": ["number", "null"],
+          "default": null,
+          "markdownDescription": "Port the local Repowise server listens on. Leave empty to discover it from the running server's lockfile."
+        },
+        "repowise.server.autoStart": {
+          "type": "string",
+          "enum": ["ask", "always", "never"],
+          "enumDescriptions": [
+            "Ask before starting the local server.",
+            "Start the local server automatically when a Repowise index is present.",
+            "Never start the local server automatically."
+          ],
+          "default": "ask",
+          "description": "Whether to start the local Repowise server automatically."
+        },
+        "repowise.cliPath": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path to the repowise CLI executable. Leave empty to use 'repowise' from your PATH."
+        },
+        "repowise.diagnostics.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show health findings for visible files in the Problems panel. Off by default to keep the panel quiet; the gutter, explorer badges, and hovers still surface findings."
+        },
+        "repowise.diagnostics.minSeverity": {
+          "type": "string",
+          "enum": ["critical", "high", "medium", "low"],
+          "default": "high",
+          "description": "Lowest finding severity surfaced in the Problems panel. Lower-severity findings stay visible in the gutter and tree views."
+        },
+        "repowise.diagnostics.dimensions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["defect", "maintainability", "performance"]
+          },
+          "default": ["defect", "maintainability", "performance"],
+          "description": "Health dimensions included in the Problems panel."
+        },
+        "repowise.gutterHeat.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Shade the gutter next to lines with health findings in visible editors."
+        },
+        "repowise.fileDecorations.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Badge the worst-health files in the file explorer."
+        },
+        "repowise.fileDecorations.maxScore": {
+          "type": "number",
+          "default": 4,
+          "minimum": 0,
+          "maximum": 10,
+          "description": "Badge files whose defect score is at or below this value."
+        },
+        "repowise.codeLens.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show refactoring plan lenses above symbols with a detected refactoring opportunity."
+        },
+        "repowise.hover.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show file health, ownership, and decision context on hover."
+        },
+        "repowise.hover.symbolDetail": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enrich symbol hovers with caller/callee counts, ownership, and governing decisions from the index. Fetched only when you hover, then cached."
+        },
+        "repowise.risk.baseBranch": {
+          "type": "string",
+          "default": "",
+          "description": "Base branch for change risk scoring. Leave empty to use the repository's default branch."
+        },
+        "repowise.changeIntel.cochangeNudge": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a quiet status-bar hint when files you are editing usually change together with a file you have not touched. Advisory and dismissible; never interrupts."
+        },
+        "repowise.changeIntel.cochangeMinScore": {
+          "type": "number",
+          "default": 4,
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Minimum historical co-change count before a related file is surfaced by the nudge. Higher values mean fewer, stronger hints."
+        },
+        "repowise.agentHandoff.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Offer lightbulb code actions that hand a detected refactoring plan to your AI agent, alongside the copy-to-clipboard action."
+        },
+        "repowise.agentTools.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Expose Repowise index lookups (search, health, plans, risk, symbols, docs) as native tools your editor's AI chat can call."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "repowise.startServer",
+        "title": "Start Server",
+        "category": "Repowise"
+      },
+      {
+        "command": "repowise.stopServer",
+        "title": "Stop Server",
+        "category": "Repowise"
+      },
+      {
+        "command": "repowise.showLog",
+        "title": "Show Log",
+        "category": "Repowise"
+      },
+      {
+        "command": "repowise.configureMcp",
+        "title": "Configure MCP for this Workspace",
+        "category": "Repowise"
+      },
+      {
+        "command": "repowise.runInit",
+        "title": "Set Up This Repository",
+        "category": "Repowise"
+      },
+      {
+        "command": "repowise.checkSetup",
+        "title": "Check Setup",
+        "category": "Repowise"
+      },
+      {
+        "command": "repowise.checkBranchRisk",
+        "title": "Analyze Change Risk",
+        "category": "Repowise",
+        "icon": "$(pulse)"
+      },
+      {
+        "command": "repowise.updateIndex",
+        "title": "Update Index",
+        "category": "Repowise"
+      },
+      {
+        "command": "repowise.showFileHealth",
+        "title": "Show File Health",
+        "category": "Repowise"
+      },
+      {
+        "command": "repowise.openDocs",
+        "title": "Open Docs for This File",
+        "category": "Repowise"
+      },
+      {
+        "command": "repowise.showHealthDashboard",
+        "title": "Show Health Dashboard",
+        "category": "Repowise",
+        "icon": "$(dashboard)"
+      },
+      {
+        "command": "repowise.showArchitecture",
+        "title": "Show Architecture Map",
+        "category": "Repowise",
+        "icon": "$(layers)"
+      },
+      {
+        "command": "repowise.showKnowledgeGraph",
+        "title": "Show Knowledge Graph",
+        "category": "Repowise",
+        "icon": "$(type-hierarchy)"
+      },
+      {
+        "command": "repowise.showDecisionTimeline",
+        "title": "Show Decision Timeline",
+        "category": "Repowise",
+        "icon": "$(milestone)"
+      },
+      {
+        "command": "repowise.showSettings",
+        "title": "Open Settings",
+        "category": "Repowise",
+        "icon": "$(gear)"
+      }
+    ],
+    "menus": {
+      "scm/title": [
+        {
+          "command": "repowise.checkBranchRisk",
+          "group": "navigation",
+          "when": "scmProvider == git && repowise.state == 'ready'"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "repowise.showHealthDashboard",
+          "group": "navigation",
+          "when": "view == repowise.findingsView"
+        },
+        {
+          "command": "repowise.showSettings",
+          "group": "navigation",
+          "when": "view == repowise.homeView"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "repowise",
+          "title": "Repowise",
+          "icon": "media/repowise.svg"
+        }
+      ]
+    },
+    "views": {
+      "repowise": [
+        {
+          "id": "repowise.home",
+          "name": "Overview",
+          "when": "repowise.state != 'ready'"
+        },
+        {
+          "id": "repowise.homeView",
+          "type": "webview",
+          "name": "Home",
+          "when": "repowise.state == 'ready'"
+        },
+        {
+          "id": "repowise.findingsView",
+          "name": "Findings",
+          "when": "repowise.state == 'ready'",
+          "visibility": "collapsed"
+        },
+        {
+          "id": "repowise.refactoringView",
+          "name": "Refactoring",
+          "when": "repowise.state == 'ready'",
+          "visibility": "collapsed"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "repowise.home",
+        "when": "!isWorkspaceTrusted",
+        "contents": "Repowise is disabled in untrusted workspaces because it runs a local CLI and connects to a local server.\n\n[Manage Workspace Trust](command:workbench.trust.manage)"
+      },
+      {
+        "view": "repowise.home",
+        "when": "isWorkspaceTrusted && repowise.state == 'not-installed'",
+        "contents": "The repowise CLI was not found on your PATH.\n\nInstall it, then set it up for this repository.\n\n[Check Setup](command:repowise.checkSetup)\n\nIf the CLI lives at a custom location, set `repowise.cliPath` in settings."
+      },
+      {
+        "view": "repowise.home",
+        "when": "isWorkspaceTrusted && repowise.state == 'no-index'",
+        "contents": "This repository is not indexed yet.\n\nSet up Repowise to build the index and unlock codebase intelligence.\n\n[Set Up This Repository](command:repowise.runInit)"
+      },
+      {
+        "view": "repowise.home",
+        "when": "isWorkspaceTrusted && repowise.state == 'server-down'",
+        "contents": "The local Repowise server is not running.\n\nStart it to browse the index and connect your AI agent.\n\n[Start Server](command:repowise.startServer)\n[Check Setup](command:repowise.checkSetup)"
+      }
+    ],
+    "mcpServerDefinitionProviders": [
+      {
+        "id": "repowise.mcp",
+        "label": "Repowise"
+      }
+    ],
+    "languageModelTools": [
+      {
+        "name": "repowise_searchCodebase",
+        "displayName": "Repowise: Search Codebase",
+        "toolReferenceName": "repowiseSearch",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(search)",
+        "tags": ["repowise"],
+        "when": "repowise.agentToolsEnabled",
+        "modelDescription": "Search the Repowise index of this repository: semantic search over documentation pages, files, and symbols. Returns ranked matches with titles, target paths, scores, and snippets. Use it to locate where a concept, feature, or identifier lives before reading files.",
+        "userDescription": "Search the Repowise index of this repository.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string",
+              "description": "Search query: an identifier, file path, or natural language description."
+            },
+            "limit": {
+              "type": "number",
+              "description": "Maximum number of results (1 to 20, default 5)."
+            }
+          },
+          "required": ["query"]
+        }
+      },
+      {
+        "name": "repowise_getFileHealth",
+        "displayName": "Repowise: File Health",
+        "toolReferenceName": "repowiseFileHealth",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(heart)",
+        "tags": ["repowise"],
+        "when": "repowise.agentToolsEnabled",
+        "modelDescription": "Get code health for one file in this repository: defect, maintainability, and performance scores (0 to 10, higher is healthier) plus line-anchored findings with severity and biomarker type. Use it before editing a file to know what is already flagged, or to check whether a change should also fix nearby findings.",
+        "userDescription": "Health scores and findings for one file.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "filePath": {
+              "type": "string",
+              "description": "Repository-relative path of the file, forward slashes."
+            }
+          },
+          "required": ["filePath"]
+        }
+      },
+      {
+        "name": "repowise_getRefactoringPlans",
+        "displayName": "Repowise: Refactoring Plans",
+        "toolReferenceName": "repowisePlans",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(tools)",
+        "tags": ["repowise"],
+        "when": "repowise.agentToolsEnabled",
+        "modelDescription": "Get the deterministic refactoring plans Repowise computed for one file: refactoring type, target symbol with line range, step-by-step plan, evidence, impact estimate, and blast radius (affected callers and co-change partners). These plans are precomputed from static analysis and git history, not generated on the fly. Follow the plan's steps and constraints when refactoring.",
+        "userDescription": "Precomputed refactoring plans for one file.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "filePath": {
+              "type": "string",
+              "description": "Repository-relative path of the file, forward slashes."
+            }
+          },
+          "required": ["filePath"]
+        }
+      },
+      {
+        "name": "repowise_getBranchRisk",
+        "displayName": "Repowise: Branch Risk",
+        "toolReferenceName": "repowiseBranchRisk",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(pulse)",
+        "tags": ["repowise"],
+        "when": "repowise.agentToolsEnabled",
+        "modelDescription": "Score the defect risk of the current branch's changes against a base branch (0 to 10, higher is riskier), with the drivers behind the score. Use it after making changes to judge whether the change set needs extra review or tests before pushing.",
+        "userDescription": "Defect risk score for the current branch.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "base": {
+              "type": "string",
+              "description": "Base branch or revision to compare against. Omit to use the repository's default branch."
+            }
+          }
+        }
+      },
+      {
+        "name": "repowise_getSymbolInfo",
+        "displayName": "Repowise: Symbol Info",
+        "toolReferenceName": "repowiseSymbol",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(symbol-method)",
+        "tags": ["repowise"],
+        "when": "repowise.agentToolsEnabled",
+        "modelDescription": "Look up a symbol (function, class, method) in one file of this repository: kind, line bounds, callers and callees, ownership, and governing architectural decisions. Use it to judge the blast radius of editing a symbol or to find who depends on it. Omit symbolName to list the file's symbols.",
+        "userDescription": "Callers, callees, and ownership for a symbol.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "filePath": {
+              "type": "string",
+              "description": "Repository-relative path of the file, forward slashes."
+            },
+            "symbolName": {
+              "type": "string",
+              "description": "Name of the symbol to look up. Omit to list all symbols in the file."
+            }
+          },
+          "required": ["filePath"]
+        }
+      },
+      {
+        "name": "repowise_getFileDocs",
+        "displayName": "Repowise: File Docs",
+        "toolReferenceName": "repowiseDocs",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(book)",
+        "tags": ["repowise"],
+        "when": "repowise.agentToolsEnabled",
+        "modelDescription": "Get the generated documentation page for one file in this repository: what the file does, its role in the architecture, key symbols, and relationships. Use it to orient in an unfamiliar file before reading the source.",
+        "userDescription": "Generated documentation for one file.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "filePath": {
+              "type": "string",
+              "description": "Repository-relative path of the file, forward slashes."
+            }
+          },
+          "required": ["filePath"]
+        }
+      }
+    ],
+    "walkthroughs": [
+      {
+        "id": "repowise.gettingStarted",
+        "title": "Get Started with Repowise",
+        "description": "Index your repository and connect it to your editor and AI agent.",
+        "steps": [
+          {
+            "id": "installCli",
+            "title": "Install the CLI",
+            "description": "Install the repowise command line tool so the extension can index and serve your repository.\n[Check Setup](command:repowise.checkSetup)",
+            "media": {
+              "markdown": "media/walkthrough/install-cli.md"
+            }
+          },
+          {
+            "id": "indexRepo",
+            "title": "Index the repository",
+            "description": "Build the Repowise index for this workspace.\n[Set Up This Repository](command:repowise.runInit)",
+            "media": {
+              "markdown": "media/walkthrough/index-repo.md"
+            },
+            "completionEvents": ["onCommand:repowise.runInit"]
+          },
+          {
+            "id": "connectServer",
+            "title": "Connect the server",
+            "description": "Start the local server so the extension can read your index.\n[Start Server](command:repowise.startServer)",
+            "media": {
+              "markdown": "media/walkthrough/connect-server.md"
+            },
+            "completionEvents": ["onCommand:repowise.startServer"]
+          },
+          {
+            "id": "firstInsight",
+            "title": "See your first insight",
+            "description": "Open the health dashboard for a first look at your repository.\n[Show Health Dashboard](command:repowise.showHealthDashboard)",
+            "media": {
+              "markdown": "media/walkthrough/first-insight.md"
+            },
+            "completionEvents": ["onCommand:repowise.showHealthDashboard"]
+          },
+          {
+            "id": "connectMcp",
+            "title": "MCP for your AI agent",
+            "description": "Expose the Repowise tools to your AI agent over MCP.\n[Configure MCP for this Workspace](command:repowise.configureMcp)",
+            "media": {
+              "markdown": "media/walkthrough/connect-mcp.md"
+            },
+            "completionEvents": ["onCommand:repowise.configureMcp"]
+          }
+        ]
+      }
+    ]
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "build:webview": "vite build --config webview/vite.config.mts",
+    "watch": "node esbuild.mjs --watch",
+    "type-check": "tsc --noEmit && tsc -p webview/tsconfig.json",
+    "pretest": "npm run build && npm run build:webview && tsc -p tsconfig.test.json",
+    "test": "vscode-test",
+    "test:webview": "vitest run --config webview/vitest.config.mts",
+    "package": "vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@repowise-dev/api-client": "*",
+    "@repowise-dev/types": "*",
+    "@repowise-dev/ui": "*",
+    "@tailwindcss/typography": "^0.5.15",
+    "@tailwindcss/vite": "^4.0.0",
+    "@testing-library/react": "^16.1.0",
+    "@types/mocha": "^10.0.0",
+    "@types/node": "^20",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@types/vscode": "~1.101.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "@vscode/test-cli": "^0.0.10",
+    "@vscode/test-electron": "^3.0.0",
+    "@vscode/vsce": "^3.0.0",
+    "esbuild": "^0.28.0",
+    "jsdom": "^26.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "swr": "^2.2.5",
+    "tailwindcss": "^4.0.0",
+    "typescript": "^5.7.2",
+    "vite": "^7.0.0",
+    "vitest": "^3.0.0"
+  }
+}

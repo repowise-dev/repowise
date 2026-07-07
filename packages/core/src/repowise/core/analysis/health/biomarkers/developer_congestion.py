@@ -1,9 +1,8 @@
 """Developer Congestion — too many hands on a single file.
 
 When a file has a large contributor count over a 90-day window and is
-also a hotspot, coordination cost explodes. CodeScene calls this
-"Developer Congestion" — strongly correlated with regression rates in
-their published industry studies.
+also a hotspot, coordination cost explodes. This pattern is strongly
+correlated with regression rates in published industry studies.
 
 Fires when ALL of:
 

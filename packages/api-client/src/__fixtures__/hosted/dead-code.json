@@ -1,0 +1,46 @@
+{
+  "total_findings": 28,
+  "deletable_lines": 169,
+  "findings": [
+    {
+      "kind": "unreachable_file",
+      "file_path": "docs/conf.py",
+      "symbol_name": null,
+      "symbol_kind": null,
+      "confidence": 0.4,
+      "reason": "File has no importers (in_degree=0)",
+      "last_commit_at": "2025-06-12T20:46:49+00:00",
+      "commit_count_90d": 0,
+      "lines": 240,
+      "package": "docs",
+      "evidence": [
+        "in_degree=0 (no files import this)",
+        "No commits in last 90 days",
+        "Package uses dynamic imports or runtime-resolved edges",
+        "Runtime-load risk (configuration): files of this kind are often referenced outside static imports — review before deleting"
+      ],
+      "safe_to_delete": false,
+      "primary_owner": "David Lord",
+      "age_days": 3734
+    },
+    {
+      "kind": "unreachable_file",
+      "file_path": "examples/celery/make_celery.py",
+      "symbol_name": null,
+      "symbol_kind": null,
+      "confidence": 1,
+      "reason": "File has no importers (in_degree=0)",
+      "last_commit_at": "2023-02-10T17:16:53+00:00",
+      "commit_count_90d": 0,
+      "lines": 20,
+      "package": "examples",
+      "evidence": [
+        "in_degree=0 (no files import this)",
+        "No commits in last 90 days"
+      ],
+      "safe_to_delete": true,
+      "primary_owner": "David Lord",
+      "age_days": 1239
+    }
+  ]
+}

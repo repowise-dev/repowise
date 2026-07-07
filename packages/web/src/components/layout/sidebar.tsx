@@ -74,6 +74,18 @@ export function Sidebar({ repos = [], activeRepoId, workspace }: SidebarProps) {
     }
   }, [isDocsRoute]);
 
+  // Workspace group: collapsed unless the user is on a workspace route, so
+  // the (more used) per-repo navigation leads. Tracks route changes in both
+  // directions; manual toggles win while the route type is unchanged.
+  const isWorkspaceRoute = pathname?.startsWith("/workspace") ?? false;
+  const [workspaceNavOpen, setWorkspaceNavOpen] = React.useState(isWorkspaceRoute);
+  const wasWorkspaceRoute = React.useRef(isWorkspaceRoute);
+  React.useEffect(() => {
+    if (isWorkspaceRoute === wasWorkspaceRoute.current) return;
+    wasWorkspaceRoute.current = isWorkspaceRoute;
+    setWorkspaceNavOpen(isWorkspaceRoute);
+  }, [isWorkspaceRoute]);
+
   const toggleRepo = (id: string) => {
     setExpandedRepos((prev) => {
       const next = new Set(prev);
@@ -135,28 +147,42 @@ export function Sidebar({ repos = [], activeRepoId, workspace }: SidebarProps) {
             <SidebarSearchButton iconOnly={isIconOnly} />
           </nav>
 
-          {/* Workspace nav — only shown in workspace mode */}
+          {/* Workspace nav — only shown in workspace mode. Collapsed by
+              default: per-repo navigation is the primary surface, so the
+              cross-repo views tuck behind a toggle unless one is active. */}
           {isWorkspace && (
             <>
+              <Separator className="my-4" />
               {!isIconOnly && (
-                <>
-                  <Separator className="my-4" />
-                  <p className="mb-2 px-2 text-xs font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
-                    Workspace
-                  </p>
-                </>
+                <button
+                  onClick={() => setWorkspaceNavOpen((v) => !v)}
+                  aria-expanded={workspaceNavOpen}
+                  aria-controls="sidebar-workspace-nav"
+                  className="mb-1 flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium uppercase tracking-wider text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-secondary)]"
+                >
+                  <span className="flex-1 truncate text-left">Workspace</span>
+                  {workspaceNavOpen ? (
+                    <ChevronDown className="h-3.5 w-3.5 shrink-0 opacity-60" />
+                  ) : (
+                    <ChevronRight className="h-3.5 w-3.5 shrink-0 opacity-60" />
+                  )}
+                </button>
               )}
-              {isIconOnly && <Separator className="my-4" />}
-              <nav className="space-y-1">
-                {WORKSPACE_NAV.map((item) => (
-                  <SidebarNavItem
-                    key={item.href}
-                    item={item}
-                    isActive={item.exact ? pathname === item.href : pathname.startsWith(`${item.href}`)}
-                    iconOnly={isIconOnly}
-                  />
-                ))}
-              </nav>
+              {(isIconOnly || workspaceNavOpen) && (
+                <nav className="space-y-1" id="sidebar-workspace-nav">
+                  {(isIconOnly && !isWorkspaceRoute
+                    ? WORKSPACE_NAV.slice(0, 1)
+                    : WORKSPACE_NAV
+                  ).map((item) => (
+                    <SidebarNavItem
+                      key={item.href}
+                      item={item}
+                      isActive={item.exact ? pathname === item.href : pathname.startsWith(`${item.href}`)}
+                      iconOnly={isIconOnly}
+                    />
+                  ))}
+                </nav>
+              )}
             </>
           )}
 
@@ -176,25 +202,32 @@ export function Sidebar({ repos = [], activeRepoId, workspace }: SidebarProps) {
                   const isExpanded = expandedRepos.has(repo.id);
                   const isActive = derivedActiveRepoId === repo.id;
                   const navGroups = repoNavGroups(repo.id);
+                  // The server flags never-indexed repos (workspace members
+                  // and plain registrations alike) with "needs_index";
+                  // synthetic workspace entries additionally have "ws:" ids.
+                  const isSynthetic = repo.id.startsWith("ws:");
                   const needsIndex =
-                    repo.workspace_status === "needs_index" ||
-                    repo.id.startsWith("ws:");
+                    repo.workspace_status === "needs_index" || isSynthetic;
                   const isMissing = repo.workspace_status === "missing_dir";
 
                   if (needsIndex || isMissing) {
-                    // Synthetic / unindexed workspace entry — show as a
-                    // disabled row with a status hint. The Index/Sync
-                    // CTA lives in the Workspace dashboard.
+                    // Unindexed entry: a status pill that routes to where
+                    // the Index CTA lives, the Workspace dashboard for
+                    // synthetic entries and the repo overview otherwise.
+                    const indexHref = isSynthetic || isMissing
+                      ? "/workspace"
+                      : `/repos/${repo.id}/overview`;
                     if (isIconOnly) {
                       return (
                         <Tooltip key={repo.id}>
                           <TooltipTrigger asChild>
-                            <div
-                              className="flex w-full items-center justify-center rounded-md p-2 text-[var(--color-text-tertiary)] opacity-60"
+                            <Link
+                              href={indexHref}
+                              className="flex w-full items-center justify-center rounded-md p-2 text-[var(--color-text-tertiary)] opacity-60 transition-colors hover:bg-[var(--color-bg-elevated)]"
                               aria-label={`${repo.name} (${isMissing ? "missing" : "needs index"})`}
                             >
                               <Circle className="h-2.5 w-2.5 stroke-current" />
-                            </div>
+                            </Link>
                           </TooltipTrigger>
                           <TooltipContent side="right">
                             {repo.workspace_alias ?? repo.name}
@@ -207,12 +240,14 @@ export function Sidebar({ repos = [], activeRepoId, workspace }: SidebarProps) {
                     return (
                       <Link
                         key={repo.id}
-                        href="/workspace"
+                        href={indexHref}
                         className="flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-sm text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-elevated)]"
                         title={
                           isMissing
                             ? "Directory missing — open Workspace to remove or fix"
-                            : "Not indexed yet — open Workspace to index"
+                            : isSynthetic
+                              ? "Not indexed yet. Open Workspace to index."
+                              : "Not indexed yet. Open the repo to index."
                         }
                       >
                         <Circle className="h-2 w-2 shrink-0 stroke-current" />
@@ -342,8 +377,9 @@ export function Sidebar({ repos = [], activeRepoId, workspace }: SidebarProps) {
           {repos.length === 0 && !isIconOnly && (
             <>
               <Separator className="my-4" />
+              {/* First run: no repos to list, so the add action carries the sidebar. */}
               <div className="px-0.5">
-                <AddRepoDialog variant="sidebar" />
+                <AddRepoDialog />
               </div>
             </>
           )}

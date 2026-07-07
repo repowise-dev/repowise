@@ -40,7 +40,7 @@ MCP tools and skills activate automatically.
 Graph (tree-sitter dependency graph, 15 languages) · Git (hotspots, ownership,
 co-change, bus factor) · Docs (LLM-generated wiki + semantic search) · Decisions
 (architectural rationale mined from eight sources) · Code Health (1–10
-defect-validated score from deterministic biomarkers).
+defect-validated score from deterministic markers).
 
 ### Slash commands
 
@@ -82,7 +82,7 @@ Registered automatically when the plugin is enabled:
 | `get_risk` | Per-file hotspot, dependents, co-changes, owners; PR `directive` block with `changed_files` |
 | `get_why` | Architectural decisions — search, path-anchored, or health dashboard |
 | `get_dead_code` | Unused/unreachable findings tiered by confidence |
-| `get_health` | 1–10 code-health score and biomarker findings per file |
+| `get_health` | 1–10 code-health score and marker findings per file |
 
 ## Setup modes
 

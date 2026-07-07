@@ -388,7 +388,7 @@ This is how you connect repowise to Claude Code, Cursor, Cline, Windsurf, and ot
 | `get_risk` | Modification risk assessment — hotspot score, dependents, co-change partners, bus factor, blast radius, test gaps, 0–10 risk score |
 | `get_why` | Why code is structured the way it is — architectural decisions, git archaeology. Three modes: NL search, path-based, health dashboard. |
 | `get_dead_code` | Tiered dead code report grouped by confidence with cleanup impact estimates |
-| `get_health` | 25-biomarker code-health scores — dashboard KPIs + lowest-scoring files, or per-file findings; `include` for refactoring suggestions and trend alerts |
+| `get_health` | 25-marker code-health scores — dashboard KPIs + lowest-scoring files, or per-file findings; `include` for refactoring suggestions and trend alerts |
 
 In workspace mode, tools are workspace-aware — pass `repo="backend"` to target a specific repo or `repo="all"` to query across the entire workspace. The default repo is used when `repo` is omitted.
 

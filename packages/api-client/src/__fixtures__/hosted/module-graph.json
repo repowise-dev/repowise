@@ -1,0 +1,59 @@
+{
+  "nodes": [
+    {
+      "module_id": ".pre-commit-config.yaml",
+      "file_count": 1,
+      "symbol_count": 0,
+      "avg_pagerank": 0.002136,
+      "doc_coverage_pct": 0
+    },
+    {
+      "module_id": ".readthedocs.yaml",
+      "file_count": 1,
+      "symbol_count": 0,
+      "avg_pagerank": 0.002136,
+      "doc_coverage_pct": 0
+    },
+    {
+      "module_id": "README.md",
+      "file_count": 1,
+      "symbol_count": 0,
+      "avg_pagerank": 0.002136,
+      "doc_coverage_pct": 0
+    }
+  ],
+  "edges": [
+    {
+      "source": "examples",
+      "target": "src",
+      "edge_count": 10
+    },
+    {
+      "source": "src",
+      "target": "tests",
+      "edge_count": 5
+    },
+    {
+      "source": "tests",
+      "target": "src",
+      "edge_count": 64
+    }
+  ],
+  "links": [
+    {
+      "source": "examples",
+      "target": "src",
+      "edge_count": 10
+    },
+    {
+      "source": "src",
+      "target": "tests",
+      "edge_count": 5
+    },
+    {
+      "source": "tests",
+      "target": "src",
+      "edge_count": 64
+    }
+  ]
+}

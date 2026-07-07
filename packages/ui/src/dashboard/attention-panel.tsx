@@ -3,6 +3,7 @@
 import { useState } from "react";
 import {
   AlertTriangle,
+  CheckCircle2,
   Trash2,
   Users,
   FileWarning,
@@ -11,6 +12,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Badge } from "../ui/badge";
 import { stripMarkdown } from "../lib/format";
+import { EmptyState } from "../shared/empty-state";
 import { fileEntityPath } from "../shared/entity/routes";
 import { AiPromptButton } from "../health/ai-prompt-button";
 import { AiPromptModal } from "../health/ai-prompt-modal";
@@ -106,10 +108,12 @@ export function AttentionPanel({
   if (items.length === 0) {
     return (
       <Card>
-        <CardContent className="p-6 text-center">
-          <p className="text-sm text-[var(--color-success)]">
-            No attention items — codebase looks healthy
-          </p>
+        <CardContent className="p-2">
+          <EmptyState
+            icon={<CheckCircle2 className="h-8 w-8 text-[var(--color-success)]" />}
+            title="Nothing needs attention"
+            description="No hotspots, risky files, or stale docs right now."
+          />
         </CardContent>
       </Card>
     );

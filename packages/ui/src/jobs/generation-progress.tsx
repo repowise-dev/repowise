@@ -1,16 +1,16 @@
 "use client";
 
-import { CheckCircle, XCircle, Loader2, AlertTriangle, X } from "lucide-react";
+import { Ban, CheckCircle, XCircle, Loader2, AlertTriangle, RotateCw, Settings, X } from "lucide-react";
 import { Progress } from "../ui/progress";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
-import { JobLog } from "./job-log";
+import { JobLog, type JobLogEntry } from "./job-log";
 import { formatTokens, formatNumber } from "../lib/format";
 
 /** Subset of the Job shape this presentational shell renders. */
 export interface GenerationProgressJob {
   id: string;
-  status: "pending" | "running" | "completed" | "failed" | string;
+  status: "pending" | "running" | "completed" | "failed" | "cancelled" | string;
   total_pages: number;
   completed_pages: number;
   failed_pages?: number;
@@ -22,7 +22,7 @@ export interface GenerationProgressJob {
 
 export interface GenerationProgressProps {
   job: GenerationProgressJob | undefined;
-  log: Array<{ text: string }>;
+  log: JobLogEntry[];
   /** Wall-clock elapsed time in ms. The wrapper owns the interval timer. */
   elapsed: number;
   /** Live cost in USD (null until first SSE progress event with cost). */
@@ -31,6 +31,13 @@ export interface GenerationProgressProps {
   stuckPending: boolean;
   cancelling: boolean;
   onCancel: () => void;
+  /** Live pipeline phase label from the SSE stream ("Parsing files", …).
+   * Falls back to the coarse level-derived label when absent. */
+  phase?: string | null;
+  /** Recovery action for failed/cancelled jobs: start a fresh run. */
+  onRetry?: () => void;
+  /** Where provider/API-key settings live; offered as a failure recovery path. */
+  settingsHref?: string;
 }
 
 const PHASE_LABELS: Record<number, string> = {
@@ -38,6 +45,12 @@ const PHASE_LABELS: Record<number, string> = {
   1: "Analysing",
   2: "Generating docs",
 };
+
+/** "knowledge_graph.skeleton" → "Knowledge graph skeleton". */
+function humanizePhase(phase: string): string {
+  const words = phase.replace(/[._]/g, " ").trim();
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
 
 export function GenerationProgress({
   job,
@@ -47,6 +60,9 @@ export function GenerationProgress({
   stuckPending,
   cancelling,
   onCancel,
+  phase,
+  onRetry,
+  settingsHref,
 }: GenerationProgressProps) {
   const progress = job
     ? job.total_pages > 0
@@ -60,8 +76,10 @@ export function GenerationProgress({
   const isInflight = isPending || isRunning;
   const isDone = job?.status === "completed";
   const isFailed = job?.status === "failed";
-  const phaseLabel =
-    job?.current_level == null
+  const isCancelled = job?.status === "cancelled";
+  const phaseLabel = phase
+    ? humanizePhase(phase)
+    : job?.current_level == null
       ? "Processing"
       : PHASE_LABELS[job.current_level] ?? `Processing phase ${job.current_level}`;
 
@@ -71,12 +89,14 @@ export function GenerationProgress({
         {isInflight && <Loader2 className="h-4 w-4 animate-spin text-[var(--color-accent-primary)] shrink-0" />}
         {isDone && <CheckCircle className="h-4 w-4 text-[var(--color-fresh)] shrink-0" />}
         {isFailed && <XCircle className="h-4 w-4 text-[var(--color-outdated)] shrink-0" />}
+        {isCancelled && <Ban className="h-4 w-4 text-[var(--color-text-tertiary)] shrink-0" />}
 
         <span className="text-sm font-medium text-[var(--color-text-primary)]">
           {isPending && "Queued — waiting for worker…"}
           {isRunning && `${phaseLabel}…`}
           {isDone && "Generation complete"}
           {isFailed && "Generation failed"}
+          {isCancelled && "Cancelled"}
         </span>
 
         <span className="ml-auto text-xs text-[var(--color-text-tertiary)] tabular-nums">
@@ -115,6 +135,7 @@ export function GenerationProgress({
         <Progress
           value={progress}
           {...(isFailed ? { indicatorClassName: "bg-[var(--color-outdated)]" } : {})}
+          {...(isCancelled ? { indicatorClassName: "bg-[var(--color-text-tertiary)]" } : {})}
         />
         <div className="flex justify-between text-xs text-[var(--color-text-tertiary)]">
           <span>
@@ -166,7 +187,33 @@ export function GenerationProgress({
       )}
 
       {isFailed && job?.error_message && (
-        <p className="text-sm text-[var(--color-outdated)]">{job.error_message}</p>
+        <p className="text-sm text-[var(--color-outdated)] break-words">{job.error_message}</p>
+      )}
+
+      {isCancelled && (
+        <p className="text-sm text-[var(--color-text-secondary)]">
+          Stopped before completion; nothing more will be generated. Start a new
+          run whenever you&apos;re ready.
+        </p>
+      )}
+
+      {(isFailed || isCancelled) && (onRetry || (isFailed && settingsHref)) && (
+        <div className="flex flex-wrap gap-2">
+          {onRetry && (
+            <Button size="sm" variant="outline" onClick={onRetry} className="h-7 px-2 text-xs">
+              <RotateCw className="h-3.5 w-3.5 mr-1" />
+              {isCancelled ? "Start again" : "Retry"}
+            </Button>
+          )}
+          {isFailed && settingsHref && (
+            <Button size="sm" variant="ghost" asChild className="h-7 px-2 text-xs">
+              <a href={settingsHref}>
+                <Settings className="h-3.5 w-3.5 mr-1" />
+                Provider settings
+              </a>
+            </Button>
+          )}
+        </div>
       )}
 
       {log.length > 0 && <JobLog entries={log} />}

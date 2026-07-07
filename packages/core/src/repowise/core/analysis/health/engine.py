@@ -35,11 +35,13 @@ from .biomarkers import FileContext, detect_all
 from .biomarkers.base import HasEdge
 from .complexity import FileComplexity, FunctionComplexity, walk_file
 from .coverage import is_test_file as _coverage_is_test_file
+from .dataflow import analyze_file
 from .duplication import DuplicationReport, detect_clones
 from .models import HealthFileMetricData, HealthFindingData, HealthReport, Severity
 from .perf import (
     CallGraphIndex,
     PerfRanker,
+    apply_perf_promotions,
     collect_blocking_io_under_lock,
     collect_centrality_gated,
     collect_crossfn_io_in_loop,
@@ -54,6 +56,10 @@ from .refactoring.graph_signals import build_file_scc_index
 from .scoring import attach_impacts, compute_kpis, remap_severities, score_file
 
 log = structlog.get_logger(__name__)
+
+# Method-level smells that make the dataflow / Extract Method pass worthwhile.
+# Only files carrying one of these get a CFG + def/use + reaching pass built.
+_EXTRACT_METHOD_SOURCES = frozenset({"large_method", "brain_method", "complex_method"})
 
 
 def _log_duplication_diagnostics(report: DuplicationReport) -> None:
@@ -356,6 +362,8 @@ class HealthAnalyzer:
                 dup_report = DuplicationReport()
 
         disabled_refactorings: list[str] = list(cfg.get("disabled_refactorings", ()))
+        refactoring_enabled: bool = bool(cfg.get("refactoring_enabled", True))
+        refactoring_min_confidence: str | None = cfg.get("refactoring_min_confidence")
         # Repo-wide SCC index (import cycles), computed once and threaded into
         # each file's RefactoringContext so Break Cycle never recomputes it.
         file_scc_index = build_file_scc_index(self.graph)
@@ -387,6 +395,10 @@ class HealthAnalyzer:
 
         # Cross-function N+1: augment perf_hits before the biomarker stage.
         self._apply_crossfn_perf(walked)
+        # Dataflow promotion: mark advisory perf hits whose loop is provably
+        # iteration-independent (runs after the graph passes so the
+        # centrality-gated nested-loop hits are present to promote).
+        apply_perf_promotions(walked)
 
         for pf, fcx in walked:
             # Side-effect: bump Symbol.complexity_estimate when we can
@@ -415,6 +427,8 @@ class HealthAnalyzer:
                 repo_active_contributors_90d=repo_active_contributors,
                 severity_overrides=file_severity_overrides or None,
                 disabled_refactorings=disabled_refactorings,
+                refactoring_enabled=refactoring_enabled,
+                refactoring_min_confidence=refactoring_min_confidence,
                 file_scc_index=file_scc_index,
             )
             metrics.append(file_metric)
@@ -548,8 +562,13 @@ class HealthAnalyzer:
         # Cross-function N+1: augment perf_hits before the biomarker stage.
         walked = list(walked)
         self._apply_crossfn_perf(walked)
+        # Dataflow promotion: mark advisory perf hits whose loop is provably
+        # iteration-independent (after the graph passes populate the hits).
+        apply_perf_promotions(walked)
 
         disabled_refactorings: list[str] = list(cfg.get("disabled_refactorings", ()))
+        refactoring_enabled: bool = bool(cfg.get("refactoring_enabled", True))
+        refactoring_min_confidence: str | None = cfg.get("refactoring_min_confidence")
         file_scc_index = build_file_scc_index(self.graph)
         findings: list[HealthFindingData] = []
         metrics: list[HealthFileMetricData] = []
@@ -577,6 +596,8 @@ class HealthAnalyzer:
                 repo_active_contributors_90d=repo_active_contributors,
                 severity_overrides=file_severity_overrides or None,
                 disabled_refactorings=disabled_refactorings,
+                refactoring_enabled=refactoring_enabled,
+                refactoring_min_confidence=refactoring_min_confidence,
                 file_scc_index=file_scc_index,
             )
             metrics.append(file_metric)
@@ -692,7 +713,33 @@ class HealthAnalyzer:
             source = Path(path).read_bytes()
         except OSError:
             return FileComplexity(functions=[], classes=[])
+        if language == "sql":
+            # SQL has no tree-sitter grammar here; the sqlglot-backed walker
+            # produces routine CCN + the sql_* smell hits instead.
+            from .sql_complexity import walk_sql_file
+
+            return walk_sql_file(pf.file_info, source)
         return walk_file(path, language, source)
+
+    def _extract_method_analyses(self, pf: Any, findings: list[HealthFindingData]) -> list[Any]:
+        """Dataflow analyses for the Extract Method detector, gated to files
+        that already carry a method-level smell.
+
+        Building a CFG + def/use + reaching definitions is only useful where a
+        ``large_method`` / ``brain_method`` / ``complex_method`` finding fired,
+        so the dataflow pass (and its re-parse) runs for that small subset of
+        files only -- everything else pays nothing. Degrades to ``[]`` on any
+        read or analysis failure; the detector then yields no suggestion.
+        """
+        if not any(getattr(f, "biomarker_type", "") in _EXTRACT_METHOD_SOURCES for f in findings):
+            return []
+        path = pf.file_info.abs_path
+        language = pf.file_info.language
+        try:
+            source = Path(path).read_bytes()
+        except OSError:
+            return []
+        return analyze_file(path, language, source).functions
 
     def _populate_symbol_complexity(self, pf: Any, fc_list: list[FunctionComplexity]) -> None:
         if not fc_list:
@@ -722,12 +769,20 @@ class HealthAnalyzer:
         repo_active_contributors_90d: int | None = None,
         severity_overrides: dict[str, Severity] | None = None,
         disabled_refactorings: list[str] | None = None,
+        refactoring_enabled: bool = True,
+        refactoring_min_confidence: str | None = None,
         file_scc_index: dict[str, tuple[str, ...]] | None = None,
     ) -> tuple[HealthFileMetricData, list[HealthFindingData], list[RefactoringSuggestion]]:
         file_path = pf.file_info.path
 
         fc_list = fcx.functions
-        fn_metrics: dict[str, FunctionComplexity] = {fc.name: fc for fc in fc_list}
+        # SQL routine metrics are text-counted and defect-uncalibrated; they
+        # exist for symbol stamping and the sql_high_complexity marker
+        # (maintainability). Keeping them out of function_metrics keeps the
+        # calibrated method biomarkers (defect dimension) from firing on SQL.
+        fn_metrics: dict[str, FunctionComplexity] = (
+            {} if pf.file_info.language == "sql" else {fc.name: fc for fc in fc_list}
+        )
         max_ccn = max((fc.ccn for fc in fc_list), default=1)
         max_nesting = max((fc.max_nesting for fc in fc_list), default=0)
         nloc = fcx.file_nloc
@@ -762,7 +817,8 @@ class HealthAnalyzer:
             nloc=nloc,
             has_test_file=_has_paired_test_file(file_path, path_basenames)
             or _is_test_file(file_path)
-            or _coverage_is_test_file(file_path),
+            or _coverage_is_test_file(file_path)
+            or fcx.has_inline_tests,
             module=module,
             function_metrics=fn_metrics,
             class_metrics=fcx.classes,
@@ -817,6 +873,10 @@ class HealthAnalyzer:
         # Refactoring layer: reuse the data just computed (class cohesion
         # components + this file's findings) to emit structured suggestions.
         # Fault-isolated per detector; degrades to [] on any missing signal.
+        # Disabled outright from config => skip the whole pass (and its
+        # dataflow re-parse) for this file.
+        if not refactoring_enabled:
+            return metric, findings, []
         rctx = RefactoringContext(
             file_path=file_path,
             language=pf.file_info.language,
@@ -828,8 +888,14 @@ class HealthAnalyzer:
             module_map=self.module_map,
             graph=self.graph,
             file_scc=(file_scc_index or {}).get(file_path),
+            function_analyses=self._extract_method_analyses(pf, findings),
+            blame_index=blame_index,
         )
-        suggestions = detect_refactorings(rctx, disabled=disabled_refactorings or ())
+        suggestions = detect_refactorings(
+            rctx,
+            disabled=disabled_refactorings or (),
+            min_confidence=refactoring_min_confidence,
+        )
         return metric, findings, suggestions
 
     def _is_hotspot(self, meta: dict | object) -> bool:

@@ -32,6 +32,7 @@ import { SystemMapInspector } from "./system-map-inspector";
 import { useSystemMapLayout } from "./use-system-map-layout";
 import type { SystemMapView } from "./layout";
 import type { RepoHealth, SystemMapOverlay, SystemMapSelection } from "./types";
+import { toFriendlyMessage } from "../../lib/errors";
 
 export interface SystemMapProps {
   graph: SystemGraph | null;
@@ -137,7 +138,7 @@ function SystemMapInner({ graph, loading, error, healthByRepo, overlay, roleByNo
       <div style={{ position: "relative", flex: 1, minHeight: 0 }}>
         {error ? (
           <Centered>
-            <EmptyState title="Couldn't load the system map" description={error.message} />
+            <EmptyState title="Couldn't load the system map" description={toFriendlyMessage(error)} />
           </Centered>
         ) : !isLoading && !hasGraph ? (
           <Centered>

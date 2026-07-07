@@ -15,6 +15,7 @@ No edits to the walker. A language absent here ⇒ the perf pass is silent for i
 from __future__ import annotations
 
 from . import csharp as _csharp
+from . import dart as _dart
 from . import go as _go
 from . import java as _java
 from . import python as _python
@@ -35,6 +36,7 @@ _REGISTER: tuple[tuple[str, BasePerfDialect], ...] = (
     ("go", _go.DIALECT),
     ("csharp", _csharp.DIALECT),
     ("rust", _rust.DIALECT),
+    ("dart", _dart.DIALECT),
 )
 
 for _tag, _dialect in _REGISTER:

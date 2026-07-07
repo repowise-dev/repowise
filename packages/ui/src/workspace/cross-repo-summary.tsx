@@ -1,7 +1,7 @@
 "use client";
 
 import { Link2, GitMerge, Package } from "lucide-react";
-import { StatCard } from "../shared/stat-card";
+import { MetricCard } from "../shared/metric-card";
 import type {
   WorkspaceCrossRepoSummary,
   WorkspaceContractSummary,
@@ -21,22 +21,22 @@ export function CrossRepoSummary({ crossRepo, contracts }: CrossRepoSummaryProps
 
   return (
     <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-      <StatCard
+      <MetricCard
         label="Co-Change Pairs"
         value={crossRepo?.co_change_count ?? 0}
         icon={<GitMerge className="h-4 w-4 text-[var(--color-accent-primary)]" />}
       />
-      <StatCard
+      <MetricCard
         label="Package Deps"
         value={crossRepo?.package_dep_count ?? 0}
         icon={<Package className="h-4 w-4 text-[var(--color-accent-secondary)]" />}
       />
-      <StatCard
+      <MetricCard
         label="Contract Links"
         value={contracts?.total_links ?? 0}
         icon={<Link2 className="h-4 w-4 text-[var(--color-info)]" />}
       />
-      <StatCard
+      <MetricCard
         label="Contracts Detected"
         value={contracts?.total_contracts ?? 0}
         {...(byTypeDescription ? { description: byTypeDescription } : {})}

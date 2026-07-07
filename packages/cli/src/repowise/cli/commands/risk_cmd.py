@@ -14,7 +14,6 @@ Examples:
 from __future__ import annotations
 
 import json
-import subprocess
 from dataclasses import replace
 
 import click
@@ -41,61 +40,6 @@ def _ordinal(n: int) -> str:
     """1 -> '1st', 2 -> '2nd', 93 -> '93rd', 11 -> '11th'."""
     suffix = "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
     return f"{n}{suffix}"
-
-
-def _baseline_scores(
-    repo_path: str,
-    anchor: str,
-    limit: int,
-    extensions: tuple[str, ...],
-    exclude: str,
-) -> list[float]:
-    """Score the repo's recent commits to build a local risk distribution.
-
-    One ``git log --numstat`` call (no per-commit author lookup), so it stays
-    cheap enough for a pre-merge gate. Experience is left unknown for the
-    baseline; the target is ranked with experience likewise unknown, so the
-    comparison is like-with-like — a diff-shape percentile within this repo.
-    """
-    from repowise.core.analysis.change_risk import (
-        features_from_file_changes,
-        score_change,
-    )
-
-    out = subprocess.run(
-        ["git", "log", f"-n{limit}", "--no-merges", "--format=%x1e%H", "--numstat", anchor],
-        cwd=repo_path,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    ).stdout
-
-    scores: list[float] = []
-    for block in out.split("\x1e"):
-        lines = block.strip().split("\n")
-        if not lines or not lines[0]:
-            continue
-        sha, rows = lines[0].strip(), lines[1:]
-        # Drop the target itself from its own baseline (short or full sha).
-        if exclude and (sha.startswith(exclude) or exclude.startswith(sha)):
-            continue
-        changes: list[tuple[str, int, int]] = []
-        for row in rows:
-            parts = row.split("\t")
-            if len(parts) != 3:
-                continue
-            a_raw, d_raw, path = parts
-            if extensions and not path.endswith(extensions):
-                continue
-            a = int(a_raw) if a_raw.isdigit() else 0
-            d = int(d_raw) if d_raw.isdigit() else 0
-            changes.append((path, a, d))
-        if not changes:
-            continue
-        feats = features_from_file_changes(changes, exp=None)
-        scores.append(score_change(feats).score)
-    return scores
 
 
 @click.command("risk")
@@ -134,6 +78,7 @@ def risk_command(
 ) -> None:
     """Score the defect risk of a change (commit or ``base..head`` range)."""
     from repowise.core.analysis.change_risk import (
+        baseline_scores,
         extract_commit_features,
         extract_range_features,
         score_change,
@@ -176,7 +121,7 @@ def risk_command(
             anchor, exclude = revspec, features.ref
         if fmt == "table":
             status.print(f"[dim]Sampling up to {baseline} recent commits…[/dim]")
-        scores = _baseline_scores(repo_path, anchor, baseline, extensions, exclude)
+        scores = baseline_scores(repo_path, anchor, baseline, extensions, exclude)
         if len(scores) >= _MIN_BASELINE:
             from repowise.core.analysis.change_risk import RiskNormalizer
 

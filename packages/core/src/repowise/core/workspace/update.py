@@ -10,12 +10,15 @@ import asyncio
 import json as _json
 import logging
 import os
+import sqlite3
 import subprocess
 import time
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from collections.abc import Callable
+from contextlib import suppress
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from .config import WorkspaceConfig
 
@@ -33,6 +36,32 @@ _log = logging.getLogger("repowise.workspace.update")
 
 _LOCK_FILENAME = ".update.lock"
 _LOCK_STALE_AFTER_SECONDS = 30 * 60
+
+
+def _merged_repo_excludes(
+    repo_path: Path,
+    extra_exclude_patterns: list[str] | None = None,
+) -> list[str]:
+    from ..repo_config import load_repo_config
+
+    patterns: list[str] = list(load_repo_config(repo_path).get("exclude_patterns") or [])
+    db_path = repo_path / ".repowise" / "wiki.db"
+    if db_path.is_file():
+        try:
+            with sqlite3.connect(str(db_path)) as conn:
+                row = conn.execute("SELECT settings_json FROM repositories LIMIT 1").fetchone()
+            if row and row[0]:
+                settings = _json.loads(row[0])
+                if isinstance(settings, dict):
+                    for value in settings.get("exclude_patterns") or []:
+                        if isinstance(value, str) and value not in patterns:
+                            patterns.append(value)
+        except Exception:
+            pass
+    for pattern in extra_exclude_patterns or []:
+        if pattern not in patterns:
+            patterns.append(pattern)
+    return patterns
 
 
 def _lock_path(repo_path: Path) -> Path:
@@ -98,10 +127,8 @@ def _acquire_lock(repo_path: Path, target_commit: str | None) -> None:
 
 
 def _release_lock(repo_path: Path) -> None:
-    try:
+    with suppress(OSError):
         _lock_path(repo_path).unlink(missing_ok=True)
-    except OSError:
-        pass
 
 
 # ---------------------------------------------------------------------------
@@ -257,6 +284,50 @@ def check_repo_staleness(
     return True, current_head, behind
 
 
+async def reconcile_repo_head_commit(repo_path: Path, head: str | None) -> None:
+    """Advance the DB freshness for *repo_path* after a sync-check to *head*.
+
+    The "up to date" skip and the no-relevant-changes incremental path bump
+    ``state.json``'s ``last_sync_commit`` but never re-run the DB persistence
+    that stamps the ``repositories`` row. The server reads both the indexed
+    commit (``/api/repos``, MCP ``_meta``) and the "indexed at" time (the health
+    overview's ``last_indexed_at`` fallback) from that row, not from
+    ``state.json`` — so an un-reconciled row keeps the "index behind checkout"
+    signal stuck and the freshness timestamp frozen at the last full index even
+    after a successful update.
+
+    Stamps ``head_commit`` only on drift (avoids needless churn), but always
+    advances ``updated_at`` so the freshness time reflects the latest
+    sync-check — a routine ``repowise update`` that finds nothing to do still
+    counts as "verified current now". A no-op when the repo row is absent.
+    """
+    if not head or not (repo_path / ".repowise" / "wiki.db").is_file():
+        return
+    from ..persistence import (
+        create_engine,
+        create_session_factory,
+        get_session,
+        init_db,
+    )
+    from ..persistence.crud import get_repository_by_path
+    from ..persistence.database import resolve_db_url
+
+    url = resolve_db_url(repo_path)
+    engine = create_engine(url)
+    try:
+        await init_db(engine)
+        sf = create_session_factory(engine)
+        async with get_session(sf) as session:
+            repo = await get_repository_by_path(session, str(repo_path))
+            if repo is not None:
+                if repo.head_commit != head:
+                    repo.head_commit = head
+                repo.updated_at = datetime.now(UTC)
+                await session.flush()
+    finally:
+        await engine.dispose()
+
+
 # ---------------------------------------------------------------------------
 # Single-repo update (index-only)
 # ---------------------------------------------------------------------------
@@ -291,8 +362,6 @@ async def _incremental_repo_update(
         run_partial_analysis,
     )
     from ..pipeline.phases.git import drop_transient_git_signals
-    from ..repo_config import load_repo_config
-
     alias = repo_path.name
     head = get_head_commit(repo_path) or "HEAD"
 
@@ -316,11 +385,10 @@ async def _incremental_repo_update(
 
     # Per-repo config, like the single-repo update path. The workspace-level
     # ``exclude_patterns`` (when provided) apply on top.
+    from ..repo_config import load_repo_config
+
     cfg = load_repo_config(repo_path)
-    merged_excludes = list(cfg.get("exclude_patterns") or [])
-    for pattern in exclude_patterns or []:
-        if pattern not in merged_excludes:
-            merged_excludes.append(pattern)
+    merged_excludes = _merged_repo_excludes(repo_path, exclude_patterns)
 
     (
         parsed_files,
@@ -356,6 +424,7 @@ async def _incremental_repo_update(
         dead_code_report,
         partial_health_report,
         [fd.path for fd in file_diffs],
+        current_graph_file_paths={pf.file_info.path for pf in parsed_files},
         log=_log.info,
     )
 
@@ -396,6 +465,7 @@ async def update_single_repo_index(
     alias = repo_path.name
     state = read_repo_state(repo_path)
     base_ref = state.get("last_sync_commit")
+    merged_excludes = _merged_repo_excludes(repo_path, exclude_patterns)
 
     if (
         base_ref
@@ -423,7 +493,7 @@ async def update_single_repo_index(
         result = await run_pipeline(
             repo_path,
             commit_depth=commit_depth,
-            exclude_patterns=exclude_patterns,
+            exclude_patterns=merged_excludes or None,
             include_submodules=bool(state.get("include_submodules", False)),
             include_nested_repos=bool(state.get("include_nested_repos", False)),
             generate_docs=False,
@@ -536,12 +606,15 @@ async def update_workspace(
             except Exception:
                 pass
 
-        is_stale, current_head, commits_behind = check_repo_staleness(
-            abs_path,
-            stored_commit,
+        is_stale, current_head, _commits_behind = check_repo_staleness(
+            abs_path, stored_commit,
         )
 
         if not is_stale:
+            # Nothing to regenerate, but the DB freshness stamp can still be
+            # behind (e.g. a row left drifted by a pre-fix run). Reconcile it so
+            # the server's /api/repos no longer reports "index behind checkout".
+            await reconcile_repo_head_commit(abs_path, current_head)
             results.append(
                 RepoUpdateResult(
                     alias=entry.alias,
@@ -593,10 +666,10 @@ async def update_workspace(
                     elapsed,
                 )
                 # Record pending so the running update can roll forward.
-                try:
-                    (path / ".repowise" / ".update.pending").write_text(new_head, encoding="utf-8")
-                except OSError:
-                    pass
+                with suppress(OSError):
+                    (path / ".repowise" / ".update.pending").write_text(
+                        new_head, encoding="utf-8"
+                    )
                 return RepoUpdateResult(
                     alias=alias,
                     updated=False,
@@ -622,10 +695,8 @@ async def update_workspace(
                 state_path = path / ".repowise" / "state.json"
                 state: dict[str, Any] = {}
                 if state_path.is_file():
-                    try:
+                    with suppress(Exception):
                         state = _json.loads(state_path.read_text(encoding="utf-8"))
-                    except Exception:
-                        pass
                 state["last_sync_commit"] = new_head
                 # Mark first-time so downstream tooling (status, doctor) can
                 # distinguish a never-indexed repo from one that's been
@@ -641,12 +712,17 @@ async def update_workspace(
                     _json.dumps(state, indent=2),
                     encoding="utf-8",
                 )
+                # Keep the DB freshness stamp in lockstep with last_sync_commit.
+                # The no-relevant-changes incremental path returns updated=True
+                # without re-running DB persistence, so the row would otherwise
+                # lag HEAD; a no-op when persistence already stamped it.
+                await reconcile_repo_head_commit(path, new_head)
 
             # Update workspace config entry
             if result.updated:
                 entry = ws_config.get_repo(alias)
                 if entry is not None:
-                    entry.indexed_at = datetime.now(timezone.utc).isoformat()
+                    entry.indexed_at = datetime.now(UTC).isoformat()
                     entry.last_commit_at_index = new_head
 
             if on_repo_done:

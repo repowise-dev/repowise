@@ -467,3 +467,122 @@ async def test_file_target_callers_rolls_up_importers(setup_mcp):
     [middleware] = [c for c in callers if c["file"] == "src/auth/middleware.py"]
     assert middleware.get("imports") is True
     assert "rollup" in t.get("_call_graph_note", "")
+
+
+@pytest.mark.asyncio
+async def test_symbol_callers_carry_definition_line(setup_mcp, session):
+    """Symbol-level callers must carry the caller's definition line so the
+    agent jumps to it instead of grepping for the call-site position."""
+    from repowise.core.persistence.models import GraphEdge, GraphNode, Repository
+    from repowise.server.mcp_server import get_context
+
+    repo = (await session.execute(__import__("sqlalchemy").select(Repository))).scalars().first()
+    target_id = "src/auth/service.py::login"
+    caller_id = "src/auth/service.py::caller_fn"
+    session.add_all(
+        [
+            GraphNode(
+                id="sgn_login",
+                repository_id=repo.id,
+                node_id=target_id,
+                node_type="symbol",
+                name="login",
+                file_path="src/auth/service.py",
+                kind="method",
+                start_line=20,
+                end_line=40,
+                created_at=_NOW,
+            ),
+            GraphNode(
+                id="sgn_caller",
+                repository_id=repo.id,
+                node_id=caller_id,
+                node_type="symbol",
+                name="caller_fn",
+                file_path="src/auth/service.py",
+                kind="function",
+                start_line=55,
+                end_line=70,
+                created_at=_NOW,
+            ),
+            GraphEdge(
+                id="sge_call",
+                repository_id=repo.id,
+                source_node_id=caller_id,
+                target_node_id=target_id,
+                edge_type="calls",
+                confidence=0.95,
+                created_at=_NOW,
+            ),
+        ]
+    )
+    await session.flush()
+
+    result = await get_context([target_id], include=["callers"], compact=False)
+    t = result["targets"][target_id]
+    [caller] = [c for c in t.get("callers", []) if c["symbol_id"] == caller_id]
+    assert caller["line"] == 55
+
+
+@pytest.mark.asyncio
+async def test_high_fan_in_callers_signal_truncation(setup_mcp, session):
+    """A symbol with more callers than the display cap must report the TRUE
+    total + a truncation flag, so a find-all-callers sweep is not silently
+    misled into thinking the partial list is complete (S2 dogfood bug)."""
+    from repowise.core.persistence.models import GraphEdge, GraphNode, Repository
+    from repowise.server.mcp_server import get_context
+
+    repo = (await session.execute(__import__("sqlalchemy").select(Repository))).scalars().first()
+    target_id = "src/db/util.py::hot"
+    nodes = [
+        GraphNode(
+            id="hot_tgt",
+            repository_id=repo.id,
+            node_id=target_id,
+            node_type="symbol",
+            name="hot",
+            file_path="src/db/util.py",
+            kind="function",
+            start_line=10,
+            end_line=20,
+            created_at=_NOW,
+        )
+    ]
+    edges = []
+    n_callers = 75  # > the cap of 50
+    for i in range(n_callers):
+        cid = f"src/callers/c{i}.py::caller_{i}"
+        nodes.append(
+            GraphNode(
+                id=f"hot_caller_{i}",
+                repository_id=repo.id,
+                node_id=cid,
+                node_type="symbol",
+                name=f"caller_{i}",
+                file_path=f"src/callers/c{i}.py",
+                kind="function",
+                start_line=i + 1,
+                end_line=i + 5,
+                created_at=_NOW,
+            )
+        )
+        edges.append(
+            GraphEdge(
+                id=f"hot_edge_{i}",
+                repository_id=repo.id,
+                source_node_id=cid,
+                target_node_id=target_id,
+                edge_type="calls",
+                confidence=0.95,
+                created_at=_NOW,
+            )
+        )
+    session.add_all(nodes + edges)
+    await session.flush()
+
+    result = await get_context([target_id], include=["callers"], compact=False)
+    t = result["targets"][target_id]
+    assert len(t["callers"]) == 50  # capped display
+    assert t["callers_total"] == n_callers  # true total surfaced
+    assert t["callers_truncated"] is True
+    assert "grep" in t["_callers_note"]

@@ -15,7 +15,9 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-_VALID_JOB_STATUSES = frozenset({"pending", "running", "completed", "failed", "paused"})
+_VALID_JOB_STATUSES = frozenset(
+    {"pending", "running", "completed", "failed", "cancelled", "paused"}
+)
 
 _BATCH_SIZE = 500  # max rows per INSERT to stay under SQLite's parameter limit
 

@@ -100,6 +100,11 @@ def swift_visibility(_name: str, modifier_texts: list[str]) -> str:
     return "internal"  # Swift default is internal
 
 
+def dart_visibility(name: str, _mods: list[str]) -> str:
+    """Dart visibility is name-based: a leading underscore is library-private."""
+    return "private" if name.startswith("_") else "public"
+
+
 def scala_visibility(_name: str, modifier_texts: list[str]) -> str:
     """Scala visibility — public/private/protected, default public."""
     combined = " ".join(modifier_texts).lower()

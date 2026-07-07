@@ -5,6 +5,7 @@ import { Search } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { Input } from "../ui/input";
 import { EmptyState } from "../shared/empty-state";
+import { ResponsiveTable, type ResponsiveColumn } from "../shared/responsive-table";
 import { AiPromptButton } from "../health/ai-prompt-button";
 
 export interface SecurityFinding {
@@ -47,6 +48,81 @@ export function SecurityFindingsTable({ findings, onSelect, onGeneratePrompt }: 
     }
     return items;
   }, [findings, q, sev]);
+
+  const columns = useMemo(() => {
+    const cols: ResponsiveColumn<SecurityFinding>[] = [
+      {
+        key: "severity",
+        header: "Severity",
+        headerClassName: "w-20",
+        render: (f) => (
+          <Badge variant={SEVERITY_VARIANT[f.severity] ?? "outline"} className="capitalize">
+            {f.severity}
+          </Badge>
+        ),
+      },
+      {
+        key: "file_path",
+        header: "File",
+        render: (f) => (
+          <span
+            className="block max-w-[280px] truncate font-mono text-xs text-[var(--color-text-primary)]"
+            title={f.file_path}
+          >
+            {f.file_path}
+          </span>
+        ),
+      },
+      {
+        key: "kind",
+        header: "Kind",
+        headerClassName: "w-40",
+        render: (f) => <span className="text-xs text-[var(--color-text-secondary)]">{f.kind}</span>,
+      },
+      {
+        key: "snippet",
+        header: "Snippet",
+        priority: 2,
+        render: (f) => (
+          <span
+            className="block max-w-[320px] truncate font-mono text-xs text-[var(--color-text-tertiary)]"
+            title={f.snippet ?? ""}
+          >
+            {f.snippet ?? "—"}
+          </span>
+        ),
+      },
+      {
+        key: "detected_at",
+        header: "Detected",
+        headerClassName: "w-28",
+        priority: 3,
+        render: (f) => (
+          <span className="text-xs tabular-nums text-[var(--color-text-tertiary)]">
+            {new Date(f.detected_at).toLocaleDateString()}
+          </span>
+        ),
+      },
+    ];
+    if (onGeneratePrompt) {
+      cols.push({
+        key: "actions",
+        header: "",
+        headerClassName: "w-10",
+        hideInCard: true,
+        render: (f) => (
+          <span onClick={(e) => e.stopPropagation()}>
+            <AiPromptButton
+              variant="icon"
+              label="AI fix prompt"
+              onClick={() => onGeneratePrompt(f)}
+            />
+          </span>
+        ),
+      });
+    }
+    return cols;
+  }, [onGeneratePrompt]);
 
   if (findings.length === 0) {
     return (
@@ -92,73 +168,17 @@ export function SecurityFindingsTable({ findings, onSelect, onGeneratePrompt }: 
         </div>
       </div>
 
-      <div className="border border-[var(--color-border-default)] overflow-hidden overflow-x-auto">
-        <table className="w-full min-w-[560px] text-sm">
-          <thead className="sticky top-0 z-10 bg-[var(--color-bg-surface)]">
-            <tr className="border-b border-[var(--color-border-default)] bg-[var(--color-bg-surface)]">
-              <th className="px-3 py-2.5 text-left text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-20">
-                Severity
-              </th>
-              <th className="px-3 py-2.5 text-left text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
-                File
-              </th>
-              <th className="px-3 py-2.5 text-left text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-40">
-                Kind
-              </th>
-              <th className="px-3 py-2.5 text-left text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
-                Snippet
-              </th>
-              <th className="px-3 py-2.5 text-left text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-28">
-                Detected
-              </th>
-              {onGeneratePrompt && <th className="px-3 py-2.5 w-10" />}
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.map((f) => (
-              <tr
-                key={f.id}
-                onClick={onSelect ? () => onSelect(f) : undefined}
-                className={
-                  "group border-b border-[var(--color-table-divider)] last:border-0 hover:bg-[var(--color-bg-elevated)] transition-colors" +
-                  (onSelect ? " cursor-pointer" : "")
-                }
-              >
-                <td className="px-3 py-2">
-                  <Badge variant={SEVERITY_VARIANT[f.severity] ?? "outline"} className="capitalize">
-                    {f.severity}
-                  </Badge>
-                </td>
-                <td className="px-3 py-2 font-mono text-xs text-[var(--color-text-primary)] max-w-[280px]">
-                  <span className="block truncate group-hover:underline underline-offset-2" title={f.file_path}>{f.file_path}</span>
-                </td>
-                <td className="px-3 py-2 text-xs text-[var(--color-text-secondary)]">{f.kind}</td>
-                <td className="px-3 py-2 font-mono text-xs text-[var(--color-text-tertiary)] max-w-[320px]">
-                  <span className="block truncate" title={f.snippet ?? ""}>
-                    {f.snippet ?? "—"}
-                  </span>
-                </td>
-                <td className="px-3 py-2 text-xs text-[var(--color-text-tertiary)] tabular-nums">
-                  {new Date(f.detected_at).toLocaleDateString()}
-                </td>
-                {onGeneratePrompt && (
-                  <td className="px-3 py-2" onClick={(e) => e.stopPropagation()}>
-                    <AiPromptButton
-                      variant="icon"
-                      label="AI fix prompt"
-                      onClick={() => onGeneratePrompt(f)}
-                    />
-                  </td>
-                )}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      {filtered.length === 0 && (
-        <p className="text-sm text-[var(--color-text-tertiary)] py-6 text-center">No matches.</p>
-      )}
+      <ResponsiveTable
+        columns={columns}
+        rows={filtered}
+        rowKey={(f) => String(f.id)}
+        caption="Security findings"
+        {...(onSelect ? { onRowClick: onSelect } : {})}
+        stacked="sm"
+        empty={
+          <p className="text-sm text-[var(--color-text-tertiary)] py-6 text-center">No matches.</p>
+        }
+      />
     </div>
   );
 }

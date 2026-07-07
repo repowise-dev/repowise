@@ -1,4 +1,4 @@
-"""``repowise health`` — code-health biomarker report.
+"""``repowise health`` — code-health marker report.
 
 Mirrors the dead-code CLI: ingest → analyze → render. Reads from
 ``HealthFileMetric`` / ``HealthFinding`` if a fresh index exists, falls
@@ -43,7 +43,7 @@ from repowise.cli.helpers import (
     "--safe-only",
     is_flag=True,
     default=False,
-    help="Phase-3 placeholder — currently a no-op for v1 biomarkers.",
+    help="Phase-3 placeholder — currently a no-op for v1 markers.",
 )
 @click.option(
     "--repo",
@@ -124,7 +124,7 @@ def health_command(
     trend_view: bool,
     badge_view: bool,
 ) -> None:
-    """Compute code-health scores from biomarkers (CCN, nesting, brain-method).
+    """Compute code-health scores from markers (CCN, nesting, brain-method).
 
     Runs in-process — no LLM, no network. Re-uses the repowise ingestion
     parser, graph builder, and git indexer.
@@ -414,10 +414,10 @@ def health_command(
     console.print(table)
 
     if findings:
-        console.print(f"\n[bold]{len(findings)}[/bold] biomarker findings:")
+        console.print(f"\n[bold]{len(findings)}[/bold] marker findings:")
         f_table = Table()
         f_table.add_column("Severity", style="magenta")
-        f_table.add_column("Biomarker", style="cyan")
+        f_table.add_column("Marker", style="cyan")
         f_table.add_column("File")
         f_table.add_column("Function")
         f_table.add_column("Impact", justify="right")
@@ -671,8 +671,10 @@ def _render_refactoring_targets(
             )
         _render_extract_class_plans_md(ranked_plans)
         _render_extract_helper_plans_md(ranked_plans)
+        _render_extract_method_plans_md(ranked_plans)
         _render_move_method_plans_md(ranked_plans)
         _render_break_cycle_plans_md(ranked_plans)
+        _render_split_file_plans_md(ranked_plans)
         return
 
     table = Table(title=f"Refactoring targets ({len(targets)})")
@@ -681,7 +683,7 @@ def _render_refactoring_targets(
     table.add_column("Impact", justify="right")
     table.add_column("Effort", justify="center")
     table.add_column("Ratio", justify="right")
-    table.add_column("Primary biomarker")
+    table.add_column("Primary marker")
     for t in targets:
         table.add_row(
             t["file_path"],
@@ -694,8 +696,10 @@ def _render_refactoring_targets(
     console.print(table)
     _render_extract_class_plans_console(ranked_plans)
     _render_extract_helper_plans_console(ranked_plans)
+    _render_extract_method_plans_console(ranked_plans)
     _render_move_method_plans_console(ranked_plans)
     _render_break_cycle_plans_console(ranked_plans)
+    _render_split_file_plans_console(ranked_plans)
 
 
 def _render_extract_class_plans_console(plans: list[dict]) -> None:
@@ -778,6 +782,46 @@ def _render_extract_helper_plans_md(plans: list[dict]) -> None:
             click.echo(f"  - {o['file']}:{o['line_start']}-{o['line_end']}")
 
 
+def _render_extract_method_plans_console(plans: list[dict]) -> None:
+    """Print the concrete Extract Method (long-function split) plans below the table."""
+    em_plans = [p for p in plans if p["refactoring_type"] == "extract_method"]
+    if not em_plans:
+        return
+    console.print(f"\n[bold]Extract Method plans ({len(em_plans)})[/bold]")
+    for p in em_plans:
+        pl = p["plan"]
+        ev = p["evidence"]
+        span = pl.get("span", {}) or {}
+        params = ", ".join(pl.get("params", [])) or "—"
+        returns = ", ".join(pl.get("returns", [])) or "none"
+        console.print(
+            f"\n[cyan]{p['target_symbol']}[/cyan] [dim]({p['file_path']})[/dim] — "
+            f"extract lines {span.get('start')}-{span.get('end')} "
+            f"[dim]({ev.get('slice_nloc')} lines, -{ev.get('ccn_removed')} CCN, "
+            f"recover ~{p['impact_delta']:.2f}, effort {p['effort_bucket']}, "
+            f"{p['confidence']} confidence)[/dim]"
+        )
+        console.print(f"  [dim]params (in):[/dim] {params}    [dim]returns (out):[/dim] {returns}")
+
+
+def _render_extract_method_plans_md(plans: list[dict]) -> None:
+    em_plans = [p for p in plans if p["refactoring_type"] == "extract_method"]
+    if not em_plans:
+        return
+    click.echo("\n## Extract Method plans\n")
+    for p in em_plans:
+        pl = p["plan"]
+        ev = p["evidence"]
+        span = pl.get("span", {}) or {}
+        params = ", ".join(pl.get("params", [])) or "—"
+        returns = ", ".join(pl.get("returns", [])) or "none"
+        click.echo(
+            f"- **{p['target_symbol']}** ({p['file_path']}) — extract lines "
+            f"{span.get('start')}-{span.get('end')} ({ev.get('slice_nloc')} lines, "
+            f"-{ev.get('ccn_removed')} CCN)  ·  in: {params}  ·  out: {returns}"
+        )
+
+
 def _render_move_method_plans_console(plans: list[dict]) -> None:
     """Print the concrete Move Method (feature-envy) plans below the table."""
     mm_plans = [p for p in plans if p["refactoring_type"] == "move_method"]
@@ -850,6 +894,56 @@ def _render_break_cycle_plans_md(plans: list[dict]) -> None:
         click.echo(f"- **Import cycle of {ev.get('cycle_size')} files** — cut {len(cuts)} edge(s):")
         for e in cuts:
             click.echo(f"  - invert {e['from']} -> {e['to']}")
+
+
+def _render_split_file_plans_console(plans: list[dict]) -> None:
+    """Print the concrete Split File (module decomposition) plans below the table."""
+    sf_plans = [p for p in plans if p["refactoring_type"] == "split_file"]
+    if not sf_plans:
+        return
+    console.print(f"\n[bold]Split File plans ({len(sf_plans)})[/bold]")
+    for p in sf_plans:
+        pl = p["plan"]
+        ev = p["evidence"]
+        groups = pl.get("groups", [])
+        br = p["blast_radius"]
+        shim = " [dim]+shim[/dim]" if pl.get("shim_required") else ""
+        console.print(
+            f"\n[cyan]{p['file_path']}[/cyan] — "
+            f"{ev.get('symbol_count')} symbols, {ev.get('file_nloc')} NLOC, "
+            f"modularity {ev.get('modularity')} → split into {len(groups)} files{shim} "
+            f"[dim](effort {p['effort_bucket']}, {p['confidence']} confidence, "
+            f"{br.get('import_rewrites', 0)} import rewrites in "
+            f"{br.get('dependent_count', 0)} files)[/dim]"
+        )
+        for i, g in enumerate(groups, 1):
+            console.print(
+                f"  [bold]{i}.[/bold] [green]{g.get('suggested_file')}[/green]: "
+                f"{', '.join(g.get('symbols', []))}"
+            )
+        residual = pl.get("residual")
+        if residual and residual.get("symbols"):
+            console.print(f"  [dim]core (shared):[/dim] {', '.join(residual['symbols'])}")
+
+
+def _render_split_file_plans_md(plans: list[dict]) -> None:
+    sf_plans = [p for p in plans if p["refactoring_type"] == "split_file"]
+    if not sf_plans:
+        return
+    click.echo("\n## Split File plans\n")
+    for p in sf_plans:
+        pl = p["plan"]
+        ev = p["evidence"]
+        groups = pl.get("groups", [])
+        click.echo(
+            f"- **{p['file_path']}** — {ev.get('symbol_count')} symbols, "
+            f"modularity {ev.get('modularity')}, split into {len(groups)} files:"
+        )
+        for i, g in enumerate(groups, 1):
+            click.echo(f"  {i}. `{g.get('suggested_file')}`: {', '.join(g.get('symbols', []))}")
+        residual = pl.get("residual")
+        if residual and residual.get("symbols"):
+            click.echo(f"  - core (shared): {', '.join(residual['symbols'])}")
 
 
 def _render_trend(repo_path: object, *, fmt: str) -> None:

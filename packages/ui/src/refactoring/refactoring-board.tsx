@@ -64,7 +64,7 @@ export function RefactoringBoard({
   fileHref,
   showQuadrant = true,
   emptyTitle = "No refactoring plans",
-  emptyHint = "Nothing crosses the precision bar for this repo yet. Plans appear here when a class is worth splitting, a clone worth extracting, a method worth moving, or a cycle worth cutting.",
+  emptyHint = "Nothing crosses the precision bar for this repo yet. Plans appear here when a class is worth splitting, a clone worth extracting, a method worth moving, a cycle worth cutting, or a file worth decomposing.",
 }: RefactoringBoardProps) {
   const [highlighted, setHighlighted] = useState<string | null>(null);
   const [selected, setSelected] = useState<RefactoringPlan | null>(null);

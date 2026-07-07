@@ -14,20 +14,59 @@ from repowise.core.analysis.health.models import Severity
 from repowise.core.analysis.health.scoring import biomarker_weight, severity_deduction
 from repowise.server.routers.code_health import (
     _finding_base_deduction,
+    _leads_by_file,
+    _primary_and_magnitude,
     _score_breakdown_from_findings,
 )
 
 
-def _finding(biomarker_type, severity, health_impact, *, details=None, fid="x"):
+def _finding(
+    biomarker_type, severity, health_impact, *, details=None, fid="x", reason="", file_path="f.py"
+):
     return SimpleNamespace(
         id=fid,
+        file_path=file_path,
         biomarker_type=biomarker_type,
         severity=severity,
         health_impact=health_impact,
         function_name=None,
-        reason="",
+        reason=reason,
         details=details or {},
     )
+
+
+def test_primary_and_magnitude_picks_worst_and_sums_impact() -> None:
+    findings = [
+        _finding("complex_method", Severity.HIGH, 0.8, reason="ccn 15", fid="a"),
+        _finding("god_object", Severity.CRITICAL, 3.5, reason="1200-line class", fid="b"),
+        _finding("deep_nesting", Severity.MEDIUM, 0.7, reason="nests 6 deep", fid="c"),
+    ]
+    lead = _primary_and_magnitude(findings)
+    # Dominant cause = the single worst finding, not the first one.
+    assert lead["primary_biomarker"] == "god_object"
+    assert lead["primary_reason"] == "1200-line class"
+    # Magnitude = summed (pre-floor) impact = 0.8 + 3.5 + 0.7.
+    assert abs(lead["total_deduction"] - 5.0) < 1e-6
+
+
+def test_primary_and_magnitude_empty_is_all_null() -> None:
+    assert _primary_and_magnitude([]) == {
+        "primary_biomarker": None,
+        "primary_reason": None,
+        "total_deduction": None,
+    }
+
+
+def test_leads_by_file_groups_per_path() -> None:
+    findings = [
+        _finding("complex_method", Severity.HIGH, 1.0, fid="a", file_path="a.py"),
+        _finding("god_object", Severity.CRITICAL, 4.0, fid="b", file_path="b.py"),
+        _finding("deep_nesting", Severity.LOW, 0.5, fid="c", file_path="b.py"),
+    ]
+    leads = _leads_by_file(findings)
+    assert leads["a.py"]["primary_biomarker"] == "complex_method"
+    assert leads["b.py"]["primary_biomarker"] == "god_object"
+    assert abs(leads["b.py"]["total_deduction"] - 4.5) < 1e-6
 
 
 def test_base_deduction_prefers_continuous_override() -> None:

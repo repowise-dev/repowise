@@ -10,6 +10,7 @@ from repowise.cli.commands.augment_cmd import augment_command
 from repowise.cli.commands.claude_md_cmd import claude_md_command
 from repowise.cli.commands.corrections_cmd import corrections_command
 from repowise.cli.commands.costs_cmd import costs_command
+from repowise.cli.commands.coverage_cmd import coverage_group
 from repowise.cli.commands.dead_code_cmd import dead_code_command
 from repowise.cli.commands.decision_cmd import decision_group
 from repowise.cli.commands.delete_cmd import delete_command
@@ -20,6 +21,7 @@ from repowise.cli.commands.export_cmd import export_command
 from repowise.cli.commands.health_cmd import health_command
 from repowise.cli.commands.hook_cmd import hook_group
 from repowise.cli.commands.init_cmd import init_command
+from repowise.cli.commands.login_cmd import login_command, logout_command, whoami_command
 from repowise.cli.commands.mcp_cmd import mcp_command
 from repowise.cli.commands.reindex_cmd import reindex_command
 from repowise.cli.commands.restyle_cmd import restyle_command, wiki_styles_command
@@ -68,6 +70,7 @@ register_command(dead_code_command)
 register_command(health_command)
 register_command(risk_command)
 register_command(decision_group)
+register_command(coverage_group)
 register_command(search_command)
 register_command(distill_command)
 register_command(expand_command)
@@ -85,6 +88,9 @@ register_command(restyle_command)
 register_command(wiki_styles_command)
 register_command(whats_new_command)
 register_command(telemetry_command)
+register_command(login_command)
+register_command(logout_command)
+register_command(whoami_command)
 register_command(workspace_group)
 
 cli_registry.apply(cli)

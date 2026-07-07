@@ -47,7 +47,7 @@ All of the following ship in `pip install repowise` today, free for internal use
   factor, significant commits, contributor profiles, module health), Documentation
   (LLM-generated wiki, freshness scoring, RAG search), Decision (architectural
   decision records linked to graph nodes, staleness tracking), and Code Health
-  (25 deterministic biomarkers, 1–10 score per file, coverage ingestion, trend
+  (25 deterministic markers, 1–10 score per file, coverage ingestion, trend
   alerts).
 - **Nine task-shaped MCP tools** — `get_overview`, `get_answer`, `get_context`,
   `get_symbol`, `search_codebase`, `get_risk`, `get_why`, `get_dead_code`,

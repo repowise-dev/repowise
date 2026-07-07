@@ -289,7 +289,7 @@ def run_partial_analysis(
             _hcfg = HealthConfig.load(repo_path)
             _analyzer_config = (
                 _hcfg.to_analyzer_config([pf.file_info.path for pf in parsed_files])
-                if (_hcfg.disabled_biomarkers or _hcfg.rules)
+                if _hcfg.has_overrides()
                 else None
             )
             partial_health_report = _health_analyzer.analyze(
@@ -403,6 +403,7 @@ async def persist_incremental_index(
     partial_health_report: Any,
     changed_paths: list[str],
     *,
+    current_graph_file_paths: set[str] | None = None,
     file_diffs: list[Any] | None = None,
     log: LogFn | None = None,
 ) -> None:
@@ -432,6 +433,16 @@ async def persist_incremental_index(
         async with get_session(sf) as session:
             repo = await upsert_repository(session, name=repo_path.name, local_path=str(repo_path))
             repo_id = repo.id
+
+            if current_graph_file_paths:
+                try:
+                    from repowise.core.pipeline.persist import _prune_stale_file_rows
+
+                    await _prune_stale_file_rows(
+                        session, repo_id, current_graph_file_paths, set()
+                    )
+                except Exception as exc:
+                    log(f"[yellow]Stale row prune skipped: {exc}[/yellow]")
 
             # Tombstone pages for deleted/renamed files FIRST — a fresh page
             # for a file that no longer exists misleads every retrieval

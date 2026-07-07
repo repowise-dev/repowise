@@ -1,0 +1,939 @@
+{
+  "repo": {
+    "id": "d8ea204a-6325-438c-a805-fbdb029ffd11",
+    "name": "flask",
+    "default_branch": "main",
+    "head_commit": "36e4a824f340fdee7ed50937ba8e7f6bc7d17f81"
+  },
+  "scale": {
+    "file_count": 108,
+    "symbol_count": 1060,
+    "entry_point_count": 5,
+    "module_count": 24,
+    "total_nloc": 14043,
+    "language_count": 8,
+    "languages": [
+      {
+        "language": "python",
+        "file_count": 83
+      },
+      {
+        "language": "yaml",
+        "file_count": 8
+      },
+      {
+        "language": "markdown",
+        "file_count": 6
+      },
+      {
+        "language": "toml",
+        "file_count": 5
+      },
+      {
+        "language": "json",
+        "file_count": 2
+      },
+      {
+        "language": "sql",
+        "file_count": 2
+      },
+      {
+        "language": "shell",
+        "file_count": 1
+      },
+      {
+        "language": "makefile",
+        "file_count": 1
+      }
+    ],
+    "size_class": {
+      "name": "Village",
+      "blurb": "A tidy village — a few neighborhoods, easy to walk.",
+      "nloc": 14043
+    }
+  },
+  "activity": {
+    "total_commits": 2000,
+    "agent_commits": 0,
+    "agent_pct": 0,
+    "fix_commits": 204,
+    "fix_pct": 10.2,
+    "contributor_count": 568,
+    "first_commit_at": "2015-06-06T04:25:41+00:00",
+    "last_commit_at": "2026-05-31T14:42:46+00:00",
+    "age_days": 4012,
+    "busiest_month": {
+      "month": "2017-05",
+      "total": 100,
+      "agent": 0
+    },
+    "monthly": [
+      {
+        "month": "2015-06",
+        "total": 22,
+        "agent": 0
+      },
+      {
+        "month": "2015-07",
+        "total": 12,
+        "agent": 0
+      },
+      {
+        "month": "2015-08",
+        "total": 3,
+        "agent": 0
+      },
+      {
+        "month": "2015-09",
+        "total": 2,
+        "agent": 0
+      },
+      {
+        "month": "2015-10",
+        "total": 10,
+        "agent": 0
+      },
+      {
+        "month": "2015-11",
+        "total": 8,
+        "agent": 0
+      },
+      {
+        "month": "2015-12",
+        "total": 10,
+        "agent": 0
+      },
+      {
+        "month": "2016-01",
+        "total": 6,
+        "agent": 0
+      },
+      {
+        "month": "2016-02",
+        "total": 6,
+        "agent": 0
+      },
+      {
+        "month": "2016-03",
+        "total": 7,
+        "agent": 0
+      },
+      {
+        "month": "2016-04",
+        "total": 18,
+        "agent": 0
+      },
+      {
+        "month": "2016-05",
+        "total": 33,
+        "agent": 0
+      },
+      {
+        "month": "2016-06",
+        "total": 71,
+        "agent": 0
+      },
+      {
+        "month": "2016-07",
+        "total": 9,
+        "agent": 0
+      },
+      {
+        "month": "2016-08",
+        "total": 33,
+        "agent": 0
+      },
+      {
+        "month": "2016-09",
+        "total": 22,
+        "agent": 0
+      },
+      {
+        "month": "2016-10",
+        "total": 10,
+        "agent": 0
+      },
+      {
+        "month": "2016-11",
+        "total": 13,
+        "agent": 0
+      },
+      {
+        "month": "2016-12",
+        "total": 21,
+        "agent": 0
+      },
+      {
+        "month": "2017-01",
+        "total": 10,
+        "agent": 0
+      },
+      {
+        "month": "2017-02",
+        "total": 10,
+        "agent": 0
+      },
+      {
+        "month": "2017-03",
+        "total": 27,
+        "agent": 0
+      },
+      {
+        "month": "2017-04",
+        "total": 29,
+        "agent": 0
+      },
+      {
+        "month": "2017-05",
+        "total": 100,
+        "agent": 0
+      },
+      {
+        "month": "2017-06",
+        "total": 54,
+        "agent": 0
+      },
+      {
+        "month": "2017-07",
+        "total": 11,
+        "agent": 0
+      },
+      {
+        "month": "2017-08",
+        "total": 9,
+        "agent": 0
+      },
+      {
+        "month": "2017-09",
+        "total": 4,
+        "agent": 0
+      },
+      {
+        "month": "2017-10",
+        "total": 9,
+        "agent": 0
+      },
+      {
+        "month": "2017-11",
+        "total": 8,
+        "agent": 0
+      },
+      {
+        "month": "2017-12",
+        "total": 16,
+        "agent": 0
+      },
+      {
+        "month": "2018-01",
+        "total": 25,
+        "agent": 0
+      },
+      {
+        "month": "2018-02",
+        "total": 14,
+        "agent": 0
+      },
+      {
+        "month": "2018-03",
+        "total": 4,
+        "agent": 0
+      },
+      {
+        "month": "2018-04",
+        "total": 77,
+        "agent": 0
+      },
+      {
+        "month": "2018-05",
+        "total": 27,
+        "agent": 0
+      },
+      {
+        "month": "2018-06",
+        "total": 11,
+        "agent": 0
+      },
+      {
+        "month": "2018-07",
+        "total": 4,
+        "agent": 0
+      },
+      {
+        "month": "2018-08",
+        "total": 1,
+        "agent": 0
+      },
+      {
+        "month": "2018-09",
+        "total": 12,
+        "agent": 0
+      },
+      {
+        "month": "2018-10",
+        "total": 6,
+        "agent": 0
+      },
+      {
+        "month": "2018-11",
+        "total": 7,
+        "agent": 0
+      },
+      {
+        "month": "2018-12",
+        "total": 2,
+        "agent": 0
+      },
+      {
+        "month": "2019-01",
+        "total": 36,
+        "agent": 0
+      },
+      {
+        "month": "2019-02",
+        "total": 2,
+        "agent": 0
+      },
+      {
+        "month": "2019-03",
+        "total": 1,
+        "agent": 0
+      },
+      {
+        "month": "2019-04",
+        "total": 2,
+        "agent": 0
+      },
+      {
+        "month": "2019-05",
+        "total": 73,
+        "agent": 0
+      },
+      {
+        "month": "2019-06",
+        "total": 26,
+        "agent": 0
+      },
+      {
+        "month": "2019-07",
+        "total": 19,
+        "agent": 0
+      },
+      {
+        "month": "2019-08",
+        "total": 8,
+        "agent": 0
+      },
+      {
+        "month": "2019-09",
+        "total": 5,
+        "agent": 0
+      },
+      {
+        "month": "2019-10",
+        "total": 10,
+        "agent": 0
+      },
+      {
+        "month": "2019-11",
+        "total": 11,
+        "agent": 0
+      },
+      {
+        "month": "2020-02",
+        "total": 22,
+        "agent": 0
+      },
+      {
+        "month": "2020-03",
+        "total": 8,
+        "agent": 0
+      },
+      {
+        "month": "2020-04",
+        "total": 22,
+        "agent": 0
+      },
+      {
+        "month": "2020-05",
+        "total": 8,
+        "agent": 0
+      },
+      {
+        "month": "2020-06",
+        "total": 19,
+        "agent": 0
+      },
+      {
+        "month": "2020-07",
+        "total": 33,
+        "agent": 0
+      },
+      {
+        "month": "2020-08",
+        "total": 12,
+        "agent": 0
+      },
+      {
+        "month": "2020-09",
+        "total": 6,
+        "agent": 0
+      },
+      {
+        "month": "2020-10",
+        "total": 10,
+        "agent": 0
+      },
+      {
+        "month": "2020-11",
+        "total": 21,
+        "agent": 0
+      },
+      {
+        "month": "2020-12",
+        "total": 2,
+        "agent": 0
+      },
+      {
+        "month": "2021-01",
+        "total": 16,
+        "agent": 0
+      },
+      {
+        "month": "2021-02",
+        "total": 26,
+        "agent": 0
+      },
+      {
+        "month": "2021-03",
+        "total": 14,
+        "agent": 0
+      },
+      {
+        "month": "2021-04",
+        "total": 34,
+        "agent": 0
+      },
+      {
+        "month": "2021-05",
+        "total": 67,
+        "agent": 0
+      },
+      {
+        "month": "2021-06",
+        "total": 15,
+        "agent": 0
+      },
+      {
+        "month": "2021-07",
+        "total": 12,
+        "agent": 0
+      },
+      {
+        "month": "2021-08",
+        "total": 21,
+        "agent": 0
+      },
+      {
+        "month": "2021-09",
+        "total": 10,
+        "agent": 0
+      },
+      {
+        "month": "2021-10",
+        "total": 14,
+        "agent": 0
+      },
+      {
+        "month": "2021-11",
+        "total": 24,
+        "agent": 0
+      },
+      {
+        "month": "2021-12",
+        "total": 14,
+        "agent": 0
+      },
+      {
+        "month": "2022-01",
+        "total": 7,
+        "agent": 0
+      },
+      {
+        "month": "2022-02",
+        "total": 14,
+        "agent": 0
+      },
+      {
+        "month": "2022-03",
+        "total": 23,
+        "agent": 0
+      },
+      {
+        "month": "2022-04",
+        "total": 16,
+        "agent": 0
+      },
+      {
+        "month": "2022-05",
+        "total": 24,
+        "agent": 0
+      },
+      {
+        "month": "2022-06",
+        "total": 32,
+        "agent": 0
+      },
+      {
+        "month": "2022-07",
+        "total": 33,
+        "agent": 0
+      },
+      {
+        "month": "2022-08",
+        "total": 32,
+        "agent": 0
+      },
+      {
+        "month": "2022-09",
+        "total": 6,
+        "agent": 0
+      },
+      {
+        "month": "2022-10",
+        "total": 4,
+        "agent": 0
+      },
+      {
+        "month": "2022-11",
+        "total": 5,
+        "agent": 0
+      },
+      {
+        "month": "2022-12",
+        "total": 14,
+        "agent": 0
+      },
+      {
+        "month": "2023-01",
+        "total": 13,
+        "agent": 0
+      },
+      {
+        "month": "2023-02",
+        "total": 22,
+        "agent": 0
+      },
+      {
+        "month": "2023-03",
+        "total": 8,
+        "agent": 0
+      },
+      {
+        "month": "2023-04",
+        "total": 34,
+        "agent": 0
+      },
+      {
+        "month": "2023-05",
+        "total": 24,
+        "agent": 0
+      },
+      {
+        "month": "2023-06",
+        "total": 21,
+        "agent": 0
+      },
+      {
+        "month": "2023-07",
+        "total": 6,
+        "agent": 0
+      },
+      {
+        "month": "2023-08",
+        "total": 24,
+        "agent": 0
+      },
+      {
+        "month": "2023-09",
+        "total": 7,
+        "agent": 0
+      },
+      {
+        "month": "2023-10",
+        "total": 5,
+        "agent": 0
+      },
+      {
+        "month": "2023-11",
+        "total": 14,
+        "agent": 0
+      },
+      {
+        "month": "2023-12",
+        "total": 6,
+        "agent": 0
+      },
+      {
+        "month": "2024-01",
+        "total": 11,
+        "agent": 0
+      },
+      {
+        "month": "2024-02",
+        "total": 8,
+        "agent": 0
+      },
+      {
+        "month": "2024-04",
+        "total": 14,
+        "agent": 0
+      },
+      {
+        "month": "2024-05",
+        "total": 11,
+        "agent": 0
+      },
+      {
+        "month": "2024-06",
+        "total": 4,
+        "agent": 0
+      },
+      {
+        "month": "2024-07",
+        "total": 5,
+        "agent": 0
+      },
+      {
+        "month": "2024-08",
+        "total": 10,
+        "agent": 0
+      },
+      {
+        "month": "2024-09",
+        "total": 4,
+        "agent": 0
+      },
+      {
+        "month": "2024-10",
+        "total": 13,
+        "agent": 0
+      },
+      {
+        "month": "2024-11",
+        "total": 22,
+        "agent": 0
+      },
+      {
+        "month": "2025-01",
+        "total": 4,
+        "agent": 0
+      },
+      {
+        "month": "2025-03",
+        "total": 11,
+        "agent": 0
+      },
+      {
+        "month": "2025-05",
+        "total": 8,
+        "agent": 0
+      },
+      {
+        "month": "2025-06",
+        "total": 7,
+        "agent": 0
+      },
+      {
+        "month": "2025-08",
+        "total": 13,
+        "agent": 0
+      },
+      {
+        "month": "2025-09",
+        "total": 3,
+        "agent": 0
+      },
+      {
+        "month": "2025-10",
+        "total": 1,
+        "agent": 0
+      },
+      {
+        "month": "2025-11",
+        "total": 4,
+        "agent": 0
+      },
+      {
+        "month": "2026-01",
+        "total": 12,
+        "agent": 0
+      },
+      {
+        "month": "2026-02",
+        "total": 11,
+        "agent": 0
+      },
+      {
+        "month": "2026-03",
+        "total": 4,
+        "agent": 0
+      },
+      {
+        "month": "2026-04",
+        "total": 4,
+        "agent": 0
+      },
+      {
+        "month": "2026-05",
+        "total": 6,
+        "agent": 0
+      }
+    ],
+    "agent_names": []
+  },
+  "people": {
+    "owner_count": 12,
+    "top_owners": [
+      {
+        "name": "David Lord",
+        "file_count": 58,
+        "pct": 0.6904761904761905
+      },
+      {
+        "name": "Markus Unterwaditzer",
+        "file_count": 5,
+        "pct": 0.05952380952380952
+      },
+      {
+        "name": "pgjones",
+        "file_count": 4,
+        "pct": 0.047619047619047616
+      },
+      {
+        "name": "David Baumgold",
+        "file_count": 4,
+        "pct": 0.047619047619047616
+      },
+      {
+        "name": "Armin Ronacher",
+        "file_count": 4,
+        "pct": 0.047619047619047616
+      },
+      {
+        "name": "Jannis Leidel",
+        "file_count": 3,
+        "pct": 0.03571428571428571
+      },
+      {
+        "name": "emisargent",
+        "file_count": 1,
+        "pct": 0.011904761904761904
+      },
+      {
+        "name": "Hendrik Makait",
+        "file_count": 1,
+        "pct": 0.011904761904761904
+      }
+    ],
+    "single_owner_files": 28,
+    "silo_count": 4
+  },
+  "quality": {
+    "average_health": 6.94,
+    "maintainability_average": 7.71,
+    "performance_average": 9.96,
+    "worst_performer_path": "src/flask/app.py",
+    "worst_performer_score": 1.07,
+    "open_findings": 209,
+    "severity_breakdown": {
+      "critical": 8,
+      "high": 32,
+      "medium": 84,
+      "low": 85
+    },
+    "defect_accuracy": {
+      "k": 20,
+      "hits": 5,
+      "precision": 0.25,
+      "base_rate": 0.0556,
+      "lift": 4.5,
+      "window_days": 180,
+      "scored_files": 108,
+      "defect_files": 6,
+      "concentration_file_fraction": 0.2,
+      "concentration_defect_share": 0.8333,
+      "precision_table": [
+        {
+          "k": 10,
+          "hits": 3
+        },
+        {
+          "k": 20,
+          "hits": 5
+        },
+        {
+          "k": 30,
+          "hits": 5
+        }
+      ],
+      "flagged_files": [
+        {
+          "file_path": "src/flask/app.py",
+          "score": 1.07,
+          "recent_fixes": 1
+        },
+        {
+          "file_path": "src/flask/sansio/app.py",
+          "score": 1.35,
+          "recent_fixes": 1
+        },
+        {
+          "file_path": "src/flask/cli.py",
+          "score": 2.05,
+          "recent_fixes": 0
+        },
+        {
+          "file_path": "src/flask/sansio/blueprints.py",
+          "score": 3.53,
+          "recent_fixes": 0
+        },
+        {
+          "file_path": "src/flask/config.py",
+          "score": 5.15,
+          "recent_fixes": 0
+        },
+        {
+          "file_path": "src/flask/testing.py",
+          "score": 5.5,
+          "recent_fixes": 0
+        },
+        {
+          "file_path": "src/flask/ctx.py",
+          "score": 6.51,
+          "recent_fixes": 0
+        },
+        {
+          "file_path": "src/flask/templating.py",
+          "score": 7.15,
+          "recent_fixes": 0
+        },
+        {
+          "file_path": "src/flask/sansio/scaffold.py",
+          "score": 7.16,
+          "recent_fixes": 0
+        },
+        {
+          "file_path": "tests/test_basic.py",
+          "score": 7.49,
+          "recent_fixes": 1
+        },
+        {
+          "file_path": "src/flask/debughelpers.py",
+          "score": 7.53,
+          "recent_fixes": 0
+        },
+        {
+          "file_path": "src/flask/helpers.py",
+          "score": 8.09,
+          "recent_fixes": 0
+        },
+        {
+          "file_path": "tests/test_blueprints.py",
+          "score": 8.14,
+          "recent_fixes": 1
+        },
+        {
+          "file_path": "tests/test_cli.py",
+          "score": 8.19,
+          "recent_fixes": 1
+        },
+        {
+          "file_path": "src/flask/wrappers.py",
+          "score": 8.59,
+          "recent_fixes": 0
+        },
+        {
+          "file_path": "src/flask/blueprints.py",
+          "score": 8.64,
+          "recent_fixes": 0
+        },
+        {
+          "file_path": "tests/test_templating.py",
+          "score": 8.74,
+          "recent_fixes": 0
+        },
+        {
+          "file_path": "tests/test_appctx.py",
+          "score": 8.94,
+          "recent_fixes": 0
+        },
+        {
+          "file_path": "tests/test_reqctx.py",
+          "score": 8.94,
+          "recent_fixes": 0
+        },
+        {
+          "file_path": "tests/test_testing.py",
+          "score": 8.94,
+          "recent_fixes": 0
+        }
+      ]
+    },
+    "distribution": {
+      "total_files": 108,
+      "total_nloc": 14046,
+      "bands": {
+        "healthy": {
+          "files": 97,
+          "nloc": 7562,
+          "pct": 53.8
+        },
+        "warning": {
+          "files": 7,
+          "nloc": 3192,
+          "pct": 22.7
+        },
+        "alert": {
+          "files": 4,
+          "nloc": 3292,
+          "pct": 23.4
+        }
+      }
+    },
+    "doc_coverage_pct": 0,
+    "page_count": 0,
+    "test_coverage_pct": 62,
+    "dead_code": {
+      "total_findings": 28,
+      "deletable_lines": 169
+    }
+  },
+  "knowledge": {
+    "decision_count": 32,
+    "active_decision_count": 0
+  },
+  "superlatives": {
+    "largest_file": {
+      "path": "tests/test_basic.py",
+      "nloc": 1440
+    },
+    "most_complex_symbol": {
+      "name": "register",
+      "file_path": "src/flask/sansio/blueprints.py",
+      "complexity": 22
+    },
+    "most_changed_file": {
+      "path": "src/flask/app.py",
+      "commit_count": 134
+    },
+    "oldest_file": {
+      "path": "tests/test_apps/blueprintapp/apps/__init__.py",
+      "first_commit_at": "2014-09-11T20:09:50+00:00"
+    },
+    "strongest_coupling": {
+      "a": "CHANGES.rst",
+      "b": "src/flask/sansio/app.py",
+      "count": 3
+    }
+  }
+}

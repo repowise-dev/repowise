@@ -5,7 +5,7 @@ export function computeElapsedMs(job: JobResponse | undefined, nowMs = Date.now(
   const start = Date.parse(job.started_at ?? job.created_at);
   if (!Number.isFinite(start)) return 0;
   const end =
-    job.status === "completed" || job.status === "failed"
+    job.status === "completed" || job.status === "failed" || job.status === "cancelled"
       ? Date.parse(job.finished_at ?? "")
       : nowMs;
   const effectiveEnd = Number.isFinite(end) ? end : nowMs;
@@ -24,5 +24,6 @@ export function mergeJobProgress(
     total_pages: ev.total_pages ?? job.total_pages,
     failed_pages: ev.failed_pages ?? job.failed_pages,
     current_level: ev.current_level ?? job.current_level,
+    error_message: ev.error_message ?? job.error_message,
   };
 }

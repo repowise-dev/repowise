@@ -101,6 +101,46 @@ class TestCargoWorkspaceGlobExpansion:
         assert idx.lookup("foo") == "crates/foo/src"
         assert idx.lookup("ignored") is None
 
+    def test_root_member_dot(self, tmp_path: Path) -> None:
+        """members = ["."] should index the root crate without crashing.
+
+        Python 3.14+ rejects ``pathlib.Path.glob(".")`` with
+        ``ValueError: Unacceptable pattern``. Cargo workspaces commonly
+        declare ``"."`` as a member to include the root crate.
+        """
+        (tmp_path / "Cargo.toml").write_text(
+            '[workspace]\nmembers = [".", "crates/foo"]\n'
+            '[package]\nname = "root_crate"\nversion = "0.1.0"\n'
+        )
+        _write_member_crate(tmp_path, "crates/foo", "foo")
+        (tmp_path / "src").mkdir(exist_ok=True)
+        (tmp_path / "src" / "lib.rs").write_text("// root crate\n")
+        ctx = _ctx(tmp_path, [
+            "src/lib.rs",
+            "crates/foo/src/lib.rs",
+        ])
+        idx = get_or_build_cargo_workspace_index(ctx)
+        assert idx is not None
+        assert idx.lookup("root_crate") == "src"
+        assert idx.lookup("foo") == "crates/foo/src"
+
+    def test_exclude_dot(self, tmp_path: Path) -> None:
+        """exclude = ["."] should not crash (root pkg still indexed via [package])."""
+        (tmp_path / "Cargo.toml").write_text(
+            '[workspace]\nmembers = [".", "crates/foo"]\nexclude = ["."]\n'
+            '[package]\nname = "root_crate"\nversion = "0.1.0"\n'
+        )
+        _write_member_crate(tmp_path, "crates/foo", "foo")
+        (tmp_path / "src").mkdir(exist_ok=True)
+        (tmp_path / "src" / "lib.rs").write_text("// root crate\n")
+        ctx = _ctx(tmp_path, [
+            "src/lib.rs",
+            "crates/foo/src/lib.rs",
+        ])
+        idx = get_or_build_cargo_workspace_index(ctx)
+        assert idx is not None
+        assert idx.lookup("foo") == "crates/foo/src"
+
 
 def test_rust_visibility_levels():
     from repowise.core.ingestion.extractors.visibility import rust_visibility

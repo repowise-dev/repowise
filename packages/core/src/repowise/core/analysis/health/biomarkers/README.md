@@ -98,7 +98,7 @@ Error handling (cap −0.5, own category `error_handling`):
   pass in the complexity walker, so module-level code is covered too.
 
 Caps were recalibrated to lift `organizational` (was −1.0) and de-rate
-`size_and_complexity` / `duplication` per plan §3.1. A per-biomarker
+`size_and_complexity` / `duplication` per plan §3.1. A per-marker
 weight multiplier in `scoring._BIOMARKER_WEIGHT_MULTIPLIER` lets the
 strongest empirical predictors deduct more than the uniform severity
 table alone would allow.
@@ -134,7 +134,7 @@ dict (JSON-serialised into `HealthFinding.details_json` for the UI), and a
 `reason` string. `health_impact` is filled in by the scorer. An optional
 `deduction` field carries a continuous deduction magnitude (health points,
 pre-weight/pre-cap); when set the scorer uses it instead of the discrete
-severity → deduction table, letting a biomarker (e.g. `coverage_gradient`)
+severity → deduction table, letting a marker (e.g. `coverage_gradient`)
 express a per-finding signal that varies continuously while staying linear and
 attributable.
 
@@ -149,12 +149,12 @@ attributable.
 
 ## Extension points
 
-To add a 13th biomarker:
+To add a 13th marker:
 
 1. New file `biomarkers/my_marker.py` with a class implementing the
    `Biomarker` protocol.
 2. Append to `_DETECTOR_FACTORIES` in `registry.py`.
-3. Add the biomarker → category mapping in `scoring._BIOMARKER_CATEGORY`.
+3. Add the marker → category mapping in `scoring._BIOMARKER_CATEGORY`.
 4. Add a suggestion template in `suggestions._TEMPLATES`.
 5. Add a unit test under `tests/unit/health/`.
 6. Update this README's "Registered v1 detectors" list.

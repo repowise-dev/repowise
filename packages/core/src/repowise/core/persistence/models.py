@@ -886,6 +886,8 @@ class DeadCodeFinding(Base):
     last_commit_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     commit_count_90d: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     lines: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    start_line: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    end_line: Mapped[int | None] = mapped_column(Integer, nullable=True)
     package: Mapped[str | None] = mapped_column(String(255), nullable=True)
     evidence_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     safe_to_delete: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

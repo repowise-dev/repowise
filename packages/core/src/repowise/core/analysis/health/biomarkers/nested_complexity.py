@@ -1,8 +1,7 @@
 """Nested Complexity — deeply indented control flow.
 
-Flags functions whose maximum nesting depth exceeds 4. Inspired by
-CodeScene's "Deep, Nested Complexity" — strongly correlated with
-defect density in their published studies.
+Flags functions whose maximum nesting depth exceeds 4. Deep nesting is
+strongly correlated with defect density in published studies.
 """
 
 from __future__ import annotations

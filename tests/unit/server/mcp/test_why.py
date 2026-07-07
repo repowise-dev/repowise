@@ -193,6 +193,53 @@ async def test_get_why_module_path(setup_mcp):
 
 
 @pytest.mark.asyncio
+async def test_get_why_path_surfaces_code_rationale(setup_mcp, tmp_path):
+    """Ungoverned file whose 'why' lives in a code comment → code_rationale."""
+    import repowise.server.mcp_server as mcp_mod
+    from repowise.server.mcp_server import get_why
+
+    # Point the repo root at a real dir holding a rationale-bearing source file.
+    (tmp_path / "src" / "other").mkdir(parents=True)
+    (tmp_path / "src" / "other" / "widget.py").write_text(
+        "# We poll every 5s instead of using a webhook because the upstream\n"
+        "# service drops connections behind their proxy.\n"
+        "POLL_INTERVAL = 5\n",
+        encoding="utf-8",
+    )
+    mcp_mod._repo_path = str(tmp_path)
+
+    result = await get_why("src/other/widget.py")
+    assert result["mode"] == "path"
+    assert len(result["decisions"]) == 0  # ungoverned → fallback fires
+    assert "code_rationale" in result
+    top = result["code_rationale"][0]
+    assert "webhook" in top["comment"]
+    assert top["path"] == "src/other/widget.py"
+    assert top["lines"][0] == 1
+
+
+@pytest.mark.asyncio
+async def test_get_why_targets_surfaces_code_rationale(setup_mcp, tmp_path):
+    """Search with a target lacking decisions → mine the target's comments."""
+    import repowise.server.mcp_server as mcp_mod
+    from repowise.server.mcp_server import get_why
+
+    (tmp_path / "src" / "other").mkdir(parents=True)
+    (tmp_path / "src" / "other" / "cache.py").write_text(
+        "import time\n"
+        "# TTL is 30s because shorter windows thrash the backing store\n"
+        "TTL = 30\n",
+        encoding="utf-8",
+    )
+    mcp_mod._repo_path = str(tmp_path)
+
+    result = await get_why("why this ttl value", targets=["src/other/cache.py"])
+    assert result["mode"] == "search"
+    assert "code_rationale" in result
+    assert any("thrash" in r["comment"] for r in result["code_rationale"])
+
+
+@pytest.mark.asyncio
 async def test_get_why_semantic_decision_namespace_filtering(setup_mcp):
     """Mode 3 semantic path: over-fetch from page store, keep only decision: hits.
 

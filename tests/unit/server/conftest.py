@@ -165,6 +165,7 @@ async def create_test_repo(client: AsyncClient, tmp_path: Path | None = None) ->
     resp = await client.post(
         "/api/repos",
         json={
+            "index": False,
             "name": "test-repo",
             "local_path": str(repo_dir),
             "url": "https://github.com/example/test-repo",

@@ -1,7 +1,3 @@
-import type { StatsHighlights } from "@repowise-dev/types/stats";
-import { apiGet } from "./client";
+import "./client";
 
-/** One-call payload for the repo Stats ("By the Numbers") page. */
-export async function getStatsHighlights(repoId: string): Promise<StatsHighlights> {
-  return apiGet<StatsHighlights>(`/api/repos/${repoId}/stats/highlights`);
-}
+export * from "@repowise-dev/api-client/stats";

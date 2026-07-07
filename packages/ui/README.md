@@ -22,7 +22,7 @@ src/
   git/           hotspot-table, ownership-table/treemap, churn viz, …
   graph/         graph-flow (Sigma), toolbar, legend, panels (+ sigma/)
   graph-primitives/
-  health/        file-table, kpi-cards, biomarkers, score tokens
+  health/        file-table, kpi-cards, markers, score tokens
   hooks/         use-debounce, …
   jobs/          generation-progress, job-log
   modules/       module health detail
@@ -31,7 +31,7 @@ src/
   security/      findings table
   settings/      general-form
   shared/        primitives: responsive-table, adaptive-panel, toast,
-                 error-boundary, empty-state, api-error, stat-card,
+                 error-boundary, empty-state, api-error, metric-card,
                  entity links/hover cards, context-drawer, owl-loader
   symbols/       symbol-table, symbol-drawer, symbol-page, graph/git panels
   ui/            Radix-CVA primitives

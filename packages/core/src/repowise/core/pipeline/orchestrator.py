@@ -178,6 +178,7 @@ async def run_pipeline(
     existing_kg_fingerprint: str | None = None,
     on_page_ready: Any | None = None,
     resume_controller: ResumeController | None = None,
+    coverage_report_paths: list[Path] | None = None,
 ) -> PipelineResult:
     """Run the repowise indexing/analysis/generation pipeline.
 
@@ -463,7 +464,12 @@ async def run_pipeline(
         )
 
         health_report = await _run_health_analysis(
-            graph_builder, git_meta_map, parsed_files, repo_path=repo_path, progress=progress
+            graph_builder,
+            git_meta_map,
+            parsed_files,
+            repo_path=repo_path,
+            coverage_report_paths=coverage_report_paths,
+            progress=progress,
         )
 
         # Drop the in-memory-only ``BlameIndex`` now that the health biomarkers

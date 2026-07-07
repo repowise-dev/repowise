@@ -42,21 +42,36 @@ function NeighborList({
         ) : (
           <ul className="space-y-2">
             {neighbors.map((n) => {
-              const isSymbol = n.node_type === "symbol" || n.node_id.includes("::");
+              const isExternal = n.node_id.startsWith("external:");
+              const isSymbol = !isExternal && (n.node_type === "symbol" || n.node_id.includes("::"));
               const href = isSymbol ? symbolHref(n.node_id) : fileHref(n.node_id);
+              const row = (
+                <>
+                  <span
+                    className={`font-mono text-xs truncate flex-1 min-w-0 ${
+                      isExternal ? "text-[var(--color-text-tertiary)]" : "text-[var(--color-text-primary)]"
+                    }`}
+                    title={isExternal ? `${n.node_id} (external dependency, not part of this repo)` : n.node_id}
+                  >
+                    {truncatePath(n.node_id, 48)}
+                  </span>
+                  <span className="text-[10px] text-[var(--color-text-tertiary)] shrink-0">
+                    {n.edge_type}
+                  </span>
+                </>
+              );
               return (
                 <li key={`${n.node_id}-${n.edge_type}`}>
-                  <a
-                    href={href}
-                    className="flex items-center gap-2 -mx-2 px-2 py-1 rounded hover:bg-[var(--color-bg-elevated)] transition-colors"
-                  >
-                    <span className="font-mono text-xs text-[var(--color-text-primary)] truncate flex-1 min-w-0" title={n.node_id}>
-                      {truncatePath(n.node_id, 48)}
-                    </span>
-                    <span className="text-[10px] text-[var(--color-text-tertiary)] shrink-0">
-                      {n.edge_type}
-                    </span>
-                  </a>
+                  {isExternal ? (
+                    <div className="flex items-center gap-2 -mx-2 px-2 py-1 rounded">{row}</div>
+                  ) : (
+                    <a
+                      href={href}
+                      className="flex items-center gap-2 -mx-2 px-2 py-1 rounded hover:bg-[var(--color-bg-elevated)] transition-colors"
+                    >
+                      {row}
+                    </a>
+                  )}
                   {n.imported_names.length > 0 && (
                     <p
                       className="pl-1 text-[10px] text-[var(--color-text-tertiary)] truncate"

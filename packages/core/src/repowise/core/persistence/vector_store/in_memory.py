@@ -61,11 +61,21 @@ class InMemoryVectorStore(VectorStore):
             )
         return results
 
+    async def upsert_vectors(self, items: list[tuple[str, list[float], dict]]) -> bool:
+        for page_id, vector, metadata in items:
+            self._store[page_id] = (list(vector), dict(metadata))
+        return True
+
     async def search(self, query: str, limit: int = 10) -> list[SearchResult]:
         if not self._store:
             return []
         q_vecs = await self._embedder.embed([query])
         return self._search_by_vector(q_vecs[0], limit)
+
+    async def search_by_vector(self, vector: list[float], limit: int = 10) -> list[SearchResult]:
+        if not self._store:
+            return []
+        return self._search_by_vector(vector, limit)
 
     async def search_many(self, queries: list[str], limit: int = 10) -> list[list[SearchResult]]:
         """One embedder call for all queries, then local scoring per query."""

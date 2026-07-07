@@ -34,6 +34,10 @@ class DeadCodeFindingData:
     # script). Non-empty means the finding is a review candidate, never
     # deletion-ready, regardless of confidence. See :mod:`risk_factors`.
     risk_factors: list[str] = field(default_factory=list)
+    # Symbol span in the defining file, when known (symbol-kind findings
+    # only; file/package-kind findings leave both None).
+    start_line: int | None = None
+    end_line: int | None = None
 
 
 @dataclass

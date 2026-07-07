@@ -21,18 +21,18 @@ pipeline stages produce meaningful output.
 | Call graph edges | Y | partial | -- | -- | -- |
 | Heritage (extends/implements) | Y | partial | -- | -- | -- |
 | Named bindings | Y | -- | -- | -- | -- |
-| Code-health biomarkers | Y¹ | -- | -- | -- | -- |
+| Code-health markers | Y¹ | -- | -- | -- | -- |
 | Dead code detection | Y | Y | Y | Y | -- |
 | Semantic search & wiki pages | Y | Y | Y | Y | Y |
 
-¹ **Code-health biomarkers** require a per-language complexity-walker map
+¹ **Code-health markers** require a per-language complexity-walker map
 (`analysis/health/complexity/languages.py`), independent of `.scm` parsing.
 A language is only listed **Full** once it clears the
-[code-health checklist](#code-health-biomarker-coverage) below — except
+[code-health checklist](#code-health-marker-coverage) below, except
 **Go**, whose class-level metrics (LCOM4 / god-class) are not computable
 because Go methods attach to a type via an external receiver rather than
 nesting in a class body; Go gets the function- and assertion-level
-biomarkers but is footnoted on the class-level ones.
+markers but is footnoted on the class-level ones.
 
 ---
 
@@ -47,7 +47,7 @@ call resolution, named bindings, heritage extraction, and docstrings.
 |----------|-----------|-------------|-------------|
 | **Python** | `.py` `.pyi` | `main.py` `app.py` `__main__.py` `manage.py` `wsgi.py` `asgi.py` | `import x` / `from x import y` |
 | **TypeScript** | `.ts` `.tsx` | `index.ts` `main.ts` `app.ts` `server.ts` | `import { x } from 'y'` / `export { x } from 'y'` & `export * from 'y'` re-export barrels / `require()` with tsconfig path aliases, npm/yarn/pnpm `workspaces`, and optional `.vue`/`.svelte`/`.astro` SFC probing |
-| **JavaScript** | `.js` `.jsx` `.mjs` `.cjs` | `index.js` `main.js` `app.js` `server.js` | `import` / `require()` incl. CommonJS re-export shapes (`module.exports = require('./x')`, `exports.foo = require('./y')`, `Object.assign(module.exports, require('./z'), …)` — flagged as re-export hubs like ESM barrels) and member picks (`var x = require('./m').member`) |
+| **JavaScript** | `.js` `.jsx` `.mjs` `.cjs` | `index.js` `main.js` `app.js` `server.js` | `import` / `require()` incl. CommonJS re-export shapes (`module.exports = require('./x')`, `exports.foo = require('./y')`, `Object.assign(module.exports, require('./z'), …)`, flagged as re-export hubs like ESM barrels) and member picks (`var x = require('./m').member`) |
 | **Java** | `.java` | `Main.java` `Application.java` | `import pkg.Class` / `import pkg.*` / `import static pkg.Class.*` with Maven `pom.xml` reactor + Gradle `settings.gradle(.kts)` source-sets + `gradle/libs.versions.toml` discovery, JPMS `module-info.java` / `package-info.java` recognition, fan-out to every file in the imported package (siblings share importers), same-package implicit identifier resolution; JDK namespaces (`java.` / `javax.` / `jdk.`) are filtered with no node, `jakarta.` classifies as an external dependency |
 | **Kotlin** | `.kt` `.kts` | `Main.kt` `Application.kt` | `import com.example.Foo` / `import com.example.*` sharing the JVM workspace index with Java (cross-language resolution, `.kt` under `src/main/java` recognised); `kotlin.` stdlib filtered with no node, `kotlinx.` classifies as an external dependency; same-package implicit identifier resolution |
 | **Go** | `.go` | `main.go` `cmd/main.go` | `import "path"` with multi-module `go.mod` discovery (longest-prefix match); a package import fans out to **all** `.go` files in the package directory |
@@ -61,39 +61,39 @@ All nine languages support:
 - Named binding extraction (mapping imported names to source symbols)
 - Heritage extraction (class/interface/trait/record inheritance chains)
 - Docstring extraction (Python, JSDoc, GoDoc, Rustdoc, Javadoc, Doxygen, XML doc)
-- Framework-aware edges (Django, FastAPI, Flask for Python; tsconfig path aliases for TS/JS; pytest fixture detection; ASP.NET controllers / minimal API / EF Core DbContext for C#; Spring Boot DI + `@Bean` factories for Java/Kotlin; Rails routes + ActiveRecord relationships; Laravel routes + service providers + Eloquent; TYPO3 convention files (`ext_localconf.php`, `Configuration/TCA/*`, `JavaScriptModules.php` registrations) for PHP; Express `app.use(router)` + NestJS `@Module` arrays; Gin/Echo/Chi router + stdlib `net/http` (`http.HandleFunc` / `mux.Handle`) + gRPC `RegisterXxxServer` → handler/impl files for Go; Axum/Actix `.route` → handler files for Rust)
-- Per-language dynamic-hint extractors (Django/Pytest/Node/`importlib` string-import registries for Python+JS/TS; .NET DI/Activator/InternalsVisibleTo for C#; Spring `getBean`/`@Bean` factories for Java/Kotlin; Ruby `send`/`const_get`/`define_method`/`delegate`; PHP `call_user_func`/`ReflectionClass`/container `get`; Scala `Class.forName`/`given`/`implicit val`; Swift `NSClassFromString`/`Selector`/`#selector`/KVC; C function-pointer assignment + `dlopen`/`dlsym`; Luau `game:GetService`/`setmetatable __index`; Go `reflect.TypeOf`/`reflect.New`/`reflect.ValueOf`/`plugin.Open`/`plugin.Lookup`; Alpine.js `Alpine.data`/`store`/`magic`/`directive` registrations → handler files for JS)
-- For C# only: MSBuild project graph (`<ProjectReference>` / `<PackageReference>`), namespace → file mapping across projects, `global using` / `using static` / `using alias` propagation, ASP.NET HTTP and gRPC-dotnet contract extraction in workspace mode, cross-repo `<ProjectReference>` and internal-NuGet detection, host-builder extension method resolution (`app.MapCatalogApi()` / `services.AddCatalogServices()` on any C# repo, not just ASP.NET), `nameof(Type)` references resolved as dynamic uses, local `var x = new T()` property reads bound to the defining file, and CommunityToolkit MVVM source-generator synthesis (`[ObservableProperty]` fields → PascalCase property, `[RelayCommand]` methods → `<Name>Command`)
-- For Go only: a package-granular workspace index (`GoPackageIndex`) built as a warmup phase — a package import resolves to every file in the package directory, and package-qualified calls (`pkg.Func`) / same-package bare calls resolve across all of a package's files; type-reference resolution emits `type_use` edges for field / parameter / return / composite-literal types (unwrapping `*T` / `[]T` / `map[K]V` / `pkg.T` / generics); package-aware dead-code reachability (a file is reachable when its package is imported or is a `package main` entry); structural interface satisfaction — concrete types are matched to the interfaces their method set satisfies (embedded interfaces expanded) and emit `method_implements` edges so interfaces reached only through implementors are not flagged dead; and Go never-flag conventions (`*_test.go`, `cmd/**/main.go`, `doc.go`, `magefile.go`, generated `*.pb.go` / `*_string.go` / `zz_generated*` / `bindata.go`) plus `init` / `TestMain` / `Test*` / `Benchmark*` / `Example*` / `Fuzz*` entry handling
-- For C/C++ only: a unified `CppWorkspaceIndex` warmup parses CMake reactors (`add_subdirectory`, `add_executable` / `add_library`, `target_sources`, `target_include_directories`, `target_compile_definitions`, `target_link_libraries`, `option`/`if(...)` conditional sources, CMake File API `build/.cmake/api/v1/reply/` JSON), Bazel `BUILD` files (`cc_binary` / `cc_library` / `cc_test` / `cc_proto_library` / `cc_grpc_library` / `cc_fuzz_test`), and `compile_commands.json`; the index drives a six-step include resolver (compile_commands → workspace public-header map → per-target include-dirs → importer-relative → stdlib filter → stem fallback) and fans `#include` edges out to every sibling TU in the same target so internal headers are reachable without a direct importer; project-specific export macros (`LEVELDB_EXPORT` / `SEASTAR_API` / `*_EXPORT` / `*_API` / `*_PUBLIC`) are discovered from `target_compile_definitions` and `#define X __declspec(dllexport)` patterns and re-applied as visibility markers during the warmup, alongside the literal `__declspec(dllexport)` / `__attribute__((visibility("default")))` / `EMSCRIPTEN_KEEPALIVE` / `WASM_EXPORT` / `export_name` / `((used))` markers (so JS↔WASM exports and project-macro-exported public APIs are not flagged dead); type-reference resolution emits `type_use` edges for parameter / field / return / template-argument types (unwrapping `std::vector` / `std::optional` / `std::shared_ptr` / friends and stripping pointer / reference / array tails) and consults the workspace's same-target sibling set for unqualified resolution; static-initialiser registration macros (`PYBIND11_MODULE`, `BOOST_PYTHON_MODULE`, `REGISTER_OP`, `REGISTER_KERNEL_BUILDER`, `BOOST_CLASS_EXPORT`, `PLUGINLIB_EXPORT_CLASS`, `RCLCPP_COMPONENTS_REGISTER_NODE`, `Q_OBJECT` / `Q_GADGET` / `QML_ELEMENT`, gflags `DEFINE_*`, `ABSL_FLAG`, `__attribute__((constructor/used))`, `[[gnu::retain/used]]`, `JNI_OnLoad`, `NAPI_MODULE`) synthesize the symbols they emit at compile time and stamp their TU as an entry point so the file is not flagged unreachable; framework edges cover the C++ test, benchmark, and fuzzing ecosystem — **GoogleTest** (`TEST` / `TEST_F` / `TEST_P` / `TYPED_TEST` with `TEST_F(FixtureClass, …)` emitting a `type_use` edge to the fixture's defining header), **Catch2** (`TEST_CASE` / `TEST_CASE_METHOD` / `SCENARIO`), **Boost.Test** (`BOOST_AUTO_TEST_CASE` / `BOOST_FIXTURE_TEST_CASE(case, Fixture)` with fixture rescue), **doctest** (`DOCTEST_TEST_CASE`), **Google Benchmark** (`BENCHMARK` / `BENCHMARK_F` / `BENCHMARK_MAIN`), **libFuzzer** (`LLVMFuzzerTestOneInput` / `LLVMFuzzerInitialize`); C++ dynamic-hint extractor (function-pointer assignments, designated-initializer field tables, `dlopen` / `dlsym` / `LoadLibrary` / `GetProcAddress`, Qt old-style `connect(SIGNAL(sig()), SLOT(slot()))` and new-style `connect(&Sender::sig, &Recv::slot)`); C++ contract methods (constructor / destructor / operator overloads, conversion operators (`operator bool`, `operator T`), STL customisation points (`begin` / `end` / `cbegin` / `cend` / `rbegin` / `rend` / `size` / `empty` / `data` / `swap` / `hash_value` / `to_string`), coroutine machinery (`await_ready` / `await_suspend` / `await_resume` / `promise_type` / `initial_suspend` / `final_suspend` / `return_void` / `return_value` / `yield_value` / `unhandled_exception`), `std::format` / `std::error_code` customisation); directory-granular reachability with **header-reached-by-symbol-reference rescue**, `int main` / `WinMain` / `wWinMain` / `wmain` / `LLVMFuzzerTestOneInput` / `LLVMFuzzerInitialize` / `DllMain` binary-entry recognition, sibling-rescue (internal header reached via its `.cc` neighbour), same-directory main-carrier rescue (helper files alongside `main.cc` are not dead), and conditional-compile alternative pairing (`env_posix.cc` ↔ `env_windows.cc`, `crypto_openssl.cc` ↔ `crypto_gnutls.cc`); never-flag conventions for `apps/**`, `demos/**`, `examples/**`, `samples/**`, `benchmarks/**`, `bench/**`, `tools/**`, `tests/{perf,fuzz,unit,manual,integration}/**`, `*_test.{cc,cpp}` / `*_unittest.*` / `*_perf.*` / `*_benchmark.*` / `*_fuzz.*` suffix globs, skeleton convention headers (`port_example.h`, `*_example.{h,hpp,cc}`), build directory roots (`build/**`, `cmake-build-*/**`, `_deps/**`, `out/{build,Debug,Release}/**`), generated source patterns (`moc_*.{cpp,cc}`, `ui_*.h`, `qrc_*.{cpp,cc}`, `*.moc`, `*.pb.{cc,h}`, `*.pb-c.{c,h}`, `*.grpc.pb.{cc,h}`, `*.capnp.{c++,h}`, `*.flatbuffers.h`, `*_generated.h`, `*.tab.{c,h}`, `*.yy.c`, `*_lex.cc`, `*_wrap.{cxx,cpp}`, `*.cython.cpp`), vendor roots (`external/**`, `extern/**`, `contrib/**`, `submodules/**`, `vendor/**`, `third_party/**`, `deps/**`), precompiled-header conventions (`pch.{h,cc,cpp}`, `stdafx.*`, `PrecompiledHeader.{cc,cpp}`), and Windows COM / ATL DLL entry points (`DllMain`, `DllGetClassObject`, `DllCanUnloadNow`, `DllRegisterServer`, `DllUnregisterServer`, `DllGetActivationFactory`); a per-symbol-use dead-code check rescues headers whose declared types are referenced as parameter / field / return / template-argument / `extends` / `implements` even with no `#include` chain
+- Framework-aware edges (Django, FastAPI, Flask for Python; tsconfig path aliases for TS/JS; pytest fixture detection; ASP.NET controllers / minimal API / EF Core DbContext for C#; Spring Boot DI + `@Bean` factories for Java/Kotlin; Rails routes + ActiveRecord relationships; Laravel routes + service providers + Eloquent; TYPO3 convention files (`ext_localconf.php`, `Configuration/TCA/*`, `JavaScriptModules.php` registrations) for PHP; Express `app.use(router)` + NestJS `@Module` arrays; Gin/Echo/Chi router + stdlib `net/http` (`http.HandleFunc` / `mux.Handle`) + gRPC `RegisterXxxServer` -> handler/impl files for Go; Axum/Actix `.route` -> handler files for Rust)
+- Per-language dynamic-hint extractors (Django/Pytest/Node/`importlib` string-import registries for Python+JS/TS; .NET DI/Activator/InternalsVisibleTo for C#; Spring `getBean`/`@Bean` factories for Java/Kotlin; Ruby `send`/`const_get`/`define_method`/`delegate`; PHP `call_user_func`/`ReflectionClass`/container `get`; Scala `Class.forName`/`given`/`implicit val`; Swift `NSClassFromString`/`Selector`/`#selector`/KVC; C function-pointer assignment + `dlopen`/`dlsym`; Luau `game:GetService`/`setmetatable __index`; Go `reflect.TypeOf`/`reflect.New`/`reflect.ValueOf`/`plugin.Open`/`plugin.Lookup`; Alpine.js `Alpine.data`/`store`/`magic`/`directive` registrations -> handler files for JS)
+- For C# only: MSBuild project graph (`<ProjectReference>` / `<PackageReference>`), namespace -> file mapping across projects, `global using` / `using static` / `using alias` propagation, ASP.NET HTTP and gRPC-dotnet contract extraction in workspace mode, cross-repo `<ProjectReference>` and internal-NuGet detection, host-builder extension method resolution (`app.MapCatalogApi()` / `services.AddCatalogServices()` on any C# repo, not just ASP.NET), `nameof(Type)` references resolved as dynamic uses, local `var x = new T()` property reads bound to the defining file, and CommunityToolkit MVVM source-generator synthesis (`[ObservableProperty]` fields -> PascalCase property, `[RelayCommand]` methods -> `<Name>Command`)
+- For Go only: a package-granular workspace index (`GoPackageIndex`) built as a warmup phase: a package import resolves to every file in the package directory, and package-qualified calls (`pkg.Func`) / same-package bare calls resolve across all of a package's files; type-reference resolution emits `type_use` edges for field / parameter / return / composite-literal types (unwrapping `*T` / `[]T` / `map[K]V` / `pkg.T` / generics); package-aware dead-code reachability (a file is reachable when its package is imported or is a `package main` entry); structural interface satisfaction: concrete types are matched to the interfaces their method set satisfies (embedded interfaces expanded) and emit `method_implements` edges so interfaces reached only through implementors are not flagged dead; and Go never-flag conventions (`*_test.go`, `cmd/**/main.go`, `doc.go`, `magefile.go`, generated `*.pb.go` / `*_string.go` / `zz_generated*` / `bindata.go`) plus `init` / `TestMain` / `Test*` / `Benchmark*` / `Example*` / `Fuzz*` entry handling
+- For C/C++ only: a unified `CppWorkspaceIndex` warmup parses CMake reactors (`add_subdirectory`, `add_executable` / `add_library`, `target_sources`, `target_include_directories`, `target_compile_definitions`, `target_link_libraries`, `option`/`if(...)` conditional sources, CMake File API `build/.cmake/api/v1/reply/` JSON), Bazel `BUILD` files (`cc_binary` / `cc_library` / `cc_test` / `cc_proto_library` / `cc_grpc_library` / `cc_fuzz_test`), and `compile_commands.json`; the index drives a six-step include resolver (compile_commands -> workspace public-header map -> per-target include-dirs -> importer-relative -> stdlib filter -> stem fallback) and fans `#include` edges out to every sibling TU in the same target so internal headers are reachable without a direct importer; project-specific export macros (`LEVELDB_EXPORT` / `SEASTAR_API` / `*_EXPORT` / `*_API` / `*_PUBLIC`) are discovered from `target_compile_definitions` and `#define X __declspec(dllexport)` patterns and re-applied as visibility markers during the warmup, alongside the literal `__declspec(dllexport)` / `__attribute__((visibility("default")))` / `EMSCRIPTEN_KEEPALIVE` / `WASM_EXPORT` / `export_name` / `((used))` markers (so JS↔WASM exports and project-macro-exported public APIs are not flagged dead); type-reference resolution emits `type_use` edges for parameter / field / return / template-argument types (unwrapping `std::vector` / `std::optional` / `std::shared_ptr` / friends and stripping pointer / reference / array tails) and consults the workspace's same-target sibling set for unqualified resolution; static-initialiser registration macros (`PYBIND11_MODULE`, `BOOST_PYTHON_MODULE`, `REGISTER_OP`, `REGISTER_KERNEL_BUILDER`, `BOOST_CLASS_EXPORT`, `PLUGINLIB_EXPORT_CLASS`, `RCLCPP_COMPONENTS_REGISTER_NODE`, `Q_OBJECT` / `Q_GADGET` / `QML_ELEMENT`, gflags `DEFINE_*`, `ABSL_FLAG`, `__attribute__((constructor/used))`, `[[gnu::retain/used]]`, `JNI_OnLoad`, `NAPI_MODULE`) synthesize the symbols they emit at compile time and stamp their TU as an entry point so the file is not flagged unreachable; framework edges cover the C++ test, benchmark, and fuzzing ecosystem: **GoogleTest** (`TEST` / `TEST_F` / `TEST_P` / `TYPED_TEST` with `TEST_F(FixtureClass, …)` emitting a `type_use` edge to the fixture's defining header), **Catch2** (`TEST_CASE` / `TEST_CASE_METHOD` / `SCENARIO`), **Boost.Test** (`BOOST_AUTO_TEST_CASE` / `BOOST_FIXTURE_TEST_CASE(case, Fixture)` with fixture rescue), **doctest** (`DOCTEST_TEST_CASE`), **Google Benchmark** (`BENCHMARK` / `BENCHMARK_F` / `BENCHMARK_MAIN`), **libFuzzer** (`LLVMFuzzerTestOneInput` / `LLVMFuzzerInitialize`); C++ dynamic-hint extractor (function-pointer assignments, designated-initializer field tables, `dlopen` / `dlsym` / `LoadLibrary` / `GetProcAddress`, Qt old-style `connect(SIGNAL(sig()), SLOT(slot()))` and new-style `connect(&Sender::sig, &Recv::slot)`); C++ contract methods (constructor / destructor / operator overloads, conversion operators (`operator bool`, `operator T`), STL customisation points (`begin` / `end` / `cbegin` / `cend` / `rbegin` / `rend` / `size` / `empty` / `data` / `swap` / `hash_value` / `to_string`), coroutine machinery (`await_ready` / `await_suspend` / `await_resume` / `promise_type` / `initial_suspend` / `final_suspend` / `return_void` / `return_value` / `yield_value` / `unhandled_exception`), `std::format` / `std::error_code` customisation); directory-granular reachability with **header-reached-by-symbol-reference rescue**, `int main` / `WinMain` / `wWinMain` / `wmain` / `LLVMFuzzerTestOneInput` / `LLVMFuzzerInitialize` / `DllMain` binary-entry recognition, sibling-rescue (internal header reached via its `.cc` neighbour), same-directory main-carrier rescue (helper files alongside `main.cc` are not dead), and conditional-compile alternative pairing (`env_posix.cc` ↔ `env_windows.cc`, `crypto_openssl.cc` ↔ `crypto_gnutls.cc`); never-flag conventions for `apps/**`, `demos/**`, `examples/**`, `samples/**`, `benchmarks/**`, `bench/**`, `tools/**`, `tests/{perf,fuzz,unit,manual,integration}/**`, `*_test.{cc,cpp}` / `*_unittest.*` / `*_perf.*` / `*_benchmark.*` / `*_fuzz.*` suffix globs, skeleton convention headers (`port_example.h`, `*_example.{h,hpp,cc}`), build directory roots (`build/**`, `cmake-build-*/**`, `_deps/**`, `out/{build,Debug,Release}/**`), generated source patterns (`moc_*.{cpp,cc}`, `ui_*.h`, `qrc_*.{cpp,cc}`, `*.moc`, `*.pb.{cc,h}`, `*.pb-c.{c,h}`, `*.grpc.pb.{cc,h}`, `*.capnp.{c++,h}`, `*.flatbuffers.h`, `*_generated.h`, `*.tab.{c,h}`, `*.yy.c`, `*_lex.cc`, `*_wrap.{cxx,cpp}`, `*.cython.cpp`), vendor roots (`external/**`, `extern/**`, `contrib/**`, `submodules/**`, `vendor/**`, `third_party/**`, `deps/**`), precompiled-header conventions (`pch.{h,cc,cpp}`, `stdafx.*`, `PrecompiledHeader.{cc,cpp}`), and Windows COM / ATL DLL entry points (`DllMain`, `DllGetClassObject`, `DllCanUnloadNow`, `DllRegisterServer`, `DllUnregisterServer`, `DllGetActivationFactory`); a per-symbol-use dead-code check rescues headers whose declared types are referenced as parameter / field / return / template-argument / `extends` / `implements` even with no `#include` chain
 - For JavaScript only: esbuild/rollup bundle outputs (`*.bundle.js`), minified artifacts (`*.min.js`), LiveReload generated browser-global scripts (`livereload/gen/*`, `livereload.js`) and WASM JS glue (`*wasm_exec.js`) are never flagged as dead (build products / browser-loaded, never module-imported)
-- For TypeScript / JavaScript only: a workspace-granular index (`TsWorkspaceIndex`) built as a warmup phase that surfaces every file reachable through a `package.json` `exports` map (including `"./locales/*"`-style wildcards) as an entry point so downstream npm consumers don't read as unreachable; type-reference resolution emits `type_use` edges for parameter / field / return / generic-constraint / type-alias-RHS / heritage clauses (unwrapping `Promise<T>`, `T[]`, `Pick<T,K>`, union/intersection, conditional/mapped types) so interfaces consumed only as types are not flagged dead; same-file rescue exempts symbols whose only consumer is another declaration in the same module; convention never-flag globs for `*.test.*` / `*.spec.*` / `*.stories.*` / `*.bench.*` / `__tests__/**` / `__mocks__/**` / Next.js app-router files (`page.tsx`, `layout.tsx`, `route.ts`, `middleware.ts`, `instrumentation.ts`, route segment configs) / SvelteKit `+page` / `+layout` / `+server` / Remix `entry.client` / `entry.server` / `next-env.d.ts` / `*.gen.ts` / `generated/**`; experimental sub-package rescue marks every source file in directories named `bench` / `benchmarks` / `treeshake` / `examples` / `demos` / `samples` / `playground` / `scratch` / `scripts` as a live entry (these dirs invoke their files via runtime CLI arguments no static scan can follow); npm-script entry detection — parses every `package.json` `scripts.*` command for paths (`tsx X.ts` / `bun run X.mts` / `rollup -c X.js`), quoted glob arguments (prettier / eslint scopes), and bare directory tokens; MDX `import` scan + `vitest.config` `include` glob scan as belt-and-suspenders for entry surfaces the static parser can't see; framework edges for Next.js App Router (`app/**/{page,layout,route,middleware,…}`), Hono / Fastify / Koa / Elysia router DSLs (`.get('/x', handler)`), Remix / SvelteKit / Astro filesystem-convention routes, and tRPC procedure registries (`.query(handler)` / `.mutation(handler)`); JSX-namespace types declared inside a `namespace JSX` file are exempt from `unused_export` (consumed by tsc via `jsxImportSource`, never imported as values)
-- For XAML only: `<ResourceDictionary Source="..."/>` and `MergedDictionaries` entries resolve across `pack://application:,,,/`, `ms-appx:///`, repo-rooted and relative URIs, emitting xaml→xaml `dynamic_uses` edges
-- For JVM (Java + Kotlin together) only: a unified `JvmWorkspaceIndex` warmup parsing Maven `pom.xml` reactors and Gradle `settings.gradle(.kts)` + source-sets + `gradle/libs.versions.toml` version catalogs; one walk groups every `.java` and `.kt` file by package directory so `import com.foo.Bar` fans out to every defining file in the package (siblings share importers), `import com.foo.*` / `import static com.foo.Bar.*` expand to all matching files, same-package implicit identifier access is honoured, and Kotlin↔Java cross-language resolution links callers across both source-roots (including `.kt` files hosted under `src/main/java`); type-reference resolution emits `type_use` edges for parameter / field / return / generic / `new T()` types (unwrapping arrays, generics, nullables), plus Kotlin `companion object` / `object` singleton / method-reference (`Foo::bar`) / `sealed … permits` resolution; source-generator-equivalent synthesis emits the symbols Lombok (`@Data` / `@Value` / `@Builder` / `@RequiredArgsConstructor` / `@Slf4j` / `@UtilityClass` / friends), Java `record`, Kotlin `data class` / `enum class` / `object`, and MapStruct / AutoValue / Immutables would produce at compile time — so a Lombok-only Spring service no longer reads its injected fields as unused; framework edges cover Spring (stereotypes with meta-annotation resolution; `@RequestMapping` family routing; Spring Data `JpaRepository` / `Crud` / `Mongo` / `R2dbc` / `Elasticsearch` / `Neo4j` / `Couchbase` / `Cassandra` interfaces and their derived-query methods as entry points; `@Bean` factories; single-constructor + `@Autowired` / `@Inject` / `@Resource` DI; Lombok-RAC/AAC constructor inference), Jakarta (JAX-RS `@Path`, CDI scopes, Servlet 3+ `@WebServlet`/`@WebFilter`/`@WebListener`, JPA `@Entity` + `@OneToMany`/`@ManyToOne`/`@ManyToMany`/`@OneToOne` association edges; both `javax.*` and `jakarta.*`), Quarkus (entry stereotypes + SmallRye `@Incoming("topic")` ↔ `@Outgoing("topic")` cross-linking), Micronaut (DI / routing, gated on Micronaut imports to disambiguate Spring's collisions), and Android (`AndroidManifest.xml` `android:name` references emit edges to the named class); JVM dynamic hints capture `Class.forName`, Mockito / mockk, MapStruct `Mappers.getMapper`, `SpringApplication.run` and Kotlin `runApplication<>`, Jackson / Gson `readValue` / `fromJson` / `treeToValue`; package-aware dead-code reachability rescues sibling-rescued packages, stereotype-annotated classes, `main(String[])` carriers, and FQNs listed in `META-INF/services/*` / `META-INF/spring.factories` (Boot 2) / `META-INF/spring/...AutoConfiguration.imports` (Boot 3) / JPMS `provides … with …` — all resolved during the workspace warmup; JVM never-flag patterns cover `module-info.java`, `package-info.java`, every conventional test source-set (`src/test/**`, `src/integrationTest/**`, `src/intTest/**`, `src/it/**`, `src/jmh/**`, generic `src/*Test/**`), generated source roots (`build/generated/**`, KAPT/KSP, `target/generated-sources/**`, GraalVM `aotSources`), generated suffix conventions (`Dagger*`, `AutoValue_*`, JPA `*_.java` metamodel, `*Grpc.java`, protoc `*OuterClass.java`), JUnit / TestNG / Spock / ArchUnit test-naming + annotation-marked entry points (`@Test` / `@PostConstruct` / `@EventListener` / `@Scheduled` / `@JmsListener` / `@KafkaListener` / `@RabbitListener` / `@SqsListener` / `@Incoming` / `@Outgoing` / `@Mojo` / `@Bean` / …), and JVM contract methods (`equals` / `hashCode` / `toString` / `compareTo` / `clone` / serialization `readObject` / `writeObject` / `serialVersionUID` / Lombok `canEqual` / Kotlin `componentN` / `copy` / enum `values` / `valueOf`)
+- For TypeScript / JavaScript only: a workspace-granular index (`TsWorkspaceIndex`) built as a warmup phase that surfaces every file reachable through a `package.json` `exports` map (including `"./locales/*"`-style wildcards) as an entry point so downstream npm consumers don't read as unreachable; type-reference resolution emits `type_use` edges for parameter / field / return / generic-constraint / type-alias-RHS / heritage clauses (unwrapping `Promise<T>`, `T[]`, `Pick<T,K>`, union/intersection, conditional/mapped types) so interfaces consumed only as types are not flagged dead; same-file rescue exempts symbols whose only consumer is another declaration in the same module; convention never-flag globs for `*.test.*` / `*.spec.*` / `*.stories.*` / `*.bench.*` / `__tests__/**` / `__mocks__/**` / Next.js app-router files (`page.tsx`, `layout.tsx`, `route.ts`, `middleware.ts`, `instrumentation.ts`, route segment configs) / SvelteKit `+page` / `+layout` / `+server` / Remix `entry.client` / `entry.server` / `next-env.d.ts` / `*.gen.ts` / `generated/**`; experimental sub-package rescue marks every source file in directories named `bench` / `benchmarks` / `treeshake` / `examples` / `demos` / `samples` / `playground` / `scratch` / `scripts` as a live entry (these dirs invoke their files via runtime CLI arguments no static scan can follow); npm-script entry detection parses every `package.json` `scripts.*` command for paths (`tsx X.ts` / `bun run X.mts` / `rollup -c X.js`), quoted glob arguments (prettier / eslint scopes), and bare directory tokens; MDX `import` scan + `vitest.config` `include` glob scan as belt-and-suspenders for entry surfaces the static parser can't see; framework edges for Next.js App Router (`app/**/{page,layout,route,middleware,…}`), Hono / Fastify / Koa / Elysia router DSLs (`.get('/x', handler)`), Remix / SvelteKit / Astro filesystem-convention routes, and tRPC procedure registries (`.query(handler)` / `.mutation(handler)`); JSX-namespace types declared inside a `namespace JSX` file are exempt from `unused_export` (consumed by tsc via `jsxImportSource`, never imported as values)
+- For XAML only: `<ResourceDictionary Source="..."/>` and `MergedDictionaries` entries resolve across `pack://application:,,,/`, `ms-appx:///`, repo-rooted and relative URIs, emitting xaml-to-xaml `dynamic_uses` edges
+- For JVM (Java + Kotlin together) only: a unified `JvmWorkspaceIndex` warmup parsing Maven `pom.xml` reactors and Gradle `settings.gradle(.kts)` + source-sets + `gradle/libs.versions.toml` version catalogs; one walk groups every `.java` and `.kt` file by package directory so `import com.foo.Bar` fans out to every defining file in the package (siblings share importers), `import com.foo.*` / `import static com.foo.Bar.*` expand to all matching files, same-package implicit identifier access is honoured, and Kotlin↔Java cross-language resolution links callers across both source-roots (including `.kt` files hosted under `src/main/java`); type-reference resolution emits `type_use` edges for parameter / field / return / generic / `new T()` types (unwrapping arrays, generics, nullables), plus Kotlin `companion object` / `object` singleton / method-reference (`Foo::bar`) / `sealed … permits` resolution; source-generator-equivalent synthesis emits the symbols Lombok (`@Data` / `@Value` / `@Builder` / `@RequiredArgsConstructor` / `@Slf4j` / `@UtilityClass` / friends), Java `record`, Kotlin `data class` / `enum class` / `object`, and MapStruct / AutoValue / Immutables would produce at compile time, so a Lombok-only Spring service no longer reads its injected fields as unused; framework edges cover Spring (stereotypes with meta-annotation resolution; `@RequestMapping` family routing; Spring Data `JpaRepository` / `Crud` / `Mongo` / `R2dbc` / `Elasticsearch` / `Neo4j` / `Couchbase` / `Cassandra` interfaces and their derived-query methods as entry points; `@Bean` factories; single-constructor + `@Autowired` / `@Inject` / `@Resource` DI; Lombok-RAC/AAC constructor inference), Jakarta (JAX-RS `@Path`, CDI scopes, Servlet 3+ `@WebServlet`/`@WebFilter`/`@WebListener`, JPA `@Entity` + `@OneToMany`/`@ManyToOne`/`@ManyToMany`/`@OneToOne` association edges; both `javax.*` and `jakarta.*`), Quarkus (entry stereotypes + SmallRye `@Incoming("topic")` ↔ `@Outgoing("topic")` cross-linking), Micronaut (DI / routing, gated on Micronaut imports to disambiguate Spring's collisions), and Android (`AndroidManifest.xml` `android:name` references emit edges to the named class); JVM dynamic hints capture `Class.forName`, Mockito / mockk, MapStruct `Mappers.getMapper`, `SpringApplication.run` and Kotlin `runApplication<>`, Jackson / Gson `readValue` / `fromJson` / `treeToValue`; package-aware dead-code reachability rescues sibling-rescued packages, stereotype-annotated classes, `main(String[])` carriers, and FQNs listed in `META-INF/services/*` / `META-INF/spring.factories` (Boot 2) / `META-INF/spring/...AutoConfiguration.imports` (Boot 3) / JPMS `provides … with …`, all resolved during the workspace warmup; JVM never-flag patterns cover `module-info.java`, `package-info.java`, every conventional test source-set (`src/test/**`, `src/integrationTest/**`, `src/intTest/**`, `src/it/**`, `src/jmh/**`, generic `src/*Test/**`), generated source roots (`build/generated/**`, KAPT/KSP, `target/generated-sources/**`, GraalVM `aotSources`), generated suffix conventions (`Dagger*`, `AutoValue_*`, JPA `*_.java` metamodel, `*Grpc.java`, protoc `*OuterClass.java`), JUnit / TestNG / Spock / ArchUnit test-naming + annotation-marked entry points (`@Test` / `@PostConstruct` / `@EventListener` / `@Scheduled` / `@JmsListener` / `@KafkaListener` / `@RabbitListener` / `@SqsListener` / `@Incoming` / `@Outgoing` / `@Mojo` / `@Bean` / ...), and JVM contract methods (`equals` / `hashCode` / `toString` / `compareTo` / `clone` / serialization `readObject` / `writeObject` / `serialVersionUID` / Lombok `canEqual` / Kotlin `componentN` / `copy` / enum `values` / `valueOf`)
 
-#### Code-health biomarker coverage
+#### Code-health marker coverage
 
 The code-health layer scores every source file from deterministic
-biomarkers (complexity, cohesion, test-quality, …). These run off a
+markers (complexity, cohesion, test-quality, ...). These run off a
 per-language complexity-walker map
 (`analysis/health/complexity/languages.py`) that is **independent** of the
-`.scm` ingestion queries — a language can parse perfectly for the graph yet
-still need this map before health biomarkers fire. To keep "Full" meaning
+`.scm` ingestion queries: a language can parse perfectly for the graph yet
+still need this map before health markers fire. To keep "Full" meaning
 "health works", a language must clear this checklist (each item has a green
 fixture under `tests/fixtures/lang_samples/<lang>/` + a walker test):
 
-1. **Control flow** — `if` / loop / `switch`/`match`/`when` / `try`-`catch`
-   nodes mapped → McCabe CCN, nesting depth, cognitive complexity.
-2. **Boolean operators** — `&&` / `||` (or their text form) counted toward
+1. **Control flow**: `if` / loop / `switch`/`match`/`when` / `try`-`catch`
+   nodes mapped -> McCabe CCN, nesting depth, cognitive complexity.
+2. **Boolean operators**: `&&` / `||` (or their text form) counted toward
    CCN and `complex_conditional`.
-3. **Class metrics** — `class_kinds` set so `method_count` / `total_nloc` /
-   `max_method_ccn` aggregate (feeds `god_class`). *(N/A for Go — no
+3. **Class metrics**: `class_kinds` set so `method_count` / `total_nloc` /
+   `max_method_ccn` aggregate (feeds `god_class`). *(N/A for Go: no
    class-grouping node.)*
-4. **LCOM4 cohesion** — `self_identifiers` + `member_access_kinds` set so
+4. **LCOM4 cohesion**: `self_identifiers` + `member_access_kinds` set so
    explicit-receiver member access is detected (feeds `low_cohesion`).
    Receiver-less idioms degrade to "no signal", never a false positive.
    *(N/A for Go.)*
-5. **Assertion blocks** — `assert_kinds` / `assert_call_kinds` set so runs
+5. **Assertion blocks**: `assert_kinds` / `assert_call_kinds` set so runs
    of consecutive assertions are detected on test files (feeds
    `large_assertion_block` / `duplicated_assertion_block`).
 
@@ -103,10 +103,11 @@ fixture under `tests/fixtures/lang_samples/<lang>/` + a walker test):
 | TypeScript / JavaScript | Y | Y | Y | Y |
 | Java | Y | Y | Y | Y |
 | Kotlin | Y | Y | Y | Y |
-| Go | Y | — | — | Y |
+| Go | Y | n/a | n/a | Y |
 | Rust | Y | Y | Y | Y |
 | C++ | Y | Y | Y | Y |
 | C# | Y | Y | Y | Y |
+| Dart | Y | Y | n/a | Y (`assert` statements only; `expect()` calls have no call-node type to key on) |
 
 ### Good
 
@@ -118,10 +119,11 @@ resolvers for each language.
 | Language | Extensions | Entry Points | Import Style |
 |----------|-----------|-------------|-------------|
 | **C** | `.c` | `main.c` | `#include` with `compile_commands.json` (shares C++ grammar) |
-| **Ruby** | `.rb` | `main.rb` `app.rb` `config.ru` | `require 'mod'` / `require_relative './mod'` with `$LOAD_PATH` convention probing (`require 'sinatra/base'` → `lib/sinatra/base.rb`, including every sub-gem's `lib/` in monorepos), Ruby-stdlib requires filtered with no node, Gemfile/gemspec dependencies labelled as gem externals, rspec directory-mirror edges (`spec/lib/x_spec.rb` → `lib/x.rb`), plus Rails / Zeitwerk autoloading (gated on `config/application.rb`) |
-| **Swift** | `.swift` | `main.swift` `App.swift` | `import Foundation` with SPM `Package.swift` `targets:` → directory mapping; intra-module type references link same-target files (Swift has no intra-module imports by design); `@main` / `@UIApplicationMain` / `@NSApplicationMain` flag entry points; `@_exported import` marks re-exports |
-| **Scala** | `.scala` | `Main.scala` `App.scala` | `import pkg.Foo`, brace imports `{A, B => C}` (expanded per selected name, hidden imports skipped), wildcards (`pkg._` / Scala 3 `pkg.*`), and package imports — resolved through the shared JVM workspace index (chained package clauses, Scala ↔ Java cross-language, same-package implicit identifiers) with SBT `build.sbt` / Mill `build.sc` multi-project parsing as fallback; `scala.` and JDK namespaces filtered |
+| **Ruby** | `.rb` | `main.rb` `app.rb` `config.ru` | `require 'mod'` / `require_relative './mod'` with `$LOAD_PATH` convention probing (`require 'sinatra/base'` -> `lib/sinatra/base.rb`, including every sub-gem's `lib/` in monorepos), Ruby-stdlib requires filtered with no node, Gemfile/gemspec dependencies labelled as gem externals, rspec directory-mirror edges (`spec/lib/x_spec.rb` -> `lib/x.rb`), plus Rails / Zeitwerk autoloading (gated on `config/application.rb`) |
+| **Swift** | `.swift` | `main.swift` `App.swift` | `import Foundation` with SPM `Package.swift` `targets:` -> directory mapping; intra-module type references link same-target files (Swift has no intra-module imports by design); `@main` / `@UIApplicationMain` / `@NSApplicationMain` flag entry points; `@_exported import` marks re-exports |
+| **Scala** | `.scala` | `Main.scala` `App.scala` | `import pkg.Foo`, brace imports `{A, B => C}` (expanded per selected name, hidden imports skipped), wildcards (`pkg._` / Scala 3 `pkg.*`), and package imports, resolved through the shared JVM workspace index (chained package clauses, Scala ↔ Java cross-language, same-package implicit identifiers) with SBT `build.sbt` / Mill `build.sc` multi-project parsing as fallback; `scala.` and JDK namespaces filtered |
 | **PHP** | `.php` | `index.php` `public/index.php` | `use Foo\Bar\Baz` with composer.json `autoload.psr-4` longest-prefix resolution |
+| **Dart** | `.dart` | `main.dart` | `import` / `export` (re-export) / `part` / `part of` URIs; `package:` URIs via every `pubspec.yaml` `name:` (monorepos included); `dart:` SDK URIs filtered; `as` prefixes and `show` combinators become named bindings; heritage covers `extends` / `with` (mixin) / `implements` / mixin `on` constraints; Flutter route tables (`MaterialApp(routes:)`, `GoRoute` / `MaterialPageRoute` builders) and `runApp()` emit framework edges; the regex tier below stays as the no-grammar fallback |
 
 ### Config / Data
 
@@ -141,10 +143,10 @@ endpoints or targets where applicable.
 | **TOML** | `.toml` | -- |
 | **Markdown** | `.md` `.mdx` `.markdown` `.mdown` | -- |
 | **AsciiDoc** | `.adoc` `.asciidoc` | -- |
-| **SQL** | `.sql` | -- |
+| **SQL** | `.sql` | Graduated: DDL symbols + dbt lineage, see [SQL + dbt](#sql--dbt) |
 | **Shell** | `.sh` `.bash` `.zsh` | -- |
 
-### Partial (Luau — Roblox)
+### Partial (Luau, Roblox)
 
 | Language | Extensions | Entry Points | Import Style |
 |----------|-----------|-------------|-------------|
@@ -166,7 +168,7 @@ These languages have no AST parsing (no symbols, calls, or heritage) but
 get a real file-level import graph from a regex tier: import statements
 are extracted with per-language regexes and resolved against a declared
 module-name index (declaration scan + path-convention inverse). The
-knowledge graph runs in flow/sparse mode on the resulting density —
+knowledge graph runs in flow/sparse mode on the resulting density:
 honest file-to-file dependencies, no symbol-level claims.
 
 | Language | Extensions | Import Forms Resolved |
@@ -179,13 +181,66 @@ honest file-to-file dependencies, no symbol-level claims.
 | **Erlang** | `.erl` `.hrl` | `-include` / `-include_lib` / `-behaviour` + module-qualified calls (`mod:fun(`) → `-module()` index; qualified calls are strict local-hit-or-drop (never mint externals) |
 | **F#** | `.fs` `.fsi` `.fsx` | `open` → file-level `namespace`/`module` index (unambiguous single-file declarations only), plus the fsproj `<Compile Include>` compile-order dependency spine (a real F# constraint: files may only reference earlier files) |
 
+### SQL + dbt
+
+SQL is parsed by a dedicated special handler (sqlglot, multi-dialect and
+error-tolerant) rather than tree-sitter, plus the lightweight import tier
+for dbt lineage. Four independent capabilities:
+
+**DDL symbols (any `.sql` file).** `CREATE TABLE` / `VIEW` /
+`MATERIALIZED VIEW` -> class-kind symbols with columns in the signature;
+`CREATE FUNCTION` / `PROCEDURE` -> function-kind symbols. Tables get wiki
+pages, search hits, and `get_symbol` lookups (`schema.sql::public.users`).
+Indexes and triggers are deliberately not symbols. Dialect is sqlglot's
+permissive default; set `sql_dialect` in `.repowise/config.yaml`
+(`postgres`, `mysql`, `tsql`, `clickhouse`, ...) for dialect-specific
+syntax like PL/pgSQL `$$` bodies. Any parse problem degrades the file to
+plain passthrough: no symbols, never a crash, never a guess.
+
+**dbt lineage (gated on `dbt_project.yml`).** `{{ ref('model') }}`,
+`{{ ref('package', 'model') }}`, and `{{ source('schema', 'table') }}`
+become real import edges: refs resolve against a per-project model-name
+index built from `dbt_project.yml`'s `model-paths` / `seed-paths` /
+`snapshot-paths` (defaults `models/` `seeds/` `snapshots/`; `.csv` seeds
+are ref-able), sources become typed `external:source:<schema>.<table>`
+nodes marking the warehouse boundary, and refs to uninstalled packages
+become `external:dbt:<package>.<model>`. When two projects in a monorepo
+declare the same model name, the importer's own project wins; two-arg
+refs prefer the project whose declared `name` matches. Everything that
+rides the import graph falls out free: model-level lineage, hotspots,
+co-change, ownership, and Leiden communities of the DAG.
+
+**App-to-database contracts (workspace mode).** The workspace contract
+extractor pairs table *providers* (DDL `CREATE`/`ALTER` in `.sql` files,
+Alembic `op.create_table`, and ORM entities: SQLAlchemy `__tablename__`,
+SQLModel `table=True`, Django `db_table`, JPA `@Entity`/`@Table`, EF Core
+`DbSet<T>`/`[Table]`, ActiveRecord, Eloquent `$table`) with table
+*consumers* (SQL string literals in app code, parsed with sqlglot when the
+literal parses, recovered by a verb-anchored regex when interpolation
+breaks it). Matched pairs become `data` contracts rendered as `db` edges
+on the Live System Map: "which services touch table X" across repos.
+Table names are normalized in one place (quoting, `public`/`dbo`
+prefixes, case), and an interpolated table target emits nothing rather
+than a guess.
+
+**Health markers (maintainability/performance pillars only).** Stored
+routines get cyclomatic complexity counted from the decision keywords in
+the body (`sql_high_complexity`; procedural bodies do not parse into an
+AST, so nesting is deliberately not reported). Three statement smells
+ride the sqlglot AST: `sql_select_star` (a bare `*` in a view or
+routine), `sql_update_delete_without_where`, and `sql_cartesian_join`
+(comma-join with no predicate). All four are uncalibrated by construction
+and never move the defect headline; dbt/Jinja templates and garbled
+parses emit nothing. See `docs/CODE_HEALTH.md`.
+
+
 ### Structural (git + file tree only)
 
 These languages are tracked in git history (blame, hotspot analysis,
 co-change detection) but have no AST parsing or import resolution. Files
 appear in the wiki as traversal-level entries, and the knowledge graph
 runs in **structural mode** for repos dominated by them: the tour
-orients by directory structure, naming conventions, and git evidence —
+orients by directory structure, naming conventions, and git evidence:
 it never claims an execution flow it cannot see.
 
 Objective-C, R, Zig, Julia, Elm, OCaml, Crystal, Nim, D
@@ -201,7 +256,7 @@ File discovered by FileTraverser
 Extension/filename -> LanguageTag  (via LanguageRegistry)
         |
         +-- Config/data language?  -> empty ParsedFile (passthrough)
-        +-- Special format?        -> special_handlers.py (OpenAPI/Dockerfile/Makefile)
+        +-- Special format?        -> special_handlers.py (OpenAPI/Dockerfile/Makefile/SQL)
         +-- Has grammar?           -> tree-sitter AST parsing
                 |
                 v
@@ -228,7 +283,10 @@ Extension/filename -> LanguageTag  (via LanguageRegistry)
           Rust:   crate::/self::/super::, mod.rs probing
           C/C++:  compile_commands.json include directories
           Lightweight tier (Elixir/Dart/Clojure/Haskell/Lean 4/Erlang/F#):
+          Dart:   package:/dart:/relative URIs via the pubspec name map +
+                  library-name index (dotted part-of)
                   regex-extracted imports vs a declared-module-name index
+                  (dbt: ref()/source() vs a per-project model-name index)
           Other:  stem-map fallback (filename matching)
                 |
                 v
@@ -247,7 +305,7 @@ Adding a new language touches these places:
 
 ### Step 1: Add a `LanguageSpec` module
 
-Language identity data lives in the `languages/specs/` package — **one module
+Language identity data lives in the `languages/specs/` package: **one module
 per language**. Create
 `packages/core/src/repowise/core/ingestion/languages/specs/mylang.py` exporting
 a single `SPEC`:
@@ -274,7 +332,7 @@ SPEC = LanguageSpec(
 ```
 
 Then register it in `languages/specs/__init__.py` by importing the module and
-slotting it into the `ALL_SPECS` tuple. **Order matters** — `LanguageRegistry`
+slotting it into the `ALL_SPECS` tuple. **Order matters**: `LanguageRegistry`
 builds its extension map first-spec-wins, so place more specific languages
 ahead of ones that share an extension (e.g. TypeScript before JavaScript).
 The `LanguageRegistry` in `registry.py` consumes `ALL_SPECS`; you never edit
@@ -407,23 +465,23 @@ without touching the shared pipeline files:
   without extending the hardcoded glob list. Used today by `_warmup_jvm`
   to exempt every file under a Gradle non-`main` source set
   (`testFixtures`, `integrationTest`, `javaPoet`, `jcstress`, `jmh`,
-  custom names) — Caffeine's `javaPoet/` and `jcstress/` are picked up
+  custom names); Caffeine's `javaPoet/` and `jcstress/` are picked up
   automatically without us knowing the names exist. The same shape fits
   Rust (`[[example]]` / `[[bench]]` / `[[bin]]` targets in `Cargo.toml`),
   C# (projects with `<Sdk>Microsoft.NET.Sdk.Test</Sdk>` or
   `Microsoft.NET.Test.Sdk` references), TS/JS (workspace `packages/*`
   declared `"private": true`), and Go (`//go:build integration`-gated
-  files) — any language that already builds a workspace index can opt
+  files): any language that already builds a workspace index can opt
   in by stamping the attribute during its warmup.
 - `analysis/health/complexity/languages.py` --- the code-health
   complexity walker keeps its own per-language node-type map
   (`LanguageNodeMap`), independent of the ingestion `.scm` queries. Add a
   map for a language to get McCabe complexity, nesting, cognitive
-  complexity, and the per-function biomarkers; optionally set
+  complexity, and the per-function markers; optionally set
   `class_kinds` / `self_identifiers` / `member_access_kinds` to also get
   class-level metrics (LCOM4 cohesion, god-class), and
   `assert_kinds` / `assert_call_kinds` to get test-quality assertion-block
-  smells. All tiers are purely additive and degrade safely — an unmapped
+  smells. All tiers are purely additive and degrade safely: an unmapped
   language simply produces no health findings rather than wrong ones.
   Control-flow and assertion maps ship for all nine full-tier languages
   (Python, TypeScript, JavaScript, Go, Java, Kotlin, Rust, C++, C#);
@@ -449,6 +507,54 @@ without touching the shared pipeline files:
   false perf findings. Adding a language's perf support is one module plus a
   `call_kinds` line on its `LanguageNodeMap` and its
   `external_systems/io_kind.py` ecosystem rows --- no walker edits.
+- `analysis/health/dataflow/dialects/` --- the **dataflow** layer
+  (intra-procedural CFG + def/use + reaching definitions, powering the
+  **Extract Method** refactoring) is driven by a per-language `DefUseDialect`
+  plugin, registered in `DEFUSE_DIALECTS` exactly like `perf/dialects/`. A
+  dialect owns the read-vs-write classification of each statement (the
+  per-grammar seam: which node is an assignment / declaration / destructuring
+  target, which is a member or index target that binds no local, how a loop's
+  binder reads and writes) and the parameter binders (including a Go method
+  receiver). The CFG builder, the reaching-definitions fixpoint, and the
+  Extract Method slicer stay language-agnostic: the control-flow grammar they
+  branch on (`if_kinds` / `block_kinds` / `return_kinds` / `raise_kinds` /
+  `break_kinds` / `continue_kinds`, alongside the existing
+  `branch_kinds` / `loop_kinds` / `try_kinds`) lives on the `LanguageNodeMap`,
+  so the same builder serves Python's clause-style `elif` / `else` and the
+  C-family's `alternative`-field `else if` without a per-language branch. Every
+  facet has a safe "no signal" default, so a language without a dialect (or one
+  whose map omits the control-flow kinds) produces no def/use and therefore no
+  Extract Method suggestion --- never a wrong one. Adding a language is one
+  module plus the `assignment_kinds` / `local_decl_kinds` and control-flow
+  lines on its `LanguageNodeMap` --- no core edits. The full dataflow pass runs
+  only for functions a structural marker already flagged
+  (`large_method` / `brain_method` / `complex_method`), so it stays within the
+  health-pass budget.
+
+#### Dataflow / Extract Method coverage
+
+The dataflow layer needs a `DefUseDialect` (plus the `assignment_kinds` /
+`local_decl_kinds` and control-flow kinds on the language's `LanguageNodeMap`);
+it is independent of the perf / class / assertion tiers. A language without a
+dialect emits no Extract Method suggestions. Coverage rolls out in value order
+(the high-yield set first), degrading to silence elsewhere.
+
+| Language | CFG + def/use | Extract Method | Notes |
+|----------|:---:|:---:|---|
+| Python | Y | Y | assignment, augmented, walrus, tuple-unpack, `for` / `with`-as / comprehension targets |
+| Go | Y | Y | `:=` / `var`, `=` vs `+=` (operator-sniffed), `x++`, `range` binders, selector / index targets; method `receiver` seeded as a param |
+| TypeScript / JavaScript | Y | Y | `let` / `const` / `var`, `=` / `+=`, `++`, array / object destructuring, `for...of` / `for...in` binders, member / subscript targets |
+| Java | Y | Y | declarations (multi-declarator), `=` vs `+=` (operator-sniffed), `x++`, enhanced-`for` binders, try-with-resources bindings, field / array targets; `switch`-arm writes are conservative may-defs |
+| Rust | Y | Y | `let` with destructuring patterns (tuple / slice / struct / ref), `=` vs `+=` (distinct node kinds), `for` / `if let` / `while let` binders, field / index / deref targets, `self` receiver seeded as a param; `?` counts as an early exit (no span containing one is offered); `match`-arm writes are conservative may-defs; a block's tail expression is never extracted over |
+| Kotlin / C++ / C# | --- | --- | later |
+
+Validated on real code (flagged-only, the production path): Go fires on
+`gorilla/mux` (e.g. `setMatch` sheds ccn 15); TS/JS fires across the hosted
+Next.js frontend; Java fires on `google/gson` (e.g. `JsonTreeReader.getPath`
+sheds ccn 7); Rust fires on `sharkdp/fd` (e.g. `FormatTemplate::parse` sheds
+ccn 6). The flagged-only gate held in every run (Go 8 / 108 functions,
+TS 212 / 1172, Java 53 / 1082, Rust 8 / 217), keeping the per-file cost in the
+low single-digit milliseconds.
 
 #### Performance-signal coverage
 
@@ -465,24 +571,24 @@ findings.
 | Go | Y | Y | resource_construction, lock | `defer_in_loop`, `regex_compile_in_loop` | --- (goroutines) |
 | C# | Y | Y | resource_construction, lock, serial_await | --- (.NET caches regexes) | `blocking_sync_in_async` (`.Result` / `.Wait()` / `.GetResult()`) |
 | Rust | Y | --- (`String` is amortized) | resource_construction, serial_await | `regex_compile_in_loop` (`Regex::new`) | `blocking_sync_in_async` (`block_on` / `std::thread::sleep` / sync `std::fs` in `async fn`) |
+| Dart | Y | Y | resource_construction, serial_await | --- | --- |
 | Kotlin / C++ | --- | --- | --- | --- | --- |
 
 The Rust dialect classifies `sqlx` executor verbs (db), `reqwest::get` /
 `reqwest::post` and `std::fs` (network / filesystem) as sinks; `io_in_loop` is
 multi-repo validated (85% on bevy / rtk / deepwiki-rs). `string_concat_in_loop`
-is intentionally absent — Rust `String::push_str` / `+=` are amortized O(1), so
+is intentionally absent: Rust `String::push_str` / `+=` are amortized O(1), so
 it would be a guaranteed false positive. Kotlin will be nearly free once it
 rides the JVM lexicon; C++ is later. What each dialect classifies as a db /
 network / filesystem / subprocess sink, and the per-language precision hazards,
-lives in `docs/CODE_HEALTH.md` and
-`local-stash/performance-pillar/PHASE6_PLAN.md`.
+lives in `docs/CODE_HEALTH.md`.
 
 ---
 
 ## Architecture
 
 The language pipeline is fully modular. Per-language code lives in
-dedicated subpackages — adding a new language means dropping a file
+dedicated subpackages: adding a new language means dropping a file
 into each subpackage rather than editing monoliths.
 
 ```
@@ -551,7 +657,7 @@ relevant `__init__.py` dispatcher / dict.
 ## Workspace contract extraction
 
 In **workspace mode** (multiple repos indexed together), repowise links
-service-to-service API contracts — HTTP routes and gRPC services — so a
+service-to-service API contracts (HTTP routes and gRPC services) so a
 provider endpoint in one repo connects to its consumers in another. The
 extractors live in `core/workspace/extractors/` and follow the same
 dialect-plugin shape as the rest of the language pipeline: the orchestrator
@@ -577,13 +683,13 @@ workspace/extractors/
 A dialect declares the file extensions it understands (via `langs.py`) and
 turns regex matches into `Contract`s through the shared builders, so every
 dialect emits identically-shaped providers/consumers and the path-normalization
-rules live in one place. Framework-specific quirks stay local to the dialect —
-Spring/ASP.NET class-prefix stitching, Go `HandleFunc` → `*` method, fetch
+rules live in one place. Framework-specific quirks stay local to the dialect:
+Spring/ASP.NET class-prefix stitching, Go `HandleFunc` -> `*` method, fetch
 GET/method de-duplication.
 
 **Adding a framework or client** means dropping one module into `http/` or
 `grpc/` and appending its dialect to the relevant registry tuple
-(`PROVIDER_DIALECTS`, `CONSUMER_DIALECTS`, or `DIALECTS`) — no orchestrator
+(`PROVIDER_DIALECTS`, `CONSUMER_DIALECTS`, or `DIALECTS`): no orchestrator
 edits. The current coverage:
 
 | Contract | Providers | Consumers |
@@ -597,6 +703,7 @@ edits. The current coverage:
 
 | Language | Target Tier | Status |
 |----------|------------|--------|
-| Dart | Good | Lightweight tier shipped; AST upgrade planned — `tree-sitter-dart` available |
-| Elixir | Good | Lightweight tier shipped; AST upgrade planned — `tree-sitter-elixir` available |
-| F# | Good | Lightweight tier shipped; AST upgrade planned — `tree-sitter-f-sharp` available |
+| Dart | Good | Shipped: tree-sitter AST (symbols, calls, bindings, heritage), health control-flow + class facts, perf dialect (io/await/concat/resource in loop), Flutter route + `runApp` framework edges; next: riverpod/get_it dynamic hints, dataflow dialect |
+| Elixir | Good | Lightweight tier shipped; AST upgrade planned (`tree-sitter-elixir` available) |
+| F# | Good | Lightweight tier shipped; AST upgrade planned (`tree-sitter-f-sharp` available) |
+| SQL / dbt | -- | DDL symbols, dbt lineage, app-to-database contracts (workspace `data` extractor), and precision-gated health markers all shipped; next: column-level blast radius |

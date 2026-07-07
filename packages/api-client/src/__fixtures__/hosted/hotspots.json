@@ -1,0 +1,69 @@
+{
+  "items": [
+    {
+      "path": "src/flask/app.py",
+      "commit_count": 134,
+      "commit_count_90d": 0,
+      "commit_count_30d": 0,
+      "churn_percentile": 0.9880952380952381,
+      "primary_owner": "pgjones",
+      "last_commit_at": "2026-02-20T03:41:50+00:00",
+      "is_hotspot": false,
+      "is_stable": true,
+      "bus_factor": 4,
+      "contributor_count": 30,
+      "lines_added_90d": 0,
+      "lines_deleted_90d": 0,
+      "avg_commit_size": 0,
+      "commit_categories": {
+        "fix": 16,
+        "dependency": 3,
+        "feature": 15,
+        "refactor": 10
+      },
+      "commit_count_capped": false,
+      "merge_commit_count_90d": 0,
+      "recent_owner_name": null,
+      "recent_owner_commit_pct": null,
+      "temporal_hotspot_score": 1.7468812018086186,
+      "change_entropy": 1.13513,
+      "change_entropy_pct": 0.9705882352941176,
+      "prior_defect_count": 1,
+      "original_path": null
+    },
+    {
+      "path": "src/flask/ctx.py",
+      "commit_count": 44,
+      "commit_count_90d": 1,
+      "commit_count_30d": 0,
+      "churn_percentile": 0.9761904761904762,
+      "primary_owner": "David Lord",
+      "last_commit_at": "2026-05-02T03:31:50+00:00",
+      "is_hotspot": false,
+      "is_stable": false,
+      "bus_factor": 2,
+      "contributor_count": 8,
+      "lines_added_90d": 5,
+      "lines_deleted_90d": 5,
+      "avg_commit_size": 10,
+      "commit_categories": {
+        "feature": 5,
+        "dependency": 1,
+        "fix": 6,
+        "refactor": 2
+      },
+      "commit_count_capped": false,
+      "merge_commit_count_90d": 0,
+      "recent_owner_name": "David Lord",
+      "recent_owner_commit_pct": 1,
+      "temporal_hotspot_score": 1.7200224452756603,
+      "change_entropy": 1.101266,
+      "change_entropy_pct": 0.9558823529411765,
+      "prior_defect_count": 0,
+      "original_path": null
+    }
+  ],
+  "total": 83,
+  "has_more": true,
+  "next_offset": 2
+}

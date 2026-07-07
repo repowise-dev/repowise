@@ -6,7 +6,7 @@ import { useWorkspaceCoChanges, useWorkspace } from "@/lib/hooks/use-workspace";
 import { CoChangeTable } from "@repowise-dev/ui/workspace/co-change-table";
 import { RepoPairTable, type RepoPairSummary } from "@repowise-dev/ui/workspace/repo-pair-table";
 import { Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui/card";
-import { StatCard } from "@repowise-dev/ui/shared/stat-card";
+import { MetricCard } from "@repowise-dev/ui/shared/metric-card";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 import { Button } from "@repowise-dev/ui/ui/button";
 
@@ -112,17 +112,17 @@ export default function CoChangesPage() {
 
       {/* Summary */}
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
-        <StatCard
+        <MetricCard
           label="Total Co-Change Pairs"
           value={data?.total ?? "—"}
           icon={<GitMerge className="h-4 w-4 text-[var(--color-accent-primary)]" />}
         />
-        <StatCard
+        <MetricCard
           label="Repo Pairs"
           value={data?.co_changes ? repoPairs.length : "—"}
           icon={<GitMerge className="h-4 w-4 text-[var(--color-accent-secondary)]" />}
         />
-        <StatCard
+        <MetricCard
           label="Avg Strength"
           value={
             data?.co_changes && data.co_changes.length > 0

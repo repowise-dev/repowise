@@ -43,6 +43,7 @@ import type {
   DecisionDetailAdapter,
   DecisionLinkComponent,
 } from "./decision-detail-adapter";
+import { toFriendlyMessage } from "../lib/errors";
 
 const STATUS_VARIANT: Record<
   string,
@@ -155,7 +156,7 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
               setLinkedFiles(previousFiles);
             } catch (err) {
               toast.error(
-                err instanceof Error ? `Couldn't undo: ${err.message}` : "Couldn't undo",
+                `Couldn't undo: ${toFriendlyMessage(err)}`,
               );
             }
           },
@@ -165,7 +166,7 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
     } catch (err) {
       toast.error(
         err instanceof Error
-          ? `Couldn't save linkage: ${err.message}`
+          ? `Couldn't save linkage: ${toFriendlyMessage(err)}`
           : "Couldn't save linkage",
       );
     } finally {
@@ -189,7 +190,7 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
               setStatus(previous);
             } catch (err) {
               toast.error(
-                err instanceof Error ? `Couldn't undo: ${err.message}` : "Couldn't undo",
+                `Couldn't undo: ${toFriendlyMessage(err)}`,
               );
             }
           },
@@ -199,7 +200,7 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
     } catch (err) {
       toast.error(
         err instanceof Error
-          ? `Couldn't update decision: ${err.message}`
+          ? `Couldn't update decision: ${toFriendlyMessage(err)}`
           : "Couldn't update decision",
       );
     } finally {

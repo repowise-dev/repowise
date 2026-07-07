@@ -414,96 +414,75 @@ async def setup_mcp_decisions(factory, fts, vector_store, decision_db):
 
 
 # ---------------------------------------------------------------------------
-# Task 1: get_context — governing_decisions field
+# Task 1: get_context — decisions are opt-in (include=["decisions"])
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_get_context_governing_decisions_present(setup_mcp_decisions):
-    """governing_decisions is populated via bounded graph query, not full scan."""
+async def test_get_context_decisions_omitted_by_default(setup_mcp_decisions):
+    """The default triage card carries no decision fields — they're opt-in.
+
+    The enriched ``governing_decisions`` form (id/staleness/verification) was
+    dropped entirely; an agent that wants rationale calls get_why directly.
+    """
     from repowise.server.mcp_server import get_context
 
     result = await get_context(["src/auth/service.py"], include=["docs", "freshness"])
     t = result["targets"]["src/auth/service.py"]
 
-    # Backward-compat field still present
+    assert "decision_records" not in t
+    assert "decision_records_hint" not in t
+    assert "governing_decisions" not in t
+
+
+@pytest.mark.asyncio
+async def test_get_context_decisions_opt_in_titles(setup_mcp_decisions):
+    """include=["decisions"] returns a lightweight titles list + hint only."""
+    from repowise.server.mcp_server import get_context
+
+    result = await get_context(["src/auth/service.py"], include=["docs", "decisions"])
+    t = result["targets"]["src/auth/service.py"]
+
     assert "decision_records" in t
     titles = t["decision_records"]
     assert isinstance(titles, list)
-    assert len(titles) >= 1
+    assert 1 <= len(titles) <= 3
     assert "Use JWT for authentication" in titles
-
-    # New governing_decisions field
-    assert "governing_decisions" in t
-    govs = t["governing_decisions"]
-    assert isinstance(govs, list)
-    assert len(govs) >= 1
-
-    # Check dict shape
-    for gd in govs:
-        assert "id" in gd
-        assert "title" in gd
-        assert "status" in gd
-        assert "staleness_score" in gd
-        assert "verification" in gd
-        assert "stale" in gd
-        assert isinstance(gd["stale"], bool)
-
-    # dec_stale is active with staleness_score=0.8 → stale=True
-    stale_entries = [g for g in govs if g["id"] == "dec_stale"]
-    assert stale_entries, "dec_stale should appear in governing_decisions"
-    assert stale_entries[0]["stale"] is True
-
-    # dec_active has staleness_score=0.1 → stale=False
-    active_entries = [g for g in govs if g["id"] == "dec_active"]
-    assert active_entries
-    assert active_entries[0]["stale"] is False
-
-    # hint present
     assert "decision_records_hint" in t
 
+    # The heavy enriched objects are no longer emitted.
+    assert "governing_decisions" not in t
+
 
 @pytest.mark.asyncio
-async def test_get_context_governing_decisions_sorted_by_confidence(setup_mcp_decisions):
-    """governing_decisions is sorted highest-confidence first."""
+async def test_get_context_decision_titles_sorted_by_confidence(setup_mcp_decisions):
+    """decision_records titles are highest-confidence first."""
     from repowise.server.mcp_server import get_context
 
-    result = await get_context(["src/auth/service.py"], include=["docs"])
+    result = await get_context(["src/auth/service.py"], include=["decisions"])
     t = result["targets"]["src/auth/service.py"]
-    govs = t.get("governing_decisions", [])
-    if len(govs) > 1:
-        confidences = []
-        for g in govs:
-            # Find confidence from dec records
-            if g["id"] == "dec_active":
-                confidences.append(0.9)
-            elif g["id"] == "dec_stale":
-                confidences.append(0.5)
-            elif g["id"] == "dec_superseded":
-                confidences.append(0.4)
-        # Ensure non-increasing order
-        for i in range(len(confidences) - 1):
-            assert confidences[i] >= confidences[i + 1], (
-                f"governing_decisions not sorted by confidence at index {i}"
-            )
+    titles = t.get("decision_records", [])
+    # dec_active (conf 0.9) outranks dec_stale (0.5) and dec_superseded (0.4),
+    # so its title leads when all three govern the file.
+    if "Use JWT for authentication" in titles and len(titles) > 1:
+        assert titles[0] == "Use JWT for authentication"
 
 
 @pytest.mark.asyncio
-async def test_get_context_no_governing_decisions_for_ungoverned_file(setup_mcp_decisions):
-    """Files with no decision node links produce no governing_decisions field."""
+async def test_get_context_decision_titles_for_governed_file(setup_mcp_decisions):
+    """A file governed by a decision link surfaces its title under include=["decisions"]."""
     from repowise.server.mcp_server import get_context
 
-    result = await get_context(["src/db/models.py"], include=["docs"])
+    result = await get_context(["src/db/models.py"], include=["decisions"])
     t = result["targets"]["src/db/models.py"]
 
-    # dec_db governs src/db/models.py via link — should appear
-    govs = t.get("governing_decisions", [])
-    assert any(g["id"] == "dec_db" for g in govs)
+    # dec_db governs src/db/models.py via DecisionNodeLink — titles must be present.
+    assert t.get("decision_records")
 
 
 @pytest.mark.asyncio
-async def test_get_context_governing_decisions_capped_at_five(setup_mcp_decisions, session):
-    """governing_decisions is capped at 5 entries."""
+async def test_get_context_decision_titles_capped_at_three(setup_mcp_decisions, session):
+    """decision_records titles are capped at 3 entries."""
     from repowise.server.mcp_server import get_context
 
     rid = "repo1"
@@ -540,10 +519,10 @@ async def test_get_context_governing_decisions_capped_at_five(setup_mcp_decision
         session.add(lnk)
     await session.flush()
 
-    result = await get_context(["src/auth/service.py"], include=["docs"])
+    result = await get_context(["src/auth/service.py"], include=["decisions"])
     t = result["targets"]["src/auth/service.py"]
-    govs = t.get("governing_decisions", [])
-    assert len(govs) <= 5, f"governing_decisions should be capped at 5, got {len(govs)}"
+    titles = t.get("decision_records", [])
+    assert len(titles) <= 3, f"decision_records should be capped at 3, got {len(titles)}"
 
 
 # ---------------------------------------------------------------------------

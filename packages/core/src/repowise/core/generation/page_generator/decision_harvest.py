@@ -170,4 +170,15 @@ def harvest_decisions(
             rejected=rejected,
         )
 
+    # Title fallback: the gate clears any paraphrased ``decision`` that is not a
+    # verbatim substring of the source, but a survivor's ``source_quote`` keeps
+    # the record alive — leaving a body-less, title-only decision. The title is
+    # the model's own canonical one-line summary of the choice and is always
+    # present (``parse_and_strip_decisions`` requires it), so promote it into the
+    # empty ``decision`` field. Deterministic, no new LLM call, and the gate's
+    # rejection behavior is untouched.
+    for d in kept:
+        if not d.decision and d.title:
+            d.decision = d.title
+
     return clean, [dataclasses.asdict(d) for d in kept]

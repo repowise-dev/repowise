@@ -33,6 +33,7 @@ import { OwnerLeaderboard } from "./owner-leaderboard";
 import { FindingsBreakdownGrid } from "./findings-breakdown-grid";
 import { FindingsTable } from "./findings-table";
 import type { DeadCodeAdapter } from "./dead-code-adapter";
+import { toFriendlyMessage } from "../lib/errors";
 
 export function DeadCodeView({ adapter }: { adapter: DeadCodeAdapter }) {
   const [analyzing, setAnalyzing] = useState(false);
@@ -77,7 +78,7 @@ export function DeadCodeView({ adapter }: { adapter: DeadCodeAdapter }) {
     } catch (err) {
       toast.error(
         err instanceof Error
-          ? `Couldn't start analysis: ${err.message}`
+          ? `Couldn't start analysis: ${toFriendlyMessage(err)}`
           : "Couldn't start analysis",
       );
     } finally {
@@ -98,7 +99,7 @@ export function DeadCodeView({ adapter }: { adapter: DeadCodeAdapter }) {
             await adapter.patchFinding(id, { status: previousStatus });
           } catch (err) {
             toast.error(
-              err instanceof Error ? `Couldn't undo: ${err.message}` : "Couldn't undo",
+              `Couldn't undo: ${toFriendlyMessage(err)}`,
             );
           }
         },

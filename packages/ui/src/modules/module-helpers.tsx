@@ -1,22 +1,28 @@
 import * as React from "react";
 import { Folder } from "lucide-react";
+import type { HealthBand } from "@repowise-dev/types/health";
 import { cn } from "../lib/cn";
+import { healthBand100 } from "../health/tokens";
 
 /**
- * Single source of truth for module-health colour + chrome shared by the
- * module card and the module detail header. Module scores are on a 0–100
- * scale (unlike the 0–10 file-health pills in `health/tokens`), so these
- * helpers live alongside the module components rather than reusing the
- * file-score ramp.
+ * Module-health colour + chrome shared by the module card and the module
+ * detail header. Module scores are on a 0–100 scale; banding thresholds
+ * come from the shared `healthBand100` so modules agree with every other
+ * health surface on what counts as red.
  */
+
+/* Literal class strings per band so Tailwind's static scanner keeps them. */
+const BAND_CHIP: Record<HealthBand, string> = {
+  healthy:
+    "text-[var(--color-success)] bg-[var(--color-success)]/10 border-[var(--color-success)]/40",
+  warning:
+    "text-[var(--color-caution)] bg-[var(--color-caution)]/10 border-[var(--color-caution)]/40",
+  alert: "text-[var(--color-error)] bg-[var(--color-error)]/10 border-[var(--color-error)]/40",
+};
 
 /** Colour classes for a 0–100 module health score. */
 export function scoreColor(score: number): string {
-  if (score >= 70)
-    return "text-[var(--color-success)] bg-[var(--color-success)]/10 border-[var(--color-success)]/40";
-  if (score >= 40)
-    return "text-[var(--color-caution)] bg-[var(--color-caution)]/10 border-[var(--color-caution)]/40";
-  return "text-[var(--color-error)] bg-[var(--color-error)]/10 border-[var(--color-error)]/40";
+  return BAND_CHIP[healthBand100(score)];
 }
 
 export interface HealthChipProps {

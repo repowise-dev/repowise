@@ -214,10 +214,18 @@ async def workspace_app_with_workspace_router(workspace_app):
     return (app, *rest)
 
 
-async def test_workspace_sync_endpoint_skips_unindexed(
-    workspace_app_with_workspace_router, client: AsyncClient
+async def test_workspace_sync_endpoint_indexes_unindexed(
+    workspace_app_with_workspace_router, client: AsyncClient, monkeypatch
 ):
-    app, ws_root, ws_config, repo_id = workspace_app_with_workspace_router
+    _app, ws_root, _ws_config, repo_id = workspace_app_with_workspace_router
+
+    # Stub the executor: this test covers the fan-out decisions, not the pipeline.
+    async def _noop_execute(job_id, app_state, session_factory_override=None):
+        return None
+
+    from repowise.server.routers import repos as repos_module
+
+    monkeypatch.setattr(repos_module, "execute_job", _noop_execute)
     # Repo path resolution needs the fake wiki.db to point at the right
     # repo_id; the endpoint uses sqlite3.connect on disk to discover it.
     # We seeded a placeholder; replace with a real schema containing the
@@ -238,10 +246,12 @@ async def test_workspace_sync_endpoint_skips_unindexed(
     assert resp.status_code == 202, resp.text
     body = resp.json()
 
-    # frontend has no wiki.db → skipped with helpful reason.
+    # frontend has no wiki.db → a repo-local DB is created and the first
+    # full index is enqueued through the normal job machinery.
     aliases = {r["alias"]: r for r in body["results"]}
-    assert aliases["frontend"]["status"] == "skipped"
-    assert "not indexed" in aliases["frontend"]["reason"]
+    assert aliases["frontend"]["status"] == "accepted"
+    assert aliases["frontend"]["job_id"]
+    assert (ws_root / "frontend" / ".repowise" / "wiki.db").is_file()
     # backend got a job (or was accepted) — exact value depends on
     # whether the dummy job table is wired, but it must not error.
     assert aliases["backend"]["status"] in {"accepted", "error", "skipped"}

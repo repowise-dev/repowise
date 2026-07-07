@@ -84,10 +84,57 @@ jobs:
           cache-dependency-path: package-lock.json
 
       - name: Install dependencies
-        run: npm ci --workspace packages/web
+        run: npm ci
 
       - name: Type check
         run: npm run type-check --workspace packages/web
 
       - name: Lint
         run: npm run lint --workspace packages/web
+
+      - name: Lint shared packages (no framework imports)
+        run: npm run lint:shared
+
+      - name: Type check api-client
+        run: npm run type-check --workspace @repowise-dev/api-client
+
+      - name: Test api-client
+        run: npm run test --workspace @repowise-dev/api-client
+
+  # ---------------------------------------------------------------------------
+  # VS Code extension — type check, bundle-size gate, and Electron smoke test
+  # ---------------------------------------------------------------------------
+  test-vscode:
+    name: VS Code extension test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npm run type-check --workspace packages/vscode
+
+      - name: Build (asserts bundle size budget)
+        run: npm run build --workspace packages/vscode
+
+      - name: Build webviews (reports chunk sizes)
+        run: npm run build:webview --workspace packages/vscode
+
+      - name: Webview unit tests
+        run: npm run test:webview --workspace packages/vscode
+
+      - name: Smoke test under a virtual display
+        run: xvfb-run -a npm run test --workspace packages/vscode
+
+      - name: Package VSIX (no login required)
+        run: npm run package --workspace packages/vscode

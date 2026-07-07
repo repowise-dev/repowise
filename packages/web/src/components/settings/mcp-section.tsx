@@ -55,8 +55,8 @@ export function McpSection() {
         </div>
         <p className="text-xs text-[var(--color-text-tertiary)]">
           Replace <code className="font-mono">/path/to/your/repo</code> with the local path
-          of the repository you want to query. Run{" "}
-          <code className="font-mono">repowise init</code> first to generate documentation.
+          of the repository you want to query. Index the repository first so there is
+          documentation to serve.
         </p>
       </CardContent>
     </Card>

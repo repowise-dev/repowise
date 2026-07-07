@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { ExternalLink } from "lucide-react";
+import { ChevronDown, ChevronRight, ExternalLink } from "lucide-react";
 import { AdaptivePanel } from "../shared/adaptive-panel";
 import { InfoTip } from "../shared/info-tip";
 import {
@@ -56,6 +56,10 @@ export interface HealthDrawerMetric {
   defect_score?: number | null;
   maintainability_score?: number | null;
   performance_score?: number | null;
+  /** Dominant-cause lead + pre-clamp deduction magnitude (null when absent). */
+  primary_biomarker?: string | null;
+  primary_reason?: string | null;
+  total_deduction?: number | null;
 }
 
 export interface HealthFileDrawerProps {
@@ -122,6 +126,144 @@ export function HealthFileDrawer({
       setSavingId(null);
     }
   };
+
+  // A single finding row. Rendered inside a function group; kept as a closure
+  // (not a component) so it reads the drawer's triage state without threading
+  // it through props on every collapsible group.
+  const renderFinding = (f: HealthDrawerFinding) => {
+    const info = biomarkerInfo(f.biomarker_type);
+    return (
+      <li
+        key={f.id}
+        className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-3 space-y-1"
+      >
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className={`inline-block rounded px-1.5 py-px text-[10px] uppercase font-semibold ${SEVERITY_CHIP[f.severity]}`}>
+            {SEVERITY_LABEL[f.severity]}
+          </span>
+          <span className="inline-flex items-center gap-1 text-xs font-semibold text-[var(--color-text-primary)]">
+            {biomarkerLabel(f.biomarker_type)}
+            {info.description ? (
+              <InfoTip
+                content={info.description}
+                label={`About ${biomarkerLabel(f.biomarker_type)}`}
+              />
+            ) : null}
+          </span>
+          <span className="text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)]">
+            {CATEGORY_LABEL[info.category]}
+          </span>
+          {(() => {
+            const dim =
+              f.dimension === "maintainability" ||
+              f.dimension === "defect" ||
+              f.dimension === "performance"
+                ? f.dimension
+                : biomarkerDimension(f.biomarker_type);
+            return (
+              <span
+                className={`inline-flex items-center rounded px-1.5 py-px text-[10px] font-medium ${DIMENSION_CHIP[dim]}`}
+                title={`${DIMENSION_LABEL[dim]} pillar`}
+              >
+                {DIMENSION_LABEL[dim]}
+              </span>
+            );
+          })()}
+          {f.function_name ? (() => {
+            const label = `${f.function_name}${f.line_start ? `:${f.line_start}` : ""}`;
+            const lineHref =
+              f.line_start != null && fileViewHrefFor
+                ? fileViewHrefFor(f.line_start)
+                : f.line_start != null
+                  ? fileViewHref
+                  : undefined;
+            return lineHref ? (
+              <a
+                href={lineHref}
+                className="text-xs font-mono text-[var(--color-accent-primary)] hover:underline"
+              >
+                {label}
+              </a>
+            ) : (
+              <span className="text-xs font-mono text-[var(--color-text-tertiary)]">
+                {label}
+              </span>
+            );
+          })() : null}
+          <span className="ml-auto text-xs tabular-nums text-[var(--color-error)]">−{f.health_impact.toFixed(2)}</span>
+        </div>
+        <p className="text-xs text-[var(--color-text-secondary)]">{f.reason}</p>
+        <BiomarkerDetails
+          biomarkerType={f.biomarker_type}
+          details={f.details}
+          onPartnerSelect={onPartnerSelect}
+          onPartnerHref={onPartnerHref}
+        />
+        {suggestions[f.biomarker_type] ? (
+          <p className="text-xs text-[var(--color-text-tertiary)] italic">
+            {suggestions[f.biomarker_type]}
+          </p>
+        ) : null}
+        {onFindingStatusChange ? (
+          <div className="flex flex-wrap items-center gap-1.5 pt-1">
+            {TRIAGE_STATUSES.map((opt) => {
+              const current = statusOverride[f.id] ?? f.status ?? "open";
+              return (
+                <button
+                  key={opt.value}
+                  type="button"
+                  disabled={savingId === f.id || current === opt.value}
+                  onClick={() => setStatus(f.id, opt.value)}
+                  className={`rounded border px-1.5 py-0.5 text-[10px] transition-colors ${
+                    current === opt.value
+                      ? "border-[var(--color-accent-primary)] text-[var(--color-accent-primary)]"
+                      : "border-[var(--color-border-default)] text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] hover:border-[var(--color-border-strong)]"
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
+      </li>
+    );
+  };
+
+  // Group findings by the function they fire on so one oversized function reads
+  // as a single collapsible group instead of N sibling rows. File-level markers
+  // (no function_name — co_change_scatter, change_entropy, …) collect into one
+  // "File-level signals" group. Sections sort by summed impact so the dominant
+  // cause leads; the worst section starts expanded.
+  const findingSections = (() => {
+    const groups = new Map<string, HealthDrawerFinding[]>();
+    for (const f of findings) {
+      const key = f.function_name ?? " file";
+      const bucket = groups.get(key);
+      if (bucket) bucket.push(f);
+      else groups.set(key, [f]);
+    }
+    return [...groups.entries()]
+      .map(([key, group]) => {
+        const isFile = key === " file";
+        const total = group.reduce((s, f) => s + f.health_impact, 0);
+        const worst = group.reduce((a, b) => (b.health_impact > a.health_impact ? b : a));
+        return { key, group, isFile, total, worst };
+      })
+      .sort((a, b) => b.total - a.total);
+  })();
+
+  // The one reason this file scores low: prefer the server lead, else the
+  // worst finding. Rendered as a headline so the "why" leads (P3).
+  const primaryLead = (() => {
+    if (metric?.primary_biomarker) {
+      return { biomarker: metric.primary_biomarker, reason: metric.primary_reason ?? null };
+    }
+    if (findings.length === 0) return null;
+    const worst = findings.reduce((a, b) => (b.health_impact > a.health_impact ? b : a));
+    return { biomarker: worst.biomarker_type, reason: worst.reason };
+  })();
+
   return (
     <AdaptivePanel
       open={open}
@@ -147,10 +289,24 @@ export function HealthFileDrawer({
             <div className="text-sm text-[var(--color-text-tertiary)]">Loading…</div>
           ) : !metric ? (
             <div className="rounded border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] p-4 text-sm text-[var(--color-text-secondary)]">
-              No metric for this file yet. Run <code>repowise init</code> or <code>repowise health</code>.
+              No metric for this file yet. It appears after the next index or sync.
             </div>
           ) : (
             <>
+              {primaryLead ? (
+                <div className="rounded-md border-l-2 border-[var(--color-error)] bg-[var(--color-bg-elevated)] px-3 py-2">
+                  <p className="text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)]">
+                    Leading cause
+                  </p>
+                  <p className="text-sm text-[var(--color-text-primary)]">
+                    <span className="font-semibold">{biomarkerLabel(primaryLead.biomarker)}</span>
+                    {primaryLead.reason ? (
+                      <span className="text-[var(--color-text-secondary)]"> — {primaryLead.reason}</span>
+                    ) : null}
+                  </p>
+                </div>
+              ) : null}
+
               <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
                 <Stat label="Defect risk" value={
                   <span className={`inline-flex items-baseline rounded px-2 py-0.5 font-bold tabular-nums ${scoreBadgeClass(metric.score)}`}>
@@ -250,113 +406,103 @@ export function HealthFileDrawer({
                   <h3 className="text-xs font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
                     All findings ({findings.length})
                   </h3>
-                  <ul className="space-y-2">
-                    {findings.map((f) => {
-                      const info = biomarkerInfo(f.biomarker_type);
-                      return (
-                        <li
-                          key={f.id}
-                          className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-3 space-y-1"
-                        >
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <span className={`inline-block rounded px-1.5 py-px text-[10px] uppercase font-semibold ${SEVERITY_CHIP[f.severity]}`}>
-                              {SEVERITY_LABEL[f.severity]}
-                            </span>
-                            <span className="inline-flex items-center gap-1 text-xs font-semibold text-[var(--color-text-primary)]">
-                              {biomarkerLabel(f.biomarker_type)}
-                              {info.description ? (
-                                <InfoTip
-                                  content={info.description}
-                                  label={`About ${biomarkerLabel(f.biomarker_type)}`}
-                                />
-                              ) : null}
-                            </span>
-                            <span className="text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)]">
-                              {CATEGORY_LABEL[info.category]}
-                            </span>
-                            {(() => {
-                              const dim =
-                                f.dimension === "maintainability" ||
-                                f.dimension === "defect" ||
-                                f.dimension === "performance"
-                                  ? f.dimension
-                                  : biomarkerDimension(f.biomarker_type);
-                              return (
-                                <span
-                                  className={`inline-flex items-center rounded px-1.5 py-px text-[10px] font-medium ${DIMENSION_CHIP[dim]}`}
-                                  title={`${DIMENSION_LABEL[dim]} pillar`}
-                                >
-                                  {DIMENSION_LABEL[dim]}
-                                </span>
-                              );
-                            })()}
-                            {f.function_name ? (() => {
-                              const label = `${f.function_name}${f.line_start ? `:${f.line_start}` : ""}`;
-                              const lineHref =
-                                f.line_start != null && fileViewHrefFor
-                                  ? fileViewHrefFor(f.line_start)
-                                  : f.line_start != null
-                                    ? fileViewHref
-                                    : undefined;
-                              return lineHref ? (
-                                <a
-                                  href={lineHref}
-                                  className="text-xs font-mono text-[var(--color-accent-primary)] hover:underline"
-                                >
-                                  {label}
-                                </a>
-                              ) : (
-                                <span className="text-xs font-mono text-[var(--color-text-tertiary)]">
-                                  {label}
-                                </span>
-                              );
-                            })() : null}
-                            <span className="ml-auto text-xs tabular-nums text-[var(--color-error)]">−{f.health_impact.toFixed(2)}</span>
-                          </div>
-                          <p className="text-xs text-[var(--color-text-secondary)]">{f.reason}</p>
-                          <BiomarkerDetails
-                            biomarkerType={f.biomarker_type}
-                            details={f.details}
-                            onPartnerSelect={onPartnerSelect}
-                            onPartnerHref={onPartnerHref}
-                          />
-                          {suggestions[f.biomarker_type] ? (
-                            <p className="text-xs text-[var(--color-text-tertiary)] italic">
-                              {suggestions[f.biomarker_type]}
-                            </p>
-                          ) : null}
-                          {onFindingStatusChange ? (
-                            <div className="flex flex-wrap items-center gap-1.5 pt-1">
-                              {TRIAGE_STATUSES.map((opt) => {
-                                const current = statusOverride[f.id] ?? f.status ?? "open";
-                                return (
-                                  <button
-                                    key={opt.value}
-                                    type="button"
-                                    disabled={savingId === f.id || current === opt.value}
-                                    onClick={() => setStatus(f.id, opt.value)}
-                                    className={`rounded border px-1.5 py-0.5 text-[10px] transition-colors ${
-                                      current === opt.value
-                                        ? "border-[var(--color-accent-primary)] text-[var(--color-accent-primary)]"
-                                        : "border-[var(--color-border-default)] text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] hover:border-[var(--color-border-strong)]"
-                                    }`}
-                                  >
-                                    {opt.label}
-                                  </button>
-                                );
-                              })}
-                            </div>
-                          ) : null}
-                        </li>
-                      );
-                    })}
-                  </ul>
+                  <div className="space-y-2">
+                    {findingSections.map((s) => (
+                      <FunctionFindingsGroup
+                        key={s.key}
+                        isFile={s.isFile}
+                        functionName={s.isFile ? null : s.key}
+                        findings={s.group}
+                        total={s.total}
+                        worst={s.worst}
+                        // Single-marker groups have nothing to collapse; multi-
+                        // marker groups start collapsed so the drawer opens as
+                        // compact headers (the "padded" fix) — the leading-cause
+                        // headline already surfaces the top reason.
+                        defaultExpanded={s.group.length === 1}
+                        renderFinding={renderFinding}
+                      />
+                    ))}
+                  </div>
                 </section>
               ) : null}
             </>
           )}
         </div>
     </AdaptivePanel>
+  );
+}
+
+/**
+ * One collapsible group of findings that fire on the same function (or the
+ * "File-level signals" bucket when they have no function). The header names the
+ * function plus its worst marker so a 7-marker oversized function reads as one
+ * row, not seven — the P2 "looks padded" fix. Single-finding groups render
+ * expanded; the caller expands the highest-impact group by default.
+ */
+function FunctionFindingsGroup({
+  isFile,
+  functionName,
+  findings,
+  total,
+  worst,
+  defaultExpanded,
+  renderFinding,
+}: {
+  isFile: boolean;
+  functionName: string | null;
+  findings: HealthDrawerFinding[];
+  total: number;
+  worst: HealthDrawerFinding;
+  defaultExpanded: boolean;
+  renderFinding: (f: HealthDrawerFinding) => React.ReactNode;
+}) {
+  const [expanded, setExpanded] = useState(defaultExpanded);
+  const toggle = () => setExpanded((e) => !e);
+  const worstLabel = biomarkerLabel(worst.biomarker_type);
+  return (
+    <div className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]">
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={toggle}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            toggle();
+          }
+        }}
+        aria-expanded={expanded}
+        className="flex w-full items-center gap-2 px-3 py-2 text-left cursor-pointer rounded-t-md hover:bg-[var(--color-bg-surface)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+      >
+        {expanded ? (
+          <ChevronDown className="h-4 w-4 shrink-0 text-[var(--color-text-tertiary)]" />
+        ) : (
+          <ChevronRight className="h-4 w-4 shrink-0 text-[var(--color-text-tertiary)]" />
+        )}
+        {isFile ? (
+          <span className="text-sm font-medium text-[var(--color-text-primary)]">
+            File-level signals
+          </span>
+        ) : (
+          <span className="min-w-0 truncate text-sm font-medium text-[var(--color-text-primary)]">
+            <span className="font-mono">{functionName}</span>
+            <span className="text-[var(--color-text-tertiary)]"> — {worstLabel}</span>
+          </span>
+        )}
+        <span className="ml-auto inline-flex shrink-0 items-center gap-2 text-xs tabular-nums">
+          <span className="text-[var(--color-text-tertiary)]">
+            {findings.length} {findings.length === 1 ? "marker" : "markers"}
+          </span>
+          <span className="text-[var(--color-error)]">−{total.toFixed(2)}</span>
+        </span>
+      </div>
+      {expanded ? (
+        <ul className="space-y-2 border-t border-[var(--color-border-default)] p-2">
+          {findings.map((f) => renderFinding(f))}
+        </ul>
+      ) : null}
+    </div>
   );
 }
 

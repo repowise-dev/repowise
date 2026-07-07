@@ -75,6 +75,71 @@ async def test_range_read_context_does_not_exceed_cap(setup_mcp, repo_on_disk):
 
 
 @pytest.mark.asyncio
+async def test_truncated_range_emits_continuation_token(setup_mcp, repo_on_disk):
+    from repowise.server.mcp_server import get_symbol
+
+    # 400-line request caps at 200; the remainder must come back as an exact,
+    # ready-to-replay range read so the agent never guesses the next span.
+    result = await get_symbol("pkg/big.py:1-400")
+    assert result["truncated"] is True
+    assert result["continuation"] == f"pkg/big.py:{result['end_line'] + 1}-400"
+    assert "get_symbol" in result["note"]
+
+
+@pytest.mark.asyncio
+async def test_untruncated_range_has_no_continuation(setup_mcp, repo_on_disk):
+    from repowise.server.mcp_server import get_symbol
+
+    result = await get_symbol("pkg/big.py:1-50")
+    assert result["truncated"] is False
+    assert "continuation" not in result
+
+
+@pytest.mark.asyncio
+async def test_truncated_symbol_emits_continuation_token(setup_mcp, repo_on_disk, session):
+    from sqlalchemy import select
+
+    from repowise.core.persistence.models import Repository, WikiSymbol
+    from repowise.server.mcp_server import get_symbol
+
+    # A whole-file function (def on line 1, body to EOF) that overruns the
+    # serve cap. The served head must hand back the remaining span.
+    body = "\n".join(f"    a{i} = {i}" for i in range(1, 699))
+    big_fn = f"def big_fn(x):\n{body}\n    return x\n"  # 700 lines, ends at EOF
+    (repo_on_disk / "pkg" / "bigfn.py").write_text(big_fn)
+    total = len(big_fn.splitlines())
+
+    repo = (await session.execute(select(Repository))).scalars().first()
+    session.add(
+        WikiSymbol(
+            id="bigfn1",
+            repository_id=repo.id,
+            file_path="pkg/bigfn.py",
+            symbol_id="pkg/bigfn.py::big_fn",
+            name="big_fn",
+            qualified_name="pkg.bigfn.big_fn",
+            kind="function",
+            signature="def big_fn(x)",
+            start_line=1,
+            end_line=total,
+            language="python",
+        )
+    )
+    await session.flush()
+
+    result = await get_symbol("pkg/bigfn.py::big_fn")
+    assert result["truncated"] is True
+    assert result["verified"] is True
+    assert result["continuation"] == f"pkg/bigfn.py:{result['end_line'] + 1}-{total}"
+    assert "get_symbol" in result["note"]
+    # The continuation token round-trips to a clean range read of the tail.
+    tail = await get_symbol(result["continuation"])
+    assert tail.get("error") is None
+    assert tail["kind"] == "range"
+    assert "return x" in tail["source"]
+
+
+@pytest.mark.asyncio
 async def test_range_read_swaps_reversed_bounds(setup_mcp, repo_on_disk):
     from repowise.server.mcp_server import get_symbol
 

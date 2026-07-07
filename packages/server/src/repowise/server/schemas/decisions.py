@@ -57,7 +57,13 @@ class DecisionRecordResponse(BaseModel):
             title=obj.title,  # type: ignore[attr-defined]
             status=obj.status,  # type: ignore[attr-defined]
             context=obj.context,  # type: ignore[attr-defined]
-            decision=obj.decision,  # type: ignore[attr-defined]
+            # Body fallback: the substring gate can clear a paraphrased
+            # ``decision`` while an evidence quote keeps the record alive,
+            # historically leaving a title-only record. Fall back to the title
+            # (the model's canonical one-line summary, always present) so no read
+            # surface emits a body-less decision. New records get this at write
+            # time in the harvest path; this covers pre-fix stored records.
+            decision=(obj.decision or "").strip() or obj.title,  # type: ignore[attr-defined]
             rationale=obj.rationale,  # type: ignore[attr-defined]
             alternatives=json.loads(obj.alternatives_json),  # type: ignore[attr-defined]
             consequences=json.loads(obj.consequences_json),  # type: ignore[attr-defined]

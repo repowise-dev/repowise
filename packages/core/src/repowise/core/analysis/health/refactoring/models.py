@@ -50,6 +50,24 @@ For Break Cycle:
   "cut_count": int}`` — the SCC size, total intra-cycle edges, and cut size.
 - ``blast_radius`` = ``{"files": [...], "file_count": int}`` — every file in
   the cycle (breaking it is a multi-file change).
+
+For Split File:
+
+- ``plan`` = ``{"groups": [{"name": str | None, "symbols": [str, ...],
+  "suggested_file": str}], "residual": {"symbols": [...]} | None,
+  "shim_required": bool}`` — the cohesive groups the file should split into
+  (each with a suggested filename), the shared-utility ``core`` left behind,
+  and whether a back-compat re-export shim is needed (false for same-package
+  Go, true for Python/TS).
+- ``evidence`` = ``{"file_nloc": int, "symbol_count": int, "group_count": int,
+  "modularity": float, "intra_edges": int, "cut_edges": int}`` — the size and
+  decomposability signals that justify (and gate) the split. Two optional keys
+  are added only when the richer cohesion signals fired:
+  ``"cochange_edges": int`` (symbol pairs joined by a git co-change edge) and
+  ``"import_edges": int`` (pairs joined by a shared imported-name surface).
+- ``blast_radius`` = ``{"dependent_files": [str, ...], "dependent_count": int,
+  "import_rewrites": int}`` — the external files referencing the split
+  symbols and how many import edits the split implies.
 """
 
 from __future__ import annotations
@@ -107,6 +125,22 @@ class RefactoringContext:
     # engine precomputes the repo's SCC index once and threads the per-file
     # slice in, so Break Cycle never recomputes SCCs per file.
     file_scc: tuple[str, ...] | None = None
+    # Per-flagged-function dataflow analyses (``dataflow.FunctionAnalysis``
+    # records, typed ``Any`` to avoid importing the dataflow layer into the
+    # model). The engine builds these only for files carrying a method-level
+    # smell (``large_method`` / ``brain_method`` / ``complex_method``), so the
+    # Extract Method detector reads CFG + def/use + reaching definitions without
+    # a re-parse of its own. Empty for files with no such finding -- the
+    # detector then yields nothing.
+    function_analyses: list[Any] = field(default_factory=list)
+    # This file's per-line blame index (``git_indexer.function_blame.BlameIndex``,
+    # typed ``Any`` to avoid importing the ingestion layer into the model). A
+    # shared read-only reference the engine already materialised for the
+    # function-level biomarkers; Split File projects each top-level symbol's line
+    # range through it for a co-change "keep-together" edge. ``None`` (or an empty
+    # index) is the documented "no signal" outcome — the detector degrades to its
+    # call/import signals only.
+    blame_index: Any = None
 
 
 @dataclass

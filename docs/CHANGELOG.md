@@ -9,6 +9,99 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.27.0] — 2026-07-05
+
+### Added
+- **VS Code extension 0.3.0.** The editor experience grew up this cycle. Refactoring plans can now be handed straight to an AI agent, and the extension exposes native chat tools so agents can query Repowise from inside the editor (#694). The SCM view gained change intelligence, per-file change risk, and symbol hover detail, alongside more reliable server discovery (#664, #691). The listing now leads with a hero walkthrough GIF and screenshots, and the extension icon reads correctly on dark themes (#696, #697).
+- **Dart support.** A Dart AST tier brings symbol extraction plus health and performance markers to Dart codebases. (#689)
+- **SQL and dbt intelligence.** Indexing now extracts SQL DDL symbols and dbt lineage (#683), models app-to-database contracts, and surfaces SQL-specific health markers (#687).
+- **Java and Rust dataflow.** The Extract Method dataflow layer now understands def/use chains in Java and Rust, extending refactoring analysis to those languages. (#686)
+- **`repowise login`, `logout`, and `whoami`.** New CLI commands to connect the CLI to your Repowise account. (#690)
+- **Storage footprint in `status`.** `repowise status` now reports the on-disk size of the index. (#681)
+- **Add-repo wizard.** The web app gained a guided add-repo flow with a cost preflight and a live first-index experience, plus first-run polish across the app icon, explore cards, and a collapsible workspace nav (#692, #685).
+- **Accurate coverage tab.** The Coverage tab now paginates, sorts, and reports coverage accurately on large repos. (#665)
+
+### Changed
+- **One consistent UI.** A design pass unified how the dashboard renders tables, stat tiles, row banding, loading skeletons, error states, and tooltips, so every view behaves the same way. (#695)
+- **Dataflow-verified performance findings.** Advisory performance findings are now verified against the dataflow layer, cutting false positives, with refactoring config wired through. (#684)
+
+### Fixed
+- **Health sync honors repo excludes.** Workspace health sync now respects the repo's configured excludes. (#638)
+- **External dependencies no longer masquerade as files.** The Files view stops linking external dependency nodes as if they were source files. (#673)
+- **More robust parallelism.** Parse and betweenness process pools now use `spawn`, avoiding fork-related instability on some platforms. (#679)
+
+### Dependencies
+- Added `sqlglot` (SQL parsing) and `tree-sitter-dart` (Dart grammar).
+
+---
+
+## [0.26.0] — 2026-07-03
+
+### Added
+- **VS Code extension.** Repowise now runs inside your editor. The extension manages the local server lifecycle, walks you through install to first insight, and registers the Repowise MCP tools for agent mode (#643, #644). Low-health files surface as diagnostics with gutter heat, and editor-native signals include live range risk scoring, a refactoring lens, dead-code line spans, and inline docs (#642, #644). A sidebar Home dashboard shows index freshness, a theme switcher, and consolidated trees (#650), and the shared visualization panels (graph, C4, health, blast radius) render directly in webviews (#649, #653). A settings panel configures editor signals and the server connection (#654), and the latest pass adds panel navigation and quieter defaults for an editor-native feel (#660). Install it from the VS Code Marketplace or Open VSX.
+- **Continuous-zoom architecture view.** The server builds a zoom-map artifact that drives a smooth, execution-aware zoom across the architecture graph. (#626)
+- **Configurable Ollama embedding timeout.** The Ollama embedding request timeout can now be set via environment variable for slower local models. (#656)
+
+### Changed
+- **Sharper `get_answer` grounding.** The `get_answer` MCP tool gained a frame-grounding gate and anchors rationale to in-code comments, with retrieval tuning across `get_answer` and `get_context`. (#621, #622)
+- **Faster decision embeddings.** Decision embeddings are batched during persistence and reindex, cutting indexing work on decision-heavy repos. (#641)
+
+### Fixed
+- **Config languages no longer inflate language usage.** Configuration-file languages are hidden from the language-usage breakdown. (#623)
+- **Index freshness stamp stays current on no-op syncs.** An `update` that finds no changes still refreshes the freshness stamp, so agents don't distrust a current index. (#652)
+
+### Dependencies
+- Cleared high and critical CVEs across the npm and Python dependency trees. (#645)
+
+---
+
+## [0.25.0] — 2026-06-27
+
+### Added
+- **Split File refactoring.** Code Health now detects files that should be decomposed into smaller modules and proposes a concrete split. A new detector identifies low-cohesion modules and groups their members into coherent target files (#607), with richer cohesion signals driving the grouping (#614). Each plan is browsable in the web Refactoring tab and can be turned into real code via the deterministic code-gen path (#608).
+- **Extract Method refactoring.** Long, complex functions get an Extract Method suggestion computed over a real dataflow layer: an intra-procedural control-flow graph for flagged functions (#612), def/use chains and reaching definitions over that CFG (#613), and the Extract Method planner built on top (#615). The refactoring is available for Python, Go, and TypeScript/JavaScript (#616).
+- **Coverage report ingestion.** Indexing can now ingest test-coverage reports, folding coverage into the code-health picture during a run. (#604)
+
+### Changed
+- **"Biomarker" is now "marker" in the UI.** Code Health display copy renames the user-facing "biomarker" term to "marker" across the web app and plugin surfaces; internal identifiers are unchanged. (#619)
+
+### Fixed
+- **`.` works as a glob pattern on Python 3.14+.** Passing `.` as a path/glob no longer errors on newer Python. (#609)
+- **Decision harvest skips title-only records.** The decision harvester no longer emits empty records that carry only a title. (#605)
+
+### Documentation
+- Strengthened the code-health validation story and fixed stale references across the docs. (#617)
+- Tightened the code-health docs, named CodeScene explicitly, and moved deeper internals into the architecture doc. (#618)
+
+---
+
+## [0.24.1] — 2026-06-25
+
+### Changed
+- **Workspace tables and the dependency-structure matrix stay responsive on large repos.** The co-change, repo-pair, contract-links, and package-deps tables now use the windowed virtualized table, and the dependency-structure-matrix grid is capped to the top-60 services by connectivity so a large workspace can't render tens of thousands of cells; counts still reflect the full matrix. (#602)
+
+---
+
+## [0.24.0] — 2026-06-25
+
+### Added
+- **Refactoring intelligence: deterministic, graph-aware refactoring plans.** Code Health now derives concrete refactoring suggestions from the dependency graph and health biomarkers, with detectors for **Extract Class**, **Extract Helper**, **Move Method**, and **Break Cycle** (#586, #587, #588). Each suggestion is a ranked plan card carrying impact, effort, blast radius, and evidence, browsable in a new web Refactoring tab with file-first cards, a visual plan modal, and one-click agent export (#589, #590). Plans can optionally be turned into real code: opt-in LLM code generation produces a change from a deterministic plan, viewable in a side-by-side diff viewer (#592, #594).
+- **Airy Code Health overview with a Findings workbench.** The Code Health page was redesigned around a calmer overview and a dedicated Findings workbench for triaging biomarkers. (#593)
+- **Browsable Files page.** A new Files page lets you browse the repo's files directly, with a restyled table and dark-mode polish. (#591)
+- **`init` Advanced options.** `repowise init` gained an Advanced section with a docs toggle and a configurable index-only mode, and raised the commit-history cap. (#599)
+
+### Changed
+- **Large tables are virtualized.** A shared windowing primitive virtualizes large tables across the dashboard, keeping big repos responsive. (#598)
+
+### Fixed
+- **Execution-flow entry-point scores survive updates.** Incremental updates no longer wipe entry-point scores on the execution-flow graph. (#585)
+
+### Documentation
+- README and docs now lead with code health as a measure-locate-fix loop and document refactoring intelligence. (#595)
+- Plugin: version bump to 0.24.0.
+
+---
+
 ## [0.23.0] — 2026-06-23
 
 ### Added

@@ -1,7 +1,7 @@
 # Code Health analysis layer
 
 Fifth intelligence layer alongside Graph, Git, Docs, and Decisions. Computes a
-per-file health score (1.0–10.0) from twenty-six deterministic biomarkers,
+per-file health score (1.0–10.0) from twenty-six deterministic markers,
 ingests test-coverage data, tracks repo-level KPIs over time, and surfaces
 refactoring targets ranked by impact-per-effort.
 
@@ -32,7 +32,7 @@ report = analyzer.analyze(changed_files={"a.py", "b.py"})
 
 ### Returned shapes
 
-- `report.findings` — `list[HealthFindingData]`. One row per biomarker hit.
+- `report.findings` — `list[HealthFindingData]`. One row per marker hit.
 - `report.metrics` — `list[HealthFileMetricData]`. One row per analyzed file.
 - `report.kpis` — `{"hotspot_health", "average_health", "worst_performer_path",
   "worst_performer_score", "file_count"}`. Skipped on incremental runs.
@@ -43,7 +43,7 @@ Three SQLAlchemy tables back the layer (Alembic-managed, no JSON files):
 
 | Table | Purpose | Writer |
 |-------|---------|--------|
-| `health_findings` | One row per biomarker hit. Lifecycle: `open` → `acknowledged` / `resolved` / `false_positive`. | `save_health_findings` / `upsert_health_findings` |
+| `health_findings` | One row per marker hit. Lifecycle: `open` → `acknowledged` / `resolved` / `false_positive`. | `save_health_findings` / `upsert_health_findings` |
 | `health_file_metrics` | Per-file aggregate + final score. | `save_health_metrics` / `upsert_health_metrics` |
 | `health_snapshots` | KPI history (50-row rolling window). | `save_health_snapshot` |
 | `coverage_files` | Per-file coverage (line + branch). | `save_coverage_files` |
@@ -115,7 +115,7 @@ Hotspots & churn dashboard tab.
 `suggestions.suggestion_for(biomarker_type)` returns the canonical, static
 text used by both the MCP `get_health(include=["refactoring"])` response and
 the dashboard's `RefactoringCard`. Templates live in `suggestions.py` —
-adding a new biomarker means adding a new `_TEMPLATES` entry.
+adding a new marker means adding a new `_TEMPLATES` entry.
 
 ## Module rollups
 
@@ -147,7 +147,7 @@ extension points.
 
 ## Extension points
 
-- **New biomarker.** Drop a file under `biomarkers/`, implement
+- **New marker.** Drop a file under `biomarkers/`, implement
   `Biomarker.detect(ctx) -> list[BiomarkerResult]`, register in
   `biomarkers/registry.py`, add a suggestion in `suggestions.py`, add the
   category mapping in `scoring._BIOMARKER_CATEGORY`.

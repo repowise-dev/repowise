@@ -90,6 +90,7 @@ class TestDispatch:
             "lean",
             "erlang",
             "fsharp",
+            "sql",
         } == LIGHTWEIGHT_IMPORT_LANGUAGES
 
     def test_other_language_returns_empty(self) -> None:

@@ -11,6 +11,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { fileEntityPath } from "../shared/entity/routes";
 import { truncatePath } from "../lib/format";
+import { Sparkline } from "../health/sparkline";
 
 export interface HealthOverviewPoint {
   taken_at: string | null;
@@ -81,42 +82,6 @@ function TrendChip({ delta }: { delta: number | null | undefined }) {
       {up ? "+" : ""}
       {delta.toFixed(1)}
     </span>
-  );
-}
-
-function Sparkline({ points }: { points: number[] }) {
-  if (points.length < 2) return null;
-  const w = 96;
-  const h = 28;
-  const min = Math.min(...points);
-  const max = Math.max(...points);
-  const span = max - min || 1;
-  const step = w / (points.length - 1);
-  const coords = points.map((v, i) => {
-    const x = i * step;
-    const y = h - 3 - ((v - min) / span) * (h - 6);
-    return [x, y] as const;
-  });
-  const line = coords.map(([x, y], i) => `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
-  const area = `${line} L${w},${h} L0,${h} Z`;
-  return (
-    <svg width={w} height={h} className="shrink-0" aria-hidden>
-      <defs>
-        <linearGradient id="health-spark" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="var(--color-accent-fill)" stopOpacity="0.28" />
-          <stop offset="100%" stopColor="var(--color-accent-fill)" stopOpacity="0" />
-        </linearGradient>
-      </defs>
-      <path d={area} fill="url(#health-spark)" />
-      <path
-        d={line}
-        fill="none"
-        stroke="var(--color-accent-primary)"
-        strokeWidth={1.5}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
   );
 }
 
@@ -221,7 +186,15 @@ function MetricTile({
                 {b.label}
               </span>
             )}
-            {sparkline && <Sparkline points={sparkline} />}
+            {sparkline && sparkline.length >= 2 && (
+              <Sparkline
+                values={sparkline}
+                width={96}
+                height={28}
+                stroke="var(--color-accent-primary)"
+                fill="color-mix(in srgb, var(--color-accent-fill) 20%, transparent)"
+              />
+            )}
           </div>
         </>
       )}
@@ -277,8 +250,8 @@ export function HealthOverviewCard({
       <CardContent className="p-0">
         {!hasData ? (
           <p className="px-4 pb-4 text-sm text-[var(--color-text-secondary)]">
-            Run <code className="font-mono text-xs">repowise health</code> to score complexity,
-            duplication, coverage, churn, and ownership across the repo.
+            Health scores land with the first index: complexity, duplication,
+            coverage, churn, and ownership across the repo.
           </p>
         ) : (
           <>

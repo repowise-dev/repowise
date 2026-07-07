@@ -382,3 +382,41 @@ def test_csharp_assertion_blocks():
     assert many.assertion_blocks[0][2] == 16
     few = _find(results, "TestFewAsserts")
     assert few is not None and few.assertion_blocks == []
+
+
+def test_dart_nesting_and_ccn():
+    results = _walk("dart/nested.dart", "dart")
+    deep = _find(results, "deeplyNested")
+    assert deep is not None
+    assert deep.max_nesting >= 4, f"expected >=4 nesting, got {deep.max_nesting}"
+    many = _find(results, "manyBranches")
+    assert many is not None
+    # 6 ifs + 2 boolean operators over the base path.
+    assert many.ccn >= 9, f"expected CCN >= 9, got {many.ccn}"
+    shallow = _find(results, "shallow")
+    assert shallow is not None and shallow.max_nesting == 0
+    assert shallow.param_count == 1
+
+
+def test_dart_class_facts():
+    # Dart has no wrapper node for ``this.member`` access, so LCOM4 sits at
+    # its "no signal" safety valve (1) for every class — the class facts
+    # under test are method grouping and size.
+    classes = _walk_classes("dart/classes.dart", "dart")
+    cohesive = classes.get("Cohesive")
+    wide = classes.get("Wide")
+    assert cohesive is not None and wide is not None
+    assert cohesive.method_count == 3
+    assert wide.method_count == 5
+    assert cohesive.lcom4 == 1
+    assert wide.lcom4 == 1
+
+
+def test_dart_assertion_blocks():
+    results = _walk("dart/assertions.dart", "dart")
+    many = _find(results, "testManyAsserts")
+    assert many is not None
+    assert many.assertion_blocks, "expected a run of assert statements"
+    assert many.assertion_blocks[0][2] == 5
+    few = _find(results, "testFewAsserts")
+    assert few is not None and few.assertion_blocks == []
