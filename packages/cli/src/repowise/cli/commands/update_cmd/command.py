@@ -42,6 +42,7 @@ from repowise.core.reasoning import REASONING_MODES
 from .incremental import (
     _build_update_vector_store,
     _rebuild_graph_and_git,
+    _refresh_knowledge_graph,
     _run_partial_analysis,
 )
 from .mode import _infer_legacy_docs_enabled, _resolve_index_only_mode
@@ -585,6 +586,20 @@ def update_command(
 
     drop_transient_git_signals(list(git_meta_map.values()))
 
+    # Refresh the knowledge graph (layers/tour/entry points) when the graph
+    # shape changed — previously init-only, so update served a stale
+    # orientation snapshot to CLAUDE.md/get_overview forever (#669). None
+    # means fingerprint-unchanged: the persisted artifact is still current.
+    knowledge_graph_result = _refresh_knowledge_graph(
+        repo_path,
+        parsed_files,
+        graph_builder,
+        repo_structure,
+        git_meta_map,
+        dead_code_report,
+        (state.get("knowledge_graph") or {}).get("fingerprint"),
+    )
+
     if index_only:
         if emitter is not None:
             emitter.stage("persist")
@@ -600,6 +615,7 @@ def update_command(
                 start,
                 [fd.path for fd in file_diffs],
                 file_diffs=file_diffs,
+                knowledge_graph_result=knowledge_graph_result,
             )
         except Exception as exc:
             if emitter is not None:
@@ -867,6 +883,28 @@ def update_command(
 
     flush_cost_tracker(cost_tracker)
 
+    # LLM re-enrichment of the refreshed KG (layer naming + summary backfill
+    # from this run's regenerated pages), mirroring the init pipeline. Only
+    # runs when the graph shape changed — carry-forward already preserved the
+    # prior names, so an unchanged KG never pays an enrichment call.
+    if knowledge_graph_result is not None:
+        try:
+            from repowise.core.generation.knowledge_graph import enrich_knowledge_graph
+
+            knowledge_graph_result = run_async(
+                enrich_knowledge_graph(
+                    kg_skeleton=knowledge_graph_result,
+                    llm_client=provider,
+                    graph_builder=graph_builder,
+                    repo_structure=repo_structure,
+                    tech_stack=knowledge_graph_result.project.get("tech_stack", []),
+                    generated_pages=generated_pages,
+                    reasoning=config.reasoning,
+                )
+            )
+        except Exception as exc:
+            console.print(f"[yellow]Knowledge-graph enrichment skipped: {exc}[/yellow]")
+
     # Persist
     async def _persist() -> None:
         from repowise.cli.helpers import get_db_url_for_repo
@@ -902,6 +940,16 @@ def update_command(
             except Exception as exc:
                 if verbose:
                     console.print(f"[yellow]Tombstone marking skipped: {exc}[/yellow]")
+
+            # Refreshed knowledge graph — same writers as the init pipeline
+            # (full-replace layers/tour/curated meta).
+            if knowledge_graph_result is not None:
+                try:
+                    from repowise.core.pipeline.persist import persist_kg
+
+                    await persist_kg(knowledge_graph_result, session, repo_id)
+                except Exception as exc:
+                    console.print(f"[yellow]Knowledge-graph persist skipped: {exc}[/yellow]")
 
         # Persist updated git metadata + recompute percentiles
         if git_meta_map:
@@ -1094,6 +1142,15 @@ def update_command(
 
     # Update state
     from repowise.cli.helpers import config_fingerprint
+
+    if knowledge_graph_result is not None:
+        try:
+            from repowise.cli.state_persistence import build_kg_state, save_knowledge_graph_json
+
+            save_knowledge_graph_json(repo_path, knowledge_graph_result)
+            state["knowledge_graph"] = build_kg_state(knowledge_graph_result)
+        except Exception as exc:
+            console.print(f"[yellow]Knowledge-graph export skipped: {exc}[/yellow]")
 
     state["last_sync_commit"] = head
     state["total_pages"] = state.get("total_pages", 0) + len(generated_pages)
