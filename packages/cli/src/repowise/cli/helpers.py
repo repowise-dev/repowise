@@ -229,8 +229,12 @@ def save_state(repo_path: Path, state: dict[str, Any]) -> None:
         _stamp_store_version(state, package_version=_pkg_version)
     except Exception:  # never let stamping block a persist
         pass
+    from repowise.core.fsutils import atomic_write_text
+
+    # Atomic so a crash mid-write can never leave a truncated state.json —
+    # every later update would fail to parse it and demand a full re-init.
     state_path = get_repowise_dir(repo_path) / STATE_FILENAME
-    state_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    atomic_write_text(state_path, json.dumps(state, indent=2))
 
 
 # ---------------------------------------------------------------------------

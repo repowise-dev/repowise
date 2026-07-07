@@ -695,11 +695,10 @@ async def update_workspace(
                         "first-time index via update; run "
                         "`repowise update --repo " + alias + " --docs` to generate docs"
                     )
+                from ..fsutils import atomic_write_text
+
                 state_path.parent.mkdir(parents=True, exist_ok=True)
-                state_path.write_text(
-                    _json.dumps(state, indent=2),
-                    encoding="utf-8",
-                )
+                atomic_write_text(state_path, _json.dumps(state, indent=2))
                 # Keep the DB freshness stamp in lockstep with last_sync_commit.
                 # The no-relevant-changes incremental path returns updated=True
                 # without re-running DB persistence, so the row would otherwise
