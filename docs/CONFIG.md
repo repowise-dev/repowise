@@ -216,6 +216,28 @@ export LITELLM_API_KEY="..."
 repowise init --provider litellm --model azure/gpt-4
 ```
 
+### Eden AI (700+ models, one key)
+
+[Eden AI](https://www.edenai.co/) is an EU-headquartered gateway exposing 700+
+models (Mistral, GPT, Claude, Gemini, Cohere, DeepSeek, Llama, …) through a
+single OpenAI-compatible endpoint. Models use `vendor/model` form.
+
+```bash
+export EDENAI_API_KEY="..."
+repowise init --provider edenai --model mistral/mistral-small-latest
+repowise init --provider edenai --model openai/gpt-5-mini --reasoning low
+```
+
+For data residency / GDPR-sensitive workloads, point at the EU endpoint:
+
+```bash
+export EDENAI_BASE_URL="https://api.eu.edenai.run/v3"
+repowise init --provider edenai --model mistral/mistral-small-latest
+```
+
+`reasoning` is forwarded as OpenAI `reasoning_effort` for OpenAI reasoning models
+routed through Eden (e.g. `openai/gpt-5*`); other models expose only `auto`.
+
 ### Provider auto-detection
 
 If you don't pass `--provider`, repowise detects your provider by checking, in
@@ -235,6 +257,8 @@ The embedder is separate from the LLM provider.
 |----------|---------|-------|
 | `gemini` | `GEMINI_API_KEY` | Default when key is present |
 | `openai` | `OPENAI_API_KEY` | OpenAI `text-embedding-3-small` |
+| `openrouter` | `OPENROUTER_API_KEY` | OpenRouter-hosted embeddings |
+| `edenai` | `EDENAI_API_KEY` | Eden AI gateway; `openai/text-embedding-3-small` (1536), `-3-large` (3072), `cohere/embed-multilingual-v3.0` (1024) |
 | `ollama` | `OLLAMA_EMBEDDING_MODEL` | Local Ollama embeddings, no API key |
 | `mock` | n/a | Dummy embeddings, no semantic search |
 
@@ -264,6 +288,8 @@ The `.repowise/.env` file is gitignored automatically.
 | `ANTHROPIC_API_KEY` | Anthropic API key |
 | `OPENAI_API_KEY` | OpenAI API key |
 | `GEMINI_API_KEY` / `GOOGLE_API_KEY` | Google Gemini API key |
+| `EDENAI_API_KEY` | Eden AI API key |
+| `EDENAI_BASE_URL` | Eden AI endpoint override (default: `https://api.edenai.run/v3`; EU: `https://api.eu.edenai.run/v3`) |
 | `OLLAMA_BASE_URL` | Ollama server URL (default: `http://localhost:11434`) |
 | `OLLAMA_EMBEDDING_MODEL` | Ollama embedding model (also selects the `ollama` embedder) |
 | `OLLAMA_EMBEDDING_DIMS` | Ollama embedding output dimensions (optional; inferred from the model otherwise) |

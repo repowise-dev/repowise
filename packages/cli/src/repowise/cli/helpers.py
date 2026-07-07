@@ -689,6 +689,7 @@ def resolve_provider(
             "openai": ["OPENAI_BASE_URL"],
             "gemini": ["GEMINI_BASE_URL"],
             "deepseek": ["DEEPSEEK_BASE_URL"],
+            "edenai": ["EDENAI_BASE_URL"],
             "ollama": ["OLLAMA_BASE_URL"],
             "litellm": ["LITELLM_BASE_URL", "LITELLM_API_BASE"],
         }
@@ -736,6 +737,8 @@ def resolve_provider(
             kwargs["api_key"] = os.environ["OPENROUTER_API_KEY"]
         elif provider_name == "deepseek" and os.environ.get("DEEPSEEK_API_KEY"):
             kwargs["api_key"] = os.environ["DEEPSEEK_API_KEY"]
+        elif provider_name == "edenai" and os.environ.get("EDENAI_API_KEY"):
+            kwargs["api_key"] = os.environ["EDENAI_API_KEY"]
         elif provider_name == "litellm" and os.environ.get("LITELLM_API_KEY"):
             kwargs["api_key"] = os.environ["LITELLM_API_KEY"]
         elif provider_name == "ollama" and os.environ.get("OLLAMA_BASE_URL"):
@@ -797,11 +800,22 @@ def resolve_provider(
         if base_url:
             kwargs["base_url"] = base_url
         return get_provider("deepseek", **kwargs)
+    if os.environ.get("EDENAI_API_KEY") and os.environ["EDENAI_API_KEY"].strip():
+        kwargs = (
+            {"model": model, "api_key": os.environ["EDENAI_API_KEY"]}
+            if model
+            else {"api_key": os.environ["EDENAI_API_KEY"]}
+        )
+        base_url = _resolve_base_url("edenai")
+        if base_url:
+            kwargs["base_url"] = base_url
+        return get_provider("edenai", **kwargs)
 
     raise click.ClickException(
         "No provider configured. Use --provider, set REPOWISE_PROVIDER, "
         "or set ANTHROPIC_API_KEY / OPENAI_API_KEY / OPENROUTER_API_KEY / "
         "OLLAMA_BASE_URL / GEMINI_API_KEY / GOOGLE_API_KEY / DEEPSEEK_API_KEY / "
+        "EDENAI_API_KEY / "
         "LITELLM_API_KEY. Use REPOWISE_PROVIDER=codex_cli to use an authenticated "
         "Codex CLI subscription, or REPOWISE_PROVIDER=opencode to use opencode."
     )
@@ -839,6 +853,7 @@ def validate_provider_config(provider_name: str | None = None) -> list[str]:
         "openai": ["OPENAI_API_KEY"],
         "openrouter": ["OPENROUTER_API_KEY"],
         "deepseek": ["DEEPSEEK_API_KEY"],
+        "edenai": ["EDENAI_API_KEY"],
         "gemini": ["GEMINI_API_KEY", "GOOGLE_API_KEY"],  # Either one
         "ollama": ["OLLAMA_BASE_URL"],
         "litellm": ["LITELLM_API_KEY"],  # May need others depending on backend
