@@ -110,7 +110,12 @@ repowise init . --no-workspace                        # force single-repo, even 
 
 ### `repowise update [PATH]`
 
-Incrementally update wiki pages for files changed since the last sync.
+Incrementally refresh the index for files changed since the last sync: the
+dependency graph, git metadata, health and dead-code findings, and — when the
+graph shape changed — the knowledge graph (layers, guided tour, entry points)
+plus the exported `knowledge-graph.json`. In docs mode it also regenerates the
+affected wiki pages. Index-only updates carry forward the previously generated
+layer names and node summaries, so no LLM call is ever made without docs mode.
 
 **Options:**
 

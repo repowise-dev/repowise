@@ -147,6 +147,10 @@ class RepoUpdateResult:
     symbol_count: int = 0
     error: str | None = None
     first_time_indexed: bool = False  # True if this run was a first-time index
+    # state.json "knowledge_graph" summary block when this run refreshed the
+    # KG; None means the persisted block is still current. State-file writes
+    # stay with the caller (_update_one), so the block rides on the result.
+    kg_state: dict[str, Any] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -362,6 +366,7 @@ async def _incremental_repo_update(
         run_partial_analysis,
     )
     from ..pipeline.phases.git import drop_transient_git_signals
+
     alias = repo_path.name
     head = get_head_commit(repo_path) or "HEAD"
 
@@ -417,6 +422,22 @@ async def _incremental_repo_update(
     # object can never leak downstream (mirrors the CLI update path).
     drop_transient_git_signals(list(git_meta_map.values()))
 
+    # Refresh the knowledge graph (layers/tour/entry points) when the graph
+    # shape changed — previously init-only, so workspace member repos served
+    # a stale orientation snapshot forever (#669).
+    from ..pipeline.incremental import refresh_knowledge_graph
+
+    kg = await refresh_knowledge_graph(
+        repo_path,
+        parsed_files,
+        graph_builder,
+        _structure,
+        git_meta_map,
+        dead_code_report,
+        prior_fingerprint=(state.get("knowledge_graph") or {}).get("fingerprint"),
+        log=_log.info,
+    )
+
     await persist_incremental_index(
         repo_path,
         graph_builder,
@@ -425,14 +446,26 @@ async def _incremental_repo_update(
         partial_health_report,
         [fd.path for fd in file_diffs],
         current_graph_file_paths={pf.file_info.path for pf in parsed_files},
+        knowledge_graph_result=kg,
         log=_log.info,
     )
+
+    kg_state: dict[str, Any] | None = None
+    if kg is not None:
+        from ..analysis.knowledge_graph import build_kg_state, save_knowledge_graph_json
+
+        try:
+            save_knowledge_graph_json(repo_path, kg)
+            kg_state = build_kg_state(kg)
+        except Exception:
+            _log.warning("knowledge-graph.json export failed for %s", alias, exc_info=True)
 
     return RepoUpdateResult(
         alias=alias,
         updated=True,
         file_count=file_count,
         symbol_count=sum(len(pf.symbols) for pf in parsed_files),
+        kg_state=kg_state,
     )
 
 
@@ -516,11 +549,26 @@ async def update_single_repo_index(
 
         await engine.dispose()
 
+        # Export the pipeline's freshly built KG so the artifact matches the
+        # rows just persisted — the workspace add path already does this; the
+        # update-triggered full index previously skipped it.
+        kg_state: dict[str, Any] | None = None
+        kg = getattr(result, "knowledge_graph_result", None)
+        if kg is not None:
+            from ..analysis.knowledge_graph import build_kg_state, save_knowledge_graph_json
+
+            try:
+                save_knowledge_graph_json(repo_path, kg)
+                kg_state = build_kg_state(kg)
+            except Exception:
+                _log.warning("knowledge-graph.json export failed for %s", alias, exc_info=True)
+
         return RepoUpdateResult(
             alias=alias,
             updated=True,
             file_count=result.file_count,
             symbol_count=result.symbol_count,
+            kg_state=kg_state,
         )
     except Exception as exc:
         return RepoUpdateResult(
@@ -607,7 +655,8 @@ async def update_workspace(
                 pass
 
         is_stale, current_head, _commits_behind = check_repo_staleness(
-            abs_path, stored_commit,
+            abs_path,
+            stored_commit,
         )
 
         if not is_stale:
@@ -667,9 +716,7 @@ async def update_workspace(
                 )
                 # Record pending so the running update can roll forward.
                 with suppress(OSError):
-                    (path / ".repowise" / ".update.pending").write_text(
-                        new_head, encoding="utf-8"
-                    )
+                    (path / ".repowise" / ".update.pending").write_text(new_head, encoding="utf-8")
                 return RepoUpdateResult(
                     alias=alias,
                     updated=False,
@@ -698,6 +745,8 @@ async def update_workspace(
                     with suppress(Exception):
                         state = _json.loads(state_path.read_text(encoding="utf-8"))
                 state["last_sync_commit"] = new_head
+                if result.kg_state:
+                    state["knowledge_graph"] = result.kg_state
                 # Mark first-time so downstream tooling (status, doctor) can
                 # distinguish a never-indexed repo from one that's been
                 # updated at least once.

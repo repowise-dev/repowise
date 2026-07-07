@@ -149,9 +149,10 @@ def _persist_index_only_update(
     start: float,
     changed_paths: list[str],
     file_diffs: list | None = None,
+    knowledge_graph_result: Any | None = None,
 ) -> None:
-    """Persist the index-only update (graph + git + dead-code + health), save
-    state, and print the completion line. No LLM regeneration.
+    """Persist the index-only update (graph + git + dead-code + health + KG),
+    save state, and print the completion line. No LLM regeneration.
 
     DB persistence delegates to :mod:`repowise.core.pipeline.incremental`;
     state-file updates and console reporting stay here.
@@ -167,15 +168,26 @@ def _persist_index_only_update(
             partial_health_report,
             changed_paths,
             file_diffs=file_diffs,
+            knowledge_graph_result=knowledge_graph_result,
             log=console.print,
         )
     )
     from repowise.cli.helpers import config_fingerprint
 
-    save_state(
-        repo_path,
-        {**state, "last_sync_commit": head, "config_fingerprint": config_fingerprint(repo_path)},
-    )
+    new_state = {
+        **state,
+        "last_sync_commit": head,
+        "config_fingerprint": config_fingerprint(repo_path),
+    }
+    if knowledge_graph_result is not None:
+        try:
+            from repowise.cli.state_persistence import build_kg_state, save_knowledge_graph_json
+
+            save_knowledge_graph_json(repo_path, knowledge_graph_result)
+            new_state["knowledge_graph"] = build_kg_state(knowledge_graph_result)
+        except Exception as exc:
+            console.print(f"[yellow]Knowledge-graph export skipped: {exc}[/yellow]")
+    save_state(repo_path, new_state)
     elapsed = time.monotonic() - start
     from .reporting import show_index_only_completion
 
