@@ -489,6 +489,26 @@ class TestLeanExtraction:
         src = "-- import Fake.Mod\nlet x := 1\n  import Nested.NotReal\n"
         assert extract_lean_imports(src) == []
 
+    def test_block_comment_not_captured(self) -> None:
+        src = "/- import Foo.Bar -/\nimport Real.Mod\n"
+        assert _modules(extract_lean_imports(src)) == ["Real.Mod"]
+
+    def test_nested_block_comment_not_captured(self) -> None:
+        src = "/- outer /- import Nested.Fake -/ import Still.Fake -/\nimport Real.Mod\n"
+        assert _modules(extract_lean_imports(src)) == ["Real.Mod"]
+
+    def test_trailing_line_comment_still_captures(self) -> None:
+        src = "import Foo.Bar -- import Fake.Mod\n"
+        assert _modules(extract_lean_imports(src)) == ["Foo.Bar"]
+
+    def test_unicode_identifier_round_trips(self) -> None:
+        src = "import Mathlib.Algebra.Ω.Café'\n"
+        assert _modules(extract_lean_imports(src)) == ["Mathlib.Algebra.Ω.Café'"]
+
+    def test_trailing_dot_not_captured(self) -> None:
+        src = "import Foo.\n"
+        assert _modules(extract_lean_imports(src)) == ["Foo"]
+
     def test_dedup(self) -> None:
         src = "import Foo.Bar\nimport Foo.Bar\n"
         assert _modules(extract_lean_imports(src)) == ["Foo.Bar"]
