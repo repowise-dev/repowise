@@ -29,6 +29,9 @@ drives the individual passes, each of which lives in its own sibling module:
 - ``error_handling`` — error-handling anti-patterns
 - ``perf_walk``      — the performance-risk pass
 - ``class_analysis`` — class-level LCOM4 / god-class metrics
+
+Each pass is independent and side-effect free, so ``walk_file`` can run them
+in any order over the single parsed tree.
 """
 
 from __future__ import annotations
