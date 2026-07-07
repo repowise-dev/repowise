@@ -97,7 +97,28 @@ def _round_opt(v: Any) -> float | None:
     return round(v, 2) if v is not None else None
 
 
-def _serialize_metric(m: HealthFileMetric) -> dict[str, Any]:
+def _leads_by_file(findings: list[Any]) -> dict[str, dict[str, Any]]:
+    """Reduce each file's findings to its dominant cause + pre-clamp magnitude.
+
+    ``primary_biomarker`` / ``primary_reason`` give a low file "the one reason"
+    to lead with; ``total_deduction`` (summed ``health_impact``) distinguishes
+    two files that both floor at 1.0. Additive — the score itself is untouched.
+    """
+    by_file: dict[str, list[Any]] = {}
+    for f in findings:
+        by_file.setdefault(f.file_path, []).append(f)
+    leads: dict[str, dict[str, Any]] = {}
+    for path, fs in by_file.items():
+        primary = max(fs, key=lambda x: x.health_impact)
+        leads[path] = {
+            "primary_biomarker": primary.biomarker_type,
+            "primary_reason": primary.reason,
+            "total_deduction": round(sum(float(x.health_impact or 0.0) for x in fs), 3),
+        }
+    return leads
+
+
+def _serialize_metric(m: HealthFileMetric, lead: dict[str, Any] | None = None) -> dict[str, Any]:
     return {
         "file_path": m.file_path,
         "score": round(m.score, 2),
@@ -114,6 +135,12 @@ def _serialize_metric(m: HealthFileMetric) -> dict[str, Any]:
         "defect_score": _round_opt(getattr(m, "defect_score", None)),
         "maintainability_score": _round_opt(getattr(m, "maintainability_score", None)),
         "performance_score": _round_opt(getattr(m, "performance_score", None)),
+        # Dominant-cause lead + pre-clamp magnitude (null when no findings for
+        # this row). Lets a caller lead with the one reason and rank two floored
+        # files by depth without re-reading every finding.
+        "primary_biomarker": lead.get("primary_biomarker") if lead else None,
+        "primary_reason": lead.get("primary_reason") if lead else None,
+        "total_deduction": lead.get("total_deduction") if lead else None,
     }
 
 
@@ -386,11 +413,14 @@ async def get_health(
             snapshots = await list_health_snapshots(session, repository.id, limit=20)
 
     kpis = _compute_kpis(metric_rows if effective_targets else all_metrics)
+    # Dominant-cause lead per file, from the findings already loaded (targeted
+    # findings are scoped to the targets; dashboard findings cover every file).
+    leads = _leads_by_file(finding_rows)
 
     if effective_targets:
         metric_payload: list[dict[str, Any]] = []
         for m in metric_rows:
-            row = _serialize_metric(m)
+            row = _serialize_metric(m, leads.get(m.file_path))
             if m.file_path in signals_by_path:
                 row["signals"] = signals_by_path[m.file_path]
             metric_payload.append(row)
@@ -429,7 +459,7 @@ async def get_health(
             "mode": "dashboard",
             "kpis": kpis,
             "distribution": health_distribution(all_metrics),
-            "worst_files": [_serialize_metric(m) for m in metric_rows[:limit]],
+            "worst_files": [_serialize_metric(m, leads.get(m.file_path)) for m in metric_rows[:limit]],
             "top_findings": [_serialize_finding(f) for f in finding_rows[:limit]],
             "modules": _module_rollups(all_metrics),
         }

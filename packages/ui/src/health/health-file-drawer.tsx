@@ -56,6 +56,10 @@ export interface HealthDrawerMetric {
   defect_score?: number | null;
   maintainability_score?: number | null;
   performance_score?: number | null;
+  /** Dominant-cause lead + pre-clamp deduction magnitude (null when absent). */
+  primary_biomarker?: string | null;
+  primary_reason?: string | null;
+  total_deduction?: number | null;
 }
 
 export interface HealthFileDrawerProps {
@@ -249,6 +253,17 @@ export function HealthFileDrawer({
       .sort((a, b) => b.total - a.total);
   })();
 
+  // The one reason this file scores low: prefer the server lead, else the
+  // worst finding. Rendered as a headline so the "why" leads (P3).
+  const primaryLead = (() => {
+    if (metric?.primary_biomarker) {
+      return { biomarker: metric.primary_biomarker, reason: metric.primary_reason ?? null };
+    }
+    if (findings.length === 0) return null;
+    const worst = findings.reduce((a, b) => (b.health_impact > a.health_impact ? b : a));
+    return { biomarker: worst.biomarker_type, reason: worst.reason };
+  })();
+
   return (
     <AdaptivePanel
       open={open}
@@ -278,6 +293,20 @@ export function HealthFileDrawer({
             </div>
           ) : (
             <>
+              {primaryLead ? (
+                <div className="rounded-md border-l-2 border-[var(--color-error)] bg-[var(--color-bg-elevated)] px-3 py-2">
+                  <p className="text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)]">
+                    Leading cause
+                  </p>
+                  <p className="text-sm text-[var(--color-text-primary)]">
+                    <span className="font-semibold">{biomarkerLabel(primaryLead.biomarker)}</span>
+                    {primaryLead.reason ? (
+                      <span className="text-[var(--color-text-secondary)]"> — {primaryLead.reason}</span>
+                    ) : null}
+                  </p>
+                </div>
+              ) : null}
+
               <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
                 <Stat label="Defect risk" value={
                   <span className={`inline-flex items-baseline rounded px-2 py-0.5 font-bold tabular-nums ${scoreBadgeClass(metric.score)}`}>

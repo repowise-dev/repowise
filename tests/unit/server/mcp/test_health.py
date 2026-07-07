@@ -73,3 +73,22 @@ async def test_get_health_targeted(setup_mcp, health_data):
     assert result["metrics"][0]["maintainability_score"] == 6.0
     assert result["metrics"][0]["performance_score"] == 9.0
     assert all(f["file_path"] == "src/auth/service.py" for f in result["findings"])
+
+
+@pytest.mark.asyncio
+async def test_get_health_metric_carries_dominant_cause_and_magnitude(setup_mcp, health_data):
+    """Metric rows lead with the worst finding + the pre-floor deduction sum."""
+    from repowise.server.mcp_server import get_health
+
+    result = await get_health(targets=["src/auth/service.py"])
+    metric = result["metrics"][0]
+    # Worst of {complex_method 1.2, nested 0.7, low_cohesion 1.0, io_in_loop 1.0}.
+    assert metric["primary_biomarker"] == "complex_method"
+    assert metric["primary_reason"] == "authenticate has cyclomatic complexity 15"
+    # Σ health_impact = 1.2 + 0.7 + 1.0 + 1.0 — the depth behind a floored score.
+    assert metric["total_deduction"] == pytest.approx(3.9)
+    # Same lead reaches dashboard worst_files.
+    dash = await get_health()
+    worst = next(m for m in dash["worst_files"] if m["file_path"] == "src/auth/service.py")
+    assert worst["primary_biomarker"] == "complex_method"
+    assert worst["total_deduction"] == pytest.approx(3.9)

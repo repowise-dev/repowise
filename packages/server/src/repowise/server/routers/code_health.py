@@ -79,7 +79,40 @@ def _round_opt(v: Any) -> float | None:
     return round(v, 2) if v is not None else None
 
 
-def _metric_to_dict(m: Any) -> dict:
+def _primary_and_magnitude(findings: list[Any]) -> dict:
+    """Dominant cause + pre-clamp deduction magnitude for one file's findings.
+
+    Two presentation signals the score alone can't carry:
+
+    - ``primary_biomarker`` / ``primary_reason`` — the single worst finding, so a
+      low file can lead with "the one reason" instead of a wall of markers.
+    - ``total_deduction`` — the summed (pre-floor) ``health_impact``. Equal to
+      the breakdown endpoint's ``total_deduction`` (each finding's stored impact
+      is already the applied, capped value), so it distinguishes two files that
+      both floor at 1.0 (a -25 file from a -9 one) without touching ``score``.
+
+    All-null on an empty list: a clean file has no lead and no magnitude.
+    """
+    if not findings:
+        return {"primary_biomarker": None, "primary_reason": None, "total_deduction": None}
+    primary = max(findings, key=lambda x: x.health_impact)
+    total = sum(float(x.health_impact or 0.0) for x in findings)
+    return {
+        "primary_biomarker": primary.biomarker_type,
+        "primary_reason": primary.reason,
+        "total_deduction": round(total, 3),
+    }
+
+
+def _leads_by_file(findings: list[Any]) -> dict[str, dict]:
+    """Group findings by file and reduce each group to its dominant-cause lead."""
+    by_file: dict[str, list[Any]] = {}
+    for f in findings:
+        by_file.setdefault(f.file_path, []).append(f)
+    return {path: _primary_and_magnitude(fs) for path, fs in by_file.items()}
+
+
+def _metric_to_dict(m: Any, lead: dict | None = None) -> dict:
     return {
         "file_path": m.file_path,
         "score": round(m.score, 2),
@@ -96,6 +129,11 @@ def _metric_to_dict(m: Any) -> dict:
         "defect_score": _round_opt(getattr(m, "defect_score", None)),
         "maintainability_score": _round_opt(getattr(m, "maintainability_score", None)),
         "performance_score": _round_opt(getattr(m, "performance_score", None)),
+        # Dominant-cause lead + pre-clamp magnitude (null when findings weren't
+        # loaded for this row, or the file is clean). Additive; readers degrade.
+        "primary_biomarker": lead.get("primary_biomarker") if lead else None,
+        "primary_reason": lead.get("primary_reason") if lead else None,
+        "total_deduction": lead.get("total_deduction") if lead else None,
     }
 
 
@@ -317,7 +355,8 @@ async def health_overview(
 
     last_indexed_at = _resolve_last_indexed_at(snapshot_taken_at, repo.updated_at)
 
-    metric_dicts = [_metric_to_dict(m) for m in metrics]
+    leads = _leads_by_file(findings)
+    metric_dicts = [_metric_to_dict(m, leads.get(m.file_path)) for m in metrics]
 
     # Repo-level band (from the NLOC-weighted average) + the per-band file
     # distribution. Both derive purely from the existing score — no new data.
@@ -564,11 +603,16 @@ async def list_health_files(
 
     total = len(filtered)
     page = filtered[offset : offset + limit]
+    # Leads only for the page's files — enough to carry the top-reason chip and
+    # the magnitude tiebreak without loading every finding for every row.
+    page_paths = {m.file_path for m in page}
+    findings = await crud.get_health_findings(session, repo_id)
+    leads = _leads_by_file([f for f in findings if f.file_path in page_paths])
     return {
         "total": total,
         "offset": offset,
         "limit": limit,
-        "files": [_metric_to_dict(m) for m in page],
+        "files": [_metric_to_dict(m, leads.get(m.file_path)) for m in page],
     }
 
 
@@ -685,7 +729,7 @@ async def file_score_breakdown(
     snapshots = await crud.list_health_snapshots(session, repo_id)
     return {
         "file_path": file_path,
-        "metric": _metric_to_dict(metric) if metric else None,
+        "metric": _metric_to_dict(metric, _primary_and_magnitude(findings)) if metric else None,
         "breakdown": breakdown,
         "findings": finding_dicts,
         "suggestions": {b: _suggestion_for(b) for b in {f.biomarker_type for f in findings}},
