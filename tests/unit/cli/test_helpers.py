@@ -261,9 +261,9 @@ class TestConfigFingerprint:
 
 class TestUpdateLock:
     def test_acquire_writes_payload(self, tmp_path):
-        from repowise.cli.helpers import acquire_update_lock, read_update_lock
+        from repowise.cli.helpers import read_update_lock, try_acquire_update_lock
 
-        acquire_update_lock(tmp_path, "abc123def")
+        assert try_acquire_update_lock(tmp_path, "abc123def") is None
         payload = read_update_lock(tmp_path)
         assert payload is not None
         assert payload["target_commit"] == "abc123def"
@@ -272,12 +272,12 @@ class TestUpdateLock:
 
     def test_release_removes_lock(self, tmp_path):
         from repowise.cli.helpers import (
-            acquire_update_lock,
             read_update_lock,
             release_update_lock,
+            try_acquire_update_lock,
         )
 
-        acquire_update_lock(tmp_path, "abc")
+        try_acquire_update_lock(tmp_path, "abc")
         release_update_lock(tmp_path)
         assert read_update_lock(tmp_path) is None
 

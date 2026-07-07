@@ -25,13 +25,10 @@ from typing import Any
 # bypassing the CLI lock acquisition in update_cmd, so workspace updates are
 # themselves single-flight per repo.
 from repowise.core.update_lock import (
-    acquire_update_lock as _acquire_lock,
-)
-from repowise.core.update_lock import (
-    read_update_lock as _read_lock,
-)
-from repowise.core.update_lock import (
     release_update_lock as _release_lock,
+)
+from repowise.core.update_lock import (
+    try_acquire_update_lock as _try_acquire_lock,
 )
 
 from .config import WorkspaceConfig
@@ -630,11 +627,12 @@ async def update_workspace(
             # first-time indexing has a place to put wiki.db and state.json.
             (path / ".repowise").mkdir(parents=True, exist_ok=True)
 
-            # Per-repo single-flight check. The post-commit hook fires a
+            # Per-repo single-flight lock. The post-commit hook fires a
             # new ``repowise update`` for every commit; without this guard,
             # rapid-fire commits race on save_state, each pass starts from
             # the same stale base, and the wiki never converges to HEAD.
-            existing = _read_lock(path)
+            # Check + acquire are one atomic exclusive create.
+            existing = _try_acquire_lock(path, new_head)
             if existing is not None:
                 elapsed = int(time.time() - existing.get("started_at", time.time()))
                 target_short = (existing.get("target_commit") or "")[:8]
@@ -655,7 +653,6 @@ async def update_workspace(
                     skipped_reason="in_flight",
                 )
 
-            _acquire_lock(path, new_head)
             try:
                 result = await update_single_repo_index(
                     path,

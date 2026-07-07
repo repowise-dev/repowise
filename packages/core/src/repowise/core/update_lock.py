@@ -28,16 +28,24 @@ def update_lock_path(repo_path: Path) -> Path:
     return Path(repo_path) / ".repowise" / UPDATE_LOCK_FILENAME
 
 
-def acquire_update_lock(repo_path: Path, target_commit: str | None) -> Path:
-    """Write the update lock file. Returns its path.
+def try_acquire_update_lock(repo_path: Path, target_commit: str | None) -> dict[str, Any] | None:
+    """Atomically acquire the update lock. ``None`` means acquired.
 
-    The lock contains the PID and target commit so the augment hook can
+    Returns the live owner's payload when another update already holds the
+    lock, so the caller can report who it lost to and bail. The check and
+    the write are one exclusive create (``O_EXCL``) — the previous
+    read-then-write pair left a window where two updates racing past the
+    read would both "acquire" and then race on save_state, the exact
+    failure the lock exists to prevent. A stale lock (dead or recycled PID,
+    or past the wall-clock ceiling) is cleared and the create retried.
+
+    The payload contains the PID and target commit so the augment hook can
     decide whether a stale-wiki warning is redundant, plus the writing
     process's creation-time token so ``read_update_lock`` can tell a live
     lock owner apart from an unrelated process that recycled the PID.
-    Best-effort: if write fails (read-only fs, permissions), returns the
-    path anyway — callers must still call ``release_update_lock`` in a
-    finally block.
+    Best-effort: unexpected ``OSError`` (read-only fs, permissions) counts
+    as acquired — the lock is advisory and must never block an update.
+    Callers must still call ``release_update_lock`` in a finally block.
     """
     from repowise.core.procutils import process_create_token
 
@@ -48,12 +56,27 @@ def acquire_update_lock(repo_path: Path, target_commit: str | None) -> Path:
         "target_commit": target_commit,
         "started_at": time.time(),
     }
-    try:
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-        lock_path.write_text(json.dumps(payload), encoding="utf-8")
-    except OSError:
-        pass
-    return lock_path
+    data = json.dumps(payload)
+    for _ in range(2):
+        try:
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(lock_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+        except FileExistsError:
+            existing = read_update_lock(repo_path)
+            if existing is not None:
+                return existing
+            # Stale or corrupt lock: clear it and retry the exclusive create.
+            with contextlib.suppress(OSError):
+                lock_path.unlink(missing_ok=True)
+            continue
+        except OSError:
+            return None
+        with contextlib.suppress(OSError), os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(data)
+        return None
+    # Lost the create race twice in a row: someone else just acquired a
+    # fresh lock — report it. A still-unreadable lock degrades to acquired.
+    return read_update_lock(repo_path)
 
 
 def release_update_lock(repo_path: Path) -> None:

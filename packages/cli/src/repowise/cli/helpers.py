@@ -32,13 +32,13 @@ from repowise.core.update_lock import (
     UPDATE_LOCK_STALE_AFTER_SECONDS as UPDATE_LOCK_STALE_AFTER_SECONDS,
 )
 from repowise.core.update_lock import (
-    acquire_update_lock as acquire_update_lock,
-)
-from repowise.core.update_lock import (
     read_update_lock as read_update_lock,
 )
 from repowise.core.update_lock import (
     release_update_lock as release_update_lock,
+)
+from repowise.core.update_lock import (
+    try_acquire_update_lock as try_acquire_update_lock,
 )
 
 T = TypeVar("T")

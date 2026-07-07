@@ -17,7 +17,6 @@ import click
 import structlog
 
 from repowise.cli.helpers import (
-    acquire_update_lock,
     clear_update_pending,
     clear_update_queued,
     console,
@@ -26,7 +25,6 @@ from repowise.cli.helpers import (
     get_head_commit,
     load_config,
     load_state,
-    read_update_lock,
     read_update_pending,
     release_update_lock,
     resolve_command_target,
@@ -36,6 +34,7 @@ from repowise.cli.helpers import (
     run_async,
     save_state,
     silence_logs_for_machine_output,
+    try_acquire_update_lock,
     write_update_pending,
 )
 from repowise.core.reasoning import REASONING_MODES
@@ -407,16 +406,18 @@ def update_command(
             )
         return
 
-    # --- Single-flight check ------------------------------------------------
-    # A fresh lock from another process means a `repowise update` is already
+    # --- Single-flight lock ---------------------------------------------
+    # A live lock from another process means a `repowise update` is already
     # running on this repo. Two updates racing on save_state was the actual
     # root cause of "wiki keeps going stale": post-commit hooks fired during
     # rapid-fire commits would each redo full ingestion + generation from the
     # same outdated base, take 10+ minutes, then save_state out of order so
     # state.json never reflected reality. Bail cleanly instead — and leave
     # the new HEAD in ``.update.pending`` so the running update can roll
-    # forward to it at the end of its current pass.
-    existing_lock = read_update_lock(repo_path)
+    # forward to it at the end of its current pass. Check + acquire are one
+    # atomic exclusive create, so two updates arriving together can no
+    # longer both pass a separate read check and race anyway.
+    existing_lock = try_acquire_update_lock(repo_path, head)
     if existing_lock is not None:
         import time as _time
 
@@ -438,6 +439,19 @@ def update_command(
             )
         return
 
+    # We own the lock from here on: the augment hook suppresses its
+    # stale-wiki warning while this run is in flight (typical case: the
+    # post-commit hook fires `repowise update` in the background, then a
+    # follow-on tool call would otherwise warn that HEAD has moved).
+    import atexit
+
+    # Drop the queued marker now that the real lock owns the suppression
+    # window. Leaving both behind would cause the augment hook to keep
+    # suppressing for the queued-stale-after duration even past a failed run.
+    clear_update_queued(repo_path)
+    atexit.register(release_update_lock, repo_path)
+    atexit.register(clear_update_queued, repo_path)
+
     # Backfill docs_enabled on legacy state files using the same
     # shape-based inference the resolver uses, so the post-commit hook
     # and future runs stop relying on the inference. Done before mode
@@ -456,20 +470,6 @@ def update_command(
 
     # --- Resolve effective mode (index-only vs full LLM regen) ---
     index_only = _resolve_index_only_mode(index_only=index_only, docs_flag=docs_flag, state=state)
-
-    # --- Acquire update lock so the augment hook can suppress its
-    # stale-wiki warning while this run is in flight (typical case: the
-    # post-commit hook fires `repowise update` in the background, then a
-    # follow-on tool call would otherwise warn that HEAD has moved). ---
-    import atexit
-
-    acquire_update_lock(repo_path, head)
-    # Drop the queued marker now that the real lock owns the suppression
-    # window. Leaving both behind would cause the augment hook to keep
-    # suppressing for the queued-stale-after duration even past a failed run.
-    clear_update_queued(repo_path)
-    atexit.register(release_update_lock, repo_path)
-    atexit.register(clear_update_queued, repo_path)
 
     # --- Store-format upgrade assessment --------------------------------
     # Single decision point for "does upgrading repowise need to touch this
