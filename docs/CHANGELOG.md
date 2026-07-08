@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.28.1] — 2026-07-08
+
+### Changed
+- **Performance map colors by findings.** The performance code map now colors by open findings and detector coverage instead of the bounded score, so hot spots read at a glance. (#716)
+
+### Fixed
+- **Graph overlays show their nodes.** The full dependency graph reserves part of its node budget for dead-code files, hotspots, and execution-flow members instead of selecting purely by PageRank — the Dead/Hot overlays and flow highlighting no longer come up empty on large repos. The view says how many flagged files are in view ("12 of 37 dead files"), and empty overlays explain whether the repo has none or they fell outside the loaded set. (#714)
+- **Graph controls explain themselves.** The hierarchical layout says why it won't run above 500 nodes instead of silently doing nothing; the Execution Flows panel gained a close button and Escape handling, and warns when a selected flow has out-of-view nodes; the Dead/Hot toggle pair became an exclusive All / Hot / Dead control. (#714)
+- **Honest health drawer and stats labels.** Missing structural metrics render "not measured" instead of 0; score-breakdown bars scale against real category caps with a tooltip explaining the cap; the lines-of-code and agent-authorship stats now say exactly what they measure. (#715)
+- **Decisions page polish.** Missing decision dates render a dash instead of "Invalid Date"; the decision graph bounds its layout so large decision sets can't hang the page; Confirm/Dismiss/Deprecate explain what they do; and a new "Enforce this decision" button generates a paste-ready agent prompt that audits governed code for compliance. (#715)
+- **Honest performance coverage.** Dead performance markers are wired up and performance coverage is reported honestly. (#711)
+
+---
+
 ## [0.28.0] — 2026-07-07
 
 ### Added
