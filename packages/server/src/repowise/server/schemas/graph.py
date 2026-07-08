@@ -38,9 +38,18 @@ class GraphExportResponse(BaseModel):
     nodes: list[GraphNodeResponse]
     links: list[GraphEdgeResponse]
     # When the graph is too large to return in full, the server caps the response
-    # to top-N nodes by PageRank. Clients should surface a banner.
+    # (PageRank fill + reserved slots for dead/hot/flow nodes). Clients should
+    # surface a banner.
     truncated: bool = False
     total_node_count: int | None = None
+    # Signal-overlay counts: repo-wide totals vs how many made it into this
+    # response. Lets clients render "12 of 37 dead files in view" and
+    # distinguish "none in repo" from "none in view". None on endpoints that
+    # don't compute them.
+    dead_total: int | None = None
+    dead_in_view: int | None = None
+    hot_total: int | None = None
+    hot_in_view: int | None = None
 
 
 # Architecture / community super-node graph

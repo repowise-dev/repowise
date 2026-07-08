@@ -49,9 +49,18 @@ export interface GraphLink {
 export interface GraphExport {
   nodes: GraphNode[];
   links: GraphLink[];
-  /** Server flagged response as capped (top-N by PageRank). UI should banner. */
+  /** Server flagged response as capped (PageRank fill + reserved dead/hot/flow
+   *  slots). UI should banner. */
   truncated?: boolean;
   total_node_count?: number;
+  /** Signal-overlay counts: repo-wide totals vs how many nodes are in this
+   *  response. Lets the UI say "12 of 37 dead files in view" and distinguish
+   *  "none in the repo" from "none in the loaded view". Optional — older
+   *  backends and endpoints that don't compute them omit these. */
+  dead_total?: number | null;
+  dead_in_view?: number | null;
+  hot_total?: number | null;
+  hot_in_view?: number | null;
 }
 
 // ---------------------------------------------------------------------------
