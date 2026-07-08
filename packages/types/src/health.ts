@@ -179,6 +179,21 @@ export interface HealthFileMetric {
   maintainability_score?: number | null;
   performance_score?: number | null;
   /**
+   * Open performance-risk findings on this file. The performance lens on the
+   * code-health map colors by this count (+ `performance_analyzed`), not by the
+   * [9,10]-compressed `performance_score`, so a file with 40 N+1s reads
+   * differently from one with 1. Absent on payloads predating the perf pass.
+   */
+  performance_findings?: number | null;
+  /**
+   * Whether a performance detector actually ran on this file (its language has a
+   * registered perf dialect). `false` = unsupported language, the perf pass never
+   * looked — a silent 10.0 — so the map greys the file as "not analyzed" instead
+   * of green. High-precision / low-recall: green means "a detector ran and
+   * surfaced nothing", never "verified fast". `null`/absent on older payloads.
+   */
+  performance_analyzed?: boolean | null;
+  /**
    * Dominant-cause lead: the biomarker + reason of this file's worst finding, so
    * a low file can headline "the one reason" instead of a wall of markers. Null
    * when the row carries no findings or the payload predates this field.

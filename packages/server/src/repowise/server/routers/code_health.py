@@ -22,6 +22,7 @@ from repowise.core.analysis.health.defect_accuracy import compute_defect_accurac
 from repowise.core.analysis.health.grading import band_for
 from repowise.core.analysis.health.grading import distribution as health_distribution
 from repowise.core.analysis.health.models import Severity
+from repowise.core.analysis.health.perf.coverage import supported_perf_languages
 from repowise.core.analysis.health.scoring import (
     CATEGORY_CAPS,
     biomarker_category,
@@ -112,7 +113,13 @@ def _leads_by_file(findings: list[Any]) -> dict[str, dict]:
     return {path: _primary_and_magnitude(fs) for path, fs in by_file.items()}
 
 
-def _metric_to_dict(m: Any, lead: dict | None = None) -> dict:
+def _metric_to_dict(
+    m: Any,
+    lead: dict | None = None,
+    *,
+    perf_findings: int = 0,
+    perf_analyzed: bool | None = None,
+) -> dict:
     return {
         "file_path": m.file_path,
         "score": round(m.score, 2),
@@ -129,6 +136,12 @@ def _metric_to_dict(m: Any, lead: dict | None = None) -> dict:
         "defect_score": _round_opt(getattr(m, "defect_score", None)),
         "maintainability_score": _round_opt(getattr(m, "maintainability_score", None)),
         "performance_score": _round_opt(getattr(m, "performance_score", None)),
+        # Performance lens inputs for the code-health map: the open perf-finding
+        # count colors the heat, and ``perf_analyzed`` (did a detector run on this
+        # language?) separates green ("analyzed, none found") from grey ("never
+        # looked"). Presentation only — the score above is untouched.
+        "performance_findings": perf_findings,
+        "performance_analyzed": perf_analyzed,
         # Dominant-cause lead + pre-clamp magnitude (null when findings weren't
         # loaded for this row, or the file is clean). Additive; readers degrade.
         "primary_biomarker": lead.get("primary_biomarker") if lead else None,
@@ -608,11 +621,28 @@ async def list_health_files(
     page_paths = {m.file_path for m in page}
     findings = await crud.get_health_findings(session, repo_id)
     leads = _leads_by_file([f for f in findings if f.file_path in page_paths])
+    # Per-file performance signal for the map's performance lens: open perf-
+    # finding counts + whether a perf detector ran on the file's language. Colors
+    # the lens by findings/coverage instead of the uniformly-green [9,10] score.
+    perf_counts: dict[str, int] = {}
+    for fnd in findings:
+        if (getattr(fnd, "dimension", None) or "defect") == "performance":
+            perf_counts[fnd.file_path] = perf_counts.get(fnd.file_path, 0) + 1
+    lang_by_path = await crud.get_file_language_map(session, repo_id)
+    perf_langs = supported_perf_languages()
     return {
         "total": total,
         "offset": offset,
         "limit": limit,
-        "files": [_metric_to_dict(m, leads.get(m.file_path)) for m in page],
+        "files": [
+            _metric_to_dict(
+                m,
+                leads.get(m.file_path),
+                perf_findings=perf_counts.get(m.file_path, 0),
+                perf_analyzed=lang_by_path.get(m.file_path) in perf_langs,
+            )
+            for m in page
+        ],
     }
 
 

@@ -14,8 +14,16 @@ export interface CodeHealthMapFile {
   has_test_file: boolean;
   /** Maintainability pillar score (1–10) — drives the maintainability overlay. */
   maintainability_score?: number | null;
-  /** Performance-risk pillar score (1–10) — drives the performance overlay. */
+  /** Performance-risk pillar score (1–10) — computed but NOT used to color the
+   *  performance overlay (it is compressed to [9,10] and reads uniformly green).
+   *  The performance lens colors by {@link performance_findings} + coverage. */
   performance_score?: number | null;
+  /** Open performance-risk findings on this file — drives the performance heat. */
+  performance_findings?: number | null;
+  /** Whether a perf detector ran on this file's language (has a dialect). `false`
+   *  → grey "not analyzed"; the pillar is high-precision / low-recall, so green
+   *  can only mean "a detector ran and surfaced nothing", never "verified fast". */
+  performance_analyzed?: boolean | null;
   /** 0–100 churn percentile — drives the churn overlay. */
   churn_percentile?: number | null;
   /** Reclaimable lines on this file — drives the dead-code overlay. */
@@ -109,6 +117,27 @@ function coverageFill(pct: number | null | undefined): string {
   return "var(--color-error)";
 }
 
+/**
+ * Performance lens fill — by findings + coverage state, NOT by the performance
+ * score. The score is capped to [9,10] so a score ramp paints the whole map
+ * green and hides where the risk actually is. Instead:
+ *   heat (yellow→red) = open perf findings, so 40 N+1s ≠ 1;
+ *   green            = a detector ran and surfaced nothing (NOT "verified fast");
+ *   grey             = no detector for this language ever ran ("not analyzed").
+ * This keeps the pillar's high-precision / low-recall honesty on the map.
+ */
+function perfFill(f: CodeHealthMapFile): string {
+  const n = f.performance_findings ?? 0;
+  if (n > 0) {
+    if (n >= 5) return "var(--color-error)";
+    if (n >= 2) return "var(--color-warning)";
+    return "var(--color-caution)";
+  }
+  // No findings: green only when a detector actually ran on this language;
+  // otherwise grey so an un-analyzed file never reads as "clean".
+  return f.performance_analyzed ? "var(--color-success)" : NEUTRAL_FILL;
+}
+
 /** Churn band: red = top-decile churn, green = quiet. */
 function churnFill(pctile: number | null | undefined): string {
   if (pctile == null) return NEUTRAL_FILL;
@@ -136,11 +165,14 @@ const OVERLAY_SPECS: Record<CodeHealthOverlay, OverlaySpec> = {
   },
   performance: {
     label: "Performance",
-    caption: "color = performance-risk score · grey = not measured",
-    fill: (f) => scoreFill(f.performance_score),
+    caption: "color = findings, not a score · grey = language not analyzed",
+    fill: perfFill,
     legend: [
-      ...BAND_LABEL.map((b) => ({ fill: BAND_FILL[b.band], label: b.label })),
-      { fill: NEUTRAL_FILL, label: "not measured" },
+      { fill: "var(--color-error)", label: "5+ findings" },
+      { fill: "var(--color-warning)", label: "2–4 findings" },
+      { fill: "var(--color-caution)", label: "1 finding" },
+      { fill: "var(--color-success)", label: "Analyzed, none found" },
+      { fill: NEUTRAL_FILL, label: "Not analyzed" },
     ],
   },
   coverage: {

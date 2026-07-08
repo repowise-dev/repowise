@@ -106,6 +106,35 @@ describe("CodeHealthMap", () => {
     expect(getByText("≥80%")).toBeInTheDocument();
   });
 
+  it("performance lens colors by findings + coverage, not the score", () => {
+    // Three files: covered-with-findings (heat), covered-clean (green), and an
+    // unsupported-language file the perf pass never ran on (grey, NOT green).
+    const files: CodeHealthMapFile[] = [
+      { ...f("core/hot.py", 120, "core"), performance_findings: 7, performance_analyzed: true },
+      { ...f("core/clean.py", 80, "core"), performance_findings: 0, performance_analyzed: true },
+      { ...f("core/leveldb.cc", 60, "core"), performance_findings: 0, performance_analyzed: false },
+    ];
+    const { container, getByText } = render(
+      <CodeHealthMap files={files} overlay="performance" />,
+    );
+    // Educational legend: findings-first, plus the "not analyzed" grey.
+    expect(getByText("5+ findings")).toBeInTheDocument();
+    expect(getByText("Not analyzed")).toBeInTheDocument();
+    expect(getByText("Analyzed, none found")).toBeInTheDocument();
+
+    const fillFor = (path: string) => {
+      const title = Array.from(container.querySelectorAll("title")).find((t) =>
+        t.textContent?.startsWith(path),
+      );
+      return (title?.parentElement as SVGCircleElement | undefined)?.getAttribute("fill");
+    };
+    // A file with findings burns red; a covered-clean file is green; an
+    // un-analyzed file is grey (tertiary) — never green.
+    expect(fillFor("core/hot.py")).toBe("var(--color-error)");
+    expect(fillFor("core/clean.py")).toBe("var(--color-success)");
+    expect(fillFor("core/leveldb.cc")).toBe("var(--color-text-tertiary)");
+  });
+
   it("fires onOverlayChange when a lens-switch button is clicked", () => {
     const onOverlayChange = vi.fn();
     const { getByRole } = render(
