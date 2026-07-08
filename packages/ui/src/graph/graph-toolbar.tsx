@@ -108,10 +108,14 @@ const SCOPES: { id: Scope; icon: typeof Boxes; label: string; hint: string }[] =
   { id: "full", icon: LayoutGrid, label: "Full", hint: "All files and symbols" },
 ];
 
-// Overlays = additive signal highlights that compose with any scope.
-const OVERLAYS: { id: Overlay; icon: typeof Skull; label: string }[] = [
-  { id: "dead", icon: Skull, label: "Dead" },
-  { id: "hot", icon: Flame, label: "Hot" },
+// Node filter = exclusive All / Hot / Dead segmented control. Hot and dead
+// files are near-disjoint sets, so the old pair of independent toggles read
+// as an AND filter and mostly produced an empty view when both were lit; a
+// single exclusive control matches how the affordance is read.
+const NODE_FILTERS: { id: Overlay | "all"; icon?: typeof Skull; label: string; hint: string }[] = [
+  { id: "all", label: "All", hint: "Show every node" },
+  { id: "hot", icon: Flame, label: "Hot", hint: "High-churn files" },
+  { id: "dead", icon: Skull, label: "Dead", hint: "Dead-code files" },
 ];
 
 const COLOR_MODES: { id: ColorMode; icon: typeof Palette; label: string }[] = [
@@ -179,10 +183,16 @@ export const GraphToolbar = memo(function GraphToolbar({
     onViewChange(scopeOverlaysToViewMode(next, activeOverlays));
   };
 
-  const toggleOverlay = (id: Overlay) => {
-    const next = new Set(activeOverlays);
-    if (next.has(id)) next.delete(id);
-    else next.add(id);
+  // Exclusive node filter. Legacy "unified" URLs parse to both overlays and
+  // render as Dead here; any click normalizes back to a single filter.
+  const activeFilter: Overlay | "all" = activeOverlays.has("dead")
+    ? "dead"
+    : activeOverlays.has("hot")
+      ? "hot"
+      : "all";
+
+  const setNodeFilter = (id: Overlay | "all") => {
+    const next = new Set<Overlay>(id === "all" ? [] : [id]);
     onViewChange(scopeOverlaysToViewMode(activeScope, next));
   };
 
@@ -231,27 +241,32 @@ export const GraphToolbar = memo(function GraphToolbar({
       </div>
       )}
 
-      {/* Overlays (additive signal chips) — not applicable in the constellation */}
+      {/* Node filter (exclusive All / Hot / Dead) — not applicable in the constellation */}
       {!isConstellation && (
-      <div className={`${clusterVisibility} gap-0.5 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm p-1 shadow-sm`}>
-        {OVERLAYS.map((o) => {
-          const Icon = o.icon;
-          const isActive = activeOverlays.has(o.id);
+      <div
+        role="radiogroup"
+        aria-label="Node filter"
+        className={`${clusterVisibility} gap-0.5 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm p-1 shadow-sm`}
+      >
+        {NODE_FILTERS.map((f) => {
+          const Icon = f.icon;
+          const isActive = activeFilter === f.id;
           return (
             <button
-              key={o.id}
-              onClick={() => toggleOverlay(o.id)}
+              key={f.id}
+              onClick={() => setNodeFilter(f.id)}
               className={`flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium transition-all ${
                 isActive
                   ? "bg-[var(--color-accent-graph)]/15 text-[var(--color-accent-graph)]"
                   : "text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-overlay)]"
               }`}
-              title={`Overlay: ${o.label}`}
-              aria-label={`Overlay: ${o.label}`}
-              aria-pressed={isActive}
+              title={f.hint}
+              aria-label={f.label}
+              role="radio"
+              aria-checked={isActive}
             >
-              <Icon className="w-3 h-3" />
-              <span className="hidden lg:inline">{o.label}</span>
+              {Icon && <Icon className="w-3 h-3" />}
+              <span className={Icon ? "hidden lg:inline" : undefined}>{f.label}</span>
             </button>
           );
         })}

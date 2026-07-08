@@ -58,6 +58,9 @@ export interface SigmaCanvasProps {
     | ((nodeId: string, nodeType: string) => boolean | void)
     | undefined;
   onStageClick?: (() => void) | undefined;
+  /** Fired when the hierarchical (ELK) layout refuses to run (too many
+   *  nodes) so the host can explain the dead-looking toggle to the user. */
+  onLayoutSkipped?: ((reason: string) => void) | undefined;
   hiddenNodes?: Set<string> | undefined;
   visibleEdgeTypes?: Set<string> | undefined;
   /** Concentric depth-ring radii (graph coords) for the constellation underlay. */
@@ -110,6 +113,7 @@ export const SigmaCanvas = forwardRef<SigmaCanvasHandle, SigmaCanvasProps>(
       moduleNodes: props.moduleNodes,
       moduleEdges: props.moduleEdges,
       viewMode: props.viewMode,
+      onSkipped: props.onLayoutSkipped,
     });
 
     // Keep callback refs up to date so Sigma event handlers always use latest props

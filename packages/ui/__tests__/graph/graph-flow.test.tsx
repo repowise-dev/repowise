@@ -62,4 +62,44 @@ describe("GraphFlow shell", () => {
       screen.getByRole("button", { name: "Language" }).getAttribute("aria-pressed"),
     ).toBe("false");
   });
+
+  it("offers an exclusive All / Hot / Dead node filter", () => {
+    render(<GraphFlow {...baseProps} initialViewMode="full" />);
+
+    expect(screen.getByRole("radio", { name: "All" }).getAttribute("aria-checked")).toBe("true");
+
+    fireEvent.click(screen.getByRole("radio", { name: "Dead" }));
+    expect(screen.getByRole("radio", { name: "Dead" }).getAttribute("aria-checked")).toBe("true");
+    expect(screen.getByRole("radio", { name: "Hot" }).getAttribute("aria-checked")).toBe("false");
+    expect(screen.getByRole("radio", { name: "All" }).getAttribute("aria-checked")).toBe("false");
+
+    // Selecting Hot replaces Dead — the two can never be active together.
+    fireEvent.click(screen.getByRole("radio", { name: "Hot" }));
+    expect(screen.getByRole("radio", { name: "Hot" }).getAttribute("aria-checked")).toBe("true");
+    expect(screen.getByRole("radio", { name: "Dead" }).getAttribute("aria-checked")).toBe("false");
+  });
+
+  it("says when dead files exist but fell outside the loaded view", () => {
+    render(
+      <GraphFlow
+        {...baseProps}
+        initialViewMode="full"
+        fullGraph={{ nodes: [], links: [], truncated: true, dead_total: 3 }}
+      />,
+    );
+    fireEvent.click(screen.getByRole("radio", { name: "Dead" }));
+    expect(screen.getByText("Dead files are outside the loaded view")).toBeTruthy();
+  });
+
+  it("says when the repo simply has no dead files", () => {
+    render(
+      <GraphFlow
+        {...baseProps}
+        initialViewMode="full"
+        fullGraph={{ nodes: [], links: [], dead_total: 0 }}
+      />,
+    );
+    fireEvent.click(screen.getByRole("radio", { name: "Dead" }));
+    expect(screen.getByText("No dead files in this repo")).toBeTruthy();
+  });
 });

@@ -9,7 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import { useTheme } from "next-themes";
-import { ChevronRight, Home } from "lucide-react";
+import { ChevronRight, Home, X } from "lucide-react";
 import { Skeleton } from "../ui/skeleton";
 import { EmptyState } from "../shared/empty-state";
 import { GraphProvider, type GraphContextValue, type Signal } from "./context";
@@ -209,6 +209,9 @@ export function GraphFlow(props: GraphFlowProps) {
   const [highlightedEdges, setHighlightedEdges] = useState<Set<string>>(new Set());
   const [showPathFinder, setShowPathFinder] = useState(false);
   const [showShortcutHelp, setShowShortcutHelp] = useState(false);
+  // Explanation surfaced when the hierarchical layout refuses to run (too
+  // many nodes) — otherwise the toggle looks active but does nothing.
+  const [layoutNotice, setLayoutNotice] = useState<string | null>(null);
   // Constellation is the default scope → its fixed radial layout.
   const [layoutMode, setLayoutMode] = useState<LayoutMode>(
     (initialViewMode ?? "architecture") === "architecture" ? "radial" : "force",
@@ -440,6 +443,13 @@ export function GraphFlow(props: GraphFlowProps) {
 
   const hasDeadSignal = activeSignals.has("dead");
   const hasHotSignal = activeSignals.has("hot");
+
+  // Repo-wide signal totals, when the backend provides them (the overlay's
+  // own payload wins over the capped full graph). Distinguishes "the repo has
+  // none" from "none survived the node cap" in the empty states below.
+  const deadTotal =
+    deadCodeGraph?.dead_total ?? fullGraph?.dead_total ?? null;
+  const hotTotal = hotFilesGraph?.hot_total ?? fullGraph?.hot_total ?? null;
 
   // Pre-build indexes for O(1) module expansion lookups (Fix 1.1)
   const fullGraphIndexes = useMemo(() => {
@@ -701,6 +711,61 @@ export function GraphFlow(props: GraphFlowProps) {
   const effectiveNodeDataMap = sigmaNodeMaps?.fileMap ?? new Map<string, FileNodeData>();
   const effectiveModuleDataMap = sigmaNodeMaps?.modMap ?? new Map<string, ModuleNodeData>();
 
+  // How many flagged nodes actually made it into the rendered graph — paired
+  // with the repo-wide totals to caption the dead/hot views honestly.
+  const overlayStats = useMemo(() => {
+    if (!sigmaGraph) return null;
+    let deadInView = 0;
+    let hotInView = 0;
+    sigmaGraph.forEachNode((_, attrs) => {
+      if (attrs.isDead) deadInView++;
+      if (attrs.isHotspot) hotInView++;
+    });
+    return { deadInView, hotInView };
+  }, [sigmaGraph]);
+
+  const isDeadView = viewMode === "dead" || viewMode === "unified";
+  const isHotView = viewMode === "hotfiles" || viewMode === "unified";
+
+  // Trace nodes of the selected execution flow that fell outside the loaded
+  // node set — highlighting/focus silently no-op for them, so tell the user.
+  const activeFlowMissingCount = useMemo(() => {
+    if (activeFlowIdx === null || !executionFlows || !sigmaGraph) return 0;
+    const flow = executionFlows.flows[activeFlowIdx];
+    if (!flow) return 0;
+    return flow.trace.filter((id) => !sigmaGraph.hasNode(id)).length;
+  }, [activeFlowIdx, executionFlows, sigmaGraph]);
+
+  // Empty-state copy for a dead/hot view that resolved to zero nodes. Two
+  // different failure modes deserve two different messages: the repo really
+  // has no flagged files, vs the flagged files exist but fell outside the
+  // capped node selection.
+  const overlayEmptyState = (() => {
+    if (!isDeadView && !isHotView) return null;
+    const kind = isDeadView && isHotView ? "dead or hot" : isDeadView ? "dead" : "hot";
+    const total = isDeadView && isHotView ? null : isDeadView ? deadTotal : hotTotal;
+    if (total === 0) {
+      return {
+        title: `No ${kind} files in this repo`,
+        description:
+          kind === "dead"
+            ? "No open dead-code findings — nothing to overlay."
+            : "No files are flagged as hotspots — nothing to overlay.",
+      };
+    }
+    if (total != null && total > 0) {
+      return {
+        title: `${kind === "dead" ? "Dead" : "Hot"} files are outside the loaded view`,
+        description: `None of the ${total} ${kind} files are in the loaded node set. Load more nodes from the banner, or narrow the scope to bring them in.`,
+      };
+    }
+    return {
+      title: `No ${kind} files in this view`,
+      description:
+        "The repo may have none, or they may fall outside the loaded node set.",
+    };
+  })();
+
   const panToNode = useCallback((nodeId: string) => {
     sigmaRef.current?.focusNode(nodeId);
   }, []);
@@ -852,6 +917,11 @@ export function GraphFlow(props: GraphFlowProps) {
       setShowShortcutHelp(false);
       return true;
     }
+    if (showFlows) {
+      setShowFlows(false);
+      setActiveFlowIdx(null);
+      return true;
+    }
     if (selectedNodeId !== null || communityPanelId !== null) {
       setSelectedNodeId(null);
       setCommunityPanelId(null);
@@ -910,6 +980,7 @@ export function GraphFlow(props: GraphFlowProps) {
     setViewMode(v);
     // Constellation is fixed-radial; other scopes default back to FA2.
     setLayoutMode(v === "architecture" ? "radial" : "force");
+    setLayoutNotice(null);
     setModulePath([]);
     setHighlightedPath(new Set());
     setHighlightedEdges(new Set());
@@ -921,6 +992,7 @@ export function GraphFlow(props: GraphFlowProps) {
 
   const handleLayoutModeChange = useCallback((mode: LayoutMode) => {
     setLayoutMode(mode);
+    setLayoutNotice(null);
   }, []);
 
   const handleGraphThemeChange = useCallback(
@@ -1034,7 +1106,7 @@ export function GraphFlow(props: GraphFlowProps) {
   return (
     <GraphProvider value={ctxValue}>
       <div className="relative w-full h-full" style={{ touchAction: "none", ...(graphTheme === "dark" ? { background: "var(--color-bg-inset)" } : {}) }} aria-label="Dependency graph">
-        {sigmaGraph ? (
+        {sigmaGraph && sigmaGraph.order > 0 ? (
           <SigmaCanvas
             ref={sigmaRef}
             graph={sigmaGraph}
@@ -1059,6 +1131,7 @@ export function GraphFlow(props: GraphFlowProps) {
             onNodeHover={setHoveredNodeId}
             onNodeContextMenu={handleSigmaNodeContextMenu}
             onStageClick={() => setSelectedNodeId(null)}
+            onLayoutSkipped={setLayoutNotice}
             hiddenNodes={isEgoActive ? hiddenNodes : undefined}
             visibleEdgeTypes={visibleEdgeTypes}
             depthRingRadii={isConstellation ? constellationRingRadii : null}
@@ -1066,15 +1139,19 @@ export function GraphFlow(props: GraphFlowProps) {
         ) : !isLoading ? (
           <div className="flex items-center justify-center h-full">
             <EmptyState
-              title="No graph data"
-              description="Check that the backend is running and this repo has been indexed."
+              title={overlayEmptyState?.title ?? "No graph data"}
+              description={
+                overlayEmptyState?.description ??
+                "Check that the backend is running and this repo has been indexed."
+              }
             />
           </div>
         ) : null}
 
-        {/* Ego indicator or breadcrumb */}
+        {/* Ego indicator / breadcrumb / overlay counts (stacked top-left) */}
+        <div className="absolute top-3 left-3 z-10 flex flex-col items-start gap-1.5">
         {isEgoActive && selectedNodeId ? (
-          <div className="absolute top-3 left-3 z-10">
+          <div>
             <div className="flex items-center gap-2 rounded-lg border border-[var(--color-accent-graph)]/30 bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm px-2.5 py-1.5 shadow-lg shadow-black/20">
               <span className="text-[10px] text-[var(--color-accent-graph)]">
                 Showing {egoVisibleCount} nodes within {egoDepth} hop{egoDepth === 1 ? "" : "s"} of{" "}
@@ -1089,7 +1166,7 @@ export function GraphFlow(props: GraphFlowProps) {
             </div>
           </div>
         ) : isModuleView && isDrilledDown ? (
-          <div className="absolute top-3 left-3 z-10">
+          <div>
             <div className="flex items-center gap-1 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm px-2.5 py-1.5 shadow-lg shadow-black/20">
               <button
                 onClick={() => handleBreadcrumbClick(-1)}
@@ -1121,6 +1198,49 @@ export function GraphFlow(props: GraphFlowProps) {
             </div>
           </div>
         ) : null}
+
+        {/* Overlay coverage: how many flagged files are actually in view. The
+            totals come from the backend when it provides them; without totals
+            we still report the in-view count so the overlay never reads as
+            silently doing nothing. */}
+        {sigmaGraph && sigmaGraph.order > 0 && overlayStats && (isDeadView || isHotView) && (
+          <div className="flex flex-col items-start gap-1">
+            {isDeadView && (
+              <OverlayCountChip
+                kind="dead"
+                inView={overlayStats.deadInView}
+                total={deadTotal}
+              />
+            )}
+            {isHotView && (
+              <OverlayCountChip
+                kind="hot"
+                inView={overlayStats.hotInView}
+                total={hotTotal}
+              />
+            )}
+          </div>
+        )}
+        </div>
+
+        {/* Layout-skipped notice: the hierarchical toggle must never look
+            active while silently doing nothing. */}
+        {layoutNotice && (
+          <div
+            role="status"
+            aria-live="polite"
+            className="absolute top-3 left-1/2 -translate-x-1/2 z-10 flex max-w-[min(28rem,calc(100vw-6rem))] items-center gap-2 rounded-lg border border-[var(--color-warning)]/40 bg-[var(--color-bg-elevated)]/95 backdrop-blur-sm px-3 py-1.5 shadow-sm"
+          >
+            <span className="text-[11px] text-[var(--color-text-primary)]">{layoutNotice}</span>
+            <button
+              onClick={() => setLayoutNotice(null)}
+              aria-label="Dismiss layout notice"
+              className="shrink-0 text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]"
+            >
+              <X className="w-3 h-3" />
+            </button>
+          </div>
+        )}
 
         {/* Toolbar */}
         <div className="absolute top-3 right-3 z-10">
@@ -1188,9 +1308,23 @@ export function GraphFlow(props: GraphFlowProps) {
                 <span className="text-xs font-medium text-[var(--color-text-primary)]">
                   Execution Flows
                 </span>
-                <span className="text-[10px] text-[var(--color-text-tertiary)]">
-                  {executionFlows.flows.length} entry points
-                </span>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[10px] text-[var(--color-text-tertiary)]">
+                    {executionFlows.flows.length} entry points
+                  </span>
+                  {/* Same close affordance as the Path Finder panel above. */}
+                  <button
+                    onClick={() => {
+                      setShowFlows(false);
+                      setActiveFlowIdx(null);
+                    }}
+                    aria-label="Close"
+                    title="Close"
+                    className="text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </div>
               </div>
               <div className="space-y-1 max-h-60 overflow-y-auto">
                 {executionFlows.flows.map((flow, idx) => (
@@ -1214,6 +1348,13 @@ export function GraphFlow(props: GraphFlowProps) {
                   </button>
                 ))}
               </div>
+              {activeFlowMissingCount > 0 && (
+                <p className="mt-2 text-[10px] leading-snug text-[var(--color-warning)]">
+                  This flow includes {activeFlowMissingCount} node
+                  {activeFlowMissingCount === 1 ? "" : "s"} not in the loaded
+                  view — load more nodes to see the full trace.
+                </p>
+              )}
             </div>
           </div>
         )}
@@ -1297,5 +1438,36 @@ export function GraphFlow(props: GraphFlowProps) {
         })()}
       </div>
     </GraphProvider>
+  );
+}
+
+/** Small status chip captioning a dead/hot view: "12 of 37 dead files in
+ *  view" when the backend supplies repo-wide totals, or just the in-view
+ *  count when it doesn't. */
+function OverlayCountChip({
+  kind,
+  inView,
+  total,
+}: {
+  kind: "dead" | "hot";
+  inView: number;
+  total: number | null;
+}) {
+  const noun = kind === "dead" ? "dead files" : "hot files";
+  let text: string;
+  if (total != null && inView < total) {
+    text = `${inView} of ${total} ${noun} in view — the rest are outside the loaded node set`;
+  } else if (total != null) {
+    text = `Showing all ${total} ${noun}`;
+  } else {
+    text = `${inView} ${noun} in view`;
+  }
+  return (
+    <div
+      role="status"
+      className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm px-2.5 py-1.5 shadow-sm text-[10px] text-[var(--color-text-secondary)]"
+    >
+      {text}
+    </div>
   );
 }
