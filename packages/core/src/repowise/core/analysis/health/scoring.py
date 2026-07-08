@@ -213,6 +213,9 @@ _BIOMARKER_DIMENSIONS: dict[str, set[str]] = {
     "io_in_loop": {"performance"},
     "string_concat_in_loop": {"performance"},
     "blocking_sync_in_async": {"performance"},
+    # Phase 6 dialect markers (Java/Go/Rust) - performance-only.
+    "regex_compile_in_loop": {"performance"},
+    "defer_in_loop": {"performance"},
     # Phase 7a loop markers - performance-only, same as the originals.
     "resource_construction_in_loop": {"performance"},
     "lock_in_loop": {"performance"},
@@ -333,6 +336,12 @@ _PERFORMANCE_WEIGHT_MULTIPLIER: dict[str, float] = {
     # (MARKER_BACKLOG.md); promote to full weight where corpus precision >= 70%.
     # resource_construction is the highest-confidence (classified constructor),
     # serial_await the lowest (cannot prove iteration independence).
+    # Phase 6 dialect markers. Both are high-precision syntactic shapes (Go
+    # `go vet`/`gocritic` ship defer-in-loop; the regex marker gates on a static
+    # literal pattern in Java/Go/Rust). Ship advisory pending this session's
+    # test-repo gate; bounded by the 1.0 perf cap either way.
+    "regex_compile_in_loop": 0.6,
+    "defer_in_loop": 0.6,
     "resource_construction_in_loop": 0.7,
     "lock_in_loop": 0.5,
     # PROMOTED 0.5 -> 0.7 (Phase-7c): 100% precision across corpora (7a 22/22 +
@@ -372,6 +381,8 @@ _PERFORMANCE_CATEGORY: dict[str, str] = {
     "io_in_loop": "performance",
     "string_concat_in_loop": "performance",
     "blocking_sync_in_async": "performance",
+    "regex_compile_in_loop": "performance",
+    "defer_in_loop": "performance",
     "resource_construction_in_loop": "performance",
     "lock_in_loop": "performance",
     "serial_await_in_loop": "performance",
@@ -400,6 +411,8 @@ _PERFORMANCE_HOME: frozenset[str] = frozenset(
         "io_in_loop",
         "string_concat_in_loop",
         "blocking_sync_in_async",
+        "regex_compile_in_loop",
+        "defer_in_loop",
         "resource_construction_in_loop",
         "lock_in_loop",
         "serial_await_in_loop",

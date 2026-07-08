@@ -12,12 +12,14 @@ from repowise.core.analysis.health.churn_complexity import churn_complexity_poin
 from repowise.core.analysis.health.defect_accuracy import compute_defect_accuracy
 from repowise.core.analysis.health.grading import band_for
 from repowise.core.analysis.health.grading import distribution as health_distribution
+from repowise.core.analysis.health.perf.coverage import PerfCoverage, coverage_for_metrics
 from repowise.core.analysis.health.signals import file_signals
 from repowise.core.analysis.health.suggestions import suggestion_for
 from repowise.core.analysis.health.trends import diff_snapshots, file_trend, recent_kpis
 from repowise.core.persistence.crud import (
     get_all_git_metadata,
     get_coverage_summary,
+    get_file_language_map,
     get_git_metadata,
     get_graph_node,
     get_node_degree_counts,
@@ -210,7 +212,35 @@ def _dimension_average(metrics: list[HealthFileMetric], attr: str) -> float | No
     return round(sum(getattr(m, attr) * max(m.nloc, 1) for m in scored) / total_nloc, 2)
 
 
-def _compute_kpis(metrics: list[HealthFileMetric]) -> dict[str, Any]:
+def _perf_kpis(performance_findings: int, coverage: PerfCoverage | None) -> dict[str, Any]:
+    """The honest performance headline: finding count + density + coverage.
+
+    Leads with *how many* findings and over *how much* of the code the perf pass
+    ran, so an agent never reads a bare ``performance_average`` of ~10 as "fast"
+    when the real story is "we could only analyze 3% of this repo".
+    """
+    density: float | None = None
+    if coverage is not None and coverage.covered_nloc > 0:
+        density = round(10000.0 * performance_findings / coverage.covered_nloc, 2)
+    return {
+        "performance_findings": performance_findings,
+        "performance_findings_density_per_10k_loc": density,
+        "performance_coverage_pct": (
+            coverage.pct_loc if (coverage and coverage.analyzed_files) else None
+        ),
+        "performance_covered_files": coverage.covered_files if coverage else 0,
+        "performance_analyzed_files": coverage.analyzed_files if coverage else 0,
+        "performance_skipped_files": coverage.skipped_files if coverage else 0,
+        "performance_unsupported_languages": (coverage.unsupported_languages if coverage else []),
+    }
+
+
+def _compute_kpis(
+    metrics: list[HealthFileMetric],
+    *,
+    performance_findings: int = 0,
+    coverage: PerfCoverage | None = None,
+) -> dict[str, Any]:
     if not metrics:
         return {
             "file_count": 0,
@@ -219,6 +249,7 @@ def _compute_kpis(metrics: list[HealthFileMetric]) -> dict[str, Any]:
             "worst_performer_score": None,
             "maintainability_average": None,
             "performance_average": None,
+            **_perf_kpis(0, None),
         }
     total_nloc = sum(max(m.nloc, 1) for m in metrics)
     avg = sum(m.score * max(m.nloc, 1) for m in metrics) / total_nloc
@@ -233,6 +264,8 @@ def _compute_kpis(metrics: list[HealthFileMetric]) -> dict[str, Any]:
         # defect-backed average. Each is ``None`` until its pillar is measured.
         "maintainability_average": _dimension_average(metrics, "maintainability_score"),
         "performance_average": _dimension_average(metrics, "performance_score"),
+        # Performance leads with count + density + coverage, not the diluted /10.
+        **_perf_kpis(performance_findings, coverage),
     }
 
 
@@ -308,6 +341,9 @@ async def get_health(
     file_targets = [t for t in raw_targets if not t.startswith("module:")]
 
     ctx = await _resolve_repo_context(repo)
+    # Performance headline inputs (dashboard mode): filled inside the session.
+    perf_coverage: PerfCoverage | None = None
+    perf_findings_count = 0
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session, repo)
 
@@ -351,6 +387,16 @@ async def get_health(
             "file_path",
             exclude_spec,
         )
+
+        # Dashboard perf headline: coverage (how much of the analyzed code the
+        # perf pass ran on) + open performance-finding count. finding_rows in
+        # dashboard mode is the complete open set, so the count is exact.
+        if not effective_targets:
+            lang_by_path = await get_file_language_map(session, repository.id)
+            perf_coverage = coverage_for_metrics(all_metrics, lang_by_path)
+            perf_findings_count = sum(
+                1 for f in finding_rows if (f.dimension or "defect") == "performance"
+            )
 
         # Structured refactoring plans (Extract Class, ...) — loaded only when
         # asked for, scoped to the same targets, exclude-filtered like findings.
@@ -412,7 +458,11 @@ async def get_health(
         if "trend" in include_set or effective_targets:
             snapshots = await list_health_snapshots(session, repository.id, limit=20)
 
-    kpis = _compute_kpis(metric_rows if effective_targets else all_metrics)
+    kpis = _compute_kpis(
+        metric_rows if effective_targets else all_metrics,
+        performance_findings=perf_findings_count,
+        coverage=perf_coverage,
+    )
     # Dominant-cause lead per file, from the findings already loaded (targeted
     # findings are scoped to the targets; dashboard findings cover every file).
     leads = _leads_by_file(finding_rows)
@@ -459,7 +509,9 @@ async def get_health(
             "mode": "dashboard",
             "kpis": kpis,
             "distribution": health_distribution(all_metrics),
-            "worst_files": [_serialize_metric(m, leads.get(m.file_path)) for m in metric_rows[:limit]],
+            "worst_files": [
+                _serialize_metric(m, leads.get(m.file_path)) for m in metric_rows[:limit]
+            ],
             "top_findings": [_serialize_finding(f) for f in finding_rows[:limit]],
             "modules": _module_rollups(all_metrics),
         }

@@ -15,6 +15,7 @@ from pathlib import Path
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.health.perf.coverage import coverage_for_metrics
 from repowise.core.persistence import crud
 from repowise.core.persistence.models import (
     DecisionRecord,
@@ -277,9 +278,7 @@ class EditorFileDataFetcher:
         if hotspot_metrics:
             h_nloc = sum(max(m.nloc, 1) for m in hotspot_metrics)
             hotspot_health = (
-                sum(m.score * max(m.nloc, 1) for m in hotspot_metrics) / h_nloc
-                if h_nloc
-                else avg
+                sum(m.score * max(m.nloc, 1) for m in hotspot_metrics) / h_nloc if h_nloc else avg
             )
         else:
             hotspot_health = avg
@@ -287,7 +286,9 @@ class EditorFileDataFetcher:
         # Maintainability pillar headline: NLOC-weighted over the per-file
         # maintainability scores, skipping rows that predate the split. ``None``
         # when unmeasured so the section omits the line rather than printing 10.0.
-        maint_rows = [m for m in metric_rows if getattr(m, "maintainability_score", None) is not None]
+        maint_rows = [
+            m for m in metric_rows if getattr(m, "maintainability_score", None) is not None
+        ]
         maintainability_average: float | None = None
         if maint_rows:
             m_nloc = sum(max(m.nloc, 1) for m in maint_rows)
@@ -310,6 +311,12 @@ class EditorFileDataFetcher:
                 else sum(m.performance_score for m in perf_rows) / len(perf_rows)
             )
 
+        # Honest performance headline: how much of the analyzed code a perf
+        # detector actually ran on. Restricted to real code (LANGUAGE_MAPS), so a
+        # mostly-C++/Kotlin repo reads a low coverage %, never a bare 10/10.
+        lang_by_path = await crud.get_file_language_map(self._session, self._repo_id)
+        perf_coverage = coverage_for_metrics(metric_rows, lang_by_path)
+
         # Critical biomarkers: brain methods, or critical-severity findings
         # in hotspot files. Cap at 5 to keep CLAUDE.md tight.
         f_res = await self._session.execute(
@@ -321,6 +328,18 @@ class EditorFileDataFetcher:
             .order_by(HealthFinding.health_impact.desc())
         )
         all_findings = list(f_res.scalars().all())
+
+        # Open performance-finding count + density over covered LOC (the honest
+        # headline the diluted /10 hides).
+        performance_findings = sum(
+            1 for f in all_findings if (f.dimension or "defect") == "performance"
+        )
+        performance_findings_density: float | None = None
+        if perf_coverage.covered_nloc > 0:
+            performance_findings_density = round(
+                10000.0 * performance_findings / perf_coverage.covered_nloc, 2
+            )
+
         critical = []
         for f in all_findings:
             if len(critical) >= 5:
@@ -328,14 +347,16 @@ class EditorFileDataFetcher:
             if f.biomarker_type == "brain_method" or (
                 f.severity == "critical" and f.file_path in hotspot_paths
             ):
-                critical.append({
-                    "path": f.file_path,
-                    "summary": (
-                        f"{f.biomarker_type.replace('_', ' ')}"
-                        + (f" ({f.function_name})" if f.function_name else "")
-                        + f" — impact −{f.health_impact:.1f}"
-                    ),
-                })
+                critical.append(
+                    {
+                        "path": f.file_path,
+                        "summary": (
+                            f"{f.biomarker_type.replace('_', ' ')}"
+                            + (f" ({f.function_name})" if f.function_name else "")
+                            + f" — impact −{f.health_impact:.1f}"
+                        ),
+                    }
+                )
 
         return CodeHealthBlock(
             hotspot_health=round(hotspot_health, 2),
@@ -349,6 +370,13 @@ class EditorFileDataFetcher:
             performance_average=(
                 round(performance_average, 2) if performance_average is not None else None
             ),
+            performance_findings=performance_findings,
+            performance_findings_density=performance_findings_density,
+            performance_coverage_pct=(
+                perf_coverage.pct_loc if perf_coverage.analyzed_files else None
+            ),
+            performance_skipped_files=perf_coverage.skipped_files,
+            performance_unsupported_languages=perf_coverage.unsupported_languages,
             critical_biomarkers=critical,
             untested_hotspots=[],  # Phase 2 fills this from coverage data
         )

@@ -87,7 +87,11 @@ Worst: {{ data.code_health.worst_score }}/10 (`{{ data.code_health.worst_path }}
 Maintainability, Average: {{ data.code_health.maintainability_average }}/10
 {% endif %}
 {% if data.code_health.performance_average is not none %}
-Performance risk, Average: {{ data.code_health.performance_average }}/10
+Performance risk: {{ data.code_health.performance_findings }} open finding{{ 's' if data.code_health.performance_findings != 1 else '' }}{% if data.code_health.performance_findings_density is not none %} ({{ data.code_health.performance_findings_density }} per 10K covered LOC){% endif %} · Average: {{ data.code_health.performance_average }}/10 (a bounded [9,10] summary of the findings, not a verification claim)
+{% if data.code_health.performance_coverage_pct is not none %}
+Performance coverage: perf detectors ran on {{ data.code_health.performance_coverage_pct }}% of analyzed code lines{% if data.code_health.performance_skipped_files %}; {{ data.code_health.performance_skipped_files }} file(s) skipped in unsupported languages ({% for lang, n in data.code_health.performance_unsupported_languages[:3] %}{{ lang }}×{{ n }}{% if not loop.last %}, {% endif %}{% endfor %}){% endif %}
+{% endif %}
+Performance scope: static RISK detection (I/O-in-loop / N+1, resource-in-loop, regex/defer-in-loop, blocking-in-async); high-precision, low-recall. Does NOT cover algorithmic blowups, GC/memory pressure, or ORM lazy-load N+1. Full list: `get_health(include=["biomarkers","performance"])`.
 {% endif %}
 {% if data.code_health.critical_biomarkers %}
 

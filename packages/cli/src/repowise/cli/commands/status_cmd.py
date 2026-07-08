@@ -209,8 +209,15 @@ def _query_health_line(repo_path: Path) -> str | None:
     # split has populated it (None on indexes that predate the relevant work).
     maint = data.get("maintainability_average")
     maint_part = f" · {maint:.1f} (maintainability)" if maint is not None else ""
+    # Performance leads with the finding COUNT (the honest signal); the bounded
+    # /10 average trails in parens as a summary, never as a verification claim.
     perf = data.get("performance_average")
-    perf_part = f" · {perf:.1f} (performance)" if perf is not None else ""
+    perf_findings = data.get("performance_findings", 0)
+    perf_part = (
+        f" · {perf_findings} perf finding{'s' if perf_findings != 1 else ''} ({perf:.1f})"
+        if perf is not None
+        else ""
+    )
     return (
         f"[bold]Health:[/bold] {data['average_health']:.1f} (avg) "
         f"[[{band_color}]{BAND_LABEL[band]}[/{band_color}]] · "

@@ -249,6 +249,18 @@ export const BIOMARKER_GLOSSARY: Record<string, BiomarkerInfo> = {
     description:
       "A synchronous blocking call (time.sleep, requests.get, subprocess.run) inside an async function blocks the whole event loop, stalling every other coroutine. Mirrors ruff's ASYNC210/230/251.",
   },
+  regex_compile_in_loop: {
+    label: "Regex compiled in loop",
+    category: "performance",
+    description:
+      "A regex with a static pattern compiled every loop iteration (Pattern.compile, regexp.MustCompile, Regex::new) instead of once. Compilation dominates matching, so recompiling a constant pattern is wasted work. Fires only where the language does not cache compiled patterns (Java, Go, Rust). Hoist the compile outside the loop.",
+  },
+  defer_in_loop: {
+    label: "Defer in loop",
+    category: "performance",
+    description:
+      "A Go `defer` inside a loop runs when the enclosing function returns, not at the end of the iteration, so a resource opened-and-deferred each iteration stays held until the function exits — the classic file-handle / *sql.Rows leak. Close it in the loop body, or wrap the body in its own function so the defer fires per iteration.",
+  },
   resource_construction_in_loop: {
     label: "Resource built in loop",
     category: "performance",
@@ -376,6 +388,8 @@ export const PERFORMANCE_HOME_BIOMARKERS: ReadonlySet<string> = new Set([
   "io_in_loop",
   "string_concat_in_loop",
   "blocking_sync_in_async",
+  "regex_compile_in_loop",
+  "defer_in_loop",
   "resource_construction_in_loop",
   "lock_in_loop",
   "serial_await_in_loop",

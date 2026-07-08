@@ -54,6 +54,8 @@ def test_render_contains_repo_name(gen):
 def _health_block(
     maintainability_average: float | None,
     performance_average: float | None = None,
+    performance_findings: int = 0,
+    performance_coverage_pct: float | None = None,
 ) -> CodeHealthBlock:
     return CodeHealthBlock(
         hotspot_health=5.0,
@@ -62,6 +64,8 @@ def _health_block(
         worst_path="src/bad.py",
         maintainability_average=maintainability_average,
         performance_average=performance_average,
+        performance_findings=performance_findings,
+        performance_coverage_pct=performance_coverage_pct,
     )
 
 
@@ -87,10 +91,16 @@ def test_render_surfaces_performance_when_present(gen):
     import dataclasses
 
     data = dataclasses.replace(
-        _minimal_data(), code_health=_health_block(6.4, performance_average=9.2)
+        _minimal_data(),
+        code_health=_health_block(
+            6.4, performance_average=9.2, performance_findings=7, performance_coverage_pct=88.0
+        ),
     )
     result = gen.render(data)
-    assert "Performance risk, Average: 9.2/10" in result
+    # Leads with the finding COUNT + coverage, not the bounded /10.
+    assert "Performance risk: 7 open findings" in result
+    assert "Average: 9.2/10" in result
+    assert "perf detectors ran on 88.0% of analyzed code lines" in result
 
 
 def test_render_omits_performance_when_unmeasured(gen):
@@ -100,7 +110,7 @@ def test_render_omits_performance_when_unmeasured(gen):
     result = gen.render(data)
     # Maintainability still renders; the performance line is suppressed.
     assert "Maintainability, Average: 6.4/10" in result
-    assert "Performance risk, Average" not in result
+    assert "Performance risk:" not in result
 
 
 def test_write_creates_new_file(gen, tmp_path):

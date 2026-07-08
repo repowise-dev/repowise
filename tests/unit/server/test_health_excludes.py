@@ -96,6 +96,12 @@ async def test_health_reads_honor_repo_settings_excludes(session, tmp_path) -> N
         "performance_average": None,
         "maintainability_findings": 0,
         "performance_findings": 0,
+        "performance_findings_density": None,
+        "performance_coverage_pct": None,
+        "performance_covered_files": 0,
+        "performance_analyzed_files": 0,
+        "performance_skipped_files": 0,
+        "performance_unsupported_languages": [],
         "worst_performance_path": None,
         "worst_performance_score": None,
     }

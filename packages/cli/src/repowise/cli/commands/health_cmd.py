@@ -394,6 +394,14 @@ def health_command(
 
     _render_defect_accuracy_line(report)
 
+    # Performance pillar section: lead with the finding COUNT + density +
+    # coverage (the honest signal), not the bounded /10 average. Language comes
+    # from the parsed files (the in-memory metrics don't carry it).
+    _render_performance_section(
+        report,
+        {pf.file_info.path: pf.file_info.language for pf in parsed_files},
+    )
+
     table = Table(title=f"Lowest-scoring files ({min(len(metrics_sorted), 20)})")
     table.add_column("File", style="cyan")
     table.add_column("Score", justify="right")
@@ -430,6 +438,49 @@ def health_command(
                 f"-{f.health_impact:.2f}",
             )
         console.print(f_table)
+
+
+def _render_performance_section(report: Any, lang_by_path: dict[str, str]) -> None:
+    """Honest performance headline: finding count + density + coverage + scope.
+
+    Leads with the open-finding count and how much of the analyzed code a perf
+    detector actually ran on, so a mostly-unsupported-language repo reads a low
+    coverage % rather than a meaningless bounded 10/10. Silent when no code file
+    carries a supported language (nothing to say).
+    """
+    from repowise.core.analysis.health.perf.coverage import coverage_for_metrics
+
+    coverage = coverage_for_metrics(report.metrics, lang_by_path)
+    if not coverage.analyzed_files:
+        return
+    perf_findings = sum(
+        1 for f in report.findings if getattr(f, "dimension", "defect") == "performance"
+    )
+    perf_avg = report.kpis.get("performance_average")
+
+    parts = [f"[bold]{perf_findings}[/bold] finding{'s' if perf_findings != 1 else ''}"]
+    if coverage.covered_nloc > 0:
+        density = round(10000.0 * perf_findings / coverage.covered_nloc, 2)
+        parts.append(f"{density}/10K covered LOC")
+    if isinstance(perf_avg, (int, float)):
+        parts.append(f"avg {perf_avg:.1f}/10")
+    console.print(
+        "\n[bold]Performance risk[/bold] "
+        "[dim](static, high-precision/low-recall)[/dim]: " + " · ".join(parts)
+    )
+
+    cov_line = (
+        f"[dim]Coverage:[/dim] perf ran on {coverage.pct_loc}% of analyzed code lines "
+        f"({coverage.covered_files}/{coverage.analyzed_files} files)"
+    )
+    if coverage.skipped_files:
+        langs = ", ".join(f"{lang} x{n}" for lang, n in coverage.unsupported_languages[:3])
+        cov_line += f"; {coverage.skipped_files} skipped in unsupported languages ({langs})"
+    console.print(cov_line)
+    console.print(
+        "[dim]Scope: I/O-in-loop / N+1, resource/regex/defer-in-loop, blocking-in-async. "
+        "Not covered: algorithmic blowups, GC pressure, ORM lazy-load N+1.[/dim]"
+    )
 
 
 def _render_distribution_line(dist: dict) -> None:

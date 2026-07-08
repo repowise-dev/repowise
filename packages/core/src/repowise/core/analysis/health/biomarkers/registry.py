@@ -25,6 +25,7 @@ from .complex_conditional import ComplexConditionalDetector
 from .complex_method import ComplexMethodDetector
 from .coverage_gap import CoverageGapDetector
 from .coverage_gradient import CoverageGradientDetector
+from .defer_in_loop import DeferInLoopDetector
 from .developer_congestion import DeveloperCongestionDetector
 from .dry_violation import DryViolationDetector
 from .duplicated_assertion_block import DuplicatedAssertionBlockDetector
@@ -51,6 +52,7 @@ from .pandas_iterrows_in_loop import PandasIterrowsInLoopDetector
 from .pd_concat_in_loop import PdConcatInLoopDetector
 from .primitive_obsession import PrimitiveObsessionDetector
 from .prior_defect import PriorDefectDetector
+from .regex_compile_in_loop import RegexCompileInLoopDetector
 from .resource_construction_in_loop import ResourceConstructionInLoopDetector
 from .serial_await_in_loop import SerialAwaitInLoopDetector
 from .sql_cartesian_join import SqlCartesianJoinDetector
@@ -91,6 +93,10 @@ _DETECTOR_FACTORIES: list[type[Biomarker]] = [
     IoInLoopDetector,  # type: ignore[list-item]
     StringConcatInLoopDetector,  # type: ignore[list-item]
     BlockingSyncInAsyncDetector,  # type: ignore[list-item]
+    # Phase 6 dialect markers — emitted by the Java/Go/Rust dialects but
+    # previously unwired (no lifter), so recall-zero until now.
+    RegexCompileInLoopDetector,  # type: ignore[list-item]
+    DeferInLoopDetector,  # type: ignore[list-item]
     # Phase 7a — cheap, high-precision loop markers.
     ResourceConstructionInLoopDetector,  # type: ignore[list-item]
     LockInLoopDetector,  # type: ignore[list-item]

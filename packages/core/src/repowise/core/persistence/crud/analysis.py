@@ -9,16 +9,20 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+if TYPE_CHECKING:
+    from ...analysis.health.perf.coverage import PerfCoverage
 
 from repowise.core.analysis.dead_code.risk_factors import effective_safe_to_delete
 
 from ..models import (
     CoverageFile,
     DeadCodeFinding,
+    GraphNode,
     HealthFileMetric,
     HealthFinding,
     HealthSnapshot,
@@ -529,6 +533,26 @@ async def get_health_metrics(
     )
 
 
+async def get_file_language_map(session: AsyncSession, repository_id: str) -> dict[str, str]:
+    """``{file_path: language_tag}`` for every file node in the graph."""
+    q = select(GraphNode.node_id, GraphNode.language).where(
+        GraphNode.repository_id == repository_id,
+        GraphNode.node_type == "file",
+    )
+    return {node_id: language for node_id, language in (await session.execute(q)).all()}
+
+
+async def get_perf_coverage(session: AsyncSession, repository_id: str) -> PerfCoverage:
+    """How much of the analyzed code the performance pass was able to run on."""
+    # Imported lazily to keep the persistence layer free of an analysis-layer
+    # import at module load (and to avoid a circular import).
+    from ...analysis.health.perf.coverage import coverage_for_metrics
+
+    metrics = await get_health_metrics(session, repository_id)
+    lang_by_path = await get_file_language_map(session, repository_id)
+    return coverage_for_metrics(metrics, lang_by_path)
+
+
 async def get_health_summary(session: AsyncSession, repository_id: str) -> dict:
     """Aggregate KPIs over the per-file metrics table."""
     metrics = await get_health_metrics(session, repository_id)
@@ -543,6 +567,12 @@ async def get_health_summary(session: AsyncSession, repository_id: str) -> dict:
             "performance_average": None,
             "maintainability_findings": 0,
             "performance_findings": 0,
+            "performance_findings_density": None,
+            "performance_coverage_pct": None,
+            "performance_covered_files": 0,
+            "performance_analyzed_files": 0,
+            "performance_skipped_files": 0,
+            "performance_unsupported_languages": [],
             "worst_performance_path": None,
             "worst_performance_score": None,
         }
@@ -600,6 +630,21 @@ async def get_health_summary(session: AsyncSession, repository_id: str) -> dict:
     for finding in findings:
         dim = finding.dimension or "defect"
         by_dim[dim] = by_dim.get(dim, 0) + 1
+
+    # Perf coverage: honest denominator for the score. On a repo that is mostly a
+    # perf-unsupported language the aggregate perf average is meaningless, so we
+    # surface how much of the analyzed code a detector actually ran on, plus a
+    # findings-per-10K-LOC density over the *covered* lines (not the whole repo).
+    from ...analysis.health.perf.coverage import coverage_for_metrics
+
+    lang_by_path = await get_file_language_map(session, repository_id)
+    coverage = coverage_for_metrics(metrics, lang_by_path)
+    performance_findings = by_dim.get("performance", 0)
+    performance_findings_density: float | None = None
+    if coverage.covered_nloc > 0:
+        performance_findings_density = round(
+            10000.0 * performance_findings / coverage.covered_nloc, 2
+        )
     return {
         "file_count": len(metrics),
         "average_health": round(avg, 2),
@@ -613,7 +658,13 @@ async def get_health_summary(session: AsyncSession, repository_id: str) -> dict:
             round(performance_average, 2) if performance_average is not None else None
         ),
         "maintainability_findings": by_dim.get("maintainability", 0),
-        "performance_findings": by_dim.get("performance", 0),
+        "performance_findings": performance_findings,
+        "performance_findings_density": performance_findings_density,
+        "performance_coverage_pct": (coverage.pct_loc if coverage.analyzed_files else None),
+        "performance_covered_files": coverage.covered_files,
+        "performance_analyzed_files": coverage.analyzed_files,
+        "performance_skipped_files": coverage.skipped_files,
+        "performance_unsupported_languages": coverage.unsupported_languages,
         "worst_performance_path": worst_performance_path,
         "worst_performance_score": worst_performance_score,
     }

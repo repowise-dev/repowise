@@ -58,6 +58,17 @@ class CodeHealthBlock:
     # performance scores: static performance RISK). ``None`` when unmeasured, so
     # the section omits the line rather than printing a misleading 10.0.
     performance_average: float | None = None
+    # Honest performance headline: the open finding count, its density per 10K
+    # covered LOC, and how much of the analyzed code a perf detector actually ran
+    # on. An agent reading a bare 9.9/10 should still see "N findings" and "perf
+    # ran on X% of the code" so a mostly-unsupported-language repo never reads as
+    # verified-fast. ``performance_coverage_pct`` is ``None`` when no code file
+    # carries a supported language.
+    performance_findings: int = 0
+    performance_findings_density: float | None = None
+    performance_coverage_pct: float | None = None
+    performance_skipped_files: int = 0
+    performance_unsupported_languages: list[tuple[str, int]] = field(default_factory=list)
     critical_biomarkers: list[dict] = field(default_factory=list)
     untested_hotspots: list[dict] = field(default_factory=list)
 
