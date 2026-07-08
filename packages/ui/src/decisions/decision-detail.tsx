@@ -33,7 +33,10 @@ import { ConfirmDialog } from "../ui/confirm-dialog";
 import { stripMarkdown } from "../lib/format";
 import { AiPromptButton } from "../health/ai-prompt-button";
 import { AiPromptModal } from "../health/ai-prompt-modal";
-import { buildDecisionAiPrompt } from "../health/ai-prompt-builder";
+import {
+  buildDecisionAiPrompt,
+  buildDecisionEnforcementAiPrompt,
+} from "../health/ai-prompt-builder";
 
 import { ModuleLinkEditor } from "./module-link-editor";
 import { VerificationBadge } from "./verification-badge";
@@ -89,7 +92,9 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
   const [linkedFiles, setLinkedFiles] = React.useState(decision.affected_files);
   const [linkageSaving, setLinkageSaving] = React.useState(false);
   const [evidenceOpen, setEvidenceOpen] = React.useState(false);
-  const [promptOpen, setPromptOpen] = React.useState(false);
+  // Which AI-prompt flavor the modal shows: verification ("is this decision
+  // still true?") or enforcement ("make the code conform to it").
+  const [promptMode, setPromptMode] = React.useState<"verify" | "enforce" | null>(null);
 
   // Lineage: cheap, load eagerly so the Evolution timeline renders when present.
   const { data: lineage } = useSWR(
@@ -258,9 +263,15 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
           )}
           <AiPromptButton
             label={status === "proposed" ? "Verify & confirm with AI" : "Verify with AI"}
-            onClick={() => setPromptOpen(true)}
+            onClick={() => setPromptMode("verify")}
             className="ml-auto"
           />
+          {status === "active" && (
+            <AiPromptButton
+              label="Enforce this decision"
+              onClick={() => setPromptMode("enforce")}
+            />
+          )}
           <button
             type="button"
             onClick={() => setEvidenceOpen(true)}
@@ -278,7 +289,7 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
               Staleness: {decision.staleness_score.toFixed(2)}
             </span>
           )}
-          <span>Created: {new Date(decision.created_at).toLocaleDateString()}</span>
+          <span>Created: {formatDateOrDash(decision.created_at)}</span>
         </div>
       </div>
 
@@ -331,8 +342,7 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
           <div className="space-y-2 text-sm">
             {decision.last_code_change && (
               <p className="text-xs text-[var(--color-text-tertiary)]">
-                Affected files last changed{" "}
-                {new Date(decision.last_code_change).toLocaleDateString()}.
+                Affected files last changed {formatDateOrDash(decision.last_code_change)}.
               </p>
             )}
             <div className="flex flex-col gap-1.5">
@@ -389,33 +399,49 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
       )}
 
       {/* Actions */}
-      <div className="flex gap-2 border-t border-[var(--color-border-default)] pt-4">
-        {status === "proposed" && (
-          <>
-            <button
-              onClick={() => handleStatusChange("active")}
-              disabled={loading}
-              className="rounded-md bg-[var(--color-success)] px-3 py-1.5 text-sm font-medium text-[var(--color-text-inverse)] hover:opacity-90 disabled:opacity-50"
-            >
-              Confirm
-            </button>
+      <div className="space-y-2 border-t border-[var(--color-border-default)] pt-4">
+        <div className="flex gap-2">
+          {status === "proposed" && (
+            <>
+              <button
+                onClick={() => handleStatusChange("active")}
+                disabled={loading}
+                className="rounded-md bg-[var(--color-success)] px-3 py-1.5 text-sm font-medium text-[var(--color-text-inverse)] hover:opacity-90 disabled:opacity-50"
+              >
+                Confirm
+              </button>
+              <button
+                onClick={() => handleStatusChange("deprecated")}
+                disabled={loading}
+                className="rounded-md border border-[var(--color-border-default)] px-3 py-1.5 text-sm text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] disabled:opacity-50"
+              >
+                Dismiss
+              </button>
+            </>
+          )}
+          {status === "active" && (
             <button
               onClick={() => handleStatusChange("deprecated")}
               disabled={loading}
-              className="rounded-md border border-[var(--color-border-default)] px-3 py-1.5 text-sm text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] disabled:opacity-50"
+              className="rounded-md border border-[var(--color-error)]/40 px-3 py-1.5 text-sm text-[var(--color-error)] hover:bg-[var(--color-error)]/10 disabled:opacity-50"
             >
-              Dismiss
+              Deprecate
             </button>
-          </>
+          )}
+        </div>
+        {status === "proposed" && (
+          <p className="text-xs text-[var(--color-text-tertiary)]">
+            Confirm marks this as an accurate, current decision for your team.
+            Dismiss hides it from the active list as inaccurate or no longer
+            relevant. Neither changes any code.
+          </p>
         )}
         {status === "active" && (
-          <button
-            onClick={() => handleStatusChange("deprecated")}
-            disabled={loading}
-            className="rounded-md border border-[var(--color-error)]/40 px-3 py-1.5 text-sm text-[var(--color-error)] hover:bg-[var(--color-error)]/10 disabled:opacity-50"
-          >
-            Deprecate
-          </button>
+          <p className="text-xs text-[var(--color-text-tertiary)]">
+            Deprecate marks this decision as no longer current — existing
+            references remain, but it stops being treated as the standard. It
+            doesn&apos;t change any code.
+          </p>
         )}
       </div>
       {confirmConfig && (
@@ -441,10 +467,12 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
       />
 
       <AiPromptModal
-        open={promptOpen}
-        onOpenChange={setPromptOpen}
+        open={promptMode !== null}
+        onOpenChange={(o) => !o && setPromptMode(null)}
         getPrompt={(flavor) =>
-          buildDecisionAiPrompt({
+          (promptMode === "enforce"
+            ? buildDecisionEnforcementAiPrompt
+            : buildDecisionAiPrompt)({
             decision: {
               title: decision.title,
               status,
@@ -462,11 +490,27 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
           })
         }
         filePath={stripMarkdown(decision.title)}
-        title="AI decision verification"
-        description="A ready-to-paste prompt that has your AI agent check this decision against the current code and recommend whether to keep, update, or retire it."
+        title={
+          promptMode === "enforce"
+            ? "AI decision enforcement"
+            : "AI decision verification"
+        }
+        description={
+          promptMode === "enforce"
+            ? "A ready-to-paste prompt that has your AI agent audit the governed code for compliance with this decision and fix every violation it finds."
+            : "A ready-to-paste prompt that has your AI agent check this decision against the current code and recommend whether to keep, update, or retire it."
+        }
       />
     </div>
   );
+}
+
+/** Older/hosted backends can omit decision timestamps — render "—" instead of
+ *  "Invalid Date" for a missing or unparseable value. */
+function formatDateOrDash(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? "—" : d.toLocaleDateString();
 }
 
 function PrevNextLink({

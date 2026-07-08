@@ -119,6 +119,35 @@ describe("DecisionDetail", () => {
     expect(await screen.findByText("Evolution")).toBeInTheDocument();
   });
 
+  it("renders a dash instead of 'Invalid Date' when created_at is missing", () => {
+    renderView(
+      <DecisionDetail
+        decision={makeDecision({ created_at: undefined as unknown as string })}
+        adapter={makeAdapter()}
+      />,
+    );
+    expect(screen.getByText("Created: —")).toBeInTheDocument();
+    expect(screen.queryByText(/Invalid Date/i)).not.toBeInTheDocument();
+  });
+
+  it("explains what Confirm/Dismiss do next to the buttons", () => {
+    renderView(<DecisionDetail decision={makeDecision()} adapter={makeAdapter()} />);
+    expect(
+      screen.getByText(/Confirm marks this as an accurate, current decision/),
+    ).toBeInTheDocument();
+  });
+
+  it("offers the enforcement prompt only for active decisions", () => {
+    const { unmount } = renderView(
+      <DecisionDetail decision={makeDecision({ status: "active" })} adapter={makeAdapter()} />,
+    );
+    expect(screen.getByRole("button", { name: /Enforce this decision/ })).toBeInTheDocument();
+    unmount();
+
+    renderView(<DecisionDetail decision={makeDecision()} adapter={makeAdapter()} />);
+    expect(screen.queryByRole("button", { name: /Enforce this decision/ })).not.toBeInTheDocument();
+  });
+
   it("renders a host-supplied linked-issues slot, and nothing when omitted", () => {
     const withSlot = makeAdapter({
       renderLinkedIssues: () => <div>JIRA-123 linked</div>,
