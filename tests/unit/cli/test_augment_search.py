@@ -320,12 +320,12 @@ def _call(tool_name, pattern, output_text, cwd):
 
 class TestDecisionTree:
     def test_skip_when_pattern_is_path(self, repowise_cwd) -> None:
-        with patch.object(augment_cmd, "_search_enrich") as enrich:
+        with patch.object(augment_cmd.search, "_search_enrich") as enrich:
             assert _call("Grep", "src/foo.py", "src/foo.py:1: x", repowise_cwd) is None
             enrich.assert_not_called()
 
     def test_skip_when_no_pattern(self, repowise_cwd) -> None:
-        with patch.object(augment_cmd, "_search_enrich") as enrich:
+        with patch.object(augment_cmd.search, "_search_enrich") as enrich:
             assert (
                 _handle_search_post(
                     tool_name="Grep",
@@ -339,14 +339,14 @@ class TestDecisionTree:
 
     def test_skip_when_outside_repowise_repo(self, tmp_path) -> None:
         # No .repowise dir: silently skip without invoking the enrich path.
-        with patch.object(augment_cmd, "_search_enrich") as enrich:
+        with patch.object(augment_cmd.search, "_search_enrich") as enrich:
             assert _call("Grep", "auth", "src/a.py:1: hit", tmp_path) is None
             enrich.assert_not_called()
 
     def test_skip_on_focused_result_set(self, repowise_cwd) -> None:
         """1–14 lines = focused: agent has what it wanted, hook stays silent."""
         output = "\n".join(f"src/file{i}.py:1: hit" for i in range(5))
-        with patch.object(augment_cmd, "_search_enrich") as enrich:
+        with patch.object(augment_cmd.search, "_search_enrich") as enrich:
             assert _call("Grep", "auth", output, repowise_cwd) is None
             enrich.assert_not_called()
 
@@ -361,7 +361,7 @@ class TestDecisionTree:
     def test_rescue_mode_on_true_zero_results(self, repowise_cwd, tool_output) -> None:
         """A positively-identified zero + concept query → rescue mode."""
         sentinel = object()
-        with patch.object(augment_cmd, "_search_enrich", return_value=sentinel) as enrich:
+        with patch.object(augment_cmd.search, "_search_enrich", return_value=sentinel) as enrich:
             with patch("asyncio.run", side_effect=lambda coro: (coro.close(), sentinel)[1]):
                 _handle_search_post(
                     tool_name="Grep",
@@ -377,7 +377,7 @@ class TestDecisionTree:
 
     def test_no_rescue_for_successful_files_mode_grep(self, repowise_cwd) -> None:
         """The live bug: files_with_matches results must never read as zero."""
-        with patch.object(augment_cmd, "_search_enrich") as enrich:
+        with patch.object(augment_cmd.search, "_search_enrich") as enrich:
             result = _handle_search_post(
                 tool_name="Grep",
                 tool_input={"pattern": "distill_savings"},
@@ -397,7 +397,7 @@ class TestDecisionTree:
         ],
     )
     def test_unknown_shape_skips_never_rescues(self, repowise_cwd, tool_output) -> None:
-        with patch.object(augment_cmd, "_search_enrich") as enrich:
+        with patch.object(augment_cmd.search, "_search_enrich") as enrich:
             result = _handle_search_post(
                 tool_name="Grep",
                 tool_input={"pattern": "parse_yaml"},
@@ -418,7 +418,7 @@ class TestDecisionTree:
     )
     def test_zero_match_rescue_skipped_when_irrelevant(self, repowise_cwd, tool_input) -> None:
         """Regex patterns and single non-code-file scopes never rescue."""
-        with patch.object(augment_cmd, "_search_enrich") as enrich:
+        with patch.object(augment_cmd.search, "_search_enrich") as enrich:
             result = _handle_search_post(
                 tool_name="Grep",
                 tool_input=tool_input,
@@ -434,7 +434,7 @@ class TestDecisionTree:
 
         big = "\n".join(f"src/file{i}.py:1: hit" for i in range(_TRIAGE_THRESHOLD + 5))
         sentinel = object()
-        with patch.object(augment_cmd, "_search_enrich", return_value=sentinel) as enrich:
+        with patch.object(augment_cmd.search, "_search_enrich", return_value=sentinel) as enrich:
             with patch("asyncio.run", side_effect=lambda coro: (coro.close(), sentinel)[1]):
                 _call("Grep", "auth", big, repowise_cwd)
             call_args = enrich.call_args_list[0]
@@ -473,7 +473,7 @@ class TestFloodDigest:
     def test_few_files_fall_through_to_triage(self, repowise_cwd) -> None:
         """A flood concentrated in 1-2 files is already navigable — no digest."""
         sentinel = "triaged"
-        with patch.object(augment_cmd, "_search_enrich", return_value=sentinel) as enrich:
+        with patch.object(augment_cmd.search, "_search_enrich", return_value=sentinel) as enrich:
             with patch("asyncio.run", side_effect=lambda coro: (coro.close(), sentinel)[1]):
                 out = _call("Grep", "auth", _flood(files=2, per_file=40), repowise_cwd)
             assert out == sentinel
@@ -483,7 +483,7 @@ class TestFloodDigest:
         """Glob-style bare path lists can't be grouped — triage handles them."""
         big = "\n".join(f"line {i} of something unstructured" for i in range(60))
         sentinel = "triaged"
-        with patch.object(augment_cmd, "_search_enrich", return_value=sentinel) as enrich:
+        with patch.object(augment_cmd.search, "_search_enrich", return_value=sentinel) as enrich:
             with patch("asyncio.run", side_effect=lambda coro: (coro.close(), sentinel)[1]):
                 out = _call("Grep", "auth", big, repowise_cwd)
             assert out == sentinel
