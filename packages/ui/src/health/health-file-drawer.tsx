@@ -45,9 +45,11 @@ export interface HealthDrawerFinding {
 export interface HealthDrawerMetric {
   file_path: string;
   score: number;
-  max_ccn: number;
-  max_nesting: number;
-  nloc: number;
+  /** Structural counters — null when the host has no metric row for the
+   *  file, so the drawer can say "not measured" instead of a misleading 0. */
+  max_ccn: number | null;
+  max_nesting: number | null;
+  nloc: number | null;
   module: string | null;
   duplication_pct?: number | null;
   line_coverage_pct?: number | null;
@@ -334,9 +336,9 @@ export function HealthFileDrawer({
                     </span>
                   )
                 } />
-                <Stat label="Max CCN" value={<span className="text-base font-semibold tabular-nums">{metric.max_ccn}</span>} />
-                <Stat label="Nest" value={<span className="text-base font-semibold tabular-nums">{metric.max_nesting}</span>} />
-                <Stat label="NLOC" value={<span className="text-base font-semibold tabular-nums">{metric.nloc}</span>} />
+                <Stat label="Max CCN" value={<MeasuredNum v={metric.max_ccn} />} />
+                <Stat label="Nest" value={<MeasuredNum v={metric.max_nesting} />} />
+                <Stat label="NLOC" value={<MeasuredNum v={metric.nloc} />} />
                 <Stat label="Module" value={<span className="text-xs">{metric.module ?? "—"}</span>} />
                 <Stat label="Tests" value={<span className="text-xs">{metric.has_test_file ? "Paired" : "None"}</span>} />
                 <Stat label="Coverage" value={
@@ -504,6 +506,22 @@ function FunctionFindingsGroup({
       ) : null}
     </div>
   );
+}
+
+/** A structural counter that may genuinely be unmeasured — say so instead of
+ *  rendering a misleading 0. */
+function MeasuredNum({ v }: { v: number | null }) {
+  if (v == null) {
+    return (
+      <span
+        className="text-xs text-[var(--color-text-tertiary)]"
+        title="Not measured — no metric row is available for this file on this snapshot."
+      >
+        not measured
+      </span>
+    );
+  }
+  return <span className="text-base font-semibold tabular-nums">{v}</span>;
 }
 
 function Stat({ label, value }: { label: string; value: React.ReactNode }) {

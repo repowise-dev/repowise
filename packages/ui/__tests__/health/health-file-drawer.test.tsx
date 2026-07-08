@@ -70,3 +70,28 @@ describe("HealthFileDrawer finding grouping", () => {
     expect(screen.getByRole("button", { name: /_run_repo_checks/ })).toBeInTheDocument();
   });
 });
+
+describe("HealthFileDrawer metric cards", () => {
+  it("says 'not measured' instead of 0 when structural counters are absent", () => {
+    render(
+      <HealthFileDrawer
+        open
+        onClose={() => {}}
+        metric={metric({ max_ccn: null, max_nesting: null, nloc: null })}
+      />,
+    );
+    expect(screen.getAllByText("not measured")).toHaveLength(3);
+  });
+
+  it("still renders real zero values as numbers", () => {
+    render(
+      <HealthFileDrawer
+        open
+        onClose={() => {}}
+        metric={metric({ max_ccn: 0, max_nesting: 0, nloc: 12 })}
+      />,
+    );
+    expect(screen.queryByText("not measured")).not.toBeInTheDocument();
+    expect(screen.getByText("12")).toBeInTheDocument();
+  });
+});

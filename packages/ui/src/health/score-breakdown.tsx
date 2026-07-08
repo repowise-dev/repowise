@@ -66,8 +66,16 @@ export function ScoreBreakdown({
           .map((c) => {
           const label =
             CATEGORY_LABEL[c.category as BiomarkerCategory] ?? c.category;
-          const cap = CATEGORY_CAP[c.category as BiomarkerCategory] ?? c.cap;
-          const pct = Math.min(100, (c.applied_deduction / Math.max(cap, 0.01)) * 100);
+          // Only trust the glossary's caps for scaling the bar. A
+          // payload-supplied cap for an unknown category is often just the
+          // deduction echoed back at itself, which would render a
+          // meaningless always-full bar.
+          const knownCap = CATEGORY_CAP[c.category as BiomarkerCategory];
+          const cap = knownCap ?? c.cap;
+          const pct = Math.min(
+            100,
+            (Math.abs(c.applied_deduction) / Math.max(Math.abs(cap), 0.01)) * 100,
+          );
           return (
             <div
               key={c.category}
@@ -77,14 +85,26 @@ export function ScoreBreakdown({
                 <span className="font-medium text-[var(--color-text-primary)]">
                   {label}
                 </span>
-                <span className="tabular-nums text-[var(--color-text-tertiary)]">
+                <span
+                  className="cursor-help tabular-nums text-[var(--color-text-tertiary)]"
+                  title="The cap is the most this category is allowed to subtract from the 10-point score, no matter how many findings it has."
+                >
                   −{c.applied_deduction.toFixed(2)} / cap −{cap.toFixed(1)}
-                  {c.capped ? <span className="ml-1 text-[var(--color-warning)]" title="Capped">(capped)</span> : null}
+                  {c.capped ? <span className="ml-1 text-[var(--color-warning)]" title="Raw deductions exceeded the cap; only the cap was subtracted.">(capped)</span> : null}
                 </span>
               </div>
               <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-[var(--color-bg-muted)]">
                 <div
-                  className="h-full bg-[var(--color-error)]/70"
+                  className={
+                    knownCap != null
+                      ? "h-full bg-[var(--color-error)]/70"
+                      : "h-full bg-[var(--color-text-tertiary)]/40"
+                  }
+                  title={
+                    knownCap == null
+                      ? "No defined cap for this category — bar scale is approximate."
+                      : undefined
+                  }
                   style={{ width: `${pct}%` }}
                 />
               </div>
