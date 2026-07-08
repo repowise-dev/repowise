@@ -105,9 +105,6 @@ class GoPerfDialect(BasePerfDialect):
     markers = frozenset(
         {
             "io_in_loop",
-            # Record own data-dependent loops so a caller looping over this
-            # function becomes a cross-function quadratic target.
-            "interprocedural_quadratic_loop",
             "string_concat_in_loop",
             "defer_in_loop",
             "regex_compile_in_loop",

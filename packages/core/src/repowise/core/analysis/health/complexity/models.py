@@ -185,14 +185,6 @@ class PerfHit:
       (C# ``lock``/Java ``synchronized``) is held. Same-function (sink lexically
       under the lock) is emitted here; the cross-function case is added by
       ``perf.gated.collect_blocking_io_under_lock``.
-    - ``interprocedural_quadratic_loop`` — a loop calls a helper that, within a
-      few hops, contains its OWN data-dependent loop: O(n^2)+ pure-CPU cost split
-      across the call boundary (no I/O involved). Cross-function only, produced by
-      ``perf.gated.collect_interprocedural_quadratic``. **Infrastructure only, not
-      surfaced:** the collector validated at ~2% precision (the naive sink
-      over-fires on linear-total "process each element's own children" shapes), so
-      no biomarker consumes this kind and the engine does not run the pass. Kept
-      for a future interprocedural-dataflow-gated detector.
 
     The Phase-7a markers above are emitted via the dialect ``loop_call_marker`` /
     ``loop_stmt_marker`` hooks (and the inline awaited-sink path for
@@ -247,13 +239,6 @@ class PerfFnFacts:
     rightmost names of non-sink calls made while a block-scoped lock is held.
     Each is a candidate helper whose body might reach a sink transitively —
     the cross-function ``blocking_io_under_lock`` entry points.
-
-    ``own_loop_line`` makes the function an ``interprocedural_quadratic_loop``
-    *reachability target*: a representative line of a data-dependent loop the
-    function contains at any depth (0 = none). When a loop in another function
-    calls into this one (directly or within a few hops), the callee's own loop
-    runs once per outer iteration — an O(n^2)+ algorithmic cost with no I/O. It is
-    the pure-CPU analogue of ``bare_sink_kind`` (which targets an I/O sink).
     """
 
     function: str | None
@@ -271,10 +256,6 @@ class PerfFnFacts:
     nested_loop_line: int = 0
     blocking_sink_kind: str | None = None
     blocking_sink_line: int = 0
-    # Cross-function quadratic fact: a representative data-dependent loop line
-    # this function contains (0 = none). Makes the function a reachability target
-    # for the cross-function ``interprocedural_quadratic_loop`` pass.
-    own_loop_line: int = 0
 
 
 @dataclass
