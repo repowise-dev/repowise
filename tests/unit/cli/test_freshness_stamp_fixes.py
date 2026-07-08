@@ -119,7 +119,7 @@ def test_advise_stamp_prints_on_drift(tmp_path, monkeypatch):
     _write_claude_md(tmp_path, "1c67e0a9")
     printed: list[str] = []
     monkeypatch.setattr(
-        doctor_cmd.console,
+        doctor_cmd.advisories.console,
         "print",
         lambda *a, **k: printed.append(" ".join(str(x) for x in a)),
     )
@@ -137,7 +137,7 @@ def test_advise_stamp_skips_when_claude_md_disabled(tmp_path, monkeypatch):
     )
     printed: list[str] = []
     monkeypatch.setattr(
-        doctor_cmd.console,
+        doctor_cmd.advisories.console,
         "print",
         lambda *a, **k: printed.append(" ".join(str(x) for x in a)),
     )
