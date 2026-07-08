@@ -1,6 +1,12 @@
 import { Bot, CalendarClock, Users, ShieldCheck, Trash2, HeartPulse } from "lucide-react";
 import type { StatsHighlights } from "@repowise-dev/types/stats";
-import { SizeClassHero, StatCallout, SuperlativesGrid } from "@repowise-dev/ui/stats";
+import {
+  SizeClassHero,
+  StatCallout,
+  SuperlativesGrid,
+  NLOC_HINT,
+  AGENT_PCT_HINT,
+} from "@repowise-dev/ui/stats";
 import { formatNumber, formatLOC, formatAgeDays, formatDate } from "@repowise-dev/ui/lib/format";
 
 export function ByTheNumbersTab({ data }: { data: StatsHighlights }) {
@@ -19,7 +25,8 @@ export function ByTheNumbersTab({ data }: { data: StatsHighlights }) {
           icon={<Bot className="h-4 w-4" />}
           sub={`${formatNumber(activity.agent_commits)} of ${formatNumber(
             activity.total_commits,
-          )} commits written by agents`}
+          )} commits carry a verifiable agent signature`}
+          hint={AGENT_PCT_HINT}
         />
         <StatCallout
           label="Project age"
@@ -60,11 +67,12 @@ export function ByTheNumbersTab({ data }: { data: StatsHighlights }) {
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <StatCallout
-          label="Total lines"
+          label="Lines of code"
           value={formatLOC(scale.total_nloc)}
-          sub={`${formatNumber(scale.symbol_count)} symbols across ${formatNumber(
+          sub={`in the repo today · ${formatNumber(scale.symbol_count)} symbols across ${formatNumber(
             scale.module_count,
           )} modules`}
+          hint={NLOC_HINT}
         />
         <StatCallout
           label="Knowledge captured"

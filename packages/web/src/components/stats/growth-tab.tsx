@@ -1,5 +1,5 @@
 import type { StatsHighlights } from "@repowise-dev/types/stats";
-import { ActivityTrendChart, StatCallout } from "@repowise-dev/ui/stats";
+import { ActivityTrendChart, StatCallout, AGENT_PCT_HINT } from "@repowise-dev/ui/stats";
 import { Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui/card";
 import { formatNumber, formatDate } from "@repowise-dev/ui/lib/format";
 
@@ -44,7 +44,8 @@ export function GrowthTab({ data }: { data: StatsHighlights }) {
           label="Agent commits"
           value={`${activity.agent_pct}%`}
           tone="info"
-          sub={`${formatNumber(activity.agent_commits)} agent-authored`}
+          sub={`${formatNumber(activity.agent_commits)} commits with verifiable agent signatures`}
+          hint={AGENT_PCT_HINT}
         />
       </div>
 

@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import type { StatsScale } from "@repowise-dev/types/stats";
 import { formatNumber, formatLOC } from "../lib/format";
+import { NLOC_HINT } from "./stat-callout";
 
 const SIZE_ICON: Record<string, React.ComponentType<{ className?: string }>> = {
   Seedling: Sprout,
@@ -23,6 +24,8 @@ const SIZE_ICON: Record<string, React.ComponentType<{ className?: string }>> = {
 interface HeroFigure {
   label: string;
   value: string;
+  /** Longer clarification shown as a native hover tooltip. */
+  hint?: string;
 }
 
 interface SizeClassHeroProps {
@@ -40,7 +43,7 @@ export function SizeClassHero({ scale, repoName }: SizeClassHeroProps) {
   const Icon = SIZE_ICON[scale.size_class.name] ?? Building2;
 
   const figures: HeroFigure[] = [
-    { label: "Lines of code", value: formatLOC(scale.total_nloc) },
+    { label: "Lines of code", value: formatLOC(scale.total_nloc), hint: NLOC_HINT },
     { label: "Files", value: formatNumber(scale.file_count) },
     { label: "Symbols", value: formatNumber(scale.symbol_count) },
     { label: "Languages", value: formatNumber(scale.language_count) },
@@ -80,7 +83,8 @@ export function SizeClassHero({ scale, repoName }: SizeClassHeroProps) {
           {figures.map((f) => (
             <div
               key={f.label}
-              className="rounded-xl border border-[var(--color-border-subtle,var(--color-border-default))] bg-[var(--color-bg-surface)]/70 px-4 py-3 backdrop-blur-sm"
+              title={f.hint}
+              className={`rounded-xl border border-[var(--color-border-subtle,var(--color-border-default))] bg-[var(--color-bg-surface)]/70 px-4 py-3 backdrop-blur-sm${f.hint ? " cursor-help" : ""}`}
             >
               <p className="text-2xl font-bold tabular-nums text-[var(--color-text-primary)] sm:text-3xl">
                 {f.value}

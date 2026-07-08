@@ -3,6 +3,13 @@ import { cn } from "../lib/cn";
 
 export type CalloutTone = "default" | "accent" | "success" | "warning" | "info";
 
+// Canonical clarifications for the two most-misread stats, shared by every
+// surface that shows them (stats tabs, overview teaser, size-class hero).
+export const NLOC_HINT =
+  "Lines of code in the repo today: non-blank, non-comment lines, excluding lockfiles, generated and vendored files. Not a historical total — deleted code doesn't count.";
+export const AGENT_PCT_HINT =
+  "Share of commits with a verifiable agent signature: known bot identities, agent commit footers, or Co-authored-by agent trailers. Squash merges that drop trailers and agents committing under a human git identity can't be detected, so the true share may be higher.";
+
 const TONE_VALUE: Record<CalloutTone, string> = {
   default: "text-[var(--color-text-primary)]",
   accent: "text-[var(--color-accent-primary)]",
@@ -18,6 +25,8 @@ export interface StatCalloutProps {
   value: React.ReactNode;
   /** One-line context shown under the figure. */
   sub?: React.ReactNode;
+  /** Longer clarification shown as a native hover tooltip on the card. */
+  hint?: string;
   icon?: React.ReactNode;
   tone?: CalloutTone;
   className?: string;
@@ -32,14 +41,17 @@ export function StatCallout({
   label,
   value,
   sub,
+  hint,
   icon,
   tone = "default",
   className,
 }: StatCalloutProps) {
   return (
     <div
+      title={hint}
       className={cn(
         "rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-4",
+        hint && "cursor-help",
         className,
       )}
     >
