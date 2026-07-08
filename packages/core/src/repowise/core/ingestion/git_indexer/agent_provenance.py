@@ -16,6 +16,16 @@ LLM), in strip-resistance order:
        pushed/amended a human-driven change — deliberately NOT tier 1)
   Tier 3 (assisted — an agent contributed, a human authored):
      * ``Co-authored-by:`` trailer naming a known agent service identity
+     * an ``Assisted-by:`` trailer naming a recognized agent (the Fedora /
+       OpenInfra AI-attribution standard)
+
+Two cross-cutting channels ride the same rule set:
+  * a **git-ai authorship note** (``refs/notes/ai``, the git-ai standard) —
+    an explicit, line-level attestation attached to the commit. Read out of
+    band (see :mod:`git_commit_index`) and passed in pre-resolved as
+    ``note_agent``; classified Tier 2 (``git_ai_note`` channel).
+  * a ``Generated-by:`` trailer (Apache's AI-attribution footer) naming a
+    recognized agent — Tier 2 (``generated_by_trailer`` channel).
 
 Precedence is tier order (1 > 2 > 3); first match wins. A commit with no
 match is human (``None``). Every pattern is anchored to a *service identity*
@@ -48,6 +58,7 @@ rides the existing commit-index walk — it adds no git subprocess and no I/O.
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 
@@ -58,6 +69,7 @@ logger = structlog.get_logger(__name__)
 __all__ = [
     "AgentProvenance",
     "AgentProvenanceClassifier",
+    "_agent_from_git_ai_note",
     "classifier_from_repo_config",
 ]
 
@@ -74,11 +86,33 @@ _BOT_LOGINS: dict[str, str] = {
     "cursor": "cursor",
     "cursoragent": "cursor",
     "google-labs-jules": "jules",
+    "gemini-code-assist": "gemini",
     "codegen-sh": "codegen",
     "openhands-ai": "openhands",
     "sweep-ai": "sweep",
     "claude": "claude",
 }
+
+# Agent name/tool aliases → canonical label. Substring match (first hit wins),
+# so ``GitHub Copilot`` → ``copilot`` and ``claude-code`` → ``claude``. Used to
+# resolve free-text values in ``Assisted-by:`` / ``Generated-by:`` trailers and
+# the ``agent_id.tool`` field of git-ai notes. ``chatgpt`` precedes ``gpt`` so
+# the more specific token wins first.
+_AGENT_ALIASES: list[tuple[str, str]] = [
+    ("claude", "claude"),
+    ("cursor", "cursor"),
+    ("copilot", "copilot"),
+    ("chatgpt", "chatgpt"),
+    ("gpt", "chatgpt"),
+    ("codex", "codex"),
+    ("gemini", "gemini"),
+    ("windsurf", "windsurf"),
+    ("opencode", "opencode"),
+    ("devin", "devin"),
+    ("aider", "aider"),
+    ("jules", "jules"),
+    ("llama", "llama"),
+]
 
 # Exact service e-mails → (agent, tier) for commit identity fields.
 _SERVICE_EMAILS: dict[str, tuple[str, int]] = {
@@ -91,8 +125,19 @@ _FOOTER_PATTERNS: list[tuple[str, str]] = [
     (r"generated with \[?claude code\]?", "claude"),
     (r"generated with \[?opencode\]?", "opencode"),
     (r"generated with \[?(?:openai )?codex\]?", "codex"),
+    (r"generated with \[?cursor\]?", "cursor"),
+    (r"<!--\s*cursor\s*-->", "cursor"),
     (r"^\s*aider wrote this", "aider"),
 ]
+
+# AI-attribution trailers (Fedora/OpenInfra ``Assisted-by``, Apache
+# ``Generated-by``). The trailer KEY is the anchor — a standardized AI marker —
+# but the agent identity comes from the value, so these fire only when the
+# value resolves to a recognized agent (``allow_slug=False``): a bare human
+# name in a misused ``Assisted-by`` must never mint a phantom agent. Generated =
+# agent wrote it (T2); Assisted = human wrote it, agent helped (T3).
+_GENERATED_BY_RE = re.compile(r"^\s*generated-by:\s*(.+?)\s*$", re.IGNORECASE | re.MULTILINE)
+_ASSISTED_BY_RE = re.compile(r"^\s*assisted-by:\s*(.+?)\s*$", re.IGNORECASE | re.MULTILINE)
 
 # ``Co-authored-by:`` trailers → agent. Anchored to the trailer position AND
 # the agent's service identity — a name alone is not enough (see module doc).
@@ -112,6 +157,62 @@ _COAUTHOR_PATTERNS: list[tuple[str, str]] = [
 ]
 
 _AIDER_NAME_RE = re.compile(r"\(aider\)\s*$")
+
+
+def _normalize_agent_token(value: str, *, allow_slug: bool) -> str | None:
+    """Resolve a free-text tool/agent name to a canonical label.
+
+    Matches *value* against :data:`_AGENT_ALIASES` (substring, first hit wins).
+    With ``allow_slug`` the unmatched remainder is slugified and returned (used
+    for git-ai notes, whose ``refs/notes/ai`` ref is AI-specific by
+    construction, so an unknown tool is still a genuine agent). Without it, an
+    unrecognized value returns ``None`` — the precision-first path for
+    free-text trailers where a bare human name must not become an agent.
+    """
+    v = (value or "").strip().lower()
+    if not v:
+        return None
+    for needle, canon in _AGENT_ALIASES:
+        if needle in v:
+            return canon
+    if not allow_slug:
+        return None
+    slug = re.sub(r"[^a-z0-9]+", "-", v).strip("-")
+    return slug or None
+
+
+def _agent_from_git_ai_note(note: str) -> str | None:
+    """Resolve the dominant agent from a git-ai authorship note.
+
+    A note (``refs/notes/ai``, git-ai standard v3.0.0) is
+    ``<attestation>\\n---\\n<json metadata>``. We read
+    ``sessions.<id>.agent_id.tool`` from the JSON metadata and return the tool
+    owning the most sessions, normalized to our agent label. A tie between
+    distinct tools returns ``None`` (ambiguous — precision-first; per-line
+    dominance from the attestation section is the upgrade path). Any parse
+    failure returns ``None``: a malformed note is never a signal.
+    """
+    if not note:
+        return None
+    try:
+        lines = note.splitlines()
+        div = max((i for i, ln in enumerate(lines) if ln.strip() == "---"), default=-1)
+        if div < 0:
+            return None
+        data = json.loads("\n".join(lines[div + 1 :]))
+        counts: dict[str, int] = {}
+        for sess in (data.get("sessions") or {}).values():
+            tool = ((sess or {}).get("agent_id") or {}).get("tool")
+            agent = _normalize_agent_token(str(tool), allow_slug=True) if tool else None
+            if agent:
+                counts[agent] = counts.get(agent, 0) + 1
+        if not counts:
+            return None
+        top = max(counts.values())
+        leaders = [a for a, c in counts.items() if c == top]
+        return leaders[0] if len(leaders) == 1 else None
+    except Exception:
+        return None
 
 
 @dataclass(frozen=True)
@@ -182,25 +283,47 @@ class AgentProvenanceClassifier:
         committer_name: str,
         committer_email: str,
         message: str,
+        note_agent: str | None = None,
     ) -> AgentProvenance:
         """Classify one commit from local metadata. *message* is the full
         commit message (subject + body) — trailers and footers live in the
-        body, so passing the subject alone silently disables two channels."""
+        body, so passing the subject alone silently disables several channels.
+        *note_agent* is the pre-resolved agent from this commit's git-ai
+        authorship note (``refs/notes/ai``), or ``None`` when absent — read out
+        of band by the caller so classification stays a pure function."""
         # T1 — agent service identity AUTHORED the commit.
         hit = self._identity_match(author_email)
         if hit:
             return AgentProvenance(hit[0], hit[1], "service_email", "high")
+        # T2 — git-ai authorship note: an explicit line-level attestation on
+        # this commit. Below T1 (a bot service account is more autonomous) but
+        # above the message-derived channels.
+        if note_agent:
+            return AgentProvenance(note_agent, 2, "git_ai_note", "high")
         # T2 — message footer / aider author-name suffix.
         for pat, agent in self._footers:
             if pat.search(message):
                 return AgentProvenance(agent, 2, "message_footer", "high")
         if _AIDER_NAME_RE.search(author_name or ""):
             return AgentProvenance("aider", 2, "author_name_aider", "high")
+        # T2 — ``Generated-by:`` AI-attribution trailer (agent generated it).
+        m = _GENERATED_BY_RE.search(message)
+        if m:
+            agent = _normalize_agent_token(m.group(1), allow_slug=False)
+            if agent:
+                return AgentProvenance(agent, 2, "generated_by_trailer", "high")
         # T2 — service identity as COMMITTER over a human author: the agent
         # pushed/amended a human-driven change. Deliberately tier 2, not 1.
         hit = self._identity_match(committer_email)
         if hit:
             return AgentProvenance(hit[0], max(hit[1], 2), "service_committer", "high")
+        # T3 — ``Assisted-by:`` AI-attribution trailer (human wrote it, agent
+        # helped). Below the committer channel to keep tier order intact.
+        m = _ASSISTED_BY_RE.search(message)
+        if m:
+            agent = _normalize_agent_token(m.group(1), allow_slug=False)
+            if agent:
+                return AgentProvenance(agent, 3, "assisted_by_trailer", "high")
         # T3 — co-author trailer naming an agent service identity.
         for pat, agent in self._coauthors:
             if pat.search(message):
