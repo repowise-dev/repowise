@@ -10,7 +10,7 @@ from sqlalchemy import select
 
 from repowise.core.analysis.health.churn_complexity import churn_complexity_points
 from repowise.core.analysis.health.defect_accuracy import compute_defect_accuracy
-from repowise.core.analysis.health.grading import band_for
+from repowise.core.analysis.health.grading import HEALTHY_MIN, band_for
 from repowise.core.analysis.health.grading import distribution as health_distribution
 from repowise.core.analysis.health.perf.coverage import PerfCoverage, coverage_for_metrics
 from repowise.core.analysis.health.signals import file_signals
@@ -131,6 +131,12 @@ def _serialize_metric(m: HealthFileMetric, lead: dict[str, Any] | None = None) -
         "line_coverage_pct": m.line_coverage_pct,
         "branch_coverage_pct": m.branch_coverage_pct,
         "module": m.module,
+        # Leverage: NLOC-weighted points this file drags below the Healthy band
+        # (``(8.0 - score) * nloc``, 0 once healthy). This is how much the repo
+        # headline recovers if the file reaches 8.0, so ranking by it — not by
+        # raw score — points at the files that actually move the average. A tiny
+        # 1.0 file and a 1200-line 1.0 file score the same but differ 40x here.
+        "weighted_deficit": round(max(HEALTHY_MIN - m.score, 0.0) * max(m.nloc, 1)),
         # Per-dimension scores from the three-signal split. ``score`` is the
         # overall surfaced number (== ``defect_score`` for now);
         # ``performance_score`` is computed but not yet surfaced as its own pillar.
@@ -212,6 +218,53 @@ def _dimension_average(metrics: list[HealthFileMetric], attr: str) -> float | No
     return round(sum(getattr(m, attr) * max(m.nloc, 1) for m in scored) / total_nloc, 2)
 
 
+def _gap_analysis(metrics: list[HealthFileMetric]) -> dict[str, Any]:
+    """How few files must reach 8.0 for the *weighted average* to reach 8.0.
+
+    Answers what the bare KPI cannot: the NLOC-weighted average is held down by a
+    *few large low-scoring files*, not the long tail. The gap here is the **net**
+    points the average needs (``8.0 * total_nloc - Σ score*nloc``) — healthy files
+    already sit above 8.0 and cushion it, so this is smaller than the gross
+    all-files-healthy deficit and is the number that matches the goal "move the
+    average". ``files_to_reach_target`` is the punchline: lift the worst-deficit N
+    files to 8.0 and the headline crosses 8.0. Pure over the metrics in hand.
+    """
+    total_nloc = sum(max(m.nloc, 1) for m in metrics)
+    weighted_sum = sum(m.score * max(m.nloc, 1) for m in metrics)
+    net_gap = HEALTHY_MIN * total_nloc - weighted_sum
+    below = sorted(
+        (max(HEALTHY_MIN - m.score, 0.0) * max(m.nloc, 1) for m in metrics if m.score < HEALTHY_MIN),
+        reverse=True,
+    )
+    if net_gap <= 0 or not below:
+        return {
+            "target_score": HEALTHY_MIN,
+            "weighted_gap_points": 0,
+            "files_below_target": len(below),
+            "files_to_reach_target": 0,
+            "files_for_half_gap": 0,
+        }
+
+    def _files_for(points: float) -> int:
+        acc = 0.0
+        for i, d in enumerate(below, 1):
+            acc += d
+            if acc >= points:
+                return i
+        return len(below)
+
+    return {
+        "target_score": HEALTHY_MIN,
+        # Net weighted points the average must recover to reach 8.0.
+        "weighted_gap_points": round(net_gap),
+        "files_below_target": len(below),
+        # The reframe: lift this many worst-deficit files to 8.0 and the weighted
+        # average reaches 8.0; half that gap needs even fewer.
+        "files_to_reach_target": _files_for(net_gap),
+        "files_for_half_gap": _files_for(0.5 * net_gap),
+    }
+
+
 def _perf_kpis(performance_findings: int, coverage: PerfCoverage | None) -> dict[str, Any]:
     """The honest performance headline: finding count + density + coverage.
 
@@ -257,6 +310,12 @@ def _compute_kpis(
     return {
         "file_count": len(metrics),
         "average_health": round(avg, 2),
+        # NLOC-weighted (``average_health``) vs plain file mean. When these
+        # diverge, a few large low-scoring files are holding the headline down —
+        # the weighted number is what the dashboard/badge surface, and the gap
+        # between the two is the signal to chase big files, not the long tail.
+        "average_health_weighting": "nloc",
+        "average_health_unweighted": round(sum(m.score for m in metrics) / len(metrics), 2),
         "band": band_for(round(avg, 2)),
         "worst_performer_path": worst.file_path,
         "worst_performer_score": round(worst.score, 2),
@@ -281,6 +340,17 @@ async def get_health(
     Dashboard mode (no ``targets``) returns repo-level KPIs + the
     lowest-scoring files. Targeted mode returns per-file findings and
     metrics for each path in ``targets``.
+
+    Leverage, not just lowness: ``average_health`` is NLOC-weighted (the number
+    the badge/dashboard surface), so a few large low files hold it down;
+    ``kpis.average_health_unweighted`` is the plain file mean, and a gap between
+    the two says "chase big files". ``gap_analysis`` reports the weighted points
+    to reach an all-Healthy floor and how few files carry 50% / 90% of it;
+    ``high_leverage_files`` ranks files by ``weighted_deficit`` (``(8 - score) *
+    nloc``, on every metric row) — the ones that actually move the average, as
+    opposed to ``worst_files`` which sorts by raw score. ``refactoring_plans``
+    is capped to ``limit`` and ranked file-leverage-first (``refactoring_plans_total``
+    reports the full count).
 
     Markers in v1: ``brain_method``, ``nested_complexity``,
     ``complex_method``. Phase 2 adds coverage markers; Phase 3 adds
@@ -505,12 +575,28 @@ async def get_health(
         # Dashboard mode — top-N worst files + headline findings + the
         # per-module rollup so the overview page doesn't need a second
         # round-trip.
+        # Leverage view: files ranked by NLOC-weighted deficit (how much each
+        # drags the headline), not by raw score. Distinct from worst_files —
+        # a big warning-band file outranks a tiny alert-band one here because
+        # fixing it moves the average far more. Same serializer, so every row
+        # carries weighted_deficit for the caller to sort on further.
+        by_leverage = sorted(
+            (m for m in all_metrics if m.score < HEALTHY_MIN),
+            key=lambda m: max(HEALTHY_MIN - m.score, 0.0) * max(m.nloc, 1),
+            reverse=True,
+        )
         result = {
             "mode": "dashboard",
             "kpis": kpis,
             "distribution": health_distribution(all_metrics),
+            # Where the gap to Healthy concentrates — the "few files, not the
+            # long tail" reframe that turns a repo-wide number into a short list.
+            "gap_analysis": _gap_analysis(all_metrics),
             "worst_files": [
                 _serialize_metric(m, leads.get(m.file_path)) for m in metric_rows[:limit]
+            ],
+            "high_leverage_files": [
+                _serialize_metric(m, leads.get(m.file_path)) for m in by_leverage[:limit]
             ],
             "top_findings": [_serialize_finding(f) for f in finding_rows[:limit]],
             "modules": _module_rollups(all_metrics),
@@ -533,7 +619,31 @@ async def get_health(
         # Structured refactoring plans (the concrete split groups / evidence /
         # blast radius) for detectors that have one — the upgrade over the old
         # prose-string suggestions.
-        result["refactoring_plans"] = [_serialize_refactoring(r) for r in refactoring_rows]
+        #
+        # Rank by the *file's* weighted deficit first, per-plan impact_delta
+        # second, and cap to ``limit``. Two reasons: an un-capped dump is a
+        # thousands-of-plans firehose that blows the token budget, and a pure
+        # impact_delta sort buries the highest-leverage plans — a Split File on a
+        # 1200-line hotspot recovers the most repo-average yet can carry a modest
+        # per-file delta, so file leverage has to lead. ``refactoring_plans_total``
+        # keeps the truncation honest.
+        deficit_by_path = {
+            m.file_path: round(max(HEALTHY_MIN - m.score, 0.0) * max(m.nloc, 1))
+            for m in all_metrics
+        }
+        ranked = sorted(
+            refactoring_rows,
+            key=lambda r: (deficit_by_path.get(r.file_path, 0), r.impact_delta or 0.0),
+            reverse=True,
+        )
+        result["refactoring_plans"] = [
+            {
+                **_serialize_refactoring(r),
+                "file_weighted_deficit": deficit_by_path.get(r.file_path, 0),
+            }
+            for r in ranked[:limit]
+        ]
+        result["refactoring_plans_total"] = len(refactoring_rows)
         # Attach the deterministic prose suggestion to every finding as the
         # fallback for biomarkers without a structured detector yet. Surfaces
         # on the dashboard cards too so both consumers stay in sync.

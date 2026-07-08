@@ -63,6 +63,52 @@ async def test_get_health_dashboard_surfaces_performance(setup_mcp, health_data)
 
 
 @pytest.mark.asyncio
+async def test_get_health_dashboard_surfaces_leverage(setup_mcp, health_data):
+    """Leverage view: which files move the NLOC-weighted headline, not just which score low."""
+    from repowise.server.mcp_server import get_health
+
+    result = await get_health()
+    kpis = result["kpis"]
+    # Weighted (4.5*200 + 8.5*50)/250 = 5.3 vs plain mean (4.5 + 8.5)/2 = 6.5:
+    # the divergence is the "a big low file holds the headline down" signal.
+    assert kpis["average_health"] == 5.3
+    assert kpis["average_health_unweighted"] == 6.5
+    assert kpis["average_health_weighting"] == "nloc"
+
+    # Per-file leverage: (8 - score) * nloc, 0 once healthy.
+    worst = next(m for m in result["worst_files"] if m["file_path"] == "src/auth/service.py")
+    assert worst["weighted_deficit"] == 700  # (8.0 - 4.5) * 200
+    healthy = next(m for m in result["worst_files"] if m["file_path"] == "src/db/models.py")
+    assert healthy["weighted_deficit"] == 0  # score 8.5 >= Healthy floor
+
+    # high_leverage_files excludes healthy files and leads with the biggest drag.
+    hi = result["high_leverage_files"]
+    assert [m["file_path"] for m in hi] == ["src/auth/service.py"]
+
+    # gap_analysis: net points to move the *average* to 8.0 credits the healthy
+    # file's surplus, so it's 8*250 - (4.5*200 + 8.5*50) = 2000 - 1325 = 675,
+    # all sitting in one below-target file.
+    gap = result["gap_analysis"]
+    assert gap["target_score"] == 8.0
+    assert gap["weighted_gap_points"] == 675
+    assert gap["files_below_target"] == 1
+    assert gap["files_to_reach_target"] == 1
+    assert gap["files_for_half_gap"] == 1
+
+
+@pytest.mark.asyncio
+async def test_get_health_refactoring_capped_and_leverage_ranked(setup_mcp, health_data):
+    """refactoring_plans is bounded by limit and reports the honest total."""
+    from repowise.server.mcp_server import get_health
+
+    result = await get_health(include=["refactoring"], limit=5)
+    assert "refactoring_plans" in result
+    assert len(result["refactoring_plans"]) <= 5
+    # Honest truncation signal is always present when refactoring is requested.
+    assert "refactoring_plans_total" in result
+
+
+@pytest.mark.asyncio
 async def test_get_health_targeted(setup_mcp, health_data):
     from repowise.server.mcp_server import get_health
 

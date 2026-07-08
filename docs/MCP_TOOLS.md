@@ -447,6 +447,23 @@ Targeted mode returns per-file marker findings with severity, per-dimension
 scores, and the score breakdown. Each finding carries a `dimension`
 (`defect` / `maintainability` / `performance`).
 
+**Leverage, not just lowness.** `average_health` is NLOC-weighted (the number the
+badge and dashboard surface), so a few large low-scoring files hold it down. To
+make that actionable rather than a mystery:
+
+- `kpis.average_health_unweighted` is the plain file mean and
+  `kpis.average_health_weighting` is `"nloc"`. When the weighted and unweighted
+  numbers diverge, the gap is telling you to chase *big* files, not the long tail.
+- `gap_analysis` (dashboard mode) reports the net weighted points the average must
+  recover to reach the Healthy floor (8.0), how many files sit below it, and how
+  few of them carry the whole gap (`files_to_reach_target`) or half of it
+  (`files_for_half_gap`). This reframes a repo-wide number as a short worklist.
+- Every metric row carries `weighted_deficit = (8 - score) × nloc`: how much the
+  repo headline recovers if that file reaches 8.0. `high_leverage_files`
+  (dashboard mode) is the top-N ranked by it — distinct from `worst_files`, which
+  sorts by raw score and ranks a 30-line file at 1.0 equal to a 1,200-line file at
+  1.0 that moves the average ~40x more.
+
 The opt-in enrichments:
 
 - **`accuracy`** returns a `defect_accuracy` block: of the K least-healthy files, how
@@ -464,8 +481,11 @@ The opt-in enrichments:
   strings): `extract_class` (the cohesion `groups` to split into), `extract_helper`
   (clone `occurrences` + `suggested_site`), `move_method` (`{method, from_class,
   to_class}`), and `break_cycle` (the import `cut_edges`). Each plan carries its
-  `evidence`, `impact_delta`, `effort_bucket`, and `blast_radius`, ranked
-  `impact × centrality × blast radius`. Full shapes in
+  `evidence`, `impact_delta`, `effort_bucket`, and `blast_radius`. The list is
+  capped to `limit` and ranked file-leverage-first (by the file's
+  `weighted_deficit`, then per-plan impact), so plans on the files that move the
+  headline surface first; `refactoring_plans_total` reports the full count behind
+  the cap. Each plan echoes its `file_weighted_deficit`. Full shapes in
   [`docs/REFACTORING.md`](REFACTORING.md).
 - **dimension filter** narrows the returned findings to one pillar. Pair with
   `"biomarkers"` for the full (uncapped) finding set, e.g.
@@ -480,7 +500,7 @@ hotspots.
 **Example calls:**
 
 ```
-get_health()
+get_health()                                          # kpis, gap_analysis, worst + high_leverage files
 get_health(include=["accuracy", "churn_complexity"])
 get_health(include=["biomarkers", "performance"])     # only performance findings
 get_health(targets=["src/api/server.py"], include=["signals"])
