@@ -19,7 +19,11 @@ from __future__ import annotations
 from .callgraph import CallGraphIndex
 from .crossfn import collect_crossfn_io_in_loop
 from .dialects import PERF_DIALECTS, BasePerfDialect
-from .gated import collect_blocking_io_under_lock, collect_centrality_gated
+from .gated import (
+    collect_blocking_io_under_lock,
+    collect_centrality_gated,
+    collect_interprocedural_quadratic,
+)
 from .io_boundaries import collect_io_names
 from .promotion import apply_perf_promotions
 from .ranking import PerfRanker
@@ -35,6 +39,7 @@ __all__ = [
     "collect_blocking_io_under_lock",
     "collect_centrality_gated",
     "collect_crossfn_io_in_loop",
+    "collect_interprocedural_quadratic",
     "collect_io_names",
     "path_to_sink",
     "reachable_to_sink",
