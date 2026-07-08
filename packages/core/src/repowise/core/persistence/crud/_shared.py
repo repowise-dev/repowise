@@ -22,6 +22,13 @@ _VALID_JOB_STATUSES = frozenset(
 _BATCH_SIZE = 500  # max rows per INSERT to stay under SQLite's parameter limit
 
 
+def _finding_file_path(finding: Any) -> str | None:
+    """Read ``file_path`` from a dataclass-like finding or a plain dict."""
+    if isinstance(finding, dict):
+        return finding.get("file_path")
+    return getattr(finding, "file_path", None)
+
+
 def _parse_dt(ts: str) -> datetime:
     """Parse an ISO-8601 UTC string to a timezone-aware datetime."""
     ts = ts.replace("Z", "+00:00")
