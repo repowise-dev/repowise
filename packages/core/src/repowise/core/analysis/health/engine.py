@@ -650,22 +650,15 @@ class HealthAnalyzer:
     def _apply_crossfn_perf(self, walked: list[tuple[Any, FileComplexity]]) -> None:
         """Run the graph-dependent perf passes over the walked files, in place.
 
-        Three sources of extra ``perf_hits``, all sharing one
+        Four sources of extra ``perf_hits``, all sharing one
         :class:`CallGraphIndex` (built once over the resolved ``calls`` graph):
 
           1. cross-function ``io_in_loop`` / N+1 (PR4);
-          2. cross-function ``blocking_io_under_lock`` — the lock→I/O
+          2. cross-function ``blocking_io_under_lock`` (Phase 7b) — the lock→I/O
              reachability case;
           3. the centrality-gated ``nested_loop_quadratic`` / ``hot_path_sync_io``
-             markers, generated from the walker's per-function facts ONLY for a
-             hot function, via the :class:`PerfRanker`.
-
-        The cross-function ``interprocedural_quadratic_loop`` collector
-        (:func:`perf.gated.collect_interprocedural_quadratic`) is deliberately
-        NOT wired here: it validated at ~2% precision (the naive "reaches a loop"
-        taint over-fires on the linear-total "process each element's own children"
-        shape), so it stays available as reusable infrastructure for a future
-        interprocedural-dataflow-gated version rather than a live finding source.
+             markers (Phase 7b), generated from the walker's per-function facts
+             ONLY for a hot function, via the :class:`PerfRanker`.
 
         Each is appended onto the matching file's ``perf_hits`` in place so the
         biomarkers handle every case through one path. Failure-isolated and never

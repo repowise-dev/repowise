@@ -1,6 +1,6 @@
-"""Centrality-gated markers (the differentiator).
+"""Centrality-gated Phase-7b markers (the differentiator).
 
-Three passes that run after the walker, over the resolved ``calls`` graph, using
+Two passes that run after the walker, over the resolved ``calls`` graph, using
 the :class:`~.ranking.PerfRanker` (Primitive 2) and the sink-agnostic
 reachability engine (Primitive 3):
 
@@ -20,27 +20,7 @@ reachability engine (Primitive 3):
     while a lock is held, ``PerfFnFacts.lock_call_targets``, instead of every
     loop-nested callee).
 
-  * :func:`collect_interprocedural_quadratic` — the cross-function
-    algorithmic-complexity case: a loop in function ``A`` calls a helper ``B``
-    that, within a few hops, contains its OWN data-dependent loop. Each outer
-    iteration pays for ``B``'s inner loop — O(n^2)+ pure-CPU cost with no I/O, the
-    single largest class of real perf bugs (Jin PLDI'12) and invisible to the
-    I/O-centric passes. It reuses the identical reverse-BFS as the N+1 pass; the
-    only differences are the sink set (functions with ``PerfFnFacts.own_loop_line``
-    instead of a bare I/O sink) and a **centrality gate on the loop owner** ``A``.
-
-    **NOT wired into the engine.** Validated at ~2% precision on 4 repos (64
-    hand-labels): the sink "callee contains any data-dependent loop" is satisfied
-    by nearly every collection-processing helper, and the dominant real shape — a
-    helper looping over the current element's OWN sub-data — is linear-total, not
-    quadratic. Telling the two apart needs interprocedural (cross-call)
-    argument-derivation dataflow the intra-procedural ``dataflow`` layer does not
-    provide. This collector + ``PerfFnFacts.own_loop_line`` are kept as validated,
-    tested infrastructure for that future dataflow-gated detector, but the engine
-    does not call this pass, so the marker never reaches a finding. See
-    ``local-stash/performance-pillar/{PROBE_FINDINGS,MARKER_BACKLOG}.md``.
-
-The centrality-gated pair are failure-isolated by their callers.
+Both are failure-isolated by their callers.
 """
 
 from __future__ import annotations
@@ -57,9 +37,6 @@ if TYPE_CHECKING:
 
 # The boundary-kind detail convention shared with the cross-function N+1 pass.
 LOCK_IO_KIND = "blocking_io_under_lock"
-
-# The cross-function algorithmic-complexity marker.
-INTERPROC_QUAD_KIND = "interprocedural_quadratic_loop"
 
 
 def collect_centrality_gated(
@@ -217,131 +194,6 @@ def _lock_hits_for_function(
                     line=call_line,
                     function=fact.function,
                     detail=kind,
-                    func_start=fact.func_start,
-                    path=(a_sid, *chain),
-                )
-            )
-            break
-    return hits
-
-
-def collect_interprocedural_quadratic(
-    walked: Iterable[tuple[Any, FileComplexity]],
-    graph: Any,
-    ranker: PerfRanker,
-    *,
-    index: CallGraphIndex | None = None,
-    max_depth: int = 3,
-) -> dict[str, list[PerfHit]]:
-    """Cross-function ``interprocedural_quadratic_loop`` hits, keyed by the loop-owning file.
-
-    A loop in function ``A`` calls a helper that, within ``max_depth`` hops,
-    contains its own data-dependent loop: the inner loop runs once per outer
-    iteration, an O(n^2)+ algorithmic cost with no I/O. Mirrors
-    :func:`collect_blocking_io_under_lock` exactly, with two differences:
-
-      * the **sink set** is functions carrying a data-dependent loop
-        (``PerfFnFacts.own_loop_line``), not a bare I/O sink;
-      * every candidate is **centrality-gated on the loop owner** ``A`` via the
-        :class:`~.ranking.PerfRanker` — the raw "loop calls a looping helper"
-        shape is common and mostly benign, so a hit survives only where ``A``
-        sits on a hot, central, or churny path. Pure when neither graph nor git
-        signal is available (nothing is hot -> no hits): the precision-first
-        default, exactly as for the same-function quadratic marker.
-    """
-    walked_list = list(walked)
-    if graph is None or not walked_list:
-        return {}
-
-    # Cheap pre-check over the already-computed facts: the case needs BOTH a
-    # function holding a data-dependent loop (a reachability target) and a
-    # function with a loop-nested call (an entry). Skip the graph otherwise.
-    has_sink = any(fact.own_loop_line for _pf, fcx in walked_list for fact in fcx.perf_fn_facts)
-    has_entry = any(
-        fact.loop_call_targets for _pf, fcx in walked_list for fact in fcx.perf_fn_facts
-    )
-    if not (has_sink and has_entry):
-        return {}
-
-    if index is None:
-        index = CallGraphIndex(graph)
-    if not index.forward:
-        return {}
-
-    # --- sink set: functions that contain a data-dependent loop -------------
-    loop_sinks: set[str] = set()
-    for pf, fcx in walked_list:
-        path = pf.file_info.path
-        for fact in fcx.perf_fn_facts:
-            if not fact.own_loop_line:
-                continue
-            sid = index.resolve_function(path, fact.func_start)
-            if sid is not None:
-                loop_sinks.add(sid)
-    if not loop_sinks:
-        return {}
-
-    reach = reachable_to_sink(
-        loop_sinks,
-        lambda node: index.reverse.get(node, ()),
-        max_depth=max_depth,
-    )
-
-    out: dict[str, list[PerfHit]] = {}
-    for pf, fcx in walked_list:
-        path = pf.file_info.path
-        for fact in fcx.perf_fn_facts:
-            # Gate on the loop owner up front — the precision lever and the
-            # cheapest possible filter.
-            if not fact.loop_call_targets or not ranker.is_hot(path, fact.func_start):
-                continue
-            hits = _quadratic_hits_for_function(path, fact, index, reach)
-            if hits:
-                out.setdefault(path, []).extend(hits)
-    return out
-
-
-def _quadratic_hits_for_function(
-    path: str,
-    fact: PerfFnFacts,
-    index: CallGraphIndex,
-    reach: dict[str, Any],
-) -> list[PerfHit]:
-    from ..complexity import PerfHit
-
-    a_sid = index.resolve_function(path, fact.func_start)
-    if a_sid is None:
-        return []
-    callees = index.forward.get(a_sid)
-    if not callees:
-        return []
-    callees_by_name: dict[str, list[str]] = {}
-    for c in callees:
-        callees_by_name.setdefault(index.name.get(c, ""), []).append(c)
-
-    hits: list[PerfHit] = []
-    seen: set[str] = set()
-    for target_name, call_line in fact.loop_call_targets:
-        if target_name in seen:
-            continue
-        for callee in callees_by_name.get(target_name, ()):
-            info = reach.get(callee)
-            if info is None:
-                continue
-            chain = path_to_sink(callee, reach)
-            if not chain:
-                continue
-            # Skip the self-loop degenerate case: A's loop calls a helper whose
-            # only reached loop is A itself (recursion resolves back to a_sid).
-            if chain[-1] == a_sid:
-                continue
-            seen.add(target_name)
-            hits.append(
-                PerfHit(
-                    kind=INTERPROC_QUAD_KIND,
-                    line=call_line,
-                    function=fact.function,
-                    detail="",
                     func_start=fact.func_start,
                     path=(a_sid, *chain),
                 )

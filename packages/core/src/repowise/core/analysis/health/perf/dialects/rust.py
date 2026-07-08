@@ -127,9 +127,6 @@ class RustPerfDialect(BasePerfDialect):
     markers = frozenset(
         {
             "io_in_loop",
-            # Record own data-dependent loops so a caller looping over this
-            # function becomes a cross-function quadratic target.
-            "interprocedural_quadratic_loop",
             "blocking_sync_in_async",
             "regex_compile_in_loop",
             "resource_construction_in_loop",
