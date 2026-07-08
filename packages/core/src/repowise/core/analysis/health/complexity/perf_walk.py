@@ -159,6 +159,9 @@ def _collect_perf_hits(
     do_nested_quadratic = "nested_loop_quadratic" in markers
     do_hot_path = "hot_path_sync_io" in markers
     do_lock_io = "blocking_io_under_lock" in markers
+    # Record every function's own data-dependent loop so a caller looping over
+    # it becomes a cross-function ``interprocedural_quadratic_loop`` target.
+    do_interproc_quad = "interprocedural_quadratic_loop" in markers
     # ``list_names`` is the precision gate for the membership marker; compute it
     # once per file only when this dialect can emit that marker, then thread it
     # to the loop-marker hooks (which ignore it for every other marker).
@@ -183,6 +186,7 @@ def _collect_perf_hits(
     #   misc[0] = nested_loop_line   (a data-dependent loop nested in another)
     #   misc[1] = blocking_sink_kind (first non-awaited loop_depth-0 sink kind)
     #   misc[2] = blocking_sink_line
+    #   misc[3] = own_loop_line      (first data-dependent loop, any depth)
     fn_acc: dict[
         int, tuple[str | None, dict[str, int], dict[str, int], list[str | None], list]
     ] = {}
@@ -192,7 +196,7 @@ def _collect_perf_hits(
     ) -> tuple[dict[str, int], dict[str, int], list[str | None], list]:
         entry = fn_acc.get(func_start)
         if entry is None:
-            entry = (func_name, {}, {}, [None], [0, None, 0])
+            entry = (func_name, {}, {}, [None], [0, None, 0, 0])
             fn_acc[func_start] = entry
         return entry[1], entry[2], entry[3], entry[4]
 
@@ -233,6 +237,15 @@ def _collect_perf_hits(
                 misc = _acc(next_start, next_func)[3]
                 if misc[0] == 0:
                     misc[0] = node.start_point[0] + 1
+
+        # Any data-dependent loop makes the function a cross-function
+        # ``interprocedural_quadratic_loop`` target — a caller looping over it
+        # pays O(n^2)+. Record the first such loop's line (any nesting depth);
+        # the engine emits a hit only when the LOOP-OWNING caller is hot.
+        if is_loop and do_interproc_quad:
+            misc = _acc(next_start, next_func)[3]
+            if misc[3] == 0:
+                misc[3] = node.start_point[0] + 1
 
         # A loop whose ITERABLE is itself a slow call (``for _, r in
         # df.iterrows()``): the call sits in the loop header (runs once), so the
@@ -457,9 +470,17 @@ def _collect_perf_hits(
             nested_loop_line=misc[0],
             blocking_sink_kind=misc[1],
             blocking_sink_line=misc[2],
+            own_loop_line=misc[3],
         )
         for start, (name, loop_targets, lock_targets, sink, misc) in fn_acc.items()
-        if (loop_targets or lock_targets or sink[0] is not None or misc[0] or misc[1] is not None)
+        if (
+            loop_targets
+            or lock_targets
+            or sink[0] is not None
+            or misc[0]
+            or misc[1] is not None
+            or misc[3]
+        )
     ]
     fn_facts.sort(key=lambda f: f.func_start)
     return deduped, io_names, fn_facts

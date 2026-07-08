@@ -76,6 +76,9 @@ class DartPerfDialect(BasePerfDialect):
     markers = frozenset(
         {
             "io_in_loop",
+            # Record own data-dependent loops so a caller looping over this
+            # function becomes a cross-function quadratic target.
+            "interprocedural_quadratic_loop",
             "serial_await_in_loop",
             "string_concat_in_loop",
             "resource_construction_in_loop",
