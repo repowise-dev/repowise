@@ -256,7 +256,7 @@ async def _load_overview_page(session: Any, repository: Any) -> Page | None:
 async def _load_module_pages(
     session: Any, repository: Any, collector: OmissionCollector
 ) -> list[Page]:
-    """Module pages capped to 20; the remainder goes to the omission store."""
+    """Module pages capped to ``_MODULE_CAP``; the remainder goes to the omission store."""
     result = await session.execute(
         select(Page)
         .where(

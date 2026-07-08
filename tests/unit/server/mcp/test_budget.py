@@ -341,6 +341,7 @@ async def test_get_overview_module_cap_is_expandable(setup_mcp, session, repo_ro
     import repowise.server.mcp_server as mcp_mod
     from repowise.core.persistence.models import Page
     from repowise.server.mcp_server import get_overview
+    from repowise.server.mcp_server.tool_overview import _MODULE_CAP
 
     now = datetime(2026, 3, 19, tzinfo=UTC)
     for i in range(25):
@@ -367,11 +368,11 @@ async def test_get_overview_module_cap_is_expandable(setup_mcp, session, repo_ro
 
     mcp_mod._repo_path = str(repo_root)
     result = await get_overview()
-    assert len(result["key_modules"]) == 20
+    assert len(result["key_modules"]) == _MODULE_CAP
     omitted = result["_meta"]["omitted"]
     stored = "\n".join(_store_get(repo_root, r) or "" for r in omitted["refs"])
     # 27 module pages total, ordered by title — the tail is in the store.
-    assert "module pages beyond cap=20" in stored
+    assert f"module pages beyond cap={_MODULE_CAP}" in stored
     assert stored.count("Extra Module") + stored.count("Module") >= 7
 
 
