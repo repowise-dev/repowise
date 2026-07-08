@@ -60,6 +60,27 @@ from repowise.server.mcp_server._meta import build_meta as _build_meta
 # Leading markdown-header boilerplate on module page content ("## Overview").
 _MD_HEADER_RE = re.compile(r"^\s*#{1,6}\s+.*$", re.MULTILINE)
 
+# Orientation, not a directory listing — the top few modules are enough to
+# point a fresh agent at the interesting subsystems. The rest are persisted
+# to the omission store, not dropped.
+_MODULE_CAP = 8
+
+# Split point between markdown H2 sections ("\n## ...").
+_H2_SPLIT_RE = re.compile(r"\n(?=#{1,2}\s)")
+
+
+def _compact_overview_content(content: str) -> str:
+    """Leading section of the overview essay — the summary paragraph, not the walkthrough.
+
+    The full essay repeats what ``key_modules`` and ``architecture.layers``
+    already carry, so compact mode (the default) keeps only the first H2
+    section. Callers who want the whole thing pass ``include=["content"]``.
+    """
+    text = (content or "").strip()
+    if not text:
+        return text
+    return _H2_SPLIT_RE.split(text, maxsplit=1)[0].strip()
+
 
 def _truncate_at_word(text: str, limit: int) -> str:
     """Truncate at a word boundary with an ellipsis — never mid-word.
@@ -245,12 +266,13 @@ async def _load_module_pages(
         .order_by(Page.title)
     )
     all_module_pages = result.scalars().all()
-    if len(all_module_pages) > 20:
+    if len(all_module_pages) > _MODULE_CAP:
         collector.add(
-            f"module pages beyond cap=20 ({len(all_module_pages) - 20} dropped)",
-            "\n".join(f"{p.title}: {p.target_path}" for p in all_module_pages[20:]),
+            f"module pages beyond cap={_MODULE_CAP} "
+            f"({len(all_module_pages) - _MODULE_CAP} dropped)",
+            "\n".join(f"{p.title}: {p.target_path}" for p in all_module_pages[_MODULE_CAP:]),
         )
-    return all_module_pages[:20]
+    return all_module_pages[:_MODULE_CAP]
 
 
 def _drop_fixtures(ids: list[str], exclude_spec: Any) -> list[str]:
@@ -631,6 +653,25 @@ async def _build_key_decisions(session: Any, repository: Any) -> dict[str, Any]:
         return {}
 
 
+def _dedupe_tour_steps(tour: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collapse a run of near-identical steps (same kind + reason) into one.
+
+    Topology tours often emit a stretch of re-export-hub steps with an
+    identical ``kind``/``reason`` ("The X layer's anchor…"); a fresh agent
+    learns nothing from the second through Nth. Consecutive duplicates fold
+    into the first; distinct steps and re-occurrences later in the walk survive.
+    """
+    deduped: list[dict[str, Any]] = []
+    prev_key: tuple[Any, Any] | None = None
+    for step in tour:
+        key = (step.get("kind"), step.get("reason"))
+        if key == prev_key:
+            continue
+        deduped.append(step)
+        prev_key = key
+    return deduped
+
+
 def _build_guided_tour(overview_page: Page, result: dict[str, Any]) -> None:
     """Attach the topology-driven guided tour + layer order from overview page metadata."""
     from repowise.core.generation.models import compute_page_id
@@ -639,7 +680,7 @@ def _build_guided_tour(overview_page: Page, result: dict[str, Any]) -> None:
         ov_meta = json.loads(overview_page.metadata_json or "{}")
     except (json.JSONDecodeError, TypeError):
         ov_meta = {}
-    tour = ov_meta.get("guided_tour") or []
+    tour = _dedupe_tour_steps(ov_meta.get("guided_tour") or [])
     if tour:
         result["guided_tour"] = [
             {
@@ -665,7 +706,7 @@ def _build_guided_tour(overview_page: Page, result: dict[str, Any]) -> None:
 
 
 @mcp.tool()
-async def get_overview(repo: str | None = None) -> dict:
+async def get_overview(repo: str | None = None, include: list[str] | None = None) -> dict:
     """Architecture map for an unfamiliar repo — first call when you don't know your way around.
 
     Returns the synthesised overview plus key modules, entry points, repo-wide
@@ -673,6 +714,10 @@ async def get_overview(repo: str | None = None) -> dict:
     knowledge map (top owners, knowledge silos), and the community summary.
     Skip this on subsequent calls — once you have the map, jump straight to
     ``get_context`` / ``get_answer``.
+
+    Compact by default: ``content_md`` carries only the overview essay's summary
+    section — the rest of the essay repeats ``key_modules`` / ``entry_points`` /
+    ``architecture.layers``. Pass ``include=["content"]`` for the full essay.
 
     In workspace mode:
     - Omit ``repo`` for the default repo's overview plus a workspace footer.
@@ -682,6 +727,8 @@ async def get_overview(repo: str | None = None) -> dict:
 
     Args:
         repo: Repository alias, path, or ID. Use ``"all"`` for workspace overview.
+        include: Opt-in extras. ``"content"`` returns the full overview essay in
+            ``content_md`` instead of the compact summary section.
     """
     if repo == "all":
         return await _workspace_overview()
@@ -716,9 +763,13 @@ async def get_overview(repo: str | None = None) -> dict:
         code_health = await _build_code_health(session, repository)
         key_decisions_section = await _build_key_decisions(session, repository)
 
+        full_content = overview_page.content if overview_page else "No overview generated yet."
+        want_full_content = "content" in set(include or [])
+        content_md = full_content if want_full_content else _compact_overview_content(full_content)
+
         result = {
             "title": title,
-            "content_md": overview_page.content if overview_page else "No overview generated yet.",
+            "content_md": content_md,
             "code_health": code_health,
             "key_modules": [
                 {
@@ -733,6 +784,12 @@ async def get_overview(repo: str | None = None) -> dict:
             "knowledge_map": knowledge_map,
             "community_summary": community_summary,
         }
+
+        if not want_full_content and content_md != full_content:
+            result["content_hint"] = (
+                'Overview essay trimmed to its summary section. '
+                'Call get_overview(include=["content"]) for the full walkthrough.'
+            )
 
         if architecture:
             result["architecture"] = architecture
