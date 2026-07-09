@@ -67,6 +67,13 @@ class ChurnRiskDetector:
         if relative_churn < _RELATIVE_CHURN_FLOOR:
             return []
 
+        # Above 100% the churn/NLOC ratio reads as nonsense as a percentage
+        # (e.g. "15475%"); render it as a multiplier of the file's size instead.
+        if relative_churn >= 1.0:
+            churn_text = f"{relative_churn:.1f}x the file's size"
+        else:
+            churn_text = f"{relative_churn:.0%} of the file's lines"
+
         is_hotspot = bool(meta.get("is_hotspot"))
         if relative_churn >= 4 and is_hotspot:
             severity = Severity.CRITICAL
@@ -93,7 +100,7 @@ class ChurnRiskDetector:
                     "nloc": ctx.nloc,
                 },
                 reason=(
-                    f"90-day churn rewrote {relative_churn:.0%} of the file's lines "
+                    f"90-day churn rewrote {churn_text} "
                     f"({added + deleted} lines over {ctx.nloc} NLOC, "
                     f"top {(1 - churn_pct):.0%} of repo churn)"
                 ),
