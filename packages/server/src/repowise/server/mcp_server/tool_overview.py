@@ -352,7 +352,11 @@ def _build_git_health(all_git: list) -> dict[str, Any]:
     top_modules = [m for m, _ in module_churn.most_common(5) if module_churn[m] > 0]
 
     return {
-        "total_files_indexed": len(all_git),
+        # Files that carry git history (churn/ownership), NOT the parsed file
+        # total — a repo can parse more files than git attributes (vendored,
+        # generated, or newly added files have no 90-day history). Named
+        # explicitly so the two counts don't read as a discrepancy.
+        "files_git_attributed": len(all_git),
         "hotspot_count": hotspot_count,
         "avg_bus_factor": round(avg_bus, 1),
         "files_with_bus_factor_1": bf1,
@@ -361,24 +365,41 @@ def _build_git_health(all_git: list) -> dict[str, Any]:
     }
 
 
+def _owner_display_name(name: str | None, email: str) -> str:
+    """A privacy-safe display name for a contributor — never the raw email.
+
+    Prefers the recorded ``primary_owner_name``; when absent, derives a
+    conservative label from the email's local part (e.g. ``jane.doe`` from
+    ``jane.doe@example.com``) so the address itself is never surfaced.
+    """
+    if name and name.strip():
+        return name.strip()
+    local = (email or "").split("@", 1)[0].strip()
+    return local or "unknown"
+
+
 def _build_knowledge_map(all_git: list) -> dict[str, Any]:
     """Top owners and knowledge silos aggregated across all indexed files."""
     if not all_git:
         return {}
 
+    # Aggregate on email (the stable identity key) but never surface it — the
+    # payload emits a display name only, to keep contributor emails private.
     owner_file_count: dict[str, int] = defaultdict(int)
     owner_pct_sum: dict[str, float] = defaultdict(float)
+    owner_name: dict[str, str] = {}
     for g in all_git:
         email = g.primary_owner_email or ""
         if email:
             owner_file_count[email] += 1
             owner_pct_sum[email] += float(g.primary_owner_commit_pct or 0.0)
+            owner_name.setdefault(email, _owner_display_name(g.primary_owner_name, email))
 
     total_files = len(all_git) or 1
     top_owners = sorted(
         [
             {
-                "email": email,
+                "name": owner_name.get(email) or _owner_display_name(None, email),
                 "files_owned": count,
                 "percentage": round(count / total_files * 100.0, 1),
             }
@@ -787,7 +808,7 @@ async def get_overview(repo: str | None = None, include: list[str] | None = None
 
         if not want_full_content and content_md != full_content:
             result["content_hint"] = (
-                'Overview essay trimmed to its summary section. '
+                "Overview essay trimmed to its summary section. "
                 'Call get_overview(include=["content"]) for the full walkthrough.'
             )
 
