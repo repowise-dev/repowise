@@ -215,7 +215,14 @@ def _statement_smells(text: str, dialect: str | None) -> list[PerfHit]:
                     break  # one finding per relation, not per nested select
 
         # -- sql_update_delete_without_where: whole-table DML.
-        elif isinstance(stmt, (exp.Update, exp.Delete)) and not stmt.args.get("where"):
+        # A LIMIT (``UPDATE ... LIMIT n`` / ``DELETE ... LIMIT n`` in MySQL and
+        # friends) bounds the affected row count, so the statement provably does
+        # NOT touch every row — treat it like a WHERE and stay silent.
+        elif (
+            isinstance(stmt, (exp.Update, exp.Delete))
+            and not stmt.args.get("where")
+            and not stmt.args.get("limit")
+        ):
             table = _clean_ident(getattr(stmt.this, "name", "") or "")
             if table:
                 hits.append(
