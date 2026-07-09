@@ -41,6 +41,40 @@ _BODY_FIELD_NAMES = (
     "block",
 )
 
+# The ``if``-shaped node types that can appear as an ``else if`` / ``elif``
+# chain continuation. Ternaries / ``if_element`` collection-``if`` are
+# deliberately excluded — only statement-level if chains flatten.
+_ELSE_IF_NODE_KINDS = frozenset(
+    {"if_statement", "if_expression", "elif_clause", "if_let_expression"}
+)
+
+
+def _is_elif_continuation(node: Node) -> bool:
+    """True when *node* is an ``else if`` / ``elif`` chain continuation.
+
+    Such an arm is visually flat guard-clause dispatch but the grammar nests
+    each arm under the previous ``else`` / ``alternative`` slot. We recognise
+    the continuation so the walker charges it a branch point (CCN) without
+    opening a fresh nesting level — mirroring the flat-``switch``/``match``
+    special-case. The AST shape differs per grammar:
+
+    - Python: a dedicated ``elif_clause`` node (always a continuation).
+    - TypeScript / Rust / C++: the else-if is wrapped in an ``else_clause``.
+    - Java / Go / C# / Dart / Kotlin: the else-if node is the sibling that
+      immediately follows the parent ``if``'s ``else`` token.
+    """
+    if node.type not in _ELSE_IF_NODE_KINDS:
+        return False
+    if node.type == "elif_clause":
+        return True
+    parent = node.parent
+    if parent is None:
+        return False
+    if parent.type == "else_clause":
+        return True
+    prev = node.prev_sibling
+    return prev is not None and prev.type == "else"
+
 
 def _count_boolean_ops_in_condition(node: Node, lmap: LanguageNodeMap) -> int:
     """Count ``&&`` / ``||`` / ``and`` / ``or`` operators in a condition.
@@ -55,7 +89,10 @@ def _count_boolean_ops_in_condition(node: Node, lmap: LanguageNodeMap) -> int:
     stack: list[Node] = [node]
     while stack:
         cur = stack.pop()
-        if cur is not node and cur.type in lmap.function_kinds:
+        if cur is not node and (cur.type in lmap.function_kinds or cur.type in lmap.lambda_kinds):
+            # Lambdas / arrow functions used as condition values (sort keys,
+            # predicates) are a separate scope; their boolean operators are not
+            # part of the enclosing branch's own decision logic.
             continue
         if _is_boolean_operator(cur, lmap):
             count += 1
@@ -234,7 +271,12 @@ def _walk_function_body(
             or node.type in lmap.catch_kinds
         ):
             ccn_increment = 1
-            nesting_increment = 1
+            # An ``else if`` / ``elif`` chain arm is a flat guard-clause
+            # continuation, not a genuinely nested block: charge the extra
+            # branch (ccn) but do not open a new nesting level for it. This
+            # parallels the flat-``switch``/``match`` special-case above.
+            if not _is_elif_continuation(node):
+                nesting_increment = 1
             # Side-channel: count compound boolean ops in this
             # construct's condition. Does not affect ccn/cognitive
             # (boolean operators are still tallied independently by
