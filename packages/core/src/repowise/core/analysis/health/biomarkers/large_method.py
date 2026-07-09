@@ -21,11 +21,17 @@ class LargeMethodDetector:
     category = "size_and_complexity"
 
     _NLOC_THRESHOLD = 60
-    # Minimal branching required so a long-but-flat body (CCN 1, e.g. a big
-    # config dict) doesn't read as a complexity smell. Anything with even a
-    # single branch clears this floor. Keeps the trigger about substance,
-    # not raw line count — directly targeting the size-confound critique.
-    _CCN_FLOOR = 2
+    # Minimal branching required so a long-but-flat body doesn't read as a
+    # complexity smell. Set to 3 (not 2) so a flat ``match``/``case`` dispatch
+    # table — every arm a single-expression return, functionally a data literal
+    # — is excluded too: the walker gives it CCN 2 (base 1 + the lone ``match``
+    # keyword point, no per-arm counting), the exact "layout artefact" shape
+    # this floor exists to filter. Tradeoff: a long body whose *only* branch is
+    # a single ``if``/``for`` also lands at CCN 2 and is now skipped. That is an
+    # acceptable loss — a 60-line function with one branch is weak evidence of a
+    # maintainability problem, and distinguishing it from a flat match would need
+    # a per-function flat-match flag threaded from the walker (a larger change).
+    _CCN_FLOOR = 3
 
     def detect(self, ctx: FileContext) -> list[BiomarkerResult]:
         out: list[BiomarkerResult] = []

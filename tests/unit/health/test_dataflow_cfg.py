@@ -334,8 +334,11 @@ def test_is_flagged_thresholds():
     # complex_method: ccn >= 9 alone flags.
     assert is_flagged(ccn=9, nloc=10)
     assert not is_flagged(ccn=8, nloc=10)
-    # large_method: nloc >= 60 with at least one branch (ccn >= 2).
-    assert is_flagged(ccn=2, nloc=60)
+    # large_method: nloc >= 60 with real branching (ccn >= 3). CCN 2 no longer
+    # qualifies — that's the score a flat match/case dispatch table gets from its
+    # lone keyword point, a layout artefact rather than a complexity smell.
+    assert is_flagged(ccn=3, nloc=60)
+    assert not is_flagged(ccn=2, nloc=60)  # flat-match dispatch, not substance
     assert not is_flagged(ccn=1, nloc=200)  # flat body, no branching
     assert not is_flagged(ccn=8, nloc=59)
 
