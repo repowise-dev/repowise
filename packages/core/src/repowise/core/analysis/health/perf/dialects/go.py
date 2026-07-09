@@ -239,8 +239,90 @@ class GoPerfDialect(BasePerfDialect):
         # a RANGE loop — a bare ``for {}`` accept loop or a ``for cond`` cursor
         # spawns one-per-event (idiomatic), so it is excluded.
         if node.type == "go_statement" and self._nearest_for_is_range(node):
+            # A preceding send to a locally-declared buffered channel
+            # (``sem <- struct{}{}`` where ``sem := make(chan T, N)``, N>0) is the
+            # canonical worker-pool bound: the send blocks once N are in flight,
+            # so the spawn is NOT unbounded. Suppress the finding.
+            if self._bounded_by_semaphore(node):
+                return None
             return "goroutine_in_unbounded_loop"
         return None
+
+    def _bounded_by_semaphore(self, go_node: Node) -> bool:
+        """True if a sibling statement before ``go_node`` in the same loop body
+        sends to a buffered channel declared in the enclosing function."""
+        block = go_node.parent
+        if block is None:
+            return False
+        chan_names: set[str] = set()
+        for sib in block.children:
+            # NB: tree-sitter Node wrappers are not singletons — compare by ==.
+            if sib == go_node:
+                break
+            if sib.type == "send_statement":
+                ch = sib.child_by_field_name("channel")
+                if ch is None:
+                    ch = next((c for c in sib.children if c.is_named), None)
+                if ch is not None and ch.type == "identifier" and ch.text is not None:
+                    chan_names.add(ch.text.decode("utf-8", "replace"))
+        return any(self._is_buffered_channel(go_node, name) for name in chan_names)
+
+    def _is_buffered_channel(self, go_node: Node, name: str) -> bool:
+        """True if ``name`` is bound to a ``make(chan T, N)`` (N>0) anywhere in
+        the enclosing function. Reuses the ``func_literal`` /
+        ``function_declaration`` / ``method_declaration`` boundary walk that
+        ``_nearest_for_is_range`` uses to find the enclosing function scope."""
+        scope: Node | None = go_node.parent
+        while scope is not None and scope.type not in (
+            "function_declaration",
+            "method_declaration",
+            "func_literal",
+        ):
+            scope = scope.parent
+        if scope is None:
+            scope = go_node
+            while scope.parent is not None:
+                scope = scope.parent
+        stack: list[Node] = [scope]
+        while stack:
+            n = stack.pop()
+            if n.type in ("short_var_declaration", "assignment_statement"):
+                left = n.child_by_field_name("left")
+                right = n.child_by_field_name("right")
+                if left is not None and right is not None:
+                    left_names = {
+                        c.text.decode("utf-8", "replace")
+                        for c in left.children
+                        if c.type == "identifier" and c.text is not None
+                    }
+                    if name in left_names and any(
+                        self._is_buffered_make(c) for c in right.children if c.is_named
+                    ):
+                        return True
+            stack.extend(n.children)
+        return False
+
+    @staticmethod
+    def _is_buffered_make(call: Node) -> bool:
+        """True if ``call`` is ``make(chan T, N)`` with a positive buffer size."""
+        if call.type != "call_expression":
+            return False
+        fn = call.child_by_field_name("function")
+        if fn is None or fn.text is None or fn.text.decode("utf-8", "replace") != "make":
+            return False
+        args = call.child_by_field_name("arguments")
+        if args is None:
+            return False
+        named = [c for c in args.children if c.is_named]
+        if len(named) < 2 or named[0].type != "channel_type":
+            return False
+        size = named[1]
+        if size.type != "int_literal" or size.text is None:
+            return False
+        try:
+            return int(size.text.decode("utf-8", "replace")) > 0
+        except ValueError:
+            return False
 
     @staticmethod
     def _nearest_for_is_range(node: Node) -> bool:
