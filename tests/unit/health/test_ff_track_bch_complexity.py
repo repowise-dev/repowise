@@ -107,10 +107,15 @@ _FLAT_DISPATCH = {
         " else if x==3 { return 3 } else if x==4 { return 4 }"
         " else if x==5 { return 5 }\n return 0\n}"
     ),
+    "rust": (
+        "fn f(x: i32) -> i32 {"
+        " if x==1 {1} else if x==2 {2} else if x==3 {3}"
+        " else if x==4 {4} else if x==5 {5} else {0} }"
+    ),
 }
 
 
-@pytest.mark.parametrize("language", ["python", "typescript", "java", "go"])
+@pytest.mark.parametrize("language", ["python", "typescript", "java", "go", "rust"])
 def test_flat_elif_chain_is_not_nested(language):
     ccn, max_nesting, _cognitive, _bumps, _conds = _walk(language, _FLAT_DISPATCH[language])
     # A 5-arm flat dispatch is one branch deep, not five.
@@ -127,6 +132,19 @@ def test_genuine_nested_ifs_still_report_depth():
         "    return 0\n",
     )
     assert max_nesting == 3
+
+
+def test_else_block_with_nested_if_is_not_flattened():
+    # An ``else:`` opening a block that *contains* an if is genuine nesting
+    # (depth 2) — only a direct ``elif`` / ``else if`` continuation flattens.
+    _ccn, max_nesting, _cog, _b, _c = _walk(
+        "python",
+        "def f(a, b):\n"
+        "    if a:\n        return 1\n"
+        "    else:\n        if b:\n            return 2\n"
+        "    return 0\n",
+    )
+    assert max_nesting == 2
 
 
 # --- M4: boolean ops inside a lambda body do not leak into the condition ---
@@ -156,6 +174,39 @@ def test_comprehension_filter_clauses_count_toward_ccn():
     )
     # base path + two independent filter predicates.
     assert ccn == 3
+
+
+def test_comprehension_filter_does_not_inflate_nesting():
+    # A lone filtered comprehension is a branch, not a nested block.
+    ccn, max_nesting, cognitive, _b, _c = _walk(
+        "python",
+        "def f(xs):\n    return [x for x in xs if x > 0]\n",
+    )
+    assert (ccn, max_nesting, cognitive) == (2, 0, 1)
+    # And it must not add a level on top of genuine nesting.
+    _ccn, max_nesting_deep, _cog, _b, _c = _walk(
+        "python",
+        "def g(xs, a, b, c):\n"
+        "    if a:\n        if b:\n            if c:\n"
+        "                return [x for x in xs if x > 0]\n"
+        "    return 0\n",
+    )
+    assert max_nesting_deep == 3
+
+
+def test_match_case_guard_does_not_inflate_nesting():
+    # A ``case ... if guard:`` also parses as an ``if_clause``; the guard is a
+    # branch point but must not open a nesting level beyond match + case.
+    ccn, max_nesting, _cog, _b, _c = _walk(
+        "python",
+        "def f(v):\n"
+        "    match v:\n"
+        "        case 1 if v > 0:\n            return 1\n"
+        "        case _:\n            return 0\n",
+    )
+    assert max_nesting == 2
+    # The guard still counts toward CCN.
+    assert ccn >= 3
 
 
 # --- M5: function NLOC excludes docstring / comment-only lines --------------
