@@ -33,9 +33,9 @@ log = structlog.get_logger(__name__)
 # Pulled from the biomarker detectors so the gate stays in lockstep with the
 # flags it mirrors. ``complex_method`` (ccn >= 9) already subsumes the
 # ``brain_method`` ccn condition, so the predicate needs only these two shapes.
-_COMPLEX_CCN = ComplexMethodDetector._CCN_THRESHOLD  # 9
-_LARGE_NLOC = LargeMethodDetector._NLOC_THRESHOLD  # 60
-_LARGE_CCN_FLOOR = LargeMethodDetector._CCN_FLOOR  # 2
+_COMPLEX_CCN = ComplexMethodDetector._CCN_THRESHOLD
+_LARGE_NLOC = LargeMethodDetector._NLOC_THRESHOLD
+_LARGE_CCN_FLOOR = LargeMethodDetector._CCN_FLOOR
 
 
 def is_flagged(*, ccn: int, nloc: int) -> bool:
@@ -44,7 +44,7 @@ def is_flagged(*, ccn: int, nloc: int) -> bool:
     The union of the size/complexity biomarker triggers:
 
     - ``complex_method`` -- ``ccn >= 9`` (also covers ``brain_method``'s ccn).
-    - ``large_method`` -- ``nloc >= 60`` with at least one branch (``ccn >= 2``).
+    - ``large_method`` -- ``nloc >= 60`` with real branching (``ccn >= 3``).
     """
     if ccn >= _COMPLEX_CCN:
         return True
