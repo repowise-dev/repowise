@@ -69,6 +69,19 @@ PROVIDER_CATALOG: list[dict[str, Any]] = [
         "requires_key": True,
     },
     {
+        "id": "edenai",
+        "name": "Eden AI",
+        "default_model": "mistral/mistral-small-latest",
+        "models": [
+            "mistral/mistral-small-latest",
+            "openai/gpt-4o-mini",
+            "anthropic/claude-haiku-4-5",
+            "google/gemini-2.5-flash",
+        ],
+        "env_keys": ["EDENAI_API_KEY"],
+        "requires_key": True,
+    },
+    {
         "id": "ollama",
         "name": "Ollama (Local)",
         "default_model": "llama3.2",

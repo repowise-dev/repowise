@@ -14,14 +14,15 @@ import {
   SelectValue,
 } from "@repowise-dev/ui/ui/select";
 
-const PROVIDERS = ["gemini", "openai", "anthropic", "deepseek", "opencode", "ollama", "litellm", "mock"] as const;
-const EMBEDDERS = ["mock", "gemini", "openai", "openrouter", "ollama"] as const;
+const PROVIDERS = ["gemini", "openai", "anthropic", "deepseek", "edenai", "opencode", "ollama", "litellm", "mock"] as const;
+const EMBEDDERS = ["mock", "gemini", "openai", "openrouter", "edenai", "ollama"] as const;
 
 const MODEL_PLACEHOLDERS: Record<string, string> = {
   gemini: "gemini-3.1-flash-lite-preview",
   openai: "gpt-5.4-nano",
   anthropic: "claude-sonnet-4-6",
   deepseek: "deepseek-v4-flash",
+  edenai: "mistral/mistral-small-latest",
   opencode: "opencode/default",
   ollama: "llama3.2",
   litellm: "groq/llama-3.1-70b-versatile",
@@ -34,6 +35,7 @@ const PROVIDER_ENV_VARS: Record<string, { vars: string[]; installHint: string }>
   anthropic: { vars: ["ANTHROPIC_API_KEY"], installHint: "pip install anthropic" },
   ollama: { vars: ["OLLAMA_BASE_URL"], installHint: "https://ollama.ai" },
   deepseek: { vars: ["DEEPSEEK_API_KEY"], installHint: "pip install openai" },
+  edenai: { vars: ["EDENAI_API_KEY"], installHint: "pip install openai" },
   litellm: { vars: ["LITELLM_*"], installHint: "pip install litellm" },
   opencode: { vars: [], installHint: "curl -fsSL https://opencode.ai/install | bash" },
   mock: { vars: [], installHint: "No key needed" },
@@ -43,6 +45,7 @@ const EMBEDDER_ENV_VARS: Record<string, string[]> = {
   gemini: ["GEMINI_API_KEY"],
   openai: ["OPENAI_API_KEY"],
   openrouter: ["OPENROUTER_API_KEY"],
+  edenai: ["EDENAI_API_KEY"],
   ollama: ["OLLAMA_BASE_URL"],
   mock: [],
 };
