@@ -67,12 +67,11 @@ class ChurnRiskDetector:
         if relative_churn < _RELATIVE_CHURN_FLOOR:
             return []
 
-        # Above 100% the churn/NLOC ratio reads as nonsense as a percentage
-        # (e.g. "15475%"); render it as a multiplier of the file's size instead.
-        if relative_churn >= 1.0:
-            churn_text = f"{relative_churn:.1f}x the file's size"
-        else:
-            churn_text = f"{relative_churn:.0%} of the file's lines"
+        # relative_churn is always >= _RELATIVE_CHURN_FLOOR (1.0) here — below it
+        # the detector already returned. Above 100% the churn/NLOC ratio reads as
+        # nonsense as a percentage (e.g. "15475%"), so render it as a multiplier
+        # of the file's size instead.
+        churn_text = f"{relative_churn:.1f}x the file's size"
 
         is_hotspot = bool(meta.get("is_hotspot"))
         if relative_churn >= 4 and is_hotspot:
