@@ -49,6 +49,25 @@ from .prompts import (
 
 logger = structlog.get_logger(__name__)
 
+
+def _truncate_title(text: str, limit: int) -> str:
+    """Truncate a decision title to ``limit`` chars on a word boundary.
+
+    Avoids splitting a word mid-way: trims back to the last whitespace inside
+    the limit and appends an ellipsis. Falls back to a hard cut only when the
+    first word already exceeds the limit (no boundary to break on).
+    """
+    text = (text or "").strip()
+    if len(text) <= limit:
+        return text
+    window = text[:limit]
+    cut = window.rfind(" ")
+    if cut <= 0:
+        # Single over-long word — hard cut, still signal truncation.
+        return window.rstrip() + "…"
+    return window[:cut].rstrip() + "…"
+
+
 # ---------------------------------------------------------------------------
 # Data models
 # ---------------------------------------------------------------------------
@@ -432,7 +451,7 @@ class DecisionExtractor:
     ) -> ExtractedDecision:
         """Create a minimal decision from a raw marker without LLM."""
         return ExtractedDecision(
-            title=marker["text"][:100],
+            title=_truncate_title(marker["text"], 100),
             decision=marker["text"],
             context=f"Found in {file_path}:{marker['line']}",
             source="inline_marker",
@@ -817,7 +836,7 @@ class DecisionExtractor:
         mapped_status = _ADR_STATUS_MAP.get(status_key, "active")
 
         return ExtractedDecision(
-            title=(title or rel_path)[:200],
+            title=_truncate_title(title or rel_path, 200),
             context=context.strip(),
             decision=decision_txt.strip(),
             rationale=rationale.strip(),
@@ -862,7 +881,7 @@ class DecisionExtractor:
         for section, bullet in entries[:50]:
             decisions.append(
                 ExtractedDecision(
-                    title=bullet[:100],
+                    title=_truncate_title(bullet, 100),
                     decision=bullet,
                     context=f"CHANGELOG · {section.title()}",
                     source="changelog",
@@ -1221,7 +1240,7 @@ class DecisionExtractor:
         """A short, single-line title for a harvested comment."""
         first = text.strip().splitlines()[0] if text.strip() else text
         first = re.sub(r"\s+", " ", first).strip()
-        return first[:100]
+        return _truncate_title(first, 100)
 
     def _build_symbol_index(self) -> dict[str, list[tuple[int, int, str]]]:
         """Map each file's rel path → its symbols' ``(start, end, label)``.
