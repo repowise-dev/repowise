@@ -80,6 +80,7 @@ async def get_risk(
             select(GraphNode).where(GraphNode.repository_id == repo_id)
         )
         node_meta = {n.node_id: n for n in node_res.scalars().all()}
+        test_paths = {nid for nid, n in node_meta.items() if n.is_test}
 
         # Team size is repo-wide — compute once, share across targets
         # (small-team calibration for bus-factor-risk, issue #361).
@@ -160,6 +161,7 @@ async def get_risk(
             exclude_spec,
             collector,
             governance_risk,
+            test_paths,
             ctx.alias,
         )
     else:

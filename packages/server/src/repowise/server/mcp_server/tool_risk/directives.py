@@ -44,6 +44,11 @@ _BC_CONSUMER_LIMIT = 5
 _CF_VIOLATION_LIMIT = 5
 _CF_CYCLE_LIMIT = 3
 
+#: Caps on the will-break split. Production impact leads the directive, so it
+#: keeps the larger budget; test fallout is a secondary signal capped tighter.
+_WILL_BREAK_LIMIT = 5
+_WILL_BREAK_TESTS_LIMIT = 3
+
 
 def _breaking_change_directive(repo_alias: str) -> list[dict[str, Any]]:
     """Breaking-change half of the PR directive: incompatible provider changes.
@@ -269,6 +274,7 @@ def _build_pr_directive(
     exclude_spec: Any,
     collector: OmissionCollector,
     governance_risk: list[dict[str, Any]],
+    test_paths: set[str],
     alias: str,
 ) -> None:
     """Assemble PR-mode output: trim co-change lists + blast radius, then build
@@ -295,10 +301,13 @@ def _build_pr_directive(
     # entry is a file path (string), never a dossier. Designed to answer
     # "what should I do about this PR" in three lines.
 
-    will_break = filter_path_list(
+    affected = filter_path_list(
         [p for p in (_as_path(e) for e in trimmed_blast.get("transitive_affected", [])) if p],
         exclude_spec,
-    )[:5]
+    )
+    will_break = [p for p in affected if p not in test_paths][:_WILL_BREAK_LIMIT]
+    will_break_tests = [p for p in affected if p in test_paths][:_WILL_BREAK_TESTS_LIMIT]
+
     missing_cochanges = filter_path_list(
         [p for p in (_as_path(e) for e in trimmed_blast.get("cochange_warnings", [])) if p],
         exclude_spec,
@@ -364,6 +373,7 @@ def _build_pr_directive(
 
     response["directive"] = {
         "will_break": will_break,
+        "will_break_tests": will_break_tests,
         "missing_cochanges": missing_cochanges,
         "missing_tests": missing_tests,
         "will_break_consumers": will_break_consumers,
@@ -376,6 +386,7 @@ def _build_pr_directive(
         "summary": (
             f"PR touches {len(changed_files)} file(s). "
             f"~{len(will_break)} downstream file(s) likely affected, "
+            f"{len(will_break_tests)} test(s) likely broken, "
             f"{len(missing_cochanges)} historical co-changer(s) missing, "
             f"{len(missing_tests)} file(s) without tests."
             f"{gov_suffix}{xr_suffix}{bc_suffix}{cf_suffix}"

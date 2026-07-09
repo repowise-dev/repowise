@@ -91,6 +91,27 @@ async def test_get_risk_stable_file(setup_mcp):
     assert t["risk_type"] == "stable"
 
 
+@pytest.mark.asyncio
+async def test_get_risk_pr_directive_splits_test_breakage(setup_mcp):
+    """PR mode splits test-file fallout out of will_break into will_break_tests (#672)."""
+    from repowise.server.mcp_server import get_risk
+
+    # Pass changed_files to trigger PR mode + blast-radius directive.
+    result = await get_risk(["src/auth/service.py"], changed_files=["src/auth/service.py"])
+    directive = result["directive"]
+
+    # middleware.py imports service.py → production breakage.
+    assert "src/auth/middleware.py" in directive["will_break"]
+    assert "src/auth/middleware.py" not in directive["will_break_tests"]
+
+    # test_service.py imports service.py but is is_test=True → segmented out.
+    assert "tests/test_service.py" in directive["will_break_tests"]
+    assert "tests/test_service.py" not in directive["will_break"]
+
+    # Summary reflects the test count.
+    assert "test(s) likely broken" in directive["summary"]
+
+
 # ---- _classify_risk_type small-team calibration (issue #361) ---------------
 
 
