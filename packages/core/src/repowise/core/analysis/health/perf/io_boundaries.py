@@ -130,6 +130,14 @@ def collect_io_names(tree_root: _NodeLike, language: str) -> dict[str, str]:
     do not originate from a classified I/O library are simply absent.
     """
     names: dict[str, str] = {}
+    # Names rebound by a plain local assignment (``requests = {...}``) that
+    # shadows the import. ``sink_kind`` has no call-site position, so full
+    # per-scope resolution would need a walker rewrite; instead we drop any
+    # import name that is also an assignment target *anywhere* in the file. That
+    # is coarser than true scoping (it also suppresses a genuine ``requests.get``
+    # in a file that rebinds ``requests`` elsewhere — a recall trade for
+    # precision), but closes the shadowed-receiver false flag with no new pass.
+    rebound: set[str] = set()
     stack: list[_NodeLike] = [tree_root]
     while stack:
         node = stack.pop()
@@ -149,6 +157,15 @@ def collect_io_names(tree_root: _NodeLike, language: str) -> dict[str, str]:
                 if kind is not None:
                     for name in bound:
                         names.setdefault(name, kind)
+        elif node.type == "assignment":
+            # Python assignment target; ``x = ...`` shadows an imported ``x``.
+            target = (
+                node.child_by_field_name("left") if hasattr(node, "child_by_field_name") else None
+            )
+            if target is not None and target.type == "identifier" and target.text is not None:
+                rebound.add(target.text.decode("utf-8", "replace"))
         for child in node.children:
             stack.append(child)
+    for name in rebound:
+        names.pop(name, None)
     return names

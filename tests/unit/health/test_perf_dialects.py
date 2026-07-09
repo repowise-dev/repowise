@@ -490,7 +490,9 @@ def test_python_pd_concat_in_loop():
 def test_python_pandas_iterrows_in_loop():
     # The iterrows() call lives in the loop HEADER, so the body call-markers
     # never see it — the loop_iterable_call_marker hook fires on the loop node.
-    iterrows = "def f(df):\n    for _, row in df.iterrows():\n        use(row)\n"
+    # Soft-gated on a pandas import present in the file (a bare .iterrows() with
+    # no pandas import is now treated as a name collision, not a DataFrame).
+    iterrows = "import pandas\ndef f(df):\n    for _, row in df.iterrows():\n        use(row)\n"
     assert ("pandas_iterrows_in_loop", "") in _hits("python", iterrows)
     # itertuples is the recommended faster alternative — never flagged.
     tuples = "def f(df):\n    for row in df.itertuples():\n        use(row)\n"
