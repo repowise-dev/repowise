@@ -75,7 +75,22 @@ def decision_match_text(title: str, decision: str = "") -> str:
     """
     title = (title or "").strip()
     decision = (decision or "").strip()
-    return f"{title}\n{decision}".strip() if decision else title
+    if not decision:
+        return title
+    # When ``decision`` is just the title again (a body-less record whose title
+    # was promoted into the decision field), don't emit the same line twice.
+    if _same_line(title, decision):
+        return title
+    return f"{title}\n{decision}".strip()
+
+
+def _same_line(a: str, b: str) -> bool:
+    """True when two strings are the same line ignoring case and edge punctuation."""
+
+    def norm(s: str) -> str:
+        return s.strip().strip(".!?:;,").casefold()
+
+    return norm(a) == norm(b)
 
 
 def _decision_page_id(decision_id: str) -> str:
