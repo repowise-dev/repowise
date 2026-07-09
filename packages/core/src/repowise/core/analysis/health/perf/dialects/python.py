@@ -161,7 +161,10 @@ class PythonPerfDialect(BasePerfDialect):
             return "filesystem"
         if method == "urlopen":
             return "network"
-        if root_kind == "network" and method in HTTP_VERBS:
+        if is_attribute and root_kind == "network" and method in HTTP_VERBS:
+            # ``requests.get(...)`` is a member call on an imported client; a bare
+            # ``get(...)`` (e.g. a builtin/local) never has the verb-call shape, so
+            # gate on ``is_attribute`` like the DB branches above.
             return "network"
         if awaited and root_kind == "network":
             return "network"
@@ -314,11 +317,15 @@ class PythonPerfDialect(BasePerfDialect):
         # each iteration (a fresh ``buf = [...]; buf.insert(0, x)`` is bounded,
         # not O(n^2) — the same reset-per-iteration FP class as string_concat;
         # Phase-7d headroom corpus).
+        # ``collections.deque.insert(0, x)`` is O(1) front-insertion by design (it
+        # is the deque's own ``appendleft`` machinery), so exclude a receiver
+        # provably constructed via ``deque()`` / ``collections.deque(...)``.
         if (
             method == "insert"
             and self.callee_is_attribute(node)
             and self._first_arg_is_zero(node)
             and not self._receiver_reset_in_loop(node, root)
+            and not self._receiver_bound_to_deque(node, root)
         ):
             return "list_insert_zero_in_loop"
         # ``pd.concat([acc, chunk])`` / ``pandas.concat(...)`` in a loop copies
@@ -335,18 +342,42 @@ class PythonPerfDialect(BasePerfDialect):
         ``itertuples`` / ``to_dict`` when row access is unavoidable). The call
         sits in the loop header, so the body ``loop_call_marker`` misses it.
         Gated to the distinctive method name on a member-access receiver
-        (``x.iterrows()``, never a bare ``iterrows(...)``) — high-precision by
-        construction, like the ``pd``/``pandas`` ``concat`` root: ``iterrows`` is
-        a pandas-only verb with no common collision.
+        (``x.iterrows()``, never a bare ``iterrows(...)``) AND to a file that
+        imports pandas (same style as the ``pd``/``pandas`` root gate in
+        ``pd_concat``). Residual limitation: this is still a name match — a
+        user-defined class with an ``iterrows`` method in a file that also
+        imports pandas would still be flagged.
         """
         if node.type != "for_statement":
             return None
         right = node.child_by_field_name("right")
         if right is None or right.type != "call":
             return None
-        if self.callee_method_name(right) == "iterrows" and self.callee_is_attribute(right):
+        if (
+            self.callee_method_name(right) == "iterrows"
+            and self.callee_is_attribute(right)
+            and self._file_imports_pandas(node)
+        ):
             return "pandas_iterrows_in_loop"
         return None
+
+    @staticmethod
+    def _file_imports_pandas(node: Node) -> bool:
+        """True if the enclosing file has an ``import pandas`` / ``from pandas
+        import ...`` statement (a soft gate; still a name match, see caller)."""
+        root = node
+        while root.parent is not None:
+            root = root.parent
+        stack: list[Node] = [root]
+        while stack:
+            n = stack.pop()
+            if "import" in n.type:
+                txt = (n.text or b"").decode("utf-8", "replace")
+                if "pandas" in txt:
+                    return True
+                continue  # imports do not nest further imports
+            stack.extend(n.children)
+        return False
 
     def _receiver_reset_in_loop(self, node: Node, name: str) -> bool:
         """True if the call's receiver ``name`` is re-assigned (reset to a fresh
@@ -362,6 +393,46 @@ class PythonPerfDialect(BasePerfDialect):
                     return True
             cur = cur.parent
         return False
+
+    def _receiver_bound_to_deque(self, node: Node, name: str) -> bool:
+        """True if the call's receiver ``name`` is bound to a ``deque()`` /
+        ``collections.deque(...)`` anywhere in the file. Mirrors the whole-tree
+        binding scan of :meth:`list_bound_names`: a scoped rewrite is out of
+        scope, so a same-named list in another scope would still be missed here —
+        acceptable, since dropping the finding only trades recall for precision.
+        """
+        if not name:
+            return False
+        root = node
+        while root.parent is not None:
+            root = root.parent
+        stack: list[Node] = [root]
+        while stack:
+            n = stack.pop()
+            if n.type == "assignment":
+                left = n.child_by_field_name("left")
+                right = n.child_by_field_name("right")
+                if (
+                    left is not None
+                    and left.type == "identifier"
+                    and left.text is not None
+                    and left.text.decode("utf-8", "replace") == name
+                    and right is not None
+                    and self._rhs_is_deque(right)
+                ):
+                    return True
+            stack.extend(n.children)
+        return False
+
+    @staticmethod
+    def _rhs_is_deque(right: Node) -> bool:
+        if right.type != "call":
+            return False
+        fn = right.child_by_field_name("function")
+        if fn is None or fn.text is None:
+            return False
+        callee = fn.text.decode("utf-8", "replace")
+        return callee == "deque" or callee.endswith(".deque")
 
     @staticmethod
     def _first_arg_is_zero(node: Node) -> bool:
@@ -424,9 +495,36 @@ class PythonPerfDialect(BasePerfDialect):
                         list_names.add(name)
                     elif self._rhs_is_nonlist_container(right):
                         exclude.add(name)
+            elif n.type == "parameters":
+                # A name also used as a function parameter has no proven binding
+                # inside that scope (the caller could pass a set), so it collides
+                # with an unrelated module-level list of the same name. Exclude it,
+                # mirroring the set/dict-literal exclusion above.
+                exclude.update(self._param_names(n))
             for c in n.children:
                 stack.append(c)
         return frozenset(list_names - exclude)
+
+    @staticmethod
+    def _param_names(params: Node) -> set[str]:
+        """The bound names declared in a ``parameters`` node (plain / typed /
+        default / splat forms), excluding any type-annotation identifiers."""
+        names: set[str] = set()
+        for p in params.children:
+            if not p.is_named:
+                continue
+            if p.type == "identifier":
+                if p.text is not None:
+                    names.add(p.text.decode("utf-8", "replace"))
+                continue
+            nm = p.child_by_field_name("name")
+            if nm is None:
+                # typed_parameter has no ``name`` field: the param name is its
+                # first identifier child (the type comes after the ``:``).
+                nm = next((c for c in p.children if c.type == "identifier"), None)
+            if nm is not None and nm.text is not None:
+                names.add(nm.text.decode("utf-8", "replace"))
+        return names
 
     @staticmethod
     def _rhs_is_list(right: Node) -> bool:
