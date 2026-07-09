@@ -125,12 +125,17 @@ class ErrorHandlingHit:
 
     - ``swallowed_catch`` — a catch/except whose body has no real handling
       (empty, or only ``pass`` / ``...`` / a docstring / comments).
-    - ``bare_except`` — Python ``except:`` / ``except Exception:`` /
-      ``except BaseException:`` (catch-all) regardless of body.
+    - ``bare_except`` — Python truly-catch-all ``except:`` / ``except
+      BaseException:`` (also swallows KeyboardInterrupt / SystemExit),
+      regardless of body.
+    - ``broad_except`` — Python ``except Exception:`` (broad, but cannot catch
+      the BaseException-only interrupts), regardless of body.
     - ``unsafe_unwrap`` — Rust ``.unwrap()`` / ``.expect()`` /
-      ``.unwrap_unchecked()`` calls and ``panic!`` / ``unreachable!`` /
-      ``todo!`` / ``unimplemented!`` macros (latent panic-on-error).
-    - ``go_swallow`` — Go empty ``if err != nil {}`` block, or a
+      ``.unwrap_unchecked()`` calls (latent panic-on-error). Suppressed inside
+      ``#[test]`` / ``#[cfg(test)]`` items.
+    - ``panic_macro`` — Rust ``panic!`` / ``unreachable!`` / ``todo!`` /
+      ``unimplemented!`` macros (unconditional abort). Suppressed inside tests.
+    - ``go_swallow`` — Go empty ``if err != nil {}`` block, or a trailing
       blank-identifier discard of a multi-return call's value.
     """
 

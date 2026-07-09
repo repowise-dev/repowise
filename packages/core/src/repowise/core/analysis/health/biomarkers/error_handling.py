@@ -26,8 +26,10 @@ from .base import BiomarkerResult, FileContext
 
 _REASONS: dict[str, str] = {
     "swallowed_catch": "caught exception is swallowed without any handling",
-    "bare_except": "catch-all except hides every error, including KeyboardInterrupt",
-    "unsafe_unwrap": "unwrap/expect/panic turns a recoverable error into a crash",
+    "bare_except": "bare/BaseException catch also swallows KeyboardInterrupt and SystemExit",
+    "broad_except": "broad `except Exception` catches unrelated errors and can hide bugs",
+    "unsafe_unwrap": "unwrap/expect turns a recoverable error into a crash",
+    "panic_macro": "panic!/unreachable!/todo!/unimplemented! aborts the process unconditionally",
     "go_swallow": "error value is checked then ignored, or discarded via the blank identifier",
 }
 
