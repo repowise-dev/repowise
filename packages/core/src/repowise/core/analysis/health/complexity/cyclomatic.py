@@ -48,6 +48,13 @@ _ELSE_IF_NODE_KINDS = frozenset(
     {"if_statement", "if_expression", "elif_clause", "if_let_expression"}
 )
 
+# Branch nodes that are a decision point (count toward CCN) but do NOT open a
+# nesting level: a comprehension filter (``[x for x in xs if a]``) and a match
+# ``case ... if guard:`` both parse as ``if_clause`` and sit inline, not as a
+# nested block. Treating them as flat keeps ``max_nesting`` / ``cognitive``
+# honest — they were only added to ``branch_kinds`` for the CCN count.
+_FLAT_BRANCH_KINDS = frozenset({"if_clause"})
+
 
 def _is_elif_continuation(node: Node) -> bool:
     """True when *node* is an ``else if`` / ``elif`` chain continuation.
@@ -271,11 +278,11 @@ def _walk_function_body(
             or node.type in lmap.catch_kinds
         ):
             ccn_increment = 1
-            # An ``else if`` / ``elif`` chain arm is a flat guard-clause
-            # continuation, not a genuinely nested block: charge the extra
-            # branch (ccn) but do not open a new nesting level for it. This
-            # parallels the flat-``switch``/``match`` special-case above.
-            if not _is_elif_continuation(node):
+            # An ``else if`` / ``elif`` chain arm and a comprehension /
+            # case-guard filter are flat: charge the extra branch (ccn) but do
+            # not open a new nesting level for them. This parallels the
+            # flat-``switch``/``match`` special-case above.
+            if node.type not in _FLAT_BRANCH_KINDS and not _is_elif_continuation(node):
                 nesting_increment = 1
             # Side-channel: count compound boolean ops in this
             # construct's condition. Does not affect ccn/cognitive
