@@ -256,6 +256,25 @@ def test_r6_semaphore_bounded_goroutine_not_flagged():
     assert "goroutine_in_unbounded_loop" not in _kinds("go", "go", src)
 
 
+def test_r6_results_collector_channel_still_flagged():
+    # A buffered channel that is only SENT to (a results/work channel, drained
+    # elsewhere) bounds nothing — the spawn must still fire. The goroutine body
+    # never receives from ``results``, so it is not a semaphore.
+    src = (
+        b"package main\n"
+        b"func process(items []int) {\n"
+        b"    results := make(chan int, 8)\n"
+        b"    for _, item := range items {\n"
+        b"        results <- item\n"
+        b"        go func(it int) {\n"
+        b"            handle(it)\n"
+        b"        }(item)\n"
+        b"    }\n"
+        b"}\n"
+    )
+    assert "goroutine_in_unbounded_loop" in _kinds("go", "go", src)
+
+
 def test_r6_unbounded_goroutine_still_flagged():
     src = (
         b"package main\n"

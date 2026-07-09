@@ -235,6 +235,10 @@ def _collect_perf_hits(
         # merely DEFINED here — it runs whenever/wherever it is later invoked).
         # Reset both depths at the boundary, mirroring ``next_async``; the
         # closure's OWN loops/locks still count from its own body.
+        # Ceiling: a closure INVOKED inline in the loop (``(lambda: io())()`` /
+        # Go's ``func(){…}()`` IIFE) does run per-iteration, but we do not detect
+        # inline invocation, so those are cleared too — accepted (favouring
+        # precision), and the Go IIFE case is the idiomatic defer-in-loop fix.
         next_loop_depth = 0 if entering_fn else loop_depth
         next_lock_depth = 0 if entering_fn else lock_depth
         next_func = func_name

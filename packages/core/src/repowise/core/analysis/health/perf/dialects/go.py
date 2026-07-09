@@ -249,8 +249,15 @@ class GoPerfDialect(BasePerfDialect):
         return None
 
     def _bounded_by_semaphore(self, go_node: Node) -> bool:
-        """True if a sibling statement before ``go_node`` in the same loop body
-        sends to a buffered channel declared in the enclosing function."""
+        """True if the spawn is guarded by a genuine buffered-channel semaphore.
+
+        The idiom is: acquire before the spawn (``sem <- struct{}{}`` in the loop
+        body, which blocks once N are in flight) and release inside the goroutine
+        (``defer func(){ <-sem }()``). A results/work channel that is only *sent*
+        to and drained elsewhere bounds nothing, so we require the SAME buffered
+        channel to also be RECEIVED FROM (``<-sem``) inside the goroutine body —
+        that receive is what distinguishes a semaphore from a plain send target.
+        """
         block = go_node.parent
         if block is None:
             return False
@@ -265,7 +272,47 @@ class GoPerfDialect(BasePerfDialect):
                     ch = next((c for c in sib.children if c.is_named), None)
                 if ch is not None and ch.type == "identifier" and ch.text is not None:
                     chan_names.add(ch.text.decode("utf-8", "replace"))
-        return any(self._is_buffered_channel(go_node, name) for name in chan_names)
+        if not chan_names:
+            return False
+        body = self._goroutine_body(go_node)
+        if body is None:
+            return False
+        return any(
+            self._is_buffered_channel(go_node, name) and self._channel_received_in(body, name)
+            for name in chan_names
+        )
+
+    @staticmethod
+    def _goroutine_body(go_node: Node) -> Node | None:
+        """The ``func_literal`` body of ``go func(){…}()`` — the first func_literal
+        under the go statement (its ``<-sem`` release lives here)."""
+        stack: list[Node] = [go_node]
+        while stack:
+            n = stack.pop()
+            if n.type == "func_literal":
+                return n
+            stack.extend(n.children)
+        return None
+
+    @staticmethod
+    def _channel_received_in(node: Node, name: str) -> bool:
+        """True if ``<-name`` (a channel receive) appears anywhere under ``node``."""
+        stack: list[Node] = [node]
+        while stack:
+            n = stack.pop()
+            if n.type == "unary_expression" and any(c.type == "<-" for c in n.children):
+                operand = n.child_by_field_name("operand")
+                if operand is None:
+                    operand = next((c for c in n.children if c.is_named), None)
+                if (
+                    operand is not None
+                    and operand.type == "identifier"
+                    and operand.text is not None
+                    and operand.text.decode("utf-8", "replace") == name
+                ):
+                    return True
+            stack.extend(n.children)
+        return False
 
     def _is_buffered_channel(self, go_node: Node, name: str) -> bool:
         """True if ``name`` is bound to a ``make(chan T, N)`` (N>0) anywhere in
