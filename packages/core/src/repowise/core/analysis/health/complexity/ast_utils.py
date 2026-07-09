@@ -181,14 +181,27 @@ def _count_parameters(fn_node: Node) -> int:
         # Dart: the parameter list lives on the preceding signature sibling.
         sig = _dart_signature_sibling(fn_node)
         if sig is not None:
-            params = next(
-                (c for c in sig.children if c.type == "formal_parameter_list"), None
-            )
+            params = next((c for c in sig.children if c.type == "formal_parameter_list"), None)
     if params is None:
         return 0
     count = 0
     for child in params.children:
-        if child.type in ("(", ")", ",", "self", "cls", ":", "*", "**"):
+        # A bare ``*`` (keyword-only marker) and a bare ``/`` (positional-only
+        # marker) parse as named ``keyword_separator`` / ``positional_separator``
+        # nodes but carry no arity, so they must be skipped alongside the
+        # ``*``/``**`` splat tokens and the punctuation.
+        if child.type in (
+            "(",
+            ")",
+            ",",
+            "self",
+            "cls",
+            ":",
+            "*",
+            "**",
+            "keyword_separator",
+            "positional_separator",
+        ):
             continue
         if child.is_named:
             count += 1
