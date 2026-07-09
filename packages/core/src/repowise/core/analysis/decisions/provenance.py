@@ -53,6 +53,15 @@ SOURCE_RANK: dict[str, int] = {
 
 MAX_SOURCE_RANK: int = max(SOURCE_RANK.values())
 
+# Rank at/below which the only evidence is a heuristic rationale-comment harvest
+# (``code_comment`` and the placeholder ``test_name``/``inferred`` tiers). A
+# decision resting solely on a plain code comment is a weak signal and must not
+# read as confident as a real ADR/commit-derived decision, so its confidence is
+# decayed into a sub-tier below the 0.5 floor unless something stronger
+# corroborates it (which lifts ``top_rank`` above this line).
+_HEURISTIC_COMMENT_RANK: int = 2
+_HEURISTIC_COMMENT_DECAY: float = 0.85
+
 
 def rank_for_source(source: str | None) -> int:
     """Return the ranking ladder value for *source* (unknown → lowest rank)."""
@@ -84,6 +93,10 @@ def compute_confidence(
         conf *= 0.85
     elif verification == "unverified":
         conf *= 0.6
+    # A decision backed only by a heuristic code-comment harvest sits a tier
+    # below real ADR/commit-derived intent, so it never clears the 0.5 floor.
+    if top_rank <= _HEURISTIC_COMMENT_RANK:
+        conf *= _HEURISTIC_COMMENT_DECAY
     return round(max(0.0, min(0.99, conf)), 3)
 
 
