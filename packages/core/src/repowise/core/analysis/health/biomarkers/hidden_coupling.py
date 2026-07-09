@@ -34,6 +34,13 @@ _MIN_CORRELATION = 0.5
 _HIGH_THRESHOLD = 0.65
 _CRITICAL_THRESHOLD = 0.8
 _MAX_FINDINGS_PER_FILE = 3
+# Absolute number of shared commits required before HIGH/CRITICAL severity is
+# allowed. A high correlation ratio over a handful of commits (e.g. 4 shared of
+# 5 = 80%) is very likely coincidental — small-sample correlations oversell
+# confidence, and a repo-wide scan compares thousands of pairs, so some clear
+# any ratio by chance. Until the raw co-change count clears this floor (well
+# above ``_MIN_COMMITS``), severity is capped at MEDIUM: a hint, not a verdict.
+_MIN_CO_CHANGE_FOR_HIGH = 8
 
 # Same conventions used by engine._has_paired_test_file. Keeping them
 # inline (rather than importing) avoids a circular dependency between
@@ -101,7 +108,11 @@ def _as_int(value: object, default: int = 0) -> int:
         return default
 
 
-def _severity_for(correlation: float) -> Severity:
+def _severity_for(correlation: float, co_count: int) -> Severity:
+    # Confidence-weight by absolute sample size: below the co-change floor the
+    # ratio isn't trustworthy enough to assert HIGH/CRITICAL, so cap at MEDIUM.
+    if co_count < _MIN_CO_CHANGE_FOR_HIGH:
+        return Severity.MEDIUM
     if correlation >= _CRITICAL_THRESHOLD:
         return Severity.CRITICAL
     if correlation >= _HIGH_THRESHOLD:
@@ -164,7 +175,7 @@ class HiddenCouplingDetector:
             findings.append(
                 BiomarkerResult(
                     biomarker_type=self.name,
-                    severity=_severity_for(correlation),
+                    severity=_severity_for(correlation, co_count),
                     function_name=None,
                     line_start=None,
                     line_end=None,
