@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.29.0] — 2026-07-09
+
+### Added
+- **Leverage-weighted health signals.** `get_health` now surfaces NLOC-weighting and per-file leverage, so the score points at where a fix buys the most. (#719)
+- **Wider agent-authorship detection.** Git indexing recognizes agent-written commits across more provenance channels. (#731)
+
+### Changed
+- **Leaner `get_overview` by default.** The `get_overview` MCP payload is compact by default, cutting the token cost of orienting an agent. (#729)
+- **Health scores reflect corrected findings.** Removing the false findings below raises some file and repo health scores — this is expected and desirable, not a regression. Broad `except Exception` catches are now detected completely (they were previously under-counted), so a few files surface additional — but honest — findings.
+
+### Fixed
+- **Honest exception-handling rationale.** A broad `except Exception` is no longer described as catching `KeyboardInterrupt`/`SystemExit` — only a genuine bare `except:` or `except BaseException:` carries that warning, and `except Exception` gets its own rationale. Go blank-identifier discards are only flagged when the discarded value sits in the error position, and Rust panic macros and `.unwrap()`/`.expect()` inside test code are no longer flagged as recoverable-error crashes. (#733)
+- **Accurate complexity counting.** `elif` / `else if` chains no longer read as deep nesting (a flat guard chain is flat); parameter counts ignore the bare `*` / `/` separators; comprehension filters now count toward complexity; and docstring- and comment-only lines no longer inflate a function's or class's measured length. (#734)
+- **Fewer false performance findings.** I/O-in-loop, defer-in-loop, blocking-I/O-under-lock and related markers no longer fire on a closure that is merely defined — not run — inside a loop or lock; a parenthesized `await` is recognized as awaited; `deque.insert(0, …)` is no longer flagged as quadratic; name-shadowing collisions in the Python and TypeScript detectors are resolved; and a semaphore-bounded goroutine worker pool is no longer called unbounded. (#735)
+- **Truthful structural findings.** A god-class finding cites the complexity of the actual brain method rather than the class-wide maximum; an `UPDATE`/`DELETE` bounded by a `LIMIT` is no longer said to touch every row; a flat `match`/`case` dispatch table is no longer flagged as a large method; and hidden-coupling severity is no longer overstated from a handful of shared commits. (#736)
+- **Cleaner, more private MCP output.** Contributor email addresses are never shown in overview output (display names only); extreme churn renders as a multiplier instead of a runaway percentage; search snippets no longer repeat a title-only decision; comment-derived decisions rank below real architecture decisions; file counts are labeled; and decision titles truncate on a word boundary with an ellipsis. (#737)
+- **Atomic update lock.** `repowise update`'s lock file is now written atomically with its contents, closing a creation race. (#720)
+
+---
+
 ## [0.28.1] — 2026-07-08
 
 ### Changed
