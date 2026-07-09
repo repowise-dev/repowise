@@ -138,8 +138,29 @@ def test_rust_panic_macro_in_test_not_flagged() -> None:
     assert _kinds("rust", src) == []
 
 
+def test_rust_unwrap_in_tokio_test_not_flagged() -> None:
+    # ``#[tokio::test]`` is a test-runner attribute even though ``#[test]`` is
+    # not a literal substring of it.
+    src = b'#[tokio::test]\nasync fn t() { let cfg = parse("v.toml").unwrap(); }\n'
+    assert _kinds("rust", src) == []
+
+
+def test_rust_unwrap_in_cfg_all_test_mod_not_flagged() -> None:
+    src = (
+        b'#[cfg(all(test, feature = "x"))]\nmod tests {\n'
+        b'    fn parses() { let cfg = parse("v.toml").unwrap(); }\n}\n'
+    )
+    assert _kinds("rust", src) == []
+
+
 def test_rust_unwrap_in_production_fn_still_flagged() -> None:
     assert _kinds("rust", b"fn prod() { let x = g().unwrap(); }\n") == ["unsafe_unwrap"]
+
+
+def test_rust_unwrap_under_cfg_not_test_still_flagged() -> None:
+    # ``#[cfg(not(test))]`` gates the non-test build — the unwrap is still a smell.
+    src = b"#[cfg(not(test))]\nfn prod() { let x = g().unwrap(); }\n"
+    assert _kinds("rust", src) == ["unsafe_unwrap"]
 
 
 # --- new kinds flow through the detector without dropping / crashing ---

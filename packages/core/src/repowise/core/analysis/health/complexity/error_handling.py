@@ -11,6 +11,7 @@ Go err-swallow it finds, anywhere in the file (not just function bodies).
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
 
 from .languages import LanguageNodeMap
@@ -18,6 +19,10 @@ from .models import ErrorHandlingHit
 
 if TYPE_CHECKING:
     from tree_sitter import Node
+
+# A bare ``test`` cfg predicate token: preceded by ``(`` / ``,`` / start and
+# followed by ``)`` / ``,`` / end, so ``feature = "test"`` (a string) does not match.
+_RUST_TEST_CFG_TOKEN = re.compile(r"(?:^|[(,])test(?:[),]|$)")
 
 # Block-like body node types of a catch/except clause.
 _EH_BLOCK_KINDS = frozenset({"block", "statement_block", "compound_statement"})
@@ -108,17 +113,36 @@ def _eh_catches_base(clause: Node) -> bool:
     return is_catch_all and name != "Exception"
 
 
+def _eh_rust_attr_is_test(attr_text: str) -> bool:
+    """True when a Rust attribute marks test-only code.
+
+    Recognizes test-runner attributes (``#[test]``, ``#[tokio::test]``,
+    ``#[rstest]`` …) whose name path ends in ``test``, and ``cfg`` test gates
+    (``#[cfg(test)]``, ``#[cfg(all(test, feature = "x"))]``). Deliberately does
+    NOT match ``#[cfg(not(test))]`` — that gates non-test builds, where an
+    ``.unwrap()`` is still a real smell.
+    """
+    t = attr_text.replace(" ", "")
+    if t.startswith("#[") and t.endswith("]"):
+        t = t[2:-1]
+    name = t.split("(", 1)[0]
+    if name == "cfg":
+        args = t[len("cfg") :]
+        if "not(test)" in args:
+            return False
+        return bool(_RUST_TEST_CFG_TOKEN.search(args))
+    # ``test`` / ``tokio::test`` / ``async_std::test`` / ``rstest`` …
+    return name.endswith("test")
+
+
 def _eh_rust_in_test(node: Node) -> bool:
-    """True when *node* sits inside a Rust ``#[test]`` / ``#[cfg(test)]`` item.
+    """True when *node* sits inside a Rust test item.
 
     ``.unwrap()`` / ``.expect()`` and the panic-family macros are the intended
     failure signal inside a test, not a smell. Walks the enclosing
     ``function_item`` / ``mod_item`` chain and checks each item's preceding
-    ``attribute_item`` siblings for the same markers the file-level inline-test
-    scan uses (reused from the walker, no second attribute parser).
+    ``attribute_item`` siblings for a test-runner or ``cfg(test)`` marker.
     """
-    from .walker import _RUST_INLINE_TEST_MARKERS  # local: walker imports this module
-
     cur: Node | None = node.parent
     while cur is not None:
         if cur.type in ("function_item", "mod_item"):
@@ -128,9 +152,7 @@ def _eh_rust_in_test(node: Node) -> bool:
                 "line_comment",
                 "block_comment",
             ):
-                if sib.type == "attribute_item" and any(
-                    m in (sib.text or b"") for m in _RUST_INLINE_TEST_MARKERS
-                ):
+                if sib.type == "attribute_item" and _eh_rust_attr_is_test(_eh_text(sib)):
                     return True
                 sib = sib.prev_sibling
         cur = cur.parent
