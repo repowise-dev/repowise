@@ -202,7 +202,11 @@ class LanguageNodeMap:
 _PY = LanguageNodeMap(
     function_kinds=frozenset({"function_definition", "async_function_definition"}),
     lambda_kinds=frozenset({"lambda"}),
-    branch_kinds=frozenset({"if_statement", "elif_clause", "conditional_expression"}),
+    # ``if_clause`` is a comprehension filter (``[x for x in xs if a if b]``);
+    # each filter is an independent branch point, so it belongs with the other
+    # branch kinds. The comprehension ``for`` (``for_in_clause``) is a generator,
+    # not a decision, so it is intentionally left out.
+    branch_kinds=frozenset({"if_statement", "elif_clause", "conditional_expression", "if_clause"}),
     loop_kinds=frozenset({"for_statement", "while_statement"}),
     try_kinds=frozenset({"try_statement"}),
     catch_kinds=frozenset({"except_clause"}),
@@ -453,9 +457,7 @@ _DART = LanguageNodeMap(
     # ``if_element`` is the collection-literal ``if`` (``[if (x) y]``);
     # ``conditional_expression`` is the ternary.
     branch_kinds=frozenset({"if_statement", "conditional_expression", "if_element"}),
-    loop_kinds=frozenset(
-        {"for_statement", "while_statement", "do_statement", "for_element"}
-    ),
+    loop_kinds=frozenset({"for_statement", "while_statement", "do_statement", "for_element"}),
     try_kinds=frozenset({"try_statement"}),
     # A bare ``on FormatException {}`` arm without ``catch`` has no
     # catch_clause node (the block hangs off try_statement directly), so it
