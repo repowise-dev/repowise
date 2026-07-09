@@ -63,6 +63,20 @@ def test_owner_display_name_derives_from_email_when_name_missing():
     assert _owner_display_name("Jane Doe", "jane.doe@example.com") == "Jane Doe"
 
 
+def test_owner_display_name_rejects_email_shaped_name():
+    # Git author name is commonly itself an email (bot/CI commits, misconfigured
+    # user.name); it must NOT be surfaced — fall through to the local part.
+    assert _owner_display_name("bob@corp.io", "bob@corp.io") == "bob"
+    assert _owner_display_name("ci-bot@ci.internal", "bob@corp.io") == "bob"
+
+
+def test_knowledge_map_rejects_email_shaped_name():
+    rows = [_git_row(primary_owner_name="bob@corp.io", primary_owner_email="bob@corp.io")]
+    out = _build_knowledge_map(rows)
+    assert out["top_owners"][0]["name"] == "bob"
+    assert "bob@corp.io" not in str(out["top_owners"])
+
+
 def test_knowledge_map_falls_back_to_local_part():
     rows = [_git_row(primary_owner_name=None, primary_owner_email="bob@corp.io")]
     out = _build_knowledge_map(rows)

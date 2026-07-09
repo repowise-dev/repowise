@@ -368,11 +368,12 @@ def _build_git_health(all_git: list) -> dict[str, Any]:
 def _owner_display_name(name: str | None, email: str) -> str:
     """A privacy-safe display name for a contributor — never the raw email.
 
-    Prefers the recorded ``primary_owner_name``; when absent, derives a
-    conservative label from the email's local part (e.g. ``jane.doe`` from
-    ``jane.doe@example.com``) so the address itself is never surfaced.
+    Prefers the recorded ``primary_owner_name``; when absent — or when that name
+    is itself an address (bot/CI commits, a misconfigured ``user.name``) —
+    derives a conservative label from the email's local part (e.g. ``jane.doe``
+    from ``jane.doe@example.com``) so the address itself is never surfaced.
     """
-    if name and name.strip():
+    if name and name.strip() and "@" not in name:
         return name.strip()
     local = (email or "").split("@", 1)[0].strip()
     return local or "unknown"
