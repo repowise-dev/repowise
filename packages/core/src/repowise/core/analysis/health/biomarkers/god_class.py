@@ -39,7 +39,19 @@ class GodClassDetector:
                 continue
             if cls.method_count < self._METHOD_THRESHOLD:
                 continue
-            if not any(m.nloc >= _BRAIN_NLOC and m.ccn >= _BRAIN_CCN for m in cls.methods):
+            # Find the actual brain method (the one that satisfies the gate)
+            # and quote *its* CCN — not the class-wide ``max_method_ccn``, which
+            # can belong to a short, high-CCN method that never passed the gate
+            # (that would point a reviewer at the wrong function).
+            brain_ccn, brain_name = max(
+                (
+                    (m.ccn, m.name)
+                    for m in cls.methods
+                    if m.nloc >= _BRAIN_NLOC and m.ccn >= _BRAIN_CCN
+                ),
+                default=(0, None),
+            )
+            if brain_name is None:
                 continue
 
             if cls.total_nloc >= 400 and cls.method_count >= 25:
@@ -61,11 +73,13 @@ class GodClassDetector:
                         "total_nloc": cls.total_nloc,
                         "method_count": cls.method_count,
                         "max_method_ccn": cls.max_method_ccn,
+                        "brain_method_ccn": brain_ccn,
+                        "brain_method_name": brain_name,
                     },
                     reason=(
                         f"{cls.name} is a god class: {cls.total_nloc} lines across "
                         f"{cls.method_count} methods, including a brain method "
-                        f"(max method CCN {cls.max_method_ccn})"
+                        f"({brain_name}, CCN {brain_ccn})"
                     ),
                 )
             )
