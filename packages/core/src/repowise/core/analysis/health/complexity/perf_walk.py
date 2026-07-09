@@ -87,6 +87,23 @@ _HOT_PATH_SINK_KINDS = frozenset({"subprocess", "filesystem"})
 # expression (``synchronized(repo.find(id)){…}``) runs BEFORE the lock is taken.
 _LOCK_BODY_KINDS = frozenset({"block", "statement_block", "compound_statement"})
 
+# Non-semantic wrapper nodes tree-sitter inserts between a ``call`` and its
+# enclosing ``await`` — parenthesising an awaited call (``await (foo())``) adds a
+# ``parenthesized_expression`` hop, so the immediate-parent ``await`` check would
+# miss it and wrongly read the call as un-awaited. Walk up through these before
+# testing for ``await``.
+_AWAIT_WRAPPER_KINDS = frozenset({"parenthesized_expression"})
+
+
+def _is_awaited(node: Node) -> bool:
+    """Whether ``node`` is (transitively, through parenthesising wrappers) the
+    operand of an ``await``. Mirrors the old immediate-parent substring test but
+    first skips non-semantic wrappers so ``await (foo())`` reads as awaited."""
+    parent = node.parent
+    while parent is not None and parent.type in _AWAIT_WRAPPER_KINDS:
+        parent = parent.parent
+    return parent is not None and "await" in parent.type
+
 
 def _perf_func_name(node: Node) -> str | None:
     if node.type == "function_body":
@@ -213,6 +230,13 @@ def _collect_perf_hits(
         entering_fn = t in fn_kinds or t in lambda_kinds
         is_async_fn = t in async_fn_kinds or (entering_fn and dialect.is_async_fn(node))
         next_async = True if is_async_fn else (False if entering_fn else in_async)
+        # A nested function/lambda opens a new execution scope: its body is not
+        # run per outer-loop-iteration nor while an outer lock is held (it is
+        # merely DEFINED here — it runs whenever/wherever it is later invoked).
+        # Reset both depths at the boundary, mirroring ``next_async``; the
+        # closure's OWN loops/locks still count from its own body.
+        next_loop_depth = 0 if entering_fn else loop_depth
+        next_lock_depth = 0 if entering_fn else lock_depth
         next_func = func_name
         next_start = func_start
         if t in fn_kinds:
@@ -248,8 +272,7 @@ def _collect_perf_hits(
         if t in call_kinds:
             method = dialect.callee_method_name(node) or ""
             root_name = dialect.callee_root_name(node) or ""
-            parent = node.parent
-            awaited = parent is not None and "await" in parent.type
+            awaited = _is_awaited(node)
             line = node.start_point[0] + 1
             if do_bare_call_marker:
                 # A call that is its own iteration construct (``.reduce`` with an
@@ -406,32 +429,42 @@ def _collect_perf_hits(
                 # NB: tree-sitter Node wrappers are not singletons, so compare
                 # with ``==`` (identity by tree + byte range), never ``is``.
                 for c in node.children:
-                    cd = loop_depth + 1 if c == body else loop_depth
+                    cd = next_loop_depth + 1 if c == body else next_loop_depth
                     stack.append(
-                        (c, cd, next_async, next_func, next_start, lock_depth, next_outer_iter)
+                        (c, cd, next_async, next_func, next_start, next_lock_depth, next_outer_iter)
                     )
             else:
                 for c in node.children:
                     stack.append(
                         (
                             c,
-                            loop_depth + 1,
+                            next_loop_depth + 1,
                             next_async,
                             next_func,
                             next_start,
-                            lock_depth,
+                            next_lock_depth,
                             next_outer_iter,
                         )
                     )
         elif entering_lock:
             # Raise lock_depth for the body block only (not the lock-object expr).
             for c in node.children:
-                cl = lock_depth + 1 if c.type in _LOCK_BODY_KINDS else lock_depth
-                stack.append((c, loop_depth, next_async, next_func, next_start, cl, outer_iter))
+                cl = next_lock_depth + 1 if c.type in _LOCK_BODY_KINDS else next_lock_depth
+                stack.append(
+                    (c, next_loop_depth, next_async, next_func, next_start, cl, outer_iter)
+                )
         else:
             for c in node.children:
                 stack.append(
-                    (c, loop_depth, next_async, next_func, next_start, lock_depth, outer_iter)
+                    (
+                        c,
+                        next_loop_depth,
+                        next_async,
+                        next_func,
+                        next_start,
+                        next_lock_depth,
+                        outer_iter,
+                    )
                 )
 
     # Dedup chained sinks: ``result.scalars().all()`` parses as two call nodes
