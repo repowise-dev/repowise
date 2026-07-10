@@ -46,6 +46,7 @@ reasoning: auto                      # auto | off | none | minimal | low | mediu
 commit_limit: 500                    # Max commits per file for git analysis (clamped 1-10000)
 follow_renames: false                # Track file renames in git history
 wiki_style: comprehensive            # comprehensive | caveman | reference | tutorial | custom
+language: en                         # Output language for generated pages (en, zh, ru, hi, ...)
 enable_onboarding: true               # Show first-run onboarding prompts
 exclude_patterns:                    # Gitignore-style patterns
   - vendor/
@@ -76,6 +77,7 @@ You can edit this file directly. Changes take effect on the next `init`,
 | `follow_renames` | `false` | Track file renames through git history |
 | `exclude_patterns` | `[]` | Extra gitignore-style patterns, on top of `.gitignore` |
 | `wiki_style` | `comprehensive` | `comprehensive`, `caveman`, `reference`, `tutorial`, `custom` |
+| `language` | `en` | Output language for generated wiki pages: `en`, `ar`, `de`, `es`, `fr`, `hi`, `it`, `ja`, `ko`, `nl`, `pl`, `pt`, `ru`, `tr`, `zh` |
 | `enable_onboarding` | `true` | Show first-run onboarding prompts (CLI and web) |
 | `distill` | see below | Output distillation config |
 | `mcp` | see below | MCP tool surface config |
@@ -98,6 +100,14 @@ regenerates the wiki). Power users can define their own style under
 `.repowise/styles/<name>/style.yaml`. Full guide: [WIKI_STYLES.md](WIKI_STYLES.md).
 Note: hand-editing `wiki_style` here and running `update` does not regenerate
 existing pages, use `restyle`.
+
+`language` controls the natural language of generated wiki content (prose only;
+code, file paths, and symbol names stay untranslated). Set it with
+`init --language <code>` or pick it in advanced interactive mode; it persists
+here so `update` regenerates changed pages in the same language. Unknown codes
+fall back to English with a warning. As with `wiki_style`, changing it later
+does not retranslate existing pages, re-run `init --force --language <code>`
+to rebuild the wiki in the new language.
 
 > **Code-health rules** are configured separately in
 > `.repowise/health-rules.json` (per-file marker overrides); see

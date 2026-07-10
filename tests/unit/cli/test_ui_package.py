@@ -118,6 +118,7 @@ def test_advanced_config_default_keys_no_fast(monkeypatch: pytest.MonkeyPatch) -
         "harvest_decisions": True,
         "tier1_top_n": None,
         "wiki_style": DEFAULT_STYLE,
+        "language": "en",
     }
 
 

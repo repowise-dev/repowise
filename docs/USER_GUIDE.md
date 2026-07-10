@@ -184,6 +184,7 @@ repowise init [PATH]
 | `--embedder` | Embedder for semantic search: `gemini`, `openai`, `mock`. Auto-detected from env vars. |
 | `--index-only` | Skip LLM generation entirely. Only parse, build graph, and index git. Free. |
 | `--wiki-style` | Documentation voice: `comprehensive` (default), `caveman` (token-condensed), `reference` (API-manual), `tutorial`. Saved to config; switch later with `repowise restyle`. See [WIKI_STYLES.md](WIKI_STYLES.md). |
+| `--language` | Output language for generated wiki pages (`en` default; also `zh`, `ru`, `hi`, `es`, `fr`, `de`, `ja`, `ko`, `it`, `pt`, `nl`, `pl`, `tr`, `ar`). Prose is translated; code, file paths, and symbol names are not. Saved to config so `update` keeps the language. |
 | `--dry-run` | Show generation plan and cost estimate without running anything. |
 | `--test-run` | Generate docs for only the top 10 files (by PageRank), quick validation. |
 | `--skip-tests` | Exclude test files from documentation generation. |

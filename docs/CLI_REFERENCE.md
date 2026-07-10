@@ -78,6 +78,7 @@ All three reach the indexing knobs; the LLM-only knobs appear only when docs are
 | `--onboarding` / `--no-onboarding` | Generate the curated Onboarding collection (up to 8 overview pages). Default: on; slots without enough signal are skipped. |
 | `--harvest-decisions` / `--no-harvest-decisions` | Harvest architectural decisions during page generation (verified against source before storage). Default: on. |
 | `--wiki-style` | Documentation voice/density: `comprehensive` (default), `caveman` (token-condensed, AI-first), `reference` (API-manual), `tutorial` (beginner-friendly). Interactive full runs prompt when omitted. Saved to config so `update` keeps the style. See [WIKI_STYLES.md](WIKI_STYLES.md). |
+| `--language` | Output language for generated wiki pages: `en` (default), `ar`, `de`, `es`, `fr`, `hi`, `it`, `ja`, `ko`, `nl`, `pl`, `pt`, `ru`, `tr`, `zh`. Code, file paths, and symbol names stay untranslated. Saved to config so `update` keeps the language. Also asked in advanced interactive mode. To switch an existing wiki's language, set the flag and re-run `init --force`. |
 | `--resume` | Resume from the last checkpoint if interrupted |
 | `--force` | Regenerate all pages even if they exist |
 | `--commit-limit` | Max commits to analyze per file (default: 500, capped at 10000) |
@@ -106,6 +107,7 @@ repowise init --dry-run                               # preview cost
 repowise init --test-run                              # quick test (10 files)
 repowise init --provider openai --model qwen3 --reasoning off
 repowise init --provider openrouter --model openai/gpt-5 --reasoning minimal
+repowise init --language zh                           # wiki docs in Chinese
 repowise init -x vendor/ -x "*.gen.go"               # exclude patterns
 repowise init --include-submodules                    # include submodules
 repowise init --no-codex --no-agents                  # skip Codex project files

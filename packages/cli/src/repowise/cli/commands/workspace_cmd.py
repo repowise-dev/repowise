@@ -663,10 +663,12 @@ def _generate_docs_for_added_repo(
 
     from repowise.core.repo_config import load_repo_config
 
+    repo_cfg = load_repo_config(repo_path)
     config = GenerationConfig(
         max_concurrency=concurrency,
         reasoning=reasoning,
-        wiki_style=load_repo_config(repo_path).get("wiki_style", "comprehensive"),
+        wiki_style=repo_cfg.get("wiki_style", "comprehensive"),
+        language=repo_cfg.get("language", "en"),
     )
     assembler = ContextAssembler(config)
     generator = PageGenerator(
