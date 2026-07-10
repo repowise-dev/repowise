@@ -2,7 +2,7 @@
 
 All notable changes to the Repowise Claude Code plugin are documented here.
 
-## Unreleased
+## 0.30.0
 
 ### Added
 - Bundled `SessionStart` hook (`repowise-augment`, matcher `startup|resume|clear`):
