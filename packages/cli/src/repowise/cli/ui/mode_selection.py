@@ -15,6 +15,7 @@ from rich.text import Text
 
 from repowise.cli.ui.brand import BRAND, BRAND_STYLE, DIM
 from repowise.cli.ui.repo_scanner import RepoScanInfo
+from repowise.core.generation.languages import SUPPORTED_LANGUAGES
 from repowise.core.generation.styles import DEFAULT_STYLE, list_styles
 from repowise.core.reasoning import REASONING_MODES
 
@@ -152,6 +153,28 @@ def prompt_wiki_style(console: Console) -> str:
     return styles[choice - 1].name
 
 
+def prompt_language(console: Console) -> str:
+    """Interactive picker for the wiki output language.
+
+    Returns the chosen language code. Defaults to English so a bare Enter
+    keeps today's behaviour.
+    """
+    console.print("\n[bold]Output language[/bold]")
+    console.print(
+        "  [dim]"
+        + " · ".join(f"{code} {name}" for code, name in SUPPORTED_LANGUAGES.items())
+        + "[/dim]"
+    )
+    console.print("  [dim]Code, file paths, and symbol names stay untranslated.[/dim]")
+    return click.prompt(
+        "  Language code",
+        default="en",
+        show_default=True,
+        type=click.Choice(sorted(SUPPORTED_LANGUAGES)),
+        show_choices=False,
+    )
+
+
 def _prompt_scope(console: Console, scan: RepoScanInfo | None, result: dict[str, Any]) -> None:
     """Scope section: which file classes to include."""
     console.print()
@@ -282,12 +305,14 @@ def _prompt_generation(
     is_large: bool,
     prompt_reasoning: bool = True,
     wiki_style: str | None = None,
+    language: str | None = None,
 ) -> None:
     """Generation section: concurrency, reasoning, embedder, test run, tiering,
-    onboarding, decision harvesting, and wiki style.
+    onboarding, decision harvesting, wiki style, and output language.
 
     *wiki_style* carries an explicit ``--wiki-style`` value; when set the style
-    prompt is skipped so the flag wins.
+    prompt is skipped so the flag wins. *language* works the same way for the
+    ``--language`` flag.
     """
     console.print()
     console.print(f"  [{BRAND}]Generation[/]")
@@ -369,6 +394,9 @@ def _prompt_generation(
     # here so the choice lands inside the section, before the summary panel.
     result["wiki_style"] = wiki_style if wiki_style is not None else prompt_wiki_style(console)
 
+    # Output language. An explicit --language wins; otherwise prompt (English default).
+    result["language"] = language if language is not None else prompt_language(console)
+
 
 def _build_summary_table(
     result: dict[str, Any],
@@ -411,6 +439,11 @@ def _build_summary_table(
         summary.add_row("Embedder", result["embedder"])
         if result.get("wiki_style"):
             summary.add_row("Wiki style", result["wiki_style"])
+        if result.get("language") and result["language"] != "en":
+            summary.add_row(
+                "Language",
+                f"{result['language']} ({SUPPORTED_LANGUAGES.get(result['language'], '?')})",
+            )
         if allow_fast and result.get("tier1_top_n"):
             summary.add_row("Full-LLM page cap", str(result["tier1_top_n"]))
         summary.add_row("Onboarding", "yes" if result.get("onboarding", True) else "no")
@@ -429,6 +462,7 @@ def interactive_advanced_config(
     prompt_reasoning: bool = True,
     generate_docs: bool = True,
     wiki_style: str | None = None,
+    language: str | None = None,
 ) -> dict[str, Any]:
     """Prompt for advanced init options, grouped into logical sections.
 
@@ -445,8 +479,8 @@ def interactive_advanced_config(
     ``commit_limit``, ``follow_renames``, ``skip_tests``, ``skip_infra``,
     ``exclude``, ``include_submodules``, ``run_mode``, ``generate_docs`` (always),
     plus ``concurrency``, ``reasoning``, ``embedder``, ``test_run``,
-    ``tier1_top_n``, ``onboarding``, ``harvest_decisions``, ``wiki_style`` (docs
-    only).
+    ``tier1_top_n``, ``onboarding``, ``harvest_decisions``, ``wiki_style``,
+    ``language`` (docs only).
 
     Editor integration prompts are intentionally not asked here so that full and
     advanced modes stay aligned. Editor setup owns those prompts after mode
@@ -476,6 +510,7 @@ def interactive_advanced_config(
             is_large=is_large,
             prompt_reasoning=prompt_reasoning,
             wiki_style=wiki_style,
+            language=language,
         )
     result["generate_docs"] = generate_docs
 

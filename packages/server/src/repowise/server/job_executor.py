@@ -797,9 +797,13 @@ async def _incremental_page_regen(
         effective_style = resolve_style(
             job_config.get("style") or repo_wiki_style, repo_path=repo_path
         ).name
+        repo_cfg = load_repo_config(repo_path)
         generation_config = GenerationConfig(
-            reasoning=resolve_reasoning(config=load_repo_config(repo_path)),
+            reasoning=resolve_reasoning(config=repo_cfg),
             wiki_style=effective_style,
+            # Regenerate in the repo's configured output language, not default
+            # English (PageGenerator picks the language up from the config).
+            language=repo_cfg.get("language", "en"),
         )
         assembler = ContextAssembler(generation_config)
         generator = PageGenerator(

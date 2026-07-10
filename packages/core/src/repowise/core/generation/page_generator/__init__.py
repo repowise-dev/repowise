@@ -25,10 +25,11 @@ from .helpers import (
     _now_iso,
     _select_clone_representatives,
 )
-from .prompts import SYSTEM_PROMPTS
+from .prompts import SUPPORTED_LANGUAGES, SYSTEM_PROMPTS
 from .validation import _validate_symbol_references
 
 __all__ = [
+    "SUPPORTED_LANGUAGES",
     "SYSTEM_PROMPTS",
     "PageGenerator",
     "PriorPage",

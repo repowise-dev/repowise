@@ -42,7 +42,7 @@ from .decision_harvest import (
 )
 from .helpers import _extract_summary, _now_iso
 from .pertype import PerTypeGenerationMixin
-from .prompts import _LANGUAGE_NAMES, SYSTEM_PROMPTS
+from .prompts import SUPPORTED_LANGUAGES, SYSTEM_PROMPTS
 from .validation import _validate_symbol_references
 
 if TYPE_CHECKING:
@@ -131,7 +131,7 @@ class PageGenerator(PerTypeGenerationMixin):
         config: GenerationConfig,
         jinja_env: jinja2.Environment | None = None,
         vector_store: Any | None = None,
-        language: str = "en",
+        language: str | None = None,
         prior_pages: dict[str, PriorPage] | None = None,
         repo_path: Path | str | None = None,
     ) -> None:
@@ -139,7 +139,8 @@ class PageGenerator(PerTypeGenerationMixin):
         self._assembler = assembler
         self._config = config
         self._vector_store = vector_store
-        self._language = language
+        # Output language: explicit arg wins, else the config's, else English.
+        self._language = language if language is not None else getattr(config, "language", "en")
         # Resolve the wiki style once. "comprehensive" (default) is inert, so this
         # is a no-op for repos that never opt in. ``repo_path`` lets a user-defined
         # ``.repowise/styles/<name>`` style resolve (Phase 5).
@@ -440,13 +441,13 @@ class PageGenerator(PerTypeGenerationMixin):
         # newlines or extra instructions into the system prompt.
         raw = (self._language or "en").lower().strip()
         lang_code = "".join(ch for ch in raw if ch.isalnum() or ch == "_")
-        if lang_code not in _LANGUAGE_NAMES:
+        if lang_code not in SUPPORTED_LANGUAGES:
             if lang_code != "en":
                 log.warning("unknown_language_code", code=lang_code, fallback="en")
             lang_code = "en"
         if lang_code == "en":
             return base_system
-        lang_name = _LANGUAGE_NAMES[lang_code]
+        lang_name = SUPPORTED_LANGUAGES[lang_code]
         instruction = (
             f"Generate all documentation content in {lang_name}. "
             "Keep all code, file paths, and symbol names in their original form. "

@@ -6,23 +6,10 @@ every call. This enables Anthropic server-side prefix caching.
 
 from __future__ import annotations
 
-_LANGUAGE_NAMES = {
-    "en": "English",
-    "ru": "Russian",
-    "es": "Spanish",
-    "fr": "French",
-    "de": "German",
-    "zh": "Chinese",
-    "ja": "Japanese",
-    "ko": "Korean",
-    "it": "Italian",
-    "pt": "Portuguese",
-    "nl": "Dutch",
-    "pl": "Polish",
-    "tr": "Turkish",
-    "ar": "Arabic",
-    "hi": "Hindi",
-}
+# Re-exported here so page-generator internals keep one import site for
+# prompt-related constants; the map itself lives in the dependency-free
+# ``generation.languages`` leaf so the CLI can import it cheaply.
+from ..languages import SUPPORTED_LANGUAGES  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # System prompts — one per page type (constant strings for prefix caching)

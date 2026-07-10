@@ -66,6 +66,7 @@ from repowise.cli.ui import (
     quick_repo_scan,
     should_offer_fast_mode,
 )
+from repowise.core.generation.languages import SUPPORTED_LANGUAGES
 from repowise.core.generation.styles import DEFAULT_STYLE, list_styles, resolve_style
 from repowise.core.reasoning import REASONING_MODES
 
@@ -399,6 +400,18 @@ def _run_generation_phase(
     ),
 )
 @click.option(
+    "--language",
+    "language_opt",
+    type=click.Choice(sorted(SUPPORTED_LANGUAGES)),
+    default=None,
+    metavar="CODE",
+    help=(
+        "Output language for generated wiki pages (e.g. en, zh, ru, hi). "
+        "Code, file paths, and symbol names stay untranslated. Saved to "
+        "config so `update` keeps the language. Default: en."
+    ),
+)
+@click.option(
     "--seed-from",
     type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=str),
     help=(
@@ -465,6 +478,7 @@ def init_command(
     coverage_report: tuple[str, ...],
     harvest_decisions: bool,
     wiki_style: str | None,
+    language_opt: str | None,
     no_cost_tracking: bool,
     verbose: bool,
     progress: str,
@@ -588,6 +602,7 @@ def init_command(
             # Apply the chosen style uniformly across the workspace's repos
             # (no per-repo interactive prompt in the multi-repo flow).
             wiki_style=resolve_style(wiki_style).name,
+            language=language_opt,
             run_mode=run_mode,
         )
         return
@@ -618,6 +633,10 @@ def init_command(
     # Tiered doc generation cap (set in advanced mode); None = every selected
     # file page is a full-LLM tier-1 page (unchanged behaviour).
     tier1_top_n: int | None = None
+
+    # Output language picked in the advanced-mode generation section; None
+    # until chosen. Resolved below: flag > this > config.yaml > English.
+    language_choice: str | None = None
 
     # The two orthogonal axes the interactive menu resolves: whether docs are
     # generated and whether we entered the advanced-config prompts. Initialized
@@ -671,6 +690,7 @@ def init_command(
                 prompt_reasoning=False,
                 generate_docs=generate_docs,
                 wiki_style=wiki_style,
+                language=language_opt,
             )
             # Indexing knobs (always present).
             commit_limit = adv["commit_limit"]
@@ -691,6 +711,8 @@ def init_command(
                 harvest_decisions = adv.get("harvest_decisions", harvest_decisions)
                 if adv.get("wiki_style"):
                     wiki_style = adv["wiki_style"]
+                if adv.get("language"):
+                    language_choice = adv["language"]
             # Fast mode (picked in the indexing section) is a no-LLM index, so it
             # forces index-only even if the user had asked for docs.
             if run_mode == "fast":
@@ -738,7 +760,8 @@ def init_command(
 
     # Merge exclude_patterns from config.yaml and --exclude/-x flags
     config = load_config(repo_path)
-    language = config.get("language", "en")
+    # Output language: CLI flag > advanced-mode choice > config.yaml > English.
+    language = language_opt or language_choice or config.get("language", "en")
     resolved_reasoning = resolve_reasoning(reasoning, config)
     exclude_patterns: list[str] = list(config.get("exclude_patterns") or []) + list(exclude)
 
@@ -980,6 +1003,12 @@ def init_command(
     # default is omitted to keep config files tidy — only an override is recorded.
     if wiki_style != DEFAULT_STYLE:
         save_config_partial(repo_path, wiki_style=wiki_style)
+
+    # Persist the output language so `repowise update` regenerates changed
+    # pages in the same language. Written only when the run's language differs
+    # from what config.yaml already holds; the default stays unrecorded.
+    if language != config.get("language", "en"):
+        save_config_partial(repo_path, language=language)
 
     # ---- Post-run: config, state, MCP, editor project files ----
     if commit_limit is not None:

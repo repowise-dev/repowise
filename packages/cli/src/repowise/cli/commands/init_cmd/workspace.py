@@ -89,6 +89,7 @@ def _run_workspace_generation(
     coverage_pct: float | None = None,
     harvest_decisions: bool = True,
     wiki_style: str = DEFAULT_STYLE,
+    language: str = "en",
 ) -> list[Any]:
     """Run LLM generation for a single repo in the workspace init flow.
 
@@ -105,6 +106,7 @@ def _run_workspace_generation(
         enable_onboarding=onboarding,
         harvest_decisions=harvest_decisions,
         wiki_style=wiki_style,
+        language=language,
     )
     chosen_pct, _plans, est, gen_config = select_coverage(
         result=result,
@@ -184,6 +186,7 @@ class _WorkspaceCtx:
     coverage_pct: float | None
     harvest_decisions: bool
     wiki_style: str
+    language: str
     resolved_reasoning: str
     embedder_name_resolved: str
     resolved_commit_limit: int
@@ -294,6 +297,7 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
                     coverage_pct=ctx.coverage_pct,
                     harvest_decisions=ctx.harvest_decisions,
                     wiki_style=ctx.wiki_style,
+                    language=ctx.language,
                 )
                 result.generated_pages = generated_pages
                 # (result.vector_store is set inside _run_workspace_generation
@@ -371,6 +375,9 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
         # omitted to keep config tidy — only an override is recorded.
         if ctx.wiki_style != DEFAULT_STYLE:
             save_config_partial(repo.path, wiki_style=ctx.wiki_style)
+        # Same for the output language, so update regenerates in it.
+        if ctx.language != "en":
+            save_config_partial(repo.path, language=ctx.language)
 
     return _RepoOutcome(
         file_count=result.file_count,
@@ -424,6 +431,7 @@ def _workspace_init(
     coverage_pct: float | None = None,
     harvest_decisions: bool = True,
     wiki_style: str = DEFAULT_STYLE,
+    language: str | None = None,
     run_mode: str = "standard",
 ) -> None:
     """Multi-repo workspace initialization.
@@ -484,7 +492,7 @@ def _workspace_init(
             # add a per-workspace wiki-style prompt (the workspace flow applies
             # one style uniformly); onboarding / decision harvesting still apply.
             adv = interactive_advanced_config(
-                console, prompt_reasoning=False, wiki_style=wiki_style
+                console, prompt_reasoning=False, wiki_style=wiki_style, language=language
             )
             commit_limit = adv.get("commit_limit") or commit_limit
             follow_renames = adv.get("follow_renames", follow_renames)
@@ -500,6 +508,8 @@ def _workspace_init(
             harvest_decisions = adv.get("harvest_decisions", harvest_decisions)
             if adv.get("wiki_style"):
                 wiki_style = adv["wiki_style"]
+            if adv.get("language"):
+                language = adv["language"]
         elif not index_only:
             # "full" mode
             selection = interactive_provider_config_select(
@@ -596,6 +606,7 @@ def _workspace_init(
         coverage_pct=coverage_pct,
         harvest_decisions=harvest_decisions,
         wiki_style=wiki_style,
+        language=language or "en",
         resolved_reasoning=resolved_reasoning,
         embedder_name_resolved=embedder_name_resolved,
         resolved_commit_limit=resolved_commit_limit,

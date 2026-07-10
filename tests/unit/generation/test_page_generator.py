@@ -442,6 +442,17 @@ def test_build_system_prompt_strips_control_chars_from_language():
     assert prompt == SYSTEM_PROMPTS["file_page"]
 
 
+def test_language_defaults_from_config_when_arg_omitted():
+    # Callers that only build a GenerationConfig (server regenerate, pipeline
+    # fallback) must still get the configured output language.
+    config = GenerationConfig(
+        max_tokens=256, token_budget=500, max_concurrency=1, harvest_decisions=False, language="ru"
+    )
+    gen = PageGenerator(MockProvider(), ContextAssembler(config), config)
+    prompt = gen._build_system_prompt("file_page")
+    assert prompt.startswith("Generate all documentation content in Russian.")
+
+
 def test_compute_cache_key_varies_by_language():
     gen_en = _gen("en")
     gen_ru = _gen("ru")
@@ -479,8 +490,12 @@ async def test_generate_all_uses_in_memory_kg_modules_without_artifact_file():
         sym = _make_symbol(file_path=p)
         parsed.append(
             ParsedFile(
-                file_info=fi, symbols=[sym], imports=[], exports=[],
-                docstring=None, parse_errors=[],
+                file_info=fi,
+                symbols=[sym],
+                imports=[],
+                exports=[],
+                docstring=None,
+                parse_errors=[],
             )
         )
     repo = RepoStructure(
@@ -554,8 +569,12 @@ async def test_generate_all_builds_kg_ctx_from_in_memory_kg_data():
         sym = _make_symbol(file_path=p)
         parsed.append(
             ParsedFile(
-                file_info=fi, symbols=[sym], imports=[], exports=[],
-                docstring=None, parse_errors=[],
+                file_info=fi,
+                symbols=[sym],
+                imports=[],
+                exports=[],
+                docstring=None,
+                parse_errors=[],
             )
         )
     repo = RepoStructure(
@@ -570,8 +589,7 @@ async def test_generate_all_builds_kg_ctx_from_in_memory_kg_data():
         "version": "1.0.0",
         "project": {"name": "test-repo", "total_files": len(paths), "entry_points": []},
         "nodes": [
-            {"id": f"file:{p}", "type": "file", "filePath": p, "language": "python"}
-            for p in paths
+            {"id": f"file:{p}", "type": "file", "filePath": p, "language": "python"} for p in paths
         ],
         "edges": [],
         "layers": [

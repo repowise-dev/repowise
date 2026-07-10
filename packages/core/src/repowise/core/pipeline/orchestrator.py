@@ -612,6 +612,7 @@ async def run_pipeline(
                 max_concurrency=concurrency,
                 reasoning=resolve_reasoning(config=_cfg),
                 wiki_style=_style,
+                language=_cfg.get("language", "en"),
             )
 
         # Phase 2 enrichment: flag framework-defined HTTP surfaces (FastAPI,
