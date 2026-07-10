@@ -45,17 +45,28 @@ _BODY_FIELD_NAMES = (
 # chain continuation. Ternaries / ``if_element`` collection-``if`` are
 # deliberately excluded — only statement-level if chains flatten.
 _ELSE_IF_NODE_KINDS = frozenset(
-    {"if_statement", "if_expression", "elif_clause", "if_let_expression"}
+    {"if_statement", "if_expression", "elif_clause", "elsif", "if_let_expression"}
 )
 
 # Branch nodes that are a decision point (count toward CCN) but do NOT open a
 # nesting level: a comprehension filter (``[x for x in xs if a]``) and a match
 # ``case ... if guard:`` both parse as ``if_clause`` and sit inline, not as a
 # nested block; Scala's ``guard`` (for-comprehension filter / match-case guard)
-# is the same inline shape. Treating them as flat keeps ``max_nesting`` /
-# ``cognitive`` honest — they were only added to ``branch_kinds`` for the CCN
-# count.
-_FLAT_BRANCH_KINDS = frozenset({"if_clause", "guard"})
+# is the same inline shape, and Ruby's one-line modifier forms (``return x if
+# cond`` / ``x += 1 until done`` / ``x rescue nil``) are too. Treating them as
+# flat keeps ``max_nesting`` / ``cognitive`` honest — they were only added to
+# ``branch_kinds`` / ``loop_kinds`` / ``catch_kinds`` for the CCN count.
+_FLAT_BRANCH_KINDS = frozenset(
+    {
+        "if_clause",
+        "guard",
+        "if_modifier",
+        "unless_modifier",
+        "while_modifier",
+        "until_modifier",
+        "rescue_modifier",
+    }
+)
 
 
 def _is_elif_continuation(node: Node) -> bool:
@@ -68,13 +79,14 @@ def _is_elif_continuation(node: Node) -> bool:
     special-case. The AST shape differs per grammar:
 
     - Python: a dedicated ``elif_clause`` node (always a continuation).
+    - Ruby: a dedicated ``elsif`` node (always a continuation).
     - TypeScript / Rust / C++: the else-if is wrapped in an ``else_clause``.
     - Java / Go / C# / Dart / Kotlin: the else-if node is the sibling that
       immediately follows the parent ``if``'s ``else`` token.
     """
     if node.type not in _ELSE_IF_NODE_KINDS:
         return False
-    if node.type == "elif_clause":
+    if node.type in ("elif_clause", "elsif"):
         return True
     parent = node.parent
     if parent is None:
@@ -270,10 +282,15 @@ def _walk_function_body(
         ):
             is_flat_match_arm = True
 
+        # ``node.is_named`` guards grammars (Ruby) whose keyword tokens share
+        # the node-type name of their parent node (an ``if`` node contains an
+        # unnamed ``if`` token of type ``"if"``): only the named node is the
+        # control-flow construct — without the guard every Ruby branch/loop
+        # would double-count.
         if is_flat_match_arm:
             # Flat match arms: no CCN increment, no nesting increment.
             pass
-        elif (
+        elif node.is_named and (
             node.type in lmap.branch_kinds
             or node.type in lmap.loop_kinds
             or node.type in lmap.case_kinds
@@ -301,10 +318,10 @@ def _walk_function_body(
                         enclosing_construct=_enclosing_construct(node, lmap),
                     )
                 )
-        elif node.type in lmap.try_kinds:
+        elif node.is_named and node.type in lmap.try_kinds:
             # TRY opens a nesting level but does not branch on its own.
             nesting_increment = 1
-        elif node.type in lmap.switch_kinds:
+        elif node.is_named and node.type in lmap.switch_kinds:
             # Detect flat match: all arms are simple single-expression arms.
             if _is_flat_match(node, lmap):
                 flat_match_ids.add(node.id)

@@ -19,6 +19,7 @@ from . import dart as _dart
 from . import go as _go
 from . import java as _java
 from . import python as _python
+from . import ruby as _ruby
 from . import rust as _rust
 from . import scala as _scala
 from . import ts_js as _ts_js
@@ -39,6 +40,7 @@ _REGISTER: tuple[tuple[str, BasePerfDialect], ...] = (
     ("rust", _rust.DIALECT),
     ("dart", _dart.DIALECT),
     ("scala", _scala.DIALECT),
+    ("ruby", _ruby.DIALECT),
 )
 
 for _tag, _dialect in _REGISTER:

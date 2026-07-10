@@ -304,7 +304,7 @@ per-language plugin pattern, registered in a dict exactly like `resolvers/`:
   complexity, and per-function markers; optional `class_kinds` /
   `self_identifiers` / `member_access_kinds` add class-level metrics (LCOM4,
   god-class), and `assert_kinds` / `assert_call_kinds` add assertion-block
-  smells. Ships for the 10 Full languages plus Dart. See `complexity/README.md`.
+  smells. Ships for the 11 Full languages plus Dart. See `complexity/README.md`.
 - **`analysis/health/perf/dialects/`** (`PERF_DIALECTS`), the **performance**
   signal. A `PerfDialect` owns callee extraction (the per-grammar seam), the
   execution-sink lexicon (`sink_kind`), the constant-loop / string-concat /

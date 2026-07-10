@@ -25,10 +25,10 @@ names to the walker's abstract categories:
                   test-assertion runs (test-quality smells). Opt-in per
                   language via ``assert_kinds`` / ``assert_call_kinds``.
 
-Control-flow maps cover all ten full-tier languages (Python, TypeScript,
-JavaScript, Go, Java, Kotlin, Rust, C++, C#, Scala) plus their aliases and
-Dart; class-level maps cover all of those except Go (no class-grouping node).
-Adding a language, at either tier, is purely additive here.
+Control-flow maps cover all eleven full-tier languages (Python, TypeScript,
+JavaScript, Go, Java, Kotlin, Rust, C++, C#, Scala, Ruby) plus their aliases
+and Dart; class-level maps cover all of those except Go (no class-grouping
+node). Adding a language, at either tier, is purely additive here.
 
 Two cross-language heuristic limits worth noting (both degrade to "no signal",
 never a false positive): (1) instance members accessed without an explicit
@@ -601,6 +601,69 @@ _SCALA = LanguageNodeMap(
 )
 
 
+_RUBY = LanguageNodeMap(
+    # NB (grammar-wide): tree-sitter-ruby names keyword tokens after their
+    # parent node (an ``if`` node contains an unnamed ``if`` token of type
+    # ``"if"``); the walkers' ``is_named`` guards keep those tokens from
+    # double-counting.
+    function_kinds=frozenset({"method", "singleton_method"}),
+    # Only the ``->`` literal is a closure-shaped entry. ``block`` /
+    # ``do_block`` are deliberately NOT lambda kinds: Ruby code is block-heavy
+    # and every ``items.each do … end`` would otherwise read as a nested
+    # closure; block bodies roll up into the enclosing method instead.
+    # (``lambda { }`` / ``proc { }`` parse as plain calls with a block and
+    # likewise roll up.)
+    lambda_kinds=frozenset({"lambda"}),
+    # ``conditional`` is the ternary; the one-line modifier forms (``return x
+    # if cond``) are flat decision points (see ``_FLAT_BRANCH_KINDS``), as is
+    # the inline ``x rescue nil`` (``rescue_modifier`` — a catch shape, but an
+    # inline one, so it lives here with the other flat branches).
+    branch_kinds=frozenset(
+        {
+            "if",
+            "unless",
+            "elsif",
+            "if_modifier",
+            "unless_modifier",
+            "conditional",
+            "rescue_modifier",
+        }
+    ),
+    # ``loop do … end`` and ``.each``/``.map`` blocks are method calls, not
+    # loop nodes — the perf dialect recognises them via ``block_loop_body``;
+    # for CCN/nesting they roll up like any other block (documented choice:
+    # block-heavy Ruby would otherwise nest everything).
+    loop_kinds=frozenset({"while", "until", "for", "while_modifier", "until_modifier"}),
+    try_kinds=frozenset({"begin"}),
+    # A method-level ``rescue`` (no ``begin``) is the same ``rescue`` node
+    # nested directly in the method body — counted identically.
+    catch_kinds=frozenset({"rescue"}),
+    switch_kinds=frozenset({"case", "case_match"}),
+    case_kinds=frozenset({"when", "in_clause"}),
+    boolean_operator_kinds=frozenset(),
+    # ``&&`` / ``||`` / ``and`` / ``or`` are operator tokens inside a generic
+    # ``binary`` node — the text sniff.
+    boolean_operator_text_kinds=frozenset({"binary"}),
+    class_kinds=frozenset({"class", "module", "singleton_class"}),
+    self_identifiers=frozenset({"self"}),
+    # LCOM4 stays at its "no signal" valve: idiomatic Ruby reaches state via
+    # receiver-less ``@ivar`` reads and bare sibling-method calls, so the only
+    # mappable shape (an explicit ``self.member`` call) is too sparse to build
+    # an honest cohesion graph on — partial evidence would inflate LCOM4 into
+    # false ``low_cohesion`` hits. ``@ivar`` text grouping is the follow-up.
+    # Class size / method-count / max-CCN facts still work off ``class_kinds``.
+    member_access_kinds=frozenset(),
+    # minitest ``assert_equal`` / bare ``assert`` and RSpec ``expect(...)``
+    # are all ``call`` nodes and match the shared assert/expect prefix rule;
+    # minitest's ``refute_*`` family does not (under-signal, safe).
+    assert_call_kinds=frozenset({"call"}),
+    # ``subshell`` is a backtick command — its own node type, mapped so the
+    # perf dialect can classify it as a subprocess sink.
+    call_kinds=frozenset({"call", "subshell"}),
+    # Ruby has no async syntax; ``blocking_sync_in_async`` is n/a.
+)
+
+
 LANGUAGE_MAPS: dict[str, LanguageNodeMap] = {
     "python": _PY,
     "typescript": _TS,
@@ -615,6 +678,7 @@ LANGUAGE_MAPS: dict[str, LanguageNodeMap] = {
     "csharp": _CSHARP,
     "dart": _DART,
     "scala": _SCALA,
+    "ruby": _RUBY,
 }
 
 

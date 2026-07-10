@@ -724,3 +724,127 @@ def test_scala_same_collection_nested_loop_fact():
     fc = walk_file("t.scala", "scala", src.encode())
     assert any(f.nested_loop_line for f in fc.perf_fn_facts)
     assert not any(h.kind == "nested_loop_quadratic" for h in fc.perf_hits)
+
+
+# ---------------------------------------------------------------------------
+# Ruby
+# ---------------------------------------------------------------------------
+
+
+def test_ruby_fixture_counts():
+    fc = _walk("ruby/perf_io_in_loop.rb", "ruby")
+    counts = _kinds(fc.perf_hits)
+    # Net::HTTP.get + File.read (map) + Dir.glob + nested File.read +
+    # Order.where + conn.get (require-gated Faraday) + backticks + File.write.
+    assert counts["io_in_loop"] == 8
+    assert {h.detail for h in fc.perf_hits if h.kind == "io_in_loop"} == {
+        "network",
+        "filesystem",
+        "db",
+        "subprocess",
+    }
+    assert counts["nested_loop_with_io"] == 1
+    # In-loop Regexp.new fires; the hoisted one stays quiet.
+    assert counts["regex_compile_in_loop"] == 1
+    # ``out += "<lit>"`` fires; ``buf << line`` and the reset-per-iteration
+    # accumulator do not.
+    assert counts["string_concat_in_loop"] == 1
+    assert counts["resource_construction_in_loop"] == 1
+    assert counts["lock_in_loop"] == 1
+    assert counts["blocking_io_under_lock"] == 1
+    # The constant-bound 3.times / [1, 2].each loops contribute nothing.
+
+
+_RUBY_CASES = [
+    (
+        "def m(ids)\n  ids.each do |id|\n    Order.where(id: id)\n  end\nend\n",
+        [("io_in_loop", "db")],
+        "AR .where on a constant receiver inside .each (the canonical N+1)",
+    ),
+    (
+        "def m(users)\n  users.each do |u|\n    u.posts.find_by(name: u.name)\n  end\nend\n",
+        [("io_in_loop", "db")],
+        "distinctive find_by fires ungated on any member call",
+    ),
+    (
+        "def m(ids, repo)\n  ids.each do |id|\n    repo.find(id)\n  end\nend\n",
+        [],
+        "ambiguous find() with NO db require is gated out",
+    ),
+    (
+        'require "active_record"\n'
+        "def m(ids, repo)\n  ids.each do |id|\n    repo.find(id)\n  end\nend\n",
+        [("io_in_loop", "db")],
+        "ambiguous find() WITH a db require passes the file-level gate",
+    ),
+    (
+        "def m(paths)\n  paths.each do |p|\n    get p\n  end\nend\n",
+        [],
+        "bare get (Sinatra route DSL shape) is not a network sink",
+    ),
+    (
+        'require "faraday"\n'
+        "def m(conn, urls)\n  urls.each do |u|\n    conn.get(u)\n  end\nend\n",
+        [("io_in_loop", "network")],
+        "instance client verb WITH a network require",
+    ),
+    (
+        "def m(conn, urls)\n  urls.each do |u|\n    conn.get(u)\n  end\nend\n",
+        [],
+        "instance client verb with NO network require is gated out",
+    ),
+    (
+        "def m(queue)\n  loop do\n    File.read(queue.pop)\n  end\nend\n",
+        [("io_in_loop", "filesystem")],
+        "loop do ... end is an unconditional-repeat loop scope",
+    ),
+    (
+        "def m\n  3.times do\n    File.read(\"x\")\n  end\nend\n",
+        [],
+        "literal-receiver .times is a constant-bound loop",
+    ),
+    (
+        "def m(items)\n  items.map(&:to_s)\n  File.read(items.first.path)\nend\n",
+        [],
+        "a combinator WITHOUT an inline block is not a loop scope",
+    ),
+    (
+        "def m(rows)\n  rows.each do |r|\n    transform(r)\n  end\nend\n",
+        [],
+        "a loop-nested plain helper call is not a sink",
+    ),
+]
+
+
+@pytest.mark.parametrize("src,expected,note", _RUBY_CASES, ids=[c[2] for c in _RUBY_CASES])
+def test_ruby_cases(src, expected, note):
+    assert _hits("ruby", src) == sorted(expected), note
+
+
+def test_ruby_backticks_are_subprocess():
+    src = "def m(names)\n  names.each do |n|\n    `grep #{n} log.txt`\n  end\nend\n"
+    assert _hits("ruby", src) == [("io_in_loop", "subprocess")]
+
+
+def test_ruby_receiver_runs_once():
+    # The receiver chain of an iteration call runs ONCE — only the block body
+    # is per-iteration. ``Order.where(...)`` here must not be io_in_loop.
+    src = "def m\n  Order.where(active: true).each do |o|\n    transform(o)\n  end\nend\n"
+    assert _hits("ruby", src) == []
+
+
+def test_ruby_same_collection_nested_block_loops_fact():
+    # Two nested .each blocks over the SAME collection record the
+    # centrality-gated ``nested_loop_quadratic`` fact (not a raw hit).
+    src = (
+        "def m(items)\n"
+        "  items.each do |a|\n"
+        "    items.each do |b|\n"
+        "      combine(a, b)\n"
+        "    end\n"
+        "  end\n"
+        "end\n"
+    )
+    fc = walk_file("t.rb", "ruby", src.encode())
+    assert any(f.nested_loop_line for f in fc.perf_fn_facts)
+    assert not any(h.kind == "nested_loop_quadratic" for h in fc.perf_hits)

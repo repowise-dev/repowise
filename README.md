@@ -328,7 +328,7 @@ Install from the Marketplace (search **Repowise**) or Open VSX, then run
 
 ## Supported languages
 
-**15 languages parsed to AST · 10 at the Full tier · framework-aware across all of them.**
+**15 languages parsed to AST · 11 at the Full tier · framework-aware across all of them.**
 
 <p>
   <strong>Full tier &nbsp;</strong>
@@ -342,11 +342,11 @@ Install from the Marketplace (search **Repowise**) or Open VSX, then run
   <img src="https://img.shields.io/badge/C++-00599C?style=flat-square&logo=cplusplus&logoColor=white" alt="C++" />
   <img src="https://img.shields.io/badge/C%23-512BD4?style=flat-square&logo=csharp&logoColor=white" alt="C#" />
   <img src="https://img.shields.io/badge/Scala-DC322F?style=flat-square&logo=scala&logoColor=white" alt="Scala" />
+  <img src="https://img.shields.io/badge/Ruby-CC342D?style=flat-square&logo=ruby&logoColor=white" alt="Ruby" />
 </p>
 <p>
   <strong>Good tier &nbsp;</strong>
   <img src="https://img.shields.io/badge/C-A8B9CC?style=flat-square&logo=c&logoColor=black" alt="C" />
-  <img src="https://img.shields.io/badge/Ruby-CC342D?style=flat-square&logo=ruby&logoColor=white" alt="Ruby" />
   <img src="https://img.shields.io/badge/Swift-F05138?style=flat-square&logo=swift&logoColor=white" alt="Swift" />
   <img src="https://img.shields.io/badge/PHP-777BB4?style=flat-square&logo=php&logoColor=white" alt="PHP" />
   <img src="https://img.shields.io/badge/Dart-0175C2?style=flat-square&logo=dart&logoColor=white" alt="Dart" />
@@ -356,8 +356,8 @@ Install from the Marketplace (search **Repowise**) or Open VSX, then run
 
 | Tier | Languages | What works |
 |------|-----------|------------|
-| **Full** | Python · TypeScript · JavaScript · Java · Kotlin · Go · Rust · C++ · C# · Scala | AST parsing, import resolution, named bindings, call resolution, heritage extraction, docstrings; multi-project workspace resolvers; framework-aware edges; per-language dynamic-hint extractors; **code-health markers** |
-| **Good** | C · Ruby · Swift · PHP · Dart | AST parsing, import resolution, named bindings, call resolution, heritage (mixins / derive / extensions / traits), docstrings; dedicated workspace-aware resolvers; Rails / Laravel / TYPO3 / Flutter framework edges; dynamic-hint extractors; Dart adds code-health + perf markers |
+| **Full** | Python · TypeScript · JavaScript · Java · Kotlin · Go · Rust · C++ · C# · Scala · Ruby | AST parsing, import resolution, named bindings, call resolution, heritage extraction, docstrings; multi-project workspace resolvers; framework-aware edges; per-language dynamic-hint extractors; **code-health markers** |
+| **Good** | C · Swift · PHP · Dart | AST parsing, import resolution, named bindings, call resolution, heritage (mixins / derive / extensions / traits), docstrings; dedicated workspace-aware resolvers; Laravel / TYPO3 / Flutter framework edges; dynamic-hint extractors; Dart adds code-health + perf markers |
 | **SQL / dbt** | `.sql` via sqlglot (postgres, mysql, tsql, clickhouse, ...) | Tables / views / functions / procedures as symbols with wiki pages; dbt projects get real `ref()` / `source()` lineage edges: model-level DAG, hotspots, co-change, ownership |
 | **Config / data** | OpenAPI · Protobuf · GraphQL · Dockerfile · Makefile · YAML · JSON · TOML · Terraform · Markdown · Shell | Included in the file tree; special handlers extract endpoints / targets where applicable |
 | **Git-blame only** | Objective-C · Elixir · Erlang · Zig · Julia · Clojure · Haskell · OCaml · F# · … | Tracked in git history (blame, hotspots, co-change); no AST parsing yet |

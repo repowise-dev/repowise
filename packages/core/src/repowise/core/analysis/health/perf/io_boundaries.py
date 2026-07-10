@@ -144,7 +144,21 @@ def collect_io_names(tree_root: _NodeLike, language: str) -> dict[str, str]:
         # ``import`` covers Python / TS / Java / Go import nodes; C# spells its
         # import a ``using_directive`` (and Go an ``import_spec``), Rust a
         # ``use_declaration`` — none of which contains the substring "import".
-        if "import" in node.type or node.type in ("using_directive", "use_declaration"):
+        if node.type == "call" and language == "ruby":
+            # Ruby's import statement is a method call: ``require "net/http"``.
+            # Classify the quoted feature path; its segments bind lowercase
+            # (``net`` / ``httparty``), which the Ruby dialect normalises its
+            # constant receivers against. ``require_relative`` paths are local
+            # files and never classify — harmless to run through the table.
+            method = (
+                node.child_by_field_name("method") if hasattr(node, "child_by_field_name") else None
+            )
+            if method is not None and (method.text or b"") in (b"require", b"require_relative"):
+                kind, bound = _classify_import(node)
+                if kind is not None:
+                    for name in bound:
+                        names.setdefault(name, kind)
+        elif "import" in node.type or node.type in ("using_directive", "use_declaration"):
             # Classify only the *leaf* import node. A Go grouped
             # ``import ( "database/sql"; "regexp" )`` is an ``import_declaration``
             # wrapping per-line ``import_spec`` leaves; classifying the wrapper

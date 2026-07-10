@@ -22,6 +22,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ..perf.dialects import PERF_DIALECTS
+from ..perf.dialects.base import BasePerfDialect as BasePerfDialectClass
 from ..perf.io_boundaries import collect_io_names
 from .languages import LanguageNodeMap
 from .models import PerfFnFacts, PerfHit
@@ -85,10 +86,11 @@ _LOOP_ITERABLE_CALL_MARKER_KINDS = frozenset({"pandas_iterrows_in_loop"})
 _HOT_PATH_SINK_KINDS = frozenset({"subprocess", "filesystem"})
 
 # Block node kinds that form the *body* of a lock construct (C# ``lock (x) {…}``
-# / Java ``synchronized (x) {…}``). Only the body runs with the lock held, so
-# ``lock_depth`` is raised for the body child only — a sink in the lock-object
-# expression (``synchronized(repo.find(id)){…}``) runs BEFORE the lock is taken.
-_LOCK_BODY_KINDS = frozenset({"block", "statement_block", "compound_statement"})
+# / Java ``synchronized (x) {…}`` / Ruby ``mutex.synchronize do … end``). Only
+# the body runs with the lock held, so ``lock_depth`` is raised for the body
+# child only — a sink in the lock-object expression
+# (``synchronized(repo.find(id)){…}``) runs BEFORE the lock is taken.
+_LOCK_BODY_KINDS = frozenset({"block", "statement_block", "compound_statement", "do_block"})
 
 # Non-semantic wrapper nodes tree-sitter inserts between a ``call`` and its
 # enclosing ``await`` — parenthesising an awaited call (``await (foo())``) adds a
@@ -124,17 +126,23 @@ def _perf_func_name(node: Node) -> str | None:
 
 
 def _enclosing_loop_iterables(
-    node: Node, dialect: BasePerfDialect, loop_kinds: frozenset[str], fn_kinds: frozenset[str]
+    node: Node,
+    dialect: BasePerfDialect,
+    loop_kinds: frozenset[str],
+    fn_kinds: frozenset[str],
+    block_loops: bool = False,
 ) -> set[str]:
     """Names of the collections every enclosing loop (up to the function bound)
     iterates over — the lookup the same-collection ``nested_loop_quadratic``
-    shape gate compares the inner loop's iterable against."""
+    shape gate compares the inner loop's iterable against. When the dialect
+    recognises block-iteration calls (*block_loops*), those count as enclosing
+    loops too (Ruby ``items.each do … end``)."""
     names: set[str] = set()
     cur = node.parent
     for _ in range(64):
         if cur is None or cur.type in fn_kinds:
             break
-        if cur.type in loop_kinds:
+        if cur.type in loop_kinds or (block_loops and dialect.block_loop_body(cur) is not None):
             nm = dialect.loop_iterable_name(cur)
             if nm:
                 names.add(nm)
@@ -191,6 +199,9 @@ def _collect_perf_hits(
     fn_kinds = lmap.function_kinds
     lambda_kinds = lmap.lambda_kinds
     async_fn_kinds = lmap.async_function_kinds
+    # Block-iteration loops (Ruby ``items.each do … end``): only pay for the
+    # per-call-node hook when the dialect actually overrides it.
+    do_block_loop = type(dialect).block_loop_body is not BasePerfDialectClass.block_loop_body
 
     hits: list[PerfHit] = []
     # Per-enclosing-function accumulators keyed by the function's start line
@@ -226,9 +237,21 @@ def _collect_perf_hits(
         node, loop_depth, in_async, func_name, func_start, lock_depth, outer_iter = stack.pop()
         t = node.type
 
-        is_loop = t in loop_kinds
+        # ``node.is_named`` guards grammars (Ruby) whose keyword tokens share
+        # the node-type name of their parent (a ``while`` node contains an
+        # unnamed ``while`` token) — only the named node is the loop.
+        is_loop = t in loop_kinds and node.is_named
+        # Block-iteration loop (Ruby ``items.each do … end``): the dialect
+        # recognises the call and returns the per-iteration body node; the
+        # receiver / arguments still run once (native loop-BODY scoping).
+        block_loop_body: Node | None = None
+        if not is_loop and do_block_loop and t in call_kinds:
+            block_loop_body = dialect.block_loop_body(node)
+            if block_loop_body is not None:
+                is_loop = True
         if is_loop and dialect.is_constant_loop(node):
             is_loop = False
+            block_loop_body = None
 
         entering_fn = t in fn_kinds or t in lambda_kinds
         is_async_fn = t in async_fn_kinds or (entering_fn and dialect.is_async_fn(node))
@@ -260,7 +283,9 @@ def _collect_perf_hits(
             # loop iterates the same named collection as an enclosing loop
             # (all-pairs O(n^2)) — which all four Phase-7c labelers converged on.
             nm = dialect.loop_iterable_name(node)
-            if nm and nm in _enclosing_loop_iterables(node, dialect, loop_kinds, fn_kinds):
+            if nm and nm in _enclosing_loop_iterables(
+                node, dialect, loop_kinds, fn_kinds, do_block_loop
+            ):
                 misc = _acc(next_start, next_func)[3]
                 if misc[0] == 0:
                     misc[0] = node.start_point[0] + 1
@@ -430,8 +455,11 @@ def _collect_perf_hits(
             # inherit it. Set when entering the first loop (loop_depth 0 -> 1).
             next_outer_iter = outer_iter if loop_depth >= 1 else dialect.is_iteration_loop(node)
             # Only the loop BODY runs per-iteration; the ``for x in <iterable>``
-            # header / ``while <cond>`` condition runs once.
-            body = node.child_by_field_name("body")
+            # header / ``while <cond>`` condition runs once. For a block-
+            # iteration loop the body is the dialect-returned block node.
+            body = block_loop_body
+            if body is None:
+                body = node.child_by_field_name("body")
             if body is not None:
                 # NB: tree-sitter Node wrappers are not singletons, so compare
                 # with ``==`` (identity by tree + byte range), never ``is``.

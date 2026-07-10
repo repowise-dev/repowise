@@ -181,6 +181,27 @@ class BasePerfDialect:
         """True if this loop's bound is a compile-time constant (not N+1)."""
         return False
 
+    def block_loop_body(self, node: Node) -> Node | None:
+        """The per-iteration body when *node* is a call-with-block the language
+        counts as a loop (Ruby ``items.each do |x| ... end``), else ``None``.
+
+        The shared answer to combinator/block iteration: languages whose real
+        loop idiom is a method call taking a block (Ruby ``.each``/``.map``,
+        and later Scala ``.foreach``, Kotlin ``forEach``, Dart ``forEach``)
+        override this to return the block node when the callee is a known
+        full-iteration combinator AND a block argument is present. The walker
+        then treats the call as a loop whose body is exactly the returned
+        node — the receiver and arguments still run once, mirroring the
+        loop-BODY scoping rule for native loops. Only *statically certain*
+        iteration counts: a combinator without an inline block (``.map(&:f)``)
+        returns ``None`` because there is no per-iteration body to scan.
+
+        Default ``None`` — a dialect that does not override this is
+        byte-for-byte unchanged (the walker skips the hook entirely unless it
+        is overridden).
+        """
+        return None
+
     def is_iteration_loop(self, node: Node) -> bool:
         """True if this loop iterates a *collection* (a data multiplier), rather
         than spinning a cursor (``while (hasMore)`` / ``for (;;)``).
