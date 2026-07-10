@@ -30,6 +30,7 @@ from repowise.core.registry import mcp_tool_registry as _mcp_tool_registry
 
 # --- Import submodules in dependency order (triggers tool registration) ---
 from repowise.server.mcp_server import _state
+from repowise.server.mcp_server._failure_shield import shield as _failure_shield
 from repowise.server.mcp_server._graph_utils import (  # used by routers/graph.py
     build_visual_context as _build_visual_context,
 )
@@ -65,10 +66,12 @@ from repowise.server.mcp_server.tool_search import search_codebase
 from repowise.server.mcp_server.tool_symbol import get_symbol
 from repowise.server.mcp_server.tool_why import get_why
 
-# ``middleware`` wraps each tool with savings instrumentation: every call records
-# the counterfactual raw-exploration tokens its answer replaced into the unified
-# ledger. The wrapper is signature-preserving, so tool schemas are unchanged.
-_mcp_tool_registry.apply(mcp, middleware=_savings_instrument)
+# ``middleware`` wraps each tool twice, both layers signature-preserving so the
+# tool schemas are unchanged. The failure shield sits innermost: no exception
+# may escape to FastMCP as a protocol-level isError (an early isError teaches
+# the agent to abandon the server for the whole session). The savings layer
+# wraps it, so shaped error responses are still dead-end-debited in the ledger.
+_mcp_tool_registry.apply(mcp, middleware=lambda fn: _savings_instrument(_failure_shield(fn)))
 
 # Snapshot the full registered surface so per-server tool selection (single-repo
 # vs workspace, config/CLI overrides) can rebuild from it. Selection itself runs

@@ -273,7 +273,8 @@ async def test_get_symbol_unknown_ref_errors(setup_mcp, repo_root: Path):
 
 @pytest.mark.asyncio
 async def test_get_symbol_normal_path_byte_identical(setup_mcp, repo_root: Path):
-    """A real symbol_id must still slice the exact on-disk byte range."""
+    """A real symbol_id slices the exact on-disk byte range, served in
+    Read's numbered format (line content verbatim after the number+tab)."""
     import repowise.server.mcp_server as mcp_mod
     from repowise.server.mcp_server import get_symbol
 
@@ -285,7 +286,7 @@ async def test_get_symbol_normal_path_byte_identical(setup_mcp, repo_root: Path)
 
     # WikiSymbol fixture rows: login spans lines 20..40 (see conftest).
     result = await get_symbol("src/auth/service.py::login")
-    assert result["source"] == "\n".join(lines[19:40])
+    assert result["source"] == "\n".join(f"{n:>6}\t{lines[n - 1]}" for n in range(20, 41))
     assert result["start_line"] == 20 and result["end_line"] == 40
     assert result["truncated"] is False
 

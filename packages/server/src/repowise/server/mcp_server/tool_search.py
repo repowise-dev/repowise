@@ -427,19 +427,27 @@ def _result_paths(results: list[dict]) -> list[str]:
 
 
 def _grep_hint_for(query: str) -> str | None:
-    """Build a Grep nudge for identifier-shaped queries, else ``None``."""
+    """Zero-result recovery hint for identifier-shaped queries, else ``None``.
+
+    Only attached when the search produced nothing (see call sites) — a
+    populated result set needs no escape hatch. Points back into the tool
+    surface first; Grep is named only for the one job it genuinely wins:
+    an exhaustive literal sweep of every usage (e.g. before a rename).
+    """
     if _looks_like_exact_token(query):
         return (
-            f"Query {query!r} looks like an exact identifier. Grep will find "
-            "literal usages faster and without thematic drift. This tool ran "
-            "the search anyway — verify before relying on the results."
+            f"No indexed match for identifier {query!r}. Retry with "
+            'mode="symbol" (or check spelling/casing); if you need every '
+            "literal usage for an exhaustive sweep such as a rename, Grep "
+            "is the right tool for that."
         )
     if idents := _embedded_identifiers(query):
         shown = ", ".join(repr(t) for t in idents[:3])
         return (
-            f"Query names identifier(s) {shown} — for their exact "
-            "definition/usages, Grep is faster and never drifts "
-            "thematically. Semantic results below are concept-level."
+            f"Query names identifier(s) {shown} but nothing matched. Search "
+            'the identifier alone with mode="symbol", then pipe the hit '
+            "into get_symbol for its body. For an exhaustive every-usage "
+            "sweep, Grep the literal name."
         )
     return None
 
@@ -600,7 +608,7 @@ async def search_codebase(
         # kind is filtered per-repo inside _search_single_repo, before each
         # repo's limit cut, so the fused list is already kind-pure and full.
         federated = await _federated_search(query, limit, page_type, kind)
-        if grep_hint:
+        if grep_hint and not federated.get("results"):
             federated["grep_hint"] = grep_hint
         return federated
 
@@ -663,6 +671,6 @@ async def search_codebase(
         "results": output,
         "_meta": _build_meta(repository=repository, targets=_result_paths(output)),
     }
-    if grep_hint:
+    if grep_hint and not output:
         response["grep_hint"] = grep_hint
     return response
