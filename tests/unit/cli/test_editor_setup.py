@@ -10,6 +10,7 @@ from rich.console import Console
 
 from repowise.cli import mcp_config
 from repowise.cli.commands import init_cmd, update_cmd
+from repowise.cli.commands.update_cmd.command import run_update
 from repowise.cli.editor_integrations import claude as claude_integration
 from repowise.cli.editor_integrations import claude_config
 from repowise.cli.editor_integrations import codex as codex_integration
@@ -514,7 +515,7 @@ def test_claude_refresh_project_files_skips_when_options_disable_file(
 def test_update_command_uses_editor_refresh_abstraction() -> None:
     from repowise.cli.commands.update_cmd.command import _refresh_editor_stamp
 
-    command_source = inspect.getsource(update_cmd.update_command.callback)
+    command_source = inspect.getsource(run_update)
     stamp_source = inspect.getsource(_refresh_editor_stamp)
 
     # The command routes every editor-file write through the shared stamp

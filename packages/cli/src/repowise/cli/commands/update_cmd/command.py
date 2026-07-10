@@ -261,6 +261,52 @@ def update_command(
     workspace exists upstream of the working directory. Use --no-workspace to
     force single-repo mode and --workspace to force workspace mode.
     """
+    return run_update(
+        path=path,
+        provider_name=provider_name,
+        model=model,
+        since=since,
+        reasoning=reasoning,
+        cascade_budget=cascade_budget,
+        dry_run=dry_run,
+        workspace=workspace,
+        no_workspace=no_workspace,
+        repo_alias=repo_alias,
+        index_only=index_only,
+        docs_flag=docs_flag,
+        full=full,
+        agents_md=agents_md,
+        concurrency=concurrency,
+        no_cost_tracking=no_cost_tracking,
+        verbose=verbose,
+        progress=progress,
+    )
+
+
+def run_update(
+    path: str | None,
+    provider_name: str | None,
+    model: str | None,
+    since: str | None,
+    reasoning: str | None,
+    cascade_budget: int | None,
+    dry_run: bool,
+    workspace: bool,
+    no_workspace: bool,
+    repo_alias: str | None,
+    index_only: bool = False,
+    docs_flag: bool | None = None,
+    full: bool = False,
+    agents_md: bool | None = None,
+    concurrency: int = 10,
+    no_cost_tracking: bool = False,
+    verbose: bool = False,
+    progress: str = "rich",
+) -> None:
+    """Incrementally update wiki pages for files changed since last sync.
+
+    If `since` is None, the base commit is read from state.json's last_sync_commit.
+    """
     start = time.monotonic()
 
     # --- Machine-readable progress (--progress json) --------------------
