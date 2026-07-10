@@ -9,18 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
-
-### Changed
-- **One dataflow parse per file.** The health pass's dataflow consumers (the Extract Method detector and the perf advisory-to-asserted promotion) now share a single lazily parsed per-file analysis instead of each re-reading and re-parsing the file, making the health pass measurably faster on large repos with identical output. The new per-function dataflow summary and point-lookup APIs this introduces are the foundation for upcoming dataflow-backed surfaces.
+## [0.30.0] — 2026-07-10
 
 ### Added
-- **First-class output-language support.** `repowise init --language <code>` (15 languages: en, ru, es, fr, de, zh, ja, ko, it, pt, nl, pl, tr, ar, hi) sets the natural language for generated wiki pages; advanced interactive mode now asks for it too (English default). The choice persists to `.repowise/config.yaml` so `update` regenerates changed pages in the same language, and the workspace init, workspace generate, and server regenerate paths now honor it instead of silently defaulting to English. Code, file paths, and symbol names stay untranslated. Previously this was config-file-only (#99).
-- **Worktrees just work.** `repowise init` and `repowise update` inside a linked git worktree now auto-detect the base checkout and seed the worktree's index from it, then catch up incrementally; no flags needed. `--seed-from <base>` remains as an explicit override and `--no-seed` forces a cold init. See [WORKTREES.md](WORKTREES.md). (#655 introduced the manual flag; this release makes it automatic.)
+- **First-class output-language support.** `repowise init --language <code>` (15 languages: en, ru, es, fr, de, zh, ja, ko, it, pt, nl, pl, tr, ar, hi) sets the natural language for generated wiki pages; advanced interactive mode now asks for it too (English default). The choice persists to `.repowise/config.yaml` so `update` regenerates changed pages in the same language, and the workspace init, workspace generate, and server regenerate paths now honor it instead of silently defaulting to English. Code, file paths, and symbol names stay untranslated. Previously this was config-file-only (#99). (#756)
+- **Worktrees just work.** `repowise init` and `repowise update` inside a linked git worktree now auto-detect the base checkout and seed the worktree's index from it, then catch up incrementally; no flags needed. `--seed-from <base>` remains as an explicit override and `--no-seed` forces a cold init. See [WORKTREES.md](WORKTREES.md). (#655 introduced the manual flag; #747 makes it automatic.)
+- **Ruby and Scala promoted to Full health tier.** Both languages now get the full complexity node map and performance-risk dialect, so health scores and perf findings match the depth Python/TypeScript/Go already had. (#745, #749)
+- **Git stats awards.** The contributor stats view gained biggest-commit, longest-streak, most-imported-file, and dependency awards. (#752)
+- **Workspace socket-contract detection.** Cross-repo analysis now detects socket-based service contracts alongside HTTP ones. (#710)
+- **Anonymous feedback panel.** The dashboard gained a lightweight feedback panel — no account or email required. (#763)
+- **Claude Code integration: session context + safer distill.** The augment hook now emits a per-session context block with live index freshness on session start, the distill rewrite hook learned two safe shell-syntax carve-outs, and `repowise doctor` checks hook registration. (#743)
+
+### Changed
+- **Unchanged wiki pages are reused across runs.** Cross-run page reuse now keys on the documented file's content plus the generation settings (template, language, style) instead of the exact rendered prompt — which embedded per-run retrieval context and practically never matched. A re-run over a repo where a handful of files changed now regenerates only those pages; changing the model, output language, or wiki style still regenerates everything it should. (#757)
+- **One dataflow parse per file.** The health pass's dataflow consumers (the Extract Method detector and the perf advisory-to-asserted promotion) now share a single lazily parsed per-file analysis instead of each re-reading and re-parsing the file, making the health pass measurably faster on large repos with identical output. The new per-function dataflow summary and point-lookup APIs this introduces are the foundation for upcoming dataflow-backed surfaces. (#755)
+- **Leaner MCP surface for agents.** An agent-lean tool profile with tool-search gating and registry-pinned docs, plus payload-precision trims across tools, cut the token cost of the MCP surface without removing capability. (#742, #744)
+- **Graph view cleanups.** The module view no longer collapses into a single blob, external nodes are hidden by default, and node info panels are layer-aware. (#754)
 
 ### Fixed
-- **Seeded worktree indexes no longer split in two.** Seeding now re-points the copied index at the worktree, so the first update reuses the seeded pages instead of minting a second repository entry and regenerating everything under it.
-- **`[workspace]` notices render again.** The one-line workspace auto-detect notice was being swallowed by console markup and printed without its prefix.
+- **Pages skipped by the update budget are labelled stale.** `repowise update` marks weakly-affected pages it chose not to regenerate as stale instead of leaving them claiming to be fresh, and `total_pages` is recomputed from the store. (#748)
+- **Dataflow CFG no longer flags reachable code as unreachable.** (#760)
+- **TypeScript object-literal shorthand properties count as reads**, fixing spurious unused-symbol findings. (#759)
+- **Cross-repo co-change is a bounded session-share signal**, preventing one shared session from dominating workspace coupling scores. (#758)
+- **Seeded worktree indexes no longer split in two.** Seeding now re-points the copied index at the worktree, so the first update reuses the seeded pages instead of minting a second repository entry and regenerating everything under it. (#747)
+- **`[workspace]` notices render again.** The one-line workspace auto-detect notice was being swallowed by console markup and printed without its prefix. (#747)
+
+### Documentation
+- User-facing docs restructured and refreshed (quickstart, user guide, CLI reference, config). (#741)
+- Plugin: the Claude Code plugin bundles the new SessionStart context hook. (#743)
 
 ---
 
