@@ -86,7 +86,8 @@ All three reach the indexing knobs; the LLM-only knobs appear only when docs are
 | `--agents` / `--no-agents` | Generate or skip managed `AGENTS.md` for Codex. Persists the preference. |
 | `--codex` / `--no-codex` | Generate or skip project-local Codex MCP/hooks setup. Interactive runs prompt when Codex CLI is installed and logged in; non-interactive runs require `--codex`. |
 | `--distill-hook` / `--no-distill-hook` | Install or skip the Distill command-rewrite hook (Claude Code PreToolUse). Strictly opt-in: interactive runs prompt (default No); `--no-distill-hook` also gates the repo off in config so a globally installed hook stays inert here. In workspace mode the verdict applies to every selected repo. See [DISTILL.md](DISTILL.md). |
-| `--seed-from` | Seed the index from an existing base-branch checkout to skip indexing unmodified files. |
+| `--seed-from` | Seed the index from an explicit base checkout instead of the auto-detected one. Rarely needed: inside a linked git worktree the base is detected and seeded automatically. See [WORKTREES.md](WORKTREES.md). |
+| `--no-seed` | Disable worktree auto-seeding and run a full init even inside a linked worktree. |
 | `--yes` / `-y` | Skip confirmation prompts |
 | `--dry-run` | Show generation plan and cost estimate without running |
 | `--test-run` | Generate docs for only the top 10 files (by PageRank) |
@@ -130,6 +131,10 @@ the `done` event's `degraded` array with `--progress json`); the next update
 retries them. In docs mode each regenerated page is persisted as it completes,
 so an interrupted run never pays for the finished pages again, the rerun's
 prompt-hash check skips them.
+
+Inside an unindexed linked git worktree, `update` first seeds the index from
+the base checkout automatically, then proceeds with the incremental update.
+See [WORKTREES.md](WORKTREES.md).
 
 **Options:**
 

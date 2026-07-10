@@ -8,14 +8,9 @@ respectively, and are shared by both flows.
 
 from __future__ import annotations
 
-import json
 import os
-import shutil
-import subprocess
 import sys
-import tempfile
 import time
-import uuid
 from pathlib import Path
 from typing import Any
 
@@ -406,7 +401,17 @@ def _run_generation_phase(
 @click.option(
     "--seed-from",
     type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=str),
-    help="Seed the index from an existing base-branch checkout to skip indexing unmodified files.",
+    help=(
+        "Seed the index from an existing base-branch checkout to skip indexing "
+        "unmodified files. Rarely needed: inside a linked git worktree the base "
+        "checkout is detected and seeded automatically."
+    ),
+)
+@click.option(
+    "--no-seed",
+    is_flag=True,
+    default=False,
+    help="Disable worktree auto-seeding and run a full init even inside a linked worktree.",
 )
 @click.option(
     "--no-cost-tracking",
@@ -448,6 +453,7 @@ def init_command(
     follow_renames: bool,
     no_claude_md: bool,
     seed_from: str | None,
+    no_seed: bool,
     agents_md: bool | None,
     codex_setup: bool | None,
     distill_hook: bool | None,
@@ -488,125 +494,40 @@ def init_command(
 
     scan = scan_for_repos(repo_path, include_submodules=include_submodules)
 
-    if seed_from:
-        # Startup Cleanup: sweep and remove any stale .repowise.bak.* directories from previous disrupted setups.
-        for r in scan.repos:
-            for p in r.path.glob(".repowise.bak.*"):
-                if p.is_dir():
-                    shutil.rmtree(p, ignore_errors=True)
-        for p in repo_path.glob(".repowise.bak.*"):
-            if p.is_dir():
-                shutil.rmtree(p, ignore_errors=True)
+    # ---- Worktree seeding ----
+    # Explicit --seed-from wins. Otherwise, an unindexed linked worktree
+    # auto-seeds from its base checkout (derived via --git-common-dir, no
+    # path needed) when that base holds a healthy index. --no-seed forces a
+    # cold init; any failed validation falls back to full init with a notice.
+    from repowise.cli.worktree import (
+        base_is_seedable,
+        detect_worktree_base,
+        seed_index_from_base,
+    )
 
+    seed_base: Path | None = None
+    if seed_from:
         seed_base = Path(seed_from).resolve()
         if seed_base == repo_path.resolve():
             raise click.ClickException("--seed-from cannot be the same as the target directory.")
-
-        temp_dirs = []
-        success = True
-
-        def _get_initial_commit(p: Path) -> str:
-            try:
-                return subprocess.check_output(
-                    ["git", "rev-list", "--max-parents=0", "HEAD"],
-                    cwd=p,
-                    text=True,
-                    stderr=subprocess.DEVNULL,
-                ).strip()
-            except subprocess.CalledProcessError:
-                return ""
-
-        for r in scan.repos:
-            r_rel = (
-                r.path.relative_to(scan.root)
-                if getattr(scan, "root", None)
-                else r.path.relative_to(repo_path)
+    elif not no_seed and not (repo_path / ".repowise" / "state.json").exists():
+        detected = detect_worktree_base(repo_path)
+        if detected is not None and base_is_seedable(detected):
+            seed_base = detected
+            console.print(
+                f"[dim]\\[worktree][/dim] Linked worktree of {detected} detected; "
+                f"seeding its index."
             )
-            src_repo = seed_base / r_rel
 
-            if (
-                not (src_repo / ".repowise" / "state.json").exists()
-                or not (src_repo / ".repowise" / "wiki.db").exists()
-            ):
-                console.print(
-                    f"[yellow]Seed source {src_repo} is missing .repowise state/db. Falling back to full init.[/yellow]"
-                )
-                success = False
-                break
-
-            if _get_initial_commit(src_repo) != _get_initial_commit(
-                r.path
-            ) or not _get_initial_commit(src_repo):
-                console.print(
-                    f"[yellow]Seed source {src_repo} does not share the same initial commit as worktree. Falling back to full init.[/yellow]"
-                )
-                success = False
-                break
-
-            state_data = json.loads(
-                (src_repo / ".repowise" / "state.json").read_text(encoding="utf-8")
-            )
-            last_sync_commit = state_data.get("last_sync_commit")
-            if not last_sync_commit:
-                console.print(
-                    f"[yellow]Seed source {src_repo} has no last_sync_commit. Falling back to full init.[/yellow]"
-                )
-                success = False
-                break
-
-            try:
-                subprocess.check_call(
-                    ["git", "merge-base", "--is-ancestor", last_sync_commit, "HEAD"],
-                    cwd=r.path,
-                    stderr=subprocess.DEVNULL,
-                )
-            except subprocess.CalledProcessError:
-                console.print(
-                    f"[yellow]Seed source {src_repo} last_sync_commit {last_sync_commit[:8]} is not an ancestor of worktree HEAD. Falling back to full init.[/yellow]"
-                )
-                success = False
-                break
-
-            try:
-                source_head = subprocess.check_output(
-                    ["git", "rev-parse", "HEAD"], cwd=src_repo, text=True, stderr=subprocess.DEVNULL
-                ).strip()
-                if source_head and last_sync_commit != source_head:
-                    console.print(
-                        f"[dim]Note: Seed source {src_repo} is behind its HEAD, seeding from last synced commit {last_sync_commit[:8]}.[/dim]"
-                    )
-            except subprocess.CalledProcessError:
-                pass
-
-            temp_dir = Path(tempfile.mkdtemp(prefix=".repowise-seed-", dir=r.path))
-            temp_dirs.append((r.path, temp_dir))
-
-            shutil.copytree(src_repo / ".repowise", temp_dir, dirs_exist_ok=True)
-
-            # Since config.yaml is copied atomically alongside state.json, the config_fingerprint remains valid.
-            st_data = json.loads((temp_dir / "state.json").read_text(encoding="utf-8"))
-
-            state_include = st_data.get("include_submodules", False)
-            if include_submodules != state_include:
-                console.print(f"[yellow]Warning: --include-submodules={include_submodules} conflicts with copied state ({state_include}). Seeded state will take precedence.[/yellow]")
-
-            (temp_dir / "state.json").write_text(json.dumps(st_data, indent=2), encoding="utf-8")
-
-        if not success:
-            for _, temp_dir in temp_dirs:
-                shutil.rmtree(temp_dir, ignore_errors=True)
-        else:
-            # Stage 2: Rename
-            for r_path, temp_dir in temp_dirs:
-                target = r_path / ".repowise"
-                backup = None
-                if target.exists():
-                    backup = r_path / f".repowise.bak.{uuid.uuid4().hex[:8]}"
-                    target.rename(backup)
-                temp_dir.rename(target)
-                if backup:
-                    shutil.rmtree(backup, ignore_errors=True)
-
+    if seed_base is not None:
+        seed_root = scan.root if getattr(scan, "root", None) else repo_path
+        seeded = seed_index_from_base(
+            root=seed_root,
+            repo_paths=[r.path for r in scan.repos],
+            seed_base=seed_base,
+            include_submodules=include_submodules,
+        )
+        if seeded:
             console.print(
                 "[green]Worktree index seeded successfully. Delegating to update...[/green]"
             )

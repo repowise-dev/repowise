@@ -361,6 +361,26 @@ def run_update(
     # --- Single-repo path from here on. ---
     repo_path = target.repo_path
     assert repo_path is not None  # single mode always sets repo_path
+
+    # An unindexed linked worktree seeds itself from its base checkout before
+    # updating, so post-commit hooks and agents running `update` in a fresh
+    # worktree get incremental catch-up instead of a "no previous sync" error.
+    # Best-effort: failed validation falls through to the normal flow.
+    if not (repo_path / ".repowise" / "state.json").exists():
+        from repowise.cli.worktree import (
+            base_is_seedable,
+            detect_worktree_base,
+            seed_index_from_base,
+        )
+
+        wt_base = detect_worktree_base(repo_path)
+        if wt_base is not None and base_is_seedable(wt_base):
+            console.print(
+                f"[dim]\\[worktree][/dim] Unindexed linked worktree of {wt_base}; "
+                f"seeding its index."
+            )
+            seed_index_from_base(root=repo_path, repo_paths=[repo_path], seed_base=wt_base)
+
     ensure_repowise_dir(repo_path)
 
     # If this repo is a workspace member updated here for the first time,
