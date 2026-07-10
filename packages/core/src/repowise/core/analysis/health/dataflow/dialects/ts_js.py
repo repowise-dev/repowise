@@ -60,6 +60,11 @@ class TsJsDefUseDialect(BaseDefUseDialect):
     language = "typescript"
     member_access_kinds = frozenset({"member_expression"})
     keyword_kinds = frozenset()  # object-property keys are not variable reads.
+    # ``shorthand_property_identifier`` is an object-literal read (``{ days }``
+    # reads the local ``days``). Its ``_pattern`` twin is the destructuring
+    # *binder*; the grammars (ts / tsx / js) never emit the non-pattern kind in
+    # a write-target position, so counting it as an identifier only adds reads.
+    identifier_kinds = frozenset({"identifier", "shorthand_property_identifier"})
 
     def _is_scope_boundary(self, node: Node) -> bool:
         return node.type in _SCOPE_BOUNDARIES
