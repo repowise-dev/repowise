@@ -67,6 +67,9 @@ _DB_NAMES: frozenset[str] = frozenset({
     # Dart / Flutter (pub package names; ``package:sqflite/...`` resolves via
     # the interior segment).
     "sqflite", "postgres", "mysql1", "mongo_dart", "drift",
+    # Scala (root package as imported: ``import slick.jdbc...`` -> ``slick``,
+    # ``import doobie._`` -> ``doobie``; Quill imports as ``io.getquill``).
+    "slick", "doobie", "scalikejdbc", "anorm", "io.getquill",
 })
 
 _NETWORK_NAMES: frozenset[str] = frozenset({
@@ -88,6 +91,10 @@ _NETWORK_NAMES: frozenset[str] = frozenset({
     # Dart / Flutter (``package:http`` doubles as Node's stdlib ``http`` —
     # both are network boundaries).
     "http", "dio", "chopper",
+    # Scala (root packages / progressive dotted prefixes: ``import
+    # sttp.client3._`` -> ``sttp``; ``import org.http4s...`` -> ``org.http4s``;
+    # ``import akka.http.scaladsl...`` -> ``akka.http``).
+    "sttp", "org.http4s", "akka.http", "play.api.libs.ws",
 })
 
 _FILESYSTEM_NAMES: frozenset[str] = frozenset({
@@ -104,6 +111,11 @@ _FILESYSTEM_NAMES: frozenset[str] = frozenset({
     # Dart (``dart:io`` hosts File/Directory; Process is method-gated in the
     # perf dialect rather than classified wholesale as subprocess).
     "dart:io",
+    # Scala (``import scala.io.Source`` -> the ``scala.io`` dotted prefix;
+    # lihaoyi's os-lib root package ``os`` is deliberately NOT seeded; the
+    # bare name would collide with Python's stdlib ``os`` cross-ecosystem, so
+    # the Scala perf dialect method-gates it instead).
+    "scala.io",
 })
 
 _SUBPROCESS_NAMES: frozenset[str] = frozenset({

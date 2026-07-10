@@ -54,6 +54,9 @@ _LOOP_STMT_MARKER_KINDS = frozenset(
         "membership_test_against_list_in_loop",
         # Phase 7d — language-specific statement markers.
         "goroutine_in_unbounded_loop",
+        # Scala ``"...".r`` is a bare ``field_expression`` (not a call), so its
+        # regex-recompile form arrives through the statement hook.
+        "regex_compile_in_loop",
     }
 )
 # Markers for a call that is its OWN iteration construct (``.reduce``), a perf

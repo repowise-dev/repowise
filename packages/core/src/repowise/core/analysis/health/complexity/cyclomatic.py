@@ -51,9 +51,11 @@ _ELSE_IF_NODE_KINDS = frozenset(
 # Branch nodes that are a decision point (count toward CCN) but do NOT open a
 # nesting level: a comprehension filter (``[x for x in xs if a]``) and a match
 # ``case ... if guard:`` both parse as ``if_clause`` and sit inline, not as a
-# nested block. Treating them as flat keeps ``max_nesting`` / ``cognitive``
-# honest — they were only added to ``branch_kinds`` for the CCN count.
-_FLAT_BRANCH_KINDS = frozenset({"if_clause"})
+# nested block; Scala's ``guard`` (for-comprehension filter / match-case guard)
+# is the same inline shape. Treating them as flat keeps ``max_nesting`` /
+# ``cognitive`` honest — they were only added to ``branch_kinds`` for the CCN
+# count.
+_FLAT_BRANCH_KINDS = frozenset({"if_clause", "guard"})
 
 
 def _is_elif_continuation(node: Node) -> bool:

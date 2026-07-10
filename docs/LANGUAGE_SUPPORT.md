@@ -1,7 +1,7 @@
 # Language Support
 
 repowise parses **15 languages to a full AST**, resolves imports and call
-graphs across them, and scores **9 at the Full tier** with code-health markers.
+graphs across them, and scores **10 at the Full tier** with code-health markers.
 Everything else in your repo is still tracked through git history and appears in
 the wiki. This page is the "what works for my language today" reference.
 
@@ -19,8 +19,8 @@ produce meaningful output.
 
 | Tier | Languages | What works |
 |------|-----------|------------|
-| **Full** | Python · TypeScript · JavaScript · Java · Kotlin · Go · Rust · C++ · C# | AST parsing, import resolution, named bindings, call resolution, heritage, docstrings, framework-aware edges, dynamic-hint extractors, and **code-health markers** |
-| **Good** | C · Ruby · Swift · Scala · PHP · Dart | Everything above except code-health markers (C, Ruby, Swift, Scala, PHP; Dart *does* get health markers). Dedicated workspace resolvers and framework edges per language |
+| **Full** | Python · TypeScript · JavaScript · Java · Kotlin · Go · Rust · C++ · C# · Scala | AST parsing, import resolution, named bindings, call resolution, heritage, docstrings, framework-aware edges, dynamic-hint extractors, and **code-health markers** |
+| **Good** | C · Ruby · Swift · PHP · Dart | Everything above except code-health markers (C, Ruby, Swift, PHP; Dart *does* get health markers). Dedicated workspace resolvers and framework edges per language |
 | **SQL / dbt** | `.sql` via sqlglot | Tables / views / functions / procedures as symbols with wiki pages; dbt projects get real `ref()` / `source()` lineage |
 | **Config / data** | OpenAPI · Protobuf · GraphQL · Dockerfile · Makefile · YAML · JSON · TOML · Terraform · Markdown · Shell | In the file tree and wiki; special handlers extract endpoints / targets where applicable |
 | **Lightweight** | Elixir · Clojure · Haskell · Lean 4 · Erlang · F# | Regex-tier file-level import graph (no symbols/calls). Honest file-to-file dependencies, no symbol-level claims |
@@ -33,7 +33,7 @@ produce meaningful output.
 |-------|:----:|:----:|:-----------:|:----------:|:-------------:|
 | File discovery & git history | ✅ | ✅ | ✅ | ✅ | ✅ |
 | AST symbol extraction | ✅ | ✅ | - | - | - |
-| Import resolution | ✅ | ✅¹ | regex | - | - |
+| Import resolution | ✅¹ | ✅ | regex | - | - |
 | Call graph edges | ✅ | ✅ | - | - | - |
 | Heritage (extends/implements) | ✅ | ✅ | - | - | - |
 | Named bindings | ✅ | ✅ | - | - | - |
@@ -41,8 +41,9 @@ produce meaningful output.
 | Dead code detection | ✅ | ✅ | ✅ | ✅ | - |
 | Semantic search & wiki pages | ✅ | ✅ | ✅ | ✅ | ✅ |
 
-¹ Scala's import resolution is partial (build-file fallback via SBT/Mill); the
-other Good languages resolve imports fully.
+¹ Scala's import resolution is partial (shared JVM index with SBT/Mill
+build-file fallback); every other Full and Good language resolves imports
+fully.
 ² See [code-health coverage](#code-health-coverage), a language is only "Full"
 once it clears the health checklist.
 
@@ -65,10 +66,11 @@ extractors, and code-health markers.
 | **Rust** | `.rs` | `use crate::` / `super::` / `self::` with `Cargo.toml` |
 | **C++** | `.cpp` `.cc` `.cxx` `.h` `.hpp` `.hxx` | `#include` via `compile_commands.json` + CMake / Bazel workspace header maps, header↔implementation pairing |
 | **C#** | `.cs` | `using` / `global using` / `using static` / aliases with `.csproj` / `.sln` resolution; MSBuild project graph; `partial` class linking |
+| **Scala** | `.scala` | `import pkg.Foo`, brace/wildcard/package imports via the shared JVM index (cross-language with Java/Kotlin); SBT / Mill build parsing as fallback (partial import resolution¹) |
 
-All nine also support three-tier call resolution (same-file, cross-file, global
+All ten also support three-tier call resolution (same-file, cross-file, global
 stem match) and docstring extraction (Python, JSDoc, GoDoc, Rustdoc, Javadoc,
-Doxygen, XML doc).
+Scaladoc, Doxygen, XML doc).
 
 **Framework-aware edges** connect routes to handlers, DI registrations to
 implementations, and ORM entities to relationships:
@@ -101,7 +103,6 @@ PHP trait use, Dart mixins). Dedicated workspace resolvers per language.
 | **C** | `.c` | `#include` via `compile_commands.json` (shares C++ grammar) |
 | **Ruby** | `.rb` | `require` / `require_relative` with `$LOAD_PATH` probing, Gemfile externals, RSpec mirror edges, Rails / Zeitwerk autoloading |
 | **Swift** | `.swift` | `import` with SPM `Package.swift` target → directory mapping; intra-module type references; `@main` entry points |
-| **Scala** | `.scala` | `import pkg.Foo`, brace/wildcard/package imports via the shared JVM index; SBT / Mill build parsing as fallback (partial import resolution) |
 | **PHP** | `.php` | `use Foo\Bar\Baz` with composer.json PSR-4 longest-prefix resolution; Laravel, TYPO3 edges |
 | **Dart** | `.dart` | `import` / `export` / `part` URIs; `package:` via every `pubspec.yaml`; Flutter route tables and `runApp()` edges; **code-health markers** |
 
@@ -174,6 +175,7 @@ is "Full" vs "Good".
 | Kotlin | ✅ | ✅ | ✅ | later | later |
 | C++ | ✅ | ✅ | ✅ | later | later |
 | Dart | ✅ | n/a³ | ✅ | later | ✅ |
+| Scala | ✅ | ✅ | ✅⁴ | later | ✅⁵ |
 
 ¹ Go methods attach to a type via an external receiver rather than nesting in a
 class body, so class-level metrics aren't computable; Go gets the function- and
@@ -182,6 +184,14 @@ assertion-level markers.
 O(1), so it would be a guaranteed false positive).
 ³ Dart assertion smells cover `assert` statements only; `expect()` calls have no
 call-node type to key on.
+⁴ Plain `assert(...)` and munit/JUnit-style `assert*` calls are counted;
+ScalaTest's infix DSL (`x shouldBe y`) has no assert-prefixed callee and is not.
+⁵ Rides the JVM sink lexicon (JDBC / JPA / Spring-Data interop) plus
+Scala-native boundaries (`scala.io.Source`, os-lib, sttp / http4s, Slick /
+doobie). Scala-specific markers: `"...".r` regex recompile in a loop and
+`Await.result` / `Thread.sleep` inside a `Future`-returning def
+(`blocking_sync_in_async`). Combinator iteration (`.map` / `.foreach`) is not
+loop-tracked yet; loops are `while` / `do-while` / for-comprehensions.
 
 The **performance** signal (`io_in_loop`, `string_concat_in_loop`,
 `resource_construction_in_loop`, language-specific markers like Go
@@ -197,6 +207,7 @@ where a dialect isn't wired yet. Per-marker mechanics and precision hazards:
 | Language | Target tier | Status |
 |----------|------------|--------|
 | Dart | Good | Shipped: AST, health control-flow + class facts, perf dialect, Flutter edges. Next: riverpod/get_it dynamic hints, dataflow dialect |
+| Scala | Full (health) | Shipped: complexity/class/assertion markers + perf dialect (JVM lexicon, `.r` recompile, sync-over-Future). Next: dataflow dialect, combinator (`.map`/`.foreach`) loop tracking |
 | Kotlin / C++ | Full (health) | Perf + dataflow dialects pending; everything else shipped |
 | C# | Full (health) | Dataflow dialect pending; perf shipped |
 | Elixir | Good | Lightweight tier shipped; AST upgrade planned (`tree-sitter-elixir` available) |

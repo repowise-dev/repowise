@@ -25,10 +25,10 @@ names to the walker's abstract categories:
                   test-assertion runs (test-quality smells). Opt-in per
                   language via ``assert_kinds`` / ``assert_call_kinds``.
 
-Control-flow maps cover all nine full-tier languages — Python, TypeScript,
-JavaScript, Go, Java, Kotlin, Rust, C++, C# — plus their aliases; class-level
-maps cover all of those except Go (no class-grouping node). Adding a language —
-either tier — is purely additive here.
+Control-flow maps cover all ten full-tier languages (Python, TypeScript,
+JavaScript, Go, Java, Kotlin, Rust, C++, C#, Scala) plus their aliases and
+Dart; class-level maps cover all of those except Go (no class-grouping node).
+Adding a language, at either tier, is purely additive here.
 
 Two cross-language heuristic limits worth noting (both degrade to "no signal",
 never a false positive): (1) instance members accessed without an explicit
@@ -538,6 +538,69 @@ _CSHARP = LanguageNodeMap(
 )
 
 
+_SCALA = LanguageNodeMap(
+    # ``function_definition`` is a ``def`` with a body (expression or block);
+    # abstract ``def``s parse as ``function_declaration`` (no body, nothing to
+    # measure). ``given_definition`` is deliberately NOT a function kind: a
+    # ``given ... with {}`` instance nests real ``function_definition`` members,
+    # and function collection stops descending at a function boundary, so
+    # mapping ``given`` would swallow its methods; leaving it unmapped lets the
+    # traversal find them individually (alias givens are values, not bodies).
+    function_kinds=frozenset({"function_definition"}),
+    # A partial-function literal (``{ case n => ... }``) is a ``case_block``,
+    # shared with ``match`` / ``catch``, so it cannot be a lambda kind without
+    # every match arm block becoming a module-level entry; its cases still
+    # count via ``case_kinds`` and its body rolls up into the enclosing def.
+    lambda_kinds=frozenset({"lambda_expression"}),
+    # Scala ``if`` is an expression; ``guard`` covers both for-comprehension
+    # filters (``for (i <- xs if i > 0)``) and match-case guards
+    # (``case n if n > 0``), each an inline decision point (flat, see
+    # ``_FLAT_BRANCH_KINDS``).
+    branch_kinds=frozenset({"if_expression", "guard"}),
+    # A for-comprehension is a loop for nesting/CCN purposes even though it
+    # desugars to flatMap: this matches developer intuition.
+    loop_kinds=frozenset({"for_expression", "while_expression", "do_while_expression"}),
+    try_kinds=frozenset({"try_expression"}),
+    # ``catch`` takes a ``case_block``; each handler is a ``case_clause`` that
+    # already counts via ``case_kinds`` (per-handler parity with Python's
+    # per-``except`` counting). Mapping ``catch_clause`` too would double-count
+    # every single-case catch.
+    catch_kinds=frozenset(),
+    switch_kinds=frozenset({"match_expression"}),
+    case_kinds=frozenset({"case_clause"}),
+    boolean_operator_kinds=frozenset(),
+    # ``&&`` / ``||`` are ``operator_identifier`` tokens inside a generic
+    # ``infix_expression``, the text sniff. The sniffer also matches ``and`` /
+    # ``or`` operator text (ScalaTest matcher DSL combinators), which are
+    # genuine boolean combinators when used infix, so the shared behavior is
+    # acceptable here.
+    boolean_operator_text_kinds=frozenset({"infix_expression"}),
+    # ``object`` (singletons / companions), ``trait``, and Scala 3 ``enum``
+    # bodies all group methods the same way a class body does; case classes
+    # are plain ``class_definition``s.
+    class_kinds=frozenset(
+        {"class_definition", "object_definition", "trait_definition", "enum_definition"}
+    ),
+    # Self-type aliases (``self =>``) are skipped: bare and aliased implicit
+    # receivers degrade to the LCOM4 "no signal" valve, same documented limit
+    # as Kotlin.
+    self_identifiers=frozenset({"this"}),
+    # ``field_expression`` (fields ``value`` / ``field``) covers both
+    # ``this.field`` and ``this.method()`` (the latter nests one inside a
+    # ``call_expression``).
+    member_access_kinds=frozenset({"field_expression"}),
+    # Plain ``assert(...)`` and munit/JUnit-style ``assertEquals(...)`` are
+    # calls; ScalaTest's infix DSL (``x shouldBe y``) has no assert-prefixed
+    # callee and is a documented gap (under-signal, safe).
+    assert_call_kinds=frozenset({"call_expression"}),
+    # ``instance_expression`` is ``new Foo(...)``, needed so a constructor at
+    # an I/O boundary inside a loop is caught (JVM interop, as in Java).
+    call_kinds=frozenset({"call_expression", "instance_expression"}),
+    # Scala has no async syntax; the perf dialect's ``is_async_fn`` sniffs a
+    # declared ``Future[...]`` return type instead.
+)
+
+
 LANGUAGE_MAPS: dict[str, LanguageNodeMap] = {
     "python": _PY,
     "typescript": _TS,
@@ -551,6 +614,7 @@ LANGUAGE_MAPS: dict[str, LanguageNodeMap] = {
     "cpp": _CPP,
     "csharp": _CSHARP,
     "dart": _DART,
+    "scala": _SCALA,
 }
 
 

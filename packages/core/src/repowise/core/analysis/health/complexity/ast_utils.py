@@ -64,6 +64,12 @@ def _find_assigned_lambda_name(node: Node) -> str | None:
             name = parent.child_by_field_name("name")
             if name is not None and name.text is not None:
                 return _node_text(name)
+        if parent.type in {"val_definition", "var_definition"}:
+            # Scala ``val f = (x: Int) => ...``: the bound name is the
+            # ``pattern`` field (only simple identifier patterns are named).
+            pattern = parent.child_by_field_name("pattern")
+            if pattern is not None and pattern.type == "identifier" and pattern.text is not None:
+                return _node_text(pattern)
         if parent.type in {"assignment_expression", "assignment_pattern"}:
             left = parent.child_by_field_name("left")
             if left is None:
