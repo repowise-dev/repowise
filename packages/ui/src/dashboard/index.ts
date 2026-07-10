@@ -5,6 +5,7 @@ export * from "./commits-mini";
 export * from "./decisions-timeline";
 export * from "./health-overview-card";
 export * from "./savings-mini";
+export * from "./index-storage-mini";
 export * from "./dependency-heatmap";
 export * from "./execution-flows-panel";
 export * from "./health-score-ring";

@@ -131,3 +131,22 @@ export function formatProgress(done: number, total: number): string {
   const pct = total > 0 ? Math.round((done / total) * 100) : 0;
   return `${formatNumber(done)} / ${formatNumber(total)} (${pct}%)`;
 }
+
+/** Format a ratio as a percentage: 0.873 → "87%", 1 → "100%" */
+export function formatPercent(ratio: number, decimals = 0): string {
+  if (!Number.isFinite(ratio)) return "—";
+  const pct = ratio * 100;
+  if (decimals <= 0) return `${Math.round(pct)}%`;
+  return `${pct.toFixed(decimals)}%`;
+}
+
+/** Format byte counts: 1536 → "1.5 KB", 1048576 → "1.0 MB" */
+export function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return "—";
+  if (bytes === 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"] as const;
+  const exponent = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  const value = bytes / 1024 ** exponent;
+  const formatted = value >= 10 || exponent === 0 ? value.toFixed(0) : value.toFixed(1);
+  return `${formatted} ${units[exponent]}`;
+}

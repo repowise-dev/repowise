@@ -9,6 +9,7 @@ decisions slice, savings headline, and health KPIs.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sqlite3
 from pathlib import Path
@@ -35,6 +36,18 @@ router = APIRouter(
     tags=["overview"],
     dependencies=[Depends(verify_api_key)],
 )
+
+
+def _index_storage_bytes(repowise_dir: Path) -> int:
+    """Total on-disk size of a repo's ``.repowise/`` directory."""
+    if not repowise_dir.is_dir():
+        return 0
+    total = 0
+    for path in repowise_dir.rglob("*"):
+        if path.is_file():
+            with contextlib.suppress(OSError):
+                total += path.stat().st_size
+    return total
 
 
 def _decision_slim(d: Any) -> dict:
@@ -378,6 +391,7 @@ async def overview_summary(
         last_sync_at = repo.updated_at.isoformat()
 
     savings = await _savings_headline(repo.local_path)
+    repowise_dir = Path(repo.local_path) / ".repowise" if repo.local_path else Path(".repowise")
 
     return {
         "repo": {
@@ -436,5 +450,6 @@ async def overview_summary(
             "last_sync_model": last_sync_model,
             "active_job_id": active_job_id,
             "page_count": total_pages,
+            "index_storage_bytes": _index_storage_bytes(repowise_dir),
         },
     }

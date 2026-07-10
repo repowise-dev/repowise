@@ -9,6 +9,7 @@ job-only derivation reported "never synced" even when the index was current.
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 
 import pytest
 from httpx import AsyncClient
@@ -77,3 +78,17 @@ async def test_completed_sync_job_wins_over_fallback(client: AsyncClient, app) -
 
     assert body["sync"]["last_sync_at"] == finished.isoformat()
     assert body["sync"]["last_sync_at"] != body["repo"]["updated_at"]
+
+
+@pytest.mark.asyncio
+async def test_sync_includes_index_storage_bytes(client: AsyncClient, tmp_path) -> None:
+    """overview-summary reports total .repowise on-disk footprint."""
+    repo = await create_test_repo(client, tmp_path)
+    repo_dir = Path(repo["local_path"])
+    repowise = repo_dir / ".repowise"
+    repowise.mkdir()
+    (repowise / "wiki.db").write_bytes(b"x" * 100)
+
+    resp = await client.get(f"/api/repos/{repo['id']}/overview-summary")
+    assert resp.status_code == 200
+    assert resp.json()["sync"]["index_storage_bytes"] == 100

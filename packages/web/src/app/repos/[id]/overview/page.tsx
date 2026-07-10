@@ -14,6 +14,7 @@ import { AttentionPanel } from "@repowise-dev/ui/dashboard/attention-panel";
 import { KpiStrip, kpiDelta, type KpiItem } from "@repowise-dev/ui/dashboard/kpi-strip";
 import { OverviewGrid } from "@repowise-dev/ui/dashboard/overview-grid";
 import { SavingsMini } from "@repowise-dev/ui/dashboard/savings-mini";
+import { IndexStorageMini } from "@repowise-dev/ui/dashboard/index-storage-mini";
 import { LanguageDonut } from "@repowise-dev/ui/dashboard/language-donut";
 import { KnowledgeGraphCard } from "@repowise-dev/ui/dashboard/explore-cards";
 import { AskAnythingCardWrapper } from "@/components/overview/ask-anything-card-wrapper";
@@ -154,6 +155,13 @@ export default async function OverviewPage({ params }: Props) {
             rail={
               <>
                 {statsHighlights && <StatsTeaserCard repoId={id} data={statsHighlights} />}
+                <IndexStorageMini
+                  data={{
+                    index_storage_bytes: sync.index_storage_bytes ?? 0,
+                    page_count: sync.page_count,
+                    doc_coverage_pct: stats.doc_coverage_pct,
+                  }}
+                />
                 <SavingsMini data={summary.savings} repoId={id} />
                 <AttentionPanel items={attentionItems} repoId={id} previewCount={5} repoName={repo.name} />
               </>
