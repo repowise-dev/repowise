@@ -21,6 +21,7 @@
     "./dead-code": "./src/dead-code.ts",
     "./decisions": "./src/decisions.ts",
     "./external-systems": "./src/external-systems.ts",
+    "./feedback": "./src/feedback.ts",
     "./files": "./src/files.ts",
     "./git": "./src/git.ts",
     "./graph": "./src/graph.ts",

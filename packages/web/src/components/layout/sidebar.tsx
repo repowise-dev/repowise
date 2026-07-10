@@ -25,6 +25,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@repowise-dev/ui/ui/too
 import { ThemeToggle } from "@repowise-dev/ui/shared/theme-toggle";
 import { AddRepoDialog } from "@/components/repos/add-repo-dialog";
 import { VersionFooter } from "./version-footer";
+import { FeedbackButton } from "./feedback-button";
 import type { RepoResponse, WorkspaceResponse } from "@/lib/api/types";
 
 interface SidebarProps {
@@ -390,6 +391,7 @@ export function Sidebar({ repos = [], activeRepoId, workspace }: SidebarProps) {
       {!isIconOnly && (
         <div className="flex flex-col gap-3 border-t border-[var(--color-border-default)] px-4 py-3">
           <ThemeToggle className="w-full justify-between" />
+          <FeedbackButton />
           <VersionFooter />
         </div>
       )}

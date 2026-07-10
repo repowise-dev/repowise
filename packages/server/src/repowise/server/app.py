@@ -41,6 +41,7 @@ from repowise.server.routers import (
     dead_code,
     decisions,
     external_systems,
+    feedback,
     files,
     git,
     graph,
@@ -447,5 +448,6 @@ def create_app() -> FastAPI:
     app.include_router(stats.router)
     app.include_router(files.router)
     app.include_router(external_systems.router)
+    app.include_router(feedback.router)
 
     return app
