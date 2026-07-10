@@ -89,7 +89,7 @@ Each layer is queryable from the CLI, the MCP tools, and the local dashboard.
 | **◈ Git** | hotspots (churn × complexity) · ownership % · co-change pairs (hidden coupling) · bus factor · contributor profiles · module health · reviewer suggestions | Behavioral signals static analysis can't see |
 | **◈ Docs** | LLM-generated wiki per module/file · incremental on every commit · freshness + confidence scoring · hybrid RAG search (FTS + vector via RRF) · selectable wiki styles (comprehensive / reference / tutorial / caveman) | Stays current, rebuilt every commit |
 | **◈ Decisions** | architectural decisions mined from **8 sources**, evidence-backed (verified / fuzzy / unverified), linked to graph nodes, connected by `supersedes`/`refines`/`conflicts_with` edges, tracked for staleness | **★ Captured nowhere else** |
-| **★ Code Health** | **25 deterministic markers**, 1–10 per file · **three signals: defect risk · maintainability · performance** · coverage ingestion · trend alerts · **concrete graph-aware refactoring plans** (Extract Class / Helper / Move Method / Break Cycle / Split File) · **zero LLM, <30s** | **★ Defect-validated, with the fix attached. Our edge** |
+| **★ Code Health** | **25 deterministic markers**, 1–10 per file · **three signals: defect risk · maintainability · performance** · coverage ingestion · trend alerts · **concrete graph-aware refactoring plans** (Extract Class / Helper / Move Method / Break Cycle / Split File / Extract Method) · **zero LLM, <30s** | **★ Defect-validated, with the fix attached. Our edge** |
 
 Full deep-dive on every layer (graph, git, docs, decisions, hooks, auto-sync,
 dead code, CLAUDE.md generation): **[docs/INTELLIGENCE_LAYERS.md →](docs/INTELLIGENCE_LAYERS.md)**
@@ -105,7 +105,7 @@ concentrates through the graph and git history, then **fix** it with a concrete
 refactoring plan your agent can execute.
 
 <div align="center">
-<img src=".github/assets/health-loop.svg" alt="repowise code-health loop: 25 deterministic markers fan into three signals (defect risk, maintainability, performance), the graph and git history locate where risk concentrates, and refactoring intelligence emits concrete plans (Extract Class, Extract Helper, Move Method, Break Cycle, Split File) your agent executes" width="100%" />
+<img src=".github/assets/health-loop.svg" alt="repowise code-health loop: 25 deterministic markers fan into three signals (defect risk, maintainability, performance), the graph and git history locate where risk concentrates, and refactoring intelligence emits concrete plans (Extract Class, Extract Helper, Move Method, Break Cycle, Split File, Extract Method) your agent executes" width="100%" />
 </div>
 
 repowise scores **every file 1–10** from **25 deterministic markers**:
@@ -167,13 +167,17 @@ A health score tells you a file is in trouble. Every other tool stops there, or
 prints the same static sentence for every god class in every repo. repowise names
 the **specific** fix, computed deterministically from the graph, the class model,
 and git co-change: **Extract Class**, **Extract Helper**, **Move Method**,
-**Break Cycle**, and **Split File**. Each plan names the exact methods, edges, or
-symbols that move, and carries its **blast radius** (the callers and co-changing
-files that must move with it). Ranking is **graph-aware** (`impact × call-graph
-centrality × blast radius`), so a fix on a central hub outranks the same fix on a
-leaf. That is the wedge: CodeScene's AI refactoring stays within a single
-function, where repowise names the cross-file move and the dependents it ripples
-to.
+**Break Cycle**, **Split File**, and **Extract Method**. Each plan names the
+exact methods, edges, or symbols that move, and carries its **blast radius**
+(the callers and co-changing files that must move with it). Extract Method goes
+deepest: an intra-procedural dataflow pass (CFG + def/use + reaching
+definitions) finds the exact line span to lift out of an oversized method and
+infers the helper's parameters and return value, so the plan is
+behavior-preserving by construction. Ranking is **graph-aware** (`impact ×
+call-graph centrality × blast radius`), so a fix on a central hub outranks the
+same fix on a leaf. That is the wedge: CodeScene's AI refactoring stays within a
+single function, where repowise names the cross-file move and the dependents it
+ripples to.
 
 The deterministic plan is the product; an optional LLM step (never in the
 indexing path, only on explicit request) expands any plan into generated code
@@ -493,6 +497,7 @@ Worked example (*"Add rate limiting to all API endpoints"* in 5 calls instead of
 | Health trend + declining alerts | ✅ rolling snapshots | ❌ | ❌ | ❌ | ✅ |
 | Refactoring recommendations | ✅ deterministic | ❌ | ❌ | ❌ | ✅ |
 | Concrete cross-file refactoring plans (Extract Class / Move Method / Break Cycle) | ✅ graph-aware + blast radius | ❌ | ❌ | ❌ | ⚠️ within-function only |
+| Dataflow-verified within-function plans (Extract Method with inferred signature) | ✅ CFG + reaching definitions | ❌ | ❌ | ❌ | ⚠️ LLM-generated, unverified |
 | Git intelligence (hotspots, ownership, co-change) | ✅ | ❌ | ❌ | ❌ | ✅ |
 | Bus factor analysis | ✅ | ❌ | ❌ | ❌ | ✅ |
 | Dead code detection | ✅ | ❌ | ❌ | ❌ | ❌ |

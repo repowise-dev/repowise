@@ -3,8 +3,9 @@
 This subpackage builds, per function, a control-flow graph (CFG), a def/use
 classification, and reaching-definitions sets -- the semantic foundation for
 dataflow-aware refactoring signals (Extract Method) and cross-layer consumers.
-It is deliberately standalone: nothing here is wired into the health engine yet,
-so the layer can be built and measured in isolation before it joins a hot path.
+The health engine consumes it through :class:`facts.FileDataflowCache` (one
+shared, lazily parsed object per file) for the Extract Method detector and the
+perf-promotion pass; request-time callers use :func:`lookup.function_analysis_at`.
 
 **Layering (language-agnostic core, per-language dialects).**
 
@@ -17,6 +18,11 @@ so the layer can be built and measured in isolation before it joins a hot path.
   zero core edits to add one.
 - :mod:`analyze` -- composes the three stages behind one call.
 - :mod:`gating` -- the flagged-only predicate and the CFG-only file harness.
+- :mod:`facts` -- the shared per-file service (parse once, analyze each
+  function once, every consumer reads the same object) and the curated
+  :class:`DataflowFacts` summary downstream surfaces derive from an analysis.
+- :mod:`lookup` -- point lookup of one function's analysis from live source
+  (the request-time entry point for callers outside the health pass).
 
 **Performance contract (load-bearing).** Full dataflow is built ONLY for a
 function a structural biomarker already flagged (``large_method`` /
@@ -46,6 +52,7 @@ from .dialects.base import (
     StatementDefUse,
     get_defuse_dialect,
 )
+from .facts import DataflowFacts, DeadStore, FileDataflow, FileDataflowCache, derive_facts
 from .gating import (
     CFGPassStats,
     FileCFGResult,
@@ -54,6 +61,7 @@ from .gating import (
     is_flagged,
     is_flagged_function,
 )
+from .lookup import function_analysis_at
 from .reaching import ReachingDefinitions, compute_reaching
 from .slice import Extraction, find_extractions
 
@@ -63,12 +71,16 @@ __all__ = [
     "BasicBlock",
     "BlockDefUse",
     "CFGPassStats",
+    "DataflowFacts",
+    "DeadStore",
     "DefUseDialect",
     "Definition",
     "Extraction",
     "FileAnalysisResult",
     "FileAnalysisStats",
     "FileCFGResult",
+    "FileDataflow",
+    "FileDataflowCache",
     "FunctionAnalysis",
     "FunctionCFG",
     "FunctionDefUse",
@@ -82,7 +94,9 @@ __all__ = [
     "build_cfgs_for_file",
     "compute_def_use",
     "compute_reaching",
+    "derive_facts",
     "find_extractions",
+    "function_analysis_at",
     "get_defuse_dialect",
     "is_flagged",
     "is_flagged_function",

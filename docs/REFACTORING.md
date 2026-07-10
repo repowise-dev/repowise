@@ -23,7 +23,7 @@ LLM layer (code generation) is a separate, strictly opt-in step ([below](#opt-in
 <img src="../.github/assets/health-loop.svg" alt="repowise code-health loop: markers fan into three signals, the graph and git history locate risk, and refactoring intelligence emits concrete plans an agent executes" width="100%" />
 </div>
 
-## The five detectors
+## The six detectors
 
 Each detector is a self-contained module registered into a registry (adding a
 refactoring type is a new file + a registry entry, like the marker registry).
@@ -37,6 +37,7 @@ one**, and produces stable-sorted, deterministic output.
 | **Move Method** | A feature-envy method and the class it actually belongs to. | The method's entity set (fields/methods it touches, class-qualified) is built from the call graph; Jaccard distance to each class. Fires only when a foreign class is clearly nearer than its own. |
 | **Break Cycle** | The minimal set of import edges to invert to break a dependency cycle. | A strongly-connected component in the import graph → greedy minimum feedback arc set (MFAS) over the real edges picks the smallest cut. |
 | **Split File** | The cohesive files an oversized module should decompose into: which top-level symbols move to each new file, plus the import edits in every dependent. | Community detection (Leiden, Louvain fallback) over a weighted intra-file symbol graph (direct calls, shared local helpers, shared foreign modules); emits only when the partition's **modularity** clears a decomposability gate. The file-level analog of Extract Class. |
+| **Extract Method** | The exact line span to lift out of an oversized/complex method, with the helper's inferred signature: the parameters it needs (IN) and the value it must return (OUT). | Intra-procedural dataflow (CFG + def/use + reaching definitions) over methods a `large_method` / `brain_method` / `complex_method` finding already flagged. Only single-exit, statement-boundary spans that remove real complexity qualify; IN/OUT comes from liveness over the def/use facts, so the suggested helper is behavior-preserving by construction. |
 
 The algorithms are derived from public academic literature (Fokaefs-Tsantalis
 HAC for class splitting, Bavota feature-envy distance, MFAS for cycle breaking,
@@ -57,9 +58,9 @@ web).
 
 | Field | Meaning |
 |-------|---------|
-| `refactoring_type` | `extract_class` \| `extract_helper` \| `move_method` \| `break_cycle` \| `split_file` |
+| `refactoring_type` | `extract_class` \| `extract_helper` \| `move_method` \| `break_cycle` \| `split_file` \| `extract_method` |
 | `file_path`, `target_symbol`, `line_start`, `line_end` | What the refactoring acts on. |
-| `plan` | The concrete, type-specific plan: the split `groups` (methods + fields), the move `{method, from_class, to_class}`, the clone `occurrences` + `suggested_site`, the cycle + `cut_edges`, or the file-split `groups` (`{name, symbols, suggested_file}`) + `residual` core + `shim_required`. |
+| `plan` | The concrete, type-specific plan: the split `groups` (methods + fields), the move `{method, from_class, to_class}`, the clone `occurrences` + `suggested_site`, the cycle + `cut_edges`, the file-split `groups` (`{name, symbols, suggested_file}`) + `residual` core + `shim_required`, or the method-extraction `span` + `params` + `returns`. |
 | `evidence` | The signals that justify it: `lcom4`, `wmc`, clone token/line counts + `co_change_count`, Jaccard distances, cycle size, or the split's `modularity` + `symbol_count` + `group_count` + intra/cut edge counts. |
 | `impact_delta` | The health score the refactoring would recover (the deduction of the marker it answers); `0` for the graph-native types that answer no marker. |
 | `effort_bucket` | `S` \| `M` \| `L` \| `XL`, from the target's size. |

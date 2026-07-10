@@ -46,7 +46,6 @@ Extract Method consumer uses, keyed on the perf hit instead of a structural smel
 from __future__ import annotations
 
 from dataclasses import replace
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -57,6 +56,7 @@ if TYPE_CHECKING:
     from ..complexity import FileComplexity
     from ..dataflow.cfg import CFG
     from ..dataflow.defuse import FunctionDefUse
+    from ..dataflow.facts import FileDataflowCache
     from ..dataflow.reaching import ReachingDefinitions
 
 log = structlog.get_logger(__name__)
@@ -72,17 +72,29 @@ log = structlog.get_logger(__name__)
 PROMOTABLE_KINDS: frozenset[str] = frozenset({"serial_await_in_loop", "nested_loop_quadratic"})
 
 
-def apply_perf_promotions(walked: Iterable[tuple[Any, FileComplexity]]) -> None:
+def apply_perf_promotions(
+    walked: Iterable[tuple[Any, FileComplexity]],
+    dataflow: FileDataflowCache | None = None,
+) -> None:
     """Mark provably-independent advisory perf hits ``promoted``, in place.
 
     Mirrors ``engine._apply_crossfn_perf``: it mutates each file's ``perf_hits``
     in place and is fully failure-isolated, so a promotion hiccup never blocks
     the health report. Must run AFTER the graph-dependent perf passes so the
     centrality-gated ``nested_loop_quadratic`` hits are present.
+
+    *dataflow* is the pass-wide :class:`FileDataflowCache` the engine threads
+    through every dataflow consumer, so a file this pass analyzes is parsed at
+    most once across the whole health pass. A private cache is created when the
+    caller supplies none (tests, standalone use).
     """
+    if dataflow is None:
+        from ..dataflow.facts import FileDataflowCache
+
+        dataflow = FileDataflowCache()
     for pf, fcx in walked:
         try:
-            promoted_lines = _promotable_lines_for_file(pf, fcx)
+            promoted_lines = _promotable_lines_for_file(pf, fcx, dataflow)
         except Exception as exc:  # never let a single file break the pass
             log.debug(
                 "perf_promotion_failed", path=getattr(pf.file_info, "path", "?"), error=str(exc)
@@ -98,50 +110,30 @@ def apply_perf_promotions(walked: Iterable[tuple[Any, FileComplexity]]) -> None:
         ]
 
 
-def _promotable_lines_for_file(pf: Any, fcx: FileComplexity) -> set[int]:
+def _promotable_lines_for_file(
+    pf: Any, fcx: FileComplexity, dataflow: FileDataflowCache
+) -> set[int]:
     """The advisory-hit lines in *fcx* the dataflow proof clears for promotion.
 
     Returns an empty set (never raises up to the caller for the common cases)
     when the file has no promotable advisory hit, the language has no def/use
-    dialect, or the parse fails - the documented degrade-to-silence outcomes.
+    dialect, or the parse fails - the documented degrade-to-silence outcomes,
+    all realised inside the shared per-file service.
     """
     target_lines = {h.line for h in fcx.perf_hits if h.kind in PROMOTABLE_KINDS}
     if not target_lines:
         return set()
 
-    from ..complexity.ast_utils import _collect_function_nodes
-    from ..dataflow.analyze import analyze_function
-    from ..dataflow.dialects.base import get_defuse_dialect
-    from ..dataflow.parsing import parse_source
-
-    language = pf.file_info.language
-    if get_defuse_dialect(language) is None:
-        return set()  # no dialect -> silence (Python / TS / JS / Go only)
-
-    abs_path = pf.file_info.abs_path
-    try:
-        source = Path(abs_path).read_bytes()
-    except OSError:
-        return set()
-
-    parsed = parse_source(abs_path, language, source)
-    if parsed is None:
-        return set()
-    root, lmap = parsed
-
+    fd = dataflow.get(pf.file_info.abs_path, pf.file_info.language)
     promoted: set[int] = set()
-    for fn_node in _collect_function_nodes(root, lmap):
-        fstart = fn_node.start_point[0] + 1
-        fend = fn_node.end_point[0] + 1
-        hits_here = {ln for ln in target_lines if fstart <= ln <= fend}
-        if not hits_here:
-            continue
-        analyzed = analyze_function(fn_node, language, lmap)
-        if analyzed is None:
-            continue  # guard trip / non-convergence / no dialect -> stay advisory
-        cfg, def_use, reaching = analyzed
+    for analysis in fd.analyses_covering(target_lines):
+        # A guard trip / non-convergence never reaches here (the service
+        # returns no analysis for that function -> the hit stays advisory).
+        hits_here = {ln for ln in target_lines if analysis.start_line <= ln <= analysis.end_line}
         for line in hits_here:
-            if _loop_iterations_independent(cfg, def_use, reaching, line):
+            if _loop_iterations_independent(
+                analysis.cfg, analysis.def_use, analysis.reaching, line
+            ):
                 promoted.add(line)
     return promoted
 

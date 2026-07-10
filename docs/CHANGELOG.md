@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **One dataflow parse per file.** The health pass's dataflow consumers (the Extract Method detector and the perf advisory-to-asserted promotion) now share a single lazily parsed per-file analysis instead of each re-reading and re-parsing the file, making the health pass measurably faster on large repos with identical output. The new per-function dataflow summary and point-lookup APIs this introduces are the foundation for upcoming dataflow-backed surfaces.
+
 ### Added
 - **Worktrees just work.** `repowise init` and `repowise update` inside a linked git worktree now auto-detect the base checkout and seed the worktree's index from it, then catch up incrementally; no flags needed. `--seed-from <base>` remains as an explicit override and `--no-seed` forces a cold init. See [WORKTREES.md](WORKTREES.md). (#655 introduced the manual flag; this release makes it automatic.)
 
