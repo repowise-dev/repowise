@@ -124,13 +124,13 @@ def derive_facts(analysis: FunctionAnalysis) -> DataflowFacts:
     exit_defs = reaching.in_sets.get(cfg.exit_id, frozenset())
     flows_out = tuple(sorted({def_use.definitions[i].var for i in exit_defs if i >= n_param_seeds}))
 
-    unreachable = cfg.reachable_ids()
+    reachable = cfg.reachable_ids()
     unreachable_lines = tuple(
         sorted(
             {
                 stmt.start_line
                 for block in cfg.blocks
-                if block.id not in unreachable
+                if block.id not in reachable
                 for stmt in block.statements
             }
         )

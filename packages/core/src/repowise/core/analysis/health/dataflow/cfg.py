@@ -254,12 +254,20 @@ class _CFGBuilder:
     def _body_stmts(self, block: Node | None) -> list[Node]:
         """The statement sequence inside a container, unwrapping a single nested
         statement-container (Go wraps a ``block``'s statements in a
-        ``statement_list``; Python/TS expose them directly)."""
+        ``statement_list``; Python/TS expose them directly).
+
+        Comment nodes are dropped: tree-sitter emits them as named siblings in
+        the statement sequence (a trailing ``return x  # note`` puts the comment
+        *after* the return), and a comment threaded through ``_process_seq``
+        after a terminator would spawn a bogus ``unreachable`` block at the
+        terminator's own line. The substring match covers every grammar's
+        comment kinds (``comment`` / ``line_comment`` / ``block_comment`` /
+        ``doc_comment``), the same idiom nloc counting uses."""
         if block is None:
             return []
-        kids = list(block.named_children)
+        kids = [c for c in block.named_children if "comment" not in c.type]
         while len(kids) == 1 and kids[0].type in self.lmap.block_kinds:
-            kids = list(kids[0].named_children)
+            kids = [c for c in kids[0].named_children if "comment" not in c.type]
         return kids
 
     # -- the recursive walk ---------------------------------------------------
@@ -444,6 +452,13 @@ class _CFGBuilder:
         # try body (the protected region)
         body_entry = self._new()
         self._edge(cur, body_entry)
+        # The finally body runs on every path out of the protected region,
+        # including abrupt exits (a body / handler ``return`` or ``raise``)
+        # that never reach the normal join. Approximate with an edge from the
+        # region entry, mirroring the handler edges below; without it a
+        # ``finally`` after an always-returning body is flagged unreachable.
+        if finally_clause is not None:
+            self._edge(body_entry, normal_join)
         body_out = self._process_seq(
             self._body_stmts(try_node.child_by_field_name("body")), body_entry
         )

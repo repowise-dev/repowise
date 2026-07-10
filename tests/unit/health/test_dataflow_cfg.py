@@ -297,6 +297,149 @@ def test_unreachable_after_return():
     assert unreachable[0].id not in cfg.reachable_ids()
 
 
+# -- comments are not statements --------------------------------------------------
+# Tree-sitter emits a trailing comment as a named sibling *after* its statement,
+# so a comment following a terminator used to spawn a bogus ``unreachable`` block
+# at the terminator's own line. These mirror the shapes found in the wild.
+
+
+def _assert_all_reachable(cfg) -> None:
+    reachable = cfg.reachable_ids()
+    assert [b.id for b in cfg.blocks if b.id not in reachable] == []
+    assert _by_kind(cfg, "unreachable") == []
+
+
+def test_guarded_bare_return_with_trailing_comment():
+    cfg = _cfg(
+        """
+        def f(token):
+            if not token:
+                return  # no token configured, skip verification
+            check(token)
+        """
+    )
+    _assert_all_reachable(cfg)
+
+
+def test_trailing_return_after_if_chain_with_comment():
+    cfg = _cfg(
+        """
+        def f(kind, is_test):
+            if not kind:
+                return True
+            if kind == "test":
+                return is_test
+            return False  # config / doc: symbols do not qualify
+        """
+    )
+    _assert_all_reachable(cfg)
+
+
+def test_post_guard_body_stays_reachable():
+    cfg = _cfg(
+        """
+        def f(ids, titles):
+            if not ids:
+                return None  # no siblings to compare
+            shared = titles & ids
+            return len(shared) / len(ids)
+        """
+    )
+    _assert_all_reachable(cfg)
+
+
+def test_if_guarded_return_with_comment_mid_function():
+    cfg = _cfg(
+        """
+        def f(include, targets):
+            if not targets:
+                return None
+            if include and "source" in include:
+                return None  # source mode provides its own truncation info
+            return build(targets)
+        """
+    )
+    _assert_all_reachable(cfg)
+
+
+def test_standalone_comment_after_return_is_not_a_statement():
+    cfg = _cfg(
+        """
+        def f(x):
+            if x:
+                return 1
+                # explains the early exit
+            return 2
+        """
+    )
+    _assert_all_reachable(cfg)
+
+
+def test_ts_mid_return_chain_with_trailing_comment():
+    src = textwrap.dedent(
+        """
+        function f(scope, dead, hot) {
+            if (dead && hot) return "unified";
+            if (dead) return "dead";
+            if (hot) return "hotfiles";
+            return scope; // "architecture" | "full"
+        }
+        """
+    )
+    result = build_cfgs_for_file("m.ts", "typescript", src.encode(), flagged_only=False)
+    if result.stats.functions_seen == 0:
+        pytest.skip("tree-sitter language pack missing for typescript")
+    _assert_all_reachable(result.functions[0].cfg)
+
+
+def test_finally_reachable_when_body_and_handlers_return():
+    # The finally body runs on every path out of the protected region, even
+    # when the body and all handlers terminate; it must never be flagged.
+    cfg = _cfg(
+        """
+        def f(store):
+            try:
+                write(store)
+                return True
+            except Exception:
+                return False
+            finally:
+                store.close()
+        """
+    )
+    _assert_all_reachable(cfg)
+
+
+def test_finally_reachable_after_always_returning_try_without_except():
+    cfg = _cfg(
+        """
+        def f(store):
+            try:
+                return read(store)
+            finally:
+                store.close()
+        """
+    )
+    _assert_all_reachable(cfg)
+
+
+def test_true_unreachable_after_comment_still_flagged():
+    # A comment between the terminator and real dead code must not hide the
+    # dead code: the statement itself stays flagged.
+    cfg = _cfg(
+        """
+        def f():
+            return 1
+            # a note about the exit
+            dead = 2
+        """
+    )
+    unreachable = _by_kind(cfg, "unreachable")
+    assert len(unreachable) == 1
+    assert [s.kind for s in unreachable[0].statements] == ["expression_statement"]
+    assert unreachable[0].statements[0].start_line == 5
+
+
 # -- determinism ----------------------------------------------------------------
 
 
