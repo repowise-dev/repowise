@@ -90,8 +90,9 @@ def _print_network_startup(
     help=(
         "Override which tools are exposed. A comma-separated list is an "
         "explicit allowlist; prefix names with + or - to adjust the default "
-        "set (e.g. '+get_dependency_path,-get_dead_code'). Overrides the "
-        "mcp.tools config block."
+        "set (e.g. '+get_dependency_path,-get_dead_code'); 'lean' selects "
+        "the five-tool agent-lean profile. Overrides the mcp.tools config "
+        "block."
     ),
 )
 @click.option(
@@ -126,6 +127,7 @@ def mcp_command(
         repowise mcp                     # stdio, current directory
         repowise mcp /path/to/repo       # stdio, specific repo
         repowise mcp --tools +get_execution_flows  # default set plus one
+        repowise mcp --tools lean        # five-tool agent-lean profile
         repowise mcp --all               # every available tool
         repowise mcp --transport streamable-http  # HTTP on port 7338
     """
