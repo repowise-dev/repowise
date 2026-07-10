@@ -20,13 +20,28 @@ interface Branch {
   readonly commit?: string;
 }
 
+/** One changed path as reported by the git extension. */
+interface Change {
+  readonly uri: vscode.Uri;
+  readonly originalUri: vscode.Uri;
+  /** Numeric git status; not interpreted here, every change counts as touched. */
+  readonly status: number;
+}
+
 interface RepositoryState {
   readonly HEAD?: Branch;
+  /** Staged changes (the index). */
+  readonly indexChanges: readonly Change[];
+  /** Unstaged working-tree changes. */
+  readonly workingTreeChanges: readonly Change[];
   readonly onDidChange: vscode.Event<void>;
 }
 
 interface Repository {
+  readonly rootUri: vscode.Uri;
   readonly state: RepositoryState;
+  /** `git diff ref1 ref2`, name+status list. Absent on older git extensions. */
+  diffBetween?(ref1: string, ref2: string): Promise<Change[]>;
 }
 
 interface GitAPI {
@@ -163,4 +178,85 @@ export async function onDidChangeHead(
     lastCommit = commit;
     cb();
   });
+}
+
+/** Uncommitted changes split by staging state; paths are repo-relative POSIX. */
+export interface ChangedFiles {
+  /** Staged (index) paths. */
+  staged: string[];
+  /** Unstaged working-tree paths. */
+  workingTree: string[];
+}
+
+/**
+ * Converts a changed-file URI to a repo-relative POSIX path (the shape the
+ * server addresses files by), or null when it resolves outside the root. The
+ * git extension only ever reports paths inside the repo, so the guard is
+ * defensive, not expected to fire.
+ */
+function toRepoRelative(root: string, uri: vscode.Uri): string | null {
+  const rel = path.relative(root, uri.fsPath);
+  if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel)) return null;
+  return rel.split(path.sep).join("/");
+}
+
+/** De-dupes and sorts a path list so a change-set has a stable signature. */
+function normalizePaths(root: string, changes: readonly Change[]): string[] {
+  const out = new Set<string>();
+  for (const change of changes) {
+    const rel = toRepoRelative(root, change.uri);
+    if (rel) out.add(rel);
+  }
+  return [...out].sort();
+}
+
+/**
+ * Uncommitted changes (staged and working tree), or null when git cannot serve
+ * the repository. An empty repo with a clean tree returns empty arrays, which is
+ * distinct from the null "git unavailable" case callers must not treat as clean.
+ */
+export async function getChangedFiles(
+  repoRoot: string,
+): Promise<ChangedFiles | null> {
+  const repo = await getRepository(repoRoot);
+  if (!repo) return null;
+  return {
+    staged: normalizePaths(repoRoot, repo.state.indexChanges),
+    workingTree: normalizePaths(repoRoot, repo.state.workingTreeChanges),
+  };
+}
+
+/**
+ * Files that differ between `base` and the checked-out HEAD (the committed work
+ * a push would carry), as repo-relative POSIX paths. Null when git is
+ * unavailable, the git extension is too old to expose `diffBetween`, or `base`
+ * cannot be resolved (e.g. never fetched); callers fall back to the working-tree
+ * set. Never throws.
+ */
+export async function getBranchChangedFiles(
+  repoRoot: string,
+  base: string,
+): Promise<string[] | null> {
+  const repo = await getRepository(repoRoot);
+  if (!repo?.diffBetween) return null;
+  try {
+    const changes = await repo.diffBetween(base, "HEAD");
+    return normalizePaths(repoRoot, changes);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Invokes `cb` on any repository state change (staging, working-tree edits, HEAD
+ * moves). Unlike {@link onDidChangeHead} this does not filter, so callers must
+ * debounce. Returns a no-op disposable when git is unavailable.
+ */
+export async function onDidChangeRepoState(
+  repoRoot: string,
+  cb: () => void,
+): Promise<vscode.Disposable> {
+  const repo = await getRepository(repoRoot);
+  if (!repo) return { dispose: () => {} };
+  return repo.state.onDidChange(() => cb());
 }

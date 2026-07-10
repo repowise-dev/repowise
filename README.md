@@ -308,9 +308,27 @@ pattern scan) · **Costs** · **Workspace**
 
 ---
 
+## VS Code extension
+
+The **Repowise** extension puts the index where code gets written: know what
+your change breaks before you push (your riskiest files ranked, what is
+downstream, forgotten companion files, missing tests, suggested reviewers),
+health signals in the gutter and status bar, callers and ownership on hover,
+refactoring plans as CodeLens, and the full dashboards (health, architecture,
+knowledge graph, decisions, docs) inside the editor. One install also registers
+the Repowise MCP server with VS Code, so the same local index serves both you
+and your AI agent. Quiet by default, everything toggleable, nothing leaves your
+machine.
+
+Install from the Marketplace (search **Repowise**) or Open VSX, then run
+**Repowise: Set Up This Repository**. Full guide in
+[docs/VSCODE.md →](docs/VSCODE.md).
+
+---
+
 ## Supported languages
 
-**15 languages parsed to AST · 9 at the Full tier · framework-aware across all of them.**
+**15 languages parsed to AST · 10 at the Full tier · framework-aware across all of them.**
 
 <p>
   <strong>Full tier &nbsp;</strong>
@@ -323,24 +341,26 @@ pattern scan) · **Costs** · **Workspace**
   <img src="https://img.shields.io/badge/Rust-000000?style=flat-square&logo=rust&logoColor=white" alt="Rust" />
   <img src="https://img.shields.io/badge/C++-00599C?style=flat-square&logo=cplusplus&logoColor=white" alt="C++" />
   <img src="https://img.shields.io/badge/C%23-512BD4?style=flat-square&logo=csharp&logoColor=white" alt="C#" />
+  <img src="https://img.shields.io/badge/Scala-DC322F?style=flat-square&logo=scala&logoColor=white" alt="Scala" />
 </p>
 <p>
   <strong>Good tier &nbsp;</strong>
   <img src="https://img.shields.io/badge/C-A8B9CC?style=flat-square&logo=c&logoColor=black" alt="C" />
   <img src="https://img.shields.io/badge/Ruby-CC342D?style=flat-square&logo=ruby&logoColor=white" alt="Ruby" />
   <img src="https://img.shields.io/badge/Swift-F05138?style=flat-square&logo=swift&logoColor=white" alt="Swift" />
-  <img src="https://img.shields.io/badge/Scala-DC322F?style=flat-square&logo=scala&logoColor=white" alt="Scala" />
   <img src="https://img.shields.io/badge/PHP-777BB4?style=flat-square&logo=php&logoColor=white" alt="PHP" />
+  <img src="https://img.shields.io/badge/Dart-0175C2?style=flat-square&logo=dart&logoColor=white" alt="Dart" />
   &nbsp;<strong>· Partial &nbsp;</strong>
   <img src="https://img.shields.io/badge/Luau-00A2FF?style=flat-square&logo=lua&logoColor=white" alt="Luau" />
 </p>
 
 | Tier | Languages | What works |
 |------|-----------|------------|
-| **Full** | Python · TypeScript · JavaScript · Java · Kotlin · Go · Rust · C++ · C# | AST parsing, import resolution, named bindings, call resolution, heritage extraction, docstrings; multi-project workspace resolvers; framework-aware edges; per-language dynamic-hint extractors; **code-health markers** |
-| **Good** | C · Ruby · Swift · Scala · PHP | AST parsing, import resolution, named bindings, call resolution, heritage (mixins / derive / extensions / traits), docstrings; dedicated workspace-aware resolvers; Rails / Laravel / TYPO3 framework edges; dynamic-hint extractors |
-| **Config / data** | OpenAPI · Protobuf · GraphQL · Dockerfile · Makefile · YAML · JSON · TOML · SQL · Terraform · Markdown · Shell | Included in the file tree; special handlers extract endpoints / targets where applicable |
-| **Git-blame only** | Objective-C · Elixir · Erlang · Dart · Zig · Julia · Clojure · Haskell · OCaml · F# · … | Tracked in git history (blame, hotspots, co-change); no AST parsing yet |
+| **Full** | Python · TypeScript · JavaScript · Java · Kotlin · Go · Rust · C++ · C# · Scala | AST parsing, import resolution, named bindings, call resolution, heritage extraction, docstrings; multi-project workspace resolvers; framework-aware edges; per-language dynamic-hint extractors; **code-health markers** |
+| **Good** | C · Ruby · Swift · PHP · Dart | AST parsing, import resolution, named bindings, call resolution, heritage (mixins / derive / extensions / traits), docstrings; dedicated workspace-aware resolvers; Rails / Laravel / TYPO3 / Flutter framework edges; dynamic-hint extractors; Dart adds code-health + perf markers |
+| **SQL / dbt** | `.sql` via sqlglot (postgres, mysql, tsql, clickhouse, ...) | Tables / views / functions / procedures as symbols with wiki pages; dbt projects get real `ref()` / `source()` lineage edges: model-level DAG, hotspots, co-change, ownership |
+| **Config / data** | OpenAPI · Protobuf · GraphQL · Dockerfile · Makefile · YAML · JSON · TOML · Terraform · Markdown · Shell | Included in the file tree; special handlers extract endpoints / targets where applicable |
+| **Git-blame only** | Objective-C · Elixir · Erlang · Zig · Julia · Clojure · Haskell · OCaml · F# · … | Tracked in git history (blame, hotspots, co-change); no AST parsing yet |
 
 Adding a language needs **one `.scm` query file and one config entry**, with no
 changes to the parser core. Full per-language matrix, code-health checklist, and
@@ -360,67 +380,71 @@ the contributor recipe: **[docs/LANGUAGE_SUPPORT.md →](docs/LANGUAGE_SUPPORT.m
 
 ---
 
-## Quickstart
+<a id="quickstart"></a>
+
+## Quick start (under 5 minutes, no API key)
+
+*Index once, and give your agent the dependency graph + git history + code-health
+— not 40 greps.*
+
+**1. Install**
 
 ```bash
-pip install repowise          # or: uv tool install repowise
+pip install repowise          # Windows: python -m pip install repowise
+repowise --version            # -> repowise, version 0.27.x
 ```
 
-### Single repo
+**2. Index your repo — no LLM, no key**
 
 ```bash
-cd your-project
-repowise init        # builds all five intelligence layers (one-time)
-repowise serve       # starts MCP server + local dashboard
+cd /path/to/your/repo
+repowise init --index-only -y
 ```
 
-### Multi-repo workspace
+Builds the dependency graph, git history, code-health score, and dead-code findings
+in seconds. (Want the generated wiki + semantic search? Use
+`repowise init --provider gemini|anthropic|openai` with the matching key.)
+
+**3. Connect your agent** — the MCP server is `repowise mcp`, served from the repo dir.
+
+<details><summary><b>Claude Code</b></summary>
 
 ```bash
-cd my-workspace/     # parent dir containing backend/, frontend/, shared-libs/
-repowise init .      # scans for git repos, indexes each, runs cross-repo analysis
-repowise serve       # workspace dashboard, Live System Map + per-repo pages
-```
-
-The workspace **Live System Map** renders your services and their typed
-relationships (HTTP / gRPC / events / package deps / co-change) as a
-code-derived, always-current diagram, health-colored, filterable, with
-drill-down to the underlying contracts. See
-[Workspaces](docs/WORKSPACES.md#live-system-map).
-
-`repowise init` automatically registers the MCP server, installs a PostToolUse
-hook in `~/.claude/settings.json`, generates `.mcp.json` at the project root, and
-offers a post-commit hook that keeps everything in sync. If the Codex CLI is
-installed and logged in, interactive runs also offer to write project-local
-`.codex/config.toml`, `.codex/hooks.json`, and a managed `AGENTS.md`;
-non-interactive runs require `--codex`. Skip Codex setup with `--no-codex`; force or
-skip `AGENTS.md` with `--agents` / `--no-agents`.
-
-**Claude Code plugin.** Prefer a one-command setup? Install the plugin from the
-marketplace: it registers the MCP server and hook and adds `/repowise:*` slash
-commands (`init`, `health`, `risk`, `dead-code`, `decision`, …):
-
-```text
+# Plugin (adds 9 tools + slash commands + skills):
 /plugin marketplace add repowise-dev/repowise
 /plugin install repowise@repowise
+
+# …or wire the MCP server directly:
+claude mcp add repowise -- repowise mcp
 ```
-
-To add the MCP server to another editor manually:
-
+Or commit a project `.mcp.json`:
 ```json
-{
-  "mcpServers": {
-    "repowise": { "command": "repowise", "args": ["mcp", "/path/to/your/project"] }
-  }
-}
+{ "mcpServers": { "repowise": { "command": "repowise", "args": ["mcp"] } } }
 ```
+</details>
 
-> **Init time:** the graph, git, dead-code, and code-health layers build in
-> minutes with **zero LLM calls**; run `repowise init --index-only` for a
-> queryable index almost immediately. The one-time cost is the documentation
-> layer (LLM-generated wiki pages, can run in the background). After that, every
-> commit-triggered update takes **under 30 seconds** and only regenerates the
-> pages your change touched.
+<details><summary><b>Codex CLI</b></summary>
+
+Add to `~/.codex/config.toml`:
+```toml
+[mcp_servers.repowise]
+command = "repowise"
+args = ["mcp"]
+```
+Or: `codex mcp add repowise -- repowise mcp`
+</details>
+
+**4. First real call.** Ask your agent: *"Use repowise `get_overview` to summarize this
+repo,"* or *"`get_context` for `src/auth.py`."* You get graph-grounded architecture and
+per-file triage instead of a flurry of greps. ✅
+
+> `get_overview` / `get_context` work in **index-only mode** (no key) — they synthesize
+> from the graph/git/health layers. `search_codebase` / `get_answer` / `get_why` need
+> full mode (the generated wiki).
+
+Ready for the full picture? Run `repowise init --provider …` for the generated wiki +
+semantic search, or skip key management entirely with the hosted tier at
+[repowise.dev](https://www.repowise.dev). Full walkthrough: [docs/QUICKSTART.md](docs/QUICKSTART.md).
 
 **Docs:** [Quickstart](docs/QUICKSTART.md) · [User Guide](docs/USER_GUIDE.md) · [CLI Reference](docs/CLI_REFERENCE.md) · [Codex](docs/CODEX.md) · [MCP Tools](docs/MCP_TOOLS.md) · [Distill](docs/DISTILL.md) · [Workspaces](docs/WORKSPACES.md) · [Auto-Sync](docs/AUTO_SYNC.md) · [Upgrading](docs/UPGRADING.md) · [Config](docs/CONFIG.md)
 
@@ -520,7 +544,7 @@ pricing: **[docs/COMMERCIAL.md](docs/COMMERCIAL.md)** · [Get in touch →](http
 repowise init [PATH]      # index codebase (one-time; --index-only skips LLM)
 repowise serve [PATH]     # MCP server + local dashboard
 repowise update [PATH]    # incremental update (<30s; --workspace for all repos)
-repowise query "<q>"      # ask anything from the terminal
+repowise search "<q>"     # search the wiki (fulltext / semantic / symbol)
 repowise health           # code-health KPIs + lowest-scoring files
 repowise risk main..HEAD  # score a branch / PR range for defect risk
 repowise dead-code        # unreachable-code report

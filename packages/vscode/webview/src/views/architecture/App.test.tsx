@@ -97,6 +97,8 @@ function makeHost(overrides: Partial<WebviewHost["api"]> = {}): WebviewHost {
     copyText: vi.fn(),
     openExternal: vi.fn(),
     openView: vi.fn(),
+    focusHome: vi.fn(),
+    openNativeSettings: vi.fn(),
     updateIndex: vi.fn(),
     setTheme: vi.fn(),
   };

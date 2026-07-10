@@ -5,6 +5,7 @@ import {
   FileText,
   CheckCircle2,
   AlertCircle,
+  Ban,
   Skull,
   Activity,
   RefreshCw,
@@ -15,12 +16,13 @@ import { listJobs } from "@/lib/api/jobs";
 import { getGitSummary } from "@/lib/api/git";
 import { getWorkspace } from "@/lib/api/workspace";
 import type { RepoStatsResponse, GitSummaryResponse } from "@/lib/api/types";
-import { StatCard } from "@repowise-dev/ui/shared/stat-card";
+import { MetricCard } from "@repowise-dev/ui/shared/metric-card";
 import { Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui/card";
 import { Badge } from "@repowise-dev/ui/ui/badge";
 import { EmptyState } from "@repowise-dev/ui/shared/empty-state";
 import { formatRelativeTime, formatNumber } from "@repowise-dev/ui/lib/format";
 import { DeleteRepoButton } from "@/components/repos/delete-repo-button";
+import { EmptyReposState } from "@/components/repos/empty-repos-state";
 import { LiveJobProgress } from "@/components/jobs/live-job-progress";
 
 export const metadata: Metadata = { title: "Dashboard" };
@@ -89,24 +91,24 @@ export default async function DashboardPage() {
 
       {/* Stat Cards */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <StatCard
+        <MetricCard
           label="Total Pages"
           value={formatNumber(totalPages)}
           icon={<FileText className="h-4 w-4" />}
         />
-        <StatCard
+        <MetricCard
           label="Fresh Pages"
           value={formatNumber(freshPages)}
           description="Confidence ≥ 80%"
           icon={<CheckCircle2 className="h-4 w-4 text-[var(--color-success)]" />}
         />
-        <StatCard
+        <MetricCard
           label="Stale Pages"
           value={formatNumber(stalePages)}
           description="Need regeneration"
           icon={<AlertCircle className="h-4 w-4 text-[var(--color-warning)]" />}
         />
-        <StatCard
+        <MetricCard
           label="Dead Code"
           value={deadCode > 0 ? formatNumber(deadCode) : "—"}
           description={deadCode > 0 ? "Unused exports" : "Analyze to detect"}
@@ -122,24 +124,8 @@ export default async function DashboardPage() {
           </CardHeader>
           <CardContent className="p-0">
             {repoList.length === 0 ? (
-              <div className="px-6 pb-6 space-y-2">
-                <EmptyState
-                  title="No repositories yet"
-                  description="Run repowise init on a repository to get started."
-                  icon={<FileText className="h-8 w-8" />}
-                />
-                <p className="text-center text-xs text-[var(--color-text-tertiary)]">
-                  New here? See the{" "}
-                  <a
-                    href="https://github.com/repowise-dev/repowise#quick-start"
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-[var(--color-accent-primary)] hover:underline"
-                  >
-                    setup guide
-                  </a>
-                  .
-                </p>
+              <div className="px-6 pb-6">
+                <EmptyReposState />
               </div>
             ) : (
               <ul className="divide-y divide-[var(--color-border-default)]">
@@ -217,7 +203,7 @@ export default async function DashboardPage() {
               <div className="px-6 pb-6">
                 <EmptyState
                   title="No jobs yet"
-                  description="Jobs appear after running repowise init or sync."
+                  description="Indexing and sync runs show up here, with live progress."
                   icon={<Activity className="h-8 w-8" />}
                 />
               </div>
@@ -251,6 +237,8 @@ export default async function DashboardPage() {
                               ? "outdated"
                               : job.status === "running"
                               ? "accent"
+                              : job.status === "cancelled"
+                              ? "stale"
                               : "default"
                           }
                         >
@@ -284,6 +272,9 @@ function JobStatusIcon({ status }: { status: string }) {
   }
   if (status === "failed") {
     return <AlertCircle className="h-4 w-4 shrink-0 text-[var(--color-error)]" />;
+  }
+  if (status === "cancelled") {
+    return <Ban className="h-4 w-4 shrink-0 text-[var(--color-text-tertiary)]" />;
   }
   return <Clock className="h-4 w-4 shrink-0 text-[var(--color-text-tertiary)]" />;
 }

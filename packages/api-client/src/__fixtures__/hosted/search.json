@@ -1,0 +1,28 @@
+{
+  "results": [
+    {
+      "title": "Set with env var instead of ScriptInfo.load so that it can be accessed early during a factory functi",
+      "page_type": "decision_record",
+      "target_path": "decision:26c8470eb1f84a45987e4276c0e3b982",
+      "snippet": "Set with env var instead of ScriptInfo.load so that it can be accessed early during a factory functi\nSet with env var instead of ScriptInfo.load so that it can be accessed early during a factory function.",
+      "score": 0.370858750216633,
+      "search_type": "semantic"
+    },
+    {
+      "title": "Handle app factory errors by distinguishing TypeError from factory-raised errors",
+      "page_type": "decision_record",
+      "target_path": "decision:c6c45112396544979af05342c09476e5",
+      "snippet": "Handle app factory errors by distinguishing TypeError from factory-raised errors\nTreat a TypeError as indicating call failure only if it was raised because the call failed, not because something inside the factory raised the error.",
+      "score": 0.348739732750966,
+      "search_type": "semantic"
+    },
+    {
+      "title": "Processing is done with option callbacks instead of a group callback. This allows users to make a cu",
+      "page_type": "decision_record",
+      "target_path": "decision:aa9c9a7359724a22842a61146e730b9a",
+      "snippet": "Processing is done with option callbacks instead of a group callback. This allows users to make a cu\nProcessing is done with option callbacks instead of a group callback. This allows users to make a custom group callback without losing the ",
+      "score": 0.336411976817619,
+      "search_type": "semantic"
+    }
+  ]
+}

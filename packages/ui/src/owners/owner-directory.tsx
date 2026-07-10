@@ -33,6 +33,10 @@ export interface OwnerDirectoryFilters {
 
 export interface OwnerDirectoryProps {
   owners: OwnerListEntry[];
+  /** Optional full owner set for the distribution bar (e.g. fetched via
+   *  listAllOwners when the contributor count is small). Falls back to
+   *  `owners` when omitted. */
+  distributionOwners?: OwnerListEntry[];
   isLoading: boolean;
   isValidating: boolean;
   total: number;
@@ -45,6 +49,7 @@ export interface OwnerDirectoryProps {
 
 export function OwnerDirectory({
   owners,
+  distributionOwners,
   isLoading,
   isValidating,
   total,
@@ -54,6 +59,7 @@ export function OwnerDirectory({
   onLoadMore,
   onSelect,
 }: OwnerDirectoryProps) {
+  const barOwners = distributionOwners ?? owners;
   // Spotlight metrics — drives the strip above the directory grid.
   const headline = useMemo(() => {
     const totalFiles = owners.reduce((s, o) => s + o.files_owned, 0);
@@ -65,9 +71,9 @@ export function OwnerDirectory({
 
   return (
     <div className="space-y-5">
-      {owners.length > 0 && (
+      {barOwners.length > 0 && (
         <OwnershipDistributionBar
-          owners={owners}
+          owners={barOwners}
           totalContributors={total}
           onSelect={onSelect}
         />

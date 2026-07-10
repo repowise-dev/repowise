@@ -2,7 +2,10 @@ name: Publish to PyPI
 
 on:
   push:
-    tags: ['v*']
+    # Match release tags like v0.26.0 but NOT the extension's vscode-v* tags
+    # (which also start with "v"). Requiring a digit right after the "v" keeps
+    # the two tag namespaces from triggering each other.
+    tags: ['v[0-9]*']
 
 permissions:
   contents: write  # needed for creating GitHub releases

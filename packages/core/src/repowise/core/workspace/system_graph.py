@@ -65,10 +65,11 @@ _CONTRACT_TYPE_TO_EDGE_KIND: dict[str, str] = {
     "http": "http",
     "grpc": "grpc",
     "topic": "event",
+    "data": "db",
 }
 
-#: All edge kinds the graph can carry. ``db`` is reserved for a future
-#: shared-table transport; the taxonomy is fixed now so views render consistently.
+#: All edge kinds the graph can carry. ``db`` carries the shared-table
+#: (``data``) contracts; the taxonomy is fixed so views render consistently.
 EDGE_KINDS: tuple[str, ...] = ("http", "grpc", "event", "package", "co_change", "db")
 
 #: ``match_type`` precedence when several links collapse onto one edge — the most

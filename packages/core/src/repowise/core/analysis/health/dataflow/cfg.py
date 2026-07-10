@@ -284,6 +284,10 @@ class _CFGBuilder:
         """
         assert self.exit_block is not None
         for st in stmts:
+            # Expression-oriented grammars (Rust) wrap statement-position
+            # control flow in a carrier node; classify the real statement.
+            if st.type in self.lmap.statement_wrapper_kinds and st.named_child_count:
+                st = st.named_children[-1]
             if cur is None:
                 # Statements after a terminator: dead code with no predecessor.
                 # Captured in an ``unreachable`` block so the statement is not
@@ -342,9 +346,7 @@ class _CFGBuilder:
             self._build_c_alternative(if_node, cur, join)
         return join
 
-    def _build_py_else_chain(
-        self, alts: list[Node], cur: BasicBlock, join: BasicBlock
-    ) -> None:
+    def _build_py_else_chain(self, alts: list[Node], cur: BasicBlock, join: BasicBlock) -> None:
         """Python ``elif`` / ``else`` clause chain off *cur*'s false edge."""
         false_src: BasicBlock | None = cur
         for alt in alts:
@@ -421,6 +423,11 @@ class _CFGBuilder:
         return after
 
     def _build_try(self, try_node: Node, cur: BasicBlock) -> BasicBlock:
+        # try-with-resources (Java) binds locals in its resource clause; record
+        # a head so the def/use dialect sees those bindings. A plain ``try``
+        # has no ``resources`` field and records nothing (unchanged).
+        if try_node.child_by_field_name("resources") is not None:
+            self._record_head(cur, try_node)
         join = self._new("join")
 
         # ``finally`` is the convergence point everything funnels through; with

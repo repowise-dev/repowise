@@ -15,6 +15,7 @@ from pathlib import Path
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.health.perf.coverage import coverage_for_metrics
 from repowise.core.persistence import crud
 from repowise.core.persistence.models import (
     DecisionRecord,
@@ -128,7 +129,9 @@ class EditorFileDataFetcher:
         modules: list[KeyModule] = []
         for page, _pagerank, symbol_count in rows:
             purpose = _extract_sentences(page.content or "", max_sentences=1)
-            purpose = _truncate_at_word(purpose, 80).rstrip(".") if purpose else ""
+            # 80 chars cut every purpose mid-thought ("…is the **test-layer
+            # ingestion subsystem** for…"); 140 fits one real clause.
+            purpose = _truncate_at_word(purpose, 140).rstrip(".") if purpose else ""
             modules.append(
                 KeyModule(
                     name=page.target_path,
@@ -199,6 +202,8 @@ class EditorFileDataFetcher:
 
     async def _get_decisions(self) -> list[DecisionSummary]:
         """Active decision records, least-stale first."""
+        from repowise.core.exclusion import build_exclude_spec, decision_is_excluded
+
         result = await self._session.execute(
             select(DecisionRecord)
             .where(
@@ -206,9 +211,14 @@ class EditorFileDataFetcher:
                 DecisionRecord.status == "active",
             )
             .order_by(DecisionRecord.staleness_score.asc())
-            .limit(_MAX_DECISIONS)
+            # Over-fetch: records anchored entirely in excluded paths (vendored
+            # venvs mined before exclude rules changed) are dropped below.
+            .limit(_MAX_DECISIONS * 3)
         )
-        records = list(result.scalars().all())
+        exclude_spec = build_exclude_spec(self._repo_path)
+        records = [r for r in result.scalars().all() if not decision_is_excluded(r, exclude_spec)][
+            :_MAX_DECISIONS
+        ]
         summaries: list[DecisionSummary] = []
         for rec in records:
             rationale = (rec.rationale or "").strip()
@@ -277,9 +287,7 @@ class EditorFileDataFetcher:
         if hotspot_metrics:
             h_nloc = sum(max(m.nloc, 1) for m in hotspot_metrics)
             hotspot_health = (
-                sum(m.score * max(m.nloc, 1) for m in hotspot_metrics) / h_nloc
-                if h_nloc
-                else avg
+                sum(m.score * max(m.nloc, 1) for m in hotspot_metrics) / h_nloc if h_nloc else avg
             )
         else:
             hotspot_health = avg
@@ -287,7 +295,9 @@ class EditorFileDataFetcher:
         # Maintainability pillar headline: NLOC-weighted over the per-file
         # maintainability scores, skipping rows that predate the split. ``None``
         # when unmeasured so the section omits the line rather than printing 10.0.
-        maint_rows = [m for m in metric_rows if getattr(m, "maintainability_score", None) is not None]
+        maint_rows = [
+            m for m in metric_rows if getattr(m, "maintainability_score", None) is not None
+        ]
         maintainability_average: float | None = None
         if maint_rows:
             m_nloc = sum(max(m.nloc, 1) for m in maint_rows)
@@ -310,6 +320,12 @@ class EditorFileDataFetcher:
                 else sum(m.performance_score for m in perf_rows) / len(perf_rows)
             )
 
+        # Honest performance headline: how much of the analyzed code a perf
+        # detector actually ran on. Restricted to real code (LANGUAGE_MAPS), so a
+        # mostly-C++/Kotlin repo reads a low coverage %, never a bare 10/10.
+        lang_by_path = await crud.get_file_language_map(self._session, self._repo_id)
+        perf_coverage = coverage_for_metrics(metric_rows, lang_by_path)
+
         # Critical biomarkers: brain methods, or critical-severity findings
         # in hotspot files. Cap at 5 to keep CLAUDE.md tight.
         f_res = await self._session.execute(
@@ -321,6 +337,18 @@ class EditorFileDataFetcher:
             .order_by(HealthFinding.health_impact.desc())
         )
         all_findings = list(f_res.scalars().all())
+
+        # Open performance-finding count + density over covered LOC (the honest
+        # headline the diluted /10 hides).
+        performance_findings = sum(
+            1 for f in all_findings if (f.dimension or "defect") == "performance"
+        )
+        performance_findings_density: float | None = None
+        if perf_coverage.covered_nloc > 0:
+            performance_findings_density = round(
+                10000.0 * performance_findings / perf_coverage.covered_nloc, 2
+            )
+
         critical = []
         for f in all_findings:
             if len(critical) >= 5:
@@ -328,14 +356,16 @@ class EditorFileDataFetcher:
             if f.biomarker_type == "brain_method" or (
                 f.severity == "critical" and f.file_path in hotspot_paths
             ):
-                critical.append({
-                    "path": f.file_path,
-                    "summary": (
-                        f"{f.biomarker_type.replace('_', ' ')}"
-                        + (f" ({f.function_name})" if f.function_name else "")
-                        + f" — impact −{f.health_impact:.1f}"
-                    ),
-                })
+                critical.append(
+                    {
+                        "path": f.file_path,
+                        "summary": (
+                            f"{f.biomarker_type.replace('_', ' ')}"
+                            + (f" ({f.function_name})" if f.function_name else "")
+                            + f" — impact −{f.health_impact:.1f}"
+                        ),
+                    }
+                )
 
         return CodeHealthBlock(
             hotspot_health=round(hotspot_health, 2),
@@ -349,6 +379,13 @@ class EditorFileDataFetcher:
             performance_average=(
                 round(performance_average, 2) if performance_average is not None else None
             ),
+            performance_findings=performance_findings,
+            performance_findings_density=performance_findings_density,
+            performance_coverage_pct=(
+                perf_coverage.pct_loc if perf_coverage.analyzed_files else None
+            ),
+            performance_skipped_files=perf_coverage.skipped_files,
+            performance_unsupported_languages=perf_coverage.unsupported_languages,
             critical_biomarkers=critical,
             untested_hotspots=[],  # Phase 2 fills this from coverage data
         )
@@ -461,6 +498,10 @@ def _extract_sentences(text: str, max_sentences: int) -> str:
     # Drop list items, table rows, and blockquotes — prose only.
     # Both "1." and "1)" enumeration styles count as list items.
     text = re.sub(r"^\s*(?:[-*+]\s|\d+[.)]\s|\||>).*$", "", text, flags=re.MULTILINE)
+    # Drop colon-terminated list lead-ins ("Repowise consumes:") — their list
+    # items were just stripped, so keeping them leaves dangling fragments in
+    # the rendered CLAUDE.md.
+    text = re.sub(r"^.*:\s*$", "", text, flags=re.MULTILINE)
     text = re.sub(r"`([^`]+)`", r"\1", text)  # strip backticks, keep text
     text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)  # links → text
     text = re.sub(r"\n{2,}", "\n", text).strip()

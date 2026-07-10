@@ -10,6 +10,16 @@
 :root {
   --font-sans: var(--vscode-font-family, ui-sans-serif, system-ui, sans-serif);
   --font-mono: var(--vscode-editor-font-family, ui-monospace, monospace);
+
+  /* The knowledge-graph card texture layers a ruled-paper photo served from
+     the web app's public folder; that path 404s inside a packaged webview.
+     Drop the photo layer and render solid node cards instead (no bundled
+     asset, no failed request). The .dark override below matches. */
+  --kg-card-texture: none;
+}
+
+.dark {
+  --kg-card-texture: none;
 }
 
 html,

@@ -111,7 +111,12 @@ and restores your AGENTS.md byte-for-byte.
 
 The hook is deliberately conservative. It never rewrites:
 
-- pipes, redirections, compound commands (`|`, `>`, `&&`, `;`, backticks, `$()`)
+- redirections, compound commands (`>`, `&&`, `;`, backticks, `$()`) and
+  almost all pipes. Two safe shapes are carved out: a trailing `2>&1`
+  (distill merges stderr into its capture anyway), and, on macOS/Linux only,
+  a single pipe into bare `head`/`tail`, which runs unchanged inside
+  distill's own shell (`pytest -q | head -50` →
+  `repowise distill "pytest -q | head -50"`)
 - watch/follow modes (`--watch`, `tail -f`, …)
 - anything on the trivial-command ignore-list, or already-prefixed commands
 - PowerShell-native constructs: `Verb-Noun` cmdlets, `& "path"` invocations,

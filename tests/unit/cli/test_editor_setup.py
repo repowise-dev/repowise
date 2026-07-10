@@ -513,12 +513,20 @@ def test_claude_refresh_project_files_skips_when_options_disable_file(
 
 
 def test_update_command_uses_editor_refresh_abstraction() -> None:
-    source = inspect.getsource(run_update)
+    from repowise.cli.commands.update_cmd.command import _refresh_editor_stamp
 
-    assert "refresh_editor_project_files" in source
-    assert "ClaudeMdGenerator" not in source
-    assert "EditorFileDataFetcher" not in source
-    assert "claude_md" not in source
+    command_source = inspect.getsource(run_update)
+    stamp_source = inspect.getsource(_refresh_editor_stamp)
+
+    # The command routes every editor-file write through the shared stamp
+    # helper, which in turn uses the refresh abstraction — never the raw
+    # generator/fetcher internals.
+    assert "_refresh_editor_stamp" in command_source
+    assert "refresh_editor_project_files" in stamp_source
+    for source in (command_source, stamp_source):
+        assert "ClaudeMdGenerator" not in source
+        assert "EditorFileDataFetcher" not in source
+        assert "claude_md" not in source
 
 
 def test_workspace_update_refreshes_agents_for_selected_repos(
@@ -635,6 +643,52 @@ def test_claude_client_registration_uses_existing_claude_setup(
     assert "Claude Code MCP registered" in text
     assert "Claude Code hooks registered" in text
     assert "tool-search enabled" in text
+
+
+def test_lean_tool_surface_skips_tool_search_recommendation(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    """A repo configured with the lean profile keeps schemas always loaded."""
+    calls: list[str] = []
+    monkeypatch.setattr(claude_config, "register_with_claude_desktop", lambda p: None)
+    monkeypatch.setattr(claude_config, "register_with_claude_code", lambda p: None)
+    monkeypatch.setattr(claude_config, "install_claude_code_hooks", lambda: None)
+    monkeypatch.setattr(
+        claude_config,
+        "enable_tool_search_in_claude_code",
+        lambda: calls.append("tool_search"),
+    )
+
+    (tmp_path / ".repowise").mkdir()
+    (tmp_path / ".repowise" / "config.yaml").write_text("mcp:\n  tools: lean\n", encoding="utf-8")
+
+    output = StringIO()
+    console = Console(file=output, force_terminal=False)
+    ClaudeCodeSetup().register_client(console, tmp_path)
+
+    assert calls == []
+    assert "Lean MCP tool surface configured" in output.getvalue()
+
+
+def test_uses_lean_tool_surface_shapes(tmp_path: Path) -> None:
+    from repowise.cli.editor_integrations.claude import _uses_lean_tool_surface
+
+    config = tmp_path / ".repowise" / "config.yaml"
+    config.parent.mkdir()
+
+    assert _uses_lean_tool_surface(tmp_path) is False  # no config
+
+    for text, expected in [
+        ("mcp:\n  tools: lean\n", True),
+        ("mcp:\n  tools: LEAN\n", True),
+        ("mcp:\n  tools: [lean]\n", True),
+        ("mcp:\n  tools: ['+get_execution_flows']\n", False),
+        ("mcp:\n  tools: all\n", False),
+        ("mcp:\n  tools: [lean, get_health]\n", False),
+    ]:
+        config.write_text(text, encoding="utf-8")
+        assert _uses_lean_tool_surface(tmp_path) is expected, text
 
 
 def test_enable_tool_search_sets_env_idempotently(tmp_path: Path, monkeypatch: Any) -> None:

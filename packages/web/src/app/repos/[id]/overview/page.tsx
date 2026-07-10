@@ -7,13 +7,17 @@ import { getProviders } from "@/lib/api/providers";
 import { getStatsHighlights } from "@/lib/api/stats";
 import { StatsTeaserCard } from "@/components/overview/stats-teaser-card";
 import { Badge } from "@repowise-dev/ui/ui/badge";
-import { EmptyState, PageShell } from "@repowise-dev/ui/shared";
+import { PageShell } from "@repowise-dev/ui/shared";
+import { FirstIndexExperience } from "@/components/repos/first-index-experience";
 import { HealthOverviewCard } from "@repowise-dev/ui/dashboard/health-overview-card";
 import { AttentionPanel } from "@repowise-dev/ui/dashboard/attention-panel";
 import { KpiStrip, kpiDelta, type KpiItem } from "@repowise-dev/ui/dashboard/kpi-strip";
 import { OverviewGrid } from "@repowise-dev/ui/dashboard/overview-grid";
 import { SavingsMini } from "@repowise-dev/ui/dashboard/savings-mini";
+import { IndexStorageMini } from "@repowise-dev/ui/dashboard/index-storage-mini";
 import { LanguageDonut } from "@repowise-dev/ui/dashboard/language-donut";
+import { KnowledgeGraphCard } from "@repowise-dev/ui/dashboard/explore-cards";
+import { AskAnythingCardWrapper } from "@/components/overview/ask-anything-card-wrapper";
 import { QuickActionsWrapper as QuickActions } from "@/components/dashboard/quick-actions-wrapper";
 import { OverviewTabs } from "@/components/overview/overview-tabs";
 import { ContributorsStripCard } from "@/components/overview/contributors-strip-card";
@@ -115,24 +119,21 @@ export default async function OverviewPage({ params }: Props) {
 
   return (
     <PageShell title={repo.name} description={repo.local_path} actions={headerMeta} maxWidth="wide">
-      <QuickActions
-        repoId={id}
-        repoName={repo.name}
-        pageCount={sync.page_count || stats.file_count}
-        modelName={providers?.active.model ?? sync.last_sync_model ?? ""}
-        lastSyncAt={sync.last_sync_at}
-        lastResyncAt={sync.last_resync_at}
-      />
+      {/* Fresh repos get one prominent index action instead of the sync
+          toolbar; everything else appears once the first index lands. */}
+      {!isFresh && (
+        <QuickActions
+          repoId={id}
+          repoName={repo.name}
+          pageCount={sync.page_count || stats.file_count}
+          modelName={providers?.active.model ?? sync.last_sync_model ?? ""}
+          lastSyncAt={sync.last_sync_at}
+          lastResyncAt={sync.last_resync_at}
+        />
+      )}
 
       {isFresh ? (
-        <EmptyState
-          title={
-            lastActivityAt
-              ? `Indexed ${formatRelativeTime(lastActivityAt)} — nothing to show yet`
-              : "This repo hasn't been indexed yet"
-          }
-          description="Run a sync (above) or `repowise init` in the repo to populate the overview. Stats, attention items, and activity appear as soon as the first index lands."
-        />
+        <FirstIndexExperience repoId={id} repoName={repo.name} />
       ) : (
         <>
           {/* ── KPI bar leads ── */}
@@ -154,6 +155,13 @@ export default async function OverviewPage({ params }: Props) {
             rail={
               <>
                 {statsHighlights && <StatsTeaserCard repoId={id} data={statsHighlights} />}
+                <IndexStorageMini
+                  data={{
+                    index_storage_bytes: sync.index_storage_bytes ?? 0,
+                    page_count: sync.page_count,
+                    doc_coverage_pct: stats.doc_coverage_pct,
+                  }}
+                />
                 <SavingsMini data={summary.savings} repoId={id} />
                 <AttentionPanel items={attentionItems} repoId={id} previewCount={5} repoName={repo.name} />
               </>
@@ -168,15 +176,17 @@ export default async function OverviewPage({ params }: Props) {
             decisions={summary.recent_decisions}
           />
 
-          {/* ── Languages (single canonical donut) ── */}
-          {summary.languages.length > 0 && (
-            <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+          {/* ── Languages + explore: donut alongside the graph and chat front-doors ── */}
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+            {summary.languages.length > 0 && (
               <LanguageDonut
                 distribution={langDistribution}
                 viewAllHref={`/repos/${id}/architecture?view=graph&colorMode=language`}
               />
-            </div>
-          )}
+            )}
+            <KnowledgeGraphCard href={`/repos/${id}/knowledge-graph`} />
+            <AskAnythingCardWrapper repoId={id} />
+          </div>
         </>
       )}
     </PageShell>

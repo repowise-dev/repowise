@@ -2,11 +2,12 @@
 
 import type { SecurityFinding, SecuritySeverity } from "@repowise-dev/types";
 import { Badge } from "../ui/badge";
+import { CardSkeleton } from "../shared/loading-skeletons";
 
 export interface SecurityPanelProps {
   /** Findings for the file. Empty / undefined renders an empty-state message. */
   findings: SecurityFinding[] | undefined;
-  /** While loading the shell renders nothing. */
+  /** While loading the shell renders a card skeleton. */
   isLoading?: boolean;
 }
 
@@ -23,7 +24,7 @@ function severityLabel(severity: SecuritySeverity): string {
 }
 
 export function SecurityPanel({ findings, isLoading }: SecurityPanelProps) {
-  if (isLoading) return null;
+  if (isLoading) return <CardSkeleton lines={2} />;
   if (!findings || findings.length === 0) {
     return (
       <p className="text-xs text-[var(--color-text-tertiary)]">No security signals.</p>

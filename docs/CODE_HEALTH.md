@@ -113,6 +113,14 @@ same marker stream:
   count toward both dimensions.
 - Pure defect and organizational predictors (`change_entropy`, `ownership_risk`,
   `co_change_scatter`, and the like) stay out of maintainability entirely.
+- SQL markers (`sql_high_complexity` for branchy stored routines,
+  `sql_select_star` in views/routines, `sql_update_delete_without_where`) are
+  maintainability-only by construction: no defect corpus covers procedural SQL,
+  so they carry an advisory weight under their own capped `sql` category and
+  never touch the defect score. Routine complexity is counted from the decision
+  keywords in the body text (procedural bodies do not parse into an AST);
+  statement smells come from the sqlglot AST and stay silent on dbt/Jinja
+  templates and on statements whose parse looks garbled.
 
 The two signals are computed by the single shared scoring kernel
 (`scoring.score_file`) against independent weight/category/cap tables, and they
@@ -242,6 +250,12 @@ below) rather than the shared core:
 - **sync-over-async** (C#, via `blocking_sync_in_async`): `.Result` / `.Wait()`
   / `.GetAwaiter().GetResult()` inside an `async` method blocks a thread-pool
   thread. C# is the one non-Python language with real `async`/`await`.
+- **`sql_cartesian_join`** (SQL): a comma-join (`FROM a, b`) with no join
+  predicate anywhere in the statement produces the full cross product (O(n·m)
+  rows). An explicit `CROSS JOIN` states intent and is not flagged; a comma-join
+  whose statement carries a `WHERE` is old-style join syntax and is not flagged
+  either. Detected on the sqlglot AST; a statement whose parse looks garbled
+  (dialect mismatch) emits nothing. Advisory.
 
 Each performance finding's `details` carry the `boundary_kind` it crosses, a
 `cross_function` flag, and the reachability `path` for the cross-function case.
@@ -283,6 +297,14 @@ is untyped (`None`), so its sinks don't fire. We call this performance RISK, nev
 measured performance, and never fold it into the defect score. The
 commit-agreement precision study and its caveats are published in the
 [perf-detection methodology](https://github.com/repowise-dev/repowise-bench/blob/master/perf-detection/METHODOLOGY.md).
+
+**Verified findings.** `serial_await_in_loop` and `nested_loop_quadratic` are
+advisory because a quick scan cannot tell whether a loop's iterations depend on
+each other. When a deeper analysis can prove they do not, the finding is marked
+verified: it asserts the fix (fan out the awaits, or a genuine quadratic scan)
+instead of hedging, and carries `dataflow_verified: true`. The check is
+conservative (anything it cannot prove stays advisory) and only touches
+Python, TypeScript, JavaScript, and Go. It changes the wording, not the score.
 
 Performance surfaces exactly where maintainability does: a `performance_average`
 on the overview summary and MCP `kpis`, a per-file `performance_score`, a

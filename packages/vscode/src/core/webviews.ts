@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import * as path from "node:path";
 import { randomBytes } from "node:crypto";
-import { Commands, Views } from "../constants";
+import { Commands, EXTENSION_ID, Views } from "../constants";
 import type { RepowiseContext } from "./context";
 import { createHostApi } from "./webviewApi";
 import type {
@@ -37,7 +37,8 @@ const VIEW_META: Record<PanelViewId, ViewMeta> = {
   refactoring: { title: "Repowise Refactoring Plan", retainContextWhenHidden: false },
   decisions: { title: "Repowise Decisions", retainContextWhenHidden: false },
   docs: { title: "Repowise Docs", retainContextWhenHidden: false },
-  risk: { title: "Repowise Branch Risk", retainContextWhenHidden: false },
+  risk: { title: "Repowise Change Risk", retainContextWhenHidden: false },
+  settings: { title: "Repowise Settings", retainContextWhenHidden: false },
 };
 
 /** Tab title for a panel; the sidebar Home view's title lives in the manifest. */
@@ -59,9 +60,34 @@ export function openViewPanel<V extends PanelViewId>(
   params?: ViewParams[V],
 ): void {
   if (ctx.getExtensionState() !== "ready" || !ctx.repoId) {
-    void vscode.window.showWarningMessage(
-      "Connect to the Repowise server to open this view.",
-    );
+    if (ctx.getExtensionState() === "server-down") {
+      void vscode.window
+        .showWarningMessage(
+          "The local Repowise server is not running.",
+          "Start Server",
+        )
+        .then((choice) => {
+          if (choice === "Start Server") {
+            void vscode.commands.executeCommand(Commands.startServer);
+          }
+        });
+    } else if (ctx.getExtensionState() === "ready" && !ctx.repoId) {
+      // Connected, but the server has no record of this folder.
+      void vscode.window
+        .showWarningMessage(
+          "The connected Repowise server has no index for this folder.",
+          "Check Setup",
+        )
+        .then((choice) => {
+          if (choice === "Check Setup") {
+            void vscode.commands.executeCommand(Commands.checkSetup);
+          }
+        });
+    } else {
+      void vscode.window.showWarningMessage(
+        "Connect to the Repowise server to open this view.",
+      );
+    }
     return;
   }
   if (!manager) {
@@ -283,6 +309,18 @@ class WebviewManager {
         openViewPanel(this.ctx, msg.view, params);
         return;
       }
+      case "focus-home":
+        // Reveal the sidebar Home view (its auto-generated focus command).
+        await vscode.commands.executeCommand(`${Views.homeDashboard}.focus`);
+        return;
+      case "open-native-settings":
+        // Hand off to the native Settings editor, prefiltered to this extension
+        // (search, sync, and per-scope overrides the custom panel does not offer).
+        await vscode.commands.executeCommand(
+          "workbench.action.openSettings",
+          `@ext:${EXTENSION_ID}`,
+        );
+        return;
       case "update-index":
         // Resolves when the update finishes (the command returns its promise).
         // A successful update also lands as a refresh broadcast; this ack is

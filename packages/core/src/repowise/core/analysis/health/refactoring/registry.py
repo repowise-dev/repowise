@@ -15,7 +15,7 @@ from collections.abc import Sequence
 
 import structlog
 
-from .models import RefactoringContext, RefactoringSuggestion
+from .models import CONFIDENCE_LEVELS, RefactoringContext, RefactoringSuggestion
 
 log = structlog.get_logger(__name__)
 
@@ -67,15 +67,47 @@ def registered_detectors(*, disabled: Sequence[str] = ()) -> list[RefactoringDet
 
 
 def detect_refactorings(
-    ctx: RefactoringContext, *, disabled: Sequence[str] = ()
+    ctx: RefactoringContext,
+    *,
+    disabled: Sequence[str] = (),
+    min_confidence: str | None = None,
 ) -> list[RefactoringSuggestion]:
-    """Run every registered detector on *ctx*, fault-isolated per detector."""
+    """Run every registered detector on *ctx*, fault-isolated per detector.
+
+    *min_confidence* is an optional confidence floor (``"low"`` / ``"medium"``
+    / ``"high"``): a suggestion whose ``confidence`` ranks below it is dropped
+    at detection time, so a repo can suppress low-confidence plans from config
+    exactly as it disables a detector. An unset or unrecognised floor keeps
+    every suggestion.
+    """
+    floor_idx = _confidence_floor_index(min_confidence)
     out: list[RefactoringSuggestion] = []
     for detector in registered_detectors(disabled=disabled):
         try:
-            out.extend(detector.detect(ctx))
+            for suggestion in detector.detect(ctx):
+                if floor_idx and _confidence_rank(suggestion.confidence) < floor_idx:
+                    continue
+                out.append(suggestion)
         except Exception as exc:
             # One bad detector must not break the health pass; degrade to
             # "no suggestion" for this file.
             log.debug("refactoring_detector_failed", detector=detector.name, error=str(exc))
     return out
+
+
+def _confidence_rank(level: str) -> int:
+    """Ordinal of a confidence label; unknown labels rank at the floor (0)."""
+    try:
+        return CONFIDENCE_LEVELS.index(level)
+    except ValueError:
+        return 0
+
+
+def _confidence_floor_index(min_confidence: str | None) -> int:
+    """Ordinal of the confidence floor, or 0 (no floor) when unset/unknown."""
+    if not min_confidence:
+        return 0
+    try:
+        return CONFIDENCE_LEVELS.index(min_confidence.strip().lower())
+    except (ValueError, AttributeError):
+        return 0

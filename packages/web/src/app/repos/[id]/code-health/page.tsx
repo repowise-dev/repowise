@@ -14,8 +14,8 @@
  */
 
 import { useParams, useRouter, useSearchParams } from "next/navigation";
-import { useCallback } from "react";
-import useSWR from "swr";
+import { useCallback, useState } from "react";
+import useSWR, { useSWRConfig } from "swr";
 import { HeartPulse, RotateCw } from "lucide-react";
 import { PageShell } from "@repowise-dev/ui/shared/page-shell";
 import { ViewTabs } from "@repowise-dev/ui/shared/view-tabs";
@@ -90,12 +90,30 @@ export default function CodeHealthPage() {
     : "health";
 
   // Shares the SWR key with TriageTab — the meta line costs no extra request.
-  const { data: overview, mutate } = useSWR<HealthOverviewResponse>(
+  const { data: overview } = useSWR<HealthOverviewResponse>(
     `code-health-overview:${repoId}`,
     () => getHealthOverview(repoId, 25),
     { revalidateOnFocus: false },
   );
   const meta = overview?.meta;
+
+  // Refresh revalidates every SWR key for this repo (overview + each tab's own
+  // keys — coverage, findings, hotspots…), so the button works on whichever
+  // tab is active, not just the shared overview.
+  const { mutate: mutateAll } = useSWRConfig();
+  const [refreshing, setRefreshing] = useState(false);
+  const refresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await mutateAll(
+        (key) => typeof key === "string" && key.includes(repoId),
+        undefined,
+        { revalidate: true },
+      );
+    } finally {
+      setRefreshing(false);
+    }
+  }, [mutateAll, repoId]);
 
   // Trend fetched ONCE here, fed to both the KPI sparklines (Triage) and the
   // folded Trend section — no second fetch, no second SWR key.
@@ -148,8 +166,11 @@ export default function CodeHealthPage() {
       description="Per-file health scores from complexity, duplication, coverage, churn, and ownership markers — ranked into a fix-next queue."
       maxWidth="wide"
       actions={
-        <Button size="sm" variant="outline" onClick={() => mutate()}>
-          <RotateCw className="h-3.5 w-3.5 mr-1.5" /> Refresh
+        <Button size="sm" variant="outline" onClick={refresh} disabled={refreshing}>
+          <RotateCw
+            className={`h-3.5 w-3.5 mr-1.5 ${refreshing ? "animate-spin" : ""}`}
+          />{" "}
+          {refreshing ? "Refreshing…" : "Refresh"}
         </Button>
       }
     >

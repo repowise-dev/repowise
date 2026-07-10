@@ -36,10 +36,17 @@ async def upsert_repository(
     default_branch: str = "main",
     settings: dict | None = None,
     head_commit: str | None = None,
+    repo_id: str | None = None,
 ) -> Repository:
     """Create or update a repository record.
 
     Lookup is by ``local_path`` (the canonical key for local repositories).
+
+    ``repo_id`` fixes the primary key when the row is *created*. The server
+    keeps a registry row for each repo in its primary database and the
+    canonical row in the repo-local ``wiki.db``; both must share one id so
+    per-repo session routing keyed by that id resolves consistently. Ignored
+    when a row for ``local_path`` already exists (the existing id wins).
 
     ``head_commit`` records the git commit the index was built against — the
     value the MCP ``_meta`` freshness check compares to the live HEAD. Callers
@@ -56,7 +63,7 @@ async def upsert_repository(
 
     if repo is None:
         repo = Repository(
-            id=_new_uuid(),
+            id=repo_id or _new_uuid(),
             name=name,
             local_path=local_path,
             url=url,
@@ -231,7 +238,7 @@ async def update_job_status(
 
     if status == "running" and job.started_at is None:
         job.started_at = _now_utc()
-    if status in ("completed", "failed"):
+    if status in ("completed", "failed", "cancelled"):
         job.finished_at = _now_utc()
 
     await session.flush()

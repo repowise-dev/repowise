@@ -25,10 +25,10 @@ names to the walker's abstract categories:
                   test-assertion runs (test-quality smells). Opt-in per
                   language via ``assert_kinds`` / ``assert_call_kinds``.
 
-Control-flow maps cover all nine full-tier languages — Python, TypeScript,
-JavaScript, Go, Java, Kotlin, Rust, C++, C# — plus their aliases; class-level
-maps cover all of those except Go (no class-grouping node). Adding a language —
-either tier — is purely additive here.
+Control-flow maps cover all ten full-tier languages (Python, TypeScript,
+JavaScript, Go, Java, Kotlin, Rust, C++, C#, Scala) plus their aliases and
+Dart; class-level maps cover all of those except Go (no class-grouping node).
+Adding a language, at either tier, is purely additive here.
 
 Two cross-language heuristic limits worth noting (both degrade to "no signal",
 never a false positive): (1) instance members accessed without an explicit
@@ -186,12 +186,27 @@ class LanguageNodeMap:
     raise_kinds: frozenset[str] = frozenset()
     break_kinds: frozenset[str] = frozenset()
     continue_kinds: frozenset[str] = frozenset()
+    #   * ``statement_wrapper_kinds`` -- statement node(s) that merely wrap the
+    #     node the CFG builder should classify, as their last named child.
+    #     Expression-oriented grammars need this: tree-sitter-rust parses every
+    #     statement-position control-flow expression (``for`` / ``if`` /
+    #     ``return`` / ``break``) inside an ``expression_statement``, so without
+    #     unwrapping the builder would see one opaque statement and produce a
+    #     straight-line CFG. A nonempty set is therefore also the slicer's
+    #     expression-oriented-language marker: it then refuses spans ending on a
+    #     block's tail expression (the implicit value an extraction would
+    #     silently drop), so only truly expression-oriented grammars may map it.
+    statement_wrapper_kinds: frozenset[str] = frozenset()
 
 
 _PY = LanguageNodeMap(
     function_kinds=frozenset({"function_definition", "async_function_definition"}),
     lambda_kinds=frozenset({"lambda"}),
-    branch_kinds=frozenset({"if_statement", "elif_clause", "conditional_expression"}),
+    # ``if_clause`` is a comprehension filter (``[x for x in xs if a if b]``);
+    # each filter is an independent branch point, so it belongs with the other
+    # branch kinds. The comprehension ``for`` (``for_in_clause``) is a generator,
+    # not a decision, so it is intentionally left out.
+    branch_kinds=frozenset({"if_statement", "elif_clause", "conditional_expression", "if_clause"}),
     loop_kinds=frozenset({"for_statement", "while_statement"}),
     try_kinds=frozenset({"try_statement"}),
     catch_kinds=frozenset({"except_clause"}),
@@ -334,6 +349,19 @@ _JAVA = LanguageNodeMap(
     # The perf pass needs both forms: ``repo.find()`` (method_invocation) and
     # ``new FileInputStream()`` (object_creation_expression).
     call_kinds=frozenset({"method_invocation", "object_creation_expression"}),
+    # ``x = ...`` and ``x += ...`` are both ``assignment_expression`` (the
+    # dialect tells them apart by the operator token, as in Go), so the
+    # augmented set stays empty. ``int x = 1, y = 2;`` is a
+    # ``local_variable_declaration`` nesting one ``variable_declarator`` per
+    # bound name.
+    assignment_kinds=frozenset({"assignment_expression"}),
+    local_decl_kinds=frozenset({"local_variable_declaration"}),
+    if_kinds=frozenset({"if_statement"}),
+    block_kinds=frozenset({"block"}),
+    return_kinds=frozenset({"return_statement"}),
+    raise_kinds=frozenset({"throw_statement"}),
+    break_kinds=frozenset({"break_statement"}),
+    continue_kinds=frozenset({"continue_statement"}),
 )
 
 _RUST = LanguageNodeMap(
@@ -365,6 +393,28 @@ _RUST = LanguageNodeMap(
     # ``function_modifiers`` child — so ``async_function_kinds`` stays empty and
     # ``RustPerfDialect.is_async_fn`` sniffs the modifier instead.
     call_kinds=frozenset({"call_expression"}),
+    # ``x = ...`` is an ``assignment_expression``; ``x += ...`` a dedicated
+    # ``compound_assignment_expr``. ``let`` (with any pattern) is the fresh-
+    # binding form. ``if_let_expression`` / ``while_let_expression`` only exist
+    # in older tree-sitter-rust grammars (current ones parse ``if let`` as an
+    # ``if_expression`` with a ``let_condition``); listing them is harmless.
+    assignment_kinds=frozenset({"assignment_expression"}),
+    augmented_assign_kinds=frozenset({"compound_assignment_expr"}),
+    local_decl_kinds=frozenset({"let_declaration"}),
+    if_kinds=frozenset({"if_expression", "if_let_expression"}),
+    block_kinds=frozenset({"block"}),
+    return_kinds=frozenset({"return_expression"}),
+    # ``?`` (``try_expression``) propagates an error out of the function -- an
+    # early exit the CFG treats as a terminator and the Extract Method slicer
+    # treats as a jump, so no span containing one is ever offered.
+    raise_kinds=frozenset({"try_expression"}),
+    break_kinds=frozenset({"break_expression"}),
+    continue_kinds=frozenset({"continue_expression"}),
+    # Rust parses every statement-position control-flow expression inside an
+    # ``expression_statement``; the CFG builder unwraps it to classify the real
+    # node, and the slicer uses this as the expression-oriented marker for
+    # tail-expression suppression.
+    statement_wrapper_kinds=frozenset({"expression_statement"}),
 )
 
 
@@ -393,6 +443,48 @@ _KOTLIN = LanguageNodeMap(
     # ``assertTrue(...)`` are plain calls placed directly in the statement
     # list (no ``expression_statement`` wrapper).
     assert_call_kinds=frozenset({"call_expression"}),
+)
+
+_DART = LanguageNodeMap(
+    # Dart splits a function into a ``function_signature`` node whose body is
+    # a SIBLING ``function_body`` node (members wrap the signature in
+    # ``method_signature``). Keying ``function_kinds`` on the body measures
+    # complexity/NLOC exactly right with the shared walker; the entry name
+    # and parameter count come from the preceding signature sibling (see the
+    # ``function_body`` handling in ``ast_utils`` / ``perf_walk``).
+    function_kinds=frozenset({"function_body"}),
+    lambda_kinds=frozenset({"function_expression"}),
+    # ``if_element`` is the collection-literal ``if`` (``[if (x) y]``);
+    # ``conditional_expression`` is the ternary.
+    branch_kinds=frozenset({"if_statement", "conditional_expression", "if_element"}),
+    loop_kinds=frozenset({"for_statement", "while_statement", "do_statement", "for_element"}),
+    try_kinds=frozenset({"try_statement"}),
+    # A bare ``on FormatException {}`` arm without ``catch`` has no
+    # catch_clause node (the block hangs off try_statement directly), so it
+    # is undercounted — the safe direction.
+    catch_kinds=frozenset({"catch_clause"}),
+    switch_kinds=frozenset({"switch_statement", "switch_expression"}),
+    case_kinds=frozenset(
+        {"switch_statement_case", "switch_statement_default", "switch_expression_case"}
+    ),
+    # The grammar exposes dedicated operator nodes inside
+    # logical_and_expression / logical_or_expression — one node per operator
+    # occurrence, so no binary-node text sniffing is needed.
+    boolean_operator_kinds=frozenset({"logical_and_operator", "logical_or_operator"}),
+    # Method/size/CCN class facts only. Dart has no wrapper node for
+    # ``this.member`` (receiver and ``.member`` selector are flat siblings)
+    # and idiomatic Dart omits ``this.`` anyway, so member access stays
+    # unmapped and LCOM4 sits at its "no signal" safety valve rather than
+    # mis-firing on every class.
+    class_kinds=frozenset({"class_definition", "mixin_declaration"}),
+    self_identifiers=frozenset({"this"}),
+    # ``assert(...)`` is a real statement in Dart. package:test ``expect()``
+    # calls have no call-expression node type to key on (calls are selector
+    # chains), so assertion-call runs are not counted — under-signal, safe.
+    assert_kinds=frozenset({"assert_statement"}),
+    # Calls are ``selector`` nodes carrying an ``argument_part``; the Dart
+    # perf dialect's callee extraction filters out the non-call selectors.
+    call_kinds=frozenset({"selector"}),
 )
 
 _CPP = LanguageNodeMap(
@@ -446,6 +538,69 @@ _CSHARP = LanguageNodeMap(
 )
 
 
+_SCALA = LanguageNodeMap(
+    # ``function_definition`` is a ``def`` with a body (expression or block);
+    # abstract ``def``s parse as ``function_declaration`` (no body, nothing to
+    # measure). ``given_definition`` is deliberately NOT a function kind: a
+    # ``given ... with {}`` instance nests real ``function_definition`` members,
+    # and function collection stops descending at a function boundary, so
+    # mapping ``given`` would swallow its methods; leaving it unmapped lets the
+    # traversal find them individually (alias givens are values, not bodies).
+    function_kinds=frozenset({"function_definition"}),
+    # A partial-function literal (``{ case n => ... }``) is a ``case_block``,
+    # shared with ``match`` / ``catch``, so it cannot be a lambda kind without
+    # every match arm block becoming a module-level entry; its cases still
+    # count via ``case_kinds`` and its body rolls up into the enclosing def.
+    lambda_kinds=frozenset({"lambda_expression"}),
+    # Scala ``if`` is an expression; ``guard`` covers both for-comprehension
+    # filters (``for (i <- xs if i > 0)``) and match-case guards
+    # (``case n if n > 0``), each an inline decision point (flat, see
+    # ``_FLAT_BRANCH_KINDS``).
+    branch_kinds=frozenset({"if_expression", "guard"}),
+    # A for-comprehension is a loop for nesting/CCN purposes even though it
+    # desugars to flatMap: this matches developer intuition.
+    loop_kinds=frozenset({"for_expression", "while_expression", "do_while_expression"}),
+    try_kinds=frozenset({"try_expression"}),
+    # ``catch`` takes a ``case_block``; each handler is a ``case_clause`` that
+    # already counts via ``case_kinds`` (per-handler parity with Python's
+    # per-``except`` counting). Mapping ``catch_clause`` too would double-count
+    # every single-case catch.
+    catch_kinds=frozenset(),
+    switch_kinds=frozenset({"match_expression"}),
+    case_kinds=frozenset({"case_clause"}),
+    boolean_operator_kinds=frozenset(),
+    # ``&&`` / ``||`` are ``operator_identifier`` tokens inside a generic
+    # ``infix_expression``, the text sniff. The sniffer also matches ``and`` /
+    # ``or`` operator text (ScalaTest matcher DSL combinators), which are
+    # genuine boolean combinators when used infix, so the shared behavior is
+    # acceptable here.
+    boolean_operator_text_kinds=frozenset({"infix_expression"}),
+    # ``object`` (singletons / companions), ``trait``, and Scala 3 ``enum``
+    # bodies all group methods the same way a class body does; case classes
+    # are plain ``class_definition``s.
+    class_kinds=frozenset(
+        {"class_definition", "object_definition", "trait_definition", "enum_definition"}
+    ),
+    # Self-type aliases (``self =>``) are skipped: bare and aliased implicit
+    # receivers degrade to the LCOM4 "no signal" valve, same documented limit
+    # as Kotlin.
+    self_identifiers=frozenset({"this"}),
+    # ``field_expression`` (fields ``value`` / ``field``) covers both
+    # ``this.field`` and ``this.method()`` (the latter nests one inside a
+    # ``call_expression``).
+    member_access_kinds=frozenset({"field_expression"}),
+    # Plain ``assert(...)`` and munit/JUnit-style ``assertEquals(...)`` are
+    # calls; ScalaTest's infix DSL (``x shouldBe y``) has no assert-prefixed
+    # callee and is a documented gap (under-signal, safe).
+    assert_call_kinds=frozenset({"call_expression"}),
+    # ``instance_expression`` is ``new Foo(...)``, needed so a constructor at
+    # an I/O boundary inside a loop is caught (JVM interop, as in Java).
+    call_kinds=frozenset({"call_expression", "instance_expression"}),
+    # Scala has no async syntax; the perf dialect's ``is_async_fn`` sniffs a
+    # declared ``Future[...]`` return type instead.
+)
+
+
 LANGUAGE_MAPS: dict[str, LanguageNodeMap] = {
     "python": _PY,
     "typescript": _TS,
@@ -458,6 +613,8 @@ LANGUAGE_MAPS: dict[str, LanguageNodeMap] = {
     "kotlin": _KOTLIN,
     "cpp": _CPP,
     "csharp": _CSHARP,
+    "dart": _DART,
+    "scala": _SCALA,
 }
 
 

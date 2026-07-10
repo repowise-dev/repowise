@@ -1,0 +1,15 @@
+{
+  "points": [
+    {
+      "taken_at": "2026-07-03T19:00:45.142832+00:00",
+      "hotspot_health": 10,
+      "average_health": 6.94,
+      "worst_performer_path": "src/flask/app.py",
+      "worst_performer_score": 1.07
+    }
+  ],
+  "declining": false,
+  "predicted_decline": false,
+  "state": "ready",
+  "reason": null
+}

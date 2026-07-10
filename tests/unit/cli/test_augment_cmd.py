@@ -75,16 +75,41 @@ def test_codex_user_prompt_submit_payload_returns_mcp_context(
     assert "semantic search" in _hook_context(result.output)
 
 
-def test_claude_lifecycle_payload_stays_silent_without_codex_client(
-    runner: CliRunner, tmp_path: Path
+def test_claude_session_start_emits_freshness_context(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _init_repowise_repo(tmp_path)
+    # The dedup marker is keyed on (event, context); identical blocks across
+    # fast test runs would suppress the emission, so bypass it here.
+    monkeypatch.setattr(
+        "repowise.cli.commands.augment_cmd.command._claim_emission", lambda e, c: True
+    )
 
     result = _invoke_augment(
         runner,
         {
             "hook_event_name": "SessionStart",
             "source": "startup",
+            "cwd": str(tmp_path),
+        },
+    )
+
+    assert result.exit_code == 0
+    # tmp_path is not a git repo, so the handler emits the freshness-free
+    # reminder, never a false "current" claim.
+    context = _hook_context(result.output)
+    assert "MCP tools" in context
+    assert "current" not in context
+
+
+def test_claude_user_prompt_submit_stays_silent(runner: CliRunner, tmp_path: Path) -> None:
+    _init_repowise_repo(tmp_path)
+
+    result = _invoke_augment(
+        runner,
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "Where is the auth flow?",
             "cwd": str(tmp_path),
         },
     )

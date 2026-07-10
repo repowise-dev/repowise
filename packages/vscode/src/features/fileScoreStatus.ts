@@ -3,6 +3,7 @@ import { Commands } from "../constants";
 import { getBulkHealth, type FileScores } from "../core/bulkHealth";
 import type { RepowiseContext } from "../core/context";
 import { repoRelativePath } from "../core/fileSignals";
+import { openViewPanel } from "../core/webviews";
 
 /** Renders a score, or a dash when the dimension is absent from the payload. */
 function fmt(value: number | null): string {
@@ -109,9 +110,13 @@ export function registerFileScoreStatus(ctx: RepowiseContext): vscode.Disposable
     }
   });
 
-  // Clicking the score opens the full health dashboard panel.
+  // Clicking the score opens the health dashboard focused on the active file,
+  // so the score in the status bar and the dashboard are one continuous read
+  // instead of two disconnected surfaces.
   const commandSub = vscode.commands.registerCommand(Commands.showFileHealth, () => {
-    void vscode.commands.executeCommand(Commands.showHealthDashboard);
+    const editor = vscode.window.activeTextEditor;
+    const rel = editor ? repoRelativePath(ctx, editor.document.uri) : null;
+    openViewPanel(ctx, "health", rel ? { selectPath: rel } : {});
   });
 
   if (ctx.getExtensionState() === "ready") {

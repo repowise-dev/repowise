@@ -12,6 +12,7 @@ import {
   ReferenceLine,
 } from "recharts";
 import type { Hotspot } from "@repowise-dev/types/git";
+import { riskInk } from "../health/tokens";
 
 interface RiskDistributionChartProps {
   hotspots: Hotspot[];
@@ -31,10 +32,7 @@ function computeRiskScore(h: Hotspot): number {
 }
 
 function riskColor(score: number): string {
-  if (score >= 70) return "var(--color-error)";
-  if (score >= 45) return "var(--color-accent-fill)";
-  if (score >= 25) return "var(--color-warning)";
-  return "var(--color-success)";
+  return riskInk(score / 100);
 }
 
 export function RiskDistributionChart({ hotspots, maxBars = 30 }: RiskDistributionChartProps) {

@@ -13,6 +13,7 @@ import { ChurnBar } from "./churn-bar";
 import { formatLOC } from "../lib/format";
 import { cn } from "../lib/cn";
 import { useVirtualRows } from "../shared/virtualized-table";
+import { clickableRowProps, CLICKABLE_ROW_CLS } from "../shared/responsive-table";
 import type { Hotspot } from "@repowise-dev/types/git";
 
 /**
@@ -236,27 +237,42 @@ export function HotspotTable({
                 <th
                   scope="col"
                   aria-sort={ariaSortFor("commits", sortKey, sortDir)}
-                  className="px-3 py-2.5 text-right text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-24 cursor-pointer select-none hover:text-[var(--color-text-secondary)]"
-                  onClick={() => handleSort("commits")}
+                  className="px-3 py-2.5 text-right text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-24"
                 >
-                  Commits 90d<SortIcon column="commits" sortKey={sortKey} sortDir={sortDir} />
+                  <button
+                    type="button"
+                    className="cursor-pointer select-none uppercase tracking-wider font-medium hover:text-[var(--color-text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] rounded"
+                    onClick={() => handleSort("commits")}
+                  >
+                    Commits 90d<SortIcon column="commits" sortKey={sortKey} sortDir={sortDir} />
+                  </button>
                 </th>
                 <th
                   scope="col"
                   aria-sort={ariaSortFor("churn", sortKey, sortDir)}
-                  className="px-3 py-2.5 text-left text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-32 cursor-pointer select-none hover:text-[var(--color-text-secondary)] hidden lg:table-cell"
-                  onClick={() => handleSort("churn")}
+                  className="px-3 py-2.5 text-left text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-32 hidden lg:table-cell"
                 >
-                  Churn<SortIcon column="churn" sortKey={sortKey} sortDir={sortDir} />
+                  <button
+                    type="button"
+                    className="cursor-pointer select-none uppercase tracking-wider font-medium hover:text-[var(--color-text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] rounded"
+                    onClick={() => handleSort("churn")}
+                  >
+                    Churn<SortIcon column="churn" sortKey={sortKey} sortDir={sortDir} />
+                  </button>
                 </th>
                 <th
                   scope="col"
                   aria-sort={ariaSortFor("trend", sortKey, sortDir)}
-                  className="px-3 py-2.5 text-right text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-24 cursor-pointer select-none hover:text-[var(--color-text-secondary)]"
-                  onClick={() => handleSort("trend")}
-                  title="Exponential decay score weighting recent commits more heavily (180-day half-life)"
+                  className="px-3 py-2.5 text-right text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-24"
                 >
-                  Trend<SortIcon column="trend" sortKey={sortKey} sortDir={sortDir} />
+                  <button
+                    type="button"
+                    className="cursor-pointer select-none uppercase tracking-wider font-medium hover:text-[var(--color-text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] rounded"
+                    onClick={() => handleSort("trend")}
+                    title="Exponential decay score weighting recent commits more heavily (180-day half-life)"
+                  >
+                    Trend<SortIcon column="trend" sortKey={sortKey} sortDir={sortDir} />
+                  </button>
                 </th>
                 <th className="px-3 py-2.5 text-left text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-20 hidden md:table-cell">
                   Bus Factor
@@ -287,11 +303,11 @@ export function HotspotTable({
               return (
                 <tbody key={h.file_path} ref={measureElement} data-index={i}>
                   <tr
-                    onClick={onSelect ? () => onSelect(h) : undefined}
+                    {...(onSelect ? clickableRowProps(() => onSelect(h)) : {})}
                     className={cn(
                       "border-b border-[var(--color-table-divider)] hover:bg-[var(--color-bg-elevated)] transition-colors group",
                       !isExpanded && "last:border-0",
-                      onSelect && "cursor-pointer",
+                      onSelect && CLICKABLE_ROW_CLS,
                     )}
                   >
                     {expandable && (

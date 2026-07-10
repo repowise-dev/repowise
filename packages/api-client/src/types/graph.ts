@@ -41,9 +41,15 @@ export interface GraphLike<N> {
 }
 
 export interface GraphExportResponse extends GraphLike<GraphNodeResponse> {
-  /** Server set this true when the response was capped to top-N by PageRank. */
+  /** Server set this true when the response was capped (PageRank fill +
+   *  reserved dead/hot/flow slots). */
   truncated?: boolean;
   total_node_count?: number;
+  /** Repo-wide signal totals vs how many nodes are in this response. */
+  dead_total?: number | null;
+  dead_in_view?: number | null;
+  hot_total?: number | null;
+  hot_in_view?: number | null;
 }
 
 // Community slice (Phase G4 — constellation blossom)

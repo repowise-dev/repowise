@@ -53,12 +53,18 @@ hide below `lg`; the wrapper always provides `overflow-x-auto`, and
 | `columns` | `ResponsiveColumn<T>[]` | yes | `{ key, header, render, priority?, align?, sortable?, mobileLabel?, mobileRender?, hideInCard?, headerClassName?, cellClassName? }`. |
 | `rows` | `T[]` | yes | |
 | `rowKey` | `(row: T) => string` | yes | |
-| `onRowClick` | `(row: T) => void` | no | Rows get pointer affordance when set. |
+| `onRowClick` | `(row: T) => void` | no | Rows get pointer affordance plus keyboard activation (`tabIndex`, Enter/Space) when set. |
 | `selectedKey` | `string \| null` | no | Highlights the matching row. |
-| `sortField` / `sortOrder` / `onSort` | `string` / `"asc" \| "desc"` / `(key) => void` | no | Controlled sorting; header arrows render on the active column. |
+| `sortField` / `sortOrder` / `onSort` | `string` / `"asc" \| "desc"` / `(key) => void` | no | Controlled sorting; sortable headers render as real buttons with `aria-sort` on the active column. |
 | `empty` | `ReactNode` | no | Rendered instead of the table when `rows` is empty (pass `EmptyState`). |
+| `caption` | `string` | no | Screen-reader-only `<caption>` describing the table. |
 | `stacked` | `"sm" \| "md"` | no | Collapse to stacked cards below the breakpoint. |
 | `bare` | `boolean` | no | Omit the rounded border + surface background (for card-embedded tables). |
+
+The module also exports `clickableRowProps(activate)` and
+`CLICKABLE_ROW_CLS` so tables that own their `<tr>` markup (for example
+`VirtualizedTable` consumers) can give clickable rows the same keyboard
+activation and focus treatment.
 
 ---
 
@@ -120,19 +126,22 @@ Empty-list placeholder with optional icon and CTA.
 
 ---
 
-## `shared/stat-card` â€” `StatCard`
+## `shared/metric-card` â€” `MetricCard`
 
-Single-stat display tile.
+The canonical single-stat display tile.
 
 | Prop | Type | Required | Notes |
 |------|------|----------|-------|
 | `label` | `string` | yes | Uppercase label above the value. |
-| `value` | `string \| number` | yes | Rendered tabular-nums. |
+| `value` | `React.ReactNode` | yes | Rendered tabular-nums. |
 | `description` | `string` | no | Caption under the value. |
-| `trend` | `{ value: string; positive: boolean }` | no | Renders an up/down arrow next to the value. |
+| `delta` | `{ value: string; positive: boolean; neutral?: boolean }` | no | Signed change; `positive` drives good/bad colour, `neutral` renders uncoloured. |
+| `sparkline` | `React.ReactNode` | no | Rendered beneath the value. |
+| `distBar` | `React.ReactNode` | no | Distribution bar beneath the value. |
 | `icon` | `React.ReactNode` | no | Right-aligned glyph. |
+| `href` | `string` | no | Wraps the card in a link; hover affordance follows. |
+| `LinkComponent` | `React.ElementType` | no | Link element used with `href`; defaults to `"a"`. |
 | `className` | `string` | no | Forwarded to the outer Card. |
-| `href` | `string` | no | Wraps the card in an `<a>`; hover affordance follows. |
 
 ---
 
@@ -692,7 +701,7 @@ bars colour-graded against the freshness thresholds.
 
 ### `workspace/cross-repo-summary` â€” `CrossRepoSummary`
 
-Four-tile summary header (`StatCard` Ã— 4) for co-change pairs, package
+Four-tile summary header (`MetricCard` Ã— 4) for co-change pairs, package
 deps, contract links, and contract count.
 
 | Prop | Type | Required |

@@ -391,11 +391,20 @@ def _post_repowise_entries(saved: dict) -> list:
     ]
 
 
+def _session_start_repowise_entries(saved: dict) -> list:
+    return [
+        (entry.get("matcher"), h["command"])
+        for entry in saved["hooks"].get("SessionStart", [])
+        for h in entry["hooks"]
+        if "repowise" in h.get("command", "")
+    ]
+
+
 def test_install_claude_code_hooks_creates_missing_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Fresh install: only a PostToolUse entry is added. The new design
-    routes Bash + Grep + Glob through a single matcher; PreToolUse is
+    """Fresh install: a PostToolUse entry plus the SessionStart context hook.
+    Enrichment routes through a single PostToolUse matcher; PreToolUse is
     intentionally absent because it can't see actual result counts."""
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
@@ -407,6 +416,7 @@ def test_install_claude_code_hooks_creates_missing_file(
     assert _post_repowise_entries(saved) == [
         ("Bash|PowerShell|Grep|Glob|Read|Edit|Write", "repowise-augment")
     ]
+    assert _session_start_repowise_entries(saved) == [("startup|resume|clear", "repowise-augment")]
 
 
 def test_install_claude_code_hooks_preserves_user_pretool_hooks(
@@ -645,7 +655,15 @@ def test_migrate_claude_code_hooks_never_widens_user_matcher(
                                 {"type": "command", "command": "my-linter"},
                             ],
                         }
-                    ]
+                    ],
+                    # SessionStart already present so its backfill (a separate
+                    # migration) can't mask the matcher no-op under test.
+                    "SessionStart": [
+                        {
+                            "matcher": "startup|resume|clear",
+                            "hooks": [{"type": "command", "command": "repowise-augment"}],
+                        }
+                    ],
                 }
             }
         ),
@@ -705,7 +723,13 @@ def test_migrate_claude_code_hooks_noop_when_already_current(
                     "matcher": "Bash|PowerShell|Grep|Glob|Read|Edit|Write",
                     "hooks": [{"type": "command", "command": "repowise-augment"}],
                 }
-            ]
+            ],
+            "SessionStart": [
+                {
+                    "matcher": "startup|resume|clear",
+                    "hooks": [{"type": "command", "command": "repowise-augment"}],
+                }
+            ],
         }
     }
     original = json.dumps(payload, indent=2) + "\n"
@@ -715,6 +739,97 @@ def test_migrate_claude_code_hooks_noop_when_already_current(
     assert claude_config.migrate_claude_code_hooks() is False
     assert settings_path.read_text(encoding="utf-8") == original
     assert settings_path.stat().st_mtime_ns == mtime_before
+
+
+def test_migrate_claude_code_hooks_backfills_session_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Installs that predate the SessionStart context hook get it added,
+    gated on the augment PostToolUse hook being present (so migration never
+    installs anything for a user who removed repowise hooks on purpose)."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    settings_path.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "PostToolUse": [
+                        {
+                            "matcher": "Bash|PowerShell|Grep|Glob|Read|Edit|Write",
+                            "hooks": [{"type": "command", "command": "repowise-augment"}],
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert claude_config.migrate_claude_code_hooks() is True
+    saved = json.loads(settings_path.read_text(encoding="utf-8"))
+    assert _session_start_repowise_entries(saved) == [("startup|resume|clear", "repowise-augment")]
+    # Idempotent on the second pass.
+    assert claude_config.migrate_claude_code_hooks() is False
+
+
+def test_migrate_claude_code_hooks_no_session_start_without_augment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A settings.json with only user hooks never gains repowise entries."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    settings_path.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "PostToolUse": [
+                        {
+                            "matcher": "Bash",
+                            "hooks": [{"type": "command", "command": "my-linter"}],
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert claude_config.migrate_claude_code_hooks() is False
+    saved = json.loads(settings_path.read_text(encoding="utf-8"))
+    assert "SessionStart" not in saved["hooks"]
+
+
+def test_migrate_claude_code_hooks_preserves_user_session_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A user's own SessionStart hook is kept; the repowise entry appends."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    settings_path.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "PostToolUse": [
+                        {
+                            "matcher": "Bash|PowerShell|Grep|Glob|Read|Edit|Write",
+                            "hooks": [{"type": "command", "command": "repowise-augment"}],
+                        }
+                    ],
+                    "SessionStart": [{"hooks": [{"type": "command", "command": "echo mine"}]}],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert claude_config.migrate_claude_code_hooks() is True
+    saved = json.loads(settings_path.read_text(encoding="utf-8"))
+    session = saved["hooks"]["SessionStart"]
+    assert session[0]["hooks"][0]["command"] == "echo mine"
+    assert _session_start_repowise_entries(saved) == [("startup|resume|clear", "repowise-augment")]
 
 
 def test_migrate_claude_code_hooks_silent_when_settings_missing(
@@ -733,6 +848,26 @@ def test_migrate_claude_code_hooks_silent_on_malformed_json(
     settings_path.write_text("{ not json", encoding="utf-8")
 
     assert claude_config.migrate_claude_code_hooks() is False
+
+
+def test_plugin_hooks_json_mirrors_settings_entries(repo_root: Path) -> None:
+    """The bundled plugin's hooks.json must match what init writes to
+    settings.json; the emission dedup in augment assumes both surfaces
+    fire the same command on the same events."""
+    plugin = json.loads(
+        (repo_root / "plugins" / "claude-code" / "hooks" / "hooks.json").read_text(encoding="utf-8")
+    )
+    hooks = plugin["hooks"]
+
+    def rows(bucket: str) -> list:
+        return [
+            (entry.get("matcher"), h["command"])
+            for entry in hooks.get(bucket, [])
+            for h in entry["hooks"]
+        ]
+
+    assert rows("PostToolUse") == [(claude_config._AUGMENT_MATCHER, "repowise-augment")]
+    assert rows("SessionStart") == [(claude_config._SESSION_START_MATCHER, "repowise-augment")]
 
 
 def test_install_claude_code_hooks_rejects_invalid_existing_file(

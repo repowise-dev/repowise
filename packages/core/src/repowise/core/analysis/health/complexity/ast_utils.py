@@ -64,6 +64,12 @@ def _find_assigned_lambda_name(node: Node) -> str | None:
             name = parent.child_by_field_name("name")
             if name is not None and name.text is not None:
                 return _node_text(name)
+        if parent.type in {"val_definition", "var_definition"}:
+            # Scala ``val f = (x: Int) => ...``: the bound name is the
+            # ``pattern`` field (only simple identifier patterns are named).
+            pattern = parent.child_by_field_name("pattern")
+            if pattern is not None and pattern.type == "identifier" and pattern.text is not None:
+                return _node_text(pattern)
         if parent.type in {"assignment_expression", "assignment_pattern"}:
             left = parent.child_by_field_name("left")
             if left is None:
@@ -107,8 +113,31 @@ def _is_test_suite_callback(node: Node, lmap: LanguageNodeMap) -> bool:
     return any(part in _TEST_SUITE_CALLBACK_CALLEES for part in callee_text.split("."))
 
 
+def _dart_signature_sibling(body: Node) -> Node | None:
+    """Resolve a Dart ``function_body`` back to its signature node.
+
+    Dart's grammar splits a function into a signature node and a SIBLING
+    ``function_body`` (class members additionally wrap the signature in a
+    ``method_signature``); the name and parameter list live on the signature.
+    Returns ``None`` when the preceding sibling is not a signature shape, so
+    non-Dart callers are unaffected (no other mapped grammar collects
+    ``function_body`` nodes).
+    """
+    sib = body.prev_named_sibling
+    if sib is None or not sib.type.endswith("_signature"):
+        return None
+    if sib.type == "method_signature":
+        inner = next((c for c in sib.children if c.is_named), None)
+        return inner or sib
+    return sib
+
+
 def _find_function_entry_name(node: Node, lmap: LanguageNodeMap) -> str:
     if node.type not in lmap.lambda_kinds:
+        if node.type == "function_body":
+            sig = _dart_signature_sibling(node)
+            if sig is not None:
+                return _find_name(sig)
         return _find_name(node)
     assigned = _find_assigned_lambda_name(node)
     if assigned:
@@ -154,11 +183,31 @@ def _count_parameters(fn_node: Node) -> int:
             if child.type in ("parameters", "parameter_list", "formal_parameters"):
                 params = child
                 break
+    if params is None and fn_node.type == "function_body":
+        # Dart: the parameter list lives on the preceding signature sibling.
+        sig = _dart_signature_sibling(fn_node)
+        if sig is not None:
+            params = next((c for c in sig.children if c.type == "formal_parameter_list"), None)
     if params is None:
         return 0
     count = 0
     for child in params.children:
-        if child.type in ("(", ")", ",", "self", "cls", ":", "*", "**"):
+        # A bare ``*`` (keyword-only marker) and a bare ``/`` (positional-only
+        # marker) parse as named ``keyword_separator`` / ``positional_separator``
+        # nodes but carry no arity, so they must be skipped alongside the
+        # ``*``/``**`` splat tokens and the punctuation.
+        if child.type in (
+            "(",
+            ")",
+            ",",
+            "self",
+            "cls",
+            ":",
+            "*",
+            "**",
+            "keyword_separator",
+            "positional_separator",
+        ):
             continue
         if child.is_named:
             count += 1

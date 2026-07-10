@@ -59,7 +59,19 @@ class TestJsonProgressEmitter:
             "pages_generated": 5,
             "cost_usd": 0.42,
             "duration_s": 12.3,
+            "degraded": [],
         }
+
+    def test_done_reports_degraded_steps(self, capsys):
+        JsonProgressEmitter().done(
+            ok=True,
+            pages_generated=5,
+            cost_usd=0.42,
+            duration_s=12.3,
+            degraded=["Git persist: disk I/O error"],
+        )
+        (event,) = self._lines(capsys)
+        assert event["degraded"] == ["Git persist: disk I/O error"]
 
     def test_error(self, capsys):
         JsonProgressEmitter().error("boom")
@@ -136,6 +148,7 @@ class TestUpdateProgressJsonCli:
             "pages_generated": 0,
             "cost_usd": 0.0,
             "duration_s": events[-1]["duration_s"],
+            "degraded": [],
         }
         # Informational Rich output (repo header, "No changed files detected.")
         # went to stderr, not stdout.

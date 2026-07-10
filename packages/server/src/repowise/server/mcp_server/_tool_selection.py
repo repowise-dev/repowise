@@ -35,6 +35,14 @@ _log = logging.getLogger("repowise.mcp")
 # usable in the current mode, including opt-in and workspace-only tools.
 ALL = "all"
 
+# A value of "lean" enables the agent-lean profile: the five pre-edit tools a
+# coding agent actually reaches for, small enough that every schema can stay
+# always-loaded instead of deferred behind a tool-search round trip. list_repos
+# joins it in workspace mode only, where repo aliases must be discoverable.
+LEAN = "lean"
+LEAN_TOOLS = frozenset({"get_answer", "get_context", "get_symbol", "search_codebase", "get_risk"})
+_LEAN_WORKSPACE_EXTRAS = frozenset({"list_repos"})
+
 # Snapshot of every tool registered on the server, captured once after the
 # registry applies them and before any selection trims the live set. Selection
 # rebuilds the advertised set from this snapshot, so it is idempotent and can
@@ -88,6 +96,7 @@ def resolve_enabled_tools(
 
     - ``None`` / empty: the curated default surface.
     - ``"all"`` (or ``["all"]``): every tool usable in the current mode.
+    - ``"lean"``: the agent-lean profile (see :data:`LEAN_TOOLS`).
     - all tokens prefixed ``+``/``-``: deltas applied to the default surface.
     - otherwise: an explicit allowlist (only the named tools).
 
@@ -107,6 +116,10 @@ def resolve_enabled_tools(
 
     if len(tokens) == 1 and tokens[0].lower() == ALL:
         return {name for name, e in catalog.items() if usable(e)}
+
+    if len(tokens) == 1 and tokens[0].lower() == LEAN:
+        names = LEAN_TOOLS | (_LEAN_WORKSPACE_EXTRAS if is_workspace else frozenset())
+        return {n for n in names if n in catalog and usable(catalog[n])}
 
     def resolve_name(raw: str) -> str | None:
         entry = catalog.get(raw)

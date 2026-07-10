@@ -1,0 +1,30 @@
+{
+  "points": [
+    {
+      "file_path": "src/flask/cli.py",
+      "commit_count_90d": 2,
+      "max_ccn": 13,
+      "nloc": 822,
+      "score": 2.05,
+      "churn_percentile": 84.5
+    },
+    {
+      "file_path": "src/flask/sansio/app.py",
+      "commit_count_90d": 1,
+      "max_ccn": 12,
+      "nloc": 678,
+      "score": 1.35,
+      "churn_percentile": 94
+    },
+    {
+      "file_path": "src/flask/ctx.py",
+      "commit_count_90d": 1,
+      "max_ccn": 7,
+      "nloc": 395,
+      "score": 6.51,
+      "churn_percentile": 97.6
+    }
+  ],
+  "total_points": 4,
+  "state": "ready"
+}

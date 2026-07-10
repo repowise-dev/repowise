@@ -92,7 +92,7 @@ export function FileHealthTab({
       <EmptyState
         icon={<HeartPulse className="h-8 w-8" />}
         title="No health data"
-        description="Run repowise init (or repowise health) to score this file."
+        description="Index this repo to score this file. Health signals land with the first index."
       />
     );
   }

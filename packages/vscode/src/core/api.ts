@@ -36,6 +36,13 @@ export interface RepowiseApi {
    * `head_commit` (cache tag, staleness) and `default_branch` (risk base).
    */
   resolveRepo(repoRoot: string): Promise<RepoResponse | null>;
+  /**
+   * Registers the single listener fired when a request fails at the network
+   * level (refused, reset) while a base URL is set. HTTP error statuses do
+   * not fire it. Lets the server manager notice a server that died without
+   * touching its lockfile, instead of staying "connected" forever.
+   */
+  onConnectionFailure(listener: () => void): void;
 }
 
 const DEFAULT_HEALTH_TIMEOUT_MS = 800;
@@ -55,10 +62,20 @@ function canonicalPath(p: string): string {
 
 export function createApi(log: Logger): RepowiseApi {
   let baseUrl: string | null = null;
+  let connectionFailureListener: (() => void) | null = null;
+
+  const guardedFetch: typeof fetch = async (input, init) => {
+    try {
+      return await fetch(input, init);
+    } catch (err) {
+      if (baseUrl) connectionFailureListener?.();
+      throw err;
+    }
+  };
 
   function apply(): void {
     // The API client keeps global module state; keep it in sync with baseUrl.
-    configureApiClient({ baseUrl: baseUrl ?? "" });
+    configureApiClient({ baseUrl: baseUrl ?? "", fetch: guardedFetch });
   }
 
   return {
@@ -101,6 +118,10 @@ export function createApi(log: Logger): RepowiseApi {
         log.debug(`resolveRepo failed: ${String(err)}`);
         return null;
       }
+    },
+
+    onConnectionFailure(listener: () => void): void {
+      connectionFailureListener = listener;
     },
   };
 }

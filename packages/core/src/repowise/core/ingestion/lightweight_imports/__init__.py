@@ -20,6 +20,9 @@ from .elixir import extract_elixir_imports
 from .erlang import extract_erlang_imports
 from .fsharp import extract_fsharp_imports
 from .haskell import extract_haskell_imports
+from .lean import extract_lean_imports
+from .sql import extract_dbt_imports
+
 
 ExtractorFn = Callable[[str], list[Import]]
 
@@ -28,8 +31,12 @@ _EXTRACTORS: dict[str, ExtractorFn] = {
     "dart": extract_dart_imports,
     "clojure": extract_clojure_imports,
     "haskell": extract_haskell_imports,
+    "lean": extract_lean_imports,
     "erlang": extract_erlang_imports,
     "fsharp": extract_fsharp_imports,
+    # dbt {{ ref() }} / {{ source() }}, the only import system .sql files
+    # have; plain SQL contains neither form, so this is a no-op outside dbt.
+    "sql": extract_dbt_imports,
 }
 
 LIGHTWEIGHT_IMPORT_LANGUAGES = frozenset(_EXTRACTORS)

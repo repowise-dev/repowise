@@ -1,5 +1,12 @@
 import { apiGet, apiPost, apiPatch, apiDelete } from "./client";
-import type { RepoCreate, RepoUpdate, RepoResponse, JobResponse, RepoStatsResponse } from "./types";
+import type {
+  RepoCreate,
+  RepoUpdate,
+  RepoResponse,
+  JobResponse,
+  RepoStatsResponse,
+  PreflightResponse,
+} from "./types";
 
 export async function listRepos(): Promise<RepoResponse[]> {
   return apiGet<RepoResponse[]>("/api/repos");
@@ -23,6 +30,27 @@ export async function syncRepo(repoId: string): Promise<JobResponse> {
 
 export async function fullResyncRepo(repoId: string): Promise<JobResponse> {
   return apiPost<JobResponse>(`/api/repos/${repoId}/full-resync`);
+}
+
+/** Start the first full index (docs included) for a registered repo.
+ * Returns 409 when a job is already active for it. */
+export async function startIndexJob(
+  repoId: string,
+): Promise<{ job_id: string; status: string }> {
+  return apiPost<{ job_id: string; status: string }>(`/api/repos/${repoId}/index`);
+}
+
+/** Provider connectivity smoke test + page/cost estimate for a first index. */
+export async function preflightIndex(
+  repoId: string,
+  coveragePct?: number,
+): Promise<PreflightResponse> {
+  return apiPost<PreflightResponse>(
+    `/api/repos/${repoId}/preflight`,
+    undefined,
+    undefined,
+    coveragePct !== undefined ? { coverage_pct: coveragePct } : undefined,
+  );
 }
 
 export async function deleteRepo(repoId: string): Promise<{ ok: boolean; deleted_pages: number }> {

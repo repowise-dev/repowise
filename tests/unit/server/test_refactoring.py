@@ -21,6 +21,7 @@ async def create_test_repo(client: AsyncClient) -> dict:
     resp = await client.post(
         "/api/repos",
         json={
+            "index": False,
             "name": "test-repo",
             "local_path": str(repo_dir),
             "url": "https://github.com/example/test-repo",
@@ -349,6 +350,7 @@ async def _seed_enrich_repo(client: AsyncClient, app, *, enabled: bool) -> tuple
     resp = await client.post(
         "/api/repos",
         json={
+            "index": False,
             "name": "enrich-repo",
             "local_path": str(repo_dir),
             "url": "https://github.com/example/enrich-repo",

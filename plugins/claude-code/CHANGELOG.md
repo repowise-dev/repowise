@@ -2,6 +2,26 @@
 
 All notable changes to the Repowise Claude Code plugin are documented here.
 
+## Unreleased
+
+### Added
+- Bundled `SessionStart` hook (`repowise-augment`, matcher `startup|resume|clear`):
+  injects a short context block at session start with live index freshness
+  (current / behind with a changed-file count / update in progress) and the
+  core-tool trust rule, matching the CLI-installed hook.
+
+## 0.27.0
+
+### Changed
+- Version bump to track the repowise 0.27.0 release. No command, skill, or MCP
+  tool-surface changes this cycle.
+
+## 0.26.0
+
+### Changed
+- Version bump to track the repowise 0.26.0 release. No command, skill, or MCP
+  tool-surface changes this cycle.
+
 ## 0.25.0
 
 ### Changed

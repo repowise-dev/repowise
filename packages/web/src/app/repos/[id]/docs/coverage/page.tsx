@@ -5,7 +5,7 @@ import { DriftBanner } from "@repowise-dev/ui/coverage/drift-banner";
 import { ConfidenceVsFreshnessMatrix } from "@repowise-dev/ui/coverage/confidence-vs-freshness-matrix";
 import { FreshnessTableWithRegenerate } from "@/components/coverage/freshness-table-wrapper";
 import type { DocPage } from "@repowise-dev/types/docs";
-import { StatCard } from "@repowise-dev/ui/shared/stat-card";
+import { MetricCard } from "@repowise-dev/ui/shared/metric-card";
 import { listPages } from "@/lib/api/pages";
 import { formatNumber } from "@repowise-dev/ui/lib/format";
 
@@ -53,17 +53,17 @@ export default async function CoveragePage({
 
         {/* Stat cards */}
         <div className="flex-1 grid grid-cols-1 gap-3 sm:grid-cols-3">
-          <StatCard
+          <MetricCard
             label="Fresh"
             value={formatNumber(fresh)}
             description={`${pages.length > 0 ? Math.round((fresh / pages.length) * 100) : 0}% of pages`}
           />
-          <StatCard
+          <MetricCard
             label="Stale"
             value={formatNumber(stale)}
             description={`${pages.length > 0 ? Math.round((stale / pages.length) * 100) : 0}% of pages`}
           />
-          <StatCard
+          <MetricCard
             label="Outdated"
             value={formatNumber(outdated)}
             description={`${pages.length > 0 ? Math.round((outdated / pages.length) * 100) : 0}% of pages`}

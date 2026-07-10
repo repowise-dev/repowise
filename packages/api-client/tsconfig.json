@@ -15,7 +15,7 @@
     "declaration": true,
     "declarationMap": true,
     "noEmit": true,
-    "types": ["vitest/globals"],
+    "types": ["vitest/globals", "node"],
     "paths": {
       "@repowise-dev/types": ["../types/src/index.ts"],
       "@repowise-dev/types/*": ["../types/src/*"],

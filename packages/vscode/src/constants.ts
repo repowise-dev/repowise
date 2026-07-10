@@ -13,7 +13,7 @@ export const CONFIG_SECTION = "repowise";
  * Lowest server version this build understands. Older servers may serve a
  * store shape this extension cannot read, so the status bar flags them.
  */
-export const MIN_SERVER_VERSION = "0.25.0";
+export const MIN_SERVER_VERSION = "0.26.0";
 
 /** Command ids contributed by the extension, mirrored from package.json. */
 export const Commands = {
@@ -31,6 +31,7 @@ export const Commands = {
   showArchitecture: "repowise.showArchitecture",
   showKnowledgeGraph: "repowise.showKnowledgeGraph",
   showDecisionTimeline: "repowise.showDecisionTimeline",
+  showSettings: "repowise.showSettings",
 } as const;
 
 /**
@@ -41,7 +42,30 @@ export const Commands = {
 export const InternalCommands = {
   copyRefactoringPrompt: "repowise.copyRefactoringPrompt",
   openRefactoringPlan: "repowise.openRefactoringPlan",
+  /** Opens the co-change nudge QuickPick; bound to the status-bar item only. */
+  reviewCochanges: "repowise.reviewCochanges",
+  /** Hand a refactoring plan to Copilot agent mode; bound to code actions. */
+  handPlanToCopilot: "repowise.handPlanToCopilot",
+  /** Hand a refactoring plan to Claude Code; bound to code actions. */
+  handPlanToClaudeCode: "repowise.handPlanToClaudeCode",
 } as const;
+
+/**
+ * Language model tool names, mirrored from the `languageModelTools`
+ * contribution in package.json. The runtime registration in features/lmTools
+ * must cover exactly this set or VS Code drops the missing tools.
+ */
+export const LmToolNames = {
+  searchCodebase: "repowise_searchCodebase",
+  getFileHealth: "repowise_getFileHealth",
+  getRefactoringPlans: "repowise_getRefactoringPlans",
+  getBranchRisk: "repowise_getBranchRisk",
+  getSymbolInfo: "repowise_getSymbolInfo",
+  getFileDocs: "repowise_getFileDocs",
+} as const;
+
+/** Context key gating the language model tools (mirrors agentTools.enabled). */
+export const AGENT_TOOLS_CONTEXT_KEY = "repowise.agentToolsEnabled";
 
 /** Sidebar view ids, mirrored from package.json `contributes.views`. */
 export const Views = {

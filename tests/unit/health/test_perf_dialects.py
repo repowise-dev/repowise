@@ -490,7 +490,9 @@ def test_python_pd_concat_in_loop():
 def test_python_pandas_iterrows_in_loop():
     # The iterrows() call lives in the loop HEADER, so the body call-markers
     # never see it — the loop_iterable_call_marker hook fires on the loop node.
-    iterrows = "def f(df):\n    for _, row in df.iterrows():\n        use(row)\n"
+    # Soft-gated on a pandas import present in the file (a bare .iterrows() with
+    # no pandas import is now treated as a name collision, not a DataFrame).
+    iterrows = "import pandas\ndef f(df):\n    for _, row in df.iterrows():\n        use(row)\n"
     assert ("pandas_iterrows_in_loop", "") in _hits("python", iterrows)
     # itertuples is the recommended faster alternative — never flagged.
     tuples = "def f(df):\n    for row in df.itertuples():\n        use(row)\n"
@@ -510,3 +512,215 @@ def test_ts_array_spread_in_reduce_vs_push():
     push = "function f(xs){ return xs.reduce((acc, x) => { acc.push(x); return acc; }, []); }"
     assert ("array_spread_in_reduce", "") in _hits("typescript", spread)
     assert not any(k == "array_spread_in_reduce" for k, _ in _hits("typescript", push))
+
+
+# ---------------------------------------------------------------------------
+# Dart
+# ---------------------------------------------------------------------------
+
+
+def test_dart_fixture_counts():
+    fc = _walk("dart/perf_io_in_loop.dart", "dart")
+    counts = _kinds(fc.perf_hits)
+    assert counts["io_in_loop"] == 3
+    assert {h.detail for h in fc.perf_hits if h.kind == "io_in_loop"} == {
+        "db",
+        "filesystem",
+        "network",
+    }
+    assert counts["serial_await_in_loop"] == 3
+    assert counts["string_concat_in_loop"] == 1
+    assert counts["resource_construction_in_loop"] == 1
+
+
+_DART_CASES = [
+    (
+        "import 'package:http/http.dart' as http;\n"
+        "Future<void> f(List<Uri> urls) async {\n"
+        "  for (final u in urls) { final r = await http.get(u); }\n"
+        "}\n",
+        [("io_in_loop", "network"), ("serial_await_in_loop", "network")],
+        "an awaited http verb in a for-in loop is a serial network round-trip",
+    ),
+    (
+        "Future<void> f(List<dynamic> files) async {\n"
+        "  for (final x in files) { final t = await x.readAsString(); }\n"
+        "}\n",
+        [("io_in_loop", "filesystem"), ("serial_await_in_loop", "filesystem")],
+        "readAsString is a File round-trip regardless of receiver name",
+    ),
+    (
+        "String f(List<String> parts) {\n"
+        "  var s = '';\n"
+        "  for (final p in parts) { s += 'x'; }\n"
+        "  return s;\n"
+        "}\n",
+        [("string_concat_in_loop", "")],
+        "immutable-string += accumulation in a loop is O(n^2)",
+    ),
+    (
+        "void f(List<int> xs) {\n"
+        "  for (final x in xs) { final d = Dio(); }\n"
+        "}\n",
+        [("resource_construction_in_loop", "")],
+        "a Dio client constructed per-iteration",
+    ),
+    (
+        "import 'package:http/http.dart' as http;\n"
+        "void f() {\n"
+        "  for (var i = 0; i < 3; i++) { http.get(Uri.parse('u')); }\n"
+        "}\n",
+        [],
+        "a constant-bound loop is not data-dependent N+1",
+    ),
+    (
+        "void f(List<String> parts) {\n"
+        "  var s = '';\n"
+        "  for (final p in parts) { s = ''; s += p; }\n"
+        "}\n",
+        [],
+        "opaque-variable += is not provably string concat (precision-first)",
+    ),
+]
+
+
+@pytest.mark.parametrize("src,expected,note", _DART_CASES, ids=[c[2] for c in _DART_CASES])
+def test_dart_cases(src, expected, note):
+    assert _hits("dart", src) == sorted(expected), note
+
+
+def test_dart_string_concat_reset_per_iteration_not_flagged():
+    # ``name`` is declared fresh inside the loop body, so ``name += '/'``
+    # is not a cross-iteration accumulator (shelf directory_listing FP).
+    src = (
+        "void f(List<String> xs) {\n"
+        "  for (final x in xs) {\n"
+        "    var name = x;\n"
+        "    name += '/';\n"
+        "    use(name);\n"
+        "  }\n"
+        "}\n"
+    )
+    assert not any(k == "string_concat_in_loop" for k, _ in _hits("dart", src))
+
+
+# ---------------------------------------------------------------------------
+# Scala
+# ---------------------------------------------------------------------------
+
+
+def test_scala_fixture_counts():
+    fc = _walk("scala/perf_io_in_loop.scala", "scala")
+    counts = _kinds(fc.perf_hits)
+    # Source.fromFile in readAll + in matrix's inner loop.
+    assert counts["io_in_loop"] == 2
+    assert {h.detail for h in fc.perf_hits if h.kind == "io_in_loop"} == {"filesystem"}
+    assert counts["nested_loop_with_io"] == 1
+    # ``"a+b".r`` (StringOps) + ``Pattern.compile`` (JVM interop); the hoisted
+    # ``.r`` outside the loop stays quiet.
+    assert counts["regex_compile_in_loop"] == 2
+    assert counts["string_concat_in_loop"] == 1
+    assert counts["lock_in_loop"] == 1
+    assert counts["blocking_sync_in_async"] == 1
+    # The constant-bound ``1 to 3`` loop and the plain helper call do not fire.
+    assert counts["resource_construction_in_loop"] == 0
+
+
+_SCALA_CASES = [
+    (
+        "import slick.jdbc.PostgresProfile.api._\n"
+        "object A { def m(ids: List[Long], db: Database): Unit = {\n"
+        "  for (id <- ids) { db.run(query(id)) }\n"
+        "} }\n",
+        [("io_in_loop", "db")],
+        "Slick db.run WITH a db import passes the file-level gate",
+    ),
+    (
+        "object A { def m(ids: List[Long], job: Runner): Unit = {\n"
+        "  for (id <- ids) { job.run(id) }\n"
+        "} }\n",
+        [],
+        "ambiguous run() with NO db import is gated out",
+    ),
+    (
+        "object A { def m(ids: List[Long], xa: Any): Unit = {\n"
+        "  for (id <- ids) { query(id).transact(xa) }\n"
+        "} }\n",
+        [("io_in_loop", "db")],
+        "doobie .transact is distinctive enough to fire ungated",
+    ),
+    (
+        "import sttp.client3._\n"
+        "object A { def m(reqs: List[Req], backend: Backend): Unit = {\n"
+        "  for (r <- reqs) { r.send(backend) }\n"
+        "} }\n",
+        [("io_in_loop", "network")],
+        "sttp request.send WITH a network import",
+    ),
+    (
+        "object A { def m(msgs: List[Msg], actor: Actor): Unit = {\n"
+        "  for (m <- msgs) { actor.send(m) }\n"
+        "} }\n",
+        [],
+        "generic .send with NO network import is gated out",
+    ),
+    (
+        "object A { def m(paths: List[String]): Unit = {\n"
+        "  for (p <- paths) { os.read(p) }\n"
+        "} }\n",
+        [("io_in_loop", "filesystem")],
+        "os-lib os.read is method-gated (no import needed)",
+    ),
+    (
+        "import scala.concurrent.Future\n"
+        "object A { def m(): Future[Int] = {\n"
+        "  Thread.sleep(100)\n"
+        "  Future.successful(1)\n"
+        "} }\n",
+        [("blocking_sync_in_async", "Thread.sleep")],
+        "Thread.sleep inside a Future-returning def",
+    ),
+    (
+        "import scala.concurrent.Await\n"
+        "object A { def m(fut: Fut): Int = {\n"
+        "  Await.result(fut, d)\n"
+        "} }\n",
+        [],
+        "Await.result in a NON-Future def is not sync-over-async",
+    ),
+    (
+        "object A { def m(items: List[String]): String = {\n"
+        '  var acc = ""\n'
+        "  var i = 0\n"
+        "  while (i < items.length) {\n"
+        '    acc = acc + "x"\n'
+        "    i += 1\n"
+        "  }\n"
+        "  acc\n"
+        "} }\n",
+        [("string_concat_in_loop", "")],
+        "`acc = acc + \"lit\"` reassignment form on a string var",
+    ),
+]
+
+
+@pytest.mark.parametrize("src,expected,note", _SCALA_CASES, ids=[c[2] for c in _SCALA_CASES])
+def test_scala_cases(src, expected, note):
+    assert _hits("scala", src) == sorted(expected), note
+
+
+def test_scala_same_collection_nested_loop_fact():
+    # Two nested for-comprehensions over the SAME collection record the
+    # centrality-gated ``nested_loop_quadratic`` fact (not a raw hit).
+    src = (
+        "object A { def m(items: List[Int]): Unit = {\n"
+        "  for (a <- items) {\n"
+        "    for (b <- items) {\n"
+        "      combine(a, b)\n"
+        "    }\n"
+        "  }\n"
+        "} }\n"
+    )
+    fc = walk_file("t.scala", "scala", src.encode())
+    assert any(f.nested_loop_line for f in fc.perf_fn_facts)
+    assert not any(h.kind == "nested_loop_quadratic" for h in fc.perf_hits)

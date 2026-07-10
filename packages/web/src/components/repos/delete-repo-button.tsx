@@ -13,6 +13,7 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@repowise-dev/ui/ui/dialog";
+import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
 
 interface DeleteRepoButtonProps {
   repoId: string;
@@ -43,7 +44,7 @@ export function DeleteRepoButton({
         router.refresh();
       }
     } catch (err) {
-      toast.error(`Failed to delete: ${err instanceof Error ? err.message : "Unknown error"}`);
+      toast.error(`Failed to delete: ${toFriendlyMessage(err)}`);
     } finally {
       setDeleting(false);
     }
@@ -67,8 +68,9 @@ export function DeleteRepoButton({
             e.stopPropagation();
             setOpen(true);
           }}
-          className="opacity-0 group-hover:opacity-100 p-1 text-[var(--color-text-tertiary)] hover:text-[var(--color-error)] transition-all"
+          className="p-1 text-[var(--color-text-tertiary)] hover:text-[var(--color-error)] transition-all md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100"
           title="Delete repository"
+          aria-label={`Delete ${repoName}`}
         >
           <Trash2 className="h-3.5 w-3.5" />
         </button>

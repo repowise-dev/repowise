@@ -57,6 +57,15 @@ export interface FileHealthMetric {
   defect_score?: number | null;
   maintainability_score?: number | null;
   performance_score?: number | null;
+  /**
+   * Dominant-cause lead (worst finding's biomarker + reason) and the summed
+   * pre-floor `health_impact`. Additive display signals: the lead headlines the
+   * "one reason", `total_deduction` ranks two files that both floor at `1.0`.
+   * Null on clean files or payloads that predate these fields.
+   */
+  primary_biomarker?: string | null;
+  primary_reason?: string | null;
+  total_deduction?: number | null;
 }
 
 export interface FileScoreBreakdownFinding {

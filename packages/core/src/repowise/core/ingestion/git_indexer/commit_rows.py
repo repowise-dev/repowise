@@ -18,6 +18,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from ._constants import is_fix_commit
+from .identity import canonicalize_author_email
 
 # Commit subjects are a headline (`%s`); cap defensively against a pathological
 # single-line subject so one row can't bloat the table.
@@ -25,8 +26,14 @@ _MAX_SUBJECT_LEN = 500
 
 
 def _author_key(author_name: str, author_email: str) -> str:
-    """Stable identity for the in-memory experience tally."""
-    return (author_email or author_name or "").strip().lower()
+    """Stable identity for the in-memory experience tally.
+
+    GitHub ``noreply`` variants of one login are folded together first so a
+    person's prior-commit count doesn't reset when their email flips between
+    forms.
+    """
+    canonical = canonicalize_author_email(author_email) or author_email
+    return (canonical or author_name or "").strip().lower()
 
 
 def _committed_at(ts: int) -> datetime | None:

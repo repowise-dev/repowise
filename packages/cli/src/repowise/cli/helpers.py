@@ -21,6 +21,26 @@ from repowise.core.reasoning import (
 )
 from repowise.core.repo_config import CONFIG_FILENAME, load_repo_config
 
+# Update lock — coordinates concurrent `repowise update` invocations and lets
+# the augment hook suppress stale-wiki warnings while a refresh is in flight.
+# One shared implementation in core (the workspace updater used to carry a
+# hand-synced copy); re-exported here for the existing CLI/hook imports.
+from repowise.core.update_lock import (
+    UPDATE_LOCK_FILENAME as UPDATE_LOCK_FILENAME,
+)
+from repowise.core.update_lock import (
+    UPDATE_LOCK_STALE_AFTER_SECONDS as UPDATE_LOCK_STALE_AFTER_SECONDS,
+)
+from repowise.core.update_lock import (
+    read_update_lock as read_update_lock,
+)
+from repowise.core.update_lock import (
+    release_update_lock as release_update_lock,
+)
+from repowise.core.update_lock import (
+    try_acquire_update_lock as try_acquire_update_lock,
+)
+
 T = TypeVar("T")
 
 console = Console()
@@ -209,110 +229,12 @@ def save_state(repo_path: Path, state: dict[str, Any]) -> None:
         _stamp_store_version(state, package_version=_pkg_version)
     except Exception:  # never let stamping block a persist
         pass
+    from repowise.core.fsutils import atomic_write_text
+
+    # Atomic so a crash mid-write can never leave a truncated state.json —
+    # every later update would fail to parse it and demand a full re-init.
     state_path = get_repowise_dir(repo_path) / STATE_FILENAME
-    state_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
-
-
-# ---------------------------------------------------------------------------
-# Update lock — coordinates concurrent `repowise update` invocations and
-# lets the augment hook suppress stale-wiki warnings while a refresh is in
-# flight (post-commit hook firing → tool-call warning would be spurious).
-# ---------------------------------------------------------------------------
-
-UPDATE_LOCK_FILENAME = ".update.lock"
-
-# Locks older than this are considered stale (a crashed update); the hook
-# will ignore them and the next update will overwrite. Generous enough to
-# cover a slow full-update on a large repo.
-UPDATE_LOCK_STALE_AFTER_SECONDS = 30 * 60
-
-
-def _update_lock_path(repo_path: Path) -> Path:
-    return get_repowise_dir(repo_path) / UPDATE_LOCK_FILENAME
-
-
-def acquire_update_lock(repo_path: Path, target_commit: str | None) -> Path:
-    """Write the update lock file. Returns its path.
-
-    The lock contains the PID and target commit so the augment hook can
-    decide whether a stale-wiki warning is redundant, plus the writing
-    process's creation-time token so ``read_update_lock`` can tell a live
-    lock owner apart from an unrelated process that recycled the PID.
-    Best-effort: if write fails (read-only fs, permissions), returns the
-    path anyway — callers must still call ``release_update_lock`` in a
-    finally block.
-    """
-    import time
-
-    from repowise.core.procutils import process_create_token
-
-    ensure_repowise_dir(repo_path)
-    lock_path = _update_lock_path(repo_path)
-    payload = {
-        "pid": os.getpid(),
-        "pid_create_token": process_create_token(os.getpid()),
-        "target_commit": target_commit,
-        "started_at": time.time(),
-    }
-    try:
-        lock_path.write_text(json.dumps(payload), encoding="utf-8")
-    except OSError:
-        pass
-    return lock_path
-
-
-def release_update_lock(repo_path: Path) -> None:
-    """Remove the update lock file. Safe to call if it doesn't exist."""
-    try:
-        _update_lock_path(repo_path).unlink(missing_ok=True)
-    except OSError:
-        pass
-
-
-def read_update_lock(repo_path: Path) -> dict[str, Any] | None:
-    """Return the lock payload if present and not stale, else ``None``.
-
-    A lock is stale when its wall-clock age exceeds
-    ``UPDATE_LOCK_STALE_AFTER_SECONDS`` (a hung-but-alive update must not
-    block forever) — or, much sooner, when its owning PID is positively
-    dead or has been recycled by an unrelated process. The PID probe means
-    a crashed/killed update (SIGKILL, power loss — paths atexit can't
-    cover) no longer blocks further updates for the full 30-minute window.
-    Probes that can't decide ("unknown") fall back to the wall clock, so a
-    live update is never treated as stale by mistake.
-    """
-    import time
-
-    from repowise.core.procutils import pid_alive, process_create_token
-
-    lock_path = _update_lock_path(repo_path)
-    if not lock_path.exists():
-        return None
-    try:
-        payload = json.loads(lock_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return None
-
-    started = payload.get("started_at")
-    if not isinstance(started, (int, float)):
-        return None
-    if time.time() - started > UPDATE_LOCK_STALE_AFTER_SECONDS:
-        return None
-
-    pid = payload.get("pid")
-    if isinstance(pid, int) and pid > 0:
-        alive = pid_alive(pid)
-        if alive is False:
-            return None
-        if alive is True:
-            stored_token = payload.get("pid_create_token")
-            # Legacy locks (pre-token) skip the identity check and rely on
-            # liveness + wall clock alone.
-            if isinstance(stored_token, str) and stored_token:
-                current_token = process_create_token(pid)
-                if current_token is not None and current_token != stored_token:
-                    return None
-    return payload
+    atomic_write_text(state_path, json.dumps(state, indent=2))
 
 
 # ---------------------------------------------------------------------------
@@ -488,16 +410,15 @@ def rotate_update_log_if_needed(repo_path: Path) -> None:
 
 
 def get_head_commit(repo_path: Path) -> str | None:
-    """Return the HEAD commit SHA or ``None`` if not a git repo."""
-    try:
-        import git as gitpython
+    """Return the HEAD commit SHA or ``None`` if not a git repo.
 
-        repo = gitpython.Repo(repo_path, search_parent_directories=True)
-        sha = repo.head.commit.hexsha
-        repo.close()
-        return sha
-    except Exception:
-        return None
+    Delegates to the core implementation (``git rev-parse HEAD``) so the CLI
+    and the workspace updater resolve HEAD identically — the old gitpython
+    version here could diverge on worktree/detached-HEAD edge cases.
+    """
+    from repowise.core.workspace.update import get_head_commit as _core_head
+
+    return _core_head(Path(repo_path))
 
 
 # ---------------------------------------------------------------------------
@@ -632,20 +553,12 @@ def save_distill_commands_enabled(repo_path: Path, *, enabled: bool) -> None:
 def config_fingerprint(repo_path: Path) -> str:
     """SHA-256 hex of ``.repowise/config.yaml`` + ``health-rules.json`` content.
 
-    Used by ``repowise update`` and ``repowise init`` to detect config changes
-    across runs without relying on filesystem timestamps. Missing files are
-    skipped, so an absent config still yields a stable hash.
+    Delegates to the shared core implementation so CLI runs and server jobs
+    compute identical fingerprints for the same on-disk config.
     """
-    import hashlib
+    from repowise.core.repo_config import config_fingerprint as _core_fingerprint
 
-    rw_dir = get_repowise_dir(repo_path)
-    h = hashlib.sha256()
-    for name in ("config.yaml", "health-rules.json"):
-        p = rw_dir / name
-        if p.exists():
-            h.update(name.encode())
-            h.update(p.read_bytes())
-    return h.hexdigest()
+    return _core_fingerprint(repo_path)
 
 
 # ---------------------------------------------------------------------------

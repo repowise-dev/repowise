@@ -12,6 +12,7 @@ from pathlib import Path
 
 import networkx as nx
 
+from repowise.core.ingestion.graph import GraphBuilder
 from repowise.core.ingestion.lightweight_imports import (
     LIGHTWEIGHT_IMPORT_LANGUAGES,
     extract_lightweight_imports,
@@ -21,7 +22,9 @@ from repowise.core.ingestion.lightweight_imports.dart import extract_dart_import
 from repowise.core.ingestion.lightweight_imports.elixir import extract_elixir_imports
 from repowise.core.ingestion.lightweight_imports.erlang import extract_erlang_imports
 from repowise.core.ingestion.lightweight_imports.haskell import extract_haskell_imports
+from repowise.core.ingestion.lightweight_imports.lean import extract_lean_imports
 from repowise.core.ingestion.models import FileInfo
+from repowise.core.ingestion.parser import ASTParser
 from repowise.core.ingestion.resolvers import resolve_import
 from repowise.core.ingestion.resolvers.clojure import resolve_clojure_import
 from repowise.core.ingestion.resolvers.context import ResolverContext
@@ -29,6 +32,9 @@ from repowise.core.ingestion.resolvers.dart import resolve_dart_import
 from repowise.core.ingestion.resolvers.elixir import resolve_elixir_import
 from repowise.core.ingestion.resolvers.erlang import resolve_erlang_import
 from repowise.core.ingestion.resolvers.haskell import resolve_haskell_import
+from repowise.core.ingestion.resolvers.lean import resolve_lean_import
+
+LANG_SAMPLE_FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "lang_samples"
 
 
 def _ctx(repo: Path | None, files: dict[str, str]) -> ResolverContext:
@@ -81,8 +87,10 @@ class TestDispatch:
             "dart",
             "clojure",
             "haskell",
+            "lean",
             "erlang",
             "fsharp",
+            "sql",
         } == LIGHTWEIGHT_IMPORT_LANGUAGES
 
     def test_other_language_returns_empty(self) -> None:
@@ -446,6 +454,116 @@ class TestHaskellResolution:
         assert resolve_haskell_import("Network.Wai", "app/Main.hs", ctx) == (
             "external:Network.Wai"
         )
+
+
+# ---------------------------------------------------------------------------
+# Lean
+# ---------------------------------------------------------------------------
+
+
+class TestLeanExtraction:
+    def test_import_and_open_forms(self) -> None:
+        src = (
+            "import Init\n"
+            "import all All.Theorems\n"
+            "public import Public.Visible\n"
+            "private import Private.Hidden\n"
+            "meta import Meta.Tools\n"
+            "public import all Public.All\n"
+            "import Mathlib.Data.Nat.Basic\n"
+            "open Foo.Bar\n"
+            "open scoped Nat\n"
+        )
+        assert _modules(extract_lean_imports(src)) == [
+            "Init",
+            "All.Theorems",
+            "Public.Visible",
+            "Private.Hidden",
+            "Meta.Tools",
+            "Public.All",
+            "Mathlib.Data.Nat.Basic",
+            "Foo.Bar",
+            "Nat",
+        ]
+
+    def test_comment_and_indented_not_captured(self) -> None:
+        src = "-- import Fake.Mod\nlet x := 1\n  import Nested.NotReal\n"
+        assert extract_lean_imports(src) == []
+
+    def test_block_comment_not_captured(self) -> None:
+        src = "/- import Foo.Bar -/\nimport Real.Mod\n"
+        assert _modules(extract_lean_imports(src)) == ["Real.Mod"]
+
+    def test_nested_block_comment_not_captured(self) -> None:
+        src = "/- outer /- import Nested.Fake -/ import Still.Fake -/\nimport Real.Mod\n"
+        assert _modules(extract_lean_imports(src)) == ["Real.Mod"]
+
+    def test_trailing_line_comment_still_captures(self) -> None:
+        src = "import Foo.Bar -- import Fake.Mod\n"
+        assert _modules(extract_lean_imports(src)) == ["Foo.Bar"]
+
+    def test_unicode_identifier_round_trips(self) -> None:
+        src = "import Mathlib.Algebra.Ω.Café'\n"
+        assert _modules(extract_lean_imports(src)) == ["Mathlib.Algebra.Ω.Café'"]
+
+    def test_trailing_dot_not_captured(self) -> None:
+        src = "import Foo.\n"
+        assert _modules(extract_lean_imports(src)) == ["Foo"]
+
+    def test_dedup(self) -> None:
+        src = "import Foo.Bar\nimport Foo.Bar\n"
+        assert _modules(extract_lean_imports(src)) == ["Foo.Bar"]
+
+
+class TestLeanResolution:
+    def test_resolves_to_file(self, tmp_path: Path) -> None:
+        ctx = _ctx(tmp_path, {"Mathlib/Data/Nat/Basic.lean": "", "Main.lean": ""})
+        assert resolve_lean_import("Mathlib.Data.Nat.Basic", "Main.lean", ctx) == (
+            "Mathlib/Data/Nat/Basic.lean"
+        )
+
+    def test_local_shadows_stdlib(self, tmp_path: Path) -> None:
+        ctx = _ctx(tmp_path, {"Init/Data.lean": "", "Main.lean": ""})
+        assert resolve_lean_import("Init.Data", "Main.lean", ctx) == "Init/Data.lean"
+
+    def test_stdlib_dropped_after_local_miss(self, tmp_path: Path) -> None:
+        ctx = _ctx(tmp_path, {"Main.lean": ""})
+        assert resolve_lean_import("Init", "Main.lean", ctx) is None
+        assert resolve_lean_import("Std.Data.HashMap", "Main.lean", ctx) is None
+
+    def test_unknown_module_external(self, tmp_path: Path) -> None:
+        ctx = _ctx(tmp_path, {"Main.lean": ""})
+        assert resolve_lean_import("ThirdParty.Lib", "Main.lean", ctx) == (
+            "external:ThirdParty.Lib"
+        )
+
+    def test_self_reference_returns_none(self, tmp_path: Path) -> None:
+        ctx = _ctx(tmp_path, {"Foo/Bar.lean": ""})
+        assert resolve_lean_import("Foo.Bar", "Foo/Bar.lean", ctx) is None
+
+    def test_fixture_parses_and_resolves_graph_edges(self) -> None:
+        root = LANG_SAMPLE_FIXTURES / "lean"
+        parser = ASTParser()
+        builder = GraphBuilder(repo_path=root)
+        main_modules: list[str] = []
+
+        for path in sorted(root.rglob("*.lean")):
+            rel = path.relative_to(root).as_posix()
+            source = path.read_bytes()
+            info = _file_info(rel, "lean")
+            info.abs_path = str(path)
+            info.size_bytes = len(source)
+            parsed = parser.parse_file(info, source)
+            if rel == "Main.lean":
+                main_modules = _modules(parsed.imports)
+            builder.add_file(parsed)
+
+        graph = builder.build()
+        assert main_modules == ["Public.Visible", "Plain.Local", "BigOperators"]
+        assert graph.has_edge("Main.lean", "Public/Visible.lean")
+        assert graph.has_edge("Main.lean", "Plain/Local.lean")
+        assert graph.has_edge("Main.lean", "BigOperators.lean")
+        assert not graph.has_node("external:scoped")
 
 
 # ---------------------------------------------------------------------------

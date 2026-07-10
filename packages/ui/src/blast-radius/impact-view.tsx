@@ -22,6 +22,7 @@ import { Skeleton } from "../ui/skeleton";
 import { FilePathPicker } from "../health/file-path-picker";
 import { BlastRadiusResults } from "./blast-radius-results";
 import type { ImpactAdapter } from "./impact-adapter";
+import { toFriendlyMessage } from "../lib/errors";
 
 export function ImpactView({ adapter }: { adapter: ImpactAdapter }) {
   const [selected, setSelected] = useState<string[]>([]);
@@ -69,7 +70,7 @@ export function ImpactView({ adapter }: { adapter: ImpactAdapter }) {
       setResult(data);
       setAnalyzedFiles(selected);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Analysis failed.");
+      setError(toFriendlyMessage(err, "Analysis failed."));
     } finally {
       setLoading(false);
     }

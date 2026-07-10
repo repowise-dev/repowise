@@ -238,12 +238,53 @@ class TsJsPerfDialect(BasePerfDialect):
         return None
 
     @staticmethod
+    def _params_contain(fn: Node, name: str) -> bool:
+        """True if any parameter of ``fn`` binds ``name`` (a shadow of an outer
+        accumulator). Handles both parenthesized parameter lists and the single
+        unparenthesized ``x => …`` form."""
+        params = fn.child_by_field_name("parameters")
+        if params is not None:
+            for c in params.children:
+                ident = c if c.type == "identifier" else c.child_by_field_name("pattern")
+                if (
+                    ident is not None
+                    and ident.type == "identifier"
+                    and ident.text is not None
+                    and ident.text.decode("utf-8", "replace") == name
+                ):
+                    return True
+            return False
+        first = next((c for c in fn.children if c.is_named), None)
+        return (
+            first is not None
+            and first.type == "identifier"
+            and first.text is not None
+            and first.text.decode("utf-8", "replace") == name
+        )
+
+    _FN_LITERAL_KINDS: frozenset[str] = frozenset(
+        {"arrow_function", "function", "function_expression"}
+    )
+
+    @staticmethod
     def _spreads_name_in_collection(body: Node, name: str) -> bool:
         """True if *body* spreads ``name`` into an array / object literal
-        (``[...name, x]`` / ``{...name}``) — the O(n^2) accumulator rebuild."""
+        (``[...name, x]`` / ``{...name}``) — the O(n^2) accumulator rebuild.
+
+        Stops at a nested arrow/function that re-binds ``name`` as its own
+        parameter: a spread of ``name`` inside such a scope targets THAT binding
+        (e.g. an inner ``reduce`` with its own ``acc``), not the outer
+        accumulator, so it must not be attributed to the outer reduce.
+        """
         stack: list[Node] = [body]
         while stack:
             n = stack.pop()
+            if (
+                n != body
+                and n.type in TsJsPerfDialect._FN_LITERAL_KINDS
+                and TsJsPerfDialect._params_contain(n, name)
+            ):
+                continue
             if (
                 n.type == "spread_element"
                 and n.parent is not None

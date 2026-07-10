@@ -105,7 +105,19 @@ export function FileOverviewTab({ data, symbolHref, fileHref }: FileOverviewTabP
                 Dependencies ({data.graph.out_degree})
               </p>
               {data.graph.dependencies.slice(0, 5).map((n) => {
-                const isSymbol = n.node_type === "symbol" || n.node_id.includes("::");
+                const isExternal = n.node_id.startsWith("external:");
+                const isSymbol = !isExternal && (n.node_type === "symbol" || n.node_id.includes("::"));
+                if (isExternal) {
+                  return (
+                    <p
+                      key={`out-${n.node_id}`}
+                      className="block truncate font-mono text-xs text-[var(--color-text-tertiary)]"
+                      title={`${n.node_id} (external dependency, not part of this repo)`}
+                    >
+                      {truncatePath(n.node_id, 30)}
+                    </p>
+                  );
+                }
                 return (
                   <a
                     key={`out-${n.node_id}`}

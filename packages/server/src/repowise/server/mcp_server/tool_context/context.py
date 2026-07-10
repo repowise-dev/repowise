@@ -135,6 +135,7 @@ async def get_context(
             timing_ms=(_time.perf_counter() - _t0) * 1000,
             hint=_context_hint(targets, compact, include_set),
             repository=repository,
+            targets=targets,
         ),
     }
 

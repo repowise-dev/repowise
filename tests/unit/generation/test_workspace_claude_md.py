@@ -183,6 +183,7 @@ def test_render_limits_co_changes_to_ten(gen):
     assert result.count("source_repo") == 0  # field names not in output
     # Count occurrences of "file_" pattern — at most 10
     import re
+
     matches = re.findall(r"file_\d+\.py", result)
     assert len(matches) <= 10
 
@@ -213,10 +214,13 @@ def test_render_includes_entry_points_per_repo(gen):
     assert "src/api/server.py" in result
 
 
-def test_render_shows_placeholder_when_no_entry_points(gen):
+def test_render_omits_entry_points_section_when_none_indexed(gen):
+    # A run of "_No entry points indexed._" placeholders told the agent
+    # nothing — repos without entry points are simply omitted.
     repos = [_make_repo(alias="svc", entry_points=[])]
     result = gen.render(_make_data(repos=repos, default_repo="svc"))
-    assert "No entry points indexed" in result
+    assert "No entry points indexed" not in result
+    assert "Per-Repo Entry Points" not in result
 
 
 # ---------------------------------------------------------------------------
@@ -390,8 +394,6 @@ def test_contracts_by_type_shown_when_present(gen):
             "contract_id": "GET::/v1/ping",
         }
     ]
-    result = gen.render(
-        _make_data(contract_links=links, contracts_by_type={"http": 3, "grpc": 1})
-    )
+    result = gen.render(_make_data(contract_links=links, contracts_by_type={"http": 3, "grpc": 1}))
     assert "http: 3" in result
     assert "grpc: 1" in result

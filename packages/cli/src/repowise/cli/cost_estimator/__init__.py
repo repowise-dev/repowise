@@ -1,35 +1,31 @@
-"""Cost estimation for the repowise generation pipeline.
+"""Backward-compatible re-export of :mod:`repowise.core.cost_estimator`.
 
-Public API kept stable for existing callers:
-
-- :func:`build_generation_plan` — given parsed_files + graph + config,
-  returns a list of :class:`PageTypePlan`. Internally delegates to
-  :func:`repowise.core.generation.select_pages` so the estimator and
-  the actual generator never disagree.
-- :func:`estimate_cost` — given plans + model, returns a
-  :class:`CostEstimate` with a median + low/high range. Optionally
-  calibrated against ``.repowise/db.sqlite`` telemetry.
-- :func:`_lookup_cost` — retained for the provider unit tests.
+The estimator moved to core so the server's pre-flight endpoint can share
+the same pricing, heuristics, and calibration as the CLI cost gate. This
+shim keeps the historical ``repowise.cli.cost_estimator`` import path
+working for existing callers.
 """
 
-from .coverage import (
+from repowise.core.cost_estimator import (
     DEFAULT_COVERAGE_OPTIONS,
     RECOMMENDED_COVERAGE,
+    CostEstimate,
+    CostRange,
     CoverageOption,
+    PageTypePlan,
+    _lookup_cost,
+    build_generation_plan,
     compute_coverage_options,
+    estimate_cost,
 )
-from .estimator import estimate_cost
-from .plans import build_generation_plan
-from .pricing import _lookup_cost
-from .types import CostEstimate, CostRange, PageTypePlan
 
 __all__ = [
+    "DEFAULT_COVERAGE_OPTIONS",
+    "RECOMMENDED_COVERAGE",
     "CostEstimate",
     "CostRange",
     "CoverageOption",
-    "DEFAULT_COVERAGE_OPTIONS",
     "PageTypePlan",
-    "RECOMMENDED_COVERAGE",
     "_lookup_cost",
     "build_generation_plan",
     "compute_coverage_options",

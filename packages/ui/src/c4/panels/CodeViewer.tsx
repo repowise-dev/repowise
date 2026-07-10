@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import { X, Maximize2, Minimize2, AlertCircle, RefreshCw } from "lucide-react";
 import { useArchitectureStore } from "../store/use-architecture-store";
 import { Badge } from "./panel-atoms";
+import { toFriendlyMessage } from "../../lib/errors";
 
 const EXTENSION_MAP: Record<string, string> = {
   py: "python",
@@ -79,7 +80,7 @@ export function CodeViewer({ fetchContent }: CodeViewerProps): React.ReactElemen
         setLoading(false);
       },
       (err: unknown) => {
-        setError(err instanceof Error ? err.message : String(err));
+        setError(toFriendlyMessage(err));
         setLoading(false);
       },
     );

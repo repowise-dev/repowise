@@ -8,11 +8,13 @@ import { Component, StrictMode, useEffect, useState, type ReactNode } from "reac
 import { createRoot } from "react-dom/client";
 import type {
   InitMessage,
+  PanelViewId,
   RepoInit,
   ViewParams,
   WebviewViewId,
 } from "../../../src/shared/webviewMessages";
 import { createHost, type WebviewHost } from "./rpc";
+import { PanelChrome } from "./chrome";
 import { initTheme, setThemePreference } from "./theme";
 
 /** Everything a view component receives. */
@@ -81,7 +83,7 @@ function Bootstrap<V extends WebviewViewId>({ view, host, App }: BootstrapProps<
     );
   }
 
-  return (
+  const content = (
     <ErrorBoundary key={initSeq}>
       <App
         host={host}
@@ -90,6 +92,17 @@ function Bootstrap<V extends WebviewViewId>({ view, host, App }: BootstrapProps<
         refreshToken={refreshToken}
       />
     </ErrorBoundary>
+  );
+
+  // The sidebar Home view is the launcher itself; it gets no panel chrome.
+  // Every editor-tab panel is wrapped so it has a way back to Home and a
+  // sibling switcher, with its own content scrolling under the sticky header.
+  if (view === "home") return content;
+  return (
+    <div className="flex h-screen flex-col">
+      <PanelChrome view={view as PanelViewId} host={host} />
+      <div className="min-h-0 flex-1 overflow-auto">{content}</div>
+    </div>
   );
 }
 

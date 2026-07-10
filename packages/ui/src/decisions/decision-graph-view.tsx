@@ -39,6 +39,13 @@ import type {
 const DECISION_NODE_SIZE = { width: 200, height: 72 };
 const CODE_NODE_SIZE = { width: 180, height: 44 };
 
+// ELK's layered layout runs on the main thread; an unbounded node set (one
+// demo decision alone fans out into 160 code nodes) hangs the tab. Cap the
+// per-decision code fan-out and the total node count, and say what was
+// dropped instead of freezing.
+const MAX_CODE_LINKS_PER_DECISION = 8;
+const MAX_LAYOUT_NODES = 300;
+
 const STATUS_DOT: Record<string, string> = {
   active: "var(--color-success)",
   proposed: "var(--color-info)",
@@ -222,10 +229,17 @@ interface LayoutResult {
   nodes: Node[];
   edges: Edge[];
   loading: boolean;
+  /** Human-readable note when the graph was capped for rendering. */
+  truncationNote: string | null;
 }
 
 function useDecisionGraphLayout(graph: DecisionGraph | undefined, showCode: boolean): LayoutResult {
-  const [result, setResult] = useState<LayoutResult>({ nodes: [], edges: [], loading: false });
+  const [result, setResult] = useState<LayoutResult>({
+    nodes: [],
+    edges: [],
+    loading: false,
+    truncationNote: null,
+  });
 
   // Stable identity key so the effect only re-runs when content changes.
   const graphKey = useMemo(() => {
@@ -240,23 +254,62 @@ function useDecisionGraphLayout(graph: DecisionGraph | undefined, showCode: bool
 
   useEffect(() => {
     if (!graph || graph.nodes.length === 0) {
-      setResult({ nodes: [], edges: [], loading: false });
+      setResult({ nodes: [], edges: [], loading: false, truncationNote: null });
       return;
     }
     let cancelled = false;
     setResult((r) => ({ ...r, loading: true }));
 
-    const decisionIds = new Set(graph.nodes.map((n) => n.id));
+    // ---- Bound the graph before ELK ever sees it ----
+    // Decisions first: if they alone exceed the ceiling, keep the highest-
+    // impact ones (impact = how much code a decision governs).
+    const codeLinkCounts = new Map<string, number>();
+    for (const e of graph.code_edges) {
+      codeLinkCounts.set(e.decision_id, (codeLinkCounts.get(e.decision_id) ?? 0) + 1);
+    }
+    let decisionNodes = graph.nodes;
+    let droppedDecisions = 0;
+    if (decisionNodes.length > MAX_LAYOUT_NODES) {
+      decisionNodes = [...decisionNodes]
+        .sort((a, b) => (codeLinkCounts.get(b.id) ?? 0) - (codeLinkCounts.get(a.id) ?? 0))
+        .slice(0, MAX_LAYOUT_NODES);
+      droppedDecisions = graph.nodes.length - decisionNodes.length;
+    }
+    const decisionIds = new Set(decisionNodes.map((n) => n.id));
 
-    // Unique code node ids referenced by code edges.
-    const codeEdges = showCode ? graph.code_edges : [];
+    // Code links: cap the fan-out per decision, then stop adding new code
+    // nodes once the total node budget is spent.
+    const allCodeEdges = showCode ? graph.code_edges : [];
+    const perDecision = new Map<string, number>();
     const codeNodeIds = new Map<string, "file" | "module">();
-    for (const e of codeEdges) {
-      if (decisionIds.has(e.decision_id)) codeNodeIds.set(e.node_id, e.link_type);
+    const codeEdges: typeof allCodeEdges = [];
+    let droppedCodeLinks = 0;
+    for (const e of allCodeEdges) {
+      if (!decisionIds.has(e.decision_id)) continue;
+      const used = perDecision.get(e.decision_id) ?? 0;
+      const isNewNode = !codeNodeIds.has(e.node_id);
+      if (
+        used >= MAX_CODE_LINKS_PER_DECISION ||
+        (isNewNode && decisionIds.size + codeNodeIds.size >= MAX_LAYOUT_NODES)
+      ) {
+        droppedCodeLinks++;
+        continue;
+      }
+      perDecision.set(e.decision_id, used + 1);
+      if (isNewNode) codeNodeIds.set(e.node_id, e.link_type);
+      codeEdges.push(e);
     }
 
+    const truncationNote =
+      droppedDecisions > 0 || droppedCodeLinks > 0
+        ? `Too large to render fully — showing the top ${decisionNodes.length} decisions by impact` +
+          (droppedCodeLinks > 0
+            ? ` and up to ${MAX_CODE_LINKS_PER_DECISION} code links each (${droppedCodeLinks} links hidden).`
+            : ".")
+        : null;
+
     const layoutNodes: C4LayoutNode[] = [
-      ...graph.nodes.map((n) => ({ id: n.id, ...DECISION_NODE_SIZE })),
+      ...decisionNodes.map((n) => ({ id: n.id, ...DECISION_NODE_SIZE })),
       ...[...codeNodeIds.keys()].map((id) => ({ id: `code:${id}`, ...CODE_NODE_SIZE })),
     ];
 
@@ -273,7 +326,7 @@ function useDecisionGraphLayout(graph: DecisionGraph | undefined, showCode: bool
     void computeC4Layout(layoutNodes, layoutEdges).then((positions) => {
       if (cancelled) return;
       const nodes: Node[] = [
-        ...graph.nodes.map((n) => {
+        ...decisionNodes.map((n) => {
           const pos = positions.get(n.id) ?? { x: 0, y: 0 };
           return {
             id: n.id,
@@ -314,7 +367,7 @@ function useDecisionGraphLayout(graph: DecisionGraph | undefined, showCode: bool
           })),
       ];
 
-      setResult({ nodes, edges, loading: false });
+      setResult({ nodes, edges, loading: false, truncationNote });
     });
 
     return () => {
@@ -346,7 +399,7 @@ export function DecisionGraphView(props: DecisionGraphViewProps) {
 
 function DecisionGraphViewInner({ graph, isLoading, onSelectDecision }: DecisionGraphViewProps) {
   const [showCode, setShowCode] = useState(true);
-  const { nodes, edges, loading } = useDecisionGraphLayout(graph, showCode);
+  const { nodes, edges, loading, truncationNote } = useDecisionGraphLayout(graph, showCode);
 
   const handleNodeClick: NodeMouseHandler = (_, node) => {
     if (node.type === "decision") onSelectDecision?.(node.id);
@@ -390,6 +443,20 @@ function DecisionGraphViewInner({ graph, isLoading, onSelectDecision }: Decision
           Code links
         </label>
       </div>
+
+      {truncationNote && (
+        <div
+          role="status"
+          style={{
+            padding: "4px 10px",
+            borderBottom: "1px solid var(--color-border-default)",
+            fontSize: 11,
+            color: "var(--color-warning)",
+          }}
+        >
+          {truncationNote}
+        </div>
+      )}
 
       <div style={{ position: "relative", flex: 1, minHeight: 0 }}>
         {busy && nodes.length === 0 && <Centered text="Laying out decision graph…" />}

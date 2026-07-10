@@ -1,0 +1,496 @@
+{
+  "project_name": "flask",
+  "project_description": "",
+  "layers": [
+    {
+      "id": "layer:application",
+      "name": "Application",
+      "description": "",
+      "node_ids": [
+        ".pre-commit-config.yaml",
+        ".readthedocs.yaml",
+        "README.md",
+        "pyproject.toml",
+        "src/flask/__init__.py",
+        "src/flask/__main__.py",
+        "src/flask/cli.py",
+        "src/flask/globals.py",
+        "src/flask/helpers.py",
+        "src/flask/debughelpers.py",
+        "src/flask/signals.py",
+        "src/flask/app.py",
+        "src/flask/testing.py",
+        "src/flask/typing.py",
+        "src/flask/views.py",
+        "src/flask/wrappers.py",
+        "src/flask/sessions.py",
+        "src/flask/json/__init__.py",
+        "src/flask/sansio/README.md",
+        "src/flask/config.py",
+        "src/flask/sansio/app.py",
+        "src/flask/json/tag.py",
+        "src/flask/ctx.py",
+        "src/flask/logging.py",
+        "src/flask/templating.py",
+        "src/flask/sansio/scaffold.py",
+        "src/flask/json/provider.py",
+        "src/flask/blueprints.py",
+        "src/flask/sansio/blueprints.py"
+      ],
+      "file_count": 29,
+      "complexity_distribution": {
+        "simple": 7,
+        "moderate": 8,
+        "complex": 14
+      },
+      "health_score": null,
+      "sub_groups": [],
+      "display_order": 0
+    },
+    {
+      "id": "layer:config",
+      "name": "Config",
+      "description": "",
+      "node_ids": [
+        ".devcontainer/on-create-command.sh",
+        ".github/pull_request_template.md",
+        ".github/ISSUE_TEMPLATE/bug-report.md",
+        ".github/ISSUE_TEMPLATE/config.yml",
+        ".github/ISSUE_TEMPLATE/feature-request.md",
+        ".github/workflows/lock.yaml",
+        ".devcontainer/devcontainer.json",
+        ".github/workflows/pre-commit.yaml",
+        ".github/workflows/publish.yaml",
+        ".github/workflows/tests.yaml",
+        ".github/workflows/zizmor.yaml"
+      ],
+      "file_count": 11,
+      "complexity_distribution": {
+        "simple": 11,
+        "moderate": 0,
+        "complex": 0
+      },
+      "health_score": null,
+      "sub_groups": [],
+      "display_order": 1
+    },
+    {
+      "id": "layer:docs-tooling",
+      "name": "Docs & Tooling",
+      "description": "",
+      "node_ids": [
+        "docs/Makefile",
+        "docs/conf.py",
+        "examples/celery/README.md",
+        "examples/celery/pyproject.toml",
+        "examples/celery/src/task_app/__init__.py",
+        "examples/celery/src/task_app/views.py",
+        "examples/celery/src/task_app/tasks.py",
+        "examples/celery/make_celery.py",
+        "examples/javascript/pyproject.toml",
+        "examples/javascript/js_example/views.py",
+        "examples/javascript/js_example/__init__.py",
+        "examples/tutorial/pyproject.toml",
+        "examples/tutorial/flaskr/auth.py",
+        "examples/tutorial/flaskr/db.py",
+        "examples/tutorial/flaskr/schema.sql",
+        "examples/tutorial/flaskr/blog.py",
+        "examples/tutorial/flaskr/__init__.py"
+      ],
+      "file_count": 17,
+      "complexity_distribution": {
+        "simple": 12,
+        "moderate": 4,
+        "complex": 1
+      },
+      "health_score": null,
+      "sub_groups": [],
+      "display_order": 2
+    }
+  ],
+  "nodes": [
+    {
+      "id": ".devcontainer/devcontainer.json",
+      "node_type": "config",
+      "name": "devcontainer.json",
+      "file_path": ".devcontainer/devcontainer.json",
+      "line_range": null,
+      "summary": "Configuration file: devcontainer.json.",
+      "complexity": "simple",
+      "tags": [
+        "config"
+      ],
+      "language": "json",
+      "pagerank": 0.0021357579334815545,
+      "pagerank_percentile": 0,
+      "betweenness": 0,
+      "in_degree": 0,
+      "out_degree": 1,
+      "community_id": 4,
+      "is_entry_point": false,
+      "is_test": false,
+      "is_hotspot": false,
+      "is_dead": false,
+      "has_doc": false,
+      "primary_owner": null,
+      "primary_owner_pct": null,
+      "bus_factor": null
+    },
+    {
+      "id": ".devcontainer/on-create-command.sh",
+      "node_type": "file",
+      "name": "on-create-command.sh",
+      "file_path": ".devcontainer/on-create-command.sh",
+      "line_range": null,
+      "summary": "Config module on-create-command.",
+      "complexity": "simple",
+      "tags": [
+        "shell",
+        ".devcontainer"
+      ],
+      "language": "shell",
+      "pagerank": 0.0021357579334815545,
+      "pagerank_percentile": 0,
+      "betweenness": 0,
+      "in_degree": 0,
+      "out_degree": 1,
+      "community_id": 5,
+      "is_entry_point": false,
+      "is_test": false,
+      "is_hotspot": false,
+      "is_dead": false,
+      "has_doc": false,
+      "primary_owner": "emisargent",
+      "primary_owner_pct": 0.8571428571428571,
+      "bus_factor": 2
+    },
+    {
+      "id": ".github/ISSUE_TEMPLATE/bug-report.md",
+      "node_type": "document",
+      "name": "bug-report.md",
+      "file_path": ".github/ISSUE_TEMPLATE/bug-report.md",
+      "line_range": null,
+      "summary": "Documentation: bug-report.md.",
+      "complexity": "simple",
+      "tags": [
+        "markdown",
+        "ISSUE_TEMPLATE"
+      ],
+      "language": "markdown",
+      "pagerank": 0.0021357579334815545,
+      "pagerank_percentile": 0,
+      "betweenness": 0,
+      "in_degree": 0,
+      "out_degree": 1,
+      "community_id": 6,
+      "is_entry_point": false,
+      "is_test": false,
+      "is_hotspot": false,
+      "is_dead": false,
+      "has_doc": false,
+      "primary_owner": null,
+      "primary_owner_pct": null,
+      "bus_factor": null
+    }
+  ],
+  "edges": [
+    {
+      "source": "examples/celery/make_celery.py",
+      "target": "examples/celery/src/task_app/__init__.py",
+      "edge_type": "imports",
+      "direction": "forward",
+      "weight": 1,
+      "confidence": 1
+    },
+    {
+      "source": "examples/celery/src/task_app/__init__.py",
+      "target": "examples/celery/src/task_app/views.py",
+      "edge_type": "imports",
+      "direction": "forward",
+      "weight": 1,
+      "confidence": 1
+    },
+    {
+      "source": "examples/celery/src/task_app/__init__.py",
+      "target": "src/flask/__init__.py",
+      "edge_type": "imports",
+      "direction": "forward",
+      "weight": 1,
+      "confidence": 1
+    }
+  ],
+  "tour": [
+    {
+      "order": 1,
+      "title": "README.md",
+      "description": "",
+      "node_ids": [
+        "README.md"
+      ],
+      "target_path": "README.md",
+      "layer_id": "layer:application",
+      "reason": "Start here for the end-to-end picture before diving into the code.",
+      "depth": 0,
+      "kind": "overview",
+      "page_type": "repo_overview"
+    },
+    {
+      "order": 2,
+      "title": "app.py",
+      "description": "",
+      "node_ids": [
+        "src/flask/app.py"
+      ],
+      "target_path": "src/flask/app.py",
+      "layer_id": "layer:application",
+      "reason": "An entry point — execution and imports fan out from here.",
+      "depth": 0,
+      "kind": "code",
+      "page_type": "file_page"
+    }
+  ],
+  "total_files": 108,
+  "total_symbols": 1060,
+  "total_edges": 257,
+  "languages": [
+    "json",
+    "makefile",
+    "markdown",
+    "python",
+    "shell",
+    "sql",
+    "toml",
+    "yaml"
+  ],
+  "frameworks": [
+    "flask"
+  ],
+  "external_systems": [
+    {
+      "id": "ext:amqp",
+      "name": "amqp",
+      "display_name": "Amqp",
+      "category": "library",
+      "ecosystem": "pypi",
+      "version": "==5.1.1",
+      "io_kind": null
+    },
+    {
+      "id": "ext:asgiref",
+      "name": "asgiref",
+      "display_name": "Asgiref",
+      "category": "library",
+      "ecosystem": "pypi",
+      "version": ">=3.2",
+      "io_kind": null
+    },
+    {
+      "id": "ext:async-timeout",
+      "name": "async-timeout",
+      "display_name": "Async Timeout",
+      "category": "library",
+      "ecosystem": "pypi",
+      "version": "==4.0.2",
+      "io_kind": null
+    },
+    {
+      "id": "ext:billiard",
+      "name": "billiard",
+      "display_name": "Billiard",
+      "category": "library",
+      "ecosystem": "pypi",
+      "version": "==3.6.4.0",
+      "io_kind": null
+    },
+    {
+      "id": "ext:blinker",
+      "name": "blinker",
+      "display_name": "Blinker",
+      "category": "library",
+      "ecosystem": "pypi",
+      "version": ">=1.9.0",
+      "io_kind": null
+    },
+    {
+      "id": "ext:celery",
+      "name": "celery",
+      "display_name": "Celery",
+      "category": "library",
+      "ecosystem": "pypi",
+      "version": null,
+      "io_kind": null
+    },
+    {
+      "id": "ext:click",
+      "name": "click",
+      "display_name": "Click",
+      "category": "library",
+      "ecosystem": "pypi",
+      "version": ">=8.1.3",
+      "io_kind": null
+    },
+    {
+      "id": "ext:click-didyoumean",
+      "name": "click-didyoumean",
+      "display_name": "Click Didyoumean",
+      "category": "library",
+      "ecosystem": "pypi",
+      "version": "==0.3.0",
+      "io_kind": null
+    },
+    {
+      "id": "ext:click-plugins",
+      "name": "click-plugins",
+      "display_name": "Click Plugins",
+      "category": "library",
+      "ecosystem": "pypi",
+      "version": "==1.1.1",
+      "io_kind": null
+    },
+    {
+      "id": "ext:click-repl",
+      "name": "click-repl",
+      "display_name": "Click Repl",
+      "category": "library",
+      "ecosystem": "pypi",
+      "version": "==0.2.0",
+      "io_kind": null
+    },
+    {
+      "id": "ext:flask",
+      "name": "flask",
+      "display_name": "Flask",
+      "category": "framework",
+      "ecosystem": "pypi",
+      "version": null,
+      "io_kind": null
+    },
+    {
+      "id": "ext:itsdangerous",
+      "name": "itsdangerous",
+      "display_name": "Itsdangerous",
+      "category": "library",
+      "ecosystem": "pypi",
+      "version": ">=2.2.0",
+      "io_kind": null
+    },
+    {
+      "id": "ext:jinja2",
+      "name": "jinja2",
+      "display_name": "Jinja2",
+      "category": "library",
+      "ecosystem": "pypi",
+      "version": ">=3.1.2",
+      "io_kind": null
+    },
+    {
+      "id": "ext:kombu",
+      "name": "kombu",
+      "display_name": "Kombu",
+      "category": "library",
+      "ecosystem": "pypi",
+      "version": "==5.2.4",
+      "io_kind": null
+    },
+    {
+      "id": "ext:markupsafe",
+      "name": "markupsafe",
+      "display_name": "Markupsafe",
+      "category": "library",
+      "ecosystem": "pypi",
+      "version": ">=2.1.1",
+      "io_kind": null
+    },
+    {
+      "id": "ext:prompt-toolkit",
+      "name": "prompt-toolkit",
+      "display_name": "Prompt Toolkit",
+      "category": "library",
+      "ecosystem": "pypi",
+      "version": "==3.0.38",
+      "io_kind": null
+    },
+    {
+      "id": "ext:pytest",
+      "name": "pytest",
+      "display_name": "Pytest",
+      "category": "tool",
+      "ecosystem": "pypi",
+      "version": null,
+      "io_kind": null
+    },
+    {
+      "id": "ext:python-dotenv",
+      "name": "python-dotenv",
+      "display_name": "Python Dotenv",
+      "category": "library",
+      "ecosystem": "pypi",
+      "version": null,
+      "io_kind": null
+    },
+    {
+      "id": "ext:pytz",
+      "name": "pytz",
+      "display_name": "Pytz",
+      "category": "library",
+      "ecosystem": "pypi",
+      "version": "==2023.3",
+      "io_kind": null
+    },
+    {
+      "id": "ext:redis",
+      "name": "redis",
+      "display_name": "Redis",
+      "category": "service",
+      "ecosystem": "pypi",
+      "version": "==4.5.4",
+      "io_kind": "db"
+    },
+    {
+      "id": "ext:six",
+      "name": "six",
+      "display_name": "Six",
+      "category": "library",
+      "ecosystem": "pypi",
+      "version": "==1.16.0",
+      "io_kind": null
+    },
+    {
+      "id": "ext:vine",
+      "name": "vine",
+      "display_name": "Vine",
+      "category": "library",
+      "ecosystem": "pypi",
+      "version": "==5.0.0",
+      "io_kind": null
+    },
+    {
+      "id": "ext:wcwidth",
+      "name": "wcwidth",
+      "display_name": "Wcwidth",
+      "category": "library",
+      "ecosystem": "pypi",
+      "version": "==0.2.6",
+      "io_kind": null
+    },
+    {
+      "id": "ext:werkzeug",
+      "name": "werkzeug",
+      "display_name": "Werkzeug",
+      "category": "library",
+      "ecosystem": "pypi",
+      "version": ">=3.1.0",
+      "io_kind": null
+    }
+  ],
+  "entry_points": [
+    "src/flask/app.py",
+    "src/flask/__main__.py",
+    "src/flask/sansio/app.py"
+  ],
+  "entry_candidates": [
+    "src/flask/app.py",
+    "src/flask/__main__.py",
+    "src/flask/sansio/app.py"
+  ]
+}

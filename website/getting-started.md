@@ -20,6 +20,63 @@ The 60-second path to codebase intelligence.
 
 ---
 
+## Quick start (under 5 minutes, no API key)
+
+*Index once, and give your agent the dependency graph + git history + code-health — not 40 greps.*
+
+**1. Install**
+
+```bash
+pip install repowise          # Windows: python -m pip install repowise
+repowise --version            # -> repowise, version 0.27.x
+```
+
+**2. Index your repo — no LLM, no key**
+
+```bash
+cd /path/to/your/repo
+repowise init --index-only -y
+```
+
+Builds the dependency graph, git history, code-health score, and dead-code findings in seconds. (Want the generated wiki + semantic search? Use `repowise init --provider gemini|anthropic|openai` with the matching key.)
+
+**3. Connect your agent** — the MCP server is `repowise mcp`, served from the repo dir.
+
+<details markdown="block"><summary><b>Claude Code</b></summary>
+
+```bash
+# Plugin (adds 9 tools + slash commands + skills):
+/plugin marketplace add repowise-dev/repowise
+/plugin install repowise@repowise
+
+# …or wire the MCP server directly:
+claude mcp add repowise -- repowise mcp
+```
+Or commit a project `.mcp.json`:
+```json
+{ "mcpServers": { "repowise": { "command": "repowise", "args": ["mcp"] } } }
+```
+</details>
+
+<details markdown="block"><summary><b>Codex CLI</b></summary>
+
+Add to `~/.codex/config.toml`:
+```toml
+[mcp_servers.repowise]
+command = "repowise"
+args = ["mcp"]
+```
+Or: `codex mcp add repowise -- repowise mcp`
+</details>
+
+**4. First real call.** Ask your agent: *"Use repowise `get_overview` to summarize this repo,"* or *"`get_context` for `src/auth.py`."* You get graph-grounded architecture and per-file triage instead of a flurry of greps. ✅
+
+> `get_overview` / `get_context` work in **index-only mode** (no key) — they synthesize from the graph/git/health layers. `search_codebase` / `get_answer` / `get_why` need full mode (the generated wiki).
+
+Ready for the full picture? Run `repowise init --provider …` for the generated wiki + semantic search, or skip key management entirely with the [hosted tier](https://www.repowise.dev). The detailed setup paths below walk through each editor and mode.
+
+---
+
 ## Choose your path
 
 There are three ways to set up repowise. Pick the one that fits how you work.

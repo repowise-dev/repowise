@@ -21,8 +21,8 @@ _FIXTURES = [
     (
         "python",
         b"try:\n    x()\nexcept Exception:\n    pass\n",
-        {"swallowed_catch": 1, "bare_except": 1},
-        "empty Exception catch -> swallowed + bare",
+        {"swallowed_catch": 1, "broad_except": 1},
+        "empty Exception catch -> swallowed + broad (cannot catch KeyboardInterrupt)",
     ),
     (
         "python",
@@ -114,8 +114,8 @@ _FIXTURES = [
     (
         "rust",
         b'fn f() { let x = g().expect("boom"); panic!("x"); }\n',
-        {"unsafe_unwrap": 2},
-        "expect + panic!",
+        {"unsafe_unwrap": 1, "panic_macro": 1},
+        "expect -> unsafe_unwrap, panic! -> panic_macro",
     ),
     (
         "rust",

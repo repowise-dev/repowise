@@ -1,4 +1,5 @@
 import { apiGet } from "./client";
+import { fetchAllPaginated } from "./pagination";
 import type {
   OwnerListEntry,
   OwnerProfileResponse,
@@ -25,6 +26,21 @@ export async function listOwnersPage(
 ): Promise<Paginated<OwnerListEntry>> {
   const { repoId, ...rest } = params;
   return apiGet<Paginated<OwnerListEntry>>(`/api/repos/${repoId}/owners`, rest);
+}
+
+/** Fetch every owner row by walking pagination — for charts/export surfaces. */
+export async function listAllOwners(
+  params: Omit<ListOwnersParams, "limit" | "offset"> & {
+    pageSize?: number;
+    maxItems?: number;
+  },
+): Promise<OwnerListEntry[]> {
+  const { repoId, pageSize, maxItems, ...rest } = params;
+  return fetchAllPaginated({
+    fetchPage: (offset, limit) => listOwnersPage({ repoId, ...rest, offset, limit }),
+    ...(pageSize !== undefined ? { pageSize } : {}),
+    ...(maxItems !== undefined ? { maxItems } : {}),
+  });
 }
 
 export async function getOwnerProfile(

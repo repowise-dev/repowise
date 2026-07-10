@@ -52,6 +52,8 @@ function makeHost(list: DecisionRecordResponse[]): WebviewHost {
     copyText: () => {},
     openExternal: () => {},
     openView: () => {},
+    focusHome: () => {},
+    openNativeSettings: () => {},
     updateIndex: () => {},
     setTheme: () => {},
   };

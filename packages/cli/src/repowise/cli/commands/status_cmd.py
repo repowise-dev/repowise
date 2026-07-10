@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from datetime import UTC
 from pathlib import Path
 
@@ -17,10 +18,23 @@ from repowise.cli.helpers import (
     resolve_command_target,
     run_async,
 )
+from repowise.cli.ui.brand import format_bytes
 
 # ---------------------------------------------------------------------------
 # Workspace status
 # ---------------------------------------------------------------------------
+
+
+def _index_storage_bytes(repowise_dir: Path) -> int:
+    """Return total on-disk size of a repo's ``.repowise/`` directory."""
+    if not repowise_dir.is_dir():
+        return 0
+    total = 0
+    for path in repowise_dir.rglob("*"):
+        if path.is_file():
+            with contextlib.suppress(OSError):
+                total += path.stat().st_size
+    return total
 
 
 def _query_repo_counts(repo_path: Path) -> tuple[int, int]:
@@ -195,8 +209,15 @@ def _query_health_line(repo_path: Path) -> str | None:
     # split has populated it (None on indexes that predate the relevant work).
     maint = data.get("maintainability_average")
     maint_part = f" · {maint:.1f} (maintainability)" if maint is not None else ""
+    # Performance leads with the finding COUNT (the honest signal); the bounded
+    # /10 average trails in parens as a summary, never as a verification claim.
     perf = data.get("performance_average")
-    perf_part = f" · {perf:.1f} (performance)" if perf is not None else ""
+    perf_findings = data.get("performance_findings", 0)
+    perf_part = (
+        f" · {perf_findings} perf finding{'s' if perf_findings != 1 else ''} ({perf:.1f})"
+        if perf is not None
+        else ""
+    )
     return (
         f"[bold]Health:[/bold] {data['average_health']:.1f} (avg) "
         f"[[{band_color}]{BAND_LABEL[band]}[/{band_color}]] · "
@@ -249,6 +270,7 @@ def _workspace_status(target: CommandTarget) -> None:
     table.add_column("Files", justify="right")
     table.add_column("Symbols", justify="right")
     table.add_column("Docs", justify="right")
+    table.add_column("Storage", justify="right")
     table.add_column("Indexed", style="dim")
     table.add_column("HEAD", style="dim")
     table.add_column("Status")
@@ -264,12 +286,13 @@ def _workspace_status(target: CommandTarget) -> None:
             label += " [bold](primary)[/bold]"
 
         if not repowise_dir.exists():
-            table.add_row(label, "-", "-", "-", "-", "-", "[yellow]not indexed[/yellow]")
+            table.add_row(label, "-", "-", "-", "-", "-", "-", "[yellow]not indexed[/yellow]")
             continue
 
         file_count, symbol_count = _query_repo_counts(abs_path)
         indexed_ago = _format_relative_time(entry.indexed_at)
         page_count = _query_page_count(abs_path)
+        storage_cell = format_bytes(_index_storage_bytes(repowise_dir))
         docs_state = load_state(abs_path)
         docs_enabled = docs_state.get("docs_enabled")
 
@@ -305,6 +328,7 @@ def _workspace_status(target: CommandTarget) -> None:
             str(file_count),
             f"{symbol_count:,}",
             docs_cell,
+            storage_cell,
             indexed_ago,
             head_short,
             status,
@@ -390,6 +414,7 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool) -> Non
     state_table.add_row("Provider", state.get("provider", "—") or "—")
     state_table.add_row("Model", state.get("model", "—") or "—")
     state_table.add_row("Total tokens", f"{state.get('total_tokens', 0):,}")
+    state_table.add_row("Index storage", format_bytes(_index_storage_bytes(repowise_dir)))
     console.print(state_table)
 
     # Page counts from DB

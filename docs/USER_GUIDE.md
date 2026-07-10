@@ -24,7 +24,7 @@ Everything you need to know to install, use, and get the most out of repowise.
    - [doctor](#repowise-doctor)
    - [workspace](#repowise-workspace)
    - [hook](#repowise-hook)
-4. [Web UI](#web-ui)
+4. [Web Dashboard](#web-dashboard)
 5. [MCP Integration with AI Editors](#mcp-integration-with-ai-editors)
 6. [Proactive Context Enrichment (Hooks)](#proactive-context-enrichment-hooks)
 7. [Output Distillation (Distill)](#output-distillation-distill)
@@ -43,7 +43,7 @@ Everything you need to know to install, use, and get the most out of repowise.
 pip install repowise
 ```
 
-This installs the core engine, CLI, server, and MCP tools. No LLM provider SDK is included by default — install only the one you need:
+This installs the core engine, CLI, server, and MCP tools. No LLM provider SDK is included by default, install only the one you need:
 
 ```bash
 pip install "repowise[anthropic]"    # Claude (Anthropic)
@@ -71,7 +71,7 @@ pip install "repowise[postgres]"
 
 - Python 3.11 or later
 - Git (repowise analyzes your repository's git history)
-- An LLM API key or authenticated Codex CLI (for documentation generation — not needed for analysis-only mode)
+- An LLM API key or authenticated Codex CLI (for documentation generation, not needed for analysis-only mode)
 
 ### Verify Installation
 
@@ -125,9 +125,9 @@ repowise init
 
 In interactive mode, repowise asks you to choose:
 
-- **Index-only** — free, no LLM. Parses code, builds dependency graph, indexes git history. Useful for analysis without documentation generation.
-- **Full** — uses your chosen LLM to generate human-readable wiki pages for every file and module.
-- **Advanced** — fine-tune every option (concurrency, exclusions, commit limits, etc.)
+- **Index-only**, free, no LLM. Parses code, builds dependency graph, indexes git history. Useful for analysis without documentation generation.
+- **Full**, uses your chosen LLM to generate human-readable wiki pages for every file and module.
+- **Advanced**, fine-tune every option (concurrency, exclusions, commit limits, etc.)
 
 A typical first run on a medium codebase (~500 files) takes 5-15 minutes and costs $1-5 depending on the provider.
 
@@ -170,10 +170,10 @@ repowise init [PATH]
 
 **What it does (4 phases):**
 
-1. **Ingestion** — walks every file, parses AST with tree-sitter, builds a dependency graph, indexes git history (churn, hotspots, ownership, bus factor)
-2. **Analysis** — detects dead code, extracts architectural decisions from inline markers, READMEs, and git history
-3. **Generation** — sends structured prompts to the LLM, generates file-level, module-level, and repo-level wiki pages, plus architecture diagrams
-4. **Persistence** — stores everything in `.repowise/wiki.db`, builds search indexes, generates managed editor instruction files
+1. **Ingestion**, walks every file, parses AST with tree-sitter, builds a dependency graph, indexes git history (churn, hotspots, ownership, bus factor)
+2. **Analysis**, detects dead code, extracts architectural decisions from inline markers, READMEs, and git history
+3. **Generation**, sends structured prompts to the LLM, generates file-level, module-level, and repo-level wiki pages, plus architecture diagrams
+4. **Persistence**, stores everything in `.repowise/wiki.db`, builds search indexes, generates managed editor instruction files
 
 **Options:**
 
@@ -185,7 +185,7 @@ repowise init [PATH]
 | `--index-only` | Skip LLM generation entirely. Only parse, build graph, and index git. Free. |
 | `--wiki-style` | Documentation voice: `comprehensive` (default), `caveman` (token-condensed), `reference` (API-manual), `tutorial`. Saved to config; switch later with `repowise restyle`. See [WIKI_STYLES.md](WIKI_STYLES.md). |
 | `--dry-run` | Show generation plan and cost estimate without running anything. |
-| `--test-run` | Generate docs for only the top 10 files (by PageRank) — quick validation. |
+| `--test-run` | Generate docs for only the top 10 files (by PageRank), quick validation. |
 | `--skip-tests` | Exclude test files from documentation generation. |
 | `--skip-infra` | Exclude infrastructure files (Dockerfiles, Makefiles, Terraform, shell scripts). |
 | `--exclude / -x` | Gitignore-style exclusion patterns. Repeatable: `-x vendor/ -x "*.generated.*"` |
@@ -238,7 +238,7 @@ Incrementally update wiki pages for files that changed since the last sync.
 repowise update [PATH]
 ```
 
-Much faster and cheaper than a full `init` — only regenerates pages for changed files and their dependents.
+Much faster and cheaper than a full `init`, only regenerates pages for changed files and their dependents.
 
 **How it works:**
 
@@ -265,7 +265,7 @@ Much faster and cheaper than a full `init` — only regenerates pages for change
 
 If you first indexed a large repo with `repowise init --mode fast` (graph + essential git only, no LLM docs), `repowise update --full` upgrades it to a full index **without redoing the structural work**:
 
-1. Backfills the git tier from *essential* to *full* — per-file blame and repo-wide co-change — via a resumable, checkpointed worker (re-run `--full` to resume if interrupted).
+1. Backfills the git tier from *essential* to *full*, per-file blame and repo-wide co-change, via a resumable, checkpointed worker (re-run `--full` to resume if interrupted).
 2. Rehydrates the dependency graph straight from the database instead of re-parsing and re-resolving it, so imports/calls/heritage resolution and centrality are **not** recomputed.
 3. Generates the LLM documentation that fast mode skipped.
 
@@ -317,7 +317,7 @@ Runs continuously. Uses filesystem events (via watchdog) to detect saves, deboun
 **Example:**
 
 ```bash
-# Start watching — wiki syncs as you code
+# Start watching, wiki syncs as you code
 repowise watch --debounce 3000
 ```
 
@@ -340,9 +340,9 @@ repowise search QUERY [PATH]
 
 **Search modes:**
 
-- **fulltext** — SQLite FTS. Fast, exact keyword matching.
-- **semantic** — Vector similarity search via LanceDB. Understands meaning ("how does auth work?" finds authentication code even without the word "auth"). Falls back to fulltext if vector store is unavailable.
-- **symbol** — Searches the symbol index (function names, class names, etc.) with fuzzy matching.
+- **fulltext**, SQLite FTS. Fast, exact keyword matching.
+- **semantic**, Vector similarity search via LanceDB. Understands meaning ("how does auth work?" finds authentication code even without the word "auth"). Falls back to fulltext if vector store is unavailable.
+- **symbol**, Searches the symbol index (function names, class names, etc.) with fuzzy matching.
 
 **Examples:**
 
@@ -350,7 +350,7 @@ repowise search QUERY [PATH]
 # Keyword search
 repowise search "rate limiting"
 
-# Semantic search — understands intent
+# Semantic search, understands intent
 repowise search "how are errors handled" --mode semantic
 
 # Find a symbol
@@ -382,15 +382,15 @@ This is how you connect repowise to Claude Code, Cursor, Cline, Windsurf, and ot
 |------|-------------|
 | `get_overview` | Repository architecture summary, key modules, entry points, git health, community summary |
 | `get_answer` | One-call RAG: confidence-gated synthesis over the wiki, with cited 2–5 sentence answers and a per-repository question cache |
-| `get_context` | Complete context for files/modules/symbols — docs, ownership, decisions, freshness, community membership. Defaults to `compact=True`; pass `compact=False` for the full structure block and importer list. In workspace mode, accepts `repo` parameter. |
+| `get_context` | Complete context for files/modules/symbols, docs, ownership, decisions, freshness, community membership. Defaults to `compact=True`; pass `compact=False` for the full structure block and importer list. In workspace mode, accepts `repo` parameter. |
 | `get_symbol` | Raw source bytes for one indexed symbol with exact line bounds (cheaper/safer than `Read` + offset math) |
 | `search_codebase` | Semantic search over wiki with git freshness boosting. In workspace mode, searches across all repos. |
-| `get_risk` | Modification risk assessment — hotspot score, dependents, co-change partners, bus factor, blast radius, test gaps, 0–10 risk score |
-| `get_why` | Why code is structured the way it is — architectural decisions, git archaeology. Three modes: NL search, path-based, health dashboard. |
+| `get_risk` | Modification risk assessment, hotspot score, dependents, co-change partners, bus factor, blast radius, test gaps, 0–10 risk score |
+| `get_why` | Why code is structured the way it is, architectural decisions, git archaeology. Three modes: NL search, path-based, health dashboard. |
 | `get_dead_code` | Tiered dead code report grouped by confidence with cleanup impact estimates |
-| `get_health` | 25-marker code-health scores — dashboard KPIs + lowest-scoring files, or per-file findings; `include` for refactoring suggestions and trend alerts |
+| `get_health` | 25-marker code-health scores, dashboard KPIs + lowest-scoring files, or per-file findings; `include` for refactoring suggestions and trend alerts |
 
-In workspace mode, tools are workspace-aware — pass `repo="backend"` to target a specific repo or `repo="all"` to query across the entire workspace. The default repo is used when `repo` is omitted.
+In workspace mode, tools are workspace-aware, pass `repo="backend"` to target a specific repo or `repo="all"` to query across the entire workspace. The default repo is used when `repo` is omitted.
 
 See [MCP Integration](#mcp-integration-with-ai-editors) for setup instructions. Full tool reference: [MCP_TOOLS.md](MCP_TOOLS.md)
 
@@ -520,7 +520,7 @@ Generate or update `CLAUDE.md` with codebase intelligence.
 repowise generate-claude-md [PATH]
 ```
 
-`CLAUDE.md` gives AI editors (Claude Code, Cursor, etc.) instant context about your codebase — architecture, key modules, hotspots, entry points, and conventions.
+`CLAUDE.md` gives AI editors (Claude Code, Cursor, etc.) instant context about your codebase, architecture, key modules, hotspots, entry points, and conventions.
 
 If you have custom instructions at the top of your `CLAUDE.md`, they are preserved. Only the auto-generated section (between markers) is updated.
 
@@ -608,7 +608,7 @@ Checks:
 - `state.json` valid
 - Providers installed and importable
 - Stale page count
-- **CLI version** — best-effort check of your installed CLI against the latest
+- **CLI version**, best-effort check of your installed CLI against the latest
   PyPI release
 
 The CLI version row is advisory: when a newer release exists it prints the
@@ -665,11 +665,11 @@ repowise hook uninstall            # Remove the hook
 repowise hook uninstall --workspace
 ```
 
-The hook is marker-delimited, so it coexists safely with other tools' hooks (linters, formatters, etc.) in the same `post-commit` file. The hook runs `repowise update` in the background — your terminal is never blocked.
+The hook is marker-delimited, so it coexists safely with other tools' hooks (linters, formatters, etc.) in the same `post-commit` file. The hook runs `repowise update` in the background, your terminal is never blocked.
 
 ---
 
-## Web UI
+## Web Dashboard
 
 Repowise includes a full web dashboard built with Next.js, React, and D3.js.
 
@@ -719,10 +719,10 @@ Open **http://localhost:3000** for the Web UI, **http://localhost:7337** for the
 For working on the frontend code with hot reload:
 
 ```bash
-# Terminal 1 — API only
+# Terminal 1, API only
 repowise serve --no-ui
 
-# Terminal 2 — Frontend with hot reload
+# Terminal 2, Frontend with hot reload
 cd /path/to/repowise
 npm install
 REPOWISE_API_URL=http://localhost:7337 npm run dev --workspace packages/web
@@ -737,83 +737,42 @@ npm run dev --workspace packages/web
 
 Open **http://localhost:3000** in your browser.
 
-### Pages & Features
+### Navigation
 
-**Dashboard** (`/`)
-Home page with aggregate stats (total pages, fresh/stale counts, dead code findings), a list of indexed repositories, and recent job status.
+Two global pages sit outside any repo: **Dashboard** (`/`, lists indexed repos and recent job status) and **Settings** (`/settings`, API connection, default provider/model, embedder, webhook/MCP setup).
 
-**Repository Overview** (`/repos/[id]/overview`)
-A single-page dashboard for each repository that aggregates key health signals. Includes:
-- **Health score ring** — composite score (0–100) computed from documentation coverage, freshness, dead code ratio, hotspot density, and ownership silo risk
-- **Attention panel** — prioritized list of items needing action (stale docs, high-churn hotspots, dead code findings)
-- **Language donut** — breakdown of codebase by programming language
-- **Ownership treemap** — visualizes code ownership distribution across modules
-- **Hotspots mini** — top high-churn files at a glance
-- **Decisions timeline** — recent architectural decisions
-- **Module minimap** — compact interactive graph of module relationships
-- **Quick actions** — one-click buttons for sync, full re-index, CLAUDE.md generation, and export
-- **Active job banner** — shows progress of running pipeline jobs with live polling
+Everything else lives under a repo: `/repos/{id}/...`. The sidebar groups repo pages like this:
 
-The overview page degrades gracefully — each data section loads independently, so partial data (e.g., missing git metadata) still renders a useful dashboard. A "Graph Intelligence" section at the bottom of the overview shows an expandable list of architectural communities (with labels, cohesion scores, and member counts) and an execution flows panel listing the top entry points with their call-path traces.
+| Page | Route | What it's for |
+|------|-------|----------------|
+| Overview | `/overview` | Repo health dashboard: aggregate score, attention panel (what needs action), hotspots, decisions timeline, community graph |
+| Docs | `/docs` | Wiki browser: AI-generated documentation for every file and module, with an Explorer tab and a Coverage/freshness tab |
+| Architecture | `/architecture` | One page, five tabs: Communities (default), Explore (full dependency graph with dead-code/hotspot overlays), Coupling (change-coupling graph), Dependencies (declared third-party deps), Symbols (functions, classes, exports) |
+| Knowledge Graph | `/knowledge-graph` | The curated, layered architecture view (guided tour, personas, drill-down from system to module to file) |
+| Code Health | `/code-health` | One page, seven tabs: Triage (default), Findings, Hotspots & churn, Coverage, Dead code, Impact (blast radius), Security |
+| Refactoring | `/refactoring` | Ranked refactoring plan cards, with copy-to-agent export |
+| Files | `/files` | Browsable file tree |
+| Commits / Contributors / Decisions | `/commits`, `/owners`, `/decisions` | Grouped under "People & History": git activity, ownership/bus-factor risk, and architectural decisions |
+| Chat | `/chat` | Natural-language Q&A over the codebase, using the same MCP tools as editor integrations |
+| Stats / Usage & savings / Settings | `/stats`, `/costs`, `/settings` | Grouped under repo Settings: "by the numbers" stats, distill/LLM cost tracking, per-repo config |
 
-**Wiki Browser** (`/repos/[id]/wiki/...`)
-The heart of repowise. Browse AI-generated documentation for every file and module. Each page includes:
-- Rendered markdown with syntax-highlighted code blocks and Mermaid diagrams
-- Sticky table of contents
-- Freshness badge (fresh / stale / outdated)
-- Git history sidebar — commits, churn percentile, top authors, co-change partners, hotspot indicator
-- Regenerate button for stale pages
-- "Graph Intelligence" section in the right sidebar showing PageRank and betweenness percentile bars, community label, and in/out degree counts
+A global command palette (`Ctrl+K` / `Cmd+K`, available on every page) is the fastest way to jump between pages or repos; it replaced the old standalone Search page.
 
-**Dependency Graph** (`/repos/[id]/graph`)
-Interactive force-directed graph rendered on HTML Canvas with D3.js. Handles 2000+ nodes. Six view modes:
-- **Module view** — hierarchical organization
-- **Ego graph** — neighborhood of a selected node
-- **Architecture view** — entry point reachability
-- **Dead code view** — highlights unreachable files
-- **Hot files view** — commit activity heatmap
-- **Full graph** — everything
+Older top-level routes (`/risk`, `/hotspots`, `/security`, `/health`, `/coverage`, `/graph`, `/c4`, `/coupling`, `/ownership`, `/blast-radius`) still resolve and redirect into the tabs above, but don't link to them directly; use the tabbed pages instead.
 
-Supports pan, zoom, click-to-inspect, path finding between nodes, filtering by language, and PNG export. Community color mode uses real community labels (derived from Leiden detection) in the legend rather than generic placeholders. Clicking a node in community color mode opens a community detail panel showing members, cohesion score, and neighboring communities. The active color mode is preserved as a URL parameter so links can be shared.
+**Index-only repos:** the dashboard itself isn't gated by mode. Views that depend on the generated wiki (Docs, Chat, and parts of Overview) just show empty or thin content if you ran `repowise init --index-only`; everything else (Architecture, Code Health, Files, Commits, Contributors) works off the parsed graph and git history alone.
 
-**Search** (`/repos/[id]/search`)
-Full-text and semantic search with result cards showing snippets, confidence scores, and links. A global command palette (`Ctrl+K` / `Cmd+K`) is accessible from any page for quick navigation.
+### Workspace mode
 
-**Symbol Index** (`/repos/[id]/symbols`)
-Searchable, sortable table of every extracted symbol (functions, classes, methods, interfaces). Click any row to open the symbol drawer, which now includes a right panel showing graph metrics (PageRank and betweenness percentile bars), callers and callees with confidence scores, and heritage relationships (extends/implements) for classes.
+In a multi-repo workspace, a collapsible **Workspace** nav section appears above the per-repo pages:
 
-**Documentation Coverage** (`/repos/[id]/coverage`)
-Donut chart and table showing freshness breakdown. Regenerate stale pages directly from the UI.
-
-**Code Ownership** (`/repos/[id]/ownership`)
-Contributor attribution by module or file. Highlights knowledge silos (bus factor risk) where one person owns >80% of a module.
-
-**Hotspots** (`/repos/[id]/hotspots`)
-Ranked table of high-churn files with commit counts, churn percentile bars, and owner attribution.
-
-**Dead Code** (`/repos/[id]/dead-code`)
-Findings grouped by category (unreachable files, unused exports, zombie packages) with confidence scores, line counts, and safe-to-delete badges. Bulk operations for resolving or acknowledging findings.
-
-**Architectural Decisions** (`/repos/[id]/decisions`)
-Browse and manage extracted decisions. View full rationale, affected files, health score, and status.
-
-**Codebase Chat** (`/repos/[id]/chat`)
-Ask questions about your codebase in natural language. Streaming responses powered by your configured LLM with real-time tool call visualization. The chat uses the same MCP tools as editor integrations.
-
-**Settings** (`/settings`)
-Configure API connection, default provider/model, embedder, and view webhook/MCP setup instructions.
-
-**Workspace Dashboard** (`/workspace`) *(workspace mode only)*
-Aggregate stats across all repos, repo cards with file/symbol/coverage counts, and cross-repo intelligence summary.
-
-**Workspace System Map** (`/workspace/system-map`) *(workspace mode only)*
-A code-derived diagram of your services and their typed relationships (HTTP, gRPC, events, package deps, co-change), health-colored, with edge-kind filters, a service-to-repo collapse toggle, and click-through drill-down to the underlying contracts.
-
-**Workspace Contracts** (`/workspace/contracts`) *(workspace mode only)*
-All detected API contracts (HTTP, gRPC, message topics) with provider/consumer matching, filterable by type and repo.
-
-**Workspace Co-Changes** (`/workspace/co-changes`) *(workspace mode only)*
-Cross-repo file pairs ranked by co-change strength.
+| Page | Route | What it's for |
+|------|-------|----------------|
+| Overview | `/workspace` | Aggregate stats across all repos |
+| System Map | `/workspace/system-map` | Code-derived service diagram (HTTP, gRPC, events, package deps, co-change), health-colored, with drill-down into contracts |
+| Conformance | `/workspace/conformance` | Dependency-cycle detection and a dependency structure matrix (DSM) |
+| Contracts | `/workspace/contracts` | Detected API contracts (HTTP, gRPC, message topics) with provider/consumer matching |
+| Co-Changes | `/workspace/co-changes` | Cross-repo file pairs ranked by co-change strength |
 
 ---
 
@@ -880,7 +839,7 @@ Unlike MCP tools, hooks are passive reminders that fire from editor lifecycle ev
 
 ### How it works
 
-#### Claude Code PostToolUse Hook — Grep/Glob enrichment
+#### Claude Code PostToolUse Hook, Grep/Glob enrichment
 
 When Claude Code runs a broad or zero-result `Grep` or `Glob`, repowise can query the local `wiki.db` and append focused context:
 
@@ -891,14 +850,14 @@ When Claude Code runs a broad or zero-result `Grep` or `Glob`, repowise can quer
 | **Depends on** | What this file imports (forward dependency) |
 | **Git signals** | Hotspot status, bus factor, and owner |
 
-No LLM calls, no network requests — pure local SQLite queries against `wiki.db`.
+No LLM calls, no network requests, pure local SQLite queries against `wiki.db`.
 
-#### PostToolUse Hook — Git/edit freshness detection
+#### PostToolUse Hook, Git/edit freshness detection
 
 After a successful `git commit`, `git merge`, `git rebase`, `git cherry-pick`, or `git pull`, repowise checks whether the wiki is stale by comparing `HEAD` against the last indexed commit in `.repowise/state.json`. Codex edit hooks also remind the agent that indexed context may be stale after edits.
 
 ```
-Wiki is stale — run `repowise update` to refresh
+Wiki is stale, run `repowise update` to refresh
 ```
 
 This ensures agents are never silently working from outdated documentation.
@@ -909,16 +868,17 @@ Claude Code hooks are written to `~/.claude/settings.json` automatically during 
 
 | Hook type | Matcher | Action |
 |-----------|---------|--------|
-| Claude `PostToolUse` | `Bash\|Grep\|Glob` | Check git freshness and add search rescue/triage context |
+| Claude `SessionStart` | `startup\|resume\|clear` | Inject live index freshness (current / behind with a changed-file count / update in progress) and the core-tool trust rule |
+| Claude `PostToolUse` | `Bash\|PowerShell\|Grep\|Glob\|Read\|Edit\|Write` | Check git freshness, add search rescue/triage context, and emit Read-intelligence notices |
 | Codex `SessionStart` / `UserPromptSubmit` | lifecycle | Remind Codex to use Repowise MCP tools |
 | Codex `PostToolUse` | `Bash`, `apply_patch\|Edit\|Write` | Check git/edit freshness |
 
-Both hooks call the `repowise-augment` console script — a standalone, import-isolated entry point that does not load the full `repowise` CLI. This keeps cold start under the 500ms target and ensures a broken environment (missing optional dep, corrupt DB, etc.) never crashes the agent: any failure exits 0 silently. The equivalent `repowise augment` Click subcommand still exists for manual debugging.
+Both hooks call the `repowise-augment` console script, a standalone, import-isolated entry point that does not load the full `repowise` CLI. This keeps cold start under the 500ms target and ensures a broken environment (missing optional dep, corrupt DB, etc.) never crashes the agent: any failure exits 0 silently. The equivalent `repowise augment` Click subcommand still exists for manual debugging.
 
 ### CLI command
 
 ```bash
-repowise-augment    # Not meant to be called manually — invoked by AI-agent hooks
+repowise-augment    # Not meant to be called manually, invoked by AI-agent hooks
 repowise augment    # Equivalent Click subcommand, useful for manual debugging
 ```
 
@@ -941,14 +901,14 @@ When an agent runs `Grep` or `Glob`, it sees its normal results followed by cont
     Depends on: update_cmd.py, cost_estimator.py
 ```
 
-This means an agent that searches for `"PageGenerator"` immediately knows which files depend on it, what it depends on, and that it is a hotspot — without making a separate MCP tool call.
+This means an agent that searches for `"PageGenerator"` immediately knows which files depend on it, what it depends on, and that it is a hotspot, without making a separate MCP tool call.
 
 ### Relationship to MCP tools
 
 Hooks and MCP tools are complementary:
 
-- **Hooks** — passive, automatic, zero agent effort. Fire on every search regardless of whether the agent is thinking about graph context.
-- **MCP tools** — active, on-demand, richer output. Used when the agent needs full documentation, risk assessment, architectural decisions, or dependency tracing.
+- **Hooks**, passive, automatic, zero agent effort. Fire on every search regardless of whether the agent is thinking about graph context.
+- **MCP tools**, active, on-demand, richer output. Used when the agent needs full documentation, risk assessment, architectural decisions, or dependency tracing.
 
 For most day-to-day coding tasks, hooks provide sufficient context automatically. MCP tools remain the right choice for deeper investigation.
 
@@ -956,7 +916,7 @@ For most day-to-day coding tasks, hooks provide sufficient context automatically
 
 ## Output Distillation (Distill)
 
-Most of an agent's context is spent on command output it never needed — 300
+Most of an agent's context is spent on command output it never needed, 300
 lines of passing tests to find 4 failures, a full `git log` for "what changed
 recently". Distill compresses noisy output **before the agent reads it**,
 errors-first and fully reversible. Full guide: [DISTILL.md](DISTILL.md).
@@ -982,7 +942,7 @@ repowise expand a1b2c3d4e5f6 -q "FAILED"  # just the matching lines
 **Make your agent use it.** Two complementary ways:
 
 1. `repowise init` adds an "Output Distillation" section to the managed
-   `CLAUDE.md`, so the agent prefers `repowise distill <cmd>` voluntarily —
+   `CLAUDE.md`, so the agent prefers `repowise distill <cmd>` voluntarily -
    works in any agent that runs shell commands.
 2. Opt into the **command-rewrite hook** (Claude Code): noisy commands are
    rewritten to `repowise distill <cmd>` automatically, pending your approval.
@@ -997,7 +957,7 @@ to `ask` so you see every rewritten command. Per-repo behavior lives under
 
 **Skeletons for large files.** For structure-level questions about an indexed
 file, `get_context(["path"], include=["skeleton"])` returns every signature
-plus the bodies of only the most central symbols — typically ~15% of the full
+plus the bodies of only the most central symbols, typically ~15% of the full
 file's tokens. After a large `Read`, the PostToolUse hook nudges the agent
 with the skeleton's cost once per file per session.
 
@@ -1009,7 +969,7 @@ repowise saved --by day
 ```
 
 The Costs page in the web UI shows the same numbers on its *Cache & savings*
-tab. The ledger covers the distill command/hook path only — MCP response
+tab. The ledger covers the distill command/hook path only, MCP response
 truncation is not counted.
 
 ---
@@ -1093,7 +1053,7 @@ repowise update
 repowise watch
 
 # Option C: Set-and-forget (if hook installed)
-# Just code and commit — the hook handles it
+# Just code and commit, the hook handles it
 ```
 
 ### Before a code review
@@ -1154,7 +1114,7 @@ Install the optional dependency: `pip install "repowise[anthropic]"` (or openai,
 Check that an embedder is configured. Run `repowise reindex --embedder gemini` to rebuild the vector store.
 
 **"embedder.mock_active" warning**
-Set `REPOWISE_EMBEDDER=gemini` (or `openai`) for real vector search. Mock embedder produces random vectors — semantic search won't work meaningfully.
+Set `REPOWISE_EMBEDDER=gemini` (or `openai`) for real vector search. Mock embedder produces random vectors, semantic search won't work meaningfully.
 
 **Stale pages after code changes**
 Run `repowise update` to sync. Or use `repowise watch` for automatic syncing.

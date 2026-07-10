@@ -411,6 +411,21 @@ async def _federated_search(
     return {"results": output, "_meta": _build_meta()}
 
 
+def _result_paths(results: list[dict]) -> list[str]:
+    """File paths a result set serves, for target-scoped freshness.
+
+    Symbol hits carry ``file``; concept/page hits carry ``target_path``.
+    An empty result set returns ``[]`` (meaning "no file content served",
+    which suppresses the repo-level stale warning by design).
+    """
+    paths: list[str] = []
+    for item in results:
+        p = item.get("file") or item.get("target_path")
+        if isinstance(p, str) and p:
+            paths.append(p)
+    return paths
+
+
 def _grep_hint_for(query: str) -> str | None:
     """Build a Grep nudge for identifier-shaped queries, else ``None``."""
     if _looks_like_exact_token(query):
@@ -533,7 +548,11 @@ async def _structured_search(
         async with get_session(contexts[0].session_factory) as session:
             repository = await _get_repo(session)
 
-    response: dict = {"results": results, "mode": mode, "_meta": _build_meta(repository=repository)}
+    response: dict = {
+        "results": results,
+        "mode": mode,
+        "_meta": _build_meta(repository=repository, targets=_result_paths(results)),
+    }
     if grep_hint and not results:
         response["grep_hint"] = grep_hint
     return response
@@ -640,7 +659,10 @@ async def search_codebase(
     # Derive confidence_score from relative position in the result set.
     _assign_confidence(output, "relevance_score", "confidence_score")
 
-    response: dict = {"results": output, "_meta": _build_meta(repository=repository)}
+    response: dict = {
+        "results": output,
+        "_meta": _build_meta(repository=repository, targets=_result_paths(output)),
+    }
     if grep_hint:
         response["grep_hint"] = grep_hint
     return response

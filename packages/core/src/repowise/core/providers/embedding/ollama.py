@@ -47,6 +47,10 @@ class OllamaEmbedder:
         base_url: Ollama server URL. Defaults to ``http://localhost:11434``.
         dimensions: Optional output dimension hint. Also sent to Ollama as
             ``dimensions`` when provided.
+        timeout: Per-request timeout in seconds. Falls back to the
+            ``OLLAMA_EMBEDDING_TIMEOUT`` / ``REPOWISE_EMBEDDING_TIMEOUT`` env
+            vars, then ``30.0``. Raise it when embedding long pages on a slow
+            local model that would otherwise exceed the default and be dropped.
     """
 
     def __init__(
@@ -54,7 +58,7 @@ class OllamaEmbedder:
         model: str | None = None,
         base_url: str | None = None,
         dimensions: int | None = None,
-        timeout: float = _DEFAULT_TIMEOUT,
+        timeout: float | None = None,
     ) -> None:
         self._model = (
             model
@@ -70,7 +74,14 @@ class OllamaEmbedder:
         )
         self._requested_dimensions = dimensions or (int(env_dimensions) if env_dimensions else None)
         self._dimensions = self._requested_dimensions or _infer_dimensions(self._model)
-        self._timeout = timeout
+        env_timeout = os.environ.get("OLLAMA_EMBEDDING_TIMEOUT") or os.environ.get(
+            "REPOWISE_EMBEDDING_TIMEOUT"
+        )
+        self._timeout = (
+            timeout
+            if timeout is not None
+            else (float(env_timeout) if env_timeout else _DEFAULT_TIMEOUT)
+        )
 
     @property
     def dimensions(self) -> int:

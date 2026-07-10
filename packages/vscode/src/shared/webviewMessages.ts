@@ -18,17 +18,22 @@ import type {
 import type { FileDetailResponse } from "@repowise-dev/types/files";
 import type {
   ArchitectureGraphResponse,
+  CommunityDetailResponse,
   CommunitySliceResponse,
   CommunitySummaryItem,
   DeadCodeGraphResponse,
   DecisionRecordResponse,
   ExecutionFlowsResponse,
   GraphExportResponse,
+  GraphPathResponse,
   HotFilesGraphResponse,
   ModuleGraphResponse,
+  NodeSearchResult,
   PageResponse,
 } from "@repowise-dev/api-client/types";
 import type { RiskRangeResponse } from "@repowise-dev/api-client/risk";
+import type { ReviewerSuggestion } from "@repowise-dev/api-client/types";
+import type { BlastRadiusResponse } from "@repowise-dev/types/blast-radius";
 import type { ArchitectureView } from "@repowise-dev/ui/c4";
 import type { RefactoringPlan, RefactoringTargets } from "@repowise-dev/ui/refactoring/types";
 import type { AiPromptFlavor } from "@repowise-dev/ui/health/ai-prompt-builder";
@@ -41,22 +46,59 @@ export type PanelViewId =
   | "refactoring"
   | "decisions"
   | "docs"
-  | "risk";
+  | "risk"
+  | "settings";
 
 /** Panels plus the sidebar Home view (a WebviewView, never a tab). */
 export type WebviewViewId = PanelViewId | "home";
 
 /** Per-view open parameters, carried in the init message. */
 export interface ViewParams {
-  health: Record<string, never>;
+  /** selectPath focuses the dashboard on one file (from the status-bar score). */
+  health: { selectPath?: string };
   architecture: { selectPath?: string };
   graph: { selectNode?: string };
   refactoring: { planId?: string; filePath?: string };
   decisions: Record<string, never>;
   docs: { pageId?: string; filePath?: string };
   risk: Record<string, never>;
+  settings: Record<string, never>;
   home: Record<string, never>;
 }
+
+/**
+ * The settings the Settings panel can read and write. Kept in lockstep with
+ * the `repowise.*` keys contributed in package.json (the extension-side source
+ * of truth); the panel offers a friendlier grouped surface over the same keys,
+ * and the host validates every write against this allowlist.
+ */
+export const SETTING_KEYS = [
+  "diagnostics.enabled",
+  "diagnostics.minSeverity",
+  "diagnostics.dimensions",
+  "gutterHeat.enabled",
+  "fileDecorations.enabled",
+  "fileDecorations.maxScore",
+  "codeLens.enabled",
+  "hover.enabled",
+  "hover.symbolDetail",
+  "server.autoStart",
+  "server.port",
+  "cliPath",
+  "risk.baseBranch",
+  "changeIntel.cochangeNudge",
+  "changeIntel.cochangeMinScore",
+  "agentHandoff.enabled",
+  "agentTools.enabled",
+] as const;
+
+export type SettingKey = (typeof SETTING_KEYS)[number];
+
+/** The value shapes a setting can hold across the whole allowlist. */
+export type SettingValue = boolean | number | string | string[] | null;
+
+/** Current value of every allowlisted setting, keyed by its `repowise.*` tail. */
+export type SettingsValues = Record<SettingKey, SettingValue>;
 
 /**
  * Webview color scheme. "auto" follows the editor theme; a fixed value pins
@@ -93,6 +135,11 @@ export interface HostApi {
   architectureCommunityGraph(): Promise<ArchitectureGraphResponse>;
   communities(): Promise<CommunitySummaryItem[]>;
   communitySlice(communityId: number): Promise<CommunitySliceResponse>;
+  communityDetail(communityId: number): Promise<CommunityDetailResponse>;
+  /** Shortest path between two graph nodes (path finder panel). */
+  graphPath(from: string, to: string): Promise<GraphPathResponse>;
+  /** Node-name autocomplete for the path finder inputs. */
+  searchNodes(query: string, limit?: number): Promise<NodeSearchResult[]>;
   deadCodeGraph(): Promise<DeadCodeGraphResponse>;
   hotFilesGraph(): Promise<HotFilesGraphResponse>;
   executionFlows(): Promise<ExecutionFlowsResponse>;
@@ -107,10 +154,17 @@ export interface HostApi {
   pagesList(): Promise<PageResponse[]>;
   pageById(pageId: string): Promise<PageResponse>;
   fileDetail(relPath: string): Promise<FileDetailResponse>;
-  // Branch risk
+  // Change risk
   riskRange(): Promise<RiskRangeReport>;
+  /** Impact of the current change set (uncommitted + unpushed). */
+  changeImpact(): Promise<ChangeImpactReport>;
   // Sidebar home
   homeSummary(): Promise<HomeSummary>;
+  // Settings panel
+  /** Current value of every allowlisted setting. */
+  getSettings(): Promise<SettingsValues>;
+  /** Persist one setting, then echo the full fresh value map back. */
+  updateSetting(key: SettingKey, value: SettingValue): Promise<SettingsValues>;
 }
 
 /**
@@ -151,6 +205,31 @@ export interface RiskRangeReport {
   base: string;
   branch: string | null;
   result: RiskRangeResponse;
+}
+
+/**
+ * Impact of the working change set, assembled host-side from the blast-radius
+ * and reviewer-suggestion endpoints. Shared verbatim by the Change Risk panel
+ * and the ambient co-change nudge so there is one analysis, not two.
+ */
+export interface ChangeImpactReport {
+  /** Repo-relative paths analyzed, sorted (the change-set signature source). */
+  changed: string[];
+  /** How many of the changed paths are staged / unstaged (working tree). */
+  stagedCount: number;
+  workingCount: number;
+  /**
+   * "branch" includes committed-but-unpushed changes (base..HEAD); "working"
+   * is the uncommitted tree only. The panel asks for branch scope; the nudge
+   * asks for working scope so it speaks to the file being edited right now.
+   */
+  scope: "branch" | "working";
+  /** Blast analysis, or null when git is unavailable or nothing changed. */
+  blast: BlastRadiusResponse | null;
+  /** Reviewer suggestions for the changed set (names + reasons). */
+  reviewers: ReviewerSuggestion[];
+  /** True when git could not be read at all (distinct from a clean tree). */
+  gitUnavailable: boolean;
 }
 
 export type HostApiMethod = keyof HostApi;
@@ -231,6 +310,16 @@ export interface OpenViewMessage {
   params?: ViewParams[PanelViewId];
 }
 
+/** Webview -> host: reveal the sidebar Home view. Sent by a panel's chrome. */
+export interface FocusHomeMessage {
+  kind: "focus-home";
+}
+
+/** Webview -> host: open the native Settings editor filtered to the extension. */
+export interface OpenNativeSettingsMessage {
+  kind: "open-native-settings";
+}
+
 /** Webview -> host: run an incremental index update. Sent by Home. */
 export interface UpdateIndexMessage {
   kind: "update-index";
@@ -263,6 +352,8 @@ export type WebviewToHostMessage =
   | CopyTextMessage
   | OpenExternalMessage
   | OpenViewMessage
+  | FocusHomeMessage
+  | OpenNativeSettingsMessage
   | UpdateIndexMessage
   | SetThemeMessage;
 

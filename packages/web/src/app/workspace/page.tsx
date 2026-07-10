@@ -11,7 +11,8 @@ import {
   ArrowRight,
 } from "lucide-react";
 import { getWorkspace, getWorkspaceCoChanges } from "@/lib/api/workspace";
-import { StatCard } from "@repowise-dev/ui/shared/stat-card";
+import { MetricCard } from "@repowise-dev/ui/shared/metric-card";
+import { EmptyState } from "@repowise-dev/ui/shared/empty-state";
 import { Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui/card";
 import { RepoCard } from "@repowise-dev/ui/workspace/repo-card";
 import { CrossRepoSummary } from "@repowise-dev/ui/workspace/cross-repo-summary";
@@ -127,27 +128,27 @@ export default async function WorkspaceDashboardPage() {
 
       {/* Aggregate Stats */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
-        <StatCard
+        <MetricCard
           label="Total Files"
           value={formatNumber(totalFiles)}
           icon={<FileText className="h-4 w-4" />}
         />
-        <StatCard
+        <MetricCard
           label="Total Symbols"
           value={formatNumber(totalSymbols)}
           icon={<Code2 className="h-4 w-4" />}
         />
-        <StatCard
+        <MetricCard
           label="Avg Coverage"
           value={`${avgCoverage}%`}
           icon={<BarChart3 className="h-4 w-4" />}
         />
-        <StatCard
+        <MetricCard
           label="Hotspots"
           value={totalHotspots}
           icon={<Flame className="h-4 w-4 text-[var(--color-warning)]" />}
         />
-        <StatCard
+        <MetricCard
           label="Pages"
           value={formatNumber(wsRepos.reduce((a, r) => a + r.page_count, 0))}
           icon={<Code2 className="h-4 w-4 text-[var(--color-text-tertiary)]" />}
@@ -159,6 +160,13 @@ export default async function WorkspaceDashboardPage() {
         <h2 className="text-sm font-medium text-[var(--color-text-primary)] mb-3">
           Repositories
         </h2>
+        {wsRepos.length === 0 && (
+          <EmptyState
+            title="No repositories discovered yet"
+            description="Run `repowise init .` in the workspace root to scan for git repositories and index them. They show up here as soon as the scan lands."
+            icon={<Layers className="h-8 w-8" />}
+          />
+        )}
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {wsRepos.map((wsRepo) => {
             const status = wsRepo.status ?? (wsRepo.repo_id ? "indexed" : "needs_index");

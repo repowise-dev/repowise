@@ -1133,6 +1133,79 @@ export function buildDecisionAiPrompt({
     .join("\n");
 }
 
+/**
+ * Enforcement sibling of {@link buildDecisionAiPrompt}: where the
+ * verification prompt asks "is this decision still true?", this one asks the
+ * agent to bring non-conforming code into line with the decision — the
+ * follow-through once a decision is confirmed.
+ */
+export function buildDecisionEnforcementAiPrompt({
+  decision: d,
+  flavor = "generic",
+  repoName,
+}: BuildDecisionPromptOptions): string {
+  const repoLine = repoName ? ` (\`${repoName}\`)` : "";
+  const scope = [...(d.affected_modules ?? []), ...(d.affected_files ?? [])];
+
+  const constraintList = [
+    "Treat the decision text below as the standard; your job is conformance, not re-litigating whether the decision is right. If you find strong evidence the decision itself is wrong, stop and report that instead of enforcing it.",
+    scope.length > 0
+      ? "Start from the affected modules/files listed below, then follow the dependency graph to anything else that should obey this decision."
+      : "First identify which parts of the codebase this decision governs, then audit them.",
+    "Cite specific files/symbols for every violation — don't assert without a reference.",
+    "Propose the minimal change that brings each violation into conformance; don't refactor beyond what the decision requires.",
+    "Keep behavior identical except where the decision explicitly requires otherwise; call out any user-visible change.",
+  ];
+
+  const completionContract = [
+    "1. A conformance audit: each governed file/module and whether it conforms or violates the decision, with evidence.",
+    "2. For every violation, the concrete fix (file, symbol, and the change), ordered by impact.",
+    "3. The fixes applied (or, if you can't safely change something, why, and what a human should do).",
+    "4. Anything governed by the decision that you couldn't check, so nothing is silently skipped.",
+  ];
+
+  const closer =
+    flavor === "claude-code-mcp"
+      ? `Use \`get_why('${d.title.replace(/'/g, "")}')\` for the recorded rationale and \`get_context([${scope.slice(0, 3).map((s) => `'${s}'`).join(", ")}])\` for the governed code — repowise links decisions to graph nodes, so audit against that instead of guessing.`
+      : "Read the decision below, open the code it governs, and make the code match the decision — with a cited audit trail for every change.";
+
+  return [
+    FLAVOR_PREAMBLE[flavor],
+    "",
+    `## Architectural decision to enforce${repoLine}`,
+    "",
+    bulletList([
+      `Title: **${d.title}**`,
+      `Status: ${d.status}`,
+      scope.length > 0
+        ? `Governs: ${scope.slice(0, 8).map((s) => `\`${s}\``).join(", ")}${scope.length > 8 ? `, +${scope.length - 8} more` : ""}`
+        : null,
+    ]),
+    "",
+    d.context ? ["## Context", "", d.context, ""].join("\n") : "",
+    d.decision ? ["## Decision", "", d.decision, ""].join("\n") : "",
+    d.rationale ? ["## Rationale", "", d.rationale, ""].join("\n") : "",
+    d.consequences && d.consequences.length > 0
+      ? ["## Consequences", "", bulletList(d.consequences), ""].join("\n")
+      : "",
+    "## Your task",
+    "",
+    "Audit the governed code for compliance with this decision, then fix every violation you find. This is an enforcement pass: the outcome should be code that conforms, not just a report.",
+    "",
+    "## Hard constraints",
+    "",
+    bulletList(constraintList),
+    "",
+    "## What I expect back",
+    "",
+    completionContract.join("\n"),
+    "",
+    closer,
+  ]
+    .filter((s) => s !== "")
+    .join("\n");
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Commit review prompt (per commit)
 // ─────────────────────────────────────────────────────────────────────

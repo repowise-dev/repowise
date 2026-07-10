@@ -1,0 +1,38 @@
+{
+  "nodes": [
+    {
+      "file_path": "CHANGES.rst",
+      "module": null,
+      "score": null,
+      "nloc": 0
+    },
+    {
+      "file_path": "src/flask/app.py",
+      "module": "flask",
+      "score": 1.07,
+      "nloc": 1235
+    },
+    {
+      "file_path": "src/flask/sansio/app.py",
+      "module": "flask/sansio",
+      "score": 1.35,
+      "nloc": 678
+    }
+  ],
+  "edges": [
+    {
+      "source": "CHANGES.rst",
+      "target": "src/flask/sansio/app.py",
+      "strength": 2.66,
+      "last_co_change": "2026-05-02"
+    },
+    {
+      "source": "CHANGES.rst",
+      "target": "src/flask/app.py",
+      "strength": 2.05,
+      "last_co_change": "2026-02-20"
+    }
+  ],
+  "total_edges": 2,
+  "state": "ready"
+}

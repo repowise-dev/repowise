@@ -35,6 +35,7 @@ def serialize_hits(
     limit: int | None = None,
     summary_chars: int | None = None,
     symbols_for_expanded: bool = True,
+    lean_symbols: bool = False,
 ) -> list[dict]:
     """Agent-facing view of retrieval hits — content only, no plumbing.
 
@@ -47,7 +48,11 @@ def serialize_hits(
     ``summary_chars`` truncates summaries (medium-confidence diet);
     ``symbols_for_expanded=False`` drops symbol enrichment from hits that
     only entered via 1-hop graph expansion (they are routing material, not
-    answer material).
+    answer material). ``lean_symbols=True`` keeps each symbol pipeable
+    (name/kind/signature/lines) but drops docstrings and excerpts — for the
+    gated low-confidence path, where the hits are candidates to pick between,
+    not answer material, and ``best_guesses`` + ``code_rationale`` already
+    carry the choosing signal.
     """
     out: list[dict] = []
     for h in hits[: limit if limit is not None else len(hits)]:
@@ -66,9 +71,15 @@ def serialize_hits(
             entry["score"] = round(h["score"], 3)
         expanded = "graph_expand" in (h.get("_sources") or ())
         if h.get("symbols") and (symbols_for_expanded or not expanded):
-            entry["key_symbols"] = [
-                {k: v for k, v in s.items() if not k.startswith("_")} for s in h["symbols"]
-            ]
+            if lean_symbols:
+                keep = ("name", "kind", "signature", "start_line", "end_line")
+                entry["key_symbols"] = [
+                    {k: s[k] for k in keep if s.get(k) is not None} for s in h["symbols"]
+                ]
+            else:
+                entry["key_symbols"] = [
+                    {k: v for k, v in s.items() if not k.startswith("_")} for s in h["symbols"]
+                ]
         out.append(entry)
     return out
 

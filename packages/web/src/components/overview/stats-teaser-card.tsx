@@ -3,6 +3,7 @@ import { BarChart3, ArrowRight, Bot } from "lucide-react";
 import type { StatsHighlights } from "@repowise-dev/types/stats";
 import { Card } from "@repowise-dev/ui/ui/card";
 import { formatLOC, formatNumber, formatAgeDays } from "@repowise-dev/ui/lib/format";
+import { NLOC_HINT, AGENT_PCT_HINT } from "@repowise-dev/ui/stats";
 
 interface StatsTeaserCardProps {
   repoId: string;
@@ -14,8 +15,8 @@ interface StatsTeaserCardProps {
 export function StatsTeaserCard({ repoId, data }: StatsTeaserCardProps) {
   const { scale, activity } = data;
 
-  const figures: { label: string; value: string }[] = [
-    { label: "Lines", value: formatLOC(scale.total_nloc) },
+  const figures: { label: string; value: string; hint?: string }[] = [
+    { label: "Lines of code", value: formatLOC(scale.total_nloc), hint: NLOC_HINT },
     { label: "Commits", value: formatNumber(activity.total_commits) },
     {
       label: "Age",
@@ -48,7 +49,7 @@ export function StatsTeaserCard({ repoId, data }: StatsTeaserCardProps) {
 
         <div className="mt-3 grid grid-cols-3 gap-2">
           {figures.map((f) => (
-            <div key={f.label}>
+            <div key={f.label} title={f.hint} className={f.hint ? "cursor-help" : undefined}>
               <p className="text-base font-semibold tabular-nums text-[var(--color-text-primary)]">
                 {f.value}
               </p>
@@ -60,9 +61,12 @@ export function StatsTeaserCard({ repoId, data }: StatsTeaserCardProps) {
         </div>
 
         {activity.total_commits > 0 && (
-          <p className="mt-3 flex items-center gap-1.5 text-xs text-[var(--color-text-secondary)]">
+          <p
+            title={AGENT_PCT_HINT}
+            className="mt-3 flex cursor-help items-center gap-1.5 text-xs text-[var(--color-text-secondary)]"
+          >
             <Bot className="h-3.5 w-3.5 text-[var(--color-info)]" />
-            {activity.agent_pct}% of commits agent-authored
+            {activity.agent_pct}% of commits carry a verifiable agent signature
           </p>
         )}
       </Link>

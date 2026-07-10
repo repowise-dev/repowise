@@ -7,21 +7,78 @@ import { useWorkspace } from "@/lib/hooks/use-workspace";
 import { ContractLinksTable } from "@repowise-dev/ui/workspace/contract-links-table";
 import { ContractTypeBadge, RoleBadge } from "@repowise-dev/ui/workspace/contract-type-badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui/card";
-import { StatCard } from "@repowise-dev/ui/shared/stat-card";
-import { EmptyState } from "@repowise-dev/ui/shared";
-import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
+import { MetricCard } from "@repowise-dev/ui/shared/metric-card";
+import {
+  EmptyState,
+  ResponsiveTable,
+  TableSkeleton,
+  type ResponsiveColumn,
+} from "@repowise-dev/ui/shared";
+import type { WorkspaceContractEntry } from "@/lib/api/types";
 
 const TYPE_OPTIONS = [
   { value: "", label: "All Types" },
   { value: "http", label: "HTTP" },
   { value: "grpc", label: "gRPC" },
   { value: "topic", label: "Topic" },
+  { value: "data", label: "Table" },
 ];
 
 const ROLE_OPTIONS = [
   { value: "", label: "All Roles" },
   { value: "provider", label: "Providers" },
   { value: "consumer", label: "Consumers" },
+];
+
+type ContractRow = WorkspaceContractEntry & { _key: string };
+
+const CONTRACT_COLUMNS: ResponsiveColumn<ContractRow>[] = [
+  {
+    key: "contract_id",
+    header: "Contract ID",
+    render: (c) => (
+      <span className="text-xs font-mono text-[var(--color-text-secondary)] break-all">
+        {c.contract_id}
+      </span>
+    ),
+  },
+  {
+    key: "contract_type",
+    header: "Type",
+    render: (c) => <ContractTypeBadge type={c.contract_type} />,
+  },
+  {
+    key: "role",
+    header: "Role",
+    render: (c) => <RoleBadge role={c.role} />,
+  },
+  {
+    key: "repo",
+    header: "Repo",
+    render: (c) => (
+      <span className="text-xs font-medium text-[var(--color-text-primary)]">{c.repo}</span>
+    ),
+  },
+  {
+    key: "file_path",
+    header: "File",
+    priority: 2,
+    render: (c) => (
+      <span className="text-xs font-mono text-[var(--color-text-tertiary)] truncate block max-w-[200px]">
+        {c.file_path}
+      </span>
+    ),
+  },
+  {
+    key: "confidence",
+    header: "Confidence",
+    align: "right",
+    render: (c) => (
+      <span className="text-xs text-[var(--color-text-tertiary)] tabular-nums">
+        {Math.round(c.confidence * 100)}%
+      </span>
+    ),
+  },
 ];
 
 export default function ContractsPage() {
@@ -66,23 +123,23 @@ export default function ContractsPage() {
 
       {/* Summary Stats */}
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <StatCard
+        <MetricCard
           label="Total Contracts"
           value={data?.total_contracts ?? "—"}
           icon={<Link2 className="h-4 w-4" />}
         />
-        <StatCard
+        <MetricCard
           label="Matched Links"
           value={data?.total_links ?? "—"}
           icon={<Link2 className="h-4 w-4 text-[var(--color-success)]" />}
         />
-        <StatCard
+        <MetricCard
           label="Unmatched"
           value={isLoading ? "—" : unmatchedCount}
           description="No matching provider or consumer"
           icon={<Link2 className="h-4 w-4 text-[var(--color-warning)]" />}
         />
-        <StatCard
+        <MetricCard
           label="By Type"
           value={
             data?.by_type
@@ -153,11 +210,7 @@ export default function ContractsPage() {
         </CardHeader>
         <CardContent className="pt-0">
           {isLoading ? (
-            <div className="space-y-3 py-4">
-              {Array.from({ length: 5 }).map((_, i) => (
-                <Skeleton key={i} className="h-10 w-full" />
-              ))}
-            </div>
+            <TableSkeleton rows={5} className="py-4" />
           ) : (
             <ContractLinksTable links={data?.links ?? []} />
           )}
@@ -173,11 +226,7 @@ export default function ContractsPage() {
         </CardHeader>
         <CardContent className="pt-0">
           {isLoading ? (
-            <div className="space-y-3 py-4">
-              {Array.from({ length: 5 }).map((_, i) => (
-                <Skeleton key={i} className="h-10 w-full" />
-              ))}
-            </div>
+            <TableSkeleton rows={5} className="py-4" />
           ) : (data?.contracts ?? []).length === 0 ? (
             <EmptyState
               className="p-6"
@@ -185,48 +234,14 @@ export default function ContractsPage() {
               description="API contracts are detected during workspace indexing when providers and consumers share schemas."
             />
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-[var(--color-border-default)] text-left text-xs text-[var(--color-text-tertiary)]">
-                    <th className="pb-2 pr-4 font-medium">Contract ID</th>
-                    <th className="pb-2 pr-4 font-medium">Type</th>
-                    <th className="pb-2 pr-4 font-medium">Role</th>
-                    <th className="pb-2 pr-4 font-medium">Repo</th>
-                    <th className="pb-2 pr-4 font-medium">File</th>
-                    <th className="pb-2 font-medium w-20">Confidence</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-[var(--color-border-default)]">
-                  {(data?.contracts ?? []).map((c, i) => (
-                    <tr key={i} className="hover:bg-[var(--color-bg-elevated)] transition-colors">
-                      <td className="py-2 pr-4">
-                        <span className="text-xs font-mono text-[var(--color-text-secondary)] break-all">
-                          {c.contract_id}
-                        </span>
-                      </td>
-                      <td className="py-2 pr-4">
-                        <ContractTypeBadge type={c.contract_type} />
-                      </td>
-                      <td className="py-2 pr-4">
-                        <RoleBadge role={c.role} />
-                      </td>
-                      <td className="py-2 pr-4 text-xs font-medium text-[var(--color-text-primary)]">
-                        {c.repo}
-                      </td>
-                      <td className="py-2 pr-4">
-                        <span className="text-xs font-mono text-[var(--color-text-tertiary)] truncate block max-w-[200px]">
-                          {c.file_path}
-                        </span>
-                      </td>
-                      <td className="py-2 text-xs text-[var(--color-text-tertiary)] tabular-nums">
-                        {Math.round(c.confidence * 100)}%
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <ResponsiveTable
+              columns={CONTRACT_COLUMNS}
+              rows={(data?.contracts ?? []).map((c, i) => ({ ...c, _key: `${c.contract_id}|${i}` }))}
+              rowKey={(c) => c._key}
+              caption="All detected contracts"
+              stacked="md"
+              bare
+            />
           )}
         </CardContent>
       </Card>

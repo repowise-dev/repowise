@@ -110,6 +110,37 @@ def _rebuild_graph_and_git(
     )
 
 
+def _refresh_knowledge_graph(
+    repo_path: Any,
+    parsed_files: list,
+    graph_builder: Any,
+    repo_structure: Any,
+    git_meta_map: dict,
+    dead_code_report: Any,
+    prior_fingerprint: str | None,
+) -> Any | None:
+    """Rebuild the KG skeleton + curation when the graph shape changed.
+
+    Delegates to :mod:`repowise.core.pipeline.incremental`. Returns ``None``
+    when the graph fingerprint is unchanged (artifact already current) or the
+    rebuild failed (keep the prior artifact).
+    """
+    from repowise.core.pipeline.incremental import refresh_knowledge_graph
+
+    return run_async(
+        refresh_knowledge_graph(
+            repo_path,
+            parsed_files,
+            graph_builder,
+            repo_structure,
+            git_meta_map,
+            dead_code_report,
+            prior_fingerprint=prior_fingerprint,
+            log=console.print,
+        )
+    )
+
+
 def _run_partial_analysis(
     repo_path: Any,
     graph_builder: Any,

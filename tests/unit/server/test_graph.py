@@ -186,6 +186,12 @@ async def test_export_graph_carries_cross_link_signals(client: AsyncClient, app)
     assert utils["is_hotspot"] is False
     assert utils["has_decision"] is False
 
+    # Overlay counts: untruncated response has everything in view.
+    assert data["dead_total"] == 1
+    assert data["dead_in_view"] == 1
+    assert data["hot_total"] == 1
+    assert data["hot_in_view"] == 1
+
 
 @pytest.mark.asyncio
 async def test_export_graph_truncation(client: AsyncClient, app) -> None:
@@ -202,6 +208,160 @@ async def test_export_graph_truncation(client: AsyncClient, app) -> None:
     assert data["nodes"][0]["node_id"] == "src/main.py"
     # Edges pointing to filtered-out nodes must be dropped
     assert data["links"] == []
+
+
+async def _populate_ranked_graph_with_flags(session_factory, repo_id: str) -> None:
+    """Three high-PageRank files + one dead file and one hotspot that both
+    rank BELOW the PageRank cutoff — the shape that used to silently drop
+    every overlay node."""
+    async with get_session(session_factory) as session:
+        await crud.batch_upsert_graph_nodes(
+            session,
+            repo_id,
+            [
+                {
+                    "node_id": f"src/core_{i}.py",
+                    "node_type": "file",
+                    "language": "python",
+                    "symbol_count": 1,
+                    "pagerank": 0.9 - i * 0.1,
+                    "community_id": 0,
+                }
+                for i in range(3)
+            ]
+            + [
+                {
+                    "node_id": "src/orphan.py",
+                    "node_type": "file",
+                    "language": "python",
+                    "symbol_count": 1,
+                    "pagerank": 0.01,
+                    "community_id": 0,
+                },
+                {
+                    "node_id": "src/churny.py",
+                    "node_type": "file",
+                    "language": "python",
+                    "symbol_count": 1,
+                    "pagerank": 0.02,
+                    "community_id": 0,
+                },
+            ],
+        )
+        session.add(
+            DeadCodeFinding(
+                repository_id=repo_id,
+                file_path="src/orphan.py",
+                kind="unreachable_file",
+                status="open",
+                confidence=0.9,
+            )
+        )
+        await crud.upsert_git_metadata(
+            session,
+            repository_id=repo_id,
+            file_path="src/churny.py",
+            is_hotspot=True,
+            churn_percentile=0.99,
+            commit_count_30d=40,
+            commit_count_90d=90,
+        )
+        await session.flush()
+
+
+@pytest.mark.asyncio
+async def test_export_graph_truncation_reserves_dead_and_hot_nodes(
+    client: AsyncClient, app
+) -> None:
+    """Dead/hot files must survive truncation even with rock-bottom PageRank."""
+    repo = await create_test_repo(client)
+    await _populate_ranked_graph_with_flags(app.state.session_factory, repo["id"])
+
+    resp = await client.get(f"/api/graph/{repo['id']}", params={"limit": 3})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["truncated"] is True
+    assert data["total_node_count"] == 5
+
+    kept = {n["node_id"] for n in data["nodes"]}
+    # Reserved slots: the dead file and the hotspot are kept; the remaining
+    # budget fills by PageRank (core_0 only).
+    assert kept == {"src/orphan.py", "src/churny.py", "src/core_0.py"}
+
+    assert data["dead_total"] == 1
+    assert data["dead_in_view"] == 1
+    assert data["hot_total"] == 1
+    assert data["hot_in_view"] == 1
+
+
+@pytest.mark.asyncio
+async def test_export_graph_truncation_reserves_flow_members(client: AsyncClient, app) -> None:
+    """Execution-flow trace members must survive truncation."""
+    repo = await create_test_repo(client)
+    async with get_session(app.state.session_factory) as session:
+        await crud.batch_upsert_graph_nodes(
+            session,
+            repo["id"],
+            [
+                {
+                    "node_id": f"src/core_{i}.py",
+                    "node_type": "file",
+                    "language": "python",
+                    "symbol_count": 1,
+                    "pagerank": 0.9 - i * 0.1,
+                    "community_id": 0,
+                }
+                for i in range(3)
+            ]
+            + [
+                {
+                    "node_id": "src/api.py::handler",
+                    "node_type": "symbol",
+                    "language": "python",
+                    "symbol_count": 0,
+                    "pagerank": 0.03,
+                    "community_id": 0,
+                    "name": "handler",
+                    "kind": "function",
+                    "file_path": "src/api.py",
+                    "community_meta_json": json.dumps({"entry_point_score": 0.9}),
+                },
+                {
+                    "node_id": "src/service.py::run",
+                    "node_type": "symbol",
+                    "language": "python",
+                    "symbol_count": 0,
+                    "pagerank": 0.01,
+                    "community_id": 0,
+                    "name": "run",
+                    "kind": "function",
+                    "file_path": "src/service.py",
+                },
+            ],
+        )
+        await crud.batch_upsert_graph_edges(
+            session,
+            repo["id"],
+            [
+                {
+                    "source_node_id": "src/api.py::handler",
+                    "target_node_id": "src/service.py::run",
+                    "edge_type": "calls",
+                    "confidence": 0.95,
+                },
+            ],
+        )
+
+    resp = await client.get(f"/api/graph/{repo['id']}", params={"limit": 3})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["truncated"] is True
+
+    kept = {n["node_id"] for n in data["nodes"]}
+    # The entry point and its traced callee are reserved despite low PageRank.
+    assert "src/api.py::handler" in kept
+    assert "src/service.py::run" in kept
+    assert "src/core_0.py" in kept
 
 
 @pytest.mark.asyncio

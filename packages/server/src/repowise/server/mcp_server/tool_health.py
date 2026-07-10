@@ -10,14 +10,16 @@ from sqlalchemy import select
 
 from repowise.core.analysis.health.churn_complexity import churn_complexity_points
 from repowise.core.analysis.health.defect_accuracy import compute_defect_accuracy
-from repowise.core.analysis.health.grading import band_for
+from repowise.core.analysis.health.grading import HEALTHY_MIN, band_for
 from repowise.core.analysis.health.grading import distribution as health_distribution
+from repowise.core.analysis.health.perf.coverage import PerfCoverage, coverage_for_metrics
 from repowise.core.analysis.health.signals import file_signals
 from repowise.core.analysis.health.suggestions import suggestion_for
 from repowise.core.analysis.health.trends import diff_snapshots, file_trend, recent_kpis
 from repowise.core.persistence.crud import (
     get_all_git_metadata,
     get_coverage_summary,
+    get_file_language_map,
     get_git_metadata,
     get_graph_node,
     get_node_degree_counts,
@@ -97,7 +99,28 @@ def _round_opt(v: Any) -> float | None:
     return round(v, 2) if v is not None else None
 
 
-def _serialize_metric(m: HealthFileMetric) -> dict[str, Any]:
+def _leads_by_file(findings: list[Any]) -> dict[str, dict[str, Any]]:
+    """Reduce each file's findings to its dominant cause + pre-clamp magnitude.
+
+    ``primary_biomarker`` / ``primary_reason`` give a low file "the one reason"
+    to lead with; ``total_deduction`` (summed ``health_impact``) distinguishes
+    two files that both floor at 1.0. Additive — the score itself is untouched.
+    """
+    by_file: dict[str, list[Any]] = {}
+    for f in findings:
+        by_file.setdefault(f.file_path, []).append(f)
+    leads: dict[str, dict[str, Any]] = {}
+    for path, fs in by_file.items():
+        primary = max(fs, key=lambda x: x.health_impact)
+        leads[path] = {
+            "primary_biomarker": primary.biomarker_type,
+            "primary_reason": primary.reason,
+            "total_deduction": round(sum(float(x.health_impact or 0.0) for x in fs), 3),
+        }
+    return leads
+
+
+def _serialize_metric(m: HealthFileMetric, lead: dict[str, Any] | None = None) -> dict[str, Any]:
     return {
         "file_path": m.file_path,
         "score": round(m.score, 2),
@@ -108,12 +131,24 @@ def _serialize_metric(m: HealthFileMetric) -> dict[str, Any]:
         "line_coverage_pct": m.line_coverage_pct,
         "branch_coverage_pct": m.branch_coverage_pct,
         "module": m.module,
+        # Leverage: NLOC-weighted points this file drags below the Healthy band
+        # (``(8.0 - score) * nloc``, 0 once healthy). This is how much the repo
+        # headline recovers if the file reaches 8.0, so ranking by it — not by
+        # raw score — points at the files that actually move the average. A tiny
+        # 1.0 file and a 1200-line 1.0 file score the same but differ 40x here.
+        "weighted_deficit": round(max(HEALTHY_MIN - m.score, 0.0) * max(m.nloc, 1)),
         # Per-dimension scores from the three-signal split. ``score`` is the
         # overall surfaced number (== ``defect_score`` for now);
         # ``performance_score`` is computed but not yet surfaced as its own pillar.
         "defect_score": _round_opt(getattr(m, "defect_score", None)),
         "maintainability_score": _round_opt(getattr(m, "maintainability_score", None)),
         "performance_score": _round_opt(getattr(m, "performance_score", None)),
+        # Dominant-cause lead + pre-clamp magnitude (null when no findings for
+        # this row). Lets a caller lead with the one reason and rank two floored
+        # files by depth without re-reading every finding.
+        "primary_biomarker": lead.get("primary_biomarker") if lead else None,
+        "primary_reason": lead.get("primary_reason") if lead else None,
+        "total_deduction": lead.get("total_deduction") if lead else None,
     }
 
 
@@ -183,7 +218,86 @@ def _dimension_average(metrics: list[HealthFileMetric], attr: str) -> float | No
     return round(sum(getattr(m, attr) * max(m.nloc, 1) for m in scored) / total_nloc, 2)
 
 
-def _compute_kpis(metrics: list[HealthFileMetric]) -> dict[str, Any]:
+def _gap_analysis(metrics: list[HealthFileMetric]) -> dict[str, Any]:
+    """How few files must reach 8.0 for the *weighted average* to reach 8.0.
+
+    Answers what the bare KPI cannot: the NLOC-weighted average is held down by a
+    *few large low-scoring files*, not the long tail. The gap here is the **net**
+    points the average needs (``8.0 * total_nloc - Σ score*nloc``) — healthy files
+    already sit above 8.0 and cushion it, so this is smaller than the gross
+    all-files-healthy deficit and is the number that matches the goal "move the
+    average". ``files_to_reach_target`` is the punchline: lift the worst-deficit N
+    files to 8.0 and the headline crosses 8.0. Pure over the metrics in hand.
+    """
+    total_nloc = sum(max(m.nloc, 1) for m in metrics)
+    weighted_sum = sum(m.score * max(m.nloc, 1) for m in metrics)
+    net_gap = HEALTHY_MIN * total_nloc - weighted_sum
+    below = sorted(
+        (
+            max(HEALTHY_MIN - m.score, 0.0) * max(m.nloc, 1)
+            for m in metrics
+            if m.score < HEALTHY_MIN
+        ),
+        reverse=True,
+    )
+    if net_gap <= 0 or not below:
+        return {
+            "target_score": HEALTHY_MIN,
+            "weighted_gap_points": 0,
+            "files_below_target": len(below),
+            "files_to_reach_target": 0,
+            "files_for_half_gap": 0,
+        }
+
+    def _files_for(points: float) -> int:
+        acc = 0.0
+        for i, d in enumerate(below, 1):
+            acc += d
+            if acc >= points:
+                return i
+        return len(below)
+
+    return {
+        "target_score": HEALTHY_MIN,
+        # Net weighted points the average must recover to reach 8.0.
+        "weighted_gap_points": round(net_gap),
+        "files_below_target": len(below),
+        # The reframe: lift this many worst-deficit files to 8.0 and the weighted
+        # average reaches 8.0; half that gap needs even fewer.
+        "files_to_reach_target": _files_for(net_gap),
+        "files_for_half_gap": _files_for(0.5 * net_gap),
+    }
+
+
+def _perf_kpis(performance_findings: int, coverage: PerfCoverage | None) -> dict[str, Any]:
+    """The honest performance headline: finding count + density + coverage.
+
+    Leads with *how many* findings and over *how much* of the code the perf pass
+    ran, so an agent never reads a bare ``performance_average`` of ~10 as "fast"
+    when the real story is "we could only analyze 3% of this repo".
+    """
+    density: float | None = None
+    if coverage is not None and coverage.covered_nloc > 0:
+        density = round(10000.0 * performance_findings / coverage.covered_nloc, 2)
+    return {
+        "performance_findings": performance_findings,
+        "performance_findings_density_per_10k_loc": density,
+        "performance_coverage_pct": (
+            coverage.pct_loc if (coverage and coverage.analyzed_files) else None
+        ),
+        "performance_covered_files": coverage.covered_files if coverage else 0,
+        "performance_analyzed_files": coverage.analyzed_files if coverage else 0,
+        "performance_skipped_files": coverage.skipped_files if coverage else 0,
+        "performance_unsupported_languages": (coverage.unsupported_languages if coverage else []),
+    }
+
+
+def _compute_kpis(
+    metrics: list[HealthFileMetric],
+    *,
+    performance_findings: int = 0,
+    coverage: PerfCoverage | None = None,
+) -> dict[str, Any]:
     if not metrics:
         return {
             "file_count": 0,
@@ -192,6 +306,7 @@ def _compute_kpis(metrics: list[HealthFileMetric]) -> dict[str, Any]:
             "worst_performer_score": None,
             "maintainability_average": None,
             "performance_average": None,
+            **_perf_kpis(0, None),
         }
     total_nloc = sum(max(m.nloc, 1) for m in metrics)
     avg = sum(m.score * max(m.nloc, 1) for m in metrics) / total_nloc
@@ -199,6 +314,12 @@ def _compute_kpis(metrics: list[HealthFileMetric]) -> dict[str, Any]:
     return {
         "file_count": len(metrics),
         "average_health": round(avg, 2),
+        # NLOC-weighted (``average_health``) vs plain file mean. When these
+        # diverge, a few large low-scoring files are holding the headline down —
+        # the weighted number is what the dashboard/badge surface, and the gap
+        # between the two is the signal to chase big files, not the long tail.
+        "average_health_weighting": "nloc",
+        "average_health_unweighted": round(sum(m.score for m in metrics) / len(metrics), 2),
         "band": band_for(round(avg, 2)),
         "worst_performer_path": worst.file_path,
         "worst_performer_score": round(worst.score, 2),
@@ -206,6 +327,8 @@ def _compute_kpis(metrics: list[HealthFileMetric]) -> dict[str, Any]:
         # defect-backed average. Each is ``None`` until its pillar is measured.
         "maintainability_average": _dimension_average(metrics, "maintainability_score"),
         "performance_average": _dimension_average(metrics, "performance_score"),
+        # Performance leads with count + density + coverage, not the diluted /10.
+        **_perf_kpis(performance_findings, coverage),
     }
 
 
@@ -216,59 +339,31 @@ async def get_health(
     repo: str | None = None,
     limit: int = 20,
 ) -> dict:
-    """Code-health markers and per-file scores.
+    """Code-health scores and findings — self-check a file before/after editing.
 
-    Dashboard mode (no ``targets``) returns repo-level KPIs + the
-    lowest-scoring files. Targeted mode returns per-file findings and
-    metrics for each path in ``targets``.
+    No ``targets`` → repo dashboard (KPIs, worst files, ``high_leverage_files``
+    ranked by ``weighted_deficit`` = the files that actually move the repo
+    average). With ``targets`` → per-file scores + findings for those paths.
 
-    Markers in v1: ``brain_method``, ``nested_complexity``,
-    ``complex_method``. Phase 2 adds coverage markers; Phase 3 adds
-    duplication + organizational markers.
-
-    Three-signal health: every file metric carries per-dimension scores. ``score``
-    is the overall, defect-calibrated number surfaced everywhere (== ``defect_score``);
-    ``maintainability_score`` is a co-equal signal made of the smells the defect
-    calibration floors (cohesion, brain methods, primitive obsession, duplication,
-    error handling) given full weight in their own pillar; ``performance_score`` is
-    the third co-equal pillar: static performance RISK (I/O-in-loop / N+1 shapes that
-    waste work), high-precision / low-recall, NEVER blended into the defect headline.
-    ``kpis.maintainability_average`` and ``kpis.performance_average`` are the
-    NLOC-weighted repo headlines for those pillars (``None`` when unmeasured). Each
-    finding carries a ``dimension`` (``defect`` / ``maintainability`` /
-    ``performance``) naming the pillar it homes under, so findings can be filtered
-    per dimension. A performance finding's ``details`` carry the ``boundary_kind``
-    it crosses (``db`` / ``network`` / ``filesystem`` / ``subprocess`` / ``lock``),
-    a ``cross_function`` flag, and, for a cross-function N+1, the ``path`` (the
-    resolved ``caller -> ... -> sink`` symbol chain). Performance is a static signal:
-    dynamic dispatch, ORM lazy-load, and unmodelled libraries are out of scope.
-
-    Self-check before a PR: an agent can read the same signals the code-health
-    merge-gate judges a change on. ``include=["accuracy"]`` returns
-    ``defect_accuracy`` (does the score actually rank the buggy files first —
-    precision@K of the least-healthy files vs the repo bug-fix base rate, with a
-    ``lift`` headline); ``include=["signals"]`` attaches per-file process / people
-    / topology ``signals`` (prior-defect count, churn, owners, in/out degree) to
-    each targeted metric; ``include=["churn_complexity"]`` returns the
-    churn x complexity quadrant points (volatile-and-complex files are where
-    defects concentrate); and a dimension name in ``include``
-    (``"performance"`` / ``"defect"`` / ``"maintainability"``) filters the
-    returned findings to that pillar.
+    Three co-equal dimensions per file: ``score`` (defect risk, the headline),
+    ``maintainability_score`` (readability/change-cost smells), and
+    ``performance_score`` (static I/O-in-loop / N+1 RISK, high-precision /
+    low-recall, never blended into the defect headline). Each finding carries
+    its ``dimension``; a performance finding's ``details`` name the
+    ``boundary_kind`` (db/network/filesystem/subprocess/lock) and, for
+    cross-function N+1, the caller→sink ``path``.
 
     Args:
-        targets: List of file paths (or ``module:<name>``). Empty → dashboard mode.
-        include: Optional opt-in flags (default response stays lean):
-            ``"biomarkers"`` returns findings in dashboard mode;
-            ``"refactoring"`` attaches a deterministic ``suggestion`` per finding;
-            ``"trend"`` adds the repo trend + alert block;
-            ``"coverage"`` surfaces coverage rows when ingested;
-            ``"accuracy"`` adds repo-level ``defect_accuracy`` (dashboard mode);
-            ``"signals"`` attaches per-file ``signals`` (targeted mode);
-            ``"churn_complexity"`` adds the churn x complexity points (dashboard);
-            ``"performance"`` / ``"defect"`` / ``"maintainability"`` filter
-            findings to that dimension.
-        repo: Repo alias / id / path.
-        limit: Max rows in the lowest-scoring file list (capped at 50).
+        targets: file paths or ``module:<name>``. Empty → dashboard mode.
+        include: opt-in blocks (default stays lean): ``biomarkers`` (findings
+            in dashboard mode) | ``refactoring`` (deterministic suggestion per
+            finding) | ``trend`` | ``coverage`` | ``accuracy`` (does the score
+            rank the buggy files first) | ``signals`` (per-file churn/owners/
+            degree, targeted mode) | ``churn_complexity`` (danger-zone
+            quadrant) | ``performance``/``defect``/``maintainability``
+            (filter findings to one dimension).
+        repo: usually omitted.
+        limit: max rows in ranked lists (capped at 50).
     """
     limit = min(max(limit, 1), 50)
     include_set = set(include or [])
@@ -281,6 +376,9 @@ async def get_health(
     file_targets = [t for t in raw_targets if not t.startswith("module:")]
 
     ctx = await _resolve_repo_context(repo)
+    # Performance headline inputs (dashboard mode): filled inside the session.
+    perf_coverage: PerfCoverage | None = None
+    perf_findings_count = 0
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session, repo)
 
@@ -324,6 +422,16 @@ async def get_health(
             "file_path",
             exclude_spec,
         )
+
+        # Dashboard perf headline: coverage (how much of the analyzed code the
+        # perf pass ran on) + open performance-finding count. finding_rows in
+        # dashboard mode is the complete open set, so the count is exact.
+        if not effective_targets:
+            lang_by_path = await get_file_language_map(session, repository.id)
+            perf_coverage = coverage_for_metrics(all_metrics, lang_by_path)
+            perf_findings_count = sum(
+                1 for f in finding_rows if (f.dimension or "defect") == "performance"
+            )
 
         # Structured refactoring plans (Extract Class, ...) — loaded only when
         # asked for, scoped to the same targets, exclude-filtered like findings.
@@ -385,12 +493,19 @@ async def get_health(
         if "trend" in include_set or effective_targets:
             snapshots = await list_health_snapshots(session, repository.id, limit=20)
 
-    kpis = _compute_kpis(metric_rows if effective_targets else all_metrics)
+    kpis = _compute_kpis(
+        metric_rows if effective_targets else all_metrics,
+        performance_findings=perf_findings_count,
+        coverage=perf_coverage,
+    )
+    # Dominant-cause lead per file, from the findings already loaded (targeted
+    # findings are scoped to the targets; dashboard findings cover every file).
+    leads = _leads_by_file(finding_rows)
 
     if effective_targets:
         metric_payload: list[dict[str, Any]] = []
         for m in metric_rows:
-            row = _serialize_metric(m)
+            row = _serialize_metric(m, leads.get(m.file_path))
             if m.file_path in signals_by_path:
                 row["signals"] = signals_by_path[m.file_path]
             metric_payload.append(row)
@@ -425,11 +540,29 @@ async def get_health(
         # Dashboard mode — top-N worst files + headline findings + the
         # per-module rollup so the overview page doesn't need a second
         # round-trip.
+        # Leverage view: files ranked by NLOC-weighted deficit (how much each
+        # drags the headline), not by raw score. Distinct from worst_files —
+        # a big warning-band file outranks a tiny alert-band one here because
+        # fixing it moves the average far more. Same serializer, so every row
+        # carries weighted_deficit for the caller to sort on further.
+        by_leverage = sorted(
+            (m for m in all_metrics if m.score < HEALTHY_MIN),
+            key=lambda m: max(HEALTHY_MIN - m.score, 0.0) * max(m.nloc, 1),
+            reverse=True,
+        )
         result = {
             "mode": "dashboard",
             "kpis": kpis,
             "distribution": health_distribution(all_metrics),
-            "worst_files": [_serialize_metric(m) for m in metric_rows[:limit]],
+            # Where the gap to Healthy concentrates — the "few files, not the
+            # long tail" reframe that turns a repo-wide number into a short list.
+            "gap_analysis": _gap_analysis(all_metrics),
+            "worst_files": [
+                _serialize_metric(m, leads.get(m.file_path)) for m in metric_rows[:limit]
+            ],
+            "high_leverage_files": [
+                _serialize_metric(m, leads.get(m.file_path)) for m in by_leverage[:limit]
+            ],
             "top_findings": [_serialize_finding(f) for f in finding_rows[:limit]],
             "modules": _module_rollups(all_metrics),
         }
@@ -451,7 +584,31 @@ async def get_health(
         # Structured refactoring plans (the concrete split groups / evidence /
         # blast radius) for detectors that have one — the upgrade over the old
         # prose-string suggestions.
-        result["refactoring_plans"] = [_serialize_refactoring(r) for r in refactoring_rows]
+        #
+        # Rank by the *file's* weighted deficit first, per-plan impact_delta
+        # second, and cap to ``limit``. Two reasons: an un-capped dump is a
+        # thousands-of-plans firehose that blows the token budget, and a pure
+        # impact_delta sort buries the highest-leverage plans — a Split File on a
+        # 1200-line hotspot recovers the most repo-average yet can carry a modest
+        # per-file delta, so file leverage has to lead. ``refactoring_plans_total``
+        # keeps the truncation honest.
+        deficit_by_path = {
+            m.file_path: round(max(HEALTHY_MIN - m.score, 0.0) * max(m.nloc, 1))
+            for m in all_metrics
+        }
+        ranked = sorted(
+            refactoring_rows,
+            key=lambda r: (deficit_by_path.get(r.file_path, 0), r.impact_delta or 0.0),
+            reverse=True,
+        )
+        result["refactoring_plans"] = [
+            {
+                **_serialize_refactoring(r),
+                "file_weighted_deficit": deficit_by_path.get(r.file_path, 0),
+            }
+            for r in ranked[:limit]
+        ]
+        result["refactoring_plans_total"] = len(refactoring_rows)
         # Attach the deterministic prose suggestion to every finding as the
         # fallback for biomarkers without a structured detector yet. Surfaces
         # on the dashboard cards too so both consumers stay in sync.
@@ -529,5 +686,7 @@ async def get_health(
                     r for r in rows if (r.get("dimension") or "defect") in dimension_filter
                 ]
 
-    result["_meta"] = _build_meta(repository=repository)
+    # Targeted mode scopes the stale signal to the asked-about files; the
+    # dashboard (no targets) keeps the repo-level warning.
+    result["_meta"] = _build_meta(repository=repository, targets=targets if targets else None)
     return result

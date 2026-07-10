@@ -30,6 +30,7 @@ from repowise.server.routers.code_health import (
     _file_trend_to_dict,
     _finding_to_dict,
     _metric_to_dict,
+    _primary_and_magnitude,
     _score_breakdown_from_findings,
 )
 from repowise.server.routers.git import _hotspot_from_row
@@ -225,7 +226,7 @@ async def file_detail(
     findings = await crud.get_health_findings(session, repo_id, file_path=file_path)
     snapshots = await crud.list_health_snapshots(session, repo_id)
     health = {
-        "metric": _metric_to_dict(metric) if metric else None,
+        "metric": _metric_to_dict(metric, _primary_and_magnitude(findings)) if metric else None,
         "breakdown": _score_breakdown_from_findings(findings) if findings else None,
         "findings": [_finding_to_dict(f) for f in findings],
         "trend": _file_trend_to_dict(file_trend(snapshots, file_path)),

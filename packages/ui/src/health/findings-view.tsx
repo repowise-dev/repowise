@@ -341,7 +341,7 @@ export function FindingsView({ adapter }: { adapter: CodeHealthAdapter }) {
             ) : !queue || queue.targets.length === 0 ? (
               <EmptyState
                 title="No findings match the current filters"
-                description="Try widening the severity or effort filters, or run repowise health to populate findings."
+                description="Try widening the severity or effort filters, or sync the repo to refresh findings."
               />
             ) : (
               <>

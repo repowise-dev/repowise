@@ -220,6 +220,93 @@ class TestGoCallResolution:
 # ---------------------------------------------------------------------------
 
 
+class TestGoSameFileTypeUseFallback:
+    """Regression coverage for the same-file fallback in
+    ``_resolve_go_type_refs`` (see commit "fix(go): rescue same-file type
+    references from unused_export false positives").
+
+    A single-file Go package with no imports has an empty candidate set —
+    ``own_pkg.files`` is just ``{from_path}``, discarded before the loop.
+    Before the fix, ``if not candidates: return 0`` bailed out of the whole
+    function for such files, so a type used only within that one file (as a
+    field/return type, never imported anywhere) was never stamped onto
+    ``local_type_uses`` and read as a genuinely-dead export. This is exactly
+    the shape of the 7 false positives the fix rescues.
+    """
+
+    _SOURCES: dict[str, str] = {
+        "go.mod": "module example.com/widget\n\ngo 1.22\n",
+        # Single-file package, zero imports — candidates is empty for this
+        # file even before ``from_path`` is discarded.
+        "widget/widget.go": (
+            "package widget\n\n"
+            "// Widget is exported and used only as a return type within\n"
+            "// this same file — no cross-file or cross-package reference.\n"
+            "type Widget struct{}\n\n"
+            "func NewWidget() *Widget { return &Widget{} }\n\n"
+            "// DeadWidget is exported and never referenced anywhere — a true\n"
+            "// positive that must survive the same-file rescue.\n"
+            "type DeadWidget struct{}\n"
+        ),
+    }
+
+    def _build_graph(self, repo: Path) -> nx.DiGraph:
+        for rel, body in self._SOURCES.items():
+            p = repo / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(body, encoding="utf-8")
+
+        builder = GraphBuilder(repo_path=repo)
+        for rel in self._SOURCES:
+            if not rel.endswith(".go"):
+                continue
+            abs_path = str((repo / rel).resolve())
+            parsed = _PARSER.parse_file(_file_info(rel, abs_path), (repo / rel).read_bytes())
+            builder.add_file(parsed)
+        return builder.build()
+
+    def test_same_file_return_type_stamped_as_local_type_use(self, tmp_path: Path) -> None:
+        graph = self._build_graph(tmp_path)
+        node_data = graph.nodes["widget/widget.go"]
+        assert "Widget" in node_data.get("local_type_uses", set())
+
+    def test_same_file_only_type_not_flagged_unused_export(self, tmp_path: Path) -> None:
+        graph = self._build_graph(tmp_path)
+        analyzer = DeadCodeAnalyzer(graph, git_meta_map={})
+        report = analyzer.analyze(
+            {
+                "detect_unreachable_files": False,
+                "detect_zombie_packages": False,
+                "detect_unused_internals": True,
+                "min_confidence": 0.0,
+            }
+        )
+        unused_exports = {
+            f.symbol_name for f in report.findings if f.kind == DeadCodeKind.UNUSED_EXPORT
+        }
+        assert "Widget" not in unused_exports
+
+    def test_single_file_dead_export_still_flagged(self, tmp_path: Path) -> None:
+        # True-positive guard: the same-file rescue must not turn into a
+        # blanket "never flag single-file exports." DeadWidget lives in the
+        # same single-file, no-import package that hits the rescue path, but
+        # is never referenced — it must still be flagged unused_export.
+        graph = self._build_graph(tmp_path)
+        analyzer = DeadCodeAnalyzer(graph, git_meta_map={})
+        report = analyzer.analyze(
+            {
+                "detect_unreachable_files": False,
+                "detect_zombie_packages": False,
+                "detect_unused_internals": True,
+                "min_confidence": 0.0,
+            }
+        )
+        unused_exports = {
+            f.symbol_name for f in report.findings if f.kind == DeadCodeKind.UNUSED_EXPORT
+        }
+        assert "DeadWidget" in unused_exports
+
+
 class TestGoDeadCodeOutcome:
     def _report(self, graph: nx.DiGraph):
         analyzer = DeadCodeAnalyzer(graph, git_meta_map={})

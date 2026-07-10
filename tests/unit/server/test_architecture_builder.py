@@ -25,6 +25,7 @@ async def _create_repo(client: AsyncClient) -> dict:
     resp = await client.post(
         "/api/repos",
         json={
+            "index": False,
             "name": "test-repo",
             "local_path": str(repo_dir),
             "url": "https://github.com/example/test-repo",
@@ -307,6 +308,7 @@ async def test_auto_migrate_kg_file_to_db(client: AsyncClient, app) -> None:
     resp = await client.post(
         "/api/repos",
         json={
+            "index": False,
             "name": "migrate-repo",
             "local_path": str(repo_dir),
             "url": "https://github.com/example/migrate-repo",

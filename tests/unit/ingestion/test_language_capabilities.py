@@ -132,6 +132,9 @@ _FULL = {
     "c",
     "cpp",
     "csharp",
+    # dart promoted with the tree-sitter grammar (the regex tier stays as
+    # the no-grammar fallback).
+    "dart",
     "go",
     "java",
     "javascript",
@@ -149,11 +152,13 @@ _PARTIAL = {
     "scala",
     # Lightweight regex-tier resolvers (module-name index + import regexes).
     "elixir",
-    "dart",
     "clojure",
     "haskell",
+    "lean",
     "erlang",
     "fsharp",
+    # dbt ref()/source() lineage (model-name index gated on dbt_project.yml).
+    "sql",
 }
 
 
@@ -199,6 +204,7 @@ _ENTRY_PATTERNS_BY_LANGUAGE = {
     "clojure": ("core.clj", "main.clj"),
     "dart": ("main.dart",),
     "haskell": ("Main.hs",),
+    "lean": ("Main.lean",),
     "ocaml": ("main.ml",),
     "erlang": ("*_app.erl",),
     "fsharp": ("Program.fs",),

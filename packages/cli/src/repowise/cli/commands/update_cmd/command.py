@@ -11,12 +11,12 @@ from __future__ import annotations
 
 import sys
 import time
+from typing import Any
 
 import click
 import structlog
 
 from repowise.cli.helpers import (
-    acquire_update_lock,
     clear_update_pending,
     clear_update_queued,
     console,
@@ -25,7 +25,6 @@ from repowise.cli.helpers import (
     get_head_commit,
     load_config,
     load_state,
-    read_update_lock,
     read_update_pending,
     release_update_lock,
     resolve_command_target,
@@ -35,6 +34,7 @@ from repowise.cli.helpers import (
     run_async,
     save_state,
     silence_logs_for_machine_output,
+    try_acquire_update_lock,
     write_update_pending,
 )
 from repowise.core.reasoning import REASONING_MODES
@@ -42,14 +42,14 @@ from repowise.core.reasoning import REASONING_MODES
 from .incremental import (
     _build_update_vector_store,
     _rebuild_graph_and_git,
+    _refresh_knowledge_graph,
     _run_partial_analysis,
 )
 from .mode import _infer_legacy_docs_enabled, _resolve_index_only_mode
 from .persistence import (
-    _persist_incremental_commits,
     _persist_index_only_update,
-    _persist_partial_health,
     _run_full_health_rescore,
+    stamp_head_commit,
 )
 from .reporting import (
     JsonProgressEmitter,
@@ -62,6 +62,33 @@ from .reporting import (
 from .workspace import _workspace_update
 
 log = structlog.get_logger(__name__)
+
+
+def _refresh_editor_stamp(
+    repo_path: Any, agents_md: bool | None, degraded: list[str] | None = None
+) -> None:
+    """Re-stamp managed editor files (CLAUDE.md / AGENTS.md), best-effort.
+
+    Runs on every update outcome — including the "already up to date" and
+    "no changed files" fast paths, matching the workspace flow — so the
+    "Last indexed" stamp always reflects the latest successful sync check
+    instead of freezing at the last content-changing run.
+    """
+    try:
+        from repowise.cli.editor_integrations.defaults import get_default_project_file_overrides
+        from repowise.cli.editor_setup import EditorSetupOptions, refresh_editor_project_files
+
+        options = None
+        if agents_md is not None:
+            options = EditorSetupOptions(
+                project_file_overrides=get_default_project_file_overrides(agents_md=agents_md),
+            )
+        refresh_editor_project_files(console, repo_path, options=options)
+    except Exception as exc:
+        # Editor project-file refresh must never fail the update command,
+        # but a stale CLAUDE.md stamp is worth an honest mention.
+        if degraded is not None:
+            degraded.append(f"Editor file refresh: {exc}")
 
 
 def _surface_release_news(*, written_by: str | None) -> None:
@@ -417,22 +444,29 @@ def run_update(
         console.print("[green]Already up to date.[/green]")
         if prev_config_fp is None and not dry_run:
             save_state(repo_path, {**state, "config_fingerprint": curr_config_fp})
+        # Self-heal a row a pre-fix run left behind: state.json can already be
+        # current here while the DB head_commit is still the last full index.
+        if not dry_run:
+            stamp_head_commit(repo_path, head)
+            _refresh_editor_stamp(repo_path, agents_md)
         if emitter is not None:
             emitter.done(
                 ok=True, pages_generated=0, cost_usd=0.0, duration_s=time.monotonic() - start
             )
         return
 
-    # --- Single-flight check ------------------------------------------------
-    # A fresh lock from another process means a `repowise update` is already
+    # --- Single-flight lock ---------------------------------------------
+    # A live lock from another process means a `repowise update` is already
     # running on this repo. Two updates racing on save_state was the actual
     # root cause of "wiki keeps going stale": post-commit hooks fired during
     # rapid-fire commits would each redo full ingestion + generation from the
     # same outdated base, take 10+ minutes, then save_state out of order so
     # state.json never reflected reality. Bail cleanly instead — and leave
     # the new HEAD in ``.update.pending`` so the running update can roll
-    # forward to it at the end of its current pass.
-    existing_lock = read_update_lock(repo_path)
+    # forward to it at the end of its current pass. Check + acquire are one
+    # atomic exclusive create, so two updates arriving together can no
+    # longer both pass a separate read check and race anyway.
+    existing_lock = try_acquire_update_lock(repo_path, head)
     if existing_lock is not None:
         import time as _time
 
@@ -454,6 +488,19 @@ def run_update(
             )
         return
 
+    # We own the lock from here on: the augment hook suppresses its
+    # stale-wiki warning while this run is in flight (typical case: the
+    # post-commit hook fires `repowise update` in the background, then a
+    # follow-on tool call would otherwise warn that HEAD has moved).
+    import atexit
+
+    # Drop the queued marker now that the real lock owns the suppression
+    # window. Leaving both behind would cause the augment hook to keep
+    # suppressing for the queued-stale-after duration even past a failed run.
+    clear_update_queued(repo_path)
+    atexit.register(release_update_lock, repo_path)
+    atexit.register(clear_update_queued, repo_path)
+
     # Backfill docs_enabled on legacy state files using the same
     # shape-based inference the resolver uses, so the post-commit hook
     # and future runs stop relying on the inference. Done before mode
@@ -472,20 +519,6 @@ def run_update(
 
     # --- Resolve effective mode (index-only vs full LLM regen) ---
     index_only = _resolve_index_only_mode(index_only=index_only, docs_flag=docs_flag, state=state)
-
-    # --- Acquire update lock so the augment hook can suppress its
-    # stale-wiki warning while this run is in flight (typical case: the
-    # post-commit hook fires `repowise update` in the background, then a
-    # follow-on tool call would otherwise warn that HEAD has moved). ---
-    import atexit
-
-    acquire_update_lock(repo_path, head)
-    # Drop the queued marker now that the real lock owns the suppression
-    # window. Leaving both behind would cause the augment hook to keep
-    # suppressing for the queued-stale-after duration even past a failed run.
-    clear_update_queued(repo_path)
-    atexit.register(release_update_lock, repo_path)
-    atexit.register(clear_update_queued, repo_path)
 
     # --- Store-format upgrade assessment --------------------------------
     # Single decision point for "does upgrading repowise need to touch this
@@ -532,6 +565,10 @@ def run_update(
             repo_path,
             {**state, "last_sync_commit": head, "config_fingerprint": curr_config_fp},
         )
+        # Keep the DB freshness stamp in lockstep with state.json: the server's
+        # /repos endpoint reads head_commit from the row, not the state file.
+        stamp_head_commit(repo_path, head)
+        _refresh_editor_stamp(repo_path, agents_md)
         if emitter is not None:
             emitter.done(
                 ok=True, pages_generated=0, cost_usd=0.0, duration_s=time.monotonic() - start
@@ -559,6 +596,7 @@ def run_update(
             if emitter is not None:
                 emitter.error(str(exc))
             raise
+        _refresh_editor_stamp(repo_path, agents_md)
         if emitter is not None:
             emitter.done(
                 ok=True, pages_generated=0, cost_usd=0.0, duration_s=time.monotonic() - start
@@ -566,6 +604,11 @@ def run_update(
         return
 
     render_changed_files(file_diffs, verbose=verbose)
+
+    # Best-effort steps that fail from here on are collected (not swallowed)
+    # and rendered in the completion panel + `--progress json` done event, so
+    # "update complete" is only ever claimed when it is actually true.
+    degraded: list[str] = []
 
     # Re-parse changed files and rebuild graph for affected pages
     cfg = load_config(repo_path)
@@ -623,6 +666,20 @@ def run_update(
 
     drop_transient_git_signals(list(git_meta_map.values()))
 
+    # Refresh the knowledge graph (layers/tour/entry points) when the graph
+    # shape changed — previously init-only, so update served a stale
+    # orientation snapshot to CLAUDE.md/get_overview forever (#669). None
+    # means fingerprint-unchanged: the persisted artifact is still current.
+    knowledge_graph_result = _refresh_knowledge_graph(
+        repo_path,
+        parsed_files,
+        graph_builder,
+        repo_structure,
+        git_meta_map,
+        dead_code_report,
+        (state.get("knowledge_graph") or {}).get("fingerprint"),
+    )
+
     if index_only:
         if emitter is not None:
             emitter.stage("persist")
@@ -638,14 +695,21 @@ def run_update(
                 start,
                 [fd.path for fd in file_diffs],
                 file_diffs=file_diffs,
+                knowledge_graph_result=knowledge_graph_result,
+                degraded=degraded,
             )
         except Exception as exc:
             if emitter is not None:
                 emitter.error(str(exc))
             raise
+        _refresh_editor_stamp(repo_path, agents_md, degraded)
         if emitter is not None:
             emitter.done(
-                ok=True, pages_generated=0, cost_usd=0.0, duration_s=time.monotonic() - start
+                ok=True,
+                pages_generated=0,
+                cost_usd=0.0,
+                duration_s=time.monotonic() - start,
+                degraded=degraded,
             )
         return
 
@@ -704,6 +768,7 @@ def run_update(
                     f"New decision markers found: [green]{len(new_decision_markers)}[/green]"
                 )
     except Exception as exc:
+        degraded.append(f"Decision re-scan: {exc}")
         if verbose:
             console.print(f"[yellow]Decision re-scan skipped: {exc}[/yellow]")
 
@@ -793,6 +858,7 @@ def run_update(
                         f"+{len(evo_regen)} governed page(s) queued for regen."
                     )
     except Exception as exc:
+        degraded.append(f"Decision evolution: {exc}")
         if verbose:
             console.print(f"[yellow]Decision evolution skipped: {exc}[/yellow]")
 
@@ -822,7 +888,10 @@ def run_update(
 
     try:
         prior_pages = run_async(_load_prior())
-    except Exception:
+    except Exception as exc:
+        # Without prior pages the prompt-hash skip is off and every affected
+        # page re-bills; surface that instead of silently paying it.
+        degraded.append(f"Prior-page reuse: {exc}")
         prior_pages = {}
 
     # Generate affected pages. The vector store (shared with the decision
@@ -873,6 +942,32 @@ def run_update(
         else:
             gen_progress.update(gen_task, advance=1, cost=cost_tracker.session_cost)
 
+    # Checkpoint each page to the DB as it lands: a crash mid-generation used
+    # to lose every finished page (persist ran only at the very end), so the
+    # rerun re-billed all of them. With the row persisted, the rerun's
+    # prompt-hash skip sees the fresh content and never re-calls the LLM.
+    from .persistence import PageCheckpointer
+
+    checkpointer = PageCheckpointer(repo_path, repo_name)
+
+    async def _generate_with_checkpoint() -> list:
+        await checkpointer.start()
+        try:
+            return await generator.generate_all(
+                affected_parsed,
+                affected_source,
+                graph_builder,
+                repo_structure,
+                repo_name,
+                on_page_done=_on_page_done,
+                on_total_known=_on_total_known,
+                git_meta_map=git_meta_map,
+                repo_path=repo_path,
+                on_page_ready=checkpointer.on_page_ready,
+            )
+        finally:
+            await checkpointer.close()
+
     with make_generation_progress() if emitter is None else nullcontext() as gen_progress:
         gen_task = (
             gen_progress.add_task("Generating pages...", total=None, cost=0.0)
@@ -881,23 +976,14 @@ def run_update(
         )
 
         try:
-            generated_pages = run_async(
-                generator.generate_all(
-                    affected_parsed,
-                    affected_source,
-                    graph_builder,
-                    repo_structure,
-                    repo_name,
-                    on_page_done=_on_page_done,
-                    on_total_known=_on_total_known,
-                    git_meta_map=git_meta_map,
-                    repo_path=repo_path,
-                )
-            )
+            generated_pages = run_async(_generate_with_checkpoint())
         except Exception as exc:
             if emitter is not None:
                 emitter.error(str(exc))
             raise
+
+    if checkpointer.failure:
+        degraded.append(f"Per-page crash checkpointing: {checkpointer.failure}")
 
     # Flush the buffered LLM cost rows now that generation is done — a single
     # transaction outside the contended generation window (issue #326).
@@ -905,233 +991,71 @@ def run_update(
 
     flush_cost_tracker(cost_tracker)
 
-    # Persist
-    async def _persist() -> None:
-        from repowise.cli.helpers import get_db_url_for_repo
-        from repowise.core.persistence import (
-            FullTextSearch,
-            create_engine,
-            create_session_factory,
-            get_session,
-            init_db,
-            upsert_page_from_generated,
-            upsert_repository,
-        )
-
-        url = get_db_url_for_repo(repo_path)
-        engine = create_engine(url)
-        await init_db(engine)
-        sf = create_session_factory(engine)
-
-        async with get_session(sf) as session:
-            repo = await upsert_repository(session, name=repo_name, local_path=str(repo_path))
-            repo_id = repo.id
-            for page in generated_pages:
-                await upsert_page_from_generated(session, page, repo_id)
-            # Tombstone pages for deleted/renamed files — regeneration only
-            # rewrites pages for files that still exist.
-            try:
-                from repowise.core.pipeline.persist import (
-                    mark_tombstone_pages,
-                    tombstone_candidates,
-                )
-
-                await mark_tombstone_pages(session, repo_id, tombstone_candidates(file_diffs))
-            except Exception as exc:
-                if verbose:
-                    console.print(f"[yellow]Tombstone marking skipped: {exc}[/yellow]")
-
-        # Persist updated git metadata + recompute percentiles
-        if git_meta_map:
-            try:
-                from repowise.core.persistence.crud import (
-                    recompute_git_percentiles,
-                    upsert_git_metadata_bulk,
-                )
-
-                async with get_session(sf) as session:
-                    await upsert_git_metadata_bulk(
-                        session,
-                        repo_id,
-                        list(git_meta_map.values()),
-                    )
-                    await recompute_git_percentiles(session, repo_id)
-                    await _persist_incremental_commits(session, repo_id, repo_path)
-            except Exception:
-                pass  # git persistence is best-effort
-
-        # Decision records: persist new markers + harvested decisions, detect
-        # supersession, recompute staleness.
+    # LLM re-enrichment of the refreshed KG (layer naming + summary backfill
+    # from this run's regenerated pages), mirroring the init pipeline. Only
+    # runs when the graph shape changed — carry-forward already preserved the
+    # prior names, so an unchanged KG never pays an enrichment call.
+    if knowledge_graph_result is not None:
         try:
-            decision_dicts: list[dict] = []
-            if new_decision_markers:
-                import dataclasses as _dc
+            from repowise.core.generation.knowledge_graph import enrich_knowledge_graph
 
-                decision_dicts.extend(_dc.asdict(d) for d in new_decision_markers)
-            # Phase-2 follow-up: also harvest decisions emitted by the page
-            # generator during this update (each gated at generation time).
-            for page in generated_pages:
-                harvested = page.metadata.get("harvested_decisions")
-                if harvested:
-                    decision_dicts.extend(harvested)
-
-            if decision_dicts:
-                from repowise.core.persistence.crud import bulk_upsert_decisions
-
-                async with get_session(sf) as session:
-                    touched_ids = await bulk_upsert_decisions(
-                        session,
-                        repo_id,
-                        decision_dicts,
-                        vector_store=decision_vector_store,
-                    )
-                    # Phase 3B: supersede/conflict detection over the touched
-                    # records (gated LLM judge available on this path).
-                    if touched_ids and decision_vector_store is not None:
-                        from repowise.core.analysis.decision_evolution import (
-                            detect_supersessions_and_conflicts,
-                        )
-
-                        await detect_supersessions_and_conflicts(
-                            session,
-                            repo_id,
-                            touched_ids=touched_ids,
-                            vector_store=decision_vector_store,
-                            provider=provider,
-                        )
-
-            if git_meta_map:
-                from repowise.core.persistence.crud import recompute_decision_staleness
-
-                async with get_session(sf) as session:
-                    await recompute_decision_staleness(session, repo_id, git_meta_map)
-
-            # Governance findings pass: runs after decisions + staleness are
-            # up to date. Best-effort — never breaks the update.
-            try:
-                from sqlalchemy import select as _sel_dec
-
-                from repowise.core.analysis.health.governance import build_governance_findings
-                from repowise.core.persistence.crud import (
-                    get_decision_health_summary,
-                    replace_governance_findings,
+            knowledge_graph_result = run_async(
+                enrich_knowledge_graph(
+                    kg_skeleton=knowledge_graph_result,
+                    llm_client=provider,
+                    graph_builder=graph_builder,
+                    repo_structure=repo_structure,
+                    tech_stack=knowledge_graph_result.project.get("tech_stack", []),
+                    generated_pages=generated_pages,
+                    reasoning=config.reasoning,
                 )
-                from repowise.core.persistence.models import DecisionRecord
+            )
+        except Exception as exc:
+            console.print(f"[yellow]Knowledge-graph enrichment skipped: {exc}[/yellow]")
+            degraded.append(f"Knowledge-graph enrichment: {exc}")
 
-                async with get_session(sf) as session:
-                    _dr = await session.execute(
-                        _sel_dec(DecisionRecord).where(DecisionRecord.repository_id == repo_id)
-                    )
-                    _decisions = list(_dr.scalars().all())
-                    _summary = await get_decision_health_summary(session, repo_id)
-                    _gov = build_governance_findings(
-                        health_summary=_summary,
-                        decisions=_decisions,
-                    )
-                    await replace_governance_findings(session, repo_id, _gov)
-            except Exception:
-                pass  # governance findings are best-effort
-        except Exception:
-            pass  # never fail update due to decision processing
-
-        # Persist code-health findings + metrics (partial — upsert only)
-        if partial_health_report is not None:
-            try:
-                async with get_session(sf) as session:
-                    await _persist_partial_health(session, repo_id, partial_health_report)
-            except Exception:
-                pass  # health persistence is best-effort
-
-        # Scoped to changed files so unchanged files keep their findings (#295).
-        if dead_code_report is not None:
-            try:
-                import dataclasses as _dc_dead
-
-                from repowise.core.persistence.crud import upsert_dead_code_findings
-
-                async with get_session(sf) as session:
-                    await upsert_dead_code_findings(
-                        session,
-                        repo_id,
-                        [_dc_dead.asdict(f) for f in dead_code_report.findings],
-                        file_paths=[fd.path for fd in file_diffs],
-                    )
-            except Exception:
-                pass  # dead code persistence is best-effort
-
-        # Re-persist graph_nodes so symbol-level PageRank / betweenness
-        # / community ids reflect the current build. Same rationale as
-        # the index-only branch above — without this every per-symbol
-        # metric stays at its original value forever.
-        try:
-            from repowise.core.pipeline.persist import persist_graph_nodes
-
-            async with get_session(sf) as session:
-                await persist_graph_nodes(session, repo_id, graph_builder)
-        except Exception:
-            pass  # graph node persistence is best-effort
-
-        # Record a GenerationJob so the web UI "last synced" timestamp updates
-        try:
-            from datetime import UTC as _UTC
-            from datetime import datetime
-
-            from repowise.core.persistence.crud import upsert_generation_job
-
-            async with get_session(sf) as session:
-                now = datetime.now(_UTC)
-                page_count = len(generated_pages)
-                job = await upsert_generation_job(
-                    session,
-                    repository_id=repo_id,
-                    status="completed",
-                    total_pages=page_count,
-                    config={"mode": "incremental", "source": "cli_update"},
-                )
-                job.completed_pages = page_count
-                job.started_at = now
-                job.finished_at = now
-        except Exception:
-            pass  # job recording is best-effort
-
-        fts = FullTextSearch(engine)
-        await fts.ensure_index()
-        for page in generated_pages:
-            await fts.index(page.page_id, page.title, page.content)
-
-        await engine.dispose()
+    # Persist everything in one transaction (pages fail loudly, derived
+    # layers degrade into the collected list) — see _persist_full_update.
+    from .persistence import _persist_full_update
 
     if emitter is not None:
         emitter.stage("persist")
     try:
-        run_async(_persist())
+        _persist_full_update(
+            repo_path=repo_path,
+            repo_name=repo_name,
+            generated_pages=generated_pages,
+            file_diffs=file_diffs,
+            git_meta_map=git_meta_map,
+            new_decision_markers=new_decision_markers,
+            decision_vector_store=decision_vector_store,
+            provider=provider,
+            partial_health_report=partial_health_report,
+            dead_code_report=dead_code_report,
+            graph_builder=graph_builder,
+            knowledge_graph_result=knowledge_graph_result,
+            degraded=degraded,
+        )
     except Exception as exc:
         if emitter is not None:
             emitter.error(str(exc))
         raise
 
     # ---- Editor project files (best-effort) ----
-    try:
-        from repowise.cli.editor_integrations.defaults import get_default_project_file_overrides
-        from repowise.cli.editor_setup import EditorSetupOptions, refresh_editor_project_files
-
-        editor_options = None
-        if agents_md is not None:
-            editor_options = EditorSetupOptions(
-                project_file_overrides=get_default_project_file_overrides(
-                    agents_md=agents_md,
-                ),
-            )
-        refresh_editor_project_files(
-            console,
-            repo_path,
-            options=editor_options,
-        )
-    except Exception:
-        pass  # Editor project-file refresh must never fail the update command
+    _refresh_editor_stamp(repo_path, agents_md, degraded)
 
     # Update state
     from repowise.cli.helpers import config_fingerprint
+
+    if knowledge_graph_result is not None:
+        try:
+            from repowise.cli.state_persistence import build_kg_state, save_knowledge_graph_json
+
+            save_knowledge_graph_json(repo_path, knowledge_graph_result)
+            state["knowledge_graph"] = build_kg_state(knowledge_graph_result)
+        except Exception as exc:
+            console.print(f"[yellow]Knowledge-graph export skipped: {exc}[/yellow]")
+            degraded.append(f"Knowledge-graph export: {exc}")
 
     state["last_sync_commit"] = head
     state["total_pages"] = state.get("total_pages", 0) + len(generated_pages)
@@ -1169,8 +1093,10 @@ def run_update(
                 console.print("Running cross-repo analysis...")
                 run_async(run_cross_repo_hooks(ws_config, ws_root, [alias]))
                 console.print("[green]Cross-repo analysis updated.[/green]")
-    except Exception:
-        pass  # cross-repo hooks must never fail the update
+    except Exception as exc:
+        # Cross-repo hooks must never fail the update, but a stale cross-repo
+        # layer should not masquerade as a fully clean run.
+        degraded.append(f"Cross-repo analysis: {exc}")
 
     elapsed = time.monotonic() - start
     if emitter is not None:
@@ -1179,6 +1105,7 @@ def run_update(
             pages_generated=len(generated_pages),
             cost_usd=cost_tracker.session_cost,
             duration_s=elapsed,
+            degraded=degraded,
         )
         return
     show_full_completion(
@@ -1189,6 +1116,7 @@ def run_update(
         cost=cost_tracker.session_cost,
         tokens=cost_tracker.session_tokens,
         elapsed=elapsed,
+        degraded=degraded,
     )
     if verbose:
         _render_update_report(generated_pages, affected, new_decision_markers, elapsed)

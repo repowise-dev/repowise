@@ -330,6 +330,51 @@ def _warmup_typescript(ctx: ResolverContext) -> None:
         node["is_entry_point"] = True
 
 
+_FLUTTER_SHELL_DIRS = ("android/", "ios/", "linux/", "macos/", "windows/", "web/")
+
+
+def _warmup_dart(ctx: ResolverContext) -> None:
+    """Stamp Flutter platform-shell scaffolding as ``is_never_flag``.
+
+    The ``android/`` / ``ios/`` / ``linux/`` / ``macos/`` / ``windows/`` /
+    ``web/`` directories next to a ``pubspec.yaml`` are runner shells the
+    ``flutter`` tool wires in at build time — no source import reaches
+    them, so every MainActivity.kt / my_application.cc / win32_window.cpp
+    reads as unreachable otherwise. A pure-Dart package has no shell
+    directories, so the prefix test is a no-op there.
+    """
+    graph = getattr(ctx, "graph", None)
+    if graph is None:
+        return
+    bases = [
+        p[: -len("pubspec.yaml")]
+        for p in getattr(ctx, "sorted_paths", ())
+        if p.endswith("pubspec.yaml")
+    ]
+    if not bases:
+        return
+    prefixes = tuple(base + shell for base in bases for shell in _FLUTTER_SHELL_DIRS)
+    parsed = getattr(ctx, "parsed_files", None) or {}
+    for node_name in list(graph.nodes()):
+        s = str(node_name)
+        if s.startswith(prefixes):
+            nd = graph.nodes.get(node_name)
+            if nd is not None:
+                nd["is_never_flag"] = True
+            continue
+        # Flutter flavor entrypoints (``flutter run -t lib/main_staging.dart``)
+        # are prefix-shaped, which the traverser's exact/suffix entry-pattern
+        # forms can't express — stamp them here instead.
+        basename = s.rsplit("/", 1)[-1]
+        if basename.startswith("main_") and basename.endswith(".dart"):
+            nd = graph.nodes.get(node_name)
+            if nd is not None:
+                nd["is_entry_point"] = True
+            pf = parsed.get(node_name)
+            if pf is not None and getattr(pf, "file_info", None) is not None:
+                pf.file_info.is_entry_point = True
+
+
 # Map language tag → (phase-event name, warmup function). The phase
 # name shows up in the CLI progress bar and in ``state.json`` timings.
 #
@@ -347,6 +392,7 @@ _WARMUPS: dict[str, tuple[str, Warmup]] = {
     "cpp": ("graph.cpp_index", _warmup_cpp),
     "c": ("graph.cpp_index", _warmup_cpp),
     "swift": ("graph.swift_entry", _warmup_swift),
+    "dart": ("graph.dart_shells", _warmup_dart),
 }
 
 

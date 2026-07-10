@@ -17,8 +17,8 @@ export function TrendChart({ history, height = 220 }: TrendChartProps) {
   if (!history || history.length === 0) {
     return (
       <div className="rounded-lg border border-dashed border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-6 text-center text-sm text-[var(--color-text-tertiary)]">
-        No snapshots yet. Run <code>repowise init</code> twice (or once + an
-        update) to start building a trend.
+        No snapshots yet. Each index or sync records one; the trend appears
+        from the second snapshot on.
       </div>
     );
   }

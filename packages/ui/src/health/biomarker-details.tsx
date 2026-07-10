@@ -95,7 +95,9 @@ function PartnerLink({
 const ERROR_HANDLING_KIND_LABEL: Record<string, string> = {
   swallowed_exception: "swallowed exception",
   bare_except: "bare except",
+  broad_except: "broad except",
   unsafe_unwrap: "unsafe unwrap",
+  panic_macro: "panic macro",
   discarded_error: "discarded error return",
   empty_catch: "empty catch block",
 };

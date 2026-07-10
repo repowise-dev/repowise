@@ -58,44 +58,32 @@ def onboarding_env():
 
 
 class TestClaudeMdKGSection:
-    def test_renders_layers_when_present(self, jinja_env):
-        tmpl = jinja_env.get_template("claude_md.j2")
-        data = EditorFileData(
+    """The workflow-first CLAUDE.md deliberately omits the KG layers table and
+    guided tour (onboarding material an agent doing a task never used — it
+    lives in get_overview). Key modules render as a compact list."""
+
+    def _data(self, **kwargs):
+        return EditorFileData(
             repo_name="test",
             indexed_at="2026-05-25",
             indexed_commit="abc123",
             architecture_summary="",
+            **kwargs,
+        )
+
+    def test_layers_are_not_rendered(self, jinja_env):
+        tmpl = jinja_env.get_template("claude_md.j2")
+        data = self._data(
             kg_layers=[
                 KGLayerSummary(name="CLI", file_count=10, description="Command-line interface"),
-                KGLayerSummary(name="Core", file_count=25, description="Core business logic"),
-            ],
-        )
-        rendered = tmpl.render(data=data)
-        assert "### Architectural Layers" in rendered
-        assert "CLI" in rendered
-        assert "10" in rendered
-        assert "Core" in rendered
-        assert "25" in rendered
-
-    def test_no_layers_section_without_data(self, jinja_env):
-        tmpl = jinja_env.get_template("claude_md.j2")
-        data = EditorFileData(
-            repo_name="test",
-            indexed_at="2026-05-25",
-            indexed_commit="abc123",
-            architecture_summary="",
+            ]
         )
         rendered = tmpl.render(data=data)
         assert "Architectural Layers" not in rendered
 
-    def test_renders_tour_when_present(self, jinja_env):
+    def test_tour_is_not_rendered(self, jinja_env):
         tmpl = jinja_env.get_template("claude_md.j2")
-        data = EditorFileData(
-            repo_name="test",
-            indexed_at="2026-05-25",
-            indexed_commit="abc123",
-            architecture_summary="",
-            kg_layers=[KGLayerSummary(name="Core", file_count=5, description="Core")],
+        data = self._data(
             kg_tour=[
                 KGTourStepSummary(
                     order=1,
@@ -103,81 +91,40 @@ class TestClaudeMdKGSection:
                     primary_file="src/main.py",
                     reason="An entry point — execution starts here.",
                 ),
-                KGTourStepSummary(order=2, title="Graph Building", primary_file="src/graph.py"),
-            ],
-        )
-        rendered = tmpl.render(data=data)
-        assert "### Guided Tour (2 steps)" in rendered
-        # The package-qualified path is the step identifier; the reason follows.
-        assert "`src/main.py`" in rendered
-        assert "An entry point — execution starts here." in rendered
-
-    def test_key_modules_owner_column_dropped_when_no_owners(self, jinja_env):
-        from repowise.core.generation.editor_files.data import KeyModule
-
-        tmpl = jinja_env.get_template("claude_md.j2")
-        data = EditorFileData(
-            repo_name="test",
-            indexed_at="2026-05-25",
-            indexed_commit="abc123",
-            architecture_summary="",
-            key_modules=[
-                KeyModule(name="src/api", purpose="API layer", file_count=4, owner=None),
-                KeyModule(name="src/core", purpose="Core logic", file_count=9, owner=None),
-            ],
-        )
-        rendered = tmpl.render(data=data)
-        assert "| Module | Purpose |" in rendered
-        assert "Owner" not in rendered
-
-    def test_key_modules_owner_column_kept_when_any_owner(self, jinja_env):
-        from repowise.core.generation.editor_files.data import KeyModule
-
-        tmpl = jinja_env.get_template("claude_md.j2")
-        data = EditorFileData(
-            repo_name="test",
-            indexed_at="2026-05-25",
-            indexed_commit="abc123",
-            architecture_summary="",
-            key_modules=[
-                KeyModule(name="src/api", purpose="API layer", file_count=4, owner="Alice"),
-                KeyModule(name="src/core", purpose="Core logic", file_count=9, owner=None),
-            ],
-        )
-        rendered = tmpl.render(data=data)
-        assert "| Module | Purpose | Owner |" in rendered
-        assert "Alice" in rendered
-
-    def test_no_tour_section_without_data(self, jinja_env):
-        tmpl = jinja_env.get_template("claude_md.j2")
-        data = EditorFileData(
-            repo_name="test",
-            indexed_at="2026-05-25",
-            indexed_commit="abc123",
-            architecture_summary="",
-            kg_layers=[KGLayerSummary(name="Core", file_count=5, description="Core")],
+            ]
         )
         rendered = tmpl.render(data=data)
         assert "Guided Tour" not in rendered
 
-    def test_tour_truncates_at_6(self, jinja_env):
+    def test_key_modules_render_as_list(self, jinja_env):
+        from repowise.core.generation.editor_files.data import KeyModule
+
         tmpl = jinja_env.get_template("claude_md.j2")
-        steps = [
-            KGTourStepSummary(order=i, title=f"Step {i}", primary_file=f"f{i}.py")
-            for i in range(1, 10)
-        ]
-        data = EditorFileData(
-            repo_name="test",
-            indexed_at="2026-05-25",
-            indexed_commit="abc123",
-            architecture_summary="",
-            kg_layers=[KGLayerSummary(name="Core", file_count=5, description="Core")],
-            kg_tour=steps,
+        data = self._data(
+            key_modules=[
+                KeyModule(name="src/api", purpose="API layer", file_count=4, owner=None),
+                KeyModule(name="src/core", purpose="", file_count=9, owner=None),
+            ]
         )
         rendered = tmpl.render(data=data)
-        assert "`f6.py`" in rendered
-        assert "`f7.py`" not in rendered
-        assert "3 more steps" in rendered
+        assert "### Key modules" in rendered
+        assert "- `src/api` — API layer" in rendered
+        # No purpose → no dangling separator.
+        assert "- `src/core`\n" in rendered
+
+    def test_workflow_protocol_leads(self, jinja_env):
+        tmpl = jinja_env.get_template("claude_md.j2")
+        rendered = tmpl.render(data=self._data())
+        assert "### How to work in this repo" in rendered
+        assert "### Trust protocol" in rendered
+        # Pre-edit framing: the mandatory Read of edit targets is conceded.
+        assert "raw Read of any file you will Edit" in rendered
+        # The tool table renders from the single-source module.
+        assert "| Tool | When and why |" in rendered
+        assert "`get_answer(question)`" in rendered
+        # Protocol comes before the repo-facts data blocks.
+        if "Entry points" in rendered:
+            assert rendered.index("Trust protocol") < rendered.index("Entry points")
 
 
 # ---------------------------------------------------------------------------
@@ -230,7 +177,12 @@ class TestHowItWorksWithTour:
             repo_name="test",
             archetype="service",
             kg_tour_steps=[
-                {"order": 1, "title": "Entry", "description": "Start here", "nodeIds": ["file:src/main.py"]},
+                {
+                    "order": 1,
+                    "title": "Entry",
+                    "description": "Start here",
+                    "nodeIds": ["file:src/main.py"],
+                },
             ],
         )
         assert len(ctx.kg_tour_steps) == 1
@@ -242,8 +194,18 @@ class TestHowItWorksWithTour:
             archetype="service",
             archetype_evidence=["framework detected"],
             kg_tour_steps=[
-                {"order": 1, "title": "Entry Point", "description": "Start here", "nodeIds": ["file:src/main.py"]},
-                {"order": 2, "title": "Processing", "description": "Core logic", "nodeIds": ["file:src/process.py"]},
+                {
+                    "order": 1,
+                    "title": "Entry Point",
+                    "description": "Start here",
+                    "nodeIds": ["file:src/main.py"],
+                },
+                {
+                    "order": 2,
+                    "title": "Processing",
+                    "description": "Core logic",
+                    "nodeIds": ["file:src/process.py"],
+                },
             ],
         )
         rendered = tmpl.render(ctx=ctx)
@@ -321,7 +283,11 @@ class TestCodebaseMapWithLayers:
             total_files=10,
             total_loc=500,
             kg_layers=[
-                {"name": "Core", "description": "Core business logic", "nodeIds": ["file:a.py", "file:b.py"]},
+                {
+                    "name": "Core",
+                    "description": "Core business logic",
+                    "nodeIds": ["file:a.py", "file:b.py"],
+                },
                 {"name": "API", "description": "REST API layer", "nodeIds": ["file:c.py"]},
             ],
         )

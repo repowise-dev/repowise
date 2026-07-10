@@ -204,7 +204,7 @@ async def _run_health_analysis(
         analyzer_config: dict[str, object] | None = None
         if repo_path is not None:
             cfg = HealthConfig.load(repo_path)
-            if cfg.disabled_biomarkers or cfg.rules:
+            if cfg.has_overrides():
                 file_paths = [pf.file_info.path for pf in parsed_files]
                 analyzer_config = cfg.to_analyzer_config(file_paths)
 

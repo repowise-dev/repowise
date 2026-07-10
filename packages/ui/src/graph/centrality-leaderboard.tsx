@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronLeft, ChevronRight, Crown } from "lucide-react";
+import { ChevronLeft, ChevronRight, Crown, Info } from "lucide-react";
+import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { cn } from "../lib/cn";
 
 export interface CentralityNode {
@@ -28,6 +29,15 @@ const METRIC_LABEL: Record<string, string> = {
   pagerank: "PageRank",
   betweenness: "Betweenness",
   degree: "Degree (in+out)",
+};
+
+const METRIC_EXPLAINER: Record<string, string> = {
+  pagerank:
+    "How much of the codebase depends on this file, directly or transitively. High PageRank files are load-bearing: many import paths flow through them.",
+  betweenness:
+    "How often this file sits on the shortest path between two other files. High betweenness marks bridges between otherwise separate parts of the codebase.",
+  degree:
+    "Direct connections only: imports into the file plus imports out of it. A simple measure of how busy the file's immediate neighborhood is.",
 };
 
 function score(node: CentralityNode, metric: "pagerank" | "betweenness" | "degree"): number {
@@ -64,6 +74,29 @@ export function CentralityLeaderboard({
             <span className="text-xs font-medium text-[var(--color-text-primary)] truncate">
               Centrality
             </span>
+            <Popover>
+              <PopoverTrigger asChild>
+                <button
+                  type="button"
+                  aria-label="What do these metrics mean?"
+                  className="inline-flex shrink-0 items-center rounded-sm text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+                >
+                  <Info className="h-3 w-3" aria-hidden />
+                </button>
+              </PopoverTrigger>
+              <PopoverContent align="start" className="space-y-2">
+                {(["pagerank", "betweenness", "degree"] as const).map((m) => (
+                  <div key={m}>
+                    <p className="font-medium text-[var(--color-text-primary)]">
+                      {METRIC_LABEL[m]}
+                    </p>
+                    <p className="text-[var(--color-text-secondary)] leading-relaxed">
+                      {METRIC_EXPLAINER[m]}
+                    </p>
+                  </div>
+                ))}
+              </PopoverContent>
+            </Popover>
           </div>
         )}
         <button
@@ -78,7 +111,7 @@ export function CentralityLeaderboard({
 
       {!collapsed && (
         <>
-          <div className="flex border-b border-[var(--color-border-default)] text-[10px]">
+          <div className="flex border-b border-[var(--color-border-default)] text-caption">
             {(["pagerank", "betweenness", "degree"] as const).map((m) => (
               <button
                 key={m}
@@ -112,7 +145,7 @@ export function CentralityLeaderboard({
                     )}
                     title={n.node_id}
                   >
-                    <span className="text-[10px] tabular-nums text-[var(--color-text-tertiary)] w-4 text-right">
+                    <span className="text-caption tabular-nums text-[var(--color-text-tertiary)] w-4 text-right">
                       {i + 1}
                     </span>
                     <div className="min-w-0 flex-1">
@@ -126,7 +159,7 @@ export function CentralityLeaderboard({
                         />
                       </div>
                     </div>
-                    <span className="text-[10px] tabular-nums text-[var(--color-text-tertiary)] shrink-0">
+                    <span className="text-caption tabular-nums text-[var(--color-text-tertiary)] shrink-0">
                       {metric === "degree" ? v.toFixed(0) : v.toFixed(3)}
                     </span>
                   </button>

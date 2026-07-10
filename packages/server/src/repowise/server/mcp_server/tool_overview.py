@@ -51,6 +51,7 @@ from repowise.server.mcp_server._helpers import (
     _get_repo,
     _resolve_all_contexts,
     _resolve_repo_context,
+    decision_is_excluded,
     filter_graph_nodes,
     filter_rows_by_attr,
     is_excluded,
@@ -59,6 +60,27 @@ from repowise.server.mcp_server._meta import build_meta as _build_meta
 
 # Leading markdown-header boilerplate on module page content ("## Overview").
 _MD_HEADER_RE = re.compile(r"^\s*#{1,6}\s+.*$", re.MULTILINE)
+
+# Orientation, not a directory listing — the top few modules are enough to
+# point a fresh agent at the interesting subsystems. The rest are persisted
+# to the omission store, not dropped.
+_MODULE_CAP = 8
+
+# Split point between markdown H2 sections ("\n## ...").
+_H2_SPLIT_RE = re.compile(r"\n(?=#{1,2}\s)")
+
+
+def _compact_overview_content(content: str) -> str:
+    """Leading section of the overview essay — the summary paragraph, not the walkthrough.
+
+    The full essay repeats what ``key_modules`` and ``architecture.layers``
+    already carry, so compact mode (the default) keeps only the first H2
+    section. Callers who want the whole thing pass ``include=["content"]``.
+    """
+    text = (content or "").strip()
+    if not text:
+        return text
+    return _H2_SPLIT_RE.split(text, maxsplit=1)[0].strip()
 
 
 def _truncate_at_word(text: str, limit: int) -> str:
@@ -235,7 +257,7 @@ async def _load_overview_page(session: Any, repository: Any) -> Page | None:
 async def _load_module_pages(
     session: Any, repository: Any, collector: OmissionCollector
 ) -> list[Page]:
-    """Module pages capped to 20; the remainder goes to the omission store."""
+    """Module pages capped to ``_MODULE_CAP``; the remainder goes to the omission store."""
     result = await session.execute(
         select(Page)
         .where(
@@ -245,12 +267,13 @@ async def _load_module_pages(
         .order_by(Page.title)
     )
     all_module_pages = result.scalars().all()
-    if len(all_module_pages) > 20:
+    if len(all_module_pages) > _MODULE_CAP:
         collector.add(
-            f"module pages beyond cap=20 ({len(all_module_pages) - 20} dropped)",
-            "\n".join(f"{p.title}: {p.target_path}" for p in all_module_pages[20:]),
+            f"module pages beyond cap={_MODULE_CAP} "
+            f"({len(all_module_pages) - _MODULE_CAP} dropped)",
+            "\n".join(f"{p.title}: {p.target_path}" for p in all_module_pages[_MODULE_CAP:]),
         )
-    return all_module_pages[:20]
+    return all_module_pages[:_MODULE_CAP]
 
 
 def _drop_fixtures(ids: list[str], exclude_spec: Any) -> list[str]:
@@ -330,7 +353,11 @@ def _build_git_health(all_git: list) -> dict[str, Any]:
     top_modules = [m for m, _ in module_churn.most_common(5) if module_churn[m] > 0]
 
     return {
-        "total_files_indexed": len(all_git),
+        # Files that carry git history (churn/ownership), NOT the parsed file
+        # total — a repo can parse more files than git attributes (vendored,
+        # generated, or newly added files have no 90-day history). Named
+        # explicitly so the two counts don't read as a discrepancy.
+        "files_git_attributed": len(all_git),
         "hotspot_count": hotspot_count,
         "avg_bus_factor": round(avg_bus, 1),
         "files_with_bus_factor_1": bf1,
@@ -339,53 +366,57 @@ def _build_git_health(all_git: list) -> dict[str, Any]:
     }
 
 
+def _owner_display_name(name: str | None, email: str) -> str:
+    """A privacy-safe display name for a contributor — never the raw email.
+
+    Prefers the recorded ``primary_owner_name``; when absent — or when that name
+    is itself an address (bot/CI commits, a misconfigured ``user.name``) —
+    derives a conservative label from the email's local part (e.g. ``jane.doe``
+    from ``jane.doe@example.com``) so the address itself is never surfaced.
+    """
+    if name and name.strip() and "@" not in name:
+        return name.strip()
+    local = (email or "").split("@", 1)[0].strip()
+    return local or "unknown"
+
+
 def _build_knowledge_map(all_git: list) -> dict[str, Any]:
     """Top owners and knowledge silos aggregated across all indexed files."""
     if not all_git:
         return {}
 
+    # Aggregate on email (the stable identity key) but never surface it — the
+    # payload emits a display name only, to keep contributor emails private.
     owner_file_count: dict[str, int] = defaultdict(int)
     owner_pct_sum: dict[str, float] = defaultdict(float)
+    owner_name: dict[str, str] = {}
     for g in all_git:
         email = g.primary_owner_email or ""
         if email:
             owner_file_count[email] += 1
             owner_pct_sum[email] += float(g.primary_owner_commit_pct or 0.0)
+            owner_name.setdefault(email, _owner_display_name(g.primary_owner_name, email))
 
     total_files = len(all_git) or 1
+    # Top 3 only: get_overview is orientation, and "who do I ask" is answered
+    # by the first few names. Per-file ownership questions belong to
+    # get_risk / get_context(include=["ownership"]). The old payload also
+    # carried a knowledge_silos file list here — dropped: it duplicated
+    # get_risk's per-file ownership signal and gave an orienting agent
+    # nothing actionable.
     top_owners = sorted(
         [
             {
-                "email": email,
+                "name": owner_name.get(email) or _owner_display_name(None, email),
                 "files_owned": count,
                 "percentage": round(count / total_files * 100.0, 1),
             }
             for email, count in owner_file_count.items()
         ],
         key=lambda x: -x["files_owned"],
-    )[:10]
+    )[:3]
 
-    # knowledge_silos: files where primary owner has > 80% ownership.
-    # Filter out boilerplate (migrations, __init__.py, config, lock files).
-    silo_exclude_patterns = (
-        "alembic/versions/",
-        "__init__.py",
-        "migrations/",
-        ".lock",
-        "package-lock",
-        "conftest.py",
-    )
-    knowledge_silos = [
-        g.file_path
-        for g in sorted(all_git, key=lambda g: -(g.primary_owner_commit_pct or 0.0))
-        if (g.primary_owner_commit_pct or 0.0) > 0.8
-        and not any(pat in g.file_path for pat in silo_exclude_patterns)
-    ][:10]
-
-    return {
-        "top_owners": top_owners,
-        "knowledge_silos": knowledge_silos,
-    }
+    return {"top_owners": top_owners}
 
 
 async def _load_community_nodes(
@@ -439,21 +470,20 @@ def _build_community_summary(all_nodes: list[GraphNode]) -> list[dict[str, Any]]
         if len(community_summary) >= 10:
             break
         label = ""
-        cohesion = 0.0
         if members:
             try:
                 meta = json.loads(members[0].community_meta_json or "{}")
                 label = meta.get("label", "")
-                cohesion = meta.get("cohesion", 0.0)
             except (json.JSONDecodeError, TypeError):
                 pass
 
+        # No cohesion in the payload: a 3-decimal internal clustering metric
+        # gives an agent nothing to act on. Label + size carry the map.
         community_summary.append(
             {
                 "id": cid,
                 "label": _community_display_label(label, members, cid, generic_labels),
                 "size": len(members),
-                "cohesion": round(cohesion, 3),
             }
         )
     return community_summary
@@ -592,9 +622,14 @@ async def _build_recent_reversals(session: Any, repository: Any) -> list[dict[st
     return recent_reversals
 
 
-async def _build_key_decisions(session: Any, repository: Any) -> dict[str, Any]:
+async def _build_key_decisions(
+    session: Any, repository: Any, exclude_spec: Any = None
+) -> dict[str, Any]:
     """Top active decisions + recent reversals (Phase 4A)."""
     try:
+        # Over-fetch, then drop records anchored entirely in excluded paths
+        # (vendored venvs, local-only scratch dirs mined before the exclude
+        # rules changed) so the repo's "top decisions" are never junk.
         top_decisions_res = await session.execute(
             select(DecisionRecord)
             .where(
@@ -602,9 +637,13 @@ async def _build_key_decisions(session: Any, repository: Any) -> dict[str, Any]:
                 DecisionRecord.status == "active",
             )
             .order_by(DecisionRecord.confidence.desc())
-            .limit(5)
+            .limit(25)
         )
-        top_decisions = top_decisions_res.scalars().all()
+        top_decisions = [
+            dr
+            for dr in top_decisions_res.scalars().all()
+            if not decision_is_excluded(dr, exclude_spec)
+        ][:5]
         if not top_decisions:
             return {}
         key_decisions_list = []
@@ -631,6 +670,25 @@ async def _build_key_decisions(session: Any, repository: Any) -> dict[str, Any]:
         return {}
 
 
+def _dedupe_tour_steps(tour: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collapse a run of near-identical steps (same kind + reason) into one.
+
+    Topology tours often emit a stretch of re-export-hub steps with an
+    identical ``kind``/``reason`` ("The X layer's anchor…"); a fresh agent
+    learns nothing from the second through Nth. Consecutive duplicates fold
+    into the first; distinct steps and re-occurrences later in the walk survive.
+    """
+    deduped: list[dict[str, Any]] = []
+    prev_key: tuple[Any, Any] | None = None
+    for step in tour:
+        key = (step.get("kind"), step.get("reason"))
+        if key == prev_key:
+            continue
+        deduped.append(step)
+        prev_key = key
+    return deduped
+
+
 def _build_guided_tour(overview_page: Page, result: dict[str, Any]) -> None:
     """Attach the topology-driven guided tour + layer order from overview page metadata."""
     from repowise.core.generation.models import compute_page_id
@@ -639,7 +697,7 @@ def _build_guided_tour(overview_page: Page, result: dict[str, Any]) -> None:
         ov_meta = json.loads(overview_page.metadata_json or "{}")
     except (json.JSONDecodeError, TypeError):
         ov_meta = {}
-    tour = ov_meta.get("guided_tour") or []
+    tour = _dedupe_tour_steps(ov_meta.get("guided_tour") or [])
     if tour:
         result["guided_tour"] = [
             {
@@ -665,7 +723,7 @@ def _build_guided_tour(overview_page: Page, result: dict[str, Any]) -> None:
 
 
 @mcp.tool()
-async def get_overview(repo: str | None = None) -> dict:
+async def get_overview(repo: str | None = None, include: list[str] | None = None) -> dict:
     """Architecture map for an unfamiliar repo — first call when you don't know your way around.
 
     Returns the synthesised overview plus key modules, entry points, repo-wide
@@ -673,6 +731,10 @@ async def get_overview(repo: str | None = None) -> dict:
     knowledge map (top owners, knowledge silos), and the community summary.
     Skip this on subsequent calls — once you have the map, jump straight to
     ``get_context`` / ``get_answer``.
+
+    Compact by default: ``content_md`` carries only the overview essay's summary
+    section — the rest of the essay repeats ``key_modules`` / ``entry_points`` /
+    ``architecture.layers``. Pass ``include=["content"]`` for the full essay.
 
     In workspace mode:
     - Omit ``repo`` for the default repo's overview plus a workspace footer.
@@ -682,6 +744,8 @@ async def get_overview(repo: str | None = None) -> dict:
 
     Args:
         repo: Repository alias, path, or ID. Use ``"all"`` for workspace overview.
+        include: Opt-in extras. ``"content"`` returns the full overview essay in
+            ``content_md`` instead of the compact summary section.
     """
     if repo == "all":
         return await _workspace_overview()
@@ -714,11 +778,15 @@ async def get_overview(repo: str | None = None) -> dict:
         reading_order = await _build_reading_order(session, repository)
         title = _resolve_title(overview_page, repository)
         code_health = await _build_code_health(session, repository)
-        key_decisions_section = await _build_key_decisions(session, repository)
+        key_decisions_section = await _build_key_decisions(session, repository, exclude_spec)
+
+        full_content = overview_page.content if overview_page else "No overview generated yet."
+        want_full_content = "content" in set(include or [])
+        content_md = full_content if want_full_content else _compact_overview_content(full_content)
 
         result = {
             "title": title,
-            "content_md": overview_page.content if overview_page else "No overview generated yet.",
+            "content_md": content_md,
             "code_health": code_health,
             "key_modules": [
                 {
@@ -733,6 +801,12 @@ async def get_overview(repo: str | None = None) -> dict:
             "knowledge_map": knowledge_map,
             "community_summary": community_summary,
         }
+
+        if not want_full_content and content_md != full_content:
+            result["content_hint"] = (
+                "Overview essay trimmed to its summary section. "
+                'Call get_overview(include=["content"]) for the full walkthrough.'
+            )
 
         if architecture:
             result["architecture"] = architecture

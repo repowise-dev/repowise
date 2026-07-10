@@ -45,6 +45,17 @@ def test_render_returns_non_empty_string(gen):
     assert len(result) > 0
 
 
+def test_render_never_references_repowise_repo_paths(gen):
+    # The generated file lands in USERS' repos — a `docs/CODE_HEALTH.md`-style
+    # reference points at a file that only exists in the repowise repo itself.
+    import dataclasses
+
+    data = dataclasses.replace(_minimal_data(), code_health=_health_block(6.4))
+    result = gen.render(data)
+    for repo_relative in ("docs/CODE_HEALTH.md", "docs/MCP_TOOLS.md", "docs/DISTILL.md"):
+        assert repo_relative not in result
+
+
 def test_render_contains_repo_name(gen):
     data = _minimal_data()
     result = gen.render(data)
@@ -54,6 +65,8 @@ def test_render_contains_repo_name(gen):
 def _health_block(
     maintainability_average: float | None,
     performance_average: float | None = None,
+    performance_findings: int = 0,
+    performance_coverage_pct: float | None = None,
 ) -> CodeHealthBlock:
     return CodeHealthBlock(
         hotspot_health=5.0,
@@ -62,6 +75,8 @@ def _health_block(
         worst_path="src/bad.py",
         maintainability_average=maintainability_average,
         performance_average=performance_average,
+        performance_findings=performance_findings,
+        performance_coverage_pct=performance_coverage_pct,
     )
 
 
@@ -70,7 +85,7 @@ def test_render_surfaces_maintainability_when_present(gen):
 
     data = dataclasses.replace(_minimal_data(), code_health=_health_block(6.4))
     result = gen.render(data)
-    assert "Maintainability, Average: 6.4/10" in result
+    assert "maintainability 6.4/10" in result
 
 
 def test_render_omits_maintainability_when_unmeasured(gen):
@@ -78,19 +93,26 @@ def test_render_omits_maintainability_when_unmeasured(gen):
 
     data = dataclasses.replace(_minimal_data(), code_health=_health_block(None))
     result = gen.render(data)
-    # Defect-risk block still renders; the maintainability line is suppressed.
-    assert "Hotspot health" in result
-    assert "Maintainability, Average" not in result
+    # Defect-risk headline still renders; the maintainability clause is
+    # suppressed (the word still appears in the static tool table, so match
+    # the clause shape, not the bare word).
+    assert "hotspot health" in result
+    assert "· maintainability" not in result
 
 
 def test_render_surfaces_performance_when_present(gen):
     import dataclasses
 
     data = dataclasses.replace(
-        _minimal_data(), code_health=_health_block(6.4, performance_average=9.2)
+        _minimal_data(),
+        code_health=_health_block(
+            6.4, performance_average=9.2, performance_findings=7, performance_coverage_pct=88.0
+        ),
     )
     result = gen.render(data)
-    assert "Performance risk, Average: 9.2/10" in result
+    # Leads with the finding COUNT; the bounded [9,10] average and coverage %
+    # are deliberately not rendered (nothing an agent can act on there).
+    assert "performance risk 7 open static I/O-in-loop / N+1 findings" in result
 
 
 def test_render_omits_performance_when_unmeasured(gen):
@@ -98,9 +120,9 @@ def test_render_omits_performance_when_unmeasured(gen):
 
     data = dataclasses.replace(_minimal_data(), code_health=_health_block(6.4))
     result = gen.render(data)
-    # Maintainability still renders; the performance line is suppressed.
-    assert "Maintainability, Average: 6.4/10" in result
-    assert "Performance risk, Average" not in result
+    # Maintainability still renders; the performance clause is suppressed.
+    assert "maintainability 6.4/10" in result
+    assert "performance risk" not in result
 
 
 def test_write_creates_new_file(gen, tmp_path):

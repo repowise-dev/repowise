@@ -8,4 +8,7 @@ SPEC = LanguageSpec(
     extensions=frozenset({".sql"}),
     is_code=False,
     is_passthrough=True,
+    # dbt ref()/source() resolution via the lightweight tier: real edges
+    # inside dbt projects, nothing claimed for plain SQL files.
+    import_support="partial",
 )

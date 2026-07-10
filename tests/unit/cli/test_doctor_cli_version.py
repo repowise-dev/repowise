@@ -13,7 +13,7 @@ from repowise.cli.update_check import UpdateCheck
 
 def _capture(monkeypatch: pytest.MonkeyPatch, check: UpdateCheck) -> str:
     buf = io.StringIO()
-    monkeypatch.setattr(doctor_cmd, "console", Console(file=buf, width=200))
+    monkeypatch.setattr(doctor_cmd.advisories, "console", Console(file=buf, width=200))
     monkeypatch.setattr("repowise.cli.update_check.get_cli_update_check", lambda *a, **k: check)
     doctor_cmd._print_cli_version_status()
     return buf.getvalue()
@@ -73,7 +73,7 @@ def test_latest_unknown_stays_neutral(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_never_raises_when_check_errors(monkeypatch: pytest.MonkeyPatch) -> None:
     buf = io.StringIO()
-    monkeypatch.setattr(doctor_cmd, "console", Console(file=buf, width=200))
+    monkeypatch.setattr(doctor_cmd.advisories, "console", Console(file=buf, width=200))
 
     def _boom(*a, **k):
         raise RuntimeError("unexpected")

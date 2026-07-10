@@ -12,11 +12,12 @@ Merge rules:
 from __future__ import annotations
 
 import re
-import tempfile
 from abc import ABC, abstractmethod
 from pathlib import Path
 
 import jinja2
+
+from repowise.core.fsutils import atomic_write_text
 
 from .data import EditorFileData
 
@@ -97,7 +98,7 @@ class BaseEditorFileGenerator(ABC):
                 # Append managed section; preserve all existing content
                 content = existing.rstrip() + "\n\n" + wrapped + "\n"
 
-        _atomic_write(target, content)
+        atomic_write_text(target, content, newline="\n")
         return target
 
     def render_full(self, repo_path: Path, data: EditorFileData) -> str:
@@ -114,16 +115,3 @@ class BaseEditorFileGenerator(ABC):
             pattern = re.escape(marker_start) + r".*?" + re.escape(marker_end)
             return re.sub(pattern, wrapped, existing, flags=re.DOTALL)
         return existing.rstrip() + "\n\n" + wrapped + "\n"
-
-
-def _atomic_write(path: Path, content: str) -> None:
-    """Write *content* to *path* atomically via a temp file + rename."""
-    parent = path.parent
-    fd, tmp = tempfile.mkstemp(dir=parent, suffix=".tmp")
-    try:
-        with open(fd, "w", encoding="utf-8", newline="\n") as f:
-            f.write(content)
-        Path(tmp).replace(path)
-    except Exception:
-        Path(tmp).unlink(missing_ok=True)
-        raise

@@ -382,3 +382,98 @@ def test_csharp_assertion_blocks():
     assert many.assertion_blocks[0][2] == 16
     few = _find(results, "TestFewAsserts")
     assert few is not None and few.assertion_blocks == []
+
+
+def test_dart_nesting_and_ccn():
+    results = _walk("dart/nested.dart", "dart")
+    deep = _find(results, "deeplyNested")
+    assert deep is not None
+    assert deep.max_nesting >= 4, f"expected >=4 nesting, got {deep.max_nesting}"
+    many = _find(results, "manyBranches")
+    assert many is not None
+    # 6 ifs + 2 boolean operators over the base path.
+    assert many.ccn >= 9, f"expected CCN >= 9, got {many.ccn}"
+    shallow = _find(results, "shallow")
+    assert shallow is not None and shallow.max_nesting == 0
+    assert shallow.param_count == 1
+
+
+def test_dart_class_facts():
+    # Dart has no wrapper node for ``this.member`` access, so LCOM4 sits at
+    # its "no signal" safety valve (1) for every class — the class facts
+    # under test are method grouping and size.
+    classes = _walk_classes("dart/classes.dart", "dart")
+    cohesive = classes.get("Cohesive")
+    wide = classes.get("Wide")
+    assert cohesive is not None and wide is not None
+    assert cohesive.method_count == 3
+    assert wide.method_count == 5
+    assert cohesive.lcom4 == 1
+    assert wide.lcom4 == 1
+
+
+def test_dart_assertion_blocks():
+    results = _walk("dart/assertions.dart", "dart")
+    many = _find(results, "testManyAsserts")
+    assert many is not None
+    assert many.assertion_blocks, "expected a run of assert statements"
+    assert many.assertion_blocks[0][2] == 5
+    few = _find(results, "testFewAsserts")
+    assert few is not None and few.assertion_blocks == []
+
+
+def test_scala_nesting_and_ccn():
+    results = _walk("scala/nested.scala", "scala")
+    deep = _find(results, "deeplyNested")
+    assert deep is not None
+    assert deep.max_nesting >= 4, f"expected >=4 nesting, got {deep.max_nesting}"
+    many = _find(results, "manyBranches")
+    assert many is not None
+    # 6 ifs + 2 boolean operators over the base path.
+    assert many.ccn >= 9, f"expected CCN >= 9, got {many.ccn}"
+    shallow = _find(results, "shallow")
+    assert shallow is not None and shallow.max_nesting == 0
+    assert shallow.param_count == 1
+
+
+def test_scala_match_and_guards():
+    results = _walk("scala/nested.scala", "scala")
+    guarded = _find(results, "matchGuards")
+    assert guarded is not None
+    # 4 cases + 2 guards (guards make the match non-flat, so arms count).
+    assert guarded.ccn == 7, f"expected CCN 7, got {guarded.ccn}"
+    flat = _find(results, "flatMatch")
+    assert flat is not None
+    # A flat match counts once for the dispatch, not per arm.
+    assert flat.ccn == 2, f"expected CCN 2, got {flat.ccn}"
+    for_guard = _find(results, "forGuard")
+    assert for_guard is not None
+    # for-comprehension (loop) + inline guard; the guard is flat (no nesting).
+    assert for_guard.ccn == 3, f"expected CCN 3, got {for_guard.ccn}"
+    assert for_guard.max_nesting == 1
+
+
+def test_scala_class_cohesion():
+    classes = _walk_classes("scala/classes.scala", "scala")
+    cohesive = classes.get("Cohesive")
+    splintered = classes.get("Splintered")
+    assert cohesive is not None and splintered is not None
+    assert cohesive.lcom4 == 1
+    assert splintered.lcom4 == 3
+    assert splintered.method_count == 5
+    assert splintered.field_count == 2
+    # ``object`` and ``trait`` bodies group methods like a class body.
+    registry = classes.get("Registry")
+    assert registry is not None and registry.method_count == 2
+    shape = classes.get("Shape")
+    assert shape is not None and shape.method_count == 1
+
+
+def test_scala_assertion_blocks():
+    results = _walk("scala/assertions.scala", "scala")
+    many = _find(results, "testManyAsserts")
+    assert many is not None
+    assert many.assertion_blocks, "expected a run of assert calls"
+    assert many.assertion_blocks[0][2] == 5
+    few = _find(results, "testFewAsserts")
+    assert few is not None and few.assertion_blocks == []

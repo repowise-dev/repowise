@@ -49,12 +49,12 @@ export function PlanBefore({ plan }: PlanBeforeProps) {
             {plan.target_symbol || baseName(plan.file_path)}
           </code>
           {lcom4 > 0 ? (
-            <span className="shrink-0 rounded-full bg-[var(--color-error)]/10 px-2 py-0.5 text-[10px] font-semibold tabular-nums text-[var(--color-error)]">
+            <span className="shrink-0 rounded-full bg-[var(--color-error)]/10 px-2 py-0.5 text-caption font-semibold tabular-nums text-[var(--color-error)]">
               LCOM4 {lcom4}
             </span>
           ) : null}
         </div>
-        <p className="mb-2 text-[11px] text-[var(--color-text-tertiary)]">
+        <p className="mb-2 text-2xs text-[var(--color-text-tertiary)]">
           {methods.length} method{methods.length === 1 ? "" : "s"} and {fields.length} field
           {fields.length === 1 ? "" : "s"} packed into one class with no clear seams.
         </p>
@@ -62,7 +62,7 @@ export function PlanBefore({ plan }: PlanBeforeProps) {
           {shownF.map((f) => (
             <code
               key={`f-${f}`}
-              className="rounded bg-[var(--color-bg-elevated)] px-1.5 py-0.5 text-[11px] text-[var(--color-text-tertiary)]"
+              className="rounded bg-[var(--color-bg-elevated)] px-1.5 py-0.5 text-2xs text-[var(--color-text-tertiary)]"
             >
               {f}
             </code>
@@ -70,13 +70,13 @@ export function PlanBefore({ plan }: PlanBeforeProps) {
           {shownM.map((m) => (
             <code
               key={`m-${m}`}
-              className="rounded bg-[var(--color-bg-elevated)] px-1.5 py-0.5 text-[11px] text-[var(--color-text-secondary)]"
+              className="rounded bg-[var(--color-bg-elevated)] px-1.5 py-0.5 text-2xs text-[var(--color-text-secondary)]"
             >
               {m}
             </code>
           ))}
           {methods.length + fields.length > shownM.length + shownF.length ? (
-            <span className="px-1 py-0.5 text-[11px] text-[var(--color-text-tertiary)]">
+            <span className="px-1 py-0.5 text-2xs text-[var(--color-text-tertiary)]">
               +{methods.length + fields.length - shownM.length - shownF.length} more
             </span>
           ) : null}
@@ -91,7 +91,7 @@ export function PlanBefore({ plan }: PlanBeforeProps) {
     const shown = occ.slice(0, 5);
     return (
       <div className="space-y-2">
-        <p className="text-[11px] text-[var(--color-text-tertiary)]">
+        <p className="text-2xs text-[var(--color-text-tertiary)]">
           The same {lines ? `~${lines}-line ` : ""}block is copy-pasted across {occ.length} site
           {occ.length === 1 ? "" : "s"}.
         </p>
@@ -101,16 +101,16 @@ export function PlanBefore({ plan }: PlanBeforeProps) {
               key={i}
               className="flex items-center justify-between gap-3 rounded-lg border border-dashed border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-2"
             >
-              <code className="truncate text-[11px] text-[var(--color-text-secondary)]" title={o.file}>
+              <code className="truncate text-2xs text-[var(--color-text-secondary)]" title={o.file}>
                 {shortFile(o.file)}
               </code>
-              <span className="shrink-0 text-[10px] uppercase tracking-wide text-[var(--color-text-tertiary)]">
+              <span className="shrink-0 text-caption uppercase tracking-wide text-[var(--color-text-tertiary)]">
                 duplicate
               </span>
             </div>
           ))}
           {occ.length > shown.length ? (
-            <p className="px-1 text-[11px] text-[var(--color-text-tertiary)]">
+            <p className="px-1 text-2xs text-[var(--color-text-tertiary)]">
               +{occ.length - shown.length} more copies
             </p>
           ) : null}
@@ -127,15 +127,15 @@ export function PlanBefore({ plan }: PlanBeforeProps) {
     return (
       <div className="rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-3.5">
         <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] p-2.5">
-          <div className="text-[10px] uppercase tracking-wide text-[var(--color-text-tertiary)]">
+          <div className="text-caption uppercase tracking-wide text-[var(--color-text-tertiary)]">
             Currently in
           </div>
           <code className="text-xs text-[var(--color-text-secondary)]">{mv.from_class}</code>
           <div className="mt-1.5 inline-flex items-center gap-1 rounded-md border border-dashed px-1.5 py-0.5" style={{ borderColor: accent }}>
-            <code className="text-[11px] text-[var(--color-text-primary)]">{mv.method}()</code>
+            <code className="text-2xs text-[var(--color-text-primary)]">{mv.method}()</code>
           </div>
         </div>
-        <p className="mt-2.5 text-[11px] leading-relaxed text-[var(--color-text-tertiary)]">
+        <p className="mt-2.5 text-2xs leading-relaxed text-[var(--color-text-tertiary)]">
           It reaches into{" "}
           <code className="text-[var(--color-text-secondary)]">{mv.to_class}</code>
           {foreign || own ? (
@@ -168,12 +168,12 @@ export function PlanBefore({ plan }: PlanBeforeProps) {
             {baseName(plan.file_path)}
           </code>
           {nloc > 0 ? (
-            <span className="shrink-0 rounded-full bg-[var(--color-error)]/10 px-2 py-0.5 text-[10px] font-semibold tabular-nums text-[var(--color-error)]">
+            <span className="shrink-0 rounded-full bg-[var(--color-error)]/10 px-2 py-0.5 text-caption font-semibold tabular-nums text-[var(--color-error)]">
               {nloc} NLOC
             </span>
           ) : null}
         </div>
-        <p className="mb-2 text-[11px] text-[var(--color-text-tertiary)]">
+        <p className="mb-2 text-2xs text-[var(--color-text-tertiary)]">
           {count} top-level symbol{count === 1 ? "" : "s"} in one module — loosely related, no clear
           seams.
         </p>
@@ -181,13 +181,13 @@ export function PlanBefore({ plan }: PlanBeforeProps) {
           {shown.map((s) => (
             <code
               key={s}
-              className="rounded bg-[var(--color-bg-elevated)] px-1.5 py-0.5 text-[11px] text-[var(--color-text-tertiary)]"
+              className="rounded bg-[var(--color-bg-elevated)] px-1.5 py-0.5 text-2xs text-[var(--color-text-tertiary)]"
             >
               {s}
             </code>
           ))}
           {symbols.length > shown.length ? (
-            <span className="px-1 py-0.5 text-[11px] text-[var(--color-text-tertiary)]">
+            <span className="px-1 py-0.5 text-2xs text-[var(--color-text-tertiary)]">
               +{symbols.length - shown.length} more
             </span>
           ) : null}
@@ -206,7 +206,7 @@ function CycleGraph({ plan, accent }: { plan: RefactoringPlan; accent: string })
   const n = Math.min(members.length, 8);
   if (n < 2) {
     return (
-      <div className="rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-3.5 text-[11px] text-[var(--color-text-tertiary)]">
+      <div className="rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-3.5 text-2xs text-[var(--color-text-tertiary)]">
         {members.length} files form an import cycle.
       </div>
     );
@@ -284,7 +284,7 @@ function CycleGraph({ plan, accent }: { plan: RefactoringPlan; accent: string })
           </g>
         ))}
       </svg>
-      <p className="px-2 pb-1 text-center text-[11px] text-[var(--color-text-tertiary)]">
+      <p className="px-2 pb-1 text-center text-2xs text-[var(--color-text-tertiary)]">
         {members.length} files import each other in a closed loop.
       </p>
     </div>

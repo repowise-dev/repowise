@@ -78,7 +78,12 @@ class TestFindRepowiseRepoRoot:
 
         assert find_repowise_repo_root(nested) == root.resolve()
 
-    def test_returns_none_when_missing(self, tmp_path):
+    def test_returns_none_when_missing(self, tmp_path, monkeypatch):
+        # The walk stops at Path.home(); anchor "home" above the tmp dir so
+        # the test can't escape into the real filesystem (the conftest's fake
+        # home is a sibling temp dir, not an ancestor, so it never trips the
+        # guard, and the developer's real ~/.repowise must stay invisible).
+        monkeypatch.setattr(Path, "home", lambda: tmp_path.parent)
         assert find_repowise_repo_root(tmp_path) is None
 
     def test_ignores_nested_git_dirs(self, tmp_path):
@@ -261,9 +266,9 @@ class TestConfigFingerprint:
 
 class TestUpdateLock:
     def test_acquire_writes_payload(self, tmp_path):
-        from repowise.cli.helpers import acquire_update_lock, read_update_lock
+        from repowise.cli.helpers import read_update_lock, try_acquire_update_lock
 
-        acquire_update_lock(tmp_path, "abc123def")
+        assert try_acquire_update_lock(tmp_path, "abc123def") is None
         payload = read_update_lock(tmp_path)
         assert payload is not None
         assert payload["target_commit"] == "abc123def"
@@ -272,12 +277,12 @@ class TestUpdateLock:
 
     def test_release_removes_lock(self, tmp_path):
         from repowise.cli.helpers import (
-            acquire_update_lock,
             read_update_lock,
             release_update_lock,
+            try_acquire_update_lock,
         )
 
-        acquire_update_lock(tmp_path, "abc")
+        try_acquire_update_lock(tmp_path, "abc")
         release_update_lock(tmp_path)
         assert read_update_lock(tmp_path) is None
 

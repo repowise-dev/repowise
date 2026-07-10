@@ -29,6 +29,52 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 
+def load_git_ai_note_agents(repo: object, commit_limit: int) -> dict[str, str]:
+    """Map ``commit_sha → agent`` from git-ai authorship notes (``refs/notes/ai``).
+
+    Returns an empty dict when the ref is absent — the common case, gated by a
+    single cheap ``for-each-ref`` so 99.9% of repos pay nothing and add no git
+    pass. Only repos actually using git-ai incur the one bounded
+    ``git log --notes=ai`` walk here, whose ``sha → agent`` result the commit
+    walk then reads by-key (no re-parse per touched file). Any failure returns
+    ``{}`` — a notes read must never break the git index. See the git-ai
+    standard v3.0.0 for the note format.
+    """
+    from .git_indexer import _FIELD_SEP, _RECORD_SEP
+    from .git_indexer.agent_provenance import _agent_from_git_ai_note
+
+    try:
+        if not repo.git.for_each_ref("refs/notes/ai"):  # type: ignore[attr-defined]
+            return {}
+    except Exception:
+        return {}
+
+    try:
+        # ``%N`` is the note body; the leading ``%x00``/``%x1f`` mirror the main
+        # walk's record/field separators so multi-line notes parse unambiguously.
+        raw = repo.git.log(  # type: ignore[attr-defined]
+            f"-{commit_limit}",
+            "--no-merges",
+            "--notes=ai",
+            "--format=%x00%H%x1f%N",
+        )
+    except Exception as exc:
+        logger.warning("git_ai_notes_load_failed", error=str(exc))
+        return {}
+
+    agents: dict[str, str] = {}
+    for chunk in raw.split(_RECORD_SEP):
+        if not chunk.strip():
+            continue
+        sha, sep, note = chunk.partition(_FIELD_SEP)
+        if not sep:
+            continue
+        agent = _agent_from_git_ai_note(note)
+        if agent:
+            agents[sha.strip()] = agent
+    return agents
+
+
 def load_commit_index(
     repo: object,
     commit_limit: int,
@@ -105,6 +151,9 @@ def load_commit_index(
     if not raw:
         return {}
 
+    # git-ai authorship notes for this window (``{}`` unless the repo uses them).
+    note_agents = load_git_ai_note_agents(repo, commit_limit)
+
     bucket: dict[str, list[_CommitRec]] = {}
     commits_parsed = 0
 
@@ -134,6 +183,7 @@ def load_commit_index(
             header["committer_name"],
             header["committer_email"],
             f"{header['subject']}\n{header['body']}",
+            note_agent=note_agents.get(header["sha"]),
         )
 
         # Full change footprint of this commit (every file, not just the
@@ -280,6 +330,9 @@ def load_deep_commit_index(
     if not raw:
         return {}
 
+    # git-ai notes across the deep region (``{}`` unless the repo uses them).
+    note_agents = load_git_ai_note_agents(repo, skip + deep_limit)
+
     bucket: dict[str, list[_CommitRec]] = {}
     commits_parsed = 0
 
@@ -329,6 +382,7 @@ def load_deep_commit_index(
                     header["committer_name"],
                     header["committer_email"],
                     f"{header['subject']}\n{header['body']}",
+                    note_agent=note_agents.get(header["sha"]),
                 )
 
             records.append(

@@ -226,7 +226,12 @@ async def _resolve_range_read(
         "source": source,
         "truncated": range_truncated,
         "verified": True,
-        "_meta": _build_meta(timing_ms=(time.perf_counter() - t0) * 1000, repository=repository),
+        "_meta": _build_meta(
+            timing_ms=(time.perf_counter() - t0) * 1000,
+            repository=repository,
+            # A range read serves live bytes; index drift elsewhere is noise.
+            targets=[path],
+        ),
     }
     remainder_end = min(requested_end, total)
     if range_truncated and e < remainder_end:
@@ -582,6 +587,7 @@ async def get_symbol(
                         "_meta": _build_meta(
                             timing_ms=(time.perf_counter() - t0) * 1000,
                             repository=repository,
+                            targets=[file_part],
                         ),
                     }
         return {
@@ -664,6 +670,8 @@ async def get_symbol(
             timing_ms=(time.perf_counter() - t0) * 1000,
             hint=_symbol_hint(row.symbol_id, check.end_line, check.start_line),
             repository=repository,
+            # Served bytes are live-verified; only this file's drift matters.
+            targets=[row.file_path],
         ),
     }
     if truncated and not check.approximate and end < check.end_line:

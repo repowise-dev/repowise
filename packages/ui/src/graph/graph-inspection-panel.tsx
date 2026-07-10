@@ -160,7 +160,7 @@ export const GraphInspectionPanel = memo(function GraphInspectionPanel({
           <p className="text-sm font-semibold text-[var(--color-text-primary)] truncate">
             {nodeId.split("/").pop()}
           </p>
-          <p className="text-[10px] text-[var(--color-text-tertiary)] truncate mt-0.5" title={data.fullPath}>
+          <p className="text-caption text-[var(--color-text-tertiary)] truncate mt-0.5" title={data.fullPath}>
             {data.fullPath}
           </p>
         </div>
@@ -210,7 +210,7 @@ export const GraphInspectionPanel = memo(function GraphInspectionPanel({
                         {n.label}
                       </p>
                     </div>
-                    <span className="text-[10px] text-[var(--color-text-tertiary)] shrink-0">
+                    <span className="text-caption text-[var(--color-text-tertiary)] shrink-0">
                       {n.direction === "importer" ? "imports this" : "imported"}
                     </span>
                   </button>
@@ -224,17 +224,17 @@ export const GraphInspectionPanel = memo(function GraphInspectionPanel({
       {onEgoDepthChange && (
         <div className="px-4 py-3 border-t border-[var(--color-border-default)]">
           <div className="flex items-center justify-between mb-1.5">
-            <span className="text-[10px] font-medium text-[var(--color-text-secondary)]">
+            <span className="text-caption font-medium text-[var(--color-text-secondary)]">
               Ego Graph
             </span>
             {egoDepth != null && egoDepth > 0 && egoVisibleCount != null && (
-              <span className="text-[10px] text-[var(--color-text-tertiary)] tabular-nums">
+              <span className="text-caption text-[var(--color-text-tertiary)] tabular-nums">
                 {egoVisibleCount} nodes
               </span>
             )}
           </div>
           <div className="flex items-center gap-2">
-            <span className="text-[10px] text-[var(--color-text-tertiary)] w-4 text-right tabular-nums">
+            <span className="text-caption text-[var(--color-text-tertiary)] w-4 text-right tabular-nums">
               {egoDepth ?? 0}
             </span>
             <input
@@ -246,9 +246,9 @@ export const GraphInspectionPanel = memo(function GraphInspectionPanel({
               className="flex-1 h-1 accent-[var(--color-accent-graph)] cursor-pointer"
               aria-label="Ego graph depth"
             />
-            <span className="text-[10px] text-[var(--color-text-tertiary)]">5</span>
+            <span className="text-caption text-[var(--color-text-tertiary)]">5</span>
           </div>
-          <p className="text-[10px] text-[var(--color-text-tertiary)] mt-1">
+          <p className="text-caption text-[var(--color-text-tertiary)] mt-1">
             {(egoDepth ?? 0) === 0
               ? "Slide to filter by hop distance"
               : `Showing nodes within ${egoDepth} hop${egoDepth === 1 ? "" : "s"}`}
@@ -261,7 +261,7 @@ export const GraphInspectionPanel = memo(function GraphInspectionPanel({
         {!isMod && filePageHref && (
           <a
             href={filePageHref}
-            className="flex items-center justify-center gap-1.5 rounded-lg bg-[var(--color-accent-graph)]/10 hover:bg-[var(--color-accent-graph)]/20 border border-[var(--color-accent-graph)]/30 px-2 py-1.5 text-[10px] font-medium text-[var(--color-accent-graph)] transition-colors col-span-2"
+            className="flex items-center justify-center gap-1.5 rounded-lg bg-[var(--color-accent-graph)]/10 hover:bg-[var(--color-accent-graph)]/20 border border-[var(--color-accent-graph)]/30 px-2 py-1.5 text-caption font-medium text-[var(--color-accent-graph)] transition-colors col-span-2"
           >
             <FileText className="w-3 h-3" /> Open file page
           </a>
@@ -269,7 +269,7 @@ export const GraphInspectionPanel = memo(function GraphInspectionPanel({
         {isMod && onExpandModule && (
           <button
             onClick={onExpandModule}
-            className="flex items-center justify-center gap-1.5 rounded-lg bg-[var(--color-accent-graph)]/10 hover:bg-[var(--color-accent-graph)]/20 border border-[var(--color-accent-graph)]/30 px-2 py-1.5 text-[10px] font-medium text-[var(--color-accent-graph)] transition-colors col-span-2"
+            className="flex items-center justify-center gap-1.5 rounded-lg bg-[var(--color-accent-graph)]/10 hover:bg-[var(--color-accent-graph)]/20 border border-[var(--color-accent-graph)]/30 px-2 py-1.5 text-caption font-medium text-[var(--color-accent-graph)] transition-colors col-span-2"
           >
             <Network className="w-3 h-3" /> Expand Module
           </button>
@@ -277,7 +277,7 @@ export const GraphInspectionPanel = memo(function GraphInspectionPanel({
         {onViewDocs && (
           <button
             onClick={onViewDocs}
-            className="flex items-center justify-center gap-1.5 rounded-lg bg-[var(--color-bg-inset)] hover:bg-[var(--color-bg-surface)] border border-[var(--color-border-default)] px-2 py-1.5 text-[10px] font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors"
+            className="flex items-center justify-center gap-1.5 rounded-lg bg-[var(--color-bg-inset)] hover:bg-[var(--color-bg-surface)] border border-[var(--color-border-default)] px-2 py-1.5 text-caption font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors"
           >
             <BookOpen className="w-3 h-3" /> View Docs
           </button>
@@ -285,7 +285,7 @@ export const GraphInspectionPanel = memo(function GraphInspectionPanel({
         {!isMod && onViewSymbols && (
           <button
             onClick={onViewSymbols}
-            className="flex items-center justify-center gap-1.5 rounded-lg bg-[var(--color-bg-inset)] hover:bg-[var(--color-bg-surface)] border border-[var(--color-border-default)] px-2 py-1.5 text-[10px] font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors"
+            className="flex items-center justify-center gap-1.5 rounded-lg bg-[var(--color-bg-inset)] hover:bg-[var(--color-bg-surface)] border border-[var(--color-border-default)] px-2 py-1.5 text-caption font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors"
           >
             <Code2 className="w-3 h-3" /> Symbols
           </button>
@@ -293,7 +293,7 @@ export const GraphInspectionPanel = memo(function GraphInspectionPanel({
         {onFindPath && (
           <button
             onClick={onFindPath}
-            className="flex items-center justify-center gap-1.5 rounded-lg bg-[var(--color-bg-inset)] hover:bg-[var(--color-bg-surface)] border border-[var(--color-border-default)] px-2 py-1.5 text-[10px] font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors"
+            className="flex items-center justify-center gap-1.5 rounded-lg bg-[var(--color-bg-inset)] hover:bg-[var(--color-bg-surface)] border border-[var(--color-border-default)] px-2 py-1.5 text-caption font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors"
           >
             <Route className="w-3 h-3" /> Find Path
           </button>
@@ -301,7 +301,7 @@ export const GraphInspectionPanel = memo(function GraphInspectionPanel({
         {!isMod && onShowEgoGraph && (
           <button
             onClick={onShowEgoGraph}
-            className="flex items-center justify-center gap-1.5 rounded-lg bg-[var(--color-bg-inset)] hover:bg-[var(--color-bg-surface)] border border-[var(--color-border-default)] px-2 py-1.5 text-[10px] font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors"
+            className="flex items-center justify-center gap-1.5 rounded-lg bg-[var(--color-bg-inset)] hover:bg-[var(--color-bg-surface)] border border-[var(--color-border-default)] px-2 py-1.5 text-caption font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors"
           >
             <Network className="w-3 h-3" /> Ego Graph
           </button>
@@ -386,21 +386,21 @@ function FileMetadata({
 
       <div className="flex items-center gap-1.5 pt-1 flex-wrap">
         {data.isEntryPoint && (
-          <span className="inline-flex items-center gap-1 rounded-md bg-[var(--color-accent-graph)]/10 text-[var(--color-accent-graph)] px-1.5 py-0.5 text-[10px] font-medium">
+          <span className="inline-flex items-center gap-1 rounded-md bg-[var(--color-accent-graph)]/10 text-[var(--color-accent-graph)] px-1.5 py-0.5 text-caption font-medium">
             <Zap className="w-2.5 h-2.5" /> Entry Point
           </span>
         )}
         {data.isTest && (
-          <span className="inline-flex items-center gap-1 rounded-md bg-[var(--color-accent-secondary)]/10 text-[var(--color-accent-secondary)] px-1.5 py-0.5 text-[10px] font-medium">
+          <span className="inline-flex items-center gap-1 rounded-md bg-[var(--color-accent-secondary)]/10 text-[var(--color-accent-secondary)] px-1.5 py-0.5 text-caption font-medium">
             <FlaskConical className="w-2.5 h-2.5" /> Test
           </span>
         )}
         {data.hasDoc ? (
-          <span className="inline-flex items-center gap-1 rounded-md bg-[var(--color-success)]/10 text-[var(--color-success)] px-1.5 py-0.5 text-[10px] font-medium">
+          <span className="inline-flex items-center gap-1 rounded-md bg-[var(--color-success)]/10 text-[var(--color-success)] px-1.5 py-0.5 text-caption font-medium">
             <BookOpen className="w-2.5 h-2.5" /> Documented
           </span>
         ) : (
-          <span className="inline-flex items-center gap-1 rounded-md bg-[var(--color-bg-inset)] text-[var(--color-text-tertiary)] px-1.5 py-0.5 text-[10px] font-medium">
+          <span className="inline-flex items-center gap-1 rounded-md bg-[var(--color-bg-inset)] text-[var(--color-text-tertiary)] px-1.5 py-0.5 text-caption font-medium">
             <BookOpen className="w-2.5 h-2.5" /> No docs
           </span>
         )}

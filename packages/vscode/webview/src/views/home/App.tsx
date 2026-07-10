@@ -18,6 +18,7 @@ import {
   Moon,
   RefreshCw,
   Scale,
+  Settings2,
   Share2,
   Sun,
   Wrench,
@@ -194,6 +195,24 @@ export function App({ host, repo, refreshToken }: ViewProps<"home">) {
           />
         ))}
       </nav>
+      <button
+        type="button"
+        onClick={() => host.openView("settings")}
+        className="group flex w-full items-center gap-3 rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-2.5 text-left transition-colors hover:border-[var(--color-border-hover)] hover:bg-[var(--color-bg-elevated)]"
+      >
+        <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-[var(--color-bg-inset)] text-[var(--color-text-secondary)]">
+          <Settings2 className="h-4 w-4" />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-[13px] font-medium text-[var(--color-text-primary)]">
+            Settings
+          </span>
+          <span className="block truncate text-[11px] text-[var(--color-text-tertiary)]">
+            Toggle editor signals, server, and more
+          </span>
+        </span>
+        <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[var(--color-text-tertiary)] opacity-0 transition-opacity group-hover:opacity-100" />
+      </button>
       <Footer host={host} />
     </div>
   );
@@ -269,10 +288,11 @@ function Hero({
   health: HomeSummary["health"];
   loading: boolean;
 }) {
-  // Quiet or small repos can gate hotspot scoring off; the hero then falls
-  // back to the repo average rather than claiming there is no health data.
-  const usingHotspot = health?.hotspot != null;
-  const headline = health?.hotspot ?? health?.average ?? null;
+  // Average health leads; hotspot health (NLOC-weighted, more volatile) is the
+  // secondary read. Quiet or small repos gate hotspot scoring off entirely, in
+  // which case only the average shows.
+  const hasHotspot = health?.hotspot != null;
+  const headline = health?.average ?? health?.hotspot ?? null;
   const color = scoreColor(headline);
   return (
     <section
@@ -303,17 +323,21 @@ function Hero({
               {headline.toFixed(1)}
             </span>
             <span className="pb-0.5 text-sm text-[var(--color-text-tertiary)]">/ 10</span>
-            {usingHotspot ? <DeltaChip delta={health?.hotspotDelta ?? null} /> : null}
           </div>
-          <p className="mt-1.5 text-[11px] text-[var(--color-text-secondary)]">
-            {usingHotspot ? "Hotspot health" : "Average health"}
-            {usingHotspot && health?.average != null
-              ? ` · average ${health.average.toFixed(1)}`
-              : ""}
-            {` · ${(health?.fileCount ?? 0).toLocaleString()} files`}
+          <p className="mt-1.5 flex flex-wrap items-center gap-x-1.5 text-[11px] text-[var(--color-text-secondary)]">
+            <span>Average health</span>
+            {hasHotspot ? (
+              <>
+                <span aria-hidden className="text-[var(--color-text-tertiary)]">·</span>
+                <span>hotspot {health?.hotspot?.toFixed(1)}</span>
+                <DeltaChip delta={health?.hotspotDelta ?? null} />
+              </>
+            ) : null}
+            <span aria-hidden className="text-[var(--color-text-tertiary)]">·</span>
+            <span>{(health?.fileCount ?? 0).toLocaleString()} files</span>
           </p>
-          {usingHotspot && (health?.history.length ?? 0) >= 2 ? (
-            <Sparkline values={health?.history ?? []} color={color} />
+          {hasHotspot && (health?.history.length ?? 0) >= 2 ? (
+            <Sparkline values={health?.history ?? []} color={scoreColor(health?.hotspot ?? null)} />
           ) : null}
         </>
       ) : (

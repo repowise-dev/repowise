@@ -10,6 +10,15 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 
+def _render_tool_table() -> str:
+    # Local import: tool_table is a leaf module; importing lazily keeps data.py
+    # free of import-order coupling for the many tests that build these
+    # dataclasses directly.
+    from .tool_table import render_tool_table
+
+    return render_tool_table()
+
+
 @dataclass(frozen=True)
 class TechStackItem:
     name: str
@@ -58,6 +67,17 @@ class CodeHealthBlock:
     # performance scores: static performance RISK). ``None`` when unmeasured, so
     # the section omits the line rather than printing a misleading 10.0.
     performance_average: float | None = None
+    # Honest performance headline: the open finding count, its density per 10K
+    # covered LOC, and how much of the analyzed code a perf detector actually ran
+    # on. An agent reading a bare 9.9/10 should still see "N findings" and "perf
+    # ran on X% of the code" so a mostly-unsupported-language repo never reads as
+    # verified-fast. ``performance_coverage_pct`` is ``None`` when no code file
+    # carries a supported language.
+    performance_findings: int = 0
+    performance_findings_density: float | None = None
+    performance_coverage_pct: float | None = None
+    performance_skipped_files: int = 0
+    performance_unsupported_languages: list[tuple[str, int]] = field(default_factory=list)
     critical_biomarkers: list[dict] = field(default_factory=list)
     untested_hotspots: list[dict] = field(default_factory=list)
 
@@ -93,6 +113,9 @@ class EditorFileData:
     code_health: CodeHealthBlock | None = None
     kg_layers: list[KGLayerSummary] = field(default_factory=list)
     kg_tour: list[KGTourStepSummary] = field(default_factory=list)
+    # Rendered MCP tool table (single source: tool_table.py). A data field
+    # rather than a Jinja global so any environment can render the template.
+    tool_table_md: str = field(default_factory=lambda: _render_tool_table())
 
 
 # ---------------------------------------------------------------------------
@@ -124,3 +147,5 @@ class WorkspaceEditorFileData:
     package_deps: list[dict] = field(default_factory=list)  # package dep entries
     contract_links: list[dict] = field(default_factory=list)  # matched contract links
     contracts_by_type: dict[str, int] = field(default_factory=dict)  # {"http": 5, …}
+    # Rendered MCP tool table (single source: tool_table.py).
+    tool_table_md: str = field(default_factory=lambda: _render_tool_table())

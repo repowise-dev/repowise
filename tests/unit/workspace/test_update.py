@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -251,6 +252,70 @@ class TestUpdateWorkspace:
         assert len(results) == 1
         assert results[0].updated is False
         assert results[0].skipped_reason == "up_to_date"
+
+    def test_up_to_date_repo_reconciles_freshness_stamp(self, tmp_path: Path) -> None:
+        """An up-to-date workspace sync still refreshes the repo row timestamp."""
+        from repowise.core.persistence import (
+            create_engine,
+            create_session_factory,
+            get_session,
+            init_db,
+        )
+        from repowise.core.persistence.crud import get_repository_by_path, upsert_repository
+        from repowise.core.persistence.database import resolve_db_url
+
+        repo = _make_git_repo(tmp_path, "backend")
+        head = get_head_commit(repo)
+        _write_state(repo, head)
+
+        ws_config = WorkspaceConfig(
+            repos=[RepoEntry(path="backend", alias="backend", last_commit_at_index=head)],
+            default_repo="backend",
+        )
+        ws_config.save(tmp_path)
+
+        stale_dt = datetime(2026, 7, 1, 12, 0, tzinfo=UTC)
+
+        async def _seed() -> None:
+            engine = create_engine(resolve_db_url(repo))
+            await init_db(engine)
+            sf = create_session_factory(engine)
+            try:
+                async with get_session(sf) as session:
+                    row = await upsert_repository(
+                        session,
+                        name="backend",
+                        local_path=str(repo),
+                        head_commit="deadbeef" + "0" * 32,
+                    )
+                    row.updated_at = stale_dt
+                    await session.flush()
+            finally:
+                await engine.dispose()
+
+        async def _read_back():
+            engine = create_engine(resolve_db_url(repo))
+            sf = create_session_factory(engine)
+            try:
+                async with get_session(sf) as session:
+                    return await get_repository_by_path(session, str(repo))
+            finally:
+                await engine.dispose()
+
+        async def _run():
+            await _seed()
+            return await update_workspace(tmp_path, ws_config)
+
+        import asyncio
+
+        results = asyncio.run(_run())
+        row = asyncio.run(_read_back())
+        assert len(results) == 1
+        assert results[0].updated is False
+        assert results[0].skipped_reason == "up_to_date"
+        assert row is not None
+        assert row.head_commit == head
+        assert row.updated_at.replace(tzinfo=UTC) > stale_dt
 
     def test_detects_stale_repo(self, tmp_path: Path) -> None:
         """Repos with new commits should be detected as stale."""

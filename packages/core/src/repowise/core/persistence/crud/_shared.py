@@ -15,9 +15,18 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-_VALID_JOB_STATUSES = frozenset({"pending", "running", "completed", "failed", "paused"})
+_VALID_JOB_STATUSES = frozenset(
+    {"pending", "running", "completed", "failed", "cancelled", "paused"}
+)
 
 _BATCH_SIZE = 500  # max rows per INSERT to stay under SQLite's parameter limit
+
+
+def _finding_file_path(finding: Any) -> str | None:
+    """Read ``file_path`` from a dataclass-like finding or a plain dict."""
+    if isinstance(finding, dict):
+        return finding.get("file_path")
+    return getattr(finding, "file_path", None)
 
 
 def _parse_dt(ts: str) -> datetime:

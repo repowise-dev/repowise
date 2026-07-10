@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 from rich.console import Console
 from rich.markup import escape
 from rich.rule import Rule
@@ -80,3 +82,19 @@ def format_elapsed(seconds: float) -> str:
         s = int(seconds) % 60
         return f"{m}m {s}s"
     return f"{seconds:.1f}s"
+
+
+def format_bytes(num_bytes: int) -> str:
+    """Format a byte count as ``512 B``, ``1.5 KB``, ``1.0 MB``, etc."""
+    if num_bytes < 0:
+        return "—"
+    if num_bytes == 0:
+        return "0 B"
+    units = ("B", "KB", "MB", "GB", "TB")
+    exponent = min(int(math.floor(math.log(num_bytes, 1024))), len(units) - 1)
+    value = num_bytes / (1024**exponent)
+    if value >= 10 or exponent == 0:
+        formatted = f"{value:.0f}"
+    else:
+        formatted = f"{value:.1f}"
+    return f"{formatted} {units[exponent]}"

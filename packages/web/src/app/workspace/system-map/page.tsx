@@ -15,7 +15,7 @@ import {
   type RepoHealth,
 } from "@repowise-dev/ui/workspace/system-map";
 import type { NodeArchitectureRole } from "@/lib/api/types";
-import { StatCard } from "@repowise-dev/ui/shared/stat-card";
+import { MetricCard } from "@repowise-dev/ui/shared/metric-card";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 import {
   useWorkspaceSystemGraph,
@@ -106,7 +106,7 @@ export default function SystemMapPage() {
       </div>
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
-        <StatCard
+        <MetricCard
           label="Architecture score"
           value={architecture ? `${architecture.score.toFixed(1)} / 10` : "—"}
           description={
@@ -116,22 +116,22 @@ export default function SystemMapPage() {
           }
           icon={<Gauge className="h-4 w-4 text-[var(--color-accent-primary)]" />}
         />
-        <StatCard
+        <MetricCard
           label="Services"
           value={isLoading ? "—" : serviceCount}
           icon={<Boxes className="h-4 w-4" />}
         />
-        <StatCard
+        <MetricCard
           label="Relationships"
           value={isLoading ? "—" : edgeCount}
           icon={<Share2 className="h-4 w-4 text-[var(--color-accent-secondary)]" />}
         />
-        <StatCard
+        <MetricCard
           label="Providers / Consumers"
           value={diag ? `${diag.total_providers} / ${diag.total_consumers}` : "—"}
           icon={<ArrowLeftRight className="h-4 w-4 text-[var(--color-success)]" />}
         />
-        <StatCard
+        <MetricCard
           label="Orphans / Weak links"
           value={diag ? `${diag.orphan_providers.length} / ${diag.weak_link_count}` : "—"}
           description="Providers with no consumer; low-confidence links"

@@ -1,9 +1,9 @@
 """Dataflow def/use + CFG + Extract Method coverage for the ported languages.
 
-Covers the Go and TS/JS ``DefUseDialect``s and the language-agnostic CFG /
-slicer once the Python-specific grammar was lifted onto ``LanguageNodeMap``.
-Best-effort like the other dataflow tests: each language skips when its
-tree-sitter pack is missing rather than failing.
+Covers the Go, TS/JS, Java, and Rust ``DefUseDialect``s and the language-
+agnostic CFG / slicer once the Python-specific grammar was lifted onto
+``LanguageNodeMap``. Best-effort like the other dataflow tests: each language
+skips when its tree-sitter pack is missing rather than failing.
 """
 
 from __future__ import annotations
@@ -12,12 +12,15 @@ import textwrap
 
 import pytest
 
+from repowise.core.analysis.health.complexity.ast_utils import _collect_function_nodes
 from repowise.core.analysis.health.complexity.languages import get_language_map
 from repowise.core.analysis.health.dataflow import (
     analyze_file,
+    analyze_function,
     build_cfgs_for_file,
     find_extractions,
 )
+from repowise.core.analysis.health.perf.promotion import _loop_iterations_independent
 
 
 def _require(language: str) -> None:
@@ -403,3 +406,592 @@ def test_ts_flagged_only_gate_skips_small_functions():
     assert result.stats.functions_seen == 2
     assert result.stats.functions_built == 1
     assert [fc.name for fc in result.functions] == ["big"]
+
+
+# == the loop-carried-dependence proof, cross-language ==========================
+
+
+def _independent(language: str, src: str, marker: str) -> bool:
+    """Run the promotion proof at *marker*'s line in *src*'s first function."""
+    _require(language)
+    from tree_sitter import Parser
+
+    from repowise.core.ingestion.parser import _get_language
+
+    body = textwrap.dedent(src)
+    lmap = get_language_map(language)
+    parser = Parser(_get_language(language))
+    tree = parser.parse(body.encode())
+    nodes = _collect_function_nodes(tree.root_node, lmap)
+    assert nodes, "no function node parsed"
+    analyzed = analyze_function(nodes[0], language, lmap)
+    assert analyzed is not None, "analysis returned None"
+    cfg, def_use, reaching = analyzed
+    line = next(i for i, ln in enumerate(body.splitlines(), start=1) if marker in ln)
+    return _loop_iterations_independent(cfg, def_use, reaching, line)
+
+
+# == Java =======================================================================
+
+# Every Java write shape in one method: multi-declarator decl, ``=`` vs ``+=``
+# (operator-sniffed), ``x++`` / ``--x``, field / array targets (not locals),
+# an enhanced-for binder, a C-style for initializer, and try-with-resources.
+_JAVA_SHAPES = """
+class Demo {
+    int shapes(int[] input, int base, String... rest) {
+        int total = 0;
+        int a = 1, b = 2;
+        total += base;
+        a++;
+        --b;
+        this.field = total;
+        seen[a] = b;
+        for (int i = 0; i < input.length; i++) {
+            total += input[i];
+        }
+        for (int v : input) {
+            total -= v;
+        }
+        try (var res = open()) {
+            total = res.hashCode();
+        } catch (RuntimeException e) {
+            total = 0;
+        }
+        return total + a + b;
+    }
+}
+"""
+
+
+def test_java_def_use_classification():
+    fn = _first("java", _JAVA_SHAPES)
+    defs = _def_names(fn)
+    # Declarations, for-init, enhanced-for binder, and try resources are locals.
+    assert {"total", "a", "b", "i", "v", "res"} <= defs
+    assert {"input", "base", "rest"} <= defs  # parameters (varargs included)
+    # Field (``this.field = ...``) and array (``seen[a] = ...``) targets bind
+    # no local: their bases are reads, never defs.
+    assert "field" not in defs
+    assert "seen" not in defs
+    uses = _use_names(fn)
+    assert {"base", "input", "seen", "a", "b", "total", "res"} <= uses
+    # Method names are never variable reads.
+    assert "hashCode" not in uses
+    assert "open" not in uses
+
+
+def test_java_compound_assign_reads_target():
+    fn = _first(
+        "java",
+        """
+        class Demo {
+            int f(int x) {
+                int acc = 0;
+                acc += x;
+                return acc;
+            }
+        }
+        """,
+    )
+    # ``acc += x`` is both a write and a read of ``acc``.
+    assert "acc" in _def_names(fn)
+    assert "acc" in _use_names(fn)
+
+
+def test_java_for_and_while_heads():
+    fn = _first(
+        "java",
+        """
+        class Demo {
+            int loops(int n) {
+                int sum = 0;
+                for (int j = 0; j < n; j++) {
+                    sum += j;
+                }
+                while (sum < 100) {
+                    sum *= 2;
+                }
+                return sum;
+            }
+        }
+        """,
+    )
+    assert "j" in _def_names(fn)  # bound by the C-style for initializer
+    headers = [b for b in fn.cfg.blocks if b.kind == "loop_header"]
+    assert len(headers) == 2
+    assert fn.cfg.back_edges()
+
+
+def test_java_else_if_chain_branches():
+    fn = _first(
+        "java",
+        """
+        class Demo {
+            int grade(int x) {
+                int y = 0;
+                if (x == 1) {
+                    y = 1;
+                } else if (x == 2) {
+                    y = 2;
+                } else if (x == 3) {
+                    y = 3;
+                } else {
+                    y = 4;
+                }
+                return y;
+            }
+        }
+        """,
+    )
+    branches = [b for b in fn.cfg.blocks if b.kind == "branch"]
+    assert len(branches) == 3
+    assert fn.cfg.exit_id in fn.cfg.reachable_ids()
+
+
+def test_java_switch_arm_writes_are_may_defs():
+    # A ``switch`` stays one CFG statement, so an arm's write is conditional:
+    # it must register as BOTH a def and a use (the may-def convention that
+    # keeps the promotion proof conservative).
+    fn = _first(
+        "java",
+        """
+        class Demo {
+            int f(int x) {
+                int y = 0;
+                switch (x) {
+                    case 1:
+                        y = 10;
+                        break;
+                    default:
+                        y = 20;
+                }
+                return y;
+            }
+        }
+        """,
+    )
+    decl_line = min(d.line for d in fn.def_use.definitions if d.var == "y")
+    switch_defs = [d for d in fn.def_use.definitions if d.var == "y" and d.line > decl_line]
+    assert switch_defs, "expected the arm writes to register as defs"
+    use_lines = {u.line for b in fn.def_use.blocks.values() for u in b.uses if u.name == "y"}
+    assert {d.line for d in switch_defs} <= use_lines  # ...and as paired uses
+
+
+# A long Java method whose compute-average tail is a clean extraction.
+_JAVA_PROCESS = """
+class Demo {
+    int process(int[] records, int threshold) {
+        int errors = 0;
+        java.util.List<Integer> results = new java.util.ArrayList<>();
+        for (int r : records) {
+            if (r < 0) {
+                errors++;
+                continue;
+            }
+            results.add(r);
+        }
+        int total = 0;
+        int count = 0;
+        for (int v : results) {
+            if (v > threshold) {
+                total += v;
+                count++;
+            } else {
+                total -= v;
+            }
+        }
+        int average = 0;
+        if (count > 0) {
+            average = total / count;
+        }
+        return average + errors;
+    }
+}
+"""
+
+
+def test_java_extract_method_fires():
+    lmap = get_language_map("java")
+    extractions = find_extractions(_first("java", _JAVA_PROCESS), lmap)
+    assert extractions, "expected at least one Java extraction"
+    best = extractions[0]
+    assert "average" in best.returns
+    assert "results" in best.params and "threshold" in best.params
+    assert len(best.returns) <= 1
+    assert best.ccn_removed >= 1
+    assert best.slice_nloc >= 6
+
+
+def test_java_extractions_are_deterministic():
+    lmap = get_language_map("java")
+    fn = _first("java", _JAVA_PROCESS)
+
+    def serialize():
+        return [
+            (e.start_line, e.end_line, e.params, e.returns, e.ccn_removed)
+            for e in find_extractions(fn, lmap)
+        ]
+
+    first = serialize()
+    for _ in range(3):
+        assert serialize() == first
+
+
+def test_java_flagged_only_gate_skips_small_functions():
+    _require("java")
+    lines = ["class Demo {", "    int big(int x) {", "        int y = 0;"]
+    for i in range(12):
+        lines += [f"        if (x == {i}) {{", f"            y = {i};", "        }"]
+    lines += ["        return y;", "    }", "    int tiny() {", "        return 1;", "    }", "}"]
+    result = build_cfgs_for_file("m.java", "java", "\n".join(lines).encode())
+    if result.stats.functions_seen == 0:
+        pytest.skip("tree-sitter language pack missing for java")
+    assert result.stats.functions_seen == 2
+    assert result.stats.functions_built == 1
+    assert [fc.name for fc in result.functions] == ["big"]
+
+
+def test_java_append_loop_is_independent():
+    assert _independent(
+        "java",
+        """
+        class Demo {
+            void f(int[] items) {
+                for (int item : items) {
+                    int r = fetch(item);  // HIT
+                    store(r);
+                }
+            }
+        }
+        """,
+        "HIT",
+    )
+
+
+def test_java_accumulator_is_carried():
+    assert not _independent(
+        "java",
+        """
+        class Demo {
+            int f(int[] items) {
+                int acc = 0;
+                for (int item : items) {
+                    acc = acc + fetch(item);  // HIT
+                }
+                return acc;
+            }
+        }
+        """,
+        "HIT",
+    )
+
+
+def test_java_switch_conditional_write_refuses_promotion():
+    # ``flag`` is written only on one switch arm, so it may carry across
+    # iterations; the may-def convention must keep this refused.
+    assert not _independent(
+        "java",
+        """
+        class Demo {
+            void f(int[] items) {
+                int flag = 0;
+                for (int item : items) {
+                    switch (item) {
+                        case 1:
+                            flag = 1;
+                            break;
+                        default:
+                            break;
+                    }
+                    int r = fetch(flag);  // HIT
+                    store(r);
+                }
+            }
+        }
+        """,
+        "HIT",
+    )
+
+
+# == Rust =======================================================================
+
+# Every Rust write shape in one function: ``let`` (plain / mut / tuple / struct
+# / slice patterns), ``=`` vs ``+=`` (distinct node kinds), field / index /
+# deref targets (not locals), a ``for`` binder, and paths (``Vec::new``).
+_RUST_SHAPES = """
+struct S { count: i64 }
+
+impl S {
+    fn shapes(&mut self, input: &[i64], base: i64) -> i64 {
+        let total = 0;
+        let mut acc = base;
+        let (a, b) = (1, 2);
+        let Wrapper { x, y } = wrapper;
+        let [head, tail] = pair;
+        acc += a;
+        acc = acc * 2;
+        self.count += 1;
+        arr[0] = acc;
+        obj.field = b;
+        *ptr = x;
+        let v = Vec::new();
+        for item in input {
+            acc += item + y + head + tail + total;
+        }
+        acc
+    }
+}
+"""
+
+
+def test_rust_def_use_classification():
+    fn = _first("rust", _RUST_SHAPES)
+    defs = _def_names(fn)
+    # ``let`` binders across pattern shapes, plus the for binder, are locals.
+    assert {"total", "acc", "a", "b", "x", "y", "head", "tail", "v", "item"} <= defs
+    assert {"input", "base", "self"} <= defs  # params + the self receiver
+    # Field / index / deref targets bind no local: bases are reads, never defs.
+    assert "count" not in defs
+    assert "arr" not in defs
+    assert "obj" not in defs
+    assert "ptr" not in defs
+    # The tuple-struct/struct pattern *type* side is not a binder.
+    assert "Wrapper" not in defs
+    uses = _use_names(fn)
+    assert {"base", "acc", "self", "arr", "obj", "ptr", "item", "wrapper"} <= uses
+    # Path components (``Vec::new``) are never variable reads.
+    assert "Vec" not in uses
+    assert "new" not in uses
+
+
+def test_rust_while_let_binder_is_a_may_def():
+    fn = _first(
+        "rust",
+        """
+        fn drain(iter: &mut I) -> i64 {
+            let mut n = 0;
+            while let Some(item) = iter.next() {
+                n += item;
+            }
+            n
+        }
+        """,
+    )
+    # The pattern binds ``item`` only when it matches: def AND paired use.
+    assert "item" in _def_names(fn)
+    assert "item" in _use_names(fn)
+    assert [b for b in fn.cfg.blocks if b.kind == "loop_header"]
+
+
+def test_rust_else_if_chain_branches():
+    fn = _first(
+        "rust",
+        """
+        fn grade(x: i64) -> i64 {
+            let mut y = 0;
+            if x == 1 {
+                y = 1;
+            } else if x == 2 {
+                y = 2;
+            } else if x == 3 {
+                y = 3;
+            } else {
+                y = 4;
+            }
+            y
+        }
+        """,
+    )
+    branches = [b for b in fn.cfg.blocks if b.kind == "branch"]
+    assert len(branches) == 3
+    assert fn.cfg.exit_id in fn.cfg.reachable_ids()
+
+
+def test_rust_statement_position_control_flow_is_unwrapped():
+    # Rust parses statement-position loops / returns inside an
+    # ``expression_statement``; the CFG builder must classify the real node.
+    fn = _first(
+        "rust",
+        """
+        fn f(items: &[i64], x: i64) -> i64 {
+            let mut total = 0;
+            for it in items {
+                if *it > x {
+                    total += it;
+                } else {
+                    total -= it;
+                }
+                if *it == 0 {
+                    continue;
+                }
+            }
+            return total;
+        }
+        """,
+    )
+    assert [b for b in fn.cfg.blocks if b.kind == "loop_header"]
+    assert len([b for b in fn.cfg.blocks if b.kind == "branch"]) == 2
+    assert fn.cfg.back_edges()
+
+
+# A long Rust function whose compute-average tail is a clean extraction.
+_RUST_PROCESS = """
+fn process(records: &[i64], threshold: i64) -> (i64, i64) {
+    let mut results = Vec::new();
+    let mut errors = 0;
+    for r in records {
+        if *r < 0 {
+            errors += 1;
+            continue;
+        }
+        results.push(*r);
+    }
+    let mut total = 0;
+    let mut count = 0;
+    for v in &results {
+        if *v > threshold {
+            total += v;
+            count += 1;
+        } else {
+            total -= v;
+        }
+    }
+    let mut average = 0;
+    if count > 0 {
+        average = total / count;
+    }
+    (average, errors)
+}
+"""
+
+
+def test_rust_extract_method_fires():
+    lmap = get_language_map("rust")
+    extractions = find_extractions(_first("rust", _RUST_PROCESS), lmap)
+    assert extractions, "expected at least one Rust extraction"
+    best = extractions[0]
+    assert "average" in best.returns
+    assert "results" in best.params and "threshold" in best.params
+    assert len(best.returns) <= 1
+    assert best.ccn_removed >= 1
+    assert best.slice_nloc >= 6
+
+
+def test_rust_extractions_never_cover_the_tail_expression():
+    # The final ``(average, errors)`` tail is the function's value; a span
+    # ending on it would silently drop that value, so none is ever offered.
+    fn = _first("rust", _RUST_PROCESS)
+    lmap = get_language_map("rust")
+    tail_line = fn.end_line - 1  # the tuple expression before the closing brace
+    for e in find_extractions(fn, lmap):
+        assert e.end_line < tail_line
+
+
+def test_rust_extractions_are_deterministic():
+    lmap = get_language_map("rust")
+    fn = _first("rust", _RUST_PROCESS)
+
+    def serialize():
+        return [
+            (e.start_line, e.end_line, e.params, e.returns, e.ccn_removed)
+            for e in find_extractions(fn, lmap)
+        ]
+
+    first = serialize()
+    for _ in range(3):
+        assert serialize() == first
+
+
+def test_rust_question_mark_span_has_no_extraction():
+    # ``?`` propagates an error out of the function -- an early exit that makes
+    # any span containing it unsafe to lift; every candidate here carries one.
+    lmap = get_language_map("rust")
+    src = """
+        fn load(paths: &[String], threshold: i64) -> Result<i64, E> {
+            let mut total = 0;
+            let mut count = 0;
+            for p in paths {
+                let data = read(p)?;
+                if data.len() > threshold {
+                    total += parse(&data)?;
+                    count += 1;
+                }
+            }
+            let mut average = 0;
+            if count > 0 {
+                average = total / count;
+                check(average)?;
+            }
+            Ok(average)
+        }
+        """
+    assert find_extractions(_first("rust", src), lmap) == []
+
+
+def test_rust_flagged_only_gate_skips_small_functions():
+    _require("rust")
+    lines = ["fn big(x: i64) -> i64 {", "    let mut y = 0;"]
+    for i in range(12):
+        lines += [f"    if x == {i} {{", f"        y = {i};", "    }"]
+    lines += ["    y", "}", "", "fn tiny() -> i64 {", "    1", "}", ""]
+    result = build_cfgs_for_file("m.rs", "rust", "\n".join(lines).encode())
+    if result.stats.functions_seen == 0:
+        pytest.skip("tree-sitter language pack missing for rust")
+    assert result.stats.functions_seen == 2
+    assert result.stats.functions_built == 1
+    assert [fc.name for fc in result.functions] == ["big"]
+
+
+def test_rust_push_loop_is_independent():
+    assert _independent(
+        "rust",
+        """
+        fn f(items: &[i64]) -> Vec<i64> {
+            let mut out = Vec::new();
+            for item in items {
+                let r = fetch(item);  // HIT
+                out.push(r);
+            }
+            out
+        }
+        """,
+        "HIT",
+    )
+
+
+def test_rust_accumulator_is_carried():
+    assert not _independent(
+        "rust",
+        """
+        fn f(items: &[i64]) -> i64 {
+            let mut acc = 0;
+            for item in items {
+                acc = acc + fetch(item);  // HIT
+            }
+            acc
+        }
+        """,
+        "HIT",
+    )
+
+
+def test_rust_match_conditional_write_refuses_promotion():
+    # ``flag`` is written only on one match arm (a may-def inside the mega-
+    # statement), so it may carry across iterations: must stay refused.
+    assert not _independent(
+        "rust",
+        """
+        fn f(items: &[i64]) {
+            let mut flag = 0;
+            for item in items {
+                match item {
+                    1 => flag = 1,
+                    _ => {}
+                }
+                let r = fetch(flag);  // HIT
+                store(r);
+            }
+        }
+        """,
+        "HIT",
+    )

@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.ingestion.git_indexer import build_identity_resolver
 from repowise.core.persistence import crud
 from repowise.core.persistence.models import (
     DecisionRecord,
@@ -127,12 +128,17 @@ async def _activity(session: AsyncSession, repo_id: str) -> dict[str, Any]:
         await session.execute(
             select(
                 GitCommit.committed_at,
+                GitCommit.author_name,
                 GitCommit.author_email,
                 GitCommit.agent_name,
                 GitCommit.is_fix,
             ).where(GitCommit.repository_id == repo_id)
         )
     ).all()
+
+    # Fold GitHub noreply variants and same-name real+noreply emails to one
+    # identity so the same person isn't counted as several contributors.
+    resolve = build_identity_resolver([(name, email) for _, name, email, _, _ in rows])
 
     total = 0
     agent_total = 0
@@ -143,10 +149,12 @@ async def _activity(session: AsyncSession, repo_id: str) -> dict[str, Any]:
     first_at: Any = None
     last_at: Any = None
 
-    for committed_at, author_email, agent_name, is_fix in rows:
+    for committed_at, author_name, author_email, agent_name, is_fix in rows:
         total += 1
-        if author_email:
-            contributors.add(author_email.lower())
+        if author_email or author_name:
+            key = resolve(author_name, author_email)
+            if key:
+                contributors.add(key)
         if is_fix:
             fix_total += 1
         if agent_name:

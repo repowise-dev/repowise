@@ -21,6 +21,7 @@ are unavailable.
 
 from __future__ import annotations
 
+import multiprocessing
 import os
 from concurrent.futures import ProcessPoolExecutor
 
@@ -28,6 +29,14 @@ import networkx as nx
 import structlog
 
 log = structlog.get_logger(__name__)
+
+# ``spawn`` rather than the POSIX default ``fork``: graph metrics run after
+# ingestion, and in a workspace init an earlier repo's doc generation may have
+# already imported LanceDB (whose ``lance`` core is not fork-safe and installs
+# an ``os.register_at_fork`` hook that can deadlock the child). Clean spawned
+# workers never inherit that runtime. Same rationale as the parse pool in
+# ``pipeline/phases/ingestion.py`` (issue #678).
+_MP_SPAWN = multiprocessing.get_context("spawn")
 
 # Parallelize only when the estimated Brandes cost (~nodes x edges) is large
 # enough to amortize process startup (~2-3s for pool spawn + imports).
@@ -138,6 +147,7 @@ def betweenness_centrality_fast(
     try:
         with ProcessPoolExecutor(
             max_workers=workers,
+            mp_context=_MP_SPAWN,
             initializer=_init_worker,
             initargs=(n, edges, g.is_directed()),
         ) as pool:

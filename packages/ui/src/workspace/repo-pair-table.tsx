@@ -3,6 +3,8 @@
 import { Badge } from "../ui/badge";
 import { EmptyState } from "../shared/empty-state";
 import { VirtualizedTable } from "../shared/virtualized-table";
+import { clickableRowProps, CLICKABLE_ROW_CLS } from "../shared/responsive-table";
+import { cn } from "../lib/cn";
 import { ChevronRight } from "lucide-react";
 
 export interface RepoPairSummary {
@@ -58,10 +60,12 @@ export function RepoPairTable({ repoPairs, onSelectPair, selectedPairId }: RepoP
     const isSelected = selectedPairId != null && selectedPairId === p.id;
     return (
       <tr
-        className={`border-t border-[var(--color-border-default)] hover:bg-[var(--color-bg-elevated)] ${
-          isSelected ? "bg-[var(--color-accent-muted)]/30 " : ""
-        }${onClick ? "cursor-pointer" : ""}`}
-        onClick={onClick}
+        className={cn(
+          "border-t border-[var(--color-border-default)] hover:bg-[var(--color-bg-elevated)]",
+          isSelected && "bg-[var(--color-accent-muted)]/30",
+          onClick && CLICKABLE_ROW_CLS,
+        )}
+        {...(onClick ? clickableRowProps(onClick) : {})}
       >
         <td className="px-3 py-2 text-left">
           <div className="flex items-center gap-2">

@@ -3,9 +3,10 @@
 ``update_single_repo_index`` previously re-ran the full init pipeline for
 every stale repo. Already-indexed repos (persisted ``last_sync_commit`` that
 still resolves + existing ``wiki.db``) now take the incremental update path —
-changed-files diff, partial analysis, upsert persistence — and inherit the
-persisted state flags (``git_tier``, ``include_submodules``,
-``include_nested_repos``). Never-indexed repos and incremental failures fall
+changed-files diff, partial analysis, upsert persistence (including prune +
+tombstone for deletions/renames) — and inherit the persisted state flags
+(``git_tier``, ``include_submodules``, ``include_nested_repos``).
+Never-indexed repos, config-fingerprint drift, and incremental failures fall
 back to the full pipeline.
 """
 
@@ -57,11 +58,42 @@ def _mark_indexed(repo: Path, commit: str, **extra_state) -> None:
     (state_dir / "wiki.db").touch()
 
 
+def _write_repo_settings(repo: Path, settings: dict) -> None:
+    from repowise.core.persistence import (
+        create_engine,
+        create_session_factory,
+        get_session,
+        init_db,
+        upsert_repository,
+    )
+    from repowise.core.persistence.database import resolve_db_url
+
+    async def _seed() -> None:
+        engine = create_engine(resolve_db_url(repo))
+        await init_db(engine)
+        sf = create_session_factory(engine)
+        async with get_session(sf) as session:
+            await upsert_repository(
+                session,
+                name=repo.name,
+                local_path=str(repo),
+                settings=settings,
+            )
+        await engine.dispose()
+
+    asyncio.run(_seed())
+
+
 def _add_commit(repo: Path, filename: str = "b.py") -> str:
     (repo / filename).write_text("def beta():\n    return 2\n")
     _git(repo, "add", ".")
     _git(repo, "commit", "-m", f"add {filename}")
     return _git(repo, "rev-parse", "HEAD")
+
+
+def _assert_full_pipeline_fallback(result, calls: list[dict]) -> None:
+    assert len(calls) == 1
+    assert result.updated is True
 
 
 @pytest.fixture
@@ -139,10 +171,10 @@ def test_no_relevant_changes_still_reports_updated(tmp_path, forbid_full_pipelin
     assert result.file_count == 0
 
 
-def test_deleted_file_falls_back_to_full_pipeline(tmp_path, stub_full_pipeline):
-    """Incremental persistence is upsert-only — it can't prune rows for
-    removed paths. A diff containing deletions must run the full pipeline
-    (delete-then-insert) so stale graph/health rows are cleaned up."""
+def test_deleted_file_stays_on_incremental_path(tmp_path, forbid_full_pipeline):
+    """Deletions are handled incrementally: the persistence pass prunes rows
+    against the rebuilt graph and tombstones pages for removed paths, same as
+    the single-repo update — no more full-pipeline fallback."""
     repo = _make_git_repo(tmp_path)
     _add_commit(repo, "b.py")
     base = get_head_commit(repo)
@@ -153,13 +185,13 @@ def test_deleted_file_falls_back_to_full_pipeline(tmp_path, stub_full_pipeline):
 
     result = asyncio.run(update_single_repo_index(repo))
 
-    assert len(stub_full_pipeline) == 1
+    assert result.error is None
     assert result.updated is True
 
 
-def test_renamed_file_falls_back_to_full_pipeline(tmp_path, stub_full_pipeline):
-    """Renames leave the old path behind in upsert-only persistence —
-    same prune requirement as deletions."""
+def test_renamed_file_stays_on_incremental_path(tmp_path, forbid_full_pipeline):
+    """Renames prune the old path and index the new one incrementally —
+    same handling as deletions."""
     repo = _make_git_repo(tmp_path)
     base = get_head_commit(repo)
     _mark_indexed(repo, base)
@@ -168,8 +200,22 @@ def test_renamed_file_falls_back_to_full_pipeline(tmp_path, stub_full_pipeline):
 
     result = asyncio.run(update_single_repo_index(repo))
 
-    assert len(stub_full_pipeline) == 1
+    assert result.error is None
     assert result.updated is True
+
+
+def test_config_drift_runs_full_reindex(tmp_path, stub_full_pipeline):
+    """A stored config fingerprint that no longer matches the on-disk config
+    invalidates every persisted health score — the repo must take the full
+    pipeline, not the changed-files-only path."""
+    repo = _make_git_repo(tmp_path)
+    base = get_head_commit(repo)
+    _mark_indexed(repo, base, config_fingerprint="0" * 64)
+    _add_commit(repo, "b.py")
+
+    result = asyncio.run(update_single_repo_index(repo))
+
+    _assert_full_pipeline_fallback(result, stub_full_pipeline)
 
 
 def test_never_indexed_repo_runs_full_pipeline(tmp_path, stub_full_pipeline):
@@ -177,8 +223,7 @@ def test_never_indexed_repo_runs_full_pipeline(tmp_path, stub_full_pipeline):
 
     result = asyncio.run(update_single_repo_index(repo))
 
-    assert len(stub_full_pipeline) == 1
-    assert result.updated is True
+    _assert_full_pipeline_fallback(result, stub_full_pipeline)
     assert result.file_count == 7
 
 
@@ -191,8 +236,7 @@ def test_unresolvable_base_commit_falls_back_to_full_pipeline(tmp_path, stub_ful
 
     result = asyncio.run(update_single_repo_index(repo))
 
-    assert len(stub_full_pipeline) == 1
-    assert result.updated is True
+    _assert_full_pipeline_fallback(result, stub_full_pipeline)
 
 
 def test_incremental_failure_falls_back_to_full_pipeline(tmp_path, stub_full_pipeline, monkeypatch):
@@ -210,8 +254,7 @@ def test_incremental_failure_falls_back_to_full_pipeline(tmp_path, stub_full_pip
 
     result = asyncio.run(update_single_repo_index(repo))
 
-    assert len(stub_full_pipeline) == 1
-    assert result.updated is True
+    _assert_full_pipeline_fallback(result, stub_full_pipeline)
     assert result.error is None
 
 
@@ -253,6 +296,48 @@ def test_incremental_threads_persisted_state_flags(tmp_path, forbid_full_pipelin
     assert captured["git_tier"] == "essential"
     assert captured["include_submodules"] is True
     assert captured["include_nested_repos"] is True
+
+
+def test_incremental_merges_repo_settings_excludes(tmp_path, forbid_full_pipeline, monkeypatch):
+    import repowise.core.pipeline.incremental as incremental_mod
+
+    repo = _make_git_repo(tmp_path)
+    base = get_head_commit(repo)
+    _mark_indexed(repo, base)
+    _write_repo_settings(repo, {"exclude_patterns": ["tools/"]})
+    _add_commit(repo, "b.py")
+
+    captured: dict = {}
+
+    async def _fake_rebuild(repo_path, file_diffs, cfg, exclude_patterns, **kwargs):
+        captured["exclude_patterns"] = exclude_patterns
+        return [], {}, None, None, 0, {}
+
+    def _fake_analysis(*args, **kwargs):
+        return None, None
+
+    async def _fake_persist(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(incremental_mod, "rebuild_graph_and_git", _fake_rebuild)
+    monkeypatch.setattr(incremental_mod, "run_partial_analysis", _fake_analysis)
+    monkeypatch.setattr(incremental_mod, "persist_incremental_index", _fake_persist)
+
+    result = asyncio.run(update_single_repo_index(repo))
+
+    assert result.updated is True
+    assert captured["exclude_patterns"] == ["tools/"]
+
+
+def test_full_pipeline_merges_repo_settings_excludes(tmp_path, stub_full_pipeline):
+    repo = _make_git_repo(tmp_path)
+    _mark_indexed(repo, "deadbeef" * 5)
+    _write_repo_settings(repo, {"exclude_patterns": ["tools/"]})
+
+    result = asyncio.run(update_single_repo_index(repo))
+
+    _assert_full_pipeline_fallback(result, stub_full_pipeline)
+    assert stub_full_pipeline[0]["exclude_patterns"] == ["tools/"]
 
 
 # ---------------------------------------------------------------------------

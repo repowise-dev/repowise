@@ -23,7 +23,11 @@ def _workspace_update(
     Takes a resolved :class:`CommandTarget` so the caller has full control
     over how the workspace was located (auto-detected vs explicit flag).
     """
-    from repowise.core.workspace import check_repo_staleness, update_workspace
+    from repowise.core.workspace import (
+        check_repo_staleness,
+        reconcile_repo_head_commit,
+        update_workspace,
+    )
 
     start = time.monotonic()
     ws_root = target.ws_root
@@ -40,12 +44,13 @@ def _workspace_update(
 
     stale_count = 0
     up_to_date_count = 0
+    up_to_date_repos: list[tuple[Path, str]] = []
     for entry in ws_config.repos:
         if repo_alias and entry.alias != repo_alias:
             continue
         abs_path = (ws_root / entry.path).resolve()
         stored = entry.last_commit_at_index
-        is_stale, _head, behind = check_repo_staleness(abs_path, stored)
+        is_stale, head, behind = check_repo_staleness(abs_path, stored)
         indexed = (abs_path / ".repowise").is_dir()
         if not indexed:
             status = "[dim]not indexed[/dim]"
@@ -59,6 +64,8 @@ def _workspace_update(
             stale_count += 1
         if indexed and not is_stale:
             up_to_date_count += 1
+            if head:
+                up_to_date_repos.append((abs_path, head))
             if not verbose:
                 continue
         console.print(f"  {entry.alias:<20} {status}")
@@ -67,6 +74,21 @@ def _workspace_update(
         console.print(f"  [dim]{up_to_date_count} repo(s) up to date[/dim]")
 
     console.print()
+
+    # Reconcile the DB freshness stamp for up-to-date repos even when nothing
+    # needs regenerating. Staleness above is measured against the workspace
+    # config's last_commit_at_index, but the server's /api/repos endpoint and
+    # the MCP _meta check read repositories.head_commit from each repo's DB — a
+    # row left behind by an older build keeps "index behind checkout" stuck
+    # here, since the all-up-to-date path returns without calling
+    # update_workspace. reconcile_repo_head_commit only writes on drift.
+    if not dry_run and up_to_date_repos:
+
+        async def _reconcile_up_to_date() -> None:
+            for repo_path, head in up_to_date_repos:
+                await reconcile_repo_head_commit(repo_path, head)
+
+        run_async(_reconcile_up_to_date())
 
     if stale_count == 0:
         console.print("[green]All repos are up to date.[/green]")

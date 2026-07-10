@@ -94,6 +94,15 @@ def find_extractions(analysis: FunctionAnalysis, lmap: LanguageNodeMap) -> list[
     )
     jump_kinds = lmap.return_kinds | lmap.raise_kinds | lmap.break_kinds | lmap.continue_kinds
     scope_kinds = lmap.function_kinds | lmap.lambda_kinds
+    # Expression-oriented grammars (nonempty ``statement_wrapper_kinds``): a
+    # block's last child that is not a statement is its tail expression -- the
+    # block's implicit value. A span ending on one would silently drop that
+    # value when lifted into a helper, so such spans are refused outright.
+    tail_stmt_kinds = (
+        lmap.statement_wrapper_kinds | lmap.local_decl_kinds
+        if lmap.statement_wrapper_kinds
+        else None
+    )
 
     out: list[Extraction] = []
     evaluated = 0
@@ -111,6 +120,12 @@ def find_extractions(analysis: FunctionAnalysis, lmap: LanguageNodeMap) -> list[
                     continue
                 # Never extract the whole function body (that is not a split).
                 if is_body and length == n:
+                    continue
+                if (
+                    tail_stmt_kinds is not None
+                    and j == n - 1
+                    and stmts[j].type not in tail_stmt_kinds
+                ):
                     continue
                 span = stmts[i : j + 1]
                 decisions, has_jump = _span_metrics(span, decision_kinds, jump_kinds, scope_kinds)

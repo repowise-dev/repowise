@@ -5,6 +5,7 @@ import { hierarchy, treemap, treemapSquarify, type HierarchyRectangularNode } fr
 import type { FileRow } from "@repowise-dev/types/files";
 import { ChevronRight, FolderOpen } from "lucide-react";
 import { cn } from "../lib/cn";
+import { healthInk } from "../health/tokens";
 
 export type TreemapSize = "importance" | "loc";
 export type TreemapColor = "health" | "language";
@@ -53,9 +54,7 @@ function langColor(lang: string): string {
 /** Health score (0-10) → traffic-light fill. Null reads neutral. */
 function healthColor(score: number | null): string {
   if (score == null) return "var(--color-text-tertiary)";
-  if (score < 4) return "var(--color-risk-high)";
-  if (score < 7) return "var(--color-risk-medium)";
-  return "var(--color-risk-low)";
+  return healthInk(score);
 }
 
 function sizeValue(row: FileRow, sizeBy: TreemapSize): number {

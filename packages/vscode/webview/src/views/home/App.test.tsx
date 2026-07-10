@@ -61,7 +61,9 @@ describe("Home sidebar", () => {
     const { host } = makeHost();
     renderApp(host);
 
-    expect(await screen.findByText("5.1")).toBeTruthy();
+    // Average health leads the hero; hotspot health is the inline secondary.
+    expect(await screen.findByText("7.4")).toBeTruthy();
+    expect(screen.getByText(/hotspot 5\.1/)).toBeTruthy();
     expect(screen.getByText("demo-repo")).toBeTruthy();
     expect(screen.getByText("Index up to date")).toBeTruthy();
     expect(screen.getByText("12 ranked plans")).toBeTruthy();
@@ -114,7 +116,7 @@ describe("Home sidebar", () => {
   it("pins the theme through the host and applies it locally", async () => {
     const { host, setTheme } = makeHost();
     renderApp(host);
-    await screen.findByText("5.1");
+    await screen.findByText("7.4");
 
     fireEvent.click(screen.getByTitle("Dark"));
     expect(setTheme).toHaveBeenCalledWith("dark");
@@ -129,6 +131,8 @@ describe("Home sidebar", () => {
     const host = {
       api: { homeSummary: () => Promise.reject(new Error("down")) },
       openView: vi.fn(),
+      focusHome: vi.fn(),
+      openNativeSettings: vi.fn(),
       updateIndex: vi.fn(),
       setTheme: vi.fn(),
       onUpdateDone: () => () => {},

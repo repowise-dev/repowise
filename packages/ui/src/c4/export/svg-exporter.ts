@@ -10,6 +10,7 @@ import type { Edge, Node } from "@xyflow/react";
 import type { C4EdgeData, C4NodeData } from "../types";
 import { TONE_STYLES, type ToneName } from "../../graph-primitives/tone-styles";
 import { resolveToken } from "../../shared/use-theme-tokens";
+import { healthBand100 } from "../../health/tokens";
 
 /**
  * Blueprint ink palette, resolved from the LIVE theme at export time so the
@@ -264,7 +265,9 @@ function renderArchNode(n: Node, pal: InkPalette): string {
     parts.push(`<text x="14" y="44" font-family="${FONT_FAMILY}" font-size="11" fill="${pal.inkText}" opacity="0.72">${subtitle}</text>`);
     parts.push(`<text x="14" y="${h - 12}" font-family="${MONO_FONT}" font-size="9" font-weight="600" letter-spacing="1" fill="${pal.inkText}" opacity="0.6">${isGroup ? "GROUP" : "LAYER"} · ${layer.file_count} FILES</text>`);
     if (layer.health_score !== null) {
-      const healthColor = layer.health_score >= 80 ? pal.success : layer.health_score >= 60 ? pal.warning : pal.error;
+      const healthBand = healthBand100(layer.health_score);
+      const healthColor =
+        healthBand === "healthy" ? pal.success : healthBand === "warning" ? pal.warning : pal.error;
       parts.push(`<text x="${w - 14}" y="${h - 12}" font-family="${FONT_FAMILY}" font-size="12" font-weight="600" fill="${healthColor}" text-anchor="end">${Math.round(layer.health_score)}</text>`);
     }
     parts.push(`</g>`);

@@ -1,0 +1,116 @@
+{
+  "nodes": [
+    {
+      "community_id": 0,
+      "label": "tests",
+      "cohesion": 0.066,
+      "member_count": 53,
+      "top_file": "src/flask/__init__.py",
+      "avg_pagerank": 0.007025647351207999,
+      "hotspot_count": 0,
+      "dead_count": 7,
+      "has_decision": true,
+      "doc_coverage_pct": 0,
+      "languages": [
+        "python"
+      ]
+    },
+    {
+      "community_id": 1,
+      "label": "flask",
+      "cohesion": 0.5091,
+      "member_count": 11,
+      "top_file": "src/flask/globals.py",
+      "avg_pagerank": 0.02957310326458718,
+      "hotspot_count": 0,
+      "dead_count": 0,
+      "has_decision": true,
+      "doc_coverage_pct": 0,
+      "languages": [
+        "python"
+      ]
+    },
+    {
+      "community_id": 2,
+      "label": "flask/sansio",
+      "cohesion": 0.3333,
+      "member_count": 9,
+      "top_file": "src/flask/sansio/app.py",
+      "avg_pagerank": 0.010039298404646381,
+      "hotspot_count": 0,
+      "dead_count": 0,
+      "has_decision": true,
+      "doc_coverage_pct": 0,
+      "languages": [
+        "python"
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "source": 26,
+      "target": 0,
+      "edge_count": 1
+    },
+    {
+      "source": 0,
+      "target": 1,
+      "edge_count": 17
+    },
+    {
+      "source": 0,
+      "target": 3,
+      "edge_count": 11
+    },
+    {
+      "source": 1,
+      "target": 2,
+      "edge_count": 9
+    },
+    {
+      "source": 1,
+      "target": 3,
+      "edge_count": 10
+    },
+    {
+      "source": 0,
+      "target": 2,
+      "edge_count": 8
+    },
+    {
+      "source": 3,
+      "target": 0,
+      "edge_count": 9
+    },
+    {
+      "source": 2,
+      "target": 1,
+      "edge_count": 8
+    },
+    {
+      "source": 2,
+      "target": 0,
+      "edge_count": 7
+    },
+    {
+      "source": 2,
+      "target": 3,
+      "edge_count": 3
+    },
+    {
+      "source": 3,
+      "target": 1,
+      "edge_count": 8
+    },
+    {
+      "source": 1,
+      "target": 0,
+      "edge_count": 1
+    },
+    {
+      "source": 3,
+      "target": 26,
+      "edge_count": 1
+    }
+  ]
+}

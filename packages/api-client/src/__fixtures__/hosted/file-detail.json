@@ -1,0 +1,61 @@
+{
+  "file_path": ".pre-commit-config.yaml",
+  "wiki_page": null,
+  "health": {
+    "metric": {
+      "file_path": ".pre-commit-config.yaml",
+      "score": 10,
+      "band": "healthy",
+      "max_ccn": 1,
+      "max_nesting": 0,
+      "nloc": 23,
+      "duplication_pct": null,
+      "has_test_file": false,
+      "line_coverage_pct": null,
+      "branch_coverage_pct": null,
+      "module": "config",
+      "defect_score": 10,
+      "maintainability_score": 10,
+      "performance_score": 10,
+      "top_biomarkers": []
+    },
+    "breakdown": {
+      "file_path": ".pre-commit-config.yaml",
+      "score": 10,
+      "deductions_by_category": {},
+      "findings": [],
+      "suggestion": null,
+      "state": "ready",
+      "reason": null
+    },
+    "findings": []
+  },
+  "git": null,
+  "coverage": null,
+  "graph": {
+    "language": "yaml",
+    "is_entry_point": false,
+    "is_test": false,
+    "symbol_count": 0,
+    "pagerank": 0.002136,
+    "pagerank_percentile": 0,
+    "in_degree": 0,
+    "out_degree": 1,
+    "community_id": 14,
+    "community_label": null,
+    "dependents": [],
+    "dependencies": [
+      {
+        "node_id": ".pre-commit-config.yaml::__module__",
+        "node_type": "symbol",
+        "language": "yaml",
+        "edge_type": "defines",
+        "imported_names": []
+      }
+    ]
+  },
+  "symbols": [],
+  "function_blame": [],
+  "governing_decisions": [],
+  "dead_code": []
+}

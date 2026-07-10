@@ -148,8 +148,11 @@ def test_large_method_skips_long_flat_body():
     assert LargeMethodDetector().detect(_ctx(file_path="src/x.py", functions=[flat])) == []
 
 
-def test_large_method_fires_with_any_branching():
-    branchy = _fn("process", nloc=150, ccn=2)
+def test_large_method_fires_with_real_branching():
+    # CCN 3 = genuine branching (two decision points). CCN 2 no longer fires:
+    # it's the score a flat ``match`` dispatch table gets from its lone keyword
+    # point, and that layout artefact should not read as a large-method smell.
+    branchy = _fn("process", nloc=150, ccn=3)
     out = LargeMethodDetector().detect(_ctx(file_path="src/x.py", functions=[branchy]))
     assert len(out) == 1
     assert out[0].details["nloc"] == 150

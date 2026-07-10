@@ -4,7 +4,7 @@ import { useEffect, useMemo } from "react";
 import useSWR from "swr";
 import { getJob, getJobStreamUrl } from "@/lib/api/jobs";
 import { useSSE } from "./use-sse";
-import type { JobResponse, JobProgressEvent } from "@/lib/api/types";
+import type { JobResponse, JobProgressEvent, JobMessageEvent } from "@/lib/api/types";
 import { mergeJobProgress } from "@/lib/jobs/progress";
 
 /**
@@ -39,5 +39,17 @@ export function useJob(jobId: string | null) {
     return mergeJobProgress(job, ev);
   }, [job, sse.data]);
 
-  return { job: liveJob, sse, isActive };
+  // Pipeline log lines from `event: message` frames; the wrapper renders
+  // them in the JobLog tail.
+  const messages = useMemo(
+    () =>
+      (sse.messages as JobMessageEvent[]).filter(
+        (m) => m && typeof m === "object" && typeof m.text === "string",
+      ),
+    [sse.messages],
+  );
+
+  const phase = (sse.data as JobProgressEvent | null)?.phase ?? null;
+
+  return { job: liveJob, sse, isActive, messages, phase };
 }

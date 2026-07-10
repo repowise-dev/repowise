@@ -94,7 +94,7 @@ export function TrendView({
         <EmptyState
           icon={<TrendingUp className="h-6 w-6" />}
           title="One snapshot so far"
-          description="The trend lines appear once a second snapshot lands. Run repowise update (or wait for the next sync) and this page fills in."
+          description="The trend lines appear once a second snapshot lands. Sync the repo (or wait for the next automatic one) and this page fills in."
         />
       ) : (
         <TrendChart history={[...data.history].reverse()} />

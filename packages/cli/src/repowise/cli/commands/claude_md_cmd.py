@@ -157,6 +157,35 @@ async def _generate(
 # Workspace generation
 # ---------------------------------------------------------------------------
 
+_MAX_CONTRACT_LINKS = 12
+
+
+def _curate_contract_links(links: list[dict]) -> list[dict]:
+    """Reduce raw contract links to the cross-repo rows worth a CLAUDE.md line.
+
+    Raw links include intra-repo pairs (a repo's own model/migration files
+    "providing" tables its own modules consume) and one row per provider file
+    for the same (contract, consumer) — in a real workspace that rendered 30+
+    near-duplicate ``data::repositories`` rows before the first genuinely
+    cross-repo contract. Keep provider_repo != consumer_repo only, collapse
+    duplicate (contract, consumer) pairs preferring a non-migration provider,
+    and cap the table.
+    """
+    best: dict[tuple, dict] = {}
+    for link in links:
+        if not isinstance(link, dict):
+            continue
+        if link.get("provider_repo") == link.get("consumer_repo"):
+            continue
+        key = (link.get("contract_id"), link.get("consumer_repo"), link.get("consumer_file"))
+        current = best.get(key)
+        is_migration = "alembic/versions/" in (link.get("provider_file") or "")
+        if current is None or (
+            "alembic/versions/" in (current.get("provider_file") or "") and not is_migration
+        ):
+            best[key] = link
+    return list(best.values())[:_MAX_CONTRACT_LINKS]
+
 
 def _generate_workspace(
     start_path: Path,
@@ -180,8 +209,7 @@ def _generate_workspace(
     ws_root = find_workspace_root(start_path)
     if ws_root is None:
         raise click.ClickException(
-            "No .repowise-workspace.yaml found. "
-            "Run 'repowise init <workspace-dir>' first."
+            "No .repowise-workspace.yaml found. Run 'repowise init <workspace-dir>' first."
         )
 
     ws_config = WorkspaceConfig.load(ws_root)
@@ -213,7 +241,7 @@ def _generate_workspace(
     if contracts_file.exists():
         try:
             contracts_data = json.loads(contracts_file.read_text(encoding="utf-8"))
-            contract_links = contracts_data.get("contract_links", [])
+            contract_links = _curate_contract_links(contracts_data.get("contract_links", []))
             # Build counts by type from raw contracts list
             for contract in contracts_data.get("contracts", []):
                 ctype = contract.get("contract_type") or contract.get("type", "unknown")

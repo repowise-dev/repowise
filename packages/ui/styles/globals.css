@@ -248,6 +248,11 @@
      --font-lora; Georgia fallback keeps SSR/storybook surfaces sane). */
   --font-serif: var(--font-lora), "Lora", Georgia, serif;
 
+  /* Micro sizes for dense chrome: `caption` (10px) for uppercase micro-labels
+     and axis ticks, `2xs` (11px) for secondary metadata one step under xs.
+     Use these instead of arbitrary text-[10px]/text-[11px] brackets. */
+  --text-caption: 0.625rem;
+  --text-2xs: 0.6875rem;
   --text-xs: 0.8125rem;
   --text-sm: 0.875rem;
   --text-base: 0.9375rem;

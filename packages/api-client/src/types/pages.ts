@@ -53,7 +53,7 @@ export interface PageListResponse {
 export interface JobResponse {
   id: string;
   repository_id: string;
-  status: "pending" | "running" | "completed" | "failed" | "paused";
+  status: "pending" | "running" | "completed" | "failed" | "cancelled" | "paused";
   provider_name: string;
   model_name: string;
   total_pages: number;
@@ -71,15 +71,27 @@ export interface JobResponse {
 export interface JobProgressEvent {
   event: "progress" | "done" | "error";
   job_id: string;
-  status?: "pending" | "running" | "completed" | "failed" | "paused";
+  status?: "pending" | "running" | "completed" | "failed" | "cancelled" | "paused";
   completed_pages: number;
   total_pages: number;
   failed_pages?: number;
   current_page?: string;
   current_level?: number;
+  /** Human phase label ("Parsing files", "Generating docs") from the pipeline. */
+  phase?: string;
   tokens_input?: number;
   tokens_output?: number;
   estimated_cost?: number;
   actual_cost_usd?: number | null;
+  error_message?: string | null;
   error?: string;
+}
+
+/** An `event: message` frame on the job SSE stream: one pipeline log line. */
+export interface JobMessageEvent {
+  seq: number;
+  ts: number;
+  level: string;
+  text: string;
+  phase: string;
 }

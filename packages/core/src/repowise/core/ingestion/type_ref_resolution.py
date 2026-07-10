@@ -274,26 +274,38 @@ def _resolve_go_type_refs(
         elif imp.resolved_file and not imp.resolved_file.startswith("external:"):
             candidates.add(imp.resolved_file)
     candidates.discard(from_path)
-    if not candidates:
-        return 0
     # Sorted once: set iteration; first-match must be deterministic.
     sorted_candidates = sorted(candidates)
 
     emitted = 0
     seen_targets: set[tuple[str, str]] = set()
+    same_file_refs: set[str] = set()
     for ref in parsed.type_refs:
         name = ref.type_name
         if not name or name in _GO_BUILTIN_TYPES:
             continue
+        # Check cross-file candidates first.
         target = _find_go_type_file(name, sorted_candidates, defined_names)
-        if target is None or target == from_path:
+        if target is not None and target != from_path:
+            if (name, target) not in seen_targets:
+                seen_targets.add((name, target))
+                _add_or_merge_type_use_edge(graph, src=from_path, dst=target,
+                                            type_name=name, origin=ref.origin)
+                emitted += 1
             continue
-        if (name, target) in seen_targets:
-            continue
-        seen_targets.add((name, target))
-        _add_or_merge_type_use_edge(graph, src=from_path, dst=target,
-                                    type_name=name, origin=ref.origin)
-        emitted += 1
+        # Type not found cross-file — check if it is defined in the same file.
+        # Stamp it onto local_type_uses so the dead-code analyzer rescues it
+        # (same mechanism used by TS/JS for intra-module type references).
+        if name in defined_names.get(from_path, _EMPTY_NAMES):
+            same_file_refs.add(name)
+
+    if same_file_refs and graph.has_node(from_path):
+        existing = graph.nodes[from_path].get("local_type_uses")
+        if existing is None:
+            graph.nodes[from_path]["local_type_uses"] = same_file_refs
+        else:
+            existing.update(same_file_refs)
+
     return emitted
 
 

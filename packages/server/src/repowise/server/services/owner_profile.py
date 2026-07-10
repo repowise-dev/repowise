@@ -25,6 +25,10 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.ingestion.git_indexer import (
+    build_identity_resolver,
+    canonicalize_author_email,
+)
 from repowise.core.persistence.models import DeadCodeFinding, GitMetadata
 
 
@@ -37,11 +41,13 @@ def owner_key(name: str | None, email: str | None) -> str:
     """Return the canonical key for an (name, email) pair.
 
     Prefer email; fall back to a ``name:`` prefix so we never collide a
-    name with someone else's email.
+    name with someone else's email. GitHub ``noreply`` variants of one login
+    are folded to a single email first (see ``canonicalize_author_email``) so
+    the same person doesn't split into two contributor buckets.
     """
 
     if email:
-        return email.strip().lower()
+        return (canonicalize_author_email(email) or "").strip().lower()
     if name:
         return f"name:{name.strip()}"
     return ""
@@ -133,8 +139,24 @@ async def aggregate_owners(
     accs: dict[str, _OwnerAccumulator] = {}
     module_totals: dict[str, int] = defaultdict(int)
 
+    # Build a repo-wide identity resolver first so noreply variants and a
+    # person's same-display-name real+noreply emails fold to one bucket. Needs
+    # every (name, email) pair up front, so collect them in a cheap pre-pass.
+    def _pairs() -> list[tuple[str | None, str | None]]:
+        out: list[tuple[str | None, str | None]] = []
+        for m in rows:
+            out.append((m.primary_owner_name, m.primary_owner_email))
+            try:
+                for a in json.loads(m.top_authors_json or "[]"):
+                    out.append((a.get("name"), a.get("email")))
+            except json.JSONDecodeError:
+                continue
+        return out
+
+    resolve = build_identity_resolver(_pairs())
+
     def _ensure(name: str, email: str | None) -> _OwnerAccumulator:
-        k = owner_key(name, email)
+        k = resolve(name, email)
         if not k:
             return _OwnerAccumulator(key="", name=name or "(unknown)", email=email)
         acc = accs.get(k)
