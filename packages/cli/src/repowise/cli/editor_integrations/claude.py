@@ -67,7 +67,12 @@ class ClaudeCodeSetup:
                 "  [green]✓[/green] Claude Code hooks registered (PostToolUse, SessionStart)"
             )
 
-        if enable_tool_search_in_claude_code():
+        if _uses_lean_tool_surface(repo_path):
+            console_obj.print(
+                "  [dim]Lean MCP tool surface configured; skipping tool-search"
+                " deferral so the core schemas stay always loaded.[/dim]"
+            )
+        elif enable_tool_search_in_claude_code():
             console_obj.print(
                 "  [green]✓[/green] Claude Code tool-search enabled (defers MCP tool schemas)"
             )
@@ -83,6 +88,30 @@ class ClaudeCodeSetup:
         if not _claude_md_enabled(repo_path):
             return
         run_async(_write_claude_md_async(repo_path))
+
+
+def _uses_lean_tool_surface(repo_path: Path) -> bool:
+    """True when the repo's ``mcp.tools`` config selects the lean profile.
+
+    The lean surface (~1.8k tokens of schema) is cheap enough to keep always
+    loaded, so init skips the tool-search (schema deferral) recommendation for
+    it; deferral would reintroduce the schema-load round trip the profile
+    exists to remove. Mirrors the "lean" token the selection layer resolves
+    (see ``repowise.server.mcp_server._tool_selection.LEAN``), read here via
+    the lightweight config loader so init does not import the server stack.
+    """
+    try:
+        from repowise.core.repo_config import load_repo_config
+
+        mcp_cfg = load_repo_config(str(repo_path)).get("mcp") or {}
+        tools = mcp_cfg.get("tools") if isinstance(mcp_cfg, dict) else None
+    except Exception:
+        return False
+    if isinstance(tools, str):
+        return tools.strip().lower() == "lean"
+    if isinstance(tools, (list, tuple)) and len(tools) == 1:
+        return str(tools[0]).strip().lower() == "lean"
+    return False
 
 
 def _prompt_claude_md_enabled(console_obj: Any) -> bool:

@@ -73,6 +73,34 @@ def test_all_enables_everything_usable():
     }
 
 
+def test_lean_profile_single_repo():
+    # Intersected with the catalog: only the lean tools this registry has.
+    enabled = resolve_enabled_tools(CATALOG, is_workspace=False, override="lean")
+    assert enabled == {"get_answer", "get_context"}
+
+
+def test_lean_profile_workspace_adds_list_repos():
+    enabled = resolve_enabled_tools(CATALOG, is_workspace=True, override="LEAN")
+    assert enabled == {"get_answer", "get_context", "list_repos"}
+
+
+def test_lean_profile_full_registry():
+    """Against the real registry, lean is exactly the five agent-lean tools."""
+    import repowise.server.mcp_server  # noqa: F401  (registers the tools)
+    from repowise.core.registry import mcp_tool_registry
+    from repowise.server.mcp_server._tool_selection import LEAN_TOOLS
+
+    enabled = resolve_enabled_tools(
+        mcp_tool_registry.entries(), is_workspace=False, override="lean"
+    )
+    assert enabled == LEAN_TOOLS
+
+    workspace = resolve_enabled_tools(
+        mcp_tool_registry.entries(), is_workspace=True, override="lean"
+    )
+    assert workspace == LEAN_TOOLS | {"list_repos"}
+
+
 def test_workspace_only_named_explicitly_is_dropped_single_repo():
     enabled = resolve_enabled_tools(
         CATALOG, is_workspace=False, override="get_answer,get_blast_radius"

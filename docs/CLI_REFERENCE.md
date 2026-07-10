@@ -773,7 +773,7 @@ If `PATH` is omitted, `repowise mcp` first walks upward from the current directo
 |------|-------------|
 | `--transport` | `stdio` (default, for editors), `streamable-http` (for HTTP clients), or `sse` (legacy) |
 | `--port` | Port for HTTP/SSE transports (default: 7338) |
-| `--tools` | Override which tools are exposed. A comma-separated list is an explicit allowlist; prefix names with `+`/`-` to adjust the default set (e.g. `+get_dependency_path,-get_dead_code`). Overrides the `mcp.tools` config block. |
+| `--tools` | Override which tools are exposed. A comma-separated list is an explicit allowlist; prefix names with `+`/`-` to adjust the default set (e.g. `+get_dependency_path,-get_dead_code`); `lean` selects the five-tool agent-lean profile. Overrides the `mcp.tools` config block. |
 | `--all` | Expose every available tool, including opt-in and workspace tools |
 
 ```bash
@@ -781,6 +781,7 @@ repowise mcp --transport stdio           # for Claude Code, Codex, Cursor, etc.
 repowise mcp --transport streamable-http # for HTTP clients
 repowise mcp --transport sse --port 7338 # legacy SSE
 repowise mcp --tools "+get_dependency_path,-get_dead_code"
+repowise mcp --tools lean
 repowise mcp --all
 ```
 

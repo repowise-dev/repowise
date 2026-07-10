@@ -644,6 +644,52 @@ def test_claude_client_registration_uses_existing_claude_setup(
     assert "tool-search enabled" in text
 
 
+def test_lean_tool_surface_skips_tool_search_recommendation(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    """A repo configured with the lean profile keeps schemas always loaded."""
+    calls: list[str] = []
+    monkeypatch.setattr(claude_config, "register_with_claude_desktop", lambda p: None)
+    monkeypatch.setattr(claude_config, "register_with_claude_code", lambda p: None)
+    monkeypatch.setattr(claude_config, "install_claude_code_hooks", lambda: None)
+    monkeypatch.setattr(
+        claude_config,
+        "enable_tool_search_in_claude_code",
+        lambda: calls.append("tool_search"),
+    )
+
+    (tmp_path / ".repowise").mkdir()
+    (tmp_path / ".repowise" / "config.yaml").write_text("mcp:\n  tools: lean\n", encoding="utf-8")
+
+    output = StringIO()
+    console = Console(file=output, force_terminal=False)
+    ClaudeCodeSetup().register_client(console, tmp_path)
+
+    assert calls == []
+    assert "Lean MCP tool surface configured" in output.getvalue()
+
+
+def test_uses_lean_tool_surface_shapes(tmp_path: Path) -> None:
+    from repowise.cli.editor_integrations.claude import _uses_lean_tool_surface
+
+    config = tmp_path / ".repowise" / "config.yaml"
+    config.parent.mkdir()
+
+    assert _uses_lean_tool_surface(tmp_path) is False  # no config
+
+    for text, expected in [
+        ("mcp:\n  tools: lean\n", True),
+        ("mcp:\n  tools: LEAN\n", True),
+        ("mcp:\n  tools: [lean]\n", True),
+        ("mcp:\n  tools: ['+get_execution_flows']\n", False),
+        ("mcp:\n  tools: all\n", False),
+        ("mcp:\n  tools: [lean, get_health]\n", False),
+    ]:
+        config.write_text(text, encoding="utf-8")
+        assert _uses_lean_tool_surface(tmp_path) is expected, text
+
+
 def test_enable_tool_search_sets_env_idempotently(tmp_path: Path, monkeypatch: Any) -> None:
     settings = tmp_path / ".claude" / "settings.json"
     monkeypatch.setattr(claude_config, "_claude_code_settings_path", lambda: settings)

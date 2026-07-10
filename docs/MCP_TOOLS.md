@@ -42,7 +42,7 @@ The default surface is deliberately small: fewer, richer tools mean fewer round-
 - **Default (workspace):** those 11 plus `get_architecture`, `get_blast_radius`, and `get_conformance`, added automatically when the server starts inside a workspace. They are never advertised outside one.
 - **Opt-in tools:** `get_dependency_path` and `get_execution_flows` are registered but off by default everywhere. Turn them on per repo.
 
-**Configure it in `.repowise/config.yaml`** under an `mcp.tools` key. Three shapes are supported:
+**Configure it in `.repowise/config.yaml`** under an `mcp.tools` key. Four shapes are supported:
 
 ```yaml
 # Adjust the default set with + / - deltas (the common case):
@@ -56,6 +56,10 @@ mcp:
 # Or enable everything available in the current mode:
 mcp:
   tools: all
+
+# Or select the agent-lean profile (see below):
+mcp:
+  tools: lean
 ```
 
 **Or per launch on the CLI**, which overrides the config block:
@@ -63,10 +67,13 @@ mcp:
 ```bash
 repowise mcp --tools "+get_execution_flows"          # default set plus one
 repowise mcp --tools "get_answer,get_context"         # explicit allowlist
+repowise mcp --tools lean                             # agent-lean profile
 repowise mcp --all                                    # every available tool
 ```
 
 Workspace-only tools named explicitly in single-repo mode are ignored (they cannot do useful work there). Unknown tool names are ignored with a warning.
+
+**The `lean` profile** is the agent-lean surface: `get_answer`, `get_context`, `get_symbol`, `search_codebase`, and `get_risk`, plus `list_repos` in workspace mode (where repo aliases must be discoverable). It advertises ~1.8k tokens of schema versus ~4.1k for the default surface. That is small enough to keep always loaded, so when a repo has `mcp.tools: lean` configured, `repowise init` skips the tool-search recommendation (the `ENABLE_TOOL_SEARCH` setting that defers MCP schemas behind a lookup round trip) for Claude Code; the five schemas the agent actually reaches for stay in context on every turn. init never turns an existing `ENABLE_TOOL_SEARCH` setting off, since it applies to every MCP server, not just repowise.
 
 **Or from the dashboard:** the Settings page lists every tool with its description and a per-repo toggle, and writes the same `mcp.tools` config for you.
 
