@@ -50,6 +50,22 @@ log = structlog.get_logger(__name__)
 _DEFAULT_BASE_URL = "https://api.anthropic.com"
 
 
+def _first_text_block(content: list[Any]) -> str:
+    """Return the text of the first text block in a Messages API response.
+
+    The response content is not guaranteed to start with a text block: some
+    Anthropic-compatible endpoints (and Anthropic itself with extended
+    thinking enabled) emit reasoning/thinking blocks before the text block.
+    Indexing ``content[0].text`` blindly raises ``AttributeError`` in that
+    case, so scan for the first block that actually carries text.
+    """
+    for block in content:
+        text = getattr(block, "text", None)
+        if text is not None:
+            return text
+    return ""
+
+
 def _anthropic_model_options(
     api_key: str,
     base_url: str,
@@ -220,7 +236,7 @@ class AnthropicProvider(BaseProvider):
 
         cached = getattr(response.usage, "cache_read_input_tokens", 0) or 0
         result = GeneratedResponse(
-            content=response.content[0].text,
+            content=_first_text_block(response.content),
             input_tokens=response.usage.input_tokens,
             output_tokens=response.usage.output_tokens,
             cached_tokens=cached,

@@ -122,6 +122,33 @@ async def test_generate_returns_generated_response():
     assert result.content == "Hello from Claude"
 
 
+async def test_generate_skips_leading_non_text_block():
+    """A thinking/reasoning block before the text block must not crash.
+
+    Some Anthropic-compatible endpoints (and Anthropic with extended thinking)
+    return the text block after a thinking block, so ``content[0]`` has no
+    ``.text``. The provider should return the first block that carries text.
+    """
+    provider = AnthropicProvider(api_key="sk-ant-test")
+
+    # A ThinkingBlock-like object: spec without ``text`` so accessing
+    # ``.text`` raises AttributeError, matching the real crash.
+    thinking_block = MagicMock(spec=["type", "thinking"])
+    thinking_block.type = "thinking"
+    text_block = MagicMock()
+    text_block.text = "Hello after thinking"
+
+    mock_response = _make_mock_response()
+    mock_response.content = [thinking_block, text_block]
+
+    with patch("anthropic.AsyncAnthropic") as mock_client:
+        mock_client.return_value.messages.create = AsyncMock(return_value=mock_response)
+        provider._client = mock_client.return_value
+        result = await provider.generate("sys", "user")
+
+    assert result.content == "Hello after thinking"
+
+
 async def test_generate_token_counts_with_cache():
     provider = AnthropicProvider(api_key="sk-ant-test")
     mock_response = _make_mock_response()
