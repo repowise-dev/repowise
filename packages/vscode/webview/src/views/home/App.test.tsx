@@ -142,6 +142,9 @@ describe("Home sidebar", () => {
 
     expect(await screen.findByText("Knowledge Graph")).toBeTruthy();
     expect(screen.getByText("Server-ranked refactoring opportunities")).toBeTruthy();
-    expect(screen.getByText(/No health data yet/)).toBeTruthy();
+    // findByText, not getByText: the launcher renders before the summary
+    // promise rejection flushes, so on a slow runner the hero card can still
+    // be in its loading skeleton when the launcher assertions pass.
+    expect(await screen.findByText(/No health data yet/)).toBeTruthy();
   });
 });
