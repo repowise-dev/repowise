@@ -35,9 +35,11 @@ TOOL_TABLE_ROWS: dict[str, tuple[str, str]] = {
     "get_symbol": (
         "get_symbol(id)",
         'One verified body: `"path.py::Name"` (indexed symbol), `"path.py:140-180"` '
-        '(live range read), or `"repowise#<hex>"` (omission ref). `verified: true` '
-        "means no follow-up Read; `truncated` responses carry a `continuation` naming "
-        "the exact next range. Index misses fall back to live-grep `fallback_lines`.",
+        '(live range read), or `"repowise#<hex>"` (omission ref). Source arrives in '
+        "Read's numbered format — treat it as an already-performed Read. `truncated` "
+        "responses carry a `continuation` naming the exact next range; ambiguous ids "
+        "return every match in `candidates`. Index misses fall back to live-grep "
+        "`fallback_lines`.",
     ),
     "search_codebase": (
         "search_codebase(query)",

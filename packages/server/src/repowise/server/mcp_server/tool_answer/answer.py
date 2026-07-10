@@ -429,8 +429,11 @@ async def get_answer(
             "fallback_targets": [],
             "retrieval": [],
             "note": (
-                "No wiki hits for this question. Fall back to "
-                "search_codebase or Grep to locate candidate files."
+                "No wiki hits for this question. Rephrase around the code "
+                'concept, or use search_codebase (mode="symbol" for an '
+                'identifier, mode="path" for a file name); if the question '
+                "names a file, call get_context on it directly. Grep only "
+                "if those come back empty too."
             ),
             "_meta": _build_meta(
                 timing_ms=(time.perf_counter() - t0) * 1000,
@@ -497,7 +500,11 @@ async def get_answer(
                     f"Read {best_guesses[0]['file']} first — it scored highest "
                     "but retrieval was ambiguous, so verify before answering."
                     if best_guesses
-                    else "Fall back to search_codebase or Grep."
+                    else (
+                        'Retry search_codebase with mode="symbol" or '
+                        'mode="path" on the key terms; Grep only if those '
+                        "miss too."
+                    )
                 ),
                 "fallback_targets": fallback_targets,
                 "retrieval": _serialize_hits(hits, limit=_GATED_RETURN_HITS, lean_symbols=True),

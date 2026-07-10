@@ -217,9 +217,14 @@ Also resolves **omission refs** (`repowise#<12-hex>`) from truncated responses.
 | `context_lines` | int | No | Extra source lines before/after the symbol (0-50, default 0) |
 | `repo` | string | No | *(workspace only)* Usually omitted; `"all"` is not supported |
 
-**Returns:** For a symbol id or range: the source bytes (bounded at ~400 lines),
-its exact start/end line numbers, kind, and a `truncated` flag; on a miss, an
-`error` with the closest matches (`fallback_lines` from a live grep). For an
+**Returns:** For a symbol id or range: the source (bounded at ~600 lines,
+each line prefixed with its file line number in the same format as a `Read`
+result), its exact start/end line numbers, kind, and a `truncated` flag; on a
+miss, an `error` with the closest matches (`fallback_lines` from a live grep).
+When several indexed symbols match the id (overloads, re-exports, conditional
+definitions) the response has `ambiguous: true` and a `candidates` list with
+every matching body — none is silently chosen; candidates past the response
+budget appear in `not_rendered` with a `fetch_with` range read. For an
 omission ref: the stored content plus provenance (`source`, `created_at`,
 `original_tokens`).
 

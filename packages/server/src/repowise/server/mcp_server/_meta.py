@@ -416,5 +416,8 @@ def answer_hint(confidence: str, retrieval_count: int) -> str | None:
     if confidence == "low":
         return "Low confidence — Read the listed fallback_targets to verify before answering."
     if retrieval_count == 0:
-        return "No wiki hits — fall back to search_codebase or Grep."
+        return (
+            "No wiki hits — try search_codebase (mode=symbol/path) or "
+            "get_context on the named file; Grep only if those miss too."
+        )
     return None

@@ -16,7 +16,7 @@ from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import WikiSymbol, _new_uuid
 from repowise.server.mcp_server.tool_symbol import (
     _name_variants,
-    _pick_canonical,
+    _order_candidates,
     _resolve_symbol,
     _symbol_id_variants,
 )
@@ -70,36 +70,35 @@ def test_symbol_id_variants_preserves_file_path() -> None:
 
 
 @pytest.mark.asyncio
-async def test_resolve_symbol_dot_and_colon_forms_equivalent(
-    client, app, session_factory
-) -> None:
+async def test_resolve_symbol_dot_and_colon_forms_equivalent(client, app, session_factory) -> None:
     repo = await create_test_repo(client)
     await _add(session_factory, repo["id"])  # stored with "::" form
 
     async with get_session(session_factory) as session:
-        row_colon = await _resolve_symbol(
+        rows_colon = await _resolve_symbol(
             session,
             repo["id"],
             "src/flask/sansio/app.py::App::update_template_context",
         )
-        row_dot = await _resolve_symbol(
+        rows_dot = await _resolve_symbol(
             session,
             repo["id"],
             "src/flask/sansio/app.py::App.update_template_context",
         )
 
-    assert row_colon is not None
-    assert row_dot is not None
-    assert row_colon.id == row_dot.id
-    assert row_dot.name == "update_template_context"
+    assert len(rows_colon) == 1
+    assert len(rows_dot) == 1
+    assert rows_colon[0].id == rows_dot[0].id
+    assert rows_dot[0].name == "update_template_context"
 
 
 @pytest.mark.asyncio
-async def test_resolve_symbol_duplicate_rows_picks_canonical(
+async def test_resolve_symbol_duplicate_rows_returns_all_canonical_first(
     client, app, session_factory
 ) -> None:
     """When the (file_path, qualified_name) lookup returns several rows,
-    we must return one canonical row instead of raising MultipleResultsFound.
+    ALL of them come back (get_symbol serves every candidate) with the
+    deterministic canonical pick first — and no MultipleResultsFound.
     """
     repo = await create_test_repo(client)
     # Two rows share the same (file_path, qualified_name, name) — simulates
@@ -124,45 +123,46 @@ async def test_resolve_symbol_duplicate_rows_picks_canonical(
     )
 
     async with get_session(session_factory) as session:
-        row = await _resolve_symbol(
+        rows = await _resolve_symbol(
             session,
             repo["id"],
             "src/flask/sansio/blueprints.py::BlueprintSetupState.add_url_rule",
         )
 
-    assert row is not None
-    # Deterministic tiebreak: lowest id wins.
-    assert row.id.startswith("aaaa")
-    assert row.file_path == "src/flask/sansio/blueprints.py"
+    # Both candidates surface — the ambiguity is the agent's to resolve.
+    assert len(rows) == 2
+    # Deterministic tiebreak for the head slot: lowest id wins.
+    assert rows[0].id.startswith("aaaa")
+    assert {r.file_path for r in rows} == {"src/flask/sansio/blueprints.py"}
 
 
 @pytest.mark.asyncio
-async def test_resolve_symbol_nonexistent_returns_none(
-    client, app, session_factory
-) -> None:
+async def test_resolve_symbol_nonexistent_returns_none(client, app, session_factory) -> None:
     repo = await create_test_repo(client)
     await _add(session_factory, repo["id"])
 
     async with get_session(session_factory) as session:
-        row = await _resolve_symbol(
+        rows = await _resolve_symbol(
             session,
             repo["id"],
             "src/flask/sansio/app.py::App.this_method_does_not_exist",
         )
 
-    assert row is None
+    assert rows == []
 
 
-def test_pick_canonical_prefers_matching_file_path() -> None:
+def test_order_candidates_prefers_matching_file_path() -> None:
     class Fake:
         def __init__(self, id_: str, path: str) -> None:
             self.id = id_
             self.file_path = path
+            self.start_line = 1
 
-    rows = [Fake("zzzz", "other/path.py"), Fake("aaaa", "src/target.py")]
-    picked = _pick_canonical(rows, "src/target.py")  # type: ignore[arg-type]
-    assert picked.id == "aaaa"  # type: ignore[union-attr]
+    rows = [Fake("aaaa", "other/path.py"), Fake("zzzz", "src/target.py")]
+    ordered = _order_candidates(rows, "src/target.py")  # type: ignore[arg-type]
+    # File match beats lower id for the head slot; nothing is dropped.
+    assert [r.id for r in ordered] == ["zzzz", "aaaa"]
 
-    # No file_path hint: fall back to lowest id.
-    picked = _pick_canonical(rows, None)  # type: ignore[arg-type]
-    assert picked.id == "aaaa"  # type: ignore[union-attr]
+    # No file_path hint: lowest id leads.
+    ordered = _order_candidates(rows, None)  # type: ignore[arg-type]
+    assert [r.id for r in ordered] == ["aaaa", "zzzz"]
