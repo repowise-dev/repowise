@@ -7,10 +7,11 @@ posture is ``allow``: a rewritten command runs without an approval prompt,
 uniformly across the main agent and every subagent. This is safe because
 ``classify`` only ever rewrites a closed set of recognized command families
 (test/lint/build/git/search/listing/log) that survive the bailouts below —
-no pipes, redirects, compound commands, substitution, or interactive
-commands. The rewrite is therefore always ``repowise distill <one simple,
-recognized command>``, never an arbitrary command smuggled behind the
-wrapper, so auto-allowing it is not a permission escalation. Users who want
+no redirects, compound commands, substitution, or interactive commands,
+and the only pipe shape allowed is a single ``| head``/``| tail`` with no
+quoting to break out of. The rewrite is therefore always ``repowise distill
+<one simple, recognized command>``, never an arbitrary command smuggled
+behind the wrapper, so auto-allowing it is not a permission escalation. Users who want
 to review every rewrite can set ``permission: ask`` in
 ``.repowise/config.yaml``; a family set to ``off`` is never rewritten.
 
@@ -26,9 +27,12 @@ Hot-path discipline (this fires on EVERY Bash tool call):
 
 Bailouts — commands never rewritten:
 
-  - pipes / redirections / compound commands (``| > < && || ; &``),
-    substitution (backticks, ``$(``), multi-line commands: the wrapper
-    would change shell semantics;
+  - redirections / compound commands (``> < && || ; &``), substitution
+    (backticks, ``$(``), multi-line commands: the wrapper would change
+    shell semantics. Two safe tails are carved out: a trailing ``2>&1``
+    (distill merges stderr into its capture anyway) and, on POSIX hosts,
+    a single pipe into bare ``head``/``tail``; the whole pipeline is
+    then quoted so it runs inside distill's own shell, unchanged;
   - watch/follow modes (``--watch``, ``tail -f``): long-running,
     interactive by design;
   - the ignore-list of trivial or interactive commands (cd, echo, vim, …);
@@ -184,6 +188,55 @@ IGNORED_FIRST_TOKENS = frozenset(
 # and `& "path\to.exe"` call-operator invocations.
 _SHELL_SYNTAX_RE = re.compile(r"[|&;<>`\n]|\$\(")
 
+# A stderr-merge suffix is the one redirection distill preserves for free:
+# it captures both streams and interleaves them, so `cmd 2>&1` and
+# `repowise distill cmd` (with the outer shell applying the now-vacuous
+# 2>&1 to distill's own empty stderr) see the same bytes.
+_STDERR_MERGE_RE = re.compile(r"\s+2>&1(?=\s|$)")
+
+# The only pipe tails safe to run inside distill's shell: bare head/tail
+# with at most a numeric count. Anything else (grep, awk, sort, xargs)
+# passes through untouched.
+_SAFE_PIPE_TAIL_RE = re.compile(r"^(?:head|tail)(?:\s+(?:-n\s*|-c\s*|-)\d+)?\s*$")
+
+# Quoting the pipeline for distill's inner shell is only sound when nothing
+# in it can be re-expanded or break the quoting on the second pass.
+_PIPE_UNSAFE_CHARS = ('"', "'", "$", "\\")
+
+# distill executes via the system shell (cmd.exe on Windows, where head/tail
+# don't exist), so the safe-pipeline rewrite is POSIX-hosts-only. Module
+# constant so tests can pin both platforms' behavior.
+_POSIX_HOST = os.name == "posix"
+
+
+def _split_safe_tail(command: str) -> tuple[str, bool] | None:
+    """Split *command* into (classifiable head, needs_inner_shell).
+
+    Returns None when the command carries shell syntax the wrapper can't
+    preserve. ``needs_inner_shell`` is True for the safe-pipeline shape
+    (``cmd | head -N``): the caller must pass the whole command to
+    ``repowise distill`` as one quoted token so the pipe executes inside
+    distill's own shell rather than binding to the wrapper.
+    """
+    cmd = command.strip()
+    # Classification always ignores stderr merges; `pytest 2>&1 | head`
+    # still classifies as pytest.
+    declawed = _STDERR_MERGE_RE.sub("", cmd)
+    if not _SHELL_SYNTAX_RE.search(declawed):
+        return declawed, False
+    # One pipe into bare head/tail: run the pipeline inside distill.
+    if not _POSIX_HOST:
+        return None
+    if any(ch in cmd for ch in _PIPE_UNSAFE_CHARS):
+        return None
+    head_part, sep, tail_part = declawed.partition("|")
+    if not sep or _SHELL_SYNTAX_RE.search(head_part) or _SHELL_SYNTAX_RE.search(tail_part):
+        return None
+    if not _SAFE_PIPE_TAIL_RE.match(tail_part.strip()):
+        return None
+    return head_part.strip(), True
+
+
 # Watch/follow modes are long-running; wrapping them buffers forever.
 _WATCH_RE = re.compile(r"--watch(?:all)?\b|--looponfail\b|(?:^|\s)-f\b.*\.log\b|--follow\b")
 
@@ -197,9 +250,17 @@ _DASHED_TOOL_TOKENS = frozenset({"golangci-lint"})
 
 def classify(command: str) -> str | None:
     """Return the distill family for *command*, or None to pass through."""
-    if not command or _SHELL_SYNTAX_RE.search(command):
+    if not command:
         return None
-    normalized = _normalize(command)
+    split = _split_safe_tail(command)
+    if split is None:
+        return None
+    return _classify_head(split[0])
+
+
+def _classify_head(head_command: str) -> str | None:
+    """Family for an already syntax-vetted command (no bailout checks)."""
+    normalized = _normalize(head_command)
     if not normalized or normalized.startswith("repowise"):
         return None
     first = normalized.split(None, 1)[0]
@@ -304,12 +365,16 @@ def decide(
     *source* overrides the ledger tag for agents with their own surface
     (``hook-codex``); by default it derives from the shell dialect.
     """
-    family = classify(command)
+    split = _split_safe_tail(command) if command else None
+    if split is None:
+        return None
+    head_command, needs_inner_shell = split
+    family = _classify_head(head_command)
     if family is None:
         return None
 
     if shell == "powershell":
-        first = _normalize(command).split(None, 1)[0]
+        first = _normalize(head_command).split(None, 1)[0]
         if first in _PS_ALIAS_TOKENS:
             return None
 
@@ -332,8 +397,13 @@ def decide(
     # --by source` can tell hook surfaces apart from direct CLI use.
     if source is None:
         source = "hook-powershell" if shell == "powershell" else "hook-bash"
+    # A safe pipeline is passed as ONE quoted token so the pipe binds inside
+    # distill's shell (distill re-runs a single token verbatim via shell=True)
+    # instead of piping distill's own rendering. _split_safe_tail already
+    # rejected commands containing quotes, so the wrap can't be broken out of.
+    wrapped = f'"{command.strip()}"' if needs_inner_shell else command.strip()
     return RewriteResult(
-        command=f"repowise distill --source {source} {command.strip()}",
+        command=f"repowise distill --source {source} {wrapped}",
         permission=permission,
         reason=(
             f"repowise distill: compact {family} rendering; full output stays "

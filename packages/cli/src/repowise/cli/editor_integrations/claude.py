@@ -63,12 +63,13 @@ class ClaudeCodeSetup:
 
         hooks = install_claude_code_hooks()
         if hooks:
-            console_obj.print("  [green]✓[/green] Claude Code hooks registered (PostToolUse)")
+            console_obj.print(
+                "  [green]✓[/green] Claude Code hooks registered (PostToolUse, SessionStart)"
+            )
 
         if enable_tool_search_in_claude_code():
             console_obj.print(
-                "  [green]✓[/green] Claude Code tool-search enabled "
-                "(defers MCP tool schemas)"
+                "  [green]✓[/green] Claude Code tool-search enabled (defers MCP tool schemas)"
             )
 
     def refresh_project_files(

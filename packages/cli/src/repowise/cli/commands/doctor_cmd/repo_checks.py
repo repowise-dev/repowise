@@ -384,6 +384,10 @@ def _run_repo_checks(
     # 11. Distill — config block, omission store, rewrite hook (advisory)
     checks.extend(_distill_checks(repo_path))
 
+    # 12. Claude Code MCP registration: wedged-path detection
+    registration_check, registration_wedged = _claude_registration_check()
+    checks.append(registration_check)
+
     all_ok = all(c.ok for c in checks)
 
     if fmt != "table":
@@ -503,10 +507,88 @@ def _run_repo_checks(
 
         repaired_count = run_async(_repair())
         console.print(f"[bold green]Repaired {repaired_count} entries.[/bold green]")
-    elif repair and not has_mismatches:
+    elif repair and not has_mismatches and not registration_wedged:
         console.print("[green]Nothing to repair.[/green]")
 
+    if repair and registration_wedged:
+        from repowise.cli.editor_integrations.claude_config import register_with_claude_code
+
+        fixed = register_with_claude_code(repo_path)
+        if fixed:
+            console.print(
+                f"[bold green]Re-registered the Claude Code MCP entry ({fixed}).[/bold green]"
+            )
+        else:
+            console.print(
+                "[yellow]Could not re-register the Claude Code MCP entry; "
+                "run `repowise init` to redo editor setup.[/yellow]"
+            )
+
     return all_ok, checks
+
+
+def _claude_registration_check() -> tuple[DoctorCheck, bool]:
+    """Detect a wedged Claude Code MCP registration (stale paths).
+
+    The global ``~/.claude/settings.json`` entry can end up pointing at a
+    directory that no longer exists (a moved repo, or a leaked temp path) or
+    at a pinned command binary from a deleted venv; either way the MCP
+    server silently fails to start in every Claude Code session. Returns
+    ``(check, wedged)``; ``wedged`` drives the ``--repair`` re-registration.
+    Absence of a registration is informational, never a failure.
+    """
+    name = "Claude Code MCP entry"
+    try:
+        import json as _json
+
+        from repowise.cli.editor_integrations.claude_config import _claude_code_settings_path
+
+        settings_path = _claude_code_settings_path()
+        if not settings_path.exists():
+            return _check(name, True, "not registered (repowise init registers it)"), False
+        try:
+            settings = _json.loads(settings_path.read_text(encoding="utf-8"))
+        except (OSError, _json.JSONDecodeError):
+            return _check(name, True, f"could not parse {settings_path}"), False
+        servers = settings.get("mcpServers") if isinstance(settings, dict) else None
+        entry = servers.get("repowise") if isinstance(servers, dict) else None
+        if not isinstance(entry, dict):
+            return _check(name, True, "not registered (repowise init registers it)"), False
+
+        problems: list[str] = []
+        command = entry.get("command")
+        # Bare command names resolve via PATH at session start; only a pinned
+        # absolute path can go stale.
+        if (
+            isinstance(command, str)
+            and ("/" in command or "\\" in command)
+            and not _DoctorPath(command).exists()
+        ):
+            problems.append(f"command not found: {command}")
+        target = _registration_target(entry)
+        if target is not None and not _DoctorPath(target).is_dir():
+            problems.append(f"registered path missing: {target}")
+        if problems:
+            return _check(name, False, "; ".join(problems) + " (rerun with --repair)"), True
+        return _check(name, True, target or "registered"), False
+    except Exception as exc:
+        return _check(name, True, f"Could not check: {exc}"), False
+
+
+def _registration_target(entry: dict) -> str | None:
+    """The repo/workspace path a registration serves, or None if unrecognized.
+
+    Registrations are shaped ``args: ["mcp", "<abs path>", "--transport",
+    "stdio"]``; the target sits right after ``mcp``. Anything else (a flag
+    in that slot, a hand-edited entry) returns None rather than guessing.
+    """
+    args = entry.get("args")
+    if not isinstance(args, list) or args[:1] != ["mcp"] or len(args) < 2:
+        return None
+    target = args[1]
+    if isinstance(target, str) and not target.startswith("-"):
+        return target
+    return None
 
 
 def _distill_checks(repo_path: _DoctorPath) -> list[DoctorCheck]:

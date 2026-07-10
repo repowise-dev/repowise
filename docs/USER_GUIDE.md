@@ -868,7 +868,8 @@ Claude Code hooks are written to `~/.claude/settings.json` automatically during 
 
 | Hook type | Matcher | Action |
 |-----------|---------|--------|
-| Claude `PostToolUse` | `Bash\|Grep\|Glob` | Check git freshness and add search rescue/triage context |
+| Claude `SessionStart` | `startup\|resume\|clear` | Inject live index freshness (current / behind with a changed-file count / update in progress) and the core-tool trust rule |
+| Claude `PostToolUse` | `Bash\|PowerShell\|Grep\|Glob\|Read\|Edit\|Write` | Check git freshness, add search rescue/triage context, and emit Read-intelligence notices |
 | Codex `SessionStart` / `UserPromptSubmit` | lifecycle | Remind Codex to use Repowise MCP tools |
 | Codex `PostToolUse` | `Bash`, `apply_patch\|Edit\|Write` | Check git/edit freshness |
 

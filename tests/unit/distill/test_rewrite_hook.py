@@ -93,7 +93,7 @@ class TestClassify:
             "python script.py",
             "node server.js",
             # compound / pipes / redirections / substitution
-            "pytest | head -50",
+            "pytest | grep FAIL",
             "pytest && echo done",
             "pytest || true",
             "git status; ls",
@@ -167,6 +167,86 @@ class TestClassify:
         from repowise.core.distill.router import normalize_command
 
         assert _normalize(command) == normalize_command(command)
+
+
+class TestSafeTails:
+    """The two shell-syntax carve-outs: trailing ``2>&1`` and ``| head/tail``.
+
+    ``2>&1`` is platform-neutral (distill merges stderr into its capture
+    anyway). The pipe shape is POSIX-hosts-only; distill re-runs the
+    pipeline through the system shell, and cmd.exe has no head/tail.
+    """
+
+    @pytest.fixture
+    def posix_host(self, monkeypatch):
+        monkeypatch.setattr(rewrite_hook, "_POSIX_HOST", True)
+
+    @pytest.fixture
+    def windows_host(self, monkeypatch):
+        monkeypatch.setattr(rewrite_hook, "_POSIX_HOST", False)
+
+    @pytest.mark.parametrize(
+        ("command", "family"),
+        [
+            ("pytest -x 2>&1", "test_output"),
+            ("git log --oneline -20 2>&1", "git_log"),
+            ("npm run build 2>&1", "build_output"),
+        ],
+    )
+    def test_stderr_merge_classifies_on_any_host(self, command, family, windows_host) -> None:
+        assert classify(command) == family
+
+    @pytest.mark.parametrize(
+        ("command", "family"),
+        [
+            ("pytest | head -50", "test_output"),
+            ("pytest tests/unit -q | head", "test_output"),
+            ("git log --oneline | tail -20", "git_log"),
+            ("git log --oneline | tail -n 20", "git_log"),
+            ("cargo build 2>&1 | head -100", "build_output"),
+        ],
+    )
+    def test_safe_pipe_classifies_on_posix(self, command, family, posix_host) -> None:
+        assert classify(command) == family
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "pytest | head -50",
+            "cargo build 2>&1 | head -100",
+        ],
+    )
+    def test_safe_pipe_passes_through_on_windows(self, command, windows_host) -> None:
+        assert classify(command) is None
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "pytest | grep FAIL",  # tail not in the head/tail whitelist
+            "pytest | head -50 | tail -2",  # two pipes
+            'pytest -k "a b" | head',  # quotes could break the wrap
+            "pytest $ARGS | head",  # expansion re-evaluated inside distill
+            "pytest | head; ls",  # compound after the pipe
+            "pytest | head > out.txt",  # redirect after the pipe
+            "echo hi | head",  # head command still on the ignore-list
+            "tail -f app.log | head",  # watch mode still bails
+        ],
+    )
+    def test_unsafe_pipes_pass_through(self, command, posix_host) -> None:
+        assert classify(command) is None
+
+    def test_decide_keeps_stderr_merge_unquoted(self, repo) -> None:
+        result = decide("pytest -x 2>&1", str(repo))
+        assert result is not None
+        assert result.command == "repowise distill --source hook-bash pytest -x 2>&1"
+
+    def test_decide_quotes_safe_pipeline(self, repo, posix_host) -> None:
+        result = decide("pytest tests/unit -q | head -50", str(repo))
+        assert result is not None
+        assert result.command == (
+            'repowise distill --source hook-bash "pytest tests/unit -q | head -50"'
+        )
+        assert result.permission == "allow"
 
 
 # ---------------------------------------------------------------------------

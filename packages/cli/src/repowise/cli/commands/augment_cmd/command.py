@@ -23,6 +23,12 @@ asymmetric, durable value:
 
 Codex SessionStart/UserPromptSubmit: adds short repowise MCP usage guidance.
 
+  SessionStart (Claude Code)
+    * Emits a one-paragraph context block: whether the index is current,
+      behind (with a changed-file count), or mid-update, plus the core-tool
+      trust rule. CLAUDE.md stays static and cache-friendly; live freshness
+      arrives here instead.
+
   PostToolUse → Bash
     * After a successful git commit/merge/rebase/cherry-pick/pull, if
       the wiki HEAD has drifted from .repowise/state.json's last sync
@@ -74,6 +80,7 @@ from .bash_staleness import _handle_bash_post
 from .codex import _handle_codex_context_event, _handle_post_edit_use
 from .read_state import _handle_read_post, _record_edit
 from .search import _handle_search_post
+from .session_start import _handle_claude_session_start
 
 _EDIT_TOOL_NAMES = {"apply_patch", "Edit", "Write"}
 
@@ -114,6 +121,13 @@ def _run_augment(*, client: str | None = None) -> None:
 
     if client == "codex" and event in ("SessionStart", "UserPromptSubmit"):
         result = _handle_codex_context_event(event, cwd)
+        if result:
+            _emit_response(event, result)
+        return
+
+    if event == "SessionStart":
+        # Claude Code lifecycle hook: live index-freshness + trust context.
+        result = _handle_claude_session_start(cwd)
         if result:
             _emit_response(event, result)
         return
