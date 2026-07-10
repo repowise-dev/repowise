@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Added
+- **Worktrees just work.** `repowise init` and `repowise update` inside a linked git worktree now auto-detect the base checkout and seed the worktree's index from it, then catch up incrementally; no flags needed. `--seed-from <base>` remains as an explicit override and `--no-seed` forces a cold init. See [WORKTREES.md](WORKTREES.md). (#655 introduced the manual flag; this release makes it automatic.)
+
+### Fixed
+- **Seeded worktree indexes no longer split in two.** Seeding now re-points the copied index at the worktree, so the first update reuses the seeded pages instead of minting a second repository entry and regenerating everything under it.
+- **`[workspace]` notices render again.** The one-line workspace auto-detect notice was being swallowed by console markup and printed without its prefix.
+
+---
+
 ## [0.29.0] — 2026-07-09
 
 ### Added
@@ -110,7 +121,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.25.0] — 2026-06-27
 
 ### Added
-- **Seed worktree index.** `repowise init --seed-from <base>` lets you seed the index from an existing base-branch checkout. It copies the vector store, config, and state, delegating to `update` to only embed files changed in the worktree.
 - **Split File refactoring.** Code Health now detects files that should be decomposed into smaller modules and proposes a concrete split. A new detector identifies low-cohesion modules and groups their members into coherent target files (#607), with richer cohesion signals driving the grouping (#614). Each plan is browsable in the web Refactoring tab and can be turned into real code via the deterministic code-gen path (#608).
 - **Extract Method refactoring.** Long, complex functions get an Extract Method suggestion computed over a real dataflow layer: an intra-procedural control-flow graph for flagged functions (#612), def/use chains and reaching definitions over that CFG (#613), and the Extract Method planner built on top (#615). The refactoring is available for Python, Go, and TypeScript/JavaScript (#616).
 - **Coverage report ingestion.** Indexing can now ingest test-coverage reports, folding coverage into the code-health picture during a run. (#604)

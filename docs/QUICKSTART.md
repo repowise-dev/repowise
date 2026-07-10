@@ -136,6 +136,8 @@ Or run continuous sync while you work:
 repowise watch
 ```
 
+Working with `git worktree`? New worktrees seed their index from your main checkout automatically on the first `repowise init` or `repowise update`; no re-indexing. See [WORKTREES.md](WORKTREES.md).
+
 See [Auto-Sync](AUTO_SYNC.md) for all sync methods (hooks, file watcher, GitHub/GitLab webhooks, polling).
 
 ---

@@ -570,4 +570,4 @@ Yes. A single MCP server instance serves all workspace repos. It uses lazy-loadi
 
 ### Can I use `repowise` with git worktrees?
 
-Yes. If you use `git worktree` to check out branches into separate directories, you don't need to re-index the entire project from scratch. You can seed the new worktree's index from your base checkout using `repowise init --seed-from <path-to-base>`. This copies the vector store, config, and state, then incrementally updates only the files that differ in the worktree.
+Yes, and it's automatic. Running `repowise init` or `repowise update` inside a linked worktree detects the base checkout, seeds the worktree's index from it, and incrementally updates only the files that differ on your branch. No flags needed; `--seed-from <path>` and `--no-seed` exist as overrides. See [WORKTREES.md](WORKTREES.md).

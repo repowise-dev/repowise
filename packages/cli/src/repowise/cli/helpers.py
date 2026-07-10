@@ -932,13 +932,13 @@ class CommandTarget:
             repos = len(self.ws_config.repos) if self.ws_config else 0
             if self.repo_filter:
                 console_obj.print(
-                    f"[dim][workspace][/dim] {command or 'running'} on "
+                    f"[dim]\\[workspace][/dim] {command or 'running'} on "
                     f"[cyan]{self.repo_filter}[/cyan] within "
                     f"[cyan]{ws_root}[/cyan] ({repos} repos)"
                 )
             else:
                 console_obj.print(
-                    f"[dim][workspace][/dim] {command or 'running'} across "
+                    f"[dim]\\[workspace][/dim] {command or 'running'} across "
                     f"[cyan]{repos}[/cyan] repos in [cyan]{ws_root}[/cyan]"
                 )
             if self.reason and self.auto_detected:
