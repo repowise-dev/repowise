@@ -544,7 +544,7 @@ pricing: **[docs/COMMERCIAL.md](docs/COMMERCIAL.md)** · [Get in touch →](http
 repowise init [PATH]      # index codebase (one-time; --index-only skips LLM)
 repowise serve [PATH]     # MCP server + local dashboard
 repowise update [PATH]    # incremental update (<30s; --workspace for all repos)
-repowise query "<q>"      # ask anything from the terminal
+repowise search "<q>"     # search the wiki (fulltext / semantic / symbol)
 repowise health           # code-health KPIs + lowest-scoring files
 repowise risk main..HEAD  # score a branch / PR range for defect risk
 repowise dead-code        # unreachable-code report
