@@ -23,6 +23,8 @@ const HUB_FOCUS_RATIO = 0.45;
 // Below this node count file graphs build synchronously; at or above it we
 // build in chunks off the critical path (see sigmaGraph below).
 const ASYNC_BUILD_THRESHOLD = 1000;
+// One-time "double-click to expand" hint for the modules scope.
+const MODULE_HINT_KEY = "repowise-graph-module-hint";
 
 /** Deterministic 0–1 value from a string (FNV-1a) — stable layout jitter. */
 function hashUnit(s: string): number {
@@ -59,6 +61,8 @@ import {
   fileGraphToGraphologyAsync,
   moduleGraphToGraphology,
   groupFilesAsModules,
+  settleGraph,
+  isExternalModuleId,
 } from "./sigma/graphology-adapter";
 import {
   architectureToGraphology,
@@ -242,6 +246,38 @@ export function GraphFlow(props: GraphFlowProps) {
   // Expand/collapse modules (replaces drill-down for most use cases)
   const { expandedModules, toggleModule, collapseAll } = useExpandedModules();
   const hasExpandedModules = expandedModules.size > 0;
+
+  // External `external:*` dependency modules are hidden by default — they
+  // outnumber the repo's own modules and drown the layout. Toggle in toolbar.
+  const [showExternals, setShowExternals] = useState(false);
+  const externalCount = useMemo(
+    () =>
+      moduleGraph
+        ? moduleGraph.nodes.reduce(
+            (n, mod) => n + (isExternalModuleId(mod.module_id) ? 1 : 0),
+            0,
+          )
+        : 0,
+    [moduleGraph],
+  );
+
+  // One-time "double-click a module to expand it" hint (persists dismissal).
+  const [moduleHintDismissed, setModuleHintDismissed] = useState<boolean>(() => {
+    if (typeof window === "undefined") return true;
+    try {
+      return window.localStorage.getItem(MODULE_HINT_KEY) === "1";
+    } catch {
+      return true;
+    }
+  });
+  const dismissModuleHint = useCallback(() => {
+    setModuleHintDismissed(true);
+    try {
+      window.localStorage.setItem(MODULE_HINT_KEY, "1");
+    } catch {
+      /* private mode — session-only dismissal */
+    }
+  }, []);
 
   // Expand/collapse constellation hubs (radial blossom). Esc collapses the most
   // recently expanded hub; multiple hubs may be open at once.
@@ -486,27 +522,38 @@ export function GraphFlow(props: GraphFlowProps) {
   const syncSigmaGraph = useMemo(() => {
     if (isModuleView) {
       if (isDrilledDown && fullGraph) {
-        return groupFilesAsModules(fullGraph, { prefix: currentPrefix });
+        return settleGraph(groupFilesAsModules(fullGraph, { prefix: currentPrefix }));
       }
 
       if (!moduleGraph) return null;
 
+      const moduleOpts = {
+        hideExternals: !showExternals,
+        ...(communities ? { communities } : {}),
+      };
+
       if (expandedModules.size === 0 || !fullGraph || !fullGraphIndexes) {
-        return moduleGraphToGraphology(moduleGraph, communities ? { communities } : {});
+        // Settle synchronously so the first painted frame is the final layout
+        // (no FA2 convergence animation collapsing the graph into a blob).
+        return settleGraph(moduleGraphToGraphology(moduleGraph, moduleOpts));
       }
 
-      const graph = moduleGraphToGraphology(moduleGraph, communities ? { communities } : {});
+      const graph = moduleGraphToGraphology(moduleGraph, moduleOpts);
 
       for (const moduleId of expandedModules) {
         if (!graph.hasNode(moduleId)) continue;
+
+        const childNodes = fullGraphIndexes.moduleChildIndex.get(moduleId) ?? [];
+        // No file-level children in the loaded graph (e.g. a docs-only module
+        // under a capped node set): keep the module node instead of silently
+        // vanishing it.
+        if (childNodes.length === 0) continue;
 
         const modAttrs = graph.getNodeAttributes(moduleId);
         const modX = modAttrs.x;
         const modY = modAttrs.y;
 
         graph.dropNode(moduleId);
-
-        const childNodes = fullGraphIndexes.moduleChildIndex.get(moduleId) ?? [];
 
         const nodeCount = fullGraph.nodes.length;
         const jitter = 30;
@@ -596,7 +643,9 @@ export function GraphFlow(props: GraphFlowProps) {
         }
       }
 
-      return graph;
+      // Re-settle from the warm module positions so expanded files land in a
+      // readable blossom immediately (no worker restart, no wobble).
+      return settleGraph(graph);
     }
 
     const graphData = fileGraphData;
@@ -613,7 +662,7 @@ export function GraphFlow(props: GraphFlowProps) {
       { nodes: graphData.nodes, links: graphData.links },
       { signals },
     );
-  }, [isModuleView, isDrilledDown, fullGraph, currentPrefix, moduleGraph, communities, expandedModules, fileGraphData, hasHotSignal, hasDeadSignal, isUnified, hotNodeIds, deadNodeIds, fullGraphIndexes]);
+  }, [isModuleView, isDrilledDown, fullGraph, currentPrefix, moduleGraph, communities, expandedModules, showExternals, fileGraphData, hasHotSignal, hasDeadSignal, isUnified, hotNodeIds, deadNodeIds, fullGraphIndexes]);
 
   // Async-built file graph for large graphs (built in chunks off the main
   // thread critical path). Null while building / when the sync path applies.
@@ -700,6 +749,10 @@ export function GraphFlow(props: GraphFlowProps) {
           symbolCount: attrs.symbolCount,
           avgPagerank: attrs.avgPagerank ?? 0,
           docCoveragePct: attrs.docCoveragePct ?? 0,
+          hotspotCount: attrs.hotspotCount ?? 0,
+          deadCount: attrs.deadCount ?? 0,
+          hasDecision: attrs.hasDecision ?? false,
+          primaryOwner: attrs.primaryOwner ?? null,
           dominantCommunityId: attrs.dominantCommunityId,
         });
       }
@@ -852,6 +905,7 @@ export function GraphFlow(props: GraphFlowProps) {
     (nodeId: string, nodeType: string): boolean | void => {
       if (nodeType === "module") {
         toggleModule(nodeId);
+        dismissModuleHint();
         return true;
       }
       if (nodeType === "hub" && sigmaGraph?.hasNode(nodeId)) {
@@ -866,7 +920,7 @@ export function GraphFlow(props: GraphFlowProps) {
       onNodeViewDocs?.(nodeId);
       return true;
     },
-    [onNodeViewDocs, toggleModule, sigmaGraph, handleConstellationHubToggle],
+    [onNodeViewDocs, toggleModule, dismissModuleHint, sigmaGraph, handleConstellationHubToggle],
   );
 
   // Unified grammar — SINGLE CLICK = select + inspect (never structural):
@@ -1024,6 +1078,14 @@ export function GraphFlow(props: GraphFlowProps) {
     });
   }, []);
 
+  // A rebuild can drop the selected node (module expanded into files) — clear
+  // the selection then, or the reducer dims the whole canvas around a ghost.
+  useEffect(() => {
+    if (selectedNodeId && sigmaGraph && !sigmaGraph.hasNode(selectedNodeId)) {
+      setSelectedNodeId(null);
+    }
+  }, [sigmaGraph, selectedNodeId]);
+
   const initialNodeApplied = useRef(false);
   useEffect(() => {
     if (initialNodeApplied.current || !initialSelectedNode || !sigmaGraph) return;
@@ -1051,8 +1113,9 @@ export function GraphFlow(props: GraphFlowProps) {
   const handleInspectExpandModule = useCallback(() => {
     if (selectedNodeId) {
       toggleModule(selectedNodeId);
+      dismissModuleHint();
     }
-  }, [selectedNodeId, toggleModule]);
+  }, [selectedNodeId, toggleModule, dismissModuleHint]);
 
   // Breadcrumb
   const handleBreadcrumbClick = useCallback((index: number) => {
@@ -1199,6 +1262,49 @@ export function GraphFlow(props: GraphFlowProps) {
           </div>
         ) : null}
 
+        {/* Expanded-modules chip: count + collapse-all. */}
+        {isModuleView && !isDrilledDown && hasExpandedModules && (
+          <div className="flex items-center gap-2 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm px-2.5 py-1.5 shadow-sm">
+            <span className="text-[10px] text-[var(--color-text-secondary)]">
+              {expandedModules.size} module{expandedModules.size === 1 ? "" : "s"} expanded
+            </span>
+            <button
+              onClick={collapseAll}
+              className="text-[10px] font-medium text-[var(--color-accent-graph)] hover:underline"
+            >
+              Collapse all
+            </button>
+          </div>
+        )}
+
+        {/* Expansion needs the file-level graph — surface the fetch instead of
+            letting the double-click look like it silently did nothing. */}
+        {isModuleView && hasExpandedModules && !fullGraph && isLoadingFullGraph && (
+          <div
+            role="status"
+            aria-live="polite"
+            className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm px-2.5 py-1.5 shadow-sm text-[10px] text-[var(--color-text-secondary)]"
+          >
+            Loading files for expanded module…
+          </div>
+        )}
+
+        {/* One-time interaction hint for the modules scope. */}
+        {isModuleView && !isDrilledDown && !hasExpandedModules && !moduleHintDismissed && (
+          <div className="flex items-center gap-2 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm px-2.5 py-1.5 shadow-sm">
+            <span className="text-[10px] text-[var(--color-text-secondary)]">
+              Tip: double-click a module to see its files
+            </span>
+            <button
+              onClick={dismissModuleHint}
+              aria-label="Dismiss hint"
+              className="text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]"
+            >
+              <X className="w-3 h-3" />
+            </button>
+          </div>
+        )}
+
         {/* Overlay coverage: how many flagged files are actually in view. The
             totals come from the backend when it provides them; without totals
             we still report the in-view count so the overlay never reads as
@@ -1284,6 +1390,9 @@ export function GraphFlow(props: GraphFlowProps) {
             onGraphThemeChange={handleGraphThemeChange}
             onToggleHelp={handleToggleShortcutHelp}
             availableScopes={availableScopes}
+            showExternals={showExternals}
+            onShowExternalsChange={setShowExternals}
+            externalCount={externalCount}
           />
         </div>
 
@@ -1359,8 +1468,9 @@ export function GraphFlow(props: GraphFlowProps) {
           </div>
         )}
 
-        {/* Legend */}
-        <div className="absolute bottom-3 left-3 z-10">
+        {/* Legend — on phones the inspection bottom sheet covers this corner,
+            so yield to it instead of stacking underneath. */}
+        <div className={`absolute bottom-3 left-3 z-10 ${selectedNodeId ? "hidden sm:block" : ""}`}>
           <GraphLegend
             nodeCount={sigmaGraph?.order ?? 0}
             edgeCount={sigmaGraph?.size ?? 0}
@@ -1430,6 +1540,7 @@ export function GraphFlow(props: GraphFlowProps) {
               filePageHref={fileNd ? fileHrefFor?.(selectedNodeId) : undefined}
               onFindPath={handleInspectFindPath}
               onExpandModule={modNd ? handleInspectExpandModule : undefined}
+              isModuleExpanded={modNd ? expandedModules.has(selectedNodeId) : false}
               egoDepth={egoDepth}
               onEgoDepthChange={setEgoDepth}
               egoVisibleCount={egoVisibleCount}

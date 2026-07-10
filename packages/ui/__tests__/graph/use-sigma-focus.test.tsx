@@ -35,9 +35,13 @@ class FakeSigma {
 }
 
 vi.mock("sigma", () => ({ default: FakeSigma }));
-vi.mock("@sigma/edge-curve", () => ({ default: class {} }));
+vi.mock("@sigma/edge-curve", () => ({
+  default: class {},
+  EdgeCurvedArrowProgram: class {},
+}));
 vi.mock("sigma/rendering", () => ({
   EdgeLineProgram: class {},
+  EdgeArrowProgram: class {},
   drawDiscNodeLabel: () => {},
 }));
 

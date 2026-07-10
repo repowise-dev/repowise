@@ -13,6 +13,9 @@ import {
   Route,
   Network,
   Code2,
+  Flame,
+  Skull,
+  Lightbulb,
 } from "lucide-react";
 import { ScrollArea } from "../ui/scroll-area";
 import { languageColor } from "../lib/confidence";
@@ -27,6 +30,8 @@ interface NeighborInfo {
   label: string;
   communityId: number;
   direction: "importer" | "import";
+  /** Aggregated import count on the connecting edge (modules roll up many). */
+  edgeCount: number;
 }
 
 export interface GraphInspectionPanelProps {
@@ -44,6 +49,8 @@ export interface GraphInspectionPanelProps {
   onFindPath?: (() => void) | undefined;
   onShowEgoGraph?: (() => void) | undefined;
   onExpandModule?: (() => void) | undefined;
+  /** Whether the module is currently expanded (the action becomes Collapse). */
+  isModuleExpanded?: boolean | undefined;
   egoDepth?: number | undefined;
   onEgoDepthChange?: ((depth: number) => void) | undefined;
   egoVisibleCount?: number | undefined;
@@ -77,6 +84,7 @@ export const GraphInspectionPanel = memo(function GraphInspectionPanel({
   onFindPath,
   onShowEgoGraph,
   onExpandModule,
+  isModuleExpanded,
   egoDepth,
   onEgoDepthChange,
   egoVisibleCount,
@@ -87,7 +95,7 @@ export const GraphInspectionPanel = memo(function GraphInspectionPanel({
     if (!graph || !graph.hasNode(nodeId)) return [];
     const result: NeighborInfo[] = [];
     const seen = new Set<string>();
-    graph.forEachOutEdge(nodeId, (_edge, _attrs, _source, target) => {
+    graph.forEachOutEdge(nodeId, (_edge, attrs, _source, target) => {
       if (seen.has(target)) return;
       seen.add(target);
       const nd = allNodes.get(target);
@@ -96,9 +104,10 @@ export const GraphInspectionPanel = memo(function GraphInspectionPanel({
         label: target.split("/").pop() ?? target,
         communityId: nd?.communityId ?? 0,
         direction: "import",
+        edgeCount: attrs.edgeCount ?? 1,
       });
     });
-    graph.forEachInEdge(nodeId, (_edge, _attrs, source) => {
+    graph.forEachInEdge(nodeId, (_edge, attrs, source) => {
       if (seen.has(source)) return;
       seen.add(source);
       const nd = allNodes.get(source);
@@ -107,6 +116,7 @@ export const GraphInspectionPanel = memo(function GraphInspectionPanel({
         label: source.split("/").pop() ?? source,
         communityId: nd?.communityId ?? 0,
         direction: "importer",
+        edgeCount: attrs.edgeCount ?? 1,
       });
     });
     return result;
@@ -212,6 +222,9 @@ export const GraphInspectionPanel = memo(function GraphInspectionPanel({
                     </div>
                     <span className="text-caption text-[var(--color-text-tertiary)] shrink-0">
                       {n.direction === "importer" ? "imports this" : "imported"}
+                      {n.edgeCount > 1 && (
+                        <span className="tabular-nums"> · {n.edgeCount}</span>
+                      )}
                     </span>
                   </button>
                 ))}
@@ -271,7 +284,8 @@ export const GraphInspectionPanel = memo(function GraphInspectionPanel({
             onClick={onExpandModule}
             className="flex items-center justify-center gap-1.5 rounded-lg bg-[var(--color-accent-graph)]/10 hover:bg-[var(--color-accent-graph)]/20 border border-[var(--color-accent-graph)]/30 px-2 py-1.5 text-caption font-medium text-[var(--color-accent-graph)] transition-colors col-span-2"
           >
-            <Network className="w-3 h-3" /> Expand Module
+            <Network className="w-3 h-3" />
+            {isModuleExpanded ? "Collapse Module" : "Expand Module"}
           </button>
         )}
         {onViewDocs && (
@@ -463,6 +477,36 @@ function ModuleMetadata({
           </span>
         </span>
       </div>
+
+      {data.primaryOwner && (
+        <div className="flex items-center justify-between text-xs">
+          <span className="text-[var(--color-text-tertiary)]">Owner</span>
+          <span className="font-medium text-[var(--color-text-primary)] truncate max-w-[60%]" title={data.primaryOwner}>
+            {data.primaryOwner}
+          </span>
+        </div>
+      )}
+
+      {/* Health badges — only rendered when there is something to say. */}
+      {((data.hotspotCount ?? 0) > 0 || (data.deadCount ?? 0) > 0 || data.hasDecision) && (
+        <div className="flex items-center gap-1.5 pt-1 flex-wrap">
+          {(data.hotspotCount ?? 0) > 0 && (
+            <span className="inline-flex items-center gap-1 rounded-md bg-[var(--color-warning)]/10 text-[var(--color-warning)] px-1.5 py-0.5 text-caption font-medium">
+              <Flame className="w-2.5 h-2.5" /> {data.hotspotCount} hotspot{data.hotspotCount === 1 ? "" : "s"}
+            </span>
+          )}
+          {(data.deadCount ?? 0) > 0 && (
+            <span className="inline-flex items-center gap-1 rounded-md bg-[var(--color-error)]/10 text-[var(--color-error)] px-1.5 py-0.5 text-caption font-medium">
+              <Skull className="w-2.5 h-2.5" /> {data.deadCount} dead
+            </span>
+          )}
+          {data.hasDecision && (
+            <span className="inline-flex items-center gap-1 rounded-md bg-[var(--color-accent-secondary)]/10 text-[var(--color-accent-secondary)] px-1.5 py-0.5 text-caption font-medium">
+              <Lightbulb className="w-2.5 h-2.5" /> Decision
+            </span>
+          )}
+        </div>
+      )}
     </div>
   );
 }

@@ -32,9 +32,12 @@ export function useFA2Layout(
   const [isRunning, setIsRunning] = useState(false);
 
   const convergenceIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const releaseCameraTrackingRef = useRef<(() => void) | null>(null);
 
   const killLayout = useCallback(() => {
     cancelledRef.current = true;
+    releaseCameraTrackingRef.current?.();
+    releaseCameraTrackingRef.current = null;
     if (layoutTimeoutRef.current) {
       clearTimeout(layoutTimeoutRef.current);
       layoutTimeoutRef.current = null;
@@ -53,6 +56,25 @@ export function useFA2Layout(
     (graph: Graph<SigmaNodeAttributes, SigmaEdgeAttributes>) => {
       killLayout();
       cancelledRef.current = false;
+
+      // Track whether the user touches the camera while the layout runs — if
+      // they haven't, re-fit the view when it finishes so the converged graph
+      // never ends up as a small cluster under a stale wide framing.
+      let userMovedCamera = false;
+      const markMoved = () => {
+        userMovedCamera = true;
+      };
+      const layoutContainer = options.sigma?.getContainer();
+      layoutContainer?.addEventListener("pointerdown", markMoved);
+      layoutContainer?.addEventListener("wheel", markMoved, { passive: true });
+      const releaseCameraTracking = () => {
+        layoutContainer?.removeEventListener("pointerdown", markMoved);
+        layoutContainer?.removeEventListener("wheel", markMoved);
+        if (releaseCameraTrackingRef.current === releaseCameraTracking) {
+          releaseCameraTrackingRef.current = null;
+        }
+      };
+      releaseCameraTrackingRef.current = releaseCameraTracking;
 
       (async () => {
         const [{ default: FA2Layout }, { default: forceAtlas2 }] =
@@ -89,6 +111,12 @@ export function useFA2Layout(
           );
           noverlap.assign(graph, NOVERLAP_SETTINGS);
           options.sigma?.refresh();
+          // Re-frame the converged layout — but never yank a camera the user
+          // has already panned or zoomed.
+          if (!userMovedCamera) {
+            options.sigma?.getCamera().animatedReset({ duration: 300 });
+          }
+          releaseCameraTracking();
           setIsRunning(false);
         };
 
@@ -141,9 +169,16 @@ export function useFA2Layout(
     [killLayout, options.sigma],
   );
 
-  // Start layout when enabled and graph is ready
+  // Start layout when enabled and graph is ready. Graphs the adapter already
+  // settled synchronously (see settleGraph) skip the auto-run — their first
+  // frame IS the final layout; the manual toggle below can still start FA2.
   useEffect(() => {
-    if (options.enabled && options.graph && options.graph.order > 0) {
+    if (
+      options.enabled &&
+      options.graph &&
+      options.graph.order > 0 &&
+      !options.graph.getAttribute("presettled")
+    ) {
       runLayout(options.graph);
     } else {
       killLayout();

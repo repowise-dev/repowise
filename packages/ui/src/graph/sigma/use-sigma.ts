@@ -102,16 +102,27 @@ function makeDrawNodeHover(graphTheme: "light" | "dark"): NodeLabelDrawingFuncti
     const extra = data as Record<string, unknown>;
     const fullPath = (extra.fullPath as string) ?? undefined;
 
-    // Hub tooltip: a small surface card with member count, doc %, langs.
-    if (extra.nodeType === "hub") {
+    // Hub/module tooltip: a small surface card. First disclosure layer —
+    // headline stats only; the full detail lives in the inspection panel.
+    if (extra.nodeType === "hub" || extra.nodeType === "module") {
       const font = settings.labelFont || "JetBrains Mono, monospace";
-      const members = (extra.memberCount as number) ?? 0;
       const docPct = Math.round(((extra.docCoveragePct as number) ?? 0) * 100);
-      const langs = ((extra.languages as string[]) ?? []).slice(0, 3).join(", ");
-      const lines: string[] = [
-        `${members} file${members === 1 ? "" : "s"} · ${docPct}% documented`,
-      ];
-      if (langs) lines.push(langs);
+      const lines: string[] = [];
+      if (extra.nodeType === "hub") {
+        const members = (extra.memberCount as number) ?? 0;
+        lines.push(`${members} file${members === 1 ? "" : "s"} · ${docPct}% documented`);
+        const langs = ((extra.languages as string[]) ?? []).slice(0, 3).join(", ");
+        if (langs) lines.push(langs);
+      } else {
+        const files = (extra.fileCount as number) ?? 0;
+        lines.push(`${files} file${files === 1 ? "" : "s"} · ${docPct}% documented`);
+        const hot = (extra.hotspotCount as number) ?? 0;
+        const dead = (extra.deadCount as number) ?? 0;
+        const issues: string[] = [];
+        if (hot > 0) issues.push(`${hot} hotspot${hot === 1 ? "" : "s"}`);
+        if (dead > 0) issues.push(`${dead} dead file${dead === 1 ? "" : "s"}`);
+        if (issues.length > 0) lines.push(issues.join(" · "));
+      }
 
       const titleSize = (settings.labelSize || 11) + 1;
       const lineSize = 9;
@@ -430,7 +441,12 @@ export function useSigmaRenderer(options: UseSigmaOptions): UseSigmaReturn {
           return { ...attrs, color };
         }
         if (cm === "language") {
-          color = languageColor(attrs.language || "other");
+          // Modules aggregate many languages and carry none themselves — fall
+          // back to the community hue instead of a meaningless "other" gray.
+          color =
+            attrs.nodeType === "module"
+              ? getCommunityFamily(attrs.communityId).hub
+              : languageColor(attrs.language || "other");
         } else if (cm === "community") {
           // Modules (centroids) get the hub hue; files use the softer satellite
           // tint so leaves recede behind their community's anchor.
@@ -497,14 +513,17 @@ export function useSigmaRenderer(options: UseSigmaOptions): UseSigmaReturn {
     let sigmaInstance: Sigma | null = null;
 
     (async () => {
-      const [{ default: SigmaConstructor }, { default: EdgeCurveProgram }, sigmaRendering, graphologyModule] =
+      const [{ default: SigmaConstructor }, edgeCurveModule, sigmaRendering, graphologyModule] =
         await Promise.all([
           import("sigma"),
           import("@sigma/edge-curve"),
           import("sigma/rendering"),
           import("graphology"),
         ]);
+      const EdgeCurveProgram = edgeCurveModule.default;
+      const EdgeCurvedArrowProgram = edgeCurveModule.EdgeCurvedArrowProgram;
       const EdgeLineProgram = sigmaRendering.EdgeLineProgram;
+      const EdgeArrowProgram = sigmaRendering.EdgeArrowProgram;
       const drawDiscNodeLabel = sigmaRendering.drawDiscNodeLabel;
       drawDiscRef.current = drawDiscNodeLabel;
 
@@ -527,6 +546,8 @@ export function useSigmaRenderer(options: UseSigmaOptions): UseSigmaReturn {
         defaultEdgeType: "curved",
         edgeProgramClasses: {
           curved: EdgeCurveProgram,
+          curvedArrow: EdgeCurvedArrowProgram,
+          arrow: EdgeArrowProgram,
           line: EdgeLineProgram,
         },
         minCameraRatio: 0.002,

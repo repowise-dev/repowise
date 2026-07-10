@@ -187,7 +187,7 @@ export const GraphLegend = memo(function GraphLegend({
                           {onCommunityToggle && (
                             <button
                               onClick={(e) => { e.stopPropagation(); onCommunityToggle(cid); }}
-                              className="shrink-0 w-[10px] h-[10px] rounded-sm border"
+                              className="shrink-0 w-4 h-4 sm:w-[10px] sm:h-[10px] rounded-sm border"
                               style={{
                                 borderColor: color,
                                 background: checked ? color : "transparent",
@@ -257,7 +257,7 @@ export const GraphLegend = memo(function GraphLegend({
                   <div key={et.type} className="flex items-center gap-2 text-[var(--color-text-tertiary)]">
                     <button
                       onClick={() => onEdgeTypeToggle(et.type)}
-                      className="shrink-0 w-[10px] h-[10px] rounded-sm border"
+                      className="shrink-0 w-4 h-4 sm:w-[10px] sm:h-[10px] rounded-sm border"
                       style={{
                         borderColor: et.color,
                         background: checked ? et.color : "transparent",

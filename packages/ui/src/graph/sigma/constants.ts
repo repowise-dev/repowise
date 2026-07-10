@@ -125,6 +125,21 @@ export function getLayoutDuration(nodeCount: number): number {
   return 8000;
 }
 
+// ---- Synchronous pre-settle (small graphs: settle before first paint) ----
+
+/** Above this, settling synchronously would risk a main-thread jank — the
+ *  animated FA2 worker takes over instead. */
+export const PRESETTLE_MAX_NODES = 800;
+
+/** Sync FA2 iteration budget, scaled down as graphs grow. ~400 iterations on
+ *  a 100-node module graph runs in a few ms; 120 on an 800-node expansion
+ *  stays well under a frame budget with Barnes-Hut on. */
+export function getPresettleIterations(nodeCount: number): number {
+  if (nodeCount <= 150) return 400;
+  if (nodeCount <= 400) return 250;
+  return 120;
+}
+
 // ---- Noverlap post-layout settings ----
 
 export const NOVERLAP_SETTINGS = {

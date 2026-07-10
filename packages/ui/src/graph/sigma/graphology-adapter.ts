@@ -8,12 +8,17 @@ import type {
   ModuleEdge,
   CommunitySummaryItem,
 } from "@repowise-dev/types/graph";
+import forceAtlas2 from "graphology-layout-forceatlas2";
+import noverlap from "graphology-layout-noverlap";
 import type { SigmaNodeAttributes, SigmaEdgeAttributes } from "./types";
 import {
   NODE_BASE_SIZES,
   EDGE_COLORS,
   EDGE_SIZE_MULTIPLIERS,
   CURVED_EDGE_THRESHOLD,
+  PRESETTLE_MAX_NODES,
+  getFA2Settings,
+  getPresettleIterations,
   getScaledNodeSize,
   getNodeMass,
   languageColor,
@@ -282,7 +287,9 @@ function* buildFileGraph(
     const edgeAttrs: SigmaEdgeAttributes = {
       size: computeEdgeSize(edgeKind, nodeCount),
       color: EDGE_COLORS[edgeKind],
-      type: useCurved ? "curved" : "line",
+      // Directed arrowheads under the curved threshold; big graphs keep the
+      // cheaper line program.
+      type: useCurved ? "curvedArrow" : "line",
       curvature: useCurved ? computeEdgeCurvature(edgeKey) : 0,
       edgeKind,
       importedNames: link.imported_names,
@@ -299,30 +306,45 @@ function* buildFileGraph(
   return result;
 }
 
+/** External-dependency module ids share the platform-wide `external:` prefix. */
+export function isExternalModuleId(id: string): boolean {
+  return id.startsWith("external:");
+}
+
 export function moduleGraphToGraphology(
   graph: ModuleGraph,
   options?: {
     communities?: CommunitySummaryItem[];
     nodeCount?: number;
+    /** Drop `external:*` dependency modules (and their edges) so the repo's
+     *  own structure defines the layout extent. */
+    hideExternals?: boolean;
   },
 ): Graph<SigmaNodeAttributes, SigmaEdgeAttributes> {
   const result = new Graph<SigmaNodeAttributes, SigmaEdgeAttributes>();
-  const nodeCount = options?.nodeCount ?? graph.nodes.length;
+  const nodes = options?.hideExternals
+    ? graph.nodes.filter((n) => !isExternalModuleId(n.module_id))
+    : graph.nodes;
+  const nodeCount = options?.nodeCount ?? nodes.length;
 
-  // Build community lookup: map module_id to community_id
+  // Build community lookup: map module_id to community_id. For each community,
+  // check each path-prefix of its top_file against the module-id set —
+  // O(C × depth) instead of the old O(C × M) nested scan.
   const moduleCommunity = new Map<string, number>();
   if (options?.communities) {
+    const moduleIds = new Set(nodes.map((n) => n.module_id));
     for (const community of options.communities) {
-      for (const mod of graph.nodes) {
-        if (community.top_file === mod.module_id ||
-            community.top_file.startsWith(mod.module_id + "/")) {
-          moduleCommunity.set(mod.module_id, community.community_id);
+      const parts = community.top_file.split("/");
+      for (let depth = 1; depth <= parts.length; depth++) {
+        const prefix = parts.slice(0, depth).join("/");
+        if (moduleIds.has(prefix)) {
+          moduleCommunity.set(prefix, community.community_id);
         }
       }
     }
   }
   // Fill in missing modules with deterministic hash
-  for (const mod of graph.nodes) {
+  for (const mod of nodes) {
     if (!moduleCommunity.has(mod.module_id)) {
       moduleCommunity.set(mod.module_id, simpleHash(mod.module_id) % 24);
     }
@@ -330,7 +352,7 @@ export function moduleGraphToGraphology(
 
   // Group modules by community for warm-start positioning
   const communityModules = new Map<number, ModuleNode[]>();
-  for (const mod of graph.nodes) {
+  for (const mod of nodes) {
     const cid = moduleCommunity.get(mod.module_id) ?? 0;
     const list = communityModules.get(cid) ?? [];
     list.push(mod);
@@ -356,8 +378,11 @@ export function moduleGraphToGraphology(
     const centroidY = (row - (Math.ceil(communityCount / cols) - 1) / 2) * cellSize;
 
     for (const mod of members) {
-      const x = centroidX + (Math.random() - 0.5) * jitter;
-      const y = centroidY + (Math.random() - 0.5) * jitter;
+      // Deterministic per-module jitter (id hash) so the layout is stable
+      // across mounts and rebuilds — no Math.random layout churn.
+      const hash = simpleHash(mod.module_id);
+      const x = centroidX + ((hash % 1000) / 1000 - 0.5) * jitter;
+      const y = centroidY + (((hash >> 10) % 1000) / 1000 - 0.5) * jitter;
 
       const baseSize = getScaledNodeSize(NODE_BASE_SIZES.module, nodeCount);
       const size = baseSize * (0.5 + Math.min(Math.log2(Math.max(mod.file_count, 1)) * 0.3, 1.5));
@@ -384,6 +409,10 @@ export function moduleGraphToGraphology(
         fileCount: mod.file_count,
         avgPagerank: mod.avg_pagerank,
         docCoveragePct: mod.doc_coverage_pct,
+        hotspotCount: mod.hotspot_count ?? 0,
+        deadCount: mod.dead_count ?? 0,
+        hasDecision: mod.has_decision ?? false,
+        primaryOwner: mod.primary_owner ?? null,
         dominantCommunityId: communityId,
         mass: getNodeMass("module", nodeCount),
         originalColor: color,
@@ -411,7 +440,9 @@ export function moduleGraphToGraphology(
         EDGE_SIZE_MULTIPLIERS[edgeKind] *
         (1 + Math.log2(edge.edge_count)),
       color: EDGE_COLORS[edgeKind],
-      type: "curved",
+      // Arrowhead points at the imported module — direction is the whole
+      // point of a dependency edge.
+      type: "curvedArrow",
       curvature: computeEdgeCurvature(edgeKey),
       edgeKind,
       importedNames: [],
@@ -420,6 +451,35 @@ export function moduleGraphToGraphology(
   }
 
   return result;
+}
+
+/**
+ * Synchronously settle a small graph with FA2 + noverlap so the FIRST painted
+ * frame is the final layout — no visible "expand then collapse into a blob"
+ * convergence animation, no FA2 worker spin-up. Marks the graph `presettled`
+ * so use-fa2-layout skips its auto-run (the manual layout toggle still works).
+ *
+ * No-ops above PRESETTLE_MAX_NODES: large graphs keep the animated worker
+ * layout, which stays off the main thread.
+ */
+export function settleGraph(
+  graph: Graph<SigmaNodeAttributes, SigmaEdgeAttributes>,
+): Graph<SigmaNodeAttributes, SigmaEdgeAttributes> {
+  if (graph.order === 0 || graph.order > PRESETTLE_MAX_NODES) return graph;
+  const settings = {
+    ...forceAtlas2.inferSettings(graph),
+    ...getFA2Settings(graph.order),
+  };
+  forceAtlas2.assign(graph, {
+    iterations: getPresettleIterations(graph.order),
+    settings,
+  });
+  noverlap.assign(graph, {
+    maxIterations: 60,
+    settings: { ratio: 1.1, margin: 6, expansion: 1.1 },
+  });
+  graph.setAttribute("presettled", true);
+  return graph;
 }
 
 export function groupFilesAsModules(

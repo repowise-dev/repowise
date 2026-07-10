@@ -58,6 +58,11 @@ export interface ModuleNodeData {
   isEntryPoint?: boolean;
   isTest?: boolean;
   dominantCommunityId?: number | undefined;
+  /** Health rollups from the module API (0 / false / null when absent). */
+  hotspotCount?: number;
+  deadCount?: number;
+  hasDecision?: boolean;
+  primaryOwner?: string | null;
   [key: string]: unknown;
 }
 

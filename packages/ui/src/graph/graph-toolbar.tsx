@@ -21,6 +21,7 @@ import {
   Moon,
   SlidersHorizontal,
   HelpCircle,
+  Package,
 } from "lucide-react";
 import { memo, useState } from "react";
 import { Button } from "../ui/button";
@@ -99,6 +100,12 @@ interface GraphToolbarProps {
    *  surface omits the constellation scope (it lives in the Knowledge Graph
    *  view) so there is no cross-view jump back through the toolbar. */
   availableScopes?: Scope[] | undefined;
+  /** Modules scope: whether `external:*` dependency modules are drawn.
+   *  Hidden by default because they usually outnumber the repo's own modules. */
+  showExternals?: boolean | undefined;
+  onShowExternalsChange?: ((v: boolean) => void) | undefined;
+  /** How many external modules the toggle controls (0 hides the toggle). */
+  externalCount?: number | undefined;
 }
 
 // Scope = which subset of nodes are drawn. Mutually exclusive.
@@ -161,6 +168,9 @@ export const GraphToolbar = memo(function GraphToolbar({
   onGraphThemeChange,
   onToggleHelp,
   availableScopes,
+  showExternals,
+  onShowExternalsChange,
+  externalCount,
 }: GraphToolbarProps) {
   const scopes = availableScopes
     ? SCOPES.filter((s) => availableScopes.includes(s.id))
@@ -224,7 +234,7 @@ export const GraphToolbar = memo(function GraphToolbar({
             <button
               key={m.id}
               onClick={() => setScope(m.id)}
-              className={`flex items-center gap-1.5 px-2 py-1.5 rounded-md text-[10px] font-medium transition-all ${
+              className={`flex items-center gap-1.5 px-2 py-2 sm:py-1.5 rounded-md text-[10px] font-medium transition-all ${
                 isActive
                   ? "bg-[var(--color-accent-primary)]/15 text-[var(--color-accent-primary)]"
                   : "text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-overlay)]"
@@ -255,7 +265,7 @@ export const GraphToolbar = memo(function GraphToolbar({
             <button
               key={f.id}
               onClick={() => setNodeFilter(f.id)}
-              className={`flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium transition-all ${
+              className={`flex items-center gap-1 px-2 py-2 sm:py-1 rounded-md text-[10px] font-medium transition-all ${
                 isActive
                   ? "bg-[var(--color-accent-graph)]/15 text-[var(--color-accent-graph)]"
                   : "text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-overlay)]"
@@ -298,7 +308,7 @@ export const GraphToolbar = memo(function GraphToolbar({
                 <button
                   key={m.id}
                   onClick={() => onLayoutModeChange(m.id)}
-                  className={`flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium transition-all ${
+                  className={`flex items-center gap-1 px-2 py-2 sm:py-1 rounded-md text-[10px] font-medium transition-all ${
                     isActive
                       ? "bg-[var(--color-accent-graph)]/15 text-[var(--color-accent-graph)]"
                       : "text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-overlay)]"
@@ -322,7 +332,7 @@ export const GraphToolbar = memo(function GraphToolbar({
               <button
                 key={m.id}
                 onClick={() => onColorModeChange(m.id)}
-                className={`flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium transition-all ${
+                className={`flex items-center gap-1 px-2 py-2 sm:py-1 rounded-md text-[10px] font-medium transition-all ${
                   isActive
                     ? "bg-[var(--color-accent-graph)]/15 text-[var(--color-accent-graph)]"
                     : "text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-overlay)]"
@@ -342,7 +352,7 @@ export const GraphToolbar = memo(function GraphToolbar({
             size="sm"
             variant="ghost"
             onClick={() => onGraphThemeChange(graphTheme === "light" ? "dark" : "light")}
-            className={`h-7 w-7 p-0 ${graphTheme === "dark" ? "text-[var(--color-accent-graph)]" : "text-[var(--color-text-tertiary)]"}`}
+            className={`h-8 w-8 sm:h-7 sm:w-7 p-0 ${graphTheme === "dark" ? "text-[var(--color-accent-graph)]" : "text-[var(--color-text-tertiary)]"}`}
             title={graphTheme === "dark" ? "Light graph theme" : "Dark graph theme"}
             aria-label={graphTheme === "dark" ? "Light graph theme" : "Dark graph theme"}
             aria-pressed={graphTheme === "dark"}
@@ -356,7 +366,7 @@ export const GraphToolbar = memo(function GraphToolbar({
             size="sm"
             variant="ghost"
             onClick={onTogglePathFinder}
-            className={`h-7 w-7 p-0 ${showPathFinder ? "text-[var(--color-accent-graph)]" : "text-[var(--color-text-tertiary)]"}`}
+            className={`h-8 w-8 sm:h-7 sm:w-7 p-0 ${showPathFinder ? "text-[var(--color-accent-graph)]" : "text-[var(--color-text-tertiary)]"}`}
             title="Find dependency path"
             aria-label="Find dependency path"
             aria-pressed={showPathFinder}
@@ -369,7 +379,7 @@ export const GraphToolbar = memo(function GraphToolbar({
             size="sm"
             variant="ghost"
             onClick={onToggleFlows}
-            className={`h-7 w-7 p-0 ${showFlows ? "text-[var(--color-accent-graph)]" : "text-[var(--color-text-tertiary)]"}`}
+            className={`h-8 w-8 sm:h-7 sm:w-7 p-0 ${showFlows ? "text-[var(--color-accent-graph)]" : "text-[var(--color-text-tertiary)]"}`}
             title="Execution flows"
             aria-label="Execution flows"
             aria-pressed={showFlows}
@@ -377,12 +387,33 @@ export const GraphToolbar = memo(function GraphToolbar({
             <Workflow className="w-3.5 h-3.5" />
           </Button>
           )}
+          {activeScope === "modules" && onShowExternalsChange && (externalCount ?? 0) > 0 && (
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => onShowExternalsChange(!showExternals)}
+            className={`h-8 w-8 sm:h-7 sm:w-7 p-0 ${showExternals ? "text-[var(--color-accent-graph)]" : "text-[var(--color-text-tertiary)]"}`}
+            title={
+              showExternals
+                ? `Hide ${externalCount} external dependencies`
+                : `Show ${externalCount} external dependencies`
+            }
+            aria-label={
+              showExternals
+                ? "Hide external dependencies"
+                : "Show external dependencies"
+            }
+            aria-pressed={showExternals}
+          >
+            <Package className="w-3.5 h-3.5" />
+          </Button>
+          )}
           {!isConstellation && (
           <Button
             size="sm"
             variant="ghost"
             onClick={() => onHideTestsChange(!hideTests)}
-            className={`h-7 w-7 p-0 ${hideTests ? "text-[var(--color-accent-graph)]" : "text-[var(--color-text-tertiary)]"}`}
+            className={`h-8 w-8 sm:h-7 sm:w-7 p-0 ${hideTests ? "text-[var(--color-accent-graph)]" : "text-[var(--color-text-tertiary)]"}`}
             title={hideTests ? "Show test files" : "Hide test files"}
             aria-label={hideTests ? "Show test files" : "Hide test files"}
             aria-pressed={hideTests}
@@ -394,7 +425,7 @@ export const GraphToolbar = memo(function GraphToolbar({
             size="sm"
             variant="ghost"
             onClick={onFitView}
-            className="h-7 w-7 p-0 text-[var(--color-text-tertiary)]"
+            className="h-8 w-8 sm:h-7 sm:w-7 p-0 text-[var(--color-text-tertiary)]"
             title="Fit view"
             aria-label="Fit view"
           >
@@ -405,7 +436,7 @@ export const GraphToolbar = memo(function GraphToolbar({
               size="sm"
               variant="ghost"
               onClick={onToggleHelp}
-              className="h-7 w-7 p-0 text-[var(--color-text-tertiary)]"
+              className="h-8 w-8 sm:h-7 sm:w-7 p-0 text-[var(--color-text-tertiary)]"
               title="Keyboard shortcuts (?)"
               aria-label="Keyboard shortcuts"
             >
