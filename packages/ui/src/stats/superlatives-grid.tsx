@@ -1,14 +1,16 @@
 import * as React from "react";
 import {
   FileText,
+  Flame,
   GitCommitHorizontal,
   Hourglass,
   Network,
   Workflow,
   Boxes,
+  Zap,
 } from "lucide-react";
 import type { StatsSuperlatives } from "@repowise-dev/types/stats";
-import { formatNumber, formatRelativeTimeOrNull, truncatePath } from "../lib/format";
+import { formatDate, formatNumber, formatRelativeTimeOrNull, truncatePath } from "../lib/format";
 
 interface AwardRow {
   key: string;
@@ -60,12 +62,38 @@ function buildAwards(s: StatsSuperlatives): AwardRow[] {
     });
   }
   if (s.most_central_file) {
+    const central = s.most_central_file;
     rows.push({
       key: "central",
       icon: Network,
-      title: "Most central file",
-      primary: truncatePath(s.most_central_file.path, 42),
-      detail: `PageRank ${s.most_central_file.pagerank.toFixed(4)}`,
+      title: central.import_count != null ? "Most imported file" : "Most central file",
+      primary: truncatePath(central.path, 42),
+      detail:
+        central.import_count != null
+          ? `imported by ${formatNumber(central.import_count)} files · PageRank ${central.pagerank.toFixed(4)}`
+          : `PageRank ${central.pagerank.toFixed(4)}`,
+    });
+  }
+  if (s.biggest_commit) {
+    rows.push({
+      key: "biggest-commit",
+      icon: Zap,
+      title: "Biggest commit",
+      primary: s.biggest_commit.subject || s.biggest_commit.sha.slice(0, 10),
+      detail: `${formatNumber(s.biggest_commit.lines_changed)} lines across ${formatNumber(
+        s.biggest_commit.files_changed,
+      )} files — in one commit`,
+    });
+  }
+  if (s.longest_streak) {
+    rows.push({
+      key: "streak",
+      icon: Flame,
+      title: "Longest streak",
+      primary: `${formatNumber(s.longest_streak.days)} consecutive days`,
+      detail: `commits every day, ${formatDate(s.longest_streak.start)} – ${formatDate(
+        s.longest_streak.end,
+      )}`,
     });
   }
   if (s.strongest_coupling) {

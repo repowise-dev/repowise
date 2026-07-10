@@ -133,8 +133,31 @@ export interface StatsSuperlatives {
   most_complex_symbol?: { name: string; file_path: string; complexity: number };
   most_changed_file?: { path: string; commit_count: number };
   oldest_file?: { path: string; first_commit_at: string | null };
-  most_central_file?: { path: string; pagerank: number };
+  /** `import_count` present when graph metrics were materialized — the award
+   *  is then "most imported"; without it, it degrades to the PageRank pick. */
+  most_central_file?: { path: string; pagerank: number; import_count?: number };
   strongest_coupling?: { a: string; b: string; count: number };
+  /** Largest non-initial commit by churn (added + deleted lines). */
+  biggest_commit?: {
+    sha: string;
+    subject: string;
+    lines_changed: number;
+    files_changed: number;
+  };
+  /** Longest run of consecutive days with at least one commit (UTC dates). */
+  longest_streak?: { days: number; start: string; end: string };
+}
+
+export interface StatsEcosystem {
+  name: string;
+  count: number;
+}
+
+export interface StatsDependencies {
+  total: number;
+  runtime: number;
+  dev: number;
+  ecosystems: StatsEcosystem[];
 }
 
 export interface StatsRepo {
@@ -151,5 +174,7 @@ export interface StatsHighlights {
   people: StatsPeople;
   quality: StatsQuality;
   knowledge: StatsKnowledge;
+  /** Optional so older payloads (hosted exporters) degrade gracefully. */
+  dependencies?: StatsDependencies | null;
   superlatives: StatsSuperlatives;
 }

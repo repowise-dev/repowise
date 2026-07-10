@@ -1,4 +1,4 @@
-import { Bot, CalendarClock, Users, ShieldCheck, Trash2, HeartPulse } from "lucide-react";
+import { Bot, CalendarClock, Users, ShieldCheck, Trash2, HeartPulse, Package } from "lucide-react";
 import type { StatsHighlights } from "@repowise-dev/types/stats";
 import {
   SizeClassHero,
@@ -9,9 +9,18 @@ import {
 } from "@repowise-dev/ui/stats";
 import { formatNumber, formatLOC, formatAgeDays, formatDate } from "@repowise-dev/ui/lib/format";
 
+const ECOSYSTEM_NAMES: Record<string, string> = {
+  npm: "npm",
+  pypi: "PyPI",
+  go: "Go",
+  cargo: "crates.io",
+  nuget: "NuGet",
+};
+
 export function ByTheNumbersTab({ data }: { data: StatsHighlights }) {
   const { scale, activity, quality, people, superlatives } = data;
   const da = quality.defect_accuracy;
+  const deps = data.dependencies;
 
   return (
     <div className="space-y-5">
@@ -65,7 +74,7 @@ export function ByTheNumbersTab({ data }: { data: StatsHighlights }) {
         )}
       </div>
 
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <StatCallout
           label="Lines of code"
           value={formatLOC(scale.total_nloc)}
@@ -88,6 +97,18 @@ export function ByTheNumbersTab({ data }: { data: StatsHighlights }) {
             quality.dead_code.total_findings,
           )} dead-code findings`}
         />
+        {deps && deps.total > 0 && (
+          <StatCallout
+            label="Dependencies"
+            value={formatNumber(deps.total)}
+            icon={<Package className="h-4 w-4" />}
+            sub={`standing on ${formatNumber(deps.runtime)} runtime + ${formatNumber(
+              deps.dev,
+            )} dev shoulders across ${deps.ecosystems
+              .map((e) => ECOSYSTEM_NAMES[e.name] ?? e.name)
+              .join(", ")}`}
+          />
+        )}
       </div>
 
       <div>

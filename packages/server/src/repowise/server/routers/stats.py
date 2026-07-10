@@ -14,6 +14,9 @@ overview-summary contract.
 from __future__ import annotations
 
 import json
+import re
+from datetime import timedelta
+from itertools import pairwise
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -24,8 +27,10 @@ from repowise.core.ingestion.git_indexer import build_identity_resolver
 from repowise.core.persistence import crud
 from repowise.core.persistence.models import (
     DecisionRecord,
+    ExternalSystem,
     GitCommit,
     GitMetadata,
+    GraphMetric,
     GraphNode,
     Page,
     WikiSymbol,
@@ -66,6 +71,13 @@ def _size_class(total_nloc: int) -> dict[str, Any]:
 
 def _iso(dt: Any) -> str | None:
     return dt.isoformat() if dt is not None else None
+
+
+# Test-path convention shared with analysis (communities / execution_flows):
+# catches conftest, fixtures, and spec files the `is_test` flag misses.
+_TEST_PATH_RE = re.compile(
+    r"(test[s_/]|_test\.|\.test\.|\.spec\.|__tests__|conftest|fixture[s]?[/.])"
+)
 
 
 async def _scale(session: AsyncSession, repo_id: str, metrics: list[Any]) -> dict[str, Any]:
@@ -123,7 +135,12 @@ async def _activity(session: AsyncSession, repo_id: str) -> dict[str, Any]:
 
     Buckets the bounded ``git_commits`` table in Python so it is portable
     across SQLite/Postgres date functions (same approach as the agent-trend
-    endpoint)."""
+    endpoint).
+
+    Also derives the ``biggest_commit`` and ``longest_streak`` awards on the
+    same pass — they need per-commit rows anyway, and riding along here keeps
+    the endpoint at a single scan of the commits table. The caller moves them
+    into the superlatives payload."""
     rows = (
         await session.execute(
             select(
@@ -132,13 +149,18 @@ async def _activity(session: AsyncSession, repo_id: str) -> dict[str, Any]:
                 GitCommit.author_email,
                 GitCommit.agent_name,
                 GitCommit.is_fix,
+                GitCommit.sha,
+                GitCommit.subject,
+                GitCommit.lines_added,
+                GitCommit.lines_deleted,
+                GitCommit.files_changed,
             ).where(GitCommit.repository_id == repo_id)
         )
     ).all()
 
     # Fold GitHub noreply variants and same-name real+noreply emails to one
     # identity so the same person isn't counted as several contributors.
-    resolve = build_identity_resolver([(name, email) for _, name, email, _, _ in rows])
+    resolve = build_identity_resolver([(name, email) for _, name, email, *_ in rows])
 
     total = 0
     agent_total = 0
@@ -147,9 +169,17 @@ async def _activity(session: AsyncSession, repo_id: str) -> dict[str, Any]:
     agent_names: dict[str, int] = {}
     contributors: set[str] = set()
     first_at: Any = None
+    first_sha: str | None = None
     last_at: Any = None
+    commit_days: set[Any] = set()
+    # Top-2 commits by churn: the repo's very first commit is excluded from
+    # the "biggest commit" award (every import/initial commit would win), so
+    # two candidates are enough to survive dropping it.
+    top_commits: list[dict[str, Any]] = []
 
-    for committed_at, author_name, author_email, agent_name, is_fix in rows:
+    for row in rows:
+        committed_at, author_name, author_email, agent_name, is_fix = row[:5]
+        sha, subject, lines_added, lines_deleted, files_changed = row[5:]
         total += 1
         if author_email or author_name:
             key = resolve(author_name, author_email)
@@ -160,16 +190,48 @@ async def _activity(session: AsyncSession, repo_id: str) -> dict[str, Any]:
         if agent_name:
             agent_total += 1
             agent_names[agent_name] = agent_names.get(agent_name, 0) + 1
+        churn = int(lines_added or 0) + int(lines_deleted or 0)
+        if churn > 0:
+            top_commits.append(
+                {
+                    "sha": sha,
+                    "subject": subject or "",
+                    "lines_changed": churn,
+                    "files_changed": int(files_changed or 0),
+                }
+            )
+            top_commits.sort(key=lambda c: -c["lines_changed"])
+            del top_commits[2:]
         if committed_at is not None:
             if first_at is None or committed_at < first_at:
                 first_at = committed_at
+                first_sha = sha
             if last_at is None or committed_at > last_at:
                 last_at = committed_at
+            commit_days.add(committed_at.date())
             key = committed_at.strftime("%Y-%m")
             b = months.setdefault(key, {"total": 0, "agent": 0})
             b["total"] += 1
             if agent_name:
                 b["agent"] += 1
+
+    biggest_commit = next((c for c in top_commits if c["sha"] != first_sha), None)
+
+    longest_streak: dict[str, Any] | None = None
+    if commit_days:
+        days_sorted = sorted(commit_days)
+        best_len = run_len = 1
+        best_end = days_sorted[0]
+        for prev, cur in pairwise(days_sorted):
+            run_len = run_len + 1 if (cur - prev).days == 1 else 1
+            if run_len > best_len:
+                best_len, best_end = run_len, cur
+        if best_len >= 2:
+            longest_streak = {
+                "days": best_len,
+                "start": (best_end - timedelta(days=best_len - 1)).isoformat(),
+                "end": best_end.isoformat(),
+            }
 
     monthly = [
         {"month": m, "total": b["total"], "agent": b["agent"]} for m, b in sorted(months.items())
@@ -193,6 +255,8 @@ async def _activity(session: AsyncSession, repo_id: str) -> dict[str, Any]:
             ({"name": k, "count": v} for k, v in agent_names.items()),
             key=lambda x: -x["count"],
         ),
+        "biggest_commit": biggest_commit,
+        "longest_streak": longest_streak,
     }
 
 
@@ -353,17 +417,52 @@ async def _superlatives(
             "first_commit_at": _iso(oldest.first_commit_at),
         }
 
-    # Most central file (highest PageRank file node)
-    central = (
+    # Most imported file — highest fan-in among non-test file nodes, the
+    # legible version of "most central". External and test nodes are excluded
+    # so the award names real project source; the `is_test` flag misses
+    # conftest/fixture files, so the top candidates are re-checked against the
+    # test-path convention used across analysis. Falls back to the PageRank
+    # pick when graph metrics were not materialized for this repo.
+    candidates = (
         await session.execute(
-            select(GraphNode.node_id, GraphNode.pagerank)
-            .where(GraphNode.repository_id == repo_id, GraphNode.node_type == "file")
-            .order_by(GraphNode.pagerank.desc())
-            .limit(1)
+            select(GraphMetric.node_id, GraphMetric.in_degree, GraphMetric.pagerank)
+            .join(
+                GraphNode,
+                (GraphNode.repository_id == GraphMetric.repository_id)
+                & (GraphNode.node_id == GraphMetric.node_id),
+            )
+            .where(
+                GraphMetric.repository_id == repo_id,
+                GraphNode.node_type == "file",
+                GraphNode.is_test.is_(False),
+                GraphNode.external_system_id.is_(None),
+                ~GraphNode.node_id.like("external:%"),
+            )
+            .order_by(GraphMetric.in_degree.desc())
+            .limit(10)
         )
-    ).first()
-    if central is not None and (central[1] or 0) > 0:
-        out["most_central_file"] = {"path": central[0], "pagerank": round(float(central[1]), 4)}
+    ).all()
+    imported = next((c for c in candidates if not _TEST_PATH_RE.search(c[0])), None)
+    if imported is not None and (imported[1] or 0) > 0:
+        out["most_central_file"] = {
+            "path": imported[0],
+            "pagerank": round(float(imported[2] or 0.0), 4),
+            "import_count": int(imported[1]),
+        }
+    else:
+        central = (
+            await session.execute(
+                select(GraphNode.node_id, GraphNode.pagerank)
+                .where(GraphNode.repository_id == repo_id, GraphNode.node_type == "file")
+                .order_by(GraphNode.pagerank.desc())
+                .limit(1)
+            )
+        ).first()
+        if central is not None and (central[1] or 0) > 0:
+            out["most_central_file"] = {
+                "path": central[0],
+                "pagerank": round(float(central[1]), 4),
+            }
 
     # Strongest hidden coupling pair (max co-change count across files)
     best_pair: dict[str, Any] | None = None
@@ -381,6 +480,40 @@ async def _superlatives(
         out["strongest_coupling"] = best_pair
 
     return out
+
+
+async def _dependencies(session: AsyncSession, repo_id: str) -> dict[str, Any] | None:
+    """Third-party dependency rollup from the manifest-derived rows."""
+    rows = (
+        await session.execute(
+            select(ExternalSystem.ecosystem, ExternalSystem.is_dev_dep, func.count())
+            .where(ExternalSystem.repository_id == repo_id)
+            .group_by(ExternalSystem.ecosystem, ExternalSystem.is_dev_dep)
+        )
+    ).all()
+    if not rows:
+        return None
+
+    total = runtime = dev = 0
+    ecosystems: dict[str, int] = {}
+    for eco, is_dev, n in rows:
+        total += n
+        if is_dev:
+            dev += n
+        else:
+            runtime += n
+        key = eco or "other"
+        ecosystems[key] = ecosystems.get(key, 0) + n
+
+    return {
+        "total": total,
+        "runtime": runtime,
+        "dev": dev,
+        "ecosystems": sorted(
+            ({"name": k, "count": v} for k, v in ecosystems.items()),
+            key=lambda x: -x["count"],
+        ),
+    }
 
 
 @router.get("/{repo_id}/stats/highlights")
@@ -416,6 +549,15 @@ async def stats_highlights(
         or 0
     )
 
+    activity = await _activity(session, repo_id)
+    superlatives = await _superlatives(session, repo_id, metrics, all_meta)
+    # Computed on _activity's commit scan for performance, but they are awards
+    # so they belong under superlatives in the payload.
+    for key in ("biggest_commit", "longest_streak"):
+        value = activity.pop(key, None)
+        if value:
+            superlatives[key] = value
+
     return {
         "repo": {
             "id": repo.id,
@@ -424,12 +566,13 @@ async def stats_highlights(
             "head_commit": repo.head_commit,
         },
         "scale": await _scale(session, repo_id, metrics),
-        "activity": await _activity(session, repo_id),
+        "activity": activity,
         "people": await _people(session, repo_id, all_meta),
         "quality": await _quality(session, repo_id, metrics),
         "knowledge": {
             "decision_count": decision_count,
             "active_decision_count": active_decisions,
         },
-        "superlatives": await _superlatives(session, repo_id, metrics, all_meta),
+        "dependencies": await _dependencies(session, repo_id),
+        "superlatives": superlatives,
     }
