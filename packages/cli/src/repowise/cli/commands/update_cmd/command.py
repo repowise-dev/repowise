@@ -1021,7 +1021,7 @@ def run_update(
     if emitter is not None:
         emitter.stage("persist")
     try:
-        _persist_full_update(
+        db_total_pages = _persist_full_update(
             repo_path=repo_path,
             repo_name=repo_name,
             generated_pages=generated_pages,
@@ -1035,6 +1035,7 @@ def run_update(
             graph_builder=graph_builder,
             knowledge_graph_result=knowledge_graph_result,
             degraded=degraded,
+            decay_paths=affected.decay_only,
         )
     except Exception as exc:
         if emitter is not None:
@@ -1058,7 +1059,9 @@ def run_update(
             degraded.append(f"Knowledge-graph export: {exc}")
 
     state["last_sync_commit"] = head
-    state["total_pages"] = state.get("total_pages", 0) + len(generated_pages)
+    # Real DB total, not an accumulation: regeneration upserts existing pages,
+    # so adding len(generated_pages) every run inflated the count forever.
+    state["total_pages"] = db_total_pages
     state["config_fingerprint"] = config_fingerprint(repo_path)
     save_state(repo_path, state)
 

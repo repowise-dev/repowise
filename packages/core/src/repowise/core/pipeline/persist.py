@@ -80,6 +80,42 @@ async def mark_tombstone_pages(
     return marked
 
 
+async def mark_stale_pages(session: Any, repo_id: str, paths: list[str]) -> int:
+    """Decay weakly-affected file pages to ``freshness_status='stale'``.
+
+    ``ChangeDetector.get_affected_pages`` returns ``decay_only`` — pages hit
+    by the change cascade but beyond the regeneration budget (budget
+    overflow, co-change partners, 2-hop rename fallout). They keep serving
+    their existing content, but the stale bit makes the coverage view and
+    ``get_stale_pages`` truthful so the next docs run (or a reader) knows
+    they lag the code. Only ``fresh`` pages are downgraded — tombstoned or
+    already-stale pages keep their stronger status, and pages regenerated in
+    this run are never in ``decay_only`` by construction.
+
+    Returns the number of pages marked.
+    """
+    if not paths:
+        return 0
+    from sqlalchemy import update
+
+    from repowise.core.persistence.models import Page
+
+    page_ids = [f"file_page:{path}" for path in paths]
+    res = await session.execute(
+        update(Page)
+        .where(
+            Page.repository_id == repo_id,
+            Page.id.in_(page_ids),
+            Page.freshness_status == "fresh",
+        )
+        .values(freshness_status="stale")
+    )
+    marked = int(res.rowcount or 0)
+    if marked:
+        logger.info("pages_decayed_stale", repo_id=repo_id, count=marked)
+    return marked
+
+
 def _derive_entry_point_scores(graph_builder: Any) -> dict[str, float]:
     """Best-effort entry-point scores from the builder's execution-flow report.
 
@@ -540,9 +576,7 @@ async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
         # Resolved coverage rows, when a report was ingested this run.
         coverage_files = getattr(hr, "coverage_files", None)
         if coverage_files:
-            head_sha = getattr(result, "head_commit", None) or getattr(
-                result, "commit_sha", None
-            )
+            head_sha = getattr(result, "head_commit", None) or getattr(result, "commit_sha", None)
             await save_coverage_files(
                 session,
                 repo_id,

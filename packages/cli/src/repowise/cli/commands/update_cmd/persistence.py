@@ -291,7 +291,8 @@ def _persist_full_update(
     graph_builder: Any,
     knowledge_graph_result: Any | None,
     degraded: list[str],
-) -> None:
+    decay_paths: list[str] | None = None,
+) -> int:
     """Persist a full (LLM-regenerating) update in one transaction.
 
     Mirrors :func:`repowise.core.pipeline.incremental.persist_incremental_index`:
@@ -301,8 +302,13 @@ def _persist_full_update(
     Page upserts fail loudly — pages are the point of docs mode; every other
     step degrades into ``degraded`` with a logged warning. FTS indexing stays
     outside the transaction: it is rebuildable and non-transactional anyway.
+
+    Returns the repository's total page count after the write, so the caller
+    can stamp ``state["total_pages"]`` with the real DB total (regeneration
+    upserts existing pages, so accumulating ``len(generated_pages)`` inflates
+    the count forever).
     """
-    run_async(
+    return run_async(
         _persist_full_update_async(
             repo_path=repo_path,
             repo_name=repo_name,
@@ -317,6 +323,7 @@ def _persist_full_update(
             graph_builder=graph_builder,
             knowledge_graph_result=knowledge_graph_result,
             degraded=degraded,
+            decay_paths=decay_paths,
         )
     )
 
@@ -336,7 +343,8 @@ async def _persist_full_update_async(
     graph_builder: Any,
     knowledge_graph_result: Any | None,
     degraded: list[str],
-) -> None:
+    decay_paths: list[str] | None = None,
+) -> int:
     from repowise.cli.helpers import get_db_url_for_repo
     from repowise.core.persistence import (
         FullTextSearch,
@@ -378,6 +386,18 @@ async def _persist_full_update_async(
                 await mark_tombstone_pages(session, repo_id, tombstone_candidates(file_diffs))
             except Exception as exc:
                 _skip("Tombstone marking", exc)
+
+            # Weakly-affected pages (cascade overflow beyond the budget,
+            # co-change partners, 2-hop rename fallout) decay to 'stale' so
+            # the coverage view and get_stale_pages reflect them — the
+            # detector computed decay_only all along but it was never
+            # persisted.
+            try:
+                from repowise.core.pipeline.persist import mark_stale_pages
+
+                await mark_stale_pages(session, repo_id, decay_paths or [])
+            except Exception as exc:
+                _skip("Stale-page decay", exc)
 
             # Refreshed knowledge graph — same writers as the init pipeline
             # (full-replace layers/tour/curated meta).
@@ -526,6 +546,25 @@ async def _persist_full_update_async(
             except Exception as exc:
                 _skip("Generation job record", exc)
 
+            # Real page total for state.json — see _persist_full_update's
+            # docstring. Falls back to the upsert count if the count query
+            # itself degrades.
+            total_pages = len(generated_pages)
+            try:
+                from sqlalchemy import func as sa_func
+                from sqlalchemy import select as sa_select
+
+                from repowise.core.persistence.models import Page
+
+                count_result = await session.execute(
+                    sa_select(sa_func.count())
+                    .select_from(Page)
+                    .where(Page.repository_id == repo_id)
+                )
+                total_pages = int(count_result.scalar_one())
+            except Exception as exc:
+                _skip("Page count", exc)
+
         # FTS outside the transaction — rebuildable, and its writer manages
         # its own connection state.
         try:
@@ -535,6 +574,7 @@ async def _persist_full_update_async(
                 await fts.index(page.page_id, page.title, page.content)
         except Exception as exc:
             _skip("Full-text search indexing", exc)
+        return total_pages
     finally:
         await engine.dispose()
 
