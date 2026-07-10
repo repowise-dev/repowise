@@ -39,7 +39,7 @@ export function CoChangeTable({ coChanges, compact }: CoChangeTableProps) {
       <th className="px-3 py-2 text-left font-medium">Target</th>
       <th className={`px-3 py-2 text-left font-medium w-32 ${HIDE_BELOW_MD}`}>
         <span
-          title="Relative, recency-weighted frequency of same-author commits across these repos. Higher means more or more-recent shared activity. It is not a percentage or a verified dependency."
+          title="Share of the less-active file's recent work sessions that also touched the partner file (same author, recency-weighted). 100% would mean they always change together. It is not a verified dependency."
           className="cursor-help underline decoration-dotted underline-offset-2"
         >
           Strength
@@ -77,11 +77,11 @@ export function CoChangeTable({ coChanges, compact }: CoChangeTableProps) {
           <div className="h-1.5 flex-1 rounded-full bg-[var(--color-bg-inset)] overflow-hidden">
             <div
               className="h-full rounded-full bg-[var(--color-accent-primary)] transition-all"
-              style={{ width: `${Math.min(Math.round(cc.strength * 10), 100)}%` }}
+              style={{ width: `${Math.min(Math.round(cc.strength * 100), 100)}%` }}
             />
           </div>
           <span className="text-xs text-[var(--color-text-tertiary)] tabular-nums w-8 text-right">
-            {Math.round(cc.strength * 10) / 10}
+            {`${Math.round(cc.strength * 100)}%`}
           </span>
         </div>
       </td>

@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import json
-import math
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -25,7 +23,6 @@ from repowise.core.workspace.cross_repo import (
     save_overlay,
 )
 
-
 # ---------------------------------------------------------------------------
 # _parse_git_log
 # ---------------------------------------------------------------------------
@@ -35,38 +32,53 @@ class TestParseGitLog:
     def test_parses_standard_output(self, tmp_path: Path) -> None:
         """Mock subprocess to return a known git log and verify parsing."""
         fake_output = (
-            "\x00alice@co.com|1712900000\n"
+            "\x00alice@co.com\x01Alice\x011712900000\n"
             "src/app.py\n"
             "src/utils.py\n"
-            "\x00bob@co.com|1712890000\n"
+            "\x00bob@co.com\x01Bob B\x011712890000\n"
             "src/main.py\n"
         )
         with patch("subprocess.run") as mock_run:
-            mock_run.return_value = type("R", (), {
-                "returncode": 0, "stdout": fake_output, "stderr": ""
-            })()
+            mock_run.return_value = type(
+                "R", (), {"returncode": 0, "stdout": fake_output, "stderr": ""}
+            )()
             commits = _parse_git_log(tmp_path)
 
         assert len(commits) == 2
         assert commits[0].author_email == "alice@co.com"
+        assert commits[0].author_name == "Alice"
         assert commits[0].timestamp == 1712900000
         assert commits[0].files == ["src/app.py", "src/utils.py"]
         assert commits[1].author_email == "bob@co.com"
         assert commits[1].files == ["src/main.py"]
 
+    def test_author_identity_bridges_email_variants(self) -> None:
+        """Same human, different git configs → one identity."""
+        a = _GitCommit(
+            author_email="12345+jdoe@users.noreply.github.com",
+            timestamp=0,
+            author_name="Jane Doe",
+        )
+        b = _GitCommit(
+            author_email="jane@personal.dev",
+            timestamp=0,
+            author_name="JaneDoe",
+        )
+        c = _GitCommit(author_email="ci@bot.dev", timestamp=0, author_name="")
+        assert a.author_identity == b.author_identity == "janedoe"
+        assert c.author_identity == "ci@bot.dev"
+
     def test_handles_empty_repo(self, tmp_path: Path) -> None:
         with patch("subprocess.run") as mock_run:
-            mock_run.return_value = type("R", (), {
-                "returncode": 0, "stdout": "", "stderr": ""
-            })()
+            mock_run.return_value = type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
             commits = _parse_git_log(tmp_path)
         assert commits == []
 
     def test_handles_subprocess_failure(self, tmp_path: Path) -> None:
         with patch("subprocess.run") as mock_run:
-            mock_run.return_value = type("R", (), {
-                "returncode": 128, "stdout": "", "stderr": "fatal: not a git repo"
-            })()
+            mock_run.return_value = type(
+                "R", (), {"returncode": 128, "stdout": "", "stderr": "fatal: not a git repo"}
+            )()
             commits = _parse_git_log(tmp_path)
         assert commits == []
 
@@ -83,8 +95,7 @@ class TestParseGitLog:
 
 def _make_commits(alias: str, entries: list[tuple[str, int, list[str]]]) -> list[_GitCommit]:
     """Helper: build _GitCommit list from (email, ts, files) tuples."""
-    return [_GitCommit(author_email=e, timestamp=ts, files=files)
-            for e, ts, files in entries]
+    return [_GitCommit(author_email=e, timestamp=ts, files=files) for e, ts, files in entries]
 
 
 class TestCrossRepoCoChanges:
@@ -106,14 +117,24 @@ class TestCrossRepoCoChanges:
     def test_same_author_within_window(self) -> None:
         """Two repos, same author, commits <24h apart → edges found."""
         now = int(time.time())
-        results = self._detect_with_mocked_logs({
-            "backend": _make_commits("backend", [
-                ("alice@co.com", now - 3600, ["src/api.py"]),  # 1 hour ago
-            ]),
-            "frontend": _make_commits("frontend", [
-                ("alice@co.com", now - 7200, ["src/client.ts"]),  # 2 hours ago
-            ]),
-        }, min_score=0.0)
+        results = self._detect_with_mocked_logs(
+            {
+                "backend": _make_commits(
+                    "backend",
+                    [
+                        ("alice@co.com", now - 3600, ["src/api.py"]),  # 1 hour ago
+                    ],
+                ),
+                "frontend": _make_commits(
+                    "frontend",
+                    [
+                        ("alice@co.com", now - 7200, ["src/client.ts"]),  # 2 hours ago
+                    ],
+                ),
+            },
+            min_score=0.0,
+            min_sessions=1,
+        )
         assert len(results) >= 1
         edge = results[0]
         assert {edge.source_repo, edge.target_repo} == {"backend", "frontend"}
@@ -121,43 +142,71 @@ class TestCrossRepoCoChanges:
     def test_different_authors_no_match(self) -> None:
         """Same timestamps but different authors → no edges."""
         now = int(time.time())
-        results = self._detect_with_mocked_logs({
-            "backend": _make_commits("backend", [
-                ("alice@co.com", now - 3600, ["src/api.py"]),
-            ]),
-            "frontend": _make_commits("frontend", [
-                ("bob@co.com", now - 3600, ["src/client.ts"]),
-            ]),
-        }, min_score=0.0)
+        results = self._detect_with_mocked_logs(
+            {
+                "backend": _make_commits(
+                    "backend",
+                    [
+                        ("alice@co.com", now - 3600, ["src/api.py"]),
+                    ],
+                ),
+                "frontend": _make_commits(
+                    "frontend",
+                    [
+                        ("bob@co.com", now - 3600, ["src/client.ts"]),
+                    ],
+                ),
+            },
+            min_score=0.0,
+            min_sessions=1,
+        )
         assert len(results) == 0
 
     def test_outside_time_window(self) -> None:
         """Same author, commits >24h apart → no edges."""
         now = int(time.time())
-        results = self._detect_with_mocked_logs({
-            "backend": _make_commits("backend", [
-                ("alice@co.com", now, ["src/api.py"]),
-            ]),
-            "frontend": _make_commits("frontend", [
-                ("alice@co.com", now - 100000, ["src/client.ts"]),  # ~28h ago
-            ]),
-        }, min_score=0.0)
+        results = self._detect_with_mocked_logs(
+            {
+                "backend": _make_commits(
+                    "backend",
+                    [
+                        ("alice@co.com", now, ["src/api.py"]),
+                    ],
+                ),
+                "frontend": _make_commits(
+                    "frontend",
+                    [
+                        ("alice@co.com", now - 100000, ["src/client.ts"]),  # ~28h ago
+                    ],
+                ),
+            },
+            min_score=0.0,
+            min_sessions=1,
+        )
         assert len(results) == 0
 
     def test_temporal_decay(self) -> None:
         """Recent co-changes should have higher strength than old ones."""
         now = int(time.time())
         # Recent pair
-        recent = self._detect_with_mocked_logs({
-            "a": _make_commits("a", [("x@co.com", now - 100, ["f1.py"])]),
-            "b": _make_commits("b", [("x@co.com", now - 200, ["f2.py"])]),
-        }, min_score=0.0)
+        recent = self._detect_with_mocked_logs(
+            {
+                "a": _make_commits("a", [("x@co.com", now - 100, ["f1.py"])]),
+                "b": _make_commits("b", [("x@co.com", now - 200, ["f2.py"])]),
+            },
+            min_score=0.0,
+            min_sessions=1,
+        )
 
         # Old pair (6 months ago)
-        old = self._detect_with_mocked_logs({
-            "a": _make_commits("a", [("x@co.com", now - 15_000_000, ["f1.py"])]),
-            "b": _make_commits("b", [("x@co.com", now - 15_000_100, ["f2.py"])]),
-        }, min_score=0.0)
+        old = self._detect_with_mocked_logs(
+            {
+                "a": _make_commits("a", [("x@co.com", now - 15_000_000, ["f1.py"])]),
+                "b": _make_commits("b", [("x@co.com", now - 15_000_100, ["f2.py"])]),
+            },
+            min_score=0.0,
+            min_sessions=1,
+        )
 
         assert recent and old
         assert recent[0].strength > old[0].strength
@@ -165,36 +214,198 @@ class TestCrossRepoCoChanges:
     def test_min_score_filter(self) -> None:
         """Low-strength edges are filtered by min_score."""
         now = int(time.time())
-        # Very old commit → low weight
-        results = self._detect_with_mocked_logs({
-            "a": _make_commits("a", [("x@co.com", now - 30_000_000, ["f1.py"])]),
-            "b": _make_commits("b", [("x@co.com", now - 30_000_100, ["f2.py"])]),
-        }, min_score=5.0)
+        # Strength is bounded below 1, so a floor of 1.0 filters everything.
+        results = self._detect_with_mocked_logs(
+            {
+                "a": _make_commits("a", [("x@co.com", now - 100, ["f1.py"])]),
+                "b": _make_commits("b", [("x@co.com", now - 200, ["f2.py"])]),
+            },
+            min_score=1.0,
+            min_sessions=1,
+        )
         assert len(results) == 0
 
     def test_single_repo_returns_empty(self) -> None:
         """Only one repo → no cross-repo edges."""
         now = int(time.time())
-        results = self._detect_with_mocked_logs({
-            "only": _make_commits("only", [
-                ("alice@co.com", now, ["f1.py", "f2.py"]),
-            ]),
-        })
+        results = self._detect_with_mocked_logs(
+            {
+                "only": _make_commits(
+                    "only",
+                    [
+                        ("alice@co.com", now, ["f1.py", "f2.py"]),
+                    ],
+                ),
+            }
+        )
         assert results == []
 
     def test_multiple_files_per_commit(self) -> None:
-        """N files in commit A × M files in commit B = N*M file pairs."""
+        """N files in commit A x M files in commit B = N*M file pairs."""
         now = int(time.time())
-        results = self._detect_with_mocked_logs({
-            "a": _make_commits("a", [
-                ("x@co.com", now - 100, ["f1.py", "f2.py"]),
-            ]),
-            "b": _make_commits("b", [
-                ("x@co.com", now - 200, ["g1.py", "g2.py", "g3.py"]),
-            ]),
-        }, min_score=0.0)
-        # 2 × 3 = 6 unique file pairs
+        results = self._detect_with_mocked_logs(
+            {
+                "a": _make_commits(
+                    "a",
+                    [
+                        ("x@co.com", now - 100, ["f1.py", "f2.py"]),
+                    ],
+                ),
+                "b": _make_commits(
+                    "b",
+                    [
+                        ("x@co.com", now - 200, ["g1.py", "g2.py", "g3.py"]),
+                    ],
+                ),
+            },
+            min_score=0.0,
+            min_sessions=1,
+        )
+        # 2 x 3 = 6 unique file pairs
         assert len(results) == 6
+
+    def test_strength_bounded_below_one(self) -> None:
+        """Strength is a share: always in (0, 1) no matter the volume."""
+        now = int(time.time())
+        # Many co-sessions of the same pair, 2 days apart each
+        day = 86400
+        entries_a = [("x@co.com", now - i * 2 * day, ["api.py"]) for i in range(10)]
+        entries_b = [("x@co.com", now - i * 2 * day + 60, ["client.ts"]) for i in range(10)]
+        results = self._detect_with_mocked_logs(
+            {
+                "a": _make_commits("a", entries_a),
+                "b": _make_commits("b", entries_b),
+            },
+            min_score=0.0,
+        )
+        assert results
+        for r in results:
+            assert 0.0 < r.strength < 1.0
+
+    def test_session_collapses_burst_of_commits(self) -> None:
+        """A day of back-to-back commits is one session: frequency 1, not NxM."""
+        now = int(time.time())
+        results = self._detect_with_mocked_logs(
+            {
+                "a": _make_commits(
+                    "a",
+                    [
+                        ("x@co.com", now - 3600 * 1, ["api.py"]),
+                        ("x@co.com", now - 3600 * 2, ["api.py"]),
+                        ("x@co.com", now - 3600 * 3, ["api.py"]),
+                    ],
+                ),
+                "b": _make_commits(
+                    "b",
+                    [
+                        ("x@co.com", now - 3000, ["client.ts"]),
+                        ("x@co.com", now - 5000, ["client.ts"]),
+                        ("x@co.com", now - 9000, ["client.ts"]),
+                    ],
+                ),
+            },
+            min_score=0.0,
+            min_sessions=1,
+        )
+        assert len(results) == 1
+        assert results[0].frequency == 1
+
+    def test_single_session_pair_dropped_by_default(self) -> None:
+        """One shared afternoon proves nothing: default needs >=2 co-sessions."""
+        now = int(time.time())
+        results = self._detect_with_mocked_logs(
+            {
+                "a": _make_commits("a", [("x@co.com", now - 100, ["f1.py"])]),
+                "b": _make_commits("b", [("x@co.com", now - 200, ["f2.py"])]),
+            },
+            min_score=0.0,
+        )
+        assert results == []
+
+    def test_ubiquitous_file_filtered(self) -> None:
+        """A diary file touched in most commits never becomes an edge."""
+        now = int(time.time())
+        day = 86400
+        # 30 backend sessions 2 days apart (enough history for the ubiquity
+        # filter to engage); a diary rides along in every one.
+        backend = []
+        for i in range(30):
+            files = ["docs/PROGRESS.md", f"src/other_{i}.py"]
+            if i in (0, 2):
+                files.append("src/api.py")
+            backend.append(("x@co.com", now - i * 2 * day, files))
+        frontend = [
+            ("x@co.com", now - 0 * 2 * day + 60, ["src/client.ts"]),
+            ("x@co.com", now - 2 * 2 * day + 60, ["src/client.ts"]),
+        ]
+        results = self._detect_with_mocked_logs(
+            {
+                "backend": _make_commits("backend", backend),
+                "frontend": _make_commits("frontend", frontend),
+            }
+        )
+        assert results, "the real api.py <-> client.ts coupling must survive"
+        for r in results:
+            assert "PROGRESS.md" not in r.source_file
+            assert "PROGRESS.md" not in r.target_file
+        pair_files = {(r.source_file, r.target_file) for r in results}
+        assert ("src/api.py", "src/client.ts") in pair_files
+
+    def test_sustained_coupling_outranks_coincidence(self) -> None:
+        """5-of-6 sessions must outrank a 2-of-2 coincidence (smoothing)."""
+        now = int(time.time())
+        day = 86400
+        a_entries = []
+        b_entries = []
+        # Sustained pair: co-occurs in 5 sessions, plus one solo session
+        for i in range(5):
+            a_entries.append(("x@co.com", now - i * 2 * day, ["sustained.py"]))
+            b_entries.append(("x@co.com", now - i * 2 * day + 60, ["sustained.ts"]))
+        a_entries.append(("x@co.com", now - 5 * 2 * day, ["sustained.py"]))
+        # Coincidental pair: exists in exactly 2 sessions, both shared
+        for i in range(2):
+            a_entries.append(("y@co.com", now - i * 2 * day, ["coincidence.py"]))
+            b_entries.append(("y@co.com", now - i * 2 * day + 60, ["coincidence.ts"]))
+        results = self._detect_with_mocked_logs(
+            {
+                "a": _make_commits("a", a_entries),
+                "b": _make_commits("b", b_entries),
+            },
+            min_score=0.0,
+        )
+        by_pair = {(r.source_file, r.target_file): r.strength for r in results}
+        assert (
+            by_pair[("sustained.py", "sustained.ts")]
+            > by_pair[("coincidence.py", "coincidence.ts")]
+        )
+
+    def test_per_repo_pair_cap(self) -> None:
+        """One hyperactive repo pair cannot starve others out of the results."""
+        import repowise.core.workspace.cross_repo as cr
+
+        now = int(time.time())
+        day = 86400
+        # a<->b: 4x4 files co-occurring in 2 recent sessions → 16 strong pairs
+        ab_a = [("x@co.com", now - i * 2 * day, [f"a{n}.py" for n in range(4)]) for i in range(2)]
+        ab_b = [
+            ("x@co.com", now - i * 2 * day + 60, [f"b{n}.ts" for n in range(4)]) for i in range(2)
+        ]
+        # a<->c: one weaker (older) pair
+        ac_a = [("x@co.com", now - (100 + i * 2) * day, ["shared.py"]) for i in range(2)]
+        ac_c = [("x@co.com", now - (100 + i * 2) * day + 60, ["consumer.go"]) for i in range(2)]
+        with patch.object(cr, "_MAX_EDGES_PER_REPO_PAIR", 5):
+            results = self._detect_with_mocked_logs(
+                {
+                    "a": _make_commits("a", ab_a + ac_a),
+                    "b": _make_commits("b", ab_b),
+                    "c": _make_commits("c", ac_c),
+                },
+                min_score=0.0,
+            )
+        ab_edges = [r for r in results if {r.source_repo, r.target_repo} == {"a", "b"}]
+        ac_edges = [r for r in results if {r.source_repo, r.target_repo} == {"a", "c"}]
+        assert len(ab_edges) == 5, "hyperactive pair capped"
+        assert len(ac_edges) == 1, "weaker pair still present"
 
 
 # ---------------------------------------------------------------------------
@@ -203,39 +414,47 @@ class TestCrossRepoCoChanges:
 
 
 class TestIsNoisePath:
-    @pytest.mark.parametrize("path", [
-        ".github/workflows/deploy.yml",
-        "sub/.github/workflows/build.yaml",
-        "package-lock.json",
-        "frontend/yarn.lock",
-        "Cargo.lock",
-        "go.sum",
-        "poetry.lock",
-        "uv.lock",
-        "app/static/bundle.min.js",
-        "styles/site.min.css",
-        "dist/index.js",
-        "node_modules/left-pad/index.js",
-        "src/generated/client.ts",
-        "Assets/Localization/en.json",
-        "web/locales/de.json",
-        "i18n/messages.fr.json",
-        "Assets/UI/Panels/InventoryPanel.prefab",
-        "api/proto/service.pb.go",
-        "svc/pb/thing_pb2.py",
-        "messages.po",
-    ])
+    @pytest.mark.parametrize(
+        "path",
+        [
+            ".github/workflows/deploy.yml",
+            "sub/.github/workflows/build.yaml",
+            "package-lock.json",
+            "frontend/yarn.lock",
+            "Cargo.lock",
+            "go.sum",
+            "poetry.lock",
+            "uv.lock",
+            "app/static/bundle.min.js",
+            "styles/site.min.css",
+            "dist/index.js",
+            "node_modules/left-pad/index.js",
+            "src/generated/client.ts",
+            "Assets/Localization/en.json",
+            "web/locales/de.json",
+            "i18n/messages.fr.json",
+            "Assets/UI/Panels/InventoryPanel.prefab",
+            "api/proto/service.pb.go",
+            "svc/pb/thing_pb2.py",
+            "messages.po",
+            "CHANGELOG.md",
+            "docs/CHANGELOG.md",
+        ],
+    )
     def test_noise_paths_detected(self, path: str) -> None:
         assert _is_noise_path(path) is True
 
-    @pytest.mark.parametrize("path", [
-        "src/api.py",
-        "src/client.ts",
-        "backend/src/domain/manager.rs",
-        "config.json",
-        "README.md",
-        "packages/core/index.ts",
-    ])
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "src/api.py",
+            "src/client.ts",
+            "backend/src/domain/manager.rs",
+            "config.json",
+            "README.md",
+            "packages/core/index.ts",
+        ],
+    )
     def test_signal_paths_kept(self, path: str) -> None:
         assert _is_noise_path(path) is False
 
@@ -261,14 +480,28 @@ class TestCrossRepoNoiseFiltering:
     def test_noise_files_excluded_from_pairs(self) -> None:
         """Workflow/lockfile noise never appears in co-change results."""
         now = int(time.time())
-        results = self._detect_with_mocked_logs({
-            "backend": _make_commits("backend", [
-                ("alice@co.com", now - 3600, ["src/api.py", ".github/workflows/deploy.yml"]),
-            ]),
-            "frontend": _make_commits("frontend", [
-                ("alice@co.com", now - 7200, ["src/client.ts", "yarn.lock"]),
-            ]),
-        }, min_score=0.0)
+        results = self._detect_with_mocked_logs(
+            {
+                "backend": _make_commits(
+                    "backend",
+                    [
+                        (
+                            "alice@co.com",
+                            now - 3600,
+                            ["src/api.py", ".github/workflows/deploy.yml"],
+                        ),
+                    ],
+                ),
+                "frontend": _make_commits(
+                    "frontend",
+                    [
+                        ("alice@co.com", now - 7200, ["src/client.ts", "yarn.lock"]),
+                    ],
+                ),
+            },
+            min_score=0.0,
+            min_sessions=1,
+        )
         # Only the real src/api.py <-> src/client.ts pair survives.
         assert len(results) == 1
         files = {results[0].source_file, results[0].target_file}
@@ -277,46 +510,50 @@ class TestCrossRepoNoiseFiltering:
     def test_commit_with_only_noise_dropped(self) -> None:
         """A commit left empty after filtering produces no edges."""
         now = int(time.time())
-        results = self._detect_with_mocked_logs({
-            "backend": _make_commits("backend", [
-                ("alice@co.com", now - 3600, [".github/workflows/deploy.yml"]),
-            ]),
-            "frontend": _make_commits("frontend", [
-                ("alice@co.com", now - 7200, ["src/client.ts"]),
-            ]),
-        }, min_score=0.0)
+        results = self._detect_with_mocked_logs(
+            {
+                "backend": _make_commits(
+                    "backend",
+                    [
+                        ("alice@co.com", now - 3600, [".github/workflows/deploy.yml"]),
+                    ],
+                ),
+                "frontend": _make_commits(
+                    "frontend",
+                    [
+                        ("alice@co.com", now - 7200, ["src/client.ts"]),
+                    ],
+                ),
+            },
+            min_score=0.0,
+            min_sessions=1,
+        )
         assert results == []
 
-    def test_large_commit_does_not_dominate(self) -> None:
-        """A focused 1x1 cross-repo pair outranks pairs born from a wide commit.
-
-        Same author, same recency: a small focused commit pairing should score
-        higher per-pair than pairs spun off a sprawling release commit.
-        """
+    def test_wide_session_capped_per_side(self) -> None:
+        """A sprawling release session pairs at most 20 files per side."""
         now = int(time.time())
-        focused_files = [f"focused_b{n}.py" for n in range(1)]
-        wide_files = [f"wide_b{n}.py" for n in range(40)]
-        results = self._detect_with_mocked_logs({
-            "a": _make_commits("a", [
-                ("x@co.com", now - 100, ["focused_a.py"]),
-                ("x@co.com", now - 50, ["wide_a.py"]),
-            ]),
-            "b": _make_commits("b", [
-                ("x@co.com", now - 120, focused_files),
-                ("x@co.com", now - 60, wide_files),
-            ]),
-        }, min_score=0.0)
-        by_pair = {(r.source_file, r.target_file): r.strength for r in results}
-        # The focused pair must outrank any pair generated from the wide commit.
-        focused_strength = max(
-            s for (sf, tf), s in by_pair.items()
-            if "focused" in sf or "focused" in tf
+        wide_files = [f"wide_b{n:02d}.py" for n in range(40)]
+        results = self._detect_with_mocked_logs(
+            {
+                "a": _make_commits(
+                    "a",
+                    [
+                        ("x@co.com", now - 100, ["main.py"]),
+                    ],
+                ),
+                "b": _make_commits(
+                    "b",
+                    [
+                        ("x@co.com", now - 120, wide_files),
+                    ],
+                ),
+            },
+            min_score=0.0,
+            min_sessions=1,
         )
-        wide_strength = max(
-            s for (sf, tf), s in by_pair.items()
-            if "wide" in sf and "wide" in tf
-        )
-        assert focused_strength > wide_strength
+        # 1 x min(40, 20) = 20 pairs, not 40
+        assert len(results) == 20
 
 
 # ---------------------------------------------------------------------------
@@ -407,19 +644,24 @@ class TestManifestScanning:
 class TestOverlayPersistence:
     def test_save_and_load_round_trip(self, tmp_path: Path) -> None:
         overlay = CrossRepoOverlay(
-            version=1,
             generated_at="2026-04-12T12:00:00Z",
             co_changes=[
                 CrossRepoCoChange(
-                    source_repo="a", source_file="f1.py",
-                    target_repo="b", target_file="f2.py",
-                    strength=3.5, frequency=4, last_date="2026-04-10",
+                    source_repo="a",
+                    source_file="f1.py",
+                    target_repo="b",
+                    target_file="f2.py",
+                    strength=0.35,
+                    frequency=4,
+                    last_date="2026-04-10",
                 ),
             ],
             package_deps=[
                 CrossRepoPackageDep(
-                    source_repo="b", target_repo="a",
-                    source_manifest="package.json", kind="npm_local_path",
+                    source_repo="b",
+                    target_repo="a",
+                    source_manifest="package.json",
+                    kind="npm_local_path",
                 ),
             ],
             repo_summaries={"a": {"cross_repo_edge_count": 1}},
@@ -427,11 +669,17 @@ class TestOverlayPersistence:
         save_overlay(overlay, tmp_path)
         loaded = load_overlay(tmp_path)
         assert loaded is not None
-        assert loaded.version == 1
+        assert loaded.version == overlay.version
         assert len(loaded.co_changes) == 1
-        assert loaded.co_changes[0].strength == 3.5
+        assert loaded.co_changes[0].strength == 0.35
         assert len(loaded.package_deps) == 1
         assert loaded.package_deps[0].kind == "npm_local_path"
+
+    def test_load_stale_version_returns_none(self, tmp_path: Path) -> None:
+        """v1 overlays carry unbounded strengths — treated as absent."""
+        overlay = CrossRepoOverlay(version=1)
+        save_overlay(overlay, tmp_path)
+        assert load_overlay(tmp_path) is None
 
     def test_load_missing_file_returns_none(self, tmp_path: Path) -> None:
         assert load_overlay(tmp_path) is None

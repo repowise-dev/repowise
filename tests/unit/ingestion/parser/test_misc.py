@@ -22,6 +22,44 @@ class TestUnsupportedLanguage:
         assert result.parse_errors == []
 
 
+class TestContentHash:
+    def test_parse_file_stamps_content_hash(self, parser: ASTParser) -> None:
+        """Every parse path stamps SHA256(raw bytes) — the cross-run page-reuse key."""
+        import hashlib
+
+        source = b"def add(a, b):\n    return a + b\n"
+        fi = _make_file_info("pkg/math.py", "python")
+        result = parser.parse_file(fi, source)
+        assert result.content_hash == hashlib.sha256(source).hexdigest()
+
+    def test_no_grammar_fallback_stamps_content_hash(self, parser: ASTParser) -> None:
+        import hashlib
+
+        source = b"some content here"
+        fi = _make_file_info("file.xyz", "unknown")
+        fi.language = "unknown"
+        result = parser.parse_file(fi, source)
+        assert result.content_hash == hashlib.sha256(source).hexdigest()
+
+    def test_special_handler_stamps_content_hash(self, parser: ASTParser) -> None:
+        """Non-tree-sitter formats (Dockerfile & co) go through parse_special —
+        they must be stamped too."""
+        import hashlib
+
+        source = b"FROM python:3.12\nRUN pip install repowise\n"
+        fi = _make_file_info("Dockerfile", "dockerfile")
+        result = parser.parse_file(fi, source)
+        assert result.content_hash == hashlib.sha256(source).hexdigest()
+
+    def test_empty_file_stamps_content_hash(self, parser: ASTParser) -> None:
+        """sha256(b\"\") is a real, stable hash — empty files reuse like any other."""
+        import hashlib
+
+        fi = _make_file_info("pkg/__init__.py", "python")
+        result = parser.parse_file(fi, b"")
+        assert result.content_hash == hashlib.sha256(b"").hexdigest()
+
+
 class TestLanguageConfigs:
     def test_all_supported_languages_have_config(self) -> None:
         expected = {

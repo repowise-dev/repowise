@@ -446,7 +446,7 @@ async def test_single_repo_mode_no_workspace():
 def enricher_data(tmp_path):
     """Write a cross_repo_edges.json and return its path."""
     data = {
-        "version": 1,
+        "version": 2,
         "generated_at": "2026-04-12T12:00:00Z",
         "co_changes": [
             {

@@ -232,3 +232,24 @@ def test_deleted_files_age_out_of_cache(repo):
     cached_paths = {path for path, _hash in payload["files"]}
     assert "other.py" not in cached_paths
     assert "main.py" in cached_paths
+
+
+def test_cache_hit_stamps_content_hash(repo):
+    """A hit must carry the raw-bytes hash even for entries pickled before
+    ParsedFile had the field — the cache key already proves byte identity,
+    and the cross-run page-reuse key is derived from this attribute."""
+    from repowise.core.ingestion.parser import ASTParser
+
+    fi = _make_file_info(repo / "main.py", "main.py")
+    source = (repo / "main.py").read_bytes()
+    parsed = ASTParser().parse_file(fi, source)
+    parsed.content_hash = ""  # simulate an old pickle without the field
+
+    cache = ParseCache(repo / ".repowise")
+    cache.load()
+    content_hash = compute_content_hash(source)
+    cache.put(parsed, content_hash)
+
+    hit = cache.get(fi, content_hash)
+    assert hit is not None
+    assert hit.content_hash == content_hash

@@ -20,7 +20,7 @@ def contracts_json(tmp_path: Path) -> Path:
     """Write a minimal contracts.json and return its path."""
     path = tmp_path / "contracts.json"
     _write_json(path, {
-        "version": 1,
+        "version": 2,
         "generated_at": "2026-04-12T12:00:00Z",
         "contracts": [
             {
@@ -64,7 +64,7 @@ def contracts_json(tmp_path: Path) -> Path:
 def empty_cross_repo(tmp_path: Path) -> Path:
     """Empty cross_repo_edges.json (no co-changes or deps)."""
     path = tmp_path / "cross_repo_edges.json"
-    _write_json(path, {"version": 1, "co_changes": [], "package_deps": []})
+    _write_json(path, {"version": 2, "co_changes": [], "package_deps": []})
     return path
 
 

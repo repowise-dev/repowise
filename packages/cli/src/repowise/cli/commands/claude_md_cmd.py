@@ -203,8 +203,8 @@ def _generate_workspace(
         WORKSPACE_DATA_DIR,
         WorkspaceConfig,
     )
-    from repowise.core.workspace.cross_repo import CROSS_REPO_EDGES_FILENAME
     from repowise.core.workspace.contracts import CONTRACTS_FILENAME
+    from repowise.core.workspace.cross_repo import load_overlay
 
     ws_root = find_workspace_root(start_path)
     if ws_root is None:
@@ -220,14 +220,14 @@ def _generate_workspace(
     # ------------------------------------------------------------------
     co_changes: list[dict] = []
     package_deps: list[dict] = []
-    edges_file = data_dir / CROSS_REPO_EDGES_FILENAME
-    if edges_file.exists():
-        try:
-            overlay = json.loads(edges_file.read_text(encoding="utf-8"))
-            co_changes = overlay.get("co_changes", [])
-            package_deps = overlay.get("package_deps", [])
-        except Exception:
-            pass  # non-fatal; workspace data may not exist yet
+    overlay_summaries: dict[str, dict] = {}
+    overlay = load_overlay(ws_root)  # None when absent, corrupt, or stale-versioned
+    if overlay is not None:
+        from dataclasses import asdict
+
+        co_changes = [asdict(c) for c in overlay.co_changes]
+        package_deps = [asdict(d) for d in overlay.package_deps]
+        overlay_summaries = overlay.repo_summaries
 
     # Sort co-changes by frequency descending so the top entries are most useful
     co_changes = sorted(co_changes, key=lambda c: c.get("frequency", 0), reverse=True)
@@ -257,25 +257,9 @@ def _generate_workspace(
         abs_path = (ws_root / entry.path).resolve()
         file_count, symbol_count = _query_repo_counts(abs_path)
 
-        # Hotspot count: try to read from the overlay's repo_summaries if available
-        hotspot_count = 0
-        if edges_file.exists():
-            try:
-                overlay_data = json.loads(edges_file.read_text(encoding="utf-8"))
-                repo_sum = overlay_data.get("repo_summaries", {}).get(entry.alias, {})
-                hotspot_count = repo_sum.get("hotspot_count", 0)
-            except Exception:
-                pass
-
-        # Entry points: read from overlay repo_summaries if present, else empty
-        entry_points: list[str] = []
-        if edges_file.exists():
-            try:
-                overlay_data = json.loads(edges_file.read_text(encoding="utf-8"))
-                repo_sum = overlay_data.get("repo_summaries", {}).get(entry.alias, {})
-                entry_points = repo_sum.get("entry_points", [])
-            except Exception:
-                pass
+        repo_sum = overlay_summaries.get(entry.alias, {})
+        hotspot_count = repo_sum.get("hotspot_count", 0)
+        entry_points = repo_sum.get("entry_points", [])
 
         repo_summaries.append(
             WorkspaceRepoSummary(

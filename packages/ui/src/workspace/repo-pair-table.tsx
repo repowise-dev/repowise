@@ -82,11 +82,11 @@ export function RepoPairTable({ repoPairs, onSelectPair, selectedPairId }: RepoP
             <div className="h-1.5 flex-1 rounded-full bg-[var(--color-bg-inset)] overflow-hidden">
               <div
                 className="h-full rounded-full bg-[var(--color-accent-primary)] transition-all"
-                style={{ width: `${Math.min(Math.round(p.maxStrength * 10), 100)}%` }}
+                style={{ width: `${Math.min(Math.round(p.maxStrength * 100), 100)}%` }}
               />
             </div>
             <span className="text-xs text-[var(--color-text-tertiary)] tabular-nums w-8 text-right">
-              {Math.round(p.maxStrength * 10) / 10}
+              {`${Math.round(p.maxStrength * 100)}%`}
             </span>
           </div>
         </td>

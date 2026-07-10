@@ -300,6 +300,63 @@ def test_js_def_use_destructuring():
     assert {"items", "factor"} <= defs
 
 
+def test_ts_shorthand_object_literal_reads():
+    # ``{ days, limit }`` in a return reads both locals; ``shorthand_property_
+    # identifier`` must count as a use even though its ``_pattern`` twin is a
+    # destructuring def.
+    fn = _first(
+        "typescript",
+        """
+        function build(days: number, limit: number) {
+            const payload = compute(days);
+            return { days, limit, payload };
+        }
+        """,
+    )
+    uses = _use_names(fn)
+    assert {"days", "limit", "payload"} <= uses
+    # Reads never become defs.
+    defs = _def_names(fn)
+    assert defs == {"days", "limit", "payload"}  # params + the one declaration
+
+
+def test_ts_shorthand_mixed_with_destructuring_same_statement():
+    # LHS shorthand is a destructuring def; RHS shorthand is a read -- both on
+    # one statement.
+    fn = _first(
+        "typescript",
+        """
+        function f(source: { a: number }, b: number) {
+            const { a } = { ...source, b };
+            return a;
+        }
+        """,
+    )
+    assert "a" in _def_names(fn)
+    # On the destructuring line itself only ``a`` binds; the RHS shorthand
+    # ``b`` stays a read (its sole def is the parameter seed).
+    destructure_defs = {d.var for d in fn.def_use.definitions if d.line == 3}
+    assert destructure_defs == {"a"}
+    uses = _use_names(fn)
+    assert {"source", "b"} <= uses
+
+
+def test_js_shorthand_and_spread_reads():
+    # Plain JS pack: spread reads its identifier, shorthand reads its local.
+    fn = _first(
+        "javascript",
+        """
+        function merge(base, extra) {
+            const combined = { ...base, extra };
+            return combined;
+        }
+        """,
+    )
+    uses = _use_names(fn)
+    assert {"base", "extra"} <= uses
+    assert "extra" not in {d.var for d in fn.def_use.definitions if d.line > fn.start_line}
+
+
 _TS_PROCESS = """
 function process(records: number[], threshold: number): [number, number] {
     const results: number[] = [];

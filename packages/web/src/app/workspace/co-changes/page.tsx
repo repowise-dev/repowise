@@ -103,10 +103,11 @@ export default function CoChangesPage() {
           </div>
         </div>
         <p className="text-sm text-[var(--color-text-secondary)] mt-2">
-          Files the same author committed across repositories within a short time
-          window. This is a temporal work-pattern hint from git history, not a
-          verified technical dependency, so treat it as a starting point for
-          inspection rather than proof of coupling.
+          Files the same author tends to change in the same work sessions across
+          repositories. Strength is the share of the less-active file&apos;s recent
+          sessions that also touched the partner. This is a temporal work-pattern
+          hint from git history, not a verified technical dependency, so treat it
+          as a starting point for inspection rather than proof of coupling.
         </p>
       </div>
 
@@ -126,11 +127,11 @@ export default function CoChangesPage() {
           label="Avg Strength"
           value={
             data?.co_changes && data.co_changes.length > 0
-              ? Math.round(
+              ? `${Math.round(
                   (data.co_changes.reduce((sum, cc) => sum + cc.strength, 0) /
                     data.co_changes.length) *
-                    10,
-                ) / 10
+                    100,
+                )}%`
               : "—"
           }
           icon={<GitMerge className="h-4 w-4 text-[var(--color-accent-primary)]" />}

@@ -41,8 +41,13 @@ class PerTypeGenerationMixin:
             parsed, graph, pagerank, betweenness, community, source_bytes
         )
         user_prompt = self._render("file_page.j2", ctx=ctx)
+        content_hash = self._reuse_content_hash(parsed)
         response = await self._call_provider(
-            "file_page", user_prompt, str(uuid.uuid4()), target_path=parsed.file_info.path
+            "file_page",
+            user_prompt,
+            str(uuid.uuid4()),
+            target_path=parsed.file_info.path,
+            content_hash=content_hash,
         )
         return self._build_generated_page(
             "file_page",
@@ -51,6 +56,7 @@ class PerTypeGenerationMixin:
             response,
             compute_source_hash(user_prompt),
             GENERATION_LEVELS["file_page"],
+            content_hash=content_hash,
         )
 
     async def generate_symbol_spotlight(
