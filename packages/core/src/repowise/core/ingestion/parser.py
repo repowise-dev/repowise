@@ -54,6 +54,7 @@ from .models import (
     ParsedFile,
     Symbol,
     TypeReference,
+    compute_content_hash,
 )
 from .parser_helpers import (
     TYPE_HEAD_EXTRACTORS,
@@ -227,13 +228,16 @@ class ASTParser:
     def parse_file(self, file_info: FileInfo, source: bytes) -> ParsedFile:
         """Parse *source* bytes and return a fully populated ParsedFile."""
         lang = file_info.language
+        content_hash = compute_content_hash(source)
 
         # Non-tree-sitter formats (OpenAPI, Dockerfile, Makefile, SQL) parse
         # via dedicated handlers. Checked before the grammar lookup: none of
         # these tags carry a LanguageConfig, so the no-grammar fallback below
         # would otherwise swallow them.
         if lang in SPECIAL_HANDLER_LANGUAGES:
-            return parse_special(file_info, source, lang)
+            parsed = parse_special(file_info, source, lang)
+            parsed.content_hash = content_hash
+            return parsed
 
         config = LANGUAGE_CONFIGS.get(lang)
         # .tsx files need the JSX-aware grammar; tree-sitter-typescript's
@@ -262,6 +266,7 @@ class ASTParser:
                 exports=[],
                 docstring=None,
                 parse_errors=[],
+                content_hash=content_hash,
             )
 
         parser = Parser(language)
@@ -322,6 +327,7 @@ class ASTParser:
             heritage=heritage,
             docstring=docstring,
             parse_errors=parse_errors,
+            content_hash=content_hash,
             type_refs=type_refs,
             local_refs=local_refs,
         )

@@ -188,6 +188,9 @@ class ParseCache:
         self.hits += 1
         self._fresh[key] = blob
         parsed.file_info = file_info
+        # Pickles written before ParsedFile carried content_hash deserialize
+        # with the field empty; the cache key already proves the bytes match.
+        parsed.content_hash = content_hash
         return parsed
 
     def put(self, parsed: ParsedFile, content_hash: str) -> None:
