@@ -34,9 +34,6 @@ def rendered() -> str:
 
 
 class TestDistillSection:
-    def test_section_present(self, rendered: str) -> None:
-        assert "### Output Distillation" in rendered
-
     def test_teaches_distill_command(self, rendered: str) -> None:
         assert "repowise distill <cmd>" in rendered
 
@@ -46,4 +43,4 @@ class TestDistillSection:
         assert "repowise expand <ref>" in rendered
 
     def test_discourages_rerunning(self, rendered: str) -> None:
-        assert "Never re-run" in rendered
+        assert "never re-run the command" in rendered

@@ -129,7 +129,9 @@ class EditorFileDataFetcher:
         modules: list[KeyModule] = []
         for page, _pagerank, symbol_count in rows:
             purpose = _extract_sentences(page.content or "", max_sentences=1)
-            purpose = _truncate_at_word(purpose, 80).rstrip(".") if purpose else ""
+            # 80 chars cut every purpose mid-thought ("…is the **test-layer
+            # ingestion subsystem** for…"); 140 fits one real clause.
+            purpose = _truncate_at_word(purpose, 140).rstrip(".") if purpose else ""
             modules.append(
                 KeyModule(
                     name=page.target_path,
@@ -200,6 +202,8 @@ class EditorFileDataFetcher:
 
     async def _get_decisions(self) -> list[DecisionSummary]:
         """Active decision records, least-stale first."""
+        from repowise.core.exclusion import build_exclude_spec, decision_is_excluded
+
         result = await self._session.execute(
             select(DecisionRecord)
             .where(
@@ -207,9 +211,14 @@ class EditorFileDataFetcher:
                 DecisionRecord.status == "active",
             )
             .order_by(DecisionRecord.staleness_score.asc())
-            .limit(_MAX_DECISIONS)
+            # Over-fetch: records anchored entirely in excluded paths (vendored
+            # venvs mined before exclude rules changed) are dropped below.
+            .limit(_MAX_DECISIONS * 3)
         )
-        records = list(result.scalars().all())
+        exclude_spec = build_exclude_spec(self._repo_path)
+        records = [r for r in result.scalars().all() if not decision_is_excluded(r, exclude_spec)][
+            :_MAX_DECISIONS
+        ]
         summaries: list[DecisionSummary] = []
         for rec in records:
             rationale = (rec.rationale or "").strip()
@@ -489,6 +498,10 @@ def _extract_sentences(text: str, max_sentences: int) -> str:
     # Drop list items, table rows, and blockquotes — prose only.
     # Both "1." and "1)" enumeration styles count as list items.
     text = re.sub(r"^\s*(?:[-*+]\s|\d+[.)]\s|\||>).*$", "", text, flags=re.MULTILINE)
+    # Drop colon-terminated list lead-ins ("Repowise consumes:") — their list
+    # items were just stripped, so keeping them leaves dangling fragments in
+    # the rendered CLAUDE.md.
+    text = re.sub(r"^.*:\s*$", "", text, flags=re.MULTILINE)
     text = re.sub(r"`([^`]+)`", r"\1", text)  # strip backticks, keep text
     text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)  # links → text
     text = re.sub(r"\n{2,}", "\n", text).strip()

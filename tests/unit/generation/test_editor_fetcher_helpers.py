@@ -52,6 +52,24 @@ class TestExtractSentences:
         assert "rendered in a web UI." in out
         assert "served through an API." in out
 
+    def test_colon_lead_ins_are_dropped_with_their_lists(self) -> None:
+        # Regression: "Repowise consumes:" survived after its list items were
+        # stripped, leaving dangling fragments in the rendered CLAUDE.md.
+        text = (
+            "Repowise is a documentation engine that produces a wiki.\n"
+            "Repowise consumes:\n"
+            "- source files\n"
+            "- git metadata\n"
+            "Think of it as a pipeline with four stages:\n"
+            "1. ingest\n"
+            "The output is served over MCP."
+        )
+        out = _extract_sentences(text, max_sentences=4)
+        assert "consumes:" not in out
+        assert "four stages:" not in out
+        assert "produces a wiki." in out
+        assert "served over MCP." in out
+
     def test_empty_input(self) -> None:
         assert _extract_sentences("", max_sentences=3) == ""
 
