@@ -82,6 +82,17 @@ class CrossRepoEnricher:
             _log.warning("Failed to parse cross-repo data at %s", data_path, exc_info=True)
             return
 
+        if data.get("version", 1) < 2:
+            # v1 overlays carry unbounded strength values; everything
+            # downstream now assumes the bounded [0, 1) session share, so
+            # skip stale files until a workspace update regenerates them.
+            _log.info(
+                "Ignoring cross-repo data at %s (version %s < 2)",
+                data_path,
+                data.get("version", 1),
+            )
+            return
+
         self._co_changes = data.get("co_changes", [])
         self._package_deps = data.get("package_deps", [])
         self._repo_summaries = data.get("repo_summaries", {})

@@ -80,7 +80,7 @@ def _make_enricher(tmp_path: Path) -> CrossRepoEnricher:
     _write_json(
         cross_repo_path,
         {
-            "version": 1,
+            "version": 2,
             "co_changes": [
                 {
                     "source_repo": "backend",
@@ -107,7 +107,7 @@ def _make_enricher(tmp_path: Path) -> CrossRepoEnricher:
     _write_json(
         contracts_path,
         {
-            "version": 1,
+            "version": 2,
             "generated_at": "2026-04-12T12:00:00Z",
             "contracts": [
                 {
