@@ -496,38 +496,17 @@ def _compute_alignment(
 
 
 def _get_exclude_spec(repo_path: "Path | str") -> "Any":
-    """Compile the repo's exclusion rules into a PathSpec, or None.
+    """Compile the repo's exclusion rules into a PathSpec, or None."""
+    from repowise.core.exclusion import build_exclude_spec
 
-    Unions ``.repowise/config.yaml`` ``exclude_patterns`` with the repo's
-    gitignore stack (``.gitignore`` + ``.git/info/exclude``). Indexes built
-    before the traverser honoured ``info/exclude`` still contain rows for
-    local-only scratch dirs; filtering them at query time keeps those paths
-    out of tool responses without forcing a reindex.
-    """
-    from pathlib import Path
-
-    import pathspec
-
-    from repowise.core.repo_config import load_repo_config
-
-    patterns = list(load_repo_config(repo_path).get("exclude_patterns") or [])
-    root = Path(repo_path)
-    for ignore_file in (root / ".gitignore", root / ".git" / "info" / "exclude"):
-        try:
-            if ignore_file.exists():
-                patterns.extend(
-                    ignore_file.read_text(encoding="utf-8", errors="ignore").splitlines()
-                )
-        except OSError:
-            continue
-    if not patterns:
-        return None
-    return pathspec.PathSpec.from_lines("gitwildmatch", patterns)
+    return build_exclude_spec(repo_path)
 
 
 def is_excluded(path: "str | None", spec: "Any") -> bool:
     """True if *path* matches *spec* (None spec or path -> not excluded)."""
-    return bool(spec is not None and path and spec.match_file(path))
+    from repowise.core.exclusion import is_excluded as _core_is_excluded
+
+    return _core_is_excluded(path, spec)
 
 
 def filter_rows_by_attr(rows: list, attr: str, spec: "Any") -> list:
@@ -555,6 +534,13 @@ def filter_dicts_by_key(items: list, key: str, spec: "Any") -> list:
     if not spec:
         return items
     return [d for d in items if not is_excluded(d.get(key), spec)]
+
+
+def decision_is_excluded(decision_row: "Any", spec: "Any") -> bool:
+    """True when a DecisionRecord is anchored entirely in excluded paths."""
+    from repowise.core.exclusion import decision_is_excluded as _core_decision_is_excluded
+
+    return _core_decision_is_excluded(decision_row, spec)
 
 
 def filter_path_list(paths: "list | None", spec: "Any") -> list:

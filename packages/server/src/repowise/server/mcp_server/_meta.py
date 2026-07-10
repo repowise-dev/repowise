@@ -113,7 +113,88 @@ def resolve_indexed_commit(head_commit: str | None, local_path: str | None) -> s
     return read_state_sync_commit(local_path) or head_commit
 
 
-def freshness_from_repo(repository: Any | None) -> dict[str, Any]:
+# (local_path, indexed_sha, live_sha) -> files changed between the two commits,
+# or None when git couldn't answer (unknown SHA after a rebase, no git, timeout).
+# One git spawn per SHA pair per process; every later response reuses the set.
+_changed_files_cache: dict[tuple[str, str, str], frozenset[str] | None] = {}
+_CHANGED_FILES_CACHE_MAX = 32
+
+
+def _changed_files_between(
+    local_path: str, indexed_full: str, live_full: str
+) -> frozenset[str] | None:
+    """Files that differ between the indexed commit and live HEAD, cached.
+
+    Returns ``None`` (not an empty set) whenever git can't answer, so callers
+    fall back to the repo-level warning instead of falsely reporting the
+    served targets as unaffected.
+    """
+    key = (local_path, indexed_full, live_full)
+    if key in _changed_files_cache:
+        return _changed_files_cache[key]
+    changed: frozenset[str] | None = None
+    try:
+        import subprocess
+
+        # stdin=DEVNULL + captured stdout/stderr: on stdio transport a child
+        # that inherits the JSON-RPC pipe handles can wedge the session (same
+        # failure mode as the get_answer git-grep hang).
+        res = subprocess.run(
+            [
+                "git",
+                "-C",
+                local_path,
+                "--no-pager",
+                "diff",
+                "--name-only",
+                indexed_full,
+                live_full,
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=3,
+            stdin=subprocess.DEVNULL,
+        )
+        if res.returncode == 0:
+            changed = frozenset(
+                line.strip().replace("\\", "/") for line in res.stdout.splitlines() if line.strip()
+            )
+    except Exception:
+        changed = None
+    if len(_changed_files_cache) >= _CHANGED_FILES_CACHE_MAX:
+        _changed_files_cache.clear()
+    _changed_files_cache[key] = changed
+    return changed
+
+
+def _normalize_target_path(target: str) -> str:
+    """Reduce a tool target to a repo-relative slash path for intersection."""
+    path = target.replace("\\", "/").strip()
+    # "path.py::Symbol" and "path.py:140-180" both reduce to the file path.
+    if "::" in path:
+        path = path.split("::", 1)[0]
+    elif ":" in path and path.rsplit(":", 1)[-1].replace("-", "").isdigit():
+        path = path.rsplit(":", 1)[0]
+    return path.removeprefix("./").rstrip("/")
+
+
+def targets_hit_by_changes(targets: list[str], changed: frozenset[str]) -> bool:
+    """True when any served target (file, symbol, or module dir) changed."""
+    for raw in targets:
+        path = _normalize_target_path(raw)
+        if not path:
+            continue
+        if path in changed:
+            return True
+        prefix = path + "/"
+        if any(f.startswith(prefix) for f in changed):
+            return True
+    return False
+
+
+def freshness_from_repo(repository: Any | None, targets: list[str] | None = None) -> dict[str, Any]:
     """Return a minimal freshness dict for the given Repository row.
 
     Calibrated to fire ``stale_warning`` rarely so the agent keeps trusting
@@ -127,13 +208,25 @@ def freshness_from_repo(repository: Any | None) -> dict[str, Any]:
          days; under that, just emit ``index_age_days`` for the agent to
          consult on its own terms.
 
+    Pass ``targets`` (the file/symbol/module paths this response actually
+    serves) to scope the mismatch signal: when HEAD has moved but none of the
+    served targets changed between the indexed commit and live HEAD, the
+    response carries ``index_behind: true`` instead of ``stale_warning``.
+    "Silence means current" only trains trust if the warning fires only when
+    the served content is actually affected — a repo-wide warning after every
+    unrelated commit teaches the agent to ignore the field. ``targets=None``
+    (repo-level tools like get_overview) keeps the repo-level warning;
+    ``targets=[]`` means "no file content served" and never warns.
+
     Always-emitted fields:
       * ``index_age_days``  — informational, never a directive
       * ``indexed_commit``  — short SHA the index was built against
 
     Conditionally emitted:
       * ``live_head``       — only when it differs from the indexed commit
-      * ``stale_warning``   — only on a real signal (HEAD mismatch OR very old)
+      * ``stale_warning``   — only on a real signal (a served target changed,
+        HEAD mismatch on a repo-level response, OR very old with no git)
+      * ``index_behind``    — HEAD moved but no served target is affected
 
     Defensive throughout: any missing piece is dropped rather than raised so
     an upstream change to the Repository model can never poison a tool result.
@@ -163,9 +256,23 @@ def freshness_from_repo(repository: Any | None) -> dict[str, Any]:
     if live_full and indexed_full:
         if live_full != indexed_full:
             out["live_head"] = live_full[:12]
-            # The two SHAs are already in ``indexed_commit`` / ``live_head`` —
-            # don't repeat them in prose. Just the directive.
-            out["stale_warning"] = "Index is behind live HEAD — run `repowise update`."
+            changed = (
+                _changed_files_between(local_path, indexed_full, live_full)
+                if targets is not None and local_path
+                else None
+            )
+            if targets is not None and changed is not None:
+                if targets_hit_by_changes(targets, changed):
+                    out["stale_warning"] = (
+                        "A file this response serves changed after indexing — "
+                        "verify against source or run `repowise update`."
+                    )
+                else:
+                    out["index_behind"] = True
+            else:
+                # The two SHAs are already in ``indexed_commit`` / ``live_head`` —
+                # don't repeat them in prose. Just the directive.
+                out["stale_warning"] = "Index is behind live HEAD — run `repowise update`."
         # Match: deliberately emit nothing extra. Silence is the signal.
     elif live_full is None and age_days is not None and age_days > _STALE_AGE_FLOOR_DAYS:
         # No git signal available and the index is genuinely old.
@@ -175,6 +282,7 @@ def freshness_from_repo(repository: Any | None) -> dict[str, Any]:
         )
 
     return out
+
 
 # Question patterns where narrative wiki context wins over symbol-body slicing.
 # Used to suppress "use get_symbol" hints — those questions need surrounding prose.
@@ -215,6 +323,7 @@ def build_meta(
     hint: str | None = None,
     cached: bool = False,
     repository: Any | None = None,
+    targets: list[str] | None = None,
     extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Construct a `_meta` envelope. All fields optional, omitted if falsy.
@@ -222,7 +331,9 @@ def build_meta(
     Pass ``repository`` to auto-inject freshness fields (``index_age_days``,
     ``indexed_commit``, optional ``stale_warning``). Every MCP response should
     carry these so an agent can detect drift between the index and live HEAD
-    without an extra round-trip.
+    without an extra round-trip. Pass ``targets`` (the paths this response
+    serves) to scope ``stale_warning`` to actually-affected content — see
+    :func:`freshness_from_repo`.
 
     Stable shape:
       {
@@ -243,7 +354,7 @@ def build_meta(
     if cached:
         out["cached"] = True
     if repository is not None:
-        out.update(freshness_from_repo(repository))
+        out.update(freshness_from_repo(repository, targets=targets))
     out.update(_embedder_meta())
     if extra:
         out.update(extra)
@@ -303,10 +414,7 @@ def answer_hint(confidence: str, retrieval_count: int) -> str | None:
     "trust the answer" — that's the over-trust failure mode.
     """
     if confidence == "low":
-        return (
-            "Low confidence — Read the listed fallback_targets to verify "
-            "before answering."
-        )
+        return "Low confidence — Read the listed fallback_targets to verify before answering."
     if retrieval_count == 0:
         return "No wiki hits — fall back to search_codebase or Grep."
     return None

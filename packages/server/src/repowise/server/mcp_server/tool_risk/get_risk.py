@@ -167,6 +167,9 @@ async def get_risk(
         # ambient awareness. Cheap (≤5 entries) and useful for orientation.
         response["global_hotspots"] = global_hotspots
 
-    response["_meta"] = _build_meta(repository=repository)
+    response["_meta"] = _build_meta(
+        repository=repository,
+        targets=[*targets, *(changed_files or [])] if targets or changed_files else None,
+    )
     collector.attach(response)
     return response

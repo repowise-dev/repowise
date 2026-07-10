@@ -233,7 +233,11 @@ def _gap_analysis(metrics: list[HealthFileMetric]) -> dict[str, Any]:
     weighted_sum = sum(m.score * max(m.nloc, 1) for m in metrics)
     net_gap = HEALTHY_MIN * total_nloc - weighted_sum
     below = sorted(
-        (max(HEALTHY_MIN - m.score, 0.0) * max(m.nloc, 1) for m in metrics if m.score < HEALTHY_MIN),
+        (
+            max(HEALTHY_MIN - m.score, 0.0) * max(m.nloc, 1)
+            for m in metrics
+            if m.score < HEALTHY_MIN
+        ),
         reverse=True,
     )
     if net_gap <= 0 or not below:
@@ -335,70 +339,31 @@ async def get_health(
     repo: str | None = None,
     limit: int = 20,
 ) -> dict:
-    """Code-health markers and per-file scores.
+    """Code-health scores and findings — self-check a file before/after editing.
 
-    Dashboard mode (no ``targets``) returns repo-level KPIs + the
-    lowest-scoring files. Targeted mode returns per-file findings and
-    metrics for each path in ``targets``.
+    No ``targets`` → repo dashboard (KPIs, worst files, ``high_leverage_files``
+    ranked by ``weighted_deficit`` = the files that actually move the repo
+    average). With ``targets`` → per-file scores + findings for those paths.
 
-    Leverage, not just lowness: ``average_health`` is NLOC-weighted (the number
-    the badge/dashboard surface), so a few large low files hold it down;
-    ``kpis.average_health_unweighted`` is the plain file mean, and a gap between
-    the two says "chase big files". ``gap_analysis`` reports the weighted points
-    to reach an all-Healthy floor and how few files carry 50% / 90% of it;
-    ``high_leverage_files`` ranks files by ``weighted_deficit`` (``(8 - score) *
-    nloc``, on every metric row) — the ones that actually move the average, as
-    opposed to ``worst_files`` which sorts by raw score. ``refactoring_plans``
-    is capped to ``limit`` and ranked file-leverage-first (``refactoring_plans_total``
-    reports the full count).
-
-    Markers in v1: ``brain_method``, ``nested_complexity``,
-    ``complex_method``. Phase 2 adds coverage markers; Phase 3 adds
-    duplication + organizational markers.
-
-    Three-signal health: every file metric carries per-dimension scores. ``score``
-    is the overall, defect-calibrated number surfaced everywhere (== ``defect_score``);
-    ``maintainability_score`` is a co-equal signal made of the smells the defect
-    calibration floors (cohesion, brain methods, primitive obsession, duplication,
-    error handling) given full weight in their own pillar; ``performance_score`` is
-    the third co-equal pillar: static performance RISK (I/O-in-loop / N+1 shapes that
-    waste work), high-precision / low-recall, NEVER blended into the defect headline.
-    ``kpis.maintainability_average`` and ``kpis.performance_average`` are the
-    NLOC-weighted repo headlines for those pillars (``None`` when unmeasured). Each
-    finding carries a ``dimension`` (``defect`` / ``maintainability`` /
-    ``performance``) naming the pillar it homes under, so findings can be filtered
-    per dimension. A performance finding's ``details`` carry the ``boundary_kind``
-    it crosses (``db`` / ``network`` / ``filesystem`` / ``subprocess`` / ``lock``),
-    a ``cross_function`` flag, and, for a cross-function N+1, the ``path`` (the
-    resolved ``caller -> ... -> sink`` symbol chain). Performance is a static signal:
-    dynamic dispatch, ORM lazy-load, and unmodelled libraries are out of scope.
-
-    Self-check before a PR: an agent can read the same signals the code-health
-    merge-gate judges a change on. ``include=["accuracy"]`` returns
-    ``defect_accuracy`` (does the score actually rank the buggy files first —
-    precision@K of the least-healthy files vs the repo bug-fix base rate, with a
-    ``lift`` headline); ``include=["signals"]`` attaches per-file process / people
-    / topology ``signals`` (prior-defect count, churn, owners, in/out degree) to
-    each targeted metric; ``include=["churn_complexity"]`` returns the
-    churn x complexity quadrant points (volatile-and-complex files are where
-    defects concentrate); and a dimension name in ``include``
-    (``"performance"`` / ``"defect"`` / ``"maintainability"``) filters the
-    returned findings to that pillar.
+    Three co-equal dimensions per file: ``score`` (defect risk, the headline),
+    ``maintainability_score`` (readability/change-cost smells), and
+    ``performance_score`` (static I/O-in-loop / N+1 RISK, high-precision /
+    low-recall, never blended into the defect headline). Each finding carries
+    its ``dimension``; a performance finding's ``details`` name the
+    ``boundary_kind`` (db/network/filesystem/subprocess/lock) and, for
+    cross-function N+1, the caller→sink ``path``.
 
     Args:
-        targets: List of file paths (or ``module:<name>``). Empty → dashboard mode.
-        include: Optional opt-in flags (default response stays lean):
-            ``"biomarkers"`` returns findings in dashboard mode;
-            ``"refactoring"`` attaches a deterministic ``suggestion`` per finding;
-            ``"trend"`` adds the repo trend + alert block;
-            ``"coverage"`` surfaces coverage rows when ingested;
-            ``"accuracy"`` adds repo-level ``defect_accuracy`` (dashboard mode);
-            ``"signals"`` attaches per-file ``signals`` (targeted mode);
-            ``"churn_complexity"`` adds the churn x complexity points (dashboard);
-            ``"performance"`` / ``"defect"`` / ``"maintainability"`` filter
-            findings to that dimension.
-        repo: Repo alias / id / path.
-        limit: Max rows in the lowest-scoring file list (capped at 50).
+        targets: file paths or ``module:<name>``. Empty → dashboard mode.
+        include: opt-in blocks (default stays lean): ``biomarkers`` (findings
+            in dashboard mode) | ``refactoring`` (deterministic suggestion per
+            finding) | ``trend`` | ``coverage`` | ``accuracy`` (does the score
+            rank the buggy files first) | ``signals`` (per-file churn/owners/
+            degree, targeted mode) | ``churn_complexity`` (danger-zone
+            quadrant) | ``performance``/``defect``/``maintainability``
+            (filter findings to one dimension).
+        repo: usually omitted.
+        limit: max rows in ranked lists (capped at 50).
     """
     limit = min(max(limit, 1), 50)
     include_set = set(include or [])
@@ -721,5 +686,7 @@ async def get_health(
                     r for r in rows if (r.get("dimension") or "defect") in dimension_filter
                 ]
 
-    result["_meta"] = _build_meta(repository=repository)
+    # Targeted mode scopes the stale signal to the asked-about files; the
+    # dashboard (no targets) keeps the repo-level warning.
+    result["_meta"] = _build_meta(repository=repository, targets=targets if targets else None)
     return result

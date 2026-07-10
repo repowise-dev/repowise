@@ -51,6 +51,7 @@ from repowise.server.mcp_server._helpers import (
     _get_repo,
     _resolve_all_contexts,
     _resolve_repo_context,
+    decision_is_excluded,
     filter_graph_nodes,
     filter_rows_by_attr,
     is_excluded,
@@ -397,6 +398,12 @@ def _build_knowledge_map(all_git: list) -> dict[str, Any]:
             owner_name.setdefault(email, _owner_display_name(g.primary_owner_name, email))
 
     total_files = len(all_git) or 1
+    # Top 3 only: get_overview is orientation, and "who do I ask" is answered
+    # by the first few names. Per-file ownership questions belong to
+    # get_risk / get_context(include=["ownership"]). The old payload also
+    # carried a knowledge_silos file list here — dropped: it duplicated
+    # get_risk's per-file ownership signal and gave an orienting agent
+    # nothing actionable.
     top_owners = sorted(
         [
             {
@@ -407,29 +414,9 @@ def _build_knowledge_map(all_git: list) -> dict[str, Any]:
             for email, count in owner_file_count.items()
         ],
         key=lambda x: -x["files_owned"],
-    )[:10]
+    )[:3]
 
-    # knowledge_silos: files where primary owner has > 80% ownership.
-    # Filter out boilerplate (migrations, __init__.py, config, lock files).
-    silo_exclude_patterns = (
-        "alembic/versions/",
-        "__init__.py",
-        "migrations/",
-        ".lock",
-        "package-lock",
-        "conftest.py",
-    )
-    knowledge_silos = [
-        g.file_path
-        for g in sorted(all_git, key=lambda g: -(g.primary_owner_commit_pct or 0.0))
-        if (g.primary_owner_commit_pct or 0.0) > 0.8
-        and not any(pat in g.file_path for pat in silo_exclude_patterns)
-    ][:10]
-
-    return {
-        "top_owners": top_owners,
-        "knowledge_silos": knowledge_silos,
-    }
+    return {"top_owners": top_owners}
 
 
 async def _load_community_nodes(
@@ -483,21 +470,20 @@ def _build_community_summary(all_nodes: list[GraphNode]) -> list[dict[str, Any]]
         if len(community_summary) >= 10:
             break
         label = ""
-        cohesion = 0.0
         if members:
             try:
                 meta = json.loads(members[0].community_meta_json or "{}")
                 label = meta.get("label", "")
-                cohesion = meta.get("cohesion", 0.0)
             except (json.JSONDecodeError, TypeError):
                 pass
 
+        # No cohesion in the payload: a 3-decimal internal clustering metric
+        # gives an agent nothing to act on. Label + size carry the map.
         community_summary.append(
             {
                 "id": cid,
                 "label": _community_display_label(label, members, cid, generic_labels),
                 "size": len(members),
-                "cohesion": round(cohesion, 3),
             }
         )
     return community_summary
@@ -636,9 +622,14 @@ async def _build_recent_reversals(session: Any, repository: Any) -> list[dict[st
     return recent_reversals
 
 
-async def _build_key_decisions(session: Any, repository: Any) -> dict[str, Any]:
+async def _build_key_decisions(
+    session: Any, repository: Any, exclude_spec: Any = None
+) -> dict[str, Any]:
     """Top active decisions + recent reversals (Phase 4A)."""
     try:
+        # Over-fetch, then drop records anchored entirely in excluded paths
+        # (vendored venvs, local-only scratch dirs mined before the exclude
+        # rules changed) so the repo's "top decisions" are never junk.
         top_decisions_res = await session.execute(
             select(DecisionRecord)
             .where(
@@ -646,9 +637,13 @@ async def _build_key_decisions(session: Any, repository: Any) -> dict[str, Any]:
                 DecisionRecord.status == "active",
             )
             .order_by(DecisionRecord.confidence.desc())
-            .limit(5)
+            .limit(25)
         )
-        top_decisions = top_decisions_res.scalars().all()
+        top_decisions = [
+            dr
+            for dr in top_decisions_res.scalars().all()
+            if not decision_is_excluded(dr, exclude_spec)
+        ][:5]
         if not top_decisions:
             return {}
         key_decisions_list = []
@@ -783,7 +778,7 @@ async def get_overview(repo: str | None = None, include: list[str] | None = None
         reading_order = await _build_reading_order(session, repository)
         title = _resolve_title(overview_page, repository)
         code_health = await _build_code_health(session, repository)
-        key_decisions_section = await _build_key_decisions(session, repository)
+        key_decisions_section = await _build_key_decisions(session, repository, exclude_spec)
 
         full_content = overview_page.content if overview_page else "No overview generated yet."
         want_full_content = "content" in set(include or [])

@@ -28,6 +28,7 @@ from repowise.server.mcp_server._helpers import (
     _resolve_all_contexts,
     _resolve_repo_context,
     _unsupported_repo_all,
+    decision_is_excluded,
     filter_path_list,
     is_excluded,
 )
@@ -439,6 +440,10 @@ async def _why_search(query: str, targets: list[str] | None, repo: str | None) -
         all_decisions = await _list_decisions(
             session, repository.id, include_proposed=True, limit=200
         )
+        # Records anchored entirely in excluded paths (vendored venvs mined
+        # before exclude rules changed) are noise for every mode downstream.
+        _spec = _get_exclude_spec(ctx.path)
+        all_decisions = [d for d in all_decisions if not decision_is_excluded(d, _spec)]
         # Load git metadata for targets (for origin context in results)
         target_git = await _load_target_git(session, repository.id, targets)
 
@@ -477,7 +482,7 @@ async def _why_search(query: str, targets: list[str] | None, repo: str | None) -
             if rationale:
                 result_data["code_rationale"] = rationale
 
-    result_data["_meta"] = _build_meta(repository=repository)
+    result_data["_meta"] = _build_meta(repository=repository, targets=targets if targets else None)
     return result_data
 
 

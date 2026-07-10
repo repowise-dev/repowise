@@ -209,10 +209,7 @@ def _drop_already_surfaced(rationale: list[dict], *surfaced: list[dict]) -> list
             path
             and isinstance(lines, (list, tuple))
             and len(lines) == 2
-            and any(
-                p == path and not (lines[1] < s or lines[0] > e)
-                for p, s, e in occupied
-            )
+            and any(p == path and not (lines[1] < s or lines[0] > e) for p, s, e in occupied)
         ):
             continue
         kept.append(r)
@@ -346,6 +343,7 @@ async def get_answer(
                         len(payload.get("retrieval", [])),
                     ),
                     repository=repository,
+                    targets=[p for p in cached_paths if isinstance(p, str) and p],
                 )
                 return payload
 
@@ -438,6 +436,7 @@ async def get_answer(
                 timing_ms=(time.perf_counter() - t0) * 1000,
                 hint=_answer_hint("low", 0),
                 repository=repository,
+                targets=[],
             ),
         }
 
@@ -501,7 +500,7 @@ async def get_answer(
                     else "Fall back to search_codebase or Grep."
                 ),
                 "fallback_targets": fallback_targets,
-                "retrieval": _serialize_hits(hits, limit=_GATED_RETURN_HITS),
+                "retrieval": _serialize_hits(hits, limit=_GATED_RETURN_HITS, lean_symbols=True),
                 "note": (
                     "Multiple plausible candidates — synthesis skipped to "
                     "avoid anchoring on a wrong frame. Each best_guess entry "
@@ -518,6 +517,7 @@ async def get_answer(
                 timing_ms=(time.perf_counter() - t0) * 1000,
                 hint=_answer_hint("low", len(hits)),
                 repository=repository,
+                targets=fallback_targets,
             )
             return gated
 
@@ -563,6 +563,7 @@ async def get_answer(
                     timing_ms=(time.perf_counter() - t0) * 1000,
                     hint=_answer_hint("high", len(hits)),
                     repository=repository,
+                    targets=[extraction["file"], *fallback_targets],
                 ),
             }
 
@@ -585,6 +586,7 @@ async def get_answer(
                 timing_ms=(time.perf_counter() - t0) * 1000,
                 hint=_answer_hint("low", len(hits)),
                 repository=repository,
+                targets=fallback_targets,
             ),
         }
 
@@ -632,6 +634,7 @@ async def get_answer(
                 timing_ms=(time.perf_counter() - t0) * 1000,
                 hint=_answer_hint("low", len(hits)),
                 repository=repository,
+                targets=fallback_targets,
             ),
         }
 
@@ -940,11 +943,7 @@ async def get_answer(
                 "retrieved excerpt — the 'why' may be conflated with a different "
                 "mechanism. Downgraded to medium; verify against "
                 f"{fallback_targets[0] if fallback_targets else 'the cited source'}"
-                + (
-                    " or the code_rationale comments below."
-                    if code_rationale
-                    else "."
-                )
+                + (" or the code_rationale comments below." if code_rationale else ".")
             )
             payload["next_action_hint"] = (
                 f"Verify the rationale before citing: the asserted frame term(s) "
@@ -964,15 +963,9 @@ async def get_answer(
         # and the literal rationale is the comment we already mined. Surface it so
         # the win is the answer AND the cited comment in one call (no re-read),
         # unless a gate above already attached code_rationale.
-        if "code_rationale" not in payload and any(
-            h.get("_concept_anchored") for h in hits
-        ):
-            concept_rationale = _gather_code_rationale(
-                ctx, hits, fallback_targets, question
-            )
-            concept_rationale = _drop_already_surfaced(
-                concept_rationale, symbol_bodies, quotes
-            )
+        if "code_rationale" not in payload and any(h.get("_concept_anchored") for h in hits):
+            concept_rationale = _gather_code_rationale(ctx, hits, fallback_targets, question)
+            concept_rationale = _drop_already_surfaced(concept_rationale, symbol_bodies, quotes)
             if concept_rationale:
                 payload["code_rationale"] = concept_rationale
 
@@ -1014,5 +1007,6 @@ async def get_answer(
         timing_ms=(time.perf_counter() - t0) * 1000,
         hint=_answer_hint(confidence, len(hits)),
         repository=repository,
+        targets=[*citations, *fallback_targets],
     )
     return payload
