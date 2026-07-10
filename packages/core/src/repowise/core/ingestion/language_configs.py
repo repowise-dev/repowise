@@ -355,4 +355,16 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         parent_extraction="none",
         parent_class_types=frozenset(),
     ),
+    "shell": LanguageConfig(
+        # Both `foo() {}` and `function foo {}` parse as function_definition.
+        # Shell has no classes, so no parent tracking.
+        symbol_node_types={
+            "function_definition": "function",
+        },
+        import_node_types=["command"],  # `source` / `.` — see queries/shell.scm
+        export_node_types=[],
+        visibility_fn=public_by_default,
+        parent_extraction="none",
+        parent_class_types=frozenset(),
+    ),
 }

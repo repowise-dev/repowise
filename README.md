@@ -363,7 +363,8 @@ Install from the Marketplace (search **Repowise**) or Open VSX, then run
 | **Full** | Python · TypeScript · JavaScript · Java · Kotlin · Go · Rust · C++ · C# · Scala · Ruby | AST parsing, import resolution, named bindings, call resolution, heritage extraction, docstrings; multi-project workspace resolvers; framework-aware edges; per-language dynamic-hint extractors; **code-health markers** |
 | **Good** | C · Swift · PHP · Dart | AST parsing, import resolution, named bindings, call resolution, heritage (mixins / derive / extensions / traits), docstrings; dedicated workspace-aware resolvers; Laravel / TYPO3 / Flutter framework edges; dynamic-hint extractors; Dart adds code-health + perf markers |
 | **SQL / dbt** | `.sql` via sqlglot (postgres, mysql, tsql, clickhouse, ...) | Tables / views / functions / procedures as symbols with wiki pages; dbt projects get real `ref()` / `source()` lineage edges: model-level DAG, hotspots, co-change, ownership |
-| **Config / data** | OpenAPI · Protobuf · GraphQL · Dockerfile · Makefile · YAML · JSON · TOML · Terraform · Markdown · Shell | Included in the file tree; special handlers extract endpoints / targets where applicable |
+| **Shell** | `.sh` · `.bash` · `.zsh` | Functions as symbols, `source` / `.` import edges (`$SCRIPT_DIR` / `dirname` idioms), and function-level code-health complexity. No class metrics, heritage, or dead-code flagging |
+| **Config / data** | OpenAPI · Protobuf · GraphQL · Dockerfile · Makefile · YAML · JSON · TOML · Terraform · Markdown | Included in the file tree; special handlers extract endpoints / targets where applicable |
 | **Git-blame only** | Objective-C · Elixir · Erlang · Zig · Julia · Clojure · Haskell · OCaml · F# · … | Tracked in git history (blame, hotspots, co-change); no AST parsing yet |
 
 Adding a language needs **one `.scm` query file and one config entry**, with no
