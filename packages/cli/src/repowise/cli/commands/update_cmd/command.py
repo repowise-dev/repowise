@@ -792,6 +792,28 @@ def run_update(
         if verbose:
             console.print(f"[yellow]Decision re-scan skipped: {exc}[/yellow]")
 
+    # Session-sourced decisions: mine agent transcript lines appended since
+    # the last update, structure new candidates in one batched LLM pass, and
+    # collect the observation-qualified promotions. They ride the same
+    # decision upsert as the marker re-scan below. Everything stays local;
+    # `decisions.session_mining: false` in .repowise/config.yaml disables it.
+    session_decisions: list = []
+    try:
+        from repowise.core.sessions.miners.decisions import (
+            mine_session_decisions,
+            session_mining_enabled,
+        )
+
+        if session_mining_enabled(cfg):
+            session_decisions = run_async(mine_session_decisions(repo_path, provider=provider))
+            if session_decisions and verbose:
+                promoted_titles = {d.title for d in session_decisions}
+                console.print(f"Session decisions promoted: [green]{len(promoted_titles)}[/green]")
+    except Exception as exc:
+        degraded.append(f"Session decision mining: {exc}")
+        if verbose:
+            console.print(f"[yellow]Session decision mining skipped: {exc}[/yellow]")
+
     # Count of decision records touched by evolution, surfaced in the panel.
     decisions_evolved = 0
 
@@ -1047,7 +1069,7 @@ def run_update(
             generated_pages=generated_pages,
             file_diffs=file_diffs,
             git_meta_map=git_meta_map,
-            new_decision_markers=new_decision_markers,
+            new_decision_markers=[*new_decision_markers, *session_decisions],
             decision_vector_store=decision_vector_store,
             provider=provider,
             partial_health_report=partial_health_report,
@@ -1134,7 +1156,7 @@ def run_update(
     show_full_completion(
         generated_pages=generated_pages,
         decay_count=len(affected.decay_only),
-        decisions_changed=len(new_decision_markers) + decisions_evolved,
+        decisions_changed=len(new_decision_markers) + len(session_decisions) + decisions_evolved,
         provider=provider,
         cost=cost_tracker.session_cost,
         tokens=cost_tracker.session_tokens,

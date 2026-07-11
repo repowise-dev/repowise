@@ -38,6 +38,7 @@ __all__ = [
 SOURCE_RANK: dict[str, int] = {
     "cli": 9,  # human-authored manual entry — most authoritative
     "adr": 8,  # architecture decision records (structured, intentional)
+    "session": 7,  # mined from agent-session transcripts (user-corroborated)
     "pr": 7,  # PR / squash-merge body
     "commit": 6,  # individual commit message
     "git_archaeology": 6,  # alias for commit-mined decisions

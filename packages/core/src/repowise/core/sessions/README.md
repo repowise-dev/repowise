@@ -15,6 +15,8 @@ own machine and never leave it.
 | `adapters/base.py` | The `HarnessAdapter` contract: `discover()` + `normalize()`, with shared `iter_events()` built on top |
 | `adapters/claude_code.py` | First adapter: `~/.claude/projects/<munged-cwd>/*.jsonl` |
 | `cursor.py` | `CursorStore` (byte offset + mtime per file) and `iter_new_events` for incremental scans |
+| `staging.py` | `SessionStagingStore`: the `.repowise/sessions/sessions.db` sidecar (WAL) holding mined candidates, observation counts, and DB-backed cursors |
+| `miners/decisions.py` | Session-sourced decisions: deterministic gates over Events, one batched LLM structuring pass per update, observation-counted promotion |
 
 ## The contract
 

@@ -181,6 +181,7 @@ stay enabled.
 
 ```yaml
 decisions:
+  session_mining: true      # mine agent-session transcripts (see below)
   sources:
     comment: false          # LLM comment archaeology (top central files)
     # inline_marker: false  # WHY:/DECISION: markers
@@ -190,6 +191,19 @@ decisions:
     # changelog: false
     # pr: false
 ```
+
+`session_mining` (default on) lets `repowise update` mine coding-agent
+session transcripts (Claude Code's `~/.claude/projects/`) for durable
+decisions: user corrections, explicit choices with a stated reason, and
+failed approaches replaced by working ones. Candidates pass deterministic
+gates first, then one batched LLM structuring call per update, and every
+produced field must quote the transcript verbatim or it is dropped. A
+decision observed in two or more sessions is promoted as `active` with
+`source: session`; a direct user correction promotes after one. Everything
+stays local: transcripts are read from your machine, staging lives in
+`.repowise/sessions/sessions.db`, and only the distilled decision text about
+the codebase is stored. Set `session_mining: false` to turn the whole
+pipeline off.
 
 Dismissals are sticky: `repowise decision dismiss` keeps the record as a
 `dismissed` tombstone, so reindexing never re-proposes the same decision, and
