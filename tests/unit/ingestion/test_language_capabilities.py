@@ -159,6 +159,8 @@ _PARTIAL = {
     "fsharp",
     # dbt ref()/source() lineage (model-name index gated on dbt_project.yml).
     "sql",
+    # source ./lib.sh + $SCRIPT_DIR / dirname idioms.
+    "shell",
 }
 
 

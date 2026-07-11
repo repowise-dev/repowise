@@ -20,6 +20,13 @@ _NON_CODE_LANGUAGES: frozenset[str] = frozenset(
 
 # Patterns that should never be flagged as dead.
 _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
+    # Shell scripts are invoked by name from CI configs, Makefiles, and humans
+    # — static reachability is meaningless, so they are never flagged as dead.
+    # (Shell parses to a real AST now, so it left the passthrough-derived
+    # ``_NON_CODE_LANGUAGES`` exemption below; these globs restore it.)
+    "*.sh",
+    "*.bash",
+    "*.zsh",
     "*__init__.py",
     "*__main__.py",
     "*conftest.py",

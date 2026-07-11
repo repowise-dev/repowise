@@ -664,6 +664,34 @@ _RUBY = LanguageNodeMap(
 )
 
 
+_SHELL = LanguageNodeMap(
+    # Both `foo() {}` and `function foo {}` parse as function_definition; its
+    # body is a sibling `compound_statement` the shared walker measures.
+    function_kinds=frozenset({"function_definition"}),
+    # Shell has no anonymous-function literal.
+    lambda_kinds=frozenset(),
+    # `elif` is its own clause (a branch); `else_clause` is not a decision.
+    branch_kinds=frozenset({"if_statement", "elif_clause"}),
+    # `until ...` parses as `while_statement` in tree-sitter-bash, so it is
+    # covered here; `for ((;;))` is `c_style_for_statement`.
+    loop_kinds=frozenset(
+        {"for_statement", "c_style_for_statement", "while_statement"}
+    ),
+    # No exceptions in shell (`trap` is not `try`).
+    try_kinds=frozenset(),
+    catch_kinds=frozenset(),
+    switch_kinds=frozenset({"case_statement"}),
+    case_kinds=frozenset({"case_item"}),
+    boolean_operator_kinds=frozenset(),
+    # `cmd && other` / `cmd || exit 1` parse as a `list` node carrying the
+    # operator as a direct `&&` / `||` token — the walker sniffs that token.
+    # This counts the guard idiom (`cmd || exit 1`) as +1 CCN, which is honest:
+    # shell branching IS chained command lists.
+    boolean_operator_text_kinds=frozenset({"list"}),
+    # No classes, no assertions, no perf/dataflow dialect for shell.
+)
+
+
 LANGUAGE_MAPS: dict[str, LanguageNodeMap] = {
     "python": _PY,
     "typescript": _TS,
@@ -679,6 +707,7 @@ LANGUAGE_MAPS: dict[str, LanguageNodeMap] = {
     "dart": _DART,
     "scala": _SCALA,
     "ruby": _RUBY,
+    "shell": _SHELL,
 }
 
 

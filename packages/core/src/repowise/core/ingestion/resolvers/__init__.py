@@ -24,6 +24,7 @@ from .python import resolve_python_import
 from .ruby import resolve_ruby_import
 from .rust import resolve_rust_import
 from .scala import resolve_scala_import
+from .shell import resolve_shell_import
 from .sql import resolve_dbt_import
 from .swift import resolve_swift_import
 from .typescript import resolve_ts_js_import
@@ -46,6 +47,8 @@ _RESOLVERS: dict[str, ResolverFn] = {
     "swift": resolve_swift_import,
     "scala": resolve_scala_import,
     "php": resolve_php_import,
+    # source ./lib.sh + the $SCRIPT_DIR/$(dirname "$0") idioms.
+    "shell": resolve_shell_import,
     # Lightweight regex-tier resolvers (import_support="partial")
     "elixir": resolve_elixir_import,
     "dart": resolve_dart_import,

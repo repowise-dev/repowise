@@ -1,6 +1,6 @@
 # Language Support
 
-repowise parses **15 languages to a full AST**, resolves imports and call
+repowise parses **16 languages to a full AST**, resolves imports and call
 graphs across them, and scores **11 at the Full tier** with code-health markers.
 Everything else in your repo is still tracked through git history and appears in
 the wiki. This page is the "what works for my language today" reference.
@@ -22,7 +22,8 @@ produce meaningful output.
 | **Full** | Python · TypeScript · JavaScript · Java · Kotlin · Go · Rust · C++ · C# · Scala · Ruby | AST parsing, import resolution, named bindings, call resolution, heritage, docstrings, framework-aware edges, dynamic-hint extractors, and **code-health markers** |
 | **Good** | C · Swift · PHP · Dart | Everything above except code-health markers (C, Swift, PHP; Dart *does* get health markers). Dedicated workspace resolvers and framework edges per language |
 | **SQL / dbt** | `.sql` via sqlglot | Tables / views / functions / procedures as symbols with wiki pages; dbt projects get real `ref()` / `source()` lineage |
-| **Config / data** | OpenAPI · Protobuf · GraphQL · Dockerfile · Makefile · YAML · JSON · TOML · Terraform · Markdown · Shell | In the file tree and wiki; special handlers extract endpoints / targets where applicable |
+| **Shell** | `.sh` `.bash` `.zsh` | Function definitions as symbols, `source` / `.` import edges (incl. `$SCRIPT_DIR` / `dirname` / `$BATS_ROOT` idioms), and function-level code-health complexity (CCN, nesting, cognitive). No class metrics, heritage, bindings, or dead-code flagging |
+| **Config / data** | OpenAPI · Protobuf · GraphQL · Dockerfile · Makefile · YAML · JSON · TOML · Terraform · Markdown | In the file tree and wiki; special handlers extract endpoints / targets where applicable |
 | **Lightweight** | Elixir · Clojure · Haskell · Lean 4 · Erlang · F# | Regex-tier file-level import graph (no symbols/calls). Honest file-to-file dependencies, no symbol-level claims |
 | **Partial** | Luau / Roblox | AST symbols + `require()` resolution (Rojo / `.luaurc` aware); no health markers yet |
 | **Structural** | Objective-C · R · Zig · Julia · Elm · OCaml · Crystal · Nim · D | Git history only (blame, hotspots, co-change). No AST parsing |
@@ -150,6 +151,20 @@ instance paths (including `:WaitForChild` idioms), absolute Roblox paths via
 Rojo's `default.project.json`, and `@alias` requires via `.luaurc`. No health
 markers yet.
 
+**Shell** (`.sh` / `.bash` / `.zsh`), function definitions (both `foo()` and
+`function foo` forms) become symbols, `source` / `.` statements become import
+edges, and calls to functions defined in the same or a sourced file resolve to
+call edges (external binaries like `grep` mint no edge). Import resolution
+covers literal relative paths plus the common directory-anchor idioms
+(`$SCRIPT_DIR/x.sh`, `$(dirname "$0")/x.sh`, `${BASH_SOURCE%/*}/x.sh`) and
+project-root anchors (`$BATS_ROOT/$LIBDIR/lib/x.sh`) via a unique path-suffix
+match; genuinely dynamic paths (`source "$1"`) stay external. Shell also gets
+**function-level complexity** markers (CCN / nesting / cognitive, with `&&` /
+`||` command lists counted). tree-sitter-bash parses the bash/POSIX subset, so
+zsh mostly works and fish does not; any parse error degrades that file to
+passthrough. No class metrics, heritage, bindings, or dead-code flagging (shell
+scripts are invoked by name, so static reachability is meaningless).
+
 **Structural** (Objective-C, R, Zig, Julia, Elm, OCaml, Crystal, Nim, D) -
 tracked in git history (blame, hotspots, co-change) but no AST parsing. Files
 appear in the wiki as traversal-level entries, and the knowledge graph runs in
@@ -178,6 +193,7 @@ is "Full" vs "Good".
 | Dart | ✅ | n/a³ | ✅ | later | ✅ |
 | Scala | ✅ | ✅ | ✅⁴ | later | ✅⁵ |
 | Ruby | ✅ | ✅⁶ | ✅⁷ | later | ✅⁸ |
+| Shell | ✅⁹ | n/a | n/a | n/a | n/a |
 
 ¹ Go methods attach to a type via an external receiver rather than nesting in a
 class body, so class-level metrics aren't computable; Go gets the function- and
@@ -216,6 +232,11 @@ keeps in-memory `Registry.find(name)` lookups silent. Backticks / `system` /
 `Open3` are subprocess sinks; `s += "…"` in a loop is flagged while `s << x`
 (amortized append) never is.
 
+⁹ Shell gets function-level complexity only (CCN / nesting / cognitive / NLOC).
+`&&` / `||` command lists count toward CCN (`cmd || exit 1` is +1), which is
+honest: shell branching is chained command lists. There are no classes,
+assertions, dataflow, or perf dialect for shell.
+
 The **performance** signal (`io_in_loop`, `string_concat_in_loop`,
 `resource_construction_in_loop`, language-specific markers like Go
 `defer_in_loop` and C# sync-over-async) and the **dataflow** layer (powering
@@ -237,6 +258,7 @@ where a dialect isn't wired yet. Per-marker mechanics and precision hazards:
 | Elixir | Good | Lightweight tier shipped; AST upgrade planned (`tree-sitter-elixir` available) |
 | F# | Good | Lightweight tier shipped; AST upgrade planned (`tree-sitter-f-sharp` available) |
 | SQL / dbt | - | DDL symbols, dbt lineage, app-to-database contracts, health markers shipped. Next: column-level blast radius |
+| Shell | - | Function symbols, `source` import edges, function-level complexity shipped. Next: shebang-based detection of extensionless executables (a traverser capability) |
 
 ---
 
