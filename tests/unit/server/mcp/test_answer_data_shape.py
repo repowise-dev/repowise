@@ -1,0 +1,241 @@
+"""Data-shape grounding: answer "what fields does X contain" from source.
+
+A data-shape question names a data blob and asks for its field set. Instead of
+gating to a best_guesses pointer list (which triggers the agent's Read/get_symbol
+drill), the tool mines the field set straight from source: a documented ``{...}``
+shape near the identifier (authoritative -> high) or the concrete keys consumers
+pull off the parsed value (usage-mined -> medium).
+
+These tests use synthetic repos with varied identifiers and shapes so nothing is
+tuned to any one real question. The precision contract is the load-bearing part:
+every reported field must be a quoted token from source, and an identifier with
+no groundable shape must fall through (return None), never a fabricated field.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from repowise.server.mcp_server.tool_answer.data_shape import (
+    _is_data_shape_question,
+    mine_data_shape,
+)
+
+
+def _write(root: Path, rel: str, body: str) -> None:
+    p = root / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(body, encoding="utf-8")
+
+
+# --- Question detection ---------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "question,ids,expected",
+    [
+        (
+            "What fields does each entry in co_change_partners_json contain?",
+            {"co_change_partners_json"},
+            True,
+        ),
+        ("what keys are in the blame_record blob", {"blame_record"}, True),
+        ("what columns does the health_metric_row have", {"health_metric_row"}, True),
+        ("describe the schema of GitCommitMeta", {"GitCommitMeta"}, True),
+        ("what does each record in owner_stats consist of", {"owner_stats"}, True),
+        # Mechanism questions carry no shape cue -> not data-shape.
+        ("how does co_change_partners_json get populated", {"co_change_partners_json"}, False),
+        ("where is the coupling graph assembled", set(), False),
+        # A shape cue with no named identifier can't ground -> not data-shape.
+        ("what fields are typical in a config", set(), False),
+    ],
+)
+def test_detection(question, ids, expected):
+    assert _is_data_shape_question(question, ids) is expected
+
+
+# --- Documented shape (authoritative -> high) -----------------------------
+
+
+def test_docstring_brace_shape_high_confidence(tmp_path):
+    """A {...} field shape in a docstring near the identifier grounds high."""
+    _write(
+        tmp_path,
+        "pkg/models.py",
+        '''\
+class GitMeta:
+    """Row model.
+
+    ``blame_record_json`` is the raw column: a JSON list of
+    ``{"author", "commit_sha", "line_count"}`` blame records.
+    """
+
+    blame_record_json: str
+''',
+    )
+    out = mine_data_shape(tmp_path, {"blame_record_json"})
+    assert out is not None
+    assert out["grounding"] == "docstring"
+    assert out["confidence"] == "high"
+    assert out["fields"] == ["author", "commit_sha", "line_count"]
+    assert out["sources"][0]["file"] == "pkg/models.py"
+    assert out["sources"][0]["kind"] == "docstring"
+
+
+def test_comment_brace_shape(tmp_path):
+    """A shape documented in a line comment also grounds (not just docstrings)."""
+    _write(
+        tmp_path,
+        "pkg/store.py",
+        """\
+def load(raw):
+    # owner_stats rows look like {"owner", "files_touched", "last_seen"}
+    return parse(raw)
+""",
+    )
+    out = mine_data_shape(tmp_path, {"owner_stats"})
+    assert out is not None
+    assert out["grounding"] == "docstring"
+    assert set(out["fields"]) == {"owner", "files_touched", "last_seen"}
+
+
+def test_executable_dict_literal_is_not_authoritative(tmp_path):
+    """A bare dict literal in code (no doc context) is not a documented shape.
+
+    It has quoted keys, but it's one construction site, not a declared schema.
+    The access-mining path may still pick up keys, but the doc path must not
+    mislabel an executable literal as authoritative/high.
+    """
+    _write(
+        tmp_path,
+        "pkg/build.py",
+        """\
+def build(widget_payload, count):
+    result = {"kind": widget_payload, "n": count, "ok": True}
+    return result
+""",
+    )
+    out = mine_data_shape(tmp_path, {"widget_payload"})
+    # Nothing is documented and the identifier is a scalar arg (no key access),
+    # so this must fall through rather than claim {kind,n,ok} as its shape.
+    assert out is None
+
+
+# --- Access-mined shape (usage -> medium) ---------------------------------
+
+
+def test_access_mined_shape_medium_when_no_doc(tmp_path):
+    """With no documented shape, consistent key accesses ground at medium."""
+    _write(
+        tmp_path,
+        "pkg/consume.py",
+        """\
+def summarize(partner_records):
+    for entry in iter_records(partner_records):
+        name = entry.get("file_path")
+        weight = entry["co_change_count"]
+        stamp = entry.get("last_seen")
+    return name, weight, stamp
+""",
+    )
+    out = mine_data_shape(tmp_path, {"partner_records"})
+    assert out is not None
+    assert out["grounding"] == "access"
+    assert out["confidence"] == "medium"
+    assert set(out["fields"]) == {"file_path", "co_change_count", "last_seen"}
+
+
+def test_direct_subscript_on_identifier(tmp_path):
+    """When the identifier IS the dict variable, direct key access grounds it."""
+    _write(
+        tmp_path,
+        "pkg/direct.py",
+        """\
+def read(config_blob):
+    host = config_blob["host"]
+    port = config_blob.get("port")
+    return host, port
+""",
+    )
+    out = mine_data_shape(tmp_path, {"config_blob"})
+    assert out is not None
+    assert out["grounding"] == "access"
+    assert set(out["fields"]) == {"host", "port"}
+
+
+# --- Precision guards -----------------------------------------------------
+
+
+def test_no_shape_returns_none(tmp_path):
+    """An identifier that names no blob shape falls through (no fabrication)."""
+    _write(tmp_path, "pkg/plain.py", "def process_records(x):\n    return x + 1\n")
+    assert mine_data_shape(tmp_path, {"process_records"}) is None
+
+
+def test_single_field_is_too_weak(tmp_path):
+    """A one-field shape is below the min-fields floor -> abstain."""
+    _write(
+        tmp_path,
+        "pkg/thin.py",
+        """\
+def read(thin_blob):
+    # thin_blob entries are {"only_field"}
+    return thin_blob
+""",
+    )
+    assert mine_data_shape(tmp_path, {"thin_blob"}) is None
+
+
+def test_generic_short_identifier_skipped(tmp_path):
+    """Short/generic identifiers are not specific enough to ground on."""
+    _write(
+        tmp_path,
+        "pkg/rows.py",
+        """\
+def go(row):
+    a = row.get("x")
+    b = row.get("y")
+    return a, b
+""",
+    )
+    # "row" is below the specificity floor (too short, no underscore/camel).
+    assert mine_data_shape(tmp_path, {"row"}) is None
+
+
+def test_absent_identifier_returns_none(tmp_path):
+    """An identifier that appears nowhere in source grounds nothing."""
+    _write(tmp_path, "pkg/a.py", "x = 1\n")
+    assert mine_data_shape(tmp_path, {"nonexistent_blob_xyz"}) is None
+
+
+def test_doc_beats_access(tmp_path):
+    """When both a doc shape and accesses exist, the doc shape wins (high)."""
+    _write(
+        tmp_path,
+        "pkg/both.py",
+        '''\
+class M:
+    """``event_payload_json`` is a list of
+    ``{"kind", "ts", "actor"}`` event records."""
+
+    event_payload_json: str
+
+
+def consume(event_payload_json):
+    for e in parse(event_payload_json):
+        k = e.get("kind")
+        t = e.get("ts")
+    return k, t
+''',
+    )
+    out = mine_data_shape(tmp_path, {"event_payload_json"})
+    assert out is not None
+    assert out["grounding"] == "docstring"
+    assert out["confidence"] == "high"
+    assert out["fields"] == ["kind", "ts", "actor"]
+
+
+def test_none_repo_root_is_safe():
+    assert mine_data_shape(None, {"anything_json"}) is None
