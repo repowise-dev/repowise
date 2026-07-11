@@ -13,7 +13,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from repowise.server.mcp_server.tool_answer.answer import _is_readable_path
+from repowise.server.mcp_server.tool_answer.answer import (
+    _gather_body_candidates,
+    _is_readable_path,
+)
 from repowise.server.mcp_server.tool_answer.retrieval import serialize_hits
 
 # ---------------------------------------------------------------------------
@@ -63,6 +66,65 @@ RAW_HIT = {
         {"name": "f", "kind": "function", "signature": "def f()", "_matched": True},
     ],
 }
+
+
+class TestGatherBodyCandidates:
+    """Ranking of the definitions get_answer inlines in ``symbol_bodies``:
+    anchor (question-named) first, then question-matched symbols the answer
+    names; a function/method outranks its class container within a tier."""
+
+    def _sym(self, name, kind="function", matched=False, start=1):
+        return {"name": name, "kind": kind, "_matched": matched, "start_line": start}
+
+    def test_anchor_outranks_matched(self) -> None:
+        hit = {
+            "target_path": "pkg/router.py",
+            "_anchor_symbols": [self._sym("dispatch", start=50)],
+            "symbols": [
+                self._sym("Router", kind="class", matched=True, start=1),
+                self._sym("dispatch", matched=True, start=50),
+            ],
+        }
+        answer = "Router.dispatch drives routing via dispatch."
+        cands = _gather_body_candidates([hit], answer)
+        # Anchor (tier 0) leads over the matched class container (tier 1).
+        assert cands[0][0] == 0 and cands[0][4]["name"] == "dispatch"
+
+    def test_matched_symbol_named_in_answer_included(self) -> None:
+        hit = {
+            "target_path": "pkg/router.py",
+            "symbols": [self._sym("find_route", matched=True, start=20)],
+        }
+        cands = _gather_body_candidates([hit], "The dispatcher calls find_route.")
+        assert [c[4]["name"] for c in cands] == ["find_route"]
+        assert cands[0][0] == 1
+
+    def test_non_matched_symbol_excluded(self) -> None:
+        # A symbol the answer names but the question never matched is NOT
+        # inlined (the answer-cited-mechanism lever regressed the agent A/B and
+        # was reverted): only question-named/matched definitions qualify.
+        hit = {
+            "target_path": "pkg/router.py",
+            "symbols": [self._sym("dispatch_request", matched=False, start=10)],
+        }
+        cands = _gather_body_candidates([hit], "Routing is driven by dispatch_request.")
+        assert cands == []
+
+    def test_symbol_absent_from_answer_excluded(self) -> None:
+        hit = {
+            "target_path": "pkg/router.py",
+            "symbols": [self._sym("unrelated_helper", matched=True, start=10)],
+        }
+        cands = _gather_body_candidates([hit], "The answer never names it.")
+        assert cands == []
+
+    def test_non_definition_kind_excluded(self) -> None:
+        hit = {
+            "target_path": "pkg/mod.py",
+            "symbols": [self._sym("MAX_SIZE", kind="constant", matched=True, start=3)],
+        }
+        cands = _gather_body_candidates([hit], "The cap MAX_SIZE bounds it.")
+        assert cands == []
 
 
 class TestSerializeHits:

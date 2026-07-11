@@ -42,6 +42,19 @@ _INLINE_BODY_MAX_SYMBOLS = 2
 # body of ~99% of symbols in one shot; the rest carry a continuation token.
 _INLINE_BODY_MAX_LINES = 120
 
+# Synthesis-body depth for the top question-relevant symbols. The default
+# _MATCHED_SYMBOL_SOURCE_LINES (40) excerpt cuts a docstring-heavy definition
+# off before its answer-bearing logic reaches the LLM, so synthesis hedges
+# ("not in the excerpts") on the very symbol whose full 120-line body the
+# response then inlines in symbol_bodies — the excerpt the LLM saw and the body
+# the agent gets were different depths. Read the top few matched symbols at the
+# inline-body depth so what synthesis reasons over matches what the response
+# serves. Bounded so a class-name flood (every sibling method "matches" through
+# the parent's qualified name) can't balloon the synthesis prompt; the rest keep
+# the cheap 40-line excerpt.
+_SYNTH_FULL_SOURCE_LINES = _INLINE_BODY_MAX_LINES
+_SYNTH_FULL_BODY_MAX_SYMBOLS = 2
+
 # Answer-by-union (homonym exact-name lookup). When a question names a symbol
 # with N>=2 defs that no qualifier disambiguates (`_severity_for` x 4), get_answer
 # inlines the UNION of their bodies instead of a best_guesses pointer list — the

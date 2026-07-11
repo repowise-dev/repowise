@@ -23,6 +23,8 @@ from repowise.server.mcp_server.tool_answer.config import (
     _MAX_SYMBOLS_PER_HIT,
     _MAX_SYMBOLS_TOP_HIT,
     _STOPWORDS,
+    _SYNTH_FULL_BODY_MAX_SYMBOLS,
+    _SYNTH_FULL_SOURCE_LINES,
 )
 
 
@@ -602,6 +604,30 @@ async def _hydrate_symbols_for_hits(
             if len(kept) >= cap:
                 break
             kept.append(s)
+        # Upgrade the top question-relevant symbols to the inline-body depth
+        # BEFORE the reading-order sort, while `kept` is still in priority order
+        # (anchors, then matched, then unmatched). The default 40-line excerpt
+        # truncates a docstring-heavy definition before its answer-bearing logic,
+        # so synthesis hedges on the exact symbol whose full 120-line body the
+        # response inlines in symbol_bodies. Reading the leading few at the same
+        # depth keeps the LLM's view and the served body consistent. Bounded so a
+        # class-name flood can't balloon the prompt; the rest keep the excerpt.
+        upgraded = 0
+        for s in kept:
+            if upgraded >= _SYNTH_FULL_BODY_MAX_SYMBOLS:
+                break
+            if not s.get("_matched") or not s.get("source_excerpt"):
+                continue
+            fuller = _read_symbol_source(
+                repo_root,
+                path,
+                s["start_line"],
+                s.get("end_line") or 0,
+                max_lines=_SYNTH_FULL_SOURCE_LINES,
+            )
+            if fuller:
+                s["source_excerpt"] = fuller
+            upgraded += 1
         # Sort final slice by start_line for natural reading order.
         kept.sort(key=lambda s: s["start_line"])
         h["symbols"] = kept

@@ -104,7 +104,6 @@ from repowise.server.mcp_server.tool_answer.config import (
 from repowise.server.mcp_server.tool_answer.retrieval import (
     _apply_domain_penalty,
     _candidate_justification,
-    _enrich_gated_excerpts,
     _intersection_boost,
     _rerank_by_coverage,
 )
@@ -244,6 +243,50 @@ def _drop_already_surfaced(rationale: list[dict], *surfaced: list[dict]) -> list
             continue
         kept.append(r)
     return kept
+
+
+def _gather_body_candidates(
+    hits: list[dict], answer_text: str
+) -> list[tuple[int, int, int, str, dict]]:
+    """Rank the definitions to inline in ``symbol_bodies``, most-relevant first.
+
+    Returns ``(tier, kind_rank, start_line, path, symbol)`` tuples, pre-sorted so
+    the leading entries are the bodies the agent is most likely to want:
+
+      * Tier 0 — the exact symbol the question named, resolved by symbol
+        anchoring (survives the fuzzy hydration cap a parent class name floods).
+      * Tier 1 — a question-matched hydrated symbol the answer names.
+
+    Within a tier a function/method outranks a class container (so "explain the
+    extract_all method of DecisionExtractor" serves extract_all, not the
+    1,300-line class head), then document order. Only definitions the answer
+    text actually names qualify; constants stay in ``quotes``.
+    """
+    candidates: list[tuple[int, int, int, str, dict]] = []
+    for h in hits[:_ENRICH_TOP_N_HITS]:
+        path = h.get("target_path")
+        if not path:
+            continue
+        for s in h.get("_anchor_symbols") or []:
+            name = s.get("name")
+            if not name or name not in answer_text:
+                continue
+            kind = s.get("kind")
+            kind_rank = 0 if kind in ("function", "method") else 1
+            candidates.append((0, kind_rank, s.get("start_line") or 0, path, s))
+        for s in h.get("symbols") or []:
+            name = s.get("name")
+            if not name or len(name) < 3 or not s.get("_matched"):
+                continue
+            if name not in answer_text:
+                continue
+            kind = s.get("kind")
+            if kind not in ("function", "method", "class", "interface"):
+                continue
+            kind_rank = 0 if kind in ("function", "method") else 1
+            candidates.append((1, kind_rank, s.get("start_line") or 0, path, s))
+    candidates.sort(key=lambda t: (t[0], t[1], t[2]))
+    return candidates
 
 
 @mcp.tool()
@@ -587,9 +630,6 @@ async def get_answer(
             dominant = (top_score / second_score) >= _DOMINANCE_RATIO
 
         if not dominant:
-            # Enrich top hits with substantive excerpts so the agent has
-            # real material to ground in (not one-line summaries).
-            await _enrich_gated_excerpts(hits, ctx)
             # Structured candidate set: a decision-shaped list with a
             # one-line justification per file. Beats the prior flat
             # ``fallback_targets`` list because the agent can pick ONE file
@@ -607,6 +647,13 @@ async def get_answer(
             # Mine source comments for rationale the wiki/decision corpus
             # missed — turns "go Read these 5 files" into a cited why.
             code_rationale = _gather_code_rationale(ctx, hits, fallback_targets, question)
+            # A miss should be cheap to READ, not just cheap to ignore. The old
+            # gated payload also carried a full per-hit key_symbols dump — the
+            # single largest block by volume — that duplicated best_guesses and
+            # went unused (2026-07-11 dogfood). best_guesses (file + one-line
+            # why + score) and code_rationale carry the choosing signal; the
+            # symbol dump does not. Drop it, and skip the excerpt-enrichment DB
+            # round-trip that only fed it (a small latency win on the miss path).
             gated: dict = {
                 "answer": "",
                 "citations": [],
@@ -624,7 +671,7 @@ async def get_answer(
                     )
                 ),
                 "fallback_targets": fallback_targets,
-                "retrieval": _serialize_hits(hits, limit=_GATED_RETURN_HITS, lean_symbols=True),
+                "retrieval": [],
                 "note": (
                     "Multiple plausible candidates — synthesis skipped to "
                     "avoid anchoring on a wrong frame. Each best_guess entry "
@@ -810,37 +857,7 @@ async def get_answer(
     # from get_symbol's `verified` contract. When the indexed body is longer
     # than the hydrator's line cap, a `continuation` names the exact range
     # read for the remainder (mirrors get_symbol).
-    # Gather eligible definitions across the top hits, ranked so the most
-    # relevant body leads. Tier 0 = the exact symbol the question named, as
-    # resolved by symbol anchoring (survives the fuzzy hydration cap that a
-    # parent class name otherwise floods). Tier 1 = question-matched hydrated
-    # symbols. Within a tier, a function/method outranks a class container, so
-    # "explain the extract_all method of DecisionExtractor" serves extract_all,
-    # not the 1,300-line class head. Then document order.
-    _body_candidates: list[tuple[int, int, int, str, dict]] = []
-    for h in hits[:_ENRICH_TOP_N_HITS]:
-        path = h.get("target_path")
-        if not path:
-            continue
-        for s in h.get("_anchor_symbols") or []:
-            name = s.get("name")
-            if not name or name not in answer_text:
-                continue
-            kind = s.get("kind")
-            kind_rank = 0 if kind in ("function", "method") else 1
-            _body_candidates.append((0, kind_rank, s.get("start_line") or 0, path, s))
-        for s in h.get("symbols") or []:
-            name = s.get("name")
-            if not name or len(name) < 3 or not s.get("_matched"):
-                continue
-            if name not in answer_text:
-                continue
-            kind = s.get("kind")
-            if kind not in ("function", "method", "class", "interface"):
-                continue
-            kind_rank = 0 if kind in ("function", "method") else 1
-            _body_candidates.append((1, kind_rank, s.get("start_line") or 0, path, s))
-    _body_candidates.sort(key=lambda t: (t[0], t[1], t[2]))
+    _body_candidates = _gather_body_candidates(hits, answer_text)
 
     symbol_bodies: list[dict] = []
     _seen_bodies: set[tuple[str, str]] = set()
@@ -1016,8 +1033,11 @@ async def get_answer(
         # confidence the citations + answer suffice — carrying five enriched
         # hits through the conversation cache buys nothing. At medium the
         # agent verifies the top candidates: two truncated hits, no symbol
-        # enrichment for graph-expansion neighbors. Low keeps the full
-        # block — that's when routing material earns its bytes.
+        # enrichment for graph-expansion neighbors. Low keeps a grounding
+        # block, but lean: the top hits with snippets, symbols pipeable but
+        # stripped of docstrings/excerpts — the full per-hit key_symbols dump
+        # was the largest block by volume and went mostly unused on a
+        # low-confidence answer (2026-07-11 dogfood).
         if confidence == "high":
             retrieval_view: list[dict] = []
         elif confidence == "medium":
@@ -1025,7 +1045,9 @@ async def get_answer(
                 hits, limit=2, summary_chars=160, symbols_for_expanded=False
             )
         else:
-            retrieval_view = _serialize_hits(hits)
+            retrieval_view = _serialize_hits(
+                hits, limit=_GATED_RETURN_HITS, lean_symbols=True
+            )
         payload = {
             "answer": answer_text,
             "citations": citations,
