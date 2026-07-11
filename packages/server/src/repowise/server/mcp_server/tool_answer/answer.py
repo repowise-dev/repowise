@@ -965,6 +965,12 @@ async def get_answer(
 
     symbol_bodies: list[dict] = []
     _seen_bodies: set[tuple[str, str]] = set()
+    # True once a tier-0 body (the exact symbol the question named, resolved by
+    # symbol anchoring) is inlined. Its full live body IS the ground truth, so a
+    # response carrying it is content-grounded even when synthesis hedges — the
+    # confidence gate below reads this to avoid the "low, go Read" label that
+    # contradicts a payload already holding the answer (2026-07-11 dogfood).
+    served_named_body = False
     repo_root = Path(str(ctx.path)) if getattr(ctx, "path", None) else None
     for _tier, _kind_rank, start, path, s in _body_candidates:
         if len(symbol_bodies) >= _INLINE_BODY_MAX_SYMBOLS:
@@ -996,6 +1002,8 @@ async def get_answer(
             entry["continuation"] = f"{path}:{end_served + 1}-{sym_end}"
         symbol_bodies.append(entry)
         _seen_bodies.add((path, name))
+        if _tier == 0:
+            served_named_body = True
 
     # Compute confidence from the dominance ratio (top hit vs second hit).
     # The dominance ratio is a more reliable separator than absolute BM25
@@ -1024,7 +1032,14 @@ async def get_answer(
     # payload (~10k chars) through the conversation cache for no benefit.
     hedged = _answer_is_hedged(answer_text)
     if hedged:
-        confidence = "low"
+        # A hedge means the synthesised PROSE is weak — but when the exact
+        # symbol the question named is inlined in symbol_bodies (tier-0 anchor,
+        # full live body), the answer's ground truth is already in-hand. Labeling
+        # that "low" contradicts the payload and fires the "go Read" hint the
+        # body makes unnecessary, so the agent bails to Read when it never needed
+        # to. Hold such a response at medium; the note below redirects the agent
+        # from the hedged prose to the served body.
+        confidence = "medium" if served_named_body else "low"
 
     # Third gate — identifier-citation gate: when the question explicitly
     # names identifiers (classes / methods / snake_case / CamelCase) and
@@ -1101,7 +1116,7 @@ async def get_answer(
         payload = {
             "answer": answer_text,
             "citations": citations,
-            "confidence": "low",
+            "confidence": confidence,
             "retrieval_quality": retrieval_quality,
             "fallback_targets": fallback_targets[:3],
             "retrieval": [],
@@ -1115,10 +1130,22 @@ async def get_answer(
         # fallback_targets file, which is the whole point of anchoring.
         if symbol_bodies:
             payload["symbol_bodies"] = symbol_bodies
-            payload["note"] = (
-                "Synthesis hedged, but symbol_bodies carries the live body of "
-                "the symbol(s) you named — read that to answer."
-            )
+            if served_named_body:
+                # The exact symbol the question named is inlined below as live
+                # source. That is the answer; the hedge is about the surrounding
+                # prose, not the body. Say so, and mark the response grounded so
+                # the agent cites the body instead of re-reading the file.
+                payload["grounding"] = "symbol_body"
+                payload["note"] = (
+                    "Synthesis hedged on the prose, but symbol_bodies carries "
+                    "the full live body of the symbol(s) you named — cite that "
+                    "directly, no verification Read needed."
+                )
+            else:
+                payload["note"] = (
+                    "Synthesis hedged, but symbol_bodies carries the live body "
+                    "of the symbol(s) you named — read that to answer."
+                )
         # The hedge often means the rationale isn't in the wiki at all — it's a
         # code comment. Mine the candidate source for it before sending the
         # agent off to Read.

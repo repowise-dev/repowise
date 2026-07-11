@@ -428,6 +428,91 @@ async def test_inline_body_truncation_emits_continuation(setup_mcp, monkeypatch)
 
 
 # ---------------------------------------------------------------------------
+# Hedge + served named-symbol body — a hedge downgrades the PROSE, but when the
+# exact symbol the question named is inlined as a live body, the answer's ground
+# truth is already served. The response must not read "low, go Read" (which
+# contradicts the payload); it holds at medium with grounding="symbol_body".
+# ---------------------------------------------------------------------------
+
+
+def _patch_anchor(monkeypatch, answer_mod, anchored: dict):
+    """Force symbol anchoring to attach ``anchored`` to the top hit, as if the
+    question named an indexed symbol whose defining file got promoted."""
+
+    async def _fake_anchor(session, repo_id, question_ids, hits):
+        if hits:
+            hits[0]["_anchor_symbols"] = [anchored]
+        return hits, {"union": {}, "qualified_miss": []}
+
+    monkeypatch.setattr(answer_mod, "_anchor_symbol_hits", _fake_anchor)
+
+
+@pytest.mark.asyncio
+async def test_hedged_but_named_body_served_holds_medium(setup_mcp, monkeypatch, tmp_path):
+    """Hedged synthesis + the exact question-named symbol inlined as a live body
+    → medium with grounding='symbol_body', not low. The 'low → Read' hint the
+    body makes unnecessary must not fire."""
+    import repowise.server.mcp_server as mcp_mod
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    (tmp_path / "pkg" / "alpha").mkdir(parents=True)
+    (tmp_path / "pkg" / "alpha" / "one.py").write_text(
+        "def min_count_policy() -> int:\n"
+        "    # gate retries at the floor\n"
+        "    return MIN_COUNT\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(mcp_mod, "_repo_path", str(tmp_path))
+
+    _patch_pipeline(monkeypatch, answer_mod, with_symbols=True, symbol=_FN_SYMBOL)
+    _patch_anchor(
+        monkeypatch,
+        answer_mod,
+        {
+            "name": "min_count_policy",
+            "kind": "function",
+            "start_line": 1,
+            "end_line": 3,
+        },
+    )
+    _patch_provider(
+        monkeypatch,
+        answer_mod,
+        "The provided excerpts do not include the full body of min_count_policy.",
+    )
+
+    result = await get_answer("How does min_count_policy work?")
+    assert result["confidence"] == "medium"
+    assert result["grounding"] == "symbol_body"
+    [b] = result["symbol_bodies"]
+    assert b["name"] == "min_count_policy"
+    assert "return MIN_COUNT" in b["source"]
+    assert "cite that directly" in result["note"]
+    # The low-confidence "Read the fallback_targets" hint must be gone.
+    assert "Low confidence" not in (result["_meta"].get("hint") or "")
+
+
+@pytest.mark.asyncio
+async def test_hedged_without_named_body_stays_low(setup_mcp, monkeypatch):
+    """The same hedge, but no anchored body is served → still low (the negative
+    control for the grounding bump)."""
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    _patch_pipeline(monkeypatch, answer_mod, with_symbols=True, symbol=_FN_SYMBOL)
+    _patch_provider(
+        monkeypatch,
+        answer_mod,
+        "The provided excerpts do not include the full body of min_count_policy.",
+    )
+
+    result = await get_answer("How does min_count_policy work?")
+    assert result["confidence"] == "low"
+    assert "grounding" not in result
+
+
+# ---------------------------------------------------------------------------
 # Symbol anchoring — force the defining file of a question-named symbol into
 # the candidate set when fuzzy retrieval missed it.
 # ---------------------------------------------------------------------------
