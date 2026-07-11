@@ -414,7 +414,7 @@ def test_install_claude_code_hooks_creates_missing_file(
     saved = json.loads(settings_path.read_text(encoding="utf-8"))
     assert "PreToolUse" not in saved["hooks"]
     assert _post_repowise_entries(saved) == [
-        ("Bash|PowerShell|Grep|Glob|Read|Edit|Write", "repowise-augment")
+        (claude_config._AUGMENT_MATCHER, "repowise-augment")
     ]
     assert _session_start_repowise_entries(saved) == [("startup|resume|clear", "repowise-augment")]
 
@@ -452,7 +452,7 @@ def test_install_claude_code_hooks_preserves_user_pretool_hooks(
     assert saved["hooks"]["PreToolUse"][0]["hooks"][0]["command"] == "echo read"
     # PostToolUse now has the repowise hook.
     assert _post_repowise_entries(saved) == [
-        ("Bash|PowerShell|Grep|Glob|Read|Edit|Write", "repowise-augment")
+        (claude_config._AUGMENT_MATCHER, "repowise-augment")
     ]
 
 
@@ -498,7 +498,7 @@ def test_install_claude_code_hooks_migrates_pre_0_6_1_command(
     saved = json.loads(settings_path.read_text(encoding="utf-8"))
     assert "PreToolUse" not in saved["hooks"]
     assert _post_repowise_entries(saved) == [
-        ("Bash|PowerShell|Grep|Glob|Read|Edit|Write", "repowise-augment")
+        (claude_config._AUGMENT_MATCHER, "repowise-augment")
     ]
 
 
@@ -538,7 +538,7 @@ def test_install_claude_code_hooks_migrates_pre_0_6_2_matcher(
     saved = json.loads(settings_path.read_text(encoding="utf-8"))
     assert "PreToolUse" not in saved["hooks"]
     assert _post_repowise_entries(saved) == [
-        ("Bash|PowerShell|Grep|Glob|Read|Edit|Write", "repowise-augment")
+        (claude_config._AUGMENT_MATCHER, "repowise-augment")
     ]
 
 
@@ -594,7 +594,7 @@ def test_migrate_claude_code_hooks_handles_full_legacy_payload(
     saved = json.loads(settings_path.read_text(encoding="utf-8"))
     assert "PreToolUse" not in saved["hooks"]
     assert _post_repowise_entries(saved) == [
-        ("Bash|PowerShell|Grep|Glob|Read|Edit|Write", "repowise-augment")
+        (claude_config._AUGMENT_MATCHER, "repowise-augment")
     ]
 
     # Idempotent: a second run finds nothing to do.
@@ -632,7 +632,7 @@ def test_migrate_claude_code_hooks_widens_legacy_matchers(
     assert claude_config.migrate_claude_code_hooks() is True
     saved = json.loads(settings_path.read_text(encoding="utf-8"))
     assert _post_repowise_entries(saved) == [
-        ("Bash|PowerShell|Grep|Glob|Read|Edit|Write", "repowise-augment")
+        (claude_config._AUGMENT_MATCHER, "repowise-augment")
     ]
 
 
@@ -720,7 +720,7 @@ def test_migrate_claude_code_hooks_noop_when_already_current(
         "hooks": {
             "PostToolUse": [
                 {
-                    "matcher": "Bash|PowerShell|Grep|Glob|Read|Edit|Write",
+                    "matcher": claude_config._AUGMENT_MATCHER,
                     "hooks": [{"type": "command", "command": "repowise-augment"}],
                 }
             ],
