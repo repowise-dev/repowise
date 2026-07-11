@@ -510,3 +510,57 @@ class TestIdentifierGrepHint:
 
         result = await search_codebase("authentication flow for the service")
         assert "grep_hint" not in result
+
+
+class TestExactMatchSignal:
+    """An identifier query says whether any hit is an EXACT symbol match, so
+    the agent doesn't anchor on a fuzzy neighbour that ranks first (finding 1)."""
+
+    def test_has_exact_symbol_matches_name(self):
+        from repowise.server.mcp_server.tool_search import _has_exact_symbol
+
+        syms = [{"name": "get_answer", "qualified_name": "get_answer"}]
+        assert _has_exact_symbol(["get_answer"], syms)
+        assert not _has_exact_symbol(["get_answerX"], syms)
+        assert not _has_exact_symbol([], syms)
+        assert not _has_exact_symbol(["get_answer"], [])
+
+    def test_has_exact_symbol_normalizes_separators(self):
+        # An agent's "Class.method" must match a "Class::method" qualified_name.
+        from repowise.server.mcp_server.tool_search import _has_exact_symbol
+
+        syms = [{"name": "method", "qualified_name": "Class::method"}]
+        assert _has_exact_symbol(["Class.method"], syms)
+
+    def test_identifier_candidates_by_mode(self):
+        from repowise.server.mcp_server.tool_search import _identifier_candidates
+
+        assert _identifier_candidates("AuthService", "symbol") == ["AuthService"]
+        assert _identifier_candidates("where is AuthService defined", "hybrid") == ["AuthService"]
+        assert _identifier_candidates("rate limiting", "concept") == []
+
+    @pytest.mark.asyncio
+    async def test_exact_hit_sets_true_and_no_note(self, setup_mcp):
+        from repowise.server.mcp_server import search_codebase
+
+        result = await search_codebase("AuthService", mode="symbol")
+        assert result["exact_match"] is True
+        assert "note" not in result
+
+    @pytest.mark.asyncio
+    async def test_fuzzy_only_sets_false_with_note(self, setup_mcp):
+        # "AuthServiceXyz" token-overlaps AuthService (a hit) but matches no
+        # symbol exactly — the signal must fire even though results are non-empty.
+        from repowise.server.mcp_server import search_codebase
+
+        result = await search_codebase("AuthServiceXyz", mode="symbol")
+        assert result["results"], "fuzzy neighbour should still be returned"
+        assert result["exact_match"] is False
+        assert "exactly matches" in result.get("note", "")
+
+    @pytest.mark.asyncio
+    async def test_concept_query_gets_no_signal(self, setup_mcp):
+        from repowise.server.mcp_server import search_codebase
+
+        result = await search_codebase("authentication flow for the service")
+        assert "exact_match" not in result

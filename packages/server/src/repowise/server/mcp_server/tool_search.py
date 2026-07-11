@@ -24,6 +24,7 @@ from repowise.server.mcp_server._helpers import (
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server.tool_search_symbols import (
+    _qual_norm,
     search_paths_single,
     search_symbols_single,
 )
@@ -61,6 +62,41 @@ _IDENT_TOKEN_RE = re.compile(
 def _embedded_identifiers(query: str) -> list[str]:
     """Identifier-shaped tokens carried inside a natural-language query."""
     return _IDENT_TOKEN_RE.findall(query)
+
+
+def _identifier_candidates(query: str, mode: str) -> list[str]:
+    """Identifier tokens the query is asking after, for the exact-match signal.
+
+    A single-token query IS the identifier (symbol mode); a natural-language
+    query carrying identifiers (hybrid mode) exposes them the same way
+    ``_resolve_mode`` used to route here. Concept/path queries name none.
+    """
+    if mode == "symbol":
+        q = query.strip()
+        return [q] if q else []
+    if mode == "hybrid":
+        return _embedded_identifiers(query)
+    return []
+
+
+def _has_exact_symbol(candidates: list[str], symbols: list[dict]) -> bool:
+    """True when some returned symbol's name/qualified-name equals a candidate.
+
+    Reuses the scorer's separator-normalisation so an agent's ``Class.method``
+    matches a ``Class::method`` qualified_name in the index. This is the score
+    cliff made explicit: an exact hit and a fuzzy neighbour look identical in
+    the result list otherwise, and the agent anchors on whatever ranks first.
+    """
+    if not candidates or not symbols:
+        return False
+    wanted = {c.strip().lower() for c in candidates if c.strip()}
+    wanted |= {_qual_norm(c) for c in candidates if c.strip()}
+    for s in symbols:
+        name = (s.get("name") or "").strip().lower()
+        qn = _qual_norm(s.get("qualified_name"))
+        if (name and name in wanted) or (qn and qn in wanted):
+            return True
+    return False
 
 
 # Decision records are short, dense title-statements; they win cosine
@@ -561,6 +597,24 @@ async def _structured_search(
         "mode": mode,
         "_meta": _build_meta(repository=repository, targets=_result_paths(results)),
     }
+    # Exact-match honesty: an identifier-shaped query whose target names no
+    # indexed symbol still returns fuzzy neighbours. Say so, or the agent
+    # anchors on a wrong hit that looks authoritative (their Alamofire
+    # 44-overload read-spiral). Emit the boolean either way; a note only when
+    # there is no exact hit to distinguish from the fuzz.
+    candidates = _identifier_candidates(query, mode)
+    if candidates:
+        exact = _has_exact_symbol(candidates, symbols)
+        response["exact_match"] = exact
+        if not exact:
+            shown = ", ".join(repr(c) for c in candidates[:3])
+            response["note"] = (
+                f"No indexed symbol exactly matches {shown}. The results are "
+                "fuzzy neighbours ranked by token overlap — confirm a hit names "
+                "what you meant before relying on it. If you expected an exact "
+                "symbol, recheck spelling/casing, or Grep the literal name for "
+                "an exhaustive usage sweep."
+            )
     if grep_hint and not results:
         response["grep_hint"] = grep_hint
     return response
