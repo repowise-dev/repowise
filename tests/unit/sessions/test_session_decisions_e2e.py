@@ -152,6 +152,78 @@ async def test_llm_failure_leaves_candidates_staged(tmp_path):
     assert decision.status == "active"
 
 
+async def test_init_pipeline_appends_session_decisions(tmp_path, monkeypatch):
+    """The full-index decision phase folds mined session decisions in."""
+    from types import SimpleNamespace
+
+    from repowise.core.analysis.decisions.extractor import ExtractedDecision
+    from repowise.core.pipeline.phases.analysis import _run_decision_extraction
+
+    calls = []
+
+    async def fake_mine(repo_path, *, provider, **kw):
+        calls.append(repo_path)
+        return [ExtractedDecision(title="Use X", source="session", status="active")]
+
+    monkeypatch.setattr("repowise.core.sessions.miners.decisions.mine_session_decisions", fake_mine)
+
+    class Graph:
+        def graph(self):
+            return None
+
+    class Provider:
+        async def generate(self, *a, **kw):
+            return SimpleNamespace(content="[]")
+
+    report = await _run_decision_extraction(
+        tmp_path,
+        llm_client=Provider(),
+        graph_builder=Graph(),
+        git_meta_map={},
+        parsed_files=[],
+        progress=None,
+    )
+    assert calls == [tmp_path]
+    assert [d.title for d in report.decisions if d.source == "session"] == ["Use X"]
+    assert report.by_source["session"] == 1
+    assert report.total_found == len(report.decisions)
+
+
+async def test_init_pipeline_respects_session_mining_gate(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from repowise.core.pipeline.phases.analysis import _run_decision_extraction
+
+    (tmp_path / ".repowise").mkdir()
+    (tmp_path / ".repowise" / "config.yaml").write_text(
+        "decisions:\n  session_mining: false\n", encoding="utf-8"
+    )
+
+    async def fake_mine(repo_path, *, provider, **kw):
+        raise AssertionError("must not mine when the config gate is off")
+
+    monkeypatch.setattr("repowise.core.sessions.miners.decisions.mine_session_decisions", fake_mine)
+
+    class Graph:
+        def graph(self):
+            return None
+
+    class Provider:
+        async def generate(self, *a, **kw):
+            return SimpleNamespace(content="[]")
+
+    report = await _run_decision_extraction(
+        tmp_path,
+        llm_client=Provider(),
+        graph_builder=Graph(),
+        git_meta_map={},
+        parsed_files=[],
+        progress=None,
+    )
+    assert report is not None
+    assert "session" not in report.by_source
+
+
 def test_session_rank_sits_between_adr_and_commit():
     assert SOURCE_RANK["session"] == 7
     assert SOURCE_RANK["adr"] > SOURCE_RANK["session"] > SOURCE_RANK["commit"]

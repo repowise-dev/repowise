@@ -263,7 +263,8 @@ async def _run_decision_extraction(
         # Sources run concurrently inside extract_all(); drive a determinate
         # bar so users see live progress. ``decisions.sources`` in the repo
         # config can disable individual sources (#751).
-        enabled = enabled_source_names(load_repo_config(repo_path))
+        repo_cfg = load_repo_config(repo_path)
+        enabled = enabled_source_names(repo_cfg)
         if progress:
             progress.on_phase_start("decisions", len(enabled))
 
@@ -284,6 +285,31 @@ async def _run_decision_extraction(
             timeout=DECISION_EXTRACTION_TIMEOUT_SECS,
         )
 
+        # Session-sourced decisions: a repo indexed for the first time on a
+        # machine with existing agent-session history gets them at init, not
+        # only from the first update. Appended after extract_all's substring
+        # gate on purpose: the miner enforces its own grounding contract, and
+        # re-gating without a source_text would wipe its verification. A
+        # server-side index has no transcript directory and no-ops here.
+        try:
+            from repowise.core.sessions.miners.decisions import (
+                mine_session_decisions,
+                session_mining_enabled,
+            )
+
+            if llm_client is not None and session_mining_enabled(repo_cfg):
+                session_decisions = await asyncio.wait_for(
+                    mine_session_decisions(repo_path, provider=llm_client),
+                    timeout=DECISION_EXTRACTION_TIMEOUT_SECS,
+                )
+                if session_decisions:
+                    report.decisions.extend(session_decisions)
+                    report.by_source["session"] = len(session_decisions)
+                    report.total_found = len(report.decisions)
+        except Exception as exc:
+            if progress:
+                progress.on_message("warning", f"Session decision mining skipped: {exc}")
+
         if progress:
             bs = report.by_source
             total_decisions = report.total_found
@@ -296,7 +322,8 @@ async def _run_decision_extraction(
                 f"{bs.get('pr', 0)} PR · "
                 f"{bs.get('git_archaeology', 0)} git · "
                 f"{bs.get('comment', 0)} comments · "
-                f"{bs.get('readme_mining', 0)} docs",
+                f"{bs.get('readme_mining', 0)} docs · "
+                f"{bs.get('session', 0)} session",
             )
 
         _phase_done(progress, "decisions")
