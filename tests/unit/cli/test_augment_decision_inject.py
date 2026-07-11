@@ -160,6 +160,29 @@ async def test_global_session_rule_injected_without_file_overlap(tmp_path, monke
     assert "Batch the embed calls" not in block
 
 
+async def test_global_rules_are_capped_and_never_crowd_out_linked(tmp_path, monkeypatch):
+    """Unlinked rules are always eligible, so a cap keeps them from flooding
+    the block; a working-set-linked decision must still get through."""
+    rules = [
+        {
+            "id": f"d-g{i}",
+            "title": f"Global rule {i}",
+            "decision": f"always follow global rule number {i}",
+            "source": "session",
+            "confidence": 0.8,
+            "links": [],
+        }
+        for i in range(5)
+    ]
+    await _build_wiki_db(tmp_path, [*rules, _AUTH_DECISION])
+    _quiet_git(monkeypatch, dirty=["src/core/auth.py"])
+
+    block = decision_inject._session_decision_block(tmp_path, "sess-1")
+    assert block is not None
+    assert "Use JWT auth" in block
+    assert sum("Global rule" in ln for ln in block.splitlines()) == 2
+
+
 async def test_unlinked_non_session_decision_is_not_global(tmp_path, monkeypatch):
     """Only session-mined rules get the repo-wide base relevance."""
     await _build_wiki_db(

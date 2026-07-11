@@ -56,6 +56,11 @@ _W_BRANCH_TOKEN = 0.4
 #: Base relevance for repo-wide session rules (active, session-sourced, no
 #: node links). They apply everywhere, so SessionStart is their only path.
 _W_GLOBAL_RULE = 0.5
+#: At most this many unlinked global rules per block. Working-set-relevant
+#: decisions must never be crowded out by always-eligible rules, and a
+#: mis-promoted one-off (dogfood: "merge the backend PRs" made it to active)
+#: costs at most one slot until it is dismissed.
+_MAX_GLOBAL_RULES = 2
 
 #: Branch-name tokens that identify workflow, not topic.
 _GENERIC_BRANCH_TOKENS = frozenset(
@@ -414,7 +419,13 @@ def _session_decision_block(repo_path: Path, session_id: str) -> str | None:
     lines = [header]
     budget = _TOKEN_CAP - _estimate_tokens(header)
     shown: list[dict] = []
-    for decision, _score in scored[:_MAX_ITEMS]:
+    globals_shown = 0
+    for decision, _score in scored:
+        if len(shown) >= _MAX_ITEMS:
+            break
+        is_global = not decision["links"] and decision["source"] == "session"
+        if is_global and globals_shown >= _MAX_GLOBAL_RULES:
+            continue
         line = _format_decision_line(decision)
         cost = _estimate_tokens(line)
         if cost > budget:
@@ -422,6 +433,8 @@ def _session_decision_block(repo_path: Path, session_id: str) -> str | None:
         lines.append(line)
         budget -= cost
         shown.append(decision)
+        if is_global:
+            globals_shown += 1
     if not shown:
         return None
     _record_injections(repo_path, session_id, [d["id"] for d in shown], node_id="")
