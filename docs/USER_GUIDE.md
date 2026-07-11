@@ -863,14 +863,23 @@ Wiki is stale, run `repowise update` to refresh
 
 This ensures agents are never silently working from outdated documentation.
 
+#### Decision injection, relevance-ranked
+
+The decision layer reaches the agent at the two moments it matters, with no LLM calls and indexed SQLite lookups only:
+
+- **Session start.** Repowise scores the repo's active decisions against the session's likely working set: dirty and staged files, files changed on the branch vs main, the previous session's edited files, and branch-name tokens, expanded one hop through import edges and co-change partners. The top few land in a compact block under a hard ~400-token cap. Nothing clears the relevance floor, nothing is injected; decisions are never injected just for being high-confidence. Repo-wide rules mined from your own corrections (see session decision mining in the CLI reference) are the exception: they apply everywhere, so they compete at a flat base relevance.
+- **Edit time.** When the agent edits a file governed by a decision (via `decision_node_links`), it gets a one-line "governed by" notice with the rationale, once per session per decision and at most a few times per session.
+
+Injected decision ids are recorded locally in `.repowise/sessions/sessions.db`. On the next `repowise update`, the session miner checks whether the guidance was followed or contradicted by your corrections in that session, relaxing or bumping the decision's staleness accordingly, so guidance that stops being true stops being injected.
+
 ### Configuration
 
 Claude Code hooks are written to `~/.claude/settings.json` automatically during `repowise init`. Codex hooks are written to `.codex/hooks.json` by `repowise init --codex`.
 
 | Hook type | Matcher | Action |
 |-----------|---------|--------|
-| Claude `SessionStart` | `startup\|resume\|clear` | Inject live index freshness (current / behind with a changed-file count / update in progress) and the core-tool trust rule |
-| Claude `PostToolUse` | `Bash\|PowerShell\|Grep\|Glob\|Read\|Edit\|Write` | Check git freshness, add search rescue/triage context, and emit Read-intelligence notices |
+| Claude `SessionStart` | `startup\|resume\|clear` | Inject live index freshness (current / behind with a changed-file count / update in progress), the core-tool trust rule, and the standing decisions relevant to the session's working set |
+| Claude `PostToolUse` | `Bash\|PowerShell\|Grep\|Glob\|Read\|Edit\|Write` | Check git freshness, add search rescue/triage context, emit Read-intelligence notices, and surface the governing decision when a governed file is edited |
 | Codex `SessionStart` / `UserPromptSubmit` | lifecycle | Remind Codex to use Repowise MCP tools |
 | Codex `PostToolUse` | `Bash`, `apply_patch\|Edit\|Write` | Check git/edit freshness |
 

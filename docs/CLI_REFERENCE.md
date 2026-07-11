@@ -987,7 +987,7 @@ repowise delete <repo-id> --force        # delete a specific repo's index, no pr
 
 ### `repowise augment`
 
-Hook-driven context enrichment engine. Not meant to be called manually, invoked by Claude Code and Codex hooks installed during `repowise init`. Claude Code uses it for search-result enrichment and stale-wiki checks; Codex uses it for `SessionStart`, `UserPromptSubmit`, and `PostToolUse` lifecycle guidance.
+Hook-driven context enrichment engine. Not meant to be called manually, invoked by Claude Code and Codex hooks installed during `repowise init`. Claude Code uses it for search-result enrichment, stale-wiki checks, and decision injection: session start gets the standing decisions relevant to the session's working set (relevance-ranked, hard token cap, silent when nothing clears the floor), and editing a governed file gets a one-line "governed by" notice once per session per decision. Codex uses it for `SessionStart`, `UserPromptSubmit`, and `PostToolUse` lifecycle guidance. Shown decisions are recorded in `.repowise/sessions/sessions.db` so the next `repowise update` can judge whether the guidance was followed or contradicted and adjust decision staleness.
 
 ### `repowise-augment` / `repowise-rewrite`
 
