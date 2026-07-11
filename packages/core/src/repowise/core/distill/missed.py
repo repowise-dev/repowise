@@ -1,11 +1,11 @@
 """Missed-savings discovery — what did raw agent commands waste?
 
-Scans Claude Code transcript JSONL (``~/.claude/projects/<munged-cwd>/*.jsonl``)
-for Bash/PowerShell tool calls inside this repo that were **not** routed
-through ``repowise distill``, classifies each command with the same router the
-engine uses, and estimates the tokens a filter would have saved using that
-filter's conservative measured floor (the per-fixture savings floors asserted
-in CI, not the medians).
+Scans Claude Code transcripts (via the shared
+:mod:`repowise.core.sessions` layer) for Bash/PowerShell tool calls inside
+this repo that were **not** routed through ``repowise distill``, classifies
+each command with the same router the engine uses, and estimates the tokens
+a filter would have saved using that filter's conservative measured floor
+(the per-fixture savings floors asserted in CI, not the medians).
 
 Read-only and best-effort by contract: malformed lines, unreadable files, or
 an absent transcript directory produce an empty report, never an error — this
@@ -18,15 +18,15 @@ user's own transcript directory on this machine; nothing leaves it.
 
 from __future__ import annotations
 
-import json
-import re
 import time
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from repowise.core.distill.budget import estimate_tokens
 from repowise.core.distill.router import normalize_command, select_filter
+from repowise.core.sessions import ClaudeCodeAdapter, Event, transcript_dir_for
+
+__all__ = ["scan_missed_savings", "transcript_dir_for"]
 
 #: Default scan window, in days.
 DEFAULT_WINDOW_DAYS = 7.0
@@ -54,18 +54,7 @@ _MIN_EST_TOKENS = 40
 
 _SHELL_TOOLS = ("Bash", "PowerShell")
 
-_NON_SLUG_RE = re.compile(r"[^A-Za-z0-9-]")
-
-
-def transcript_dir_for(repo_root: Path, projects_root: Path | None = None) -> Path:
-    """The Claude Code transcript directory for sessions started at *repo_root*.
-
-    Claude Code munges the session cwd into a directory name by replacing
-    every non ``[A-Za-z0-9-]`` character with ``-`` (``C:\\Users\\x\\repo`` →
-    ``C--Users-x-repo``).
-    """
-    root = projects_root if projects_root is not None else Path.home() / ".claude" / "projects"
-    return root / _NON_SLUG_RE.sub("-", str(repo_root))
+_ADAPTER = ClaudeCodeAdapter()
 
 
 def empty_report(days: float = DEFAULT_WINDOW_DAYS) -> dict[str, Any]:
@@ -129,72 +118,49 @@ def _scan(
     return report
 
 
+def _prefilter(raw: str) -> bool:
+    """Only shell tool_use lines and result lines are worth parsing."""
+    return ('"tool_use"' in raw and '"command"' in raw) or '"toolUseResult"' in raw
+
+
 def _scan_file(
     path: Path, cutoff: float, repo_prefix: str, per_filter: dict[str, dict[str, int]]
 ) -> None:
     #: tool_use id -> command, for shell calls that passed every command gate.
     pending: dict[str, str] = {}
-    with path.open(encoding="utf-8", errors="replace") as fh:
-        for raw in fh:
-            # Cheap substring gates before paying for json.loads on huge lines.
-            if '"tool_use"' in raw and '"command"' in raw:
-                _collect_tool_use(raw, cutoff, repo_prefix, pending)
-            elif pending and '"toolUseResult"' in raw:
-                _collect_result(raw, pending, per_filter)
+    for event in _ADAPTER.iter_events(path, prefilter=_prefilter):
+        if event.kind == "assistant" and event.tool_uses:
+            _collect_tool_use(event, cutoff, repo_prefix, pending)
+        elif pending and event.tool_results:
+            _collect_result(event, pending, per_filter)
 
 
-def _collect_tool_use(raw: str, cutoff: float, repo_prefix: str, pending: dict[str, str]) -> None:
-    try:
-        entry = json.loads(raw)
-    except ValueError:
+def _collect_tool_use(
+    event: Event, cutoff: float, repo_prefix: str, pending: dict[str, str]
+) -> None:
+    if event.ts is not None and event.ts < cutoff:
         return
-    if entry.get("type") != "assistant":
-        return
-    ts = _parse_ts(entry.get("timestamp"))
-    if ts is not None and ts < cutoff:
-        return
-    cwd = str(entry.get("cwd") or "").lower().rstrip("\\/")
+    cwd = (event.cwd or "").lower().rstrip("\\/")
     if not cwd.startswith(repo_prefix):
         return
-    content = (entry.get("message") or {}).get("content")
-    if not isinstance(content, list):
-        return
-    for block in content:
-        if not isinstance(block, dict) or block.get("type") != "tool_use":
+    for use in event.tool_uses:
+        if use.name not in _SHELL_TOOLS:
             continue
-        if block.get("name") not in _SHELL_TOOLS:
-            continue
-        command = str((block.get("input") or {}).get("command") or "")
+        command = str(use.input.get("command") or "")
         if not command or normalize_command(command).startswith("repowise"):
             continue  # already distilled (or another repowise invocation)
-        block_id = block.get("id")
-        if isinstance(block_id, str):
-            pending[block_id] = command
+        pending[use.id] = command
 
 
 def _collect_result(
-    raw: str, pending: dict[str, str], per_filter: dict[str, dict[str, int]]
+    event: Event, pending: dict[str, str], per_filter: dict[str, dict[str, int]]
 ) -> None:
-    try:
-        entry = json.loads(raw)
-    except ValueError:
-        return
-    content = (entry.get("message") or {}).get("content")
-    if not isinstance(content, list):
-        return
-    block_id = next(
-        (
-            b.get("tool_use_id")
-            for b in content
-            if isinstance(b, dict) and b.get("type") == "tool_result"
-        ),
-        None,
-    )
-    command = pending.pop(block_id, None) if isinstance(block_id, str) else None
+    result = event.tool_results[0]
+    command = pending.pop(result.tool_use_id, None)
     if command is None:
         return
 
-    output = _result_text(entry.get("toolUseResult"))
+    output = _result_text(result.payload)
     if not output:
         return
     chosen = select_filter(command, output)
@@ -221,12 +187,3 @@ def _result_text(result: Any) -> str:
         parts = [str(result.get(key) or "") for key in ("stdout", "stderr")]
         return "\n".join(p for p in parts if p)
     return ""
-
-
-def _parse_ts(value: Any) -> float | None:
-    if not isinstance(value, str):
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
-    except ValueError:
-        return None

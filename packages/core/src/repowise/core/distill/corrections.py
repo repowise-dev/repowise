@@ -22,13 +22,12 @@ report, never an error. Everything stays local.
 
 from __future__ import annotations
 
-import json
 import re
 import time
 from pathlib import Path
 from typing import Any
 
-from repowise.core.distill.missed import _parse_ts, transcript_dir_for
+from repowise.core.sessions import ClaudeCodeAdapter, Event, transcript_dir_for
 
 #: Default scan window, in days. Corrections are rarer than missed savings,
 #: so the default window is wider.
@@ -44,6 +43,8 @@ WRITE_MIN_COUNT = 2
 WRITE_MAX_RULES = 10
 
 _SHELL_TOOLS = ("Bash", "PowerShell")
+
+_ADAPTER = ClaudeCodeAdapter()
 
 #: The one true command-failure shape in real transcripts. Everything else
 #: stringly (cancellations, rejections, permission denials, harness errors)
@@ -172,69 +173,46 @@ def _scan(
 # ---------------------------------------------------------------------------
 
 
+def _prefilter(raw: str) -> bool:
+    """Only shell tool_use lines and result lines are worth parsing."""
+    return ('"tool_use"' in raw and '"command"' in raw) or '"toolUseResult"' in raw
+
+
 def _session_events(path: Path, cutoff: float, repo_prefix: str) -> list[dict[str, Any]]:
     """Ordered shell events: ``{"command", "failed", "error"}`` per call."""
     events: list[dict[str, Any]] = []
     pending: dict[str, str] = {}
-    with path.open(encoding="utf-8", errors="replace") as fh:
-        for raw in fh:
-            if '"tool_use"' in raw and '"command"' in raw:
-                _collect_tool_use(raw, cutoff, repo_prefix, pending)
-            elif pending and '"toolUseResult"' in raw:
-                _collect_result(raw, pending, events)
+    for event in _ADAPTER.iter_events(path, prefilter=_prefilter):
+        if event.kind == "assistant" and event.tool_uses:
+            _collect_tool_use(event, cutoff, repo_prefix, pending)
+        elif pending and event.tool_results:
+            _collect_result(event, pending, events)
     return events
 
 
-def _collect_tool_use(raw: str, cutoff: float, repo_prefix: str, pending: dict[str, str]) -> None:
-    try:
-        entry = json.loads(raw)
-    except ValueError:
+def _collect_tool_use(
+    event: Event, cutoff: float, repo_prefix: str, pending: dict[str, str]
+) -> None:
+    if event.ts is not None and event.ts < cutoff:
         return
-    if entry.get("type") != "assistant":
-        return
-    ts = _parse_ts(entry.get("timestamp"))
-    if ts is not None and ts < cutoff:
-        return
-    cwd = str(entry.get("cwd") or "").lower().rstrip("\\/")
+    cwd = (event.cwd or "").lower().rstrip("\\/")
     if not cwd.startswith(repo_prefix):
         return
-    content = (entry.get("message") or {}).get("content")
-    if not isinstance(content, list):
-        return
-    for block in content:
-        if not isinstance(block, dict) or block.get("type") != "tool_use":
+    for use in event.tool_uses:
+        if use.name not in _SHELL_TOOLS:
             continue
-        if block.get("name") not in _SHELL_TOOLS:
-            continue
-        command = str((block.get("input") or {}).get("command") or "")
+        command = str(use.input.get("command") or "")
         if not command:
             continue
-        block_id = block.get("id")
-        if isinstance(block_id, str):
-            pending[block_id] = command
+        pending[use.id] = command
 
 
-def _collect_result(raw: str, pending: dict[str, str], events: list[dict[str, Any]]) -> None:
-    try:
-        entry = json.loads(raw)
-    except ValueError:
-        return
-    content = (entry.get("message") or {}).get("content")
-    if not isinstance(content, list):
-        return
-    block_id = next(
-        (
-            b.get("tool_use_id")
-            for b in content
-            if isinstance(b, dict) and b.get("type") == "tool_result"
-        ),
-        None,
-    )
-    command = pending.pop(block_id, None) if isinstance(block_id, str) else None
+def _collect_result(event: Event, pending: dict[str, str], events: list[dict[str, Any]]) -> None:
+    command = pending.pop(event.tool_results[0].tool_use_id, None)
     if command is None:
         return
 
-    result = entry.get("toolUseResult")
+    result = event.tool_results[0].payload
     if isinstance(result, dict):
         # Real success shape: stdout/stderr/interrupted dict.
         events.append({"command": command, "failed": False, "error": ""})

@@ -129,7 +129,7 @@ def _resolve(
 
 def _claude_code_sighting(repo_root: Path, projects_root: Path | None) -> _Sighting | None:
     """Newest Claude Code transcript for *repo_root* that names a model."""
-    from repowise.core.distill.missed import transcript_dir_for
+    from repowise.core.sessions import transcript_dir_for
 
     directory = transcript_dir_for(repo_root, projects_root)
     if not directory.is_dir():
@@ -238,9 +238,7 @@ def _extract_codex_fields(entry: dict) -> tuple[str | None, str | None]:
     model = _first_str(
         entry.get("model"), payload.get("model"), turn.get("model"), info.get("model")
     )
-    cwd = _first_str(
-        entry.get("cwd"), payload.get("cwd"), turn.get("cwd"), info.get("cwd")
-    )
+    cwd = _first_str(entry.get("cwd"), payload.get("cwd"), turn.get("cwd"), info.get("cwd"))
     return model, cwd
 
 

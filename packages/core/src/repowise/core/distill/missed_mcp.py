@@ -7,10 +7,10 @@ session. The first read puts the file in context; a later *full* re-read of
 the unchanged file re-bills the whole thing, when a targeted ``get_symbol``
 or a line-range read would have returned a fraction.
 
-It scans the same Claude Code transcript JSONL
-(``~/.claude/projects/<munged-cwd>/*.jsonl``) as the missed-savings scan,
-tracks per-file read and edit order within each session, and credits a
-conservative fraction of each wasteful re-read's tokens as foregone savings.
+It scans the same Claude Code transcripts as the missed-savings scan (via
+the shared :mod:`repowise.core.sessions` layer), tracks per-file read and
+edit order within each session, and credits a conservative fraction of each
+wasteful re-read's tokens as foregone savings.
 
 Read-only and best-effort by the same contract as
 :mod:`repowise.core.distill.missed`: malformed lines, unreadable files, or an
@@ -30,14 +30,13 @@ What counts as a wasteful re-read (high precision on purpose):
 
 from __future__ import annotations
 
-import json
 import os.path
 import time
 from pathlib import Path
 from typing import Any
 
 from repowise.core.distill.budget import estimate_tokens
-from repowise.core.distill.missed import _parse_ts, transcript_dir_for
+from repowise.core.sessions import ClaudeCodeAdapter, Event, transcript_dir_for
 
 #: Default scan window, in days. Matches the missed-savings scan.
 DEFAULT_WINDOW_DAYS = 7.0
@@ -53,6 +52,8 @@ REREAD_FLOOR = 0.5
 _MIN_EST_TOKENS = 40
 
 _MUTATING_TOOLS = ("Edit", "Write", "MultiEdit", "NotebookEdit")
+
+_ADAPTER = ClaudeCodeAdapter()
 
 
 def empty_report(days: float = DEFAULT_WINDOW_DAYS) -> dict[str, Any]:
@@ -122,6 +123,11 @@ def _rel(file_path: str, repo_root: Path) -> str:
     return rel.replace("\\", "/")
 
 
+def _prefilter(raw: str) -> bool:
+    """Only tool_use lines and result lines are worth parsing."""
+    return '"tool_use"' in raw or '"tool_result"' in raw
+
+
 def _scan_file(
     path: Path,
     cutoff: float,
@@ -140,16 +146,15 @@ def _scan_file(
     last_read_seq: dict[str, int] = {}
     last_edit_seq: dict[str, int] = {}
 
-    with path.open(encoding="utf-8", errors="replace") as fh:
-        for raw in fh:
-            if '"tool_use"' in raw:
-                seq = _collect_tool_use(raw, cutoff, repo_prefix, seq, pending, last_edit_seq)
-            elif pending and '"tool_result"' in raw:
-                _collect_result(raw, pending, last_read_seq, last_edit_seq, repo_root, per_file)
+    for event in _ADAPTER.iter_events(path, prefilter=_prefilter):
+        if event.kind == "assistant":
+            seq = _collect_tool_use(event, cutoff, repo_prefix, seq, pending, last_edit_seq)
+        elif pending and event.tool_results:
+            _collect_result(event, pending, last_read_seq, last_edit_seq, repo_root, per_file)
 
 
 def _collect_tool_use(
-    raw: str,
+    event: Event,
     cutoff: float,
     repo_prefix: str,
     seq: int,
@@ -157,67 +162,34 @@ def _collect_tool_use(
     last_edit_seq: dict[str, int],
 ) -> int:
     """Record Read tool_use ids (awaiting result) and Edit ordering. Returns seq."""
-    try:
-        entry = json.loads(raw)
-    except ValueError:
+    if event.ts is not None and event.ts < cutoff:
         return seq
-    if entry.get("type") != "assistant":
-        return seq
-    ts = _parse_ts(entry.get("timestamp"))
-    if ts is not None and ts < cutoff:
-        return seq
-    cwd = str(entry.get("cwd") or "").lower().rstrip("\\/")
+    cwd = (event.cwd or "").lower().rstrip("\\/")
     if not cwd.startswith(repo_prefix):
-        return seq
-    content = (entry.get("message") or {}).get("content")
-    if not isinstance(content, list):
         return seq
 
     seq += 1
-    for block in content:
-        if not isinstance(block, dict) or block.get("type") != "tool_use":
-            continue
-        name = block.get("name")
-        tool_input = block.get("input")
-        if not isinstance(tool_input, dict):
-            continue
-        file_path = tool_input.get("file_path") or tool_input.get("path")
+    for use in event.tool_uses:
+        file_path = use.input.get("file_path") or use.input.get("path")
         if not isinstance(file_path, str) or not file_path.strip():
             continue
-        if name == "Read":
-            partial = tool_input.get("offset") is not None or tool_input.get("limit") is not None
-            block_id = block.get("id")
-            if isinstance(block_id, str):
-                pending[block_id] = (file_path, partial, seq)
-        elif name in _MUTATING_TOOLS:
+        if use.name == "Read":
+            partial = use.input.get("offset") is not None or use.input.get("limit") is not None
+            pending[use.id] = (file_path, partial, seq)
+        elif use.name in _MUTATING_TOOLS:
             last_edit_seq[file_path] = seq
     return seq
 
 
 def _collect_result(
-    raw: str,
+    event: Event,
     pending: dict[str, tuple[str, bool, int]],
     last_read_seq: dict[str, int],
     last_edit_seq: dict[str, int],
     repo_root: Path,
     per_file: dict[str, dict[str, int]],
 ) -> None:
-    try:
-        entry = json.loads(raw)
-    except ValueError:
-        return
-    content = (entry.get("message") or {}).get("content")
-    if not isinstance(content, list):
-        return
-    block_id = next(
-        (
-            b.get("tool_use_id")
-            for b in content
-            if isinstance(b, dict) and b.get("type") == "tool_result"
-        ),
-        None,
-    )
-    record = pending.pop(block_id, None) if isinstance(block_id, str) else None
+    record = pending.pop(event.tool_results[0].tool_use_id, None)
     if record is None:
         return
     file_path, partial, read_seq = record
@@ -235,7 +207,7 @@ def _collect_result(
     if not is_waste:
         return
 
-    output = _read_output_text(entry.get("toolUseResult"))
+    output = _read_output_text(event.tool_results[0].payload)
     if not output:
         return
     raw_tokens = estimate_tokens(output)
