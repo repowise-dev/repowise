@@ -142,14 +142,29 @@ def _order_candidates(files: list[str]) -> list[str]:
     )
 
 
-def _run_grep(repo_root: Path, args: list[str], identifier: str) -> subprocess.CompletedProcess | None:
+def _run_grep(
+    repo_root: Path, args: list[str], identifier: str
+) -> subprocess.CompletedProcess | None:
     """Run a bounded, transport-safe ``git grep`` variant; ``None`` on failure."""
     try:
         return subprocess.run(
             # --no-pager + stdin=DEVNULL are load-bearing: this can run inside a
             # stdio MCP server whose stdin IS the JSON-RPC pipe, so a pager that
             # reads stdin would deadlock the transport.
-            ["git", "--no-pager", "grep", *args, "-l", "-I", "-F", "-w", "-e", identifier, "--", *_GREP_PATHSPECS],
+            [
+                "git",
+                "--no-pager",
+                "grep",
+                *args,
+                "-l",
+                "-I",
+                "-F",
+                "-w",
+                "-e",
+                identifier,
+                "--",
+                *_GREP_PATHSPECS,
+            ],
             cwd=str(repo_root),
             capture_output=True,
             text=True,
@@ -259,6 +274,40 @@ def _doc_shape_in_file(
     return None
 
 
+# A ``<receiver>.get("<key>")`` access - group(1) receiver, group(2) key.
+_GET_ACCESS = re.compile(r"([A-Za-z_]\w*)\s*\.\s*get\(\s*['\"]([A-Za-z_]\w*)['\"]")
+
+
+def _alias_keys_on_documented_lines(
+    lines: list[str], doc_fields: set[str]
+) -> list[tuple[str, int]]:
+    """Alias keys a documented field is read as a fallback for.
+
+    Targets one idiom precisely: ``<recv>.get("<A>") or <recv>.get("<B>")`` - the
+    same receiver reads two keys joined by ``or``, so when one is a documented
+    field the other is an alias for it (``partner.get("co_change_count") or
+    partner.get("count")`` -> ``count``; ``... or partner.get("path")`` ->
+    ``path``). Requiring the ``or`` fallback and a shared receiver keeps this tight:
+    an assignment that merely co-mentions a documented key on a different record
+    (``meta["prior_defect_count"] = ...meta["file_path"]``) or a test assertion
+    does not match. Returns ``(alias, line)`` for keys not in ``doc_fields``.
+    """
+    out: list[tuple[str, int]] = []
+    for idx, line in enumerate(lines, 1):
+        if " or " not in line:
+            continue
+        by_recv: dict[str, list[str]] = {}
+        for m in _GET_ACCESS.finditer(line):
+            by_recv.setdefault(m.group(1), []).append(m.group(2))
+        for keys in by_recv.values():
+            if len(keys) < 2 or not any(k in doc_fields for k in keys):
+                continue
+            for k in keys:
+                if k not in doc_fields:
+                    out.append((k, idx))
+    return out
+
+
 def _accessed_fields_in_file(
     lines: list[str], identifier: str, mentions: list[int]
 ) -> list[tuple[str, int]]:
@@ -323,6 +372,9 @@ def mine_data_shape(repo_root: Path | None, question_ids: set[str]) -> dict | No
           "grounding": "docstring" | "access",
           "confidence": "high" | "medium",
           "sources": [{"file", "line", "kind"}],   # kind in {docstring, access}
+          # docstring grounding only, and only when present: keys consumers read
+          # beside a documented field that the doc omits (aliases / optional keys)
+          "also_accessed": [{"field", "file", "line"}],
         }
     """
     if repo_root is None:
@@ -344,6 +396,7 @@ def mine_data_shape(repo_root: Path | None, question_ids: set[str]) -> dict | No
         access_fields: list[str] = []
         access_sources: list[dict] = []
         access_seen: set[str] = set()
+        file_lines: dict[str, list[str]] = {}  # cached for the divergence pass
 
         for rel in files:
             lines = _read_lines(root, rel)
@@ -352,6 +405,7 @@ def mine_data_shape(repo_root: Path | None, question_ids: set[str]) -> dict | No
             mentions = _mention_lines(lines, identifier)
             if not mentions:
                 continue
+            file_lines[rel] = lines
             doc = _doc_shape_in_file(lines, identifier, mentions)
             if doc is not None:
                 fields, line = doc
@@ -387,13 +441,30 @@ def mine_data_shape(repo_root: Path | None, question_ids: set[str]) -> dict | No
                 if any(src["file"] == s["file"] for s in sources):
                     continue
                 sources.append(src)
-            return {
+            # Divergence: keys consumers read right beside a documented field but
+            # the doc never lists (a legacy alias like ``count`` for
+            # ``co_change_count``, an optional key). The documented shape is
+            # authoritative for what it declares, but if we said "cite it, no Read
+            # needed" while hiding a key four consumers defensively handle, an
+            # agent could ship a change that ignores it. Surface it instead.
+            doc_field_set = set(fields)
+            also_accessed: list[dict] = []
+            also_seen: set[str] = set()
+            for rel, lines in file_lines.items():
+                for key, line in _alias_keys_on_documented_lines(lines, doc_field_set):
+                    if key not in also_seen:
+                        also_seen.add(key)
+                        also_accessed.append({"field": key, "file": rel, "line": line})
+            result: dict = {
                 "identifier": identifier,
                 "fields": fields,
                 "grounding": "docstring",
                 "confidence": "high",
                 "sources": sources,
             }
+            if also_accessed:
+                result["also_accessed"] = also_accessed
+            return result
 
         # No documented shape - fall back to consistent key accesses.
         if len(access_fields) >= _DATA_SHAPE_MIN_FIELDS:

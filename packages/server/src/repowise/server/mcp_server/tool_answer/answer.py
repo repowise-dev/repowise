@@ -303,21 +303,43 @@ def _build_data_shape_payload(grounded: dict, t0: float, repository) -> dict:
     ident = grounded["identifier"]
     fields = grounded["fields"]
     sources = grounded["sources"]
+    also_accessed = grounded.get("also_accessed") or []
     citations = sorted({s["file"] for s in sources})
     field_list = ", ".join(f"`{f}`" for f in fields)
     doc_src = next((s for s in sources if s["kind"] == "docstring"), None)
     if grounded["grounding"] == "docstring":
         where = f"{doc_src['file']}:{doc_src['line']}" if doc_src else citations[0]
-        answer = (
-            f"Each entry in `{ident}` has {len(fields)} field(s): {field_list}. "
-            f"This is the documented shape at {where}; cite it directly, no "
-            "verification Read needed."
-        )
-        note = (
-            "Grounded in the documented field shape mined from source (the "
-            "quoted keys in the docstring/comment at the cited line). "
-            "data_shape.sources lists every field's origin line."
-        )
+        if also_accessed:
+            # The doc lists the declared shape, but consumers read alias key(s)
+            # it omits (a legacy fallback). Surface them: telling the agent "no
+            # Read needed" while hiding a key it must handle would be a
+            # confidently-incomplete answer.
+            alias_list = ", ".join(f"`{a['field']}`" for a in also_accessed)
+            first_alias = also_accessed[0]
+            answer = (
+                f"Each entry in `{ident}` has {len(fields)} documented field(s): "
+                f"{field_list} (documented shape at {where}). Consumers also read "
+                f"{alias_list} as a fallback (e.g. {first_alias['file']}:"
+                f"{first_alias['line']}) - an alias the docstring omits, so handle "
+                f"{alias_list} too if you touch this."
+            )
+            note = (
+                "Grounded in the documented field shape, plus alias key(s) "
+                "consumers read beside a documented field that the docstring "
+                "omits (see data_shape.also_accessed). The documented fields are "
+                "authoritative; the aliases are real keys the code defends against."
+            )
+        else:
+            answer = (
+                f"Each entry in `{ident}` has {len(fields)} field(s): {field_list}. "
+                f"This is the documented shape at {where}; cite it directly, no "
+                "verification Read needed."
+            )
+            note = (
+                "Grounded in the documented field shape mined from source (the "
+                "quoted keys in the docstring/comment at the cited line). "
+                "data_shape.sources lists every field's origin line."
+            )
     else:
         first = sources[0]
         answer = (
@@ -340,6 +362,7 @@ def _build_data_shape_payload(grounded: dict, t0: float, repository) -> dict:
             "identifier": ident,
             "fields": fields,
             "sources": sources,
+            **({"also_accessed": also_accessed} if also_accessed else {}),
         },
         "fallback_targets": citations,
         "retrieval": [],

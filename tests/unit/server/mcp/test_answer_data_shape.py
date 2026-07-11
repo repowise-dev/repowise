@@ -237,5 +237,103 @@ def consume(event_payload_json):
     assert out["fields"] == ["kind", "ts", "actor"]
 
 
+# --- Alias divergence (doc omits a key consumers read as a fallback) -------
+
+
+def test_documented_shape_surfaces_alias_fallback(tmp_path):
+    """A doc shape that omits an ``or``-fallback alias must surface the alias.
+
+    The docstring is authoritative for what it declares, but if a consumer reads
+    ``x.get("weight_json") or x.get("weight")`` the ``weight`` alias is a real key
+    the tool must not hide behind "no verification needed".
+    """
+    _write(
+        tmp_path,
+        "pkg/models.py",
+        '''\
+class M:
+    """``metric_rows_json`` is a JSON list of
+    ``{"file_path", "weight_json", "ts"}`` metric records."""
+
+    metric_rows_json: str
+''',
+    )
+    _write(
+        tmp_path,
+        "pkg/consume.py",
+        """\
+def use(metric_rows_json):
+    for row in parse(metric_rows_json):
+        w = row.get("weight_json") or row.get("weight") or 0
+    return w
+""",
+    )
+    out = mine_data_shape(tmp_path, {"metric_rows_json"})
+    assert out is not None
+    assert out["grounding"] == "docstring"
+    assert out["fields"] == ["file_path", "weight_json", "ts"]
+    aliases = {a["field"] for a in out.get("also_accessed", [])}
+    assert aliases == {"weight"}
+    assert out["also_accessed"][0]["file"] == "pkg/consume.py"
+
+
+def test_no_alias_key_when_none_diverges(tmp_path):
+    """A clean documented shape with no fallback alias carries no also_accessed."""
+    _write(
+        tmp_path,
+        "pkg/clean.py",
+        '''\
+class M:
+    """``clean_rows_json`` is a JSON list of
+    ``{"file_path", "score", "ts"}`` records."""
+
+    clean_rows_json: str
+
+
+def use(clean_rows_json):
+    for r in parse(clean_rows_json):
+        s = r.get("score")
+    return s
+''',
+    )
+    out = mine_data_shape(tmp_path, {"clean_rows_json"})
+    assert out is not None
+    assert "also_accessed" not in out
+
+
+def test_alias_precision_ignores_cross_record_comention(tmp_path):
+    """A documented key co-mentioned on a different record is NOT an alias.
+
+    ``meta["other_count"] = src[meta["file_path"]]`` reads a documented field
+    (``file_path``) and another key on the same line, but it's an assignment on an
+    unrelated record, not an ``or`` fallback - it must not be reported as an alias.
+    """
+    _write(
+        tmp_path,
+        "pkg/models.py",
+        '''\
+class M:
+    """``rows_json`` is a JSON list of
+    ``{"file_path", "amount", "ts"}`` records."""
+
+    rows_json: str
+''',
+    )
+    _write(
+        tmp_path,
+        "pkg/enrich.py",
+        """\
+def enrich(rows_json, meta, src):
+    for row in parse(rows_json):
+        amount = row.get("amount")
+    meta["other_count"] = src[meta["file_path"]]
+    return amount, meta
+""",
+    )
+    out = mine_data_shape(tmp_path, {"rows_json"})
+    assert out is not None
+    assert "also_accessed" not in out
+
+
 def test_none_repo_root_is_safe():
     assert mine_data_shape(None, {"anything_json"}) is None
