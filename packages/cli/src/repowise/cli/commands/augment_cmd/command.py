@@ -124,7 +124,10 @@ def _run_augment(*, client: str | None = None) -> None:
     cwd = payload.get("cwd", "")
 
     if client == "codex" and event in ("SessionStart", "UserPromptSubmit"):
-        result = _handle_codex_context_event(event, cwd)
+        session_id = payload.get("session_id", "")
+        result = _handle_codex_context_event(
+            event, cwd, session_id if isinstance(session_id, str) else ""
+        )
         if result:
             _emit_response(event, result)
         return
