@@ -1067,6 +1067,11 @@ def run_update(
                 emitter.error(str(exc))
             raise
 
+    # Surface the FAQ-weighted budget tilt when session demand shaped this run
+    # (silent when there is no history to weight; human console mode only).
+    if emitter is None and getattr(generator, "faq_demand_summary", None):
+        console.print(f"[dim]{generator.faq_demand_summary}[/dim]")
+
     if checkpointer.failure:
         degraded.append(f"Per-page crash checkpointing: {checkpointer.failure}")
 

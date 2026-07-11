@@ -163,6 +163,10 @@ async def run_generation(
                 f"Onboarding: {len(slots_made)}/8 slots — {', '.join(slots_made)}",
             )
         progress.on_message("info", f"Generated {len(generated_pages)} pages")
+        # Surface the FAQ-weighted budget tilt when session demand shaped it
+        # (silent on fresh repos with no history — nothing to weight yet).
+        if getattr(generator, "faq_demand_summary", None):
+            progress.on_message("info", generator.faq_demand_summary)
     _phase_done(progress, "onboarding")
     _phase_done(progress, "generation")
 

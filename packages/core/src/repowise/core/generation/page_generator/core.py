@@ -160,6 +160,10 @@ class PageGenerator(PerTypeGenerationMixin):
         # table.
         self._prior_pages: dict[str, PriorPage] = prior_pages or {}
         self._reuse_count: int = 0
+        # One-line summary of the FAQ-weighted budget tilt for this run, set by
+        # the orchestrator when session demand was found (else None). The CLI
+        # surfaces it after generation so the usage-weighting is visible.
+        self.faq_demand_summary: str | None = None
         # Lazily computed by _generation_fingerprint(); every input it folds
         # is fixed for the generator's lifetime.
         self._gen_fingerprint: str | None = None

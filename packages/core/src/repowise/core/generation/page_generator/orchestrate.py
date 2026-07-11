@@ -236,6 +236,10 @@ class _GenerationRun:
                 # and one run stale on update. Inert unless
                 # module_grouping == "curated".
                 kg_modules=self.kg_modules or self.kg_ctx.get_modules() or None,
+                # Per-file question demand from session transcripts: tilts the
+                # file_page budget toward modules agents ask about. Empty (no
+                # session history / disabled) leaves selection uniform.
+                demand=self._compute_demand() or None,
             )
         )
 
@@ -266,6 +270,32 @@ class _GenerationRun:
                 -self.pagerank.get(p.file_info.path, 0.0),
             ),
         )
+
+    def _compute_demand(self) -> dict[str, int]:
+        """Per-file question demand for the FAQ-weighted budget tilt.
+
+        Best-effort transcript sweep; any failure (no repo path, no session
+        history, mining error) yields an empty map and selection stays
+        uniform. Runs only on real generation — the cost estimator builds its
+        own demand-free SelectionInputs, so estimates are untouched.
+        """
+        if not self.repo_path:
+            return {}
+        try:
+            from repowise.core.repo_config import load_repo_config
+            from repowise.core.sessions.miners.demand import (
+                aggregate_file_demand,
+                demand_summary_line,
+            )
+
+            repo_config = load_repo_config(self.repo_path)
+            demand = aggregate_file_demand(self.repo_path, repo_config=repo_config)
+            # Surface the usage-weighting to the CLI (shown after generation).
+            self.gen.faq_demand_summary = demand_summary_line(demand)
+            return demand
+        except Exception as exc:  # never let mining break generation
+            log.warning("page_selection.demand_failed", error=str(exc))
+            return {}
 
     def _announce_total(self) -> None:
         counts = self.selection.counts()

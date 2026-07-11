@@ -18,7 +18,13 @@ import structlog
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
 
 from ..tour import DEFAULT_MAX_LANDMARKS, tour_landmark_paths
-from .budget import BucketAllocation, allocate_budget, compute_budget
+from .budget import (
+    BucketAllocation,
+    ModuleDemandRow,
+    allocate_budget,
+    allocate_module_file_pages,
+    compute_budget,
+)
 from .scoring import (
     score_api_contract,
     score_file,
@@ -114,6 +120,12 @@ class SelectionInputs:
     # ``config.module_grouping == "curated"``; ``None``/empty falls back to
     # community grouping (the fallback-matrix "degraded" row).
     kg_modules: list[dict] | None = None
+    # Per-file question demand mined from session transcripts
+    # (``core.sessions.miners.demand.aggregate_file_demand``): repo-relative
+    # path -> question count. Tilts the file_page budget toward high-demand
+    # modules. ``None``/empty reproduces the uniform, demand-free selection
+    # byte-for-byte (fresh installs with no session history).
+    demand: dict[str, int] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -385,6 +397,82 @@ def _coverage_pct(cfg: Any) -> float:
     return float(getattr(cfg, "coverage_pct", None) or getattr(cfg, "max_pages_pct", 0.20))
 
 
+def _build_file_module_map(
+    module_groups: list[tuple[float, ModuleGroup]],
+) -> dict[str, str]:
+    """Map each grouped file to its module key (the wiki-page granularity).
+
+    Built from every candidate module group, not just the selected top-K, so
+    demand attribution covers all grouped files. Files in no group fall back to
+    their top-level directory (:func:`_fallback_module`) at lookup time.
+    """
+    file_to_module: dict[str, str] = {}
+    for _, group in module_groups:
+        for path in group.file_paths:
+            file_to_module.setdefault(path, group.key)
+    return file_to_module
+
+
+def _fallback_module(path: str) -> str:
+    """Module key for a file in no group: its top-level directory.
+
+    Mirrors the ``top_dir`` grouping fallback the pipeline itself uses, so an
+    ungrouped file still attributes to a stable, human-legible bucket.
+    """
+    parts = Path(path).parts
+    return parts[0] if len(parts) > 1 else "root"
+
+
+def _select_file_pages(
+    files: list[tuple[float, str]],
+    file_page_budget: int,
+    module_groups: list[tuple[float, ModuleGroup]],
+    demand: dict[str, int] | None,
+) -> list[str]:
+    """The file_page allow-set, tilted toward high-demand modules.
+
+    Falls straight through to the demand-free top-``file_page_budget`` when
+    there is no demand, so behaviour is unchanged on fresh installs.
+    """
+    ranked = [p for _, p in files]
+    if not demand:
+        return ranked[:file_page_budget]
+
+    file_to_module = _build_file_module_map(module_groups)
+
+    def module_of(path: str) -> str:
+        return file_to_module.get(path) or _fallback_module(path)
+
+    selected, audit = allocate_module_file_pages(ranked, file_page_budget, demand, module_of)
+    _log_demand_tilt(audit, file_page_budget)
+    return selected
+
+
+def _log_demand_tilt(audit: list[ModuleDemandRow], file_page_budget: int) -> None:
+    """Emit the inspectable per-module reallocation table (dry-run audit)."""
+    if not audit:
+        return
+    moved = [r for r in audit if r.delta]
+    log.info(
+        "page_selection.demand_tilt",
+        file_page_budget=file_page_budget,
+        modules_reweighted=len(audit),
+        modules_moved=len(moved),
+        gained=sum(r.delta for r in moved if r.delta > 0),
+        table=[
+            {
+                "module": r.module,
+                "demand": r.demand,
+                "baseline": r.baseline_pages,
+                "allocated": r.allocated_pages,
+                "delta": r.delta,
+                "candidates": r.candidates,
+            }
+            for r in audit[:25]
+        ],
+    )
+
+
 def _ensure_landmarks(selected: list[str], landmarks: list[str]) -> list[str]:
     """Guarantee every *landmark* is in *selected*, keeping the count honest.
 
@@ -442,10 +530,13 @@ def select_pages(inputs: SelectionInputs) -> Selection:
         n_files=len(inputs.parsed_files),
     )
 
+    # File pages, tilted toward the modules agents ask about most (demand-free
+    # top-K when there is no session data, so fresh installs are unchanged).
+    selected_files = _select_file_pages(files, allocation.file_page, modules, inputs.demand)
+
     # The guided tour wants its highest-value entry points to land on real
     # pages. Force those landmarks into the file_page allow-set, displacing the
     # lowest-scored picks so the budget total stays honest (see _ensure_landmarks).
-    selected_files = [p for _, p in files[: allocation.file_page]]
     if selected_files or allocation.file_page > 0:
         file_candidate_set = {p for _, p in files}
         landmarks = [

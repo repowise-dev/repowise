@@ -13,7 +13,12 @@ Import direction (one-way):
     ingestion.models  ←  generation.models  ←  selection
 """
 
-from .budget import BucketAllocation, allocate_budget
+from .budget import (
+    BucketAllocation,
+    ModuleDemandRow,
+    allocate_budget,
+    allocate_module_file_pages,
+)
 from .scoring import (
     score_api_contract,
     score_file,
@@ -32,10 +37,12 @@ from .selector import (
 
 __all__ = [
     "BucketAllocation",
+    "ModuleDemandRow",
     "ModuleGroup",
     "Selection",
     "SelectionInputs",
     "allocate_budget",
+    "allocate_module_file_pages",
     "score_api_contract",
     "score_file",
     "score_infra",
