@@ -127,6 +127,15 @@ plus the exported `knowledge-graph.json`. In docs mode it also regenerates the
 affected wiki pages. Index-only updates carry forward the previously generated
 layer names and node summaries, so no LLM call is ever made without docs mode.
 
+Docs-mode updates (and `init`) also mine local coding-agent session
+transcripts for durable decisions: user corrections, explicit choices with a
+stated reason, and failed approaches replaced by working ones. Candidates
+pass deterministic gates and a verbatim-quote grounding check; a decision
+observed in two or more sessions (or one direct user correction) is promoted
+into the decision records with `source: session`. Everything stays on your
+machine. Disable with `decisions.session_mining: false` in
+`.repowise/config.yaml` (see [CONFIG.md](CONFIG.md)).
+
 If any best-effort step fails (git metadata, decisions, dead code, ...), the
 run still exits 0 but lists the degraded steps in the completion panel (and in
 the `done` event's `degraded` array with `--progress json`); the next update
