@@ -13,16 +13,13 @@ comments. The unbiased A/B (task T4) confirmed the gap — when the rationale
 was a code comment, get_answer returned low confidence and the agent fell
 back to Read+Grep, losing on tokens AND round-trips.
 
-This module is the **query-time recall backstop**. The durable fix is the
-index-time decision harvest (Source 8,
-:meth:`repowise.core.analysis.decisions.extractor.DecisionExtractor.harvest_rationale_comments`)
-which lands these comments in the queryable decision corpus. This miner only
-earns its keep for what the index can't cover: files edited since the last
-index, and comment shapes the index-time gate drops (trailing inline comments,
-intent-only markers, docstrings). The comment tokenizer and the rationale
-marker list are shared with that harvest — both import from
-:mod:`repowise.core.analysis.decisions.rationale_comments` so the two paths
-never drift.
+This module is the **query-time miner** that closes the gap, and since the
+removal of the index-time ``code_comment`` harvest (#751: it duplicated this
+miner while flooding the proposed-decision queue) it is the only consumer of
+the shared heuristics in
+:mod:`repowise.core.analysis.decisions.rationale_comments`. Mining live means
+the served comments are always fresh, including files edited since the last
+index.
 
 It is deliberately wired only into the LOW-confidence exits (get_answer's
 gated / hedged paths, get_why's no-decision fallback): when the confident
@@ -381,7 +378,20 @@ def grep_comment_candidates(
             # subprocess.run does NOT redirect stdin by default, so a pager / hook
             # that reads stdin would consume the protocol stream and deadlock the
             # whole server. Redirect it to /dev/null and disable the pager.
-            ["git", "--no-pager", "grep", "-n", "-I", "-i", "-E", pat, "--", "*.py", "*.ts", "*.tsx"],
+            [
+                "git",
+                "--no-pager",
+                "grep",
+                "-n",
+                "-I",
+                "-i",
+                "-E",
+                pat,
+                "--",
+                "*.py",
+                "*.ts",
+                "*.tsx",
+            ],
             cwd=str(root),
             capture_output=True,
             text=True,

@@ -97,9 +97,7 @@ def _build_pipeline_coverage(
         elif cfg.paths:
             report_paths = [repo_path / p for p in cfg.paths if (repo_path / p).is_file()]
         elif cfg.auto_discover:
-            report_paths = discover_artifacts(
-                repo_path, globs=cfg.artifacts or None
-            )
+            report_paths = discover_artifacts(repo_path, globs=cfg.artifacts or None)
         else:
             return {}, [], None
 
@@ -256,13 +254,18 @@ async def _run_decision_extraction(
 ) -> Any | None:
     """Extract architectural decisions from source and git history."""
     try:
-        from repowise.core.analysis.decision_extractor import DecisionExtractor
+        from repowise.core.analysis.decision_extractor import (
+            DecisionExtractor,
+            enabled_source_names,
+        )
+        from repowise.core.repo_config import load_repo_config
 
-        # Eight sources run concurrently inside extract_all(); drive a
-        # determinate bar so users see live progress.
-        decision_steps = 8
+        # Sources run concurrently inside extract_all(); drive a determinate
+        # bar so users see live progress. ``decisions.sources`` in the repo
+        # config can disable individual sources (#751).
+        enabled = enabled_source_names(load_repo_config(repo_path))
         if progress:
-            progress.on_phase_start("decisions", decision_steps)
+            progress.on_phase_start("decisions", len(enabled))
 
         extractor = DecisionExtractor(
             repo_path=repo_path,
@@ -277,7 +280,7 @@ async def _run_decision_extraction(
                 progress.on_item_done("decisions")
 
         report = await asyncio.wait_for(
-            extractor.extract_all(on_step=_decision_step),
+            extractor.extract_all(on_step=_decision_step, enabled_sources=enabled),
             timeout=DECISION_EXTRACTION_TIMEOUT_SECS,
         )
 
@@ -293,7 +296,6 @@ async def _run_decision_extraction(
                 f"{bs.get('pr', 0)} PR · "
                 f"{bs.get('git_archaeology', 0)} git · "
                 f"{bs.get('comment', 0)} comments · "
-                f"{bs.get('code_comment', 0)} code-comments · "
                 f"{bs.get('readme_mining', 0)} docs",
             )
 

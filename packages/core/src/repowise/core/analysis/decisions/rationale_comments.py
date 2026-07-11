@@ -7,18 +7,12 @@ sits in a code comment instead::
     # We retry on 429 here rather than in the client because the client is
     # shared across tenants and a global backoff would starve everyone.
 
-Two consumers want exactly the same comment-extraction + rationale-marker
-heuristics, so they live here once:
-
-* the **index-time** decision-extractor pass
-  (:meth:`repowise.core.analysis.decisions.extractor.DecisionExtractor.harvest_rationale_comments`)
-  which harvests these into low-confidence ``proposed`` decision records so they
-  enter the queryable corpus with full retrieval/ranking/citation treatment, and
-* the **query-time** MCP live-grep miner (``mcp_server/_code_rationale.py``),
-  the best-effort recall backstop for un-indexed / just-edited files.
-
-Keeping one implementation here means the marker list and the comment tokenizer
-never drift between the two paths.
+The sole consumer is the **query-time** MCP live-grep miner
+(``mcp_server/_code_rationale.py``), which surfaces these comments fresh in
+``get_answer`` / ``get_why`` responses. (An index-time harvest into
+``code_comment`` decision records also consumed these heuristics until it was
+removed: it flooded the proposed-decision queue without adding information
+over the live miner; see #751.)
 
 This module is deliberately dependency-free (stdlib only) so both the core
 ingestion pipeline and the server layer can import it without a cycle.
@@ -117,9 +111,9 @@ RATIONALE_MARKERS: tuple[str, ...] = (
 
 # The strong subset: markers that state an actual *reason*, an alternative
 # rejected, or a deliberate choice — as opposed to a bare intent label
-# (``note:``, ``always``, ``we use``). The index-time decision harvest requires
-# one of these so a ``code_comment`` record always carries a genuine rationale;
-# the MCP recall miner uses the full ``RATIONALE_MARKERS`` set instead.
+# (``note:``, ``always``, ``we use``). Callers that want only genuine
+# rationale pass ``require_causal=True``; the MCP recall miner uses the full
+# ``RATIONALE_MARKERS`` set instead.
 CAUSAL_MARKERS: tuple[str, ...] = (
     "because",
     "instead of",
@@ -408,9 +402,7 @@ def extract_comment_blocks(
                 in_c_block = False
                 joined = " ".join(p for p in block_parts if p).strip()
                 if joined:
-                    blocks.append(
-                        CommentBlock(block_start, i, joined, tuple(block_parts), "block")
-                    )
+                    blocks.append(CommentBlock(block_start, i, joined, tuple(block_parts), "block"))
                 block_parts = []
             continue
 
@@ -423,9 +415,7 @@ def extract_comment_blocks(
                 in_pydoc = False
                 joined = " ".join(p for p in block_parts if p).strip()
                 if joined:
-                    blocks.append(
-                        CommentBlock(block_start, i, joined, tuple(block_parts), "doc")
-                    )
+                    blocks.append(CommentBlock(block_start, i, joined, tuple(block_parts), "doc"))
                 block_parts = []
             continue
 
@@ -586,16 +576,15 @@ def harvest_file_rationale(
 
     ``ext`` must name a known code extension; non-code files return ``[]``.
 
-    ``include_docstrings`` is ``False`` for the index-time decision harvest:
-    triple-quoted docstrings are the documented API surface (already mined by
-    the page generator / readme sources) and would flood the decision corpus.
-    The hidden rationale this targets lives in ``#`` / ``//`` / ``/* */``
-    comments. The MCP live-grep miner sets it ``True`` for maximum recall.
+    ``include_docstrings=False`` skips triple-quoted docstrings: they are the
+    documented API surface (already mined by the page generator / readme
+    sources); the hidden rationale this targets lives in ``#`` / ``//`` /
+    ``/* */`` comments. The MCP live-grep miner sets it ``True`` for maximum
+    recall.
 
-    ``require_causal`` (index-time default) demands a strong
-    :data:`CAUSAL_MARKERS` reason rather than any intent label, so every
-    ``code_comment`` decision carries a genuine rationale. The MCP recall miner
-    sets it ``False`` to surface any marker-bearing comment.
+    ``require_causal=True`` demands a strong :data:`CAUSAL_MARKERS` reason
+    rather than any intent label. The MCP recall miner sets it ``False`` to
+    surface any marker-bearing comment.
     """
     ext = ext.lower()
     if ext not in CODE_EXTENSIONS:

@@ -654,5 +654,18 @@ async def persist_incremental_index(
                     await persist_kg(knowledge_graph_result, session, repo_id)
                 except Exception as exc:
                     _skip("Knowledge-graph persist", exc)
+
+            # One-shot drain of proposals from the removed code_comment
+            # harvest (#751). Runs on the index-only path too, because the
+            # post-commit hook's updates never reach the full decision
+            # persist. Confirmed/dismissed rows are kept.
+            try:
+                from repowise.core.persistence.crud import (
+                    purge_proposed_decisions_by_source,
+                )
+
+                await purge_proposed_decisions_by_source(session, repo_id, "code_comment")
+            except Exception as exc:
+                _skip("Decision purge", exc)
     finally:
         await engine.dispose()

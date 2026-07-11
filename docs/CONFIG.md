@@ -172,6 +172,30 @@ mcp:
   `get_architecture`) are added automatically in workspace mode and ignored if
   named in single-repo mode. See [MCP_TOOLS.md](MCP_TOOLS.md#configuring-the-tool-surface).
 
+### The `decisions:` block
+
+Controls decision extraction. Each key under `sources:` names an index-time
+capture source; set it to `false` to skip that source on the next
+`init` / `update`. Unknown keys are ignored, and sources you don't mention
+stay enabled.
+
+```yaml
+decisions:
+  sources:
+    comment: false          # LLM comment archaeology (top central files)
+    # inline_marker: false  # WHY:/DECISION: markers
+    # git_archaeology: false
+    # readme_mining: false
+    # adr: false
+    # changelog: false
+    # pr: false
+```
+
+Dismissals are sticky: `repowise decision dismiss` keeps the record as a
+`dismissed` tombstone, so reindexing never re-proposes the same decision, and
+a confirmed (`active`) decision is never walked back to `proposed` by a
+re-extraction.
+
 ### The `refactoring:` block
 
 Controls the refactoring-intelligence layer: the structured Extract Class /

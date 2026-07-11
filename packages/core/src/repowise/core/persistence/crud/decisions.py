@@ -11,14 +11,16 @@ from datetime import datetime
 from typing import Any
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.decision_provenance import compute_confidence, rank_for_source
 
 from ..decision_graph import sync_decision_node_links
 from ..models import (
+    DecisionEdge,
     DecisionEvidence,
+    DecisionNodeLink,
     DecisionRecord,
     GitMetadata,
     _new_uuid,
@@ -29,7 +31,29 @@ from ..models import (
 # DecisionRecord CRUD
 # ---------------------------------------------------------------------------
 
-_VALID_DECISION_STATUSES = frozenset({"proposed", "active", "deprecated", "superseded"})
+_VALID_DECISION_STATUSES = frozenset(
+    {"proposed", "active", "deprecated", "superseded", "dismissed"}
+)
+
+# Statuses a human (or the evolution judge) set deliberately. Re-extraction
+# must never walk one of these back to ``proposed``: a re-harvested source
+# ties or beats the stored rank, so without this guard a reindex would flip
+# confirmed decisions back into the review queue and resurrect dismissed ones
+# (#751). ``dismissed`` is terminal: the row is kept purely as a tombstone so
+# the same content never re-proposes.
+_PROTECTED_STATUSES = frozenset({"active", "deprecated", "superseded", "dismissed"})
+
+
+def _merge_status(existing: str, incoming: str) -> str:
+    """Resolve a re-extracted status against the stored one.
+
+    Extraction only ever emits ``proposed`` or ``active`` (ADR files can also
+    carry ``deprecated``/``superseded``). A protected stored status wins over
+    an incoming ``proposed``; anything else follows the incoming value.
+    """
+    if incoming == "proposed" and existing in _PROTECTED_STATUSES:
+        return existing
+    return incoming
 
 
 async def upsert_decision(
@@ -146,12 +170,18 @@ async def list_decisions(
     limit: int = 100,
     offset: int = 0,
 ) -> list[DecisionRecord]:
-    """Return decision records with optional filters."""
+    """Return decision records with optional filters.
+
+    Dismissed records are tombstones and only show up when explicitly asked
+    for via ``status="dismissed"``.
+    """
     q = select(DecisionRecord).where(DecisionRecord.repository_id == repository_id)
     if status is not None:
         q = q.where(DecisionRecord.status == status)
-    elif not include_proposed:
-        q = q.where(DecisionRecord.status != "proposed")
+    else:
+        q = q.where(DecisionRecord.status != "dismissed")
+        if not include_proposed:
+            q = q.where(DecisionRecord.status != "proposed")
     if source is not None:
         q = q.where(DecisionRecord.source == source)
     if tag is not None:
@@ -538,6 +568,12 @@ async def bulk_upsert_decisions(
                 rec = id_to_rec[match_id]
                 existing_by_norm[norm] = rec
 
+        # A dismissed record is a tombstone: leave it untouched (no headline
+        # promotion, no new evidence, not re-embedded, not in touched_ids) so
+        # dismissals survive every reindex.
+        if rec is not None and rec.status == "dismissed":
+            continue
+
         if rec is None:
             rec = DecisionRecord(
                 id=_new_uuid(),
@@ -566,7 +602,7 @@ async def bulk_upsert_decisions(
             # A new contributor at least as authoritative as the current
             # headline → promote its fields (provenance still accretes below).
             rec.title = headline.get("title", rec.title)
-            rec.status = headline.get("status", rec.status)
+            rec.status = _merge_status(rec.status, headline.get("status", rec.status))
             rec.context = headline.get("context") or rec.context
             rec.decision = headline.get("decision") or rec.decision
             rec.rationale = headline.get("rationale") or rec.rationale
@@ -674,6 +710,46 @@ async def bulk_upsert_decisions(
     return touched_ids
 
 
+async def purge_proposed_decisions_by_source(
+    session: AsyncSession,
+    repository_id: str,
+    source: str,
+) -> int:
+    """Delete still-``proposed`` records of *source* plus their child rows.
+
+    One-shot cleanup for retired extraction sources (today: the removed
+    ``code_comment`` harvest, #751). Only ``proposed`` rows go — anything the
+    user confirmed, deprecated, or dismissed is kept. Child rows are deleted
+    explicitly rather than trusting the FK cascade, which on SQLite depends on
+    the ``foreign_keys`` pragma. Returns the number of records deleted.
+    """
+    result = await session.execute(
+        select(DecisionRecord.id).where(
+            DecisionRecord.repository_id == repository_id,
+            DecisionRecord.source == source,
+            DecisionRecord.status == "proposed",
+        )
+    )
+    ids = [row[0] for row in result.all()]
+    if not ids:
+        return 0
+
+    await session.execute(delete(DecisionEvidence).where(DecisionEvidence.decision_id.in_(ids)))
+    await session.execute(
+        delete(DecisionEdge).where(
+            or_(
+                DecisionEdge.src_decision_id.in_(ids),
+                DecisionEdge.dst_decision_id.in_(ids),
+            )
+        )
+    )
+    await session.execute(delete(DecisionNodeLink).where(DecisionNodeLink.decision_id.in_(ids)))
+    await session.execute(delete(DecisionRecord).where(DecisionRecord.id.in_(ids)))
+    await session.flush()
+    structlog.get_logger(__name__).info("decision_purge_by_source", source=source, deleted=len(ids))
+    return len(ids)
+
+
 async def recompute_decision_staleness(
     session: AsyncSession,
     repository_id: str,
@@ -742,7 +818,14 @@ async def get_decision_health_summary(
     )
     all_decisions = list(result.scalars().all())
 
-    counts = {"active": 0, "proposed": 0, "deprecated": 0, "superseded": 0, "stale": 0}
+    counts = {
+        "active": 0,
+        "proposed": 0,
+        "deprecated": 0,
+        "superseded": 0,
+        "dismissed": 0,
+        "stale": 0,
+    }
     stale_decisions: list[DecisionRecord] = []
     proposed_decisions: list[DecisionRecord] = []
 

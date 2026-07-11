@@ -439,7 +439,7 @@ repowise decision list [PATH]           # list decisions
 repowise decision show ID [PATH]        # full details
 repowise decision add [PATH]            # interactive add
 repowise decision confirm ID [PATH]     # confirm a proposal
-repowise decision dismiss ID [PATH]     # delete a proposal
+repowise decision dismiss ID [PATH]     # dismiss a proposal (sticky; never re-proposed)
 repowise decision deprecate ID [PATH]   # mark deprecated
 repowise decision health [PATH]         # health dashboard
 ```

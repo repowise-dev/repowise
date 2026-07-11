@@ -167,7 +167,7 @@ def _is_readable_path(target: str) -> bool:
     if "/" in t or "\\" in t:
         return True
     dot = t.rfind(".")
-    ext = t[dot + 1:] if dot != -1 else ""
+    ext = t[dot + 1 :] if dot != -1 else ""
     return bool(ext) and ext.isalnum() and len(ext) <= 6
 
 
@@ -215,11 +215,10 @@ def _gather_code_rationale(ctx, hits: list[dict], fallback_targets: list[str], q
 def _drop_already_surfaced(rationale: list[dict], *surfaced: list[dict]) -> list[dict]:
     """Drop mined rationale comments already shown elsewhere in the response.
 
-    Track B harvests rationale comments into ``code_comment`` decision records at
-    index time; Track A mines them live here. Once both ship, the same comment
-    can appear twice — once as material already in the payload (a ``symbol_bodies``
-    block whose body contains the comment, a quote, or a line-ranged citation /
-    decision) and once as a ``code_rationale`` entry. Suppress the duplicate:
+    The same comment can reach the payload twice — once as material already in
+    the response (a ``symbol_bodies`` block whose body contains the comment, a
+    quote, a line-ranged citation, or a legacy ``code_comment`` decision) and
+    once as a live-mined ``code_rationale`` entry. Suppress the duplicate:
     drop any mined comment whose ``(path, line-range)`` overlaps an entry already
     surfaced. Entries without a ``(path, lines)`` pair are ignored.
     """
@@ -534,7 +533,8 @@ async def get_answer(
         # normal retrieval/gate path rather than returning an empty union.
 
     fallback_targets = [
-        h["target_path"] for h in hits
+        h["target_path"]
+        for h in hits
         if h.get("target_path") and _is_readable_path(h["target_path"])
     ]
 

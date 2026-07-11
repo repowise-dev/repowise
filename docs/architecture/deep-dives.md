@@ -557,7 +557,7 @@ CLI commands:
   repowise decision add        → creates with status "active"
   repowise decision confirm    → proposed → active
   repowise decision deprecate  → sets status "deprecated"
-  repowise decision dismiss    → deletes a proposed decision
+  repowise decision dismiss    → dismisses a proposal (sticky; never re-proposed)
   repowise decision health     → shows stale, ungoverned, proposed
 ```
 
