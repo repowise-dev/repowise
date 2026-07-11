@@ -15,7 +15,18 @@ search → context → read loop with one tool call that returns:
                                    follow-up); present only when the answer
                                    names a function/method/class that was
                                    hydrated
+      "more_definitions":  list    only on an answer-by-union (homonym) reply
+                                   whose bodies overflowed the char budget:
+                                   {file, name, line, symbol_id, hint} entries
+                                   the agent fetches with get_symbol, not Read
     }
+
+Answer-by-union: when the question names a symbol with N>=2 definitions no
+qualifier disambiguates (``_severity_for`` x 4), the tool returns the UNION of
+their bodies in ``symbol_bodies`` (grounding="exact_symbol", confidence="high")
+rather than a best_guesses pointer list (the pointer list is what triggers the
+agent's get_symbol/get_context drill). A qualified miss (``Parent.leaf`` matching
+no def) returns not-found instead of guessing a same-named symbol elsewhere.
 
 When no LLM provider is configured, the tool degrades to retrieval-only
 mode (returns ranked hits + snippets, confidence="low") so C1 / index-only
@@ -107,6 +118,7 @@ from repowise.server.mcp_server.tool_answer.symbols import (
     _extract_value_answer,
     _hydrate_symbols_for_hits,
     _read_symbol_source,
+    build_homonym_union_bodies,
 )
 from repowise.server.mcp_server.tool_answer.synthesis import (
     _hash_question,
@@ -412,10 +424,11 @@ async def get_answer(
     # Fuzzy retrieval misses deep-path definitions even when the symbol is
     # indexed; this makes "explain X" one-shot-complete instead of degrading
     # to best_guesses on plausible-but-wrong neighbors.
+    homonyms: dict = {"union": {}, "qualified_miss": []}
     if question_ids:
         with contextlib.suppress(Exception):
             async with get_session(ctx.session_factory) as session:
-                hits = await _anchor_symbol_hits(session, repo_id, question_ids, hits)
+                hits, homonyms = await _anchor_symbol_hits(session, repo_id, question_ids, hits)
     # Concept anchoring: when a why/value question pins a literal number to a
     # described behaviour (no named symbol), grep source COMMENTS for the file
     # that justifies the number and anchor it as a dominant hit. Rescues the
@@ -437,6 +450,88 @@ async def get_answer(
                 await _hydrate_symbols_for_hits(
                     session, repo_id, hits, ctx, question_ids=question_ids
                 )
+
+    # --- Qualified-miss guard ----------------------------------------------
+    # The question qualified a symbol (``Parent.leaf``) but the exact-name scan
+    # found the leaf only under OTHER parents. Return not-found rather than
+    # synthesizing from a same-named symbol elsewhere: a precise query must
+    # never degrade to a confidently-wrong answer (CodeGraph #173).
+    if homonyms.get("qualified_miss"):
+        missed = homonyms["qualified_miss"]
+        return {
+            "answer": "",
+            "citations": [],
+            "confidence": "low",
+            "note": (
+                f"No indexed definition matches the qualified name(s) {missed}. "
+                "The base name is defined elsewhere, but not under the "
+                "class/module you named, so this is not returning a same-named "
+                "symbol from another file, to avoid a confidently-wrong answer. "
+                'Re-check the qualifier, or call search_codebase mode="symbol" '
+                "on the base name to see every definition."
+            ),
+            "fallback_targets": [],
+            "retrieval": [],
+            "_meta": _build_meta(
+                timing_ms=(time.perf_counter() - t0) * 1000,
+                hint=_answer_hint("low", 0),
+                repository=repository,
+                targets=[],
+            ),
+        }
+
+    # --- Answer-by-union (homonym exact-name lookup) -----------------------
+    # The question named a symbol with N>=2 defs no qualifier disambiguates
+    # (``_severity_for`` x 4). Instead of bailing to a best_guesses pointer list
+    # (the exact thing that triggers the agent's get_symbol/get_context drill),
+    # inline the UNION of the candidate bodies (char-budgeted, Read-parity) so
+    # the agent picks the one it wants from material already in-hand. This is
+    # the fix for the retrieval-MISS class: those defs are never in the fuzzy
+    # candidate set, so the exact-name scan is the only thing that surfaces them.
+    union_groups = homonyms.get("union") or {}
+    if union_groups:
+        repo_root = Path(str(ctx.path)) if getattr(ctx, "path", None) else None
+        union_bodies, more_defs = build_homonym_union_bodies(repo_root, union_groups)
+        if union_bodies:
+            names = sorted(union_groups)
+            total = sum(len(v) for v in union_groups.values())
+            cited = sorted({b["path"] for b in union_bodies})
+            note = (
+                f"{total} definition(s) of {', '.join(names)} exist (exact-name "
+                f"index scan; this is the complete set). {len(union_bodies)} "
+                "inlined below in symbol_bodies as live source; use them "
+                "directly, no verification Read."
+            )
+            if more_defs:
+                note += (
+                    f" {len(more_defs)} more are in more_definitions; call "
+                    "get_symbol with the listed id, do NOT Read."
+                )
+            payload: dict = {
+                "answer": (
+                    f"`{', '.join(names)}` has {total} definition(s) in this repo; "
+                    "all are inlined in symbol_bodies below. They are distinct "
+                    "implementations, so pick the one for your context."
+                ),
+                "citations": cited,
+                "confidence": "high",
+                "grounding": "exact_symbol",
+                "symbol_bodies": union_bodies,
+                "fallback_targets": [b["path"] for b in union_bodies],
+                "retrieval": [],
+                "note": note,
+                "_meta": _build_meta(
+                    timing_ms=(time.perf_counter() - t0) * 1000,
+                    hint=_answer_hint("high", len(union_bodies)),
+                    repository=repository,
+                    targets=cited,
+                ),
+            }
+            if more_defs:
+                payload["more_definitions"] = more_defs
+            return payload
+        # Bodies unreadable (no repo root / files gone) — fall through to the
+        # normal retrieval/gate path rather than returning an empty union.
 
     fallback_targets = [
         h["target_path"] for h in hits

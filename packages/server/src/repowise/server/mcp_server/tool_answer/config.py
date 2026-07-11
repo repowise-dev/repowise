@@ -42,6 +42,17 @@ _INLINE_BODY_MAX_SYMBOLS = 2
 # body of ~99% of symbols in one shot; the rest carry a continuation token.
 _INLINE_BODY_MAX_LINES = 120
 
+# Answer-by-union (homonym exact-name lookup). When a question names a symbol
+# with N>=2 defs that no qualifier disambiguates (`_severity_for` x 4), get_answer
+# inlines the UNION of their bodies instead of a best_guesses pointer list — the
+# pointer list is exactly what triggers the agent's get_symbol/get_context drill.
+# Bodies render greedily under this char budget (mirrors the get_context budget
+# philosophy); defs that don't fit are listed file:line with a "call get_symbol,
+# do NOT Read" redirect. First def always renders even if it alone exceeds budget.
+_HOMONYM_UNION_CHAR_BUDGET = 12000
+# Line cap per union body — same rationale as _INLINE_BODY_MAX_LINES.
+_HOMONYM_UNION_BODY_MAX_LINES = 120
+
 # Sort priority by symbol kind. Classes first because "what does X do" /
 # "which class inherits from Y" questions resolve at the class level. Then
 # top-level functions, then methods (which usually only matter once the

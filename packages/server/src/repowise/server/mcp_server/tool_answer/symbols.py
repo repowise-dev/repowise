@@ -16,6 +16,8 @@ from repowise.core.persistence.models import WikiSymbol
 from repowise.server.mcp_server.tool_answer.config import (
     _ENRICH_TOP_N_HITS,
     _HIGH_CONFIDENCE_SCORE_FLOOR,
+    _HOMONYM_UNION_BODY_MAX_LINES,
+    _HOMONYM_UNION_CHAR_BUDGET,
     _MATCHED_SYMBOL_SOURCE_LINES,
     _MAX_RICH_SIG_LINES,
     _MAX_SYMBOLS_PER_HIT,
@@ -179,12 +181,25 @@ def _extract_value_answer(hits: list[dict], question_ids: set[str]) -> dict | No
     return candidates[0] if candidates else None
 
 
+def _symbol_def_dict(sym) -> dict:
+    """Plain-dict view of a WikiSymbol def (decouples answer.py from the ORM)."""
+    return {
+        "name": sym.name,
+        "kind": sym.kind,
+        "file_path": sym.file_path,
+        "start_line": sym.start_line,
+        "end_line": sym.end_line,
+        "qualified_name": sym.qualified_name,
+        "parent_name": sym.parent_name,
+    }
+
+
 async def _anchor_symbol_hits(
     session,
     repo_id: str,
     question_ids: set[str],
     hits: list[dict],
-) -> list[dict]:
+) -> tuple[list[dict], dict[str, Any]]:
     """Inject the defining file of a question-named indexed symbol into hits.
 
     BM25 / vector retrieval misses deep-path files even when the named symbol
@@ -193,14 +208,34 @@ async def _anchor_symbol_hits(
     the definition, so synthesis hedges and ``symbol_bodies`` can't fire. When
     a question identifier resolves to a single indexed function / method /
     class, prepend (or boost) its defining file as the dominant hit so the
-    answer grounds in the actual definition. Homonyms are kept only when the
-    question also names the parent (``DecisionExtractor``) — never guessed.
+    answer grounds in the actual definition.
 
-    Returns ``hits`` re-sorted by score (mutated in place).
+    Homonyms (N>=2 defs of one name) split three ways:
+
+    * The question names the parent / qualifies the name so exactly one def
+      survives → anchor that def (as before).
+    * The question does NOT qualify the name → the whole def set is returned in
+      ``homonyms["union"]`` so the caller can inline the UNION of bodies instead
+      of bailing to a best_guesses pointer list (the pointer list is exactly
+      what triggers the agent's get_symbol/get_context drill). This is the fix
+      for the retrieval-MISS class (``_severity_for`` x 4) - the defs are never
+      in the fuzzy candidate set, so an exact-name index scan is the only thing
+      that surfaces them.
+    * The question qualifies the name (``Parent.leaf``) but NO def matches that
+      qualifier → recorded in ``homonyms["qualified_miss"]`` so the caller can
+      return not-found instead of synthesizing from a same-named symbol
+      elsewhere (a precise query must never degrade to a confident wrong answer).
+
+    Returns ``(hits, homonyms)``; ``hits`` is re-sorted by score (mutated in
+    place). ``homonyms = {"union": {name: [def_dict, ...]}, "qualified_miss":
+    [name, ...]}``.
     """
+    homonyms: dict[str, Any] = {"union": {}, "qualified_miss": []}
     if not question_ids:
-        return hits
+        return hits, homonyms
     qids_lower = {q.lower() for q in question_ids}
+    # Qualifiers the question used (dotted forms like ``decisionextractor.extract_all``).
+    qualifiers = {q for q in qids_lower if "." in q}
     res = await session.execute(
         select(WikiSymbol).where(
             WikiSymbol.repository_id == repo_id,
@@ -213,13 +248,12 @@ async def _anchor_symbol_hits(
         by_name.setdefault(row.name, []).append(row)
 
     chosen: list = []
-    for cands in by_name.values():
+    for name, cands in by_name.items():
         if len(cands) == 1:
             chosen.append(cands[0])
             continue
-        # Disambiguate a homonym only when the question names its parent or
-        # the parent appears in the qualified name. Otherwise skip — a wrong
-        # anchor is worse than no anchor.
+        # Disambiguate a homonym when the question names its parent or the
+        # parent appears in the qualified name.
         narrowed = [
             c
             for c in cands
@@ -232,9 +266,23 @@ async def _anchor_symbol_hits(
         ]
         if len(narrowed) == 1:
             chosen.append(narrowed[0])
+            continue
+        # Can't narrow to exactly one. Decide union vs qualified-miss.
+        leaf = (name or "").lower()
+        targeted = any(q.rsplit(".", 1)[-1] == leaf and q != leaf for q in qualifiers)
+        if narrowed:
+            # Qualifier matched >1 def: union of the narrowed set (still all
+            # genuine candidates for the qualified name).
+            homonyms["union"][name] = [_symbol_def_dict(c) for c in narrowed]
+        elif targeted:
+            # Qualifier present but matched nothing: do not guess.
+            homonyms["qualified_miss"].append(name)
+        else:
+            # Bare homonym, no qualifier: union of every def.
+            homonyms["union"][name] = [_symbol_def_dict(c) for c in cands]
 
     if not chosen:
-        return hits
+        return hits, homonyms
 
     by_path = {h.get("target_path"): h for h in hits}
     top_score = max((h.get("score", 0.0) for h in hits), default=0.0)
@@ -272,7 +320,75 @@ async def _anchor_symbol_hits(
             }
         )
     hits.sort(key=lambda h: h.get("score", 0.0), reverse=True)
-    return hits
+    return hits, homonyms
+
+
+def build_homonym_union_bodies(
+    repo_root: Path | None,
+    union_groups: dict[str, list[dict]],
+    char_budget: int = _HOMONYM_UNION_CHAR_BUDGET,
+) -> tuple[list[dict], list[dict]]:
+    """Inline the UNION of a homonym's defining bodies, char-budgeted.
+
+    ``union_groups`` maps a symbol name to the list of its indexed defs (from
+    ``_anchor_symbol_hits``). Returns ``(symbol_bodies, more_definitions)``:
+
+    * ``symbol_bodies``: Read-parity entries (same shape as get_answer's
+      existing ``symbol_bodies``: ``path`` / ``name`` / ``lines`` / ``source``,
+      plus ``truncated`` / ``continuation`` when the body was line-capped)
+      rendered greedily until ``char_budget`` is exhausted. The first def always
+      renders even if it alone exceeds the budget (a homonym with one huge def
+      must still answer), matching the CodeGraph "first match always renders"
+      contract.
+    * ``more_definitions``: the defs that did not fit, each ``{file, name,
+      line, symbol_id, hint}`` with a "call get_symbol, do NOT Read" redirect so
+      the agent never falls back to Read for the remainder.
+
+    Defs are ordered by (name, file_path) so output is deterministic across runs.
+    """
+    symbol_bodies: list[dict] = []
+    more: list[dict] = []
+    spent = 0
+    defs: list[dict] = []
+    for name in sorted(union_groups):
+        for d in sorted(union_groups[name], key=lambda x: (x.get("file_path") or "")):
+            defs.append(d)
+
+    for d in defs:
+        path = d.get("file_path")
+        name = d.get("name")
+        start = d.get("start_line") or 0
+        end = d.get("end_line") or 0
+        symbol_id = f"{path}::{name}"
+        body = _read_symbol_source(
+            repo_root, path, start, end, max_lines=_HOMONYM_UNION_BODY_MAX_LINES
+        )
+        # Budget: always render the first, then only while under budget.
+        if body and (not symbol_bodies or spent + len(body) <= char_budget):
+            served = body.count("\n") + 1
+            end_served = start + served - 1
+            entry: dict = {
+                "path": path,
+                "name": name,
+                "lines": [start, end_served],
+                "source": body,
+            }
+            if end and end > end_served:
+                entry["truncated"] = True
+                entry["continuation"] = f"{path}:{end_served + 1}-{end}"
+            symbol_bodies.append(entry)
+            spent += len(body)
+        else:
+            more.append(
+                {
+                    "file": path,
+                    "name": name,
+                    "line": start,
+                    "symbol_id": symbol_id,
+                    "hint": f"call get_symbol id='{symbol_id}' for this definition, do NOT Read",
+                }
+            )
+    return symbol_bodies, more
 
 
 async def _concept_anchor_hits(
