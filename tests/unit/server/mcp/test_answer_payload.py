@@ -13,7 +13,33 @@ from types import SimpleNamespace
 
 import pytest
 
+from repowise.server.mcp_server.tool_answer.answer import _is_readable_path
 from repowise.server.mcp_server.tool_answer.retrieval import serialize_hits
+
+# ---------------------------------------------------------------------------
+# fallback_targets must be Read-able paths, never internal graph node ids
+# (2026-07-10 dogfood finding: "scc-607" / "layer:application" leaked in)
+# ---------------------------------------------------------------------------
+
+
+class TestIsReadablePath:
+    @pytest.mark.parametrize(
+        "target,expected",
+        [
+            ("src/flask/app.py", True),
+            ("app.py", True),
+            ("pkg/sub/mod.py", True),
+            ("cluster-config/x.py", True),   # hyphen in a real dir must not trip it
+            ("scc-607", False),              # community/SCC node id
+            ("layer:application", False),    # architectural-layer scheme token
+            ("comm-12", False),
+            ("README", False),              # no separator, no extension
+            ("", False),
+        ],
+    )
+    def test_filters_node_ids_keeps_paths(self, target, expected) -> None:
+        assert _is_readable_path(target) is expected
+
 
 # ---------------------------------------------------------------------------
 # serialize_hits unit tests

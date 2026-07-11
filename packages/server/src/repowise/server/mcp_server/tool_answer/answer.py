@@ -140,6 +140,25 @@ def _cache_entry_expired(created_at) -> bool:
     return (datetime.now(UTC) - ts) > timedelta(days=_ANSWER_CACHE_TTL_DAYS)
 
 
+def _is_readable_path(target: str) -> bool:
+    """Whether a fallback_target is a file the agent can actually Read.
+
+    Non-file graph nodes (community/SCC nodes, architectural layers) can ride in
+    on retrieval hits with a ``target_path`` like ``"scc-607"`` or
+    ``"layer:application"``: internal ids with no path separator and no file
+    extension. An agent handed one in ``fallback_targets`` will try to Read it and
+    dead-end, so keep only path-shaped entries (2026-07-10 dogfood finding).
+    """
+    t = (target or "").strip()
+    if not t:
+        return False
+    if "/" in t or "\\" in t:
+        return True
+    dot = t.rfind(".")
+    ext = t[dot + 1:] if dot != -1 else ""
+    return bool(ext) and ext.isalnum() and len(ext) <= 6
+
+
 def _gather_code_rationale(ctx, hits: list[dict], fallback_targets: list[str], question: str):
     """Mine in-code rationale comments for a low-confidence answer.
 
@@ -419,7 +438,10 @@ async def get_answer(
                     session, repo_id, hits, ctx, question_ids=question_ids
                 )
 
-    fallback_targets = [h["target_path"] for h in hits if h.get("target_path")]
+    fallback_targets = [
+        h["target_path"] for h in hits
+        if h.get("target_path") and _is_readable_path(h["target_path"])
+    ]
 
     if not hits:
         return {
