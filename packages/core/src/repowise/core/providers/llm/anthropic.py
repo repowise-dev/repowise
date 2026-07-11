@@ -219,8 +219,15 @@ class AnthropicProvider(BaseProvider):
             raise ProviderError("anthropic", str(exc), status_code=exc.status_code) from exc
 
         cached = getattr(response.usage, "cache_read_input_tokens", 0) or 0
+
+        text_content = ""
+        for block in response.content:
+            if hasattr(block, "text"):
+                text_content = block.text
+                break
+
         result = GeneratedResponse(
-            content=response.content[0].text,
+            content=text_content,
             input_tokens=response.usage.input_tokens,
             output_tokens=response.usage.output_tokens,
             cached_tokens=cached,
