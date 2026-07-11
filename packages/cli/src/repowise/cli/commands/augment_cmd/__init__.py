@@ -6,6 +6,8 @@ Split out of a single ~1300-line module into cohesive submodules:
   path relativisation) that every other submodule builds on.
 * :mod:`.search` — PostToolUse Grep/Glob rescue / triage / flood digest.
 * :mod:`.read_state` — per-session Read/Edit read-intelligence state machine.
+* :mod:`.decision_inject` — relevance-ranked standing-decision injection
+  (SessionStart block + edit-time governing-decision notice).
 * :mod:`.bash_staleness` — post-git-commit stale-wiki detection.
 * :mod:`.codex` — Codex lifecycle hooks.
 * :mod:`.command` — the Click command, stdin dispatch, and emission dedup.

@@ -27,7 +27,8 @@ Codex SessionStart/UserPromptSubmit: adds short repowise MCP usage guidance.
     * Emits a one-paragraph context block: whether the index is current,
       behind (with a changed-file count), or mid-update, plus the core-tool
       trust rule. CLAUDE.md stays static and cache-friendly; live freshness
-      arrives here instead.
+      arrives here instead. When active decisions are relevant to the
+      session's working set, a capped standing-decisions block rides along.
 
   PostToolUse → Bash
     * After a successful git commit/merge/rebase/cherry-pick/pull, if
@@ -46,8 +47,10 @@ Codex SessionStart/UserPromptSubmit: adds short repowise MCP usage guidance.
 
   PostToolUse → Edit / Write
     * Record the edit in the per-session state file so a later Read can
-      detect staleness. Emits nothing itself (Claude clients); Codex
-      lifecycle hooks additionally get the index-staleness reminder below.
+      detect staleness. Claude clients additionally get a one-line notice
+      when the edited file has a governing decision (once per session per
+      decision, strictly capped); Codex lifecycle hooks instead get the
+      index-staleness reminder below.
 
   PostToolUse → edit tools (Codex)
     * After file edits, emit a short reminder that the indexed context may
@@ -78,7 +81,7 @@ import click
 
 from .bash_staleness import _handle_bash_post
 from .codex import _handle_codex_context_event, _handle_post_edit_use
-from .read_state import _handle_read_post, _record_edit
+from .read_state import _handle_edit_post, _handle_read_post, _record_edit
 from .search import _handle_search_post
 from .session_start import _handle_claude_session_start
 
@@ -126,8 +129,12 @@ def _run_augment(*, client: str | None = None) -> None:
         return
 
     if event == "SessionStart":
-        # Claude Code lifecycle hook: live index-freshness + trust context.
-        result = _handle_claude_session_start(cwd)
+        # Claude Code lifecycle hook: live index-freshness + trust context,
+        # plus the relevance-ranked standing-decisions block.
+        session_id = payload.get("session_id", "")
+        result = _handle_claude_session_start(
+            cwd, session_id if isinstance(session_id, str) else ""
+        )
         if result:
             _emit_response(event, result)
         return
@@ -231,12 +238,13 @@ def _handle_post_tool_use(
     # The edit-tool freshness notice is a Codex-only lifecycle hook, gated on
     # the Codex client so the widened Claude matcher (Read|Edit|Write) can't
     # emit Codex-flavored banners to Claude Code users. Both clients record
-    # the edit for the per-session stale-read state machine first.
+    # the edit for the per-session stale-read state machine; Claude clients
+    # additionally get the once-per-decision governing-decision notice.
     if tool_name in _EDIT_TOOL_NAMES:
-        _record_edit(tool_input, cwd, session_id)
         if client == "codex":
+            _record_edit(tool_input, cwd, session_id)
             return _handle_post_edit_use(cwd)
-        return None
+        return _handle_edit_post(tool_input, cwd, session_id)
     if tool_name == "Read":
         return _handle_read_post(tool_input, tool_output, cwd, session_id)
     if tool_name in ("Bash", "PowerShell"):

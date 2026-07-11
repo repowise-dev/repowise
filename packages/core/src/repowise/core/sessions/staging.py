@@ -16,6 +16,9 @@ never contend with indexing. The sidecar holds three things:
   ``advance`` / ``save`` surface, so :func:`iter_new_events` consumes it
   unchanged). Living in the same database means a cursor only advances in
   the same commit that stages what was read under it.
+- ``injections``: decision ids the augment hooks showed to an agent session
+  (written hook-side with raw stdlib sqlite3), read back at update time to
+  judge whether the guidance was followed or contradicted (usage feedback).
 
 Everything is local; transcripts and candidates never leave the machine.
 """
@@ -69,6 +72,14 @@ CREATE TABLE IF NOT EXISTS cursors (
     file TEXT PRIMARY KEY,
     offset INTEGER NOT NULL,
     mtime REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS injections (
+    session_id TEXT NOT NULL,
+    decision_id TEXT NOT NULL,
+    node_id TEXT NOT NULL DEFAULT '',
+    shown_at REAL NOT NULL,
+    evaluated INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (session_id, decision_id)
 );
 CREATE INDEX IF NOT EXISTS idx_raw_pending ON raw_candidates(structured_key)
     WHERE structured_key IS NULL;
@@ -319,6 +330,45 @@ class SessionStagingStore:
             "emitted_sessions = ? WHERE key = ?",
             (now if now is not None else time.time(), observations, key),
         )
+
+    # -- injections (usage feedback v1) --------------------------------------
+    # The rows themselves are written by the augment hooks with raw stdlib
+    # sqlite3 (the hook path never imports repowise.core); these methods are
+    # the update-time reader side.
+
+    def unevaluated_injections(self, *, before: float) -> list[dict[str, Any]]:
+        """Shown-decision rows not yet judged, old enough that the showing
+        session has plausibly moved past the guidance (see *before*)."""
+        rows = self._conn.execute(
+            "SELECT session_id, decision_id, node_id, shown_at FROM injections "
+            "WHERE evaluated = 0 AND shown_at < ? ORDER BY shown_at ASC",
+            (before,),
+        ).fetchall()
+        return [
+            {"session_id": r[0], "decision_id": r[1], "node_id": r[2], "shown_at": r[3]}
+            for r in rows
+        ]
+
+    def mark_injection_evaluated(self, session_id: str, decision_id: str) -> None:
+        self._conn.execute(
+            "UPDATE injections SET evaluated = 1 WHERE session_id = ? AND decision_id = ?",
+            (session_id, decision_id),
+        )
+
+    def correction_quotes(self, session_id: str) -> list[str]:
+        """Verbatim user-correction quotes mined from one session's transcript."""
+        rows = self._conn.execute(
+            "SELECT quotes FROM raw_candidates WHERE session_id = ? AND kind = 'user_correction'",
+            (session_id,),
+        ).fetchall()
+        out: list[str] = []
+        for (raw,) in rows:
+            try:
+                quotes = json.loads(raw)
+            except (TypeError, ValueError):
+                continue
+            out.extend(q for q in quotes if isinstance(q, str))
+        return out
 
     # -- lifecycle -----------------------------------------------------------
 

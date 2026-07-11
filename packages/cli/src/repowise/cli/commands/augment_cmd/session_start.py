@@ -12,7 +12,9 @@ discovering staleness mid-task:
 
 Deliberately no hotspot/health lines here: CLAUDE.md already carries those
 statically, and this block is re-billed every session; freshness is the only
-signal that must be live.
+signal that must be live. The one addition is the relevance-ranked standing
+decisions block (see :mod:`.decision_inject`), which is also live by nature:
+it is scored against what this session is about to touch.
 
 Same operational rules as the rest of augment: stdlib + git subprocess only,
 any failure returns None, and a git failure never produces a false "current"
@@ -26,11 +28,12 @@ from pathlib import Path
 
 from ._shared import _find_repo_root
 from .bash_staleness import _read_in_flight_marker
+from .decision_inject import _session_decision_block
 
 _CORE_TOOLS = "get_answer, get_context, get_symbol, search_codebase, get_risk"
 
 
-def _handle_claude_session_start(cwd: str) -> str | None:
+def _handle_claude_session_start(cwd: str, session_id: str = "") -> str | None:
     """Return the session context block, or None outside indexed repos."""
     repo_path = _find_repo_root(Path(cwd))
     if repo_path is None:
@@ -43,6 +46,21 @@ def _handle_claude_session_start(cwd: str) -> str | None:
     if not isinstance(last_sync, str) or not last_sync:
         return None
 
+    freshness = _freshness_block(repo_path, last_sync)
+    if freshness is None:
+        return None
+
+    # Relevance-ranked standing decisions for this session's working set;
+    # silent whenever nothing clears the floor (see decision_inject).
+    try:
+        decisions = _session_decision_block(repo_path, session_id)
+    except Exception:
+        decisions = None
+    return f"{freshness}\n{decisions}" if decisions else freshness
+
+
+def _freshness_block(repo_path: Path, last_sync: str) -> str | None:
+    """The live index-freshness paragraph (the original SessionStart block)."""
     head = _git_head(repo_path)
     if head is None:
         return (

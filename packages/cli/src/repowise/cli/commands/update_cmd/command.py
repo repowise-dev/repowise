@@ -814,6 +814,49 @@ def run_update(
         if verbose:
             console.print(f"[yellow]Session decision mining skipped: {exc}[/yellow]")
 
+    # Usage feedback v1: decisions the augment hooks injected into agent
+    # sessions are judged against those sessions' mined corrections (followed
+    # -> staleness relaxes, contradicted -> staleness bumps). Pure SQLite over
+    # the staging sidecar + decision_records; no LLM.
+    try:
+        from repowise.core.sessions.miners.decisions import apply_injection_feedback
+
+        if session_mining_enabled(cfg):
+
+            async def _run_injection_feedback() -> dict:
+                from repowise.cli.helpers import get_db_url_for_repo
+                from repowise.core.persistence import (
+                    create_engine,
+                    create_session_factory,
+                    get_session,
+                    init_db,
+                    upsert_repository,
+                )
+
+                url = get_db_url_for_repo(repo_path)
+                engine = create_engine(url)
+                await init_db(engine)
+                sf = create_session_factory(engine)
+                async with get_session(sf) as session:
+                    repo = await upsert_repository(
+                        session, name=repo_path.name, local_path=str(repo_path)
+                    )
+                    res = await apply_injection_feedback(session, repo.id, repo_path)
+                await engine.dispose()
+                return res
+
+            feedback = run_async(_run_injection_feedback())
+            if verbose and (feedback.get("followed") or feedback.get("contradicted")):
+                console.print(
+                    f"Injected-decision feedback: [green]{feedback.get('followed', 0)} "
+                    f"followed[/green], [yellow]{feedback.get('contradicted', 0)} "
+                    "contradicted[/yellow]"
+                )
+    except Exception as exc:
+        degraded.append(f"Injection feedback: {exc}")
+        if verbose:
+            console.print(f"[yellow]Injection feedback skipped: {exc}[/yellow]")
+
     # Count of decision records touched by evolution, surfaced in the panel.
     decisions_evolved = 0
 

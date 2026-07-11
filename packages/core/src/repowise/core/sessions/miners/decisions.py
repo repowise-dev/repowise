@@ -70,6 +70,7 @@ logger = structlog.get_logger(__name__)
 
 __all__ = [
     "SessionCandidate",
+    "apply_injection_feedback",
     "mine_events",
     "mine_session_decisions",
     "session_mining_enabled",
@@ -589,8 +590,104 @@ def _promotion_decisions(row: dict[str, Any], repo_root: Path) -> list[Extracted
 
 
 # ---------------------------------------------------------------------------
-# Orchestration: one call per `repowise update`
+# Usage feedback v1: were injected decisions followed or contradicted?
 # ---------------------------------------------------------------------------
+
+#: An injection is judged only after this long: the showing session must have
+#: had time to react (or end) before "no contradiction" reads as "followed".
+INJECTION_EVAL_MIN_AGE_SECONDS = 3600.0
+
+#: Staleness levels mirroring run_update_evolution's amended/reaffirmed moves.
+_CONTRADICTED_STALENESS = 0.6
+_FOLLOWED_STALENESS = 0.2
+
+
+async def apply_injection_feedback(
+    db_session: Any,
+    repository_id: str,
+    repo_path: Path,
+    *,
+    now: float | None = None,
+) -> dict[str, int]:
+    """Judge shown-decision injections against what the session actually did.
+
+    For every injection row the augment hooks recorded (see the staging
+    sidecar's ``injections`` table), check the same session's mined user
+    corrections: a correction that contradicts the shown decision (the
+    :func:`~repowise.core.analysis.decisions.evolution.contradicts` heuristic)
+    marks it contradicted and bumps staleness so the evolution machinery
+    surfaces the drift; otherwise the guidance counts as followed and
+    staleness relaxes, the same reaffirm move ``run_update_evolution`` makes.
+
+    Deliberately binary for v1 (followed / contradicted); the
+    followed-vs-ignored split and relevance decay are the validation-gated
+    backlog item that rides on this data. Returns
+    ``{"followed": n, "contradicted": n}``.
+    """
+    import time
+
+    from sqlalchemy import select
+
+    from repowise.core.analysis.decisions.evolution import contradicts
+    from repowise.core.persistence.models import DecisionRecord
+
+    ts = now if now is not None else time.time()
+    summary = {"followed": 0, "contradicted": 0}
+
+    store = SessionStagingStore.open_default(Path(repo_path).resolve())
+    try:
+        injections = store.unevaluated_injections(before=ts - INJECTION_EVAL_MIN_AGE_SECONDS)
+        if not injections:
+            return summary
+
+        decision_ids = list({inj["decision_id"] for inj in injections})
+        rows = await db_session.execute(
+            select(DecisionRecord).where(
+                DecisionRecord.id.in_(decision_ids),
+                DecisionRecord.repository_id == repository_id,
+            )
+        )
+        records = {rec.id: rec for rec in rows.scalars().all()}
+
+        quotes_by_session: dict[str, list[str]] = {}
+        verdicts: dict[str, bool] = {}  # decision_id -> contradicted anywhere
+        for inj in injections:
+            rec = records.get(inj["decision_id"])
+            if rec is None:
+                # The decision no longer exists in this repo's records; drop
+                # the row so it is not re-examined forever.
+                store.mark_injection_evaluated(inj["session_id"], inj["decision_id"])
+                continue
+            session_id = inj["session_id"]
+            if session_id not in quotes_by_session:
+                quotes_by_session[session_id] = store.correction_quotes(session_id)
+            decision_text = f"{rec.title}. {rec.decision}"
+            contradicted = any(
+                contradicts(decision_text, quote)[0] for quote in quotes_by_session[session_id]
+            )
+            verdicts[rec.id] = verdicts.get(rec.id, False) or contradicted
+            store.mark_injection_evaluated(session_id, inj["decision_id"])
+
+        from datetime import UTC, datetime
+
+        for decision_id, contradicted in verdicts.items():
+            rec = records[decision_id]
+            if contradicted:
+                rec.staleness_score = max(rec.staleness_score, _CONTRADICTED_STALENESS)
+                summary["contradicted"] += 1
+            else:
+                rec.staleness_score = min(rec.staleness_score, _FOLLOWED_STALENESS)
+                summary["followed"] += 1
+            rec.updated_at = datetime.now(UTC)
+
+        store.commit()
+        await db_session.flush()
+    finally:
+        store.close()
+
+    if summary["followed"] or summary["contradicted"]:
+        logger.info("session_mining.injection_feedback", **summary)
+    return summary
 
 
 async def mine_session_decisions(

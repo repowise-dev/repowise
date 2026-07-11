@@ -49,6 +49,7 @@ def _load_session_state(repo_path: Path, session_id: str) -> dict:
         "nudged": [],
         "stale_notified": [],
         "reread_notified": [],
+        "decisions_shown": [],
     }
     try:
         state = json.loads(_session_state_path(repo_path).read_text(encoding="utf-8"))
@@ -75,19 +76,47 @@ def _save_session_state(repo_path: Path, state: dict) -> None:
 
 def _record_edit(tool_input: dict, cwd: str, session_id: str) -> None:
     """Note an Edit/Write so a later Read of the file can flag staleness."""
+    _handle_edit_post(tool_input, cwd, session_id, with_decisions=False)
+
+
+def _handle_edit_post(
+    tool_input: dict,
+    cwd: str,
+    session_id: str,
+    *,
+    with_decisions: bool = True,
+) -> str | None:
+    """Record an Edit/Write; surface the file's governing decision, if any.
+
+    The decision notice fires once per session per decision under a strict
+    per-session cap (see :func:`decision_inject._edit_decision_notice`) so a
+    governed file gets one heads-up, not a drumbeat. Codex lifecycle hooks
+    call this with ``with_decisions=False``: they get their own edit banner.
+    """
     file_path = tool_input.get("file_path") if isinstance(tool_input, dict) else None
     if not isinstance(file_path, str) or not file_path.strip():
-        return
+        return None
     repo_path = _find_repo_root(Path(cwd))
     if repo_path is None:
-        return
+        return None
     rel = _relativize(file_path, repo_path)
     if rel is None:
-        return
+        return None
     state = _load_session_state(repo_path, session_id)
     state["seq"] += 1
     state["edits"][rel] = state["seq"]
+
+    notice: str | None = None
+    if with_decisions:
+        from .decision_inject import _edit_decision_notice
+
+        try:
+            notice = _edit_decision_notice(repo_path, rel, session_id, state)
+        except Exception:
+            notice = None
+
     _save_session_state(repo_path, state)
+    return notice
 
 
 def _handle_read_post(
