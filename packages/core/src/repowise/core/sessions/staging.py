@@ -79,11 +79,33 @@ CREATE TABLE IF NOT EXISTS injections (
     node_id TEXT NOT NULL DEFAULT '',
     shown_at REAL NOT NULL,
     evaluated INTEGER NOT NULL DEFAULT 0,
+    surface TEXT NOT NULL DEFAULT '',
+    category TEXT NOT NULL DEFAULT '',
+    chars INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (session_id, decision_id)
 );
 CREATE INDEX IF NOT EXISTS idx_raw_pending ON raw_candidates(structured_key)
     WHERE structured_key IS NULL;
 """
+
+#: Columns added to ``injections`` after PR4 shipped the table (the ledger now
+#: records every hook surface, not just decision injections). Kept in one place
+#: so the hook-side writer (augment's stdlib-sqlite3 opener) and this reader
+#: apply the identical migration to sidecars created by either side first.
+INJECTIONS_LEDGER_COLUMNS = (
+    ("surface", "TEXT NOT NULL DEFAULT ''"),
+    ("category", "TEXT NOT NULL DEFAULT ''"),
+    ("chars", "INTEGER NOT NULL DEFAULT 0"),
+)
+
+
+def _migrate_injections_columns(conn: sqlite3.Connection) -> None:
+    """Best-effort ALTER for sidecars created before the ledger columns."""
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(injections)")}
+    for name, decl in INJECTIONS_LEDGER_COLUMNS:
+        if name not in existing:
+            conn.execute(f"ALTER TABLE injections ADD COLUMN {name} {decl}")
+
 
 _NON_ALNUM_RE = re.compile(r"[^a-z0-9\s]")
 _WS_RE = re.compile(r"\s+")
@@ -150,6 +172,7 @@ class SessionStagingStore:
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.executescript(_SCHEMA)
+        _migrate_injections_columns(self._conn)
         self._conn.commit()
         self.cursors = _DbCursors(self._conn)
 
@@ -338,10 +361,17 @@ class SessionStagingStore:
 
     def unevaluated_injections(self, *, before: float) -> list[dict[str, Any]]:
         """Shown-decision rows not yet judged, old enough that the showing
-        session has plausibly moved past the guidance (see *before*)."""
+        session has plausibly moved past the guidance (see *before*).
+
+        Scoped to the decision surface: the ledger also records read/search
+        enrichments whose ids are not decision_records keys, and the follow-up
+        classifier for those rides a separate mining pass. Pre-column rows
+        (surface '') are all decision injections.
+        """
         rows = self._conn.execute(
             "SELECT session_id, decision_id, node_id, shown_at FROM injections "
-            "WHERE evaluated = 0 AND shown_at < ? ORDER BY shown_at ASC",
+            "WHERE evaluated = 0 AND shown_at < ? AND surface IN ('', 'decision') "
+            "ORDER BY shown_at ASC",
             (before,),
         ).fetchall()
         return [

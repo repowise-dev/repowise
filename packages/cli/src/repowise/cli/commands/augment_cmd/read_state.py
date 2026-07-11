@@ -50,6 +50,9 @@ def _load_session_state(repo_path: Path, session_id: str) -> dict:
         "stale_notified": [],
         "reread_notified": [],
         "decisions_shown": [],
+        # File ranges served by repowise MCP responses this session, kept for
+        # the read-after-served KPI (see read_enrich; rel -> [[start, end]]).
+        "served": {},
     }
     try:
         state = json.loads(_session_state_path(repo_path).read_text(encoding="utf-8"))

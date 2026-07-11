@@ -132,13 +132,16 @@ def enable_tool_search_in_claude_code() -> Path | None:
 # Current augment PostToolUse matcher. Read/Edit/Write power the distill
 # read-intelligence layer (skeleton nudges + per-file stale-read notices);
 # PowerShell is the Windows Claude Code shell tool (same payload shape as
-# Bash); legacy installs with the narrower matchers below are widened in
-# place.
-_AUGMENT_MATCHER = "Bash|PowerShell|Grep|Glob|Read|Edit|Write"
+# Bash); the mcp__ pattern feeds the read-after-served ledger (read_enrich)
+# and matches the repowise MCP server under any registration name (local,
+# plugin, hosted "Repowise"); legacy installs with the narrower matchers
+# below are widened in place.
+_AUGMENT_MATCHER = "Bash|PowerShell|Grep|Glob|Read|Edit|Write|mcp__.*[Rr]epowise.*__.*"
 _LEGACY_AUGMENT_MATCHERS = (
     "Bash",
     "Bash|Grep|Glob",
     "Bash|Grep|Glob|Read|Edit|Write",
+    "Bash|PowerShell|Grep|Glob|Read|Edit|Write",
 )
 
 # SessionStart emits the live index-freshness / trust context block. `compact`

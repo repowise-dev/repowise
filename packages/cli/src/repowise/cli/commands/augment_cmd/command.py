@@ -83,6 +83,7 @@ from .bash_staleness import _handle_bash_post
 from .codex import _handle_codex_context_event, _handle_post_edit_use
 from .read_state import _handle_edit_post, _handle_read_post, _record_edit
 from .search import _handle_search_post
+from .served_reads import _handle_mcp_read_post, _log_read_after_served
 from .session_start import _handle_claude_session_start
 
 _EDIT_TOOL_NAMES = {"apply_patch", "Edit", "Write"}
@@ -246,11 +247,18 @@ def _handle_post_tool_use(
             return _handle_post_edit_use(cwd)
         return _handle_edit_post(tool_input, cwd, session_id)
     if tool_name == "Read":
+        # Read-after-served KPI: logged to the ledger, never spoken about.
+        _log_read_after_served(tool_input, tool_output, cwd, session_id)
         return _handle_read_post(tool_input, tool_output, cwd, session_id)
     if tool_name in ("Bash", "PowerShell"):
         # The PowerShell tool (Windows Claude Code) surfaces the same
         # stdout/stderr response shape as Bash — one handler covers both.
         return _handle_bash_post(tool_input, tool_output, cwd)
     if tool_name in ("Grep", "Glob"):
-        return _handle_search_post(tool_name, tool_input, tool_output, cwd)
+        return _handle_search_post(tool_name, tool_input, tool_output, cwd, session_id)
+    if tool_name.startswith("mcp__") and "repowise" in tool_name.lower():
+        # Served-content bookkeeping for the read-after-served KPI. Never
+        # emits — measurement only.
+        _handle_mcp_read_post(tool_output, cwd, session_id)
+        return None
     return None

@@ -547,7 +547,18 @@ _INJECTIONS_TABLE_SQL = (
     "session_id TEXT NOT NULL, decision_id TEXT NOT NULL, "
     "node_id TEXT NOT NULL DEFAULT '', shown_at REAL NOT NULL, "
     "evaluated INTEGER NOT NULL DEFAULT 0, "
+    "surface TEXT NOT NULL DEFAULT '', "
+    "category TEXT NOT NULL DEFAULT '', "
+    "chars INTEGER NOT NULL DEFAULT 0, "
     "PRIMARY KEY (session_id, decision_id))"
+)
+
+#: Mirror of core.sessions.staging.INJECTIONS_LEDGER_COLUMNS — the hook path
+#: must not import repowise.core, so the migration is duplicated verbatim.
+_LEDGER_COLUMNS = (
+    ("surface", "TEXT NOT NULL DEFAULT ''"),
+    ("category", "TEXT NOT NULL DEFAULT ''"),
+    ("chars", "INTEGER NOT NULL DEFAULT 0"),
 )
 
 
@@ -559,6 +570,10 @@ def _open_injections(repo_path: Path) -> sqlite3.Connection | None:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=1000")
         conn.execute(_INJECTIONS_TABLE_SQL)
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(injections)")}
+        for name, decl in _LEDGER_COLUMNS:
+            if name not in existing:
+                conn.execute(f"ALTER TABLE injections ADD COLUMN {name} {decl}")
         return conn
     except (sqlite3.Error, OSError):
         return None
@@ -581,13 +596,56 @@ def _record_injections(
     try:
         now = time.time()
         conn.executemany(
-            "INSERT OR IGNORE INTO injections (session_id, decision_id, node_id, shown_at) "
-            "VALUES (?, ?, ?, ?)",
+            "INSERT OR IGNORE INTO injections "
+            "(session_id, decision_id, node_id, shown_at, surface, category) "
+            "VALUES (?, ?, ?, ?, 'decision', 'session_start')",
             [(session_id, did, node_id, now) for did in decision_ids],
         )
         conn.commit()
     except sqlite3.Error:
         pass
+    finally:
+        conn.close()
+
+
+def _claim_ledger(
+    repo_path: Path,
+    session_id: str,
+    key: str,
+    *,
+    node_id: str,
+    surface: str,
+    category: str,
+    chars: int,
+) -> tuple[bool, int]:
+    """Atomically claim one non-decision ledger emission.
+
+    Generic twin of :func:`_claim_injection` for the read/search enrichment
+    surfaces: *key* replaces the decision id in the primary key, so INSERT OR
+    IGNORE is the once-per-session-per-key gate. Returns ``(claimed,
+    surface_injection_count)`` where the count covers only rows that actually
+    carried text (``chars > 0``) on *surface* — pure measurement rows must not
+    eat into an injection cap. Fail-closed: any error reports unclaimed.
+    """
+    conn = _open_injections(repo_path)
+    if conn is None:
+        return False, 0
+    try:
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO injections "
+            "(session_id, decision_id, node_id, shown_at, surface, category, chars) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (session_id, key, node_id, time.time(), surface, category, chars),
+        )
+        claimed = cur.rowcount > 0
+        count = conn.execute(
+            "SELECT COUNT(*) FROM injections WHERE session_id = ? AND surface = ? AND chars > 0",
+            (session_id, surface),
+        ).fetchone()[0]
+        conn.commit()
+        return claimed, int(count)
+    except sqlite3.Error:
+        return False, 0
     finally:
         conn.close()
 
@@ -608,13 +666,17 @@ def _claim_injection(
         return False, 0
     try:
         cur = conn.execute(
-            "INSERT OR IGNORE INTO injections (session_id, decision_id, node_id, shown_at) "
-            "VALUES (?, ?, ?, ?)",
+            "INSERT OR IGNORE INTO injections "
+            "(session_id, decision_id, node_id, shown_at, surface, category) "
+            "VALUES (?, ?, ?, ?, 'decision', 'edit_notice')",
             (session_id, decision_id, node_id, time.time()),
         )
         claimed = cur.rowcount > 0
+        # Surface-scoped: read/search enrichment rows also carry a node_id and
+        # must not eat into the edit-notice cap.
         count = conn.execute(
-            "SELECT COUNT(*) FROM injections WHERE session_id = ? AND node_id != ''",
+            "SELECT COUNT(*) FROM injections WHERE session_id = ? AND node_id != '' "
+            "AND surface IN ('', 'decision')",
             (session_id,),
         ).fetchone()[0]
         conn.commit()

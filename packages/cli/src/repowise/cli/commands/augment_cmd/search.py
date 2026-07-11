@@ -21,6 +21,7 @@ def _handle_search_post(
     tool_input: dict,
     tool_output: object,
     cwd: str,
+    session_id: str = "",
 ) -> str | None:
     """Decide whether to enrich a Grep/Glob result and how."""
     repo_path = _find_repo_root(Path(cwd))
@@ -40,6 +41,7 @@ def _handle_search_post(
     if result_count >= _DIGEST_THRESHOLD:
         digest = _grep_flood_digest(repo_path, output_text)
         if digest:
+            _log_search_firing(repo_path, session_id, "digest", output_text, digest)
             return digest
         # Unparseable output (e.g. Glob path lists): fall through to triage.
 
@@ -69,7 +71,38 @@ def _handle_search_post(
 
     import asyncio
 
-    return asyncio.run(_search_enrich(repo_path, pattern, mode, result_count))
+    enrichment = asyncio.run(_search_enrich(repo_path, pattern, mode, result_count))
+    if enrichment:
+        _log_search_firing(repo_path, session_id, mode, pattern, enrichment)
+    return enrichment
+
+
+def _log_search_firing(
+    repo_path: Path, session_id: str, category: str, keyed_on: str, text: str
+) -> None:
+    """Record one search enrichment in the shared ledger; measurement only.
+
+    All hook surfaces share the sessions.db efficacy ledger so the miner can
+    classify used vs ignored firings in one pass. Keyed on the category plus a
+    content hash — the same rescue repeated in one session logs once. Never
+    changes what the agent sees; any failure is silent.
+    """
+    if not session_id:
+        return
+    import hashlib
+
+    from .decision_inject import _claim_ledger
+
+    digest = hashlib.sha1(keyed_on.encode("utf-8", "replace")).hexdigest()[:12]
+    _claim_ledger(
+        repo_path,
+        session_id,
+        f"search:{category}:{digest}",
+        node_id="",
+        surface="search",
+        category=category,
+        chars=len(text),
+    )
 
 
 def _grep_flood_digest(repo_path: Path, output_text: str) -> str | None:
