@@ -66,6 +66,30 @@ _HOMONYM_UNION_CHAR_BUDGET = 12000
 # Line cap per union body — same rationale as _INLINE_BODY_MAX_LINES.
 _HOMONYM_UNION_BODY_MAX_LINES = 120
 
+# Data-shape grounding. "what fields does each entry in <blob> contain" is
+# answered directly by mining the field set from source instead of gating to a
+# best_guesses pointer list (the pointer list is exactly what triggers the
+# agent's Read/get_symbol drill). Two grounding sources, precision-ordered:
+#   * a documented {...} shape in a docstring/comment near the identifier
+#     (authoritative -> confidence high);
+#   * consistent key accesses (VAR.get("f") / VAR["f"]) on the value bound from
+#     the identifier (access-mined -> confidence medium).
+# Every reported field is a quoted token lifted verbatim from source, so the
+# path cannot synthesise a field with no source backing (no confidently-wrong
+# shapes). Returns nothing (falls through to normal retrieval) unless a shape
+# is genuinely grounded.
+# Cap on files scanned for the shape. A specific blob name can be referenced
+# across dozens of files (every consumer), and the one file that *documents* the
+# shape need not sort first, so the cap is generous - source files are small and
+# the doc scan must not miss the documenting file. Non-test files are scanned
+# first (fixtures document nothing), so the cap mostly trims trailing tests.
+_DATA_SHAPE_MAX_FILES = 30  # cap the identifier grep fan-out
+_DATA_SHAPE_DOC_WINDOW = 6  # lines below an identifier mention to scan for a {...}
+_DATA_SHAPE_ACCESS_WINDOW = 40  # lines below a binding to mine VAR key accesses
+_DATA_SHAPE_MIN_FIELDS = 2  # never answer from a single-field shape (too weak to trust)
+_DATA_SHAPE_MIN_IDENT_LEN = 6  # identifier must be specific, not a bare generic name
+_DATA_SHAPE_GREP_TIMEOUT_S = 6.0
+
 # Sort priority by symbol kind. Classes first because "what does X do" /
 # "which class inherits from Y" questions resolve at the class level. Then
 # top-level functions, then methods (which usually only matter once the

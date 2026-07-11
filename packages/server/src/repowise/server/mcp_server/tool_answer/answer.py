@@ -101,6 +101,10 @@ from repowise.server.mcp_server.tool_answer.config import (
     _SYSTEM_PROMPT,
     _USER_TEMPLATE,
 )
+from repowise.server.mcp_server.tool_answer.data_shape import (
+    _is_data_shape_question,
+    mine_data_shape,
+)
 from repowise.server.mcp_server.tool_answer.retrieval import (
     _apply_domain_penalty,
     _candidate_justification,
@@ -289,6 +293,67 @@ def _gather_body_candidates(
     return candidates
 
 
+def _build_data_shape_payload(grounded: dict, t0: float, repository) -> dict:
+    """Shape a grounded data-shape result into a get_answer response.
+
+    ``grounded`` is :func:`mine_data_shape`'s return. Cite the exact source
+    lines the fields were lifted from; a docstring shape is authoritative
+    (confidence high, no verification Read), a usage-mined shape is medium.
+    """
+    ident = grounded["identifier"]
+    fields = grounded["fields"]
+    sources = grounded["sources"]
+    citations = sorted({s["file"] for s in sources})
+    field_list = ", ".join(f"`{f}`" for f in fields)
+    doc_src = next((s for s in sources if s["kind"] == "docstring"), None)
+    if grounded["grounding"] == "docstring":
+        where = f"{doc_src['file']}:{doc_src['line']}" if doc_src else citations[0]
+        answer = (
+            f"Each entry in `{ident}` has {len(fields)} field(s): {field_list}. "
+            f"This is the documented shape at {where}; cite it directly, no "
+            "verification Read needed."
+        )
+        note = (
+            "Grounded in the documented field shape mined from source (the "
+            "quoted keys in the docstring/comment at the cited line). "
+            "data_shape.sources lists every field's origin line."
+        )
+    else:
+        first = sources[0]
+        answer = (
+            f"Each entry in `{ident}` is accessed with {len(fields)} key(s): "
+            f"{field_list}. These are the keys consumers actually pull off the "
+            f"parsed value (e.g. {first['file']}:{first['line']}); this is mined "
+            "from usage, not a declared schema, so verify if you need the full set."
+        )
+        note = (
+            "Grounded in the key accesses mined from consumer source (no "
+            "documented shape was found). Medium confidence: these are the keys "
+            "the code reads, which may be a subset of the stored fields."
+        )
+    payload: dict = {
+        "answer": answer,
+        "citations": citations,
+        "confidence": grounded["confidence"],
+        "grounding": "data_shape",
+        "data_shape": {
+            "identifier": ident,
+            "fields": fields,
+            "sources": sources,
+        },
+        "fallback_targets": citations,
+        "retrieval": [],
+        "note": note,
+        "_meta": _build_meta(
+            timing_ms=(time.perf_counter() - t0) * 1000,
+            hint=_answer_hint(grounded["confidence"], len(citations)),
+            repository=repository,
+            targets=citations,
+        ),
+    }
+    return payload
+
+
 @mcp.tool()
 async def get_answer(
     question: str,
@@ -333,6 +398,22 @@ async def get_answer(
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
         repo_id = repository.id
+
+    # --- Data-shape fast path ----------------------------------------------
+    # "what fields does each entry in <blob> contain" is answered by mining the
+    # field set straight from source (a documented {...} shape, else consistent
+    # key accesses) instead of gating to a best_guesses pointer list — the exact
+    # payload that triggers the agent's Read/get_symbol drill. Runs before the
+    # cache and retrieval: it's deterministic from live source, cheap, and reads
+    # the field set directly (retrieval scatters across every file that touches
+    # the blob and misses the one file that documents it). Returns None (falls
+    # through) unless the fields are genuinely grounded, so it can never invent a
+    # shape.
+    ds_ids = _extract_question_identifiers(question)
+    if _is_data_shape_question(question, ds_ids):
+        grounded = await asyncio.to_thread(mine_data_shape, getattr(ctx, "path", None), ds_ids)
+        if grounded is not None:
+            return _build_data_shape_payload(grounded, t0, repository)
 
     # --- Cache lookup --------------------------------------------------------
     # Scope: ignore the (rare) `scope` argument in the cache key for now;
@@ -1045,9 +1126,7 @@ async def get_answer(
                 hits, limit=2, summary_chars=160, symbols_for_expanded=False
             )
         else:
-            retrieval_view = _serialize_hits(
-                hits, limit=_GATED_RETURN_HITS, lean_symbols=True
-            )
+            retrieval_view = _serialize_hits(hits, limit=_GATED_RETURN_HITS, lean_symbols=True)
         payload = {
             "answer": answer_text,
             "citations": citations,
