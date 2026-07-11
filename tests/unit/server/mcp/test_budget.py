@@ -22,7 +22,15 @@ import pytest
 
 from repowise.core.distill.markers import MARKER_RE
 from repowise.core.distill.store import OmissionStore, default_store_path
-from repowise.server.mcp_server._budget import OmissionCollector, truncate_to_budget
+from repowise.server.mcp_server._budget import (
+    CHAR_BUDGET,
+    CHARS_PER_TOKEN,
+    HOST_MCP_TOKEN_CAP_DEFAULT,
+    OmissionCollector,
+    effective_char_budget,
+    host_token_cap,
+    truncate_to_budget,
+)
 
 
 @pytest.fixture
@@ -105,6 +113,52 @@ def test_collector_store_failure_degrades_silently(tmp_path: Path):
     collector.attach(response)
     assert "omission_marker" not in response
     assert "omitted" not in response["_meta"]
+
+
+# ---------------------------------------------------------------------------
+# Host-cap compliance — the response ceiling tracks MAX_MCP_OUTPUT_TOKENS so a
+# result never trips the host's reject-with-isError path (plan 3.1).
+# ---------------------------------------------------------------------------
+
+
+class TestHostCapCompliance:
+    def test_host_token_cap_default_when_unset(self, monkeypatch):
+        monkeypatch.delenv("MAX_MCP_OUTPUT_TOKENS", raising=False)
+        assert host_token_cap() == HOST_MCP_TOKEN_CAP_DEFAULT
+
+    def test_host_token_cap_reads_env_override(self, monkeypatch):
+        monkeypatch.setenv("MAX_MCP_OUTPUT_TOKENS", "5000")
+        assert host_token_cap() == 5000
+
+    def test_host_token_cap_ignores_garbage_and_nonpositive(self, monkeypatch):
+        for bad in ("", "  ", "not-a-number", "0", "-100"):
+            monkeypatch.setenv("MAX_MCP_OUTPUT_TOKENS", bad)
+            assert host_token_cap() == HOST_MCP_TOKEN_CAP_DEFAULT
+
+    def test_default_host_cap_leaves_configured_budget_untouched(self, monkeypatch):
+        # 8000-token budget << 25000-token host cap: the common case is unchanged.
+        monkeypatch.delenv("MAX_MCP_OUTPUT_TOKENS", raising=False)
+        assert effective_char_budget() == CHAR_BUDGET
+
+    def test_narrowed_host_cap_pulls_budget_under_it(self, monkeypatch):
+        monkeypatch.setenv("MAX_MCP_OUTPUT_TOKENS", "5000")
+        eff = effective_char_budget()
+        assert eff < CHAR_BUDGET
+        # Invariant: the ceiling always stays strictly under the host's raw cap
+        # (in chars), with margin for estimator error + the JSON envelope.
+        assert eff < host_token_cap() * CHARS_PER_TOKEN
+
+    def test_effective_budget_never_exceeds_host_cap_across_range(self, monkeypatch):
+        for cap in (1000, 5000, 12000, 25000, 100000):
+            monkeypatch.setenv("MAX_MCP_OUTPUT_TOKENS", str(cap))
+            assert effective_char_budget() < cap * CHARS_PER_TOKEN
+
+    def test_truncate_default_budget_honors_narrowed_host_cap(self, monkeypatch):
+        # With no explicit char_budget, a big response must truncate under a
+        # narrowed host cap where it would have fit the flat 32000-char budget.
+        monkeypatch.setenv("MAX_MCP_OUTPUT_TOKENS", "2000")
+        out = truncate_to_budget(_big_response(n_targets=3, n_symbols=20))
+        assert out["truncated"] is True
 
 
 # ---------------------------------------------------------------------------

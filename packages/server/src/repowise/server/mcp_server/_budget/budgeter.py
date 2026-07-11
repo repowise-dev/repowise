@@ -8,24 +8,36 @@ every drop recoverable, and (b) a skeleton-stripping stage for the
 ``include=["skeleton"]`` blocks that did not exist when the original was
 written.
 
-The Claude Code harness rejects MCP tool results whose stringified form
-exceeds ~10k tokens (it refuses to inline them and then refuses to Read the
-spilled file). When that happens the agent falls back to multiple get_symbol
-calls, each of which re-plays the cached system prompt — a significant cost
-driver on dense files in long multi-turn agent sessions. We therefore cap
-responses well below that ceiling: 8000 tokens leaves headroom for the
-wrapping JSON envelope and the ``_meta`` fields the harness adds on top.
+The MCP host caps the size of a tool result. Measured on Claude Code
+2026-07-11: a result whose stringified form exceeds ``MAX_MCP_OUTPUT_TOKENS``
+(default **25000 tokens**) is REJECTED with an isError
+(``MCPContentTooLargeError`` — "response (N tokens) exceeds maximum allowed
+tokens (25000)"), not silently truncated and not spilled to a file. That
+isError matters twice over: the agent loses the answer AND — per the Phase 1
+session-survival doctrine — one isError early in a session teaches it to
+abandon the server entirely. So staying under the host cap is not a nicety.
+
+Our default budget (``TOKEN_BUDGET`` = 8000) sits comfortably under the
+default host cap, so the common case is unchanged. The risk is the inverse of
+the one long assumed here: a user who *lowers* ``MAX_MCP_OUTPUT_TOKENS`` below
+our budget would start tripping the reject path. :func:`effective_char_budget`
+therefore reads the host cap at call time and clamps our ceiling under it.
+(The earlier "~10k token" ceiling in this docstring was a guess; the measured
+number is 25000, and the failure mode is rejection, not file spill.)
 
 The estimator is intentionally dependency-free: 4 chars/token is the
 widely-quoted average for English + code on BPE tokenizers and is within
-~20% of tiktoken for typical wiki content. Precise counting is unnecessary
-because we only need to stay comfortably under the hard limit.
+~20% of tiktoken for typical wiki content. Dense code can tokenize finer than
+4 chars/token, so the host may count MORE tokens than we estimate — the
+safety fraction below absorbs that gap plus the JSON envelope and ``_meta``
+the host counts on top of our payload.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Any
 
 from repowise.server.mcp_server._budget.collector import OmissionCollector
@@ -35,6 +47,45 @@ logger = logging.getLogger(__name__)
 TOKEN_BUDGET = 8000
 CHARS_PER_TOKEN = 4
 CHAR_BUDGET = TOKEN_BUDGET * CHARS_PER_TOKEN
+
+# Claude Code's MAX_MCP_OUTPUT_TOKENS default (measured 2026-07-11). A result
+# over this is rejected with an isError, so our ceiling must stay under it.
+HOST_MCP_TOKEN_CAP_DEFAULT = 25000
+
+# Fraction of the host cap we allow ourselves. The gap absorbs (a) estimator
+# error — our 4-chars/token figure can undercount real tokens on dense code by
+# up to ~30% — and (b) the JSON envelope + _meta the host tokenizes on top of
+# our payload. 0.6 keeps even an undercounted response clear of the reject line.
+HOST_CAP_BUDGET_FRACTION = 0.6
+
+
+def host_token_cap() -> int:
+    """The MCP host's max-output-tokens: ``MAX_MCP_OUTPUT_TOKENS`` or the default.
+
+    Read at call time (not import) so a mid-session env change is honoured and
+    tests can monkeypatch it. A malformed or non-positive value falls back to
+    the measured default rather than trusting a footgun.
+    """
+    raw = os.environ.get("MAX_MCP_OUTPUT_TOKENS", "").strip()
+    if raw:
+        try:
+            parsed = int(raw)
+        except ValueError:
+            parsed = 0
+        if parsed > 0:
+            return parsed
+    return HOST_MCP_TOKEN_CAP_DEFAULT
+
+
+def effective_char_budget(configured: int = CHAR_BUDGET) -> int:
+    """``configured`` ceiling, lowered under the live host cap when that is tighter.
+
+    Default host cap (25000) leaves our 8000-token budget untouched; a narrowed
+    ``MAX_MCP_OUTPUT_TOKENS`` pulls us down with it so we never trip the host's
+    reject-with-isError path (one isError = server abandonment, Phase 1).
+    """
+    host_char_ceiling = int(host_token_cap() * HOST_CAP_BUDGET_FRACTION) * CHARS_PER_TOKEN
+    return min(configured, host_char_ceiling)
 
 
 def estimate_response_tokens(obj: Any) -> int:
@@ -102,11 +153,16 @@ def query_terms_for(target: str) -> set[str]:
 
 def truncate_to_budget(
     result: dict[str, Any],
-    char_budget: int = CHAR_BUDGET,
+    char_budget: int | None = None,
     *,
     collector: OmissionCollector | None = None,
 ) -> dict[str, Any]:
     """Cap a targets-shaped response at roughly ``TOKEN_BUDGET`` tokens.
+
+    ``char_budget`` defaults to :func:`effective_char_budget` — our configured
+    ceiling, clamped under the live MCP host cap so the response can never trip
+    the host's reject-with-isError path. Pass an explicit value to override
+    (tests do; production callers should not).
 
     Strategy (applied in order, stopping as soon as the budget is met):
 
@@ -140,6 +196,8 @@ def truncate_to_budget(
       * Targets that carry an ``error`` field (not-found) are cheap and are
         preserved unless literally nothing else fits.
     """
+    if char_budget is None:
+        char_budget = effective_char_budget()
     try:
         result = _run_stages(result, char_budget, collector)
     finally:

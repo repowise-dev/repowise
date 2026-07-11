@@ -19,8 +19,12 @@ from __future__ import annotations
 from repowise.server.mcp_server._budget.budgeter import (
     CHAR_BUDGET,
     CHARS_PER_TOKEN,
+    HOST_CAP_BUDGET_FRACTION,
+    HOST_MCP_TOKEN_CAP_DEFAULT,
     TOKEN_BUDGET,
+    effective_char_budget,
     estimate_response_tokens,
+    host_token_cap,
     truncate_to_budget,
 )
 from repowise.server.mcp_server._budget.collector import OmissionCollector
@@ -28,8 +32,12 @@ from repowise.server.mcp_server._budget.collector import OmissionCollector
 __all__ = [
     "CHARS_PER_TOKEN",
     "CHAR_BUDGET",
+    "HOST_CAP_BUDGET_FRACTION",
+    "HOST_MCP_TOKEN_CAP_DEFAULT",
     "TOKEN_BUDGET",
     "OmissionCollector",
+    "effective_char_budget",
     "estimate_response_tokens",
+    "host_token_cap",
     "truncate_to_budget",
 ]
