@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from repowise.core.analysis.decision_extractor import DecisionExtractor
+from repowise.core.analysis.decision_extractor import (
+    SOURCE_NAMES,
+    DecisionExtractor,
+    enabled_source_names,
+)
 
 _NYGARD_ADR = """\
 # 1. Use PostgreSQL for primary storage
@@ -137,3 +141,47 @@ async def test_extract_all_runs_deterministic_sources_and_gates(tmp_path):
     assert "changelog" in sources
     adr = next(d for d in report.decisions if d.source == "adr")
     assert adr.verification == "exact"
+    # The repo-wide code_comment harvest was removed (#751); extract_all must
+    # neither run it nor report it.
+    assert "code_comment" not in report.by_source
+    assert not any(d.source == "code_comment" for d in report.decisions)
+
+
+async def test_extract_all_honors_enabled_sources(tmp_path):
+    adr_dir = tmp_path / "docs" / "adr"
+    adr_dir.mkdir(parents=True)
+    (adr_dir / "0001-use-postgres.md").write_text(_NYGARD_ADR, encoding="utf-8")
+    (tmp_path / "CHANGELOG.md").write_text(_CHANGELOG, encoding="utf-8")
+
+    ex = DecisionExtractor(repo_path=tmp_path)
+    seen: list[str] = []
+    report = await ex.extract_all(
+        on_step=seen.append,
+        enabled_sources=("adr", "inline_marker"),
+    )
+
+    assert set(seen) == {"adr", "inline_marker"}
+    assert set(report.by_source) == {"adr", "inline_marker"}
+    assert report.by_source["adr"] == 1
+    # The changelog file exists but its source was disabled.
+    assert not any(d.source == "changelog" for d in report.decisions)
+
+
+def test_enabled_source_names_defaults_and_overrides():
+    # No config → everything on.
+    assert enabled_source_names(None) == SOURCE_NAMES
+    assert enabled_source_names({}) == SOURCE_NAMES
+
+    cfg = {"decisions": {"sources": {"comment": False, "changelog": False}}}
+    enabled = enabled_source_names(cfg)
+    assert "comment" not in enabled
+    assert "changelog" not in enabled
+    assert "adr" in enabled and "inline_marker" in enabled
+
+    # Unknown / stale keys (e.g. the removed code_comment) are ignored.
+    assert enabled_source_names({"decisions": {"sources": {"code_comment": False}}}) == (
+        SOURCE_NAMES
+    )
+    # Malformed sections never break extraction.
+    assert enabled_source_names({"decisions": "nope"}) == SOURCE_NAMES
+    assert enabled_source_names({"decisions": {"sources": "nope"}}) == SOURCE_NAMES

@@ -429,6 +429,14 @@ async def _persist_full_update_async(
             # Decision records: new markers + harvested decisions, supersession
             # detection, staleness recompute.
             try:
+                # One-shot drain of proposals from the removed code_comment
+                # harvest (#751). Confirmed/dismissed rows are kept.
+                from repowise.core.persistence.crud import (
+                    purge_proposed_decisions_by_source,
+                )
+
+                await purge_proposed_decisions_by_source(session, repo_id, "code_comment")
+
                 decision_dicts: list[dict] = []
                 if new_decision_markers:
                     import dataclasses as _dc

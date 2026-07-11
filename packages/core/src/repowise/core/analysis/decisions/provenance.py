@@ -45,7 +45,7 @@ SOURCE_RANK: dict[str, int] = {
     "inline_marker": 4,  # # WHY: / # DECISION: code markers
     "comment": 3,  # LLM-curated rationale prose on high-centrality code
     "readme_mining": 3,  # implicit decisions in README/docs prose
-    "code_comment": 2,  # deterministic rationale-marker comment harvest (heuristic)
+    "code_comment": 2,  # legacy rows from the removed comment harvest (#751)
     "test_name": 2,  # placeholder — behaviour asserted by a test name
     "inferred": 1,  # placeholder — purely inferred, no verbatim source
     "llm_inferred": 1,  # Phase 2 LLM-docs harvest

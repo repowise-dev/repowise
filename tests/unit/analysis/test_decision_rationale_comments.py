@@ -1,14 +1,12 @@
-"""In-code rationale harvest — the shared miner + the index-time extractor pass.
+"""In-code rationale mining — the shared comment heuristics.
 
-Source 8 (``code_comment``) mines rationale-bearing source comments into
-low-confidence ``proposed`` decision records so the architectural intent that
-lives in comments (not ADRs) enters the queryable corpus. These tests cover the
-precision guardrails (the whole risk) and the extractor wiring.
+These heuristics feed the query-time MCP live-grep miner
+(``mcp_server/_code_rationale.py``). The precision guardrails are the whole
+risk, so they get the coverage. (The index-time ``code_comment`` harvest that
+also consumed them was removed; see #751.)
 """
 
 from __future__ import annotations
-
-from types import SimpleNamespace
 
 from repowise.core.analysis.decision_extractor import DecisionExtractor
 from repowise.core.analysis.decisions.rationale_comments import (
@@ -171,66 +169,18 @@ def test_require_causal_false_admits_intent_labels():
 
 
 # ---------------------------------------------------------------------------
-# Extractor pass (Source 8)
+# Extractor file walk (shared by inline markers)
 # ---------------------------------------------------------------------------
 
-
-async def test_harvest_rationale_comments_emits_grounded_proposed_record(tmp_path):
-    (tmp_path / "client.py").write_text(_RATIONALE_PY, encoding="utf-8")
-
-    ex = DecisionExtractor(repo_path=tmp_path)  # deterministic, no provider
-    decisions = await ex.harvest_rationale_comments()
-
-    assert len(decisions) == 1
-    d = decisions[0]
-    assert d.source == "code_comment"
-    assert d.status == "proposed"
-    assert d.confidence < 0.5  # ranks below real ADRs / inline markers
-    # Verbatim grounding: decision + source_quote are the comment itself.
-    assert "starve everyone" in d.decision
-    assert d.source_quote == d.decision
-    assert d.evidence_file == "client.py"
-    assert d.affected_files == ["client.py"]
-    assert d.title  # never title-only-empty; title is the comment's first line
+_WHY_PY = (
+    "def f():\n    # WHY: upstream API double-encodes, so we special-case here\n    return 1\n"
+)
 
 
-async def test_harvest_resolves_enclosing_symbol_from_parsed_files(tmp_path):
-    (tmp_path / "client.py").write_text(_RATIONALE_PY, encoding="utf-8")
-
-    # The rationale comment sits inside call_api() (lines ~7-9). Provide a
-    # parsed-file with that symbol so the harvest can attribute it.
-    parsed = SimpleNamespace(
-        file_info=SimpleNamespace(path="client.py"),
-        symbols=[
-            SimpleNamespace(
-                start_line=6, end_line=10, name="call_api", qualified_name="client.call_api"
-            )
-        ],
-    )
-    ex = DecisionExtractor(repo_path=tmp_path, parsed_files=[parsed])
-    decisions = await ex.harvest_rationale_comments()
-
-    assert len(decisions) == 1
-    assert "client.call_api" in decisions[0].context
-
-
-async def test_code_comment_records_pass_the_gate_in_extract_all(tmp_path):
-    (tmp_path / "client.py").write_text(_RATIONALE_PY, encoding="utf-8")
-
-    ex = DecisionExtractor(repo_path=tmp_path)
-    report = await ex.extract_all()
-
-    assert report.by_source["code_comment"] == 1
-    cc = [d for d in report.decisions if d.source == "code_comment"]
-    assert len(cc) == 1
-    # Verbatim comment → the substring gate stamps it exact, never rejects it.
-    assert cc[0].verification == "exact"
-
-
-async def test_harvest_skips_untracked_files_in_a_git_repo(tmp_path):
-    """In a git checkout the harvest scopes to tracked files: untracked /
-    excluded working dirs (local-stash, scratch dumps) must not produce records.
-    Gitless repos fall back to the full walk (the tmp_path tests above)."""
+async def test_source_walk_skips_untracked_files_in_a_git_repo(tmp_path):
+    """In a git checkout the extractor's file walk scopes to tracked files:
+    untracked / excluded working dirs (local-stash, scratch dumps) must not
+    produce records. Gitless repos fall back to the full walk."""
     import subprocess
 
     def _git(*args: str) -> None:
@@ -244,20 +194,15 @@ async def test_harvest_skips_untracked_files_in_a_git_repo(tmp_path):
     _git("config", "user.email", "t@t.t")
     _git("config", "user.name", "t")
 
-    (tmp_path / "tracked.py").write_text(_RATIONALE_PY, encoding="utf-8")
+    (tmp_path / "tracked.py").write_text(_WHY_PY, encoding="utf-8")
     _git("add", "tracked.py")
     _git("commit", "-m", "add tracked")
 
-    # An untracked file carrying a textbook rationale comment.
-    (tmp_path / "untracked.py").write_text(
-        "def f():\n"
-        "    # We special-case this because the upstream API double-encodes.\n"
-        "    return 1\n",
-        encoding="utf-8",
-    )
+    # An untracked file carrying the same explicit WHY: marker.
+    (tmp_path / "untracked.py").write_text(_WHY_PY, encoding="utf-8")
 
-    ex = DecisionExtractor(repo_path=tmp_path)
-    decisions = await ex.harvest_rationale_comments()
+    ex = DecisionExtractor(repo_path=tmp_path)  # no provider → raw markers
+    decisions = await ex.scan_inline_markers()
 
     files = {d.evidence_file for d in decisions}
     assert "tracked.py" in files

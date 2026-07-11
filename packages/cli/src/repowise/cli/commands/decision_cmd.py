@@ -13,7 +13,6 @@ from repowise.cli.helpers import (
     ensure_repowise_dir,
     get_db_url_for_repo,
     resolve_command_target,
-    resolve_repo_path,
     run_async,
 )
 
@@ -24,7 +23,6 @@ def _resolve_decision_repo(path: str | None):
     Honors workspace auto-detection: in workspace mode without an explicit
     path, targets the primary repo and prints a transparency notice.
     """
-    from pathlib import Path
 
     target = resolve_command_target(path=path)
     target.notice(console, command="decision")
@@ -40,6 +38,28 @@ def _resolve_decision_repo(path: str | None):
 @click.group("decision")
 def decision_group() -> None:
     """Manage architectural decision records."""
+
+
+async def _resolve_decision_id(session, decision_id: str) -> str | None:
+    """Expand a (possibly truncated) decision id to the full stored id.
+
+    ``decision list`` prints 8-char prefixes, so every id-taking subcommand
+    accepts a unique prefix. Returns None when nothing matches; raises on an
+    ambiguous prefix.
+    """
+    from sqlalchemy import select
+
+    from repowise.core.persistence.models import DecisionRecord
+
+    result = await session.execute(
+        select(DecisionRecord.id).where(DecisionRecord.id.like(f"{decision_id}%")).limit(2)
+    )
+    ids = [row[0] for row in result.all()]
+    if len(ids) > 1:
+        raise click.ClickException(
+            f"Decision id prefix {decision_id!r} is ambiguous; use more characters."
+        )
+    return ids[0] if ids else None
 
 
 # ---------------------------------------------------------------------------
@@ -129,7 +149,7 @@ def decision_add(path: str | None) -> None:
 @click.argument("path", required=False, default=None)
 @click.option(
     "--status",
-    type=click.Choice(["proposed", "active", "deprecated", "superseded", "all"]),
+    type=click.Choice(["proposed", "active", "deprecated", "superseded", "dismissed", "all"]),
     default="all",
 )
 @click.option(
@@ -203,6 +223,7 @@ def decision_list(
         "proposed": "yellow",
         "deprecated": "red",
         "superseded": "dim",
+        "dismissed": "dim",
     }
 
     for d in decisions:
@@ -249,7 +270,8 @@ def decision_show(decision_id: str, path: str | None) -> None:
         sf = create_session_factory(engine)
 
         async with get_session(sf) as session:
-            rec = await get_decision(session, decision_id)
+            full_id = await _resolve_decision_id(session, decision_id)
+            rec = await get_decision(session, full_id) if full_id else None
 
         await engine.dispose()
         return rec
@@ -328,7 +350,8 @@ def decision_confirm(decision_id: str, path: str | None) -> None:
         sf = create_session_factory(engine)
 
         async with get_session(sf) as session:
-            rec = await update_decision_status(session, decision_id, "active")
+            full_id = await _resolve_decision_id(session, decision_id)
+            rec = await update_decision_status(session, full_id, "active") if full_id else None
 
         await engine.dispose()
         return rec
@@ -349,20 +372,20 @@ def decision_confirm(decision_id: str, path: str | None) -> None:
 @click.argument("decision_id")
 @click.argument("path", required=False, default=None)
 def decision_dismiss(decision_id: str, path: str | None) -> None:
-    """Dismiss (delete) a proposed decision."""
+    """Dismiss a proposed decision (kept as a tombstone; never re-proposed)."""
     repo_path = _resolve_decision_repo(path)
 
-    if not click.confirm(f"Delete decision {decision_id[:8]}?"):
+    if not click.confirm(f"Dismiss decision {decision_id[:8]}?"):
         console.print("[yellow]Cancelled.[/yellow]")
         return
 
-    async def _delete():
+    async def _dismiss():
         from repowise.core.persistence import (
             create_engine,
             create_session_factory,
-            delete_decision,
             get_session,
             init_db,
+            update_decision_status,
         )
 
         url = get_db_url_for_repo(repo_path)
@@ -371,14 +394,18 @@ def decision_dismiss(decision_id: str, path: str | None) -> None:
         sf = create_session_factory(engine)
 
         async with get_session(sf) as session:
-            deleted = await delete_decision(session, decision_id)
+            full_id = await _resolve_decision_id(session, decision_id)
+            rec = await update_decision_status(session, full_id, "dismissed") if full_id else None
 
         await engine.dispose()
-        return deleted
+        return rec
 
-    deleted = run_async(_delete())
-    if deleted:
-        console.print(f"[green]Decision {decision_id[:8]} dismissed.[/green]")
+    rec = run_async(_dismiss())
+    if rec is not None:
+        console.print(
+            f"[green]Decision {rec.id[:8]} dismissed[/green] "
+            "[dim](kept as a tombstone; reindexing will not re-propose it)[/dim]"
+        )
     else:
         console.print(f"[red]Decision not found: {decision_id}[/red]")
 
@@ -411,8 +438,13 @@ def decision_deprecate(decision_id: str, path: str | None, superseded_by: str | 
         sf = create_session_factory(engine)
 
         async with get_session(sf) as session:
-            rec = await update_decision_status(
-                session, decision_id, "deprecated", superseded_by=superseded_by
+            full_id = await _resolve_decision_id(session, decision_id)
+            rec = (
+                await update_decision_status(
+                    session, full_id, "deprecated", superseded_by=superseded_by
+                )
+                if full_id
+                else None
             )
 
         await engine.dispose()

@@ -478,7 +478,7 @@ repowise decision list [PATH]          # List decisions
 repowise decision show ID [PATH]       # Show full details of a decision
 repowise decision add [PATH]           # Interactively add a new decision
 repowise decision confirm ID [PATH]    # Confirm a proposed decision (set to active)
-repowise decision dismiss ID [PATH]    # Delete a proposed decision
+repowise decision dismiss ID [PATH]    # Dismiss a proposal (sticky; never re-proposed)
 repowise decision deprecate ID [PATH]  # Mark as deprecated
 repowise decision health [PATH]        # Decision health dashboard
 ```

@@ -8,8 +8,14 @@ Capture sources (see ``decision_provenance.SOURCE_RANK`` for the trust ladder):
     5. CHANGELOG mining   (keep-a-changelog Changed/Removed/Deprecated)
     6. PR / squash-body mining (commit bodies captured in git indexing)
     7. Comment archaeology (LLM rationale prose on high-centrality code)
-    8. In-code rationale harvest (deterministic, repo-wide comment markers)
     + CLI capture (manual entry)
+
+Sources can be disabled per-repo via ``decisions.sources`` in
+``.repowise/config.yaml`` (see :data:`SOURCE_NAMES` /
+:meth:`DecisionExtractor.extract_all`). The former Source 8 (repo-wide
+deterministic rationale-comment harvest, ``code_comment``) was removed: the
+query-time live-grep miner (``mcp_server/_code_rationale.py``) serves the same
+comments fresh, so persisting them only flooded the proposed queue (#751).
 
 Determinism-first: ADR/CHANGELOG are parsed structurally before any LLM call.
 Every extracted decision passes an anti-hallucination substring gate
@@ -24,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -32,10 +39,6 @@ from typing import Any
 import structlog
 
 from repowise.core.analysis.decisions.gate import apply_substring_gate
-from repowise.core.analysis.decisions.rationale_comments import (
-    CODE_EXTENSIONS,
-    harvest_file_rationale,
-)
 
 from .prompts import (
     _SYSTEM_PROMPT,
@@ -105,6 +108,35 @@ class DecisionExtractionReport:
     total_found: int
     decisions: list[ExtractedDecision]
     by_source: dict[str, int]
+
+
+# Every index-time capture source, in progress order. The CLI derives its
+# progress-bar step count from this; the config gate validates against it.
+SOURCE_NAMES: tuple[str, ...] = (
+    "inline_marker",
+    "git_archaeology",
+    "readme_mining",
+    "adr",
+    "changelog",
+    "pr",
+    "comment",
+)
+
+
+def enabled_source_names(repo_config: dict[str, Any] | None) -> tuple[str, ...]:
+    """Resolve which capture sources are enabled for a repo.
+
+    Reads the ``decisions.sources`` mapping from a loaded
+    ``.repowise/config.yaml`` dict (``{source_name: bool}``). Sources absent
+    from the mapping default to enabled; unknown keys are ignored so a stale
+    config (e.g. the removed ``code_comment``) never breaks extraction.
+    """
+    cfg = repo_config or {}
+    decisions_cfg = cfg.get("decisions") or {}
+    sources_cfg = decisions_cfg.get("sources") if isinstance(decisions_cfg, dict) else {}
+    if not isinstance(sources_cfg, dict):
+        sources_cfg = {}
+    return tuple(name for name in SOURCE_NAMES if sources_cfg.get(name, True) is not False)
 
 
 # ---------------------------------------------------------------------------
@@ -282,20 +314,6 @@ _COMMENT_RATIONALE_CUES = (
     "intentionally",
 )
 _MAX_COMMENT_NODES = 30
-
-# Deterministic in-code rationale harvest (Source 8). Unlike comment
-# archaeology (LLM, top-30 central files, leading prose only) this is a
-# repo-wide, LLM-free scan of every comment block for rationale markers. It is
-# the index-time complement to the MCP live-grep miner: the same heuristics,
-# but harvested into the queryable decision corpus rather than mined per query.
-# Capped hard so a verbose file (or repo) can't flood the corpus, and emitted
-# at low confidence / ``proposed`` so these rank below real ADRs.
-_MAX_RATIONALE_PER_FILE = 3
-# Generous safety bound for a pathological repo — not a target. Causal-marker
-# gating keeps a typical repo well under this; if it is ever hit we LOG the
-# truncation rather than silently dropping the tail.
-_MAX_RATIONALE_TOTAL = 1500
-_RATIONALE_HARVEST_CONFIDENCE = 0.3
 
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
@@ -1134,159 +1152,6 @@ class DecisionExtractor:
                 decisions.extend(result)
         return decisions
 
-    # ------------------------------------------------------------------
-    # Source 8: In-code rationale harvest (deterministic, repo-wide)
-    # ------------------------------------------------------------------
-
-    async def harvest_rationale_comments(self) -> list[ExtractedDecision]:
-        """Harvest rationale-bearing code comments into proposed decisions.
-
-        Deterministic (no LLM, no graph required): scans every indexed source
-        file for comment blocks carrying a rationale marker (``because``,
-        ``instead of``, ``workaround``, ``NOTE:`` …) and emits each as a
-        low-confidence ``proposed`` ``code_comment`` decision grounded by the
-        verbatim comment. Shares its heuristics with the MCP live-grep miner
-        (:mod:`repowise.core.analysis.decisions.rationale_comments`) so the
-        index-time and query-time paths never drift.
-
-        Hard precision guardrails live in ``harvest_file_rationale`` (marker
-        required, license / shebang headers dropped, commented-out code
-        dropped, thin comments dropped, per-file cap). The records are emitted
-        ``proposed`` at low confidence so they rank below real ADRs and stay
-        opt-in on high-signal surfaces. The substring gate is a no-op here —
-        every gated field is the verbatim comment — but the records still flow
-        through it for uniform verification stamping.
-        """
-        symbol_index = self._build_symbol_index()
-        decisions: list[ExtractedDecision] = []
-        truncated = False
-
-        for file_path in self._iter_source_files():
-            if len(decisions) >= _MAX_RATIONALE_TOTAL:
-                truncated = True
-                break
-            ext = file_path.suffix.lower().lstrip(".")
-            if ext not in CODE_EXTENSIONS:
-                continue
-            if not file_path.is_file():
-                continue
-            try:
-                text = file_path.read_text(encoding="utf-8", errors="replace")
-            except (OSError, UnicodeDecodeError):
-                continue
-
-            # require_causal=False: the guardrail wants any causal/INTENT
-            # connective (the broad RATIONALE_MARKERS set), not only textbook
-            # causal connectives. The canonical T4 comment that motivated this
-            # feature (tool_symbol.py "…can never blow up… round-trip count is
-            # what dominates token cost") is phrased with an intent marker, not
-            # "because"/"so that" — a causal-only gate would drop the very
-            # comment this exists to catch. Precision is held by the structural
-            # guardrails (no docstrings/license/code/thin + per-file cap).
-            harvested = harvest_file_rationale(
-                text,
-                ext,
-                max_per_file=_MAX_RATIONALE_PER_FILE,
-                require_causal=False,
-            )
-            if not harvested:
-                continue
-
-            try:
-                rel_path = str(file_path.relative_to(self._repo_path)).replace("\\", "/")
-            except ValueError:
-                rel_path = str(file_path)
-
-            for hc in harvested:
-                if len(decisions) >= _MAX_RATIONALE_TOTAL:
-                    truncated = True
-                    break
-                symbol = self._enclosing_symbol(symbol_index, rel_path, hc.start_line)
-                if symbol:
-                    context = f"In `{symbol}` ({rel_path}:{hc.start_line})"
-                else:
-                    context = f"{rel_path}:{hc.start_line}"
-                decisions.append(
-                    ExtractedDecision(
-                        # Title is the model-free one-line summary; ungated, so
-                        # always survives. decision/source_quote are the verbatim
-                        # comment, so the gate stamps them ``exact``.
-                        title=self._comment_title(hc.text),
-                        context=context,
-                        decision=hc.text,
-                        source="code_comment",
-                        status="proposed",
-                        confidence=_RATIONALE_HARVEST_CONFIDENCE,
-                        evidence_file=rel_path,
-                        evidence_line=hc.start_line,
-                        affected_files=[rel_path],
-                        affected_modules=self._infer_modules([rel_path]),
-                        tags=self._infer_tags(hc.text),
-                        source_quote=hc.text,
-                        source_text=hc.text,
-                    )
-                )
-
-        if truncated:
-            logger.warning(
-                "decision_extractor.code_comment_harvest_truncated",
-                cap=_MAX_RATIONALE_TOTAL,
-                note="rationale-comment harvest hit its safety cap; tail dropped",
-            )
-        return decisions
-
-    @staticmethod
-    def _comment_title(text: str) -> str:
-        """A short, single-line title for a harvested comment."""
-        first = text.strip().splitlines()[0] if text.strip() else text
-        first = re.sub(r"\s+", " ", first).strip()
-        return _truncate_title(first, 100)
-
-    def _build_symbol_index(self) -> dict[str, list[tuple[int, int, str]]]:
-        """Map each file's rel path → its symbols' ``(start, end, label)``.
-
-        Built once per harvest from ``parsed_files`` (empty when unavailable).
-        ``label`` is the qualified name when present, else the bare name.
-        """
-        index: dict[str, list[tuple[int, int, str]]] = {}
-        for pf in self._parsed_files:
-            fi = getattr(pf, "file_info", None)
-            path = getattr(fi, "path", None)
-            symbols = getattr(pf, "symbols", None)
-            if not path or not symbols:
-                continue
-            rel = str(path).replace("\\", "/")
-            entries: list[tuple[int, int, str]] = []
-            for sym in symbols:
-                start = getattr(sym, "start_line", None)
-                end = getattr(sym, "end_line", None)
-                if not isinstance(start, int) or not isinstance(end, int):
-                    continue
-                label = getattr(sym, "qualified_name", "") or getattr(sym, "name", "")
-                if label:
-                    entries.append((start, end, label))
-            if entries:
-                index[rel] = entries
-        return index
-
-    @staticmethod
-    def _enclosing_symbol(
-        index: dict[str, list[tuple[int, int, str]]],
-        rel_path: str,
-        line: int,
-    ) -> str | None:
-        """Return the innermost symbol whose line range contains ``line``."""
-        entries = index.get(rel_path)
-        if not entries:
-            return None
-        best: tuple[int, str] | None = None  # (span_width, label) — smallest wins
-        for start, end, label in entries:
-            if start <= line <= end:
-                width = end - start
-                if best is None or width < best[0]:
-                    best = (width, label)
-        return best[1] if best else None
-
     # Above this node count, skip the iterative PageRank solve and use degree
     # centrality (O(nodes)) instead — comment archaeology only needs a rough
     # "most depended-on files" ranking, not exact PageRank, and the iterative
@@ -1540,13 +1405,21 @@ class DecisionExtractor:
     # Main entry point
     # ------------------------------------------------------------------
 
-    async def extract_all(self, *, on_step: Any | None = None) -> DecisionExtractionReport:
+    async def extract_all(
+        self,
+        *,
+        on_step: Any | None = None,
+        enabled_sources: Collection[str] | None = None,
+    ) -> DecisionExtractionReport:
         """Run all capture sources in parallel. LLM failures are caught per-source.
 
         *on_step* is an optional callable invoked with the source name as each
-        sub-extractor finishes (``inline_marker``, ``git_archaeology``,
-        ``readme_mining``, ``adr``, ``changelog``, ``pr``, ``comment``,
-        ``code_comment``). Used by the CLI to surface per-source progress.
+        sub-extractor finishes (the names in :data:`SOURCE_NAMES`). Used by the
+        CLI to surface per-source progress.
+
+        *enabled_sources* restricts the run to the named sources (``None`` runs
+        everything). Callers derive it from ``decisions.sources`` in
+        ``.repowise/config.yaml`` via :func:`enabled_source_names`.
 
         Every extracted decision is then put through the anti-hallucination
         substring gate (:meth:`_apply_substring_gate`) before being returned —
@@ -1567,7 +1440,7 @@ class DecisionExtractor:
                     on_step(name)
 
         # (source name, bound coroutine factory) — order is the progress order.
-        sources: list[tuple[str, Any]] = [
+        all_sources: list[tuple[str, Any]] = [
             ("inline_marker", self.scan_inline_markers),
             ("git_archaeology", self.mine_git_archaeology),
             ("readme_mining", self.mine_readme_docs),
@@ -1575,8 +1448,15 @@ class DecisionExtractor:
             ("changelog", self.mine_changelog),
             ("pr", self.mine_pr_bodies),
             ("comment", self.mine_comment_archaeology),
-            ("code_comment", self.harvest_rationale_comments),
         ]
+        if enabled_sources is None:
+            sources = all_sources
+        else:
+            enabled = set(enabled_sources)
+            sources = [(name, fn) for name, fn in all_sources if name in enabled]
+            disabled = [name for name, _fn in all_sources if name not in enabled]
+            if disabled:
+                logger.info("decision_extractor.sources_disabled", sources=disabled)
 
         logger.info("decision_extractor.extract_all_start")
         results = await asyncio.gather(*[_safe_source(name, fn) for name, fn in sources])
