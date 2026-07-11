@@ -24,6 +24,10 @@ Resolution strategy (in order):
   1. Exact match on WikiSymbol.symbol_id (the canonical "{path}::{name}" key)
   2. Exact match on (file_path, qualified_name) — supports class.method form
   3. Exact match on (file_path, name) — supports unqualified names
+  4. Suffix match — a bare filename or partial path ("answer.py::get_answer")
+     resolves against any file whose path ends with that segment, on the leaf
+     name; mirrors get_context's basename ladder. A total miss returns
+     ``suggestions`` (real path-qualified ids) instead of a bare "not found".
 
 The tool also resolves **omission refs**: a ``symbol_id`` of the form
 ``"repowise#<12-hex>"`` (from a ``[repowise#<ref>: ...]`` truncation marker)
@@ -44,7 +48,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import WikiSymbol
@@ -448,7 +452,59 @@ async def _resolve_symbol(session, repo_id: str, symbol_id: str) -> list[WikiSym
         if rows:
             return _order_candidates(rows, file_path)
 
+    # 4. Suffix file-path match — the caller passed a bare filename or partial
+    #    path ("answer.py::get_answer") instead of the full indexed path.
+    #    Resolve against any file whose path ends with that segment on a "/"
+    #    boundary, on the bare leaf name. Mirrors get_context's basename ladder
+    #    so both tools accept the same shorthand instead of a dead "not found".
+    if file_path and name:
+        from repowise.server.mcp_server.tool_context.targets import _escape_like
+
+        esc = _escape_like(file_path.strip("/").replace("\\", "/"))
+        bare = _bare_name(name)
+        res = await session.execute(
+            select(WikiSymbol).where(
+                WikiSymbol.repository_id == repo_id,
+                WikiSymbol.name == bare,
+                or_(
+                    WikiSymbol.file_path == file_path.strip("/").replace("\\", "/"),
+                    WikiSymbol.file_path.like(f"%/{esc}", escape="\\"),
+                ),
+            )
+        )
+        rows = list(res.scalars().all())
+        if rows:
+            return _order_candidates(rows, file_path)
+
     return []
+
+
+async def _symbol_suggestions(session, repo_id: str, symbol_id: str, exclude_spec) -> list[str]:
+    """Concrete symbol_ids to retry when a lookup misses entirely.
+
+    The caller usually had the right leaf name but a wrong or partial path.
+    Match that name across every file and hand back real ids (path-qualified)
+    the agent can pass straight back to get_symbol — a bare "not found" would
+    otherwise send it to get_context or a whole-file Read.
+    """
+    _, name = _parse_symbol_id(symbol_id)
+    if not name:
+        return []
+    bare = _bare_name(name)
+    res = await session.execute(
+        select(WikiSymbol.symbol_id, WikiSymbol.file_path)
+        .where(WikiSymbol.repository_id == repo_id, WikiSymbol.name == bare)
+        .limit(20)
+    )
+    out: list[str] = []
+    seen: set[str] = set()
+    for sid, fpath in res.all():
+        if sid and sid not in seen and not is_excluded(fpath, exclude_spec):
+            seen.add(sid)
+            out.append(sid)
+            if len(out) >= 5:
+                break
+    return out
 
 
 def _read_file_text(repo_path: Path, file_path: str) -> str | None:
@@ -696,6 +752,22 @@ async def get_symbol(
                             targets=[file_part],
                         ),
                     }
+        async with get_session(ctx.session_factory) as session:
+            suggestions = await _symbol_suggestions(session, repository.id, symbol_id, exclude_spec)
+        if suggestions:
+            return {
+                "symbol_id": symbol_id,
+                "error": (
+                    f"Symbol not found: {symbol_id!r}. A symbol with this name "
+                    "exists at the path(s) below — retry with one of these "
+                    "exact symbol_ids."
+                ),
+                "suggestions": suggestions,
+                "_meta": _build_meta(
+                    timing_ms=(time.perf_counter() - t0) * 1000,
+                    repository=repository,
+                ),
+            }
         return {
             "symbol_id": symbol_id,
             "error": (

@@ -134,6 +134,59 @@ async def test_unambiguous_lookup_is_unchanged_shape(setup_mcp, repo_on_disk, se
     assert "    10\t    return x + 1" in result["source"]
 
 
+async def _add_alpha_row(session):
+    from sqlalchemy import select
+
+    from repowise.core.persistence.models import Repository, WikiSymbol
+
+    repo = (await session.execute(select(Repository))).scalars().first()
+    session.add(
+        WikiSymbol(
+            id="alpha1",
+            repository_id=repo.id,
+            file_path="pkg/mod.py",
+            symbol_id="pkg/mod.py::alpha",
+            name="alpha",
+            qualified_name="alpha",
+            kind="function",
+            signature="def alpha(x)",
+            start_line=9,
+            end_line=10,
+            language="python",
+        )
+    )
+    await session.flush()
+
+
+@pytest.mark.asyncio
+async def test_filename_only_id_resolves_via_suffix(setup_mcp, repo_on_disk, session):
+    # A bare filename ("mod.py::alpha") must resolve to the full indexed path
+    # via the suffix ladder, not dead-end on "not found" (finding 2).
+    from repowise.server.mcp_server import get_symbol
+
+    await _add_alpha_row(session)
+    result = await get_symbol("mod.py::alpha")
+
+    assert result.get("error") is None
+    assert result["symbol_id"] == "pkg/mod.py::alpha"
+    assert result["verified"] is True
+    assert "     9\tdef alpha(x):" in result["source"]
+
+
+@pytest.mark.asyncio
+async def test_total_miss_returns_symbol_id_suggestions(setup_mcp, repo_on_disk, session):
+    # A wrong path with a real leaf name returns retryable path-qualified ids
+    # instead of a bare "not found".
+    from repowise.server.mcp_server import get_symbol
+
+    await _add_alpha_row(session)
+    result = await get_symbol("nope/wrong.py::alpha")
+
+    assert "source" not in result
+    assert result["suggestions"] == ["pkg/mod.py::alpha"]
+    assert "retry" in result["error"].lower()
+
+
 @pytest.mark.asyncio
 async def test_range_read_source_is_numbered(setup_mcp, repo_on_disk):
     from repowise.server.mcp_server import get_symbol
