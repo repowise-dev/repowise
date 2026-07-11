@@ -175,3 +175,34 @@ async def test_missing_file_still_errors(setup_mcp, repo_on_disk):
 
     result = await get_symbol("pkg/ghost.py::nothing")
     assert "error" in result
+
+
+@pytest.mark.asyncio
+async def test_id_is_accepted_as_alias_for_symbol_id(setup_mcp, repo_on_disk):
+    """The tool table documents this tool as ``get_symbol(id)``, so ``id=`` is
+    the natural call. It must resolve exactly like ``symbol_id=`` rather than
+    raising a pydantic 'field required' error (a real, recurring footgun that
+    teaches the agent to abandon the server)."""
+    from repowise.server.mcp_server import get_symbol
+
+    aliased = await get_symbol(id="pkg/mod.py:5-6")
+    assert aliased.get("error") is None
+    assert aliased["start_line"] == 5
+    assert "_DEFAULT_MIN_COUNT = 2" in aliased["source"]
+
+
+@pytest.mark.asyncio
+async def test_symbol_id_wins_when_both_given(setup_mcp, repo_on_disk):
+    from repowise.server.mcp_server import get_symbol
+
+    result = await get_symbol("pkg/mod.py:5-6", id="pkg/ghost.py:1-2")
+    assert result.get("error") is None
+    assert result["start_line"] == 5
+
+
+@pytest.mark.asyncio
+async def test_neither_id_nor_symbol_id_returns_shaped_error(setup_mcp, repo_on_disk):
+    from repowise.server.mcp_server import get_symbol
+
+    result = await get_symbol()
+    assert "required" in (result.get("error") or "").lower()

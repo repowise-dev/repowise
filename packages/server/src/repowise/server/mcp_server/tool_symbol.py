@@ -656,10 +656,11 @@ async def _render_ambiguous(
 
 @mcp.tool()
 async def get_symbol(
-    symbol_id: str,
+    symbol_id: str | None = None,
     context_lines: int = 0,
     repo: str | None = None,
     query: str | None = None,
+    id: str | None = None,
 ) -> dict:
     """Read one function/class/constant with live-verified line bounds.
 
@@ -682,12 +683,23 @@ async def get_symbol(
         context_lines: extra lines before/after (0-50).
         repo: usually omitted.
         query: omission refs only — regex/substring filter on lines.
+        id: accepted alias for ``symbol_id`` — the tool table documents this
+            tool as ``get_symbol(id)``, so ``id=`` is the natural call and is
+            forgiven here rather than met with a hard argument error.
     """
     if repo == "all":
         return _unsupported_repo_all("get_symbol")
     ctx = await _resolve_repo_context(repo)
 
     t0 = time.perf_counter()
+    # ``id`` is an alias for ``symbol_id``. The CLAUDE.md tool table and the
+    # tool description both refer to this tool as ``get_symbol(id)``, so agents
+    # naturally call it with ``id=`` and hit a pydantic "field required" error
+    # on ``symbol_id`` — one isError early teaches the agent to abandon the
+    # server (agent-context doctrine). Accept both; ``symbol_id`` wins when both
+    # are given.
+    if not symbol_id and id:
+        symbol_id = id
     if not symbol_id or not symbol_id.strip():
         return {
             "symbol_id": symbol_id,
