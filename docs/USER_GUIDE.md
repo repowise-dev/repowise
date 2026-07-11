@@ -834,93 +834,19 @@ Once connected, your AI editor can:
 
 ## Proactive Context Enrichment (Hooks)
 
-Repowise installs lightweight AI-agent hooks during editor setup. Claude Code hooks are installed during `repowise init`; Codex hooks are written by `repowise init --codex`.
+Repowise installs lightweight AI-agent hooks during editor setup so graph, git,
+health, and decision context reaches your agent (and your index stays fresh) with
+zero effort. They fire from editor lifecycle and tool-use events, never call an
+LLM or the network, and fail silently.
 
-Unlike MCP tools, hooks are passive reminders that fire from editor lifecycle events and tool-use events. They do not call an LLM or the network.
+The full inventory, the SessionStart freshness + relevant-decisions block, the
+PostToolUse Grep/Glob enrichment, git/edit freshness, read-intelligence, and
+edit-time "governed by" notices, the opt-in distill command-rewrite hook, the
+Codex hooks, and the exact `settings.json` entries, lives in a dedicated guide:
+**[HOOKS.md →](HOOKS.md)**.
 
-### How it works
-
-#### Claude Code PostToolUse Hook, Grep/Glob enrichment
-
-When Claude Code runs a broad or zero-result `Grep` or `Glob`, repowise can query the local `wiki.db` and append focused context:
-
-| Field | What it tells the agent |
-|-------|------------------------|
-| **Symbols** | Functions, classes, and methods defined in the file |
-| **Imported by** | Which files depend on this file (reverse dependency) |
-| **Depends on** | What this file imports (forward dependency) |
-| **Git signals** | Hotspot status, bus factor, and owner |
-
-No LLM calls, no network requests, pure local SQLite queries against `wiki.db`.
-
-#### PostToolUse Hook, Git/edit freshness detection
-
-After a successful `git commit`, `git merge`, `git rebase`, `git cherry-pick`, or `git pull`, repowise checks whether the wiki is stale by comparing `HEAD` against the last indexed commit in `.repowise/state.json`. Codex edit hooks also remind the agent that indexed context may be stale after edits.
-
-```
-Wiki is stale, run `repowise update` to refresh
-```
-
-This ensures agents are never silently working from outdated documentation.
-
-#### Decision injection, relevance-ranked
-
-The decision layer reaches the agent at the two moments it matters, with no LLM calls and indexed SQLite lookups only:
-
-- **Session start.** Repowise scores the repo's active decisions against the session's likely working set: dirty and staged files, files changed on the branch vs main, the previous session's edited files, and branch-name tokens, expanded one hop through import edges and co-change partners. The top few land in a compact block under a hard ~400-token cap. Nothing clears the relevance floor, nothing is injected; decisions are never injected just for being high-confidence. Repo-wide rules mined from your own corrections (see session decision mining in the CLI reference) are the exception: they apply everywhere, so they compete at a flat base relevance.
-- **Edit time.** When the agent edits a file governed by a decision (via `decision_node_links`), it gets a one-line "governed by" notice with the rationale, once per session per decision and at most a few times per session.
-
-Injected decision ids are recorded locally in `.repowise/sessions/sessions.db`. On the next `repowise update`, the session miner checks whether the guidance was followed or contradicted by your corrections in that session, relaxing or bumping the decision's staleness accordingly, so guidance that stops being true stops being injected.
-
-### Configuration
-
-Claude Code hooks are written to `~/.claude/settings.json` automatically during `repowise init`. Codex hooks are written to `.codex/hooks.json` by `repowise init --codex`.
-
-| Hook type | Matcher | Action |
-|-----------|---------|--------|
-| Claude `SessionStart` | `startup\|resume\|clear` | Inject live index freshness (current / behind with a changed-file count / update in progress), the core-tool trust rule, and the standing decisions relevant to the session's working set |
-| Claude `PostToolUse` | `Bash\|PowerShell\|Grep\|Glob\|Read\|Edit\|Write` | Check git freshness, add search rescue/triage context, emit Read-intelligence notices, and surface the governing decision when a governed file is edited |
-| Codex `SessionStart` / `UserPromptSubmit` | lifecycle | Remind Codex to use Repowise MCP tools |
-| Codex `PostToolUse` | `Bash`, `apply_patch\|Edit\|Write` | Check git/edit freshness |
-
-Both hooks call the `repowise-augment` console script, a standalone, import-isolated entry point that does not load the full `repowise` CLI. This keeps cold start under the 500ms target and ensures a broken environment (missing optional dep, corrupt DB, etc.) never crashes the agent: any failure exits 0 silently. The equivalent `repowise augment` Click subcommand still exists for manual debugging.
-
-### CLI command
-
-```bash
-repowise-augment    # Not meant to be called manually, invoked by AI-agent hooks
-repowise augment    # Equivalent Click subcommand, useful for manual debugging
-```
-
-### Sample enrichment output
-
-When an agent runs `Grep` or `Glob`, it sees its normal results followed by context like this:
-
-```
-[repowise] 2 related file(s) found:
-
-  packages/core/.../page_generator.py
-    Symbols: function:_now_iso, class:PageGenerator, method:__init__
-    Imported by: init_cmd.py, update_cmd.py, generation/__init__.py
-    Depends on: context_assembler.py, base.py, models.py
-    Git: HOTSPOT, bus-factor=1, owner=RaghavChamadiya
-
-  packages/cli/.../init_cmd.py
-    Symbols: function:_resolve_embedder, function:_register_mcp_with_claude
-    Imported by: reindex_cmd.py, search_cmd.py, main.py
-    Depends on: update_cmd.py, cost_estimator.py
-```
-
-This means an agent that searches for `"PageGenerator"` immediately knows which files depend on it, what it depends on, and that it is a hotspot, without making a separate MCP tool call.
-
-### Relationship to MCP tools
-
-Hooks and MCP tools are complementary:
-
-- **Hooks**, passive, automatic, zero agent effort. Fire on every search regardless of whether the agent is thinking about graph context.
-- **MCP tools**, active, on-demand, richer output. Used when the agent needs full documentation, risk assessment, architectural decisions, or dependency tracing.
-
-For most day-to-day coding tasks, hooks provide sufficient context automatically. MCP tools remain the right choice for deeper investigation.
+The post-commit git hook that auto-syncs the wiki is documented under
+[`repowise hook`](#repowise-hook) above and in [AUTO_SYNC.md](AUTO_SYNC.md).
 
 ---
 

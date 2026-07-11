@@ -28,6 +28,7 @@
 
 <p align="center"><sub>
   <a href="#the-five-layers">Layers</a> ·
+  <a href="#learns-from-how-you-actually-use-it">Learns from you</a> ·
   <a href="#-code-health-the-layer-nobody-else-nails">Code Health</a> ·
   <a href="#refactoring-intelligence">Refactoring</a> ·
   <a href="#benchmarks">Benchmarks</a> ·
@@ -96,6 +97,31 @@ dead code, CLAUDE.md generation): **[docs/INTELLIGENCE_LAYERS.md →](docs/INTEL
 
 ---
 
+## Learns from how you actually use it
+
+repowise doesn't just index once and go stale, it watches how you and your agent
+work in the repo and tilts itself toward that. All local, all deterministic, no
+extra LLM calls, and it feeds back through the [hooks](docs/HOOKS.md) at zero
+agent effort:
+
+- **Decisions mined from your own sessions.** repowise reads your Claude Code
+  transcripts for the corrections and conventions you actually enforce ("new
+  endpoints go through the auth middleware", "use the shared HTTP client, not
+  raw requests"), turns the durable ones into tracked decisions, then delivers
+  the relevant ones back: a compact block at session start, and a one-line
+  *"governed by"* notice the moment your agent edits a file that decision
+  governs. If a later session contradicts a decision, it stops being injected.
+- **Docs that follow your questions.** The wiki generation budget tilts toward
+  the modules you and your agent ask about most (from `get_answer` and
+  `search_codebase` history), so depth lands where you actually work instead of
+  spreading evenly. Silent and byte-identical on a fresh repo with no history.
+
+It is a flywheel: **use it → it mines what mattered → it delivers that back on
+the next session.** How the hooks carry it: **[docs/HOOKS.md →](docs/HOOKS.md)** ·
+decision layer: **[docs/INTELLIGENCE_LAYERS.md →](docs/INTELLIGENCE_LAYERS.md)**
+
+---
+
 ## ★ Code Health: the layer nobody else nails
 
 Code health is repowise's deepest differentiator: the one layer with no real
@@ -108,27 +134,26 @@ refactoring plan your agent can execute.
 <img src=".github/assets/health-loop.svg" alt="repowise code-health loop: 25 deterministic markers fan into three signals (defect risk, maintainability, performance), the graph and git history locate where risk concentrates, and refactoring intelligence emits concrete plans (Extract Class, Extract Helper, Move Method, Break Cycle, Split File, Extract Method) your agent executes" width="100%" />
 </div>
 
-repowise scores **every file 1–10** from **25 deterministic markers**:
-McCabe complexity, deep nesting, brain methods, class cohesion (LCOM4), god
-classes, native Rabin–Karp clone detection, untested hotspots, function-level
-churn, code-age volatility, ownership dispersion, change entropy, co-change
-scatter, prior-defect history, test-quality smells, and more.
+repowise scores **every file 1–10** from **25 deterministic markers**, McCabe
+complexity, brain methods, class cohesion (LCOM4), god classes, native
+Rabin–Karp clone detection, untested hotspots, change entropy, prior-defect
+history, and more, split into **three signals**:
 
-**Three signals, one index.** The headline 1–10 is **defect risk**: the
-defect-calibrated, bug-predictive score in the table below. From the same
-marker stream, repowise surfaces two co-equal companion views:
-**maintainability** (cohesion, brain methods, DRY and god-class smells that
-raise change-cost without predicting bugs) and **performance** (static N+1 /
-I/O-in-loop risk, followed across files through the call graph: file-local
-linters found 0 of those cross-function cases on a 12k-file benchmark where
-repowise surfaced 557). They are separate lenses, never blended into the defect
+- **Defect risk** is the headline 1–10: the defect-calibrated, bug-predictive
+  score in the table below.
+- **Maintainability** (cohesion, brain methods, DRY and god-class smells) flags
+  what raises change-cost without predicting bugs.
+- **Performance** (static N+1 / I/O-in-loop risk) is followed across files
+  through the call graph: file-local linters found 0 of those cross-function
+  cases on a 12k-file benchmark where repowise surfaced 557.
+
+The companion signals are separate lenses, never blended into the defect
 headline, so the bug-predictive number stays clean.
 
-> **Zero LLM calls. Zero cloud requirement. Zero new runtime dependencies.**
-> Pure Python over tree-sitter + git data, finishing in **under 30 seconds** on
-> a 3,000-file repo. The marker weights are **calibrated against a real defect
-> corpus, not hand-tuned**; only the learned constants ship and the runtime
-> stays fully deterministic.
+> **Zero LLM calls, zero cloud, zero new runtime dependencies.** Pure Python
+> over tree-sitter + git data, **under 30 seconds** on a 3,000-file repo. The
+> marker weights are **calibrated against a real defect corpus, not hand-tuned**;
+> only the learned constants ship and the runtime stays fully deterministic.
 
 ```bash
 repowise health                       # KPIs + lowest-scoring files
@@ -163,26 +188,23 @@ User guide & per-marker reference: **[docs/CODE_HEALTH.md](docs/CODE_HEALTH.md)*
 
 ### Refactoring intelligence
 
-A health score tells you a file is in trouble. Every other tool stops there, or
-prints the same static sentence for every god class in every repo. repowise names
-the **specific** fix, computed deterministically from the graph, the class model,
-and git co-change: **Extract Class**, **Extract Helper**, **Move Method**,
-**Break Cycle**, **Split File**, and **Extract Method**. Each plan names the
-exact methods, edges, or symbols that move, and carries its **blast radius**
-(the callers and co-changing files that must move with it). Extract Method goes
-deepest: an intra-procedural dataflow pass (CFG + def/use + reaching
-definitions) finds the exact line span to lift out of an oversized method and
-infers the helper's parameters and return value, so the plan is
-behavior-preserving by construction. Ranking is **graph-aware** (`impact ×
-call-graph centrality × blast radius`), so a fix on a central hub outranks the
-same fix on a leaf. That is the wedge: CodeScene's AI refactoring stays within a
-single function, where repowise names the cross-file move and the dependents it
-ripples to.
+A health score tells you a file is in trouble; every other tool stops there, or
+prints the same static sentence for every god class. repowise names the
+**specific** fix, computed deterministically from the graph, the class model, and
+git co-change: **Extract Class**, **Extract Helper**, **Move Method**, **Break
+Cycle**, **Split File**, **Extract Method**. Each plan names the exact methods,
+edges, or symbols that move and carries its **blast radius** (the callers and
+co-changing files that must move with it), ranked **graph-aware** (`impact ×
+call-graph centrality × blast radius`) so a fix on a central hub outranks the
+same fix on a leaf. That is the wedge: CodeScene's AI refactoring stays inside a
+single function; repowise names the cross-file move and the dependents it ripples
+to. Extract Method goes deepest, an intra-procedural dataflow pass (CFG + def/use
++ reaching definitions) lifts the exact line span and infers the helper's
+signature, behavior-preserving by construction.
 
 The deterministic plan is the product; an optional LLM step (never in the
-indexing path, only on explicit request) expands any plan into generated code
-plus a unified diff, fed the graph and co-change context a bare codegen tool
-throws away.
+indexing path, only on request) expands any plan into generated code plus a
+unified diff, fed the graph and co-change context a bare codegen tool throws away.
 
 ```bash
 repowise health --refactoring-targets    # ranked plans; get_health(include=["refactoring"]) over MCP
@@ -451,7 +473,7 @@ Ready for the full picture? Run `repowise init --provider …` for the generated
 semantic search, or skip key management entirely with the hosted tier at
 [repowise.dev](https://www.repowise.dev). Full walkthrough: [docs/QUICKSTART.md](docs/QUICKSTART.md).
 
-**Docs:** [Quickstart](docs/QUICKSTART.md) · [User Guide](docs/USER_GUIDE.md) · [CLI Reference](docs/CLI_REFERENCE.md) · [Codex](docs/CODEX.md) · [MCP Tools](docs/MCP_TOOLS.md) · [Distill](docs/DISTILL.md) · [Workspaces](docs/WORKSPACES.md) · [Auto-Sync](docs/AUTO_SYNC.md) · [Upgrading](docs/UPGRADING.md) · [Config](docs/CONFIG.md)
+**Docs:** [Quickstart](docs/QUICKSTART.md) · [User Guide](docs/USER_GUIDE.md) · [CLI Reference](docs/CLI_REFERENCE.md) · [Codex](docs/CODEX.md) · [MCP Tools](docs/MCP_TOOLS.md) · [Hooks](docs/HOOKS.md) · [Distill](docs/DISTILL.md) · [Workspaces](docs/WORKSPACES.md) · [Auto-Sync](docs/AUTO_SYNC.md) · [Upgrading](docs/UPGRADING.md) · [Config](docs/CONFIG.md)
 
 ---
 
@@ -491,6 +513,7 @@ Worked example (*"Add rate limiting to all API endpoints"* in 5 calls instead of
 | MCP server for AI agents | ✅ 9 tools | ❌ | ✅ 3 tools | ✅ | ✅ |
 | Proactive agent hooks | ✅ Claude + Codex hooks | ❌ | ❌ | ❌ | ❌ |
 | Auto-generated AI instructions (`CLAUDE.md`, `AGENTS.md`) | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Learns from your usage (session-mined decisions, demand-weighted docs) | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Code health score (1–10) | ✅ 25 markers | ❌ | ❌ | ❌ | ✅ 25–30 |
 | Brain Method / LCOM4 / god class | ✅ | ❌ | ❌ | ❌ | ✅ |
 | Test-coverage intelligence | ✅ LCOV/Cobertura/Clover | ❌ | ❌ | ❌ | ❌ |
