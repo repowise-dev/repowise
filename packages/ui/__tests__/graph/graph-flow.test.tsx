@@ -102,4 +102,37 @@ describe("GraphFlow shell", () => {
     fireEvent.click(screen.getByRole("radio", { name: "Dead" }));
     expect(screen.getByText("No dead files in this repo")).toBeTruthy();
   });
+
+  it("opens the flow picker on the module overview and jumps to the full graph on selection", () => {
+    const onViewModeChange = vi.fn();
+    render(
+      <GraphFlow
+        {...baseProps}
+        initialViewMode="module"
+        onViewModeChange={onViewModeChange}
+        executionFlows={{
+          total_entry_points: 1,
+          flows: [
+            {
+              entry_point: "app.py::main",
+              entry_point_name: "main",
+              entry_point_score: 1,
+              trace: ["app.py::main", "core.py::run"],
+              depth: 1,
+              crosses_community: false,
+              communities_visited: [0],
+            },
+          ],
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Execution flows" }));
+    expect(screen.getByText("Execution Flows")).toBeTruthy();
+
+    // Selecting a flow from the module overview switches to the file-level
+    // graph so the trace can actually be highlighted.
+    fireEvent.click(screen.getByText("main"));
+    expect(onViewModeChange).toHaveBeenCalledWith("full");
+  });
 });
