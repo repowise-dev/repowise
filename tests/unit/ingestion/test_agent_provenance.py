@@ -27,7 +27,9 @@ from repowise.core.ingestion.git_indexer.records import _CommitRec
 CLF = AgentProvenanceClassifier()
 
 
-def _classify(an="Dev", ae="dev@x.com", cn="Dev", ce="dev@x.com", msg="feat: thing", note_agent=None):
+def _classify(
+    an="Dev", ae="dev@x.com", cn="Dev", ce="dev@x.com", msg="feat: thing", note_agent=None
+):
     return CLF.classify(an, ae, cn, ce, msg, note_agent=note_agent)
 
 
@@ -99,6 +101,38 @@ def test_coauthor_trailer_is_tier3() -> None:
     msg = "fix: handle null\n\nCo-authored-by: Claude Opus 4.5 <noreply@anthropic.com>"
     prov = _classify(msg=msg)
     assert (prov.agent, prov.autonomy_tier, prov.channel) == ("claude", 3, "coauthor_trailer")
+
+
+def test_coauthor_trailer_with_bot_noreply_email_is_tier3() -> None:
+    """A co-author trailer whose e-mail is a known bot noreply identity is
+    matched through the identity registry — no explicit pattern needed."""
+    msg = (
+        "chore: bump deps\n\n"
+        "Co-authored-by: gemini-code-assist[bot] "
+        "<176961590+gemini-code-assist[bot]@users.noreply.github.com>"
+    )
+    prov = _classify(msg=msg)
+    assert (prov.agent, prov.autonomy_tier, prov.channel) == ("gemini", 3, "coauthor_trailer")
+
+
+def test_coauthor_trailer_with_vendor_domain_email_is_tier3() -> None:
+    msg = "fix: retry\n\nCo-authored-by: Codex <codex@openai.com>"
+    prov = _classify(msg=msg)
+    assert (prov.agent, prov.autonomy_tier, prov.channel) == ("codex", 3, "coauthor_trailer")
+
+
+def test_agent_local_part_at_vendor_domain_author_is_tier1() -> None:
+    prov = _classify(an="Claude", ae="claude-sonnet@anthropic.com")
+    assert (prov.agent, prov.autonomy_tier, prov.channel) == ("claude", 1, "service_email")
+
+
+def test_human_at_vendor_domain_is_unlabelled() -> None:
+    """The vendor domain alone must never label a commit — the local part has
+    to name the agent."""
+    prov = _classify(an="Jane Doe", ae="jane@anthropic.com")
+    assert prov.agent is None
+    msg = "fix: typo\n\nCo-authored-by: Jane Doe <jane@anthropic.com>"
+    assert _classify(msg=msg).agent is None
 
 
 def test_tier_precedence_footer_beats_trailer() -> None:

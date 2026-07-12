@@ -118,7 +118,14 @@ _AGENT_ALIASES: list[tuple[str, str]] = [
 _SERVICE_EMAILS: dict[str, tuple[str, int]] = {
     "cursoragent@cursor.com": ("cursor", 1),
     "devin-ai-integration[bot]@users.noreply.github.com": ("devin", 1),
+    "noreply@anthropic.com": ("claude", 1),
 }
+
+# Agent-vendor e-mail domains. A domain alone is never enough — real humans
+# work at these companies — so an identity here counts only when the LOCAL
+# PART itself resolves to an agent via :data:`_AGENT_ALIASES`:
+# ``claude-sonnet@anthropic.com`` matches, ``jane@anthropic.com`` never does.
+_AGENT_EMAIL_DOMAINS = frozenset({"anthropic.com", "openai.com", "cursor.com", "devin.ai"})
 
 # Commit-message footers → agent (exact service phrases only).
 _FOOTER_PATTERNS: list[tuple[str, str]] = [
@@ -157,6 +164,13 @@ _COAUTHOR_PATTERNS: list[tuple[str, str]] = [
 ]
 
 _AIDER_NAME_RE = re.compile(r"\(aider\)\s*$")
+
+# Any ``Co-authored-by:`` trailer's e-mail, for registry-based identity
+# matching: agent service identities the explicit patterns above don't name
+# (bot noreply logins, exact service e-mails, vendor-domain identities) are
+# resolved through the same :meth:`AgentProvenanceClassifier._identity_match`
+# registry — one list, no parallel patterns.
+_COAUTHOR_EMAIL_RE = re.compile(r"^co-authored-by:[^<\n]*<([^>\s]+)>", re.IGNORECASE | re.MULTILINE)
 
 
 def _normalize_agent_token(value: str, *, allow_slug: bool) -> str | None:
@@ -274,6 +288,11 @@ class AgentProvenanceClassifier:
         m = self._bot_email_re.match(e)
         if m:
             return (_BOT_LOGINS[m.group(1).lower()], 1)
+        local, _, domain = e.partition("@")
+        if domain in _AGENT_EMAIL_DOMAINS:
+            agent = _normalize_agent_token(local, allow_slug=False)
+            if agent:
+                return (agent, 1)
         return None
 
     def classify(
@@ -328,6 +347,10 @@ class AgentProvenanceClassifier:
         for pat, agent in self._coauthors:
             if pat.search(message):
                 return AgentProvenance(agent, 3, "coauthor_trailer", "high")
+        for m in _COAUTHOR_EMAIL_RE.finditer(message):
+            hit = self._identity_match(m.group(1))
+            if hit:
+                return AgentProvenance(hit[0], 3, "coauthor_trailer", "high")
         return _HUMAN
 
 
