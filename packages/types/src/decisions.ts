@@ -20,7 +20,7 @@ export type DecisionSource =
   | "cli";
 
 /** Derived granularity of a decision's blast area, narrowest first. */
-export type DecisionScope = "function" | "file" | "module" | "cross-module";
+export type DecisionScope = "file" | "module" | "cross-module";
 
 export interface DecisionRecord {
   id: string;
@@ -45,7 +45,10 @@ export interface DecisionRecord {
   last_code_change: string | null;
   /** Trust tier of the decision's primary supporting evidence. Optional for back-compat. */
   verification?: DecisionVerification;
-  /** Derived granularity level. Optional for back-compat with older backends. */
+  /**
+   * Derived granularity level. Optional for back-compat with older backends;
+   * null when the record has no code linkage at all.
+   */
   scope?: DecisionScope | null;
   created_at: string;
   updated_at: string;

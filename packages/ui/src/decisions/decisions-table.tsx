@@ -32,7 +32,6 @@ const SOURCE_LABEL: Record<string, string> = {
 };
 
 const SCOPE_LABEL: Record<string, string> = {
-  function: "Function",
   file: "File",
   module: "Module",
   "cross-module": "Cross-module",
@@ -87,10 +86,13 @@ export function DecisionsTable({
   const Link = LinkComponent;
 
   // Scope is derived at serialization time (no server-side query param), so
-  // this filter applies client-side to the fetched rows.
+  // this filter applies client-side to the fetched rows. Backends that don't
+  // serve scope yet leave every row null: hide the filter (it could only
+  // empty the table) and ignore any lingering scope value.
   const scopeFilter = filters.scope ?? "all";
+  const hasScope = (decisions ?? []).some((d) => d.scope != null);
   const visibleDecisions = (decisions ?? []).filter(
-    (d) => scopeFilter === "all" || d.scope === scopeFilter,
+    (d) => !hasScope || scopeFilter === "all" || d.scope === scopeFilter,
   );
 
   const columns: ResponsiveColumn<DecisionRecord>[] = [
@@ -267,20 +269,21 @@ export function DecisionsTable({
           <option value="readme_mining">Docs mining</option>
           <option value="cli">Manual</option>
         </select>
-        <select
-          value={filters.scope ?? "all"}
-          onChange={(e) =>
-            onFiltersChange({ ...filters, scope: e.target.value as DecisionScopeFilter })
-          }
-          aria-label="Filter by scope"
-          className="w-full sm:w-auto rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-1.5 text-sm text-[var(--color-text-primary)]"
-        >
-          <option value="all">All scopes</option>
-          <option value="function">Function</option>
-          <option value="file">File</option>
-          <option value="module">Module</option>
-          <option value="cross-module">Cross-module</option>
-        </select>
+        {hasScope && (
+          <select
+            value={filters.scope ?? "all"}
+            onChange={(e) =>
+              onFiltersChange({ ...filters, scope: e.target.value as DecisionScopeFilter })
+            }
+            aria-label="Filter by scope"
+            className="w-full sm:w-auto rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-1.5 text-sm text-[var(--color-text-primary)]"
+          >
+            <option value="all">All scopes</option>
+            <option value="file">File</option>
+            <option value="module">Module</option>
+            <option value="cross-module">Cross-module</option>
+          </select>
+        )}
       </div>
 
       <ResponsiveTable

@@ -25,6 +25,11 @@ export interface DecisionRecordResponse {
   last_code_change: string | null;
   /** Trust tier of the decision's primary supporting evidence. */
   verification?: DecisionVerification;
+  /**
+   * Derived granularity of the decision's blast area. Absent on older
+   * backends; null when the record has no code linkage at all.
+   */
+  scope?: "file" | "module" | "cross-module" | null;
   created_at: string;
   updated_at: string;
   /** Evidence rows backing the record. Populated by the list endpoint only. */

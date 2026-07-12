@@ -40,9 +40,10 @@ class DecisionRecordResponse(BaseModel):
     confidence: float
     staleness_score: float
     verification: str = "unverified"
-    # Derived granularity: function | file | module | cross-module. Computed
-    # at serialization time from the linkage fields, so old records get it too.
-    scope: str = "cross-module"
+    # Derived granularity: file | module | cross-module, or None when the
+    # record has no code linkage at all. Computed at serialization time from
+    # the linkage fields, so old records get it too.
+    scope: str | None = None
     superseded_by: str | None
     last_code_change: datetime | None
     created_at: datetime
