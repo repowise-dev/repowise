@@ -1,6 +1,28 @@
-import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { render, screen, fireEvent, act } from "@testing-library/react";
+import { forwardRef, useImperativeHandle } from "react";
 import { GraphFlow } from "../../src/graph/graph-flow.js";
+
+// Stub the Sigma canvas: it dynamically imports "sigma", which needs WebGL2
+// and rejects under jsdom. These tests assert toolbar / notice / picker
+// behavior, none of which lives inside the canvas.
+const { focusNodeSpy } = vi.hoisted(() => ({ focusNodeSpy: vi.fn() }));
+vi.mock("../../src/graph/sigma/sigma-canvas.js", () => ({
+  SigmaCanvas: forwardRef(function MockSigmaCanvas(_props, ref) {
+    useImperativeHandle(ref, () => ({
+      focusNode: focusNodeSpy,
+      fitView: () => {},
+      zoomIn: () => {},
+      zoomOut: () => {},
+    }));
+    return <div data-testid="sigma-canvas" />;
+  }),
+}));
+
+afterEach(() => {
+  vi.useRealTimers();
+  focusNodeSpy.mockClear();
+});
 
 // Minimal prop set — no graphs supplied, so the canvas renders its empty state
 // while the toolbar (and its color-mode control) still mounts.
@@ -134,6 +156,65 @@ describe("GraphFlow shell", () => {
     // graph so the trace can actually be highlighted.
     fireEvent.click(screen.getByText("main"));
     expect(onViewModeChange).toHaveBeenCalledWith("full");
+  });
+
+  it("focuses the flow trace head once the graph gains it, exactly once", () => {
+    vi.useFakeTimers();
+    const flows = {
+      total_entry_points: 1,
+      flows: [
+        {
+          entry_point: "app.py::main",
+          entry_point_name: "main",
+          entry_point_score: 1,
+          trace: ["app.py::main", "core.py::run"],
+          depth: 1,
+          crosses_community: false,
+          communities_visited: [0],
+        },
+      ],
+    };
+    const { rerender } = render(
+      <GraphFlow {...baseProps} initialViewMode="full" executionFlows={flows} />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Execution flows" }));
+    fireEvent.click(screen.getByText("main"));
+
+    // The focus timer fires while the full graph is still loading — the
+    // trace head isn't in the (empty) graph yet, so nothing is focused.
+    act(() => {
+      vi.advanceTimersByTime(800);
+    });
+    expect(focusNodeSpy).not.toHaveBeenCalled();
+
+    // The full graph lands: the deferred focus fires once for the trace head.
+    const nodes = flows.flows[0]!.trace.map((id) => ({
+      node_id: id,
+      label: id,
+      language: "python",
+    }));
+    rerender(
+      <GraphFlow
+        {...baseProps}
+        initialViewMode="full"
+        executionFlows={flows}
+        fullGraph={{ nodes, links: [] }}
+      />,
+    );
+    expect(focusNodeSpy).toHaveBeenCalledWith("app.py::main");
+    expect(focusNodeSpy).toHaveBeenCalledTimes(1);
+
+    // Later graph changes must not re-steer the camera for the same flow.
+    rerender(
+      <GraphFlow
+        {...baseProps}
+        initialViewMode="full"
+        executionFlows={flows}
+        fullGraph={{ nodes: [...nodes], links: [] }}
+      />,
+    );
+    expect(focusNodeSpy).toHaveBeenCalledTimes(1);
   });
 
   it("refuses hierarchical layout above the ELK cap and explains why", () => {

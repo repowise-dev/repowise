@@ -109,10 +109,11 @@ export function GraphFlow({
   const { communities } = useCommunities(repoId);
   // Flow traces highlight file-level nodes, but the picker must also work from
   // the module overview: selecting a flow there makes the shell jump to the
-  // full graph (enterFullViewFromModule) and highlight the trace. Only the
-  // constellation and dead/hot overlays skip the fetch.
+  // full graph (enterFullViewFromModule) and highlight the trace. Dead/hot
+  // scopes render file-level graphs too, so flows work there as well — only
+  // the constellation skips the fetch.
   const { flows: executionFlowsData } = useExecutionFlows(
-    needsFullGraph || isModuleView ? repoId : null,
+    viewMode !== "architecture" || needsFullGraph ? repoId : null,
     {
       top_n: 10,
       max_depth: 6,
@@ -138,7 +139,6 @@ export function GraphFlow({
       isLoadingHotFilesGraph={hotLoading}
       communities={communities as CommunitySummaryItem[] | undefined}
       executionFlows={executionFlowsData as ExecutionFlows | undefined}
-      flowsAvailable={needsFullGraph}
       initialViewMode={initialViewMode}
       initialColorMode={initialColorMode}
       colorMode={colorMode}
