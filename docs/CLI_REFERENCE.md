@@ -2,9 +2,9 @@
 
 Complete reference for all `repowise` commands. For a guided introduction, see the [Quickstart](QUICKSTART.md).
 
-Command list (in `--help` order): `augment`, `init`, `delete`, `generate-claude-md`, `costs`, `update`, `dead-code`, `health`, `risk`, `decision`, `coverage`, `search`, `distill`, `expand`, `saved`, `corrections`, `export`, `hook`, `status`, `doctor`, `watch`, `serve`, `mcp`, `reindex`, `restyle`, `wiki-styles`, `whats-new`, `telemetry`, `login`, `logout`, `whoami`, `workspace`. Two more ship as separate console scripts, not subcommands: `repowise-augment`, `repowise-rewrite` (both hook entry points, not meant to be run by hand).
+Command list (in `--help` order): `augment`, `init`, `delete`, `generate-claude-md`, `costs`, `update`, `dead-code`, `health`, `risk`, `decision`, `coverage`, `impacted-tests`, `search`, `distill`, `expand`, `saved`, `corrections`, `export`, `hook`, `status`, `doctor`, `watch`, `serve`, `mcp`, `reindex`, `restyle`, `wiki-styles`, `whats-new`, `telemetry`, `login`, `logout`, `whoami`, `workspace`. Two more ship as separate console scripts, not subcommands: `repowise-augment`, `repowise-rewrite` (both hook entry points, not meant to be run by hand).
 
-**Do you need an LLM key?** Most commands are pure index/analysis and never call an LLM. The exceptions: `init` (unless `--index-only` or `--mode fast`), `update` (unless `--index-only` or `--no-docs`), `restyle`, `watch` (when it regenerates a page), `health --generate-code`, and `workspace add --docs`. Everything else, `search`, `dead-code`, `health`, `risk`, `decision`, `coverage`, `export`, `mcp`, `reindex`, `doctor`, and so on, works index-only, with no provider configured.
+**Do you need an LLM key?** Most commands are pure index/analysis and never call an LLM. The exceptions: `init` (unless `--index-only` or `--mode fast`), `update` (unless `--index-only` or `--no-docs`), `restyle`, `watch` (when it regenerates a page), `health --generate-code`, and `workspace add --docs`. Everything else, `search`, `dead-code`, `health`, `risk`, `impacted-tests`, `decision`, `coverage`, `export`, `mcp`, `reindex`, `doctor`, and so on, works index-only, with no provider configured.
 
 ## Workspace auto-detect (cross-cutting)
 
@@ -396,6 +396,45 @@ repowise risk --ext .ts,.tsx  # restrict to specific suffixes
 ```
 
 See [`docs/CHANGE_RISK.md`](./CHANGE_RISK.md) for the scoring model.
+
+---
+
+### `repowise impacted-tests [REVSPEC]`
+
+Print the tests a change actually exercises, so CI can run "these 40 tests, not
+all 4,000". For each changed line it consults the per-test test-to-code map
+built by [`repowise coverage add`](#repowise-coverage) and returns the tests
+whose recorded coverage intersects the diff. No LLM, no network - a straight
+index lookup.
+
+`REVSPEC` is a `base..head` range or a single commit; with no argument (or
+`--staged`) it diffs the staged changes. It is honest about what it does not
+know, and always says which path fired:
+
+- a changed file with per-test coverage -> the exact covering tests (`via: coverage`);
+- a changed file with no coverage rows -> a filename-pattern **guess** at its paired test, labelled as a guess (never presented as coverage-backed);
+- a new file with neither coverage nor a paired test -> reported as "unknown, run the full suite" (never implied as "no tests needed");
+- no map ingested at all -> a prompt to run `repowise coverage add` on a report with contexts first.
+
+The map only exists when coverage was ingested from a report that carries
+per-test contexts (a coverage.py `.coverage` written with dynamic contexts, or a
+per-test lcov). Score the same `head` the map was ingested at so line numbers
+line up.
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--path` | Repo path (defaults to cwd / workspace primary) |
+| `--staged` | Diff the staged changes (`git diff --cached`); the default when no range is given |
+| `--format` | `table` (default), `json` (full report), or `list` (test ids one per line, for piping) |
+
+```bash
+repowise impacted-tests                        # staged changes
+repowise impacted-tests main..HEAD             # a branch / PR range
+repowise impacted-tests abc123                 # a single commit
+repowise impacted-tests main..HEAD --format list | xargs pytest
+```
 
 ---
 
