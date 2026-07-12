@@ -122,8 +122,15 @@ def test_coauthor_trailer_with_vendor_domain_email_is_tier3() -> None:
 
 
 def test_agent_local_part_at_vendor_domain_author_is_tier1() -> None:
+    prov = _classify(an="Claude", ae="claude@anthropic.com")
+    assert (prov.agent, prov.autonomy_tier, prov.channel) == ("claude", 1, "service_email")
     prov = _classify(an="Claude", ae="claude-sonnet@anthropic.com")
     assert (prov.agent, prov.autonomy_tier, prov.channel) == ("claude", 1, "service_email")
+
+
+def test_vendor_domain_committer_over_human_author_is_tier2() -> None:
+    prov = _classify(cn="Claude", ce="claude@anthropic.com")
+    assert (prov.agent, prov.autonomy_tier, prov.channel) == ("claude", 2, "service_committer")
 
 
 def test_human_at_vendor_domain_is_unlabelled() -> None:
@@ -161,6 +168,45 @@ def test_human_named_devin_is_not_the_devin_agent() -> None:
 def test_mentioning_claude_in_prose_is_not_a_footer() -> None:
     prov = _classify(msg="docs: explain how we generated docs with an LLM, not Claude Code")
     assert prov.agent is None
+
+
+def test_vendor_domain_lookalike_locals_are_unlabelled() -> None:
+    """The vendor-domain channel is an exact allowlist on the local part —
+    a human at an agent vendor whose address merely CONTAINS an agent token
+    must never classify as an agent."""
+    for email in (
+        "jean-claude@anthropic.com",
+        "claudette@anthropic.com",
+        "somecursorfan@cursor.com",
+        "jules@openai.com",
+    ):
+        assert _classify(an="Someone", ae=email).agent is None, email
+
+
+def test_vendor_domain_allowlists_are_per_vendor_not_a_flat_set() -> None:
+    """codex is OpenAI's agent identity, not Anthropic's."""
+    assert _classify(an="X", ae="codex@anthropic.com").agent is None
+
+
+def test_coauthor_human_name_containing_agent_token_is_unlabelled() -> None:
+    msg = "feat: sonata\n\nCo-authored-by: Claude Debussy <claude.debussy@anthropic.com>"
+    assert _classify(msg=msg).agent is None
+
+
+def test_mixed_case_coauthor_trailer_matches() -> None:
+    msg = "fix: z\n\nCO-AUTHORED-BY: Claude <NoReply@Anthropic.com>"
+    prov = _classify(msg=msg)
+    assert (prov.agent, prov.autonomy_tier, prov.channel) == ("claude", 3, "coauthor_trailer")
+
+
+def test_multi_coauthor_human_first_agent_second_is_detected() -> None:
+    msg = (
+        "feat: pairing\n\n"
+        "Co-authored-by: Jane Doe <jane@example.com>\n"
+        "Co-authored-by: Claude <noreply@anthropic.com>"
+    )
+    prov = _classify(msg=msg)
+    assert (prov.agent, prov.autonomy_tier) == ("claude", 3)
 
 
 def test_devin_service_trailer_matches() -> None:

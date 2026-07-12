@@ -118,14 +118,24 @@ _AGENT_ALIASES: list[tuple[str, str]] = [
 _SERVICE_EMAILS: dict[str, tuple[str, int]] = {
     "cursoragent@cursor.com": ("cursor", 1),
     "devin-ai-integration[bot]@users.noreply.github.com": ("devin", 1),
+    # Primarily Claude's co-author identity; as AUTHOR it is tier 1 like every
+    # other service e-mail here.
     "noreply@anthropic.com": ("claude", 1),
 }
 
-# Agent-vendor e-mail domains. A domain alone is never enough — real humans
-# work at these companies — so an identity here counts only when the LOCAL
-# PART itself resolves to an agent via :data:`_AGENT_ALIASES`:
-# ``claude-sonnet@anthropic.com`` matches, ``jane@anthropic.com`` never does.
-_AGENT_EMAIL_DOMAINS = frozenset({"anthropic.com", "openai.com", "cursor.com", "devin.ai"})
+# Agent-vendor e-mail domains → the exact agent identities each vendor emits.
+# A domain alone is never enough — real humans work at these companies — so an
+# identity here counts only when the LOCAL PART fully matches the vendor's
+# allowlisted agent identity (anchored fullmatch, never a substring scan, and
+# per vendor, never a flat token set): ``claude@anthropic.com`` and the
+# ``claude-<model>`` slugs match; ``jane@anthropic.com``,
+# ``jean-claude@anthropic.com`` and ``codex@anthropic.com`` never do.
+_VENDOR_DOMAIN_LOCALS: dict[str, tuple[re.Pattern[str], str]] = {
+    "anthropic.com": (re.compile(r"claude(?:-(?:opus|sonnet|haiku)(?:-[\w.]+)?)?"), "claude"),
+    "openai.com": (re.compile(r"codex"), "codex"),
+    "cursor.com": (re.compile(r"cursor(?:agent)?"), "cursor"),
+    "devin.ai": (re.compile(r"devin"), "devin"),
+}
 
 # Commit-message footers → agent (exact service phrases only).
 _FOOTER_PATTERNS: list[tuple[str, str]] = [
@@ -289,10 +299,9 @@ class AgentProvenanceClassifier:
         if m:
             return (_BOT_LOGINS[m.group(1).lower()], 1)
         local, _, domain = e.partition("@")
-        if domain in _AGENT_EMAIL_DOMAINS:
-            agent = _normalize_agent_token(local, allow_slug=False)
-            if agent:
-                return (agent, 1)
+        vendor = _VENDOR_DOMAIN_LOCALS.get(domain)
+        if vendor and vendor[0].fullmatch(local):
+            return (vendor[1], 1)
         return None
 
     def classify(
