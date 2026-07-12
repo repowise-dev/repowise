@@ -19,6 +19,9 @@ export type DecisionSource =
   | "readme_mining"
   | "cli";
 
+/** Derived granularity of a decision's blast area, narrowest first. */
+export type DecisionScope = "function" | "file" | "module" | "cross-module";
+
 export interface DecisionRecord {
   id: string;
   repository_id: string;
@@ -42,6 +45,8 @@ export interface DecisionRecord {
   last_code_change: string | null;
   /** Trust tier of the decision's primary supporting evidence. Optional for back-compat. */
   verification?: DecisionVerification;
+  /** Derived granularity level. Optional for back-compat with older backends. */
+  scope?: DecisionScope | null;
   created_at: string;
   updated_at: string;
   /** Number of evidence rows backing the record. List endpoint only. */

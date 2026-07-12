@@ -14,6 +14,7 @@ import type {
   DecisionRecord,
   DecisionStatus,
   DecisionSource,
+  DecisionScope,
 } from "@repowise-dev/types/decisions";
 
 const STATUS_VARIANT: Record<string, "default" | "fresh" | "stale" | "outdated" | "outline" | "accent"> = {
@@ -30,12 +31,26 @@ const SOURCE_LABEL: Record<string, string> = {
   cli: "Manual",
 };
 
+const SCOPE_LABEL: Record<string, string> = {
+  function: "Function",
+  file: "File",
+  module: "Module",
+  "cross-module": "Cross-module",
+};
+
 export type DecisionStatusFilter = DecisionStatus | "all";
 export type DecisionSourceFilter = DecisionSource | "all";
+export type DecisionScopeFilter = DecisionScope | "all";
 
 export interface DecisionsTableFilters {
   status: DecisionStatusFilter;
   source: DecisionSourceFilter;
+  /**
+   * Optional for back-compat with callers that predate scope. Unlike
+   * status/source (server query params), scope is derived at serialization
+   * time, so the table filters rows client-side.
+   */
+  scope?: DecisionScopeFilter;
 }
 
 export interface DecisionsTableProps {
@@ -70,6 +85,13 @@ export function DecisionsTable({
 }: DecisionsTableProps) {
   const prefix = linkPrefix ?? `/repos/${repoId}`;
   const Link = LinkComponent;
+
+  // Scope is derived at serialization time (no server-side query param), so
+  // this filter applies client-side to the fetched rows.
+  const scopeFilter = filters.scope ?? "all";
+  const visibleDecisions = (decisions ?? []).filter(
+    (d) => scopeFilter === "all" || d.scope === scopeFilter,
+  );
 
   const columns: ResponsiveColumn<DecisionRecord>[] = [
     {
@@ -122,6 +144,17 @@ export function DecisionsTable({
       priority: 3,
       cellClassName: "text-[var(--color-text-secondary)]",
       render: (d) => SOURCE_LABEL[d.source] ?? d.source,
+    },
+    {
+      key: "scope",
+      header: "Scope",
+      priority: 3,
+      render: (d) =>
+        d.scope ? (
+          <Badge variant="outline">{SCOPE_LABEL[d.scope] ?? d.scope}</Badge>
+        ) : (
+          <span className="text-[var(--color-text-tertiary)]">—</span>
+        ),
     },
     {
       key: "trust",
@@ -234,11 +267,25 @@ export function DecisionsTable({
           <option value="readme_mining">Docs mining</option>
           <option value="cli">Manual</option>
         </select>
+        <select
+          value={filters.scope ?? "all"}
+          onChange={(e) =>
+            onFiltersChange({ ...filters, scope: e.target.value as DecisionScopeFilter })
+          }
+          aria-label="Filter by scope"
+          className="w-full sm:w-auto rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-1.5 text-sm text-[var(--color-text-primary)]"
+        >
+          <option value="all">All scopes</option>
+          <option value="function">Function</option>
+          <option value="file">File</option>
+          <option value="module">Module</option>
+          <option value="cross-module">Cross-module</option>
+        </select>
       </div>
 
       <ResponsiveTable
         columns={columns}
-        rows={decisions ?? []}
+        rows={visibleDecisions}
         rowKey={(d) => d.id}
         empty={empty}
       />

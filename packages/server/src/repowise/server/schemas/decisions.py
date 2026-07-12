@@ -7,6 +7,8 @@ from datetime import datetime
 
 from pydantic import BaseModel
 
+from repowise.core.analysis.decisions.scope import derive_decision_scope
+
 
 class EvidencePreview(BaseModel):
     """The top-ranked evidence row, slimmed for list rows."""
@@ -38,6 +40,9 @@ class DecisionRecordResponse(BaseModel):
     confidence: float
     staleness_score: float
     verification: str = "unverified"
+    # Derived granularity: function | file | module | cross-module. Computed
+    # at serialization time from the linkage fields, so old records get it too.
+    scope: str = "cross-module"
     superseded_by: str | None
     last_code_change: datetime | None
     created_at: datetime
@@ -51,6 +56,8 @@ class DecisionRecordResponse(BaseModel):
 
     @classmethod
     def from_orm(cls, obj: object) -> DecisionRecordResponse:
+        affected_files = json.loads(obj.affected_files_json)  # type: ignore[attr-defined]
+        affected_modules = json.loads(obj.affected_modules_json)  # type: ignore[attr-defined]
         return cls(
             id=obj.id,  # type: ignore[attr-defined]
             repository_id=obj.repository_id,  # type: ignore[attr-defined]
@@ -67,8 +74,8 @@ class DecisionRecordResponse(BaseModel):
             rationale=obj.rationale,  # type: ignore[attr-defined]
             alternatives=json.loads(obj.alternatives_json),  # type: ignore[attr-defined]
             consequences=json.loads(obj.consequences_json),  # type: ignore[attr-defined]
-            affected_files=json.loads(obj.affected_files_json),  # type: ignore[attr-defined]
-            affected_modules=json.loads(obj.affected_modules_json),  # type: ignore[attr-defined]
+            affected_files=affected_files,
+            affected_modules=affected_modules,
             tags=json.loads(obj.tags_json),  # type: ignore[attr-defined]
             source=obj.source,  # type: ignore[attr-defined]
             evidence_commits=json.loads(obj.evidence_commits_json),  # type: ignore[attr-defined]
@@ -77,6 +84,11 @@ class DecisionRecordResponse(BaseModel):
             confidence=obj.confidence,  # type: ignore[attr-defined]
             staleness_score=obj.staleness_score,  # type: ignore[attr-defined]
             verification=obj.verification,  # type: ignore[attr-defined]
+            scope=derive_decision_scope(
+                affected_files,
+                affected_modules,
+                evidence_file=obj.evidence_file,  # type: ignore[attr-defined]
+            ),
             superseded_by=obj.superseded_by,  # type: ignore[attr-defined]
             last_code_change=obj.last_code_change,  # type: ignore[attr-defined]
             created_at=obj.created_at,  # type: ignore[attr-defined]
