@@ -16,6 +16,14 @@ Keep the order list in lockstep with ``packages/ui/src/lib/page-types.ts``
 
 from __future__ import annotations
 
+# Generation version for onboarding pages. Folded into every onboarding
+# page's source_hash, so bumping it forces a one-time regeneration of all
+# onboarding slots on an existing user's next docs update - even when the
+# rendered prompt is byte-identical. Bump when a builder or template change
+# should reach already-cached pages. (File pages have an equivalent in
+# ``_generation_fingerprint``; onboarding pages had none until this.)
+ONBOARDING_GENERATION_VERSION = "2"
+
 # ---- Slot identifiers ----
 
 SLOT_PROJECT_OVERVIEW = "project_overview"

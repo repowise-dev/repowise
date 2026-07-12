@@ -9,6 +9,7 @@ each module under the project's 400-line ceiling.
 from __future__ import annotations
 
 import uuid
+from dataclasses import replace
 from typing import Any
 
 import structlog
@@ -281,15 +282,31 @@ class PerTypeGenerationMixin:
         template_name = f"onboarding/{spec.template}"
         user_prompt = self._render(template_name, ctx=ctx, slot=spec.slot)
         target = _onboarding.target_path(spec.slot)
+        # Fold the onboarding generation version into the reuse hash so a
+        # builder/template upgrade forces a one-time regen of cached pages.
+        salt = _onboarding.ONBOARDING_GENERATION_VERSION
         response = await self._call_provider(
-            "onboarding", user_prompt, str(uuid.uuid4()), target_path=target
+            "onboarding", user_prompt, str(uuid.uuid4()), target_path=target, source_salt=salt
         )
+        # Grounding post-check: strip ungrounded path/symbol citations from the
+        # output. Runs on fresh AND reused content (``response.content`` carries
+        # the prior page's bytes on a cache hit), so an existing user's cached
+        # page is cleaned on their next docs update.
+        cleaned, ungrounded = _onboarding.check_grounding(response.content, ctx)
+        if ungrounded:
+            log.info(
+                "onboarding.grounding_stripped",
+                slot=spec.slot,
+                count=len(ungrounded),
+                tokens=ungrounded[:20],
+            )
+            response = replace(response, content=cleaned)
         page = self._build_generated_page(
             "onboarding",
             target,
             spec.title,
             response,
-            compute_source_hash(user_prompt),
+            compute_source_hash(user_prompt + salt),
             GENERATION_LEVELS["onboarding"],
         )
         # Subkind discriminator lives in metadata; page_type alone is shared
