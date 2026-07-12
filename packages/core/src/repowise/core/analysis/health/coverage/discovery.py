@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .detector import parse as parse_coverage
-from .model import CoverageReport, FileCoverage
+from .model import ContextCoverageReport, CoverageReport, FileCoverage, TestCoverage
 
 # Default glob patterns, relative to the repo root. Ordered roughly by how
 # canonical/common the location is. Kept curated (not a blind ``**/*.info``)
@@ -343,6 +343,104 @@ def resolve_reports(
         }
     result.files = list(by_key.values())
     return result
+
+
+@dataclass
+class ResolvedTestCoverage:
+    """Outcome of resolving a :class:`ContextCoverageReport` against the tree.
+
+    Mirrors :class:`ResolvedCoverage` but keeps the test dimension: every
+    record's ``file_path`` (and, best-effort, ``test_file``) is rewritten to
+    a canonical repo key. ``has_contexts`` propagates the loud-degradation
+    signal so a report with no contexts stays visibly empty.
+    """
+
+    records: list[TestCoverage] = field(default_factory=list)
+    source_format: str | None = None
+    has_contexts: bool = False
+    matched_exact: int = 0
+    matched_suffix: int = 0
+    # Report source paths that did not map to an indexed file.
+    unmatched: list[str] = field(default_factory=list)
+    ambiguous: list[str] = field(default_factory=list)
+    # How many records had their test's own file resolved to a repo key.
+    test_files_resolved: int = 0
+
+    @property
+    def matched(self) -> int:
+        return self.matched_exact + self.matched_suffix
+
+
+# Extensions that make a test-id prefix look like a real source path (rather
+# than a bare suite name), so we only try to resolve path-shaped ids.
+_CODE_EXTS = (".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rb", ".java", ".scala")
+
+
+def _extract_test_file(test_id: str) -> str | None:
+    """Pull a resolvable source path out of a raw test id, or ``None``.
+
+    coverage.py contexts look like ``path/to/test_x.py::Class::test|run``:
+    the file lives before ``::`` (and any ``|phase`` suffix). lcov ``TN:``
+    names are often bare suite labels with no path, which we skip.
+    """
+    head = test_id.split("::", 1)[0].split("|", 1)[0].strip()
+    if not head:
+        return None
+    looks_pathy = "/" in head or "\\" in head or head.endswith(_CODE_EXTS)
+    return head if looks_pathy else None
+
+
+def resolve_test_reports(
+    report: ContextCoverageReport,
+    repo_keys: set[str],
+    *,
+    strip_prefix: str | None = None,
+    path_prefix: str | None = None,
+) -> ResolvedTestCoverage:
+    """Resolve per-test records against the indexed tree.
+
+    Reuses the aggregate path resolver (:func:`normalize_report_path` +
+    :func:`_match_key`) for *both* the source path and the test's own file,
+    so no second resolver is introduced. Records whose source path does not
+    map to the tree are dropped and counted in ``unmatched`` / ``ambiguous``.
+    """
+    suffix_index = _build_suffix_index(repo_keys)
+    out = ResolvedTestCoverage(source_format=report.source_format, has_contexts=report.has_contexts)
+    for rec in report.records:
+        norm = normalize_report_path(
+            rec.file_path, strip_prefix=strip_prefix, path_prefix=path_prefix
+        )
+        key, ambiguous = _match_key(norm, repo_keys, suffix_index)
+        if key is None:
+            if ambiguous:
+                out.ambiguous.append(rec.file_path)
+            else:
+                out.unmatched.append(rec.file_path)
+            continue
+        if norm == key:
+            out.matched_exact += 1
+        else:
+            out.matched_suffix += 1
+
+        test_key: str | None = None
+        head = _extract_test_file(rec.test_id)
+        if head:
+            tnorm = normalize_report_path(head, strip_prefix=strip_prefix, path_prefix=path_prefix)
+            tkey, _ = _match_key(tnorm, repo_keys, suffix_index)
+            if tkey is not None:
+                test_key = tkey
+                out.test_files_resolved += 1
+
+        out.records.append(
+            TestCoverage(
+                test_id=rec.test_id,
+                file_path=key,
+                covered_lines=list(rec.covered_lines),
+                source_format=rec.source_format,
+                test_file=test_key,
+            )
+        )
+    return out
 
 
 def build_coverage_map(
