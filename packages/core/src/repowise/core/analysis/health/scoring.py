@@ -313,10 +313,14 @@ _MAINTAINABILITY_HOME: frozenset[str] = frozenset(
 
 
 # ---------------------------------------------------------------------------
-# Performance dimension (PR3). Shipped at a small, ADVISORY weight - the whole
-# pillar is bounded by a single 1.0 category cap, so even a file riddled with
-# perf hits loses at most one health point on this dimension. Promotion to a
-# co-equal weight waits on PR4's cross-function precision study.
+# Performance dimension (PR3). Originally shipped at a small, ADVISORY weight
+# (a single 1.0 category cap), which left the pillar reading near-perfect even
+# on repos dense with open perf findings. With the cross-function pass landed
+# (PR4) and per-marker precision multipliers in place, the cap is raised to
+# 2.0 so open findings visibly move the score - still a deliberately
+# conservative ceiling for this first release (a file loses at most two
+# points regardless of hit count). Raising it further to a co-equal budget
+# waits on corpus precision data for the remaining advisory markers.
 # ---------------------------------------------------------------------------
 
 # Per-biomarker weight on the performance dimension. ``io_in_loop`` is the
@@ -339,7 +343,7 @@ _PERFORMANCE_WEIGHT_MULTIPLIER: dict[str, float] = {
     # Phase 6 dialect markers. Both are high-precision syntactic shapes (Go
     # `go vet`/`gocritic` ship defer-in-loop; the regex marker gates on a static
     # literal pattern in Java/Go/Rust). Ship advisory pending this session's
-    # test-repo gate; bounded by the 1.0 perf cap either way.
+    # test-repo gate; bounded by the perf category cap either way.
     "regex_compile_in_loop": 0.6,
     "defer_in_loop": 0.6,
     "resource_construction_in_loop": 0.7,
@@ -400,9 +404,13 @@ _PERFORMANCE_CATEGORY: dict[str, str] = {
     "sql_cartesian_join": "performance",
 }
 
-# One bounded performance category cap. ~1.0 keeps performance advisory.
+# One bounded performance category cap. 2.0 is a deliberately conservative
+# first-release ceiling: enough for open findings to register on the pillar,
+# small enough that an all-advisory marker set cannot crater a file. Upgrade
+# path: raise toward the defect-style multi-point budget once the remaining
+# advisory markers clear their corpus precision gates (MARKER_BACKLOG.md).
 _PERFORMANCE_CATEGORY_CAPS: dict[str, float] = {
-    "performance": 1.0,
+    "performance": 2.0,
 }
 
 # Perf biomarkers home to ``performance`` for display / per-pillar filtering.
@@ -565,7 +573,7 @@ def score_file(results: Iterable[BiomarkerResult]) -> tuple[dict[str, float | No
       identical to the pre-split ``score_file`` (the load-bearing guarantee).
       ``scores["performance"]`` is now measured (PR3): a file with no perf
       findings scores 10.0; the perf detectors deduct under a single bounded
-      ``performance`` cap. It is still capped low (advisory) and never blends
+      ``performance`` cap (2.0, a conservative ceiling). It never blends
       into ``defect``.
     - ``defect_deductions`` is each finding's contribution to the DEFECT score
       after category capping, parallel to *results*. It populates

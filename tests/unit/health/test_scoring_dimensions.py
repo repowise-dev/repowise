@@ -239,12 +239,25 @@ def test_perf_io_in_loop_deduction():
     assert scores["performance"] == 9.3
 
 
+def test_perf_two_medium_findings_deduct_uncapped():
+    """Two MEDIUM io_in_loop hits deduct in full (2 x 0.7 = 1.4, under the cap)."""
+    scores, _ = score_file([_r("io_in_loop", Severity.MEDIUM) for _ in range(2)])
+    assert scores["performance"] == 8.6
+
+
 def test_perf_category_cap_bounds_dimension():
-    """The single 1.0 performance cap bounds the whole pillar."""
+    """The single 2.0 performance cap bounds the whole pillar."""
     findings = [_r("io_in_loop", Severity.MEDIUM) for _ in range(10)]
     scores, _ = score_file(findings)
-    # 10 * 0.7 = 7.0 raw -> capped at 1.0 -> 9.0, never lower.
-    assert scores["performance"] == 9.0
+    # 10 * 0.7 = 7.0 raw -> capped at 2.0 -> 8.0, never lower.
+    assert scores["performance"] == 8.0
+
+
+def test_perf_cap_bounds_high_severity_pileup():
+    """Six HIGH hits (6 x 1.2 = 7.2 raw) still bottom out at the 2.0 cap."""
+    findings = [_r("io_in_loop", Severity.HIGH) for _ in range(6)]
+    scores, _ = score_file(findings)
+    assert scores["performance"] == 8.0
 
 
 def test_perf_bonus_markers_advisory_weight():

@@ -93,7 +93,7 @@ async def list_health_files(
     leads = _leads_by_file([f for f in findings if f.file_path in page_paths])
     # Per-file performance signal for the map's performance lens: open perf-
     # finding counts + whether a perf detector ran on the file's language. Colors
-    # the lens by findings/coverage instead of the uniformly-green [9,10] score.
+    # the lens by findings/coverage instead of the narrow-band [8,10] score.
     perf_counts: dict[str, int] = {}
     for fnd in findings:
         if (getattr(fnd, "dimension", None) or "defect") == "performance":
