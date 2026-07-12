@@ -66,9 +66,18 @@ async def test_batch_upsert_graph_metrics_inserts_then_updates(async_session):
 @pytest.mark.asyncio
 async def test_batch_upsert_graph_edges_updates_existing(async_session):
     repo = await insert_repo(async_session)
-    edges = [{"source_node_id": "a", "target_node_id": "b", "edge_type": "imports"}]
+    edges = [
+        {
+            "source_node_id": "a",
+            "target_node_id": "b",
+            "edge_type": "imports",
+            "confidence": 0.7,
+        }
+    ]
     await batch_upsert_graph_edges(async_session, repo.id, edges)
-    # Re-upsert the same key with new optional fields → in-place update.
+    # Re-upsert the same key with new optional fields → in-place update, but
+    # confidence keeps the max on collision (a lower re-upsert must not lower
+    # it — the resolver can stamp a real call below the flow floor otherwise).
     await batch_upsert_graph_edges(
         async_session,
         repo.id,
@@ -88,7 +97,7 @@ async def test_batch_upsert_graph_edges_updates_existing(async_session):
     rows = list(result.scalars().all())
     assert len(rows) == 1
     assert rows[0].imported_names_json == '["foo"]'
-    assert rows[0].confidence == 0.5
+    assert rows[0].confidence == 0.7
 
 
 @pytest.mark.asyncio

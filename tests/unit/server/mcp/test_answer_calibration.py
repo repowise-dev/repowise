@@ -439,7 +439,7 @@ def _patch_anchor(monkeypatch, answer_mod, anchored: dict):
     """Force symbol anchoring to attach ``anchored`` to the top hit, as if the
     question named an indexed symbol whose defining file got promoted."""
 
-    async def _fake_anchor(session, repo_id, question_ids, hits):
+    async def _fake_anchor(session, repo_id, question_ids, hits, **kwargs):
         if hits:
             hits[0]["_anchor_symbols"] = [anchored]
         return hits, {"union": {}, "qualified_miss": []}
