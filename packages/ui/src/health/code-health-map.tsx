@@ -15,7 +15,7 @@ export interface CodeHealthMapFile {
   /** Maintainability pillar score (1–10) — drives the maintainability overlay. */
   maintainability_score?: number | null;
   /** Performance-risk pillar score (1–10) — computed but NOT used to color the
-   *  performance overlay (it is compressed to [9,10] and reads uniformly green).
+   *  performance overlay (it is compressed to [8,10] and reads uniformly green).
    *  The performance lens colors by {@link performance_findings} + coverage. */
   performance_score?: number | null;
   /** Open performance-risk findings on this file — drives the performance heat. */

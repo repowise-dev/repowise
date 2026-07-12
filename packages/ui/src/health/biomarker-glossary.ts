@@ -48,9 +48,10 @@ export const CATEGORY_CAP: Record<BiomarkerCategory, number> = {
   test_quality: 0.5,
   error_handling: 0.5,
   // One bounded performance category cap (mirrors `_PERFORMANCE_CATEGORY_CAPS`
-  // in scoring.py): the whole performance pillar deducts at most 1.0, keeping it
-  // advisory.
-  performance: 1.0,
+  // in scoring.py): the whole performance pillar deducts at most 2.0. Fallback
+  // only — a server-supplied cap always wins (see score-breakdown.tsx), so this
+  // constant matters just for payloads that predate the `cap` field.
+  performance: 2.0,
   // SQL smells deduct on the maintainability pillar only, bounded by the `sql`
   // cap in `_MAINTAINABILITY_CATEGORY_CAPS` (scoring.py).
   sql: 2.0,
