@@ -15,6 +15,7 @@ from .coverage import (
     save_coverage_files,
 )
 from .coverage_map import (
+    covered_source_files,
     files_covered_by,
     get_test_coverage_summary,
     save_test_coverage,
@@ -52,6 +53,7 @@ from .refactoring import (
 
 __all__ = [
     "HEALTH_SNAPSHOT_RETENTION",
+    "covered_source_files",
     "files_covered_by",
     "get_coverage_summary",
     "get_dead_code_findings",

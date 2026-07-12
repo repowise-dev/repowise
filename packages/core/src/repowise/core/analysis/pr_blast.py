@@ -229,14 +229,23 @@ class PRBlastRadiusAnalyzer:
         return reviewers[:5]
 
     async def _find_test_gaps(self, affected_files: list[str]) -> list[str]:
-        """Return files that lack a corresponding test file.
+        """Return files that lack a test, coverage-backed where the map has data.
 
-        Checks graph_nodes for paths matching test_<name>, <name>_test, or
-        <name>.spec.* patterns. Test files themselves are excluded — they
+        A file with >=1 per-test coverage row (from ``repowise coverage add``) is
+        coverage-*proven* to be exercised by some test, so it is never a gap -
+        this supersedes the filename guess for files the map can speak to. Where
+        the per-test map has no data for a file, fall back to the filename
+        pattern (test_<name>, <name>_test, <name>.spec.*) - an honest "unknown",
+        never asserted as untested. Test files themselves are excluded; they
         don't need their own tests.
         """
         if not affected_files:
             return []
+
+        from repowise.core.persistence.crud import covered_source_files
+
+        # Coverage-proven-tested files: absent from gaps regardless of naming.
+        covered = await covered_source_files(self._session, self._repo_id, set(affected_files))
 
         node_res = await self._session.execute(
             select(GraphNode.node_id, GraphNode.is_test).where(
@@ -247,7 +256,7 @@ class PRBlastRadiusAnalyzer:
         # Build a set of affected files that are themselves test files
         test_file_set = {row[0] for row in node_res.all() if row[1]}
 
-        # Fetch all test paths for matching
+        # Fetch all test paths for the filename fallback (map-no-data files only)
         all_test_res = await self._session.execute(
             select(GraphNode.node_id).where(
                 GraphNode.repository_id == self._repo_id,
@@ -260,6 +269,9 @@ class PRBlastRadiusAnalyzer:
         for path in affected_files:
             # Skip test files — they don't need their own tests
             if path in test_file_set:
+                continue
+            # Coverage proves a test exercises this file: not a gap.
+            if path in covered:
                 continue
             base = os.path.splitext(os.path.basename(path))[0]
             ext = os.path.splitext(path)[1].lstrip(".")

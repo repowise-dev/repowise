@@ -135,6 +135,30 @@ async def tests_covering(
     return out
 
 
+async def covered_source_files(
+    session: AsyncSession,
+    repository_id: str,
+    source_files: set[str],
+) -> set[str]:
+    """Return the subset of *source_files* that have >=1 per-test coverage row.
+
+    A file with a row is coverage-*proven* to be exercised by some test - the
+    honest basis for "this changed file is tested". A file with no row is
+    "unknown" (the coverage run may simply not have exercised it), never a
+    proof of absence, so callers fall back to a labelled filename guess for
+    those rather than asserting a test gap.
+    """
+    if not source_files:
+        return set()
+    result = await session.execute(
+        select(TestCoverageEntry.source_file).where(
+            TestCoverageEntry.repository_id == repository_id,
+            TestCoverageEntry.source_file.in_(source_files),
+        )
+    )
+    return {row[0] for row in result.all()}
+
+
 async def files_covered_by(
     session: AsyncSession,
     repository_id: str,

@@ -163,11 +163,17 @@ def _compute_impact_surface(
 
 
 async def _check_test_gap(session: AsyncSession, repo_id: str, target: str) -> bool:
-    """Return True if no test file corresponding to *target* exists in graph_nodes.
+    """Return True if *target* has no test, coverage-backed where the map has data.
 
-    Test files themselves (is_test=True) are never considered to have a test gap.
+    A file with a per-test coverage row (from ``repowise coverage add``) is
+    coverage-*proven* tested, so it is never a gap. Where the map has no data for
+    the file, fall back to the filename pattern (test_<name>, <name>_test,
+    <name>.spec.*) - an honest "unknown", never asserted as untested. Test files
+    themselves (is_test=True) are never a gap.
     """
     import os
+
+    from repowise.core.persistence.crud import covered_source_files
 
     # Test files don't need tests — skip the check entirely
     node_res = await session.execute(
@@ -180,6 +186,10 @@ async def _check_test_gap(session: AsyncSession, repo_id: str, target: str) -> b
     )
     row = node_res.scalar_one_or_none()
     if row is True:
+        return False
+
+    # Coverage proves a test exercises this file: not a gap.
+    if await covered_source_files(session, repo_id, {target}):
         return False
 
     base = os.path.splitext(os.path.basename(target))[0]
