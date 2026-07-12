@@ -23,7 +23,7 @@ from repowise.cli.helpers import (
 )
 
 from .codegen import _generate_refactoring_code
-from .persist import _persist_health
+from .persist import _load_persisted_coverage_map, _persist_health
 from .refactoring_targets import _render_refactoring_targets
 from .summary import (
     _render_badge,
@@ -66,20 +66,6 @@ from .trends import _render_trend
     is_flag=True,
     default=False,
     help="Force single-repo mode.",
-)
-@click.option(
-    "--coverage",
-    "coverage_paths",
-    multiple=True,
-    type=click.Path(exists=True),
-    help="Ingest a coverage report (LCOV/Cobertura/Clover). May be repeated.",
-)
-@click.option(
-    "--coverage-format",
-    "coverage_format",
-    default=None,
-    type=click.Choice(["lcov", "cobertura", "clover"]),
-    help="Override coverage-format auto-detection.",
 )
 @click.option(
     "--refactoring-targets",
@@ -126,8 +112,6 @@ def health_command(
     safe_only: bool,
     repo_alias: str | None,
     no_workspace: bool,
-    coverage_paths: tuple[str, ...],
-    coverage_format: str | None,
     refactoring_targets: bool,
     generate_code: str | None,
     module_filter: str | None,
@@ -142,7 +126,6 @@ def health_command(
     from pathlib import Path as PathlibPath
 
     from repowise.core.analysis.health import HealthAnalyzer
-    from repowise.core.analysis.health.coverage import parse as parse_coverage
     from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
 
     # Silence structlog/stdlib info+debug lines when the user asked for a
@@ -223,40 +206,10 @@ def health_command(
     except Exception:
         pass
 
-    coverage_map: dict[str, dict] = {}
-    coverage_persist_files: list = []
-    coverage_persist_format: str | None = None
-    if coverage_paths:
-        for cov_path in coverage_paths:
-            try:
-                text = PathlibPath(cov_path).read_text(encoding="utf-8")
-            except OSError as exc:
-                status.print(f"[red]Could not read coverage file {cov_path}: {exc}[/red]")
-                continue
-            report_cov = parse_coverage(text, format=coverage_format)
-            if not report_cov.files:
-                status.print(
-                    f"[yellow]No coverage entries parsed from {cov_path} "
-                    f"(detected={report_cov.source_format}).[/yellow]"
-                )
-                continue
-            for fc in report_cov.files:
-                coverage_map[fc.file_path] = {
-                    "line_coverage_pct": fc.line_coverage_pct,
-                    "branch_coverage_pct": fc.branch_coverage_pct,
-                    "covered_lines": list(fc.covered_lines),
-                    "total_coverable_lines": fc.total_coverable_lines,
-                    "source_format": report_cov.source_format,
-                }
-            # Accumulate for DB persistence. Last format wins when multiple
-            # reports are passed — they should all be the same format in
-            # practice, but the CLI doesn't enforce it.
-            coverage_persist_files.extend(report_cov.files)
-            coverage_persist_format = report_cov.source_format
-            status.print(
-                f"[green]Ingested {len(report_cov.files)} files "
-                f"from {cov_path} ({report_cov.source_format}).[/green]"
-            )
+    # Coverage folds into scoring from whatever `repowise coverage add` (or
+    # index-time ingest) persisted - no per-run flag. Ingestion lives solely
+    # in the `coverage` command group.
+    coverage_map = _load_persisted_coverage_map(repo_path)
 
     analyzer = HealthAnalyzer(
         graph_builder.graph(),
@@ -276,23 +229,15 @@ def health_command(
     )
     report = analyzer.analyze(analyzer_cfg)
 
-    # Persist health + coverage to the repo's wiki.db so the dashboard,
-    # MCP tools, and `repowise status` see the same numbers as this CLI
-    # run. Without this step, `--coverage` was effectively a stdout-only
-    # toy — biomarkers got recomputed in memory but nothing reached the
-    # tables that drive the Coverage page / get_health.
+    # Persist health to the repo's wiki.db so the dashboard, MCP tools, and
+    # `repowise status` see the same numbers as this CLI run.
     #
     # Skip when fmt != "table" (json/md are read by scripts and CI; side
     # effects are unwelcome) or when the run is filtered to a single
     # file/module (those are inspection runs that shouldn't overwrite
     # repo-level state).
     if fmt == "table" and not file_filter and not module_filter:
-        _persist_health(
-            repo_path,
-            report=report,
-            coverage_files=coverage_persist_files,
-            coverage_format=coverage_persist_format,
-        )
+        _persist_health(repo_path, report=report)
 
     metrics = report.metrics
     if file_filter:

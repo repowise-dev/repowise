@@ -188,7 +188,7 @@ the layer closes the loop into concrete, graph-aware refactoring plans
 
 ```bash
 repowise health                       # KPIs + lowest-scoring files
-repowise health --coverage cov.lcov   # ingest coverage, light up untested-hotspot
+repowise coverage add cov.lcov   # ingest coverage, light up untested-hotspot
 repowise health --refactoring-targets # ranked by impact / effort
 repowise health --trend               # last 10 snapshots + declining/predicted-decline alerts
 repowise status                       # one-line summary in the status report

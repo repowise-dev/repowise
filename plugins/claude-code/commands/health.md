@@ -29,7 +29,7 @@ Handle `$ARGUMENTS`:
 - "trend" / "trends" → `repowise health --trend` (last snapshots + declining / predicted-decline alerts)
 - "module <name>" → `repowise health --module <name>`
 - "safe" → `repowise health --safe-only`
-- a coverage file (e.g. `cov.lcov`, `coverage.xml`) → `repowise health --coverage <file>` to light up untested-hotspot / coverage-gap markers (LCOV, Cobertura, Clover)
+- a coverage file (e.g. `cov.lcov`, `coverage.xml`, `.coverage`) → `repowise coverage add <file>` to ingest it (folds into health markers, and builds the per-test map when the report has contexts), then `repowise health`
 
 Other flags: `--format json` for machine-readable output, `--repo <alias>` /
 `--no-workspace` in workspace mode.

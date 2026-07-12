@@ -413,8 +413,6 @@ Compute per-file code-health scores from 25 deterministic markers (McCabe comple
 | `--generate-code <selector>` | Generate an actual refactoring patch for one target. The only `health` flag that calls an LLM; needs a configured provider. |
 | `--trend` | Print the last 10 health snapshots + any active alerts (declining / predicted decline) |
 | `--badge` | Print a shields.io-compatible badge URL/JSON for the repo's health score |
-| `--coverage <path>` | Ingest a coverage report (LCOV / Cobertura / Clover). Repeatable. |
-| `--coverage-format` | Override coverage-format auto-detection: `lcov`, `cobertura`, `clover` |
 | `--format` | Output: `table` (default), `json`, `md` |
 | `--safe-only` | Documented no-op placeholder for a future confidence filter; has no effect today |
 | `--repo` | In workspace mode, target a specific repo (defaults to primary) |
@@ -427,13 +425,15 @@ repowise health --module packages/server              # restrict to a directory
 repowise health --refactoring-targets                 # ranked by impact / effort
 repowise health --generate-code packages/server/app.py::handler   # LLM patch for one target
 repowise health --trend                               # snapshot history + alerts
-repowise health --coverage coverage.lcov              # ingest coverage
+repowise coverage add coverage.lcov   # ingest coverage, then:
+repowise health
 repowise health --format json | jq .kpis              # machine-readable
 ```
 
 `repowise init` and `repowise update` populate the health tables automatically -
 no separate command needed. `repowise status` shows a one-line summary
 (`Health: 7.4 (avg) · 6.2 (hotspots) · 2.1 (worst: <path>)`).
+Health automatically folds in whatever coverage was already ingested via `repowise coverage add`, no flag needed.
 
 ---
 
@@ -475,8 +475,8 @@ regardless of where their tests live.
 **Subcommands:**
 
 ```bash
-repowise coverage add [PATHS...]        # ingest one or more reports
-repowise coverage status                # show currently ingested coverage
+repowise coverage add [PATHS...]        # ingest coverage reports (+ per-test map when contexts are present)
+repowise coverage status                # show ingested coverage + the map
 ```
 
 **`add` options:**
@@ -486,12 +486,27 @@ repowise coverage status                # show currently ingested coverage
 | `--path` | Repo path (defaults to cwd / workspace primary) |
 | `--format` | Force a parser instead of auto-detecting: `lcov`, `cobertura`, `clover`, `repowise-json` |
 
+`add` ingests per-file line/branch coverage from LCOV, Cobertura, Clover, or a
+coverage.py `.coverage` file. It auto-discovers `coverage/lcov.info`,
+`.coverage`, and similar reports at the repo root when no path is given, and
+merges multiple reports (hit wins). When the report carries per-test contexts,
+a coverage.py `.coverage` written with `coverage run --contexts=test`, or a
+per-test lcov, `add` also builds the per-test *test-to-code map*, which test
+covers which source lines. A report without contexts still ingests the
+per-file coverage; it just skips the map.
+
 ```bash
-repowise coverage add                       # discover coverage/lcov.info etc.
+repowise coverage add                       # discover coverage/lcov.info, .coverage, etc.
 repowise coverage add coverage/lcov.info
 repowise coverage add web.lcov api.lcov     # merged, hit wins
-repowise coverage status
+coverage run --contexts=test -m pytest      # produce .coverage with contexts
+repowise coverage add .coverage             # per-file coverage + per-test map
+repowise coverage status                    # coverage summary + "Test-to-code map" counts
 ```
+
+> The per-test map is a separate dimension from the per-file aggregate that
+> `add` always stores (a file is covered, merged over all tests) and from what
+> `health` reads. It's used to answer "which tests exercise this change".
 
 ---
 

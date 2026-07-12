@@ -1,7 +1,7 @@
 """Format auto-detection + test-file heuristic.
 
-The CLI accepts ``--coverage <path>`` without a format flag in the common
-case. We sniff the content to decide which parser to dispatch to.
+``repowise coverage add <path>`` accepts a report without a format flag in
+the common case. We sniff the content to decide which parser to dispatch to.
 
 Sniffing rules (cheap, deterministic):
 
@@ -12,7 +12,7 @@ Sniffing rules (cheap, deterministic):
 - Clover XML has a ``<coverage generated=`` root with a ``<project>``
   child.
 
-If detection is ambiguous, callers can pass ``--coverage-format`` to
+If detection is ambiguous, callers can pass ``coverage add --format`` to
 override.
 """
 

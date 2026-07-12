@@ -56,6 +56,9 @@ class TestCoverage:
     (``None`` when the test id is not path-shaped or does not resolve).
     """
 
+    # Tell pytest this ``Test``-prefixed class is not a test to collect.
+    __test__ = False
+
     test_id: str
     file_path: str
     covered_lines: list[int] = field(default_factory=list)

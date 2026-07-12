@@ -8,11 +8,17 @@ imports are unaffected.
 
 from __future__ import annotations
 
-from . import coverage, dead_code, health, refactoring  # noqa: F401
+from . import coverage, coverage_map, dead_code, health, refactoring  # noqa: F401
 from .coverage import (
     get_coverage_summary,
     load_coverage_for_repo,
     save_coverage_files,
+)
+from .coverage_map import (
+    files_covered_by,
+    get_test_coverage_summary,
+    save_test_coverage,
+    tests_covering,
 )
 from .dead_code import (
     get_dead_code_findings,
@@ -46,6 +52,7 @@ from .refactoring import (
 
 __all__ = [
     "HEALTH_SNAPSHOT_RETENTION",
+    "files_covered_by",
     "get_coverage_summary",
     "get_dead_code_findings",
     "get_dead_code_summary",
@@ -56,6 +63,7 @@ __all__ = [
     "get_perf_coverage",
     "get_refactoring_suggestion",
     "get_refactoring_suggestions",
+    "get_test_coverage_summary",
     "list_health_snapshots",
     "load_coverage_for_repo",
     "replace_governance_findings",
@@ -65,6 +73,8 @@ __all__ = [
     "save_health_metrics",
     "save_health_snapshot",
     "save_refactoring_suggestions",
+    "save_test_coverage",
+    "tests_covering",
     "update_dead_code_status",
     "update_health_finding_status",
     "upsert_dead_code_findings",

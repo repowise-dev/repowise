@@ -26,7 +26,7 @@ from repowise.core.analysis.health.coverage import (
 
 A small, explicit JSON shape so coverage from *any* runner can be
 normalized once (keyed by repo-relative POSIX path) and fed to
-`repowise health --coverage`:
+`repowise coverage add`:
 
 ```json
 {

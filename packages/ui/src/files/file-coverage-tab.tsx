@@ -20,7 +20,7 @@ export function FileCoverageTab({ coverage, coverageCodeHtml }: FileCoverageTabP
       <EmptyState
         icon={<Shield className="h-8 w-8" />}
         title="No coverage data"
-        description="Ingest a coverage report (repowise health --coverage <report>) to see line-level coverage here."
+        description="Ingest a coverage report (repowise coverage add <report>) to see line-level coverage here."
       />
     );
   }

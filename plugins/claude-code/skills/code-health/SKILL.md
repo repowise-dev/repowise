@@ -44,15 +44,16 @@ not just *bigger*.
 3. Before editing a flagged file → cross-check `get_risk(targets=[...])`; a file
    that is both low-health *and* a churn hotspot deserves the most care.
 4. Untested-hotspot / coverage questions → tell the user coverage markers
-   light up once they ingest a report: `repowise health --coverage cov.lcov`
-   (LCOV / Cobertura / Clover).
+   light up once they ingest a report: `repowise coverage add cov.lcov`
+   (LCOV / Cobertura / Clover; a coverage.py `.coverage` also builds the
+   per-test map), then re-run `repowise health`.
 
 ## CLI equivalents
 
 - `repowise health` — KPIs + lowest-scoring files
 - `repowise health --refactoring-targets` — ranked by impact / effort
 - `repowise health --trend` — snapshots + declining alerts
-- `repowise health --coverage <file>` — ingest coverage, light up untested-hotspot
+- `repowise coverage add <file>` — ingest coverage, light up untested-hotspot
 
 ## Error handling
 

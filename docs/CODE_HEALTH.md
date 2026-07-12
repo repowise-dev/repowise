@@ -588,16 +588,17 @@ score by more than half a point.
 
 ## Test coverage
 
-Pass coverage reports straight into the analyzer:
+Ingest coverage reports, then run health:
 
 ```bash
 pytest --cov --cov-report=lcov:coverage.lcov
-repowise health --coverage coverage.lcov
+repowise coverage add coverage.lcov
+repowise health
 
 # Cobertura, Clover, or multiple sources also work:
-repowise health \
-  --coverage backend/coverage.xml --coverage-format cobertura \
-  --coverage frontend/lcov.info
+repowise coverage add backend/coverage.xml --format cobertura
+repowise coverage add frontend/lcov.info
+repowise health
 ```
 
 Formats are auto-detected: **LCOV**, **Cobertura** XML, **Clover** XML, and a

@@ -146,7 +146,7 @@ core/pipeline/
 
 ```
 cli/src/repowise/cli/commands/
-├── health_cmd.py                   # repowise health [--trend|--coverage|--refactoring-targets|--module]
+├── health_cmd.py                   # repowise health [--trend|--refactoring-targets|--module]
 ├── status_cmd.py                   # `Health: 7.4 (avg) · 6.2 (hotspots) · 2.1 (worst: ...)`
 └── update_cmd.py                   # incremental path: HealthAnalyzer.analyze(changed_files=...)
 ```
@@ -621,7 +621,7 @@ KPI + per-file score history. Rolling delete on insert keeps the latest
 
 ### `coverage_files`
 
-Per-file coverage, overwritten on every `--coverage` run. Carries the
+Per-file coverage, overwritten on every `coverage add` run. Carries the
 explicit `covered_lines_json` array so the `coverage_gap` marker can
 flag the exact uncovered surface, not just the percent.
 
@@ -638,8 +638,8 @@ repowise health --file path/to/x.py        # deep-dive one file
 repowise health --module packages/server   # restrict to a directory prefix
 repowise health --refactoring-targets      # ranked by impact / effort
 repowise health --trend                    # last 10 snapshots + active alerts
-repowise health --coverage coverage.lcov   # ingest coverage; can repeat
-repowise health --coverage-format cobertura
+repowise coverage add coverage.lcov        # ingest coverage; can repeat
+repowise coverage add coverage.xml --format cobertura
 repowise health --format json | jq ...
 repowise health --safe-only                # confidence ≥ 0.8 only (placeholder)
 ```

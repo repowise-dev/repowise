@@ -318,6 +318,7 @@ def test_base_includes_all_models():
         "health_snapshots",
         "refactoring_suggestions",
         "coverage_files",
+        "test_coverage",
         "pipeline_jobs",
         "graph_metrics",
         "graph_node_membership",

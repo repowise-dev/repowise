@@ -483,7 +483,7 @@ function NoCoverageState() {
         </p>
         <pre className="inline-block px-4 py-2 rounded bg-[var(--color-bg-muted)] text-left text-xs font-mono">
           pytest --cov --cov-report=lcov{"\n"}
-          repowise health --coverage coverage.lcov
+          repowise coverage add coverage.lcov
         </pre>
         <p className="text-xs text-[var(--color-text-tertiary)]">
           Supported formats: LCOV · Cobertura · Clover.
