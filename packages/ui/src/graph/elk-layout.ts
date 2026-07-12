@@ -374,11 +374,26 @@ export async function computeElkModulePositions(
 ): Promise<Map<string, { x: number; y: number }>> {
   if (moduleNodes.length === 0) return new Map();
 
-  const moduleIds = new Set(moduleNodes.map((m) => m.module_id));
+  // Modules without any dependency edge would each become their own ELK
+  // component, packed side by side into one huge band that drowns out the
+  // actual layering. Run ELK on the connected subgraph only; the isolated
+  // modules get a compact grid below it (see after extractPositions).
+  const connectedIds = new Set<string>();
+  for (const e of moduleEdges) {
+    connectedIds.add(e.source);
+    connectedIds.add(e.target);
+  }
+  const isolated = moduleNodes.filter((m) => !connectedIds.has(m.module_id));
+  const layoutNodes =
+    isolated.length === moduleNodes.length
+      ? moduleNodes
+      : moduleNodes.filter((m) => connectedIds.has(m.module_id));
+
+  const moduleIds = new Set(layoutNodes.map((m) => m.module_id));
 
   // Build all ancestor directories for compound node nesting
   const dirSet = new Set<string>();
-  for (const m of moduleNodes) {
+  for (const m of layoutNodes) {
     const ancestors = ancestorDirs(dirOf(m.module_id));
     for (const a of ancestors) {
       if (!moduleIds.has(a)) dirSet.add(a);
@@ -413,7 +428,7 @@ export async function computeElkModulePositions(
   }
 
   // Place module nodes into their parent directory (or root)
-  for (const m of moduleNodes) {
+  for (const m of layoutNodes) {
     const elkNode: ElkNode = {
       id: m.module_id,
       width: MODULE_NODE_WIDTH,
@@ -473,6 +488,39 @@ export async function computeElkModulePositions(
     }
   };
   extractPositions(layout);
+
+  // Shelve isolated modules in a grid below the layered area so they stay
+  // visible without stretching the layers into a single band.
+  if (isolated.length > 0 && isolated.length < moduleNodes.length) {
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const p of positions.values()) {
+      minX = Math.min(minX, p.x);
+      maxX = Math.max(maxX, p.x);
+      maxY = Math.max(maxY, p.y);
+    }
+    if (!Number.isFinite(minX)) {
+      minX = 0;
+      maxX = 0;
+      maxY = 0;
+    }
+    // Wider than the layered spacing: grid rows have no edges to separate
+    // nodes visually, so labels need the room instead.
+    const cellW = MODULE_NODE_WIDTH + 90;
+    const cellH = MODULE_NODE_HEIGHT + 45;
+    const cols = Math.max(
+      Math.ceil(Math.sqrt(isolated.length)),
+      Math.min(isolated.length, Math.floor((maxX - minX) / cellW) || 1),
+    );
+    const startY = maxY + MODULE_NODE_HEIGHT + 90;
+    isolated.forEach((m, i) => {
+      positions.set(m.module_id, {
+        x: minX + (i % cols) * cellW,
+        y: startY + Math.floor(i / cols) * cellH,
+      });
+    });
+  }
 
   return positions;
 }
