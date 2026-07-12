@@ -7,6 +7,13 @@ export function formatNumber(n: number): string {
   return new Intl.NumberFormat().format(n);
 }
 
+/** Format large counts compactly: 1234567 → "1.2M", 98432 → "98.4K", 999 → "999" */
+export function formatCompact(n: number): string {
+  if (n >= 1_000_000) return `${Number((n / 1_000_000).toFixed(1))}M`;
+  if (n >= 1_000) return `${Number((n / 1_000).toFixed(1))}K`;
+  return String(n);
+}
+
 /** Format token counts: 4200000 → "4.2M", 980000 → "980K", 1234 → "1,234" */
 export function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
@@ -103,16 +110,28 @@ export function truncatePath(path: string, maxChars = 60): string {
   return filename.length <= maxChars ? `…/${filename}` : `…${filename.slice(-(maxChars - 1))}`;
 }
 
-/** Format age in days to human-readable: 45 → "1.5 months", 400 → "1.1 years" */
+/** Format age in days to split units: 45 → "1 month 15 days", 400 → "1 year 1 month" */
 export function formatAgeDays(n: number): string {
   if (n < 1) return "< 1 day";
-  if (n < 30) return `${n} day${n !== 1 ? "s" : ""}`;
-  if (n < 365) {
-    const months = Math.round(n / 30 * 10) / 10;
-    return `${months} month${months !== 1 ? "s" : ""}`;
+
+  const days = Math.floor(n);
+  const pluralize = (value: number, unit: string) =>
+    `${value} ${unit}${value === 1 ? "" : "s"}`;
+
+  if (days < 30) return pluralize(days, "day");
+  if (days < 365) {
+    const months = Math.floor(days / 30);
+    const remainingDays = days % 30;
+    return [pluralize(months, "month"), remainingDays && pluralize(remainingDays, "day")]
+      .filter(Boolean)
+      .join(" ");
   }
-  const years = Math.round(n / 365 * 10) / 10;
-  return `${years} year${years !== 1 ? "s" : ""}`;
+
+  const years = Math.floor(days / 365);
+  const months = Math.floor((days % 365) / 30);
+  return [pluralize(years, "year"), months && pluralize(months, "month")]
+    .filter(Boolean)
+    .join(" ");
 }
 
 /** Strip inline markdown emphasis/code markers for plain-text display:

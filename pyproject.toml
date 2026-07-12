@@ -214,4 +214,9 @@ check_untyped_defs = true
 asyncio_mode = "auto"
 testpaths = ["tests"]
 addopts = "-v --tb=short"
-pythonpath = ["."]
+pythonpath = [
+    ".",
+    "packages/core/src",
+    "packages/cli/src",
+    "packages/server/src",
+]

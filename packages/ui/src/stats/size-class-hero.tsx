@@ -8,7 +8,7 @@ import {
   Globe2,
 } from "lucide-react";
 import type { StatsScale } from "@repowise-dev/types/stats";
-import { formatNumber, formatLOC } from "../lib/format";
+import { formatCompact, formatNumber, formatLOC } from "../lib/format";
 import { NLOC_HINT } from "./stat-callout";
 
 const SIZE_ICON: Record<string, React.ComponentType<{ className?: string }>> = {
@@ -44,8 +44,8 @@ export function SizeClassHero({ scale, repoName }: SizeClassHeroProps) {
 
   const figures: HeroFigure[] = [
     { label: "Lines of code", value: formatLOC(scale.total_nloc), hint: NLOC_HINT },
-    { label: "Files", value: formatNumber(scale.file_count) },
-    { label: "Symbols", value: formatNumber(scale.symbol_count) },
+    { label: "Files", value: formatCompact(scale.file_count) },
+    { label: "Symbols", value: formatCompact(scale.symbol_count) },
     { label: "Languages", value: formatNumber(scale.language_count) },
   ];
 
@@ -84,9 +84,9 @@ export function SizeClassHero({ scale, repoName }: SizeClassHeroProps) {
             <div
               key={f.label}
               title={f.hint}
-              className={`rounded-xl border border-[var(--color-border-subtle,var(--color-border-default))] bg-[var(--color-bg-surface)]/70 px-4 py-3 backdrop-blur-sm${f.hint ? " cursor-help" : ""}`}
+              className={`min-w-0 rounded-xl border border-[var(--color-border-subtle,var(--color-border-default))] bg-[var(--color-bg-surface)]/70 px-4 py-3 backdrop-blur-sm${f.hint ? " cursor-help" : ""}`}
             >
-              <p className="text-2xl font-bold tabular-nums text-[var(--color-text-primary)] sm:text-3xl">
+              <p className="truncate text-2xl font-bold tabular-nums text-[var(--color-text-primary)] sm:text-3xl">
                 {f.value}
               </p>
               <p className="mt-0.5 text-[11px] font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
