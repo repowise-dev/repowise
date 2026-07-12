@@ -158,6 +158,7 @@ headline, so the bug-predictive number stays clean.
 ```bash
 repowise health                       # KPIs + lowest-scoring files
 repowise coverage add cov.lcov   # ingest LCOV/Cobertura/Clover → untested-hotspot
+repowise impacted-tests HEAD~1   # run only the tests a diff actually exercises
 repowise health --refactoring-targets # ranked by impact / effort
 repowise health --trend               # snapshots + declining / predicted-decline alerts
 ```

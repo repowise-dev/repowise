@@ -9,6 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.31.0] — 2026-07-12
+
+### Added
+- **Coverage-backed test intelligence.** repowise now ingests per-test coverage to build a test-to-code map, and puts it to work two ways: a missing-test signal proven by that map (real gaps, not just heuristics), and a new `repowise impacted-tests` command that takes a diff and lists only the tests that actually exercise the changed code, so you can run the smallest relevant subset instead of the whole suite. (#789, #790, #792, #793)
+- **Decisions mined from your agent sessions.** A shared agent-transcript layer lets repowise mine durable architectural decisions out of Claude Code / agent session transcripts, then deliver them relevance-ranked at session start and at edit time with a usage-feedback loop. Agent co-authorship is detected and decision scope is derived from it. (#774, #775, #776, #803)
+- **Flow-shaped answers.** `get_answer` can now trace how something gets from one named endpoint to another by walking the graph path between them and narrating the flow. (#804)
+- **Shell parsed to a real AST.** Shell scripts now parse into functions, source edges, and complexity like every other supported language, instead of being treated as opaque text. (#768)
+- **Lean MCP-only Docker image.** A new `Dockerfile.mcp` builds a slim MCP-server-only image for MCP hosts and server directories. (#800)
+
+### Changed
+- **`get_answer` is grounded in what it serves.** Synthesis is grounded in the exact body the answer returns, data-shape questions are grounded in the field set mined from source (including alias keys the shape omits), homonym symbols are answered by union across their definitions, and low-confidence misses are slimmed. `get_symbol(id=...)` is forgiven and a hedged answer is re-grounded on the served body. (#778, #779, #780, #772, #783)
+- **Performance findings move the health score.** Open performance-risk findings are now deducted from the performance score, so the number reflects outstanding perf debt. (#801)
+- **Decision sources gated and stickier.** The code-comment decision harvest is gone, decision sources are gated, and dismissals stick so a dismissed suggestion stays dismissed. (#773)
+- **FAQ-weighted docs budget.** Generation tilts documentation depth toward the modules people actually ask about. (#781)
+- **Hardier MCP surface.** Session-survival hardening for the tool surface, plus a response budget clamped under the live MCP host token cap, keeps the server responsive under strict hosts. (#767, #771)
+- **Prose search leads with concept pages.** Hybrid search now leads prose queries with concept and wiki pages instead of raw symbol hits. (#797)
+- **Contributors strip explains agent authorship.** The contributors view now spells out the agent-authored share of commits. (#799)
+
+### Fixed
+- **Incremental updates persist graph and symbol data.** `repowise update` now persists `graph_edges` and `wiki_symbols` on incremental runs (both were dropped before), and edge upserts keep the maximum confidence instead of overwriting it. (#795, #806, #807)
+- **`get_answer` verifies live slices.** Symbol bounds are verified before serving a live slice, and non-path node ids are kept out of `fallback_targets`. (#796, #769)
+- **Honest search and symbol signals.** Zero-exact search and filename-only `get_symbol` carry honesty signals instead of implying a confident hit. (#770)
+- **Execution-flow picker on the module overview.** The module overview gained an execution-flow picker with hierarchical-layout guardrails so large graphs stay readable. (#805)
+
+### Documentation
+- New hooks guide plus a "learns from your usage" section explaining the adoption feedback loop. (#784)
+- Full AGPL-3.0 license text so GitHub detects the license correctly. (#794)
+
+---
+
 ## [0.30.0] — 2026-07-10
 
 ### Added
