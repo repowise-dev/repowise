@@ -464,6 +464,70 @@ class TestHybridSearch:
         assert "page" in types, "concept page must survive the merge"
 
 
+class TestHybridInterleave:
+    """The hybrid block-interleave: symbol and concept scores are incomparable,
+    so ordering is by block. Default symbols-lead, EXCEPT the score-scale trap -
+    a mostly-prose query whose embedded identifier matches no symbol exactly must
+    lead with concept pages, or fuzzy symbol hits bury the relevant page."""
+
+    def _sym(self, name, file, score):
+        return {"type": "symbol", "name": name, "file": file, "score": score}
+
+    def _page(self, path, rel):
+        return {"type": "page", "target_path": path, "relevance_score": rel}
+
+    def test_prose_dominates(self):
+        from repowise.server.mcp_server.tool_search import _prose_dominates
+
+        # 6 prose tokens vs 1 identifier -> prose.
+        assert _prose_dominates("how does retrieval feed synthesis in get_answer", ["get_answer"])
+        # Balanced / symbol-heavy -> not prose-dominant.
+        assert not _prose_dominates("compare FooBar and BazQux", ["FooBar", "BazQux"])
+        # No embedded identifier -> never prose-dominant (nothing to demote).
+        assert not _prose_dominates("plain english question here", [])
+
+    def test_no_exact_prose_query_leads_with_concepts(self):
+        from repowise.server.mcp_server.tool_search import _interleave_hybrid
+
+        symbols = [self._sym("get", "a/registry.py", 43.8),
+                   self._sym("get", "b/store.py", 43.7)]
+        concepts = [self._page("mcp/answer.py", 0.47)]
+        out = _interleave_hybrid(
+            "how does retrieval feed synthesis in get_answer",
+            symbols, concepts, limit=5, exact=False,
+        )
+        assert out[0]["type"] == "page", "the answer.py page must lead, not fuzzy .get"
+        # Nothing dropped - the fuzzy symbols still ride along at the tail.
+        assert {s["file"] for s in symbols} <= {r.get("file") for r in out}
+
+    def test_exact_match_keeps_symbols_first(self):
+        from repowise.server.mcp_server.tool_search import _interleave_hybrid
+
+        symbols = [self._sym("get_answer", "mcp/answer.py", 143.0)]
+        concepts = [self._page("mcp/other.py", 0.5)]
+        out = _interleave_hybrid("where is get_answer defined", symbols, concepts,
+                                 limit=5, exact=True)
+        assert out[0]["type"] == "symbol"
+
+    def test_symbol_heavy_query_keeps_symbols_first(self):
+        from repowise.server.mcp_server.tool_search import _interleave_hybrid
+
+        # Not prose-dominant, so default ordering even without an exact match.
+        symbols = [self._sym("FooBar", "x.py", 40.0)]
+        concepts = [self._page("y.py", 0.3)]
+        out = _interleave_hybrid("compare FooBar BazQux", symbols, concepts,
+                                 limit=5, exact=False)
+        assert out[0]["type"] == "symbol"
+
+    def test_no_concepts_returns_symbols(self):
+        from repowise.server.mcp_server.tool_search import _interleave_hybrid
+
+        symbols = [self._sym("get", "a.py", 43.0)]
+        out = _interleave_hybrid("how does retrieval feed synthesis in get_answer",
+                                 symbols, [], limit=5, exact=False)
+        assert out == symbols
+
+
 class TestConceptModeUnchanged:
     """Forcing mode="concept" preserves the original semantic behavior."""
 

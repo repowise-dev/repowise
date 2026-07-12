@@ -99,6 +99,40 @@ def _has_exact_symbol(candidates: list[str], symbols: list[dict]) -> bool:
     return False
 
 
+def _prose_dominates(query: str, identifiers: list[str]) -> bool:
+    """True when natural-language tokens outnumber the identifier tokens a query
+    carries: the query reads as prose that merely *mentions* a symbol, not a
+    symbol lookup dressed in a few words. Drives hybrid ordering below."""
+    ident_count = len(identifiers)
+    if ident_count == 0:
+        return False
+    total = len(re.findall(r"[A-Za-z0-9_]+", query))
+    return (total - ident_count) > ident_count
+
+
+def _interleave_hybrid(query: str, symbols: list[dict], concepts: list[dict],
+                       limit: int, exact: bool) -> list[dict]:
+    """Order one hybrid result window from the two incomparable score scales.
+
+    Symbol SQL scores (~43, +100 on an exact-name hit) and concept relevance
+    (0 to 1) can't be merge-sorted, so we interleave by block. Default: symbols
+    lead, reserving up to half the window for concept pages so a flood of symbol
+    matches can't truncate every page out.
+
+    The exception is the score-scale trap. When NO returned symbol matches the
+    query's identifier exactly AND the query is mostly prose, leading with fuzzy
+    symbol hits buries the page the caller actually wants: the generic ``.get``
+    methods that outscore the ``answer.py`` page for "how does retrieval feed
+    synthesis in get_answer". There, concept pages lead and the fuzzy symbols
+    fall to the tail (nothing is dropped, only reordered within the window).
+    """
+    if not exact and concepts and _prose_dominates(query, _embedded_identifiers(query)):
+        reserved = min(len(symbols), limit // 2)
+        return (concepts[: max(1, limit - reserved)] + symbols)[:limit]
+    reserved = min(len(concepts), limit // 2)
+    return (symbols[: max(1, limit - reserved)] + concepts)[:limit]
+
+
 # Decision records are short, dense title-statements; they win cosine
 # similarity against long file-page embeddings on any query containing
 # design nouns ("store", "SQLite", "cap", "prune") and crowd file pages
@@ -571,21 +605,24 @@ async def _structured_search(
     symbols.sort(key=lambda x: -(x.get("score") or 0.0))
     files.sort(key=lambda x: -(x.get("score") or 0.0))
 
+    # Whether any returned symbol matches the query's identifier(s) exactly.
+    # Computed once here so the hybrid interleave and the exact-match note below
+    # agree on the same signal.
+    candidates = _identifier_candidates(query, mode)
+    exact = _has_exact_symbol(candidates, symbols) if candidates else False
+
     if mode == "symbol":
         results = symbols[:limit]
     elif mode == "path":
         results = files[:limit]
-    else:  # hybrid — symbol matches first, then concept pages for new files
+    else:  # hybrid: interleave symbol matches and concept pages for new files
         sym_files = {s.get("file") for s in symbols}
         concepts = [c for c in concepts if c.get("target_path") not in sym_files]
         # Federation appends per-repo concept lists in repo order — re-rank by
         # relevance so a strong page in repo B isn't buried under repo A's weak
         # ones. (Single-repo: already sorted upstream; this is a no-op.)
         concepts.sort(key=lambda x: -(x.get("relevance_score") or 0.0))
-        # Reserve up to half the window for concept pages so hybrid stays
-        # hybrid: a flood of symbol matches must not truncate every page out.
-        reserved = min(len(concepts), limit // 2)
-        results = (symbols[: max(1, limit - reserved)] + concepts)[:limit]
+        results = _interleave_hybrid(query, symbols, concepts, limit, exact)
 
     repository = None
     if not multi:
@@ -601,10 +638,9 @@ async def _structured_search(
     # indexed symbol still returns fuzzy neighbours. Say so, or the agent
     # anchors on a wrong hit that looks authoritative (their Alamofire
     # 44-overload read-spiral). Emit the boolean either way; a note only when
-    # there is no exact hit to distinguish from the fuzz.
-    candidates = _identifier_candidates(query, mode)
+    # there is no exact hit to distinguish from the fuzz. ``candidates`` /
+    # ``exact`` were computed above so ordering and this note stay consistent.
     if candidates:
-        exact = _has_exact_symbol(candidates, symbols)
         response["exact_match"] = exact
         if not exact:
             shown = ", ".join(repr(c) for c in candidates[:3])
