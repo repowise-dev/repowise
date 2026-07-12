@@ -395,8 +395,16 @@ class PageGenerator(PerTypeGenerationMixin):
         request_id: str,
         target_path: str | None = None,
         content_hash: str = "",
+        source_salt: str = "",
     ) -> GeneratedResponse:
-        """Call the provider with caching, optionally prefixing a language instruction."""
+        """Call the provider with caching, optionally prefixing a language instruction.
+
+        *source_salt* is folded into the source_hash used for cross-run reuse
+        without changing the prompt sent to the model. Onboarding pages pass a
+        generation-version salt so a builder/template upgrade forces a one-time
+        regen even when the rendered prompt is byte-identical. Empty for every
+        other page type, so their reuse hashes are unchanged.
+        """
         # Persistent cross-run cache: if the page exists from a prior run, was
         # produced by the same model, and either the documented file's bytes
         # (content_hash) or the prompt's source_hash matches, reuse the stored
@@ -409,7 +417,7 @@ class PageGenerator(PerTypeGenerationMixin):
             if prior is not None and prior.model_name == self._provider.model_name:
                 reuse = bool(content_hash) and prior.content_hash == content_hash
                 if not reuse:
-                    reuse = prior.source_hash == compute_source_hash(user_prompt)
+                    reuse = prior.source_hash == compute_source_hash(user_prompt + source_salt)
                 if reuse:
                     self._reuse_count += 1
                     log.debug(
