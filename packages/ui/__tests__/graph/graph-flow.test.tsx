@@ -24,6 +24,20 @@ afterEach(() => {
   focusNodeSpy.mockClear();
 });
 
+// Fixture file node carrying every required GraphNode field.
+const fileNode = (id: string, language: string) => ({
+  node_id: id,
+  node_type: "file",
+  language,
+  symbol_count: 1,
+  pagerank: 0,
+  betweenness: 0,
+  community_id: 0,
+  is_test: false,
+  is_entry_point: false,
+  has_doc: false,
+});
+
 // Minimal prop set — no graphs supplied, so the canvas renders its empty state
 // while the toolbar (and its color-mode control) still mounts.
 const baseProps = {
@@ -189,11 +203,7 @@ describe("GraphFlow shell", () => {
     expect(focusNodeSpy).not.toHaveBeenCalled();
 
     // The full graph lands: the deferred focus fires once for the trace head.
-    const nodes = flows.flows[0]!.trace.map((id) => ({
-      node_id: id,
-      label: id,
-      language: "python",
-    }));
+    const nodes = flows.flows[0]!.trace.map((id) => fileNode(id, "python"));
     rerender(
       <GraphFlow
         {...baseProps}
@@ -218,11 +228,9 @@ describe("GraphFlow shell", () => {
   });
 
   it("refuses hierarchical layout above the ELK cap and explains why", () => {
-    const nodes = Array.from({ length: 501 }, (_, i) => ({
-      node_id: `f${i}.ts`,
-      label: `f${i}.ts`,
-      language: "typescript",
-    }));
+    const nodes = Array.from({ length: 501 }, (_, i) =>
+      fileNode(`f${i}.ts`, "typescript"),
+    );
     render(
       <GraphFlow
         {...baseProps}
