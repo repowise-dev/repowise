@@ -251,6 +251,57 @@ async def persist_graph_nodes(
         logger.warning("graph_node_membership_materialize_skipped", error=str(exc))
 
 
+def _changed_file_symbols(
+    parsed_files: list[Any] | None, changed_paths: list[str]
+) -> tuple[list[str], list[Any]]:
+    """``(reconcile_paths, symbols)`` for files that both changed and parsed.
+
+    Restricting to the intersection means a changed file that failed to parse
+    this run keeps its existing symbol rows (mirrors the graph, which skips
+    unparsed files) rather than having them wrongly pruned on a transient
+    failure. Mutates ``sym.file_path`` where the parser left it unset, same as
+    the full persist path.
+    """
+    changed = set(changed_paths or [])
+    reconcile_paths: list[str] = []
+    symbols: list[Any] = []
+    for pf in parsed_files or []:
+        path = pf.file_info.path
+        if path not in changed:
+            continue
+        reconcile_paths.append(path)
+        for sym in pf.symbols:
+            if not getattr(sym, "file_path", None):
+                sym.file_path = path
+            symbols.append(sym)
+    return reconcile_paths, symbols
+
+
+async def persist_incremental_symbols(
+    session: Any,
+    repo_id: str,
+    parsed_files: list[Any] | None,
+    changed_paths: list[str],
+) -> None:
+    """Refresh ``wiki_symbols`` for changed+parsed files on an incremental update.
+
+    The incremental update path re-parses changed files but never persisted
+    their symbols, so wiki_symbols bounds fossilized at the last full index and
+    the get_answer hydrator served drifted signatures/bodies. This upserts the
+    changed files' fresh symbols and prunes symbols that vanished from a
+    still-existing file. Scoped to the changed set for cost — the repo-wide
+    ``batch_upsert_symbols`` reloads every symbol row.
+    """
+    if not parsed_files:
+        return
+    from repowise.core.persistence.crud import reconcile_symbols_for_files
+
+    reconcile_paths, symbols = _changed_file_symbols(parsed_files, changed_paths)
+    if not reconcile_paths:
+        return
+    await reconcile_symbols_for_files(session, repo_id, reconcile_paths, symbols)
+
+
 # Chunk size for IN (...) deletes — stays under SQLite's host-parameter limit.
 _PRUNE_CHUNK = 500
 

@@ -716,6 +716,7 @@ def run_update(
                 [fd.path for fd in file_diffs],
                 file_diffs=file_diffs,
                 knowledge_graph_result=knowledge_graph_result,
+                parsed_files=parsed_files,
                 degraded=degraded,
             )
         except Exception as exc:
@@ -1126,6 +1127,7 @@ def run_update(
             knowledge_graph_result=knowledge_graph_result,
             degraded=degraded,
             decay_paths=affected.decay_only,
+            parsed_files=parsed_files,
         )
     except Exception as exc:
         if emitter is not None:

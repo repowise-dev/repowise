@@ -386,6 +386,7 @@ async def _incremental_repo_update(
         # until the next full regeneration.
         file_diffs=file_diffs,
         knowledge_graph_result=kg,
+        parsed_files=parsed_files,
         log=_log.info,
     )
 

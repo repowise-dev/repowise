@@ -128,6 +128,28 @@ def _symbol_id(sym: Any) -> str:
     return getattr(sym, "id", None) or f"{sym.file_path}::{sym.name}"
 
 
+def _new_wiki_symbol(repository_id: str, sym: Any) -> WikiSymbol:
+    """Build a WikiSymbol row from an ingestion Symbol (shared insert recipe)."""
+    return WikiSymbol(
+        id=_new_uuid(),
+        repository_id=repository_id,
+        file_path=getattr(sym, "file_path", ""),
+        symbol_id=_symbol_id(sym),
+        name=sym.name,
+        qualified_name=getattr(sym, "qualified_name", sym.name),
+        kind=sym.kind,
+        signature=getattr(sym, "signature", ""),
+        start_line=getattr(sym, "start_line", 0),
+        end_line=getattr(sym, "end_line", 0),
+        docstring=getattr(sym, "docstring", None),
+        visibility=getattr(sym, "visibility", "public"),
+        is_async=getattr(sym, "is_async", False),
+        complexity_estimate=getattr(sym, "complexity_estimate", 0),
+        language=getattr(sym, "language", ""),
+        parent_name=getattr(sym, "parent_name", None),
+    )
+
+
 def _update_wiki_symbol(existing: WikiSymbol, sym: Any) -> None:
     existing.name = sym.name
     existing.qualified_name = getattr(sym, "qualified_name", sym.name)
@@ -161,22 +183,75 @@ async def batch_upsert_symbols(
         item_key_fn=_symbol_id,
         row_key_fn=lambda row: row.symbol_id,
         update_fn=_update_wiki_symbol,
-        insert_fn=lambda sym: WikiSymbol(
-            id=_new_uuid(),
-            repository_id=repository_id,
-            file_path=getattr(sym, "file_path", ""),
-            symbol_id=_symbol_id(sym),
-            name=sym.name,
-            qualified_name=getattr(sym, "qualified_name", sym.name),
-            kind=sym.kind,
-            signature=getattr(sym, "signature", ""),
-            start_line=getattr(sym, "start_line", 0),
-            end_line=getattr(sym, "end_line", 0),
-            docstring=getattr(sym, "docstring", None),
-            visibility=getattr(sym, "visibility", "public"),
-            is_async=getattr(sym, "is_async", False),
-            complexity_estimate=getattr(sym, "complexity_estimate", 0),
-            language=getattr(sym, "language", ""),
-            parent_name=getattr(sym, "parent_name", None),
-        ),
+        insert_fn=lambda sym: _new_wiki_symbol(repository_id, sym),
     )
+
+
+# Chunk size for the scoped existence SELECT — stays under SQLite's
+# host-parameter limit when a wide catch-up update touches many files.
+_SYMBOL_RECONCILE_CHUNK = 400
+
+
+async def reconcile_symbols_for_files(
+    session: AsyncSession,
+    repository_id: str,
+    file_paths: list[str],
+    symbols: list,  # fresh parse of exactly those files
+) -> int:
+    """Make ``wiki_symbols`` for *file_paths* match a fresh parse (*symbols*).
+
+    The incremental update path re-parses changed files but historically never
+    persisted their symbols, so bounds fossilized at the last full index and
+    the get_answer hydrator served drifted signatures. The repo-wide
+    :func:`batch_upsert_symbols` reloads *every* symbol row for the repo, so
+    calling it per update would SELECT the whole table. This scopes the
+    existence query to the changed *file_paths*, upserts their symbols, and
+    prunes rows for symbols that vanished from a still-existing file (a symbol
+    deleted/renamed inside a file a pure upsert would otherwise leave behind as
+    a stale row). Whole-file deletions are handled separately by the stale-row
+    pruner; this only touches the files it was handed.
+
+    Returns the number of pruned rows.
+    """
+    scoped = [p for p in dict.fromkeys(file_paths) if p]
+    if not scoped:
+        return 0
+
+    existing_rows: list[WikiSymbol] = []
+    for i in range(0, len(scoped), _SYMBOL_RECONCILE_CHUNK):
+        chunk = scoped[i : i + _SYMBOL_RECONCILE_CHUNK]
+        rows = (
+            (
+                await session.execute(
+                    select(WikiSymbol).where(
+                        WikiSymbol.repository_id == repository_id,
+                        WikiSymbol.file_path.in_(chunk),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        existing_rows.extend(rows)
+    by_id: dict[str, WikiSymbol] = {row.symbol_id: row for row in existing_rows}
+
+    fresh_ids: set[str] = set()
+    for sym in symbols:
+        sid = _symbol_id(sym)
+        # Within-batch duplicate ids: first inserts, later ones update it.
+        fresh_ids.add(sid)
+        existing = by_id.get(sid)
+        if existing is not None:
+            _update_wiki_symbol(existing, sym)
+        else:
+            obj = _new_wiki_symbol(repository_id, sym)
+            session.add(obj)
+            by_id[sid] = obj
+
+    pruned = 0
+    for sid, row in list(by_id.items()):
+        if sid not in fresh_ids:
+            await session.delete(row)
+            pruned += 1
+    await session.flush()
+    return pruned

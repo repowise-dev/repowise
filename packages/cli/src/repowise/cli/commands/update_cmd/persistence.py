@@ -139,9 +139,10 @@ def _persist_index_only_update(
     changed_paths: list[str],
     file_diffs: list | None = None,
     knowledge_graph_result: Any | None = None,
+    parsed_files: list | None = None,
     degraded: list[str] | None = None,
 ) -> None:
-    """Persist the index-only update (graph + git + dead-code + health + KG),
+    """Persist the index-only update (graph + symbols + git + dead-code + health + KG),
     save state, and print the completion line. No LLM regeneration.
 
     DB persistence delegates to :mod:`repowise.core.pipeline.incremental`;
@@ -161,6 +162,7 @@ def _persist_index_only_update(
             changed_paths,
             file_diffs=file_diffs,
             knowledge_graph_result=knowledge_graph_result,
+            parsed_files=parsed_files,
             log=console.print,
             degraded=degraded,
         )
@@ -292,6 +294,7 @@ def _persist_full_update(
     knowledge_graph_result: Any | None,
     degraded: list[str],
     decay_paths: list[str] | None = None,
+    parsed_files: list | None = None,
 ) -> int:
     """Persist a full (LLM-regenerating) update in one transaction.
 
@@ -324,6 +327,7 @@ def _persist_full_update(
             knowledge_graph_result=knowledge_graph_result,
             degraded=degraded,
             decay_paths=decay_paths,
+            parsed_files=parsed_files,
         )
     )
 
@@ -344,6 +348,7 @@ async def _persist_full_update_async(
     knowledge_graph_result: Any | None,
     degraded: list[str],
     decay_paths: list[str] | None = None,
+    parsed_files: list | None = None,
 ) -> int:
     from repowise.cli.helpers import get_db_url_for_repo
     from repowise.core.persistence import (
@@ -531,6 +536,18 @@ async def _persist_full_update_async(
                 await persist_graph_nodes(session, repo_id, graph_builder)
             except Exception as exc:
                 _skip("Graph nodes persist", exc)
+
+            # Refresh wiki_symbols for the changed files (upsert + within-file
+            # prune). Without this, symbol bounds fossilize at the last full
+            # index and the get_answer hydrator serves drifted signatures.
+            try:
+                from repowise.core.pipeline.persist import persist_incremental_symbols
+
+                await persist_incremental_symbols(
+                    session, repo_id, parsed_files, [fd.path for fd in file_diffs]
+                )
+            except Exception as exc:
+                _skip("Symbol persist", exc)
 
             # Record a GenerationJob so the web UI "last synced" timestamp updates.
             try:

@@ -538,10 +538,11 @@ async def persist_incremental_index(
     current_graph_file_paths: set[str] | None = None,
     file_diffs: list[Any] | None = None,
     knowledge_graph_result: Any | None = None,
+    parsed_files: list[Any] | None = None,
     log: LogFn | None = None,
     degraded: list[str] | None = None,
 ) -> None:
-    """Persist an incremental index refresh (graph + git + dead-code + health).
+    """Persist an incremental index refresh (graph + symbols + git + dead-code + health).
 
     Upsert-only: unchanged files keep their existing rows, unlike
     ``persist_pipeline_result``'s delete-then-insert. State-file updates stay
@@ -646,6 +647,18 @@ async def persist_incremental_index(
                 await persist_graph_nodes(session, repo_id, graph_builder)
             except Exception as exc:
                 _skip("Graph nodes persist", exc)
+
+            # Refresh wiki_symbols for the changed files. Historically the
+            # incremental path re-parsed but never persisted symbols, so their
+            # start/end bounds fossilized at the last full index and the
+            # get_answer hydrator served drifted signatures. Scoped to the
+            # changed set for cost.
+            try:
+                from repowise.core.pipeline.persist import persist_incremental_symbols
+
+                await persist_incremental_symbols(session, repo_id, parsed_files, changed_paths)
+            except Exception as exc:
+                _skip("Symbol persist", exc)
 
             if knowledge_graph_result is not None:
                 try:
