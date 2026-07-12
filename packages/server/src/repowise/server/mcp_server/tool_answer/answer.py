@@ -573,8 +573,16 @@ async def get_answer(
     homonyms: dict = {"union": {}, "qualified_miss": []}
     if question_ids:
         with contextlib.suppress(Exception):
+            _anchor_root = Path(str(ctx.path)) if getattr(ctx, "path", None) else None
             async with get_session(ctx.session_factory) as session:
-                hits, homonyms = await _anchor_symbol_hits(session, repo_id, question_ids, hits)
+                hits, homonyms = await _anchor_symbol_hits(
+                    session,
+                    repo_id,
+                    question_ids,
+                    hits,
+                    repo_root=_anchor_root,
+                    session_factory=ctx.session_factory,
+                )
     # Concept anchoring: when a why/value question pins a literal number to a
     # described behaviour (no named symbol), grep source COMMENTS for the file
     # that justifies the number and anchor it as a dominant hit. Rescues the

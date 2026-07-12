@@ -188,6 +188,23 @@ def check_symbol_bounds(row: WikiSymbol, source_text: str) -> BoundsCheck:
     )
 
 
+async def verify_and_heal(session_factory, row: WikiSymbol, source_text: str) -> BoundsCheck:
+    """Run the bounds gate and self-heal a corrected row in one step.
+
+    The shared serve-time contract for every site that turns a stored
+    ``WikiSymbol`` bound into live bytes (get_symbol, the get_answer hydrator,
+    the get_context skeleton): verify against the live file, and when a
+    re-parse moves the bounds, persist the correction so the next serve hits
+    the cheap gate. Healing is best-effort and skipped when no session factory
+    is available (unit tests, index-only contexts) — correctness rides on the
+    returned :class:`BoundsCheck`, not on the write landing.
+    """
+    check = check_symbol_bounds(row, source_text)
+    if check.corrected and session_factory is not None:
+        await heal_symbol_row(session_factory, row, check.start_line, check.end_line)
+    return check
+
+
 async def heal_symbol_row(session_factory, row: WikiSymbol, start: int, end: int) -> None:
     """Persist corrected bounds so the next serve hits the cheap gate.
 

@@ -551,17 +551,31 @@ async def _resolve_skeleton(
         }
         return
 
-    symbols = [
-        SkeletonSymbol(
-            name=r.name,
-            kind=r.kind,
-            start_line=r.start_line,
-            end_line=r.end_line,
-            signature=r.signature,
-            importance=pagerank.get(r.name, 0.0),
+    # Trust contract: the skeleton is sliced on stored bounds but claims
+    # ``verified: True``. Gate each row against the live source first (cheap
+    # string check; a re-parse fires only on a miss) so a drifted bound can't
+    # render the wrong lines as a signature. Corrected rows render at their real
+    # bounds; a symbol that moved and can't be re-located is dropped rather than
+    # garbling the skeleton (its region collapses into an elision marker), which
+    # keeps the ``verified`` claim honest. Healing is left to get_symbol / the
+    # hydrator / incremental update, which hold a writable session on their path.
+    from repowise.server.mcp_server._verify import check_symbol_bounds
+
+    symbols = []
+    for r in rows:
+        check = check_symbol_bounds(r, source)
+        if check.approximate:
+            continue
+        symbols.append(
+            SkeletonSymbol(
+                name=r.name,
+                kind=r.kind,
+                start_line=check.start_line,
+                end_line=check.end_line,
+                signature=r.signature,
+                importance=pagerank.get(r.name, 0.0),
+            )
         )
-        for r in rows
-    ]
     result = build_skeleton(
         source,
         symbols,

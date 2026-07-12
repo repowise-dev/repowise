@@ -13,6 +13,7 @@ from typing import Any
 from sqlalchemy import select
 
 from repowise.core.persistence.models import WikiSymbol
+from repowise.server.mcp_server._verify import verify_and_heal
 from repowise.server.mcp_server.tool_answer.config import (
     _ENRICH_TOP_N_HITS,
     _HIGH_CONFIDENCE_SCORE_FLOOR,
@@ -66,12 +67,30 @@ def _extract_question_identifiers(question: str) -> set[str]:
     return ids
 
 
+def _read_repo_text(repo_root: Path | None, file_path: str) -> str | None:
+    """Read a repo file's live text, refusing paths outside the root.
+
+    The single disk read shared by the bounds gate and the signature/body
+    slices below, so a hydrated file is read once rather than once per helper.
+    """
+    if repo_root is None:
+        return None
+    try:
+        abs_path = (repo_root / file_path).resolve()
+        abs_path.relative_to(repo_root.resolve())
+        return abs_path.read_text(encoding="utf-8", errors="replace")
+    except (OSError, ValueError):
+        return None
+
+
 def _read_symbol_source(
     repo_root: Path | None,
     file_path: str,
     start_line: int,
     end_line: int,
     max_lines: int = _MATCHED_SYMBOL_SOURCE_LINES,
+    *,
+    text: str | None = None,
 ) -> str | None:
     """Return the literal source body for a symbol, bounded to max_lines.
 
@@ -80,17 +99,16 @@ def _read_symbol_source(
     docstring; what it was missing was the actual code. With 40 lines of
     the method body in front of it, the synthesis step can answer "how
     does X work" without hedging back to "you should inspect the source".
+
+    ``text`` lets a caller that already read the file (the hydrator reads it
+    once for the bounds gate) pass the live source in, so a hydrated file is
+    read once instead of once per symbol.
     """
-    if repo_root is None or start_line < 1:
+    if start_line < 1:
         return None
-    try:
-        abs_path = (repo_root / file_path).resolve()
-        try:
-            abs_path.relative_to(repo_root.resolve())
-        except ValueError:
-            return None
-        text = abs_path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
+    if text is None:
+        text = _read_repo_text(repo_root, file_path)
+    if text is None:
         return None
     lines = text.splitlines()
     if start_line > len(lines):
@@ -102,7 +120,7 @@ def _read_symbol_source(
 
 
 def _read_signature_from_source(
-    repo_root: Path | None, file_path: str, start_line: int
+    repo_root: Path | None, file_path: str, start_line: int, *, text: str | None = None
 ) -> str | None:
     """Read the symbol's actual signature line from disk.
 
@@ -112,19 +130,12 @@ def _read_signature_from_source(
       * decorators (one line above the def)
       * full type annotations across line continuations
 
+    ``text`` reuses the caller's already-read source (see _read_symbol_source).
     None on any failure — caller falls back to the stored signature.
     """
-    if repo_root is None:
-        return None
-    try:
-        abs_path = (repo_root / file_path).resolve()
-        # Defense in depth: never read outside the repo root.
-        try:
-            abs_path.relative_to(repo_root.resolve())
-        except ValueError:
-            return None
-        text = abs_path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
+    if text is None:
+        text = _read_repo_text(repo_root, file_path)
+    if text is None:
         return None
     lines = text.splitlines()
     if not lines or start_line < 1 or start_line > len(lines):
@@ -201,6 +212,8 @@ async def _anchor_symbol_hits(
     repo_id: str,
     question_ids: set[str],
     hits: list[dict],
+    repo_root: Path | None = None,
+    session_factory: Any = None,
 ) -> tuple[list[dict], dict[str, Any]]:
     """Inject the defining file of a question-named indexed symbol into hits.
 
@@ -249,6 +262,28 @@ async def _anchor_symbol_hits(
     for row in res.scalars().all():
         by_name.setdefault(row.name, []).append(row)
 
+    # Verify bounds against the live file before any body is sliced from a
+    # stored range. Both the answer-by-union bodies (grounding=exact_symbol,
+    # confidence=high) and the anchored tier-0 symbol_bodies serve live source at
+    # these bounds, so a drifted row would otherwise ground the strongest-trust
+    # answer in the wrong lines. Cheap gate first (string check); a re-parse fires
+    # only on a genuine miss and heals the row. One live read per file, cached.
+    _text_cache: dict[str, str | None] = {}
+
+    async def _verified_dict(row) -> dict:
+        d = _symbol_def_dict(row)
+        if row.file_path not in _text_cache:
+            _text_cache[row.file_path] = _read_repo_text(repo_root, row.file_path)
+        text = _text_cache[row.file_path]
+        if text is None:
+            d["_approx"] = True
+            return d
+        check = await verify_and_heal(session_factory, row, text)
+        d["start_line"], d["end_line"] = check.start_line, check.end_line
+        if not check.verified:
+            d["_approx"] = True
+        return d
+
     chosen: list = []
     for name, cands in by_name.items():
         if len(cands) == 1:
@@ -275,13 +310,13 @@ async def _anchor_symbol_hits(
         if narrowed:
             # Qualifier matched >1 def: union of the narrowed set (still all
             # genuine candidates for the qualified name).
-            homonyms["union"][name] = [_symbol_def_dict(c) for c in narrowed]
+            homonyms["union"][name] = [await _verified_dict(c) for c in narrowed]
         elif targeted:
             # Qualifier present but matched nothing: do not guess.
             homonyms["qualified_miss"].append(name)
         else:
             # Bare homonym, no qualifier: union of every def.
-            homonyms["union"][name] = [_symbol_def_dict(c) for c in cands]
+            homonyms["union"][name] = [await _verified_dict(c) for c in cands]
 
     if not chosen:
         return hits, homonyms
@@ -312,13 +347,18 @@ async def _anchor_symbol_hits(
             target["_symbol_anchored"] = True
         # Stash the exact symbol the question named so symbol_bodies serves it
         # directly — the fuzzy hydration cap drops a far-down method when the
-        # parent class name floods every sibling's qualified-name match.
+        # parent class name floods every sibling's qualified-name match. Serve
+        # verified bounds only: an unrelocatable (approximate) symbol still
+        # boosts its file's rank, but is not stashed for a live-body slice.
+        vd = await _verified_dict(sym)
+        if vd.get("_approx"):
+            continue
         target.setdefault("_anchor_symbols", []).append(
             {
                 "name": sym.name,
                 "kind": sym.kind,
-                "start_line": sym.start_line,
-                "end_line": sym.end_line,
+                "start_line": vd["start_line"],
+                "end_line": vd["end_line"],
             }
         )
     hits.sort(key=lambda h: h.get("score", 0.0), reverse=True)
@@ -362,8 +402,16 @@ def build_homonym_union_bodies(
         start = d.get("start_line") or 0
         end = d.get("end_line") or 0
         symbol_id = f"{path}::{name}"
-        body = _read_symbol_source(
-            repo_root, path, start, end, max_lines=_HOMONYM_UNION_BODY_MAX_LINES
+        # Bounds that failed live verification (symbol moved and could not be
+        # re-located): don't inline a slice at unreliable lines under a
+        # confidence=high envelope. Hand the agent a get_symbol pointer, which
+        # verifies on its own path.
+        body = (
+            None
+            if d.get("_approx")
+            else _read_symbol_source(
+                repo_root, path, start, end, max_lines=_HOMONYM_UNION_BODY_MAX_LINES
+            )
         )
         # Budget: always render the first, then only while under budget.
         if body and (not symbol_bodies or spent + len(body) <= char_budget):
@@ -540,14 +588,35 @@ async def _hydrate_symbols_for_hits(
     )
     by_file: dict[str, list[dict]] = {}
     repo_root = Path(str(ctx.path)) if ctx and ctx.path else None
+    session_factory = getattr(ctx, "session_factory", None)
+    # One live read per hydrated file, shared by the bounds gate and the
+    # signature/body slices. None when unreadable (missing/outside root).
+    text_cache: dict[str, str | None] = {}
     for row in res.scalars().all():
+        if row.file_path not in text_cache:
+            text_cache[row.file_path] = _read_repo_text(repo_root, row.file_path)
+        text = text_cache[row.file_path]
+        # Trust contract (shared with get_symbol): verify the stored bounds
+        # against the live file before slicing a signature or body out of it.
+        # Drift (an edit above the def, or an update lag) otherwise turns into a
+        # garbled signature / body served as if fresh. On a re-parse correction
+        # the row is healed; when the symbol can't be re-located we fall back to
+        # the stored signature and skip the live body — a stored-but-consistent
+        # signature beats a live slice at the wrong lines.
+        if text is not None:
+            check = await verify_and_heal(session_factory, row, text)
+            start_line, end_line, verified = check.start_line, check.end_line, check.verified
+        else:
+            start_line, end_line, verified = row.start_line, row.end_line, False
         # Constants/variables: the stored signature IS the verbatim assignment
         # line. The disk re-read below walks forward looking for a ":"-closed
         # def line and would join unrelated following lines for assignments.
-        if row.kind in ("constant", "variable"):
+        if row.kind in ("constant", "variable") or not verified:
             rich_sig = None
         else:
-            rich_sig = _read_signature_from_source(repo_root, row.file_path, row.start_line)
+            rich_sig = _read_signature_from_source(
+                repo_root, row.file_path, start_line, text=text
+            )
         # Does the symbol name match any identifier from the question?
         name_lower = (row.name or "").lower()
         qname_lower = (row.qualified_name or "").lower()
@@ -568,12 +637,14 @@ async def _hydrate_symbols_for_hits(
             "kind": row.kind,
             "signature": rich_sig or row.signature,
             "docstring": row.docstring or "",
-            "start_line": row.start_line,
-            "end_line": row.end_line,
+            "start_line": start_line,
+            "end_line": end_line,
             "_matched": matched,
         }
-        if matched:
-            src = _read_symbol_source(repo_root, row.file_path, row.start_line, row.end_line)
+        if matched and verified:
+            src = _read_symbol_source(
+                repo_root, row.file_path, start_line, end_line, text=text
+            )
             if src:
                 entry["source_excerpt"] = src
         by_file.setdefault(row.file_path, []).append(entry)
@@ -624,6 +695,7 @@ async def _hydrate_symbols_for_hits(
                 s["start_line"],
                 s.get("end_line") or 0,
                 max_lines=_SYNTH_FULL_SOURCE_LINES,
+                text=text_cache.get(path),
             )
             if fuller:
                 s["source_excerpt"] = fuller

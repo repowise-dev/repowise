@@ -43,6 +43,54 @@ async def test_skeleton_block_for_file_target(setup_mcp, tmp_path, monkeypatch):
     assert "... " in sk["text"]  # at least one elision marker
 
 
+def _write_drifted_source(tmp_path, rel="src/auth/service.py"):
+    """Same file as ``_write_source`` but shifted down 5 lines.
+
+    The indexed bounds (AuthService 10-100, login 20-40 from conftest) now point
+    into the header filler: synthetic drift. AuthService really sits at line 15,
+    login at 25. A skeleton that trusts the stored bounds would render a filler
+    line as the AuthService "signature" and elide the real ``class`` line.
+    """
+    lines = ["import os", "import sys", "import json", "import re", "import abc"]  # 1-5
+    lines += ["# preamble"] * 9  # 6-14
+    lines.append("class AuthService:")  # line 15
+    for n in range(16, 25):
+        lines.append(f"    setup_{n} = {n}")
+    lines.append("    async def login(self, username: str, password: str) -> Token:")  # 25
+    for n in range(26, 46):
+        lines.append(f"        step_{n} = {n}")
+    for n in range(46, 106):
+        lines.append(f"    tail_{n} = {n}")
+    path = tmp_path / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+@pytest.mark.asyncio
+async def test_skeleton_verifies_drifted_bounds(setup_mcp, tmp_path, monkeypatch):
+    """``verified: True`` must be honest: drifted symbols are relocated, not garbled.
+
+    Without the bounds gate the skeleton slices signatures at the stored (drifted)
+    lines and would keep a filler line as the AuthService signature while eliding
+    the real ``class`` def, all under a ``verified: True`` claim.
+    """
+    from repowise.server.mcp_server import _state, get_context
+
+    _write_drifted_source(tmp_path)
+    monkeypatch.setattr(_state, "_repo_path", str(tmp_path))
+
+    result = await get_context(["src/auth/service.py"], include=["skeleton"])
+    sk = result["targets"]["src/auth/service.py"]["skeleton"]
+    assert "error" not in sk
+    assert sk["verified"] is True
+    # The real signatures render at their relocated positions. Without the gate
+    # these class/def lines fall inside the drifted "body" region and get elided,
+    # so their presence proves relocation ran.
+    assert "class AuthService:" in sk["text"]
+    assert "async def login" in sk["text"]
+
+
 @pytest.mark.asyncio
 async def test_skeleton_requires_file_target(setup_mcp, tmp_path, monkeypatch):
     from repowise.server.mcp_server import _state, get_context
