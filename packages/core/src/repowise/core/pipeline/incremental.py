@@ -660,6 +660,20 @@ async def persist_incremental_index(
             except Exception as exc:
                 _skip("Symbol persist", exc)
 
+            # Refresh graph_edges for the changed files. The full-init path was
+            # historically the only writer of edges, so adjacency froze at the
+            # last full index: new imports/calls stayed invisible and dropped
+            # ones lingered as false paths. Phase E flow-path traversal reads
+            # adjacency straight from this table, so it decayed on every update.
+            try:
+                from repowise.core.pipeline.persist import persist_incremental_edges
+
+                await persist_incremental_edges(
+                    session, repo_id, graph_builder, parsed_files, changed_paths
+                )
+            except Exception as exc:
+                _skip("Graph edges persist", exc)
+
             if knowledge_graph_result is not None:
                 try:
                     from repowise.core.pipeline.persist import persist_kg

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import (
@@ -120,6 +120,100 @@ async def batch_upsert_graph_edges(
             confidence=e.get("confidence", 1.0),
         ),
     )
+
+
+# Chunk size for the scoped edge delete/existence work — stays under SQLite's
+# host-parameter limit when a wide catch-up update touches many files.
+_EDGE_RECONCILE_CHUNK = 400
+
+
+async def reconcile_edges_for_files(
+    session: AsyncSession,
+    repository_id: str,
+    source_file_paths: list[str],
+    edges: list[dict],  # fresh edges whose source belongs to those files
+) -> int:
+    """Make ``graph_edges`` outgoing from *source_file_paths* match a fresh parse.
+
+    Sibling of :func:`reconcile_symbols_for_files` for the edge table. The
+    incremental update path rebuilds the in-memory graph, but only the full-init
+    path ever persisted edges, so ``graph_edges`` froze at the last full index:
+    new imports/calls stayed invisible and edges a changed file dropped lingered
+    as false BFS paths (the Phase E flow-path traversal reads adjacency straight
+    from this table). This deletes every edge whose source node belongs to one
+    of *source_file_paths* — both the file node and its symbol nodes, including
+    symbols the change deleted whose node rows the incremental path never prunes
+    — then inserts the fresh set. Edges *into* a changed file from an unchanged
+    one are owned by that other file and left untouched, the same file-scoping
+    the symbol reconciler uses; a full reindex reconciles those.
+
+    Returns the number of deleted rows.
+    """
+    scoped = [p for p in dict.fromkeys(source_file_paths) if p]
+    if not scoped:
+        return 0
+
+    # Every graph node owned by a changed file. Pulled from graph_nodes (not
+    # just the fresh edge list) so outgoing edges of a symbol the change deleted
+    # — whose node row the incremental path leaves behind — are cleared too. A
+    # file node keys on node_id == path; a symbol node carries file_path.
+    source_ids: set[str] = set()
+    for i in range(0, len(scoped), _EDGE_RECONCILE_CHUNK):
+        chunk = scoped[i : i + _EDGE_RECONCILE_CHUNK]
+        rows = (
+            (
+                await session.execute(
+                    select(GraphNode.node_id).where(
+                        GraphNode.repository_id == repository_id,
+                        or_(
+                            and_(
+                                GraphNode.node_type == "file",
+                                GraphNode.node_id.in_(chunk),
+                            ),
+                            GraphNode.file_path.in_(chunk),
+                        ),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        source_ids.update(rows)
+    # Union in the fresh edges' own sources so a brand-new node's edges are still
+    # rewritten cleanly even if the node-row read above raced its insert.
+    source_ids.update(e.get("source_node_id", "") for e in edges)
+    source_ids.discard("")
+    if not source_ids:
+        return 0
+
+    id_list = list(source_ids)
+    deleted = 0
+    for i in range(0, len(id_list), _EDGE_RECONCILE_CHUNK):
+        batch = id_list[i : i + _EDGE_RECONCILE_CHUNK]
+        res = await session.execute(
+            delete(GraphEdge).where(
+                GraphEdge.repository_id == repository_id,
+                GraphEdge.source_node_id.in_(batch),
+            )
+        )
+        deleted += res.rowcount or 0
+
+    # Every fresh edge's source was just cleared, so these are all plain inserts
+    # — no need for the repo-wide upsert (which reloads every edge row).
+    for e in edges:
+        session.add(
+            GraphEdge(
+                id=_new_uuid(),
+                repository_id=repository_id,
+                source_node_id=e.get("source_node_id", ""),
+                target_node_id=e.get("target_node_id", ""),
+                imported_names_json=e.get("imported_names_json", "[]"),
+                edge_type=e.get("edge_type", "imports"),
+                confidence=e.get("confidence", 1.0),
+            )
+        )
+    await session.flush()
+    return deleted
 
 
 async def batch_upsert_graph_metrics(

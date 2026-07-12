@@ -549,6 +549,19 @@ async def _persist_full_update_async(
             except Exception as exc:
                 _skip("Symbol persist", exc)
 
+            # Refresh graph_edges for the changed files (delete-then-insert of
+            # each file's outgoing edges). Without this, adjacency fossilizes at
+            # the last full index and Phase E flow-path answers decay on every
+            # incremental update.
+            try:
+                from repowise.core.pipeline.persist import persist_incremental_edges
+
+                await persist_incremental_edges(
+                    session, repo_id, graph_builder, parsed_files, [fd.path for fd in file_diffs]
+                )
+            except Exception as exc:
+                _skip("Graph edges persist", exc)
+
             # Record a GenerationJob so the web UI "last synced" timestamp updates.
             try:
                 from datetime import UTC as _UTC

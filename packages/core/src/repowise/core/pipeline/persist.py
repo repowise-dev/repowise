@@ -302,6 +302,76 @@ async def persist_incremental_symbols(
     await reconcile_symbols_for_files(session, repo_id, reconcile_paths, symbols)
 
 
+def _changed_file_edges(
+    graph_builder: Any,
+    parsed_files: list[Any] | None,
+    changed_paths: list[str],
+) -> tuple[list[str], list[dict]]:
+    """``(reconcile_paths, edges)`` for edges emanating from changed+parsed files.
+
+    An edge is attributed to the file that owns its *source* node: a file node
+    is the path itself; a symbol node carries ``file_path``. Restricting to
+    files that both changed and parsed this run mirrors ``_changed_file_symbols``
+    — a changed file that failed to parse keeps its existing edges rather than
+    having them wrongly wiped on a transient failure.
+    """
+    changed = set(changed_paths or [])
+    parsed = {pf.file_info.path for pf in parsed_files or []}
+    reconcile = changed & parsed
+    if not reconcile:
+        return [], []
+
+    graph = graph_builder.graph()
+    owner: dict[str, str | None] = {}
+    for node_id in graph.nodes:
+        data = graph.nodes[node_id]
+        owner[node_id] = (
+            node_id if data.get("node_type", "file") == "file" else data.get("file_path")
+        )
+
+    edges: list[dict] = []
+    for u, v, data in graph.edges(data=True):
+        if owner.get(u) not in reconcile:
+            continue
+        edges.append(
+            {
+                "source_node_id": u,
+                "target_node_id": v,
+                "imported_names_json": json.dumps(data.get("imported_names", [])),
+                "edge_type": data.get("edge_type", "imports"),
+                "confidence": data.get("confidence", 1.0),
+            }
+        )
+    return sorted(reconcile), edges
+
+
+async def persist_incremental_edges(
+    session: Any,
+    repo_id: str,
+    graph_builder: Any,
+    parsed_files: list[Any] | None,
+    changed_paths: list[str],
+) -> None:
+    """Refresh ``graph_edges`` for changed files on an incremental update.
+
+    Sibling of :func:`persist_incremental_symbols`. The full-init path was the
+    only one that ever wrote ``graph_edges``; ``repowise update`` rebuilt the
+    graph but never repersisted edges, so adjacency froze at the last full
+    index. Phase E flow-path answers and any graph expansion read adjacency
+    straight from this table, so they decayed on every incremental update. This
+    delete-then-inserts the changed files' outgoing edges (dropping edges those
+    files no longer have). Scoped to the changed set for cost.
+    """
+    if graph_builder is None or not parsed_files:
+        return
+    from repowise.core.persistence.crud import reconcile_edges_for_files
+
+    reconcile_paths, edges = _changed_file_edges(graph_builder, parsed_files, changed_paths)
+    if not reconcile_paths:
+        return
+    await reconcile_edges_for_files(session, repo_id, reconcile_paths, edges)
+
+
 # Chunk size for IN (...) deletes — stays under SQLite's host-parameter limit.
 _PRUNE_CHUNK = 500
 
