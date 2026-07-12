@@ -73,6 +73,7 @@ from repowise.server.mcp_server._answer_pipeline import (
 )
 from repowise.server.mcp_server._answer_pipeline import hydrate_hits as _hydrate_hits
 from repowise.server.mcp_server._code_rationale import mine_rationale as _mine_rationale
+from repowise.server.mcp_server._flow_path import expand_via_flow_path as _expand_via_flow_path
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
     _get_repo,
@@ -591,6 +592,20 @@ async def get_answer(
     if _is_why_question(question) or _is_value_question(question):
         with contextlib.suppress(Exception):
             hits = await _concept_anchor_hits(getattr(ctx, "path", None), question, hits)
+    # Flow-path expansion: when the question anchors 2+ endpoints (a named
+    # symbol's file, a module it names), lead with the dependency/call path
+    # between them. Plain 1-hop expansion (above) rescues "right module wrong
+    # file" ranking misses; it does NOT reach a far endpoint 2-4 hops away that
+    # the question names but retrieval never ranked. This threads that path over
+    # imports + projected calls edges and injects its files so both endpoints
+    # surface in one call. Runs before the cap so an injected endpoint can take a
+    # top-5 slot.
+    flow_paths: list[list[str]] = []
+    with contextlib.suppress(Exception):
+        async with get_session(ctx.session_factory) as session:
+            hits, flow_paths = await _expand_via_flow_path(
+                session, repo_id, hits, question, question_ids
+            )
     # Always cap retrieval hits at 5 for the response payload.
     hits = hits[:5]
 
@@ -1224,6 +1239,12 @@ async def get_answer(
             concept_rationale = _drop_already_surfaced(concept_rationale, symbol_bodies, quotes)
             if concept_rationale:
                 payload["code_rationale"] = concept_rationale
+
+    # Flow-path lead: when the question anchored 2+ endpoints, surface the
+    # dependency/call chain the answer traverses so the agent sees the path in
+    # the same call instead of reconstructing it hop by hop.
+    if flow_paths:
+        payload["flow_path"] = [" -> ".join(p) for p in flow_paths[:2]]
 
     # Persist to cache (upsert). Best-effort: cache failures must never block
     # the response — but they must be LOGGED, not suppressed. A plain INSERT
