@@ -15,6 +15,7 @@ describe("formatCompact", () => {
   it("shortens thousands and millions without unnecessary decimal zeroes", () => {
     expect(formatCompact(1_000)).toBe("1K");
     expect(formatCompact(98_432)).toBe("98.4K");
+    expect(formatCompact(999_999)).toBe("1M");
     expect(formatCompact(1_234_567)).toBe("1.2M");
   });
 });
@@ -33,6 +34,7 @@ describe("formatAgeDays", () => {
   it("splits longer ages into years and months", () => {
     expect(formatAgeDays(365)).toBe("1 year");
     expect(formatAgeDays(400)).toBe("1 year 1 month");
+    expect(formatAgeDays(725)).toBe("2 years");
     expect(formatAgeDays(730)).toBe("2 years");
     expect(formatAgeDays(1_000)).toBe("2 years 9 months");
   });

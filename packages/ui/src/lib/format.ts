@@ -10,7 +10,10 @@ export function formatNumber(n: number): string {
 /** Format large counts compactly: 1234567 → "1.2M", 98432 → "98.4K", 999 → "999" */
 export function formatCompact(n: number): string {
   if (n >= 1_000_000) return `${Number((n / 1_000_000).toFixed(1))}M`;
-  if (n >= 1_000) return `${Number((n / 1_000).toFixed(1))}K`;
+  if (n >= 1_000) {
+    const thousands = Number((n / 1_000).toFixed(1));
+    return thousands === 1_000 ? "1M" : `${thousands}K`;
+  }
   return String(n);
 }
 
@@ -127,8 +130,12 @@ export function formatAgeDays(n: number): string {
       .join(" ");
   }
 
-  const years = Math.floor(days / 365);
-  const months = Math.floor((days % 365) / 30);
+  let years = Math.floor(days / 365);
+  let months = Math.floor((days % 365) / 30);
+  if (months === 12) {
+    years += 1;
+    months = 0;
+  }
   return [pluralize(years, "year"), months && pluralize(months, "month")]
     .filter(Boolean)
     .join(" ");
