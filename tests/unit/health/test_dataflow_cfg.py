@@ -260,6 +260,97 @@ def test_try_except_finally_convergence():
     assert cfg.exit_id in cfg.reachable_ids()
 
 
+# ----with statements------------------------------------------------------------------
+def test_with_body_builds_nested_cfg():
+    cfg = _cfg(
+        """
+        def f(ctx, cond):
+            with ctx.push():
+                if cond:
+                    result = 1
+                else:
+                    result = 2
+            return result
+        """
+    )
+
+    # The if inside the with should still produce a branch.
+    assert len(_by_kind(cfg, "branch")) == 1
+
+    # The branch should still merge.
+    branches = _by_kind(cfg, "branch")
+    assert len(branches) == 1
+    assert len(branches[0].successors) == 2
+    assert cfg.exit_id in cfg.reachable_ids()
+
+
+def test_unreachable_inside_with():
+    cfg = _cfg(
+        """
+        def f(ctx):
+            with ctx:
+                return
+                dead = 1
+        """
+    )
+
+    unreachable = _by_kind(cfg, "unreachable")
+    assert len(unreachable) == 1
+    assert unreachable[0].id not in cfg.reachable_ids()
+
+
+def test_loop_inside_with():
+    cfg = _cfg(
+        """
+        def f(ctx, xs):
+            with ctx:
+                for x in xs:
+                    print(x)
+        """
+    )
+
+    assert len(_by_kind(cfg, "loop_header")) == 1
+    assert cfg.back_edges()
+
+
+def test_with_preserves_if_structure():
+    outside = _cfg(
+        """
+        def f(cond):
+            if cond:
+                x = 1
+            else:
+                x = 2
+            return x
+        """
+    )
+
+    inside = _cfg(
+        """
+        def f(ctx, cond):
+            with ctx:
+                if cond:
+                    x = 1
+                else:
+                    x = 2
+            return x
+        """
+    )
+
+    outside_branches = _by_kind(outside, "branch")
+    inside_branches = _by_kind(inside, "branch")
+
+    # Wrapping an if in a with must not change the nested branch structure.
+    assert len(outside_branches) == len(inside_branches)
+    assert len(outside_branches) == 1
+    assert len(outside_branches[0].successors) == 2
+    assert len(inside_branches[0].successors) == 2
+
+    # Both CFGs should reach the function exit.
+    assert outside.exit_id in outside.reachable_ids()
+    assert inside.exit_id in inside.reachable_ids()
+
+
 # -- early return ---------------------------------------------------------------
 
 

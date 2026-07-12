@@ -180,12 +180,21 @@ class LanguageNodeMap:
     #     (``throw``) edge to the function exit; ``break`` / ``continue`` edge to
     #     the enclosing loop's exit / header. A language that omits one simply
     #     records that statement as a plain straight-line node (no special edge).
+    #   * ``with_kinds`` -- structured resource/context-management statements
+    #     whose bodies execute as a normal statement sequence (Python
+    #     ``with_statement``; analogous constructs in other languages such as
+    #     C# ``using`` or Java try-with-resources where applicable). Unlike
+    #     ``if`` or ``loop`` statements, these do not introduce a control-flow
+    #     split themselves; instead, the CFG builder recursively processes the
+    #     body so nested branches, loops, and early exits create their normal
+    #     basic-block structure.
     if_kinds: frozenset[str] = frozenset()
     block_kinds: frozenset[str] = frozenset()
     return_kinds: frozenset[str] = frozenset()
     raise_kinds: frozenset[str] = frozenset()
     break_kinds: frozenset[str] = frozenset()
     continue_kinds: frozenset[str] = frozenset()
+    with_kinds: frozenset[str] = frozenset()
     #   * ``statement_wrapper_kinds`` -- statement node(s) that merely wrap the
     #     node the CFG builder should classify, as their last named child.
     #     Expression-oriented grammars need this: tree-sitter-rust parses every
@@ -230,6 +239,7 @@ _PY = LanguageNodeMap(
     raise_kinds=frozenset({"raise_statement"}),
     break_kinds=frozenset({"break_statement"}),
     continue_kinds=frozenset({"continue_statement"}),
+    with_kinds=frozenset({"with_statement"}),
 )
 
 _TS = LanguageNodeMap(

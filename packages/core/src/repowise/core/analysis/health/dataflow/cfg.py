@@ -308,6 +308,8 @@ class _CFGBuilder:
                 cur = self._build_loop(st, cur)
             elif t in self.lmap.try_kinds:
                 cur = self._build_try(st, cur)
+            elif t in self.lmap.with_kinds:
+                cur = self._build_with(st, cur)
             elif t in self.lmap.return_kinds or t in self.lmap.raise_kinds:
                 self._record_stmt(cur, st)
                 self._edge(cur, self.exit_block)
@@ -325,6 +327,22 @@ class _CFGBuilder:
             else:
                 self._record_stmt(cur, st)
         return cur
+
+    def _build_with(self, with_node: Node, cur: BasicBlock) -> BasicBlock:
+        self._record_head(cur, with_node)
+        join = self._new("join")
+
+        body_entry = self._new()
+        self._edge(cur, body_entry)
+
+        body_out = self._process_seq(
+            self._body_stmts(with_node.child_by_field_name("body")), body_entry
+        )
+
+        if body_out is not None:
+            self._edge(body_out, join)
+
+        return join
 
     def _build_if(self, if_node: Node, cur: BasicBlock) -> BasicBlock:
         cur.kind = "branch"
