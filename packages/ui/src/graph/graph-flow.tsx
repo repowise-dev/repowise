@@ -70,6 +70,7 @@ import {
   mergeCommunitySlice,
 } from "./sigma/constellation-adapter";
 import { computeRadialLayout } from "./sigma/radial-layout";
+import { ELK_MAX_NODES, elkSkipReason } from "./sigma/use-elk-sigma-layout";
 import type { SigmaNodeAttributes, SigmaEdgeAttributes } from "./sigma/types";
 import type GraphologyGraph from "graphology";
 import { useEgoFilter } from "./sigma/use-ego-filter";
@@ -1045,9 +1046,17 @@ export function GraphFlow(props: GraphFlowProps) {
   }, [onViewModeChange, collapseAllHubs]);
 
   const handleLayoutModeChange = useCallback((mode: LayoutMode) => {
+    // Refuse right at the click when ELK can't run: switching the mode anyway
+    // would stop the force layout and leave an active-looking toggle doing
+    // nothing (the canvas-side notice covers graphs that grow past the cap
+    // after the mode is already active).
+    if (mode === "hierarchical" && sigmaGraph && sigmaGraph.order > ELK_MAX_NODES) {
+      setLayoutNotice(elkSkipReason(sigmaGraph.order));
+      return;
+    }
     setLayoutMode(mode);
     setLayoutNotice(null);
-  }, []);
+  }, [sigmaGraph]);
 
   const handleGraphThemeChange = useCallback(
     (theme: GraphTheme) => {

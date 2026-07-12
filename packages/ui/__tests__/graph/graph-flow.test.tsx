@@ -135,4 +135,29 @@ describe("GraphFlow shell", () => {
     fireEvent.click(screen.getByText("main"));
     expect(onViewModeChange).toHaveBeenCalledWith("full");
   });
+
+  it("refuses hierarchical layout above the ELK cap and explains why", () => {
+    const nodes = Array.from({ length: 501 }, (_, i) => ({
+      node_id: `f${i}.ts`,
+      label: `f${i}.ts`,
+      language: "typescript",
+    }));
+    render(
+      <GraphFlow
+        {...baseProps}
+        initialViewMode="full"
+        fullGraph={{ nodes, links: [] }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Hierarchical" }));
+
+    // The mode must not activate — force stays on — and the notice says why.
+    expect(
+      screen.getByRole("button", { name: "Hierarchical" }).getAttribute("aria-pressed"),
+    ).toBe("false");
+    expect(screen.getByRole("status").textContent).toContain(
+      "Hierarchical layout is limited to 500 nodes",
+    );
+  });
 });

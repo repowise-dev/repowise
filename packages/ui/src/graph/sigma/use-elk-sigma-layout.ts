@@ -21,6 +21,10 @@ import {
 // interactive; raising this ceiling means moving ELK into a web worker first.
 export const ELK_MAX_NODES = 500;
 
+export function elkSkipReason(order: number): string {
+  return `Hierarchical layout is limited to ${ELK_MAX_NODES} nodes — this view has ${order.toLocaleString()}. Switch to the Modules scope or narrow the view to use it.`;
+}
+
 export interface UseElkSigmaLayoutOptions {
   graph: Graph<SigmaNodeAttributes, SigmaEdgeAttributes> | null;
   sigma: Sigma | null;
@@ -102,9 +106,7 @@ export function useElkSigmaLayout(
   useEffect(() => {
     if (enabled && graph && graph.order > 0) {
       if (graph.order > ELK_MAX_NODES) {
-        options.onSkipped?.(
-          `Hierarchical layout is limited to ${ELK_MAX_NODES} nodes — this view has ${graph.order.toLocaleString()}. Switch to the Modules scope or narrow the view to use it.`,
-        );
+        options.onSkipped?.(elkSkipReason(graph.order));
         return;
       }
       compute();
