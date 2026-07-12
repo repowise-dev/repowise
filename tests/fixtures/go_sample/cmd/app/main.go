@@ -4,6 +4,7 @@ package main
 import (
 	"example.com/gosample/service"
 	"example.com/gosample/store"
+	"example.com/gosample/transform"
 )
 
 // run wires the concrete store into a service. Naming *store.MemStore (a
@@ -13,6 +14,12 @@ func run(st *store.MemStore) *service.Service {
 	return service.New(st)
 }
 
+// apply accepts a transform function as a value — exercises the pkg.Func
+// argument-position capture that rescues functions passed as arguments.
+func apply(fn func(string) string) {}
+
 func main() {
 	run(store.NewMemStore()).Run()
+	apply(transform.Upper)
+	apply(transform.Lower)
 }
