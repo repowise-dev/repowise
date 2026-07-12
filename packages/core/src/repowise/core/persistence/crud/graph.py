@@ -39,7 +39,11 @@ def _update_graph_edge(existing: GraphEdge, edge_data: dict) -> None:
         existing.imported_names_json = imported
     confidence = edge_data.get("confidence")
     if confidence is not None:
-        existing.confidence = confidence
+        # Keep the max on collision, mirroring the in-memory resolver
+        # (_resolvers.py:504-505). A pair can carry several resolved calls of
+        # differing confidence; a last-write upsert could stamp a real call
+        # below _FLOW_CALLS_CONF_FLOOR (0.5) and drop it from flow-path answers.
+        existing.confidence = max(existing.confidence or 0.0, confidence)
 
 
 def _update_graph_metric(existing: GraphMetric, m: dict) -> None:
