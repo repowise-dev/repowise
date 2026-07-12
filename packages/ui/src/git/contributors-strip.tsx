@@ -1,5 +1,7 @@
 import { Users, Bot, ArrowRight } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
+import { InfoTip } from "../shared/info-tip";
+import { AGENT_PCT_HINT } from "../stats/stat-callout";
 
 export interface StripOwner {
   name: string;
@@ -129,15 +131,18 @@ export function ContributorsStrip({
                 <Bot className="h-3 w-3" />
                 Authorship
               </span>
-              <a
-                href={commitsHref}
-                className="text-xs tabular-nums text-[var(--color-text-secondary)] hover:text-[var(--color-accent-primary)] transition-colors"
-              >
-                <span className="font-semibold text-[var(--color-accent-primary)]">
-                  {Math.round(provenance!.agentPct)}%
-                </span>{" "}
-                agent-written
-              </a>
+              <span className="flex items-center gap-1">
+                <a
+                  href={commitsHref}
+                  className="text-xs tabular-nums text-[var(--color-text-secondary)] hover:text-[var(--color-accent-primary)] transition-colors"
+                >
+                  <span className="font-semibold text-[var(--color-accent-primary)]">
+                    {Math.round(provenance!.agentPct)}%
+                  </span>{" "}
+                  agent-written
+                </a>
+                <InfoTip content={AGENT_PCT_HINT} label="How agent authorship is measured" />
+              </span>
             </div>
             <div className="flex h-2 w-full overflow-hidden rounded-full bg-[var(--color-bg-inset)]">
               <div
