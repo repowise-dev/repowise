@@ -9,14 +9,17 @@ import pytest
 
 @pytest.fixture(scope="session", autouse=True)
 def _no_telemetry_network():
-    """Guarantee no test ever emits real telemetry over the network.
+    """Guarantee no test emits core-layer telemetry over the network.
 
-    The MCP instrument seam and the CLI root wrapper emit anonymous events; a
-    test that drives the real wrapper with consent enabled would otherwise POST
-    to the production ingest endpoint. We patch the two senders (not just
-    consent) so it can never happen regardless of a test's environment. Tests
-    that assert emit behaviour re-patch these at function scope and still never
-    touch the network.
+    The MCP instrument seam emits an ``mcp_tool_call`` event via the core
+    emitter's ``_post``; a test that drives the real wrapper with consent
+    enabled would otherwise POST to the production ingest endpoint. Patch that
+    sink to a no-op. Tests that assert emit behaviour re-patch it at function
+    scope and still never touch the network.
+
+    The CLI's ``command_run`` path is intentionally left alone: its tests patch
+    ``PlatformClient.post`` at the class level, so patching the ``default_client``
+    instance here would shadow those patches.
     """
     from _pytest.monkeypatch import MonkeyPatch
 
@@ -25,12 +28,6 @@ def _no_telemetry_network():
         from repowise.core.platform import telemetry as _core_telemetry
 
         mp.setattr(_core_telemetry, "_post", lambda envelope: None, raising=False)
-    except Exception:
-        pass
-    try:
-        from repowise.cli.platform.client import default_client
-
-        mp.setattr(default_client, "post", lambda *a, **k: True, raising=False)
     except Exception:
         pass
     yield
