@@ -68,7 +68,7 @@ You can edit this file directly. Changes take effect on the next `init`,
 
 | Key | Default | Meaning |
 |-----|---------|---------|
-| `provider` | auto-detected | `anthropic`, `openai`, `gemini`, `openrouter`, `deepseek`, `ollama`, `litellm`, `opencode` |
+| `provider` | auto-detected | `anthropic`, `openai`, `gemini`, `openrouter`, `deepseek`, `kimi`, `ollama`, `litellm`, `opencode` |
 | `model` | provider default | Model identifier passed to the provider |
 | `embedder` | `mock` | `openai`, `gemini`, `ollama`, `openrouter`, `mock` |
 | `embedding_model` | provider default | Embedding model identifier |
@@ -345,6 +345,29 @@ export DEEPSEEK_API_KEY="..."
 repowise init --provider deepseek --model deepseek-chat
 ```
 
+### Kimi
+
+```bash
+export KIMI_API_KEY="..."
+repowise init --provider kimi --model kimi-for-coding
+```
+
+The default Kimi Code endpoint supports `kimi-for-coding` and
+`kimi-for-coding-highspeed`. Repowise automatically uses their required
+sampling parameters.
+
+K2.x models use the separate Kimi Open Platform. Supply a key from that
+platform together with its OpenAI-compatible endpoint:
+
+```bash
+export KIMI_API_KEY="..."
+export KIMI_BASE_URL="https://api.moonshot.ai/v1"
+repowise init --provider kimi --model kimi-k2.6
+```
+
+For K2.x models, Repowise selects the required sampling parameters for
+thinking or instant mode.
+
 ### Ollama (local, no API key)
 
 ```bash
@@ -367,7 +390,7 @@ order:
 
 1. `REPOWISE_PROVIDER` environment variable
 2. `provider` in `.repowise/config.yaml`
-3. API key env vars: `ANTHROPIC_API_KEY` → `OPENAI_API_KEY` → `OLLAMA_BASE_URL` → `GEMINI_API_KEY`
+3. API key env vars: `ANTHROPIC_API_KEY` → `OPENAI_API_KEY` → `OPENROUTER_API_KEY` → `OLLAMA_BASE_URL` → `GEMINI_API_KEY` → `DEEPSEEK_API_KEY` → `KIMI_API_KEY`
 
 ---
 
@@ -418,6 +441,7 @@ The `.repowise/.env` file is gitignored automatically.
 | `GEMINI_API_KEY` / `GOOGLE_API_KEY` | Google Gemini API key |
 | `OPENROUTER_API_KEY` | OpenRouter API key |
 | `DEEPSEEK_API_KEY` | DeepSeek API key |
+| `KIMI_API_KEY` | Kimi API key |
 | `LITELLM_API_KEY` | LiteLLM proxy key |
 | `LITELLM_API_BASE` | LiteLLM proxy base URL |
 
@@ -430,6 +454,7 @@ The `.repowise/.env` file is gitignored automatically.
 | `GEMINI_BASE_URL` | Override the Gemini API base URL |
 | `OLLAMA_BASE_URL` | Ollama server URL (default: `http://localhost:11434`) |
 | `DEEPSEEK_BASE_URL` | Override the DeepSeek API base URL |
+| `KIMI_BASE_URL` | Override the Kimi API base URL |
 | `LITELLM_BASE_URL` | Override the LiteLLM proxy base URL |
 
 ### Provider and model overrides

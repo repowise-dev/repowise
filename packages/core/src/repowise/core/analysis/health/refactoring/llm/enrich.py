@@ -167,6 +167,7 @@ def build_enrichment_provider(
         "openai": "OPENAI_API_KEY",
         "openrouter": "OPENROUTER_API_KEY",
         "deepseek": "DEEPSEEK_API_KEY",
+        "kimi": "KIMI_API_KEY",
         "gemini": "GEMINI_API_KEY",
         "litellm": "LITELLM_API_KEY",
     }

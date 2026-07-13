@@ -9,6 +9,7 @@ Built-in providers:
     - openai      → OpenAIProvider
     - openrouter  → OpenRouterProvider
     - deepseek    → DeepSeekProvider
+    - kimi        → KimiProvider
     - ollama      → OllamaProvider
     - litellm     → LiteLLMProvider
     - codex_cli   → CodexCliProvider
@@ -46,6 +47,7 @@ _BUILTIN_PROVIDERS: dict[str, tuple[str, str]] = {
     "ollama": ("repowise.core.providers.llm.ollama", "OllamaProvider"),
     "litellm": ("repowise.core.providers.llm.litellm", "LiteLLMProvider"),
     "deepseek": ("repowise.core.providers.llm.deepseek", "DeepSeekProvider"),
+    "kimi": ("repowise.core.providers.llm.kimi", "KimiProvider"),
     "codex_cli": ("repowise.core.providers.llm.codex_cli", "CodexCliProvider"),
     "opencode": ("repowise.core.providers.llm.opencode", "OpenCodeProvider"),
     "mock": ("repowise.core.providers.llm.mock", "MockProvider"),
@@ -142,6 +144,7 @@ def get_provider(
             "ollama": "openai",  # ollama uses the openai package
             "openrouter": "openai",  # openrouter uses the openai package
             "deepseek": "openai",  # deepseek uses the openai package
+            "kimi": "openai",  # kimi uses the openai package
             "litellm": "litellm",
             "codex_cli": "@openai/codex",
             "opencode": "opencode",

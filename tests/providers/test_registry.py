@@ -28,6 +28,7 @@ class TestListProviders:
         assert "litellm" in providers
         assert "codex_cli" in providers
         assert "mock" in providers
+        assert "kimi" in providers
 
     def test_returns_sorted_list(self) -> None:
         providers = list_providers()
@@ -116,5 +117,5 @@ class TestCustomProviderRegistration:
         assert received.get("api_key") == "key-123"
 
     def test_builtin_count(self) -> None:
-        """Sanity check: we have exactly 10 built-in providers."""
-        assert len(_BUILTIN_PROVIDERS) == 10
+        """Sanity check: we have exactly 11 built-in providers."""
+        assert len(_BUILTIN_PROVIDERS) == 11

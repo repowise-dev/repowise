@@ -116,6 +116,7 @@ def _resolve_provider_for_answer(repo_path: Path | None = None):
             "anthropic": ["ANTHROPIC_BASE_URL"],
             "gemini": ["GEMINI_BASE_URL"],
             "deepseek": ["DEEPSEEK_BASE_URL"],
+            "kimi": ["KIMI_BASE_URL"],
             "ollama": ["OLLAMA_BASE_URL"],
             "litellm": ["LITELLM_BASE_URL", "LITELLM_API_BASE"],
         }
@@ -136,6 +137,8 @@ def _resolve_provider_for_answer(repo_path: Path | None = None):
             kw["api_key"] = _env("OPENAI_API_KEY")
         elif name == "deepseek" and _env("DEEPSEEK_API_KEY"):
             kw["api_key"] = _env("DEEPSEEK_API_KEY")
+        elif name == "kimi" and _env("KIMI_API_KEY"):
+            kw["api_key"] = _env("KIMI_API_KEY")
         elif name == "gemini" and (_env("GEMINI_API_KEY") or _env("GOOGLE_API_KEY")):
             kw["api_key"] = _env("GEMINI_API_KEY") or _env("GOOGLE_API_KEY")
         base_url = _resolve_base_url(name)
@@ -181,4 +184,12 @@ def _resolve_provider_for_answer(repo_path: Path | None = None):
         if base_url:
             kw["base_url"] = base_url
         return _try("deepseek", **kw)
+    if _env("KIMI_API_KEY"):
+        kw = {"api_key": _env("KIMI_API_KEY")}
+        if model:
+            kw["model"] = model
+        base_url = _resolve_base_url("kimi")
+        if base_url:
+            kw["base_url"] = base_url
+        return _try("kimi", **kw)
     return None

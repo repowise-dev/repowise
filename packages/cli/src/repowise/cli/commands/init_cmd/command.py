@@ -108,7 +108,9 @@ def _record_init_outcome(
             "symbol_count_bucket": telemetry.bucket_count(getattr(result, "symbol_count", 0) or 0),
         }
 
-        lang_dist = getattr(getattr(result, "repo_structure", None), "root_language_distribution", None)
+        lang_dist = getattr(
+            getattr(result, "repo_structure", None), "root_language_distribution", None
+        )
         if isinstance(lang_dist, dict) and lang_dist:
             outcome["top_language"] = max(lang_dist.items(), key=lambda kv: kv[1])[0]
 
@@ -275,7 +277,7 @@ def _run_generation_phase(
     default=None,
     help=(
         "LLM provider name (anthropic, openai, openrouter, gemini, "
-        "deepseek, ollama, litellm, codex_cli, opencode, mock)."
+        "deepseek, kimi, ollama, litellm, codex_cli, opencode, mock)."
     ),
 )
 @click.option("--model", default=None, help="Model identifier override.")

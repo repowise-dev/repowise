@@ -379,6 +379,7 @@ def _resolve_docs_flag(
         "GEMINI_API_KEY",
         "GOOGLE_API_KEY",
         "DEEPSEEK_API_KEY",
+        "KIMI_API_KEY",
         "OLLAMA_BASE_URL",
     ):
         if _os.environ.get(key):

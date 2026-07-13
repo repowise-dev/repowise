@@ -62,7 +62,7 @@ All three reach the indexing knobs; the LLM-only knobs appear only when docs are
 
 | Flag | Description |
 |------|-------------|
-| `--provider` | LLM provider: `anthropic`, `openai`, `openrouter`, `gemini`, `deepseek`, `ollama`, `litellm`, `codex_cli`, `opencode`, `mock` |
+| `--provider` | LLM provider: `anthropic`, `openai`, `openrouter`, `gemini`, `deepseek`, `kimi`, `ollama`, `litellm`, `codex_cli`, `opencode`, `mock` |
 | `--model` | Model name override (e.g., `claude-sonnet-4-6`) |
 | `--embedder` | Embedder for semantic search: `gemini`, `openai`, `openrouter`, `ollama`, `mock` (default: auto-detect) |
 | `--index-only` | Skip LLM generation. Only parse, build graph, and index git. Free. |

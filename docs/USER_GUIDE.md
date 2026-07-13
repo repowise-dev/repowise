@@ -179,7 +179,7 @@ repowise init [PATH]
 
 | Flag | Description |
 |------|-------------|
-| `--provider` | LLM provider: `anthropic`, `openai`, `openrouter`, `gemini`, `deepseek`, `ollama`, `litellm`, `codex_cli`, `mock`. Auto-detected from env vars if not set. |
+| `--provider` | LLM provider: `anthropic`, `openai`, `openrouter`, `gemini`, `deepseek`, `kimi`, `ollama`, `litellm`, `codex_cli`, `mock`. Auto-detected from env vars if not set. |
 | `--model` | Model name override (e.g., `claude-sonnet-4-6`, `gpt-5.4-nano`) |
 | `--embedder` | Embedder for semantic search: `gemini`, `openai`, `mock`. Auto-detected from env vars. |
 | `--index-only` | Skip LLM generation entirely. Only parse, build graph, and index git. Free. |

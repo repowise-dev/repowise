@@ -148,6 +148,31 @@ Gemini is also the default embedding provider when `GEMINI_API_KEY` is set.
 
 ---
 
+### Kimi
+
+```bash
+export KIMI_API_KEY="..."
+repowise init --provider kimi --model kimi-for-coding
+```
+
+The default Kimi Code endpoint supports `kimi-for-coding` and
+`kimi-for-coding-highspeed`. Repowise automatically uses their required
+sampling parameters.
+
+K2.x models use the separate Kimi Open Platform. Supply a key from that
+platform together with its OpenAI-compatible endpoint:
+
+```bash
+export KIMI_API_KEY="..."
+export KIMI_BASE_URL="https://api.moonshot.ai/v1"
+repowise init --provider kimi --model kimi-k2.6
+```
+
+For K2.x models, Repowise selects the required sampling parameters for
+thinking or instant mode.
+
+---
+
 ### Ollama (local)
 
 Run models locally without any API key.
@@ -222,7 +247,7 @@ If you don't pass `--provider`, repowise detects your provider by checking:
 
 1. `REPOWISE_PROVIDER` environment variable
 2. `provider` in `.repowise/config.yaml`
-3. API key environment variables, in order: `ANTHROPIC_API_KEY` → `OPENAI_API_KEY` → `OLLAMA_BASE_URL` → `GEMINI_API_KEY`
+3. API key environment variables, in order: `ANTHROPIC_API_KEY` → `OPENAI_API_KEY` → `OPENROUTER_API_KEY` → `OLLAMA_BASE_URL` → `GEMINI_API_KEY` → `DEEPSEEK_API_KEY` → `KIMI_API_KEY`
 
 Codex CLI is intentionally explicit: pass `--provider codex_cli` or set `REPOWISE_PROVIDER=codex_cli`. Similarly, OpenCode is detected automatically when on `PATH` but can be explicitly selected with `--provider opencode` or `REPOWISE_PROVIDER=opencode`.
 
@@ -310,6 +335,8 @@ repowise also writes a `.mcp.json` at the repository root for Claude Code auto-d
 | `ANTHROPIC_API_KEY` | Anthropic API key |
 | `OPENAI_API_KEY` | OpenAI API key |
 | `GEMINI_API_KEY` / `GOOGLE_API_KEY` | Google Gemini API key |
+| `KIMI_API_KEY` | Kimi API key |
+| `KIMI_BASE_URL` | Override the Kimi API base URL |
 | `OLLAMA_BASE_URL` | Ollama server URL (default: `http://localhost:11434`) |
 | `LITELLM_API_KEY` | LiteLLM proxy key |
 | `REPOWISE_PROVIDER` | Override provider (skips auto-detection) |
