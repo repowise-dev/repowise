@@ -23,7 +23,7 @@ def test_discover_lists_jsonl_sorted(tmp_path: Path) -> None:
 
 
 def test_normalize_maps_common_fields_and_tools() -> None:
-    event = ADAPTER.normalize((FIXTURE.read_text(encoding="utf-8").splitlines()[0]))
+    event = ADAPTER.normalize(FIXTURE.read_text(encoding="utf-8").splitlines()[0])
 
     assert isinstance(event, Event)
     assert event.kind == "assistant"
