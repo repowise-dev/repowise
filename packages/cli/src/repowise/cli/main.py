@@ -29,6 +29,7 @@ from repowise.cli.commands.restyle_cmd import restyle_command, wiki_styles_comma
 from repowise.cli.commands.risk_cmd import risk_command
 from repowise.cli.commands.saved_cmd import saved_command
 from repowise.cli.commands.search_cmd import search_command
+from repowise.cli.commands.security_cmd import security_command
 from repowise.cli.commands.serve_cmd import serve_command
 from repowise.cli.commands.status_cmd import status_command
 from repowise.cli.commands.telemetry_cmd import telemetry_command
@@ -77,6 +78,7 @@ register_command(search_command)
 register_command(distill_command)
 register_command(expand_command)
 register_command(saved_command)
+register_command(security_command)
 register_command(corrections_command)
 register_command(export_command)
 register_command(hook_group)

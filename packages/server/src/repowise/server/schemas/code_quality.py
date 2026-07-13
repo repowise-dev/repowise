@@ -88,6 +88,10 @@ class SecurityFindingResponse(BaseModel):
     severity: str
     snippet: str | None
     detected_at: datetime
+    # Present when the finding was sourced from git history (full-history
+    # scan). ``None`` for working-tree findings produced during indexing.
+    commit_sha: str | None
+    found_in_history: bool
 
 
 class RepoStatsResponse(BaseModel):

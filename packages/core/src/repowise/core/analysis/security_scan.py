@@ -3,7 +3,17 @@
 Scans indexed symbols and source for keyword/regex patterns that indicate
 authentication, secret handling, raw SQL, dangerous deserialization, etc.
 
-Stores findings in the security_findings table (see migration 0011).
+Two scan surfaces share the same pattern registry and persistence layer:
+
+* working-tree scans (during indexing) — ``SecurityScanner.scan_file`` +
+  ``persist`` with no commit provenance;
+* full-history scans (``repowise security scan --history``) — iterate every
+  tracked revision of every source file and persist hits tagged with the
+  introducing commit's SHA + author date.
+
+Both paths land in the ``security_findings`` table. The
+``(repository_id, file_path, kind, line_number, commit_sha)`` unique
+constraint (migration 0037) makes re-runs idempotent.
 """
 
 from __future__ import annotations
@@ -12,6 +22,7 @@ import re
 from datetime import UTC, datetime
 from typing import Any
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 # ---------------------------------------------------------------------------
@@ -35,6 +46,14 @@ _PATTERNS: list[tuple[re.Pattern, str, str]] = [
 _SYMBOL_KEYWORDS = re.compile(
     r"\b(auth|token|password|jwt|session|crypto)\b", re.IGNORECASE
 )
+
+# Patterns whose matches are genuine leaked credentials (as opposed to the
+# broader "code smell" patterns like os.system/eval). Full-history scans
+# default to this subset: a historical commit that *once* called eval() is
+# mostly noise, whereas a committed secret is actionable and persists in
+# history. This positions history mode as complementary to gitleaks /
+# trufflehog rather than a noisy replacement.
+SECRET_KINDS: frozenset[str] = frozenset({"hardcoded_password", "hardcoded_secret"})
 
 
 class SecurityScanner:
@@ -94,25 +113,68 @@ class SecurityScanner:
 
         return findings
 
-    async def persist(self, file_path: str, findings: list[dict]) -> None:
+    def _uses_sqlite(self) -> bool:
+        """True when the bound session talks to SQLite (local/dev backend)."""
+        try:
+            name = self._session.bind.dialect.name  # type: ignore[attr-defined]
+        except AttributeError:
+            name = ""
+        return name == "sqlite"
+
+    async def persist(
+        self,
+        file_path: str,
+        findings: list[dict],
+        *,
+        commit_sha: str | None = None,
+        commit_at: datetime | None = None,
+    ) -> int:
         """Insert security findings into the security_findings table.
 
-        Uses raw INSERT to stay independent of any ORM session state.
-        Silently skips if the table doesn't exist yet (pre-migration).
-        """
-        from sqlalchemy import text
+        Re-runs never duplicate rows: the unique provenance constraint
+        (``uq_security_finding_provenance``) makes a conflicting INSERT a no-op.
+        We pick the conflict clause per dialect — Postgres supports
+        ``ON CONFLICT ON CONSTRAINT ... DO NOTHING``; SQLite uses
+        ``INSERT OR IGNORE`` (``ON CONFLICT ON CONSTRAINT`` is unsupported).
 
+        ``commit_sha`` / ``commit_at`` carry the git-history provenance; omit
+        them (working-tree scans) to leave the columns NULL/empty. The dedup key
+        uses ``""`` (not NULL) for working-tree findings so the constraint keys
+        identically across runs.
+
+        A per-row failure is skipped (``continue``) rather than aborting the
+        whole batch, so one malformed finding cannot silently drop the rest.
+        Returns the number of rows actually inserted, taken from the statement's
+        ``rowcount`` (the constraint makes duplicate inserts report 0 affected
+        rows on Postgres; SQLite reports the inserted count via ``rowcount`` too).
+        """
         if not findings:
-            return
+            return 0
 
         now = datetime.now(UTC)
+        # The dedup key uses "" (not NULL) for working-tree findings so the
+        # unique constraint keys identically across runs.
+        sha_key = commit_sha or ""
+        uses_sqlite = self._uses_sqlite()
+        if uses_sqlite:
+            conflict_clause = "INSERT OR IGNORE INTO security_findings "
+        else:
+            conflict_clause = (
+                "INSERT INTO security_findings "
+                "ON CONFLICT ON CONSTRAINT uq_security_finding_provenance "
+                "DO NOTHING "
+            )
+
+        inserted = 0
         for finding in findings:
             try:
-                await self._session.execute(
+                result = await self._session.execute(
                     text(
-                        "INSERT INTO security_findings "
-                        "(repository_id, file_path, kind, severity, snippet, line_number, detected_at) "
-                        "VALUES (:repo_id, :file_path, :kind, :severity, :snippet, :line, :detected_at)"
+                        conflict_clause
+                        + "(repository_id, file_path, kind, severity, snippet, line_number, "
+                        "commit_sha, commit_at, detected_at) "
+                        "VALUES (:repo_id, :file_path, :kind, :severity, :snippet, :line, "
+                        ":commit_sha, :commit_at, :detected_at)"
                     ),
                     {
                         "repo_id": self._repo_id,
@@ -121,8 +183,12 @@ class SecurityScanner:
                         "severity": finding["severity"],
                         "snippet": finding.get("snippet", ""),
                         "line": finding.get("line", 0),
+                        "commit_sha": sha_key,
+                        "commit_at": commit_at,
                         "detected_at": now,
                     },
                 )
-            except Exception:  # noqa: BLE001 — table may not exist pre-migration
-                break
+                inserted += max(result.rowcount or 0, 0)
+            except Exception:
+                continue
+        return inserted
