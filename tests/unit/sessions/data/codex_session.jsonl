@@ -1,0 +1,1 @@
+{"type":"assistant","session_id":"sess-1","cwd":"C:\\Users\\x\\repo","model":"gpt-5-codex","message_id":"msg_01","text":"Searching the codebase.","tool_calls":[{"id":"toolu_01","name":"search_codebase","input":{"query":"repowise"}}]}
