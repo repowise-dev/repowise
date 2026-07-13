@@ -61,11 +61,33 @@ class InstrumentedGroup(click.Group):
         error_type: str | None = None
         try:
             return super().invoke(ctx)
+        except click.exceptions.Exit as exc:
+            # click's ctx.exit(): code 0 is a clean success (must NOT read as an
+            # error), 130 is a Ctrl-C exit, anything else is a real failure.
+            code = getattr(exc, "exit_code", 0)
+            if code in (0, None):
+                status = "ok"
+            elif code == 130:
+                status = "interrupted"
+            else:
+                status = "error"
+                error_type = "Exit"
+            raise
         except SystemExit as exc:
-            if exc.code not in (0, None):
+            if exc.code in (0, None):
+                status = "ok"
+            elif exc.code == 130:
+                status = "interrupted"
+            else:
                 status = "error"
             raise
-        except (click.ClickException, click.exceptions.Abort) as exc:
+        except (KeyboardInterrupt, click.exceptions.Abort):
+            # User cancelled (Ctrl-C / declined a prompt). Not a failure — long-
+            # running commands (serve/watch/init) are routinely Ctrl-C'd, and
+            # counting that as "error" made success rates uninterpretable.
+            status = "interrupted"
+            raise
+        except click.ClickException as exc:
             status = "error"
             error_type = type(exc).__name__  # class name only, never the message
             raise
@@ -88,6 +110,7 @@ class InstrumentedGroup(click.Group):
                     status=status,
                     error_type=error_type,
                     duration_ms=duration_ms,
+                    extra=telemetry.drain_command_outcome(),
                 )
 
     def _subcommand_and_flags(

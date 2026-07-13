@@ -16,17 +16,19 @@ A tiny amount of anonymous data answers questions we otherwise have to guess at:
 - Which CLI versions and Python versions are in use? (what we can drop support for)
 - What share of runs fail, and on which command? (where the bugs are)
 - Which OSes matter? (what to test on)
+- Which MCP tools do coding agents reach for, and how often do answers come
+  back stale? (where the retrieval work pays off)
 
 That is the whole purpose. We do not sell it, and we do not use it to identify
 anyone.
 
 ## What is collected
 
-One event, `command_run`, is sent once per CLI invocation. Every event carries:
+Every event, whatever its type, carries the same anonymous envelope:
 
 | Field | Example | Purpose |
 |---|---|---|
-| `event` | `command_run` | Event type |
+| `event` | `command_run` / `mcp_tool_call` | Event type |
 | `anon_id` | `194639…d48a` | Random per-install id (see below) |
 | `session_id` | `e2ecb2…1158` | Random per-process id, groups one run |
 | `cli_version` | `0.21.0` | Version adoption |
@@ -34,14 +36,50 @@ One event, `command_run`, is sent once per CLI invocation. Every event carries:
 | `arch` | `arm64` / `x86_64` | Architecture priorities |
 | `python_version` | `3.12` | **major.minor only** |
 | `is_ci` | `true` / `false` | Separate automation from humans |
+
+### `command_run` — once per CLI invocation
+
+| Field | Example | Purpose |
+|---|---|---|
 | `properties.command` | `init`, `update`, `health` | Which command ran |
 | `properties.subcommand` | `decision.add`, `telemetry.status` | A known subcommand name only |
 | `properties.flags` | `["--resume", "--provider"]` | Option **names only**, never values |
-| `properties.status` | `ok` / `error` | Success rate |
+| `properties.status` | `ok` / `error` / `interrupted` | Success, failure, or user-cancelled (Ctrl-C) |
 | `properties.error_type` | `LLMProviderError` | Exception **class name only** |
 | `properties.duration_ms` | `71840` | Performance in the wild |
 
-Example payload:
+For `init` and `update`, a few coarse **buckets and enums** describe the shape
+of the run so we can see the size of repos people index and whether docs
+generation is used. Never exact counts, never repo or file names:
+
+| Field | Example | Purpose |
+|---|---|---|
+| `properties.file_count_bucket` | `500-999` | Repo size distribution (a range, not a count) |
+| `properties.top_language` | `python` | Which languages to prioritise |
+| `properties.docs_mode` | `true` / `false` | AI docs vs index-only adoption |
+| `properties.provider` / `properties.model` | `anthropic` / `claude-opus` | Which models generate docs |
+| `properties.embedder` | `openai` | Which embedders are in use |
+| `properties.pages_bucket` | `100-499` | Docs volume (a range) |
+
+### `mcp_tool_call` — once per MCP tool call
+
+Emitted by the MCP server (`repowise mcp` / `repowise serve`) so we can see
+which tools coding agents actually use and how often answers come back stale or
+degraded. Only the tool name and coarse enums/booleans — **never the question,
+query, results, paths, or repo/symbol names**:
+
+| Field | Example | Purpose |
+|---|---|---|
+| `properties.tool` | `get_answer`, `search_codebase` | Which tool was called |
+| `properties.status` | `ok` / `error` | Tool error rate |
+| `properties.duration_ms` | `820` | Tool latency in the wild |
+| `properties.confidence` | `high` / `medium` / `low` | Answer confidence distribution |
+| `properties.retrieval_quality` | `strong` / `weak` | Retrieval quality distribution |
+| `properties.results_bucket` | `1-3`, `4-10` | Result count for searches (a range) |
+| `properties.index_behind` | `true` / `false` | How often served content is stale |
+| `properties.embedder_degraded` | `true` / `false` | How often search runs on mock vectors |
+
+Example `command_run` payload:
 
 ```json
 {

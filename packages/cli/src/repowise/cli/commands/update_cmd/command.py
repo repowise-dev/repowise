@@ -64,6 +64,36 @@ from .workspace import _workspace_update
 log = structlog.get_logger(__name__)
 
 
+def _record_update_outcome(
+    *,
+    index_only: bool,
+    changed_count: int,
+    provider: Any = None,
+    generated_pages: list | None = None,
+) -> None:
+    """Attach an anonymous update-shape outcome to the ``command_run`` event.
+
+    Coarse buckets + enums only (changed-files bucket, docs mode, provider,
+    pages bucket). Best-effort; never breaks the command.
+    """
+    try:
+        from repowise.cli.platform import telemetry
+
+        outcome: dict[str, Any] = {
+            "outcome": "success",
+            "index_only": bool(index_only),
+            "docs_mode": not index_only and provider is not None,
+            "changed_files_bucket": telemetry.bucket_count(changed_count),
+        }
+        if not index_only and provider is not None:
+            outcome["provider"] = getattr(provider, "provider_name", None)
+            outcome["model"] = getattr(provider, "model_name", None)
+            outcome["pages_bucket"] = telemetry.bucket_count(len(generated_pages or []))
+        telemetry.add_command_outcome(**{k: v for k, v in outcome.items() if v is not None})
+    except Exception:
+        return
+
+
 def _refresh_editor_stamp(
     repo_path: Any, agents_md: bool | None, degraded: list[str] | None = None
 ) -> None:
@@ -724,6 +754,7 @@ def run_update(
                 emitter.error(str(exc))
             raise
         _refresh_editor_stamp(repo_path, agents_md, degraded)
+        _record_update_outcome(index_only=True, changed_count=len(file_diffs))
         if emitter is not None:
             emitter.done(
                 ok=True,
@@ -1202,6 +1233,12 @@ def run_update(
         degraded.append(f"Cross-repo analysis: {exc}")
 
     elapsed = time.monotonic() - start
+    _record_update_outcome(
+        index_only=False,
+        changed_count=len(file_diffs),
+        provider=provider,
+        generated_pages=generated_pages,
+    )
     if emitter is not None:
         emitter.done(
             ok=True,
