@@ -29,8 +29,8 @@ export function FileDocTab({ wikiPage, docSlot, wikiHref }: FileDocTabProps) {
     return (
       <EmptyState
         icon={<BookOpen className="h-8 w-8" />}
-        title="No documentation yet"
-        description="This file hasn't been documented. Run a sync to generate its wiki page."
+        title="This page didn't make the cut"
+        description="Not every file gets its own documentation page, and that's perfectly normal."
       />
     );
   }
