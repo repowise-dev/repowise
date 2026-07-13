@@ -319,8 +319,28 @@ class TestGenerationPipeline:
             assert page.model_name
 
     def test_all_pages_provider_is_mock(self, pipeline_result):
+        # LLM pages use the mock provider; the deterministic coverage tail
+        # (files outside the budget) is rendered from a template with no
+        # provider call, so those carry provider_name "template".
         for page in pipeline_result["pages"]:
-            assert page.provider_name == "mock"
+            assert page.provider_name in ("mock", "template")
+
+    def test_deterministic_tail_pages_emitted(self, pipeline_result):
+        """Files outside the LLM budget get zero-LLM deterministic file pages.
+
+        With the default config (tier1_top_n=None) the only template pages are
+        the Phase G coverage tail, tagged doc_tier=3.
+        """
+        tail = [
+            p
+            for p in pipeline_result["pages"]
+            if p.provider_name == "template" and p.metadata.get("doc_tier") == 3
+        ]
+        assert tail, "expected deterministic coverage-tail pages"
+        for p in tail:
+            assert p.page_type == "file_page"
+            assert p.input_tokens == 0 and p.output_tokens == 0
+            assert p.metadata.get("deterministic") is True
 
     def test_generates_repo_overview(self, pipeline_result):
         types = [p.page_type for p in pipeline_result["pages"]]
@@ -403,8 +423,14 @@ class TestGenerationPipeline:
             assert jobs[0].completed_pages >= 0
 
     def test_generated_page_tokens_nonzero(self, pipeline_result):
-        """Every generated page should report nonzero token usage."""
-        for page in pipeline_result["pages"]:
+        """Every LLM page should report nonzero token usage.
+
+        Deterministic tail pages (provider "template") are zero-LLM by design,
+        so they are excluded from this token assertion.
+        """
+        llm_pages = [p for p in pipeline_result["pages"] if p.provider_name != "template"]
+        assert llm_pages, "expected at least one LLM page"
+        for page in llm_pages:
             assert page.input_tokens > 0 or page.output_tokens > 0
 
     def test_generated_page_source_hash_is_hex(self, pipeline_result):
