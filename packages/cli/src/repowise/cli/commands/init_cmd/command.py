@@ -94,6 +94,7 @@ def _run_generation_phase(
     resolved_reasoning: str,
     onboarding: bool,
     tier1_top_n: int | None,
+    tier2_tail_enabled: bool,
     harvest_decisions: bool,
     wiki_style: str,
     coverage_pct: float | None,
@@ -127,6 +128,7 @@ def _run_generation_phase(
         reasoning=resolved_reasoning,
         enable_onboarding=onboarding,
         tier1_top_n=tier1_top_n,
+        tier2_tail_enabled=tier2_tail_enabled,
         harvest_decisions=harvest_decisions,
         wiki_style=wiki_style,
     )
@@ -187,6 +189,17 @@ def _run_generation_phase(
             "post-commit hook won't trigger LLM regen.[/dim]"
         )
         return False, True
+
+    # Persist the tiering knobs so `repowise update` regenerates with the same
+    # coverage settings (save_config later round-trips and preserves these).
+    # save_config_partial skips None, so a no-cap tier1 stays unwritten.
+    from repowise.cli.helpers import save_config_partial
+
+    save_config_partial(
+        repo_path,
+        tier1_top_n=tier1_top_n,
+        tier2_tail_enabled=tier2_tail_enabled,
+    )
 
     run_repo_generation(
         repo_path=repo_path,
@@ -634,6 +647,11 @@ def init_command(
     # file page is a full-LLM tier-1 page (unchanged behaviour).
     tier1_top_n: int | None = None
 
+    # Deterministic coverage tail (Phase G): document every remaining source
+    # file with a free, no-LLM page. On by default; only the advanced menu
+    # can turn it off.
+    tier2_tail_enabled: bool = True
+
     # Output language picked in the advanced-mode generation section; None
     # until chosen. Resolved below: flag > this > config.yaml > English.
     language_choice: str | None = None
@@ -707,6 +725,7 @@ def init_command(
                 embedder_name = adv.get("embedder") or embedder_name
                 test_run = adv["test_run"]
                 tier1_top_n = adv.get("tier1_top_n")
+                tier2_tail_enabled = adv.get("tier2_tail_enabled", True)
                 onboarding = adv.get("onboarding", onboarding)
                 harvest_decisions = adv.get("harvest_decisions", harvest_decisions)
                 if adv.get("wiki_style"):
@@ -963,6 +982,7 @@ def init_command(
             resolved_reasoning=resolved_reasoning,
             onboarding=onboarding,
             tier1_top_n=tier1_top_n,
+            tier2_tail_enabled=tier2_tail_enabled,
             harvest_decisions=harvest_decisions,
             wiki_style=wiki_style,
             coverage_pct=coverage_pct,

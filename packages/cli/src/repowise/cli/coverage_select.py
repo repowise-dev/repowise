@@ -76,18 +76,28 @@ def render_coverage_table(options: list[CoverageOption]) -> Table:
 def interactive_coverage_select(
     console: Console,
     options: list[CoverageOption],
+    *,
+    deterministic_tail: bool = False,
 ) -> CoverageOption:
     """Render the coverage table and prompt the user for a choice.
 
     Returns the selected :class:`CoverageOption`. The default is the
     one whose ``is_recommended`` flag is set, falling back to the
     middle of the list when none is flagged.
+
+    ``deterministic_tail`` notes that files outside the chosen coverage still
+    get a free, no-LLM page (so the table's counts are not the whole story).
     """
     if not options:
         msg = "No coverage options provided"
         raise ValueError(msg)
 
     console.print(render_coverage_table(options))
+    if deterministic_tail:
+        console.print(
+            "  [dim]Every file outside this coverage still gets a free, no-LLM "
+            "deterministic page, so search can find all of your code.[/dim]"
+        )
 
     # Pick the default = recommended option's index, else the median.
     default_idx = next(

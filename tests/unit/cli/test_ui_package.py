@@ -117,6 +117,7 @@ def test_advanced_config_default_keys_no_fast(monkeypatch: pytest.MonkeyPatch) -
         "onboarding": True,
         "harvest_decisions": True,
         "tier1_top_n": None,
+        "tier2_tail_enabled": True,
         "wiki_style": DEFAULT_STYLE,
         "language": "en",
     }

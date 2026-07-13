@@ -390,6 +390,20 @@ def _prompt_generation(
         )
         result["tier1_top_n"] = tier_val if tier_val > 0 else None
 
+    # Deterministic coverage tail: give every remaining (budget-dropped) source
+    # file a free, no-LLM page so the whole codebase is retrievable by search.
+    result["tier2_tail_enabled"] = True
+    if result["run_mode"] == "standard":
+        console.print()
+        console.print(
+            "  [dim]Recommended: keep this on so search and get_answer can find "
+            "every source file, not just the documented slice (free, no tokens).[/dim]"
+        )
+        result["tier2_tail_enabled"] = click.confirm(
+            "  Document remaining files deterministically (no-LLM coverage)?",
+            default=True,
+        )
+
     # Documentation voice/density. An explicit --wiki-style wins; otherwise prompt
     # here so the choice lands inside the section, before the summary panel.
     result["wiki_style"] = wiki_style if wiki_style is not None else prompt_wiki_style(console)
@@ -446,6 +460,10 @@ def _build_summary_table(
             )
         if allow_fast and result.get("tier1_top_n"):
             summary.add_row("Full-LLM page cap", str(result["tier1_top_n"]))
+        summary.add_row(
+            "Deterministic coverage",
+            "yes" if result.get("tier2_tail_enabled", True) else "no",
+        )
         summary.add_row("Onboarding", "yes" if result.get("onboarding", True) else "no")
         summary.add_row(
             "Harvest decisions", "yes" if result.get("harvest_decisions", True) else "no"

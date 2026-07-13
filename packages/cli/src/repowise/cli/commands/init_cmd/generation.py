@@ -133,7 +133,9 @@ def select_coverage(
             skip_infra=skip_infra,
             kg_modules=kg_modules,
         )
-        chosen = interactive_coverage_select(console, options)
+        chosen = interactive_coverage_select(
+            console, options, deterministic_tail=gen_config.tier2_tail_enabled
+        )
         chosen_pct = chosen.pct
         plans = chosen.plans
         est = chosen.estimate

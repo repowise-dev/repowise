@@ -200,9 +200,17 @@ def show_completion(
         console.print()
         _render_defect_accuracy(result)
     else:
-        total_tokens = sum(p.total_tokens for p in (result.generated_pages or []))
+        _pages = result.generated_pages or []
+        total_tokens = sum(p.total_tokens for p in _pages)
+        # Split AI-written from the zero-LLM deterministic coverage tail so broad
+        # coverage reads as thoroughness, not padding.
+        _det = sum(1 for p in _pages if getattr(p, "provider_name", "") == "template")
+        _ai = len(_pages) - _det
+        _pages_label = str(len(_pages))
+        if _det:
+            _pages_label = f"{len(_pages)} ({_ai} AI-written · {_det} deterministic)"
         metrics = [
-            ("Pages generated", str(len(result.generated_pages or []))),
+            ("Pages generated", _pages_label),
             ("Total tokens", f"{total_tokens:,}"),
             ("Provider", f"{provider.provider_name} / {provider.model_name}"),
             ("Elapsed", format_elapsed(elapsed)),

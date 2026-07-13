@@ -744,6 +744,10 @@ def run_update(
     # on update yet — defaults to on to keep the onboarding collection
     # fresh as the codebase evolves.
     enable_onboarding_cfg = bool(cfg.get("enable_onboarding", True))
+    # Honor the tiering knobs chosen at init so update regenerates with the same
+    # coverage. Without reading these back, every update would silently drop the
+    # deterministic tail (and any tier-1 cap) to their defaults.
+    tail_dirs_cfg = cfg.get("tier2_tail_dirs")
     config = GenerationConfig(
         max_concurrency=concurrency,
         language=language,
@@ -752,6 +756,10 @@ def run_update(
         # Honor the wiki style chosen at init (or via `repowise restyle`) so pages
         # regenerated for changed files match the rest of the wiki's voice.
         wiki_style=cfg.get("wiki_style", "comprehensive"),
+        tier1_top_n=cfg.get("tier1_top_n"),
+        tier2_tail_enabled=bool(cfg.get("tier2_tail_enabled", True)),
+        tier2_tail_cap=cfg.get("tier2_tail_cap"),
+        tier2_tail_dirs=tuple(tail_dirs_cfg) if tail_dirs_cfg else None,
     )
 
     provider = resolve_provider(provider_name, model, repo_path=repo_path)
