@@ -32,6 +32,8 @@ __all__ = [
     "TELEMETRY_DOC_URL",
     "CommandRunEvent",
     "TelemetryEvent",
+    "add_command_outcome",
+    "drain_command_outcome",
     "maybe_show_notice",
     "record",
     "record_command_run",
@@ -39,6 +41,52 @@ __all__ = [
     "registered_events",
     "status_lines",
 ]
+
+
+#: Anonymous outcome fields a command stashes for THIS invocation's
+#: ``command_run`` event. A CLI process runs exactly one command, so a plain
+#: module global is sufficient (no contextvar needed); the root wrapper drains
+#: it once when it records the event.
+_command_outcome: dict[str, Any] = {}
+
+
+def bucket_count(n: int) -> str:
+    """Bucket a count into a coarse, non-identifying range for telemetry.
+
+    Exact file/page counts can help fingerprint a specific repo; buckets give
+    the size distribution we actually want without that risk.
+    """
+    if n <= 0:
+        return "0"
+    if n < 10:
+        return "1-9"
+    if n < 100:
+        return "10-99"
+    if n < 500:
+        return "100-499"
+    if n < 1000:
+        return "500-999"
+    if n < 5000:
+        return "1k-5k"
+    return "5k+"
+
+
+def add_command_outcome(**fields: Any) -> None:
+    """Attach anonymous outcome fields to this invocation's ``command_run`` event.
+
+    For coarse, non-identifying context a command wants reported alongside the
+    generic outcome: bucketed counts, coarse enums, booleans (e.g. an index's
+    file-count bucket or configured provider). Same privacy contract as events —
+    never pass source, paths, repo/symbol names, or raw values.
+    """
+    _command_outcome.update(fields)
+
+
+def drain_command_outcome() -> dict[str, Any]:
+    """Return and clear the stashed outcome fields (called once by the wrapper)."""
+    outcome = dict(_command_outcome)
+    _command_outcome.clear()
+    return outcome
 
 
 def record_command_run(

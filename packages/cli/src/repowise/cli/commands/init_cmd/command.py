@@ -83,6 +83,54 @@ from .reporting import show_analysis_summary, show_completion
 from .workspace import _workspace_init
 
 
+def _record_init_outcome(
+    *,
+    result: Any,
+    effective_index_only: bool,
+    run_mode: str,
+    provider: Any,
+    embedder_name_resolved: str,
+) -> None:
+    """Attach an anonymous shape-of-the-index outcome to the ``command_run`` event.
+
+    Coarse buckets + enums only (file-count bucket, docs mode, run mode, top
+    language, provider/embedder names) — no repo names, paths, or exact counts.
+    Best-effort: never let telemetry break the command's happy path.
+    """
+    try:
+        from repowise.cli.platform import telemetry
+
+        outcome: dict[str, Any] = {
+            "outcome": "success",
+            "index_only": bool(effective_index_only),
+            "run_mode": run_mode,
+            "file_count_bucket": telemetry.bucket_count(getattr(result, "file_count", 0) or 0),
+            "symbol_count_bucket": telemetry.bucket_count(getattr(result, "symbol_count", 0) or 0),
+        }
+
+        lang_dist = getattr(getattr(result, "repo_structure", None), "root_language_distribution", None)
+        if isinstance(lang_dist, dict) and lang_dist:
+            outcome["top_language"] = max(lang_dist.items(), key=lambda kv: kv[1])[0]
+
+        if not effective_index_only and provider is not None:
+            outcome["docs_mode"] = True
+            outcome["provider"] = getattr(provider, "provider_name", None)
+            outcome["model"] = getattr(provider, "model_name", None)
+            pages = getattr(result, "generated_pages", None) or []
+            outcome["pages_bucket"] = telemetry.bucket_count(len(pages))
+            det = sum(1 for p in pages if getattr(p, "provider_name", "") == "template")
+            outcome["deterministic_pages_bucket"] = telemetry.bucket_count(det)
+        else:
+            outcome["docs_mode"] = False
+
+        if embedder_name_resolved:
+            outcome["embedder"] = embedder_name_resolved
+
+        telemetry.add_command_outcome(**{k: v for k, v in outcome.items() if v is not None})
+    except Exception:
+        return
+
+
 def _run_generation_phase(
     *,
     repo_path: Path,
@@ -1107,6 +1155,14 @@ def init_command(
         effective_index_only=effective_index_only,
         run_mode=run_mode,
         provider=provider,
+    )
+
+    _record_init_outcome(
+        result=result,
+        effective_index_only=effective_index_only,
+        run_mode=run_mode,
+        provider=provider,
+        embedder_name_resolved=embedder_name_resolved,
     )
 
     # Offer to install post-commit hook (both index-only and full modes)
