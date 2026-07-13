@@ -103,28 +103,18 @@ def test_inherits_primary_config(ws, monkeypatch):
     assert reason is None
 
 
-def test_env_provider_forces_on(ws, monkeypatch):
+@pytest.mark.parametrize("env_var", ["ANTHROPIC_API_KEY", "KIMI_API_KEY"])
+def test_env_provider_forces_on(ws, monkeypatch, env_var):
     ws_root, cfg = ws
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-fake")
+    monkeypatch.setenv(env_var, "sk-fake")
+
     docs, reason = _resolve_docs_flag(
         run_docs=None,
         provider_name=None,
         ws_root=ws_root,
         ws_config=cfg,
     )
-    assert docs is True
-    assert reason is None
 
-
-def test_kimi_env_provider_forces_on(ws, monkeypatch):
-    ws_root, cfg = ws
-    monkeypatch.setenv("KIMI_API_KEY", "sk-fake")
-    docs, reason = _resolve_docs_flag(
-        run_docs=None,
-        provider_name=None,
-        ws_root=ws_root,
-        ws_config=cfg,
-    )
     assert docs is True
     assert reason is None
 
