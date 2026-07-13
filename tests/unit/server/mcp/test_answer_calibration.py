@@ -705,6 +705,103 @@ def test_union_bodies_overflow_lists_remainder_as_pointers(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Answer-by-union incidental gate — a prose question that merely MENTIONS a
+# many-def generic method (to_dict x33) must not dump every unrelated body as a
+# confidence=high answer; it falls through to synthesis. A small genuine union
+# (_severity_for x4) and an explicit bare-symbol lookup still answer by union.
+# ---------------------------------------------------------------------------
+
+
+def _union(name: str, n: int) -> dict:
+    return {name: [{"file_path": f"pkg/f{i}.py", "name": name} for i in range(n)]}
+
+
+def test_union_defers_only_when_prose_and_many_defs():
+    from repowise.server.mcp_server.tool_answer.symbols import union_defers_to_synthesis
+
+    q_prose = "How does a wiki page get its provider_name during indexing?"
+    # Prose + many defs → defer to synthesis.
+    assert union_defers_to_synthesis(q_prose, {"provider_name"}, _union("provider_name", 12))
+    # Small genuine union stays (the _severity_for x4 case) even in prose.
+    assert not union_defers_to_synthesis(
+        "How does _severity_for compute a severity level?",
+        {"_severity_for"},
+        _union("_severity_for", 4),
+    )
+    # Bare symbol lookup (prose does not dominate) still unions at any count.
+    assert not union_defers_to_synthesis("provider_name", {"provider_name"}, _union("provider_name", 12))
+    # No union → nothing to defer.
+    assert not union_defers_to_synthesis(q_prose, {"provider_name"}, {})
+
+
+def test_union_defer_ceiling_is_inclusive():
+    from repowise.server.mcp_server.tool_answer.config import _HOMONYM_UNION_PROSE_DEF_CEILING
+    from repowise.server.mcp_server.tool_answer.symbols import union_defers_to_synthesis
+
+    q = "How is a parsed record serialized with widget_dump before it is stored?"
+    ids = {"widget_dump"}
+    at = _HOMONYM_UNION_PROSE_DEF_CEILING
+    # At the ceiling: still a handful, keep the union.
+    assert not union_defers_to_synthesis(q, ids, _union("widget_dump", at))
+    # One past it: a generic method, defer.
+    assert union_defers_to_synthesis(q, ids, _union("widget_dump", at + 1))
+
+
+def _patch_anchor_union(monkeypatch, answer_mod, union_groups: dict):
+    """Force _anchor_symbol_hits to report a homonym union (no hit boost)."""
+
+    async def _fake_anchor(session, repo_id, question_ids, hits, **kwargs):
+        return hits, {"union": union_groups, "qualified_miss": []}
+
+    monkeypatch.setattr(answer_mod, "_anchor_symbol_hits", _fake_anchor)
+
+
+@pytest.mark.asyncio
+async def test_prose_mention_of_generic_method_synthesizes(setup_mcp, monkeypatch):
+    """A prose question naming a 12-def generic method falls through to synthesis
+    instead of returning grounding='exact_symbol' with a wall of unrelated bodies."""
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    _patch_pipeline(monkeypatch, answer_mod, with_symbols=False)
+    _patch_anchor_union(monkeypatch, answer_mod, _union("to_dict", 12))
+    _patch_provider(monkeypatch, answer_mod, "The page is serialized in pkg/alpha/one.py.")
+
+    result = await get_answer("How is a parsed file turned into a dict with to_dict before it is stored?")
+    assert result.get("grounding") != "exact_symbol"
+    assert "symbol_bodies" not in result or len(result.get("symbol_bodies") or []) < 12
+
+
+@pytest.mark.asyncio
+async def test_small_union_still_answers_by_union(setup_mcp, monkeypatch, tmp_path):
+    """A small genuine parallel-impl union (3 defs, under the ceiling) still
+    short-circuits to grounding='exact_symbol' — the gate must not over-suppress."""
+    import repowise.server.mcp_server as mcp_mod
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    (tmp_path / "pkg").mkdir(parents=True)
+    defs = []
+    for i in range(3):
+        (tmp_path / "pkg" / f"f{i}.py").write_text(
+            f"class C:\n    def render_widget(self):\n        return {i}\n",
+            encoding="utf-8",
+        )
+        defs.append(
+            {"file_path": f"pkg/f{i}.py", "name": "render_widget", "start_line": 2, "end_line": 3}
+        )
+    monkeypatch.setattr(mcp_mod, "_repo_path", str(tmp_path))
+
+    _patch_pipeline(monkeypatch, answer_mod, with_symbols=False)
+    _patch_anchor_union(monkeypatch, answer_mod, {"render_widget": defs})
+    _patch_provider(monkeypatch, answer_mod, "unused — union short-circuits before synthesis")
+
+    result = await get_answer("How does render_widget build its output?")
+    assert result.get("grounding") == "exact_symbol"
+    assert len(result["symbol_bodies"]) == 3
+
+
+# ---------------------------------------------------------------------------
 # code_rationale — the T4 lever: in-code rationale recovered when the wiki /
 # decision corpus could not ground the question (low-confidence exits).
 # ---------------------------------------------------------------------------

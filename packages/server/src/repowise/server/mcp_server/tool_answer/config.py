@@ -65,6 +65,20 @@ _SYNTH_FULL_BODY_MAX_SYMBOLS = 2
 _HOMONYM_UNION_CHAR_BUDGET = 12000
 # Line cap per union body — same rationale as _INLINE_BODY_MAX_LINES.
 _HOMONYM_UNION_BODY_MAX_LINES = 120
+# Ceiling on how many same-named defs a *prose* question may answer-by-union.
+# The union is for a small set of genuine parallel implementations of one concept
+# (``_severity_for`` has 4 across the biomarkers); past a handful, the name is a
+# generic method implemented on many unrelated classes (``to_dict`` x33,
+# ``from_dict`` x26, ``provider_name`` x12), and inlining every body as a
+# confidence=high answer buries the actual question. So a prose question that
+# merely *mentions* such a name (measured: "how does a wiki page get its
+# provider_name during indexing?" dumped 12 unrelated provider stubs) falls
+# through to synthesis, which grounds in the file the question is really about.
+# An explicit symbol lookup (a bare name, where prose does not dominate) still
+# unions at any count — that caller asked for every definition. The gap between a
+# genuine union (<=4 seen) and a generic method (>=12 seen) is wide, so this is
+# not tuned to an exact count.
+_HOMONYM_UNION_PROSE_DEF_CEILING = 6
 
 # Data-shape grounding. "what fields does each entry in <blob> contain" is
 # answered directly by mining the field set from source instead of gating to a

@@ -124,6 +124,7 @@ from repowise.server.mcp_server.tool_answer.symbols import (
     _hydrate_symbols_for_hits,
     _read_symbol_source,
     build_homonym_union_bodies,
+    union_defers_to_synthesis,
 )
 from repowise.server.mcp_server.tool_answer.synthesis import (
     _hash_question,
@@ -663,7 +664,14 @@ async def get_answer(
     # the agent picks the one it wants from material already in-hand. This is
     # the fix for the retrieval-MISS class: those defs are never in the fuzzy
     # candidate set, so the exact-name scan is the only thing that surfaces them.
+    # Defer to synthesis when the union is incidental: a prose question that
+    # merely mentions a many-def generic method (``to_dict``, ``provider_name``)
+    # would otherwise dump every unrelated body as a confidence=high answer,
+    # burying what was actually asked. A bare symbol lookup, or a small genuine
+    # parallel-impl set (``_severity_for`` x4), still answers by union.
     union_groups = homonyms.get("union") or {}
+    if union_groups and union_defers_to_synthesis(question, question_ids, union_groups):
+        union_groups = {}
     if union_groups:
         repo_root = Path(str(ctx.path)) if getattr(ctx, "path", None) else None
         union_bodies, more_defs = build_homonym_union_bodies(repo_root, union_groups)

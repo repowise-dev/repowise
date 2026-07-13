@@ -19,6 +19,7 @@ from repowise.server.mcp_server.tool_answer.config import (
     _HIGH_CONFIDENCE_SCORE_FLOOR,
     _HOMONYM_UNION_BODY_MAX_LINES,
     _HOMONYM_UNION_CHAR_BUDGET,
+    _HOMONYM_UNION_PROSE_DEF_CEILING,
     _MATCHED_SYMBOL_SOURCE_LINES,
     _MAX_RICH_SIG_LINES,
     _MAX_SYMBOLS_PER_HIT,
@@ -27,6 +28,7 @@ from repowise.server.mcp_server.tool_answer.config import (
     _SYNTH_FULL_BODY_MAX_SYMBOLS,
     _SYNTH_FULL_SOURCE_LINES,
 )
+from repowise.server.mcp_server.tool_search import _prose_dominates
 
 
 def _extract_question_identifiers(question: str) -> set[str]:
@@ -65,6 +67,38 @@ def _extract_question_identifiers(question: str) -> set[str]:
             if has_upper or has_under or has_digit:
                 ids.add(c)
     return ids
+
+
+def union_defers_to_synthesis(
+    question: str, question_ids: set[str], union_groups: dict
+) -> bool:
+    """True when an answer-by-union should fall through to synthesis.
+
+    Answer-by-union is the right reply for a small set of genuine parallel
+    implementations the question is actually about (``_severity_for`` has 4
+    across the biomarkers). It is the WRONG reply when a prose question merely
+    *mentions* a generic method that happens to have many definitions: measured,
+    "how does a wiki page get its provider_name during indexing?" dumped 12
+    unrelated provider stubs as a confidence=high answer, and a ``to_dict``
+    mention dumped 28. Two signals must both hold before deferring, so the
+    narrowest population is affected:
+
+    * ``_prose_dominates`` — the query reads as prose, not a bare symbol lookup.
+      A bare ``provider_name`` (prose does not dominate) still unions: that
+      caller explicitly asked for every definition.
+    * the def count exceeds ``_HOMONYM_UNION_PROSE_DEF_CEILING`` — past a
+      handful, the name is a generic method, not a small parallel-impl set.
+
+    Small genuine unions and explicit lookups are untouched; only a prose
+    question naming a many-def generic method falls through to synthesis (which
+    grounds in the file the question is really about).
+    """
+    if not union_groups:
+        return False
+    total_defs = sum(len(defs) for defs in union_groups.values())
+    if total_defs <= _HOMONYM_UNION_PROSE_DEF_CEILING:
+        return False
+    return _prose_dominates(question, list(question_ids))
 
 
 def _read_repo_text(repo_root: Path | None, file_path: str) -> str | None:
