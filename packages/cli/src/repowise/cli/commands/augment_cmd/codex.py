@@ -10,7 +10,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from ._shared import _find_repo_root
-from .decision_inject import _session_decision_block
+from .decision_inject import _edit_decision_notice, _session_decision_block
+from .read_state import _load_session_state, _save_session_state
 
 _MCP_CONTEXT = (
     "[repowise] This repository has a local codebase wiki and graph index. "
@@ -43,8 +44,15 @@ def _handle_codex_context_event(
     return f"{_MCP_CONTEXT}\n{decisions}" if decisions else _MCP_CONTEXT
 
 
-def _handle_post_edit_use(cwd: str) -> str | None:
-    """After a Codex edit tool completes, flag that indexed context may be stale."""
+def _handle_post_edit_use(
+    cwd: str,
+    *,
+    session_id: str = "",
+    tool_input: dict | None = None,
+) -> str | None:
+    """After a Codex edit tool completes, flag that indexed context may be stale
+    and surface the edited file's governing decision, if any.
+    """
     repo_path = _find_repo_root(Path(cwd))
     if repo_path is None:
         return None
@@ -53,8 +61,26 @@ def _handle_post_edit_use(cwd: str) -> str | None:
     if not state_path.exists():
         return None
 
-    return (
+    staleness = (
         "[repowise] Files were edited after the last indexed snapshot. "
         "Run `repowise update` before relying on refreshed docs, graph context, "
         "risk checks, or dead-code results."
     )
+
+    # Governing-decision notice — same builder Claude Code's edit-time path uses.
+    notice: str | None = None
+    if tool_input is not None and session_id:
+        file_path = tool_input.get("file_path") if isinstance(tool_input, dict) else None
+        if isinstance(file_path, str) and file_path.strip():
+            from .read_state import _relativize
+
+            rel = _relativize(file_path, repo_path)
+            if rel is not None:
+                state = _load_session_state(repo_path, session_id)
+                try:
+                    notice = _edit_decision_notice(repo_path, rel, session_id, state)
+                except Exception:
+                    notice = None
+                _save_session_state(repo_path, state)
+
+    return "\n".join(filter(None, (staleness, notice))) if notice else staleness

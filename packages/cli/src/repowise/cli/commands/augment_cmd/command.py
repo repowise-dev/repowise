@@ -247,7 +247,9 @@ def _handle_post_tool_use(
     if tool_name in _EDIT_TOOL_NAMES:
         if client == "codex":
             _record_edit(tool_input, cwd, session_id)
-            return _handle_post_edit_use(cwd)
+            return _handle_post_edit_use(
+                cwd, session_id=session_id, tool_input=tool_input
+            )
         return _handle_edit_post(tool_input, cwd, session_id)
     if tool_name == "Read":
         # Read-after-served KPI: logged to the ledger, never spoken about.
