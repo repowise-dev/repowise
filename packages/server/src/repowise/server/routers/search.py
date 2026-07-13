@@ -8,7 +8,16 @@ and vector store so a single query covers the whole workspace. Pass
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query, Request
-from repowise.server.deps import get_fts, get_vector_store, verify_api_key
+from sqlalchemy import select
+
+from repowise.core.persistence.database import get_session
+from repowise.core.persistence.models import Page
+from repowise.server.deps import (
+    get_fts,
+    get_vector_store,
+    resolve_session_factory,
+    verify_api_key,
+)
 from repowise.server.schemas import SearchResultResponse
 
 router = APIRouter(
@@ -18,7 +27,7 @@ router = APIRouter(
 )
 
 
-def _to_response(r) -> SearchResultResponse:
+def _to_response(r, det_ids: set[str]) -> SearchResultResponse:
     """Convert a SearchResult dataclass into the API schema."""
     return SearchResultResponse(
         page_id=r.page_id,
@@ -28,7 +37,31 @@ def _to_response(r) -> SearchResultResponse:
         score=r.score,
         snippet=r.snippet,
         search_type=r.search_type,
+        is_deterministic=r.page_id in det_ids,
     )
+
+
+async def _deterministic_page_ids(request: Request, repo_id: str | None, page_ids: list[str]) -> set[str]:
+    """Page ids among ``page_ids`` that are deterministic template pages.
+
+    One batch lookup against the resolved repo's DB. Best-effort: workspace
+    fan-out results whose page lives in another repo's DB simply aren't
+    flagged (the badge is a hint, not load-bearing), so a lookup miss or
+    error yields an empty set rather than failing the search.
+    """
+    if not page_ids:
+        return set()
+    try:
+        factory = resolve_session_factory(request.app.state, repo_id)
+        async with get_session(factory) as session:
+            rows = await session.execute(
+                select(Page.id).where(
+                    Page.id.in_(page_ids), Page.provider_name == "template"
+                )
+            )
+            return {row[0] for row in rows.all()}
+    except Exception:
+        return set()
 
 
 @router.get("", response_model=list[SearchResultResponse])
@@ -64,7 +97,8 @@ async def search(
             request, query, limit, repo_id=repo_id, primary_vs=vector_store
         )
 
-    return [_to_response(r) for r in results]
+    det_ids = await _deterministic_page_ids(request, repo_id, [r.page_id for r in results])
+    return [_to_response(r, det_ids) for r in results]
 
 
 # ---------------------------------------------------------------------------

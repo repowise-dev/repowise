@@ -16,6 +16,14 @@ export interface FileWikiPageRef {
   confidence: number;
   human_notes: string | null;
   updated_at: string | null;
+  /**
+   * Deterministic coverage-tail pages are template-generated (zero LLM).
+   * `is_deterministic` drives the "Auto" badge in the file docs tab;
+   * `doc_tier` (2/3) mirrors `metadata.doc_tier`. Optional so payloads that
+   * predate the fields still type-check.
+   */
+  is_deterministic?: boolean;
+  doc_tier?: number | null;
 }
 
 export interface FileHealthFinding {

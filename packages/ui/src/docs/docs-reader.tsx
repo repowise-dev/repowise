@@ -14,7 +14,12 @@ import {
 import type { DocPage } from "@repowise-dev/types/docs";
 import { cn } from "../lib/cn";
 import { formatRelativeTime, formatTokens } from "../lib/format";
-import { getPageTypeLabel } from "../lib/page-types";
+import {
+  getPageTypeLabel,
+  isDeterministicPage,
+  DETERMINISTIC_BADGE_LABEL,
+  DETERMINISTIC_BADGE_TITLE,
+} from "../lib/page-types";
 import { computeDocNav } from "./doc-nav";
 import { filterMarkdownByPersona, type ReaderPersona } from "./reader-persona";
 import { WikiMarkdown } from "../wiki/wiki-markdown";
@@ -296,6 +301,14 @@ function DocsReaderBody({
               <span className="rounded-full bg-[var(--color-bg-elevated)] px-2 py-0.5 uppercase tracking-wider">
                 {getPageTypeLabel(page.page_type)}
               </span>
+              {isDeterministicPage(page) && (
+                <span
+                  className="rounded-full border border-[var(--color-border-default)] px-2 py-0.5 uppercase tracking-wider text-[var(--color-text-tertiary)]"
+                  title={DETERMINISTIC_BADGE_TITLE}
+                >
+                  {DETERMINISTIC_BADGE_LABEL}
+                </span>
+              )}
               {moduleSeg && (
                 <button
                   onClick={() => goToPageId(moduleSeg.pageId!)}

@@ -109,6 +109,7 @@ from repowise.server.mcp_server.tool_answer.data_shape import (
 from repowise.server.mcp_server.tool_answer.retrieval import (
     _apply_domain_penalty,
     _candidate_justification,
+    _downweight_deterministic,
     _intersection_boost,
     _rerank_by_coverage,
 )
@@ -557,6 +558,11 @@ async def get_answer(
     # candidate set so it's a tie-breaker, not a wholesale reordering.
     with contextlib.suppress(Exception):
         await _apply_pagerank_bias(hits, ctx)
+    # Deterministic coverage-tail pages are factual but thin — down-weight them
+    # so a projection can't displace a rich LLM page when both match. A tie-
+    # breaker, applied after the score biases and before symbol/flow anchoring
+    # (which can still promote a deterministic page the question names directly).
+    _downweight_deterministic(hits)
     # Graph expansion: 1-hop walk from the top hits to rescue near-misses
     # where retrieval landed in the right module but on the wrong file
     # (consumer instead of orchestrator). Adds up to 3 neighbors with a

@@ -141,6 +141,14 @@ def _interleave_hybrid(query: str, symbols: list[dict], concepts: list[dict],
 # who phrases one here clearly wants the decision pages ranked honestly.
 _DECISION_DOWNWEIGHT = 0.6
 
+# Deterministic template pages (the Phase G coverage tail) are factual but
+# thin — they exist so every source file is retrievable, not to out-argue a
+# rich LLM page. A mild multiplicative down-weight breaks ties toward the LLM
+# page when both match a conceptual query, without burying a deterministic
+# page that is genuinely the best hit (its file has no LLM page). A stronger
+# demotion would re-bury the coverage the tail pages add.
+_DETERMINISTIC_DOWNWEIGHT = 0.9
+
 _WHY_SHAPED_RE = re.compile(
     r"^\s*(why|when\s+did|when\s+was|who\s+decided|who\s+chose|what\s+was\s+the\s+(reason|rationale))\b"
     r"|\b(decision|decided|rationale|adr)\b",
@@ -160,6 +168,23 @@ def _downweight_decisions(output: list[dict], query: str) -> None:
     for item in output:
         if item.get("page_type") == "decision_record" and item.get("relevance_score"):
             item["relevance_score"] = round(item["relevance_score"] * _DECISION_DOWNWEIGHT, 4)
+
+
+def _downweight_deterministic(output: list[dict], det_ids: set) -> None:
+    """Scale down deterministic-template pages' relevance in place.
+
+    A thin projection page should not displace a rich LLM page when both
+    match a conceptual query. The multiplicative factor only breaks ties —
+    a deterministic page that is clearly the best hit (its file has no LLM
+    page) still surfaces, preserving the coverage the tail adds.
+    """
+    if not det_ids:
+        return
+    for item in output:
+        if item.get("page_id") in det_ids and item.get("relevance_score"):
+            item["relevance_score"] = round(
+                item["relevance_score"] * _DETERMINISTIC_DOWNWEIGHT, 4
+            )
 
 
 def _sort_demoting_decisions(output: list[dict], query: str) -> None:
@@ -310,20 +335,25 @@ def _filter_by_kind(output: list[dict], kind: str | None) -> list[dict]:
 
 async def _load_page_info(
     session, output: list[dict], *, with_git: bool = False
-) -> tuple[dict, set, dict]:
-    """Batch-load target paths, tombstones, and optionally git metadata.
+) -> tuple[dict, set, dict, set]:
+    """Batch-load target paths, tombstones, deterministic markers, and git.
 
-    Returns ``(page_info, tombstoned, git_map)`` where ``page_info`` maps
-    page_id -> target_path, ``tombstoned`` is the set of tombstoned page_ids,
-    and ``git_map`` maps file_path -> GitMetadata (empty unless ``with_git``).
+    Returns ``(page_info, tombstoned, git_map, det_ids)`` where ``page_info``
+    maps page_id -> target_path, ``tombstoned`` is the set of tombstoned
+    page_ids, ``git_map`` maps file_path -> GitMetadata (empty unless
+    ``with_git``), and ``det_ids`` is the set of page_ids for deterministic
+    template pages (the coverage tail — ``provider_name == "template"``).
     """
     page_ids = [item["page_id"] for item in output]
     res = await session.execute(
-        select(Page.id, Page.target_path, Page.freshness_status).where(Page.id.in_(page_ids))
+        select(Page.id, Page.target_path, Page.freshness_status, Page.provider_name).where(
+            Page.id.in_(page_ids)
+        )
     )
     rows = res.all()
     page_info = {row[0]: row[1] for row in rows}
     tombstoned = {row[0] for row in rows if row[2] == "tombstone"}
+    det_ids = {row[0] for row in rows if row[3] == "template"}
 
     git_map: dict[str, GitMetadata] = {}
     if with_git:
@@ -333,7 +363,7 @@ async def _load_page_info(
                 select(GitMetadata).where(GitMetadata.file_path.in_(target_paths))
             )
             git_map = {g.file_path: g for g in git_res.scalars().all()}
-    return page_info, tombstoned, git_map
+    return page_info, tombstoned, git_map, det_ids
 
 
 def _apply_freshness_boost(item: dict, gm: GitMetadata | None) -> None:
@@ -439,18 +469,23 @@ async def _search_single_repo(
 
     _downweight_decisions(output, query)
     output = await _rescue_all_decision_window(ctx, output, query, fetch_limit)
-    _sort_demoting_decisions(output, query)
 
-    # Attach target_path and drop excluded hits per repo (so federated search
-    # honours each repo's own exclude_patterns) before aggregation. Runs on
-    # the over-fetched list so the kind filter below has real headroom.
+    # Attach target_path + deterministic markers and drop excluded hits per
+    # repo (so federated search honours each repo's own exclude_patterns)
+    # before ranking. Runs on the over-fetched list so the kind filter below
+    # has real headroom. Load precedes the sort so both the decision demotion
+    # and the deterministic down-weight see the page metadata they key on.
+    det_ids: set = set()
     if output:
         async with get_session(ctx.session_factory) as session:
-            page_info, tombstoned, _ = await _load_page_info(session, output)
+            page_info, tombstoned, _, det_ids = await _load_page_info(session, output)
         output = [item for item in output if item["page_id"] not in tombstoned]
         for item in output:
             item["target_path"] = page_info.get(item["page_id"], "")
         output = filter_dicts_by_key(output, "target_path", _get_exclude_spec(ctx.path))
+
+    _downweight_deterministic(output, det_ids)
+    _sort_demoting_decisions(output, query)
 
     output = _filter_by_kind(output, kind)
     return output[:limit], method
@@ -731,7 +766,9 @@ async def search_codebase(
     # Batch-lookup page target paths for the kind filter + git freshness boost
     if output:
         async with get_session(ctx.session_factory) as session:
-            page_info, tombstoned, git_map = await _load_page_info(session, output, with_git=True)
+            page_info, tombstoned, git_map, det_ids = await _load_page_info(
+                session, output, with_git=True
+            )
         # Tombstoned pages document deleted/renamed files — never results.
         output = [item for item in output if item["page_id"] not in tombstoned]
 
@@ -748,7 +785,10 @@ async def search_codebase(
             gm = git_map.get(target_path) if target_path else None
             _apply_freshness_boost(item, gm)
 
-        # Re-sort by boosted relevance, decisions hard-demoted on non-why queries
+        # Down-weight thin deterministic pages so they don't displace a rich
+        # LLM page, then re-sort by adjusted relevance with decisions hard-
+        # demoted on non-why queries.
+        _downweight_deterministic(output, det_ids)
         _sort_demoting_decisions(output, query)
 
     output = _filter_by_kind(output, kind)

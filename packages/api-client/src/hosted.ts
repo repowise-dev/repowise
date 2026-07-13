@@ -309,6 +309,7 @@ export function mapHostedSearchResult(raw: Record<string, unknown>): SearchResul
     score: partial.score ?? 0,
     snippet: partial.snippet ?? "",
     search_type: partial.search_type ?? "keyword",
+    is_deterministic: partial.is_deterministic ?? false,
   };
 }
 

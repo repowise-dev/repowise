@@ -26,12 +26,20 @@ class PageResponse(BaseModel):
     confidence: float
     freshness_status: str
     metadata: dict
+    # Deterministic coverage-tail pages are template-generated (zero LLM).
+    # ``is_deterministic`` is the flat marker for UI badging / ranking;
+    # ``doc_tier`` (2 = in-budget template, 3 = coverage tail) mirrors
+    # ``metadata.doc_tier`` at the top level so consumers don't dig into the
+    # metadata blob. Both default to the LLM-page values for older rows.
+    is_deterministic: bool = False
+    doc_tier: int | None = None
     human_notes: str | None = None
     created_at: datetime
     updated_at: datetime
 
     @classmethod
     def from_orm(cls, obj: object) -> PageResponse:
+        metadata = json.loads(obj.metadata_json)  # type: ignore[attr-defined]
         return cls(
             id=obj.id,  # type: ignore[attr-defined]
             repository_id=obj.repository_id,  # type: ignore[attr-defined]
@@ -49,7 +57,9 @@ class PageResponse(BaseModel):
             version=obj.version,  # type: ignore[attr-defined]
             confidence=obj.confidence,  # type: ignore[attr-defined]
             freshness_status=obj.freshness_status,  # type: ignore[attr-defined]
-            metadata=json.loads(obj.metadata_json),  # type: ignore[attr-defined]
+            metadata=metadata,
+            is_deterministic=obj.provider_name == "template",  # type: ignore[attr-defined]
+            doc_tier=metadata.get("doc_tier"),
             human_notes=obj.human_notes,  # type: ignore[attr-defined]
             created_at=obj.created_at,  # type: ignore[attr-defined]
             updated_at=obj.updated_at,  # type: ignore[attr-defined]

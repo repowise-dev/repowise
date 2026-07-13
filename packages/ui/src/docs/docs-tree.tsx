@@ -22,6 +22,7 @@ import {
   getOnboardingSlot,
   getPageTypeIcon,
   getPageTypeLabel,
+  isDeterministicPage,
   type OnboardingSlot,
 } from "../lib/page-types";
 import { cn } from "../lib/cn";
@@ -32,6 +33,12 @@ import type { DocPage } from "@repowise-dev/types/docs";
 // real target_path (which never starts with "@") so directory lookups don't
 // collide with module paths.
 const ONBOARDING_DIR_KEY = "@onboarding";
+// Synthetic key for the collapsed "Auto-documented" group that collects the
+// deterministic coverage-tail file pages (~1,400 on a large repo). Namespaced
+// with "@group:" so its dir keys never collide with real target_paths and it
+// is NOT auto-expanded — the tail stays out of the way while browsing the
+// AI-written pages, and default-hidden behind the filter toggle.
+const AUTO_GROUP_KEY = "@group:auto";
 // Tree expansion survives reloads (per-browser, not per-repo — paths rarely
 // collide across repos and the fallback is just the default expansion).
 const EXPANDED_DIRS_KEY = "repowise:docs-tree-expanded";
@@ -245,6 +252,98 @@ function buildTree(pages: DocPage[]): TreeNode[] {
   }
 
   return root;
+}
+
+// ---------------------------------------------------------------------------
+// Auto-documented (deterministic coverage tail) group
+// ---------------------------------------------------------------------------
+//
+// The tail can be ~1,400 file pages. Scattering them through the module /
+// folder tree drowns the AI-written pages, so they are pulled out of the main
+// tree (see `partitionDeterministic`) and nested by directory under one
+// collapsed group. The group is only shown when the reader opts in via the
+// filter toggle.
+
+function buildAutoGroup(deterministicPages: DocPage[]): TreeNode | null {
+  const filePages = deterministicPages.filter((p) => p.target_path);
+  if (filePages.length === 0) return null;
+
+  const dirMap = new Map<string, TreeNode>();
+  const roots: TreeNode[] = [];
+
+  function ensureDir(dirPath: string): TreeNode {
+    const existing = dirMap.get(dirPath);
+    if (existing) return existing;
+    const parts = dirPath.split("/");
+    const node: TreeNode = {
+      name: parts[parts.length - 1] ?? dirPath,
+      // Prefix so these dir keys never collide with the main tree's dir nodes
+      // (which key on the raw target_path) or with real page ids.
+      path: `${AUTO_GROUP_KEY}:${dirPath}`,
+      isDir: true,
+      children: [],
+    };
+    dirMap.set(dirPath, node);
+    if (parts.length > 1) {
+      ensureDir(parts.slice(0, -1).join("/")).children.push(node);
+    } else {
+      roots.push(node);
+    }
+    return node;
+  }
+
+  for (const page of filePages) {
+    const parts = page.target_path.split("/");
+    const fileName = parts[parts.length - 1] ?? page.target_path;
+    const leaf: TreeNode = {
+      name: fileName,
+      path: page.id,
+      isDir: false,
+      page,
+      children: [],
+    };
+    if (parts.length > 1) {
+      ensureDir(parts.slice(0, -1).join("/")).children.push(leaf);
+    } else {
+      roots.push(leaf);
+    }
+  }
+
+  function sortRec(nodes: TreeNode[]) {
+    nodes.sort((a, b) => {
+      if (a.isDir && !b.isDir) return -1;
+      if (!a.isDir && b.isDir) return 1;
+      return a.name.localeCompare(b.name);
+    });
+    for (const n of nodes) if (n.children.length > 0) sortRec(n.children);
+  }
+  sortRec(roots);
+
+  return {
+    name: `Auto-documented (${filePages.length})`,
+    path: AUTO_GROUP_KEY,
+    isDir: true,
+    children: roots,
+  };
+}
+
+// Split off the deterministic coverage-tail file pages so the main tree is
+// built only from the human/AI-written pages. Deterministic pages are always
+// file_pages, so nothing else is affected.
+function partitionDeterministic(pages: DocPage[]): {
+  regular: DocPage[];
+  deterministic: DocPage[];
+} {
+  const regular: DocPage[] = [];
+  const deterministic: DocPage[] = [];
+  for (const page of pages) {
+    if (page.page_type === "file_page" && isDeterministicPage(page)) {
+      deterministic.push(page);
+    } else {
+      regular.push(page);
+    }
+  }
+  return { regular, deterministic };
 }
 
 // ---------------------------------------------------------------------------
@@ -824,11 +923,25 @@ export function DocsTree({ pages, selectedPageId, onSelectPage, className }: Doc
   // Per-row freshness dots are opt-in noise — off by default. Turning this on
   // (or filtering by status) is how a reader audits staleness across the tree.
   const [showFreshness, setShowFreshness] = useState(false);
+  // The deterministic coverage tail (~1,400 auto pages on a large repo) lives
+  // in its own collapsed "Auto-documented" group, so it's shown by default
+  // (discoverable without hunting through the filter) while staying out of the
+  // way; the reader can hide it entirely via this toggle.
+  const [showDeterministic, setShowDeterministic] = useState(true);
 
-  const tree = useMemo(
-    () => (viewMode === "domain" ? buildDomainTree(pages) : buildTree(pages)),
-    [pages, viewMode],
+  const { regular, deterministic } = useMemo(
+    () => partitionDeterministic(pages),
+    [pages],
   );
+  const autoGroup = useMemo(() => buildAutoGroup(deterministic), [deterministic]);
+
+  const tree = useMemo(() => {
+    // Build the main tree from the human/AI-written pages only, then append the
+    // collapsed auto group when the reader has opted in.
+    const base = viewMode === "domain" ? buildDomainTree(regular) : buildTree(regular);
+    if (showDeterministic && autoGroup) base.push(autoGroup);
+    return base;
+  }, [regular, viewMode, showDeterministic, autoGroup]);
   const filteredTree = useMemo(
     () => filterTree(tree, search, typeFilter, freshnessFilter),
     [tree, search, typeFilter, freshnessFilter],
@@ -848,7 +961,11 @@ export function DocsTree({ pages, selectedPageId, onSelectPage, className }: Doc
   const freshCount = pages.filter((p) => p.freshness_status === "fresh").length;
   const needAttention = totalPages - freshCount;
   const activeFilterCount =
-    (typeFilter !== "all" ? 1 : 0) + (freshnessFilter !== "all" ? 1 : 0);
+    (typeFilter !== "all" ? 1 : 0) +
+    (freshnessFilter !== "all" ? 1 : 0) +
+    // Auto-documented pages show by default; hiding them is the non-default
+    // (restricting) state, so count that as an active filter.
+    (showDeterministic ? 0 : 1);
 
   return (
     <div className={cn("flex flex-col h-full", className)}>
@@ -953,6 +1070,17 @@ export function DocsTree({ pages, selectedPageId, onSelectPage, className }: Doc
               />
               Show freshness dots on every row
             </label>
+            {deterministic.length > 0 && (
+              <label className="flex items-center gap-1.5 text-[10px] text-[var(--color-text-tertiary)] cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={showDeterministic}
+                  onChange={(e) => setShowDeterministic(e.target.checked)}
+                  className="h-3 w-3 accent-[var(--color-accent-primary)]"
+                />
+                Show {deterministic.length} auto-documented pages
+              </label>
+            )}
           </div>
         )}
 
