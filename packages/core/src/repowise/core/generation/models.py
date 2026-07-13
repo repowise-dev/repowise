@@ -163,6 +163,21 @@ class GenerationConfig:
     # ``None`` (default) preserves the prior behaviour exactly: every
     # selected file page is a full tier-1 LLM page.
     tier1_top_n: int | None = None
+    # ---- Deterministic coverage tail (Phase G) ------------------------
+    # After the budget picks its LLM (tier-1/2) file pages, every REMAINING
+    # parsed source file gets a cheap, zero-LLM "deterministic" page (the same
+    # template renderer as tier-2), so the whole codebase is retrievable by
+    # concept search instead of only the ~20% the budget covers. Proven in
+    # dogfood to lift retrieval recall (raw-vector recall@5 0.47 -> 0.67) with
+    # no regressions once the tail is importance-floored (test files and pure
+    # __init__.py re-exports are always excluded — they only dilute retrieval).
+    # On by default; free (no tokens), costs only index size + embeddings.
+    tier2_tail_enabled: bool = True
+    # Optional cap on how many tail pages to emit (highest-signal first by
+    # score). None = every floored candidate. Use to bound index size.
+    tier2_tail_cap: int | None = None
+    # Optional directory allow-list (repo-relative prefixes). None = all dirs.
+    tier2_tail_dirs: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
         if self.embed_concurrency is None:

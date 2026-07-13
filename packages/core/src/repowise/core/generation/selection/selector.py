@@ -69,7 +69,9 @@ class Selection:
     """Allow-set returned by :func:`select_pages`."""
 
     file_page_paths: list[str] = field(default_factory=list)
-    symbol_spotlights: list[tuple[str, str]] = field(default_factory=list)  # (file_path, symbol_name)
+    symbol_spotlights: list[tuple[str, str]] = field(
+        default_factory=list
+    )  # (file_path, symbol_name)
     module_groups: list[ModuleGroup] = field(default_factory=list)
     api_contract_paths: list[str] = field(default_factory=list)
     infra_paths: list[str] = field(default_factory=list)
@@ -77,9 +79,18 @@ class Selection:
     emit_repo_overview: bool = True
     emit_arch_diagram: bool = True
     allocation: BucketAllocation | None = None
+    # Zero-LLM deterministic pages for the code files the budget did NOT pick
+    # (Phase G coverage tail). Kept separate from ``file_page_paths`` so cost
+    # estimation stays honest (these are free) and the CLI can report the split.
+    deterministic_tail_paths: list[str] = field(default_factory=list)
 
     def counts(self) -> dict[str, int]:
-        """Per-page-type counts (for cost estimation and the init UI)."""
+        """Per-page-type counts of BUDGETED (LLM-costed) pages.
+
+        Deliberately excludes ``deterministic_tail_paths`` — those are free
+        zero-LLM pages, reported separately (``len(deterministic_tail_paths)``)
+        so cost estimation and the budget contract are not inflated by them.
+        """
         return {
             "api_contract": len(self.api_contract_paths),
             "symbol_spotlight": len(self.symbol_spotlights),
@@ -142,11 +153,46 @@ def _is_infra_file(parsed: Any) -> bool:
 
 def _is_code_file(parsed: Any) -> bool:
     fi = parsed.file_info
-    return (
-        not fi.is_api_contract
-        and not _is_infra_file(parsed)
-        and fi.language in _CODE_LANGUAGES
-    )
+    return not fi.is_api_contract and not _is_infra_file(parsed) and fi.language in _CODE_LANGUAGES
+
+
+def _passes_tail_floor(path: str, tail_dirs: tuple[str, ...] | None) -> bool:
+    """Importance floor for the deterministic coverage tail (Phase G).
+
+    Two exclusions are ALWAYS applied because they were proven to only dilute
+    retrieval (test-file pages pushed real answers below rank 5 in dogfood):
+    test files and pure ``__init__.py`` re-export files. When ``tail_dirs`` is
+    set, the path must also live under one of those repo-relative prefixes.
+    """
+    norm = path.replace("\\", "/")
+    if norm.startswith("tests/") or "/tests/" in norm:
+        return False
+    if norm.rsplit("/", 1)[-1] == "__init__.py":
+        return False
+    if tail_dirs:
+        return any(norm == d.rstrip("/") or norm.startswith(d.rstrip("/") + "/") for d in tail_dirs)
+    return True
+
+
+def _select_deterministic_tail(
+    files: list[tuple[float, str]],
+    selected_files: list[str],
+    cfg: Any,
+) -> list[str]:
+    """Every code file the budget dropped, importance-floored and capped.
+
+    ``files`` is score-descending, so a cap keeps the highest-signal tail.
+    Returns [] when the tail is disabled, reproducing the prior behaviour.
+    """
+    if not getattr(cfg, "tier2_tail_enabled", True):
+        return []
+    selected = set(selected_files)
+    tail_dirs = getattr(cfg, "tier2_tail_dirs", None)
+    tail = [p for _, p in files if p not in selected and _passes_tail_floor(p, tail_dirs)]
+    cap = getattr(cfg, "tier2_tail_cap", None)
+    if cap is not None and cap >= 0:
+        tail = tail[:cap]
+    return tail
 
 
 # ---------------------------------------------------------------------------
@@ -219,9 +265,7 @@ def _build_curated_module_groups(
     if not inputs.kg_modules:
         return None
 
-    code_by_path = {
-        p.file_info.path: p for p in inputs.parsed_files if _is_code_file(p)
-    }
+    code_by_path = {p.file_info.path: p for p in inputs.parsed_files if _is_code_file(p)}
     scored: list[tuple[float, ModuleGroup]] = []
     seen_keys: set[str] = set()
     for module in inputs.kg_modules:
@@ -233,8 +277,7 @@ def _build_curated_module_groups(
         member_paths = sorted(
             path
             for nid in module.get("nodeIds", [])
-            if isinstance(nid, str)
-            and (path := nid.removeprefix("file:")) in code_by_path
+            if isinstance(nid, str) and (path := nid.removeprefix("file:")) in code_by_path
         )
         if len(member_paths) < min_size:
             continue
@@ -246,9 +289,7 @@ def _build_curated_module_groups(
             continue
         seen_keys.add(key)
         name = module.get("name") or key
-        language = module.get("language") or code_by_path[
-            member_paths[0]
-        ].file_info.language
+        language = module.get("language") or code_by_path[member_paths[0]].file_info.language
         score = sum(inputs.pagerank.get(p, 0.0) for p in member_paths)
         scored.append(
             (
@@ -550,8 +591,13 @@ def select_pages(inputs: SelectionInputs) -> Selection:
         ]
         selected_files = _ensure_landmarks(selected_files, landmarks)
 
+    # Deterministic coverage tail: every code file the budget dropped gets a
+    # cheap zero-LLM page so the whole codebase is retrievable (Phase G).
+    deterministic_tail = _select_deterministic_tail(files, selected_files, cfg)
+
     sel = Selection(
         file_page_paths=selected_files,
+        deterministic_tail_paths=deterministic_tail,
         symbol_spotlights=[t for _, t in symbols[: allocation.symbol_spotlight]],
         module_groups=[m for _, m in modules[: allocation.module_page]],
         api_contract_paths=[p for _, p in apis[: allocation.api_contract]],

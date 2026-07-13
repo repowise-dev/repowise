@@ -348,14 +348,23 @@ class PageGenerator(PerTypeGenerationMixin):
         self,
         parsed: ParsedFile,
         ctx: FilePageContext,
+        *,
+        tail: bool = False,
     ) -> GeneratedPage:
         """Render a deterministic (no-LLM) tier-2 file page.
 
-        Used for the long tail of selected files on large repos. The page is
-        built straight from the assembled context via a Jinja template, marked
-        as template-generated, and carries zero token cost. It is embedded for
-        search by the level runner like any other page. No provider call and
-        no hallucination check (the content is factual by construction).
+        Used for the long tail of selected files on large repos, and (with
+        ``tail=True``) for the Phase G coverage tail: code files the budget
+        dropped entirely, so the whole codebase is retrievable by concept
+        search. The page is built straight from the assembled context via a
+        Jinja template, marked as template-generated, and carries zero token
+        cost. It is embedded for search by the level runner like any other
+        page. No provider call and no hallucination check (the content is
+        factual by construction).
+
+        ``tail=True`` stamps ``doc_tier=3`` (vs 2 for the in-budget tail) so
+        serving/ranking and the UI can tell budget-tail coverage pages apart
+        and rank them below LLM pages; ``metadata["deterministic"]`` marks both.
         """
         content = self._render("file_page_tier2.j2", style_prefix=False, ctx=ctx)
         now = _now_iso()
@@ -380,7 +389,8 @@ class PageGenerator(PerTypeGenerationMixin):
             created_at=now,
             updated_at=now,
         )
-        page.metadata["doc_tier"] = 2
+        page.metadata["doc_tier"] = 3 if tail else 2
+        page.metadata["deterministic"] = True
         _attach_file_provenance(page, ctx)
         return page
 

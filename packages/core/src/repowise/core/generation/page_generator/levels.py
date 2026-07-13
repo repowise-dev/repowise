@@ -178,9 +178,7 @@ async def _prefetch_rag_context(
         return False
     for (p, ctx), results in zip(targets, all_results, strict=False):
         self_id = f"file_page:{p.file_info.path}"
-        ctx.rag_context = [
-            f"[{r.page_id}]\n{r.snippet}" for r in results if r.page_id != self_id
-        ]
+        ctx.rag_context = [f"[{r.page_id}]\n{r.snippet}" for r in results if r.page_id != self_id]
     return True
 
 
@@ -203,7 +201,9 @@ async def build_level2_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
 
     items: list[tuple[Any, FilePageContext]] = []
     for p in run.code_files:
-        kg_file_ctx = run.kg_ctx.get_file_context(p.file_info.path) if run.kg_ctx.available else None
+        kg_file_ctx = (
+            run.kg_ctx.get_file_context(p.file_info.path) if run.kg_ctx.available else None
+        )
         ctx: FilePageContext = gen._assembler.assemble_file_page(
             p,
             run.graph,
@@ -234,16 +234,22 @@ async def build_level2_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
     )
 
     coros: list[tuple[str, Any]] = []
+    tail_paths = getattr(run, "tail_paths", set())
     for p, ctx in items:
         path = p.file_info.path
         pid = compute_page_id("file_page", path)
-        if path in run.sel_file_paths and pid not in run.completed_ids:
+        if pid in run.completed_ids:
+            continue
+        if path in run.sel_file_paths:
             if path in run.tier1_paths:
                 coros.append(
                     (pid, gen._generate_file_page_from_ctx(p, ctx, rag_prefetched=rag_prefetched))
                 )
             else:
                 coros.append((pid, gen._generate_file_page_tier2(p, ctx)))
+        elif path in tail_paths:
+            # Phase G coverage tail: budget-dropped code file -> zero-LLM page.
+            coros.append((pid, gen._generate_file_page_tier2(p, ctx, tail=True)))
     return coros
 
 
@@ -252,9 +258,7 @@ def build_level3_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
     gen = run.gen
     coros: list[tuple[str, Any]] = []
     for scc_id, scc_files in run.sel_scc_groups:
-        fc_list = [
-            run.file_page_contexts[f] for f in scc_files if f in run.file_page_contexts
-        ]
+        fc_list = [run.file_page_contexts[f] for f in scc_files if f in run.file_page_contexts]
         pid = compute_page_id("scc_page", scc_id)
         if pid not in run.completed_ids:
             coros.append((pid, gen.generate_scc_page(scc_id, scc_files, fc_list)))
@@ -266,11 +270,7 @@ def build_level4_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
     gen = run.gen
     coros: list[tuple[str, Any]] = []
     for mg in run.sel_module_groups:
-        fcs = [
-            run.file_page_contexts[fp]
-            for fp in mg.file_paths
-            if fp in run.file_page_contexts
-        ]
+        fcs = [run.file_page_contexts[fp] for fp in mg.file_paths if fp in run.file_page_contexts]
         if not fcs:
             continue
         page_id = compute_page_id("module_page", mg.key)
@@ -413,9 +413,7 @@ def build_level7_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
     """Level 7 (infra_page), allow-set filtered."""
     gen = run.gen
     infra_files = [
-        p
-        for p in run.parsed_files
-        if _is_infra_file(p) and p.file_info.path in run.sel_infra_paths
+        p for p in run.parsed_files if _is_infra_file(p) and p.file_info.path in run.sel_infra_paths
     ]
     return [
         (

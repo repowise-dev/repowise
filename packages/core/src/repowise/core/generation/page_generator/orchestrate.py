@@ -177,11 +177,7 @@ class _GenerationRun:
         )
 
     async def _seed_resume(self) -> None:
-        if (
-            self.job_system is not None
-            and self.resume
-            and self.vector_store is not None
-        ):
+        if self.job_system is not None and self.resume and self.vector_store is not None:
             self.completed_ids = await self.vector_store.list_page_ids()
             if self.completed_ids:
                 log.info(
@@ -260,6 +256,11 @@ class _GenerationRun:
             kg_file_scores=kg_scores or None,
         )
 
+        # Deterministic coverage tail (Phase G): code files the budget dropped,
+        # rendered by the same zero-LLM template path as tier-2. Disjoint from
+        # sel_file_paths by construction (select_pages excludes the selected set).
+        self.tail_paths = set(getattr(selection, "deterministic_tail_paths", []) or [])
+
         # Sort code_files for stable level-2 ordering: selected files first
         # (so dep summaries land in the store earliest), then by PageRank desc.
         self.code_files = sorted(
@@ -302,7 +303,8 @@ class _GenerationRun:
         layer_page_count = 0
         if self.kg_ctx.available:
             layer_page_count = sum(
-                1 for l in self.kg_ctx.get_layers()
+                1
+                for l in self.kg_ctx.get_layers()
                 if len([n for n in l.get("nodeIds", []) if n.startswith("file:")]) >= 3
             )
         estimated_total = (
@@ -315,6 +317,8 @@ class _GenerationRun:
             + int(self.selection.emit_repo_overview)
             + int(self.selection.emit_arch_diagram)
             + counts["infra_page"]
+            # Deterministic coverage tail also produces (zero-LLM) pages.
+            + len(getattr(self.selection, "deterministic_tail_paths", []))
         )
         remaining_total = max(0, estimated_total - len(self.completed_ids))
         if self.on_total_known is not None:
@@ -376,9 +380,9 @@ class _GenerationRun:
         file_layers: dict[str, str] = {}
         for path in self.sel_file_paths:
             kg_fc = self.kg_ctx.get_file_context(path) if self.kg_ctx.available else None
-            file_layers[path] = (kg_fc.layer_name if kg_fc and kg_fc.layer_name else "") or infer_layer(
-                path, lang_by_path.get(path)
-            )
+            file_layers[path] = (
+                kg_fc.layer_name if kg_fc and kg_fc.layer_name else ""
+            ) or infer_layer(path, lang_by_path.get(path))
         self.layer_order = compute_layer_order(file_layers, import_edges)
 
     # ------------------------------------------------------------------
@@ -547,7 +551,9 @@ class _GenerationRun:
             try:
                 from ..kg_enrichment import enrich_tour_with_wiki_links
 
-                rp = Path(self.repo_path) if not isinstance(self.repo_path, Path) else self.repo_path
+                rp = (
+                    Path(self.repo_path) if not isinstance(self.repo_path, Path) else self.repo_path
+                )
                 kg_path = rp / ".repowise" / "knowledge-graph.json"
                 if kg_path.exists():
                     enrich_tour_with_wiki_links(kg_path, all_pages)
