@@ -484,7 +484,8 @@ async def execute_job(
         # mode, config) that `repowise init` would have written.
         try:
             if is_initial_index:
-                _persist_initial_index_state(
+                await asyncio.to_thread(
+                    _persist_initial_index_state,
                     Path(repo_path),
                     llm_client=llm_client,
                     docs_enabled=generate_docs,
@@ -494,7 +495,7 @@ async def execute_job(
                     exclude_patterns=exclude_patterns,
                 )
             else:
-                _stamp_last_sync_commit(Path(repo_path))
+                await asyncio.to_thread(_stamp_last_sync_commit, Path(repo_path))
         except Exception:
             logger.debug("state_json_update_failed", job_id=job_id, exc_info=True)
 
@@ -739,7 +740,8 @@ async def _incremental_page_regen(
 
         import subprocess as _sp
 
-        head_result = _sp.run(
+        head_result = await asyncio.to_thread(
+            _sp.run,
             ["git", "rev-parse", "HEAD"],
             cwd=str(repo_path),
             capture_output=True,
@@ -758,13 +760,17 @@ async def _incremental_page_regen(
         from repowise.core.ingestion.change_detector import compute_adaptive_budget
 
         detector = ChangeDetector(repo_path)
-        file_diffs = detector.get_changed_files(base_ref, head)
+        file_diffs = await asyncio.to_thread(detector.get_changed_files, base_ref, head)
         if not file_diffs:
             return []
 
         cascade_budget = compute_adaptive_budget(file_diffs, result.file_count)
-        affected = detector.get_affected_pages(
-            file_diffs, result.graph_builder.graph(), cascade_budget
+        graph = await asyncio.to_thread(result.graph_builder.graph)
+        affected = await asyncio.to_thread(
+            detector.get_affected_pages,
+            file_diffs,
+            graph,
+            cascade_budget,
         )
 
         if not affected.regenerate:
@@ -806,9 +812,7 @@ async def _incremental_page_regen(
             language=repo_cfg.get("language", "en"),
         )
         assembler = ContextAssembler(generation_config)
-        generator = PageGenerator(
-            llm_client, assembler, generation_config, repo_path=repo_path
-        )
+        generator = PageGenerator(llm_client, assembler, generation_config, repo_path=repo_path)
 
         pages = await generator.generate_all(
             affected_parsed,

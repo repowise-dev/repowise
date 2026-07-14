@@ -8,6 +8,7 @@ are not re-indexed.
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -229,6 +230,33 @@ async def test_execute_job_merges_config_yaml_excludes(session_factory, tmp_path
 
 
 @pytest.mark.asyncio
+async def test_execute_job_offloads_state_stamping(session_factory, tmp_path):
+    """The final Git HEAD lookup and state write should not block the event loop."""
+    job_id = await _seed_repo_and_job(session_factory, tmp_path)
+    app_state = SimpleNamespace(session_factory=session_factory, fts=None, vector_store=None)
+    main_thread = threading.get_ident()
+    stamp_thread: int | None = None
+
+    def stamp_state(repo_path):
+        nonlocal stamp_thread
+        stamp_thread = threading.get_ident()
+
+    with (
+        patch("repowise.server.job_executor.run_pipeline", AsyncMock(return_value=_fake_result())),
+        patch("repowise.server.job_executor.persist_pipeline_result", AsyncMock()),
+        patch("repowise.server.job_executor._stamp_last_sync_commit", side_effect=stamp_state),
+        patch(
+            "repowise.server.provider_config.get_chat_provider_instance",
+            side_effect=RuntimeError("no provider"),
+        ),
+    ):
+        await execute_job(job_id, app_state)
+
+    assert stamp_thread is not None
+    assert stamp_thread != main_thread
+
+
+@pytest.mark.asyncio
 async def test_incremental_page_regen_passes_repo_path(tmp_path):
     """Incremental regen must forward repo_path to generate_all.
 
@@ -289,3 +317,57 @@ async def test_incremental_page_regen_passes_repo_path(tmp_path):
 
     generator.generate_all.assert_awaited_once()
     assert generator.generate_all.await_args.kwargs["repo_path"] == Path(repo_path)
+
+
+@pytest.mark.asyncio
+async def test_incremental_page_regen_offloads_change_detection(tmp_path):
+    """Git and change detection should run outside the event-loop thread."""
+    repo_path = tmp_path
+    repowise_dir = repo_path / ".repowise"
+    repowise_dir.mkdir()
+    (repowise_dir / "state.json").write_text('{"last_sync_commit": "base-sha"}', encoding="utf-8")
+
+    main_thread = threading.get_ident()
+    worker_threads: dict[str, int] = {}
+
+    def head_lookup(*args, **kwargs):
+        worker_threads["head"] = threading.get_ident()
+        return SimpleNamespace(returncode=0, stdout="head-sha\n")
+
+    detector = MagicMock()
+
+    def get_changed_files(*args):
+        worker_threads["diff"] = threading.get_ident()
+        return [object()]
+
+    def get_affected_pages(*args):
+        worker_threads["affected"] = threading.get_ident()
+        return SimpleNamespace(regenerate=[])
+
+    detector.get_changed_files.side_effect = get_changed_files
+    detector.get_affected_pages.side_effect = get_affected_pages
+
+    def build_graph():
+        worker_threads["graph"] = threading.get_ident()
+        return object()
+
+    result = SimpleNamespace(
+        file_count=10,
+        graph_builder=SimpleNamespace(graph=build_graph),
+    )
+
+    with (
+        patch("subprocess.run", side_effect=head_lookup),
+        patch("repowise.core.ingestion.ChangeDetector", return_value=detector),
+    ):
+        pages = await _incremental_page_regen(
+            Path(repo_path),
+            result,
+            llm_client=object(),
+            job_config={},
+            progress=None,
+        )
+
+    assert pages == []
+    assert set(worker_threads) == {"head", "diff", "graph", "affected"}
+    assert all(thread_id != main_thread for thread_id in worker_threads.values())

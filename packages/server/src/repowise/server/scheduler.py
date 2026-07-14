@@ -107,7 +107,8 @@ def setup_scheduler(
 
                     # Get current git HEAD
                     try:
-                        head_result = subprocess.run(
+                        head_result = await asyncio.to_thread(
+                            subprocess.run,
                             ["git", "rev-parse", "HEAD"],
                             cwd=repo.local_path,
                             capture_output=True,
@@ -134,7 +135,7 @@ def setup_scheduler(
                         continue
 
                     # Enqueue a sync job
-                    await crud.upsert_generation_job(
+                    job = await crud.upsert_generation_job(
                         session,
                         repository_id=repo.id,
                         status="pending",
