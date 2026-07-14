@@ -15,6 +15,8 @@ from typing import Any, ClassVar
 
 from repowise.core.sessions.adapters.base import HarnessAdapter
 from repowise.core.sessions.events import Event, ToolResult, ToolUse
+from repowise.core.sessions.adapters.claude_code import parse_timestamp
+from repowise.core.fs_walk import iter_glob
 
 
 class CodexAdapter(HarnessAdapter):
@@ -26,7 +28,7 @@ class CodexAdapter(HarnessAdapter):
         root = projects_root if projects_root is not None else Path.home() / ".codex" / "sessions"
         if not root.is_dir():
             return []
-        return sorted(path for path in root.glob("*.jsonl") if path.is_file())
+        return sorted(path for path in iter_glob(root, "*.jsonl") if path.is_file())
 
     def normalize(self, raw_line: str) -> Event | None:
         try:
@@ -192,15 +194,6 @@ def _extract_text(*candidates: Any) -> str:
             if isinstance(candidate.get("message"), str):
                 return candidate["message"]
     return ""
-
-
-def parse_timestamp(value: Any) -> float | None:
-    if not isinstance(value, str):
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
-    except ValueError:
-        return None
 
 
 def _first_non_empty_str(*values: Any) -> str | None:
