@@ -229,6 +229,43 @@ async def test_execute_job_merges_config_yaml_excludes(session_factory, tmp_path
 
 
 @pytest.mark.asyncio
+async def test_execute_job_uses_repository_vector_store(session_factory, tmp_path):
+    """A workspace job must not write vectors to the global primary store."""
+    job_id = await _seed_repo_and_job(session_factory, tmp_path)
+    primary_store = object()
+    repo_store = MagicMock()
+    app_state = SimpleNamespace(
+        session_factory=session_factory,
+        fts=None,
+        vector_store=primary_store,
+    )
+    run_pipeline_mock = AsyncMock(return_value=_fake_result())
+    resolve_store = AsyncMock(return_value=repo_store)
+
+    with (
+        patch("repowise.server.job_executor.run_pipeline", run_pipeline_mock),
+        patch("repowise.server.job_executor.persist_pipeline_result", AsyncMock()),
+        patch(
+            "repowise.server.search_helpers.resolve_repo_vector_store",
+            resolve_store,
+        ),
+        patch(
+            "repowise.server.provider_config.get_chat_provider_instance",
+            side_effect=RuntimeError("no provider"),
+        ),
+    ):
+        await execute_job(job_id, app_state)
+
+    resolve_store.assert_awaited_once()
+    assert resolve_store.await_args.args[0] is app_state
+    assert resolve_store.await_args.kwargs == {
+        "repo_path": str(tmp_path),
+        "create": True,
+    }
+    assert run_pipeline_mock.await_args.kwargs["vector_store"] is repo_store
+
+
+@pytest.mark.asyncio
 async def test_incremental_page_regen_passes_repo_path(tmp_path):
     """Incremental regen must forward repo_path to generate_all.
 
