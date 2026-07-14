@@ -12,10 +12,13 @@ import json
 import shutil
 import subprocess
 import tempfile
+import time
 import uuid
 from pathlib import Path
 
 from repowise.cli.helpers import console
+
+_SEED_TEMPDIR_STALENESS_SECS = 3600
 
 
 def _git_output(args: list[str], cwd: Path) -> str:
@@ -59,11 +62,19 @@ def base_is_seedable(base: Path) -> bool:
 
 
 def sweep_stale_seed_backups(paths: list[Path]) -> None:
-    """Remove ``.repowise.bak.*`` leftovers from previously disrupted seeds."""
+    """Remove leftovers from previously disrupted seeds."""
+    now = time.time()
     for root in paths:
-        for p in root.glob(".repowise.bak.*"):
-            if p.is_dir():
-                shutil.rmtree(p, ignore_errors=True)
+        for glob_pattern in (".repowise.bak.*", ".repowise-seed-*"):
+            for p in root.glob(glob_pattern):
+                if p.is_dir():
+                    try:
+                        # Windows directory mtimes may not update on file creation; 1-hour threshold mitigates this.
+                        mtime = p.stat().st_mtime
+                        if now - mtime > _SEED_TEMPDIR_STALENESS_SECS:
+                            shutil.rmtree(p, ignore_errors=True)
+                    except OSError:
+                        pass
 
 
 def _get_initial_commit(p: Path) -> str:
@@ -116,6 +127,7 @@ def seed_index_from_base(
     repo_paths: list[Path],
     seed_base: Path,
     include_submodules: bool | None = None,
+    dry_run: bool = False,
 ) -> bool:
     """Copy ``.repowise/`` from a base checkout into each target repo.
 
@@ -188,40 +200,75 @@ def seed_index_from_base(
                 f"from last synced commit {last_sync_commit[:8]}.[/dim]"
             )
 
-        temp_dir = Path(tempfile.mkdtemp(prefix=".repowise-seed-", dir=r_path))
-        temp_dirs.append((r_path, temp_dir))
+        if dry_run:
+            continue
 
-        shutil.copytree(src_repo / ".repowise", temp_dir, dirs_exist_ok=True)
+        try:
+            temp_dir = Path(tempfile.mkdtemp(prefix=".repowise-seed-", dir=r_path))
+            temp_dirs.append((r_path, temp_dir))
 
-        # Since config.yaml is copied atomically alongside state.json, the
-        # config_fingerprint remains valid.
-        st_data = json.loads((temp_dir / "state.json").read_text(encoding="utf-8"))
+            shutil.copytree(src_repo / ".repowise", temp_dir, dirs_exist_ok=True)
 
-        if include_submodules is not None:
-            state_include = st_data.get("include_submodules", False)
-            if include_submodules != state_include:
-                console.print(
-                    f"[yellow]Warning: --include-submodules={include_submodules} "
-                    f"conflicts with copied state ({state_include}). Seeded state "
-                    f"will take precedence.[/yellow]"
-                )
+            # Since config.yaml is copied atomically alongside state.json, the
+            # config_fingerprint remains valid.
+            st_data = json.loads((temp_dir / "state.json").read_text(encoding="utf-8"))
 
-        (temp_dir / "state.json").write_text(json.dumps(st_data, indent=2), encoding="utf-8")
+            if include_submodules is not None:
+                state_include = st_data.get("include_submodules", False)
+                if include_submodules != state_include:
+                    console.print(
+                        f"[yellow]Warning: --include-submodules={include_submodules} "
+                        f"conflicts with copied state ({state_include}). Seeded state "
+                        f"will take precedence.[/yellow]"
+                    )
 
-        _adopt_repository_identity(temp_dir, src_repo=src_repo, dest_repo=r_path)
+            (temp_dir / "state.json").write_text(json.dumps(st_data, indent=2), encoding="utf-8")
+
+            _adopt_repository_identity(temp_dir, src_repo=src_repo, dest_repo=r_path)
+        except Exception:
+            success = False
+            break
 
     if not success:
         for _, temp_dir in temp_dirs:
             shutil.rmtree(temp_dir, ignore_errors=True)
         return False
 
-    for r_path, temp_dir in temp_dirs:
-        target = r_path / ".repowise"
-        backup = None
-        if target.exists():
-            backup = r_path / f".repowise.bak.{uuid.uuid4().hex[:8]}"
-            target.rename(backup)
-        temp_dir.rename(target)
-        if backup:
+    if dry_run:
+        return True
+
+    backups_created: list[tuple[Path, Path]] = []
+    renamed_targets: list[Path] = []
+    
+    try:
+        # Pass 1: backup existing
+        for r_path, _ in temp_dirs:
+            target = r_path / ".repowise"
+            if target.exists():
+                backup = r_path / f".repowise.bak.{uuid.uuid4().hex[:8]}"
+                target.rename(backup)
+                backups_created.append((target, backup))
+                
+        # Pass 2: rename temp to target
+        for r_path, temp_dir in temp_dirs:
+            target = r_path / ".repowise"
+            temp_dir.rename(target)
+            renamed_targets.append(target)
+            
+        # Pass 3: clean backups
+        for _, backup in backups_created:
             shutil.rmtree(backup, ignore_errors=True)
+    except Exception:
+        # Rollback target renames
+        for target in renamed_targets:
+            shutil.rmtree(target, ignore_errors=True)
+        # Rollback backups
+        for target, backup in backups_created:
+            if backup.exists():
+                backup.rename(target)
+        # Clean temp dirs
+        for _, temp_dir in temp_dirs:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        raise
+
     return True

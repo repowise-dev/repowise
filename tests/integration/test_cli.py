@@ -168,6 +168,29 @@ class TestInitFullMock:
         assert (work_repo / ".repowise" / "state.json").exists()
         assert "init complete" in result.output
 
+    def test_coverage_persisted_after_init(self, runner, git_work_repo):
+        from repowise.cli.helpers import load_config
+
+        r_init = runner.invoke(
+            cli,
+            ["init", str(git_work_repo), "--provider", "mock", "--coverage", "0.5", "--yes"],
+            catch_exceptions=False,
+        )
+        assert r_init.exit_code == 0, r_init.output
+
+        cfg = load_config(git_work_repo)
+        assert cfg.get("coverage") == 0.5
+
+        r_update = runner.invoke(
+            cli,
+            ["update", str(git_work_repo)],
+            catch_exceptions=False,
+        )
+        assert r_update.exit_code == 0, r_update.output
+
+        cfg_after = load_config(git_work_repo)
+        assert cfg_after.get("coverage") == 0.5
+
 
 class TestInitIndexOnly:
     def test_index_only_creates_db_and_state_no_pages(self, runner, work_repo):
@@ -659,7 +682,8 @@ class TestInitSeedFrom:
 
         from click.testing import CliRunner
 
-        monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
+        # Leave REPOWISE_DB_URL pinned (as git_work_repo sets it) to verify
+        # that the delegated update does not leak worktree pages into the base DB.
 
         # Full doc coverage so the new file is not tier-gated out of a page;
         # the copied config carries the setting into the delegated update.
@@ -671,7 +695,7 @@ class TestInitSeedFrom:
         assert r0.exit_code == 0, r0.output
 
         _git(["checkout", "-b", "feature"], git_work_repo)
-        (git_work_repo / "new_file.py").write_text("print('hello')\n", encoding="utf-8")
+        (git_work_repo / "new_file.py").write_text("def my_func(): pass\n", encoding="utf-8")
         _git(["add", "new_file.py"], git_work_repo)
         _git(["commit", "-m", "feature commit"], git_work_repo)
 
@@ -706,11 +730,9 @@ class TestInitSeedFrom:
                 "SELECT target_path FROM wiki_pages",
             )
             assert len(paths) > 0, "Seeded pages should have survived"
-            # Note: no assertion that new_file.py gets its own file page. The
-            # update-time selection budget is computed over the affected-file
-            # subset (not the whole repo), so a small update batch rarely
-            # selects a brand-new file for a page. Tracked as #746;
-            # independent of seeding.
+            
+            # Since the file has a symbol and we have 1.0 coverage, it must be selected
+            assert "new_file.py" in paths, f"Expected 'new_file.py' in {paths}"
             state = json.loads(
                 (worktree_dir / ".repowise" / "state.json").read_text(encoding="utf-8")
             )
