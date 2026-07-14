@@ -18,6 +18,7 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
 import structlog
+from openai import APIError as _OpenAIAPIError
 from openai import APIStatusError as _OpenAIAPIStatusError
 from openai import AsyncOpenAI
 from openai import RateLimitError as _OpenAIRateLimitError
@@ -330,6 +331,10 @@ class OpenRouterProvider(BaseProvider):
             ) from exc
         except _OpenAIAPIStatusError as exc:
             raise ProviderError("openrouter", str(exc), status_code=exc.status_code) from exc
+        except _OpenAIAPIError as exc:
+            raise ProviderError(
+                "openrouter", str(exc), status_code=getattr(exc, "status_code", None)
+            ) from exc
 
         usage = response.usage
         result = GeneratedResponse(
@@ -390,6 +395,10 @@ class OpenRouterProvider(BaseProvider):
             ) from exc
         except _OpenAIAPIStatusError as exc:
             raise ProviderError("openrouter", str(exc), status_code=exc.status_code) from exc
+        except _OpenAIAPIError as exc:
+            raise ProviderError(
+                "openrouter", str(exc), status_code=getattr(exc, "status_code", None)
+            ) from exc
 
         # Track in-progress tool calls (OpenAI-compatible streaming)
         tool_calls_acc: dict[int, dict[str, Any]] = {}
@@ -463,3 +472,7 @@ class OpenRouterProvider(BaseProvider):
             ) from exc
         except _OpenAIAPIStatusError as exc:
             raise ProviderError("openrouter", str(exc), status_code=exc.status_code) from exc
+        except _OpenAIAPIError as exc:
+            raise ProviderError(
+                "openrouter", str(exc), status_code=getattr(exc, "status_code", None)
+            ) from exc

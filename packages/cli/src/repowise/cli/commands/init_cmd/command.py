@@ -158,6 +158,14 @@ def _run_generation_phase(
         lang_parts = [f"{lang} {pct:.0%}" for lang, pct in lang_items]
         console.print(f"  Languages: {', '.join(lang_parts)}")
 
+    # Warn when a local provider runs with default concurrency
+    if provider.provider_name in ("ollama", "codex_cli", "opencode") and concurrency > 4:
+        console.print(
+            f"  [yellow]Warning:[/yellow] {provider.provider_name} is a local provider "
+            f"running with concurrency={concurrency}. "
+            f"If you see timeout errors, try [bold]--concurrency 1[/bold]."
+        )
+
     console.print(
         f"  Coverage: {int(chosen_pct * 100)}% / "
         f"~{est.estimated_input_tokens + est.estimated_output_tokens:,} tokens "
