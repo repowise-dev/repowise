@@ -26,7 +26,7 @@ class CodexAdapter(HarnessAdapter):
         root = projects_root if projects_root is not None else Path.home() / ".codex" / "sessions"
         if not root.is_dir():
             return []
-        return sorted(path for path in root.rglob("*.jsonl") if path.is_file())
+        return sorted(path for path in root.glob("*.jsonl") if path.is_file())
 
     def normalize(self, raw_line: str) -> Event | None:
         try:
