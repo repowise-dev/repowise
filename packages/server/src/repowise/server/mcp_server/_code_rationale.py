@@ -366,10 +366,14 @@ def grep_comment_candidates(
     noun_alt = "|".join(re.escape(n) for n in nouns)
     anchor_alt = "|".join(re.escape(a) for a in anchors)
     # A comment-leading line containing an anchor AND a content noun, in either
-    # order. ``git grep`` keeps the scan inside tracked files only.
+    # order. ``git grep`` keeps the scan inside tracked files only. Use the
+    # POSIX class ``[[:space:]]`` instead of ``\s``: ``\s`` is a GNU regex
+    # extension that git's ERE engine does not honor on macOS/BSD, so the
+    # pattern would silently match nothing there (and concept-anchoring would
+    # quietly disable itself).
     pat = (
-        rf"^\s*(#|//|--|\*).*({anchor_alt}).*({noun_alt})"
-        rf"|^\s*(#|//|--|\*).*({noun_alt}).*({anchor_alt})"
+        rf"^[[:space:]]*(#|//|--|\*).*({anchor_alt}).*({noun_alt})"
+        rf"|^[[:space:]]*(#|//|--|\*).*({noun_alt}).*({anchor_alt})"
     )
     try:
         proc = subprocess.run(
@@ -382,6 +386,10 @@ def grep_comment_candidates(
                 "git",
                 "--no-pager",
                 "grep",
+                # --no-color: this output is parsed, so a user's
+                # ``color.ui=always`` git config must not wrap paths in ANSI
+                # escapes (which would corrupt the path split below).
+                "--no-color",
                 "-n",
                 "-I",
                 "-i",
