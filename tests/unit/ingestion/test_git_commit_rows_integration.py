@@ -87,6 +87,52 @@ async def test_capture_new_commit_rows_bounds_by_since_ts(tmp_path) -> None:
     assert idx.capture_new_commit_rows(since_ts=int(newest_ts)) == []
 
 
+def _configure_author(repo, name: str, email: str) -> None:
+    with repo.config_writer() as cw:
+        cw.set_value("user", "name", name)
+        cw.set_value("user", "email", email)
+
+
+@pytest.mark.asyncio
+async def test_index_repo_captures_whole_history_totals(tmp_path) -> None:
+    """``index_repo`` stamps true whole-history totals on the summary, and a
+    small ``commit_limit`` must NOT bound them (issue #730)."""
+    import git as gitpython
+
+    repo = gitpython.Repo.init(tmp_path)
+    _configure_author(repo, "Ada Lovelace", "ada@example.com")
+    _commit(repo, tmp_path / "a.py", "x = 1\n", "feat: add a")
+    _commit(repo, tmp_path / "b.py", "y = 2\n", "feat: add b")
+    _commit(repo, tmp_path / "c.py", "w = 4\n", "feat: add c")
+
+    # commit_limit far below the true count: the sample bounds, the totals don't.
+    idx = GitIndexer(tmp_path, tier=GitIndexTier.FULL, commit_limit=1)
+    summary, _results = await idx.index_repo("repo1")
+
+    totals = summary.repo_totals
+    assert totals is not None
+    assert totals.total_commit_count == 3
+    assert totals.total_contributor_count == 1
+    assert totals.first_commit_author == "Ada Lovelace"
+    assert totals.first_commit_at is not None
+
+
+def test_capture_repo_totals_method(tmp_path) -> None:
+    """The public capture (used by the incremental update path) opens its own
+    repo and returns the same whole-history record."""
+    import git as gitpython
+
+    repo = gitpython.Repo.init(tmp_path)
+    _configure_author(repo, "Grace Hopper", "grace@example.com")
+    _commit(repo, tmp_path / "a.py", "x = 1\n", "feat: add a")
+    _commit(repo, tmp_path / "b.py", "y = 2\n", "feat: add b")
+
+    totals = GitIndexer(tmp_path, tier=GitIndexTier.FULL).capture_repo_totals()
+    assert totals.total_commit_count == 2
+    assert totals.total_contributor_count == 1
+    assert totals.first_commit_author == "Grace Hopper"
+
+
 @pytest.mark.asyncio
 async def test_capture_new_commit_rows_empty_in_rename_mode(tmp_path) -> None:
     import git as gitpython

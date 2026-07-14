@@ -48,6 +48,8 @@ export interface StatsActivity {
   fix_pct: number;
   contributor_count: number;
   first_commit_at: string | null;
+  /** Founding author (root commit). Null for older indexes / non-git repos. */
+  first_commit_author: string | null;
   last_commit_at: string | null;
   age_days: number | null;
   busiest_month: StatsMonthlyBucket | null;

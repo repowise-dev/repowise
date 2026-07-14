@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 import pytest
 from httpx import AsyncClient
 
-from repowise.core.persistence.crud import upsert_git_commits_bulk
+from repowise.core.persistence.crud import get_repository, upsert_git_commits_bulk
 from repowise.core.persistence.database import get_session
 from repowise.server.routers.stats import _activity
 from tests.unit.server.conftest import create_test_repo
@@ -58,7 +58,8 @@ async def test_biggest_commit_skips_initial_and_streak_counts_days(
         await upsert_git_commits_bulk(session, repo["id"], rows)
 
     async with get_session(app.state.session_factory) as session:
-        activity = await _activity(session, repo["id"])
+        repo_row = await get_repository(session, repo["id"])
+        activity = await _activity(session, repo["id"], repo_row)
 
     biggest = activity["biggest_commit"]
     assert biggest is not None

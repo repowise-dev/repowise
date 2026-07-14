@@ -7,6 +7,7 @@ every public name, so existing imports are unaffected.
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 
 from sqlalchemy import select
@@ -125,6 +126,41 @@ def _read_head_commit(local_path: str) -> str | None:
             return None
         return None
     return head or None
+
+
+async def update_repo_git_totals(
+    session: AsyncSession,
+    repo_id: str,
+    *,
+    total_commit_count: int | None = None,
+    first_commit_at: datetime | None = None,
+    total_contributor_count: int | None = None,
+    first_commit_author: str | None = None,
+) -> None:
+    """Store a repo's whole-history git totals, captured at index time (#730).
+
+    The per-commit ``git_commits`` table is bounded to the newest N commits, so
+    the stats page must read true project age / commit / contributor counts from
+    these repo-level fields instead of that sample. Each argument is applied
+    only when non-``None`` so a partial capture never blanks a value a previous
+    index stored. No-ops on a missing repo or all-``None`` input.
+    """
+    updates = {
+        "total_commit_count": total_commit_count,
+        "first_commit_at": first_commit_at,
+        "total_contributor_count": total_contributor_count,
+        "first_commit_author": first_commit_author,
+    }
+    if all(v is None for v in updates.values()):
+        return
+    repo = await session.get(Repository, repo_id)
+    if repo is None:
+        return
+    for attr, value in updates.items():
+        if value is not None:
+            setattr(repo, attr, value)
+    repo.updated_at = _now_utc()
+    await session.flush()
 
 
 async def get_repository(session: AsyncSession, repo_id: str) -> Repository | None:
