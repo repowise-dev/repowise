@@ -10,8 +10,16 @@ function monthLabel(month: string): string {
   return new Intl.DateTimeFormat("en-US", { month: "short", year: "numeric" }).format(d);
 }
 
+const RISK_BANDS = [
+  { key: "low", label: "Low", color: "var(--color-success)" },
+  { key: "moderate", label: "Moderate", color: "var(--color-warning)" },
+  { key: "high", label: "High", color: "var(--color-error)" },
+] as const;
+
 export function GrowthTab({ data }: { data: StatsHighlights }) {
   const { activity } = data;
+  const risk = activity.change_risk_mix;
+  const riskTotal = risk.low + risk.moderate + risk.high;
 
   return (
     <div className="space-y-5">
@@ -48,6 +56,42 @@ export function GrowthTab({ data }: { data: StatsHighlights }) {
           hint={AGENT_PCT_HINT}
         />
       </div>
+
+      {riskTotal > 0 && (
+        <Card>
+          <CardHeader className="flex-row items-center justify-between gap-3 pb-3">
+            <CardTitle className="text-sm">Change-risk mix</CardTitle>
+            <span className="text-[11px] text-[var(--color-text-tertiary)]">
+              calibrated per-commit risk across {formatNumber(riskTotal)} commits
+            </span>
+          </CardHeader>
+          <CardContent className="pt-0">
+            <div className="flex h-3 w-full overflow-hidden rounded-full">
+              {RISK_BANDS.map((b) => {
+                const pct = (risk[b.key] / riskTotal) * 100;
+                return pct > 0 ? (
+                  <div
+                    key={b.key}
+                    style={{ width: `${pct}%`, background: b.color }}
+                    title={`${b.label}: ${risk[b.key]} (${Math.round(pct)}%)`}
+                  />
+                ) : null;
+              })}
+            </div>
+            <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
+              {RISK_BANDS.map((b) => (
+                <div key={b.key} className="flex items-center gap-1.5">
+                  <span className="h-2 w-2 rounded-full" style={{ background: b.color }} />
+                  <span className="text-[var(--color-text-secondary)]">{b.label}</span>
+                  <span className="tabular-nums text-[var(--color-text-tertiary)]">
+                    {formatNumber(risk[b.key])}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       <ActivityTrendChart monthly={activity.monthly} />
 

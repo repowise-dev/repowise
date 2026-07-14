@@ -1,4 +1,4 @@
-import { Users, UserCheck, AlertTriangle } from "lucide-react";
+import { Users, UserCheck, AlertTriangle, Truck } from "lucide-react";
 import type { StatsHighlights } from "@repowise-dev/types/stats";
 import { StatCallout } from "@repowise-dev/ui/stats";
 import { Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui/card";
@@ -7,10 +7,24 @@ import { formatNumber } from "@repowise-dev/ui/lib/format";
 export function PeopleTab({ data }: { data: StatsHighlights }) {
   const { people, activity } = data;
   const maxFiles = people.top_owners[0]?.file_count ?? 0;
+  const truck = people.truck_factor;
 
   return (
     <div className="space-y-5">
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
+        {truck != null && (
+          <StatCallout
+            label="Truck factor"
+            value={truck}
+            tone={truck <= 2 ? "warning" : "default"}
+            icon={<Truck className="h-4 w-4" />}
+            sub={
+              truck === 1
+                ? "one person owns most of the code"
+                : `lose ${truck} people and >50% of files lose their owner`
+            }
+          />
+        )}
         <StatCallout
           label="Contributors"
           value={formatNumber(activity.contributor_count)}

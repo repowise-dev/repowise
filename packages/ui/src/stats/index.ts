@@ -8,3 +8,4 @@ export {
 } from "./stat-callout";
 export { SuperlativesGrid } from "./superlatives-grid";
 export { ActivityTrendChart } from "./activity-trend-chart";
+export { PunchCard } from "./punch-card";
