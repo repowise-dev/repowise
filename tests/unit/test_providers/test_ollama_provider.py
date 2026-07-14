@@ -54,56 +54,51 @@ def test_available_model_options_reads_local_tags(monkeypatch):
     assert llama.reasoning_modes == ("auto",)
 
 
-@pytest.mark.asyncio
-async def test_generate_wraps_api_status_error():
-    """APIStatusError (HTTP 4xx/5xx) is caught and wrapped as ProviderError."""
-    p = OllamaProvider(model="test", base_url="http://localhost:9999")
-    p._rate_limiter = None
+async def _assert_generate_wraps(exc: Exception) -> None:
+    """Drive ``generate`` with a client that raises ``exc`` and assert the
+    error is caught and re-raised as a provider-tagged ``ProviderError``.
+
+    Shared by the #445 regression cases below: only ``APIStatusError`` used to
+    be caught, so timeout/connection errors escaped uncaught, skipped tenacity
+    (which retries ``ProviderError`` only), and surfaced as
+    ``page_generation_failed``.
+    """
+    provider = OllamaProvider(model="test", base_url="http://localhost:9999")
+    provider._rate_limiter = None
+    provider._client.chat.completions.create = AsyncMock(side_effect=exc)
+    with pytest.raises(ProviderError) as exc_info:
+        await provider.generate(system_prompt="", user_prompt="", max_tokens=10)
+    assert "ollama" in str(exc_info.value)
+
+
+def _status_error() -> APIStatusError:
     resp = AsyncMock()
     resp.status_code = 500
-    p._client.chat.completions.create = AsyncMock(
-        side_effect=APIStatusError("Internal Server Error", response=resp, body=""),
-    )
-    with pytest.raises(ProviderError) as exc_info:
-        await p.generate(system_prompt="", user_prompt="", max_tokens=10)
-    assert "ollama" in str(exc_info.value)
+    return APIStatusError("Internal Server Error", response=resp, body="")
 
 
-@pytest.mark.asyncio
-async def test_generate_wraps_api_timeout_error():
-    """APITimeoutError (request timed out) is caught and wrapped as ProviderError.
-
-    Regression test for issue #445: only APIStatusError was caught, so
-    APITimeoutError escaped the except clause and was never wrapped as
-    ProviderError. That meant tenacity never retried it (retry only fires
-    on ProviderError), and the raw exception became page_generation_failed.
-    """
-    p = OllamaProvider(model="test", base_url="http://localhost:9999")
-    p._rate_limiter = None
-    p._client.chat.completions.create = AsyncMock(
-        side_effect=APITimeoutError("Request timed out"),
-    )
-    with pytest.raises(ProviderError) as exc_info:
-        await p.generate(system_prompt="", user_prompt="", max_tokens=10)
-    assert "ollama" in str(exc_info.value)
-
-
-@pytest.mark.asyncio
-async def test_generate_wraps_api_connection_error():
-    """APIConnectionError (connection refused) is caught and wrapped as ProviderError.
-
-    Same root cause as #445: APIConnectionError is NOT a subclass of
-    APIStatusError, so it was escaping uncaught alongside APITimeoutError.
-    """
-    p = OllamaProvider(model="test", base_url="http://localhost:9999")
-    p._rate_limiter = None
+def _connection_error() -> APIConnectionError:
     request = httpx.Request("POST", "http://localhost:9999/v1/chat/completions")
-    p._client.chat.completions.create = AsyncMock(
-        side_effect=APIConnectionError(message="Connection refused", request=request),
-    )
-    with pytest.raises(ProviderError) as exc_info:
-        await p.generate(system_prompt="", user_prompt="", max_tokens=10)
-    assert "ollama" in str(exc_info.value)
+    return APIConnectionError(message="Connection refused", request=request)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "make_exc",
+    [
+        pytest.param(_status_error, id="api_status_error"),
+        pytest.param(lambda: APITimeoutError("Request timed out"), id="api_timeout_error"),
+        pytest.param(_connection_error, id="api_connection_error"),
+    ],
+)
+async def test_generate_wraps_openai_errors(make_exc):
+    """Every ``openai.APIError`` subclass is wrapped as ``ProviderError`` (#445).
+
+    ``APITimeoutError`` and ``APIConnectionError`` are NOT subclasses of
+    ``APIStatusError``, so the old catch-only-``APIStatusError`` clause let them
+    escape uncaught, skipping tenacity's retry loop entirely.
+    """
+    await _assert_generate_wraps(make_exc())
 
 
 @pytest.mark.asyncio
