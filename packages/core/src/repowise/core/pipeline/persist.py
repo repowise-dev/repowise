@@ -651,6 +651,7 @@ async def persist_git(result: Any, session: Any, repo_id: str) -> None:
     ``(repo_id, sha)`` — safe to call incrementally and on resume.
     """
     from repowise.core.persistence.crud import (
+        update_repo_git_totals,
         upsert_git_commits_bulk,
         upsert_git_metadata_bulk,
     )
@@ -658,10 +659,26 @@ async def persist_git(result: Any, session: Any, repo_id: str) -> None:
     if result.git_metadata_list:
         await upsert_git_metadata_bulk(session, repo_id, result.git_metadata_list)
 
+    summary = getattr(result, "git_summary", None)
+
     # Per-commit rows + change-risk ride on the git summary.
-    commit_rows = getattr(getattr(result, "git_summary", None), "commit_rows", None)
+    commit_rows = getattr(summary, "commit_rows", None)
     if commit_rows:
         await upsert_git_commits_bulk(session, repo_id, commit_rows)
+
+    # Whole-history totals (true age / commit / contributor counts) also ride on
+    # the summary — stamp them on the Repository row so the stats page reads them
+    # instead of deriving them from the bounded ``git_commits`` sample (#730).
+    totals = getattr(summary, "repo_totals", None)
+    if totals is not None:
+        await update_repo_git_totals(
+            session,
+            repo_id,
+            total_commit_count=totals.total_commit_count,
+            first_commit_at=totals.first_commit_at,
+            total_contributor_count=totals.total_contributor_count,
+            first_commit_author=totals.first_commit_author,
+        )
 
 
 async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:

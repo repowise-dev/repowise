@@ -60,6 +60,7 @@
     "fix_pct": 10.2,
     "contributor_count": 568,
     "first_commit_at": "2015-06-06T04:25:41+00:00",
+    "first_commit_author": "Armin Ronacher",
     "last_commit_at": "2026-05-31T14:42:46+00:00",
     "age_days": 4012,
     "busiest_month": {

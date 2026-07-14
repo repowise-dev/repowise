@@ -130,12 +130,19 @@ async def _scale(session: AsyncSession, repo_id: str, metrics: list[Any]) -> dic
     }
 
 
-async def _activity(session: AsyncSession, repo_id: str) -> dict[str, Any]:
+async def _activity(session: AsyncSession, repo_id: str, repo: Any) -> dict[str, Any]:
     """Commit volume, project age, agent-vs-human split, and a monthly series.
 
     Buckets the bounded ``git_commits`` table in Python so it is portable
     across SQLite/Postgres date functions (same approach as the agent-trend
     endpoint).
+
+    Headline totals (commit count, project age, contributor count, founder)
+    prefer the whole-history values captured on the ``Repository`` row at index
+    time — the ``git_commits`` table is bounded to the newest N commits, so
+    deriving them from it undercounts a long-lived repo badly (issue #730). The
+    bounded scan still drives the *sample* signals (agent/fix ratios, monthly
+    series, awards) that are meaningful on the recent window.
 
     Also derives the ``biggest_commit`` and ``longest_streak`` awards on the
     same pass — they need per-commit rows anyway, and riding along here keeps
@@ -237,16 +244,29 @@ async def _activity(session: AsyncSession, repo_id: str) -> dict[str, Any]:
         {"month": m, "total": b["total"], "agent": b["agent"]} for m, b in sorted(months.items())
     ]
     busiest = max(monthly, key=lambda r: r["total"], default=None)
-    age_days = (last_at - first_at).days if (first_at and last_at) else None
+
+    # Prefer the whole-history values stamped on the repo at index time; fall
+    # back to the bounded sample when they're absent (older index, non-git
+    # repo). Age runs from the true first commit to the latest commit we have.
+    true_total = getattr(repo, "total_commit_count", None)
+    true_first = getattr(repo, "first_commit_at", None)
+    true_contributors = getattr(repo, "total_contributor_count", None)
+    effective_total = true_total if true_total is not None else total
+    effective_first = true_first if true_first is not None else first_at
+    effective_contributors = (
+        true_contributors if true_contributors is not None else len(contributors)
+    )
+    age_days = (last_at - effective_first).days if (effective_first and last_at) else None
 
     return {
-        "total_commits": total,
+        "total_commits": effective_total,
         "agent_commits": agent_total,
         "agent_pct": round(agent_total / total * 100.0, 1) if total else 0.0,
         "fix_commits": fix_total,
         "fix_pct": round(fix_total / total * 100.0, 1) if total else 0.0,
-        "contributor_count": len(contributors),
-        "first_commit_at": _iso(first_at),
+        "contributor_count": effective_contributors,
+        "first_commit_at": _iso(effective_first),
+        "first_commit_author": getattr(repo, "first_commit_author", None),
         "last_commit_at": _iso(last_at),
         "age_days": age_days,
         "busiest_month": busiest,
@@ -549,7 +569,7 @@ async def stats_highlights(
         or 0
     )
 
-    activity = await _activity(session, repo_id)
+    activity = await _activity(session, repo_id, repo)
     superlatives = await _superlatives(session, repo_id, metrics, all_meta)
     # Computed on _activity's commit scan for performance, but they are awards
     # so they belong under superlatives in the payload.

@@ -49,6 +49,22 @@ class Repository(Base):
     local_path: Mapped[str] = mapped_column(Text, nullable=False)
     default_branch: Mapped[str] = mapped_column(String(255), nullable=False, default="main")
     head_commit: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    # Whole-history git totals captured at index time via cheap ``git rev-list``
+    # calls. The per-commit ``git_commits`` table is deliberately bounded to the
+    # newest N commits (churn/co-change need no more), so project age and total
+    # commit count must be read from these repo-level fields rather than derived
+    # from that sample — otherwise a multi-year repo reads as a few months old
+    # (issue #730). NULL until the first index writes them / for non-git repos.
+    total_commit_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    first_commit_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # All-time unique authors (mailmap-folded) and the founding author's name.
+    # Contributor count shares the #730 bug when read off the bounded sample;
+    # the founder rides along free (the root commit is already loaded for the
+    # first-commit date). Both NULL until the first index writes them.
+    total_contributor_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    first_commit_author: Mapped[str | None] = mapped_column(String(255), nullable=True)
     settings_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc

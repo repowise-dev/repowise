@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from ._constants import _CODE_EXTENSIONS
 
@@ -13,10 +15,12 @@ __all__ = [
     "_LOG_FORMAT",
     "_RECORD_SEP",
     "GitIndexSummary",
+    "RepoTotals",
     "_CommitRec",
     "_extract_rename_paths",
     "_parse_commit_record",
     "_should_skip_index",
+    "capture_repo_totals",
 ]
 
 # Git log record/field separators (NUL byte + US 0x1f) — chosen so they can't
@@ -129,6 +133,12 @@ class GitIndexSummary:
     # for ``upsert_git_commits_bulk``. Empty in rename-tracking mode (which uses
     # the per-file walk instead of the batched commit index).
     commit_rows: list[dict] = field(default_factory=list)
+    # Whole-history git totals captured via cheap ``git rev-list``/``shortlog``
+    # calls that ignore ``commit_limit`` (unlike ``commit_rows``). Persisted to
+    # the Repository row so the stats page reports true project age / commit /
+    # contributor counts instead of deriving them from the bounded sample
+    # (issue #730). None when git is unavailable or the repo has no commits.
+    repo_totals: RepoTotals | None = None
 
 
 _RENAME_RE = re.compile(r"\{(.*?) => (.*?)\}")
@@ -161,6 +171,64 @@ def _extract_rename_paths(stat_path: str, known_paths: set[str]) -> tuple[str | 
         known_paths.add(new_path)
         return old_path, new_path
     return None, None
+
+
+@dataclass
+class RepoTotals:
+    """Whole-history git facts, captured independently of ``commit_limit``.
+
+    Every field degrades to ``None`` on its own so a partial capture still
+    persists what succeeded. See :func:`capture_repo_totals`.
+    """
+
+    total_commit_count: int | None = None
+    first_commit_at: datetime | None = None
+    total_contributor_count: int | None = None
+    first_commit_author: str | None = None
+
+
+def capture_repo_totals(repo: Any) -> RepoTotals:
+    """Whole-history stats for *repo* via a handful of cheap git calls.
+
+    All three git calls are O(1) in subprocess count and independent of the
+    indexer's ``commit_limit``, so they stay cheap no matter how deep the
+    history is:
+
+    - ``git rev-list --count HEAD`` — the true total commit count.
+    - the root commit(s) — earliest committed date (project age) and the
+      founding author's name. Multiple roots (merged histories) use the
+      earliest root.
+    - ``git shortlog -sn HEAD`` — one line per mailmap-folded author, so its
+      line count is the true all-time contributor count. Passing ``HEAD``
+      keeps shortlog from blocking on stdin.
+
+    Each field is captured under its own ``try`` so one failure (empty/unborn
+    HEAD, detached state, git unavailable) never voids the others.
+    """
+    totals = RepoTotals()
+
+    try:
+        totals.total_commit_count = int(repo.git.rev_list("--count", "HEAD").strip())
+    except Exception:
+        pass
+
+    try:
+        roots = repo.git.rev_list("--max-parents=0", "HEAD").split()
+        root_commits = [repo.commit(sha) for sha in roots if sha]
+        if root_commits:
+            oldest = min(root_commits, key=lambda c: c.committed_datetime)
+            totals.first_commit_at = oldest.committed_datetime
+            totals.first_commit_author = (oldest.author.name or None) if oldest.author else None
+    except Exception:
+        pass
+
+    try:
+        out = repo.git.shortlog("-sn", "HEAD")
+        totals.total_contributor_count = sum(1 for line in out.splitlines() if line.strip())
+    except Exception:
+        pass
+
+    return totals
 
 
 def _should_skip_index(file_path: str) -> bool:

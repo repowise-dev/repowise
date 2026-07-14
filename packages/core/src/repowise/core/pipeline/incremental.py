@@ -503,6 +503,7 @@ async def persist_incremental_commits(session: Any, repo_id: str, repo_path: Any
     from repowise.core.ingestion.git_indexer import GitIndexer
     from repowise.core.persistence.crud import (
         get_latest_commit_committed_at,
+        update_repo_git_totals,
         upsert_git_commits_bulk,
     )
     from repowise.core.repo_config import load_repo_config
@@ -525,6 +526,19 @@ async def persist_incremental_commits(session: Any, repo_id: str, repo_path: Any
     rows = await asyncio.to_thread(indexer.capture_new_commit_rows, since_ts=since_ts)
     if rows:
         await upsert_git_commits_bulk(session, repo_id, rows)
+
+    # Refresh the repo-level whole-history totals so age / commit / contributor
+    # counts keep growing between full re-indexes (#730). Cheap git calls, and
+    # cheap to run every update since they don't touch the bounded sample.
+    totals = await asyncio.to_thread(indexer.capture_repo_totals)
+    await update_repo_git_totals(
+        session,
+        repo_id,
+        total_commit_count=totals.total_commit_count,
+        first_commit_at=totals.first_commit_at,
+        total_contributor_count=totals.total_contributor_count,
+        first_commit_author=totals.first_commit_author,
+    )
 
 
 async def persist_incremental_index(

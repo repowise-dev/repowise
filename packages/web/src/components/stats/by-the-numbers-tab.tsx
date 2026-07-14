@@ -43,7 +43,9 @@ export function ByTheNumbersTab({ data }: { data: StatsHighlights }) {
           icon={<CalendarClock className="h-4 w-4" />}
           sub={
             activity.first_commit_at
-              ? `since ${formatDate(activity.first_commit_at)}`
+              ? `since ${formatDate(activity.first_commit_at)}${
+                  activity.first_commit_author ? ` · started by ${activity.first_commit_author}` : ""
+                }`
               : "first commit date unknown"
           }
         />

@@ -32,7 +32,7 @@ from .co_change import compute_co_changes, compute_co_changes_and_entropy
 from .enrich import compute_percentiles
 from .file_history import index_file
 from .prior_defects import compute_prior_defects
-from .records import GitIndexSummary, _CommitRec, _should_skip_index
+from .records import GitIndexSummary, _CommitRec, _should_skip_index, capture_repo_totals
 from .tiers import GitIndexTier
 
 logger = structlog.get_logger(__name__)
@@ -292,6 +292,10 @@ class GitIndexer:
             stable_files=stable,
             duration_seconds=duration,
             commit_rows=commit_rows,
+            # Whole-history totals from cheap git calls on the still-open repo —
+            # true project age / commit / contributor counts for the stats page,
+            # which must not read them off the depth-capped sample (issue #730).
+            repo_totals=capture_repo_totals(repo),
         )
         repo.close()
 
@@ -481,6 +485,25 @@ class GitIndexer:
             return []
         finally:
             repo.close()
+
+    def capture_repo_totals(self) -> Any:
+        """Whole-history :class:`RepoTotals` for this repo (opens its own repo).
+
+        The incremental counterpart to the capture ``index_repo`` runs inline:
+        ``repowise update`` calls this so true project age / commit / contributor
+        counts stay fresh between full re-indexes. Returns an all-``None``
+        ``RepoTotals`` when git is unavailable rather than raising.
+        """
+        from .records import RepoTotals
+
+        repo = self._get_repo()
+        if repo is None:
+            return RepoTotals()
+        try:
+            return capture_repo_totals(repo)
+        finally:
+            with contextlib.suppress(Exception):
+                repo.close()
 
     # ------------------------------------------------------------------
     # Internal methods
