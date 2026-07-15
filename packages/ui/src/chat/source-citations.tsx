@@ -11,7 +11,12 @@ export interface SourceReference {
   title: string;
   pageType: string;
   targetPath: string;
-  score?: number;
+  /**
+   * Rank-normalized 0–1 confidence, never the raw backend score: embedding
+   * hits are cosine (0–1) but the BM25 fallback is unbounded, so the raw
+   * score has no fixed scale to render as a percentage.
+   */
+  confidence?: number | undefined;
   toolName: string;
 }
 
@@ -39,7 +44,7 @@ export function extractSources(
           title: (r.title as string) ?? pageId,
           pageType: (r.page_type as string) ?? "file_page",
           targetPath: (r.target_path as string) ?? "",
-          score: r.relevance_score as number ?? r.score as number,
+          confidence: r.confidence_score as number | undefined,
           toolName: tc.name,
         });
       }
@@ -176,9 +181,9 @@ export function SourceCitations({
             </span>
             <SourceIcon pageType={source.pageType} className="h-3 w-3 shrink-0 opacity-60" />
             <span className="truncate max-w-[160px] font-medium">{source.title}</span>
-            {source.score != null && (
+            {source.confidence != null && (
               <span className="text-[10px] text-[var(--color-text-tertiary)] tabular-nums">
-                {(source.score * 100).toFixed(0)}%
+                {(source.confidence * 100).toFixed(0)}%
               </span>
             )}
             <ArrowUpRight className="h-2.5 w-2.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
