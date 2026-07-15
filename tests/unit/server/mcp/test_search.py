@@ -604,6 +604,38 @@ class TestExactMatchSignal:
         assert _identifier_candidates("rate limiting", "concept") == []
 
     @pytest.mark.asyncio
+    async def test_hybrid_scores_symbols_on_the_identifier_not_the_prose(
+        self, setup_mcp, monkeypatch
+    ):
+        # Regression: the symbol scorer ranks on token overlap, so handing it the
+        # whole question let prose tokens ("is" -> is_ci, "filter" ->
+        # FilterRegistry) outrank the identifier the question asks after. The
+        # identifier then never reached _has_exact_symbol and the response
+        # claimed an indexed symbol was absent.
+        #
+        # Asserted on the query the scorer RECEIVES, not on ranking: a fixture
+        # small enough to unit-test has no decoys to lose to, so an end-to-end
+        # assertion here passes against the bug.
+        from repowise.server.mcp_server import search_codebase, tool_search
+
+        seen: list[str] = []
+        real = tool_search.search_symbols_single
+
+        async def spy(ctx, query, limit, **kwargs):
+            seen.append(query)
+            return await real(ctx, query, limit, **kwargs)
+
+        monkeypatch.setattr(tool_search, "search_symbols_single", spy)
+
+        await search_codebase("where is AuthService defined")
+        assert seen == ["AuthService"], f"symbol scorer got prose, not the identifier: {seen}"
+
+        # A query carrying no identifier still scores on the raw text.
+        seen.clear()
+        await search_codebase("AuthService", mode="symbol")
+        assert seen == ["AuthService"]
+
+    @pytest.mark.asyncio
     async def test_exact_hit_sets_true_and_no_note(self, setup_mcp):
         from repowise.server.mcp_server import search_codebase
 

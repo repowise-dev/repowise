@@ -620,9 +620,23 @@ async def _structured_search(
     files: list[dict] = []
     concepts: list[dict] = []
 
+    # A hybrid query is prose wrapped around an identifier ("where is X
+    # defined"). The symbol scorer ranks on token overlap, so handing it the
+    # raw prose lets stopword-ish tokens ("is" -> is_ci, "filter" ->
+    # FilterRegistry) outrank the identifier the question is actually about,
+    # which then never reaches _has_exact_symbol and the response claims the
+    # symbol is unindexed. Score symbols on the extracted identifiers instead.
+    symbol_query = query
+    if mode == "hybrid":
+        _idents = _embedded_identifiers(query)
+        if _idents:
+            symbol_query = " ".join(_idents)
+
     for ctx in contexts:
         if mode in ("symbol", "hybrid"):
-            s = await search_symbols_single(ctx, query, limit, symbol_kind=symbol_kind, kind=kind)
+            s = await search_symbols_single(
+                ctx, symbol_query, limit, symbol_kind=symbol_kind, kind=kind
+            )
             _tag_repo(s, ctx, multi)
             symbols.extend(s)
         if mode == "path":
