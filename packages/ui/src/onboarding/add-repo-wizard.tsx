@@ -263,7 +263,7 @@ export function AddRepoWizard({ adapter, open, onOpenChange }: AddRepoWizardProp
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="sm:max-w-md w-[calc(100vw-2rem)]">
+      <DialogContent className="sm:max-w-md w-[calc(100vw-2rem)] flex flex-col">
         {step === "details" && (
           <>
             <DialogHeader>
