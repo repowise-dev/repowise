@@ -5,7 +5,11 @@ from pathlib import Path
 
 from repowise.core.sessions import CodexAdapter, Event
 
+from repowise.core.sessions.miners.demand import mine_events_demand
+from repowise.core.sessions.miners.decisions import mine_events
+
 FIXTURE = Path(__file__).parent / "data" / "codex_session.jsonl"
+REPO_PREFIX = "c:\\users\\x\\repo"
 
 ADAPTER = CodexAdapter()
 
@@ -22,19 +26,35 @@ def test_discover_lists_jsonl_sorted(tmp_path: Path) -> None:
     assert [p.name for p in found] == ["a.jsonl", "b.jsonl"]
 
 
-def test_normalize_maps_common_fields_and_tools() -> None:
+def test_normalize_real_codex_rollout() -> None:
     lines = FIXTURE.read_text(encoding="utf-8").splitlines()
 
-    assert isinstance(event, Event)
-    assert event.kind == "assistant"
-    assert event.session_id == "sess-1"
-    assert event.cwd == r"C:\Users\x\repo"
-    assert event.model == "gpt-5-codex"
-    assert event.message_id == "msg_01"
-    assert event.text == "Searching the codebase."
-    assert event.tool_uses[0].name == "search_codebase"
 
+    meta = ADAPTER.normalize(lines[0])
+    message = ADAPTER.normalize(lines[1])
+    tool = ADAPTER.normalize(lines[2])
 
+    assert isinstance(meta, Event)
+    assert meta.kind == "session_meta"
+    assert meta.session_id == "sess-1"
+    assert meta.cwd == r"C:\Users\x\repo"
+    assert meta.is_meta is True
+    assert meta.text == ""
+
+    assert isinstance(message, Event)
+    assert message.kind == "assistant"
+    assert message.message_id == "msg_01"
+    assert message.model == "gpt-5-codex"
+    assert message.text == "Searching the codebase."
+
+    assert isinstance(tool, Event)
+    assert tool.kind == "assistant"
+    assert tool.tool_uses[0].name == "search_codebase"
+    assert tool.tool_uses[0].id == "call_01"
+    assert tool.tool_uses[0].input == {
+        "query": "repowise",
+        "path": "pkg/app.py",
+    }    
 def test_normalize_handles_session_meta_and_custom_tool_payloads() -> None:
     session_meta = json.dumps(
         {
@@ -90,3 +110,34 @@ def test_normalize_handles_session_meta_and_custom_tool_payloads() -> None:
     assert output_event is not None
     assert output_event.tool_results[0].tool_use_id == "call_1"
     assert output_event.text == "done"
+
+
+def test_codex_rollout_feeds_demand_miner() -> None:
+    events = [
+        event
+        for line in FIXTURE.read_text(encoding="utf-8").splitlines()
+        if (event := ADAPTER.normalize(line)) is not None
+    ]
+
+    demand = mine_events_demand(events, REPO_PREFIX)
+
+    assert demand
+    assert demand == {"pkg/app.py": 1}
+
+def test_codex_rollout_feeds_decision_miner() -> None:
+    events = [
+        event
+        for line in FIXTURE.read_text(encoding="utf-8").splitlines()
+        if (event := ADAPTER.normalize(line)) is not None
+    ]
+
+    decisions = mine_events(events, REPO_PREFIX)
+
+    assert len(decisions) == 1
+
+    decision = decisions[0]
+    assert decision.kind == "explicit_choice"
+    assert decision.files == ["pkg/app.py"]
+    assert decision.quotes == [
+        "We chose Flask because it is lightweight, keeps SQLite integration straightforward, and avoids unnecessary boilerplate for this small application."
+    ]
