@@ -55,6 +55,26 @@ def test_dead_store_overwritten_before_use():
     assert "y" in facts.flows_out
 
 
+def test_with_branch_assignments_are_both_live():
+    facts = _facts(
+        """
+        def f(ctx, cond):
+            with ctx.push():
+                if cond:
+                    result = 1
+                else:
+                    result = 2
+            return result
+        """,
+        2,
+    )
+
+    dead_result_lines = {
+        definition.line for definition in facts.dead_stores if definition.var == "result"
+    }
+    assert dead_result_lines.isdisjoint({5, 7})
+
+
 def test_unreachable_lines_after_return():
     facts = _facts(
         """

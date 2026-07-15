@@ -129,6 +129,33 @@ def test_with_as_alias_is_def():
     assert "path" in uses  # the context expression is a use
 
 
+def test_with_body_branch_defs_both_reach_return():
+    _cfg_result, def_use, reaching = _analyze(
+        """
+        def f(ctx, cond):
+            with ctx.push():
+                if cond:
+                    result = 1
+                else:
+                    result = 2
+            return result
+        """
+    )
+
+    return_block = next(
+        block_id
+        for block_id, block_def_use in def_use.blocks.items()
+        if any(use.name == "result" and use.line == 8 for use in block_def_use.uses)
+    )
+    reaching_lines = {
+        definition.line
+        for definition in reaching.reaching_in(return_block)
+        if definition.var == "result"
+    }
+
+    assert reaching_lines == {5, 7}
+
+
 def test_walrus_is_def():
     defs, _uses = _def_use_names(
         """
@@ -216,6 +243,36 @@ def test_both_branch_defs_reach_join():
     # At the return (which precedes exit), both definitions of y reach.
     reaching_y = [d for d in reaching.reaching_in(cfg.exit_id) if d.var == "y"]
     assert len(reaching_y) == 2
+
+
+def test_handler_assignment_reaches_finally_on_reraise():
+    _cfg_result, def_use, reaching = _analyze(
+        """
+        def f():
+            failed = False
+            try:
+                run()
+            except Exception:
+                failed = True
+                raise
+            finally:
+                if not failed:
+                    cleanup()
+        """
+    )
+
+    finally_block = next(
+        block_id
+        for block_id, block_def_use in def_use.blocks.items()
+        if any(use.name == "failed" and use.line == 10 for use in block_def_use.uses)
+    )
+    reaching_lines = {
+        definition.line
+        for definition in reaching.reaching_in(finally_block)
+        if definition.var == "failed"
+    }
+
+    assert 7 in reaching_lines
 
 
 def test_redefinition_kills_earlier_def():
