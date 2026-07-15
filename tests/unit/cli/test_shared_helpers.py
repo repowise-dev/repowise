@@ -96,6 +96,24 @@ def test_build_embedder_ollama_timeout_from_env(monkeypatch: pytest.MonkeyPatch)
     assert embedder._timeout == 300.0
 
 
+def test_build_embedder_ollama_timeout_invalid(monkeypatch: pytest.MonkeyPatch) -> None:
+    from repowise.core.providers.embedding.base import EmbedderConfigError
+
+    monkeypatch.setenv("OLLAMA_EMBEDDING_MODEL", "qwen3-embedding:0.6b")
+    monkeypatch.setenv("OLLAMA_EMBEDDING_TIMEOUT", "invalid")
+    with pytest.raises(EmbedderConfigError, match="Invalid OLLAMA_EMBEDDING_TIMEOUT: 'invalid'"):
+        providers.build_embedder("ollama")
+
+
+def test_build_embedder_ollama_dimensions_invalid(monkeypatch: pytest.MonkeyPatch) -> None:
+    from repowise.core.providers.embedding.base import EmbedderConfigError
+
+    monkeypatch.setenv("OLLAMA_EMBEDDING_MODEL", "qwen3-embedding:0.6b")
+    monkeypatch.setenv("OLLAMA_EMBEDDING_DIMS", "-5")
+    with pytest.raises(EmbedderConfigError, match="Invalid OLLAMA_EMBEDDING_DIMS: '-5'"):
+        providers.build_embedder("ollama")
+
+
 def test_build_vector_store_returns_a_store(tmp_path) -> None:
     from repowise.core.providers.embedding.base import MockEmbedder
 

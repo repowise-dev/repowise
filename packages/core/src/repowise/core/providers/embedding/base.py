@@ -13,7 +13,27 @@ from __future__ import annotations
 import hashlib
 import math
 import struct
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
+
+
+class EmbedderConfigError(ValueError):
+    """Raised when an embedder configuration value is malformed."""
+    pass
+
+
+def parse_numeric_env(value: Any, name: str, is_int: bool = False) -> float | int:
+    """Parse a numeric environment variable, requiring it to be finite and > 0."""
+    try:
+        parsed = int(value) if is_int else float(value)
+    except (ValueError, TypeError):
+        raise EmbedderConfigError(
+            f"Invalid {name}: {value!r} (must be a positive {'integer' if is_int else 'number'})"
+        )
+    if math.isnan(parsed) or math.isinf(parsed) or parsed <= 0:
+        raise EmbedderConfigError(
+            f"Invalid {name}: {value!r} (must be a positive {'integer' if is_int else 'number'})"
+        )
+    return parsed
 
 
 @runtime_checkable
