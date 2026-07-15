@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.32.0] — 2026-07-15
+
+### Added
+- **Every file is now retrievable.** After the LLM budget picks its file pages, every remaining parsed code file gets a zero-LLM deterministic page, so concept search reaches the whole codebase instead of only the ~20% the budget covers. These tail pages are down-weighted in `search_codebase` and `get_answer` so a thin template page never displaces a rich page on a tie, and they carry `is_deterministic` / `doc_tier` in the API responses. (#817, #819)
+- **More signals on the stats page.** "By the Numbers" gained a coding-rhythm punch card (weekday × hour commit heatmap, UTC), 90-day momentum against the prior window, the wiki's own build cost stats, a change-risk mix, and a truck factor — all derived from data the index already holds, with no new indexing. (#828)
+- **Kimi is a first-class provider.** (#824)
+- **Decisions follow you into Codex.** The Codex SessionStart hook now delivers relevance-ranked standing decisions, matching what Claude Code already did. (#788)
+- **Test breakage is called out separately in risk.** `get_risk` PR mode splits test files into a new `will_break_tests` field, so a burst of broken tests can't crowd real structural impact out of the capped `will_break` list. (#739)
+- **Richer anonymous telemetry.** One event per MCP tool call, an interrupted status, and index-shape outcomes, so the collected numbers answer real questions. Consent and env vars are unchanged. (#820)
+
+### Fixed
+- **Search scores the identifier, not the whole question.** (#853)
+- **A generic method mention no longer hijacks the answer.** A prose `get_answer` question that merely mentioned a common method (`to_dict`, `provider_name`) was routed into the exact-name union path and returned the whole definition set instead of answering. Large unions on prose questions now defer to synthesis; small unions and bare symbol lookups are untouched. (#823)
+- **Key Concepts picks real concepts.** Ranking was by file PageRank, so every public symbol in a high-ranked file inherited that rank — surfacing five methods of one registry class as the codebase's core concepts, and leaking pytest fixtures into the prose. Symbols are now ranked directly and spread across clusters. (#813)
+- **Custom `serve` ports work again.** Next.js standalone compiled rewrites with build-time env vars, breaking custom port arguments; `/api/*`, `/health`, and `/metrics` now proxy through runtime middleware. (#838, #839)
+- **Persisted vector indexes load on startup.** (#835)
+- **Go dead-code false positives.** Function references in Go are now detected, rescuing live functions that were reported as dead. (#815)
+- **Dataflow recurses into `with`-statement bodies.** (#836)
+- **Stats report true project age, commit, and contributor counts**, with compact k/m formatting and years/months age in the hero. (#730, #827, #798)
+- **Source citations show normalized confidence**, not the raw score. (#846)
+- **Anthropic thinking blocks are handled.** (#787)
+- **Add Repository dialog no longer overflows its inputs.** (#843, #844)
+- **Friendlier empty state for documents.** (#822)
+
 ## [0.31.0] — 2026-07-12
 
 ### Added
