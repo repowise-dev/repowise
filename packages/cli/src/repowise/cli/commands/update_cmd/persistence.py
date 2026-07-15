@@ -174,6 +174,8 @@ def _persist_index_only_update(
         "last_sync_commit": head,
         "config_fingerprint": config_fingerprint(repo_path),
     }
+    if "last_docs_commit" not in state and "last_sync_commit" in state:
+        new_state["last_docs_commit"] = state["last_sync_commit"]
     if knowledge_graph_result is not None:
         try:
             from repowise.cli.state_persistence import build_kg_state, save_knowledge_graph_json

@@ -456,9 +456,15 @@ def run_update(
     from repowise.cli.ui import load_dotenv
 
     load_dotenv(repo_path)
-
     state = load_state(repo_path)
-    base_ref = since or state.get("last_sync_commit")
+    from repowise.cli.commands.update_cmd.mode import _resolve_index_only_mode
+    resolved_index_only = _resolve_index_only_mode(
+        index_only=index_only, docs_flag=docs_flag, state=state
+    )
+    base_ref = since or (
+        state.get("last_sync_commit") if resolved_index_only
+        else state.get("last_docs_commit", state.get("last_sync_commit"))
+    )
     head = get_head_commit(repo_path)
 
     if base_ref is None:
@@ -568,7 +574,7 @@ def run_update(
         save_state(repo_path, state)
 
     # --- Resolve effective mode (index-only vs full LLM regen) ---
-    index_only = _resolve_index_only_mode(index_only=index_only, docs_flag=docs_flag, state=state)
+    index_only = resolved_index_only
 
     # --- Store-format upgrade assessment --------------------------------
     # Single decision point for "does upgrading repowise need to touch this
@@ -1190,6 +1196,7 @@ def run_update(
             degraded.append(f"Knowledge-graph export: {exc}")
 
     state["last_sync_commit"] = head
+    state["last_docs_commit"] = head
     # Real DB total, not an accumulation: regeneration upserts existing pages,
     # so adding len(generated_pages) every run inflated the count forever.
     state["total_pages"] = db_total_pages
