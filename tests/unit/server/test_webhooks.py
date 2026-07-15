@@ -10,6 +10,9 @@ from unittest.mock import patch
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
+
+from repowise.core.persistence.models import GenerationJob, Repository
 
 
 @pytest.mark.asyncio
@@ -32,6 +35,68 @@ async def test_github_webhook_no_secret(client: AsyncClient) -> None:
     data = resp.json()
     assert "event_id" in data
     assert data["status"] == "accepted"
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "headers", "repository_payload"),
+    [
+        (
+            "/api/webhooks/github",
+            {
+                "X-GitHub-Event": "push",
+                "X-GitHub-Delivery": "test-delivery-sync",
+            },
+            {"repository": {"clone_url": "https://example.com/test-repo"}},
+        ),
+        (
+            "/api/webhooks/gitlab",
+            {"X-Gitlab-Event": "Push Hook"},
+            {"project": {"web_url": "https://example.com/test-repo"}},
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_push_webhook_enqueues_sync_job(
+    client: AsyncClient,
+    session_factory,
+    endpoint: str,
+    headers: dict[str, str],
+    repository_payload: dict[str, object],
+) -> None:
+    """Push webhooks use the executor's sync mode so docs are regenerated."""
+    async with session_factory() as session:
+        session.add(
+            Repository(
+                name="test-repo",
+                url="https://example.com/test-repo",
+                local_path="/tmp/test-repo",
+                default_branch="main",
+            )
+        )
+        await session.commit()
+
+    payload = {
+        "ref": "refs/heads/main",
+        "before": "before-sha",
+        "after": "after-sha",
+        **repository_payload,
+    }
+    with patch("repowise.server.routers.webhooks._launch_webhook_job"):
+        response = await client.post(
+            endpoint,
+            content=json.dumps(payload),
+            headers={**headers, "Content-Type": "application/json"},
+        )
+
+    assert response.status_code == 200
+    async with session_factory() as session:
+        job = (await session.execute(select(GenerationJob))).scalar_one()
+        config = json.loads(job.config_json)
+
+    assert config["mode"] == "sync"
+    assert config["trigger"] == "webhook"
+    assert config["before"] == "before-sha"
+    assert config["after"] == "after-sha"
 
 
 @pytest.mark.asyncio
