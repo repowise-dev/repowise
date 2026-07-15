@@ -253,6 +253,8 @@ def _load_local_provider_config() -> None:
 def _is_port_free(host: str, port: int) -> bool:
     """Return True if *port* can be bound on *host* right now."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        if os.name != "nt":
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             sock.bind((host, port))
         except OSError:
