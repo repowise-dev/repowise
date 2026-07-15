@@ -270,7 +270,7 @@ export function AddRepoWizard({ adapter, open, onOpenChange }: AddRepoWizardProp
               <DialogTitle>Add Repository</DialogTitle>
             </DialogHeader>
 
-            <form onSubmit={handleDetailsSubmit} className="space-y-4 py-2">
+            <form onSubmit={handleDetailsSubmit} className="space-y-4 py-2 min-w-0">
               <div className="space-y-1.5">
                 <Label htmlFor="repo-name">Name</Label>
                 <Input
