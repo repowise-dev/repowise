@@ -7,6 +7,7 @@ port instead of crashing with EADDRINUSE.
 
 from __future__ import annotations
 
+import os
 import socket
 
 import pytest
@@ -70,10 +71,9 @@ def test_find_free_port_handles_contiguous_busy_block(
     assert 1024 <= chosen <= 65535
 
 
+@pytest.mark.skipif(os.name == "nt", reason="SO_REUSEADDR probe fix is POSIX-only (issue #840)")
 def test_is_port_free_ignores_time_wait() -> None:
     """Regression test for issue #840: TIME_WAIT sockets shouldn't block the probe."""
-    import os
-    
     host = "127.0.0.1"
     lis = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     if os.name != "nt":
