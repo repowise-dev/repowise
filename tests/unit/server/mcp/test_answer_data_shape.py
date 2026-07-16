@@ -14,22 +14,33 @@ no groundable shape must fall through (return None), never a fabricated field.
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
 
+from repowise.core.exclusion import build_exclude_spec
 from repowise.server.mcp_server.tool_answer.data_shape import (
     _grep_identifier_files,
     _is_data_shape_question,
     mine_data_shape,
 )
-from repowise.core.exclusion import build_exclude_spec
 
 
 def _write(root: Path, rel: str, body: str) -> None:
     p = root / rel
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(body, encoding="utf-8")
+
+
+def test_grep_identifier_files_disables_forced_color(tmp_path):
+    """Forced git-grep color must not leak escape codes into file paths."""
+    _write(tmp_path, "src/models.py", "blame_record_json = {}\n")
+    subprocess.run(["git", "init", "--quiet"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", "src/models.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "color.grep", "always"], cwd=tmp_path, check=True)
+
+    assert _grep_identifier_files(tmp_path, "blame_record_json") == ["src/models.py"]
 
 
 # --- Question detection ---------------------------------------------------
