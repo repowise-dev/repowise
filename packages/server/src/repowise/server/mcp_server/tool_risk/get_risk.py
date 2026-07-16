@@ -41,7 +41,9 @@ async def get_risk(
     graph topology (dependents, co-changes, impact surface) and security
     findings. Consult before editing 95th+ churn-percentile files. Pass
     changed_files for PR mode: the response leads with a directive block
-    (will_break, missing_cochanges, missing_tests) — read it first.
+    (will_break, missing_cochanges, missing_tests, tests_to_run) — read it
+    first. tests_to_run is coverage-backed: the tests the per-test map proves
+    exercise the changed files, empty when no coverage map is ingested.
 
     Args:
         targets: file paths to assess.

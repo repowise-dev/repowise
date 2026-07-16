@@ -44,15 +44,20 @@ Call `get_risk` in **PR mode** by passing the changed files:
 get_risk(targets=<changed files>, changed_files=<same changed files>)
 ```
 
-The response carries a `directive` block — read it first, it's three short lists:
+The response carries a `directive` block — read it first, it's a few short lists:
 
 - **`will_break`** — files/symbols that depend on what changed but are *not* in
   the diff. These are the likely breakages. Check each one.
 - **`missing_cochanges`** — files that historically change together with the
   changed files but were left untouched. Often a forgotten update.
 - **`missing_tests`** — changed code with a test gap. Flag for new/updated tests.
+- **`tests_to_run`** — the positive complement of `missing_tests`: the tests the
+  per-test coverage map proves execute the changed files (pytest-runnable ids).
+  Recommend running these to validate the change. Empty until a coverage map is
+  ingested (`repowise coverage add`); empty is "unknown", never "no tests exist".
 
-`pr_blast_radius` holds the fuller dossier behind those three lists.
+`pr_blast_radius` holds the fuller dossier behind those lists (including the
+per-changed-file `guarding_tests` breakdown behind `tests_to_run`).
 
 ## Then go deeper where it matters
 

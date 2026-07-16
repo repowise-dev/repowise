@@ -225,8 +225,9 @@ people who have to trust what ships:
 
 - **★ Change risk:** score any commit or `base..HEAD` range **0–10** for defect
   risk from the shape of the diff (Kamei-style just-in-time metrics), with
-  PR-mode directives (`will_break`, `missing_cochanges`, `missing_tests`). One
-  command: `repowise risk main..HEAD`. Reference: **[docs/CHANGE_RISK.md](docs/CHANGE_RISK.md)**.
+  PR-mode directives (`will_break`, `missing_cochanges`, `missing_tests`,
+  `tests_to_run`). One command: `repowise risk main..HEAD`. Reference:
+  **[docs/CHANGE_RISK.md](docs/CHANGE_RISK.md)**.
 - **★ Agent provenance:** attribute commits to the AI agents that wrote them,
   straight from git history, so you can see how much of your codebase an agent
   produced and which of that code is a low-health hotspot owned by a single
@@ -494,7 +495,7 @@ diverges from live `.git/HEAD`.
 | `get_context(targets, include?)` | Triage card for files / modules / symbols: title, summary, signatures, `hotspot` bit, `governing_decisions`, and `symbol_id`s. `include` opens callers/callees, ownership, metrics, decisions, full_doc. Batch many targets. |
 | `get_symbol("file.py::Name")` | Raw source bytes for one indexed symbol with exact line bounds, cheaper and safer than `Read` + offset math. |
 | `search_codebase(query, kind?)` | Semantic search over the wiki, filterable by `kind` (implementation / test / config / doc), tagging each result's `search_method`. |
-| `get_risk(targets, changed_files?)` | Hotspot scores, dependents, co-change partners, ownership, test gaps, security signals. Pass `changed_files` for PR mode → a `directive` block (`will_break`, `missing_cochanges`, `missing_tests`, `governance_risk`). |
+| `get_risk(targets, changed_files?)` | Hotspot scores, dependents, co-change partners, ownership, test gaps, security signals. Pass `changed_files` for PR mode → a `directive` block (`will_break`, `missing_cochanges`, `missing_tests`, `tests_to_run`, `governance_risk`). |
 | `get_why(query?, targets?)` | Architectural decision records, status, evidence spans, and the supersession **lineage chain**. Falls back to git archaeology when no ADRs exist. |
 | `get_dead_code(...)` | Unreachable code by confidence tier with cleanup-impact estimates; cross-repo consumer detection in workspace mode. |
 | `get_health(targets?, include?)` | Marker scores per file across three signals (defect · maintainability · performance). Dashboard mode → KPIs + lowest-scoring files + module rollup; targeted mode → per-file findings. Self-check before a PR via `include`: `accuracy` (does the score find the bugs), `signals` (per-file churn / owners / prior defects), `churn_complexity`, a dimension name to filter findings, plus `coverage`, `trend`, and `refactoring` → **structured, graph-aware refactoring plans** (split groups, move target, cut edges + blast radius), not template strings. |
