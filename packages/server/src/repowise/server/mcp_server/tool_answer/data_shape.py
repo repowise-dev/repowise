@@ -156,6 +156,7 @@ def _run_grep(
                 "git",
                 "--no-pager",
                 "grep",
+                "--no-color",
                 *args,
                 "-l",
                 "-I",

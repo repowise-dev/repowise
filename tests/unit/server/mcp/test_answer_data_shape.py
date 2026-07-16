@@ -14,16 +14,17 @@ no groundable shape must fall through (return None), never a fabricated field.
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
 
+from repowise.core.exclusion import build_exclude_spec
 from repowise.server.mcp_server.tool_answer.data_shape import (
     _grep_identifier_files,
     _is_data_shape_question,
     mine_data_shape,
 )
-from repowise.core.exclusion import build_exclude_spec
 
 
 def _write(root: Path, rel: str, body: str) -> None:
@@ -342,6 +343,16 @@ def test_none_repo_root_is_safe():
 
 
 # --- Gitignore / exclude_patterns are honoured (live-grep fallback) --------
+
+
+def test_grep_paths_ignore_always_color_config(tmp_path):
+    """Machine-parsed grep paths must not contain ANSI color escapes."""
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "color.ui", "always"], cwd=tmp_path, check=True)
+    _write(tmp_path, "pkg/real.py", "y = leak_record_json\n")
+    subprocess.run(["git", "add", "pkg/real.py"], cwd=tmp_path, check=True)
+
+    assert _grep_identifier_files(tmp_path, "leak_record_json") == ["pkg/real.py"]
 
 
 def test_grep_skips_gitignored_file(tmp_path):
