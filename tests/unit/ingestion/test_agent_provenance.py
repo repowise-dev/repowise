@@ -18,7 +18,9 @@ from repowise.core.ingestion.git_commit_index import (
 )
 from repowise.core.ingestion.git_indexer.agent_provenance import (
     AgentProvenanceClassifier,
+    AgentTraceIndex,
     _agent_from_git_ai_note,
+    _agent_from_trace_record,
 )
 from repowise.core.ingestion.git_indexer.commit_rows import build_commit_rows
 from repowise.core.ingestion.git_indexer.file_history import index_file
@@ -346,9 +348,11 @@ def test_extra_patterns_extend_the_registry() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _log_record(sha, an, ae, subj, body="", files=((1, 0, "src/a.py"),), ts=None) -> str:
+def _log_record(
+    sha, an, ae, subj, body="", files=((1, 0, "src/a.py"),), ts=None, parents=""
+) -> str:
     ts = ts or int(time.time())
-    lines = [f"\x00{sha}\x1f{an}\x1f{ae}\x1f{an}\x1f{ae}\x1f{ts}\x1f\x1f{subj}\x1f{body}"]
+    lines = [f"\x00{sha}\x1f{an}\x1f{ae}\x1f{an}\x1f{ae}\x1f{ts}\x1f{parents}\x1f{subj}\x1f{body}"]
     for a, d, p in files:
         lines.append(f"{a}\t{d}\t{p}")
     return "\n".join(lines)
@@ -438,3 +442,168 @@ def test_rollup_zero_for_human_only_history() -> None:
     assert meta["agent_commit_count"] == 0
     assert meta["agent_authored_pct"] == 0.0
     assert json.loads(meta["agent_tier_counts_json"]) == {}
+
+
+# ---------------------------------------------------------------------------
+# Agent-trace channel (.agent-trace/traces.jsonl)
+# ---------------------------------------------------------------------------
+
+
+def _trace_record(
+    revision, tool="cursor", files=("src/a.py",), contributor_type="ai", model_id=None
+) -> str:
+    contributor = {"type": contributor_type}
+    if model_id:
+        contributor["model_id"] = model_id
+    return json.dumps(
+        {
+            "version": "0.1.0",
+            "id": "550e8400-e29b-41d4-a716-446655440000",
+            "timestamp": "2026-01-25T10:00:00Z",
+            "vcs": {"type": "git", "revision": revision},
+            "tool": {"name": tool} if tool else None,
+            "files": [
+                {
+                    "path": p,
+                    "conversations": [
+                        {"contributor": contributor, "ranges": [{"start_line": 1, "end_line": 5}]}
+                    ],
+                }
+                for p in files
+            ],
+        }
+    )
+
+
+def test_trace_record_resolves_tool_name_first() -> None:
+    rec = json.loads(_trace_record("abc", tool="Cursor", model_id="anthropic/claude-opus-4-5"))
+    assert _agent_from_trace_record(rec) == ("abc", "cursor", frozenset({"src/a.py"}))
+
+
+def test_trace_record_falls_back_to_model_id() -> None:
+    rec = json.loads(_trace_record("abc", tool=None, model_id="anthropic/claude-opus-4-5"))
+    assert _agent_from_trace_record(rec) == ("abc", "claude", frozenset({"src/a.py"}))
+
+
+def test_trace_record_human_only_is_not_a_signal() -> None:
+    rec = json.loads(_trace_record("abc", contributor_type="human"))
+    assert _agent_from_trace_record(rec) is None
+
+
+def test_trace_record_mixed_counts_as_agent() -> None:
+    rec = json.loads(_trace_record("abc", contributor_type="mixed"))
+    assert _agent_from_trace_record(rec) is not None
+
+
+def test_trace_record_without_revision_is_skipped() -> None:
+    rec = json.loads(_trace_record("abc"))
+    del rec["vcs"]
+    assert _agent_from_trace_record(rec) is None
+
+
+def test_trace_index_resolves_exact_and_parent_matches() -> None:
+    idx = AgentTraceIndex(
+        [
+            ("sha_exact", "cursor", frozenset({"src/a.py"})),
+            ("sha_parent", "claude", frozenset({"src/b.py"})),
+        ]
+    )
+    # Revision IS the commit: high confidence.
+    assert idx.resolve("sha_exact", (), {"src/a.py"}) == ("cursor", "high")
+    # Revision is the commit's parent (trace captured pre-commit): medium.
+    assert idx.resolve("sha_child", ("sha_parent",), {"src/b.py"}) == ("claude", "medium")
+    # A revision match without file overlap must not attribute the commit.
+    assert idx.resolve("sha_exact", (), {"other.py"}) is None
+    assert idx.resolve("sha_unknown", ("sha_unrelated",), {"src/a.py"}) is None
+
+
+def test_trace_index_agent_tie_is_ambiguous() -> None:
+    idx = AgentTraceIndex(
+        [
+            ("rev", "cursor", frozenset({"src/a.py"})),
+            ("rev", "claude", frozenset({"src/b.py"})),
+        ]
+    )
+    assert idx.resolve("rev", (), {"src/a.py", "src/b.py"}) is None
+    # An unambiguous overlap still resolves.
+    assert idx.resolve("rev", (), {"src/a.py"}) == ("cursor", "high")
+
+
+def test_trace_agent_precedence_in_classify() -> None:
+    # Trace beats the message-derived channels...
+    prov = CLF.classify(
+        "Dev",
+        "dev@x.com",
+        "",
+        "",
+        "x\n\nGenerated with Claude Code",
+        trace_agent="cursor",
+        trace_confidence="medium",
+    )
+    assert (prov.agent, prov.autonomy_tier, prov.channel) == ("cursor", 2, "agent_trace")
+    assert prov.confidence == "medium"
+    # ...but loses to the commit-attached git-ai note and to a T1 identity.
+    prov = CLF.classify("Dev", "dev@x.com", "", "", "x", note_agent="claude", trace_agent="cursor")
+    assert prov.channel == "git_ai_note"
+    prov = CLF.classify("Cursor Agent", "cursoragent@cursor.com", "", "", "x", trace_agent="claude")
+    assert prov.channel == "service_email"
+
+
+def test_trace_index_load_missing_file_is_empty(tmp_path) -> None:
+    repo = MagicMock()
+    repo.working_tree_dir = str(tmp_path)
+    assert not AgentTraceIndex.load(repo)
+
+
+def test_trace_index_load_skips_malformed_lines(tmp_path) -> None:
+    trace_dir = tmp_path / ".agent-trace"
+    trace_dir.mkdir()
+    (trace_dir / "traces.jsonl").write_text(
+        "not json\n" + _trace_record("rev_a") + "\n{}\n", encoding="utf-8"
+    )
+    idx = AgentTraceIndex.load(MagicMock(working_tree_dir=str(tmp_path)))
+    assert idx.resolve("rev_a", (), {"src/a.py"}) == ("cursor", "high")
+
+
+def test_trace_index_load_never_raises_on_mock_repo() -> None:
+    # The walks pass whatever repo object they hold; a non-path working tree
+    # (or a bare repo's None) must degrade to an empty index, not an error.
+    assert not AgentTraceIndex.load(MagicMock())
+    assert not AgentTraceIndex.load(MagicMock(working_tree_dir=None))
+
+
+def test_walk_attributes_commits_from_trace_file(tmp_path) -> None:
+    trace_dir = tmp_path / ".agent-trace"
+    trace_dir.mkdir()
+    (trace_dir / "traces.jsonl").write_text(
+        _trace_record("bbb", tool="cursor")  # captured at commit bbb itself
+        + "\n"
+        + _trace_record("aaa", tool="opencode", files=("src/b.py",))  # pre-commit HEAD
+        + "\n",
+        encoding="utf-8",
+    )
+    raw = "\n".join(
+        [
+            _log_record("aaa", "Dev", "dev@x.com", "feat: base"),
+            _log_record("bbb", "Dev", "dev@x.com", "feat: traced", parents="aaa"),
+            # Child of aaa touching src/b.py: attributed via the parent match.
+            _log_record(
+                "ccc", "Dev", "dev@x.com", "feat: edit", files=((2, 0, "src/b.py"),), parents="aaa"
+            ),
+        ]
+    )
+    repo = MagicMock()
+    repo.working_tree_dir = str(tmp_path)
+    repo.git.for_each_ref.return_value = ""
+    repo.git.log.return_value = raw
+
+    sink: list[dict] = []
+    load_commit_index(repo, 100, {"src/a.py", "src/b.py"}, commit_sink=sink)
+    by_sha = {c["sha"]: c for c in sink}
+
+    assert by_sha["aaa"]["agent_name"] is None
+    assert by_sha["bbb"]["agent_name"] == "cursor"
+    assert by_sha["bbb"]["agent_channel"] == "agent_trace"
+    assert by_sha["bbb"]["agent_confidence"] == "high"
+    assert by_sha["ccc"]["agent_name"] == "opencode"
+    assert by_sha["ccc"]["agent_confidence"] == "medium"

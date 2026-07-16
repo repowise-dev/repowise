@@ -102,10 +102,19 @@ rename-tracking mode (which uses the per-file walk, not the batched index).
 `{agent, autonomy_tier, channel, confidence}` from the attribution channels
 present in **local git history** — identity fields (bot accounts / service
 e-mails), exact message footers ("Generated with Claude Code", Codex,
-opencode, aider), and `Co-authored-by:` trailers anchored to service
-identities. Tiers: **1** near-autonomous (an agent service account authored
-the commit) · **2** human-driven agent (footer, or a service identity as
-*committer* over a human author) · **3** assisted (co-author trailer only).
+opencode, aider), `Co-authored-by:` trailers anchored to service
+identities, git-ai authorship notes (`refs/notes/ai`), and agent-trace
+records (the vendor-neutral [agent-trace](https://github.com/cursor/agent-trace)
+standard, read from `.agent-trace/traces.jsonl`). Tiers: **1** near-autonomous
+(an agent service account authored the commit) · **2** human-driven agent
+(footer, note, trace record, or a service identity as *committer* over a human
+author) · **3** assisted (co-author trailer only).
+
+Agent-trace records name a `vcs.revision` captured at edit or commit time, so
+`AgentTraceIndex` attributes a record to a commit when the revision matches
+the commit itself (confidence `high`) or one of its parents (the traced change
+landed in the child; confidence `medium`), and only when the record's file
+set overlaps the commit's changed paths.
 
 Design rules:
 

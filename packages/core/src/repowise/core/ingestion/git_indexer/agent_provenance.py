@@ -19,11 +19,15 @@ LLM), in strip-resistance order:
      * an ``Assisted-by:`` trailer naming a recognized agent (the Fedora /
        OpenInfra AI-attribution standard)
 
-Two cross-cutting channels ride the same rule set:
+Three cross-cutting channels ride the same rule set:
   * a **git-ai authorship note** (``refs/notes/ai``, the git-ai standard) —
     an explicit, line-level attestation attached to the commit. Read out of
     band (see :mod:`git_commit_index`) and passed in pre-resolved as
     ``note_agent``; classified Tier 2 (``git_ai_note`` channel).
+  * an **agent-trace record** (the vendor-neutral agent-trace standard,
+    ``.agent-trace/traces.jsonl``) resolved to the commit by
+    :class:`AgentTraceIndex` and passed in as ``trace_agent``; classified
+    Tier 2 (``agent_trace`` channel).
   * a ``Generated-by:`` trailer (Apache's AI-attribution footer) naming a
     recognized agent — Tier 2 (``generated_by_trailer`` channel).
 
@@ -61,6 +65,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+from pathlib import Path
 
 import structlog
 
@@ -69,6 +74,7 @@ logger = structlog.get_logger(__name__)
 __all__ = [
     "AgentProvenance",
     "AgentProvenanceClassifier",
+    "AgentTraceIndex",
     "_agent_from_git_ai_note",
     "classifier_from_repo_config",
 ]
@@ -239,6 +245,156 @@ def _agent_from_git_ai_note(note: str) -> str | None:
         return None
 
 
+# Agent-trace records (the vendor-neutral agent-trace standard, v0.1.x): JSONL
+# at ``.agent-trace/traces.jsonl``, the spec's reference-implementation storage
+# location. The spec itself is storage-agnostic; revisit when the ecosystem
+# settles on a git-notes ref.
+_TRACE_FILE = ".agent-trace/traces.jsonl"
+# A trace log is append-only and unbounded; past this size, skip it whole
+# rather than stall the git index parsing it.
+_TRACE_MAX_BYTES = 50 * 1024 * 1024
+_TRACE_AI_CONTRIBUTORS = frozenset({"ai", "mixed"})
+
+
+def _agent_from_trace_record(rec: object) -> tuple[str, str, frozenset[str]] | None:
+    """Resolve one agent-trace record to ``(revision, agent, ai_paths)``.
+
+    A record carries ``vcs.revision`` (the git sha at capture time), a
+    record-level ``tool``, and per-file ``conversations`` whose ``contributor``
+    says who wrote the ranges. Only ``ai`` / ``mixed`` contributors count.
+    The agent label prefers ``tool.name`` (matching the tool-level labels the
+    other channels produce) and falls back to the conversation's ``model_id``;
+    both resolve with ``allow_slug=True`` because the ``.agent-trace/`` log is
+    AI-specific by construction, same rationale as ``refs/notes/ai``. Multiple
+    distinct agents in one record: the one touching the most files wins, a tie
+    returns ``None`` (ambiguous, precision-first). Any malformed shape returns
+    ``None``: a broken record is never a signal.
+    """
+    if not isinstance(rec, dict):
+        return None
+    try:
+        revision = str((rec.get("vcs") or {}).get("revision") or "").strip().lower()
+        if not revision:
+            return None
+        tool_agent = _normalize_agent_token(
+            str((rec.get("tool") or {}).get("name") or ""), allow_slug=True
+        )
+        paths_by_agent: dict[str, set[str]] = {}
+        for f in rec.get("files") or []:
+            if not isinstance(f, dict):
+                continue
+            path = str(f.get("path") or "").strip().lstrip("/")
+            if not path:
+                continue
+            for conv in f.get("conversations") or []:
+                if not isinstance(conv, dict):
+                    continue
+                contributor = conv.get("contributor") or {}
+                if str(contributor.get("type") or "").lower() not in _TRACE_AI_CONTRIBUTORS:
+                    continue
+                agent = tool_agent or _normalize_agent_token(
+                    str(contributor.get("model_id") or ""), allow_slug=True
+                )
+                if agent:
+                    paths_by_agent.setdefault(agent, set()).add(path)
+        if not paths_by_agent:
+            return None
+        top = max(len(paths) for paths in paths_by_agent.values())
+        leaders = [a for a, paths in paths_by_agent.items() if len(paths) == top]
+        if len(leaders) != 1:
+            return None
+        return revision, leaders[0], frozenset(paths_by_agent[leaders[0]])
+    except Exception:
+        return None
+
+
+class AgentTraceIndex:
+    """Commit attribution from agent-trace records, loaded once per walk.
+
+    ``resolve`` maps a commit to an agent when a record's ``vcs.revision``
+    matches the commit itself (the record was written at or after the commit:
+    confidence ``"high"``) or one of its parents (the record was written at
+    edit time and the traced change landed in the child: confidence
+    ``"medium"``). Both cases additionally require the record's file set to
+    intersect the commit's changed paths; a revision match alone must not
+    attribute an unrelated commit.
+    """
+
+    def __init__(self, records: list[tuple[str, str, frozenset[str]]] | None = None) -> None:
+        self._by_revision: dict[str, list[tuple[str, frozenset[str]]]] = {}
+        for revision, agent, paths in records or []:
+            self._by_revision.setdefault(revision, []).append((agent, paths))
+
+    def __bool__(self) -> bool:
+        return bool(self._by_revision)
+
+    @classmethod
+    def load(cls, repo: object) -> AgentTraceIndex:
+        """Read ``.agent-trace/traces.jsonl`` from *repo*'s working tree.
+
+        A missing file (the common case) returns an empty index after a single
+        stat call, so repos without traces pay nothing. Oversized files are
+        skipped whole and malformed lines individually: a broken trace log
+        must never take down the git index.
+        """
+        try:
+            root = getattr(repo, "working_tree_dir", None)
+            if not root or not isinstance(root, (str, Path)):
+                return cls()
+            path = Path(root) / _TRACE_FILE
+            if not path.is_file():
+                return cls()
+            if path.stat().st_size > _TRACE_MAX_BYTES:
+                logger.warning("agent_trace_file_too_large", path=str(path))
+                return cls()
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except Exception as exc:  # a trace read must never break the git index
+            logger.warning("agent_trace_read_failed", error=str(exc))
+            return cls()
+        records: list[tuple[str, str, frozenset[str]]] = []
+        for line in text.splitlines():
+            if not line.strip():
+                continue
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            parsed = _agent_from_trace_record(rec)
+            if parsed:
+                records.append(parsed)
+        return cls(records)
+
+    def resolve(
+        self, sha: str, parents: tuple[str, ...], changed_paths: set[str]
+    ) -> tuple[str, str] | None:
+        """Attribute one commit: ``(agent, confidence)`` or ``None``."""
+        agent = self._match(sha, changed_paths)
+        if agent:
+            return agent, "high"
+        for parent in parents:
+            agent = self._match(parent, changed_paths)
+            if agent:
+                return agent, "medium"
+        return None
+
+    def _match(self, revision: str, changed_paths: set[str]) -> str | None:
+        candidates = self._by_revision.get((revision or "").lower())
+        if not candidates:
+            return None
+        # Weight each agent by how many of its traced files this commit
+        # actually changed; the dominant agent wins, a tie is ambiguous.
+        counts: dict[str, int] = {}
+        for agent, paths in candidates:
+            overlap = len(paths & changed_paths)
+            if overlap:
+                counts[agent] = counts.get(agent, 0) + overlap
+        if not counts:
+            return None
+        top = max(counts.values())
+        leaders = [a for a, c in counts.items() if c == top]
+        return leaders[0] if len(leaders) == 1 else None
+
+
 @dataclass(frozen=True)
 class AgentProvenance:
     """One commit's agent attribution. ``agent is None`` means human."""
@@ -312,13 +468,17 @@ class AgentProvenanceClassifier:
         committer_email: str,
         message: str,
         note_agent: str | None = None,
+        trace_agent: str | None = None,
+        trace_confidence: str = "high",
     ) -> AgentProvenance:
         """Classify one commit from local metadata. *message* is the full
         commit message (subject + body) — trailers and footers live in the
         body, so passing the subject alone silently disables several channels.
         *note_agent* is the pre-resolved agent from this commit's git-ai
         authorship note (``refs/notes/ai``), or ``None`` when absent — read out
-        of band by the caller so classification stays a pure function."""
+        of band by the caller so classification stays a pure function.
+        *trace_agent* / *trace_confidence* are the pre-resolved result of
+        :meth:`AgentTraceIndex.resolve` for this commit, same contract."""
         # T1 — agent service identity AUTHORED the commit.
         hit = self._identity_match(author_email)
         if hit:
@@ -328,6 +488,11 @@ class AgentProvenanceClassifier:
         # above the message-derived channels.
         if note_agent:
             return AgentProvenance(note_agent, 2, "git_ai_note", "high")
+        # T2 — agent-trace record resolved to this commit. Below the git-ai
+        # note (a commit-attached attestation beats heuristic revision
+        # mapping), above the message-derived channels.
+        if trace_agent:
+            return AgentProvenance(trace_agent, 2, "agent_trace", trace_confidence)
         # T2 — message footer / aider author-name suffix.
         for pat, agent in self._footers:
             if pat.search(message):

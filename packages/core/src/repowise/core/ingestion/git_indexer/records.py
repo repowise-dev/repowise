@@ -83,7 +83,8 @@ def _parse_commit_record(record: str) -> tuple[dict, list[str]] | None:
     by the first line matching :data:`_NUMSTAT_RE`; everything before it is
     body. Returns ``(header, numstat_lines)`` or ``None`` if the record is
     malformed (too few fields). ``header`` keys mirror :class:`_CommitRec`
-    fields except ``added``/``deleted`` (the caller attributes churn).
+    fields except ``added``/``deleted`` (the caller attributes churn), plus
+    ``parents`` (the commit's parent shas).
     """
     parts = record.split(_FIELD_SEP)
     if len(parts) < 9:
@@ -109,6 +110,7 @@ def _parse_commit_record(record: str) -> tuple[dict, list[str]] | None:
     except ValueError:
         ts = 0
 
+    parent_shas = tuple(p for p in parents.split() if p)
     header = {
         "sha": sha,
         "author_name": an or "unknown",
@@ -116,7 +118,11 @@ def _parse_commit_record(record: str) -> tuple[dict, list[str]] | None:
         "committer_name": cn or "",
         "committer_email": ce or "",
         "ts": ts,
-        "is_merge": len(parents.split()) > 1,
+        "is_merge": len(parent_shas) > 1,
+        # Parent shas ride along for the agent-trace channel, whose records
+        # capture the pre-commit HEAD (i.e. a parent of the commit that
+        # contains the traced change).
+        "parents": parent_shas,
         "subject": subject,
         "body": "\n".join(body_lines).strip(),
     }
