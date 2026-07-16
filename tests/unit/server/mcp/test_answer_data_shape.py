@@ -14,16 +14,17 @@ no groundable shape must fall through (return None), never a fabricated field.
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
 
+from repowise.core.exclusion import build_exclude_spec
 from repowise.server.mcp_server.tool_answer.data_shape import (
     _grep_identifier_files,
     _is_data_shape_question,
     mine_data_shape,
 )
-from repowise.core.exclusion import build_exclude_spec
 
 
 def _write(root: Path, rel: str, body: str) -> None:
@@ -360,6 +361,18 @@ def test_grep_skips_gitignored_file(tmp_path):
     assert "ignored/leak.py" not in files
 
 
+def test_grep_paths_ignore_user_color_config(tmp_path):
+    """Parsed ``git grep -l`` paths must stay stable under color.ui=always."""
+    _write(tmp_path, "pkg/models.py", "value = clean_rows_json\n")
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "color.ui", "always"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", "pkg/models.py"], cwd=tmp_path, check=True)
+
+    files = _grep_identifier_files(tmp_path, "clean_rows_json")
+
+    assert files == ["pkg/models.py"]
+
+
 def test_mine_data_shape_ignores_gitignored_leak(tmp_path):
     """A gitignored stale copy must never be the shape source served."""
     _write(tmp_path, ".gitignore", "ignored/\n")
@@ -391,4 +404,4 @@ class Real:
     assert out is not None
     assert out["fields"] == ["author", "commit_sha", "line_count"]
     # No served source may point at the gitignored copy.
-    assert all("ignored/leak.py" != s["file"] for s in out["sources"])
+    assert all(s["file"] != "ignored/leak.py" for s in out["sources"])
