@@ -392,3 +392,55 @@ class Real:
     assert out["fields"] == ["author", "commit_sha", "line_count"]
     # No served source may point at the gitignored copy.
     assert all("ignored/leak.py" != s["file"] for s in out["sources"])
+
+
+def test_run_grep_paths_clean_under_color_ui_always(tmp_path):
+    """``git grep`` paths must not carry ANSI escapes under color.ui=always.
+
+    Without ``--no-color``, exclusion filtering and file reads compare corrupted
+    path strings and silently miss real files (see issue #858).
+    """
+    import os
+    import subprocess
+
+    from repowise.server.mcp_server.tool_answer import data_shape as ds
+
+    _write(tmp_path, "pkg/models.py", "marker_ident_xyz = 1\n")
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "test"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "color.ui", "always"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True, capture_output=True)
+    env = os.environ.copy()
+    env["GIT_AUTHOR_DATE"] = "2020-01-01T00:00:00"
+    env["GIT_COMMITTER_DATE"] = "2020-01-01T00:00:00"
+    subprocess.run(
+        ["git", "commit", "-m", "init"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        env=env,
+    )
+
+    proc = ds._run_grep(tmp_path, [], "marker_ident_xyz")
+    assert proc is not None
+    assert proc.returncode == 0
+    raw = proc.stdout
+    assert "\x1b[" not in raw
+    paths = [ln.strip().replace("\\", "/") for ln in raw.splitlines() if ln.strip()]
+    assert "pkg/models.py" in paths
