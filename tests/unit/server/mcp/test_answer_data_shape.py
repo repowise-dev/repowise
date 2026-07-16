@@ -19,9 +19,11 @@ from pathlib import Path
 import pytest
 
 from repowise.server.mcp_server.tool_answer.data_shape import (
+    _grep_identifier_files,
     _is_data_shape_question,
     mine_data_shape,
 )
+from repowise.core.exclusion import build_exclude_spec
 
 
 def _write(root: Path, rel: str, body: str) -> None:
@@ -337,3 +339,56 @@ def enrich(rows_json, meta, src):
 
 def test_none_repo_root_is_safe():
     assert mine_data_shape(None, {"anything_json"}) is None
+
+
+# --- Gitignore / exclude_patterns are honoured (live-grep fallback) --------
+
+
+def test_grep_skips_gitignored_file(tmp_path):
+    """The ``--no-index`` filesystem grep must not return a gitignored path.
+
+    ``tmp_path`` is not a git checkout, so ``_grep_identifier_files`` retries
+    with ``git grep --no-index`` (which ignores ``.gitignore``). The compiled
+    exclude spec must drop the ignored hit while keeping the tracked one.
+    """
+    _write(tmp_path, ".gitignore", "ignored/\n")
+    _write(tmp_path, "ignored/leak.py", "x = leak_record_json\n")
+    _write(tmp_path, "pkg/real.py", "y = leak_record_json\n")
+    spec = build_exclude_spec(tmp_path)
+    files = _grep_identifier_files(tmp_path, "leak_record_json", spec)
+    assert "pkg/real.py" in files
+    assert "ignored/leak.py" not in files
+
+
+def test_mine_data_shape_ignores_gitignored_leak(tmp_path):
+    """A gitignored stale copy must never be the shape source served."""
+    _write(tmp_path, ".gitignore", "ignored/\n")
+    # The gitignored copy documents a stale/wrong shape.
+    _write(
+        tmp_path,
+        "ignored/leak.py",
+        '''\
+class Stale:
+    """``leak_record_json`` is a JSON list of
+    ``{"stale_one", "stale_two", "stale_three"}`` records."""
+
+    leak_record_json: str
+''',
+    )
+    # The tracked file documents the real shape.
+    _write(
+        tmp_path,
+        "pkg/models.py",
+        '''\
+class Real:
+    """``leak_record_json`` is a JSON list of
+    ``{"author", "commit_sha", "line_count"}`` records."""
+
+    leak_record_json: str
+''',
+    )
+    out = mine_data_shape(tmp_path, {"leak_record_json"})
+    assert out is not None
+    assert out["fields"] == ["author", "commit_sha", "line_count"]
+    # No served source may point at the gitignored copy.
+    assert all("ignored/leak.py" != s["file"] for s in out["sources"])

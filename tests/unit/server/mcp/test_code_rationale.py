@@ -266,6 +266,36 @@ def test_grep_comment_candidates_ranks_number_bearing_file(tmp_path):
     assert "pager.py" not in cands
 
 
+def test_grep_comment_candidates_skips_gitignored_file(tmp_path):
+    """A gitignored path must not be returned as a rationale candidate.
+
+    ``git grep`` scans tracked files, but a file force-added before it was
+    gitignored stays tracked (this is exactly how a stale vendored copy leaks
+    in). The compiled exclude spec must drop it while keeping the real file.
+    """
+    _RATIONALE = (
+        "# The widget list cap is 77 because the median fan-in is small\n"
+        "# and 77 covers nearly every widget in one call.\n"
+        "LIMIT = 77\n"
+    )
+    (tmp_path / ".gitignore").write_text("stale/\n", encoding="utf-8")
+    (tmp_path / "enrichment.py").write_text(_RATIONALE, encoding="utf-8")
+    (tmp_path / "stale").mkdir()
+    (tmp_path / "stale" / "leak.py").write_text(_RATIONALE, encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", "enrichment.py", ".gitignore"], cwd=tmp_path, check=True)
+    # Force-track the ignored copy so git grep can still see it.
+    subprocess.run(["git", "add", "-f", "stale/leak.py"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "-c", "user.email=t@t.dev", "-c", "user.name=t", "commit", "-qm", "init"],
+        cwd=tmp_path,
+        check=True,
+    )
+    cands = grep_comment_candidates(str(tmp_path), "why is the widget list capped at 77")
+    assert "enrichment.py" in cands
+    assert "stale/leak.py" not in cands
+
+
 def test_grep_comment_candidates_needs_a_noun(tmp_path):
     # Numbers but no content noun (all stopwords) -> nothing to anchor on.
     repo = _git_repo(tmp_path, _CALLER_CAP_FILES)

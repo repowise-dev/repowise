@@ -41,6 +41,7 @@ from repowise.core.analysis.decisions.rationale_comments import (
     RATIONALE_MARKERS,
     extract_comment_blocks,
 )
+from repowise.core.exclusion import build_exclude_spec, is_excluded
 
 _log = logging.getLogger("repowise.mcp.code_rationale")
 
@@ -405,4 +406,9 @@ def grep_comment_candidates(
         path = line.split(":", 1)[0]
         if path:
             counts[path] += 1
-    return [p for p, _ in counts.most_common(max_files)]
+    # ``git grep`` only scans tracked files, but a gitignored copy can still be
+    # tracked (or land here via a future --no-index retry); filter the winners
+    # through the repo's exclusion rules so an ignored path is never anchored on.
+    spec = build_exclude_spec(root)
+    ranked = [p for p, _ in counts.most_common() if not is_excluded(p, spec)]
+    return ranked[:max_files]
