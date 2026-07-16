@@ -84,6 +84,9 @@ from repowise.server.mcp_server._helpers import (
 )
 from repowise.server.mcp_server._meta import answer_hint as _answer_hint
 from repowise.server.mcp_server._meta import build_meta as _build_meta
+from repowise.server.mcp_server._neighbor_rerank import (
+    expand_via_neighbor_rerank as _expand_via_neighbor_rerank,
+)
 from repowise.server.mcp_server.tool_answer.confidence import (
     _answer_is_hedged,
     _frame_term_grounding,
@@ -613,6 +616,16 @@ async def get_answer(
             hits, flow_paths = await _expand_via_flow_path(
                 session, repo_id, hits, question, question_ids
             )
+    # Neighborhood re-rank: the sibling to flow-path expansion for the flow
+    # questions it can't reach — the ones whose gold file is never *named*. Seeds
+    # from the top hits, walks 1-2 hops out over the same graph, and re-ranks the
+    # reached neighborhood by fused embedding+lexical relevance so a far endpoint
+    # that lost the corpus-wide retrieval but wins within its own subsystem gets
+    # a top-5 slot. Additive and gated to flow-shaped questions; a no-op
+    # otherwise. Runs before the cap so an injected file can land in the top-5.
+    with contextlib.suppress(Exception):
+        async with get_session(ctx.session_factory) as session:
+            hits = await _expand_via_neighbor_rerank(session, repo_id, hits, question, ctx)
     # Always cap retrieval hits at 5 for the response payload.
     hits = hits[:5]
 
