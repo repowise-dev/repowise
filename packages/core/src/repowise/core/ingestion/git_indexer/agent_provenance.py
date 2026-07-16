@@ -64,6 +64,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -254,10 +255,86 @@ _TRACE_FILE = ".agent-trace/traces.jsonl"
 # rather than stall the git index parsing it.
 _TRACE_MAX_BYTES = 50 * 1024 * 1024
 _TRACE_AI_CONTRIBUTORS = frozenset({"ai", "mixed"})
+# ``git_commits.agent_model_id`` / the model buckets are ``String(64)``.
+_MODEL_ID_MAXLEN = 64
 
 
-def _agent_from_trace_record(rec: object) -> tuple[str, str, frozenset[str]] | None:
-    """Resolve one agent-trace record to ``(revision, agent, ai_paths)``.
+def _range_interval(rng: object) -> tuple[int, int] | None:
+    """One trace ``ranges[]`` entry as a 1-indexed inclusive ``(start, end)``.
+
+    Accepts the repo's ``start_line``/``end_line`` fixture keys and the spec's
+    shorter ``start``/``end`` aliases. A non-dict entry, a non-integer bound, a
+    non-positive start, or an inverted span (``end < start``) returns ``None`` —
+    a malformed range is never counted, never raises.
+    """
+    if not isinstance(rng, dict):
+        return None
+    start = rng.get("start_line", rng.get("start"))
+    end = rng.get("end_line", rng.get("end"))
+    try:
+        s = int(start)
+        e = int(end)
+    except (TypeError, ValueError):
+        return None
+    if s <= 0 or e < s:
+        return None
+    return s, e
+
+
+def _count_distinct_lines(intervals: list[tuple[int, int]]) -> int:
+    """Distinct line count over possibly-overlapping 1-indexed intervals.
+
+    Interval-union (sort + sweep) rather than a per-line ``set`` so memory is
+    bounded by the number of ranges, not by line magnitude — a single bogus
+    ``end_line: 1_000_000_000`` can't blow up the index.
+    """
+    if not intervals:
+        return 0
+    ordered = sorted(intervals)
+    total = 0
+    cur_s, cur_e = ordered[0]
+    for s, e in ordered[1:]:
+        if s <= cur_e + 1:  # overlapping or adjacent — extend the run
+            cur_e = max(cur_e, e)
+        else:
+            total += cur_e - cur_s + 1
+            cur_s, cur_e = s, e
+    total += cur_e - cur_s + 1
+    return total
+
+
+def _iter_trace_ai_conversations(rec: dict) -> list[tuple[str, str | None, list[tuple[int, int]]]]:
+    """``(path, model_id, intervals)`` for each AI/mixed conversation in *rec*.
+
+    Shared by both consumers of a record: commit attribution
+    (:func:`_agent_from_trace_record`) and the per-file line-share aggregate.
+    Only ``ai`` / ``mixed`` contributors are yielded; ``model_id`` is the raw
+    models.dev ``provider/model`` string (truncated to the column width) or
+    ``None``. Malformed files/conversations are skipped, never raised.
+    """
+    out: list[tuple[str, str | None, list[tuple[int, int]]]] = []
+    for f in rec.get("files") or []:
+        if not isinstance(f, dict):
+            continue
+        path = str(f.get("path") or "").strip().lstrip("/")
+        if not path:
+            continue
+        for conv in f.get("conversations") or []:
+            if not isinstance(conv, dict):
+                continue
+            contributor = conv.get("contributor") or {}
+            if str(contributor.get("type") or "").lower() not in _TRACE_AI_CONTRIBUTORS:
+                continue
+            raw_model = str(contributor.get("model_id") or "").strip() or None
+            if raw_model:
+                raw_model = raw_model[:_MODEL_ID_MAXLEN]
+            intervals = [iv for rng in (conv.get("ranges") or []) if (iv := _range_interval(rng))]
+            out.append((path, raw_model, intervals))
+    return out
+
+
+def _agent_from_trace_record(rec: object) -> tuple[str, str, frozenset[str], str | None] | None:
+    """Resolve one agent-trace record to ``(revision, agent, ai_paths, model_id)``.
 
     A record carries ``vcs.revision`` (the git sha at capture time), a
     record-level ``tool``, and per-file ``conversations`` whose ``contributor``
@@ -267,8 +344,10 @@ def _agent_from_trace_record(rec: object) -> tuple[str, str, frozenset[str]] | N
     both resolve with ``allow_slug=True`` because the ``.agent-trace/`` log is
     AI-specific by construction, same rationale as ``refs/notes/ai``. Multiple
     distinct agents in one record: the one touching the most files wins, a tie
-    returns ``None`` (ambiguous, precision-first). Any malformed shape returns
-    ``None``: a broken record is never a signal.
+    returns ``None`` (ambiguous, precision-first). ``model_id`` is the dominant
+    agent's most common raw ``model_id`` (opus vs sonnet), or ``None`` when the
+    record carries none or ties. Any malformed shape returns ``None``: a broken
+    record is never a signal.
     """
     if not isinstance(rec, dict):
         return None
@@ -280,53 +359,87 @@ def _agent_from_trace_record(rec: object) -> tuple[str, str, frozenset[str]] | N
             str((rec.get("tool") or {}).get("name") or ""), allow_slug=True
         )
         paths_by_agent: dict[str, set[str]] = {}
-        for f in rec.get("files") or []:
-            if not isinstance(f, dict):
+        models_by_agent: dict[str, Counter[str]] = {}
+        for path, raw_model, _intervals in _iter_trace_ai_conversations(rec):
+            agent = tool_agent or _normalize_agent_token(raw_model or "", allow_slug=True)
+            if not agent:
                 continue
-            path = str(f.get("path") or "").strip().lstrip("/")
-            if not path:
-                continue
-            for conv in f.get("conversations") or []:
-                if not isinstance(conv, dict):
-                    continue
-                contributor = conv.get("contributor") or {}
-                if str(contributor.get("type") or "").lower() not in _TRACE_AI_CONTRIBUTORS:
-                    continue
-                agent = tool_agent or _normalize_agent_token(
-                    str(contributor.get("model_id") or ""), allow_slug=True
-                )
-                if agent:
-                    paths_by_agent.setdefault(agent, set()).add(path)
+            paths_by_agent.setdefault(agent, set()).add(path)
+            if raw_model:
+                models_by_agent.setdefault(agent, Counter())[raw_model] += 1
         if not paths_by_agent:
             return None
         top = max(len(paths) for paths in paths_by_agent.values())
         leaders = [a for a, paths in paths_by_agent.items() if len(paths) == top]
         if len(leaders) != 1:
             return None
-        return revision, leaders[0], frozenset(paths_by_agent[leaders[0]])
+        agent = leaders[0]
+        return (
+            revision,
+            agent,
+            frozenset(paths_by_agent[agent]),
+            _dominant(models_by_agent.get(agent)),
+        )
     except Exception:
         return None
 
 
-class AgentTraceIndex:
-    """Commit attribution from agent-trace records, loaded once per walk.
+def _dominant(votes: Counter[str] | None) -> str | None:
+    """The single most-common key in *votes*, or ``None`` on empty / a tie."""
+    if not votes:
+        return None
+    top = max(votes.values())
+    leaders = [k for k, c in votes.items() if c == top]
+    return leaders[0] if len(leaders) == 1 else None
 
-    ``resolve`` maps a commit to an agent when a record's ``vcs.revision``
-    matches the commit itself (the record was written at or after the commit:
-    confidence ``"high"``) or one of its parents (the record was written at
-    edit time and the traced change landed in the child: confidence
-    ``"medium"``). Both cases additionally require the record's file set to
-    intersect the commit's changed paths; a revision match alone must not
-    attribute an unrelated commit.
+
+class AgentTraceIndex:
+    """Commit attribution + per-file line share from agent-trace records.
+
+    Built once per walk. ``resolve`` maps a commit to an agent when a record's
+    ``vcs.revision`` matches the commit itself (the record was written at or
+    after the commit: confidence ``"high"``) or one of its parents (the record
+    was written at edit time and the traced change landed in the child:
+    confidence ``"medium"``). Both cases additionally require the record's file
+    set to intersect the commit's changed paths; a revision match alone must
+    not attribute an unrelated commit.
+
+    ``line_shares`` is the per-file line-level rollup: for each traced path, the
+    count of distinct lines an AI/mixed contributor wrote (interval-union
+    deduped across every record) and a ``{model_id: line_count}`` breakdown.
+    It is revision-independent — a record with no ``vcs.revision`` still
+    contributes line share — so it works on the rename-tracking walk too.
     """
 
-    def __init__(self, records: list[tuple[str, str, frozenset[str]]] | None = None) -> None:
-        self._by_revision: dict[str, list[tuple[str, frozenset[str]]]] = {}
-        for revision, agent, paths in records or []:
-            self._by_revision.setdefault(revision, []).append((agent, paths))
+    def __init__(
+        self,
+        records: list[tuple[str, str, frozenset[str], str | None]] | None = None,
+        line_intervals: dict[str, list[tuple[int, int]]] | None = None,
+        line_intervals_by_model: dict[str, dict[str, list[tuple[int, int]]]] | None = None,
+    ) -> None:
+        self._by_revision: dict[str, list[tuple[str, frozenset[str], str | None]]] = {}
+        for revision, agent, paths, model_id in records or []:
+            self._by_revision.setdefault(revision, []).append((agent, paths, model_id))
+        # Collapse the accumulated intervals to counts once, up front.
+        self._line_shares: dict[str, tuple[int, dict[str, int]]] = {}
+        for path, intervals in (line_intervals or {}).items():
+            total = _count_distinct_lines(intervals)
+            if total <= 0:
+                continue
+            models = {
+                model_id: _count_distinct_lines(ivs)
+                for model_id, ivs in (line_intervals_by_model or {}).get(path, {}).items()
+            }
+            self._line_shares[path] = (total, {m: c for m, c in models.items() if c > 0})
 
     def __bool__(self) -> bool:
-        return bool(self._by_revision)
+        return bool(self._by_revision) or bool(self._line_shares)
+
+    def line_shares(self) -> dict[str, tuple[int, dict[str, int]]]:
+        """``{path: (agent_line_count, {model_id: line_count})}`` — empty when
+        the repo ships no traces. The caller merges this into per-file
+        ``git_metadata`` (see the indexer's path-keyed merge)."""
+        return self._line_shares
 
     @classmethod
     def load(cls, repo: object) -> AgentTraceIndex:
@@ -351,7 +464,9 @@ class AgentTraceIndex:
         except Exception as exc:  # a trace read must never break the git index
             logger.warning("agent_trace_read_failed", error=str(exc))
             return cls()
-        records: list[tuple[str, str, frozenset[str]]] = []
+        records: list[tuple[str, str, frozenset[str], str | None]] = []
+        line_intervals: dict[str, list[tuple[int, int]]] = {}
+        line_intervals_by_model: dict[str, dict[str, list[tuple[int, int]]]] = {}
         for line in text.splitlines():
             if not line.strip():
                 continue
@@ -359,40 +474,57 @@ class AgentTraceIndex:
                 rec = json.loads(line)
             except ValueError:
                 continue
+            if not isinstance(rec, dict):
+                continue
             parsed = _agent_from_trace_record(rec)
             if parsed:
                 records.append(parsed)
-        return cls(records)
+            # Line share is agent-agnostic (AI vs human at line granularity) and
+            # revision-independent — accumulate regardless of whether the record
+            # resolved to a single dominant agent above.
+            for path, raw_model, intervals in _iter_trace_ai_conversations(rec):
+                if not intervals:
+                    continue
+                line_intervals.setdefault(path, []).extend(intervals)
+                if raw_model:
+                    line_intervals_by_model.setdefault(path, {}).setdefault(raw_model, []).extend(
+                        intervals
+                    )
+        return cls(records, line_intervals, line_intervals_by_model)
 
     def resolve(
         self, sha: str, parents: tuple[str, ...], changed_paths: set[str]
-    ) -> tuple[str, str] | None:
-        """Attribute one commit: ``(agent, confidence)`` or ``None``."""
-        agent = self._match(sha, changed_paths)
-        if agent:
-            return agent, "high"
+    ) -> tuple[str, str, str | None] | None:
+        """Attribute one commit: ``(agent, confidence, model_id)`` or ``None``."""
+        hit = self._match(sha, changed_paths)
+        if hit:
+            return hit[0], "high", hit[1]
         for parent in parents:
-            agent = self._match(parent, changed_paths)
-            if agent:
-                return agent, "medium"
+            hit = self._match(parent, changed_paths)
+            if hit:
+                return hit[0], "medium", hit[1]
         return None
 
-    def _match(self, revision: str, changed_paths: set[str]) -> str | None:
+    def _match(self, revision: str, changed_paths: set[str]) -> tuple[str, str | None] | None:
         candidates = self._by_revision.get((revision or "").lower())
         if not candidates:
             return None
         # Weight each agent by how many of its traced files this commit
         # actually changed; the dominant agent wins, a tie is ambiguous.
         counts: dict[str, int] = {}
-        for agent, paths in candidates:
+        model_by_agent: dict[str, str | None] = {}
+        for agent, paths, model_id in candidates:
             overlap = len(paths & changed_paths)
             if overlap:
                 counts[agent] = counts.get(agent, 0) + overlap
+                model_by_agent.setdefault(agent, model_id)
         if not counts:
             return None
         top = max(counts.values())
         leaders = [a for a, c in counts.items() if c == top]
-        return leaders[0] if len(leaders) == 1 else None
+        if len(leaders) != 1:
+            return None
+        return leaders[0], model_by_agent.get(leaders[0])
 
 
 @dataclass(frozen=True)

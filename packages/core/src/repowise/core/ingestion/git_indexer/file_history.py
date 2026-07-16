@@ -121,6 +121,12 @@ def new_meta(file_path: str) -> dict[str, Any]:
         "agent_commit_count": 0,
         "agent_authored_pct": None,
         "agent_tier_counts_json": "{}",
+        # Line-level agent share (agent-trace ranges[]): distinct AI-written
+        # lines + {model_id: line_count}. Merged in by the orchestrator from the
+        # repo-wide trace index (path-keyed, like co-change/prior-defects), so
+        # these stay at the default unless the repo ships .agent-trace/.
+        "agent_line_count": 0,
+        "agent_line_model_json": "{}",
         # Temporal hotspot score (exponentially decayed churn)
         "temporal_hotspot_score": 0.0,
         # Change entropy (Hassan HCM) — populated repo-wide by the co-change
