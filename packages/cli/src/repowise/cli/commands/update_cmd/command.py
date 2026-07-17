@@ -617,49 +617,29 @@ def run_update(
     if emitter is not None:
         emitter.stage("detect_changes")
 
-    from pathlib import Path
 
     from repowise.core.ingestion import ChangeDetector
 
-    def _git_changed_files(repo: Path, base_commit: str, head: str = "HEAD") -> list[str]:
-        import subprocess
-
-        proc = subprocess.run(
-            ["git", "diff", "--name-only", f"{base_commit}..{head}"],
-            cwd=str(repo),
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if proc.returncode != 0:
-            return []
-        return [f for f in proc.stdout.splitlines() if f.strip() and not f.startswith(".repowise/")]
-
     detector = ChangeDetector(repo_path)
+    file_diffs = detector.get_changed_files(base_ref, head or "HEAD")
 
-    if not resolved_index_only and base_ref and head:
-        changed_paths = _git_changed_files(repo_path, base_ref, head)
-        if not changed_paths and not config_changed:
-            file_diffs = []
-        else:
-            file_diffs = [
-                fd
-                for fd in detector.get_changed_files(base_ref, head)
-                if not fd.path.startswith(".repowise/")
-            ]
-    else:
-        file_diffs = [
-            fd
-            for fd in detector.get_changed_files(base_ref, head or "HEAD")
-            if not fd.path.startswith(".repowise/")
-        ]
+    def is_indexable(fd) -> bool:
+        if fd.path.startswith(".repowise/"):
+            return False
+        if fd.new_parsed and fd.new_parsed.file_info.language != "unknown":
+            return True
+        if fd.old_parsed and fd.old_parsed.file_info.language != "unknown":
+            return True
+        return False
 
-    if not file_diffs and not config_changed:
+    indexable_files = [fd for fd in file_diffs if is_indexable(fd)]
+
+    if not indexable_files and not config_changed:
         console.print("[green]No changed files detected.[/green]")
-        if "last_docs_commit" not in state and "last_sync_commit" in state:
-            state["last_docs_commit"] = state["last_sync_commit"]
-        state["last_sync_commit"] = head
-        if not resolved_index_only:
+        if not resolved_index_only and head:
+            if "last_docs_commit" not in state and "last_sync_commit" in state:
+                state["last_docs_commit"] = state["last_sync_commit"]
+            state["last_sync_commit"] = head
             state["last_docs_commit"] = head
         save_state(
             repo_path,
