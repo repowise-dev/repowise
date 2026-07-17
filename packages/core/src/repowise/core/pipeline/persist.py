@@ -626,22 +626,41 @@ async def persist_ingestion(result: Any, session: Any, repo_id: str) -> int:
         await batch_upsert_symbols(session, repo_id, all_symbols)
 
     # ---- Security scan -------------------------------------------------------
-    # There is already a clear per-file loop over parsed_files here, so the
-    # scan rides alongside symbol persistence. Best-effort — never breaks
-    # the rest of the phase.
+    # Best-effort — never breaks the rest of the phase.
     try:
-        from repowise.core.analysis.security_scan import SecurityScanner
-
-        scanner = SecurityScanner(session, repo_id)
-        for pf in result.parsed_files:
-            source_text = getattr(pf.file_info, "content", "") or ""
-            findings = await scanner.scan_file(pf.file_info.path, source_text, pf.symbols)
-            if findings:
-                await scanner.persist(pf.file_info.path, findings)
+        await persist_security_findings(result, session, repo_id)
     except Exception as _sec_err:
         logger.warning("security_scan_skipped", error=str(_sec_err))
 
     return len(all_symbols)
+
+
+async def persist_security_findings(result: Any, session: Any, repo_id: str) -> None:
+    """Scan every parsed file's source and replace its security findings.
+
+    Source bytes come from ``result.source_map`` (ingestion read them once);
+    ``FileInfo`` itself carries no content, only ``content_hash``, so reading
+    it off ``file_info`` yields empty text and a scan that can never fire.
+    Resume views without a ``source_map`` degrade to the symbol-name scan.
+    """
+    from repowise.core.analysis.security_scan import SecurityScanner
+
+    scanner = SecurityScanner(session, repo_id)
+    source_map = getattr(result, "source_map", None) or {}
+    findings_by_file: dict[str, list[dict]] = {}
+    scanned_paths: list[str] = []
+    for pf in result.parsed_files:
+        path = pf.file_info.path
+        raw = source_map.get(path, b"")
+        if isinstance(raw, (bytes, bytearray)):
+            source_text = raw.decode("utf-8", errors="replace")
+        else:
+            source_text = raw or ""
+        scanned_paths.append(path)
+        findings = await scanner.scan_file(path, source_text, pf.symbols)
+        if findings:
+            findings_by_file[path] = findings
+    await scanner.replace_findings(findings_by_file, scanned_paths)
 
 
 async def persist_git(result: Any, session: Any, repo_id: str) -> None:
