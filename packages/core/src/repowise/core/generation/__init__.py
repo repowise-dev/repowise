@@ -56,6 +56,7 @@ _EXPORTS = {
     "WikiLink": ".interlinking",
     "attach_wiki_links_and_backlinks": ".interlinking",
     "resolve_wiki_links": ".interlinking",
+    "attach_related_pages": ".related_pages",
     "SUPPORTED_LANGUAGES": ".languages",
     "SYSTEM_PROMPTS": ".page_generator",
     "PageGenerator": ".page_generator",

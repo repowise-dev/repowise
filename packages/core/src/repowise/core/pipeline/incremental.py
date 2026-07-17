@@ -688,6 +688,25 @@ async def persist_incremental_index(
             except Exception as exc:
                 _skip("Graph edges persist", exc)
 
+            # Refresh related-pages metadata across the whole wiki. LLM-free,
+            # so even index-only updates heal pages generated before the
+            # feature shipped (or drifted by new imports) in one run.
+            try:
+                from repowise.core.generation.related_pages import file_import_edges
+                from repowise.core.persistence.crud import backfill_related_pages
+
+                changed_rel = await backfill_related_pages(
+                    session,
+                    repo_id,
+                    import_edges=file_import_edges(graph_builder),
+                    git_meta_map=git_meta_map,
+                    pagerank=graph_builder.pagerank(),
+                )
+                if changed_rel:
+                    log(f"Related pages refreshed on {changed_rel} pages")
+            except Exception as exc:
+                _skip("Related-pages backfill", exc)
+
             if knowledge_graph_result is not None:
                 try:
                     from repowise.core.pipeline.persist import persist_kg
