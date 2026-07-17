@@ -23,6 +23,16 @@ from dataclasses import dataclass
 # top third of its repo's risk distribution is the review-priority tier.
 _HIGH_PCT = 200.0 / 3.0  # ≈ 66.67
 _MODERATE_PCT = 100.0 / 3.0  # ≈ 33.33
+_PRIORITY_CLASSIFICATIONS = {
+    "low": "Below typical",
+    "moderate": "Typical",
+    "high": "Elevated",
+}
+
+
+def review_priority_classification(priority: str | None) -> str | None:
+    """Return the human-facing label for a repo-relative review priority."""
+    return _PRIORITY_CLASSIFICATIONS.get(priority) if priority is not None else None
 
 
 @dataclass

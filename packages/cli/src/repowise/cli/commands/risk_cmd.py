@@ -19,11 +19,12 @@ import click
 from rich.table import Table
 
 from repowise.cli.helpers import console, err_console
-from repowise.core.analysis.change_risk import change_risk_payload, score_live_change
+from repowise.core.analysis.change_risk import (
+    change_risk_payload,
+    review_priority_classification,
+    score_live_change,
+)
 
-# Repo-relative tercile wording — mirrors the web UI's PriorityBadge so the same
-# commit reads the same in both surfaces.
-_PRIORITY_LABEL = {"high": "Elevated", "moderate": "Typical", "low": "Below typical"}
 _PRIORITY_COLOR = {"high": "yellow", "moderate": "dim", "low": "green"}
 _PRIORITY_LEAD = {
     "low": "Lower risk than a typical commit in this repo",
@@ -125,7 +126,7 @@ def risk_command(
         pcolor = _PRIORITY_COLOR[priority]
         console.print(
             f"\n[bold]Change risk[/bold] for [cyan]{features.ref}[/cyan]: "
-            f"[{pcolor}]{_PRIORITY_LABEL[priority]}[/{pcolor}] · "
+            f"[{pcolor}]{review_priority_classification(priority)}[/{pcolor}] · "
             f"{_ordinal(round(percentile))} percentile of recent commits"
         )
     else:

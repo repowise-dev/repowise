@@ -17,7 +17,7 @@ from .features import (
     features_from_file_changes,
 )
 from .model import ChangeRisk, RiskDriver, score_change
-from .normalize import RiskNormalizer
+from .normalize import RiskNormalizer, review_priority_classification
 from .service import (
     ChangeRiskResult,
     change_risk_payload,
@@ -38,6 +38,7 @@ __all__ = [
     "extract_range_features",
     "features_from_file_changes",
     "normalize_extensions",
+    "review_priority_classification",
     "riskignore_patterns",
     "score_change",
     "score_live_change",

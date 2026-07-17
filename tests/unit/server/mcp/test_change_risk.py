@@ -62,3 +62,5 @@ async def test_get_change_risk_honors_riskignore_and_request_filters(tmp_path, m
     assert result["exclude_patterns"] == ["tests/", "docs/"]
     assert result["risk_percentile"] is None
     assert result["review_priority"] is None
+    assert result["classification"] is None
+    assert result["baseline_sample_size"] == 0

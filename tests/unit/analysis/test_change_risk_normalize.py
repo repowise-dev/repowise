@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from repowise.core.analysis.change_risk import RiskNormalizer
+from repowise.core.analysis.change_risk import RiskNormalizer, review_priority_classification
 
 
 def test_empty_distribution_is_low_zero() -> None:
@@ -53,3 +53,10 @@ def test_priority_is_repo_relative_not_absolute() -> None:
     n = RiskNormalizer.from_scores([8.0, 8.2, 8.4, 8.6, 8.8, 9.0])
     assert n.priority(8.0) == "low"
     assert n.priority(9.0) == "high"
+
+
+def test_review_priority_classification() -> None:
+    assert review_priority_classification("low") == "Below typical"
+    assert review_priority_classification("moderate") == "Typical"
+    assert review_priority_classification("high") == "Elevated"
+    assert review_priority_classification(None) is None

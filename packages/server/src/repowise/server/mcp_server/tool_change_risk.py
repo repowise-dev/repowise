@@ -25,6 +25,15 @@ async def get_change_risk(
     restricts counted suffixes; ``exclude_patterns`` omits gitignore-style paths.
     Both filters also apply to the baseline used for the repository percentile.
 
+    Prefer ``risk_percentile`` as the indicator of change risk: it ranks this
+    change against sampled recent commits in the same repository. Summarize it
+    with ``review_priority`` and ``classification``. ``score``, ``probability``,
+    and ``level`` are secondary corpus-calibrated context; use them as the
+    fallback only when ``risk_percentile`` is unavailable.
+    ``baseline_sample_size`` is the number of filtered recent commits used to
+    calculate ``risk_percentile`` (normally 200); a smaller sample makes the
+    percentile less representative of the repository's usual change risk.
+
     Args:
         revspec: Commit or ``base..head`` range to score. Defaults to ``HEAD``.
         repo: Repository alias in workspace mode; omit for the default repository.

@@ -9,7 +9,7 @@ from pathlib import Path
 from .baseline import baseline_scores
 from .features import ChangeFeatures, extract_commit_features, extract_range_features
 from .model import ChangeRisk, score_change
-from .normalize import RiskNormalizer
+from .normalize import RiskNormalizer, review_priority_classification
 
 _MIN_BASELINE = 8
 
@@ -22,6 +22,7 @@ class ChangeRiskResult:
     risk: ChangeRisk
     percentile: float | None
     priority: str | None
+    baseline_sample_size: int
     riskignore_excludes: tuple[str, ...]
     request_excludes: tuple[str, ...]
 
@@ -83,6 +84,7 @@ def score_live_change(
     risk = score_change(features)
     percentile: float | None = None
     priority: str | None = None
+    baseline_sample_size = 0
     if baseline:
         scores = baseline_scores(
             repo_path,
@@ -92,6 +94,7 @@ def score_live_change(
             excluded_ref=excluded_ref,
             exclude_patterns=effective_excludes,
         )
+        baseline_sample_size = len(scores)
         if len(scores) >= _MIN_BASELINE:
             normalizer = RiskNormalizer.from_scores(scores)
             rank_score = score_change(replace(features, exp=None)).score
@@ -103,6 +106,7 @@ def score_live_change(
         risk=risk,
         percentile=percentile,
         priority=priority,
+        baseline_sample_size=baseline_sample_size,
         riskignore_excludes=from_riskignore,
         request_excludes=exclude_patterns,
     )
@@ -118,6 +122,8 @@ def change_risk_payload(result: ChangeRiskResult) -> dict:
         "level": risk.level,
         "risk_percentile": round(result.percentile, 1) if result.percentile is not None else None,
         "review_priority": result.priority,
+        "classification": review_priority_classification(result.priority),
+        "baseline_sample_size": result.baseline_sample_size,
         "exclude_patterns": list(result.riskignore_excludes + result.request_excludes),
         "is_fix": features.is_fix,
         "features": {

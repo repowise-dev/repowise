@@ -10,6 +10,8 @@ import pytest
 
 from repowise.core.analysis.change_risk import (
     ChangeFeatures,
+    ChangeRiskResult,
+    change_risk_payload,
     extract_commit_features,
     extract_range_features,
     features_from_file_changes,
@@ -82,6 +84,26 @@ def test_top_drivers_sorted_by_magnitude() -> None:
     risk = score_change(_feat(la=300, ld=5, nf=2, nd=1, ns=1, entropy=0.5, exp=100))
     contribs = [abs(d.contribution) for d in risk.top_drivers]
     assert contribs == sorted(contribs, reverse=True)
+
+
+def test_payload_includes_friendly_repo_relative_classification() -> None:
+    features = _feat(la=50, ld=10, nf=5, nd=3, ns=2, entropy=2.0, exp=8)
+    payload = change_risk_payload(
+        ChangeRiskResult(
+            features=features,
+            risk=score_change(features),
+            percentile=66.6,
+            priority="moderate",
+            baseline_sample_size=200,
+            riskignore_excludes=(),
+            request_excludes=(),
+        )
+    )
+
+    assert payload["risk_percentile"] == 66.6
+    assert payload["review_priority"] == "moderate"
+    assert payload["classification"] == "Typical"
+    assert payload["baseline_sample_size"] == 200
 
 
 # ---------------------------------------------------------------------------
