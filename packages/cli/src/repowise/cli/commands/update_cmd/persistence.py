@@ -394,6 +394,27 @@ async def _persist_full_update_async(
             except Exception as exc:
                 _skip("Tombstone marking", exc)
 
+            # Refresh related-pages metadata repo-wide. The generation pass
+            # only touched this run's regenerated pages; this LLM-free
+            # backfill heals every other page (pre-feature pages, import
+            # drift) in the same transaction.
+            try:
+                from repowise.core.generation.related_pages import file_import_edges
+                from repowise.core.persistence.crud import backfill_related_pages
+
+                await backfill_related_pages(
+                    session,
+                    repo_id,
+                    import_edges=file_import_edges(graph_builder),
+                    git_meta_map=git_meta_map,
+                    pagerank=graph_builder.pagerank(),
+                    # This run's pages carry fresher metadata (including
+                    # module siblings) than the recompute could produce.
+                    skip_page_ids={p.page_id for p in generated_pages},
+                )
+            except Exception as exc:
+                _skip("Related-pages backfill", exc)
+
             # Weakly-affected pages (cascade overflow beyond the budget,
             # co-change partners, 2-hop rename fallout) decay to 'stale' so
             # the coverage view and get_stale_pages reflect them — the

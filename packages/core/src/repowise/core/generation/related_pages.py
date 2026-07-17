@@ -172,4 +172,20 @@ def attach_related_pages(
     )
 
 
-__all__ = ["attach_related_pages"]
+def file_import_edges(graph_builder: Any) -> list[tuple[str, str]]:
+    """``(src, dst)`` import edges between file nodes (src imports dst).
+
+    Shared by the persistence-layer backfill call sites; mirrors the
+    orchestrator's ``_GenerationRun._file_import_edges``.
+    """
+    edges: list[tuple[str, str]] = []
+    try:
+        for src, dst in graph_builder.graph().edges():
+            if isinstance(src, str) and isinstance(dst, str):
+                edges.append((src, dst))
+    except Exception:
+        pass
+    return edges
+
+
+__all__ = ["attach_related_pages", "file_import_edges"]

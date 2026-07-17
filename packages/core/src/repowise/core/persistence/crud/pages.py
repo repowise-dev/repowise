@@ -214,6 +214,94 @@ async def upsert_page_from_generated(
     )
 
 
+async def backfill_related_pages(
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    import_edges: list[tuple[str, str]] | None = None,
+    git_meta_map: dict[str, dict] | None = None,
+    pagerank: dict[str, float] | None = None,
+    skip_page_ids: set[str] | None = None,
+) -> int:
+    """Recompute ``metadata['related_pages']`` across every persisted page.
+
+    LLM-free, so every update flavor (docs, index-only, workspace) can heal
+    pages generated before related-pages shipped — or drifted by new
+    imports — without a regeneration run.
+
+    Selection module groups exist only during full generation, so this
+    recompute covers the other three reasons and *preserves* any existing
+    same-module entries instead of stripping them. ``skip_page_ids`` exempts
+    pages the current run already attached (their metadata is fresher than
+    anything this recompute could produce).
+
+    Returns the number of rows whose metadata changed.
+    """
+    # Import lazily — keeps persistence independent of generation models at
+    # module-load time (same pattern as load_prior_pages above).
+    from types import SimpleNamespace
+
+    from repowise.core.generation.related_pages import attach_related_pages
+
+    result = await session.execute(
+        select(Page).where(
+            Page.repository_id == repository_id,
+            Page.freshness_status != "tombstone",
+        )
+    )
+    rows = [r for r in result.scalars() if r.id not in (skip_page_ids or set())]
+    if not rows:
+        return 0
+
+    shims = []
+    prior_related: list[Any] = []
+    for row in rows:
+        try:
+            meta = json.loads(row.metadata_json or "{}")
+        except ValueError:
+            meta = {}
+        prior_related.append(meta.get("related_pages"))
+        shims.append(
+            SimpleNamespace(
+                page_id=row.id,
+                page_type=row.page_type,
+                title=row.title,
+                target_path=row.target_path,
+                metadata=meta,
+            )
+        )
+
+    attach_related_pages(
+        shims,  # type: ignore[arg-type]  # duck-typed GeneratedPage view
+        import_edges=import_edges,
+        git_meta_map=git_meta_map,
+        pagerank=pagerank,
+    )
+
+    changed = 0
+    for row, shim, before in zip(rows, shims, prior_related, strict=True):
+        after = shim.metadata.get("related_pages")
+        if after is None:
+            continue
+        # Preserve prior same-module entries — recomputing without module
+        # groups must not strip what a full generation attached.
+        if before:
+            seen_targets = {r.get("target_page_id") for r in after}
+            after.extend(
+                entry
+                for entry in before
+                if entry.get("reason") == "same-module"
+                and entry.get("target_page_id") not in seen_targets
+            )
+        if after == before:
+            continue
+        row.metadata_json = json.dumps(shim.metadata)
+        changed += 1
+    if changed:
+        await session.flush()
+    return changed
+
+
 async def get_page(session: AsyncSession, page_id: str) -> Page | None:
     """Return a Page by its page_id, or None."""
     return await session.get(Page, page_id)
