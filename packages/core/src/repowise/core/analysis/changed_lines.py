@@ -53,7 +53,11 @@ def _parse_unified_diff(diff: str) -> dict[str, set[int]]:
 
 
 def _verify_ref(repo_path: str, ref: str) -> None:
-    if not _git(["rev-parse", "--verify", "--quiet", ref], repo_path).strip():
+    # check=False: `rev-parse --verify --quiet` deliberately exits 1 with empty
+    # stdout for a missing ref, which is the signal we test for here. Without the
+    # opt-out, _git's returncode check (see change_risk.features._git) would raise
+    # CalledProcessError first and mask the friendly ValueError this raises.
+    if not _git(["rev-parse", "--verify", "--quiet", ref], repo_path, check=False).strip():
         raise ValueError(f"unknown revision {ref!r}")
 
 
