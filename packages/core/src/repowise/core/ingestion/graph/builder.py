@@ -342,6 +342,10 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
                     from ..resolvers.cpp import resolve_cpp_import_all
 
                     targets = resolve_cpp_import_all(imp.module_path, path, ctx)
+                elif _lang == "python":
+                    from ..resolvers.python import resolve_python_import_all
+
+                    targets = resolve_python_import_all(imp, path, ctx)
                 else:
                     single = resolve_import(imp.module_path, path, _lang, ctx)
                     targets = (single,) if single else ()
