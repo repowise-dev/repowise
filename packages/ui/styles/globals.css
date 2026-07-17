@@ -236,8 +236,11 @@
   --shadow-xl: 0 16px 48px rgba(36, 27, 44, 0.14), 0 4px 12px rgba(36, 27, 44, 0.08);
   --shadow-button: 0 1px 2px rgba(214, 127, 16, 0.22);
 
-  /* Card elevation dial: flat by default, flip to a shadow token to float. */
-  --card-shadow: none;
+  /* Card elevation dial: cards float on a hairline + soft shadow rather than
+     reading as flat outlined boxes. Kept at `sm` so the lift is felt, not
+     seen — anything heavier turns a dense dashboard into a pile of panels.
+     `.dark` inherits this via its own --shadow-sm override. */
+  --card-shadow: var(--shadow-sm);
 
   /* ================================================================== */
   /* Non-color tokens (theme-independent)                               */

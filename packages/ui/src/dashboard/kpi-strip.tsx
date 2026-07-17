@@ -60,9 +60,14 @@ export interface KpiStripProps {
 }
 
 /**
- * Airy KPI bar — gap-separated stat tiles (no divider chrome), each rendered
- * with the canonical `MetricCard`. Percentage metrics carry a mini gauge.
- * Fully presentational: data and the link component arrive via props.
+ * Airy KPI bar — gap-separated stat tiles, each rendered with the canonical
+ * `MetricCard`. Percentage metrics carry a mini gauge. Fully presentational:
+ * data and the link component arrive via props.
+ *
+ * The tiles are deliberately chrome-less: a row of five outlined boxes reads
+ * as five competing objects, so the border/surface/shadow are dropped and
+ * whitespace does the separating. The surface returns on hover to keep the
+ * click target legible.
  */
 export function KpiStrip({ items, LinkComponent, className }: KpiStripProps) {
   return (
@@ -75,6 +80,7 @@ export function KpiStrip({ items, LinkComponent, className }: KpiStripProps) {
           label={kpi.label}
           value={kpi.value}
           href={kpi.href}
+          className="border-transparent bg-transparent shadow-none hover:border-transparent hover:bg-[var(--color-bg-surface)] hover:shadow-[var(--shadow-sm)]"
           {...(kpi.description ? { description: kpi.description } : {})}
           {...(kpi.delta ? { delta: kpi.delta } : {})}
           {...(LinkComponent ? { LinkComponent } : {})}

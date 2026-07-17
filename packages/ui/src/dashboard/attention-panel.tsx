@@ -45,9 +45,16 @@ const ICON_MAP = {
   proposed_decision: Lightbulb,
 } as const;
 
+/**
+ * Severity ramp for the row icons. Only `high` earns a hue — a column of
+ * saturated triangles reads as uniform noise and stops meaning "urgent". The
+ * lower two steps encode severity by *emphasis* (primary vs tertiary text)
+ * rather than colour, so all three stay distinguishable while red keeps its
+ * meaning by being rare.
+ */
 const SEVERITY_COLORS = {
   high: "text-[var(--color-error)]",
-  medium: "text-[var(--color-warning)]",
+  medium: "text-[var(--color-text-secondary)]",
   low: "text-[var(--color-text-tertiary)]",
 } as const;
 

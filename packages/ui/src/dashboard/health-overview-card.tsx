@@ -200,7 +200,9 @@ function MetricTile({
                 width={96}
                 height={28}
                 stroke="var(--color-accent-primary)"
-                fill="color-mix(in srgb, var(--color-accent-fill) 20%, transparent)"
+                // A whisper of fill: enough to read as a trend, not enough to
+                // become an amber blob competing with the score beside it.
+                fill="color-mix(in srgb, var(--color-accent-fill) 8%, transparent)"
               />
             )}
           </div>
@@ -274,7 +276,15 @@ export function HealthOverviewCard({
   const hasData = avg != null || hot != null;
 
   return (
-    <Card className={`overflow-hidden ${className ?? ""}`}>
+    // The hero of the Overview: one step of elevation above its neighbours and
+    // an accent edge, so Code Health reads as the centrepiece instead of one
+    // more equal-weight tile. Everything else on the page stays at --card-shadow.
+    <Card className={`overflow-hidden shadow-[var(--shadow-md)] ${className ?? ""}`}>
+      <div
+        aria-hidden
+        className="h-[3px] w-full"
+        style={{ background: "var(--gradient-ember)" }}
+      />
       <CardHeader className="pb-2">
         <CardTitle className="text-sm flex items-center justify-between">
           <span className="flex items-center gap-2">
