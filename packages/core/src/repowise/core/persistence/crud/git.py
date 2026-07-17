@@ -100,6 +100,12 @@ async def get_all_git_metadata(session: AsyncSession, repository_id: str) -> dic
 _WALK_FIELD_EMPTIES: dict[str, tuple] = {
     "co_change_partners_json": ("[]", "", None),
     "change_entropy": (0, 0.0, None),
+    # AI line share comes from the whole trace file, merged only into files
+    # reindexed this pass. Preserve a prior non-empty share when a transient
+    # trace-read failure (or a pass that couldn't read traces) would otherwise
+    # write the zero default — same defensive contract as the walk fields.
+    "agent_line_count": (0, None),
+    "agent_line_model_json": ("{}", "", None),
 }
 
 

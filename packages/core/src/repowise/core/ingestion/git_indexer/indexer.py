@@ -125,6 +125,12 @@ class GitIndexer:
         commit_sink: list[dict] = []
         prov_clf = self._provenance_classifier()
         deep_index: dict[str, list[_CommitRec]] = {}
+        # Agent-trace records read ONCE per index (one stat call for repos
+        # without a .agent-trace/ dir). Shared with both commit-index walks so
+        # the file isn't re-read per walk, and reused below for the per-file
+        # line-share merge — which is why it loads even in follow_renames mode,
+        # where neither commit-index walk runs.
+        trace_index = self._load_trace_index(repo)
         if not self.follow_renames:
             from ..git_commit_index import load_commit_index, load_deep_commit_index
 
@@ -134,6 +140,7 @@ class GitIndexer:
                 set(indexable_files),
                 commit_sink=commit_sink,
                 provenance_classifier=prov_clf,
+                trace_index=trace_index,
             )
 
             # Files the recent window never saw would each spawn a per-file
@@ -149,6 +156,7 @@ class GitIndexer:
                     skip=self.commit_limit,
                     deep_limit=_DEEP_WALK_COMMIT_LIMIT,
                     provenance_classifier=prov_clf,
+                    trace_index=trace_index,
                 )
 
         include_blame = self.tier.includes_blame
@@ -257,7 +265,13 @@ class GitIndexer:
         except Exception as exc:
             logger.debug("prior_defect_pass_failed", error=str(exc))
 
-        # Merge co-change partners + change entropy + prior defects into metadata.
+        # Per-file AI line share from the agent-trace records. Keyed by path
+        # like the aggregates below, so it merges in the same pass and
+        # works regardless of which commit-index walk (if any) ran.
+        trace_line_shares = trace_index.line_shares() if trace_index else {}
+
+        # Merge co-change partners + change entropy + prior defects + AI line
+        # share into metadata.
         for meta in results:
             fp = meta["file_path"]
             if fp in co_changes:
@@ -266,6 +280,10 @@ class GitIndexer:
                 meta["change_entropy"] = change_entropy[fp]
             if fp in prior_defects:
                 meta["prior_defect_count"] = prior_defects[fp]
+            share = trace_line_shares.get(fp)
+            if share:
+                meta["agent_line_count"] = share[0]
+                meta["agent_line_model_json"] = json.dumps(share[1])
 
         compute_percentiles(results)
 
@@ -524,6 +542,20 @@ class GitIndexer:
             from .agent_provenance import AgentProvenanceClassifier
 
             return AgentProvenanceClassifier()
+
+    def _load_trace_index(self, repo: Any) -> Any:
+        """Agent-trace index, loaded once per index run (one stat call when the
+        repo has no ``.agent-trace/``). Failure-isolated: a broken trace file
+        yields an empty index, never breaks the git phase."""
+        try:
+            from .agent_provenance import AgentTraceIndex
+
+            return AgentTraceIndex.load(repo)
+        except Exception as exc:
+            logger.debug("agent_trace_index_failed", error=str(exc))
+            from .agent_provenance import AgentTraceIndex
+
+            return AgentTraceIndex()
 
     def _resolve_as_of_ts(
         self, repo: Any, commit_index: dict[str, list[_CommitRec]] | None = None

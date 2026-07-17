@@ -114,7 +114,19 @@ Agent-trace records name a `vcs.revision` captured at edit or commit time, so
 `AgentTraceIndex` attributes a record to a commit when the revision matches
 the commit itself (confidence `high`) or one of its parents (the traced change
 landed in the child; confidence `medium`), and only when the record's file
-set overlaps the commit's changed paths.
+set overlaps the commit's changed paths. The winning record's dominant
+`model_id` (models.dev `provider/model` form) rides through to the commit for
+an opus-vs-sonnet split.
+
+`AgentTraceIndex` also produces a **per-file line share** from each record's
+`ranges[]`: the count of distinct lines an AI/mixed contributor wrote
+(interval-union deduped across every record for the path) plus a
+`{model_id: line_count}` breakdown. This is revision-independent (a record
+without `vcs.revision` still counts lines) and path-keyed, so the orchestrator
+merges it into `git_metadata` alongside the co-change / prior-defect signals
+and it works on the rename-tracking walk too. The `"N% AI-written"` denominator
+is the file's current LOC, applied downstream — the indexer stores only the AI
+numerator so it stays LOC-decoupled.
 
 Design rules:
 
@@ -134,11 +146,12 @@ Design rules:
   (`service_emails`, `footer_patterns`, `coauthor_patterns`) — additive on top
   of the built-ins, malformed entries skipped with a warning.
 
-Persisted as four nullable columns on `git_commits`
-(`agent_name`/`agent_autonomy_tier`/`agent_channel`/`agent_confidence`) and a
-per-file rollup on `git_metadata` (`agent_commit_count`, `agent_authored_pct`,
-`agent_tier_counts_json`), surfaced in the `/git-metadata` file view and the
-MCP `get_context` ownership block.
+Persisted as five nullable columns on `git_commits`
+(`agent_name`/`agent_autonomy_tier`/`agent_channel`/`agent_confidence`/`agent_model_id`)
+and a per-file rollup on `git_metadata` (`agent_commit_count`,
+`agent_authored_pct`, `agent_tier_counts_json` at the commit level;
+`agent_line_count`, `agent_line_model_json` at the line level), surfaced in the
+`/git-metadata` file view and the MCP `get_context` ownership block.
 
 ## Internal layout
 

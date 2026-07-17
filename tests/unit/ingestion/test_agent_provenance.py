@@ -21,6 +21,8 @@ from repowise.core.ingestion.git_indexer.agent_provenance import (
     AgentTraceIndex,
     _agent_from_git_ai_note,
     _agent_from_trace_record,
+    _count_distinct_lines,
+    _range_interval,
 )
 from repowise.core.ingestion.git_indexer.commit_rows import build_commit_rows
 from repowise.core.ingestion.git_indexer.file_history import index_file
@@ -477,12 +479,28 @@ def _trace_record(
 
 def test_trace_record_resolves_tool_name_first() -> None:
     rec = json.loads(_trace_record("abc", tool="Cursor", model_id="anthropic/claude-opus-4-5"))
-    assert _agent_from_trace_record(rec) == ("abc", "cursor", frozenset({"src/a.py"}))
+    # tool.name resolves the agent; the raw model_id rides along for the split.
+    assert _agent_from_trace_record(rec) == (
+        "abc",
+        "cursor",
+        frozenset({"src/a.py"}),
+        "anthropic/claude-opus-4-5",
+    )
 
 
 def test_trace_record_falls_back_to_model_id() -> None:
     rec = json.loads(_trace_record("abc", tool=None, model_id="anthropic/claude-opus-4-5"))
-    assert _agent_from_trace_record(rec) == ("abc", "claude", frozenset({"src/a.py"}))
+    assert _agent_from_trace_record(rec) == (
+        "abc",
+        "claude",
+        frozenset({"src/a.py"}),
+        "anthropic/claude-opus-4-5",
+    )
+
+
+def test_trace_record_without_model_id_has_no_model() -> None:
+    rec = json.loads(_trace_record("abc", tool="cursor", model_id=None))
+    assert _agent_from_trace_record(rec) == ("abc", "cursor", frozenset({"src/a.py"}), None)
 
 
 def test_trace_record_human_only_is_not_a_signal() -> None:
@@ -504,14 +522,18 @@ def test_trace_record_without_revision_is_skipped() -> None:
 def test_trace_index_resolves_exact_and_parent_matches() -> None:
     idx = AgentTraceIndex(
         [
-            ("sha_exact", "cursor", frozenset({"src/a.py"})),
-            ("sha_parent", "claude", frozenset({"src/b.py"})),
+            ("sha_exact", "cursor", frozenset({"src/a.py"}), "anthropic/claude-opus-4-5"),
+            ("sha_parent", "claude", frozenset({"src/b.py"}), None),
         ]
     )
-    # Revision IS the commit: high confidence.
-    assert idx.resolve("sha_exact", (), {"src/a.py"}) == ("cursor", "high")
+    # Revision IS the commit: high confidence, model rides through.
+    assert idx.resolve("sha_exact", (), {"src/a.py"}) == (
+        "cursor",
+        "high",
+        "anthropic/claude-opus-4-5",
+    )
     # Revision is the commit's parent (trace captured pre-commit): medium.
-    assert idx.resolve("sha_child", ("sha_parent",), {"src/b.py"}) == ("claude", "medium")
+    assert idx.resolve("sha_child", ("sha_parent",), {"src/b.py"}) == ("claude", "medium", None)
     # A revision match without file overlap must not attribute the commit.
     assert idx.resolve("sha_exact", (), {"other.py"}) is None
     assert idx.resolve("sha_unknown", ("sha_unrelated",), {"src/a.py"}) is None
@@ -520,13 +542,13 @@ def test_trace_index_resolves_exact_and_parent_matches() -> None:
 def test_trace_index_agent_tie_is_ambiguous() -> None:
     idx = AgentTraceIndex(
         [
-            ("rev", "cursor", frozenset({"src/a.py"})),
-            ("rev", "claude", frozenset({"src/b.py"})),
+            ("rev", "cursor", frozenset({"src/a.py"}), None),
+            ("rev", "claude", frozenset({"src/b.py"}), None),
         ]
     )
     assert idx.resolve("rev", (), {"src/a.py", "src/b.py"}) is None
     # An unambiguous overlap still resolves.
-    assert idx.resolve("rev", (), {"src/a.py"}) == ("cursor", "high")
+    assert idx.resolve("rev", (), {"src/a.py"}) == ("cursor", "high", None)
 
 
 def test_trace_agent_precedence_in_classify() -> None:
@@ -562,7 +584,7 @@ def test_trace_index_load_skips_malformed_lines(tmp_path) -> None:
         "not json\n" + _trace_record("rev_a") + "\n{}\n", encoding="utf-8"
     )
     idx = AgentTraceIndex.load(MagicMock(working_tree_dir=str(tmp_path)))
-    assert idx.resolve("rev_a", (), {"src/a.py"}) == ("cursor", "high")
+    assert idx.resolve("rev_a", (), {"src/a.py"}) == ("cursor", "high", None)
 
 
 def test_trace_index_load_never_raises_on_mock_repo() -> None:
@@ -607,3 +629,190 @@ def test_walk_attributes_commits_from_trace_file(tmp_path) -> None:
     assert by_sha["bbb"]["agent_confidence"] == "high"
     assert by_sha["ccc"]["agent_name"] == "opencode"
     assert by_sha["ccc"]["agent_confidence"] == "medium"
+
+
+# ---------------------------------------------------------------------------
+# Line-level share + model id
+# ---------------------------------------------------------------------------
+
+
+def _trace_line_record(revision=None, files=(("src/a.py", "ai", None, ((1, 5),)),)) -> str:
+    """A trace record with explicit (path, contributor_type, model_id, ranges).
+
+    *ranges* is a tuple of ``(start_line, end_line)`` pairs. *revision* may be
+    None to exercise the revision-independent line-share path.
+    """
+    rec: dict = {
+        "version": "0.1.0",
+        "id": "550e8400-e29b-41d4-a716-446655440000",
+        "timestamp": "2026-01-25T10:00:00Z",
+        "files": [
+            {
+                "path": path,
+                "conversations": [
+                    {
+                        "contributor": (
+                            {"type": ctype, "model_id": model} if model else {"type": ctype}
+                        ),
+                        "ranges": [{"start_line": s, "end_line": e} for s, e in ranges],
+                    }
+                ],
+            }
+            for path, ctype, model, ranges in files
+        ],
+    }
+    if revision is not None:
+        rec["vcs"] = {"type": "git", "revision": revision}
+    return json.dumps(rec)
+
+
+def _load_traces(tmp_path, *lines: str) -> AgentTraceIndex:
+    trace_dir = tmp_path / ".agent-trace"
+    trace_dir.mkdir()
+    (trace_dir / "traces.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return AgentTraceIndex.load(MagicMock(working_tree_dir=str(tmp_path)))
+
+
+def test_range_interval_accepts_both_key_styles() -> None:
+    assert _range_interval({"start_line": 3, "end_line": 7}) == (3, 7)
+    assert _range_interval({"start": 3, "end": 7}) == (3, 7)
+    # Malformed / inverted / non-positive spans are dropped, never raise.
+    assert _range_interval({"start_line": 5, "end_line": 2}) is None
+    assert _range_interval({"start_line": 0, "end_line": 4}) is None
+    assert _range_interval({"start_line": "x", "end_line": 4}) is None
+    assert _range_interval("nope") is None
+
+
+def test_count_distinct_lines_unions_overlaps() -> None:
+    assert _count_distinct_lines([]) == 0
+    assert _count_distinct_lines([(1, 5)]) == 5
+    # Overlapping and adjacent runs collapse; disjoint runs add up.
+    assert _count_distinct_lines([(1, 5), (4, 8)]) == 8
+    assert _count_distinct_lines([(1, 3), (4, 6)]) == 6  # adjacent → one run
+    assert _count_distinct_lines([(1, 3), (10, 12)]) == 6  # disjoint
+
+
+def test_line_shares_counts_distinct_ai_lines(tmp_path) -> None:
+    idx = _load_traces(
+        tmp_path,
+        _trace_line_record("rev1", files=(("src/a.py", "ai", None, ((1, 10),)),)),
+    )
+    assert idx.line_shares()["src/a.py"] == (10, {})
+
+
+def test_line_shares_dedupe_overlapping_across_records(tmp_path) -> None:
+    # Two records touch overlapping ranges of the same file: the distinct-line
+    # union (1-8), not the naive sum (14), is the AI line count.
+    idx = _load_traces(
+        tmp_path,
+        _trace_line_record("rev1", files=(("src/a.py", "ai", None, ((1, 5),)),)),
+        _trace_line_record("rev2", files=(("src/a.py", "ai", None, ((4, 8),)),)),
+    )
+    assert idx.line_shares()["src/a.py"][0] == 8
+
+
+def test_line_shares_model_breakdown(tmp_path) -> None:
+    idx = _load_traces(
+        tmp_path,
+        _trace_line_record(
+            "rev1",
+            files=(
+                ("src/a.py", "ai", "anthropic/claude-opus-4", ((1, 10),)),
+                ("src/a.py", "ai", "anthropic/claude-sonnet-4", ((20, 24),)),
+            ),
+        ),
+    )
+    total, models = idx.line_shares()["src/a.py"]
+    assert total == 15  # 10 + 5 distinct lines
+    assert models == {"anthropic/claude-opus-4": 10, "anthropic/claude-sonnet-4": 5}
+
+
+def test_line_shares_excludes_human_contributions(tmp_path) -> None:
+    idx = _load_traces(
+        tmp_path,
+        _trace_line_record(
+            "rev1",
+            files=(
+                ("src/a.py", "ai", None, ((1, 4),)),
+                ("src/human.py", "human", None, ((1, 100),)),
+            ),
+        ),
+    )
+    shares = idx.line_shares()
+    assert shares["src/a.py"][0] == 4
+    assert "src/human.py" not in shares
+
+
+def test_line_shares_survive_missing_revision(tmp_path) -> None:
+    # A record with no vcs.revision still contributes line share (the rename
+    # walk relies on this — it never resolves commits but must count lines).
+    idx = _load_traces(
+        tmp_path,
+        _trace_line_record(None, files=(("src/a.py", "ai", None, ((1, 6),)),)),
+    )
+    assert not idx._by_revision  # nothing to attribute to a commit
+    assert idx.line_shares()["src/a.py"] == (6, {})
+    assert bool(idx)  # line share alone makes the index truthy
+
+
+def test_trace_record_dominant_model_wins(tmp_path) -> None:
+    # One agent, two models across three files: the majority model is the
+    # commit-level model_id; a tie would resolve to None.
+    rec = json.loads(
+        _trace_line_record(
+            "rev1",
+            files=(
+                ("a.py", "ai", "anthropic/claude-opus-4", ((1, 2),)),
+                ("b.py", "ai", "anthropic/claude-opus-4", ((1, 2),)),
+                ("c.py", "ai", "anthropic/claude-sonnet-4", ((1, 2),)),
+            ),
+        )
+    )
+    parsed = _agent_from_trace_record(rec)
+    assert parsed is not None
+    _rev, agent, _paths, model_id = parsed
+    assert agent == "claude"
+    assert model_id == "anthropic/claude-opus-4"
+
+
+def test_walk_populates_agent_model_id(tmp_path) -> None:
+    (tmp_path / ".agent-trace").mkdir()
+    (tmp_path / ".agent-trace" / "traces.jsonl").write_text(
+        _trace_line_record("bbb", files=(("src/a.py", "ai", "anthropic/claude-opus-4", ((1, 5),)),))
+        + "\n",
+        encoding="utf-8",
+    )
+    raw = "\n".join(
+        [
+            _log_record("bbb", "Dev", "dev@x.com", "feat: traced", files=((3, 0, "src/a.py"),)),
+        ]
+    )
+    repo = MagicMock()
+    repo.working_tree_dir = str(tmp_path)
+    repo.git.for_each_ref.return_value = ""
+    repo.git.log.return_value = raw
+
+    sink: list[dict] = []
+    load_commit_index(repo, 100, {"src/a.py"}, commit_sink=sink)
+    row = {c["sha"]: c for c in sink}["bbb"]
+    assert row["agent_channel"] == "agent_trace"
+    assert row["agent_model_id"] == "anthropic/claude-opus-4"
+
+
+def test_agent_model_id_null_when_trace_channel_loses() -> None:
+    # A service-identity author (T1) outranks the trace channel, so no model id
+    # is carried even when a trace record resolved a model for the commit.
+    prov = CLF.classify(
+        "Cursor Agent",
+        "cursoragent@cursor.com",
+        "",
+        "",
+        "feat: x",
+        trace_agent="claude",
+        trace_confidence="high",
+    )
+    assert prov.channel == "service_email"
+    # The sink gate keys on channel == "agent_trace"; here it is not, so the
+    # model id (available from the trace hit) is deliberately dropped.
+    model_id = "anthropic/claude-opus-4" if prov.channel == "agent_trace" else None
+    assert model_id is None

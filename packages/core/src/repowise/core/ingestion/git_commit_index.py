@@ -83,6 +83,7 @@ def load_commit_index(
     commit_sink: list[dict] | None = None,
     since_ts: int | None = None,
     provenance_classifier: object | None = None,
+    trace_index: object | None = None,
 ) -> dict[str, list[_CommitRec]]:
     """Bucket every commit in the recent history by the files it touched.
 
@@ -154,7 +155,10 @@ def load_commit_index(
     # git-ai authorship notes for this window (``{}`` unless the repo uses them).
     note_agents = load_git_ai_note_agents(repo, commit_limit)
     # Agent-trace records (empty after one stat call unless the repo has them).
-    trace_index = AgentTraceIndex.load(repo)
+    # The orchestrator may pass a shared instance so the trace file is read once
+    # per index rather than once per walk.
+    if trace_index is None:
+        trace_index = AgentTraceIndex.load(repo)
 
     bucket: dict[str, list[_CommitRec]] = {}
     commits_parsed = 0
@@ -262,6 +266,12 @@ def load_commit_index(
                     "agent_autonomy_tier": prov.autonomy_tier,
                     "agent_channel": prov.channel,
                     "agent_confidence": prov.confidence,
+                    # Model id only when the trace channel actually won: a note
+                    # or service-identity match can outrank the trace above, and
+                    # only the trace record carries a model.
+                    "agent_model_id": (
+                        trace_hit[2] if (trace_hit and prov.channel == "agent_trace") else None
+                    ),
                 }
             )
 
@@ -282,6 +292,7 @@ def load_deep_commit_index(
     skip: int,
     deep_limit: int,
     provenance_classifier: object | None = None,
+    trace_index: object | None = None,
 ) -> dict[str, list[_CommitRec]]:
     """Bucket commits OLDER than the recent window for *wanted_files* only.
 
@@ -343,7 +354,9 @@ def load_deep_commit_index(
     # git-ai notes across the deep region (``{}`` unless the repo uses them).
     note_agents = load_git_ai_note_agents(repo, skip + deep_limit)
     # Agent-trace records (empty after one stat call unless the repo has them).
-    trace_index = AgentTraceIndex.load(repo)
+    # Reuse the orchestrator's shared instance when supplied (single file read).
+    if trace_index is None:
+        trace_index = AgentTraceIndex.load(repo)
 
     bucket: dict[str, list[_CommitRec]] = {}
     commits_parsed = 0

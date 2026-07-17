@@ -466,6 +466,17 @@ class GitMetadata(Base):
     agent_authored_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     agent_tier_counts_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
 
+    # Line-level agent share (agent-trace standard): distinct file
+    # lines an AI/mixed contributor wrote, interval-union deduped across every
+    # trace record for this path, plus a {model_id: line_count} breakdown
+    # (opus vs sonnet). The denominator ("N% AI-written") is the file's current
+    # LOC, applied downstream — the git indexer stores only the AI numerator so
+    # it stays LOC-decoupled. Both stay 0/"{}" unless the repo ships
+    # .agent-trace/traces.jsonl. Model buckets can overlap (a line touched by
+    # two models counts in both), so their sum may exceed agent_line_count.
+    agent_line_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    agent_line_model_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
     )
@@ -535,6 +546,11 @@ class GitCommit(Base):
     agent_autonomy_tier: Mapped[int | None] = mapped_column(Integer, nullable=True)
     agent_channel: Mapped[str | None] = mapped_column(String(32), nullable=True)
     agent_confidence: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    # Model that wrote the change, in models.dev ``provider/model`` form (e.g.
+    # ``anthropic/claude-opus-4``), read from the agent-trace record that
+    # attributed the commit. Set only for the ``agent_trace`` channel (no other
+    # local channel carries a model); NULL for human or non-trace commits.
+    agent_model_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
