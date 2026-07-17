@@ -16,6 +16,7 @@ from repowise.core.analysis.change_risk import (
     extract_range_features,
     features_from_file_changes,
     score_change,
+    score_live_change,
 )
 from repowise.core.analysis.change_risk.model import _CONSTANTS, _sigmoid
 
@@ -278,3 +279,42 @@ def test_score_change_on_real_commit(git_repo: Path) -> None:
     assert 0.0 <= risk.score <= 10.0
     assert risk.features is f
     assert not math.isnan(risk.probability)
+
+
+def test_extract_commit_features_bad_revspec_raises(git_repo: Path) -> None:
+    # A bogus revspec must raise (git returns nonzero), not silently produce an
+    # all-zero feature vector that scores as a low-risk change.
+    with pytest.raises(subprocess.CalledProcessError):
+        extract_commit_features(str(git_repo), "no-such-ref")
+
+
+def test_score_live_change_bad_revspec_raises(git_repo: Path) -> None:
+    with pytest.raises(subprocess.CalledProcessError):
+        score_live_change(str(git_repo), "no-such-ref", baseline=0)
+
+
+def test_score_live_change_rejects_negative_baseline(git_repo: Path) -> None:
+    with pytest.raises(ValueError, match="baseline"):
+        score_live_change(str(git_repo), "HEAD", baseline=-1)
+
+
+def test_score_live_change_three_dot_range_is_valid(git_repo: Path) -> None:
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=git_repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    _commit(git_repo, {"r/a.py": "a=1\n"}, "feat: a", author="Dev")
+    # Three-dot syntax (base...HEAD) must degrade to a valid anchor rather than
+    # leaving a leading dot that git rejects as a ref.
+    result = score_live_change(str(git_repo), f"{base}...HEAD", baseline=0)
+    assert result.features.nf == 1
+    assert result.features.ref == f"{base}..HEAD"
+
+
+def test_score_live_change_below_min_baseline_yields_no_percentile(git_repo: Path) -> None:
+    # A shallow repo (fewer than the 8-commit floor) can't produce a
+    # representative percentile, so it degrades to no ranking, not a wrong one.
+    _commit(git_repo, {"a.py": "a=1\n"}, "feat: a", author="Dev")
+    result = score_live_change(str(git_repo), "HEAD", baseline=200)
+    assert result.baseline_sample_size < 8
+    assert result.percentile is None
+    assert result.priority is None

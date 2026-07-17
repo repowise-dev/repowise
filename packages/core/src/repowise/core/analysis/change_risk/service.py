@@ -7,7 +7,12 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .baseline import baseline_scores
-from .features import ChangeFeatures, extract_commit_features, extract_range_features
+from .features import (
+    GIT_TIMEOUT_SECONDS,
+    ChangeFeatures,
+    extract_commit_features,
+    extract_range_features,
+)
 from .model import ChangeRisk, score_change
 from .normalize import RiskNormalizer, review_priority_classification
 
@@ -34,6 +39,8 @@ def riskignore_patterns(repo_path: str) -> tuple[str, ...]:
         capture_output=True,
         text=True,
         encoding="utf-8",
+        stdin=subprocess.DEVNULL,
+        timeout=GIT_TIMEOUT_SECONDS,
     )
     if proc.returncode != 0:
         return ()

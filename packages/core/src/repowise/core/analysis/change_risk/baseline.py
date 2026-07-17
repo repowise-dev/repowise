@@ -12,7 +12,7 @@ import subprocess
 
 import pathspec
 
-from .features import features_from_file_changes
+from .features import GIT_TIMEOUT_SECONDS, features_from_file_changes
 from .model import score_change
 
 
@@ -35,6 +35,10 @@ def baseline_scores(
     *exclude_patterns* use gitignore syntax and are applied to every sampled
     commit, matching the target change's filtering.
     """
+    # stdin=DEVNULL + timeout: a stuck git must not hang the caller (on MCP
+    # stdio transport an inherited pipe handle can wedge the whole session).
+    # No returncode check: the anchor was already validated by the feature
+    # extraction, and a failed sample degrades honestly to "no percentile".
     out = subprocess.run(
         ["git", "log", f"-n{limit}", "--no-merges", "--format=%x1e%H", "--numstat", anchor],
         cwd=repo_path,
@@ -42,6 +46,8 @@ def baseline_scores(
         text=True,
         encoding="utf-8",
         errors="replace",
+        stdin=subprocess.DEVNULL,
+        timeout=GIT_TIMEOUT_SECONDS,
     ).stdout
 
     scores: list[float] = []

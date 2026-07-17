@@ -64,3 +64,58 @@ async def test_get_change_risk_honors_riskignore_and_request_filters(tmp_path, m
     assert result["review_priority"] is None
     assert result["classification"] is None
     assert result["baseline_sample_size"] == 0
+    # Live-git responses carry a _meta envelope flagged as index-independent.
+    assert result["_meta"]["source"] == "live_git"
+    assert "warning" not in result
+
+
+@pytest.mark.asyncio
+async def test_get_change_risk_bad_revspec_returns_error(tmp_path, monkeypatch) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init", "-q"], repo)
+    _commit(repo, {"README.md": "# seed\n"}, "chore: seed")
+
+    module = importlib.import_module("repowise.server.mcp_server.tool_change_risk")
+
+    async def _context(_: str | None) -> SimpleNamespace:
+        return SimpleNamespace(path=str(repo))
+
+    monkeypatch.setattr(module, "_resolve_repo_context", _context)
+    result = await module.get_change_risk(revspec="does-not-exist", baseline=0)
+
+    # A bogus revspec must surface an error, not a silent zero-risk score.
+    assert "error" in result
+    assert "does-not-exist" in result["error"]
+    assert "score" not in result
+
+
+@pytest.mark.asyncio
+async def test_get_change_risk_empty_diff_warns(tmp_path, monkeypatch) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init", "-q"], repo)
+    _commit(repo, {"README.md": "# seed\n"}, "chore: seed")
+    _commit(repo, {"app.py": "value = 1\n"}, "feat: app")
+
+    module = importlib.import_module("repowise.server.mcp_server.tool_change_risk")
+
+    async def _context(_: str | None) -> SimpleNamespace:
+        return SimpleNamespace(path=str(repo))
+
+    monkeypatch.setattr(module, "_resolve_repo_context", _context)
+    # Only a .py change exists; restricting to .md counts zero files.
+    result = await module.get_change_risk(extensions=["md"], baseline=0)
+
+    assert result["features"]["nf"] == 0
+    assert "warning" in result
+    assert "no counted file changes" in result["warning"].lower()
+
+
+@pytest.mark.asyncio
+async def test_get_change_risk_rejects_repo_all() -> None:
+    module = importlib.import_module("repowise.server.mcp_server.tool_change_risk")
+    result = await module.get_change_risk(repo="all")
+
+    assert "error" in result
+    assert "get_change_risk" in result["error"]
