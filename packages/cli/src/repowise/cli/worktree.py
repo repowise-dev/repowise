@@ -69,10 +69,12 @@ def sweep_stale_seed_backups(paths: list[Path]) -> None:
             for p in root.glob(glob_pattern):
                 if p.is_dir():
                     try:
-                        # Windows directory mtimes may not update on file creation; 1-hour threshold mitigates this.
-                        mtime = p.stat().st_mtime
-                        if now - mtime > _SEED_TEMPDIR_STALENESS_SECS:
+                        if ".repowise.bak." in p.name:
                             shutil.rmtree(p, ignore_errors=True)
+                        else:
+                            mtime = p.stat().st_mtime
+                            if now - mtime > _SEED_TEMPDIR_STALENESS_SECS:
+                                shutil.rmtree(p, ignore_errors=True)
                     except OSError:
                         pass
 
@@ -225,7 +227,10 @@ def seed_index_from_base(
             (temp_dir / "state.json").write_text(json.dumps(st_data, indent=2), encoding="utf-8")
 
             _adopt_repository_identity(temp_dir, src_repo=src_repo, dest_repo=r_path)
-        except Exception:
+        except Exception as e:
+            console.print(
+                f"[yellow]Error staging seed for {r_path}: {e}. Falling back to full init.[/yellow]"
+            )
             success = False
             break
 
@@ -239,7 +244,7 @@ def seed_index_from_base(
 
     backups_created: list[tuple[Path, Path]] = []
     renamed_targets: list[Path] = []
-    
+
     try:
         # Pass 1: backup existing
         for r_path, _ in temp_dirs:
@@ -248,13 +253,13 @@ def seed_index_from_base(
                 backup = r_path / f".repowise.bak.{uuid.uuid4().hex[:8]}"
                 target.rename(backup)
                 backups_created.append((target, backup))
-                
+
         # Pass 2: rename temp to target
         for r_path, temp_dir in temp_dirs:
             target = r_path / ".repowise"
             temp_dir.rename(target)
             renamed_targets.append(target)
-            
+
         # Pass 3: clean backups
         for _, backup in backups_created:
             shutil.rmtree(backup, ignore_errors=True)

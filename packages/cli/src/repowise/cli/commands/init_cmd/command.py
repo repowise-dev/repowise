@@ -619,9 +619,11 @@ def init_command(
 
             is_workspace = len(scan.repos) > 1 and not no_workspace
 
+            from repowise.core.persistence.database import DB_ENV_VARS
+
             # Strip db-pin env vars to enforce worktree DB resolution (note: potential process-global race condition).
             old_db_urls = {}
-            for env_key in ("REPOWISE_DB_URL", "REPOWISE_DATABASE_URL"):
+            for env_key in DB_ENV_VARS:
                 if env_key in os.environ:
                     old_db_urls[env_key] = os.environ.pop(env_key)
 
@@ -640,7 +642,7 @@ def init_command(
                     repo_alias=None,
                     index_only=index_only,
                     docs_flag=None,
-                    full=False,
+                    full=force,
                     agents_md=agents_md,
                     concurrency=concurrency,
                     no_cost_tracking=no_cost_tracking,
@@ -1100,7 +1102,7 @@ def init_command(
     if commit_limit is not None:
         save_config_partial(repo_path, commit_limit=resolved_commit_limit)
     if coverage_pct is not None:
-        save_config_partial(repo_path, coverage=coverage_pct)
+        save_config_partial(repo_path, coverage_pct=coverage_pct)
 
     write_editor_project_files(
         console,

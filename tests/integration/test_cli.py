@@ -179,7 +179,7 @@ class TestInitFullMock:
         assert r_init.exit_code == 0, r_init.output
 
         cfg = load_config(git_work_repo)
-        assert cfg.get("coverage") == 0.5
+        assert cfg.get("coverage_pct") == 0.5
 
         r_update = runner.invoke(
             cli,
@@ -189,7 +189,7 @@ class TestInitFullMock:
         assert r_update.exit_code == 0, r_update.output
 
         cfg_after = load_config(git_work_repo)
-        assert cfg_after.get("coverage") == 0.5
+        assert cfg_after.get("coverage_pct") == 0.5
 
 
 class TestInitIndexOnly:
@@ -730,7 +730,7 @@ class TestInitSeedFrom:
                 "SELECT target_path FROM wiki_pages",
             )
             assert len(paths) > 0, "Seeded pages should have survived"
-            
+
             # Since the file has a symbol and we have 1.0 coverage, it must be selected
             assert "new_file.py" in paths, f"Expected 'new_file.py' in {paths}"
             state = json.loads(
