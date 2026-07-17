@@ -165,7 +165,7 @@ async def _enrich_gated_excerpts(hits: list[dict], ctx: Any = None) -> None:
     try:
         async with get_session(ctx.session_factory) as session:
             res = await session.execute(
-                select(Page.id, Page.content_md).where(Page.id.in_(page_ids))
+                select(Page.id, Page.content).where(Page.id.in_(page_ids))
             )
             content_by_id = {row[0]: (row[1] or "") for row in res.all()}
     except Exception:

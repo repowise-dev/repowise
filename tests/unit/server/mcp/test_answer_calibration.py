@@ -1021,3 +1021,25 @@ async def test_frame_gated_answer_surfaces_code_rationale(setup_mcp, monkeypatch
     assert result["confidence"] == "medium"
     assert "code_rationale" in result
     assert any("floods the synthesis context" in r["comment"] for r in result["code_rationale"])
+
+
+# ---------------------------------------------------------------------------
+# Gated-path excerpt enrichment
+# ---------------------------------------------------------------------------
+
+
+class TestGatedExcerptEnrichment:
+    """_enrich_gated_excerpts must run its real query against the real Page
+    model — a silently-swallowed AttributeError here shipped pointers-only
+    gated payloads and re-opened the 8-15 call fallback spree the excerpts
+    exist to prevent."""
+
+    async def test_excerpts_attached_from_real_page_rows(self, factory, populated_db):
+        from repowise.server.mcp_server.tool_answer.retrieval import (
+            _enrich_gated_excerpts,
+        )
+
+        hits = [{"page_id": "repo_overview:test-repo", "score": 1.0}]
+        ctx = SimpleNamespace(session_factory=factory)
+        await _enrich_gated_excerpts(hits, ctx)
+        assert hits[0].get("excerpt", "").startswith("# Test Repo")
