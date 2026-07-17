@@ -21,7 +21,7 @@ _MCP_VIOLATION_LIMIT = 25
 _MCP_CYCLE_LIMIT = 25
 
 
-@mcp.tool(requires_workspace=True)
+@mcp.tool(default=False, requires_workspace=True)
 async def get_conformance(repo: str | None = None) -> dict[str, Any]:
     """Architecture conformance — dependency-rule violations + cycles.
 

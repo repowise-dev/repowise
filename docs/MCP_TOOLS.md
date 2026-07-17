@@ -2,7 +2,7 @@
 
 repowise exposes a curated set of tools via the [Model Context Protocol](https://modelcontextprotocol.io) (MCP). These tools give AI coding assistants (Claude Code, Codex, Cursor, Cline, Windsurf) structured access to your codebase intelligence: dependency graph, git history, documentation, and architectural decisions.
 
-16 tools are registered in total. A single-repo server advertises 11 by default: the nine flagship tools below plus `list_repos` and `generate_refactoring_code`. Workspace mode adds 3 more automatically, for 14. Two further tools are off by default everywhere and must be opted in. The surface is configurable; see [Configuring the tool surface](#configuring-the-tool-surface).
+16 tools are registered in total. A single-repo server advertises 10 by default: the nine flagship tools below plus `list_repos`. Workspace mode adds 2 more automatically (`get_architecture`, `get_blast_radius`), for 12. Four further tools are off by default everywhere and must be opted in. The surface is configurable; see [Configuring the tool surface](#configuring-the-tool-surface).
 
 **Start the MCP server:**
 
@@ -30,7 +30,7 @@ repowise mcp --transport sse --port 7338 # legacy SSE transport
 | `get_dead_code` | Unreachable code | Cleanup tasks |
 | `get_health` | Code-health marker scores | Before refactoring, find the worst files |
 
-Also always on by default: `list_repos` (repo aliases) and `generate_refactoring_code` (opt-in code generation from a health plan). See [Supplementary tools](#supplementary-tools).
+Also always on by default: `list_repos` (repo aliases). See [Supplementary tools](#supplementary-tools).
 
 ---
 
@@ -38,9 +38,9 @@ Also always on by default: `list_repos` (repo aliases) and `generate_refactoring
 
 The default surface is deliberately small: fewer, richer tools mean fewer round-trips and less schema overhead per task. What a server advertises is resolved from three things: each tool's `default`/`requires_workspace` metadata, whether the server is in workspace mode, and an optional override.
 
-- **Default (single-repo):** 11 tools, the nine flagship tools plus `list_repos` and `generate_refactoring_code` (though `generate_refactoring_code` returns an error until its config flag is set; see below).
-- **Default (workspace):** those 11 plus `get_architecture`, `get_blast_radius`, and `get_conformance`, added automatically when the server starts inside a workspace. They are never advertised outside one.
-- **Opt-in tools:** `get_dependency_path` and `get_execution_flows` are registered but off by default everywhere. Turn them on per repo.
+- **Default (single-repo):** 10 tools, the nine flagship tools plus `list_repos`.
+- **Default (workspace):** those 10 plus `get_architecture` and `get_blast_radius`, added automatically when the server starts inside a workspace. They are never advertised outside one.
+- **Opt-in tools:** `get_dependency_path`, `get_execution_flows`, `generate_refactoring_code`, and `get_conformance` are registered but off by default. Turn them on per repo; `get_conformance` only does useful work in workspace mode (name it there).
 
 **Configure it in `.repowise/config.yaml`** under an `mcp.tools` key. Four shapes are supported:
 
@@ -504,25 +504,6 @@ Lists the repos this server is serving. No parameters.
 list_repos()
 ```
 
-### `generate_refactoring_code`
-
-Turns one structured refactoring plan from `get_health(include=["refactoring"])` into actual generated code and a unified diff, grounded on the plan plus the real source spans it references. For Extract Class, the result includes an LCOM4 before/after self-check.
-
-**Disabled by default.** Returns `{"error": "disabled", ...}` unless `refactoring.llm.enabled: true` is set in the repo's `.repowise/config.yaml`. When enabled, it uses the repo's configured LLM provider/model (bring your own key) and caches results by a content hash, so an unchanged plan never regenerates.
-
-**Parameters:**
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `suggestion_id` | string | Yes | The `id` of a plan returned by `get_health(include=["refactoring"])` |
-| `repo` | string | No | *(workspace only)* Target repo alias |
-
-**When to use:** After `get_health(include=["refactoring"])` surfaces a plan you want turned into an applyable diff, and your repo has opted into LLM-backed generation.
-
-```
-generate_refactoring_code(suggestion_id="a1b2c3d4")
-```
-
 ### Workspace-only tools
 
 *(Available only when the server is started inside a workspace; see [Workspace Mode](#workspace-mode).)*
@@ -549,6 +530,8 @@ get_blast_radius(targets=["mono::services/auth"], max_depth=2, include_behaviora
 #### `get_conformance`
 
 Architecture governance: does the live system graph obey the declared dependency rules, and are there circular service dependencies?
+
+**Opt-in.** Off by default even in workspace mode; enable with `mcp.tools: ["+get_conformance"]`. Named in single-repo mode it is ignored, since it needs the workspace graph. The same findings still surface in the `get_risk` PR-mode directive (`conformance_violations` / `dependency_cycles`) without opting the tool in.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -617,6 +600,25 @@ get_execution_flows()
 get_execution_flows(entry_point="src/cli/main.py::main", max_depth=4)
 ```
 
+#### `generate_refactoring_code`
+
+Turns one structured refactoring plan from `get_health(include=["refactoring"])` into actual generated code and a unified diff, grounded on the plan plus the real source spans it references. For Extract Class, the result includes an LCOM4 before/after self-check.
+
+**Off by default twice over:** it must be opted into the tool surface (`mcp.tools: ["+generate_refactoring_code"]`), and even then returns `{"error": "disabled", ...}` unless `refactoring.llm.enabled: true` is set in the repo's `.repowise/config.yaml`. When enabled, it uses the repo's configured LLM provider/model (bring your own key) and caches results by a content hash, so an unchanged plan never regenerates.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `suggestion_id` | string | Yes | The `id` of a plan returned by `get_health(include=["refactoring"])` |
+| `repo` | string | No | *(workspace only)* Target repo alias |
+
+**When to use:** After `get_health(include=["refactoring"])` surfaces a plan you want turned into an applyable diff, and your repo has opted into both the tool and LLM-backed generation.
+
+```
+generate_refactoring_code(suggestion_id="a1b2c3d4")
+```
+
 ---
 
 ## Workspace Mode
@@ -633,7 +635,7 @@ The MCP server automatically enriches responses with cross-repo intelligence:
 - **Package dependencies** between repos
 - **Cross-repo blast radius** via the workspace-only `get_blast_radius` tool, and a cross-repo `directive` in `get_risk` PR-mode
 - **Breaking-change guard**: incompatible provider-contract changes and the consumers they endanger, in the `get_risk` PR-mode `breaking_changes` directive
-- **Architecture conformance**: declared dependency-rule violations and dependency cycles via the workspace-only `get_conformance` tool, and `conformance_violations` / `dependency_cycles` in the `get_risk` PR-mode directive
+- **Architecture conformance**: declared dependency-rule violations and dependency cycles via the workspace-only, opt-in `get_conformance` tool, and `conformance_violations` / `dependency_cycles` in the `get_risk` PR-mode directive
 - **Architecture metrics**: whole-system coupling (propagation cost), the cyclic core, per-service roles, and a deterministic 1-10 architecture score via the workspace-only `get_architecture` tool
 
 ---

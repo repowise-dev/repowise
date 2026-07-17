@@ -150,7 +150,7 @@ distill:
 ### The `mcp:` block
 
 Controls which tools the MCP server advertises. The default surface is curated
-(11 tools in single-repo mode, plus 3 workspace-only tools in workspace mode);
+(10 tools in single-repo mode, plus 2 workspace-only tools in workspace mode);
 this block lets you opt extra tools in or trim the set down. The `repowise mcp
 --tools` / `--all` flags override it for a single launch.
 
@@ -167,10 +167,12 @@ mcp:
 - `lean` selects the agent-lean profile: `get_answer`, `get_context`,
   `get_symbol`, `search_codebase`, `get_risk` (plus `list_repos` in workspace
   mode), small enough that Claude Code can keep every schema always loaded.
-- Opt-in tools are `get_dependency_path` and `get_execution_flows`.
-- Workspace-only tools (`get_blast_radius`, `get_conformance`,
-  `get_architecture`) are added automatically in workspace mode and ignored if
-  named in single-repo mode. See [MCP_TOOLS.md](MCP_TOOLS.md#configuring-the-tool-surface).
+- Opt-in tools are `get_dependency_path`, `get_execution_flows`,
+  `generate_refactoring_code`, and `get_conformance` (the last only usable in
+  workspace mode).
+- Workspace-only tools (`get_blast_radius`, `get_architecture`) are added
+  automatically in workspace mode and ignored if named in single-repo mode. See
+  [MCP_TOOLS.md](MCP_TOOLS.md#configuring-the-tool-surface).
 
 ### The `decisions:` block
 

@@ -2,11 +2,12 @@
 
 By default a single-repo server exposes ten tools (get_answer, get_context,
 get_symbol, search_codebase, get_overview, get_risk, get_why, get_dead_code,
-get_health, list_repos); three more (get_blast_radius, get_conformance,
-get_architecture) are added automatically in workspace mode. Two further tools
-(get_dependency_path, get_execution_flows) are registered but off by default and
-can be opted in via the ``mcp.tools`` config block or the ``repowise mcp
---tools`` flag. The selection layer lives in :mod:`._tool_selection`.
+get_health, list_repos); two more (get_blast_radius, get_architecture) are added
+automatically in workspace mode. Four further tools (get_dependency_path,
+get_execution_flows, generate_refactoring_code, get_conformance) are registered
+but off by default and can be opted in via the ``mcp.tools`` config block or the
+``repowise mcp --tools`` flag; get_conformance only does useful work in workspace
+mode. The selection layer lives in :mod:`._tool_selection`.
 
 Exposes the full repowise wiki as queryable tools via the MCP protocol.
 Supports stdio transport (Claude Code, Cursor, Cline), streamable HTTP, and
