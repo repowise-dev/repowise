@@ -16,7 +16,7 @@ from __future__ import annotations
 import hashlib
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -307,19 +307,19 @@ class PageGenerator(PerTypeGenerationMixin):
             target_path=parsed.file_info.path,
             content_hash=content_hash,
         )
-        # Phase-2 harvest: pull any trailing decision block out of the page
-        # before it is wrapped + stored. The gate verifies each quote against
-        # ``file_source_snippet`` — exactly what the model was shown — so a
-        # quote it can't have seen is dropped. Stored on page.metadata for the
-        # persistence layer to fold into the evidence pipeline.
-        harvested: list[dict] = []
-        if self._config.harvest_decisions:
-            clean_content, harvested = harvest_decisions(
-                response.content,
-                source_text=ctx.file_source_snippet or "",
-                evidence_file=parsed.file_info.path,
+        harvested = self._strip_harvested_decisions(response, ctx, parsed.file_info.path)
+        # Cross-check LLM output against actual symbols
+        hal_warnings = _validate_symbol_references(response.content, parsed)
+        repair_outcome: str | None = None
+        threshold = self._config.repair_warning_threshold
+        if (
+            threshold > 0
+            and len(hal_warnings) >= threshold
+            and not response.usage.get("reused_from_prior_run")
+        ):
+            response, harvested, hal_warnings, repair_outcome = await self._repair_file_page(
+                parsed, ctx, user_prompt, response, harvested, hal_warnings
             )
-            response.content = clean_content
         page = self._build_generated_page(
             "file_page",
             parsed.file_info.path,
@@ -331,8 +331,6 @@ class PageGenerator(PerTypeGenerationMixin):
         )
         if harvested:
             page.metadata["harvested_decisions"] = harvested
-        # Cross-check LLM output against actual symbols
-        hal_warnings = _validate_symbol_references(response.content, parsed)
         if hal_warnings:
             log.warning(
                 "hallucination_check",
@@ -341,8 +339,84 @@ class PageGenerator(PerTypeGenerationMixin):
                 refs=hal_warnings[:5],
             )
             page.metadata["hallucination_warnings"] = hal_warnings
+        if repair_outcome:
+            page.metadata["self_repair"] = repair_outcome
         _attach_file_provenance(page, ctx)
         return page
+
+    def _strip_harvested_decisions(
+        self,
+        response: GeneratedResponse,
+        ctx: FilePageContext,
+        evidence_file: str,
+    ) -> list[dict]:
+        """Phase-2 harvest: pull any trailing decision block out of the page
+        before it is wrapped + stored. The gate verifies each quote against
+        ``file_source_snippet`` — exactly what the model was shown — so a
+        quote it can't have seen is dropped. Returned for page.metadata so the
+        persistence layer can fold it into the evidence pipeline.
+        """
+        if not self._config.harvest_decisions:
+            return []
+        clean_content, harvested = harvest_decisions(
+            response.content,
+            source_text=ctx.file_source_snippet or "",
+            evidence_file=evidence_file,
+        )
+        response.content = clean_content
+        return harvested
+
+    async def _repair_file_page(
+        self,
+        parsed: ParsedFile,
+        ctx: FilePageContext,
+        user_prompt: str,
+        response: GeneratedResponse,
+        harvested: list[dict],
+        hal_warnings: list[str],
+    ) -> tuple[GeneratedResponse, list[dict], list[str], str]:
+        """Bounded self-repair for hallucinated symbol references.
+
+        Re-calls the provider once with the invalid refs named in a corrective
+        note, re-validates, and keeps whichever draft validates cleaner. Both
+        calls' tokens are folded into the kept response so page-level token
+        accounting (and cost) reflects the real spend. One retry per page,
+        never recursive; the caller has already excluded reused prior pages.
+        """
+        path = parsed.file_info.path
+        correction = (
+            "\n\nIMPORTANT CORRECTION: a previous draft of this page referenced "
+            "identifiers that do not exist in this file: "
+            + ", ".join(f"`{r}`" for r in sorted(hal_warnings)[:15])
+            + ". Do not mention these names. Only reference symbols, imports, "
+            "exports, and files that appear in the context above."
+        )
+        # No target_path/content_hash here: the retry must reach the provider,
+        # since the cross-run reuse gate would hand back the draft that failed.
+        retry = await self._call_provider("file_page", user_prompt + correction, str(uuid.uuid4()))
+        retry_harvested = self._strip_harvested_decisions(retry, ctx, path)
+        retry_warnings = _validate_symbol_references(retry.content, parsed)
+        improved = len(retry_warnings) < len(hal_warnings)
+        log.info(
+            "hallucination_repair",
+            path=path,
+            warnings_before=len(hal_warnings),
+            warnings_after=len(retry_warnings),
+            kept="retry" if improved else "original",
+        )
+        if improved:
+            kept, kept_harvested, kept_warnings = retry, retry_harvested, retry_warnings
+        else:
+            kept, kept_harvested, kept_warnings = response, harvested, hal_warnings
+        # replace() rather than mutating: either draft may also live in the
+        # in-memory prompt cache, which must keep its per-call token counts.
+        kept = replace(
+            kept,
+            input_tokens=response.input_tokens + retry.input_tokens,
+            output_tokens=response.output_tokens + retry.output_tokens,
+            cached_tokens=response.cached_tokens + retry.cached_tokens,
+        )
+        return kept, kept_harvested, kept_warnings, "improved" if improved else "kept_original"
 
     async def _generate_file_page_tier2(
         self,

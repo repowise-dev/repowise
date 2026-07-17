@@ -88,6 +88,11 @@ Most active file: `{{ module_git_summary.most_active_file }}`
 ({{ module_git_summary.most_active_commits_90d }} commits in 90 days)
 {% endif %}
 
+Cross-references: name the module's key files and the neighboring modules it consumes
+or serves in backticks exactly as listed above so they resolve to wiki links. Mention
+a neighbor only where it explains this module's role: no references added purely for
+link density, and no reciprocal mentions out of symmetry.
+
 Generate a complete wiki page following the sections above. Required sections in the
 output: ## Overview, ## Public API Summary, ## Architecture Notes. Use the supplied
 key files, decisions, and external systems to ground the narrative; do not fabricate

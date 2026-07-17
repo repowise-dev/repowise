@@ -24,6 +24,7 @@ class GenerationReport:
     decisions_extracted: int = 0
     elapsed_seconds: float = 0.0
     hallucination_warning_count: int = 0
+    self_repaired_page_count: int = 0
 
     @classmethod
     def from_pages(
@@ -37,6 +38,7 @@ class GenerationReport:
     ) -> GenerationReport:
         by_type = dict(Counter(p.page_type for p in pages))
         hal_count = sum(1 for p in pages if p.metadata.get("hallucination_warnings"))
+        repair_count = sum(1 for p in pages if p.metadata.get("self_repair"))
         return cls(
             pages_by_type=by_type,
             total_input_tokens=sum(p.input_tokens for p in pages),
@@ -47,6 +49,7 @@ class GenerationReport:
             decisions_extracted=decisions_count,
             elapsed_seconds=elapsed,
             hallucination_warning_count=hal_count,
+            self_repaired_page_count=repair_count,
         )
 
     @property
@@ -92,5 +95,7 @@ def render_report(report: GenerationReport, console: object) -> None:
             "Hallucination warnings",
             f"[yellow]{report.hallucination_warning_count}[/yellow]",
         )
+    if report.self_repaired_page_count:
+        table.add_row("Self-repaired pages", str(report.self_repaired_page_count))
 
     console.print(table)  # type: ignore[union-attr]

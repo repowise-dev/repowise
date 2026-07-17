@@ -145,6 +145,13 @@ class GenerationConfig:
     # that carry a decision; harvested candidates pass the same substring gate
     # as every other source before storage.
     harvest_decisions: bool = True
+    # ---- In-loop self-repair (hallucinated symbol refs) ----------------
+    # When the post-generation validator flags at least this many backtick
+    # identifiers that do not exist in the documented file, the tier-1 file
+    # page is re-generated ONCE with the invalid refs named in a corrective
+    # note, and the cleaner of the two drafts is kept. 0 disables the retry.
+    # Pages reused from a prior run are never retried (validated back then).
+    repair_warning_threshold: int = 2
     jobs_dir: str = ".repowise/jobs"
     large_file_source_pct: float = 0.4  # use structural summary when source tokens > budget * this
     language: str = "en"
