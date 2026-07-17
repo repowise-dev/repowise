@@ -80,9 +80,6 @@ class CallResolver:
         # Global symbol index: {name: [symbol_ids]} — for Tier 3
         self._global_symbols: dict[str, list[str]] = defaultdict(list)
 
-        # Global class index: {name: symbol_id} — for receiver resolution
-        self._global_classes: dict[str, list[str]] = defaultdict(list)
-
         # Import graph: {file_path: set of imported file paths}
         self._import_targets = import_targets
 
@@ -408,8 +405,6 @@ class CallResolver:
 
                 # Global indices
                 self._global_symbols[sym.name].append(sym.id)
-                if sym.kind in ("class", "struct", "interface", "enum"):
-                    self._global_classes[sym.name].append(sym.id)
 
             self._file_symbols[path] = file_syms
             self._file_methods[path] = file_methods
@@ -640,31 +635,25 @@ class CallResolver:
                 continue
             return ResolvedCall(caller_id, sym_id, 0.75, call.line)
 
-        # Strategy 3: receiver is "self" or "this" — look in same class
+        # Strategy 3: receiver is "self" or "this" — look in same class.
+        # Only the caller's own file can hold the match, so index straight
+        # into it instead of scanning every file's method dict.
         if receiver_name in ("self", "this"):
-            # The caller is inside a class method — find its parent class
-            # and resolve the method within that class's methods
-            for path_key, methods in self._file_methods.items():
-                if path_key != file_path:
-                    continue
-                for (cls_name, meth_name), sym_id in methods.items():
-                    if meth_name == method_name and sym_id != caller_id:
-                        # Verify caller is in the same class
-                        caller_class = _extract_class_from_symbol_id(caller_id)
-                        if caller_class and caller_class == cls_name:
-                            return ResolvedCall(caller_id, sym_id, 0.95, call.line)
+            caller_class = _extract_class_from_symbol_id(caller_id)
+            if caller_class:
+                for (cls_name, meth_name), sym_id in self._file_methods.get(
+                    file_path, {}
+                ).items():
+                    if (
+                        meth_name == method_name
+                        and sym_id != caller_id
+                        and cls_name == caller_class
+                    ):
+                        return ResolvedCall(caller_id, sym_id, 0.95, call.line)
 
-        # Strategy 4: global class match for receiver
-        class_candidates = self._global_classes.get(receiver_name, [])
-        if len(class_candidates) == 1:
-            # Found unique class — look for the method in any file
-            # that defines methods for this class
-            for _path, methods in self._file_methods.items():
-                if (receiver_name, method_name) in methods:
-                    return ResolvedCall(
-                        caller_id, methods[(receiver_name, method_name)], 0.50, call.line
-                    )
-
+        # No further fallback: any (class, method) pair present in any file's
+        # method index was already resolved by strategy 2 (same file) or 2b
+        # (global method index), which are built from the same symbols.
         return None
 
 
