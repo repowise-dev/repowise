@@ -1,6 +1,6 @@
 """Unit tests for the shared pruned filesystem walk (``repowise.core.fs_walk``)
-plus the regression guard that keeps new unpruned ``rglob`` calls out of
-``packages/core``.
+plus the regression guard that keeps new unpruned walk call sites (``rglob``,
+``os.walk``, recursive ``glob``) out of packages/core, cli, and server.
 
 Why this exists: unpruned ``Path.rglob`` over a repo that physically contains
 sibling/vendored repos (or ``node_modules`` / ``.venv``) has caused two
@@ -276,43 +276,102 @@ class TestExternalSystemsDiscoverDepth:
 
 
 # ---------------------------------------------------------------------------
-# Regression guard — no new direct rglob calls in packages/core
+# Regression guard — no new direct filesystem-walk call sites
 # ---------------------------------------------------------------------------
+#
+# Three call shapes, three histories:
+#   .rglob(        two multi-minute init stalls plus foreign-manifest leaks
+#                  (see module docstring)
+#   os.walk(       every hand-rolled walk re-invented (and drifted) its own
+#                  prune list, and none carried the nested-git or
+#                  junction-cycle guards
+#   .glob("...**   recursive Path.glob descends into node_modules/.venv and
+#                  nested repos even when matches are filtered afterwards;
+#                  coverage discovery shipped exactly this bug
+#
+# Allowlist additions require a justification comment: the walk root is a
+# tightly-bounded directory that cannot contain junk trees or nested repos,
+# the file IS the shared implementation, or migration onto fs_walk is a
+# tracked follow-up. Matching is on comment-stripped lines, so prose
+# mentions of these names in ``#`` comments do not trip the guard
+# (docstring mentions still do — keep call syntax out of docstrings).
 
-# Files allowed to mention ``.rglob(``. Additions require justification:
-# either the walk root is a tightly-bounded subdirectory that cannot contain
-# junk trees or nested repos, or the file IS the shared implementation.
-_RGLOB_ALLOWLIST = {
-    # The shared implementation (docstring references rglob semantics).
-    "fs_walk.py",
-    # Decision mining: bounded to an explicit docs/ directory.
-    "analysis/decisions/extractor.py",
+_GUARD_KINDS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("rglob", re.compile(r"\.rglob\(")),
+    ("os.walk", re.compile(r"\bos\.walk\(")),
+    ("recursive-glob", re.compile(r"""\.glob\(\s*[rbuf]*['"][^'"]*\*\*""")),
+)
+
+_WALK_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
+    # The shared implementation (uses os.walk; docstrings reference rglob).
+    ("core", "fs_walk.py"): frozenset({"rglob", "os.walk"}),
+    # The gitignore-aware index walk; migration onto walk_repo is a tracked
+    # follow-up (it must keep its pathspec layer on top).
+    ("core", "ingestion/traverser.py"): frozenset({"os.walk"}),
+    # Repo DISCOVERY: exists to find nested .git dirs, prunes in-place;
+    # migration onto walk_repo(prune_nested_git=False) is a tracked follow-up.
+    ("core", "workspace/scanner.py"): frozenset({"os.walk"}),
+    # Decision mining: pruned in-place walks + an rglob bounded to docs/;
+    # migration is a tracked follow-up (sequenced after the source_map reuse).
+    ("core", "analysis/decisions/extractor.py"): frozenset({"rglob", "os.walk"}),
+    # Sizes .repowise/ only — repowise-owned, cannot contain junk trees.
+    ("cli", "commands/status_cmd.py"): frozenset({"rglob"}),
+    # Scans repowise's own packaged web/ui source dirs, not the user repo.
+    ("cli", "commands/serve_cmd.py"): frozenset({"rglob"}),
+    # Sizes .repowise/ only — repowise-owned, cannot contain junk trees.
+    ("server", "routers/overview.py"): frozenset({"rglob"}),
 }
 
-_RGLOB_RE = re.compile(r"\.rglob\(")
 
-
-def _core_src_root() -> Path:
-    # tests/unit/ingestion/ → repo root → packages/core/src/repowise/core
+def _guarded_src_roots() -> dict[str, Path]:
+    # tests/unit/ingestion/ → repo root → packages/<pkg>/src/repowise/<pkg>
     repo_root = Path(__file__).resolve().parents[3]
-    return repo_root / "packages" / "core" / "src" / "repowise" / "core"
+    return {
+        "core": repo_root / "packages" / "core" / "src" / "repowise" / "core",
+        "cli": repo_root / "packages" / "cli" / "src" / "repowise" / "cli",
+        "server": repo_root / "packages" / "server" / "src" / "repowise" / "server",
+    }
 
 
-class TestNoUnprunedRglobRegression:
-    def test_no_new_rglob_call_sites_in_core(self) -> None:
-        core = _core_src_root()
-        assert core.is_dir(), f"layout changed? {core}"
+def _strip_comments(text: str) -> str:
+    return "\n".join(line.split("#", 1)[0] for line in text.splitlines())
+
+
+class TestNoUnprunedWalkRegression:
+    def test_no_new_walk_call_sites(self) -> None:
         offenders: list[str] = []
-        for py in core.rglob("*.py"):  # tests may rglob; core may not.
-            rel = py.relative_to(core).as_posix()
-            if rel in _RGLOB_ALLOWLIST:
-                continue
-            text = py.read_text(encoding="utf-8", errors="ignore")
-            if _RGLOB_RE.search(text):
-                offenders.append(rel)
+        for tree, root in _guarded_src_roots().items():
+            assert root.is_dir(), f"layout changed? {root}"
+            for py in root.rglob("*.py"):  # tests may rglob; src may not.
+                rel = py.relative_to(root).as_posix()
+                allowed = _WALK_ALLOWLIST.get((tree, rel), frozenset())
+                text = _strip_comments(py.read_text(encoding="utf-8", errors="ignore"))
+                for kind, pattern in _GUARD_KINDS:
+                    if kind in allowed:
+                        continue
+                    if pattern.search(text):
+                        offenders.append(f"{tree}:{rel} [{kind}]")
         assert not offenders, (
-            "Direct .rglob( calls found in packages/core — use "
-            "repowise.core.fs_walk.iter_glob/walk_repo instead (prunes "
-            "node_modules/.venv AND nested git repos). Unpruned rglob has "
-            f"caused multi-minute init stalls twice. Offenders: {offenders}"
+            "Direct filesystem-walk calls found — use "
+            "repowise.core.fs_walk.iter_glob/walk_repo/WalkSnapshot instead "
+            "(prunes node_modules/.venv AND nested git repos, guards against "
+            "junction cycles). Unpruned walks have caused multi-minute init "
+            f"stalls and cross-repo manifest leaks. Offenders: {offenders}"
         )
+
+    def test_allowlist_entries_still_needed(self) -> None:
+        """An allowlist entry whose file no longer matches its kinds is stale —
+        prune it so the exemption cannot silently cover future code."""
+        roots = _guarded_src_roots()
+        kind_res = dict(_GUARD_KINDS)
+        stale: list[str] = []
+        for (tree, rel), kinds in _WALK_ALLOWLIST.items():
+            py = roots[tree] / rel
+            if not py.is_file():
+                stale.append(f"{tree}:{rel} (file gone)")
+                continue
+            text = _strip_comments(py.read_text(encoding="utf-8", errors="ignore"))
+            for kind in kinds:
+                if not kind_res[kind].search(text):
+                    stale.append(f"{tree}:{rel} [{kind}]")
+        assert not stale, f"Stale allowlist entries — remove them: {stale}"

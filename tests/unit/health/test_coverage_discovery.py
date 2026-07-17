@@ -147,6 +147,80 @@ def test_discover_finds_common_locations(tmp_path: Path) -> None:
     assert all("node_modules" not in p.parts for p in found)
 
 
+def test_discover_recursive_patterns_reach_deep_files(tmp_path: Path) -> None:
+    """The ``**`` patterns keep their reach through the pruned-walk rewrite."""
+    deep_cob = tmp_path / "pkg" / "reports" / "cobertura.xml"
+    deep_cob.parent.mkdir(parents=True)
+    deep_cob.write_text("<coverage/>")
+    deep_lcov = tmp_path / "coverage" / "unit" / "deep" / "lcov.info"
+    deep_lcov.parent.mkdir(parents=True)
+    deep_lcov.write_text("SF:a\nend_of_record\n")
+    rust = tmp_path / "target" / "llvm-cov" / "html" / "cov.lcov"
+    rust.parent.mkdir(parents=True)
+    rust.write_text("SF:a\nend_of_record\n")
+
+    found = set(discover_artifacts(tmp_path))
+    assert {deep_cob, deep_lcov, rust} <= found
+
+
+def test_discover_root_only_patterns_stay_root_only(tmp_path: Path) -> None:
+    """Literal patterns must NOT gain match-anywhere semantics: a checked-in
+    fixture named ``lcov.info``/``coverage.xml`` deep in the tree is not a
+    report for THIS repo."""
+    (tmp_path / "lcov.info").write_text("SF:a\nend_of_record\n")
+    fixture = tmp_path / "tests" / "fixtures" / "lcov.info"
+    fixture.parent.mkdir(parents=True)
+    fixture.write_text("SF:b\nend_of_record\n")
+    stray_xml = tmp_path / "some" / "dir" / "coverage.xml"
+    stray_xml.parent.mkdir(parents=True)
+    stray_xml.write_text("<coverage/>")
+
+    found = set(discover_artifacts(tmp_path))
+    assert tmp_path / "lcov.info" in found
+    assert fixture not in found
+    assert stray_xml not in found
+
+
+def test_discover_prunes_nested_git_repos(tmp_path: Path) -> None:
+    """A vendored/sibling checkout's reports belong to a different repo."""
+    (tmp_path / "coverage").mkdir()
+    (tmp_path / "coverage" / "lcov.info").write_text("SF:a\nend_of_record\n")
+    sibling = tmp_path / "vendored-repo"
+    (sibling / ".git").mkdir(parents=True)
+    (sibling / "reports").mkdir()
+    (sibling / "reports" / "cobertura.xml").write_text("<coverage/>")
+
+    found = discover_artifacts(tmp_path)
+    assert all("vendored-repo" not in p.parts for p in found)
+    assert tmp_path / "coverage" / "lcov.info" in set(found)
+
+
+def test_discover_pattern_priority_order_preserved(tmp_path: Path) -> None:
+    """Earlier (more canonical) patterns yield earlier results."""
+    canonical = tmp_path / "coverage" / "lcov.info"
+    canonical.parent.mkdir()
+    canonical.write_text("SF:a\nend_of_record\n")
+    late = tmp_path / "sub" / "clover.xml"
+    late.parent.mkdir()
+    late.write_text("<coverage/>")
+
+    found = discover_artifacts(tmp_path)
+    assert found.index(canonical) < found.index(late)
+
+
+def test_discover_user_glob_override_still_works(tmp_path: Path) -> None:
+    """CoverageConfig.artifacts globs route through the same expansion."""
+    deep = tmp_path / "out" / "cov" / "report.info"
+    deep.parent.mkdir(parents=True)
+    deep.write_text("SF:a\nend_of_record\n")
+    shallow = tmp_path / "reports" / "cov.xml"
+    shallow.parent.mkdir()
+    shallow.write_text("<coverage/>")
+
+    assert set(discover_artifacts(tmp_path, globs=["out/**/*.info"])) == {deep}
+    assert set(discover_artifacts(tmp_path, globs=["reports/*.xml"])) == {shallow}
+
+
 def test_build_coverage_map_end_to_end(tmp_path: Path) -> None:
     lcov = "SF:/ci/build/src/a.ts\nDA:1,1\nDA:2,0\nend_of_record\n"
     report_path = tmp_path / "coverage" / "lcov.info"
