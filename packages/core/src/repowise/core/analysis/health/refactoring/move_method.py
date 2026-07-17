@@ -118,7 +118,10 @@ class MoveMethodDetector(RefactoringDetector):
         if graph is None or _is_test_path(ctx.file_path):
             return []
 
-        methods = self._methods_in_file(graph, ctx.file_path)
+        if ctx.file_methods is not None:
+            methods = list(ctx.file_methods)
+        else:
+            methods = self._methods_in_file(graph, ctx.file_path)
         if not methods:
             return []
 

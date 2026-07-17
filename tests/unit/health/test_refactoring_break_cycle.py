@@ -135,3 +135,45 @@ def test_co_change_edges_do_not_form_a_cycle():
     g.add_edge("a.py", "b.py", edge_type="imports")
     g.add_edge("b.py", "a.py", edge_type="co_changes")
     assert build_file_scc_index(g) == {}
+
+
+# -- cycle_edges equivalence ------------------------------------------------------
+#
+# cycle_edges walks each member's out-edges; it must match a brute-force scan
+# of every graph edge (the original implementation) on any input.
+
+
+def test_cycle_edges_matches_full_edge_scan():
+    from repowise.core.analysis.health.refactoring.graph_signals import (
+        _CYCLE_EDGE_TYPES,
+        cycle_edges,
+    )
+
+    g = _import_graph(
+        [
+            ("a.py", "b.py"),
+            ("b.py", "c.py"),
+            ("c.py", "a.py"),
+            ("c.py", "d.py"),  # leaves the cycle
+            ("x.py", "a.py"),  # enters the cycle from outside
+        ]
+    )
+    g.add_edge("a.py", "a.py", edge_type="imports")  # self-loop, excluded
+    g.add_edge("b.py", "a.py", edge_type="co_changes")  # non-cycle edge type
+    g.add_edge("a.py", "c.py", edge_type="type_use")
+
+    members = ("a.py", "b.py", "c.py", "ghost.py")  # a member absent from the graph
+
+    def reference(graph, mem):
+        member_set = set(mem)
+        edges = []
+        for u, v, data in graph.edges(data=True):
+            if u == v or u not in member_set or v not in member_set:
+                continue
+            if data.get("edge_type") in _CYCLE_EDGE_TYPES:
+                edges.append((u, v))
+        return sorted(set(edges))
+
+    assert cycle_edges(g, members) == reference(g, members)
+    assert cycle_edges(g, ()) == []
+    assert cycle_edges(None, members) == []

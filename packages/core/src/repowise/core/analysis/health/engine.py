@@ -52,7 +52,7 @@ from .refactoring import (
     detect_refactorings,
     rank_suggestions,
 )
-from .refactoring.graph_signals import build_file_scc_index
+from .refactoring.graph_signals import build_file_scc_index, build_methods_by_file
 from .scoring import attach_impacts, compute_kpis, remap_severities, score_file
 
 log = structlog.get_logger(__name__)
@@ -367,6 +367,7 @@ class HealthAnalyzer:
         # Repo-wide SCC index (import cycles), computed once and threaded into
         # each file's RefactoringContext so Break Cycle never recomputes it.
         file_scc_index = build_file_scc_index(self.graph)
+        methods_by_file = build_methods_by_file(self.graph)
         findings: list[HealthFindingData] = []
         metrics: list[HealthFileMetricData] = []
         suggestions: list[RefactoringSuggestion] = []
@@ -434,6 +435,7 @@ class HealthAnalyzer:
                 refactoring_enabled=refactoring_enabled,
                 refactoring_min_confidence=refactoring_min_confidence,
                 file_scc_index=file_scc_index,
+                methods_by_file=methods_by_file,
                 dataflow_cache=dataflow_cache,
             )
             metrics.append(file_metric)
@@ -577,6 +579,7 @@ class HealthAnalyzer:
         refactoring_enabled: bool = bool(cfg.get("refactoring_enabled", True))
         refactoring_min_confidence: str | None = cfg.get("refactoring_min_confidence")
         file_scc_index = build_file_scc_index(self.graph)
+        methods_by_file = build_methods_by_file(self.graph)
         findings: list[HealthFindingData] = []
         metrics: list[HealthFileMetricData] = []
         suggestions: list[RefactoringSuggestion] = []
@@ -606,6 +609,7 @@ class HealthAnalyzer:
                 refactoring_enabled=refactoring_enabled,
                 refactoring_min_confidence=refactoring_min_confidence,
                 file_scc_index=file_scc_index,
+                methods_by_file=methods_by_file,
                 dataflow_cache=dataflow_cache,
             )
             metrics.append(file_metric)
@@ -782,6 +786,7 @@ class HealthAnalyzer:
         refactoring_enabled: bool = True,
         refactoring_min_confidence: str | None = None,
         file_scc_index: dict[str, tuple[str, ...]] | None = None,
+        methods_by_file: dict[str, tuple[str, ...]] | None = None,
         dataflow_cache: FileDataflowCache | None = None,
     ) -> tuple[HealthFileMetricData, list[HealthFindingData], list[RefactoringSuggestion]]:
         file_path = pf.file_info.path
@@ -899,6 +904,9 @@ class HealthAnalyzer:
             module_map=self.module_map,
             graph=self.graph,
             file_scc=(file_scc_index or {}).get(file_path),
+            file_methods=(
+                methods_by_file.get(file_path, ()) if methods_by_file is not None else None
+            ),
             function_analyses=self._extract_method_analyses(pf, findings, dataflow_cache),
             blame_index=blame_index,
         )

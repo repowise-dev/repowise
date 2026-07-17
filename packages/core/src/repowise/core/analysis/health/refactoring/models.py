@@ -125,6 +125,12 @@ class RefactoringContext:
     # engine precomputes the repo's SCC index once and threads the per-file
     # slice in, so Break Cycle never recomputes SCCs per file.
     file_scc: tuple[str, ...] | None = None
+    # Symbol ids of the methods defined in this file, sliced from the repo-wide
+    # index the engine precomputes once (``graph_signals.build_methods_by_file``),
+    # so Move Method never scans the whole graph per file. ``None`` means the
+    # index was not provided (direct detector use) — the detector then derives
+    # the list from the graph itself, exactly as before.
+    file_methods: tuple[str, ...] | None = None
     # Per-flagged-function dataflow analyses (``dataflow.FunctionAnalysis``
     # records, typed ``Any`` to avoid importing the dataflow layer into the
     # model). The engine builds these only for files carrying a method-level
