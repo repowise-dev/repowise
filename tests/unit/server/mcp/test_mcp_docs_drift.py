@@ -46,7 +46,7 @@ def test_surface_counts_match_registry(doc_text: str):
 
     m = re.search(
         r"(\d+) tools are registered in total\. A single-repo server advertises "
-        r"(\d+) by default.*?Workspace mode adds (\d+) more automatically, for (\d+)",
+        r"(\d+) by default.*?Workspace mode adds (\d+) more automatically.*?, for (\d+)",
         doc_text,
         flags=re.DOTALL,
     )
