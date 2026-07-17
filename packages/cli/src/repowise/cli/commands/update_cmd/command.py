@@ -376,6 +376,11 @@ def run_update(
                 "--full is single-repo only. Run it inside a specific repo "
                 "(or pass --no-workspace / --repo <alias>)."
             )
+        if docs_flag:
+            console.print(
+                "[yellow]--docs is not supported in workspace mode yet; run it per repo, "
+                "e.g. repowise update --docs --no-workspace from inside the repo.[/yellow]"
+            )
         try:
             _workspace_update(target, dry_run=dry_run, agents_md=agents_md, verbose=verbose)
         except Exception as exc:
@@ -617,9 +622,14 @@ def run_update(
 
     if not file_diffs and not config_changed:
         console.print("[green]No changed files detected.[/green]")
+        if "last_docs_commit" not in state and "last_sync_commit" in state:
+            state["last_docs_commit"] = state["last_sync_commit"]
+        state["last_sync_commit"] = head
+        if not resolved_index_only:
+            state["last_docs_commit"] = head
         save_state(
             repo_path,
-            {**state, "last_sync_commit": head, "config_fingerprint": curr_config_fp},
+            {**state, "config_fingerprint": curr_config_fp},
         )
         # Keep the DB freshness stamp in lockstep with state.json: the server's
         # /repos endpoint reads head_commit from the row, not the state file.

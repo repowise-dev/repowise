@@ -640,6 +640,8 @@ def _stamp_last_sync_commit(repo_path: Path) -> None:
     if not head:
         return
     state = _load_state(repo_path)
+    if "last_docs_commit" not in state and "last_sync_commit" in state:
+        state["last_docs_commit"] = state["last_sync_commit"]
     state["last_sync_commit"] = head
     _save_state(repo_path, state)
 
