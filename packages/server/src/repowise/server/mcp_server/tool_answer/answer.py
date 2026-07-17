@@ -391,7 +391,9 @@ async def get_answer(
 ) -> dict:
     """Synthesised answer with citations and a calibrated trust signal.
 
-    First call for "how does X work" / "where is Y" / "why is Z" questions.
+    The single entry point for questions: "how does X work" / "where is Y" /
+    "why is Z". It runs the full hybrid retrieval internally (no prior
+    search_codebase call needed) and answers in one round-trip.
     confidence=high is content-grounded (value + citation-source + frame
     gates): cite it directly, no verification Read needed. A "why" answer
     whose named mechanism is absent from the retrieved source is downgraded

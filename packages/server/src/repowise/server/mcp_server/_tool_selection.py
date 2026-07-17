@@ -35,12 +35,18 @@ _log = logging.getLogger("repowise.mcp")
 # usable in the current mode, including opt-in and workspace-only tools.
 ALL = "all"
 
-# A value of "lean" enables the agent-lean profile: the five pre-edit tools a
+# A value of "lean" enables the agent-lean profile: the pre-edit tools a
 # coding agent actually reaches for, small enough that every schema can stay
 # always-loaded instead of deferred behind a tool-search round trip. list_repos
 # joins it in workspace mode only, where repo aliases must be discoverable.
+# get_why belongs in the lean set: why/history questions are the category no
+# graph- or search-shaped tool can answer, and a comparative benchmark run
+# with a lean surface that omitted it scored repowise BELOW a bare agent on
+# history-why questions — the differentiator was configured out, not absent.
 LEAN = "lean"
-LEAN_TOOLS = frozenset({"get_answer", "get_context", "get_symbol", "search_codebase", "get_risk"})
+LEAN_TOOLS = frozenset(
+    {"get_answer", "get_context", "get_symbol", "search_codebase", "get_risk", "get_why"}
+)
 _LEAN_WORKSPACE_EXTRAS = frozenset({"list_repos"})
 
 # Snapshot of every tool registered on the server, captured once after the
