@@ -674,7 +674,7 @@ async def update_workspace(
                 if state_path.is_file():
                     with suppress(Exception):
                         state = _json.loads(state_path.read_text(encoding="utf-8"))
-                
+
                 if "last_docs_commit" not in state and "last_sync_commit" in state:
                     state["last_docs_commit"] = state["last_sync_commit"]
 

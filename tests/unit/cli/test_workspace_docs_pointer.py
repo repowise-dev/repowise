@@ -7,14 +7,15 @@ Because `repowise update --docs` uses `last_docs_commit` as its diff base, a lat
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
 from click.testing import CliRunner
 
-from repowise.cli.helpers import save_state, load_state
+from repowise.cli.helpers import load_state, save_state
 from repowise.cli.main import cli
-from repowise.core.workspace.config import WorkspaceConfig, RepoEntry
+from repowise.core.workspace.config import RepoEntry, WorkspaceConfig
 
 
 DOCS_POINTER_KEY = "last_docs_commit"
@@ -80,7 +81,7 @@ def test_workspace_update_backfills_docs_pointer(tmp_path: Path) -> None:
     c1 = _commit_change(repo, "c.py", "def gamma():\n    return 3\n", "add c.py")
 
     # Run workspace update
-    import os
+    # Run workspace update
     old_cwd = os.getcwd()
     try:
         os.chdir(str(repo))
@@ -117,7 +118,6 @@ def test_stale_prose_is_reachable_after_workspace_update(tmp_path: Path) -> None
     
     # Simulate a workspace update with no source changes or a minor change
     c1 = _commit_change(repo, "c.py", "def gamma():\n    return 3\n", "add c.py")
-    import os
     old_cwd = os.getcwd()
     try:
         os.chdir(str(repo))
@@ -147,3 +147,29 @@ def test_stale_prose_is_reachable_after_workspace_update(tmp_path: Path) -> None
 
     state = _state(repo)
     assert state.get(DOCS_POINTER_KEY) == c2, "docs pointer should now reach HEAD"
+
+
+def test_docs_early_exit_advances_docs_pointer(tmp_path: Path) -> None:
+    """When a docs run exits early due to no changed files, it must advance
+    the docs pointer to HEAD. In a legacy state (no docs pointer), it must
+    first backfill from last_sync_commit and then advance both to HEAD.
+    """
+    repo = _make_git_repo(tmp_path)
+    _index_full(repo)
+    c0 = _git(repo, "rev-parse", "HEAD")
+    
+    # Simulate a state.json missing last_docs_commit
+    save_state(repo, {SYNC_POINTER_KEY: c0, "docs_enabled": True})
+    
+    # Advance HEAD with a file that doesn't trigger indexing (e.g. .txt)
+    c1 = _commit_change(repo, "ignored.txt", "nothing to see here", "add ignored")
+    
+    result = CliRunner().invoke(
+        cli, ["update", str(repo), "--docs", "--provider", "mock", "--no-workspace"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "No changed files detected" in result.output, "expected an early exit"
+    
+    state = _state(repo)
+    assert state.get(SYNC_POINTER_KEY) == c1, "sync pointer should advance to HEAD"
+    assert state.get(DOCS_POINTER_KEY) == c1, "docs pointer should advance to HEAD on early exit"
