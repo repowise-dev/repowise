@@ -176,8 +176,12 @@ _HEDGE_MARKERS = (
 
 # When the gate triggers and we drop synthesis, fetch this many chars of
 # real page content per top hit so the agent has substantive raw material
-# to ground in (vs. one-line summary that's too thin to act on).
-_GATED_EXCERPT_CHARS = 600
+# to ground in (vs. one-line summary that's too thin to act on). 1500 chars
+# is enough for a page's opening section plus a code reference; at 600 the
+# excerpt stopped mid-context and agents fell back to native exploration
+# anyway (context-tool bench transcripts, 2026-07-17). Three hits at 1500
+# chars is ~1.1k tokens — well under any MCP output budget.
+_GATED_EXCERPT_CHARS = 1500
 _GATED_RETURN_HITS = 3
 
 # Path-prefix domain heuristics — down-weight cross-domain retrievals so a
