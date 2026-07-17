@@ -384,6 +384,7 @@ async def run_pipeline(
             git_metadata_list=git_metadata_list,
             git_summary=git_summary,
             external_systems=external_systems,
+            source_map=source_map,
         )
 
     # Emit rich insight summary for the ingestion phase
