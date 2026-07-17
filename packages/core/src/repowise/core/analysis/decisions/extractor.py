@@ -71,6 +71,18 @@ def _truncate_title(text: str, limit: int) -> str:
     return window[:cut].rstrip() + "…"
 
 
+def _as_aware_utc(value: datetime) -> datetime:
+    """Return ``value`` as a timezone-aware UTC datetime.
+
+    SQLite drops timezone information from ``DateTime(timezone=True)`` columns,
+    but Repowise writes those values as UTC. Treat naive values as UTC so they
+    can be compared with git metadata timestamps, which are already aware UTC.
+    """
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
 # ---------------------------------------------------------------------------
 # Data models
 # ---------------------------------------------------------------------------
@@ -1341,9 +1353,11 @@ class DecisionExtractor:
             if last_commit and decision_created_at:
                 if isinstance(last_commit, str):
                     last_commit = datetime.fromisoformat(last_commit.replace("Z", "+00:00"))
+                last_commit = _as_aware_utc(last_commit)
                 _created = decision_created_at
                 if isinstance(_created, str):
                     _created = datetime.fromisoformat(_created.replace("Z", "+00:00"))
+                _created = _as_aware_utc(_created)
                 if last_commit > _created:
                     age_days = (now - _created).days
                     commit_count = meta.get("commit_count_90d", 0)
