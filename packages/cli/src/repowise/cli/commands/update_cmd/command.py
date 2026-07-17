@@ -45,7 +45,7 @@ from .incremental import (
     _refresh_knowledge_graph,
     _run_partial_analysis,
 )
-from .mode import _infer_legacy_docs_enabled, _resolve_index_only_mode
+from .mode import _infer_legacy_docs_enabled
 from .persistence import (
     _persist_index_only_update,
     _run_full_health_rescore,
@@ -463,11 +463,13 @@ def run_update(
     load_dotenv(repo_path)
     state = load_state(repo_path)
     from repowise.cli.commands.update_cmd.mode import _resolve_index_only_mode
+
     resolved_index_only = _resolve_index_only_mode(
         index_only=index_only, docs_flag=docs_flag, state=state
     )
     base_ref = since or (
-        state.get("last_sync_commit") if resolved_index_only
+        state.get("last_sync_commit")
+        if resolved_index_only
         else state.get("last_docs_commit", state.get("last_sync_commit"))
     )
     head = get_head_commit(repo_path)
@@ -615,10 +617,42 @@ def run_update(
     if emitter is not None:
         emitter.stage("detect_changes")
 
+    from pathlib import Path
+
     from repowise.core.ingestion import ChangeDetector
 
+    def _git_changed_files(repo: Path, base_commit: str, head: str = "HEAD") -> list[str]:
+        import subprocess
+
+        proc = subprocess.run(
+            ["git", "diff", "--name-only", f"{base_commit}..{head}"],
+            cwd=str(repo),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if proc.returncode != 0:
+            return []
+        return [f for f in proc.stdout.splitlines() if f.strip() and not f.startswith(".repowise/")]
+
     detector = ChangeDetector(repo_path)
-    file_diffs = detector.get_changed_files(base_ref, head or "HEAD")
+
+    if not resolved_index_only and base_ref and head:
+        changed_paths = _git_changed_files(repo_path, base_ref, head)
+        if not changed_paths and not config_changed:
+            file_diffs = []
+        else:
+            file_diffs = [
+                fd
+                for fd in detector.get_changed_files(base_ref, head)
+                if not fd.path.startswith(".repowise/")
+            ]
+    else:
+        file_diffs = [
+            fd
+            for fd in detector.get_changed_files(base_ref, head or "HEAD")
+            if not fd.path.startswith(".repowise/")
+        ]
 
     if not file_diffs and not config_changed:
         console.print("[green]No changed files detected.[/green]")
