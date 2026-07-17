@@ -18,6 +18,7 @@ from typing import Any
 
 import structlog
 
+from .interlinking import FILE_BACKED_PAGE_TYPES as _FILE_BACKED
 from .interlinking import LinkIndex
 from .models import GeneratedPage
 
@@ -29,9 +30,6 @@ _REASON_PRIORITY = ("imports", "imported-by", "co-changes-with", "same-module")
 
 _PER_REASON_CAP = 5
 _TOTAL_CAP = 12
-
-# Page types whose target_path is a real file path.
-_FILE_BACKED = frozenset({"file_page", "api_contract", "infra_page"})
 
 
 def _co_change_partners(git_meta: dict | None) -> list[tuple[str, float]]:
@@ -93,12 +91,12 @@ def attach_related_pages(
         return
 
     index = LinkIndex.build(pages)
+    index.add_prior_page_ids(prior_page_ids)
     titles = {p.page_id: p.title for p in pages}
     for pid in prior_page_ids or ():
-        ptype, _, tpath = str(pid).partition(":")
-        if ptype in _FILE_BACKED and tpath:
-            index.by_path.setdefault(tpath, pid)
-            titles.setdefault(pid, tpath)
+        _, _, tpath = str(pid).partition(":")
+        if tpath:
+            titles.setdefault(str(pid), tpath)
     pr = pagerank or {}
 
     # Adjacency from the import graph: src imports dst.

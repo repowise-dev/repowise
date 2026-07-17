@@ -542,7 +542,13 @@ class _GenerationRun:
         try:
             from ..interlinking import attach_wiki_links_and_backlinks
 
-            attach_wiki_links_and_backlinks(all_pages, self.parsed_files)
+            attach_wiki_links_and_backlinks(
+                all_pages,
+                self.parsed_files,
+                # On incremental updates only the affected pages are in
+                # all_pages; the persisted ids keep resolution repo-wide.
+                prior_page_ids=list(self.gen._prior_pages or {}),
+            )
         except Exception as exc:
             log.debug("interlinking.failed", error=str(exc))
 
