@@ -4,7 +4,7 @@
 
 <a href="https://www.repowise.dev"><img src=".github/assets/banner.png" alt="repowise: the codebase intelligence layer for your AI coding agent" width="100%" /></a>
 
-<p align="center"><strong>Five intelligence layers · Nine MCP tools · 15 languages · Multi-repo workspaces · One <code>pip install</code></strong></p>
+<p align="center"><strong>Five intelligence layers · Ten MCP tools · 15 languages · Multi-repo workspaces · One <code>pip install</code></strong></p>
 
 <p align="center">
   <a href="https://www.repowise.dev"><img src="https://img.shields.io/badge/LIVE_DEMO-repowise.dev-F59520?style=for-the-badge&labelColor=0A0A0A" alt="Live demo: repowise.dev" /></a>
@@ -34,7 +34,7 @@
   <a href="#benchmarks">Benchmarks</a> ·
   <a href="#supported-languages">Languages</a> ·
   <a href="#quickstart">Quickstart</a> ·
-  <a href="#nine-mcp-tools">MCP tools</a> ·
+  <a href="#ten-mcp-tools">MCP tools</a> ·
   <a href="#how-it-compares">Comparison</a> ·
   <a href="#for-teams--enterprises">Hosted</a>
 </sub></p>
@@ -71,7 +71,7 @@ your coding agent can execute.
 And because it is all one index, your agent gets the rest for free: **five
 intelligence layers**: dependency graph, git history, auto-generated docs,
 architectural decisions, and code health, exposed to Claude Code, Codex, and any
-MCP-compatible agent through **nine task-shaped tools**. Your agent answers *"why
+MCP-compatible agent through **ten task-shaped tools**. Your agent answers *"why
 does auth work this way?"* instead of *"here is what `auth.ts` contains"*, with
 fewer tool calls, fewer file reads, and lower cost per query, at comparable
 answer quality ([benchmarks ↓](#benchmarks)). One index: context your agent can
@@ -134,56 +134,48 @@ refactoring plan your agent can execute.
 <img src=".github/assets/health-loop.svg" alt="repowise code-health loop: 25 deterministic markers fan into three signals (defect risk, maintainability, performance), the graph and git history locate where risk concentrates, and refactoring intelligence emits concrete plans (Extract Class, Extract Helper, Move Method, Break Cycle, Split File, Extract Method) your agent executes" width="100%" />
 </div>
 
-repowise scores **every file 1–10** from **25 deterministic markers**, McCabe
-complexity, brain methods, class cohesion (LCOM4), god classes, native
-Rabin–Karp clone detection, untested hotspots, change entropy, prior-defect
-history, and more, split into **three signals**:
+repowise scores **every file 1–10** from **25 deterministic markers** (McCabe
+complexity, brain methods, LCOM4 cohesion, god classes, native Rabin–Karp clone
+detection, untested hotspots, change entropy, prior-defect history, and more),
+split into **three signals** kept as separate lenses so the headline stays clean:
 
-- **Defect risk** is the headline 1–10: the defect-calibrated, bug-predictive
-  score in the table below.
-- **Maintainability** (cohesion, brain methods, DRY and god-class smells) flags
-  what raises change-cost without predicting bugs.
-- **Performance** (static N+1 / I/O-in-loop risk) is followed across files
-  through the call graph: file-local linters found 0 of those cross-function
-  cases on a 12k-file benchmark where repowise surfaced 557.
-
-The companion signals are separate lenses, never blended into the defect
-headline, so the bug-predictive number stays clean.
+- **Defect risk**, the bug-predictive, defect-calibrated headline 1–10 in the table below.
+- **Maintainability** (cohesion, brain methods, DRY and god-class smells): what
+  raises change-cost without predicting bugs.
+- **Performance** (static N+1 / I/O-in-loop risk), traced across files through
+  the call graph: file-local linters found 0 of those cross-function cases on a
+  12k-file benchmark where repowise surfaced 557.
 
 > **Zero LLM calls, zero cloud, zero new runtime dependencies.** Pure Python
-> over tree-sitter + git data, **under 30 seconds** on a 3,000-file repo. The
-> marker weights are **calibrated against a real defect corpus, not hand-tuned**;
-> only the learned constants ship and the runtime stays fully deterministic.
+> over tree-sitter + git data, **under 30 seconds** on a 3,000-file repo, with
+> marker weights **calibrated against a real defect corpus, not hand-tuned**.
 
 ```bash
-repowise health                       # KPIs + lowest-scoring files
-repowise coverage add cov.lcov   # ingest LCOV/Cobertura/Clover → untested-hotspot
-repowise impacted-tests HEAD~1   # run only the tests a diff actually exercises
-repowise health --refactoring-targets # ranked by impact / effort
-repowise health --trend               # snapshots + declining / predicted-decline alerts
+repowise health                          # KPIs + lowest-scoring files
+coverage run --contexts=test -m pytest   # produce a .coverage with per-test contexts
+repowise coverage add .coverage          # untested-hotspot marker + per-test test-to-code map
+repowise impacted-tests HEAD~1           # run only the tests a diff actually exercises
+repowise health --trend                  # snapshots + declining / predicted-decline alerts
 ```
 
-And it proves itself on *your* repo, not just a benchmark: after every index,
-repowise checks its own flags against your git history and reports the hit rate
-in the terminal and on the dashboard: *"16/20 lowest-health files had a bug fix
-in the last 6 months, 3.3x the 24% baseline"*. See
-[Does the score find the bugs?](docs/CODE_HEALTH.md#does-the-score-find-the-bugs).
+It proves itself on *your* repo, not just a benchmark: after every index,
+repowise checks its own flags against your git history, *"16/20 lowest-health
+files had a bug fix in the last 6 months, 3.3x the 24% baseline"*. [Does the
+score find the bugs?](docs/CODE_HEALTH.md#does-the-score-find-the-bugs).
 
-**Does the score actually find bugs? Yes, and it out-ranks CodeScene**, the
-leading commercial code-health tool. On the **same 2,770 files across 9
-languages**, scored at the same leakage-free commit against the same defect
-labels:
+**And it out-ranks CodeScene**, the leading commercial code-health tool, on the
+**same 2,770 files across 9 languages**, scored at the same leakage-free commit
+against the same defect labels:
 
 | Axis (head-to-head, paired tests) | repowise | CodeScene |
 |---|---:|---:|
 | **Recall @ 20%-of-lines budget** | **0.173** | 0.074 |
 | **Effort-aware ranking (Popt)** | **0.607** | 0.462 |
 | **Defect density, size-normalized (defects/KLOC, Alert:Healthy)** | **2.18×** | 0.56× |
-| Discrimination (ROC AUC) | 0.731 | 0.705 |
 
 Ranking by repowise health surfaces **2.3× the defects under a fixed review
 budget** (Popt Δ +0.144, recall Δ +0.098, density Δ all p = 0.003, paired and
-significant; the ROC AUC edge is marginal). [Full methodology & CIs →](https://github.com/repowise-dev/repowise-bench/blob/master/health-defect/COMPARISON_REPORT.md)
+significant). [Full methodology & CIs →](https://github.com/repowise-dev/repowise-bench/blob/master/health-defect/COMPARISON_REPORT.md)
 
 User guide & per-marker reference: **[docs/CODE_HEALTH.md](docs/CODE_HEALTH.md)**
 
@@ -191,17 +183,16 @@ User guide & per-marker reference: **[docs/CODE_HEALTH.md](docs/CODE_HEALTH.md)*
 
 A health score tells you a file is in trouble; every other tool stops there, or
 prints the same static sentence for every god class. repowise names the
-**specific** fix, computed deterministically from the graph, the class model, and
+**specific** fix, computed deterministically from the graph, class model, and
 git co-change: **Extract Class**, **Extract Helper**, **Move Method**, **Break
 Cycle**, **Split File**, **Extract Method**. Each plan names the exact methods,
-edges, or symbols that move and carries its **blast radius** (the callers and
-co-changing files that must move with it), ranked **graph-aware** (`impact ×
-call-graph centrality × blast radius`) so a fix on a central hub outranks the
-same fix on a leaf. That is the wedge: CodeScene's AI refactoring stays inside a
-single function; repowise names the cross-file move and the dependents it ripples
-to. Extract Method goes deepest, an intra-procedural dataflow pass (CFG + def/use
-+ reaching definitions) lifts the exact line span and infers the helper's
-signature, behavior-preserving by construction.
+edges, or symbols that move, carries its **blast radius** (callers and
+co-changing files that must move with it), and is ranked **graph-aware** (`impact
+× centrality × blast radius`) so a fix on a central hub outranks the same fix on
+a leaf. That is the wedge: CodeScene's AI refactoring stays inside one function;
+repowise names the cross-file move and its dependents. Extract Method goes
+deepest, an intra-procedural dataflow pass (CFG + def/use + reaching definitions)
+lifts the exact span and infers a behavior-preserving helper signature.
 
 The deterministic plan is the product; an optional LLM step (never in the
 indexing path, only on request) expands any plan into generated code plus a
@@ -439,7 +430,7 @@ in seconds. (Want the generated wiki + semantic search? Use
 <details><summary><b>Claude Code</b></summary>
 
 ```bash
-# Plugin (adds 9 tools + slash commands + skills):
+# Plugin (adds 10 tools + slash commands + skills):
 /plugin marketplace add repowise-dev/repowise
 /plugin install repowise@repowise
 
@@ -479,7 +470,7 @@ semantic search, or skip key management entirely with the hosted tier at
 
 ---
 
-## Nine MCP tools
+## Ten MCP tools
 
 Most tools are designed around data entities (one module, one file, one symbol),
 forcing agents into long chains of sequential calls. repowise tools are designed
@@ -496,6 +487,7 @@ diverges from live `.git/HEAD`.
 | `get_symbol("file.py::Name")` | Raw source bytes for one indexed symbol with exact line bounds, cheaper and safer than `Read` + offset math. |
 | `search_codebase(query, kind?)` | Semantic search over the wiki, filterable by `kind` (implementation / test / config / doc), tagging each result's `search_method`. |
 | `get_risk(targets, changed_files?)` | Hotspot scores, dependents, co-change partners, ownership, test gaps, security signals. Pass `changed_files` for PR mode → a `directive` block (`will_break`, `missing_cochanges`, `missing_tests`, `tests_to_run`, `governance_risk`). |
+| `get_change_risk(revspec, extensions?)` | Pre-merge defect score for a whole commit or `base..head` range from the shape of the diff (Kamei-style JIT metrics), ranked as a `risk_percentile` against recent commits. Scores the change; `get_risk` scores the indexed files it touches. |
 | `get_why(query?, targets?)` | Architectural decision records, status, evidence spans, and the supersession **lineage chain**. Falls back to git archaeology when no ADRs exist. |
 | `get_dead_code(...)` | Unreachable code by confidence tier with cleanup-impact estimates; cross-repo consumer detection in workspace mode. |
 | `get_health(targets?, include?)` | Marker scores per file across three signals (defect · maintainability · performance). Dashboard mode → KPIs + lowest-scoring files + module rollup; targeted mode → per-file findings. Self-check before a PR via `include`: `accuracy` (does the score find the bugs), `signals` (per-file churn / owners / prior defects), `churn_complexity`, a dimension name to filter findings, plus `coverage`, `trend`, and `refactoring` → **structured, graph-aware refactoring plans** (split groups, move target, cut edges + blast radius), not template strings. |
@@ -512,7 +504,7 @@ Worked example (*"Add rate limiting to all API endpoints"* in 5 calls instead of
 | Self-hostable, open source | ✅ AGPL-3.0 | ❌ cloud only | ❌ cloud only | ❌ Enterprise only | ✅ Docker |
 | Private repo, no cloud | ✅ | ❌ in development | ❌ OSS forks only | ✅ Enterprise tier | ✅ |
 | Auto-generated documentation | ✅ | ✅ Gemini | ✅ | ✅ PR2Doc | ❌ |
-| MCP server for AI agents | ✅ 9 tools | ❌ | ✅ 3 tools | ✅ | ✅ |
+| MCP server for AI agents | ✅ 10 tools | ❌ | ✅ 3 tools | ✅ | ✅ |
 | Proactive agent hooks | ✅ Claude + Codex hooks | ❌ | ❌ | ❌ | ❌ |
 | Auto-generated AI instructions (`CLAUDE.md`, `AGENTS.md`) | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Learns from your usage (session-mined decisions, demand-weighted docs) | ✅ | ❌ | ❌ | ❌ | ❌ |
