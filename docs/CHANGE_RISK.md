@@ -11,11 +11,22 @@ repowise risk                 # score HEAD
 repowise risk abc123          # score a single commit
 repowise risk main..HEAD      # score a branch / PR range as one change
 repowise risk main..HEAD --ext .py        # count only .py files
+repowise risk main..HEAD -x 'tests/' -x '*.spec.ts'  # omit matching paths
 repowise risk --format json               # machine-readable
 ```
 
 It runs in-process: pure `git` + learned constants. **No LLM, no network, and no
 blame at runtime**: SZZ labelling lives entirely in the offline calibration.
+
+## Excluding paths
+
+Use repeatable `--exclude` / `-x` flags with gitignore-style patterns to omit
+files from a score. The same filters apply to the requested change and the
+recent commits sampled for its percentile, so the comparison remains like for
+like. Put project-wide, risk-only rules in a repository-root `.riskignore`;
+those patterns apply automatically and are combined with any command-line
+flags. For example, `tests/` excludes that directory recursively, while
+`test_*.py` excludes matching test filenames anywhere in the repository.
 
 ## What it measures
 
@@ -80,6 +91,9 @@ Recalibrate via `repowise-bench/health-defect/jit_calibration.py`; the constants
 live in `packages/core/src/repowise/core/analysis/change_risk/model.py`.
 
 ## Cross-repo change risk (workspace mode)
+
+> **Note:** This section describes `get_risk` in PR mode (`changed_files`). `get_change_risk` is
+> pure diff-shape scoring and does not access the workspace graph — it produces no cross-repo fields.
 
 In a workspace, a change rarely stops at the repo boundary. When `get_risk` is
 called in PR mode (`changed_files`), its `directive` block gains two cross-repo

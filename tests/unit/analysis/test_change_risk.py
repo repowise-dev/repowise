@@ -110,9 +110,12 @@ def test_features_from_file_changes_aggregates_diffusion() -> None:
     assert f.entropy > 0.0
     # The diff-only builder must score identically to the git path for the
     # same underlying counts.
-    assert score_change(f).score == score_change(
-        ChangeFeatures(la=15, ld=3, nf=3, nd=3, ns=2, entropy=f.entropy, exp=42)
-    ).score
+    assert (
+        score_change(f).score
+        == score_change(
+            ChangeFeatures(la=15, ld=3, nf=3, nd=3, ns=2, entropy=f.entropy, exp=42)
+        ).score
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -181,6 +184,44 @@ def test_extract_filters_by_extension(git_repo: Path) -> None:
     assert f.is_fix is False
 
 
+def test_extract_filters_by_gitignore_exclude_pattern(git_repo: Path) -> None:
+    _commit(
+        git_repo,
+        {
+            "src/app.py": "value = 1\n",
+            "tests/test_app.py": "def test_value():\n    assert True\n",
+            "web/app.spec.ts": "it('works', () => {})\n",
+        },
+        "feat: add application",
+        author="Dev",
+    )
+
+    f = extract_commit_features(str(git_repo), "HEAD", exclude_patterns=("tests/", "*.spec.ts"))
+
+    assert f.nf == 1
+    assert f.la == 1
+    assert f.nd == 1
+    assert f.ns == 1
+
+
+def test_extract_range_filters_by_gitignore_exclude_pattern(git_repo: Path) -> None:
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=git_repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    _commit(git_repo, {"src/app.py": "value = 1\n"}, "feat: app", author="Dev")
+    _commit(
+        git_repo,
+        {"tests/test_app.py": "def test_value():\n    assert True\n"},
+        "test: app",
+        author="Dev",
+    )
+
+    f = extract_range_features(str(git_repo), base, "HEAD", exclude_patterns=("tests/",))
+
+    assert f.nf == 1
+    assert f.la == 1
+
+
 def test_author_experience_accrues(git_repo: Path) -> None:
     _commit(git_repo, {"f1.py": "a=1\n"}, "feat: one", author="Repeat")
     _commit(git_repo, {"f2.py": "b=2\n"}, "feat: two", author="Repeat")
@@ -204,8 +245,12 @@ def test_extract_range_features_aggregates(git_repo: Path) -> None:
 
 
 def test_score_change_on_real_commit(git_repo: Path) -> None:
-    _commit(git_repo, {"big.py": "\n".join(f"line{i} = {i}" for i in range(120)) + "\n"},
-            "feat: big drop", author="New")
+    _commit(
+        git_repo,
+        {"big.py": "\n".join(f"line{i} = {i}" for i in range(120)) + "\n"},
+        "feat: big drop",
+        author="New",
+    )
     f = extract_commit_features(str(git_repo), "HEAD", extensions=(".py",))
     risk = score_change(f)
     assert 0.0 <= risk.score <= 10.0

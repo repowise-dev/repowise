@@ -66,8 +66,8 @@ router = APIRouter(
 
 
 def _hotspot_from_row(r: GitMetadata) -> HotspotResponse:
-    # churn_percentile is stored on a 0–1 scale (rank / total) but every UI
-    # consumer treats it as a percentile rank in 0–100. Normalize here so
+    # churn_percentile is stored on a 0-1 scale (rank / total) but every UI
+    # consumer treats it as a percentile rank in 0-100. Normalize here so
     # the API contract is unambiguous and the dashboard ChurnBar / scatter
     # / hotspots-mini render correctly without per-component hacks.
     churn_pct = (r.churn_percentile or 0.0) * 100.0
@@ -554,7 +554,7 @@ async def get_co_changes(
 )
 async def get_reviewer_suggestions(
     repo_id: str,
-    paths: list[str] = Query(..., description="Repeat ?paths= for each changed file"),
+    paths: list[str] = Query(..., description="Repeat ?paths= for each changed file"),  # noqa: B008
     limit: int = Query(10, ge=1, le=50),
     session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> ReviewerSuggestionsResponse:
@@ -630,7 +630,7 @@ def get_risk_range(
     percentile: float | None = None
     priority: str | None = None
     if baseline:
-        scores = baseline_scores(local_path, head, baseline, (), "")
+        scores = baseline_scores(local_path, head, baseline, (), excluded_ref="")
         if len(scores) >= _MIN_BASELINE:
             normalizer = RiskNormalizer.from_scores(scores)
             # Rank with experience unknown, matching the baseline (diff-shape
@@ -687,7 +687,7 @@ async def get_git_summary(
 
     hotspot_count = sum(1 for m in all_meta if m.is_hotspot)
     stable_count = sum(1 for m in all_meta if m.is_stable)
-    # Normalize to 0–100 to match the rest of the HTTP API contract.
+    # Normalize to 0-100 to match the rest of the HTTP API contract.
     avg_churn = (
         sum(m.churn_percentile for m in all_meta) / len(all_meta) * 100.0 if all_meta else 0.0
     )

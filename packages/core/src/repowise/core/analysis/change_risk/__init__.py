@@ -18,15 +18,27 @@ from .features import (
 )
 from .model import ChangeRisk, RiskDriver, score_change
 from .normalize import RiskNormalizer
+from .service import (
+    ChangeRiskResult,
+    change_risk_payload,
+    normalize_extensions,
+    riskignore_patterns,
+    score_live_change,
+)
 
 __all__ = [
     "ChangeFeatures",
     "ChangeRisk",
+    "ChangeRiskResult",
     "RiskDriver",
     "RiskNormalizer",
     "baseline_scores",
+    "change_risk_payload",
     "extract_commit_features",
     "extract_range_features",
     "features_from_file_changes",
+    "normalize_extensions",
+    "riskignore_patterns",
     "score_change",
+    "score_live_change",
 ]

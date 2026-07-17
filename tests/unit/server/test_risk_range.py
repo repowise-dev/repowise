@@ -119,6 +119,30 @@ def test_baseline_scores_returns_floats(git_repo: Path) -> None:
     _commit(git_repo, {"src/d.py": "a = 1\nb = 2\n"}, "feat: add d")
     _commit(git_repo, {"src/e.py": "c = 3\n"}, "fix: crash on null")
 
-    scores = baseline_scores(str(git_repo), "HEAD", 200, (), "")
+    scores = baseline_scores(str(git_repo), "HEAD", 200, (), excluded_ref="")
     assert len(scores) >= 1
     assert all(isinstance(s, float) for s in scores)
+
+
+def test_baseline_scores_filters_excluded_paths(git_repo: Path) -> None:
+    _commit(git_repo, {"src/app.py": "a = 1\n"}, "feat: app")
+    _commit(
+        git_repo,
+        {"tests/test_app.py": "\n".join(f"assert {i}" for i in range(30)) + "\n"},
+        "test: app",
+    )
+
+    scores = baseline_scores(
+        str(git_repo), "HEAD", 2, (), excluded_ref="", exclude_patterns=("tests/",)
+    )
+
+    assert len(scores) == 1
+
+
+def test_baseline_scores_omits_target_ref(git_repo: Path) -> None:
+    _commit(git_repo, {"src/app.py": "a = 1\n"}, "feat: app")
+    head = _commit(git_repo, {"src/next.py": "b = 2\n"}, "feat: next")
+
+    scores = baseline_scores(str(git_repo), "HEAD", 2, (), excluded_ref=head)
+
+    assert len(scores) == 1

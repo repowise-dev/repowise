@@ -21,6 +21,8 @@ import subprocess
 from collections.abc import Iterable
 from dataclasses import dataclass
 
+import pathspec
+
 from ...ingestion.git_indexer._constants import is_fix_commit
 
 
@@ -57,12 +59,13 @@ def _git(args: list[str], cwd: str) -> str:
 
 
 def _accumulate_numstat(
-    numstat: str, extensions: tuple[str, ...]
+    numstat: str, extensions: tuple[str, ...], exclude_patterns: tuple[str, ...]
 ) -> tuple[int, int, int, set[str], set[str], list[int]]:
     la = ld = nf = 0
     dirs: set[str] = set()
     subs: set[str] = set()
     per_file: list[int] = []
+    exclude_spec = pathspec.PathSpec.from_lines("gitwildmatch", exclude_patterns)
     for row in numstat.strip().split("\n"):
         if not row:
             continue
@@ -71,6 +74,8 @@ def _accumulate_numstat(
             continue
         a_raw, d_raw, path = parts
         if extensions and not path.endswith(extensions):
+            continue
+        if exclude_spec.match_file(path):
             continue
         a = int(a_raw) if a_raw.isdigit() else 0
         d = int(d_raw) if d_raw.isdigit() else 0
@@ -161,16 +166,18 @@ def extract_commit_features(
     sha: str,
     *,
     extensions: tuple[str, ...] = (),
+    exclude_patterns: tuple[str, ...] = (),
 ) -> ChangeFeatures:
     """Extract change features for a single commit.
 
     *extensions* optionally restricts the counted files to a set of suffixes
-    (e.g. ``(".py",)``); empty means count every changed file.
+    (e.g. ``(".py",)``); *exclude_patterns* uses gitignore syntax to omit
+    changed paths. Empty filters count every changed file.
     """
     meta = _git(["show", "-s", "--format=%an%x00%s", sha], repo_path).strip("\n")
     author, _, subject = meta.partition("\x00")
     numstat = _git(["show", sha, "--numstat", "--format="], repo_path)
-    la, ld, nf, dirs, subs, per_file = _accumulate_numstat(numstat, extensions)
+    la, ld, nf, dirs, subs, per_file = _accumulate_numstat(numstat, extensions, exclude_patterns)
     parent = _git(["rev-parse", "--verify", "--quiet", f"{sha}^"], repo_path).strip()
     exp = _author_experience(repo_path, author, parent or sha)
     return ChangeFeatures(
@@ -194,6 +201,7 @@ def extract_range_features(
     head: str,
     *,
     extensions: tuple[str, ...] = (),
+    exclude_patterns: tuple[str, ...] = (),
 ) -> ChangeFeatures:
     """Extract features for a ``base..head`` range scored as one change.
 
@@ -202,7 +210,7 @@ def extract_range_features(
     commit count at *base*.
     """
     numstat = _git(["diff", "--numstat", f"{base}..{head}"], repo_path)
-    la, ld, nf, dirs, subs, per_file = _accumulate_numstat(numstat, extensions)
+    la, ld, nf, dirs, subs, per_file = _accumulate_numstat(numstat, extensions, exclude_patterns)
     meta = _git(["show", "-s", "--format=%an%x00%s", head], repo_path).strip("\n")
     author, _, subject = meta.partition("\x00")
     # Any fix commit in the range marks the change as a fix (informational).

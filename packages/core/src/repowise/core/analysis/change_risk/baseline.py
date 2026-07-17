@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import subprocess
 
+import pathspec
+
 from .features import features_from_file_changes
 from .model import score_change
 
@@ -19,7 +21,8 @@ def baseline_scores(
     anchor: str,
     limit: int,
     extensions: tuple[str, ...],
-    exclude: str,
+    excluded_ref: str,
+    exclude_patterns: tuple[str, ...] = (),
 ) -> list[float]:
     """Score the repo's recent commits to build a local risk distribution.
 
@@ -27,6 +30,10 @@ def baseline_scores(
     cheap enough for a pre-merge gate. Experience is left unknown for the
     baseline; the target is ranked with experience likewise unknown, so the
     comparison is like-with-like: a diff-shape percentile within this repo.
+    *excluded_ref* is a full or abbreviated Git ref for the target commit to
+    omit from its own sample. It is unrelated to path exclusions.
+    *exclude_patterns* use gitignore syntax and are applied to every sampled
+    commit, matching the target change's filtering.
     """
     out = subprocess.run(
         ["git", "log", f"-n{limit}", "--no-merges", "--format=%x1e%H", "--numstat", anchor],
@@ -38,13 +45,14 @@ def baseline_scores(
     ).stdout
 
     scores: list[float] = []
+    exclude_spec = pathspec.PathSpec.from_lines("gitwildmatch", exclude_patterns)
     for block in out.split("\x1e"):
         lines = block.strip().split("\n")
         if not lines or not lines[0]:
             continue
         sha, rows = lines[0].strip(), lines[1:]
-        # Drop the target itself from its own baseline (short or full sha).
-        if exclude and (sha.startswith(exclude) or exclude.startswith(sha)):
+        # Do not let the target commit rank against itself (short or full ref).
+        if excluded_ref and (sha.startswith(excluded_ref) or excluded_ref.startswith(sha)):
             continue
         changes: list[tuple[str, int, int]] = []
         for row in rows:
@@ -53,6 +61,8 @@ def baseline_scores(
                 continue
             a_raw, d_raw, path = parts
             if extensions and not path.endswith(extensions):
+                continue
+            if exclude_spec.match_file(path):
                 continue
             a = int(a_raw) if a_raw.isdigit() else 0
             d = int(d_raw) if d_raw.isdigit() else 0

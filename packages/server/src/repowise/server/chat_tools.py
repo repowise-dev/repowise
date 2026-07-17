@@ -61,9 +61,17 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "items": {
                         "type": "string",
                         "enum": [
-                            "docs", "full_doc", "ownership", "last_change",
-                            "decisions", "freshness", "source", "callers",
-                            "callees", "metrics", "community",
+                            "docs",
+                            "full_doc",
+                            "ownership",
+                            "last_change",
+                            "decisions",
+                            "freshness",
+                            "source",
+                            "callers",
+                            "callees",
+                            "metrics",
+                            "community",
                         ],
                     },
                     "description": "Data blocks to include. Default: docs + freshness.",
@@ -88,6 +96,39 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "repo": {"type": "string", "description": "Repository identifier."},
             },
             "required": ["targets"],
+        },
+        "artifact_type": "risk_report",
+    },
+    {
+        "name": "get_change_risk",
+        "description": "Score the defect risk of a live commit or branch range from diff size, diffusion, and author familiarity. Use for pre-merge ranking; use get_risk for per-file history and blast radius.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "revspec": {
+                    "type": "string",
+                    "description": "Commit or base..head range to score. Defaults to HEAD.",
+                    "default": "HEAD",
+                },
+                "repo": {"type": "string", "description": "Repository identifier."},
+                "extensions": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "File suffixes to count, for example .py or .ts.",
+                },
+                "exclude_patterns": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Gitignore-style paths to omit from the score and baseline.",
+                },
+                "baseline": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "default": 200,
+                    "description": "Recent commits used for percentile ranking; 0 disables it.",
+                },
+            },
+            "required": [],
         },
         "artifact_type": "risk_report",
     },
@@ -184,6 +225,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
 def _build_registry() -> dict[str, ToolDef]:
     """Build the tool registry by importing MCP tool functions."""
     from repowise.server.mcp_server import (
+        get_change_risk,
         get_context,
         get_dead_code,
         get_overview,
@@ -202,6 +244,7 @@ def _build_registry() -> dict[str, ToolDef]:
     func_map: dict[str, Callable] = {
         "get_overview": get_overview,
         "get_context": get_context,
+        "get_change_risk": get_change_risk,
         "get_risk": get_risk,
         "get_why": get_why,
         "search_codebase": _search_concept,

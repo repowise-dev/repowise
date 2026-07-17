@@ -85,7 +85,7 @@ def test_lean_profile_workspace_adds_list_repos():
 
 
 def test_lean_profile_full_registry():
-    """Against the real registry, lean is exactly the five agent-lean tools."""
+    """Against the real registry, lean is exactly the agent-lean tools."""
     import repowise.server.mcp_server  # noqa: F401  (registers the tools)
     from repowise.core.registry import mcp_tool_registry
     from repowise.server.mcp_server._tool_selection import LEAN_TOOLS
@@ -94,6 +94,7 @@ def test_lean_profile_full_registry():
         mcp_tool_registry.entries(), is_workspace=False, override="lean"
     )
     assert enabled == LEAN_TOOLS
+    assert "get_change_risk" not in enabled
 
     workspace = resolve_enabled_tools(
         mcp_tool_registry.entries(), is_workspace=True, override="lean"
