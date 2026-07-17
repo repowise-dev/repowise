@@ -42,6 +42,7 @@ def _load_repo_provider_config(
     if repo_path is None:
         return None, None, {}
 
+    config_path = repo_path / ".repowise" / "config.yaml"
     state_path = repo_path / ".repowise" / "state.json"
     env_path = repo_path / ".repowise" / ".env"
 
@@ -49,11 +50,27 @@ def _load_repo_provider_config(
     model: str | None = None
     overlay: dict[str, str] = {}
 
+    # config.yaml first: it is the user-editable intent. state.json only
+    # records what the LAST index run used, which goes stale the moment the
+    # user switches providers (observed: a config saying openai while
+    # state.json still said gemini from a months-old index build — resolution
+    # followed state.json into a keyless provider and synthesis went dark).
+    try:
+        if config_path.is_file():
+            import yaml
+
+            data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+            if isinstance(data, dict):
+                name = data.get("provider") or None
+                model = data.get("model") or None
+    except Exception:
+        _log.debug("Failed to read %s", config_path, exc_info=True)
+
     try:
         if state_path.is_file():
             data = _json.loads(state_path.read_text(encoding="utf-8"))
-            name = data.get("provider") or None
-            model = data.get("model") or None
+            name = name or data.get("provider") or None
+            model = model or data.get("model") or None
     except Exception:
         _log.debug("Failed to read %s", state_path, exc_info=True)
 
@@ -126,25 +143,42 @@ def _resolve_provider_for_answer(repo_path: Path | None = None):
                 return val
         return None
 
-    # Explicit selection wins.
+    # Explicit selection wins — when its key is actually available. A
+    # configured/persisted provider whose key is absent must NOT end
+    # resolution: returning None here made get_answer silently drop to
+    # retrieval-only mode even though another provider's key sat in the env
+    # (the auto-detect below was unreachable). Fall through instead, and
+    # drop the persisted model on the way down — it belongs to the named
+    # provider and would break a cross-provider fallback call.
+    _KEY_ENVS = {
+        "anthropic": ("ANTHROPIC_API_KEY",),
+        "openai": ("OPENAI_API_KEY",),
+        "deepseek": ("DEEPSEEK_API_KEY",),
+        "kimi": ("KIMI_API_KEY",),
+        "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+    }
     if name:
-        kw: dict[str, Any] = {}
-        if model:
-            kw["model"] = model
-        if name == "anthropic" and _env("ANTHROPIC_API_KEY"):
-            kw["api_key"] = _env("ANTHROPIC_API_KEY")
-        elif name == "openai" and _env("OPENAI_API_KEY"):
-            kw["api_key"] = _env("OPENAI_API_KEY")
-        elif name == "deepseek" and _env("DEEPSEEK_API_KEY"):
-            kw["api_key"] = _env("DEEPSEEK_API_KEY")
-        elif name == "kimi" and _env("KIMI_API_KEY"):
-            kw["api_key"] = _env("KIMI_API_KEY")
-        elif name == "gemini" and (_env("GEMINI_API_KEY") or _env("GOOGLE_API_KEY")):
-            kw["api_key"] = _env("GEMINI_API_KEY") or _env("GOOGLE_API_KEY")
-        base_url = _resolve_base_url(name)
-        if base_url:
-            kw["base_url"] = base_url
-        return _try(name, **kw)
+        key_envs = _KEY_ENVS.get(name)
+        key = next((v for v in map(_env, key_envs or ()) if v), None)
+        if key_envs is None or key:
+            kw: dict[str, Any] = {}
+            if model:
+                kw["model"] = model
+            if key:
+                kw["api_key"] = key
+            base_url = _resolve_base_url(name)
+            if base_url:
+                kw["base_url"] = base_url
+            provider = _try(name, **kw)
+            if provider is not None:
+                return provider
+        _log.warning(
+            "Configured provider %r has no usable key/setup; falling back to "
+            "auto-detection from available API keys.",
+            name,
+        )
+        if not (os.environ.get("REPOWISE_DOC_MODEL") or os.environ.get("REPOWISE_MODEL")):
+            model = None  # persisted model was provider-specific
 
     # Auto-detect from API keys.
     if _env("ANTHROPIC_API_KEY"):

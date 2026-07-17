@@ -896,15 +896,23 @@ async def get_answer(
     provider = _resolve_provider_for_answer(getattr(ctx, "path", None))
     if provider is None:
         # Retrieval-only mode (no provider). Return the hits so the agent can
-        # at least skip the search_codebase step.
-        return {
+        # at least skip the search_codebase step — but mark the degradation
+        # loudly: an arm/user should never need to diff payload shapes to
+        # notice synthesis is unplugged.
+        _log.warning(
+            "get_answer running WITHOUT synthesis: no LLM provider resolvable "
+            "(set REPOWISE_PROVIDER + its API key, or any supported API key)."
+        )
+        payload = {
             "answer": "",
             "citations": [],
             "confidence": "low",
+            "degraded": "no-llm-provider",
             "fallback_targets": fallback_targets,
             "retrieval": _serialize_hits(hits),
             "note": (
-                "No LLM provider configured (set REPOWISE_PROVIDER + API key). "
+                "DEGRADED: no LLM provider configured (set REPOWISE_PROVIDER "
+                "+ API key). "
                 "Returning retrieval hits only — Read the listed files to answer."
             ),
             "_meta": _build_meta(
@@ -914,6 +922,8 @@ async def get_answer(
                 targets=fallback_targets,
             ),
         }
+        payload["_meta"]["degraded"] = "no-llm-provider"
+        return payload
 
     # Decision fusion (why-shaped questions only) + structured prelude. Both
     # layers are gated on signal: no ADRs for the top hits → no decisions
@@ -952,9 +962,10 @@ async def get_answer(
             "answer": "",
             "citations": [],
             "confidence": "low",
+            "degraded": "synthesis-failed",
             "fallback_targets": fallback_targets,
             "retrieval": _serialize_hits(hits),
-            "note": f"LLM synthesis failed ({type(exc).__name__}). Read the listed files to answer.",
+            "note": f"DEGRADED: LLM synthesis failed ({type(exc).__name__}). Read the listed files to answer.",
             "_meta": _build_meta(
                 timing_ms=(time.perf_counter() - t0) * 1000,
                 hint=_answer_hint("low", len(hits)),
