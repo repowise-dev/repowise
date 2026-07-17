@@ -44,6 +44,8 @@ async def get_risk(
     (will_break, missing_cochanges, missing_tests, tests_to_run) — read it
     first. tests_to_run is coverage-backed: the tests the per-test map proves
     exercise the changed files, empty when no coverage map is ingested.
+    To score a live commit or ``base..head`` diff by revspec instead of file
+    paths, use ``get_change_risk``.
 
     Args:
         targets: file paths to assess.

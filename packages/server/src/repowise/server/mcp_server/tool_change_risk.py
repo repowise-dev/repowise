@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import subprocess
+import time
 
 from repowise.core.analysis.change_risk import change_risk_payload, score_live_change
 from repowise.core.registry import mcp_tool_registry as mcp
-from repowise.server.mcp_server._helpers import _resolve_repo_context
+from repowise.server.mcp_server._helpers import _resolve_repo_context, _unsupported_repo_all
+from repowise.server.mcp_server._meta import build_meta as _build_meta
 
 
 @mcp.tool()
@@ -41,7 +43,10 @@ async def get_change_risk(
         exclude_patterns: Gitignore-style paths to omit, for example ``["tests/", "*.md"]``.
         baseline: Recent commits to sample for percentile ranking; 0 disables it.
     """
+    if repo == "all":
+        return _unsupported_repo_all("get_change_risk")
     ctx = await _resolve_repo_context(repo)
+    started = time.perf_counter()
     try:
         result = await asyncio.to_thread(
             score_live_change,
@@ -54,5 +59,20 @@ async def get_change_risk(
     except ValueError as exc:
         return {"error": str(exc)}
     except subprocess.CalledProcessError as exc:
-        return {"error": f"Could not read change {revspec!r}: {exc.stderr or exc}"}
-    return change_risk_payload(result)
+        detail = (exc.stderr or "").strip() or str(exc)
+        return {"error": f"Could not read change {revspec!r}: {detail}"}
+    except subprocess.TimeoutExpired:
+        return {"error": f"git timed out reading change {revspec!r}."}
+    payload = change_risk_payload(result)
+    if result.features.nf == 0:
+        payload["warning"] = (
+            f"No counted file changes in {revspec!r} "
+            "(check the revspec, extensions, or exclusion filters)."
+        )
+    # source: live_git marks that this response is computed from the working
+    # checkout's git, not the index, so index freshness does not apply to it.
+    payload["_meta"] = _build_meta(
+        timing_ms=(time.perf_counter() - started) * 1000,
+        extra={"source": "live_git"},
+    )
+    return payload

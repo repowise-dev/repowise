@@ -47,15 +47,32 @@ class ChangeFeatures:
     ref: str = ""  # the commit sha or "base..head" range scored
 
 
-def _git(args: list[str], cwd: str) -> str:
-    return subprocess.run(
+# Generous ceiling: even a 200-commit numstat walk finishes in seconds. The
+# point is that a stuck git (lock contention, network filesystem) must fail
+# loud instead of hanging the caller's thread forever.
+GIT_TIMEOUT_SECONDS = 60
+
+
+def _git(args: list[str], cwd: str, *, check: bool = True) -> str:
+    # stdin=DEVNULL: on MCP stdio transport a child that inherits the JSON-RPC
+    # pipe handles can wedge the session (same failure mode _meta.py guards
+    # against). check=True so a bad revspec raises instead of yielding empty
+    # stdout, which used to score as a zero-feature "low risk" change.
+    proc = subprocess.run(
         ["git", *args],
         cwd=cwd,
         capture_output=True,
         text=True,
         encoding="utf-8",
         errors="replace",
-    ).stdout
+        stdin=subprocess.DEVNULL,
+        timeout=GIT_TIMEOUT_SECONDS,
+    )
+    if check and proc.returncode != 0:
+        raise subprocess.CalledProcessError(
+            proc.returncode, proc.args, output=proc.stdout, stderr=proc.stderr
+        )
+    return proc.stdout
 
 
 def _accumulate_numstat(
@@ -103,9 +120,12 @@ def _author_experience(repo_path: str, author: str, upto_ref: str) -> int:
     """Author's prior commit count reachable from *upto_ref* (one cheap call)."""
     if not author:
         return 0
+    # check=False: --author is a regex, so a name with metacharacters can make
+    # git error; unknown experience degrades to 0 rather than failing the score.
     out = _git(
         ["rev-list", "--count", "--author", author, "--no-merges", upto_ref],
         repo_path,
+        check=False,
     ).strip()
     try:
         return int(out)
@@ -178,7 +198,10 @@ def extract_commit_features(
     author, _, subject = meta.partition("\x00")
     numstat = _git(["show", sha, "--numstat", "--format="], repo_path)
     la, ld, nf, dirs, subs, per_file = _accumulate_numstat(numstat, extensions, exclude_patterns)
-    parent = _git(["rev-parse", "--verify", "--quiet", f"{sha}^"], repo_path).strip()
+    # check=False: a root commit has no parent and that is not an error.
+    parent = _git(
+        ["rev-parse", "--verify", "--quiet", f"{sha}^"], repo_path, check=False
+    ).strip()
     exp = _author_experience(repo_path, author, parent or sha)
     return ChangeFeatures(
         la=la,
