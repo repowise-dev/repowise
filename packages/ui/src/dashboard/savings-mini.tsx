@@ -18,6 +18,14 @@ interface SavingsMiniProps {
   data?: SavingsMiniData | null;
   /** Repo id, for the "View costs →" link. */
   repoId: string;
+  /**
+   * Whether savings can ever be tracked on this deployment. Savings come from
+   * a local `.repowise/omissions` sidecar written by the CLI, so hosted has no
+   * way to populate them: it passes `false` to get the indexing-cost framing
+   * instead of an empty state pitching a CLI the viewer isn't running.
+   * Defaults to true (the local CLI dashboard).
+   */
+  trackable?: boolean;
 }
 
 /**
@@ -25,7 +33,7 @@ interface SavingsMiniProps {
  * value priced at the detected agent model, and a distill-vs-MCP split, with a
  * jump to the full Costs results page.
  */
-export function SavingsMini({ data, repoId }: SavingsMiniProps) {
+export function SavingsMini({ data, repoId, trackable = true }: SavingsMiniProps) {
   const distillSaved = data?.saved_tokens ?? 0;
   const mcpSaved = data?.mcp_tokens ?? 0;
   const total = distillSaved + mcpSaved;
@@ -41,7 +49,7 @@ export function SavingsMini({ data, repoId }: SavingsMiniProps) {
         <CardTitle className="text-sm flex items-center justify-between">
           <span className="flex items-center gap-2">
             <Sparkles className="h-4 w-4 text-[var(--color-accent-secondary)]" />
-            Agent savings
+            {trackable ? "Agent savings" : "Costs"}
           </span>
           <a
             href={costsHref}
@@ -118,8 +126,17 @@ export function SavingsMini({ data, repoId }: SavingsMiniProps) {
         ) : (
           <div className="space-y-2 py-1">
             <p className="text-xs text-[var(--color-text-secondary)] leading-snug">
-              Trim what your agent reads with <code>repowise distill</code> and the MCP tools —
-              savings show up here.
+              {trackable ? (
+                <>
+                  Trim what your agent reads with <code>repowise distill</code> and the MCP tools —
+                  savings show up here.
+                </>
+              ) : (
+                // Agent savings are written by the local CLI sidecar, so there
+                // is nothing to earn here on hosted. Point at what the Costs
+                // page *does* show instead of teasing a number that never lands.
+                <>What this repo&apos;s indexing and doc generation cost, per sync.</>
+              )}
             </p>
             <a
               href={costsHref}

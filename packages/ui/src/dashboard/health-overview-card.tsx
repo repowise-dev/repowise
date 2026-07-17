@@ -7,6 +7,7 @@ import {
   ArrowRight,
   Wrench,
   Gauge,
+  Target,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { fileEntityPath } from "../shared/entity/routes";
@@ -41,12 +42,33 @@ export interface HealthOverviewData {
   snapshot_count: number;
 }
 
+/**
+ * Structural slice of the defect-accuracy rollup this card needs. Matches the
+ * slim `StatsDefectAccuracy` from stats-highlights as well as the full
+ * `DefectAccuracy` from health/overview, so either payload fits.
+ */
+export interface HealthOverviewAccuracy {
+  /** How many of the K lowest-health files were bug-fixed in the window. */
+  hits: number;
+  k: number;
+  /** Precision over the repo-wide base rate; null when not computable. */
+  lift: number | null;
+  base_rate: number;
+  window_days: number;
+}
+
 interface HealthOverviewCardProps {
   data: HealthOverviewData;
   repoId: string;
   /** Delta vs the previous snapshot (1–10 scale); drives the trend chips. */
   averageDelta?: number | null;
   hotspotDelta?: number | null;
+  /**
+   * "Does this score find the bugs?" validation, rendered as a thin strip under
+   * the scores. Null/omitted when the repo lacks enough files or defect history
+   * to answer honestly — in which case the strip hides rather than guessing.
+   */
+  defectAccuracy?: HealthOverviewAccuracy | null;
   className?: string;
 }
 
@@ -85,63 +107,49 @@ function TrendChip({ delta }: { delta: number | null | undefined }) {
   );
 }
 
-/** Severity-mix donut whose center is the open-findings headline count. */
-function SeverityDonut({
+/**
+ * Open findings as one quiet line: label, a thin severity-mix bar, and the
+ * count. Findings are a secondary read next to the health scores above, so this
+ * deliberately stays a single row — no donut, no headline number, no legend
+ * block. The severity split lives in the segment tooltips and, in full, one
+ * click away on the triage tab.
+ */
+function FindingsLine({
+  href,
   segments,
   total,
   count,
 }: {
+  href: string;
   segments: { key: string; count: number; color: string }[];
   total: number;
   count: number;
 }) {
-  const size = 88;
-  const stroke = 10;
-  const radius = (size - stroke) / 2;
-  const circ = 2 * Math.PI * radius;
-  let offset = 0;
-
   return (
-    <div className="relative shrink-0" style={{ width: size, height: size }}>
-      <svg width={size} height={size} className="-rotate-90">
-        <circle
-          cx={size / 2}
-          cy={size / 2}
-          r={radius}
-          fill="none"
-          stroke="var(--color-bg-inset)"
-          strokeWidth={stroke}
-        />
-        {total > 0 &&
-          segments.map((s) => {
-            const len = (s.count / total) * circ;
-            const dash = `${len} ${circ - len}`;
-            const el = (
-              <circle
-                key={s.key}
-                cx={size / 2}
-                cy={size / 2}
-                r={radius}
-                fill="none"
-                stroke={s.color}
-                strokeWidth={stroke}
-                strokeDasharray={dash}
-                strokeDashoffset={-offset}
-              />
-            );
-            offset += len;
-            return el;
-          })}
-      </svg>
-      <div className="absolute inset-0 flex flex-col items-center justify-center">
-        <span className="text-lg font-bold tabular-nums leading-none text-[var(--color-text-primary)]">
-          {count.toLocaleString()}
-        </span>
-        <span className="text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)]">
-          findings
-        </span>
-      </div>
-    </div>
+    <a
+      href={href}
+      className="group flex items-center gap-3 text-xs text-[var(--color-text-tertiary)] transition-colors hover:text-[var(--color-accent-primary)]"
+    >
+      <span className="flex shrink-0 items-center gap-1.5 font-medium uppercase tracking-wider">
+        <ShieldAlert className="h-3 w-3" />
+        Open findings
+      </span>
+      <span
+        className="flex h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-[var(--color-bg-inset)]"
+        title={segments.map((s) => `${s.key}: ${s.count.toLocaleString()}`).join(" · ")}
+      >
+        {segments.map((s) => (
+          <span
+            key={s.key}
+            className="h-full"
+            style={{ width: `${(s.count / total) * 100}%`, background: s.color }}
+          />
+        ))}
+      </span>
+      <span className="shrink-0 tabular-nums text-[var(--color-text-secondary)]">
+        {count.toLocaleString()}
+      </span>
+    </a>
   );
 }
 
@@ -203,6 +211,39 @@ function MetricTile({
 }
 
 /**
+ * Thin self-validation strip: of the K lowest-health files, how many actually
+ * got bug-fixed in the recent window, against the repo's own base rate. The
+ * scores above are a claim; this is the one line that says whether the claim
+ * holds on *this* repo. Full breakdown (per-K table, the flagged files, the
+ * honesty note) lives on the Code Health page.
+ */
+function AccuracyStrip({ data, href }: { data: HealthOverviewAccuracy; href: string }) {
+  const months = Math.max(1, Math.round(data.window_days / 30));
+  const windowLabel = months === 1 ? "month" : `${months} months`;
+  const basePct = Math.round(data.base_rate * 100);
+
+  return (
+    <a
+      href={href}
+      className="group flex flex-wrap items-center gap-x-2 gap-y-0.5 border-t border-[var(--color-border-default)] px-4 py-2.5 text-xs transition-colors hover:bg-[var(--color-bg-elevated)]"
+    >
+      <Target className="h-3 w-3 shrink-0 text-[var(--color-accent-primary)]" aria-hidden />
+      <span className="font-medium text-[var(--color-text-secondary)]">
+        <span className="tabular-nums text-[var(--color-text-primary)]">
+          {data.hits}/{data.k}
+        </span>{" "}
+        lowest-health files were bug-fixed in the last {windowLabel}
+      </span>
+      {data.lift != null && (
+        <span className="font-semibold tabular-nums text-[var(--color-accent-primary)]">
+          {data.lift}× the {basePct}% baseline
+        </span>
+      )}
+    </a>
+  );
+}
+
+/**
  * Code Health hero for the Overview page — the product's moat surfaced first.
  * Renders the repo-wide biomarker health and hotspot health (1–10, with trend
  * and delta), the open-findings severity mix, and the single worst-scoring
@@ -214,6 +255,7 @@ export function HealthOverviewCard({
   repoId,
   averageDelta,
   hotspotDelta,
+  defectAccuracy,
   className,
 }: HealthOverviewCardProps) {
   const reportHref = `/repos/${repoId}/code-health`;
@@ -275,38 +317,28 @@ export function HealthOverviewCard({
               />
             </div>
 
+            {/* The scores above, checked against this repo's own git history. */}
+            {defectAccuracy && (
+              <AccuracyStrip data={defectAccuracy} href={`${reportHref}?tab=triage`} />
+            )}
+
             {/* Findings + worst performer */}
             <div className="px-4 py-3.5 space-y-3">
-              <a
-                href={`${reportHref}?tab=triage`}
-                className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wider text-[var(--color-text-tertiary)] hover:text-[var(--color-accent-primary)] transition-colors"
-              >
-                <ShieldAlert className="h-3 w-3" />
-                Open findings
-              </a>
-
               {severityTotal > 0 ? (
-                <div className="flex items-center gap-4">
-                  <SeverityDonut
-                    segments={severities}
-                    total={severityTotal}
-                    count={data.open_findings}
-                  />
-                  <div className="flex flex-col gap-1">
-                    {severities.map((s) => (
-                      <span
-                        key={s.key}
-                        className="flex items-center gap-1.5 text-xs text-[var(--color-text-secondary)] capitalize"
-                      >
-                        <span className="h-2 w-2 rounded-full" style={{ background: s.color }} />
-                        {s.key}
-                        <span className="tabular-nums text-[var(--color-text-tertiary)]">{s.count}</span>
-                      </span>
-                    ))}
-                  </div>
-                </div>
+                <FindingsLine
+                  href={`${reportHref}?tab=triage`}
+                  segments={severities}
+                  total={severityTotal}
+                  count={data.open_findings}
+                />
               ) : (
-                <p className="text-xs text-[var(--color-success)]">No open findings — clean bill of health.</p>
+                <a
+                  href={`${reportHref}?tab=triage`}
+                  className="flex items-center gap-1.5 text-xs text-[var(--color-success)] hover:underline"
+                >
+                  <ShieldAlert className="h-3 w-3" />
+                  No open findings — clean bill of health.
+                </a>
               )}
 
               {data.worst_performer_path && data.worst_performer_score != null && (

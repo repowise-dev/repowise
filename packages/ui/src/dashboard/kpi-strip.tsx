@@ -5,6 +5,8 @@ export interface KpiItem {
   label: string;
   value: string;
   href: string;
+  /** One-line context beneath the value (e.g. an AI-vs-auto docs split). */
+  description?: string;
   /**
    * `positive` is a *good-vs-bad* flag (green/up vs red/down), NOT up-vs-down:
    * a metric can grow while still being neutral or bad. Set `neutral` to render
@@ -73,6 +75,7 @@ export function KpiStrip({ items, LinkComponent, className }: KpiStripProps) {
           label={kpi.label}
           value={kpi.value}
           href={kpi.href}
+          {...(kpi.description ? { description: kpi.description } : {})}
           {...(kpi.delta ? { delta: kpi.delta } : {})}
           {...(LinkComponent ? { LinkComponent } : {})}
           {...(typeof kpi.gauge === "number"
