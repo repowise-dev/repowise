@@ -282,7 +282,7 @@ async def test_incremental_page_regen_passes_repo_path(tmp_path):
         file_count=10,
         parsed_files=[],
         source_map={},
-        graph_builder=SimpleNamespace(graph=lambda: object()),
+        graph_builder=SimpleNamespace(graph=lambda: object(), pagerank=lambda: {}),
         repo_structure=object(),
         repo_name="test-repo",
         git_meta_map={},

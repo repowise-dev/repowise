@@ -262,6 +262,7 @@ class ChangeDetector:
         file_diffs: list[FileDiff],
         graph: object,  # nx.DiGraph
         cascade_budget: int = 30,
+        pagerank: dict[str, float] | None = None,
     ) -> AffectedPages:
         """Compute which wiki pages need action after a set of file changes.
 
@@ -269,6 +270,10 @@ class ChangeDetector:
             file_diffs: Output of get_changed_files().
             graph: The dependency graph (networkx DiGraph, nodes are file paths).
             cascade_budget: Max number of pages to fully regenerate per run.
+            pagerank: Precomputed scores for budget ordering (the update path
+                passes GraphBuilder's cached file pagerank so this function
+                does not recompute a full-graph pass). Falls back to an
+                internal computation when omitted.
         """
         import networkx as nx
 
@@ -322,10 +327,13 @@ class ChangeDetector:
         two_hop -= directly_changed | one_hop | co_change_decay
 
         # Apply cascade budget sorted by PageRank (highest priority first)
-        try:
-            pr = nx.pagerank(graph)
-        except Exception:
-            pr = {}
+        if pagerank is not None:
+            pr = pagerank
+        else:
+            try:
+                pr = nx.pagerank(graph)
+            except Exception:
+                pr = {}
 
         all_pages_needing_regen = sorted(
             directly_changed | one_hop,

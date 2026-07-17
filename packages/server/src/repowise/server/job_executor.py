@@ -778,7 +778,10 @@ async def _incremental_page_regen(
 
         cascade_budget = compute_adaptive_budget(file_diffs, result.file_count)
         affected = detector.get_affected_pages(
-            file_diffs, result.graph_builder.graph(), cascade_budget
+            file_diffs,
+            result.graph_builder.graph(),
+            cascade_budget,
+            pagerank=result.graph_builder.pagerank(),
         )
 
         if not affected.regenerate:

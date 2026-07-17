@@ -697,7 +697,14 @@ def run_update(
         cascade_budget = compute_adaptive_budget(file_diffs, file_count)
         if verbose:
             console.print(f"Adaptive cascade budget: [cyan]{cascade_budget}[/cyan]")
-    affected = detector.get_affected_pages(file_diffs, graph_builder.graph(), cascade_budget)
+    # Pass the builder's cached file pagerank so the cascade ordering does
+    # not recompute a full-graph pagerank pass on every update.
+    affected = detector.get_affected_pages(
+        file_diffs,
+        graph_builder.graph(),
+        cascade_budget,
+        pagerank=graph_builder.pagerank(),
+    )
 
     console.print(f"Pages to regenerate: [cyan]{len(affected.regenerate)}[/cyan]")
     if affected.decay_only:

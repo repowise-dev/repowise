@@ -287,3 +287,61 @@ class TestGetAffectedPages:
         assert result.regenerate == []
         assert result.rename_patch == []
         assert result.decay_only == []
+
+
+class TestAffectedPagesPagerankParam:
+    """A caller-supplied pagerank map must drive cascade-budget ordering
+    instead of a fresh in-function ``nx.pagerank`` pass (the update path
+    already holds GraphBuilder's cached file pagerank)."""
+
+    def _diff(self, path: str):
+        from repowise.core.ingestion.change_detector import FileDiff
+
+        return FileDiff(
+            path=path,
+            status="modified",
+            old_path=None,
+            old_parsed=None,
+            new_parsed=_parsed([], path=path),
+            symbol_diff=None,
+        )
+
+    def test_provided_pagerank_orders_cascade(self, tmp_path: Path) -> None:
+        d = ChangeDetector(tmp_path)
+        g = nx.DiGraph()
+        g.add_node("f0.py")
+        for i in range(1, 6):
+            g.add_node(f"f{i}.py")
+            g.add_edge(f"f{i}.py", "f0.py")  # all import f0
+
+        pr = {
+            "f5.py": 0.9,
+            "f4.py": 0.8,
+            "f0.py": 0.7,
+            "f1.py": 0.01,
+            "f2.py": 0.01,
+            "f3.py": 0.01,
+        }
+        result = d.get_affected_pages(
+            [self._diff("f0.py")], graph=g, cascade_budget=3, pagerank=pr
+        )
+        assert result.regenerate == ["f5.py", "f4.py", "f0.py"]
+        assert set(result.decay_only) == {"f1.py", "f2.py", "f3.py"}
+
+    def test_without_pagerank_falls_back_to_internal_computation(
+        self, tmp_path: Path
+    ) -> None:
+        """Omitting the param keeps the old self-computed ordering path:
+        the candidate partition (regenerate + decay) is unchanged."""
+        d = ChangeDetector(tmp_path)
+        g = nx.DiGraph()
+        g.add_node("f0.py")
+        for i in range(1, 6):
+            g.add_node(f"f{i}.py")
+            g.add_edge(f"f{i}.py", "f0.py")
+
+        result = d.get_affected_pages([self._diff("f0.py")], graph=g, cascade_budget=3)
+        assert len(result.regenerate) == 3
+        assert set(result.regenerate) | set(result.decay_only) == {
+            f"f{i}.py" for i in range(6)
+        }
