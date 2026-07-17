@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from ..languages.python_modules import build_python_module_index
 from .context import ResolverContext
+
+if TYPE_CHECKING:
+    from ..models import Import
 
 
 def _module_index(ctx: ResolverContext) -> dict[str, str]:
@@ -70,3 +74,44 @@ def resolve_python_import(module_path: str, importer_path: str, ctx: ResolverCon
     # Stem-only fallback
     stem = module_path.split(".")[-1].lower()
     return ctx.stem_lookup(stem)
+
+
+def resolve_python_import_all(
+    imp: Import, importer_path: str, ctx: ResolverContext
+) -> tuple[str, ...]:
+    """Resolve a Python import, fanning edges out to submodule files.
+
+    ``from pkg import a, b`` resolves to ``pkg/__init__.py`` only, so when an
+    imported name is itself a submodule file the submodule never gains an
+    inbound edge and the dead-code analyzer reports it unreachable (#666) —
+    FastAPI apps wiring routers through their package are the canonical hit.
+    Probe every imported name against the package directory and emit the
+    submodule targets alongside the package itself. The bare-relative form
+    (``from . import a, b``) is already split upstream by
+    ``expand_bare_relative_imports``; this covers the named-package forms,
+    both absolute and relative.
+    """
+    base = resolve_python_import(imp.module_path, importer_path, ctx)
+    if base is None:
+        return ()
+    targets = [base]
+    names = imp.imported_names or []
+    if base.endswith("__init__.py") and names and names != ["*"]:
+        index = _module_index(ctx)
+        base_dir = Path(base).parent.as_posix()
+        for name in names:
+            if not name or name == "*" or "." in name:
+                continue
+            # Source-root-aware index first (absolute imports), then direct
+            # sibling probes, which also cover the relative form.
+            hit = None
+            if not imp.is_relative:
+                hit = index.get(f"{imp.module_path}.{name}")
+            if hit is None:
+                for candidate in (f"{base_dir}/{name}.py", f"{base_dir}/{name}/__init__.py"):
+                    if candidate in ctx.path_set:
+                        hit = candidate
+                        break
+            if hit and hit != base:
+                targets.append(hit)
+    return tuple(dict.fromkeys(targets))

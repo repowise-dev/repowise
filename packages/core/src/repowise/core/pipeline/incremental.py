@@ -119,6 +119,20 @@ def build_repo_graph(
         if collect_sources:
             source_map[fi.path] = source
         graph_builder.add_file(parsed)
+
+    # TS/JS path aliases (``@/components/...``) resolve only when the
+    # tsconfig resolver is attached before build(); without it the alias
+    # targets read as external nodes and every aliased file looks
+    # unreachable to the dead-code analyzer (#648 — this rebuild path was
+    # missed when the CLI commands were wired).
+    from repowise.core.ingestion import wire_tsconfig_resolver
+
+    wire_tsconfig_resolver(
+        graph_builder,
+        repo_path,
+        include_submodules=include_submodules,
+        include_nested_repos=include_nested_repos,
+    )
     graph_builder.build()
     if parse_cache is not None:
         parse_cache.save()
@@ -310,7 +324,11 @@ def run_partial_analysis(
     try:
         from repowise.core.analysis.dead_code import DeadCodeAnalyzer
 
-        _analyzer_partial = DeadCodeAnalyzer(graph_builder.graph(), git_meta_map)
+        # parsed_files enables the source-scan rescues (dynamic markers,
+        # bundler aliases, export aliases) on the update path, matching init.
+        _analyzer_partial = DeadCodeAnalyzer(
+            graph_builder.graph(), git_meta_map, parsed_files=graph_builder._parsed_files
+        )
         _changed_paths_partial = [fd.path for fd in file_diffs]
         dead_code_report = _analyzer_partial.analyze_partial(_changed_paths_partial)
         if dead_code_report.total_findings:

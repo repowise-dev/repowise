@@ -11,6 +11,7 @@ parser calls it after the generic ``visibility_fn`` for C/C++ files.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
@@ -126,6 +127,83 @@ def php_visibility(_name: str, modifier_texts: list[str]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# TS / JS node-aware visibility refinement
+# ---------------------------------------------------------------------------
+
+# ``export { a, b as c }`` lists (with or without a ``from`` clause),
+# ``export default name``, and TS ``export = name`` — the deferred-export
+# forms that make a plainly-declared top-level symbol part of the module's
+# public surface.
+_TS_EXPORT_LIST_RE = re.compile(r"\bexport\s*\{([^}]*)\}")
+_TS_EXPORT_DEFAULT_RE = re.compile(r"\bexport\s+default\s+([A-Za-z_$][\w$]*)")
+_TS_EXPORT_ASSIGN_RE = re.compile(r"\bexport\s*=\s*([A-Za-z_$][\w$]*)")
+_TS_CJS_EXPORTS_RE = re.compile(r"\bmodule\.exports\b|\bexports\s*[.\[]")
+
+_TS_CLASSLIKE_ANCESTORS = frozenset(
+    {
+        "class_declaration",
+        "abstract_class_declaration",
+        "class_body",
+        "interface_body",
+        "enum_body",
+        "internal_module",  # TS ``namespace X { ... }``
+    }
+)
+
+
+def ts_deferred_export_names(src: str) -> frozenset[str] | None:
+    """Names exported after their declaration, or ``None`` when unsafe to track.
+
+    CommonJS surfaces (``module.exports`` / ``exports.x``) assign exports
+    dynamically, so per-name tracking is unreliable — return ``None`` and the
+    caller keeps everything public (the safe direction).
+    """
+    if _TS_CJS_EXPORTS_RE.search(src):
+        return None
+    names: set[str] = set()
+    for m in _TS_EXPORT_LIST_RE.finditer(src):
+        for part in m.group(1).split(","):
+            # ``local as exported`` — the local name is what we match against.
+            base = part.strip().split(" as ")[0].strip()
+            if base:
+                names.add(base)
+    for regex in (_TS_EXPORT_DEFAULT_RE, _TS_EXPORT_ASSIGN_RE):
+        for m in regex.finditer(src):
+            names.add(m.group(1))
+    return frozenset(names)
+
+
+def refine_ts_visibility(
+    def_node: Node, current_visibility: str, name: str, deferred_exports: frozenset[str] | None
+) -> str:
+    """Demote non-exported TS/JS top-level symbols to ``private``.
+
+    ``ts_visibility`` only sees class-member accessibility modifiers, so every
+    top-level declaration lands ``public`` whether or not it carries an
+    ``export`` — which makes plainly-private module helpers eligible for the
+    dead-code unused-export pass and inflates the file's derived export list.
+    A symbol stays public only when its declaration sits under an
+    ``export_statement`` or its name appears in a deferred-export form.
+    Class/namespace members are left untouched (their visibility is governed
+    by the member modifiers and the enclosing declaration's export).
+    """
+    if current_visibility != "public":
+        return current_visibility
+    if deferred_exports is None:
+        return current_visibility
+    node = def_node.parent
+    while node is not None:
+        if node.type == "export_statement":
+            return "public"
+        if node.type in _TS_CLASSLIKE_ANCESTORS:
+            return current_visibility
+        node = node.parent
+    if name in deferred_exports:
+        return "public"
+    return "private"
+
+
+# ---------------------------------------------------------------------------
 # C / C++ node-aware visibility refinement
 # ---------------------------------------------------------------------------
 
@@ -133,7 +211,7 @@ _CPP_EXPORT_MARKERS: tuple[str, ...] = (
     "__declspec(dllexport)",
     "__declspec( dllexport )",
     'visibility("default")',
-    "visibility(\"default\")",
+    'visibility("default")',
     # WebAssembly / emscripten / WASI export surfaces. A function compiled
     # to WASM and called across the JS<->WASM boundary carries one of these
     # markers; without them the export reads as an unused symbol because no
@@ -147,7 +225,7 @@ _CPP_EXPORT_MARKERS: tuple[str, ...] = (
     "WASM_EXPORT",
     "export_name(",
     "__attribute__((used))",
-    "__attribute__((visibility(\"default\")))",
+    '__attribute__((visibility("default")))',
 )
 
 
@@ -163,7 +241,11 @@ def _preceding_access_specifier(def_node: Node) -> str | None:
     while sibling is not None:
         if sibling.type == "access_specifier":
             # The specifier's text is "public" / "private" / "protected".
-            children = [c for c in sibling.children if c.is_named or c.type in ("public", "private", "protected")]
+            children = [
+                c
+                for c in sibling.children
+                if c.is_named or c.type in ("public", "private", "protected")
+            ]
             for c in children:
                 if c.type in ("public", "private", "protected"):
                     return c.type
@@ -218,9 +300,7 @@ def _has_file_scope_static(def_node: Node, src: str) -> bool:
     return False
 
 
-def refine_cpp_visibility(
-    def_node: Node, current_visibility: str, src: str
-) -> tuple[str, bool]:
+def refine_cpp_visibility(def_node: Node, current_visibility: str, src: str) -> tuple[str, bool]:
     """Return ``(visibility, is_exported)`` for a C/C++ symbol.
 
     Inputs:

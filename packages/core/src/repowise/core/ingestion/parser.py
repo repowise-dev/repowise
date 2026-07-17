@@ -44,7 +44,11 @@ from .extractors import (
 )
 from .extractors.bindings.python import expand_bare_relative_imports
 from .extractors.synthetic_symbols import extract_synthetic_symbols
-from .extractors.visibility import refine_cpp_visibility
+from .extractors.visibility import (
+    refine_cpp_visibility,
+    refine_ts_visibility,
+    ts_deferred_export_names,
+)
 from .language_configs import LANGUAGE_CONFIGS, LanguageConfig
 from .languages.registry import REGISTRY as _LANG_REGISTRY
 from .models import (
@@ -356,6 +360,12 @@ class ASTParser:
         symbols: list[Symbol] = []
         seen: set[tuple[int, str]] = set()  # (start_line, name) — dedup decorated dupes
 
+        # Deferred-export names (``export { x }`` / ``export default x``),
+        # computed once per file for the TS/JS visibility refinement.
+        ts_deferred_exports: frozenset[str] | None = None
+        if file_info.language in ("typescript", "javascript"):
+            ts_deferred_exports = ts_deferred_export_names(src)
+
         for capture_dict in matches:
             def_nodes = capture_dict.get("symbol.def", [])
             name_nodes = capture_dict.get("symbol.name", [])
@@ -482,6 +492,10 @@ class ASTParser:
             # modifier text. Refine after the generic fn ran.
             if file_info.language in ("cpp", "c"):
                 visibility, is_exported_symbol = refine_cpp_visibility(def_node, visibility, src)
+            # TS/JS: a top-level declaration is only public when exported —
+            # inline, via ``export { x }`` lists, or ``export default x``.
+            elif file_info.language in ("typescript", "javascript"):
+                visibility = refine_ts_visibility(def_node, visibility, name, ts_deferred_exports)
 
             # Parent class detection
             parent_name = self._find_parent(def_node, config, receiver_nodes, src)

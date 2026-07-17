@@ -194,7 +194,7 @@ def health_command(
             parsed_files.append(parsed)
         except Exception:
             continue
-            
+
     from repowise.core.ingestion import wire_tsconfig_resolver
 
     wire_tsconfig_resolver(

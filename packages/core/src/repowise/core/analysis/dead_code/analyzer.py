@@ -324,6 +324,93 @@ def _find_jsx_namespace_files(parsed_files: dict) -> set[str]:
     return matches
 
 
+_BUNDLER_CONFIG_STEMS = ("vite.config", "webpack.config", "rollup.config", "rspack.config")
+
+# Any quoted slash-containing path-ish string. Bundler configs reference
+# alias targets both as ``'./src/shims/x.ts'`` and as bare segments fed to
+# ``path.resolve(here, 'src/shims/x.ts')``; the parsed-files membership
+# probe below keeps loose matches harmless.
+_RELATIVE_PATH_STRING_RE = re.compile(r"""['"]((?:\.\.?/)?[\w@.-]+(?:/[\w@.-]+)+)['"]""")
+
+_TS_PROBE_SUFFIXES = ("", ".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs")
+
+
+def _find_bundler_alias_targets(parsed_files: dict) -> set[str]:
+    """Repo-relative paths referenced from bundler config files.
+
+    Vite/webpack ``resolve.alias`` entries substitute a bare package import
+    with a local file (``shiki`` → ``src/shims/shiki.ts``): no source file
+    ever imports the shim path, only the config names it, so the shim reads
+    as unreachable. Any relative path string inside a bundler config that
+    resolves to an indexed file marks that file reachable.
+    """
+    targets: set[str] = set()
+    configs = [
+        (path, pf)
+        for path, pf in parsed_files.items()
+        if Path(path).name.startswith(_BUNDLER_CONFIG_STEMS)
+    ]
+    for path, pf in configs:
+        try:
+            file_info = getattr(pf, "file_info", None)
+            if file_info is None:
+                continue
+            source = Path(file_info.abs_path).read_text(errors="ignore")
+        except Exception:
+            continue
+        config_dir = Path(path).parent
+        for match in _RELATIVE_PATH_STRING_RE.finditer(source):
+            base = _posix_normpath(config_dir, match.group(1))
+            for suffix in _TS_PROBE_SUFFIXES:
+                candidate = base + suffix
+                if candidate in parsed_files:
+                    targets.add(candidate)
+                    break
+    return targets
+
+
+def _posix_normpath(config_dir: Path, raw: str) -> str:
+    """Join *raw* onto *config_dir* and normalise ``.``/``..`` as POSIX."""
+    import posixpath
+
+    return posixpath.normpath(posixpath.join(config_dir.as_posix(), raw))
+
+
+_TS_EXPORT_ALIAS_RE = re.compile(r"\bexport\s*\{([^}]*)\}(?!\s*from)")
+
+
+def _find_ts_export_aliases(parsed_files: dict) -> dict[str, dict[str, str]]:
+    """Per-file ``{local_name: exported_alias}`` maps for TS/JS alias exports.
+
+    ``export { ConversationHistoryWrapper as ConversationHistory }`` publishes
+    the symbol under the alias, so importers pull ``ConversationHistory`` and
+    the local name never appears in any ``imported_names`` edge. The unused-
+    export pass consults this map to match the alias as well.
+    """
+    aliases: dict[str, dict[str, str]] = {}
+    for path, pf in parsed_files.items():
+        if not path.endswith((".ts", ".tsx", ".js", ".jsx", ".mts", ".mjs")):
+            continue
+        try:
+            file_info = getattr(pf, "file_info", None)
+            if file_info is None:
+                continue
+            source = Path(file_info.abs_path).read_text(errors="ignore")
+        except Exception:
+            continue
+        file_map: dict[str, str] = {}
+        for match in _TS_EXPORT_ALIAS_RE.finditer(source):
+            for part in match.group(1).split(","):
+                if " as " in part:
+                    local, _, alias = part.strip().partition(" as ")
+                    local, alias = local.strip(), alias.strip()
+                    if local and alias:
+                        file_map[local] = alias
+        if file_map:
+            aliases[path] = file_map
+    return aliases
+
+
 def _is_synthetic_node(node: str) -> bool:
     """True for non-file graph nodes that should be skipped in 'is this dead?' passes.
 
@@ -384,6 +471,14 @@ class DeadCodeAnalyzer:
             parsed_files or {}
         ) | find_dynamic_edge_files(graph)
         self._jsx_namespace_files: set[str] = _find_jsx_namespace_files(parsed_files or {})
+        # Files substituted in via bundler ``resolve.alias`` config — named
+        # by the config, never imported by path.
+        self._bundler_alias_targets: set[str] = _find_bundler_alias_targets(parsed_files or {})
+        # ``export { local as alias }`` maps so importer edges carrying the
+        # alias still count for the local symbol.
+        self._ts_export_aliases: dict[str, dict[str, str]] = _find_ts_export_aliases(
+            parsed_files or {}
+        )
         # Lazily-built ``.go`` package-directory → file-node map, used by the
         # Go package-granular reachability hook (see ``go_reachability``).
         self._go_package_files: dict[str, list[str]] | None = None
@@ -529,6 +624,10 @@ class DeadCodeAnalyzer:
             if Path(str(node)).name in _BARREL_FILENAMES:
                 continue
             if self._is_api_contract(node_data):
+                continue
+            # Bundler ``resolve.alias`` targets are reached through the
+            # aliased package name; only the config references them by path.
+            if str(node) in self._bundler_alias_targets:
                 continue
 
             # Go reachability is package-granular: a file with no direct
@@ -726,6 +825,12 @@ class DeadCodeAnalyzer:
             if file_dynamically_loaded:
                 continue
 
+            # Bundler ``resolve.alias`` shim: the whole module is substituted
+            # for a package at build time — every public symbol is reachable
+            # through the aliased import.
+            if str(node) in self._bundler_alias_targets:
+                continue
+
             # Function/method line ranges in this file — used to skip symbols
             # whose definition is nested inside another function (closures,
             # inner helpers).  Such symbols are only reachable from their
@@ -769,6 +874,11 @@ class DeadCodeAnalyzer:
                 if sym_name.startswith("__") and sym_name.endswith("__"):
                     continue
                 if sym_name in _ENTRY_POINT_SYMBOL_NAMES:
+                    continue
+                # VS Code extension lifecycle: the host calls ``activate`` /
+                # ``deactivate`` on the ``main`` module (conventionally
+                # ``extension.ts``) — no in-repo importer ever names them.
+                if sym_name in ("activate", "deactivate") and Path(str(node)).stem == "extension":
                     continue
                 # Compiler-builtin macros defined as a fallback
                 # (``#if !defined(__has_include)\n#define __has_include(h) 0``).
@@ -868,11 +978,19 @@ class DeadCodeAnalyzer:
                     sym_name.endswith(suffix) for suffix in ("_DEPRECATED", "_LEGACY", "_COMPAT")
                 )
 
+                # ``export { local as alias }`` publishes the symbol under the
+                # alias; importers carry the alias in ``imported_names``.
+                export_alias = self._ts_export_aliases.get(str(node), {}).get(sym_name)
+
                 has_importers = False
                 for pred in self.graph.predecessors(node):
                     edge_data = self.graph[pred][node]
                     imported_names = edge_data.get("imported_names", [])
-                    if sym_name in imported_names or "*" in imported_names:
+                    if (
+                        sym_name in imported_names
+                        or "*" in imported_names
+                        or (export_alias is not None and export_alias in imported_names)
+                    ):
                         has_importers = True
                         break
 
