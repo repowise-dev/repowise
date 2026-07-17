@@ -76,6 +76,39 @@ interface AttentionPanelProps {
   repoName?: string;
 }
 
+/**
+ * Round-robin one item from each type before taking a second from any, so the
+ * preview window shows a spread instead of whatever category happens to be
+ * biggest.
+ *
+ * The server sorts strictly by severity, which sounds right and isn't: the
+ * categories are wildly different sizes (hotspots / silos / dead code are each
+ * capped at 10, decisions are not), so a strict sort lets one type monopolise
+ * the window and the other four never surface at all. Buckets are walked in
+ * first-appearance order, and the incoming list is severity-sorted, so the
+ * most severe type still leads — each type just gets a voice before any type
+ * gets a second row.
+ */
+function diversifyByType(items: AttentionItem[], count: number): AttentionItem[] {
+  const buckets = new Map<AttentionItemType, AttentionItem[]>();
+  for (const item of items) {
+    const bucket = buckets.get(item.type);
+    if (bucket) bucket.push(item);
+    else buckets.set(item.type, [item]);
+  }
+
+  const queues = [...buckets.values()];
+  const out: AttentionItem[] = [];
+  let cursor = 0;
+  while (out.length < count && queues.some((q) => q.length > 0)) {
+    const queue = queues[cursor % queues.length]!;
+    const next = queue.shift();
+    if (next) out.push(next);
+    cursor++;
+  }
+  return out;
+}
+
 function getDefaultHref(item: AttentionItem, prefix: string): string {
   const target = item.target_id;
   switch (item.type) {
@@ -111,8 +144,21 @@ export function AttentionPanel({
   const prefix = linkPrefix ?? `/repos/${repoId}`;
   const [expanded, setExpanded] = useState(false);
   const [promptOpen, setPromptOpen] = useState(false);
-  const visible = expanded ? items : items.slice(0, previewCount);
-  if (items.length === 0) {
+
+  // Auto-proposed decisions are a review inbox, not a health signal: they are
+  // suggestions *we* generated, and they routinely outnumber everything else by
+  // two orders of magnitude (1,066 of 1,107 on this repo). Mixing them in made
+  // the panel a backlog dump and the count read as "your repo has 1,107
+  // problems". They collapse to a single row pointing at the Decisions page,
+  // where reviewing them in bulk actually belongs.
+  const proposed = items.filter((i) => i.type === "proposed_decision");
+  const triage = items.filter((i) => i.type !== "proposed_decision");
+
+  // Preview samples across types; expanding falls back to the server's
+  // severity order, which is the right read once you are actually triaging.
+  const visible = expanded ? triage : diversifyByType(triage, previewCount);
+
+  if (triage.length === 0 && proposed.length === 0) {
     return (
       <Card>
         <CardContent className="p-2">
@@ -140,8 +186,11 @@ export function AttentionPanel({
               label="Hand queue to AI"
               onClick={() => setPromptOpen(true)}
             />
+            {/* Counts the triage queue only. Including the proposed-decision
+                inbox here made the badge read as a problem count when it was
+                mostly our own un-reviewed suggestions. */}
             <Badge variant="outline" className="text-[10px] h-5 tabular-nums">
-              {items.length}
+              {triage.length}
             </Badge>
           </span>
         </CardTitle>
@@ -176,7 +225,7 @@ export function AttentionPanel({
               </a>
             );
           })}
-          {items.length > previewCount && (
+          {triage.length > previewCount && (
             <button
               type="button"
               onClick={() => setExpanded((v) => !v)}
@@ -184,8 +233,28 @@ export function AttentionPanel({
             >
               {expanded
                 ? "Show fewer"
-                : `+${items.length - previewCount} more items — show all`}
+                : `+${triage.length - previewCount} more items — show all`}
             </button>
+          )}
+
+          {proposed.length > 0 && (
+            <a
+              // Plain /decisions: the page lists proposals inline and has no
+              // URL-driven status filter to deep-link into yet.
+              href={`${prefix}/decisions`}
+              className="group mt-1 flex items-center gap-2.5 rounded-md border-t border-[var(--color-border-default)] p-2 -mx-2 pt-2.5 transition-colors hover:bg-[var(--color-bg-elevated)]"
+            >
+              <Lightbulb className="h-3.5 w-3.5 shrink-0 text-[var(--color-text-tertiary)]" />
+              <span className="min-w-0 flex-1 text-xs text-[var(--color-text-secondary)]">
+                <span className="font-medium tabular-nums text-[var(--color-text-primary)]">
+                  {proposed.length.toLocaleString()}
+                </span>{" "}
+                auto-proposed decision{proposed.length === 1 ? "" : "s"} awaiting review
+              </span>
+              <span className="shrink-0 text-xs text-[var(--color-accent-primary)] group-hover:underline">
+                Review →
+              </span>
+            </a>
           )}
         </div>
       </CardContent>
@@ -195,7 +264,10 @@ export function AttentionPanel({
       onOpenChange={setPromptOpen}
       getPrompt={(flavor) =>
         buildWorkQueueAiPrompt({
-          items: items.map((it) => ({
+          // Triage only, matching the panel: handing an agent 1,000+ decisions
+          // we auto-proposed as a "prioritized worklist" buries the handful of
+          // real items and asks it to do review work it cannot judge.
+          items: triage.map((it) => ({
             type: it.type,
             title: it.title,
             description: it.description,
