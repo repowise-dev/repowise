@@ -113,6 +113,7 @@ from repowise.server.mcp_server.tool_answer.retrieval import (
     _apply_domain_penalty,
     _candidate_justification,
     _downweight_deterministic,
+    _enrich_gated_excerpts,
     _intersection_boost,
     _rerank_by_coverage,
 )
@@ -472,6 +473,12 @@ async def get_answer(
             # promotion, source-body excerpts). Give synthesis another shot
             # with the new context rather than pinning the bad answer.
             hedged_cache = _answer_is_hedged(payload.get("answer", ""))
+            # Bypass-on-empty: older versions cached gated (empty-answer)
+            # payloads, so a retrieval miss got pinned until TTL and every
+            # later improvement to the miss path was invisible. The write
+            # side no longer caches empty answers; this read-side check
+            # retires rows that predate that fix.
+            empty_cache = not (payload.get("answer") or "").strip()
             # A row cached before exclude_patterns changed may reference a
             # now-excluded file — in its fields or its prose. Re-synthesize
             # rather than scrub the fields and leave the prose dangling.
@@ -503,6 +510,8 @@ async def get_answer(
                 )
             elif hedged_cache:
                 _log.info("Bypassing hedged cache entry for re-synthesis")
+            elif empty_cache:
+                _log.info("Bypassing cached empty-answer (gated) entry")
             elif excluded_cache:
                 _log.info("Bypassing cache entry referencing a now-excluded path")
             elif stale_commit:
@@ -784,6 +793,17 @@ async def get_answer(
             dominant = (top_score / second_score) >= _DOMINANCE_RATIO
 
         if not dominant:
+            # Attach real page content to the top candidates before shaping
+            # the reply. Agent-transcript evidence (context-tool bench,
+            # 2026-07-17): a pointers-only gated payload sends the agent into
+            # an 8-15 call Grep/Read spree that costs more than a bare agent —
+            # it paid for the tool call and still had to acquire all content
+            # natively. Excerpts turn the miss path into "pick one candidate,
+            # verify with at most one Read". (The 2026-07-11 dogfood dropped
+            # the per-hit key_symbols METADATA dump as unused; readable
+            # content is the part that was worth keeping.)
+            with contextlib.suppress(Exception):
+                await _enrich_gated_excerpts(hits, ctx)
             # Structured candidate set: a decision-shaped list with a
             # one-line justification per file. Beats the prior flat
             # ``fallback_targets`` list because the agent can pick ONE file
@@ -794,6 +814,7 @@ async def get_answer(
                     "why_relevant": _candidate_justification(h),
                     "score": round(h.get("score", 0.0), 3),
                     "domain_penalty": h.get("_domain_penalty"),
+                    **({"excerpt": h["excerpt"]} if h.get("excerpt") else {}),
                 }
                 for h in hits[:_GATED_RETURN_HITS]
                 if h.get("target_path")
@@ -801,13 +822,7 @@ async def get_answer(
             # Mine source comments for rationale the wiki/decision corpus
             # missed — turns "go Read these 5 files" into a cited why.
             code_rationale = _gather_code_rationale(ctx, hits, fallback_targets, question)
-            # A miss should be cheap to READ, not just cheap to ignore. The old
-            # gated payload also carried a full per-hit key_symbols dump — the
-            # single largest block by volume — that duplicated best_guesses and
-            # went unused (2026-07-11 dogfood). best_guesses (file + one-line
-            # why + score) and code_rationale carry the choosing signal; the
-            # symbol dump does not. Drop it, and skip the excerpt-enrichment DB
-            # round-trip that only fed it (a small latency win on the miss path).
+            has_excerpts = any("excerpt" in g for g in best_guesses)
             gated: dict = {
                 "answer": "",
                 "citations": [],
@@ -815,8 +830,15 @@ async def get_answer(
                 "retrieval_quality": "weak",
                 "best_guesses": best_guesses,
                 "next_action_hint": (
-                    f"Read {best_guesses[0]['file']} first — it scored highest "
-                    "but retrieval was ambiguous, so verify before answering."
+                    (
+                        f"Start from the excerpt of {best_guesses[0]['file']} — "
+                        "it scored highest; Read the file only to verify "
+                        "details the excerpt does not settle."
+                        if has_excerpts
+                        else f"Read {best_guesses[0]['file']} first — it scored "
+                        "highest but retrieval was ambiguous, so verify "
+                        "before answering."
+                    )
                     if best_guesses
                     else (
                         'Retry search_codebase with mode="symbol" or '
@@ -829,7 +851,12 @@ async def get_answer(
                 "note": (
                     "Multiple plausible candidates — synthesis skipped to "
                     "avoid anchoring on a wrong frame. Each best_guess entry "
-                    "names why that file is in the running."
+                    "names why that file is in the running"
+                    + (
+                        ", and its excerpt carries that page's actual content."
+                        if has_excerpts
+                        else "."
+                    )
                 ),
             }
             if code_rationale:

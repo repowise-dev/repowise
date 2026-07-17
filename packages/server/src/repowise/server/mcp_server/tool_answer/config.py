@@ -176,8 +176,12 @@ _HEDGE_MARKERS = (
 
 # When the gate triggers and we drop synthesis, fetch this many chars of
 # real page content per top hit so the agent has substantive raw material
-# to ground in (vs. one-line summary that's too thin to act on).
-_GATED_EXCERPT_CHARS = 600
+# to ground in (vs. one-line summary that's too thin to act on). 1500 chars
+# is enough for a page's opening section plus a code reference; at 600 the
+# excerpt stopped mid-context and agents fell back to native exploration
+# anyway (context-tool bench transcripts, 2026-07-17). Three hits at 1500
+# chars is ~1.1k tokens — well under any MCP output budget.
+_GATED_EXCERPT_CHARS = 1500
 _GATED_RETURN_HITS = 3
 
 # Path-prefix domain heuristics — down-weight cross-domain retrievals so a
@@ -287,7 +291,7 @@ _HIGH_CONFIDENCE_SCORE_FLOOR = 1.5
 # v7: concept anchoring - number-bearing why/value questions anchor the file
 # whose comment justifies the number and surface that comment as code_rationale
 # even on the high path. Cached v6 payloads predate the anchor + surfacing.
-_ANSWER_SCHEMA_VERSION = 7
+_ANSWER_SCHEMA_VERSION = 8
 
 # Hard TTL on answer-cache rows. Commit-based invalidation (the payload's
 # stamped ``_indexed_commit`` vs the repo's current head) is the primary
