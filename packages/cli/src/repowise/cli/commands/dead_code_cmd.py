@@ -201,7 +201,12 @@ def dead_code_command(
         config["detect_unused_internals"] = kind == "unused_internal"
         config["detect_zombie_packages"] = kind == "zombie_package"
 
-    analyzer = DeadCodeAnalyzer(graph_builder.graph(), git_meta_map)
+    # parsed_files powers the source-scan rescues (dynamic-import markers,
+    # bundler resolve.alias targets, export-alias maps) — without it those
+    # classes false-positive on the CLI path while init stays clean.
+    analyzer = DeadCodeAnalyzer(
+        graph_builder.graph(), git_meta_map, parsed_files=graph_builder._parsed_files
+    )
     report = analyzer.analyze(config)
 
     findings = report.findings

@@ -342,6 +342,12 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
                     from ..resolvers.cpp import resolve_cpp_import_all
 
                     targets = resolve_cpp_import_all(imp.module_path, path, ctx)
+                elif _lang == "python":
+                    # ``from pkg import submodule`` must also edge into the
+                    # submodule file, not just ``pkg/__init__.py`` (#666).
+                    from ..resolvers.python import resolve_python_import_all
+
+                    targets = resolve_python_import_all(imp, path, ctx)
                 else:
                     single = resolve_import(imp.module_path, path, _lang, ctx)
                     targets = (single,) if single else ()
@@ -462,9 +468,7 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         # the same type map and otherwise rebuilds the index from disk.
         # Only stashed when this build pruned nested git repos, because a
         # standalone rebuild always prunes — the maps must be identical.
-        self.dotnet_index = (
-            getattr(ctx, "_dotnet_index", None) if self._prune_nested_git else None
-        )
+        self.dotnet_index = getattr(ctx, "_dotnet_index", None) if self._prune_nested_git else None
 
         # Count edge types for logging
         edge_counts: dict[str, int] = {}
