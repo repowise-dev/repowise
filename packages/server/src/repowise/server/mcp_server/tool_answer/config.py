@@ -291,7 +291,7 @@ _HIGH_CONFIDENCE_SCORE_FLOOR = 1.5
 # v7: concept anchoring - number-bearing why/value questions anchor the file
 # whose comment justifies the number and surface that comment as code_rationale
 # even on the high path. Cached v6 payloads predate the anchor + surfacing.
-_ANSWER_SCHEMA_VERSION = 7
+_ANSWER_SCHEMA_VERSION = 8
 
 # Hard TTL on answer-cache rows. Commit-based invalidation (the payload's
 # stamped ``_indexed_commit`` vs the repo's current head) is the primary

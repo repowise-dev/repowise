@@ -473,6 +473,12 @@ async def get_answer(
             # promotion, source-body excerpts). Give synthesis another shot
             # with the new context rather than pinning the bad answer.
             hedged_cache = _answer_is_hedged(payload.get("answer", ""))
+            # Bypass-on-empty: older versions cached gated (empty-answer)
+            # payloads, so a retrieval miss got pinned until TTL and every
+            # later improvement to the miss path was invisible. The write
+            # side no longer caches empty answers; this read-side check
+            # retires rows that predate that fix.
+            empty_cache = not (payload.get("answer") or "").strip()
             # A row cached before exclude_patterns changed may reference a
             # now-excluded file — in its fields or its prose. Re-synthesize
             # rather than scrub the fields and leave the prose dangling.
@@ -504,6 +510,8 @@ async def get_answer(
                 )
             elif hedged_cache:
                 _log.info("Bypassing hedged cache entry for re-synthesis")
+            elif empty_cache:
+                _log.info("Bypassing cached empty-answer (gated) entry")
             elif excluded_cache:
                 _log.info("Bypassing cache entry referencing a now-excluded path")
             elif stale_commit:
