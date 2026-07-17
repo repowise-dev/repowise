@@ -455,6 +455,29 @@ function DocsReaderBody({
                   </ul>
                 </div>
               )}
+
+            {/* Related pages, bottom strip. The right rail is hidden below
+                lg (vscode webview panels rarely reach lg either), so narrow
+                viewports get the related links here instead. */}
+            {relatedLinks.length > 0 && (
+              <div className="mt-8 lg:hidden">
+                <p className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider mb-2">
+                  Related
+                </p>
+                <div className="flex flex-wrap gap-1.5">
+                  {relatedLinks.slice(0, 8).map((r) => (
+                    <button
+                      key={r.id}
+                      onClick={() => goToPageId(r.id)}
+                      className="rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2.5 py-1 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-accent-primary)] hover:border-[var(--color-accent-primary)] transition-colors"
+                      title={r.reason ? RELATED_REASON_LABELS[r.reason] : r.title}
+                    >
+                      {r.title}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>
