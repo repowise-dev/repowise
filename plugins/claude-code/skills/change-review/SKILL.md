@@ -15,26 +15,34 @@ this change put at risk" — fusing git history (churn, ownership, co-change) wi
 graph topology (dependents, impact surface), test gaps, security signals, and the
 architectural decisions that govern the touched code.
 
-Two complementary risk signals — use both:
+Two complementary risk signals, use both:
 
-- **`repowise risk` (CLI)** scores the *whole change as one unit* (a commit or a
-  `base..head` range) → a single 0–10 defect-risk score with drivers (lines
-  added/deleted, files, directories, subsystems, change entropy, author
-  familiarity). No LLM, no network. This is the pre-merge gate: "how risky is
-  this change overall?"
+- **`get_change_risk(revspec=…)` (MCP)** scores the *whole change as one unit* (a
+  commit or a `base..head` range) from its diff shape: a single 0-10 defect-risk
+  score with drivers (lines added/deleted, files, directories, subsystems,
+  change entropy, author familiarity). No LLM, no network. Prefer this in-MCP
+  tool; it takes a revspec and diffs server-side, so you never shell out. Lead
+  with `risk_percentile` (this change ranked against sampled recent commits),
+  summarized by `review_priority` and `classification`; `score` / `level` are
+  the corpus-calibrated fallback. This is the pre-merge gate: "how risky is this
+  change overall?" The `repowise risk <revspec>` CLI is the identical scorer for
+  when you are already in a terminal.
 - **`get_risk(changed_files=…)` (MCP)** works *per file* and returns the
-  `directive` block — the specific things to check inside the diff.
+  `directive` block, the specific things to check inside the diff.
 
 ## Score the whole change first
 
 ```
-repowise risk <revspec>     # HEAD, a commit SHA, or base..head (e.g. main..HEAD)
+get_change_risk(revspec="main..HEAD")   # HEAD, a commit SHA, or base..head
 ```
 
-Read the score and its top drivers — a high score from large diffusion (many
-dirs/subsystems) or low author familiarity tells you where to look hardest.
-Add `--ext .py,.ts` to count only certain file types, `--format json` for a
-machine-readable breakdown.
+Read `risk_percentile` and the top drivers: a high score from large diffusion
+(many dirs/subsystems) or low author familiarity tells you where to look
+hardest. `extensions=[".py", ".ts"]` counts only certain file types;
+`exclude_patterns=["tests/"]` omits paths. A `warning` field means the revspec
+or filters matched no files, so an all-zero score there is not a clean bill of
+health. The equivalent from a terminal is `repowise risk <revspec>` (add
+`--ext .py,.ts` or `--format json`).
 
 ## Then drill into the directive block
 
@@ -58,6 +66,12 @@ The response carries a `directive` block — read it first, it's a few short lis
 
 `pr_blast_radius` holds the fuller dossier behind those lists (including the
 per-changed-file `guarding_tests` breakdown behind `tests_to_run`).
+
+For the line-precise version from a terminal, `repowise impacted-tests <revspec>`
+maps each changed line to the tests whose recorded coverage touches it, then
+prints the ids (`--format list | xargs pytest` runs exactly them). It is honest
+about gaps: a changed file with no coverage rows is a labelled filename guess,
+and a brand-new file is "unknown, run the full suite", never "no tests needed".
 
 ## Then go deeper where it matters
 

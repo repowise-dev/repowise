@@ -35,6 +35,7 @@ def test_core_default_surface_is_documented():
         "search_codebase",
         "get_overview",
         "get_risk",
+        "get_change_risk",
         "get_why",
         "get_dead_code",
         "get_health",

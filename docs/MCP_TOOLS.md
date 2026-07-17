@@ -526,7 +526,7 @@ get_health(targets=["module:src.api"], include=["trend", "refactoring"])
 ## Supplementary tools
 
 These are registered and on by default (in the modes noted) but are not part
-of the nine-tool headline set.
+of the ten-tool headline set.
 
 ### `list_repos`
 
