@@ -546,6 +546,25 @@ class _GenerationRun:
         except Exception as exc:
             log.debug("interlinking.failed", error=str(exc))
 
+        # Post-generation: graph-derived related pages. Runs AFTER
+        # interlinking so prose-derived wiki_links win dedup and related
+        # entries only fill the gaps.
+        try:
+            from ..related_pages import attach_related_pages
+
+            attach_related_pages(
+                all_pages,
+                import_edges=self._file_import_edges(),
+                git_meta_map=self.git_meta_map,
+                module_groups=self.sel_module_groups,
+                pagerank=self.pagerank,
+                # On incremental updates only the affected pages are in
+                # all_pages; the persisted ids keep resolution repo-wide.
+                prior_page_ids=list(self.gen._prior_pages or {}),
+            )
+        except Exception as exc:
+            log.debug("related_pages.failed", error=str(exc))
+
         # Post-generation: link KG tour steps to wiki page IDs.
         if self.kg_ctx.available and self.repo_path:
             try:

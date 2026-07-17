@@ -33,6 +33,25 @@ export interface Backlink {
   anchor: string;
 }
 
+/**
+ * Graph-derived neighbor persisted in ``page.metadata.related_pages`` by
+ * the backend's related-pages post-processor
+ * (`packages/core/.../generation/related_pages.py`). Unlike wiki_links,
+ * these do not depend on the page prose mentioning the target.
+ */
+export type RelatedReason =
+  | "imports"
+  | "imported-by"
+  | "co-changes-with"
+  | "same-module";
+
+export interface RelatedPageRef {
+  target_page_id: string;
+  title: string;
+  reason: RelatedReason;
+  weight: number;
+}
+
 function isWikiLinkRef(v: unknown): v is WikiLinkRef {
   if (typeof v !== "object" || v === null) return false;
   const r = v as Record<string, unknown>;
@@ -60,6 +79,33 @@ export function getWikiLinks(
   const raw = metadata["wiki_links"];
   if (!Array.isArray(raw)) return [];
   return raw.filter(isWikiLinkRef);
+}
+
+const RELATED_REASONS = new Set([
+  "imports",
+  "imported-by",
+  "co-changes-with",
+  "same-module",
+]);
+
+function isRelatedPageRef(v: unknown): v is RelatedPageRef {
+  if (typeof v !== "object" || v === null) return false;
+  const r = v as Record<string, unknown>;
+  return (
+    typeof r["target_page_id"] === "string" &&
+    typeof r["title"] === "string" &&
+    typeof r["reason"] === "string" &&
+    RELATED_REASONS.has(r["reason"])
+  );
+}
+
+export function getRelatedPages(
+  metadata: Record<string, unknown> | undefined | null,
+): RelatedPageRef[] {
+  if (!metadata) return [];
+  const raw = metadata["related_pages"];
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(isRelatedPageRef);
 }
 
 export function getBacklinks(

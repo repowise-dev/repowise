@@ -27,9 +27,18 @@ import { TableOfContents } from "../wiki/table-of-contents";
 import { BacklinksPanel } from "../wiki/backlinks-panel";
 import {
   getBacklinks,
+  getRelatedPages,
   getWikiLinks,
+  type RelatedReason,
 } from "../wiki/wiki-links-types";
 import { Breadcrumb } from "../shared/breadcrumb";
+
+const RELATED_REASON_LABELS: Record<RelatedReason, string> = {
+  imports: "imports",
+  "imported-by": "imported by",
+  "co-changes-with": "changes together",
+  "same-module": "same module",
+};
 
 /** Router-aware anchor — host injects Next.js Link / in-app interception. */
 export type ReaderLinkComponent = React.ElementType<{
@@ -181,7 +190,18 @@ function DocsReaderBody({
   const relatedLinks = useMemo(() => {
     const byId = new Map(pages.map((p) => [p.id, p]));
     const seen = new Set<string>();
-    const out: { id: string; title: string }[] = [];
+    const out: { id: string; title: string; reason?: RelatedReason }[] = [];
+    // Graph-derived neighbors first — they carry a reason and exist even
+    // when the prose never mentions the target. The backend dedups them
+    // against wiki_links, but stay defensive here.
+    for (const rel of getRelatedPages(page.metadata)) {
+      const target = rel.target_page_id;
+      if (target === page.id || seen.has(target)) continue;
+      const hit = byId.get(target);
+      if (!hit) continue;
+      seen.add(target);
+      out.push({ id: hit.id, title: hit.title, reason: rel.reason });
+    }
     for (const link of wikiLinks) {
       const target = link.target_page_id;
       if (target === page.id || seen.has(target)) continue;
@@ -191,7 +211,7 @@ function DocsReaderBody({
       out.push({ id: hit.id, title: hit.title });
     }
     return out;
-  }, [wikiLinks, pages, page.id]);
+  }, [wikiLinks, page.metadata, pages, page.id]);
 
   const layerName =
     typeof page.metadata?.layer_name === "string" ? page.metadata.layer_name : "";
@@ -488,7 +508,7 @@ function DocsReaderBody({
                   Related
                 </p>
                 <ul className="space-y-1.5">
-                  {relatedLinks.slice(0, 5).map((r) => (
+                  {relatedLinks.slice(0, 8).map((r) => (
                     <li key={r.id} className="text-xs">
                       <button
                         onClick={() => goToPageId(r.id)}
@@ -497,12 +517,17 @@ function DocsReaderBody({
                       >
                         {r.title}
                       </button>
+                      {r.reason && (
+                        <span className="block text-[10px] text-[var(--color-text-tertiary)]">
+                          {RELATED_REASON_LABELS[r.reason]}
+                        </span>
+                      )}
                     </li>
                   ))}
                 </ul>
-                {relatedLinks.length > 5 && (
+                {relatedLinks.length > 8 && (
                   <p className="mt-1 text-[10px] text-[var(--color-text-tertiary)]">
-                    + {relatedLinks.length - 5} more
+                    + {relatedLinks.length - 8} more
                   </p>
                 )}
               </div>
