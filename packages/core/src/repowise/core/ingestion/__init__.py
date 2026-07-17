@@ -29,7 +29,7 @@ from .models import (
 )
 from .parser import LANGUAGE_CONFIGS, ASTParser, LanguageConfig, parse_file
 from .traverser import FileTraverser, TraversalStats
-from .tsconfig_resolver import TsconfigResolver
+from .tsconfig_resolver import TsconfigResolver, wire_tsconfig_resolver
 
 __all__ = [
     # Models
@@ -52,6 +52,7 @@ __all__ = [
     # Graph
     "GraphBuilder",
     "TsconfigResolver",
+    "wire_tsconfig_resolver",
     "Import",
     "LanguageConfig",
     "PackageInfo",

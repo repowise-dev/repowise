@@ -341,23 +341,18 @@ async def _run_ingestion(
     # Only runs when the repo has TS/JS files. On large TS monorepos the
     # resolver indexes hundreds of tsconfig files up-front; without a phase
     # label this shows up as a silent gap right after parsing.
-    try:
-        from repowise.core.ingestion.tsconfig_resolver import TsconfigResolver
-
-        _ts_langs = {"typescript", "javascript"}
-        if any(pf.file_info.language in _ts_langs for pf in parsed_files):
-            if progress:
-                progress.on_phase_start("tsconfig", None)
-            _path_set = set(graph_builder._parsed_files.keys())
-            _resolver = TsconfigResolver(
-                repo_path=repo_path,
-                path_set=_path_set,
-                prune_nested_git=not (include_submodules or include_nested_repos),
-            )
-            graph_builder.set_tsconfig_resolver(_resolver)
-            _phase_done(progress, "tsconfig")
-    except Exception as _resolver_exc:
-        logger.warning("tsconfig_resolver_init_failed", error=str(_resolver_exc))
+    _ts_langs = {"typescript", "javascript"}
+    if any(pf.file_info.language in _ts_langs for pf in parsed_files):
+        if progress:
+            progress.on_phase_start("tsconfig", None)
+        from repowise.core.ingestion import wire_tsconfig_resolver
+        wire_tsconfig_resolver(
+            graph_builder,
+            repo_path,
+            include_submodules=include_submodules,
+            include_nested_repos=include_nested_repos,
+        )
+        _phase_done(progress, "tsconfig")
 
     # ---- Graph build phase -------------------------------------------------
     # Sub-phases (graph.imports / graph.heritage / graph.calls) are emitted

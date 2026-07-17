@@ -660,6 +660,10 @@ def _generate_docs_for_added_repo(
             graph_builder.add_file(parsed)
         except Exception:
             continue
+
+    from repowise.core.ingestion import wire_tsconfig_resolver
+
+    wire_tsconfig_resolver(graph_builder, repo_path)
     graph_builder.build()
 
     from repowise.core.repo_config import load_repo_config

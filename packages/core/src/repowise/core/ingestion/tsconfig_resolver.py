@@ -442,3 +442,33 @@ class TsconfigResolver:
         except Exception as exc:
             log.debug("tsconfig_parse_failed", path=str(config_path), error=str(exc))
             return None
+
+
+def wire_tsconfig_resolver(
+    graph_builder: Any,
+    repo_path: str | Path,
+    *,
+    include_submodules: bool = False,
+    include_nested_repos: bool = False,
+) -> None:
+    """Wire up the TsconfigResolver for the given GraphBuilder, if TS/JS files are present.
+
+    Needs to be called after add_file() but before build().
+    """
+    _ts_langs = {"typescript", "javascript"}
+
+    # We duck-type graph_builder to avoid circular imports. It has ._parsed_files.
+    parsed_files = graph_builder._parsed_files.values()
+    if not any(pf.file_info.language in _ts_langs for pf in parsed_files):
+        return
+
+    try:
+        _path_set = set(graph_builder._parsed_files.keys())
+        _resolver = TsconfigResolver(
+            repo_path=Path(repo_path),
+            path_set=_path_set,
+            prune_nested_git=not (include_submodules or include_nested_repos),
+        )
+        graph_builder.set_tsconfig_resolver(_resolver)
+    except Exception as _resolver_exc:
+        log.warning("tsconfig_resolver_init_failed", error=str(_resolver_exc))

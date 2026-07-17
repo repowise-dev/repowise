@@ -194,6 +194,15 @@ def health_command(
             parsed_files.append(parsed)
         except Exception:
             continue
+            
+    from repowise.core.ingestion import wire_tsconfig_resolver
+
+    wire_tsconfig_resolver(
+        graph_builder,
+        repo_path,
+        include_submodules=include_submodules,
+        include_nested_repos=include_nested_repos,
+    )
     graph_builder.build()
 
     git_meta_map: dict = {}
