@@ -377,7 +377,7 @@ This is how you connect repowise to Claude Code, Cursor, Cline, Windsurf, and ot
 | `--transport` | Protocol: `stdio` (default, for editors), `streamable-http` (for HTTP clients), or `sse` (legacy) |
 | `--port` | Port for HTTP/SSE transports (default: 7338) |
 
-**MCP tools exposed (9 tools):**
+**Default single-repo MCP tools (11 tools):**
 
 | Tool | What it does |
 |------|-------------|
@@ -387,9 +387,11 @@ This is how you connect repowise to Claude Code, Cursor, Cline, Windsurf, and ot
 | `get_symbol` | Raw source bytes for one indexed symbol with exact line bounds (cheaper/safer than `Read` + offset math) |
 | `search_codebase` | Semantic search over wiki with git freshness boosting. In workspace mode, searches across all repos. |
 | `get_risk` | Modification risk assessment, hotspot score, dependents, co-change partners, bus factor, blast radius, test gaps, 0–10 risk score |
+| `get_change_risk` | Live commit or range risk score, ranked against recent commits in the same repository |
 | `get_why` | Why code is structured the way it is, architectural decisions, git archaeology. Three modes: NL search, path-based, health dashboard. |
 | `get_dead_code` | Tiered dead code report grouped by confidence with cleanup impact estimates |
 | `get_health` | 25-marker code-health scores, dashboard KPIs + lowest-scoring files, or per-file findings; `include` for refactoring suggestions and trend alerts |
+| `list_repos` | Repository aliases served by this MCP server |
 
 In workspace mode, tools are workspace-aware, pass `repo="backend"` to target a specific repo or `repo="all"` to query across the entire workspace. The default repo is used when `repo` is omitted.
 

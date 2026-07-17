@@ -333,6 +333,41 @@ get_risk(changed_files=["src/api/routes.ts", "src/middleware/cors.ts"])
 
 ---
 
+## `get_change_risk`
+
+Live risk scoring for one commit or a `base..head` range. Unlike `get_risk`,
+which evaluates indexed files and can report blast radius, this scores the
+shape of the live diff and needs no index refresh.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `revspec` | string | No | Commit or `base..head` range to score (default `"HEAD"`) |
+| `repo` | string | No | *(workspace only)* Target repo alias |
+| `extensions` | list[string] | No | File suffixes to count, such as `[".py", ".ts"]` |
+| `exclude_patterns` | list[string] | No | Gitignore-style paths to omit; combined with root `.riskignore` rules |
+| `baseline` | int | No | Recent commits to sample for percentile ranking (default `200`; `0` disables percentile ranking) |
+
+**Returns:** The corpus-calibrated `score`, `probability`, and `level`, plus a
+repo-relative `risk_percentile`, `review_priority`, and `classification`.
+`baseline_sample_size` reports how many filtered commits informed the percentile;
+`features`, `drivers`, and combined `exclude_patterns` make the result auditable.
+Use the percentile and review priority for triage; the raw score is secondary
+context when no repository baseline is available.
+
+**When to use:** Before merging a commit or PR range, especially when you need
+to assess the diff itself rather than the risk of an already-indexed file.
+
+**Example calls:**
+
+```
+get_change_risk()
+get_change_risk(revspec="main..HEAD", extensions=[".py"], exclude_patterns=["tests/"])
+```
+
+---
+
 ## `get_why`
 
 Architectural decision intelligence. Falls back to git archaeology when no decision records exist for a path, and further to a rationale comment mined live from the source when neither decisions nor git history explain the "why".
