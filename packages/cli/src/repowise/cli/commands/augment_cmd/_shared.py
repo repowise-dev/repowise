@@ -7,6 +7,7 @@ depend on ``_shared``, never the other way around.
 
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 
 
@@ -58,10 +59,20 @@ def _relativize(file_path: str, repo_path: Path) -> str | None:
 
 
 def _find_repo_root(cwd: Path) -> Path | None:
-    """Walk up from cwd to find a directory with .repowise/."""
+    """Walk up from cwd to find a directory with .repowise/.
+
+    ``~/.repowise`` is the user-level config dir and a ``.repowise`` at the
+    system temp ROOT is always a stray artifact (a tool that indexed with
+    cwd=$TMP), so neither counts as a repo opt-in; repos legitimately created
+    UNDER either directory still match.
+    """
     current = Path(cwd).resolve()
+    try:
+        skip = {Path.home().resolve(), Path(tempfile.gettempdir()).resolve()}
+    except (OSError, RuntimeError):
+        skip = set()
     for _ in range(20):
-        if (current / ".repowise").is_dir():
+        if current not in skip and (current / ".repowise").is_dir():
             return current
         parent = current.parent
         if parent == current:

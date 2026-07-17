@@ -477,3 +477,38 @@ class TestMainCodex:
     def test_unknown_agent_falls_back_to_claude_code(self, monkeypatch, repo) -> None:
         out = _run_main(monkeypatch, _payload("pytest -x", str(repo)), argv=["--agent", "weird"])
         assert json.loads(out)["hookSpecificOutput"]["permissionDecision"] == "allow"
+
+
+class TestNonRepoRoots:
+    """~ and the system temp ROOT never count as repo opt-ins, even when a
+    stray .repowise exists there; repos created UNDER them still match."""
+
+    def test_temp_root_repowise_is_ignored(self, tmp_path, monkeypatch) -> None:
+        fake_tmp = tmp_path / "faketmp"
+        (fake_tmp / ".repowise").mkdir(parents=True)
+        cwd = fake_tmp / "work" / "sub"
+        cwd.mkdir(parents=True)
+        monkeypatch.setattr(
+            rewrite_hook.tempfile, "gettempdir", lambda: str(fake_tmp)
+        )
+        # Ancestors of tmp_path on the host may legitimately match, so pin
+        # only the guard: the walk must never return the temp root itself.
+        import os
+
+        found = rewrite_hook._find_repo_root(str(cwd))
+        assert found is None or os.path.realpath(found) != os.path.realpath(
+            str(fake_tmp)
+        )
+
+    def test_repo_under_temp_root_still_matches(self, tmp_path, monkeypatch) -> None:
+        fake_tmp = tmp_path / "faketmp"
+        repo = fake_tmp / "checkout"
+        (repo / ".repowise").mkdir(parents=True)
+        monkeypatch.setattr(
+            rewrite_hook.tempfile, "gettempdir", lambda: str(fake_tmp)
+        )
+        import os
+
+        found = rewrite_hook._find_repo_root(str(repo))
+        assert found is not None
+        assert os.path.realpath(found) == os.path.realpath(str(repo))

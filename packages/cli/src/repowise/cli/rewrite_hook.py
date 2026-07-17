@@ -44,6 +44,7 @@ from __future__ import annotations
 import os.path
 import re
 import sys
+import tempfile
 
 # Stdlib-only module by design (see hot-path discipline above) — safe to
 # import at module scope. (No pathlib: it costs double-digit milliseconds
@@ -288,13 +289,20 @@ def _find_repo_root(cwd: str) -> str | None:
     try:
         current = os.path.realpath(cwd or ".")
         home = os.path.realpath(os.path.expanduser("~"))
+        temp_root = os.path.realpath(tempfile.gettempdir())
     except OSError:
         return None
     for _ in range(20):
         # ~/.repowise is the *user-level* config dir, not a repo opt-in —
         # without this guard every directory under $HOME would classify as
-        # a repowise repo and get its commands rewritten.
-        if current != home and os.path.isdir(os.path.join(current, ".repowise")):
+        # a repowise repo and get its commands rewritten. The system temp
+        # ROOT gets the same treatment: a .repowise there is always a stray
+        # artifact (a tool that indexed with cwd=$TMP), never an opt-in, and
+        # it would otherwise capture every temp-dir cwd on the machine.
+        # Repos legitimately created UNDER either directory still match.
+        if current not in (home, temp_root) and os.path.isdir(
+            os.path.join(current, ".repowise")
+        ):
             return current
         parent = os.path.dirname(current)
         if parent == current:
