@@ -234,6 +234,49 @@ class WalkSnapshot:
                 (dirpath, "" if rel == "." else rel, list(dirnames), list(filenames))
             )
 
+    @classmethod
+    def from_files(cls, root: Path | str, rel_paths: Iterable[str]) -> WalkSnapshot:
+        """Build a snapshot from an already-discovered file list, with no walk.
+
+        *rel_paths* are root-relative posix file paths (e.g. the ingestion
+        traverser's ``FileInfo.path`` values). The snapshot answers
+        :meth:`iter_glob` queries against exactly that file set — directory
+        entries are reconstructed from the paths so directory-name patterns
+        and subtree-rooted queries keep working. Entries are emitted in
+        sorted preorder, which is deterministic but not necessarily the
+        order a live walk would produce; callers that need a stable order
+        must sort their results (the dynamic-hints registry does).
+        """
+        snap = cls.__new__(cls)
+        snap.root = Path(root)
+        snap._prune_dirs = PRUNED_DIRS
+        snap._prune_nested_git = True
+        files_by_dir: dict[str, set[str]] = {"": set()}
+        subdirs: dict[str, set[str]] = {"": set()}
+        for rel in rel_paths:
+            rel_dir, _, name = rel.rpartition("/")
+            files_by_dir.setdefault(rel_dir, set()).add(name)
+            # Register the ancestor chain so every intermediate directory
+            # exists as an entry even when it holds no files directly.
+            child_dir = rel_dir
+            while child_dir:
+                parent, _, seg = child_dir.rpartition("/")
+                subdirs.setdefault(parent, set()).add(seg)
+                files_by_dir.setdefault(parent, set())
+                child_dir = parent
+        snap._entries = []
+
+        def _emit(rel_dir: str) -> None:
+            dirnames = sorted(subdirs.get(rel_dir, ()))
+            filenames = sorted(files_by_dir.get(rel_dir, ()))
+            dirpath = snap.root if rel_dir == "" else snap.root / rel_dir
+            snap._entries.append((dirpath, rel_dir, dirnames, filenames))
+            for d in dirnames:
+                _emit(f"{rel_dir}/{d}" if rel_dir else d)
+
+        _emit("")
+        return snap
+
     def iter_glob(self, root: Path | str, patterns: str | Iterable[str]) -> Iterator[Path]:
         """Replay of ``iter_glob(root, patterns)`` against the snapshot."""
         query_root = Path(root)

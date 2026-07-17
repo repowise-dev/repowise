@@ -389,9 +389,15 @@ async def _run_ingestion(
         from repowise.core.ingestion.dynamic_hints import HintRegistry
 
         registry = HintRegistry()
+        # Feed the traversed file list so hints query the indexed set
+        # directly instead of re-walking the tree (keeps gitignored and
+        # generated files out of hint edges, and skips a full walk).
+        hint_paths = [fi.path for fi in file_infos]
         dynamic_edges = await loop.run_in_executor(
             None,
-            lambda: registry.extract_all(repo_path, dotnet_index=graph_builder.dotnet_index),
+            lambda: registry.extract_all(
+                repo_path, dotnet_index=graph_builder.dotnet_index, file_paths=hint_paths
+            ),
         )
         graph_builder.add_dynamic_edges(dynamic_edges)
         logger.info("dynamic_hints_added", count=len(dynamic_edges))

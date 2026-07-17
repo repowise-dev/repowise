@@ -177,7 +177,9 @@ def build_repo_graph(
         from repowise.core.ingestion.dynamic_hints import HintRegistry
 
         dynamic_edges = HintRegistry().extract_all(
-            Path(repo_path), dotnet_index=graph_builder.dotnet_index
+            Path(repo_path),
+            dotnet_index=graph_builder.dotnet_index,
+            file_paths=[fi.path for fi in file_infos],
         )
         graph_builder.add_dynamic_edges(dynamic_edges)
         if dynamic_edges:

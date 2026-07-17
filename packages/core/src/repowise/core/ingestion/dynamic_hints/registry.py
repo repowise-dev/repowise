@@ -15,6 +15,7 @@ now completes in seconds on most codebases regardless of language mix.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -27,15 +28,15 @@ from .cpp import CppDynamicHints
 from .django import DjangoDynamicHints
 from .dotnet import DotNetDynamicHints
 from .go import GoDynamicHints
-from .rust import RustDynamicHints
+from .jvm import JvmDynamicHints
 from .luau import LuauDynamicHints
 from .node import NodeDynamicHints
 from .php import PhpDynamicHints
-from .python_imports import PythonDynamicHints
 from .pytest_hints import PytestDynamicHints
+from .python_imports import PythonDynamicHints
 from .ruby import RubyDynamicHints
+from .rust import RustDynamicHints
 from .scala import ScalaDynamicHints
-from .jvm import JvmDynamicHints
 from .spring import SpringDynamicHints
 from .swift import SwiftDynamicHints
 from .xaml import XamlDynamicHints
@@ -78,7 +79,11 @@ class HintRegistry:
         self._max_workers = max_workers or min(_DEFAULT_MAX_WORKERS, len(self._extractors))
 
     def extract_all(
-        self, repo_root: Path, *, dotnet_index: object | None = None
+        self,
+        repo_root: Path,
+        *,
+        dotnet_index: object | None = None,
+        file_paths: Iterable[str] | None = None,
     ) -> list[DynamicEdge]:
         """Run every registered extractor and merge their edges.
 
@@ -92,6 +97,15 @@ class HintRegistry:
         The XAML extractor needs the repo's type map and otherwise rebuilds
         the index from scratch (a full .cs walk + read + scan); passing the
         one the graph resolvers already built skips that duplicate work.
+
+        *file_paths* is the ingestion traverser's repo-relative file list
+        (``FileInfo.path`` values). When provided, the shared snapshot is
+        built from it directly — no second filesystem walk — and hint
+        queries see exactly the indexed file set: gitignored files (built
+        ``bin``/``obj`` trees, ``local_settings.py``) and generated files
+        (``*.Designer.cs``) can no longer produce edges to files the index
+        does not contain. Omitted (tests, standalone use), the registry
+        falls back to its own pruned walk.
         """
         edges: list[DynamicEdge] = []
         if not self._extractors:
@@ -104,9 +118,12 @@ class HintRegistry:
         try:
             from repowise.core.fs_walk import WalkSnapshot
 
-            from ._walk import PRUNED_DIRS
+            if file_paths is not None:
+                snapshot = WalkSnapshot.from_files(repo_root, file_paths)
+            else:
+                from ._walk import PRUNED_DIRS
 
-            snapshot = WalkSnapshot(repo_root, prune_dirs=PRUNED_DIRS)
+                snapshot = WalkSnapshot(repo_root, prune_dirs=PRUNED_DIRS)
         except Exception as e:  # pragma: no cover - snapshot is best-effort
             log.warning("dynamic_hints_snapshot_failed", error=str(e))
         for ex in self._extractors:
