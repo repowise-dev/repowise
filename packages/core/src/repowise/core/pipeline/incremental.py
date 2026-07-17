@@ -64,7 +64,10 @@ def build_repo_graph(
     Returns ``(parsed_files, source_map, graph_builder, repo_structure,
     file_count)``.
     """
-    from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder, compute_content_hash
+    import os
+    from concurrent.futures import ThreadPoolExecutor
+
+    from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
 
     log = log or _noop_log
 
@@ -74,20 +77,28 @@ def build_repo_graph(
         include_submodules=include_submodules,
         include_nested_repos=include_nested_repos,
     )
-    file_infos = list(traverser.traverse())
-    repo_structure = traverser.get_repo_structure()
+    # Parallel stat + header sniffing, mirroring the init ingestion phase.
+    # A serial traverse() pays per-file I/O latency sequentially; on a cold
+    # OS file cache that was ~50s of every PowerToys-scale update. Passing
+    # the file_infos into get_repo_structure also avoids its re-walk.
+    all_paths = list(traverser._walk())
+    io_workers = min(32, max(4, (os.cpu_count() or 4) * 2))
+    with ThreadPoolExecutor(max_workers=io_workers) as io_pool:
+        maybe_infos = list(io_pool.map(traverser._build_file_info, all_paths))
+    file_infos = [fi for fi in maybe_infos if fi is not None]
+    repo_structure = traverser.get_repo_structure(file_infos)
 
-    # Content-hash parse cache: an incremental update re-ingests the whole
-    # repo, but only the changed files actually need a tree-sitter parse.
-    # Best-effort — any cache failure falls back to a full parse.
-    parse_cache = None
-    try:
-        from repowise.core.ingestion.parse_cache import ParseCache
+    # Thread-pool source reads + content-hash parse cache split, shared with
+    # the init parse phase: only changed files need a tree-sitter parse.
+    # Cache failures degrade to all-miss (full parse), as before.
+    from repowise.core.pipeline.phases.ingestion import (
+        _cache_parsed,
+        _read_sources,
+        _split_cached,
+    )
 
-        parse_cache = ParseCache(Path(repo_path) / ".repowise")
-        parse_cache.load()
-    except Exception:
-        parse_cache = None
+    fi_and_bytes = _read_sources(file_infos, None)
+    parse_cache, cached_hits, to_parse = _split_cached(Path(repo_path), fi_and_bytes, None)
 
     parser: Any = None  # constructed lazily — every-file-cached updates skip query compilation
     parsed_files: list = []
@@ -100,19 +111,26 @@ def build_repo_graph(
         include_nested_repos=include_nested_repos,
     )
 
-    skipped = 0
-    for fi in file_infos:
+    # Parse the misses in process and serially: on the update path they are
+    # change-sized. (Ceiling: a wiped/stale cache re-parses everything on one
+    # core; routing large miss counts through init's process pool would lift
+    # it, at the cost of Windows spawn overhead on every routine update.)
+    merged: dict[int, Any] = dict(cached_hits)
+    for idx, (fi, source), content_hash in to_parse:
         try:
-            source = Path(fi.abs_path).read_bytes()
-            content_hash = compute_content_hash(source)
-            parsed = parse_cache.get(fi, content_hash) if parse_cache is not None else None
-            if parsed is None:
-                if parser is None:
-                    parser = ASTParser()
-                parsed = parser.parse_file(fi, source)
-                if parse_cache is not None:
-                    parse_cache.put(parsed, content_hash)
+            if parser is None:
+                parser = ASTParser()
+            parsed = parser.parse_file(fi, source)
         except Exception:
+            continue
+        merged[idx] = parsed
+        if content_hash:
+            _cache_parsed(parse_cache, parsed, content_hash)
+
+    skipped = len(file_infos) - len(fi_and_bytes)  # unreadable files
+    for idx, (fi, source) in enumerate(fi_and_bytes):
+        parsed = merged.get(idx)
+        if parsed is None:
             skipped += 1
             continue
         parsed_files.append(parsed)
