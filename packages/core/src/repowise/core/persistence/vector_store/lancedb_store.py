@@ -42,6 +42,8 @@ class LanceDBVectorStore(VectorStore):
     :meth:`embed_and_upsert`.
     """
 
+    persists_across_runs = True
+
     _TABLE_NAME = "wiki_pages"
 
     def __init__(self, db_path: str, embedder: Embedder, table_name: str | None = None) -> None:

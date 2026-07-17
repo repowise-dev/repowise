@@ -677,6 +677,11 @@ class PageGenerator(PerTypeGenerationMixin):
         # styles, so default ("comprehensive") pages keep byte-identical metadata.
         if self._style.is_active:
             page.metadata["style"] = self._style.name
+        # Content came back verbatim from the prior run's persisted page:
+        # downstream (embedding) uses this to skip work whose output already
+        # exists byte-identically.
+        if response.usage.get("reused_from_prior_run"):
+            page.metadata["reused_from_prior_run"] = True
         return page
 
     def _render(self, template_name: str, *, style_prefix: bool = True, **kwargs: Any) -> str:

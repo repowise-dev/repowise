@@ -424,7 +424,15 @@ class _GenerationRun:
                             self.on_page_ready(result)
                         except Exception as exc:  # noqa: BLE001
                             log.debug("on_page_ready.failed", error=str(exc))
-                    if self.vector_store is not None:
+                    # A page reused verbatim from the prior run already has an
+                    # identical vector in any store that survives across runs;
+                    # re-embedding it re-bills the embedder for every unchanged
+                    # page on every update. Ephemeral stores start empty each
+                    # run and still need it.
+                    if self.vector_store is not None and not (
+                        result.metadata.get("reused_from_prior_run")
+                        and getattr(self.vector_store, "persists_across_runs", False)
+                    ):
                         embed_items.append(_embed_item(result))
                 return result
             except Exception as exc:
