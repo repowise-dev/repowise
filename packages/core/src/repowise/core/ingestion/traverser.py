@@ -71,6 +71,11 @@ log = structlog.get_logger(__name__)
 _BLOCKED_DIRS: frozenset[str] = frozenset(
     {
         ".git",
+        # Repowise's own state dir. Its contents change between init and any
+        # later update (state.json, caches), so indexing it makes the
+        # update-built graph diverge from the init-built one and defeats the
+        # structure-keyed centrality cache.
+        ".repowise",
         ".hg",
         ".svn",
         "node_modules",

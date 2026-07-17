@@ -210,25 +210,29 @@ async def _run_ingestion(
 
     # Parallel stat + header reads (I/O bound).
     # Use asyncio.wrap_future so the event loop stays responsive while waiting.
-    file_infos: list[Any] = []
+    # Results are kept in walk order, matching the update path's rebuild
+    # (pipeline/incremental.py): files are fed to GraphBuilder in this order,
+    # and ambiguous reference resolution tie-breaks on insertion order — a
+    # completion-ordered list made the init-built graph differ from the
+    # update-built one, so the first post-init update could never hit the
+    # centrality cache. Progress still ticks per completion via callbacks.
     io_pool = ThreadPoolExecutor(max_workers=8)
     try:
         aws = [
             asyncio.wrap_future(io_pool.submit(traverser._build_file_info, p)) for p in all_paths
         ]
-        for coro in asyncio.as_completed(aws):
-            try:
-                result = await coro
-            except Exception:
-                result = None
-            if result is not None:
-                file_infos.append(result)
-            if progress:
-                progress.on_item_done("traverse")
+        if progress is not None:
+            _traverse_tick = lambda _fut: progress.on_item_done("traverse")  # noqa: E731
+            for fut in aws:
+                fut.add_done_callback(_traverse_tick)
+        ordered = await asyncio.gather(*aws, return_exceptions=True)
+        file_infos: list[Any] = [
+            r for r in ordered if r is not None and not isinstance(r, BaseException)
+        ]
     finally:
         # shutdown(wait=True) is blocking — run in a thread to keep the
         # event loop responsive.  All submitted futures have already
-        # completed by the time we reach here (the for-loop awaited them).
+        # completed by the time we reach here (gather awaited them).
         await asyncio.to_thread(io_pool.shutdown, wait=True)
 
     repo_structure = traverser.get_repo_structure(file_infos)
@@ -346,6 +350,7 @@ async def _run_ingestion(
         if progress:
             progress.on_phase_start("tsconfig", None)
         from repowise.core.ingestion import wire_tsconfig_resolver
+
         wire_tsconfig_resolver(
             graph_builder,
             repo_path,
@@ -386,9 +391,7 @@ async def _run_ingestion(
         registry = HintRegistry()
         dynamic_edges = await loop.run_in_executor(
             None,
-            lambda: registry.extract_all(
-                repo_path, dotnet_index=graph_builder.dotnet_index
-            ),
+            lambda: registry.extract_all(repo_path, dotnet_index=graph_builder.dotnet_index),
         )
         graph_builder.add_dynamic_edges(dynamic_edges)
         logger.info("dynamic_hints_added", count=len(dynamic_edges))
