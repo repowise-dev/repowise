@@ -261,6 +261,29 @@ class TestOutcomeClassification:
         rec = self._run(monkeypatch, body)
         assert rec and rec[0]["properties"]["status"] == "error"
 
+    def test_usage_error_is_not_error(self, monkeypatch: pytest.MonkeyPatch):
+        # A bad/unknown flag is the user mis-invoking the command, not a
+        # product failure — it must not inflate the error rate.
+        import click
+
+        def body() -> None:
+            raise click.NoSuchOption("--bogus")
+
+        rec = self._run(monkeypatch, body)
+        assert rec and rec[0]["properties"]["status"] == "usage_error"
+        assert rec[0]["properties"]["error_type"] == "NoSuchOption"
+
+    def test_app_guard_stays_error(self, monkeypatch: pytest.MonkeyPatch):
+        # A plain ClickException (e.g. "run `repowise init` first") is still a
+        # real "could not proceed" outcome and stays in the error bucket.
+        import click
+
+        def body() -> None:
+            raise click.ClickException("no index found")
+
+        rec = self._run(monkeypatch, body)
+        assert rec and rec[0]["properties"]["status"] == "error"
+
     def test_command_outcome_rides_the_event(self, monkeypatch: pytest.MonkeyPatch):
         from repowise.cli.platform import telemetry
 

@@ -44,7 +44,7 @@ Every event, whatever its type, carries the same anonymous envelope:
 | `properties.command` | `init`, `update`, `health` | Which command ran |
 | `properties.subcommand` | `decision.add`, `telemetry.status` | A known subcommand name only |
 | `properties.flags` | `["--resume", "--provider"]` | Option **names only**, never values |
-| `properties.status` | `ok` / `error` / `interrupted` | Success, failure, or user-cancelled (Ctrl-C) |
+| `properties.status` | `ok` / `error` / `usage_error` / `interrupted` | Success, failure, a mis-invocation (bad/unknown flag), or user-cancelled (Ctrl-C) |
 | `properties.error_type` | `LLMProviderError` | Exception **class name only** |
 | `properties.duration_ms` | `71840` | Performance in the wild |
 

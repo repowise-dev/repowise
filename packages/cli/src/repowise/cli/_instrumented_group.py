@@ -87,6 +87,15 @@ class InstrumentedGroup(click.Group):
             # counting that as "error" made success rates uninterpretable.
             status = "interrupted"
             raise
+        except click.UsageError as exc:
+            # Bad/unknown option, missing or malformed argument: the user
+            # mis-invoked the command (a typo, a wrong flag), not a product
+            # failure. Kept out of the ``error`` bucket so the real crash rate
+            # is readable — a UsageError subclasses ClickException, so this
+            # branch must sit *before* the ClickException one below.
+            status = "usage_error"
+            error_type = type(exc).__name__  # class name only, never the message
+            raise
         except click.ClickException as exc:
             status = "error"
             error_type = type(exc).__name__  # class name only, never the message
