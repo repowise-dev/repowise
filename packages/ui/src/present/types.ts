@@ -6,7 +6,9 @@
 // Kept framework-free (plain data) so the same model serves the OSS dashboard
 // and a future hosted app without re-implementing any logic.
 
-export type PresentSlideKind = "title" | "section" | "diagram" | "closing";
+// "split" pairs overview prose with a diagram side by side (used for layer
+// pages that carry a deterministic architecture diagram).
+export type PresentSlideKind = "title" | "section" | "diagram" | "split" | "closing";
 
 export interface PresentSlide {
   /** Stable id within the deck (slug), used as a React key. */

@@ -17,6 +17,7 @@ import structlog
 from repowise.core.ingestion.models import ParsedFile, RepoStructure
 
 from .. import onboarding as _onboarding
+from ..architecture_mermaid import embed_mermaid
 from ..context_assembler import FilePageContext, LayerPageContext
 from ..models import GENERATION_LEVELS, GeneratedPage, compute_source_hash
 
@@ -228,6 +229,7 @@ class PerTypeGenerationMixin:
         community: dict[str, int],
         sccs: list[Any],
         repo_name: str,
+        overview_mermaid: str | None = None,
     ) -> GeneratedPage:
         ctx = self._assembler.assemble_architecture_diagram(
             graph, pagerank, community, sccs, repo_name
@@ -236,6 +238,16 @@ class PerTypeGenerationMixin:
         response = await self._call_provider(
             "architecture_diagram", user_prompt, str(uuid.uuid4()), target_path=repo_name
         )
+        # Swap the LLM's free-form diagram for the deterministic KG-derived map
+        # (idempotent, applies to fresh and reused content). Falls back to the
+        # LLM's own mermaid when the KG can't produce one.
+        if overview_mermaid:
+            response = replace(
+                response,
+                content=embed_mermaid(
+                    response.content, overview_mermaid, heading="## Architecture map"
+                ),
+            )
         return self._build_generated_page(
             "architecture_diagram",
             repo_name,
@@ -340,6 +352,15 @@ class PerTypeGenerationMixin:
         response = await self._call_provider(
             "layer_page", user_prompt, str(uuid.uuid4()), target_path=target
         )
+        # Embed the deterministic per-layer diagram (idempotent, applies to fresh
+        # and reused content so it lands on both init and update).
+        if ctx.diagram_mermaid:
+            response = replace(
+                response,
+                content=embed_mermaid(
+                    response.content, ctx.diagram_mermaid, heading="## Architecture"
+                ),
+            )
         return self._build_generated_page(
             "layer_page",
             target,

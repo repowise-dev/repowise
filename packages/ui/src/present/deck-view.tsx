@@ -34,6 +34,9 @@ export function DeckView({ slides, index, onIndex, onOpenPage }: DeckViewProps) 
   const atEnd = index === slides.length - 1;
   const isTitle = slide.kind === "title";
   const isDiagram = slide.kind === "diagram";
+  // A layer slide pairing overview prose (left) with its diagram (right).
+  const isSplit = slide.kind === "split";
+  const isWide = isDiagram || isSplit;
 
   return (
     <div className="relative flex h-full flex-col">
@@ -41,7 +44,7 @@ export function DeckView({ slides, index, onIndex, onOpenPage }: DeckViewProps) 
       <div
         className={cn(
           "relative flex flex-1 items-center justify-center overflow-hidden py-4",
-          isDiagram ? "px-4 sm:px-8" : "px-6 sm:px-16",
+          isWide ? "px-4 sm:px-8" : "px-6 sm:px-16",
         )}
       >
         <AnimatePresence mode="wait">
@@ -53,55 +56,86 @@ export function DeckView({ slides, index, onIndex, onOpenPage }: DeckViewProps) 
             transition={{ duration: 0.22, ease: "easeOut" }}
             className={cn(
               "w-full",
-              isTitle ? "max-w-3xl text-center" : isDiagram ? "max-w-6xl" : "max-w-3xl text-left",
+              isTitle ? "max-w-3xl text-center" : isWide ? "max-w-6xl" : "max-w-3xl text-left",
             )}
           >
-            {slide.eyebrow && (
-              <p className="mb-3 text-xs font-semibold uppercase tracking-[0.14em] text-[var(--color-text-tertiary)]">
-                {slide.eyebrow}
-              </p>
-            )}
-            <h2
-              className={cn(
-                "font-serif font-semibold tracking-tight text-[var(--color-text-primary)]",
-                isTitle ? "text-5xl sm:text-6xl" : isDiagram ? "text-2xl sm:text-3xl" : "text-3xl sm:text-4xl",
-              )}
-            >
-              {slide.title}
-            </h2>
-
-            {slide.mermaid && (
-              <div className="mt-4 flex justify-center">
-                <div className="w-full">
-                  <MermaidDiagram chart={slide.mermaid} securityLevel="loose" />
+            {(() => {
+              const eyebrowEl = slide.eyebrow ? (
+                <p className="mb-3 text-xs font-semibold uppercase tracking-[0.14em] text-[var(--color-text-tertiary)]">
+                  {slide.eyebrow}
+                </p>
+              ) : null;
+              const titleEl = (
+                <h2
+                  className={cn(
+                    "font-serif font-semibold tracking-tight text-[var(--color-text-primary)]",
+                    isTitle
+                      ? "text-5xl sm:text-6xl"
+                      : isWide
+                        ? "text-2xl sm:text-3xl"
+                        : "text-3xl sm:text-4xl",
+                  )}
+                >
+                  {slide.title}
+                </h2>
+              );
+              const diagramEl = slide.mermaid ? (
+                <div className={cn("flex justify-center", isSplit ? "" : "mt-4")}>
+                  <div className="w-full">
+                    <MermaidDiagram chart={slide.mermaid} securityLevel="loose" />
+                  </div>
                 </div>
-              </div>
-            )}
+              ) : null;
+              const bodyEl = slide.bodyMarkdown ? (
+                <div
+                  className={cn(
+                    "text-[var(--color-text-secondary)]",
+                    isSplit ? "mt-4" : "mt-6",
+                    isTitle ? "mx-auto max-w-xl text-lg" : "text-base",
+                  )}
+                >
+                  <WikiMarkdown content={slide.bodyMarkdown} />
+                </div>
+              ) : null;
+              const sourceEl =
+                slide.sourcePageId && onOpenPage ? (
+                  <button
+                    type="button"
+                    onClick={() => onOpenPage(slide.sourcePageId!)}
+                    className={cn(
+                      "mt-6 inline-flex items-center gap-1.5 text-xs font-medium text-[var(--color-text-tertiary)] transition-colors hover:text-[var(--color-accent-primary)]",
+                      isTitle && "mx-auto",
+                    )}
+                  >
+                    <ExternalLink className="h-3.5 w-3.5" />
+                    Open{slide.sourcePath ? ` ${slide.sourcePath}` : ""} in reader
+                  </button>
+                ) : null;
 
-            {slide.bodyMarkdown && (
-              <div
-                className={cn(
-                  "mt-6 text-[var(--color-text-secondary)]",
-                  isTitle ? "mx-auto max-w-xl text-lg" : "text-base",
-                )}
-              >
-                <WikiMarkdown content={slide.bodyMarkdown} />
-              </div>
-            )}
-
-            {slide.sourcePageId && onOpenPage && (
-              <button
-                type="button"
-                onClick={() => onOpenPage(slide.sourcePageId!)}
-                className={cn(
-                  "mt-6 inline-flex items-center gap-1.5 text-xs font-medium text-[var(--color-text-tertiary)] transition-colors hover:text-[var(--color-accent-primary)]",
-                  isTitle && "mx-auto",
-                )}
-              >
-                <ExternalLink className="h-3.5 w-3.5" />
-                Open{slide.sourcePath ? ` ${slide.sourcePath}` : ""} in reader
-              </button>
-            )}
+              // Split: prose left, diagram right; stacks on narrow screens.
+              if (isSplit) {
+                return (
+                  <div className="grid items-center gap-8 md:grid-cols-2">
+                    <div className="min-w-0 text-left">
+                      {eyebrowEl}
+                      {titleEl}
+                      {bodyEl}
+                      {sourceEl}
+                    </div>
+                    <div className="min-w-0">{diagramEl}</div>
+                  </div>
+                );
+              }
+              return (
+                <>
+                  {eyebrowEl}
+                  {titleEl}
+                  {diagramEl}
+                  {bodyEl}
+                  {sourceEl}
+                </>
+              );
+            })()}
           </motion.div>
         </AnimatePresence>
 

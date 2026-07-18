@@ -153,12 +153,21 @@ export function buildPresentModel(
     .sort((a, b) => rankOf(metaString(a, "layer_name")) - rankOf(metaString(b, "layer_name")))
     .slice(0, MAX_LAYER_SLIDES);
   for (const p of layerPages) {
+    // Layer pages generated with the deterministic architecture diagram embed
+    // it as a mermaid block; pair prose with diagram in a split slide. Older
+    // indexes without a diagram degrade to a plain prose section.
+    const layerChart = extractMermaidBlocks(p.content)[0];
+    let body = slideBody(p, DECK_BODY_CHARS);
+    // The diagram renders in its own column on a split slide, so keep any
+    // embedded fence out of the prose body.
+    if (layerChart) body = body.replace(/```mermaid[\s\S]*?```/g, "").trim();
     deck.push({
       id: `layer-${p.id}`,
-      kind: "section",
+      kind: layerChart ? "split" : "section",
       eyebrow: "Layer",
       title: p.title,
-      bodyMarkdown: slideBody(p, DECK_BODY_CHARS),
+      bodyMarkdown: body,
+      mermaid: layerChart,
       sourcePageId: p.id,
       sourcePath: p.target_path,
       freshness: p.freshness_status,
@@ -236,7 +245,7 @@ export function buildPresentModel(
   // slides so the walkthrough is never empty when a deck exists.
   if (walkthrough.length === 0) {
     walkthrough = deck
-      .filter((s) => s.kind === "section" && s.bodyMarkdown)
+      .filter((s) => (s.kind === "section" || s.kind === "split") && s.bodyMarkdown)
       .map((s, i) => ({
         id: `step-${i}`,
         order: i + 1,

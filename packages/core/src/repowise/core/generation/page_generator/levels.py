@@ -307,9 +307,13 @@ def build_level5_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
     if not run.kg_ctx.available:
         return coros
 
+    from ..architecture_mermaid import ArchitectureMermaidBuilder
     from ..context_assembler import LayerPageContext
 
     _MIN_LAYER_FILES = 3
+
+    # One builder per run: indexes the graph once, then draws each layer.
+    diagram_builder = ArchitectureMermaidBuilder(run.kg_ctx)
 
     for layer in run.kg_ctx.get_layers():
         node_ids = layer.get("nodeIds", [])
@@ -370,6 +374,7 @@ def build_level5_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
             tour_steps=tour_steps,
             entry_points=entry_points,
             edge_connectors=edge_connectors,
+            diagram_mermaid=diagram_builder.layer(layer) or "",
         )
         coros.append((page_id, gen.generate_layer_page(ctx)))
 
@@ -398,11 +403,19 @@ def build_level6_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
             )
         )
     if compute_page_id("architecture_diagram", run.repo_name) not in run.completed_ids:
+        from ..architecture_mermaid import build_overview_mermaid
+
+        overview_mermaid = build_overview_mermaid(run.kg_ctx)
         coros.append(
             (
                 compute_page_id("architecture_diagram", run.repo_name),
                 gen.generate_architecture_diagram(
-                    run.graph, run.pagerank, run.community, run.sccs, run.repo_name
+                    run.graph,
+                    run.pagerank,
+                    run.community,
+                    run.sccs,
+                    run.repo_name,
+                    overview_mermaid=overview_mermaid,
                 ),
             )
         )

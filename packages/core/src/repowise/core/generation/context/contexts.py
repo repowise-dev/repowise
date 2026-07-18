@@ -118,6 +118,9 @@ class LayerPageContext:
     tour_steps: list[dict] = field(default_factory=list)
     entry_points: list[str] = field(default_factory=list)
     edge_connectors: list[str] = field(default_factory=list)
+    # Deterministic per-layer architecture diagram (mermaid source), embedded
+    # into the page after generation. Empty when the KG can't produce one.
+    diagram_mermaid: str = ""
 
 
 @dataclass

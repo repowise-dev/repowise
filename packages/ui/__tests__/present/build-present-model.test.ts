@@ -137,6 +137,31 @@ describe("buildPresentModel", () => {
     expect(model.deck[model.deck.length - 1]!.kind).toBe("closing");
   });
 
+  it("builds a split slide for a layer page that embeds a diagram", () => {
+    const layerWithDiagram = makePage({
+      id: "ld",
+      page_type: "layer_page",
+      title: "Data layer",
+      content:
+        "# Data\n\nThe data layer persists and indexes everything the pipeline produces, and it is the durable backbone every other layer leans on.\n\n## Architecture\n\n```mermaid\nflowchart TD\nX-->Y\n```",
+      metadata: { layer_name: "Data" },
+    });
+    const model = buildPresentModel([overview, layerWithDiagram]);
+    const slide = model.deck.find((s) => s.eyebrow === "Layer");
+    expect(slide!.kind).toBe("split");
+    expect(slide!.mermaid).toContain("flowchart TD");
+    expect(slide!.bodyMarkdown).toBeTruthy();
+    // Prose column must not carry the diagram fence — it renders separately.
+    expect(slide!.bodyMarkdown).not.toContain("```mermaid");
+  });
+
+  it("keeps a plain section slide for a layer page without a diagram", () => {
+    const model = buildPresentModel([overview, layerCore]);
+    const slide = model.deck.find((s) => s.eyebrow === "Layer");
+    expect(slide!.kind).toBe("section");
+    expect(slide!.mermaid).toBeUndefined();
+  });
+
   it("builds a walkthrough from the guided tour with time estimates", () => {
     const model = buildPresentModel([overview, mainFile]);
     expect(model.walkthrough).toHaveLength(2);

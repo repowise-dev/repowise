@@ -74,6 +74,15 @@ function mermaidThemeConfig() {
         stroke-width: 1.5px;
       }
       .cluster rect { stroke-dasharray: 8 5; rx: 12px; ry: 12px; }
+      /* Edge labels: mermaid draws the background rect from edgeLabelBackground
+         but leaves the label text uncolored, so labelled edges (the new
+         deterministic diagrams carry import counts) rendered as blank boxes.
+         Paint the text in the edge ink. */
+      .edgeLabel, .edgeLabel p, .edgeLabel span {
+        color: ${edge};
+        fill: ${edge};
+        font-weight: 600;
+      }
       .nodes .node:first-of-type rect,
       .nodes .node:first-of-type polygon,
       .nodes .node:first-of-type circle {

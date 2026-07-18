@@ -244,6 +244,47 @@ class TestBuildLevel5Coros:
         # Page keyed by the layer's stable slug id, not its display name.
         assert coros[0][0] == "layer_page:layer:core"
 
+    def test_layer_context_carries_diagram_when_modules_exist(self, tmp_path):
+        from unittest.mock import MagicMock
+
+        from repowise.core.generation.kg_context import KnowledgeGraphContext
+        from repowise.core.generation.page_generator.levels import build_level5_coros
+
+        files_a = [f"core/a/f{i}.py" for i in range(4)]
+        files_b = [f"core/b/f{i}.py" for i in range(3)]
+        nodes = [{"id": f"file:{f}", "filePath": f} for f in files_a + files_b]
+        edges = [{"source": f"file:{files_a[0]}", "target": f"file:{files_b[0]}",
+                  "type": "imports"}]
+        layers = [{"id": "layer:core", "name": "Core", "description": "",
+                   "nodeIds": [f"file:{f}" for f in files_a + files_b]}]
+        modules = [
+            {"id": "module:core-a", "name": "core/a", "path": "core/a",
+             "layerId": "layer:core", "nodeIds": [f"file:{f}" for f in files_a]},
+            {"id": "module:core-b", "name": "core/b", "path": "core/b",
+             "layerId": "layer:core", "nodeIds": [f"file:{f}" for f in files_b]},
+        ]
+        kg = {"nodes": nodes, "edges": edges, "layers": layers, "modules": modules, "tour": []}
+        for n in nodes:
+            full = tmp_path / n["filePath"]
+            full.parent.mkdir(parents=True, exist_ok=True)
+            full.touch()
+        kg_path = tmp_path / ".repowise" / "knowledge-graph.json"
+        kg_path.parent.mkdir(exist_ok=True)
+        kg_path.write_text(json.dumps(kg))
+
+        run = MagicMock()
+        run.kg_ctx = KnowledgeGraphContext(kg_path)
+        run.pagerank = {}
+        run.completed_page_summaries = {}
+        run.completed_ids = set()
+        run.gen = MagicMock()
+
+        coros = build_level5_coros(run)
+        assert len(coros) == 1
+        ctx = run.gen.generate_layer_page.call_args.args[0]
+        assert ctx.diagram_mermaid.startswith("flowchart TD")
+        assert "core/a" in ctx.diagram_mermaid
+
     def test_skips_small_layers(self, tmp_path):
         from repowise.core.generation.page_generator.levels import build_level5_coros
 
