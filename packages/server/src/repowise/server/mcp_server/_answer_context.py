@@ -164,9 +164,7 @@ async def build_structured_prelude(
         sections.append(f"Recent significant commits: {commits_line}")
 
     if decisions:
-        titles = "; ".join(
-            f"{d['title']} ({d['status']})" for d in decisions
-        )
+        titles = "; ".join(f"{d['title']} ({d['status']})" for d in decisions)
         sections.append(f"Decision records touching these files: {titles}")
 
     if not sections:
@@ -188,7 +186,7 @@ def _top_symbols_summary(hits: list[dict]) -> str:
                 name = s.get("name") or s.get("signature") or ""
                 kind = s.get("kind") or "?"
                 if name:
-                    matched.append(f"{name} ({kind}) in {h.get('target_path','')}")
+                    matched.append(f"{name} ({kind}) in {h.get('target_path', '')}")
             if len(matched) >= 4:
                 break
         if len(matched) >= 4:
@@ -208,9 +206,7 @@ def _top_symbols_summary(hits: list[dict]) -> str:
     return ""
 
 
-async def _recent_commits_summary(
-    hits: list[dict], ctx: Any, repo_id: str
-) -> str:
+async def _recent_commits_summary(hits: list[dict], ctx: Any, repo_id: str) -> str:
     """Short summary of significant commits across the top hits.
 
     GitMetadata.significant_commits_json is already filtered by the indexer
@@ -296,7 +292,11 @@ def _format_hits_block(hits: list[dict], max_chars_per_hit: int) -> str:
     """Format the per-hit excerpts. Mirrors the prior tool_answer behaviour."""
     parts: list[str] = []
     for i, h in enumerate(hits, start=1):
-        body_src = h.get("summary") or h.get("snippet") or ""
+        # Prefer a real page excerpt when one was attached (the ambiguous-
+        # retrieval / always-synthesize path enriches non-dominant hits with
+        # actual page content so the LLM reads across the candidates, not just
+        # one-line summaries). Falls back to the summary/snippet otherwise.
+        body_src = h.get("excerpt") or h.get("summary") or h.get("snippet") or ""
         body = body_src[:max_chars_per_hit]
         # Tag expanded hits so the LLM knows they didn't surface in retrieval
         # directly — useful context when deciding how much weight to put on
@@ -305,8 +305,8 @@ def _format_hits_block(hits: list[dict], max_chars_per_hit: int) -> str:
         sources = h.get("_sources") or set()
         src_tag = f" [{'+'.join(sorted(sources))}]" if sources else ""
         block = [
-            f"[{i}] {h.get('target_path','')} (score={h.get('score', 0.0):.3f}){tag}{src_tag}",
-            f"    title: {h.get('title','')}",
+            f"[{i}] {h.get('target_path', '')} (score={h.get('score', 0.0):.3f}){tag}{src_tag}",
+            f"    title: {h.get('title', '')}",
             f"    summary: {body}",
         ]
         symbols = h.get("symbols") or []
