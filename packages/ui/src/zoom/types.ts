@@ -46,6 +46,9 @@ export interface ZoomNode {
   layout: ZoomRect | null;
   summary: string;
   language: string | null;
+  /** Code-health score (0-10, higher = healthier), matching the /files treemap.
+   *  Null when the file/subtree was unscored (health is sparse) — read as neutral. */
+  health_score: number | null;
   is_entry_point: boolean;
   is_hotspot: boolean;
   is_dead: boolean;

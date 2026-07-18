@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import type { Rect } from "../../src/zoom/camera";
+import { CARD_ASPECT } from "../../src/zoom/constants";
 import { gridDimensions, packLayout, type LayoutChild } from "../../src/zoom/layout";
 
 function child(id: string, rank: number, importance = 0.5): LayoutChild {
@@ -68,6 +69,21 @@ describe("packLayout", () => {
     const kids = Array.from({ length: 7 }, (_, i) => child(`n${i}`, i + 1, (i + 1) / 7));
     const ratios = [...packLayout(kids, 1.2).values()].map((r) => r.w / r.h);
     for (const ratio of ratios) expect(ratio).toBeCloseTo(ratios[0]!, 6);
+  });
+
+  it("cancels the parent stretch so on-screen aspect is depth-stable", () => {
+    // Cards are sized in local space; composeRect later re-stretches width by the
+    // parent's world width and height by its world height. Emulate a parent rect
+    // of `{ w: parentAspect, h: 1 }` and confirm every card lands back at
+    // CARD_ASPECT for a range of parent shapes, so nesting cannot compound the
+    // stretch into an unreadable strip (the depth-7 sliver bug).
+    const kids = Array.from({ length: 5 }, (_, i) => child(`n${i}`, i + 1, (i + 1) / 5));
+    for (const parentAspect of [1, 1.5, 3, 6]) {
+      for (const r of packLayout(kids, parentAspect).values()) {
+        const onScreen = (r.w * parentAspect) / r.h; // composeRect re-applies parentAspect
+        expect(onScreen).toBeCloseTo(CARD_ASPECT, 5);
+      }
+    }
   });
 
   it("never overlaps siblings and is deterministic", () => {

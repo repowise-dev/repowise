@@ -57,3 +57,37 @@ def rollup_metrics(root_id: str, nodes: dict[str, ZoomNode]) -> dict[str, ZoomNo
 
     visit(root_id)
     return updated
+
+
+def rollup_health(root_id: str, nodes: dict[str, ZoomNode]) -> dict[str, ZoomNode]:
+    """Fill ``health_score`` on every node from the file leaves.
+
+    A file keeps its own score (already set on the leaf). Each container gets the
+    loc-weighted mean of its scored descendants, matching how the /files treemap
+    colors a folder tile, so the two surfaces stay pixel-consistent. Health is
+    sparse (files can be unscored or excluded); those leaves carry weight 0 and a
+    container with no scored descendant stays ``None``. Post-order, no DB.
+    """
+    updated: dict[str, ZoomNode] = dict(nodes)
+
+    def visit(node_id: str) -> tuple[float, float]:
+        """Return ``(weighted_sum, weight)`` over this subtree's scored files."""
+        node = updated[node_id]
+        if node.kind == "file":
+            if node.health_score is None:
+                return 0.0, 0.0
+            w = float(max(node.loc, 1))
+            return node.health_score * w, w
+
+        weighted_sum = 0.0
+        weight = 0.0
+        for cid in node.children:
+            cs, cw = visit(cid)
+            weighted_sum += cs
+            weight += cw
+        score = weighted_sum / weight if weight > 0 else None
+        updated[node_id] = replace(node, health_score=score)
+        return weighted_sum, weight
+
+    visit(root_id)
+    return updated

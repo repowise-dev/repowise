@@ -14,6 +14,8 @@
  * single neutral hue, thin, faded behind the cards.
  */
 
+import { ALERT_MAX, HEALTHY_MIN } from "@repowise-dev/types/health";
+
 import type { Rect } from "./camera";
 import { ARROW_SIZE_PX, EDGE_LINE_PX } from "./constants";
 import type { EdgeRoute } from "./edges";
@@ -117,14 +119,25 @@ function drawKindGlyph(
 
 /**
  * The single most useful bottom-right signal for a node. Files show their
- * language; containers show how many files they hold. (A true per-module code
- * health score would need a new backend field on the zoom node; this uses what
- * the model carries today.)
+ * language; containers show how many files they hold. Code health is shown
+ * separately as the footer's leading dot (see `healthColor`).
  */
 function primaryMetric(node: ZoomNode): string {
   if (node.kind === "file") return node.language ? node.language.toUpperCase() : "";
   const n = node.metrics.file_count;
   return n > 0 ? `${n} ${n === 1 ? "file" : "files"}` : "";
+}
+
+/**
+ * Traffic-light ink for a node's code-health score, on the same 0-10 bands the
+ * /files treemap uses (`bandForScore`: <4 alert, <8 warning, else healthy) so a
+ * card and a treemap tile never disagree. Null (unscored, sparse) reads neutral.
+ */
+function healthColor(score: number | null, palette: ZoomPalette): string {
+  if (score === null) return palette.healthNeutral;
+  if (score < ALERT_MAX) return palette.healthAlert;
+  if (score < HEALTHY_MIN) return palette.healthWarning;
+  return palette.healthHealthy;
 }
 
 /**
@@ -299,16 +312,29 @@ export function drawCard(
     ctx.fillText(summary, rect.x + pad, rect.y + pad + fontSize + 6);
   }
 
-  // Footer signal row (large cards): kind label left, primary metric right.
+  // Footer signal row (large cards): health dot + kind label left, primary metric right.
   if (rect.w >= FOOTER_MIN_W_PX && rect.h >= FOOTER_MIN_H_PX) {
     const fFont = Math.max(9, Math.min(11, fontSize - 4));
     const baseY = rect.y + rect.h - pad;
+    let kindX = rect.x + pad;
+    // A small health dot leads the footer, colored on the same bands as the
+    // /files treemap. Only drawn when the node has a score, so unscored files
+    // (health is sparse) stay quiet rather than showing a neutral dot everywhere.
+    if (node.health_score !== null) {
+      const r = 3;
+      ctx.globalAlpha = textAlpha * 0.9;
+      ctx.fillStyle = healthColor(node.health_score, palette);
+      ctx.beginPath();
+      ctx.arc(kindX + r, baseY - fFont * 0.34, r, 0, Math.PI * 2);
+      ctx.fill();
+      kindX += 2 * r + Math.max(5, fFont * 0.5);
+    }
     ctx.font = `600 ${fFont}px ui-sans-serif, system-ui, sans-serif`;
     ctx.textBaseline = "bottom";
     ctx.textAlign = "left";
     ctx.globalAlpha = textAlpha * 0.62;
     ctx.fillStyle = palette.textMuted;
-    ctx.fillText(KIND_LABEL[node.kind].toUpperCase(), rect.x + pad, baseY);
+    ctx.fillText(KIND_LABEL[node.kind].toUpperCase(), kindX, baseY);
     const metric = primaryMetric(node);
     if (metric) {
       ctx.textAlign = "right";

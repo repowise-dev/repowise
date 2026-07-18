@@ -31,6 +31,7 @@ function node(id: string, children: string[]): ZoomNode {
     is_dead: false,
     is_test: false,
     on_flow: false,
+    health_score: null,
   };
 }
 

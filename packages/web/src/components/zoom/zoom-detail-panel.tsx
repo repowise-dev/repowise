@@ -10,6 +10,7 @@
 import Link from "next/link";
 import { FileCode, ScanSearch, X } from "lucide-react";
 import type { ZoomNode } from "@repowise-dev/ui/zoom";
+import { scoreTextColor } from "@repowise-dev/ui/health";
 
 interface ZoomDetailPanelProps {
   node: ZoomNode;
@@ -86,6 +87,16 @@ export function ZoomDetailPanel({ node, repoId, onClose, onZoom }: ZoomDetailPan
           <p className="mb-3 text-xs leading-relaxed text-[var(--color-text-secondary)]">{node.summary}</p>
         )}
         <div className="grid grid-cols-2 gap-2">
+          {node.health_score !== null && (
+            <div className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-canvas)] px-2.5 py-1.5">
+              <div className={`text-sm font-semibold ${scoreTextColor(node.health_score)}`}>
+                {node.health_score.toFixed(1)}
+              </div>
+              <div className="text-[10px] uppercase tracking-wide text-[var(--color-text-muted)]">
+                {isFile ? "health" : "health (avg)"}
+              </div>
+            </div>
+          )}
           {!isFile && <Stat label="files" value={m.file_count} />}
           {m.hotspot_count > 0 && (
             <Stat label="hotspots" value={m.hotspot_count} tone="text-[var(--color-risk-high)]" />

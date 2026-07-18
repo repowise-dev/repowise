@@ -47,6 +47,12 @@ export interface ZoomPalette {
   dead: string;
   entry: string;
   flow: string;
+  /** Code-health traffic-light inks, matching the /files treemap bands. */
+  healthAlert: string;
+  healthWarning: string;
+  healthHealthy: string;
+  /** Neutral ink for an unscored file/subtree (health is sparse). */
+  healthNeutral: string;
 }
 
 /** Map each palette slot to its design-system token. */
@@ -72,6 +78,12 @@ const TOKEN_SPEC: Record<keyof ZoomPalette, string> = {
   dead: "--color-stale",
   entry: "--color-success",
   flow: "--color-accent-secondary",
+  // Same tokens the health tokens.ts `healthInk` maps to, so a zoom card and the
+  // /files treemap tile agree on what counts as red/amber/green.
+  healthAlert: "--color-error",
+  healthWarning: "--color-warning",
+  healthHealthy: "--color-success",
+  healthNeutral: "--color-text-tertiary",
 };
 
 /** CSS named-color fallbacks (lint-safe, only hit before tokens resolve). */
@@ -95,6 +107,10 @@ const FALLBACK: ZoomPalette = {
   dead: "gray",
   entry: "green",
   flow: "teal",
+  healthAlert: "crimson",
+  healthWarning: "orange",
+  healthHealthy: "green",
+  healthNeutral: "gray",
 };
 
 /** Resolve the live palette from the document theme. Call on the client only. */

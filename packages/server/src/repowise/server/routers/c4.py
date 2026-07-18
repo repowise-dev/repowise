@@ -260,6 +260,7 @@ def _zoom_response(zoom: ZoomMap) -> ZoomMapResponse:
                 ),
                 summary=n.summary,
                 language=n.language,
+                health_score=(round(n.health_score, 2) if n.health_score is not None else None),
                 is_entry_point=n.is_entry_point,
                 is_hotspot=n.is_hotspot,
                 is_dead=n.is_dead,

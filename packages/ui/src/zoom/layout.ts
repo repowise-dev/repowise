@@ -88,7 +88,16 @@ export function packLayout(
   const sizeMin = opts.sizeMin ?? PACK_SIZE_MIN;
   const sizeMax = opts.sizeMax ?? PACK_SIZE_MAX;
   const gamma = opts.gamma ?? PACK_IMPORTANCE_GAMMA;
-  const aspect = opts.aspect ?? CARD_ASPECT;
+  const baseAspect = opts.aspect ?? CARD_ASPECT;
+  // Cards are sized in the parent's LOCAL [0,1] box, but `composeRect` later
+  // stretches that box by the parent's own world width and height separately.
+  // Since a parent card is itself landscape, sizing to `baseAspect` directly
+  // would let every nesting level re-multiply the horizontal stretch, so a few
+  // levels deep a card collapses into an unreadable sliver. Pre-divide by the
+  // parent aspect: once `composeRect` re-applies it, each card lands at
+  // `baseAspect` on screen at any depth. Clamp so an extreme parent shape can't
+  // invert or explode the local card.
+  const aspect = Math.min(8, Math.max(0.2, baseAspect / (parentAspect || 1)));
 
   const out = new Map<string, Rect>();
   const n = children.length;

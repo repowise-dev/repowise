@@ -47,6 +47,7 @@ function leaf(id: string, rank: number): ZoomNode {
     is_dead: false,
     is_test: false,
     on_flow: false,
+    health_score: null,
   };
 }
 

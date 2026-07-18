@@ -65,6 +65,14 @@ class ZoomNode:
     layout: ZoomRect | None = None
     summary: str = ""
     language: str | None = None
+    # Code-health score on the 0..10 scale (higher = healthier), matching the
+    # /files treemap. A file carries its own defect score (falling back to the
+    # overall score); a container carries the loc-weighted mean over its scored
+    # descendants. None when nothing in the subtree was scored (health is sparse).
+    health_score: float | None = None
+    # Lines of code for the file leaf, used only as the health-rollup weight so
+    # a container's mean matches the treemap. Not surfaced in the response.
+    loc: int = 1
     # File-leaf flags (False / defaults on non-file nodes).
     is_entry_point: bool = False
     is_hotspot: bool = False
