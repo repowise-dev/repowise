@@ -84,6 +84,8 @@
     "./security/*": "./src/security/*.tsx",
     "./onboarding": "./src/onboarding/index.ts",
     "./onboarding/*": "./src/onboarding/*.tsx",
+    "./present": "./src/present/index.ts",
+    "./present/*": "./src/present/*.tsx",
     "./settings": "./src/settings/index.ts",
     "./settings/*": "./src/settings/*.tsx",
     "./shared": "./src/shared/index.ts",
