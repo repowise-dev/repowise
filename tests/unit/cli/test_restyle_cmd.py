@@ -60,7 +60,9 @@ def test_restyle_no_style_shows_current_and_options():
 
 def test_restyle_unknown_style_errors(tmp_path):
     result = CliRunner().invoke(cli, ["restyle", "bogus", str(tmp_path)])
-    assert result.exit_code == 1
+    # A mistyped STYLE is a usage error (Click convention: exit code 2), not a
+    # generic failure — see the telemetry usage_error classification.
+    assert result.exit_code == 2
     assert "Unknown style" in result.output
     assert "comprehensive" in result.output  # lists valid choices
 
