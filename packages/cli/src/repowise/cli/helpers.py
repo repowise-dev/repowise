@@ -722,6 +722,51 @@ def resolve_provider(
     )
 
 
+def resolve_provider_or_prompt(
+    provider_name: str | None,
+    model: str | None,
+    repo_path: Path,
+    *,
+    reasoning: str | None = None,
+    interactive: bool,
+) -> Any:
+    """Resolve a provider, falling back to init's interactive setup on a miss.
+
+    Ordinary resolution is :func:`resolve_provider`. When that fails because no
+    provider/key is configured and ``interactive`` is set (an interactive
+    terminal, not a hook / CI / ``--progress json`` run), reuse init's exact
+    provider + API-key prompt, persist the choice, and retry — so a docs run
+    that only just gained ``docs_enabled`` onboards the same way ``init`` does
+    instead of dying with "No provider configured".
+
+    When ``interactive`` is False the original error propagates unchanged, so
+    background runs (post-commit hook, CI, machine-driven ``--progress json``)
+    keep their clean, non-blocking failure.
+
+    Persistence reuses init's helpers: the key lands in ``.repowise/.env`` (from
+    the prompt) and provider/model in ``.repowise/config.yaml`` here, so the
+    prompt only ever appears once per repo.
+    """
+    try:
+        return resolve_provider(provider_name, model, repo_path=repo_path)
+    except Exception:
+        if not interactive:
+            raise
+        from repowise.cli.ui import interactive_provider_config_select
+
+        selection = interactive_provider_config_select(
+            console, model, reasoning, repo_path=repo_path
+        )
+        # Persist provider/model so future runs resolve without re-prompting.
+        # The API key was already persisted to .repowise/.env by the prompt.
+        save_config_partial(
+            repo_path,
+            provider=selection.provider_name,
+            model=selection.model,
+        )
+        return resolve_provider(selection.provider_name, selection.model, repo_path=repo_path)
+
+
 # ---------------------------------------------------------------------------
 # Provider validation
 # ---------------------------------------------------------------------------

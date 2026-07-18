@@ -28,7 +28,7 @@ from repowise.cli.helpers import (
     read_update_pending,
     release_update_lock,
     resolve_command_target,
-    resolve_provider,
+    resolve_provider_or_prompt,
     resolve_reasoning,
     rotate_update_log_if_needed,
     run_async,
@@ -62,6 +62,18 @@ from .reporting import (
 from .workspace import _workspace_update
 
 log = structlog.get_logger(__name__)
+
+
+def _docs_provider_prompt_allowed(emitter: Any) -> bool:
+    """Whether a docs run may block on an interactive provider prompt.
+
+    Requires a real terminal on *both* ends: a terminal stdout (so the table
+    renders) and a tty stdin (so the answer can actually be read). The stdin
+    check is what keeps a background post-commit hook or CI run from hanging
+    even when it inherits a ``FORCE_COLOR`` that makes ``console.is_terminal``
+    report True. ``--progress json`` (emitter set) is always non-interactive.
+    """
+    return console.is_terminal and sys.stdin.isatty() and emitter is None
 
 
 def _record_update_outcome(
@@ -830,7 +842,20 @@ def run_update(
         tier2_tail_dirs=tuple(tail_dirs_cfg) if tail_dirs_cfg else None,
     )
 
-    provider = resolve_provider(provider_name, model, repo_path=repo_path)
+    # Resolve the generation provider. If the repo wants docs but was never
+    # given a provider/key (e.g. it started --index-only and later flipped
+    # docs_enabled on, or `repowise update --docs`), onboard the same way init
+    # does: prompt for provider + key and persist, but only in an interactive
+    # terminal. Hooks / CI / --progress json keep the clean non-blocking error.
+    # In the workspace docs flow each member reaches this per-repo run; the
+    # first prompt sets the key in-process, so later members auto-resolve.
+    provider = resolve_provider_or_prompt(
+        provider_name,
+        model,
+        repo_path,
+        reasoning=reasoning,
+        interactive=_docs_provider_prompt_allowed(emitter),
+    )
 
     # Attach a DB-backed CostTracker so every LLM call made during this update
     # (decision rescan + page regeneration) is persisted to the `llm_costs`
