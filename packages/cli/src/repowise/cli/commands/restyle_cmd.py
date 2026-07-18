@@ -179,7 +179,10 @@ def restyle_command(
     style = style.strip().lower()
     if not is_known_style(style, repo_path):
         valid = ", ".join(s.name for s in list_styles(repo_path))
-        raise click.ClickException(f"Unknown style '{style}'. Choose one of: {valid}.")
+        # An unknown STYLE is a mis-typed argument, not a product failure:
+        # BadArgumentUsage renders the usage hint and (via the telemetry
+        # classifier) records as a usage_error rather than an error.
+        raise click.BadArgumentUsage(f"Unknown style '{style}'. Choose one of: {valid}.")
 
     # Restyle only makes sense for a full index (one that has generated docs).
     if not state:
