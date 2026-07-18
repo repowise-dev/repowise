@@ -303,11 +303,6 @@ def get_or_build_workspace_info(ctx: "ResolverContext") -> dict[str, dict[str, A
     return info
 
 
-def get_or_build_workspace_map(ctx: "ResolverContext") -> dict[str, str]:
-    """Backward-compat shim — kept for callers that only need name → dir."""
-    return {name: info["dir"] for name, info in get_or_build_workspace_info(ctx).items()}
-
-
 _PROBE_EXTENSIONS: tuple[str, ...] = (
     ".ts",
     ".tsx",

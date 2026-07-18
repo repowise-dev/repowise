@@ -27,22 +27,11 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Protocol
+from typing import Any
 
 DECLINE_THRESHOLD: float = 0.5
 DECLINE_LOOKBACK: int = 5  # compare current vs snapshot N positions back
 PREDICTED_DECLINE_CONSECUTIVE: int = 3
-
-
-class SnapshotLike(Protocol):
-    """Minimal shape the trend logic needs from a snapshot row."""
-
-    taken_at: datetime
-    hotspot_health: float
-    average_health: float
-    worst_performer_path: str | None
-    worst_performer_score: float | None
-    per_file_scores_json: str
 
 
 @dataclass

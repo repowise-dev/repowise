@@ -156,30 +156,6 @@ export function commitsMatch(a: string, b: string): boolean {
   return shorter.length > 0 && longer.startsWith(shorter);
 }
 
-/**
- * Invokes `cb` when the repository's HEAD name or commit changes. Returns a
- * disposable, or a no-op disposable when git is unavailable. The underlying
- * `state.onDidChange` fires on any repository change, so we filter to HEAD
- * transitions to avoid waking callers on unrelated working-tree events.
- */
-export async function onDidChangeHead(
-  repoRoot: string,
-  cb: () => void,
-): Promise<vscode.Disposable> {
-  const repo = await getRepository(repoRoot);
-  if (!repo) return { dispose: () => {} };
-  let lastName = repo.state.HEAD?.name;
-  let lastCommit = repo.state.HEAD?.commit;
-  return repo.state.onDidChange(() => {
-    const name = repo.state.HEAD?.name;
-    const commit = repo.state.HEAD?.commit;
-    if (name === lastName && commit === lastCommit) return;
-    lastName = name;
-    lastCommit = commit;
-    cb();
-  });
-}
-
 /** Uncommitted changes split by staging state; paths are repo-relative POSIX. */
 export interface ChangedFiles {
   /** Staged (index) paths. */
@@ -249,7 +225,7 @@ export async function getBranchChangedFiles(
 
 /**
  * Invokes `cb` on any repository state change (staging, working-tree edits, HEAD
- * moves). Unlike {@link onDidChangeHead} this does not filter, so callers must
+ * moves). This does not filter to a specific change kind, so callers must
  * debounce. Returns a no-op disposable when git is unavailable.
  */
 export async function onDidChangeRepoState(
