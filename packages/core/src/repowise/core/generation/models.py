@@ -384,45 +384,6 @@ def compute_source_hash(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Git and Dead Code Config (Phase 5.5)
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class GitConfig:
-    """Configuration for git intelligence features."""
-
-    enabled: bool = True
-    commit_limit: int = 500
-    co_change_min_count: int = 3
-    blame_enabled: bool = True
-    prompt_commit_count: int = 10
-    depth_auto_upgrade: bool = True
-
-
-@dataclass(frozen=True)
-class DeadCodeConfig:
-    """Configuration for dead code detection."""
-
-    enabled: bool = True
-    detect_unreachable_files: bool = True
-    detect_unused_exports: bool = True
-    detect_unused_internals: bool = True
-    detect_zombie_packages: bool = True
-    min_confidence: float = 0.4
-    safe_to_delete_threshold: float = 0.7
-    dynamic_patterns: tuple[str, ...] = (
-        "*Plugin",
-        "*Handler",
-        "*Adapter",
-        "*Middleware",
-        "register_*",
-        "on_*",
-    )
-    analyze_on_update: bool = True
-
-
-# ---------------------------------------------------------------------------
 # Git-informed confidence decay (Phase 5.5)
 # ---------------------------------------------------------------------------
 

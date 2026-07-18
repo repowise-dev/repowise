@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, TypeVar
@@ -180,25 +179,6 @@ def get_db_url_for_repo(repo_path: Path) -> str:
     from repowise.core.persistence.database import resolve_db_url
 
     return resolve_db_url(repo_path)
-
-
-async def _ensure_db_async(repo_path: Path) -> tuple[Any, Any]:
-    from repowise.core.persistence import (
-        create_engine,
-        create_session_factory,
-        init_db,
-    )
-
-    url = get_db_url_for_repo(repo_path)
-    engine = create_engine(url)
-    await init_db(engine)
-    session_factory = create_session_factory(engine)
-    return engine, session_factory
-
-
-def ensure_db(repo_path: Path) -> tuple[Any, Any]:
-    """Create the DB engine, initialise the schema, and return ``(engine, session_factory)``."""
-    return run_async(_ensure_db_async(repo_path))
 
 
 # ---------------------------------------------------------------------------
@@ -1138,15 +1118,3 @@ def resolve_command_target(
         reason="no workspace nearby",
         auto_detected=False,
     )
-
-
-def is_interactive_session() -> bool:
-    """Best-effort check for an interactive TTY.
-
-    Centralized so commands can share one definition; some test runners
-    fake stdin in ways that break ``sys.stdin.isatty()``.
-    """
-    try:
-        return sys.stdin.isatty()
-    except (AttributeError, ValueError):
-        return False

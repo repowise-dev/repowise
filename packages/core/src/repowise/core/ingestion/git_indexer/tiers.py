@@ -35,8 +35,8 @@ class GitIndexTier(enum.StrEnum):
         """Whether the per-line :class:`BlameIndex` is built per file.
 
         Built inline alongside ownership blame on FULL; ESSENTIAL defers
-        until ``backfill_blame()`` runs. Function-level biomarkers no-op
-        cleanly when the index is absent.
+        until the FULL-tier backfill (``backfill_full_tier()``) runs.
+        Function-level biomarkers no-op cleanly when the index is absent.
         """
         return self is GitIndexTier.FULL
 

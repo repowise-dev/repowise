@@ -7,7 +7,6 @@ from pathlib import Path
 from repowise.cli.helpers import get_db_url_for_repo, load_config
 from repowise.core.generation.editor_files import (
     AgentsMdGenerator,
-    ClaudeMdGenerator,
     EditorFileData,
     EditorFileDataFetcher,
 )
@@ -67,14 +66,6 @@ async def fetch_editor_file_data(repo_path: Path) -> EditorFileData | None:
             return await fetcher.fetch()
     finally:
         await engine.dispose()
-
-
-async def write_claude_md(repo_path: Path) -> Path | None:
-    """Fetch editor data and write .claude/CLAUDE.md."""
-    data = await fetch_editor_file_data(repo_path)
-    if data is None:
-        return None
-    return ClaudeMdGenerator().write(repo_path, data)
 
 
 async def write_agents_md(repo_path: Path) -> Path | None:

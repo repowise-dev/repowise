@@ -20,7 +20,7 @@ distributed. Modulus is a large prime under 2**63.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 from .tokenizer import Token
@@ -107,23 +107,3 @@ def index_by_hash(hashes: Iterable[WindowHash]) -> dict[int, list[WindowHash]]:
     for w in hashes:
         bucket.setdefault(w.hash_value, []).append(w)
     return bucket
-
-
-def iter_collisions(
-    bucket: dict[int, list[WindowHash]],
-) -> Iterator[tuple[WindowHash, WindowHash]]:
-    """Yield (a, b) pairs of windows that share a hash, a different file
-    or non-overlapping windows in the same file. The verifier in
-    ``detector.py`` then confirms by token-by-token compare."""
-    for windows in bucket.values():
-        if len(windows) < 2:
-            continue
-        for i in range(len(windows)):
-            for j in range(i + 1, len(windows)):
-                a, b = windows[i], windows[j]
-                if a.file_path == b.file_path and abs(a.start_index - b.start_index) < (
-                    b.end_line - b.start_line + 1
-                ):
-                    # Skip overlapping windows in the same file.
-                    continue
-                yield a, b
