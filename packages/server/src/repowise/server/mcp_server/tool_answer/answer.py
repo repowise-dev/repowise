@@ -44,6 +44,7 @@ import asyncio
 import contextlib
 import json as _json
 import logging
+import os
 import time
 from pathlib import Path
 
@@ -136,6 +137,43 @@ from repowise.server.mcp_server.tool_answer.synthesis import (
 )
 
 _log = logging.getLogger("repowise.mcp.answer")
+
+# Always-synthesize flag. Default ON: synthesis runs for every retrieval and the
+# post-synthesis grading cascade demotes confidence instead of the tool
+# abstaining, so coverage matches a research assistant that answers every
+# question (the pre-synthesis dominance gate abstained on ~58%). Set to a falsey
+# value (0/off/false/no) to restore the legacy abstain-on-ambiguous behaviour.
+_ALWAYS_SYNTHESIZE_ENV = "REPOWISE_ANSWER_ALWAYS_SYNTHESIZE"
+
+
+def _always_synthesize() -> bool:
+    """Whether to always synthesize (default) or keep the legacy abstain gate."""
+    return os.environ.get(_ALWAYS_SYNTHESIZE_ENV, "").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+
+
+def _build_best_guesses(hits: list[dict]) -> list[dict]:
+    """Decision-shaped candidate list: per-file justification, score, excerpt.
+
+    The evidence an ambiguous-retrieval reply carries so the agent can pick ONE
+    file to verify instead of skimming five. Shared by the legacy abstain path
+    and the always-synthesize low/medium fold-in.
+    """
+    return [
+        {
+            "file": h.get("target_path"),
+            "why_relevant": _candidate_justification(h),
+            "score": round(h.get("score", 0.0), 3),
+            "domain_penalty": h.get("_domain_penalty"),
+            **({"excerpt": h["excerpt"]} if h.get("excerpt") else {}),
+        }
+        for h in hits[:_GATED_RETURN_HITS]
+        if h.get("target_path")
+    ]
 
 
 def _json_default(obj):
@@ -768,112 +806,95 @@ async def get_answer(
             ),
         }
 
-    # --- Confidence gate ---------------------------------------------------
-    # Skip synthesis when retrieval is NOT clearly dominant. The dominance
-    # ratio (top score / second score) is the sole gating criterion: above
-    # the threshold the top hit is reliably the right answer; below it the
-    # top-1 / top-2 ambiguity is large enough that we hand the agent ranked
-    # excerpts and let it ground in source.
+    # --- Retrieval dominance -----------------------------------------------
+    # ``dominant`` = retrieval clearly pointed at ONE page (the top hit
+    # outscores the rest). It no longer decides WHETHER to synthesize — under
+    # the always-synthesize default, synthesis runs for every retrieval so
+    # coverage matches a research assistant that answers every question (the
+    # pre-synthesis gate abstained on ~58%). It now feeds the confidence grade
+    # as a CEILING (a non-dominant retrieval is "answered, but verify", never
+    # "high") and gates the ambiguous-retrieval evidence folded into the reply.
     #
-    # Coverage (fraction of query terms present in the top hit) is also
-    # available via the re-ranker and is used to bias score-based ranking,
-    # but is intentionally NOT used as a hard gate here. Natural-language
-    # questions rarely have all their content terms co-occurring in a single
-    # page (typical coverage is 0.15–0.25), so a coverage threshold over-
-    # fires on confidently-dominant retrievals and degrades the cheap path.
+    # Two-tier test: at high retrieval quality (both scores excellent) close
+    # ratios are expected, so use an absolute gap; at lower quality the ratio
+    # gate flags genuinely ambiguous retrievals. Coverage (fraction of query
+    # terms in the top hit) biases ranking but is intentionally NOT a gate:
+    # natural-language questions rarely have all content terms in one page
+    # (typical 0.15-0.25), so a coverage threshold over-fires. Default dominant
+    # for a lone hit (nothing to be ambiguous against).
+    always_synthesize = _always_synthesize()
+    dominant = True
     if len(hits) >= 2:
         top_score = hits[0].get("score", 0.0)
         second_score = hits[1].get("score", 0.0) or 1e-9
-
-        # Two-tier gating: at high retrieval quality (both scores
-        # excellent), close ratios are expected and normal — use an
-        # absolute gap instead.  At lower quality, the ratio-based
-        # gate prevents synthesis on genuinely ambiguous retrievals.
         if top_score >= 3.0:
             dominant = (top_score - second_score) >= 0.5
         else:
             dominant = (top_score / second_score) >= _DOMINANCE_RATIO
 
-        if not dominant:
-            # Attach real page content to the top candidates before shaping
-            # the reply. Agent-transcript evidence (context-tool bench,
-            # 2026-07-17): a pointers-only gated payload sends the agent into
-            # an 8-15 call Grep/Read spree that costs more than a bare agent —
-            # it paid for the tool call and still had to acquire all content
-            # natively. Excerpts turn the miss path into "pick one candidate,
-            # verify with at most one Read". (The 2026-07-11 dogfood dropped
-            # the per-hit key_symbols METADATA dump as unused; readable
-            # content is the part that was worth keeping.)
-            with contextlib.suppress(Exception):
-                await _enrich_gated_excerpts(hits, ctx)
-            # Structured candidate set: a decision-shaped list with a
-            # one-line justification per file. Beats the prior flat
-            # ``fallback_targets`` list because the agent can pick ONE file
-            # to Read first instead of skimming five.
-            best_guesses = [
-                {
-                    "file": h.get("target_path"),
-                    "why_relevant": _candidate_justification(h),
-                    "score": round(h.get("score", 0.0), 3),
-                    "domain_penalty": h.get("_domain_penalty"),
-                    **({"excerpt": h["excerpt"]} if h.get("excerpt") else {}),
-                }
-                for h in hits[:_GATED_RETURN_HITS]
-                if h.get("target_path")
-            ]
-            # Mine source comments for rationale the wiki/decision corpus
-            # missed — turns "go Read these 5 files" into a cited why.
-            code_rationale = _gather_code_rationale(ctx, hits, fallback_targets, question)
-            has_excerpts = any("excerpt" in g for g in best_guesses)
-            gated: dict = {
-                "answer": "",
-                "citations": [],
-                "confidence": "low",
-                "retrieval_quality": "weak",
-                "best_guesses": best_guesses,
-                "next_action_hint": (
-                    (
-                        f"Start from the excerpt of {best_guesses[0]['file']} — "
-                        "it scored highest; Read the file only to verify "
-                        "details the excerpt does not settle."
-                        if has_excerpts
-                        else f"Read {best_guesses[0]['file']} first — it scored "
-                        "highest but retrieval was ambiguous, so verify "
-                        "before answering."
-                    )
-                    if best_guesses
-                    else (
-                        'Retry search_codebase with mode="symbol" or '
-                        'mode="path" on the key terms; Grep only if those '
-                        "miss too."
-                    )
-                ),
-                "fallback_targets": fallback_targets,
-                "retrieval": [],
-                "note": (
-                    "Multiple plausible candidates — synthesis skipped to "
-                    "avoid anchoring on a wrong frame. Each best_guess entry "
-                    "names why that file is in the running"
-                    + (
-                        ", and its excerpt carries that page's actual content."
-                        if has_excerpts
-                        else "."
-                    )
-                ),
-            }
-            if code_rationale:
-                gated["code_rationale"] = code_rationale
-                gated["note"] += (
-                    " code_rationale carries rationale comments mined from the "
-                    "candidate source — they may already answer the question."
+    if not always_synthesize and not dominant:
+        # Legacy abstain path (REPOWISE_ANSWER_ALWAYS_SYNTHESIZE=off): retrieval
+        # is ambiguous, so skip synthesis and hand back ranked excerpts +
+        # best_guesses for the agent to ground in.
+        #
+        # Attach real page content to the top candidates before shaping the
+        # reply. Agent-transcript evidence (context-tool bench, 2026-07-17): a
+        # pointers-only gated payload sends the agent into an 8-15 call Grep/Read
+        # spree that costs more than a bare agent — it paid for the tool call and
+        # still had to acquire all content natively. Excerpts turn the miss path
+        # into "pick one candidate, verify with at most one Read".
+        with contextlib.suppress(Exception):
+            await _enrich_gated_excerpts(hits, ctx)
+        best_guesses = _build_best_guesses(hits)
+        # Mine source comments for rationale the wiki/decision corpus missed —
+        # turns "go Read these 5 files" into a cited why.
+        code_rationale = _gather_code_rationale(ctx, hits, fallback_targets, question)
+        has_excerpts = any("excerpt" in g for g in best_guesses)
+        gated: dict = {
+            "answer": "",
+            "citations": [],
+            "confidence": "low",
+            "retrieval_quality": "weak",
+            "best_guesses": best_guesses,
+            "next_action_hint": (
+                (
+                    f"Start from the excerpt of {best_guesses[0]['file']} — "
+                    "it scored highest; Read the file only to verify "
+                    "details the excerpt does not settle."
+                    if has_excerpts
+                    else f"Read {best_guesses[0]['file']} first — it scored "
+                    "highest but retrieval was ambiguous, so verify "
+                    "before answering."
                 )
-            gated["_meta"] = _build_meta(
-                timing_ms=(time.perf_counter() - t0) * 1000,
-                hint=_answer_hint("low", len(hits)),
-                repository=repository,
-                targets=fallback_targets,
+                if best_guesses
+                else (
+                    'Retry search_codebase with mode="symbol" or '
+                    'mode="path" on the key terms; Grep only if those '
+                    "miss too."
+                )
+            ),
+            "fallback_targets": fallback_targets,
+            "retrieval": [],
+            "note": (
+                "Multiple plausible candidates — synthesis skipped to "
+                "avoid anchoring on a wrong frame. Each best_guess entry "
+                "names why that file is in the running"
+                + (", and its excerpt carries that page's actual content." if has_excerpts else ".")
+            ),
+        }
+        if code_rationale:
+            gated["code_rationale"] = code_rationale
+            gated["note"] += (
+                " code_rationale carries rationale comments mined from the "
+                "candidate source — they may already answer the question."
             )
-            return gated
+        gated["_meta"] = _build_meta(
+            timing_ms=(time.perf_counter() - t0) * 1000,
+            hint=_answer_hint("low", len(hits)),
+            repository=repository,
+            targets=fallback_targets,
+        )
+        return gated
 
     # Confidence is the only axis we gate on. We deliberately do NOT add a
     # second gate keyed on question shape (e.g. relational questions
@@ -953,6 +974,15 @@ async def get_answer(
         }
         payload["_meta"]["degraded"] = "no-llm-provider"
         return payload
+
+    # Ambiguous retrieval (always-synthesize): pull real page content across the
+    # non-dominant top pages so the LLM synthesizes over the actual candidate
+    # content, not one-line summaries — the same excerpts the legacy abstain path
+    # served the agent. No-op on dominant retrievals. (The excerpts also back the
+    # best_guesses folded into a low/medium reply below.)
+    if not dominant:
+        with contextlib.suppress(Exception):
+            await _enrich_gated_excerpts(hits, ctx)
 
     # Decision fusion (why-shaped questions only) + structured prelude. Both
     # layers are gated on signal: no ADRs for the top hits → no decisions
@@ -1186,6 +1216,15 @@ async def get_answer(
         else:
             frame_unsupported = []
 
+    # Non-dominant ceiling: ambiguous retrieval is the calibration cost of
+    # always synthesizing — the answer may be right, but with no single dominant
+    # page it must never read "high" (cite without verifying). Cap at medium even
+    # if all six gates passed. (A non-dominant retrieval already scores <high via
+    # the ratio, so this is usually a no-op; it is explicit so the
+    # always-synthesize contract — "answered, but verify" — is self-documenting.)
+    if not dominant and confidence == "high":
+        confidence = "medium"
+
     # retrieval_quality is a separate signal from confidence. Where confidence
     # says "how much should you trust the synthesised text", retrieval_quality
     # says "how good was the retrieval that fed it". The agent uses confidence
@@ -1333,6 +1372,34 @@ async def get_answer(
             concept_rationale = _drop_already_surfaced(concept_rationale, symbol_bodies, quotes)
             if concept_rationale:
                 payload["code_rationale"] = concept_rationale
+
+    # Ambiguous-retrieval evidence (always-synthesize). The questions that used
+    # to abstain (no dominant page) now carry synthesized PROSE — but the
+    # retrieval was genuinely ambiguous, so ship the same evidence the old
+    # abstain path did: best_guesses (per-file justification + excerpts) and
+    # mined code_rationale, plus an honest caveat. This is the "answered, but
+    # verify against these candidates" reply that replaced the empty pointer
+    # list. Guarded so it never touches the dominant / high-confidence paths.
+    if not dominant:
+        payload.setdefault("best_guesses", _build_best_guesses(hits))
+        if "code_rationale" not in payload:
+            _cr = _gather_code_rationale(ctx, hits, fallback_targets, question)
+            _cr = _drop_already_surfaced(_cr, symbol_bodies, quotes)
+            if _cr:
+                payload["code_rationale"] = _cr
+        _caveat = (
+            "Retrieval was ambiguous (no single dominant page), so this was "
+            f"synthesized across several candidates and held at {confidence} "
+            "confidence — verify against best_guesses"
+            + (" or the code_rationale comments." if payload.get("code_rationale") else ".")
+        )
+        payload["note"] = (payload["note"] + " " + _caveat) if payload.get("note") else _caveat
+        if payload.get("best_guesses"):
+            payload.setdefault(
+                "next_action_hint",
+                f"Verify against {payload['best_guesses'][0]['file']} — it scored "
+                "highest, but retrieval was ambiguous across the top candidates.",
+            )
 
     # Flow-path lead: when the question anchored 2+ endpoints, surface the
     # dependency/call chain the answer traverses so the agent sees the path in

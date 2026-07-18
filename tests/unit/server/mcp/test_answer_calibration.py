@@ -837,13 +837,18 @@ async def test_hedged_answer_surfaces_code_rationale(setup_mcp, monkeypatch, tmp
 
 
 @pytest.mark.asyncio
-async def test_gated_answer_surfaces_code_rationale(setup_mcp, monkeypatch, tmp_path):
-    """Ambiguous retrieval (gated, no synthesis) → still mine source rationale."""
+async def test_non_dominant_answer_surfaces_code_rationale(setup_mcp, monkeypatch, tmp_path):
+    """Ambiguous retrieval → synthesize AND fold in mined source rationale.
+
+    Under the always-synthesize default a non-dominant retrieval no longer
+    abstains: synthesis runs (capped at medium), and the ambiguous-retrieval
+    fold-in still mines the candidate source for the rationale comment.
+    """
     import repowise.server.mcp_server as mcp_mod
     import repowise.server.mcp_server.tool_answer.answer as answer_mod
     from repowise.server.mcp_server import get_answer
 
-    # Two near-tied hits (4.0 vs 3.8) → dominance gate fails → best_guesses path.
+    # Two near-tied hits (4.0 vs 3.8) → non-dominant → medium ceiling + evidence.
     async def _fake_retrieve(question, ctx):
         return [
             {"page_id": "file_page:pkg/alpha/one.py", "score": 4.0},
@@ -861,6 +866,7 @@ async def test_gated_answer_surfaces_code_rationale(setup_mcp, monkeypatch, tmp_
 
     monkeypatch.setattr(answer_mod, "_hybrid_retrieve", _fake_retrieve)
     monkeypatch.setattr(answer_mod, "_hydrate_hits", _fake_hydrate)
+    _patch_provider(monkeypatch, answer_mod, "Uploads chunk at 8MB (pkg/alpha/one.py).")
 
     (tmp_path / "pkg" / "alpha").mkdir(parents=True)
     (tmp_path / "pkg" / "alpha" / "one.py").write_text(
@@ -872,20 +878,21 @@ async def test_gated_answer_surfaces_code_rationale(setup_mcp, monkeypatch, tmp_
     monkeypatch.setattr(mcp_mod, "_repo_path", str(tmp_path))
 
     result = await get_answer("why do uploads chunk at 8mb")
-    assert result["confidence"] == "low"
-    assert "best_guesses" in result  # confirms we hit the gated path
+    assert result["confidence"] == "medium"  # non-dominant ceiling
+    assert result["answer"], "non-dominant retrieval now carries synthesized prose"
+    assert "best_guesses" in result  # ambiguous-retrieval evidence folded in
     assert "code_rationale" in result
     assert any("OOMs" in r["comment"] for r in result["code_rationale"])
 
 
 @pytest.mark.asyncio
-async def test_gated_answer_carries_candidate_excerpts(setup_mcp, monkeypatch, tmp_path):
-    """Gated path serves page content inline, not just pointers.
+async def test_non_dominant_best_guesses_carry_candidate_excerpts(setup_mcp, monkeypatch, tmp_path):
+    """Ambiguous-retrieval evidence carries page content inline, not just pointers.
 
-    A pointers-only miss payload makes the agent re-acquire all content
-    natively (observed as an 8-15 call Grep/Read spree in agent transcripts),
-    so the gated reply must carry the top candidates' actual page content and
-    say so in its guidance text.
+    A pointers-only reply makes the agent re-acquire all content natively
+    (observed as an 8-15 call Grep/Read spree in agent transcripts), so the
+    best_guesses folded into a non-dominant reply carry the top candidates'
+    actual page content beside the synthesized prose.
     """
     import repowise.server.mcp_server as mcp_mod
     import repowise.server.mcp_server.tool_answer.answer as answer_mod
@@ -913,17 +920,19 @@ async def test_gated_answer_carries_candidate_excerpts(setup_mcp, monkeypatch, t
     monkeypatch.setattr(answer_mod, "_hybrid_retrieve", _fake_retrieve)
     monkeypatch.setattr(answer_mod, "_hydrate_hits", _fake_hydrate)
     monkeypatch.setattr(answer_mod, "_enrich_gated_excerpts", _fake_excerpts)
+    _patch_provider(monkeypatch, answer_mod, "Uploads chunk at 8MB (pkg/alpha/one.py).")
     (tmp_path / "pkg" / "alpha").mkdir(parents=True)
     (tmp_path / "pkg" / "alpha" / "one.py").write_text("CHUNK = 8\n", encoding="utf-8")
     monkeypatch.setattr(mcp_mod, "_repo_path", str(tmp_path))
 
     result = await get_answer("why do uploads chunk at 8mb")
-    assert result["confidence"] == "low"
+    assert result["confidence"] == "medium"  # non-dominant ceiling
+    assert result["answer"]
     top = result["best_guesses"][0]
     assert top["excerpt"].startswith("Page content for pkg/alpha/one.py")
-    # Guidance must direct the agent at the excerpt, not at a blind Read.
-    assert "excerpt" in result["next_action_hint"]
-    assert "excerpt" in result["note"]
+    # The reply names the ambiguity and points at best_guesses to verify.
+    assert "best_guesses" in result["note"]
+    assert "ambiguous" in result["note"]
 
 
 # ---------------------------------------------------------------------------
