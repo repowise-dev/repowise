@@ -646,8 +646,12 @@ repowise init .
 # Add a repo that lives outside the workspace directory
 repowise workspace add /path/to/external-repo --alias api-gateway
 
-# Update all workspace repos
+# Update all workspace repos. Each repo regenerates docs or refreshes
+# index-only based on its own docs_enabled, just like a single-repo update.
 repowise update --workspace
+
+# Force docs regeneration across every stale repo (needs a provider per repo)
+repowise update --workspace --docs
 
 # Update just one repo
 repowise update --repo backend

@@ -332,10 +332,15 @@ def run_update(
     no_cost_tracking: bool = False,
     verbose: bool = False,
     progress: str = "rich",
+    skip_cross_repo_hooks: bool = False,
 ) -> None:
     """Incrementally update wiki pages for files changed since last sync.
 
     If `since` is None, the base commit is read from state.json's last_sync_commit.
+
+    ``skip_cross_repo_hooks`` is set only by the workspace docs flow, which
+    calls this per repo and then runs the cross-repo hooks once over every
+    updated repo instead of once per repo.
     """
     start = time.monotonic()
 
@@ -376,13 +381,23 @@ def run_update(
                 "--full is single-repo only. Run it inside a specific repo "
                 "(or pass --no-workspace / --repo <alias>)."
             )
-        if docs_flag:
-            console.print(
-                "[yellow]--docs is not supported in workspace mode yet; run it per repo, "
-                "e.g. repowise update --docs --no-workspace from inside the repo.[/yellow]"
-            )
         try:
-            _workspace_update(target, dry_run=dry_run, agents_md=agents_md, verbose=verbose)
+            _workspace_update(
+                target,
+                dry_run=dry_run,
+                agents_md=agents_md,
+                verbose=verbose,
+                docs_flag=docs_flag,
+                index_only=index_only,
+                since=since,
+                provider_name=provider_name,
+                model=model,
+                reasoning=reasoning,
+                cascade_budget=cascade_budget,
+                concurrency=concurrency,
+                no_cost_tracking=no_cost_tracking,
+                progress=progress,
+            )
         except Exception as exc:
             if emitter is not None:
                 emitter.error(str(exc))
@@ -1230,9 +1245,12 @@ def run_update(
     if pending_head and pending_head == head:
         clear_update_pending(repo_path)
 
-    # Trigger cross-repo hooks if this repo is part of a workspace
+    # Trigger cross-repo hooks if this repo is part of a workspace. The
+    # workspace docs flow suppresses this per-repo and runs the hooks once
+    # over every updated repo, so the cross-repo layer isn't rebuilt from a
+    # half-updated set on every member.
     try:
-        ws_root = find_workspace_root(repo_path)
+        ws_root = find_workspace_root(repo_path) if not skip_cross_repo_hooks else None
         if ws_root is not None:
             from repowise.core.workspace import WorkspaceConfig
             from repowise.core.workspace.update import run_cross_repo_hooks

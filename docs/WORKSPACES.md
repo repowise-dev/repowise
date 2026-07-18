@@ -554,6 +554,8 @@ repowise update              # Update the primary repo
 repowise update --workspace  # Update all workspace repos
 ```
 
+Each stale repo picks docs vs index-only the same way a single-repo update does, from its own `docs_enabled` (set at init) plus any override on the command. Repos with docs enabled regenerate their wiki (pages, diagrams, decisions) through the full docs path, so a workspace wiki stays as fresh as one you update repo by repo; the rest just refresh the index. Force docs everywhere with `repowise update --workspace --docs` (each repo needs an LLM provider/key, or pass `--provider`), or keep it index-only with `--no-docs`.
+
 Or use watch mode for automatic updates:
 
 ```bash

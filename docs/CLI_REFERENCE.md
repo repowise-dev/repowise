@@ -157,18 +157,18 @@ See [WORKTREES.md](WORKTREES.md).
 | `--reasoning` | Reasoning mode for supported providers: `auto`, `off`/`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max` |
 | `--cascade-budget` | Max pages to regenerate (default: auto) |
 | `--dry-run` | Show what would be updated without regenerating |
-| `--workspace` / `-w` | Update all stale repos in the workspace + cross-repo analysis |
+| `--workspace` / `-w` | Update all stale repos in the workspace + cross-repo analysis. Each repo picks docs vs index-only the same way a single-repo update does, from its own persisted `docs_enabled` plus any `--docs` / `--no-docs` / `--index-only` override on the command. Docs repos regenerate through the full single-repo docs path (pages, diagrams, decisions) so a workspace wiki stays as fresh as one updated repo by repo; the rest take the fast parallel index-only path. |
 | `--no-workspace` | Force single-repo mode (handy when running from a workspace root) |
 | `--repo` | Update a specific workspace repo by alias |
-| `--index-only` | Refresh the index only, skip doc regeneration for this run |
-| `--docs` / `--no-docs` | Regenerate wiki pages for changed files, or skip doc regeneration entirely. Not supported in workspace mode yet: with `--workspace` the flag is ignored (with a warning) and you should run docs per repo, e.g. `repowise update --docs --no-workspace` from inside the repo. |
+| `--index-only` | Refresh the index only, skip doc regeneration for this run. In workspace mode, forces every stale repo to index-only. |
+| `--docs` / `--no-docs` | Regenerate wiki pages for changed files, or skip doc regeneration entirely. Works in workspace mode too: `--docs` fans out to every stale repo's docs update (each needs an LLM provider/key configured, or pass `--provider`), and `--no-docs` forces index-only across the workspace. Without either flag each repo follows its own `docs_enabled`. |
 | `--full` | Upgrade a fast (`--mode fast`) index to a full one, see below. Single-repo only; errors in workspace mode. |
 | `--no-cost-tracking` | Don't record LLM spend for this run |
 | `--agents` / `--no-agents` | Generate or skip managed `AGENTS.md` after update. Persists the preference. |
 | `-v`, `--verbose` | Show the full changed-file list and per-phase internals (cascade budget, decision-marker/evolution counts, best-effort skip warnings, detailed generation report). Off by default for a compact summary. |
 | `--progress` | `rich` (default) for the interactive progress bar, or `json` for newline-delimited JSON events on stdout (for driving update from another process) |
 
-**First-time indexing:** `update --workspace` runs full first-time indexing for workspace entries that have no `.repowise/` dir yet (previously skipped with `"not_indexed"`). The pipeline runs index-only, no LLM cost, and writes a state.json marker so `repowise update --repo <alias> --docs` later picks up doc generation cleanly.
+**First-time indexing:** `update --workspace` runs full first-time indexing for workspace entries that have no `.repowise/` dir yet (previously skipped with `"not_indexed"`). The pipeline runs index-only, no LLM cost, and writes a state.json marker. Doc generation then follows on the next update once the repo has an index: pass `--docs` (or set its `docs_enabled`) and it regenerates pages like any other member.
 
 **Upgrading a fast index to full (`--full`):** a repo first indexed with `repowise init --mode fast` has the full dependency graph + metrics persisted, but only the *essential* git tier (last commits, no per-file blame or co-change) and no LLM docs. `repowise update --full` upgrades it **incrementally**: it backfills the git tier to FULL (per-file blame + repo-wide co-change) using a resumable, checkpointed worker, then generates the docs that fast mode skipped. Crucially, it **reuses the persisted graph**, the dependency graph is rehydrated from SQL rather than re-parsed and re-resolved, so the expensive import/call/heritage resolution and centrality computation the fast index already did are not repeated. This is measurably cheaper than re-running a full `init`. The backfill is resumable: if it is interrupted, re-running `repowise update --full` picks it up. A provider is required (the fast index made no LLM calls), so pass `--provider`/`--model` or have one configured. Single-repo only; it errors if run in workspace mode.
 
@@ -179,7 +179,8 @@ repowise update                        # diff since last sync
 repowise update --dry-run              # preview
 repowise update --since v1.0.0         # diff from a tag
 repowise update --reasoning off        # one-off supported-provider thinking-off run
-repowise update --workspace            # all workspace repos (incl. first-time indexing)
+repowise update --workspace            # all workspace repos (docs where enabled, incl. first-time indexing)
+repowise update --workspace --docs     # force docs regeneration across every stale repo
 repowise update --repo backend         # specific workspace repo
 repowise update --no-workspace         # force single-repo mode in a workspace root
 repowise update -v                     # verbose: full file list + per-phase internals

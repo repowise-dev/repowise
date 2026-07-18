@@ -520,18 +520,28 @@ async def update_workspace(
     ws_config: WorkspaceConfig,
     *,
     repo_filter: str | None = None,
+    only_aliases: set[str] | None = None,
+    run_hooks: bool = True,
     dry_run: bool = False,
     commit_depth: int = 500,
     exclude_patterns: list[str] | None = None,
     on_repo_start: Callable[[str], None] | None = None,
     on_repo_done: Callable[[RepoUpdateResult], None] | None = None,
 ) -> list[RepoUpdateResult]:
-    """Update stale repos in the workspace.
+    """Update stale repos in the workspace (index-only).
 
     Args:
         workspace_root: Path to the workspace root directory.
         ws_config: Loaded workspace configuration.
         repo_filter: If set, only update this repo alias.
+        only_aliases: If set, restrict the run to this subset of aliases (on
+            top of ``repo_filter``). The CLI uses this to hand the fast
+            index-only path just the repos it isn't updating via the
+            single-repo docs path, so the two orchestrators never touch the
+            same repo in one workspace run.
+        run_hooks: When False, skip the cross-repo analysis hooks at the end.
+            The CLI sets this so it can run them once over the union of
+            index-only and docs repos, instead of on a partial set here.
         dry_run: If True, detect staleness but don't actually update.
         commit_depth: Max commits to analyze per file.
         exclude_patterns: Gitignore-style patterns to exclude.
@@ -553,6 +563,9 @@ async def update_workspace(
             available = ", ".join(ws_config.repo_aliases())
             raise ValueError(f"Unknown repo '{repo_filter}'. Available: {available}")
         entries = [entry]
+
+    if only_aliases is not None:
+        entries = [e for e in entries if e.alias in only_aliases]
 
     # Step 0: Sync ``last_commit_at_index`` from each repo's state.json so
     # the workspace config doesn't drift when a child repo is updated
@@ -746,8 +759,10 @@ async def update_workspace(
     if changed_aliases:
         ws_config.save(workspace_root)
 
-    # Step 4: Run cross-repo hooks (Phase 3/4 placeholder)
-    if changed_aliases:
+    # Step 4: Run cross-repo hooks (Phase 3/4 placeholder). ``run_hooks`` lets
+    # the CLI defer these so they run once over the union of index-only and
+    # docs repos, rather than on this partial set.
+    if changed_aliases and run_hooks:
         await run_cross_repo_hooks(ws_config, workspace_root, changed_aliases)
 
     return results

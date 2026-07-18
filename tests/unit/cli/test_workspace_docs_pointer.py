@@ -78,8 +78,10 @@ def test_workspace_update_backfills_docs_pointer(tmp_path: Path) -> None:
     _index_full(repo)
     c0 = _git(repo, "rev-parse", "HEAD")
 
-    # Simulate a state.json written before last_docs_commit existed.
-    save_state(repo, {SYNC_POINTER_KEY: c0, "docs_enabled": True})
+    # Simulate a state.json written before last_docs_commit existed. docs are
+    # disabled so `update --workspace` resolves to the index-only path — the
+    # path this pointer-backfill guard is about.
+    save_state(repo, {SYNC_POINTER_KEY: c0, "docs_enabled": False})
     assert DOCS_POINTER_KEY not in load_state(repo)
 
     c1 = _commit_change(repo, "c.py", "def gamma():\n    return 3\n", "add c.py")
@@ -107,7 +109,9 @@ def test_stale_prose_is_reachable_after_workspace_update(tmp_path: Path) -> None
 
     _index_full(repo)
     c0 = _git(repo, "rev-parse", "HEAD")
-    save_state(repo, {SYNC_POINTER_KEY: c0, "docs_enabled": True})
+    # docs disabled -> `update --workspace` stays index-only and only walks the
+    # sync pointer, which is the scenario that used to strand the docs pointer.
+    save_state(repo, {SYNC_POINTER_KEY: c0, "docs_enabled": False})
 
     c1 = _commit_change(repo, "c.py", "def gamma():\n    return 3\n", "add c.py")
     old_cwd = os.getcwd()
@@ -138,6 +142,35 @@ def test_stale_prose_is_reachable_after_workspace_update(tmp_path: Path) -> None
 
     state = _state(repo)
     assert state.get(DOCS_POINTER_KEY) == c2, "docs pointer should now reach HEAD"
+
+
+def test_workspace_update_regenerates_docs_for_docs_enabled_repo(tmp_path: Path) -> None:
+    """A plain `update --workspace` regenerates docs (not just the index) for a
+    member whose docs are enabled, so its wiki stays as fresh as a single-repo
+    update would keep it. The docs pointer reaching HEAD proves the docs path ran.
+    """
+    repo = _make_workspace(tmp_path)
+
+    _index_full(repo)
+    c0 = _git(repo, "rev-parse", "HEAD")
+    save_state(repo, {SYNC_POINTER_KEY: c0, DOCS_POINTER_KEY: c0, "docs_enabled": True})
+
+    c1 = _commit_change(repo, "c.py", "def gamma():\n    return 3\n", "add c.py")
+
+    old_cwd = os.getcwd()
+    try:
+        os.chdir(str(repo))
+        result = CliRunner().invoke(cli, ["update", "--workspace", "--provider", "mock"])
+    finally:
+        os.chdir(old_cwd)
+    assert result.exit_code == 0, result.output
+
+    state = _state(repo)
+    assert state[SYNC_POINTER_KEY] == c1
+    assert state.get(DOCS_POINTER_KEY) == c1, (
+        "a docs-enabled member must regenerate docs and advance the docs pointer "
+        "on a plain workspace update"
+    )
 
 
 def test_docs_early_exit_advances_docs_pointer(tmp_path: Path) -> None:
