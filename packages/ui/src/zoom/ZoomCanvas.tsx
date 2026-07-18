@@ -251,6 +251,17 @@ export const ZoomCanvas = forwardRef<ZoomCanvasHandle, ZoomCanvasProps>(function
       rendererRef.current?.setHovered(null);
     };
 
+    const onDoubleClick = (e: MouseEvent) => {
+      const renderer = rendererRef.current;
+      if (!renderer) return;
+      const { sx, sy } = localPoint(e);
+      const id = renderer.pick(sx, sy);
+      // Double-click dives into whatever card is under the cursor. This is the
+      // intuitive "zoom into this" gesture (single click just selects); empty
+      // space is ignored so a stray double-click never yanks the camera.
+      if (id) renderer.frameNode(id, { reducedMotion: reducedRef.current });
+    };
+
     const onKeyDown = (e: KeyboardEvent) => {
       const renderer = rendererRef.current;
       if (!renderer) return;
@@ -297,6 +308,7 @@ export const ZoomCanvas = forwardRef<ZoomCanvasHandle, ZoomCanvasProps>(function
     canvas.addEventListener("pointerup", onPointerUp);
     canvas.addEventListener("pointercancel", onPointerCancel);
     canvas.addEventListener("pointerleave", onPointerLeave);
+    canvas.addEventListener("dblclick", onDoubleClick);
     canvas.addEventListener("keydown", onKeyDown);
     return () => {
       canvas.removeEventListener("wheel", onWheel);
@@ -305,6 +317,7 @@ export const ZoomCanvas = forwardRef<ZoomCanvasHandle, ZoomCanvasProps>(function
       canvas.removeEventListener("pointerup", onPointerUp);
       canvas.removeEventListener("pointercancel", onPointerCancel);
       canvas.removeEventListener("pointerleave", onPointerLeave);
+      canvas.removeEventListener("dblclick", onDoubleClick);
       canvas.removeEventListener("keydown", onKeyDown);
     };
   }, [nodeById]);
@@ -315,7 +328,7 @@ export const ZoomCanvas = forwardRef<ZoomCanvasHandle, ZoomCanvasProps>(function
         ref={canvasRef}
         tabIndex={0}
         role="application"
-        aria-label="Zoomable system map. Drag to pan, scroll to zoom, arrow keys to pan, plus and minus to zoom, Enter to open the centre node."
+        aria-label="Zoomable system map. Drag to pan, scroll to zoom, double-click a card to dive into it, arrow keys to pan, plus and minus to zoom, Enter to open the centre node."
         className="h-full w-full touch-none outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
         style={{ cursor: "grab" }}
       />

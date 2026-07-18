@@ -1,14 +1,15 @@
 "use client";
 
 /**
- * Zoom Map (experimental): `/repos/[id]/zoom`.
+ * Knowledge Graph (zoom map): `/repos/[id]/zoom`.
  *
  * A continuous-zoom canvas of the system: start at the whole repo and zoom
  * *into* a card to reveal its layers, groups, folders and files, ranked by how
  * the system actually runs. The page wraps the shared `<ZoomCanvas>` with the
- * navigation chrome (breadcrumb, search-to-zoom, detail panel) and keeps the
- * focused node in the URL so a zoom state is shareable. Gated behind
- * `NEXT_PUBLIC_ENABLE_ZOOM_MAP` while it matures alongside the Knowledge Graph.
+ * navigation chrome (breadcrumb, search-to-zoom, detail panel, first-visit hint)
+ * and keeps the focused node in the URL so a zoom state is shareable. This is the
+ * replacement for the old node-link Knowledge Graph; still gated behind
+ * `NEXT_PUBLIC_ENABLE_ZOOM_MAP` until it fully takes over that route.
  */
 
 import { use, useCallback, useMemo, useRef, useState } from "react";
@@ -22,6 +23,7 @@ import { useZoomMap } from "@/lib/hooks/use-graph";
 import { ZoomBreadcrumb } from "@/components/zoom/zoom-breadcrumb";
 import { ZoomSearch } from "@/components/zoom/zoom-search";
 import { ZoomDetailPanel } from "@/components/zoom/zoom-detail-panel";
+import { ZoomHint } from "@/components/zoom/zoom-hint";
 
 const ZOOM_ENABLED = process.env.NEXT_PUBLIC_ENABLE_ZOOM_MAP === "true";
 
@@ -62,23 +64,24 @@ export default function ZoomPage({ params }: { params: Promise<{ id: string }> }
 
   return (
     <PageShell
-      title="Zoom Map"
+      title="Knowledge Graph"
       icon={<ScanSearch className="h-5 w-5 text-[var(--color-accent-primary)]" />}
-      description="Zoom into the system to reveal how it runs: layers, groups, folders and files, ranked by execution relevance."
+      description="Explore your codebase like a map: scroll to zoom, drag to pan, and double-click any card to dive into its layers, folders and files, ranked by how the code actually runs."
       maxWidth="wide"
     >
-      {/* Full-bleed canvas (no framing border): the map blends into the page like
-          the Knowledge Graph. Breadcrumb + search float over the canvas as an
-          overlay rather than a chrome bar, so the map gets the whole area. */}
+      {/* Full-bleed canvas (no framing border): the map blends into the page.
+          Breadcrumb + search float over the canvas as an overlay rather than a
+          chrome bar, and a first-visit hint teaches the zoom gestures, so the map
+          gets the whole area. */}
       <div className="relative h-[calc(100vh-12rem)] min-h-[520px] overflow-hidden rounded-lg">
         {isLoading && (
           <div className="flex h-full items-center justify-center text-sm text-[var(--color-text-secondary)]">
-            Building the zoom map…
+            Building the knowledge graph…
           </div>
         )}
         {error && !isLoading && (
           <div className="flex h-full items-center justify-center text-sm text-[var(--color-error)]">
-            Could not load the zoom map for this repository.
+            Could not load the knowledge graph for this repository.
           </div>
         )}
         {zoomMap && !isLoading && (
@@ -113,6 +116,7 @@ export default function ZoomPage({ params }: { params: Promise<{ id: string }> }
                 onZoom={(id) => flyTo(id)}
               />
             )}
+            <ZoomHint />
           </>
         )}
       </div>
