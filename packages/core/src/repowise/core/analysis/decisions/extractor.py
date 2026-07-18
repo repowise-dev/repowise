@@ -30,7 +30,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from collections.abc import Collection
+from collections.abc import Collection, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -343,12 +343,19 @@ class DecisionExtractor:
         graph: Any | None = None,
         git_meta_map: dict[str, dict] | None = None,
         parsed_files: list[Any] | None = None,
+        source_map: dict[str, bytes] | None = None,
     ) -> None:
         self._repo_path = Path(repo_path)
         self._provider = provider
         self._graph = graph
         self._git_meta_map = git_meta_map or {}
         self._parsed_files = parsed_files or []
+        # ``source_map`` is ingestion's already-computed {rel_path: bytes} for
+        # the indexed file set. When present, the inline-marker scan reuses it
+        # for both discovery and reads instead of re-walking the tree and
+        # re-reading every file from disk (redundant with ingestion). ``None``
+        # keeps the legacy self-walk fallback for callers that don't thread it.
+        self._source_map = source_map
 
     # ------------------------------------------------------------------
     # Source 1: Inline markers
@@ -361,14 +368,10 @@ class DecisionExtractor:
         """Scan source files for decision markers (WHY:, DECISION:, etc.)."""
         markers_by_file: dict[str, list[dict]] = {}
 
-        if restrict_to_files:
-            files_to_scan = [self._repo_path / fp for fp in restrict_to_files]
-        else:
-            files_to_scan = list(self._iter_source_files())
-
-        total_files = len(files_to_scan)
+        scan_targets = list(self._iter_scan_targets(restrict_to_files))
+        total_files = len(scan_targets)
         logger.info("decision_extractor.scanning_inline_markers", total_files=total_files)
-        for idx, file_path in enumerate(files_to_scan):
+        for idx, (rel_path, text) in enumerate(scan_targets):
             if idx > 0 and idx % 1000 == 0:
                 logger.info(
                     "decision_extractor.scan_progress",
@@ -376,17 +379,11 @@ class DecisionExtractor:
                     total=total_files,
                     markers_found=sum(len(v) for v in markers_by_file.values()),
                 )
-            if not file_path.is_file():
-                continue
-            try:
-                text = file_path.read_text(encoding="utf-8", errors="replace")
-            except (OSError, UnicodeDecodeError):
-                continue
 
             lines = text.splitlines()
             # Track whether we're inside a fenced code block in markdown
             # files so we don't treat example markers as real decisions.
-            is_markdown = file_path.suffix.lower() in (".md", ".mdx", ".rst")
+            is_markdown = Path(rel_path).suffix.lower() in (".md", ".mdx", ".rst")
             in_code_fence = False
             for line_num, line in enumerate(lines, start=1):
                 if is_markdown:
@@ -414,11 +411,6 @@ class DecisionExtractor:
                     ctx_start = max(0, line_num - 21)
                     ctx_end = min(len(lines), line_num + 20)
                     context = "\n".join(lines[ctx_start:ctx_end])
-
-                    try:
-                        rel_path = str(file_path.relative_to(self._repo_path))
-                    except ValueError:
-                        rel_path = str(file_path)
 
                     markers_by_file.setdefault(rel_path, []).append(
                         {
@@ -1499,6 +1491,67 @@ class DecisionExtractor:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _iter_scan_targets(
+        self, restrict_to_files: list[str] | None
+    ) -> Iterator[tuple[str, str]]:
+        """Yield ``(rel_path, text)`` for every file the marker scan covers.
+
+        Three sources, in priority order:
+
+        * ``restrict_to_files`` (update path): the caller's explicit change set.
+          Text comes from ``source_map`` when the file was just ingested, else a
+          targeted disk read; deleted / unreadable paths are skipped.
+        * ``source_map`` (init path): ingestion's already-decoded indexed set.
+          Discovery AND reads are free — no tree walk, no per-file ``read_text``.
+          Paths are POSIX (``FileInfo.path``), matching the graph node keys the
+          neighbour lookup joins against.
+        * legacy self-walk (``source_map is None``): the original ``os.walk`` +
+          git-tracked filter, kept so callers that don't thread ``source_map``
+          behave exactly as before.
+        """
+        if restrict_to_files:
+            for rel_path in restrict_to_files:
+                text = self._read_source_text(rel_path)
+                if text is not None:
+                    yield rel_path, text
+            return
+
+        if self._source_map is not None:
+            for rel_path, source in self._source_map.items():
+                yield rel_path, source.decode("utf-8", errors="replace")
+            return
+
+        for file_path in self._iter_source_files():
+            if not file_path.is_file():
+                continue
+            try:
+                text = file_path.read_text(encoding="utf-8", errors="replace")
+            except (OSError, UnicodeDecodeError):
+                continue
+            try:
+                rel_path = str(file_path.relative_to(self._repo_path))
+            except ValueError:
+                rel_path = str(file_path)
+            yield rel_path, text
+
+    def _read_source_text(self, rel_path: str) -> str | None:
+        """Decode one file's text, preferring ingestion's in-memory bytes.
+
+        Falls back to a disk read (deleted / unreadable → ``None``) so the
+        update path stays correct for files that aren't in ``source_map``.
+        """
+        if self._source_map is not None:
+            source = self._source_map.get(rel_path)
+            if source is not None:
+                return source.decode("utf-8", errors="replace")
+        abs_path = self._repo_path / rel_path
+        if not abs_path.is_file():
+            return None
+        try:
+            return abs_path.read_text(encoding="utf-8", errors="replace")
+        except (OSError, UnicodeDecodeError):
+            return None
 
     def _tracked_files(self) -> set[Path] | None:
         """Resolved paths git tracks under ``repo_path``, or ``None``.

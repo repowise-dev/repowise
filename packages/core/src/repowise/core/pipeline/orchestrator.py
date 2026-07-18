@@ -482,6 +482,7 @@ async def run_pipeline(
                 graph_builder=graph_builder,
                 git_meta_map=git_meta_map,
                 parsed_files=parsed_files,
+                source_map=source_map,
                 progress=progress,
             ),
         )
