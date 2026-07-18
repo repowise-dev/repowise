@@ -359,7 +359,7 @@ async def _persist_full_update_async(
         create_session_factory,
         get_session,
         init_db,
-        upsert_page_from_generated,
+        upsert_pages_from_generated,
         upsert_repository,
     )
 
@@ -379,8 +379,9 @@ async def _persist_full_update_async(
 
             # Pages first and without a net: everything else is derived
             # metadata, but a docs-mode update that can't write pages failed.
-            for page in generated_pages:
-                await upsert_page_from_generated(session, page, repo_id)
+            # Batched (one SELECT + one flush); the checkpointer sink already
+            # streamed each page per-commit for durability.
+            await upsert_pages_from_generated(session, generated_pages, repo_id)
 
             # Tombstone pages for deleted/renamed files — regeneration only
             # rewrites pages for files that still exist.

@@ -638,7 +638,7 @@ def _generate_docs_for_added_repo(
         create_session_factory,
         get_session,
         init_db,
-        upsert_page_from_generated,
+        upsert_pages_from_generated,
         upsert_repository,
     )
 
@@ -700,8 +700,7 @@ def _generate_docs_for_added_repo(
                 name=repo_path.name,
                 local_path=str(repo_path),
             )
-            for p in pages:
-                await upsert_page_from_generated(session, p, repo.id)
+            await upsert_pages_from_generated(session, pages, repo.id)
         fts = FullTextSearch(engine)
         await fts.ensure_index()
         for p in pages:

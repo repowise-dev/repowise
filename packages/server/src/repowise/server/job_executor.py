@@ -431,12 +431,12 @@ async def execute_job(
         async with get_session(session_factory) as session:
             swept_page_ids = await persist_pipeline_result(result, session, repo_id)
 
-            # Persist incrementally regenerated pages
+            # Persist incrementally regenerated pages (batched: one SELECT +
+            # one flush instead of a round-trip per page on the hosted DB).
             if incremental_pages:
-                from repowise.core.persistence import upsert_page_from_generated
+                from repowise.core.persistence import upsert_pages_from_generated
 
-                for page in incremental_pages:
-                    await upsert_page_from_generated(session, page, repo_id)
+                await upsert_pages_from_generated(session, incremental_pages, repo_id)
 
             # Drop swept pages from the vector store *before* the SQL session
             # commits. The vector store is a separate engine/file (pgvector DB,

@@ -876,12 +876,15 @@ async def persist_generation(result: Any, session: Any, repo_id: str) -> None:
     Pages upsert per ``page_id`` (archiving prior versions); KG layers/tour
     are full-replace. Both safe to call incrementally / on resume.
     """
-    from repowise.core.persistence import upsert_page_from_generated
+    from repowise.core.persistence import upsert_pages_from_generated
 
     # ---- Pages (if generated) -----------------------------------------------
+    # Batched: one SELECT + one flush instead of a SELECT+flush per page. The
+    # per-page durability sink already streamed these during generation; this
+    # end-of-run pass flushes the post-generation metadata enrichment. See
+    # upsert_pages_from_generated for the equivalence contract.
     if result.generated_pages:
-        for page in result.generated_pages:
-            await upsert_page_from_generated(session, page, repo_id)
+        await upsert_pages_from_generated(session, result.generated_pages, repo_id)
 
     # ---- Knowledge graph layers, tour steps & curated meta ------------------
     kg = getattr(result, "knowledge_graph_result", None)

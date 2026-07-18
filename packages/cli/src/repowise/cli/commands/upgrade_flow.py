@@ -156,7 +156,7 @@ async def _run_upgrade(
         create_session_factory,
         get_session,
         init_db,
-        upsert_page_from_generated,
+        upsert_pages_from_generated,
         upsert_repository,
     )
     from repowise.core.pipeline import rehydrate_graph_builder, run_generation
@@ -227,8 +227,7 @@ async def _run_upgrade(
 
     # 6. Persist pages + a GenerationJob marker, then build the FTS index.
     async with get_session(sf) as session:
-        for page in generated_pages:
-            await upsert_page_from_generated(session, page, repo_id)
+        await upsert_pages_from_generated(session, generated_pages, repo_id)
         try:
             from datetime import UTC, datetime
 
