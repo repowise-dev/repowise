@@ -15,6 +15,7 @@ Callers:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -563,7 +564,7 @@ async def run_pipeline(
 
             try:
                 # In generate mode the summary floor is deferred to run after
-                # the wiki-page backfill (in ``enrich_knowledge_graph``), so
+                # the wiki-page backfill (in ``finalize_knowledge_graph``), so
                 # rich page summaries win; FAST mode floors here.
                 will_generate = generate_docs and llm_client is not None
                 knowledge_graph_result = curate_knowledge_graph(
@@ -635,37 +636,84 @@ async def run_pipeline(
         except Exception as _api_err:
             logger.warning("api_contract_detection_failed", error=str(_api_err))
 
-        generated_pages = await run_generation(
-            repo_path=repo_path,
-            parsed_files=parsed_files,
-            source_map=source_map,
-            graph_builder=graph_builder,
-            repo_structure=repo_structure,
-            git_meta_map=git_meta_map,
-            llm_client=llm_client,
-            embedder=embedder,
-            vector_store=vector_store,
-            concurrency=concurrency,
-            progress=progress,
-            resume=resume,
-            generation_config=resolved_generation_config,
-            dead_code_report=gen_dead_code_report,
-            decision_report=gen_decision_report,
-            external_systems=external_systems,
-            on_page_ready=on_page_ready,
-            # In-memory KG — the artifact file is written after generation,
-            # so it cannot carry layers/tour/modules on a fresh init.
-            kg_modules=(
-                knowledge_graph_result.modules or None
-                if knowledge_graph_result is not None
-                else None
-            ),
-            kg_data=(
-                knowledge_graph_result.to_dict()
-                if knowledge_graph_result is not None
-                else None
-            ),
-        )
+        # Launch the page-independent half of KG enrichment (LLM layer naming +
+        # tour) so it overlaps page generation instead of running strictly
+        # after it. The two do not read each other's live output: run_generation
+        # receives a to_dict() snapshot of the skeleton (kg_data/kg_modules
+        # below), and structural enrichment reads only the skeleton layers plus
+        # the warmed graph metrics. Layer/tour results are applied to the
+        # skeleton only in finalize_knowledge_graph (after generation), so the
+        # in-place layer-name mutation inside enrichment can never reach the
+        # snapshot generation is already holding. The page-dependent finalize
+        # (summary backfill) runs after both complete.
+        kg_structural_task = None
+        if knowledge_graph_result is not None:
+            from repowise.core.generation.knowledge_graph import (
+                enrich_knowledge_graph_structural,
+            )
+
+            _kg_reasoning = (
+                getattr(resolved_generation_config, "reasoning", "auto")
+                if resolved_generation_config
+                else "auto"
+            )
+            # Warm the pagerank cache on this thread before the concurrent
+            # launch so both the structural task and generation only ever read
+            # it. It is already populated during ingestion; this makes the
+            # no-race invariant explicit rather than incidental.
+            graph_builder.pagerank()
+            kg_structural_task = asyncio.create_task(
+                enrich_knowledge_graph_structural(
+                    kg_skeleton=knowledge_graph_result,
+                    llm_client=llm_client,
+                    graph_builder=graph_builder,
+                    repo_structure=repo_structure,
+                    tech_stack=tech_stack_dicts,
+                    reasoning=_kg_reasoning,
+                )
+            )
+
+        try:
+            generated_pages = await run_generation(
+                repo_path=repo_path,
+                parsed_files=parsed_files,
+                source_map=source_map,
+                graph_builder=graph_builder,
+                repo_structure=repo_structure,
+                git_meta_map=git_meta_map,
+                llm_client=llm_client,
+                embedder=embedder,
+                vector_store=vector_store,
+                concurrency=concurrency,
+                progress=progress,
+                resume=resume,
+                generation_config=resolved_generation_config,
+                dead_code_report=gen_dead_code_report,
+                decision_report=gen_decision_report,
+                external_systems=external_systems,
+                on_page_ready=on_page_ready,
+                # In-memory KG — the artifact file is written after generation,
+                # so it cannot carry layers/tour/modules on a fresh init.
+                kg_modules=(
+                    knowledge_graph_result.modules or None
+                    if knowledge_graph_result is not None
+                    else None
+                ),
+                kg_data=(
+                    knowledge_graph_result.to_dict()
+                    if knowledge_graph_result is not None
+                    else None
+                ),
+            )
+        except BaseException:
+            # Generation aborted the run: cancel the concurrent enrichment task
+            # so it stops issuing LLM calls and never surfaces as a stray
+            # "Task exception was never retrieved" during teardown.
+            if kg_structural_task is not None:
+                kg_structural_task.cancel()
+                with contextlib.suppress(BaseException):
+                    await kg_structural_task
+            raise
 
         # Record which structural page types this run authoritatively decided,
         # so the sweep can retire prior rows of a type even when this run
@@ -686,37 +734,33 @@ async def run_pipeline(
         if kg_layers_present:
             authoritative_page_types.add("layer_page")
 
-    # ---- Knowledge Graph LLM enrichment (layer naming + tour) -----------------
-    if knowledge_graph_result is not None and generate_docs and llm_client is not None:
-        try:
-            from repowise.core.generation.knowledge_graph import enrich_knowledge_graph
+        # ---- Knowledge Graph enrichment: join + finalize ----------------------
+        # The structural half (layer naming + tour) ran concurrently with
+        # generation above; join it now and apply the page-derived summary
+        # backfill. Same try/except envelope as before: a KG failure logs and
+        # leaves the skeleton in place, never aborting the run.
+        if kg_structural_task is not None:
+            from repowise.core.generation.knowledge_graph import finalize_knowledge_graph
 
             if progress:
                 progress.on_phase_start("knowledge_graph.enrich", None)
-            _kg_reasoning = (
-                getattr(resolved_generation_config, "reasoning", "auto")
-                if resolved_generation_config
-                else "auto"
-            )
-            knowledge_graph_result = await enrich_knowledge_graph(
-                kg_skeleton=knowledge_graph_result,
-                llm_client=llm_client,
-                graph_builder=graph_builder,
-                repo_structure=repo_structure,
-                tech_stack=tech_stack_dicts,
-                generated_pages=generated_pages,
-                progress=progress,
-                reasoning=_kg_reasoning,
-            )
-            if progress:
-                progress.on_message(
-                    "info",
-                    f"  ↳ KG enriched: {len(knowledge_graph_result.layers)} layers, "
-                    f"{len(knowledge_graph_result.tour)} tour steps",
+            try:
+                enriched_layers, tour = await kg_structural_task
+                knowledge_graph_result = finalize_knowledge_graph(
+                    kg_skeleton=knowledge_graph_result,
+                    enriched_layers=enriched_layers,
+                    tour=tour,
+                    generated_pages=generated_pages,
                 )
-            _phase_done(progress, "knowledge_graph.enrich")
-        except (ValueError, KeyError, OSError, RuntimeError) as exc:
-            logger.error("knowledge_graph_enrichment_failed", error=str(exc), exc_info=True)
+                if progress:
+                    progress.on_message(
+                        "info",
+                        f"  ↳ KG enriched: {len(knowledge_graph_result.layers)} layers, "
+                        f"{len(knowledge_graph_result.tour)} tour steps",
+                    )
+                _phase_done(progress, "knowledge_graph.enrich")
+            except (ValueError, KeyError, OSError, RuntimeError) as exc:
+                logger.error("knowledge_graph_enrichment_failed", error=str(exc), exc_info=True)
 
     # ---- Execution flow tracing -----------------------------------------------
     execution_flow_report = None

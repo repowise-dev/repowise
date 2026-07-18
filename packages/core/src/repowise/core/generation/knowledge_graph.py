@@ -52,7 +52,40 @@ async def enrich_knowledge_graph(
     progress: Any | None = None,
     reasoning: str = "auto",
 ) -> Any:
-    """Enrich deterministic KG with LLM-generated layer names and tour."""
+    """Enrich deterministic KG with LLM-generated layer names and tour.
+
+    Thin serial wrapper: runs the page-independent structural enrichment
+    (layer naming + tour), then the page-dependent finalize (summary backfill,
+    floor, review). The init orchestrator drives the two halves separately so
+    the structural half overlaps page generation; other callers (update path,
+    init CLI) keep this simple serial entry point.
+    """
+    enriched_layers, tour = await enrich_knowledge_graph_structural(
+        kg_skeleton,
+        llm_client,
+        graph_builder,
+        repo_structure,
+        tech_stack,
+        reasoning=reasoning,
+    )
+    return finalize_knowledge_graph(kg_skeleton, enriched_layers, tour, generated_pages)
+
+
+async def enrich_knowledge_graph_structural(
+    kg_skeleton: Any,
+    llm_client: Any,
+    graph_builder: Any,
+    repo_structure: Any,
+    tech_stack: list[dict],
+    reasoning: str = "auto",
+) -> tuple[list[dict], list[dict]]:
+    """Page-independent KG enrichment: LLM layer naming + guided tour.
+
+    Reads only the skeleton, warmed graph metrics, and tech stack — never the
+    generated wiki pages — so it is safe to run concurrently with page
+    generation. Returns ``(enriched_layers, tour)``; the caller applies them to
+    the skeleton via :func:`finalize_knowledge_graph` once pages are ready.
+    """
     enriched_layers = await _enrich_layers(
         kg_skeleton.layers, llm_client, graph_builder, repo_structure, tech_stack,
         reasoning=reasoning,
@@ -72,6 +105,21 @@ async def enrich_knowledge_graph(
             reasoning=reasoning,
         )
 
+    return enriched_layers, tour
+
+
+def finalize_knowledge_graph(
+    kg_skeleton: Any,
+    enriched_layers: list[dict],
+    tour: list[dict],
+    generated_pages: list[Any] | None = None,
+) -> Any:
+    """Apply structural enrichment + page-derived summaries to the skeleton.
+
+    Runs after both structural enrichment and page generation complete. Order
+    matches the original serial path: page backfill, then the deterministic
+    summary floor, then the layer/tour assignment, then the review gate.
+    """
     if generated_pages:
         _backfill_summaries(kg_skeleton, generated_pages)
 
@@ -79,6 +127,8 @@ async def enrich_knowledge_graph(
     # page summaries always win and only never-paged files fall back. Gated by
     # the curation flag (the seam already floored FAST-mode output; this covers
     # the generate-mode path where the seam deferred to let backfill run first).
+    from repowise.core.analysis.kg_curation import curation_enabled
+
     if curation_enabled():
         from repowise.core.analysis.kg_curation import apply_summary_floor
 
