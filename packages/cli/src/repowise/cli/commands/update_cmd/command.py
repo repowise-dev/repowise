@@ -45,7 +45,7 @@ from .incremental import (
     _refresh_knowledge_graph,
     _run_partial_analysis,
 )
-from .mode import _infer_legacy_docs_enabled
+from .mode import _infer_legacy_docs_enabled, _resolve_index_only_mode
 from .persistence import (
     _persist_index_only_update,
     _run_full_health_rescore,
@@ -462,8 +462,6 @@ def run_update(
 
     load_dotenv(repo_path)
     state = load_state(repo_path)
-    from repowise.cli.commands.update_cmd.mode import _resolve_index_only_mode
-
     resolved_index_only = _resolve_index_only_mode(
         index_only=index_only, docs_flag=docs_flag, state=state
     )
@@ -617,34 +615,21 @@ def run_update(
     if emitter is not None:
         emitter.stage("detect_changes")
 
-
     from repowise.core.ingestion import ChangeDetector
 
     detector = ChangeDetector(repo_path)
     file_diffs = detector.get_changed_files(base_ref, head or "HEAD")
 
-    def is_indexable(fd) -> bool:
-        if fd.path.startswith(".repowise/"):
-            return False
-        if fd.new_parsed and fd.new_parsed.file_info.language != "unknown":
-            return True
-        if fd.old_parsed and fd.old_parsed.file_info.language != "unknown":
-            return True
-        return False
-
-    indexable_files = [fd for fd in file_diffs if is_indexable(fd)]
-
-    if not indexable_files and not config_changed:
+    if not file_diffs and not config_changed:
         console.print("[green]No changed files detected.[/green]")
+        # Always advance the sync pointer so the on-disk freshness marker stays
+        # current on no-op syncs. In docs mode, no changed files means no docs
+        # work is pending, so the docs pointer can advance to head too, which
+        # also heals legacy state that never recorded one.
+        persisted = {**state, "last_sync_commit": head, "config_fingerprint": curr_config_fp}
         if not resolved_index_only and head:
-            if "last_docs_commit" not in state and "last_sync_commit" in state:
-                state["last_docs_commit"] = state["last_sync_commit"]
-            state["last_sync_commit"] = head
-            state["last_docs_commit"] = head
-        save_state(
-            repo_path,
-            {**state, "config_fingerprint": curr_config_fp},
-        )
+            persisted["last_docs_commit"] = head
+        save_state(repo_path, persisted)
         # Keep the DB freshness stamp in lockstep with state.json: the server's
         # /repos endpoint reads head_commit from the row, not the state file.
         stamp_head_commit(repo_path, head)

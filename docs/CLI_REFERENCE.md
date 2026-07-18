@@ -161,7 +161,7 @@ See [WORKTREES.md](WORKTREES.md).
 | `--no-workspace` | Force single-repo mode (handy when running from a workspace root) |
 | `--repo` | Update a specific workspace repo by alias |
 | `--index-only` | Refresh the index only, skip doc regeneration for this run |
-| `--docs` / `--no-docs` | Regenerate wiki pages for changed files, or skip doc regeneration entirely |
+| `--docs` / `--no-docs` | Regenerate wiki pages for changed files, or skip doc regeneration entirely. Not supported in workspace mode yet: with `--workspace` the flag is ignored (with a warning) and you should run docs per repo, e.g. `repowise update --docs --no-workspace` from inside the repo. |
 | `--full` | Upgrade a fast (`--mode fast`) index to a full one, see below. Single-repo only; errors in workspace mode. |
 | `--no-cost-tracking` | Don't record LLM spend for this run |
 | `--agents` / `--no-agents` | Generate or skip managed `AGENTS.md` after update. Persists the preference. |

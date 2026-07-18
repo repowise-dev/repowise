@@ -1,4 +1,4 @@
-"""Verification suite for issue #847.
+"""Single-repo docs-pointer separation (issue #847).
 
 Bug: index-only ``repowise update`` advances ``last_sync_commit`` to HEAD
 without regenerating pages. Because ``repowise update --docs`` used
@@ -6,13 +6,8 @@ without regenerating pages. Because ``repowise update --docs`` used
 and silently regenerated nothing ("No changed files detected", exit 0),
 leaving stale prose permanently unreachable.
 
-Drop this file into tests/unit/cli/ in your fork (matches the conventions
-of tests/unit/cli/test_update_e2e.py) and run:
-
-    pytest tests/unit/cli/test_issue_847_fix.py -v
-
-It does NOT try to guess your exact implementation. It only asserts the
-externally-observable behavior the issue and its suggested fix require:
+These assert the externally-observable behavior the fix requires (the
+workspace-side counterpart lives in test_workspace_docs_pointer.py):
 
 1. An index-only update must never advance the docs pointer.
 2. A run that actually generates pages must advance the docs pointer.
