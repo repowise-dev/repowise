@@ -147,18 +147,24 @@ class CallResolver:
                 if name not in file_syms:
                     self._barrel_origins[path][name] = source_file
 
-        # Also track Rust pub-use re-exports that use wildcard (*) bindings.
-        # When a file has `pub use foo::*`, all symbols from foo are
-        # transitively available through this file.
+        # Track wildcard re-exports, which forward every symbol of the imported
+        # module under this file's namespace. Two shapes qualify: Rust
+        # `pub use foo::*` (is_reexport) and Python/JS `from foo import *` (a
+        # "*" imported name). The latter is how package ``__init__.py`` barrels
+        # commonly re-export a subpackage — ``build_import_name_maps`` skips the
+        # "*" name (it is not a binding), so without this pass the barrel chain
+        # dead-ends one hop short of the real definition and a call through the
+        # barrel resolves to nothing.
         for path, parsed in self._parsed_files.items():
+            file_syms = self._file_symbols.get(path, {})
             for imp in parsed.imports:
-                if not imp.is_reexport or not imp.resolved_file:
+                is_wildcard = imp.is_reexport or "*" in imp.imported_names
+                if not is_wildcard or not imp.resolved_file:
                     continue
                 if imp.resolved_file.startswith("external:"):
                     continue
                 resolved = imp.resolved_file
                 source_syms = self._file_symbols.get(resolved, {})
-                file_syms = self._file_symbols.get(path, {})
                 for sym_name in source_syms:
                     if sym_name not in file_syms:
                         self._barrel_origins[path][sym_name] = resolved
