@@ -30,9 +30,6 @@ import {
   Wrench,
 } from "lucide-react";
 
-/** Experimental continuous-zoom canvas, hidden unless the flag is set. */
-const ZOOM_NAV_ENABLED = process.env.NEXT_PUBLIC_ENABLE_ZOOM_MAP === "true";
-
 export interface NavItem {
   label: string;
   href: string;
@@ -67,10 +64,7 @@ export function repoNavGroups(repoId: string): NavGroup[] {
         { label: "Overview", href: `${base}/overview`, icon: Activity },
         { label: "Docs", href: `${base}/docs`, icon: BookOpen },
         { label: "Architecture", href: `${base}/architecture`, icon: Boxes },
-        { label: "Knowledge Graph", href: `${base}/knowledge-graph`, icon: Waypoints },
-        ...(ZOOM_NAV_ENABLED
-          ? [{ label: "Zoom Map", href: `${base}/zoom`, icon: ScanSearch }]
-          : []),
+        { label: "Knowledge Graph", href: `${base}/knowledge-graph`, icon: ScanSearch },
         { label: "Code Health", href: `${base}/code-health`, icon: HeartPulse },
         { label: "Refactoring", href: `${base}/refactoring`, icon: Wrench },
         { label: "Files", href: `${base}/files`, icon: FolderTree },
