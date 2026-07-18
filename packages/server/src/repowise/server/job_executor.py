@@ -106,6 +106,10 @@ def _repo_wiki_style(repo: Any, repo_path: str) -> str:
     return resolve_style(style, repo_path=repo_path).name
 
 
+# Valid job execution modes handled by execute_job
+VALID_JOB_MODES: set[str] = {"sync", "full_resync", "initial_index", "index_only"}
+
+
 # Phase → numeric level mapping for job.current_level
 _PHASE_LEVELS = {
     "traverse": 0,
@@ -341,6 +345,12 @@ async def execute_job(
             wiki_style = _repo_wiki_style(repo, repo_path)
             config = json.loads(job.config_json) if job.config_json else {}
             mode = config.get("mode") or "sync"
+            if mode not in VALID_JOB_MODES:
+                valid_str = ", ".join(sorted(VALID_JOB_MODES))
+                raise ValueError(
+                    f"Invalid job mode '{mode}'. Expected one of: {valid_str}"
+                )
+
             is_full_resync = mode == "full_resync"
             is_initial_index = mode == "initial_index"
             is_index_only = mode == "index_only"
