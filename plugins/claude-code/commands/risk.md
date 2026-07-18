@@ -25,6 +25,7 @@ Pure git + learned constants: no LLM, no network. A natural pre-merge / PR gate.
 
 Useful flags:
 - `--ext .py,.ts` — only count changes in those file types
+- `-x, --exclude <pattern>` — gitignore-style pattern to drop from the diff (repeatable; also honors a `.riskignore` file)
 - `--format json` — machine-readable score + features + drivers
 - `--path <dir>` — point at a different git repo
 

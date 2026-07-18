@@ -9,6 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.33.0] — 2026-07-18
+
+### Added
+- **Line-level AI authorship from your agent sessions.** repowise reads agent-trace records to attribute commits (and now individual lines) to the agent and model that wrote them, and stamps a per-commit model id, so the contributors and provenance views can tell human-written code from agent-written code down to the line. (#861, #866)
+- **Docs that repair themselves.** Generation now self-repairs hallucinated symbol references, resolves cross-page links across the whole repo on updates, and backfills graph-derived "related pages" with a self-healing pass, so wiki pages link to real symbols and stay cross-linked as the code moves. (#871, #872)
+- **`get_change_risk` grew up.** The change-risk score gained a `-x/--exclude` flag with `.riskignore` support to drop vendored or generated paths from the diff, and now lists the line-level tests a change actually impacts. (#867, #903)
+- **Coverage-backed tests in PR risk.** `get_risk` PR mode now surfaces `tests_to_run` proven by the per-test coverage map, so a reviewer sees exactly which tests exercise the changed files. (#859)
+- **Fewer dead-code false positives.** Whole classes of systematic false positives (re-exports, dynamic references) are eliminated, so `get_dead_code` reports far less that is actually live. (#886)
+- **Better flow answers.** `get_answer` rescues un-named flow endpoints by re-ranking on the graph neighborhood, so "how does X get to Y" answers land on real endpoints more often. (#864)
+- **Leaner MCP entry point.** `get_why` joins the lean MCP profile and `get_answer` is the advertised entry point; `get_conformance` and `generate_refactoring_code` are now opt-in. `AGENTS.md` was brought to parity with the `CLAUDE.md` tool surface. (#889, #875, #900)
+
+### Changed
+- **Faster init and update.** A broad performance pass across indexing: analysis phases run concurrently and incremental re-ingest runs in parallel, init- and update-built graphs converge so the centrality cache hits on updates, self-call resolution and pagerank are cached for cascade ordering, pages reused verbatim skip re-embedding, end-of-run wiki-page upserts are batched, refactoring detectors drop repo-sized per-file work, and coverage discovery plus the repo pre-scan share the pruned file walk. (#894, #895, #891, #892, #904, #893, #898, #897)
+- **Cleaner UI.** The Overview got a visual-hierarchy pass and a denser health card with docs counts split by AI vs auto-generated, and "Attention Needed" is a triage panel again. (#882, #879, #883)
+- **TypeScript path resolution in the CLI.** `TsconfigResolver` is now wired into the CLI commands, so `tsconfig` path aliases resolve during indexing. (#675)
+
+### Fixed
+- **Docs pointer no longer drifts on index-only updates.** The docs commit pointer is preserved during index-only updates and kept separate from the sync pointer, fixing `update --docs` drift. (#849, #878)
+- **Wildcard re-exports are followed in call resolution.** `from x import *` re-exports (and the JS equivalent) are now traced, recovering call edges that were dropped. (#905)
+- **`get_answer` stops dropping substance.** Synthesis is no longer silently skipped when a usable API key exists, the gated low-confidence path serves real substance and unpins cached misses, gated-path excerpts no longer die to a swallowed error, and the live-grep fallback respects gitignore and exclude patterns. (#888, #887, #896, #856)
+- **Sturdier change-risk on the CLI.** A friendly revspec error is restored in `changed_lines`, and subprocess handling is hardened and aligned with the MCP tool conventions. (#902, #899)
+- **Security scan reads real source** and guards repo-root detection, instead of scanning stale or wrong content. (#890)
+- **Smaller fixes.** Unknown `restyle` style arguments raise a usage error; CLI usage errors are classified separately from failures in telemetry; decision staleness timestamps are normalized; webhook jobs run in sync mode; MCP health resolves the repository from the scoped session; and the code-rationale git-grep is hardened for macOS and color configs. (#908, #907, #877, #848, #865, #825)
+
+### Documentation
+- README now counts ten MCP tools, fixes the coverage example, and tightens the Code Health section. (#901)
+- Plugin: both the Claude Code and Codex plugins ship a `change-review` skill; the risk command documents the new `--exclude` flag.
+
 ## [0.32.0] — 2026-07-15
 
 ### Added
