@@ -9,7 +9,7 @@
  */
 
 import type { Rect } from "./camera";
-import { type GridLayoutOptions, gridLayout, type LayoutChild } from "./layout";
+import { type LayoutChild, packLayout, type PackLayoutOptions } from "./layout";
 import type { ZoomNode } from "./types";
 
 /** Compose a child's parent-space layout rect into absolute world space. */
@@ -27,16 +27,16 @@ const ROOT_RECT: Rect = { x: 0, y: 0, w: 1, h: 1 };
 /**
  * Walk the tree from `rootId`, composing every node's absolute world rect.
  * Iterative (explicit stack) so a deep tree cannot overflow the call stack.
- * Each node's children are laid out client-side into a near-uniform grid (see
- * `layout.ts`) keyed off the parent's world aspect, then composed into world
- * space, so every card keeps a consistent shape and size encodes importance only
- * lightly. The backend treemap rects are intentionally ignored; unreachable
+ * Each node's children are laid out client-side as an importance-weighted
+ * masonry pack (see `layout.ts`) keyed off the parent's world aspect, then
+ * composed into world space, so card size encodes importance and the rows
+ * stagger. The backend treemap rects are intentionally ignored; unreachable
  * nodes are skipped.
  */
 export function computeWorldRects(
   nodes: Map<string, ZoomNode>,
   rootId: string,
-  opts: GridLayoutOptions = {},
+  opts: PackLayoutOptions = {},
 ): Map<string, Rect> {
   const rects = new Map<string, Rect>();
   const root = nodes.get(rootId);
@@ -58,7 +58,7 @@ export function computeWorldRects(
     if (kids.length === 0) continue;
 
     const aspect = parentAbs.h > 0 ? parentAbs.w / parentAbs.h : 1;
-    const local = gridLayout(kids, aspect, opts);
+    const local = packLayout(kids, aspect, opts);
     for (const child of kids) {
       const lr = local.get(child.id);
       if (!lr) continue;

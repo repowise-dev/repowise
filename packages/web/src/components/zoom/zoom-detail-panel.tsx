@@ -7,13 +7,22 @@
  * selection store so the zoom canvas owns its own selection lifecycle.
  */
 
-import { ScanSearch, X } from "lucide-react";
+import Link from "next/link";
+import { FileCode, ScanSearch, X } from "lucide-react";
 import type { ZoomNode } from "@repowise-dev/ui/zoom";
 
 interface ZoomDetailPanelProps {
   node: ZoomNode;
+  repoId: string;
   onClose: () => void;
   onZoom: (id: string) => void;
+}
+
+/** Route to a file's own page. Segments are encoded but the slashes are kept so
+ *  the `/files/[...path]` catch-all receives the real path. */
+function fileHref(repoId: string, path: string): string {
+  const encoded = path.split("/").map(encodeURIComponent).join("/");
+  return `/repos/${repoId}/files/${encoded}`;
 }
 
 const KIND_LABEL: Record<ZoomNode["kind"], string> = {
@@ -35,7 +44,7 @@ function Stat({ label, value, tone }: { label: string; value: number; tone?: str
   );
 }
 
-export function ZoomDetailPanel({ node, onClose, onZoom }: ZoomDetailPanelProps) {
+export function ZoomDetailPanel({ node, repoId, onClose, onZoom }: ZoomDetailPanelProps) {
   const m = node.metrics;
   const isFile = node.kind === "file";
   return (
@@ -94,16 +103,27 @@ export function ZoomDetailPanel({ node, onClose, onZoom }: ZoomDetailPanelProps)
         )}
       </div>
 
-      {node.children.length > 0 && (
-        <footer className="border-t border-[var(--color-border-default)] p-2">
-          <button
-            type="button"
-            onClick={() => onZoom(node.id)}
-            className="flex w-full items-center justify-center gap-1.5 rounded-md bg-[var(--color-accent-primary)] px-3 py-1.5 text-xs font-medium text-[var(--color-text-on-accent)] hover:opacity-90"
-          >
-            <ScanSearch className="h-3.5 w-3.5" />
-            Zoom in
-          </button>
+      {(node.children.length > 0 || isFile) && (
+        <footer className="flex flex-col gap-2 border-t border-[var(--color-border-default)] p-2">
+          {node.children.length > 0 && (
+            <button
+              type="button"
+              onClick={() => onZoom(node.id)}
+              className="flex w-full items-center justify-center gap-1.5 rounded-md bg-[var(--color-accent-primary)] px-3 py-1.5 text-xs font-medium text-[var(--color-text-on-accent)] hover:opacity-90"
+            >
+              <ScanSearch className="h-3.5 w-3.5" />
+              Zoom in
+            </button>
+          )}
+          {isFile && node.path && (
+            <Link
+              href={fileHref(repoId, node.path)}
+              className="flex w-full items-center justify-center gap-1.5 rounded-md border border-[var(--color-border-default)] px-3 py-1.5 text-xs font-medium text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)]"
+            >
+              <FileCode className="h-3.5 w-3.5" />
+              Open file page
+            </Link>
+          )}
         </footer>
       )}
     </aside>

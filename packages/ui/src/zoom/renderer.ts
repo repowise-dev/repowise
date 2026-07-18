@@ -16,6 +16,7 @@ import { type Camera, type Viewport, fitRoot, frameRect } from "./camera";
 import { flyDuration, interpolateCamera } from "./camera-anim";
 import { type DrawStats, drawScene, pickNode } from "./draw-tree";
 import { focusChain } from "./focus-path";
+import { PaperTexture } from "./paper";
 import type { ZoomScene } from "./scene";
 import type { ZoomPalette } from "./theme";
 import type { ZoomNode } from "./types";
@@ -63,6 +64,8 @@ export class ZoomRenderer {
   private palette: ZoomPalette;
   private readonly onStats: ((stats: FrameStats) => void) | undefined;
   private readonly onFocus: ((chain: ZoomNode[]) => void) | undefined;
+  /** Shared ruled-paper card texture; repaints once when the asset loads. */
+  private readonly paper: PaperTexture;
 
   private scene: ZoomScene | null = null;
   private cam: Camera = { cx: 0.5, cy: 0.5, scale: 600 };
@@ -87,6 +90,8 @@ export class ZoomRenderer {
     this.palette = opts.palette;
     this.onStats = opts.onStats;
     this.onFocus = opts.onFocus;
+    // Repaint once the paper photo decodes so the first frame picks up the texture.
+    this.paper = new PaperTexture(() => this.invalidate());
     this.resize();
   }
 
@@ -246,6 +251,7 @@ export class ZoomRenderer {
         selectedId: this.selectedId,
         hoveredId: this.hoveredId,
         lowDetail,
+        paper: this.paper,
       });
       if (this.onStats) {
         this.onStats({

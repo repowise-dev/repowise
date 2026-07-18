@@ -1,19 +1,26 @@
 /**
- * Per-parent grid layout. Pure, browser-free and unit-testable.
+ * Per-parent masonry pack layout. Pure, browser-free and unit-testable.
  *
  * The backend ships a containment tree but its layout rects are a squarified
  * treemap (space-filling, extreme aspect ratios). We ignore those and lay each
- * parent's children out client-side instead: a near-uniform grid of separated
- * boxes. Columns/rows track the parent's world aspect so cells stay near-square
- * at any depth, a whitespace gutter sits between every box, and box size encodes
- * importance only lightly (a gentle shrink toward the cell centre) so aspect
- * ratios stay uniform. Keeping the layout in the renderer means it iterates with
- * no re-index, and the rect it emits is still in parent `[0,1]` space, so the
- * clip-and-scale composition in `geometry.ts` is unchanged.
+ * parent's children out client-side instead: every card is sized by importance
+ * (more central = bigger, within bounds so nothing is unreadably small) and the
+ * cards are row-packed into centred, variable-width rows. The staggered row
+ * edges and the size variation give an organic architecture-map feel rather than
+ * a rigid grid, while the whole cluster is uniform-fit (aspect-preserving) into
+ * the parent so cards keep a single landscape shape. The rect emitted is still in
+ * parent `[0,1]` space, so the clip-and-scale composition in `geometry.ts` is
+ * unchanged.
  */
 
 import type { Rect } from "./camera";
-import { GRID_GUTTER_FRACTION, IMPORTANCE_SCALE_MIN } from "./constants";
+import {
+  CARD_ASPECT,
+  PACK_GUTTER,
+  PACK_IMPORTANCE_GAMMA,
+  PACK_SIZE_MAX,
+  PACK_SIZE_MIN,
+} from "./constants";
 
 /** The minimal slice of a node the layout needs (placement order + sizing). */
 export interface LayoutChild {
@@ -22,17 +29,24 @@ export interface LayoutChild {
   importance: number;
 }
 
-export interface GridLayoutOptions {
-  /** Whitespace channel as a fraction of each cell axis (per side). */
+export interface PackLayoutOptions {
+  /** Whitespace between cards, in the same relative units as the card sides. */
   gutter?: number;
-  /** Least-important box shrinks to this fraction of its cell (1 = uniform). */
-  importanceScaleMin?: number;
+  /** Card height for the least-important sibling. */
+  sizeMin?: number;
+  /** Card height for the most-important sibling. */
+  sizeMax?: number;
+  /** Importance curve; <1 lifts small cards so minor nodes stay readable. */
+  gamma?: number;
+  /** Card width : height. */
+  aspect?: number;
 }
 
 /**
- * Choose a grid whose column/row ratio tracks the parent's world aspect, so the
- * resulting cells are as close to square as the child count allows. Returns the
- * tightened dimensions (no empty trailing column).
+ * Choose a target column count whose column/row ratio tracks the parent's world
+ * aspect, so the packed cluster's bounding box roughly matches the parent shape
+ * and fits with little margin. Returns the tightened dimensions (no empty
+ * trailing column). Shared with the pack (which packs to ~`cols` cards per row).
  */
 export function gridDimensions(
   count: number,
@@ -45,26 +59,37 @@ export function gridDimensions(
   cols = Math.min(count, Math.max(1, cols));
   const rows = Math.ceil(count / cols);
   // Re-derive columns from the row count so the grid is as tight as possible for
-  // that many rows. This can narrow the column count (not only trim one empty
-  // trailing column), which is intended: fewer, fuller columns read better than
-  // a sparse final column.
+  // that many rows (this can narrow the column count, which is intended).
   return { cols: Math.ceil(count / rows), rows };
 }
 
+interface Packed {
+  id: string;
+  w: number;
+  h: number;
+}
+
 /**
- * Place `children` into a near-uniform grid inside the unit parent box. Children
- * are ordered by `sibling_rank` (most important first, top-left), each centred
- * in its cell, inset by the gutter, and shrunk lightly by importance. A partial
- * last row is centred horizontally. Returns each child's rect in parent `[0,1]`
- * space. Deterministic: stable order, ties broken by id.
+ * Lay `children` out as an importance-weighted masonry pack inside the unit
+ * parent box. Children are ordered by `sibling_rank` (most important first, so
+ * the biggest cards read top-left), sized by importance normalised across the
+ * sibling set, then greedily row-packed to ~`cols` cards per row. Rows are
+ * centred (so left edges stagger) and each card is centred in its row band (so
+ * top edges stagger); the whole cluster is uniform-fit into `[0,1]²`. Returns
+ * each child's rect in parent `[0,1]` space. Deterministic: stable order, ties
+ * broken by id; no randomness.
  */
-export function gridLayout(
+export function packLayout(
   children: readonly LayoutChild[],
   parentAspect: number,
-  opts: GridLayoutOptions = {},
+  opts: PackLayoutOptions = {},
 ): Map<string, Rect> {
-  const gutter = opts.gutter ?? GRID_GUTTER_FRACTION;
-  const scaleMin = opts.importanceScaleMin ?? IMPORTANCE_SCALE_MIN;
+  const gutter = opts.gutter ?? PACK_GUTTER;
+  const sizeMin = opts.sizeMin ?? PACK_SIZE_MIN;
+  const sizeMax = opts.sizeMax ?? PACK_SIZE_MAX;
+  const gamma = opts.gamma ?? PACK_IMPORTANCE_GAMMA;
+  const aspect = opts.aspect ?? CARD_ASPECT;
+
   const out = new Map<string, Rect>();
   const n = children.length;
   if (n === 0) return out;
@@ -72,38 +97,77 @@ export function gridLayout(
   const ordered = [...children].sort(
     (a, b) => a.sibling_rank - b.sibling_rank || (a.id < b.id ? -1 : 1),
   );
-  const { cols, rows } = gridDimensions(n, parentAspect);
-  const cellW = 1 / cols;
-  const cellH = 1 / rows;
-  // Per-axis gutters: equal-looking channels in world space because the cells
-  // are near-square there (cellW * parentW ~= cellH * parentH).
-  const gx = gutter * cellW;
-  const gy = gutter * cellH;
 
-  for (let i = 0; i < n; i++) {
-    const child = ordered[i]!;
-    const row = Math.floor(i / cols);
-    const col = i % cols;
-    const itemsInRow = row === rows - 1 ? n - row * cols : cols;
-    const rowShift = ((cols - itemsInRow) * cellW) / 2; // centre a partial last row
+  // Normalise importance across this sibling set so each parent shows a full
+  // range of sizes (min-max within the group). If they are all equal, everyone
+  // gets the max size (a uniform, generously-sized cluster).
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (const c of ordered) {
+    const v = Number.isFinite(c.importance) ? c.importance : 0;
+    if (v < lo) lo = v;
+    if (v > hi) hi = v;
+  }
+  const span = hi - lo;
+  const heightOf = (c: LayoutChild): number => {
+    const v = Number.isFinite(c.importance) ? c.importance : 0;
+    const norm = span > 1e-9 ? (v - lo) / span : 1;
+    return sizeMin + (sizeMax - sizeMin) * Math.pow(norm, gamma);
+  };
 
-    const cellX = col * cellW + rowShift;
-    const cellY = row * cellH;
-    const innerW = cellW - 2 * gx;
-    const innerH = cellH - 2 * gy;
+  const cards: Packed[] = ordered.map((c) => {
+    const h = heightOf(c);
+    return { id: c.id, w: h * aspect, h };
+  });
 
-    const imp = Number.isFinite(child.importance)
-      ? Math.min(1, Math.max(0, child.importance))
-      : 0;
-    const scale = scaleMin + (1 - scaleMin) * imp;
-    const w = innerW * scale;
-    const h = innerH * scale;
-    out.set(child.id, {
-      x: cellX + gx + (innerW - w) / 2,
-      y: cellY + gy + (innerH - h) / 2,
-      w,
-      h,
-    });
+  // Greedy row packing to a target width of ~`cols` average-width cards.
+  const { cols } = gridDimensions(n, parentAspect);
+  const avgW = cards.reduce((s, c) => s + c.w, 0) / n;
+  const targetRowW = cols * avgW + Math.max(0, cols - 1) * gutter;
+
+  const rows: Packed[][] = [];
+  let cur: Packed[] = [];
+  let curW = 0;
+  for (const card of cards) {
+    const add = (cur.length > 0 ? gutter : 0) + card.w;
+    if (cur.length > 0 && curW + add > targetRowW) {
+      rows.push(cur);
+      cur = [];
+      curW = 0;
+    }
+    curW += (cur.length > 0 ? gutter : 0) + card.w;
+    cur.push(card);
+  }
+  if (cur.length > 0) rows.push(cur);
+
+  const rowW = (row: Packed[]): number =>
+    row.reduce((s, c) => s + c.w, 0) + Math.max(0, row.length - 1) * gutter;
+  const rowH = (row: Packed[]): number => row.reduce((m, c) => Math.max(m, c.h), 0);
+
+  const maxRowW = Math.max(...rows.map(rowW));
+  const totalH = rows.reduce((s, r) => s + rowH(r), 0) + Math.max(0, rows.length - 1) * gutter;
+
+  // Uniform (aspect-preserving) fit of the packed cluster into the unit box,
+  // centred, so cards keep one shape and nothing spills outside the parent.
+  const scale = Math.min(1 / maxRowW, 1 / totalH);
+  const offX = (1 - maxRowW * scale) / 2;
+  const offY = (1 - totalH * scale) / 2;
+
+  let y = 0;
+  for (const row of rows) {
+    const h = rowH(row);
+    let x = (maxRowW - rowW(row)) / 2; // centre the row -> staggered left edges
+    for (const card of row) {
+      const cy = y + (h - card.h) / 2; // centre in the band -> staggered top edges
+      out.set(card.id, {
+        x: offX + x * scale,
+        y: offY + cy * scale,
+        w: card.w * scale,
+        h: card.h * scale,
+      });
+      x += card.w + gutter;
+    }
+    y += h + gutter;
   }
   return out;
 }

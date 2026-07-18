@@ -18,37 +18,145 @@ import type { Rect } from "./camera";
 import { ARROW_SIZE_PX, EDGE_LINE_PX } from "./constants";
 import type { EdgeRoute } from "./edges";
 import type { ZoomPalette } from "./theme";
-import type { ZoomNode } from "./types";
+import type { ZoomKind, ZoomNode } from "./types";
 
 const LABEL_MIN_PX = 44; // draw the name once a card is at least this wide
 const SUMMARY_MIN_PX = 260; // draw a one-line summary on large cards
 const DOT_MIN_PX = 60; // draw the role status dot once there is room
 const CORNER_PX = 12;
-const RULE_MIN_PX = 96; // draw notebook ruled lines once the card is big enough
-const RULE_GAP_PX = 22; // spacing between ruled lines (screen px)
+const TEXTURE_MIN_PX = 96; // paint the paper texture once the card is big enough
+const GLYPH_MIN_PX = 52; // draw the kind glyph beside the title once there is room
+const FOOTER_MIN_W_PX = 132; // draw the bottom signal row on cards at least this wide
+const FOOTER_MIN_H_PX = 104; // ...and at least this tall
 
-/** Faint horizontal ruled lines inside a card, for a notebook-paper texture. */
-function drawNotebookRules(
+/** Human label per node kind, shown small in the card footer. */
+const KIND_LABEL: Record<ZoomKind, string> = {
+  system: "System",
+  layer: "Layer",
+  group: "Group",
+  folder: "Folder",
+  file: "File",
+};
+
+/**
+ * A minimal monoline glyph per node kind, drawn into the `[x, y, s, s]` box in the
+ * caller's current stroke style. Canvas-native rather than the KG cards' Lucide
+ * components (which cannot be drawn to a 2D context), but echoes the same visual
+ * language: stacked planes = layer, folder = folder/group, a page = file, a grid
+ * of boxes = the whole system.
+ */
+function drawKindGlyph(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  s: number,
+  kind: ZoomKind,
+): void {
+  const at = (fx: number, fy: number): [number, number] => [x + fx * s, y + fy * s];
+  ctx.beginPath();
+  switch (kind) {
+    case "system": {
+      // 2x2 grid of small boxes.
+      const d = 0.34 * s;
+      const cells: Array<[number, number]> = [
+        [0.1, 0.1],
+        [0.56, 0.1],
+        [0.1, 0.56],
+        [0.56, 0.56],
+      ];
+      for (const [gx, gy] of cells) {
+        ctx.rect(x + gx * s, y + gy * s, d, d);
+      }
+      break;
+    }
+    case "layer": {
+      // Two stacked planes (Lucide "Layers" idiom).
+      ctx.moveTo(...at(0.5, 0.1));
+      ctx.lineTo(...at(0.88, 0.32));
+      ctx.lineTo(...at(0.5, 0.54));
+      ctx.lineTo(...at(0.12, 0.32));
+      ctx.closePath();
+      ctx.moveTo(...at(0.12, 0.52));
+      ctx.lineTo(...at(0.5, 0.74));
+      ctx.lineTo(...at(0.88, 0.52));
+      break;
+    }
+    case "group": {
+      // Two overlapping cards (a collection).
+      ctx.rect(x + 0.34 * s, y + 0.14 * s, 0.44 * s, 0.44 * s);
+      ctx.rect(x + 0.14 * s, y + 0.36 * s, 0.44 * s, 0.44 * s);
+      break;
+    }
+    case "folder": {
+      // Classic tabbed folder.
+      ctx.moveTo(...at(0.14, 0.3));
+      ctx.lineTo(...at(0.42, 0.3));
+      ctx.lineTo(...at(0.5, 0.42));
+      ctx.lineTo(...at(0.86, 0.42));
+      ctx.lineTo(...at(0.86, 0.82));
+      ctx.lineTo(...at(0.14, 0.82));
+      ctx.closePath();
+      break;
+    }
+    case "file": {
+      // Page with a folded corner.
+      ctx.moveTo(...at(0.24, 0.08));
+      ctx.lineTo(...at(0.6, 0.08));
+      ctx.lineTo(...at(0.78, 0.26));
+      ctx.lineTo(...at(0.78, 0.92));
+      ctx.lineTo(...at(0.24, 0.92));
+      ctx.closePath();
+      ctx.moveTo(...at(0.6, 0.08));
+      ctx.lineTo(...at(0.6, 0.26));
+      ctx.lineTo(...at(0.78, 0.26));
+      break;
+    }
+  }
+  ctx.stroke();
+}
+
+/**
+ * The single most useful bottom-right signal for a node. Files show their
+ * language; containers show how many files they hold. (A true per-module code
+ * health score would need a new backend field on the zoom node; this uses what
+ * the model carries today.)
+ */
+function primaryMetric(node: ZoomNode): string {
+  if (node.kind === "file") return node.language ? node.language.toUpperCase() : "";
+  const n = node.metrics.file_count;
+  return n > 0 ? `${n} ${n === 1 ? "file" : "files"}` : "";
+}
+
+/**
+ * Paint the shared ruled-paper photo inside a card, washed by the card's own
+ * per-theme wash so the tint and text contrast survive. This is the canvas
+ * equivalent of the KG cards' `--kg-card-texture` (paper photo under a
+ * translucent wash), reusing the very same asset via `PaperTexture`. The ruled
+ * lines and grain come from the photo, so no lines are drawn procedurally.
+ *
+ * Order matters: the opaque paper tile is laid down first, then the wash pulls
+ * the composite back toward the card color. Wrapped in save/restore, so the
+ * clip and the temporary alpha are both undone for the caller.
+ */
+function drawPaperTexture(
   ctx: CanvasRenderingContext2D,
   rect: Rect,
   radius: number,
+  paper: CanvasPattern,
   palette: ZoomPalette,
+  alpha: number,
 ): void {
   ctx.save();
   roundRectPath(ctx, rect, radius);
   ctx.clip();
-  ctx.strokeStyle = palette.rule;
-  ctx.lineWidth = 1;
-  const bottom = rect.y + rect.h;
-  // Offset the first line below the title band; lines run edge to edge like ruled
-  // paper and sit far enough under the text to stay invisible behind it.
-  for (let y = rect.y + RULE_GAP_PX * 1.6; y < bottom - 3; y += RULE_GAP_PX) {
-    const yy = Math.round(y) + 0.5; // crisp 1px rule
-    ctx.beginPath();
-    ctx.moveTo(rect.x, yy);
-    ctx.lineTo(rect.x + rect.w, yy);
-    ctx.stroke();
-  }
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle = paper;
+  ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
+  // The wash carries its own per-theme alpha (the `--color-zoom-card-paper-wash`
+  // token); globalAlpha here only folds in the card's body-fade.
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle = palette.paperWash;
+  ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
   ctx.restore();
 }
 
@@ -96,6 +204,7 @@ export function drawCard(
   alpha: number,
   state: CardState,
   t: number,
+  paper: CanvasPattern | null,
 ): void {
   if (alpha <= 0) return;
   const { selected, hovered, lowDetail } = state;
@@ -104,9 +213,9 @@ export function drawCard(
   const radius = Math.max(0, Math.min(CORNER_PX, rect.w / 2, rect.h / 2));
   roundRectPath(ctx, rect, radius);
 
-  // Fill with a soft elevation shadow (skipped on tiny cards / during pans so
-  // the frame stays cheap). The path is preserved across save/restore, so the
-  // border below strokes the same rounded rect without inheriting the shadow.
+  // Base fill with a soft elevation shadow (skipped on tiny cards / during pans
+  // so the frame stays cheap). This lays down the card silhouette + shadow; the
+  // paper texture below is painted over it and the border re-strokes the rect.
   const elevate = !lowDetail && rect.w >= 56 && rect.h >= 36;
   ctx.save();
   if (elevate) {
@@ -118,13 +227,17 @@ export function drawCard(
   ctx.fill();
   ctx.restore();
 
-  // Notebook ruled-paper texture inside the card (skipped on tiny cards / pans).
-  if (!lowDetail && rect.w >= RULE_MIN_PX && rect.h >= RULE_MIN_PX) {
-    drawNotebookRules(ctx, rect, radius, palette);
+  // Ruled-paper texture (shared KG asset) inside the card, skipped on tiny cards
+  // / pans and whenever the texture has not loaded yet (then the base fill above
+  // stands in). The photo supplies the ruled lines, so none are drawn by hand.
+  if (paper && !lowDetail && rect.w >= TEXTURE_MIN_PX && rect.h >= TEXTURE_MIN_PX) {
+    drawPaperTexture(ctx, rect, radius, paper, palette, alpha);
   }
 
   // Hairline border; the hovered card firms up, the selected card gets an accent
-  // ring. No role color on the frame (that lives in the status dot).
+  // ring. No role color on the frame (that lives in the status dot). Re-establish
+  // the rounded path first: the fill/texture passes above left their own paths.
+  roundRectPath(ctx, rect, radius);
   ctx.lineWidth = selected ? 2 : 1;
   ctx.strokeStyle = selected
     ? palette.accent
@@ -158,16 +271,54 @@ export function drawCard(
   ctx.fillStyle = palette.nodeText;
   ctx.font = `600 ${fontSize}px ui-sans-serif, system-ui, sans-serif`;
   ctx.textBaseline = "top";
+
+  // Kind glyph before the title so layers / folders / files are distinguishable
+  // at a glance (mirrors the KG cards' kind icon). The title shifts right to clear it.
+  let titleX = rect.x + pad;
+  if (rect.w >= GLYPH_MIN_PX && rect.h >= 28) {
+    const gs = fontSize;
+    ctx.save();
+    ctx.globalAlpha = textAlpha * 0.85;
+    ctx.strokeStyle = palette.nodeText;
+    ctx.lineWidth = Math.max(1, fontSize * 0.1);
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
+    drawKindGlyph(ctx, rect.x + pad, rect.y + pad, gs, node.kind);
+    ctx.restore();
+    titleX += gs + Math.max(5, fontSize * 0.4);
+  }
   // Leave room for the dot so a long name never collides with it.
-  const labelMax = rect.w - pad * 2 - (rect.w >= DOT_MIN_PX ? 14 : 0);
+  const labelMax = rect.x + rect.w - pad - titleX - (rect.w >= DOT_MIN_PX ? 14 : 0);
   const label = fitText(ctx, node.name, labelMax);
-  ctx.fillText(label, rect.x + pad, rect.y + pad);
+  ctx.fillText(label, titleX, rect.y + pad);
 
   if (rect.w >= SUMMARY_MIN_PX && rect.h >= 96 && node.summary) {
     ctx.fillStyle = palette.textMuted;
     ctx.font = `400 ${Math.max(11, fontSize - 3)}px ui-sans-serif, system-ui, sans-serif`;
     const summary = fitText(ctx, node.summary, rect.w - pad * 2);
     ctx.fillText(summary, rect.x + pad, rect.y + pad + fontSize + 6);
+  }
+
+  // Footer signal row (large cards): kind label left, primary metric right.
+  if (rect.w >= FOOTER_MIN_W_PX && rect.h >= FOOTER_MIN_H_PX) {
+    const fFont = Math.max(9, Math.min(11, fontSize - 4));
+    const baseY = rect.y + rect.h - pad;
+    ctx.font = `600 ${fFont}px ui-sans-serif, system-ui, sans-serif`;
+    ctx.textBaseline = "bottom";
+    ctx.textAlign = "left";
+    ctx.globalAlpha = textAlpha * 0.62;
+    ctx.fillStyle = palette.textMuted;
+    ctx.fillText(KIND_LABEL[node.kind].toUpperCase(), rect.x + pad, baseY);
+    const metric = primaryMetric(node);
+    if (metric) {
+      ctx.textAlign = "right";
+      ctx.globalAlpha = textAlpha * 0.82;
+      ctx.fillStyle = palette.nodeText;
+      ctx.fillText(fitText(ctx, metric, rect.w * 0.5), rect.x + rect.w - pad, baseY);
+    }
+    // Reset the text state the rest of the renderer expects.
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
   }
 
   ctx.globalAlpha = 1;

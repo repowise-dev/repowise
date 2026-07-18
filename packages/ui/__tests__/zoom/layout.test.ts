@@ -1,10 +1,12 @@
 import { describe, it, expect } from "vitest";
 import type { Rect } from "../../src/zoom/camera";
-import { gridDimensions, gridLayout, type LayoutChild } from "../../src/zoom/layout";
+import { gridDimensions, packLayout, type LayoutChild } from "../../src/zoom/layout";
 
 function child(id: string, rank: number, importance = 0.5): LayoutChild {
   return { id, sibling_rank: rank, importance };
 }
+
+const area = (r: Rect): number => r.w * r.h;
 
 /** Do two rects overlap (strictly, ignoring shared edges)? */
 function overlaps(a: Rect, b: Rect): boolean {
@@ -30,49 +32,48 @@ describe("gridDimensions", () => {
   });
 });
 
-describe("gridLayout", () => {
-  const square = { gutter: 0, importanceScaleMin: 1 };
-
-  it("tiles a 2x2 grid with no gutter or importance scaling", () => {
-    const kids = [child("a", 1), child("b", 2), child("c", 3), child("d", 4)];
-    const r = gridLayout(kids, 1, square);
-    expect(r.get("a")).toEqual({ x: 0, y: 0, w: 0.5, h: 0.5 });
-    expect(r.get("b")).toEqual({ x: 0.5, y: 0, w: 0.5, h: 0.5 });
-    expect(r.get("c")).toEqual({ x: 0, y: 0.5, w: 0.5, h: 0.5 });
-    expect(r.get("d")).toEqual({ x: 0.5, y: 0.5, w: 0.5, h: 0.5 });
+describe("packLayout", () => {
+  it("is empty for no children", () => {
+    expect(packLayout([], 1).size).toBe(0);
   });
 
-  it("places the most important child top-left regardless of input order", () => {
-    const kids = [child("low", 4), child("top", 1), child("mid", 2)];
-    const r = gridLayout(kids, 1, square);
+  it("sizes cards by importance (more important = larger)", () => {
+    const kids = [child("hi", 1, 0.9), child("mid", 2, 0.5), child("lo", 3, 0.1)];
+    const r = packLayout(kids, 1);
+    expect(area(r.get("hi")!)).toBeGreaterThan(area(r.get("mid")!));
+    expect(area(r.get("mid")!)).toBeGreaterThan(area(r.get("lo")!));
+  });
+
+  it("gives every card the same size when importance is uniform", () => {
+    const kids = [child("a", 1, 0.5), child("b", 2, 0.5), child("c", 3, 0.5)];
+    const r = packLayout(kids, 1);
+    const w = r.get("a")!.w;
+    expect(r.get("b")!.w).toBeCloseTo(w, 9);
+    expect(r.get("c")!.w).toBeCloseTo(w, 9);
+  });
+
+  it("places the most important child in the top row and largest", () => {
+    const kids = [child("low", 4, 0.1), child("top", 1, 0.9), child("mid", 2, 0.5)];
+    const r = packLayout(kids, 1);
     const top = r.get("top")!;
-    expect(top.x).toBe(0);
-    expect(top.y).toBe(0);
+    // Rows are centred (so left edges stagger), but the most important card is
+    // always in the top row and the biggest.
+    for (const id of ["low", "mid"]) {
+      expect(top.y).toBeLessThanOrEqual(r.get(id)!.y + 1e-9);
+      expect(area(top)).toBeGreaterThan(area(r.get(id)!));
+    }
   });
 
-  it("centres a partial last row", () => {
-    const kids = [child("a", 1), child("b", 2), child("c", 3)];
-    const r = gridLayout(kids, 1, square); // 2x2 grid, 3 items
-    const c = r.get("c")!; // the lone last-row item, centred across the two columns
-    expect(c.x).toBeCloseTo(0.25, 9);
-    expect(c.y).toBeCloseTo(0.5, 9);
-  });
-
-  it("applies a per-axis gutter", () => {
-    const r = gridLayout([child("a", 1, 1)], 1, { gutter: 0.1, importanceScaleMin: 1 });
-    expect(r.get("a")).toEqual({ x: 0.1, y: 0.1, w: 0.8, h: 0.8 });
-  });
-
-  it("shrinks a low-importance box toward its cell centre", () => {
-    const r = gridLayout([child("a", 1, 0)], 1, { gutter: 0, importanceScaleMin: 0.5 });
-    // importance 0 -> scale 0.5 of the full cell, centred
-    expect(r.get("a")).toEqual({ x: 0.25, y: 0.25, w: 0.5, h: 0.5 });
+  it("keeps every card a consistent landscape aspect", () => {
+    const kids = Array.from({ length: 7 }, (_, i) => child(`n${i}`, i + 1, (i + 1) / 7));
+    const ratios = [...packLayout(kids, 1.2).values()].map((r) => r.w / r.h);
+    for (const ratio of ratios) expect(ratio).toBeCloseTo(ratios[0]!, 6);
   });
 
   it("never overlaps siblings and is deterministic", () => {
-    const kids = Array.from({ length: 17 }, (_, i) => child(`n${i}`, i + 1, Math.random()));
-    const a = gridLayout(kids, 1.3);
-    const b = gridLayout(kids, 1.3);
+    const kids = Array.from({ length: 17 }, (_, i) => child(`n${i}`, i + 1, ((i * 7) % 17) / 17));
+    const a = packLayout(kids, 1.3);
+    const b = packLayout(kids, 1.3);
     expect([...a.entries()]).toEqual([...b.entries()]);
     const rects = [...a.values()];
     for (let i = 0; i < rects.length; i++) {
@@ -82,9 +83,9 @@ describe("gridLayout", () => {
     }
   });
 
-  it("keeps every box inside the unit parent box", () => {
-    const kids = Array.from({ length: 11 }, (_, i) => child(`n${i}`, i + 1, 1));
-    for (const r of gridLayout(kids, 2).values()) {
+  it("keeps every card inside the unit parent box", () => {
+    const kids = Array.from({ length: 11 }, (_, i) => child(`n${i}`, i + 1, (i % 4) / 4));
+    for (const r of packLayout(kids, 2).values()) {
       expect(r.x).toBeGreaterThanOrEqual(-1e-9);
       expect(r.y).toBeGreaterThanOrEqual(-1e-9);
       expect(r.x + r.w).toBeLessThanOrEqual(1 + 1e-9);
@@ -92,7 +93,9 @@ describe("gridLayout", () => {
     }
   });
 
-  it("is empty for no children", () => {
-    expect(gridLayout([], 1).size).toBe(0);
+  it("gives a lone child the full parent width", () => {
+    const r = packLayout([child("only", 1, 0.5)], 1).get("only")!;
+    expect(r.w).toBeCloseTo(1, 6);
+    expect(r.x).toBeCloseTo(0, 6);
   });
 });

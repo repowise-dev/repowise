@@ -67,51 +67,54 @@ export default function ZoomPage({ params }: { params: Promise<{ id: string }> }
       description="Zoom into the system to reveal how it runs: layers, groups, folders and files, ranked by execution relevance."
       maxWidth="wide"
     >
-      <div className="relative flex h-[calc(100vh-13rem)] min-h-[480px] flex-col overflow-hidden rounded-lg border border-[var(--color-border-default)]">
-        {zoomMap && !isLoading && (
-          <div className="flex items-center justify-between gap-3 border-b border-[var(--color-border-default)] bg-[var(--color-bg-canvas)] px-3 py-2">
-            <ZoomBreadcrumb chain={chain} onCrumb={flyTo} />
-            <ZoomSearch
-              nodes={allNodes}
-              onPick={(id) => {
-                flyTo(id);
-                setSelected(nodeById.get(id) ?? null);
-              }}
-            />
+      {/* Full-bleed canvas (no framing border): the map blends into the page like
+          the Knowledge Graph. Breadcrumb + search float over the canvas as an
+          overlay rather than a chrome bar, so the map gets the whole area. */}
+      <div className="relative h-[calc(100vh-12rem)] min-h-[520px] overflow-hidden rounded-lg">
+        {isLoading && (
+          <div className="flex h-full items-center justify-center text-sm text-[var(--color-text-secondary)]">
+            Building the zoom map…
           </div>
         )}
-
-        <div className="relative flex-1 overflow-hidden">
-          {isLoading && (
-            <div className="flex h-full items-center justify-center text-sm text-[var(--color-text-secondary)]">
-              Building the zoom map…
-            </div>
-          )}
-          {error && !isLoading && (
-            <div className="flex h-full items-center justify-center text-sm text-[var(--color-error)]">
-              Could not load the zoom map for this repository.
-            </div>
-          )}
-          {zoomMap && !isLoading && (
-            <>
-              <ZoomCanvas
-                ref={canvasRef}
-                data={zoomMap}
-                initialFocusId={initialFocus}
-                onSelect={setSelected}
-                onFocusChange={onFocusChange}
-                showStats={showStats}
-              />
-              {selected && (
-                <ZoomDetailPanel
-                  node={selected}
-                  onClose={() => setSelected(null)}
-                  onZoom={(id) => flyTo(id)}
+        {error && !isLoading && (
+          <div className="flex h-full items-center justify-center text-sm text-[var(--color-error)]">
+            Could not load the zoom map for this repository.
+          </div>
+        )}
+        {zoomMap && !isLoading && (
+          <>
+            <ZoomCanvas
+              ref={canvasRef}
+              data={zoomMap}
+              initialFocusId={initialFocus}
+              onSelect={setSelected}
+              onFocusChange={onFocusChange}
+              showStats={showStats}
+            />
+            <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex items-start justify-between gap-3 p-3">
+              <div className="pointer-events-auto rounded-lg border border-[var(--color-border-subtle)] bg-[var(--color-bg-glass)] px-2 py-1 shadow-sm backdrop-blur">
+                <ZoomBreadcrumb chain={chain} onCrumb={flyTo} />
+              </div>
+              <div className="pointer-events-auto">
+                <ZoomSearch
+                  nodes={allNodes}
+                  onPick={(id) => {
+                    flyTo(id);
+                    setSelected(nodeById.get(id) ?? null);
+                  }}
                 />
-              )}
-            </>
-          )}
-        </div>
+              </div>
+            </div>
+            {selected && (
+              <ZoomDetailPanel
+                node={selected}
+                repoId={repoId}
+                onClose={() => setSelected(null)}
+                onZoom={(id) => flyTo(id)}
+              />
+            )}
+          </>
+        )}
       </div>
     </PageShell>
   );

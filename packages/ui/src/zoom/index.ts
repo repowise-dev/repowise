@@ -45,8 +45,8 @@ export {
 
 export { composeRect, computeWorldRects, perimeterPoint, rectContains } from "./geometry";
 
-export { gridDimensions, gridLayout } from "./layout";
-export type { GridLayoutOptions, LayoutChild } from "./layout";
+export { gridDimensions, packLayout } from "./layout";
+export type { LayoutChild, PackLayoutOptions } from "./layout";
 
 export {
   controlPoints,

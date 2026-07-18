@@ -10,7 +10,7 @@
 
 import type { Rect } from "./camera";
 import { computeWorldRects } from "./geometry";
-import type { GridLayoutOptions } from "./layout";
+import type { PackLayoutOptions } from "./layout";
 import type { ZoomMap, ZoomNode, ZoomRelation } from "./types";
 
 export interface ZoomScene {
@@ -22,7 +22,7 @@ export interface ZoomScene {
   laidOutCount: number;
 }
 
-export function buildScene(map: ZoomMap, layout: GridLayoutOptions = {}): ZoomScene {
+export function buildScene(map: ZoomMap, layout: PackLayoutOptions = {}): ZoomScene {
   const nodes = new Map<string, ZoomNode>();
   for (const n of map.nodes) nodes.set(n.id, n);
 

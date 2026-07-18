@@ -171,6 +171,14 @@
   --color-zoom-edge: rgba(36, 27, 44, 0.20); /* neutral connector */
   --color-zoom-edge-strong: rgba(36, 27, 44, 0.38); /* tight coupling */
   --color-zoom-card-rule: rgba(36, 27, 44, 0.05); /* faint notebook ruled lines */
+  /* Wash painted over the shared /kg-card-paper.jpg photo on each card (canvas
+     equivalent of --kg-card-texture). Alpha = 1 - paper strength: at 0.82 the
+     ruled-paper grain shows through ~18%, matching the KG cards' feel. */
+  --color-zoom-card-paper-wash: rgba(255, 255, 255, 0.82);
+  /* Graph-paper backdrop for the canvas: faint minor lines with a slightly
+     firmer major line every few cells, for a premium "designed surface" feel. */
+  --color-zoom-grid: rgba(36, 27, 44, 0.045);
+  --color-zoom-grid-strong: rgba(36, 27, 44, 0.08);
 
   /* Language colors (canonical brand hues — theme-independent) */
   --color-lang-python: #3776ab;
@@ -407,6 +415,11 @@
   --color-zoom-edge: rgba(255, 255, 255, 0.16);
   --color-zoom-edge-strong: rgba(255, 255, 255, 0.30);
   --color-zoom-card-rule: rgba(255, 255, 255, 0.06);
+  /* Heavier wash in dark (matches the KG dark texture): the light paper photo
+     only reads as ~10% relief so cards stay graphite instead of washing out. */
+  --color-zoom-card-paper-wash: rgba(43, 44, 46, 0.90);
+  --color-zoom-grid: rgba(255, 255, 255, 0.03);
+  --color-zoom-grid-strong: rgba(255, 255, 255, 0.055);
 
   /* C4 / graph canvas surfaces — dark variants (the var()-derived aliases
      flip on their own; only the explicit rgbas need a dark override). */

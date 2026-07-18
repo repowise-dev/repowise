@@ -39,29 +39,38 @@ export const MAX_CHILDREN_DRAWN = 320;
 export const CULL_MARGIN_PX = 64;
 
 /**
- * Per-parent grid layout. Children are placed in a near-uniform grid of cells
- * (columns/rows track the parent's world aspect so cells stay near-square), each
- * box separated from its neighbours by a whitespace channel. This replaces the
- * area-filling treemap so the canvas reads as a diagram of discrete boxes, not a
- * subdivided heatmap.
+ * Per-parent masonry pack. Children are sized by importance (bigger = more
+ * central) and row-packed into centred, variable-width rows, so the canvas reads
+ * as an organic architecture map rather than a rigid lattice. Cards keep a fixed
+ * landscape aspect (readable text); only their scale varies. Tuning:
+ * - CARD_ASPECT: width:height of every card.
+ * - PACK_SIZE_MIN/MAX: card height (relative units) for the least / most
+ *   important sibling; the ratio sets how dramatic the size variation is.
+ * - PACK_IMPORTANCE_GAMMA: <1 lifts small cards so minor nodes stay readable.
+ * - PACK_GUTTER: whitespace between cards (same relative units); generous, to
+ *   give the on-hover relation arrows room to breathe.
  */
-export const GRID_GUTTER_FRACTION = 0.26; // whitespace channel as a fraction of each cell axis
-export const IMPORTANCE_SCALE_MIN = 0.86; // least-important box shrinks only this far (boxes stay near-uniform)
+export const CARD_ASPECT = 1.5;
+export const PACK_SIZE_MIN = 0.58;
+export const PACK_SIZE_MAX = 1.0;
+export const PACK_IMPORTANCE_GAMMA = 0.7;
+export const PACK_GUTTER = 0.3;
 
 /**
- * Faint dot-grid painted under the cards (anchored to the camera so it parallaxes
- * like a real surface). Spacing in screen px; the dots stay subtle via the low
- * alpha of `--color-canvas-dot`.
+ * Graph-paper line grid painted under the cards (anchored to the camera so it
+ * parallaxes like a real surface, at a fixed screen spacing). Every
+ * `GRID_MAJOR_EVERY`-th line is a firmer "major" line for depth; both stay subtle
+ * via the low alpha of `--color-zoom-grid` / `--color-zoom-grid-strong`.
  */
-export const DOT_GRID_SPACING_PX = 30;
-export const DOT_GRID_RADIUS_PX = 1;
+export const GRID_SPACING_PX = 32;
+export const GRID_MAJOR_EVERY = 4;
 
 /**
  * Relations are revealed on demand, not drawn all at once: only the edges
  * touching the hovered or selected box appear, so the canvas stays calm and the
  * arrows you do see are the ones you asked for.
  */
-export const EDGE_MAX_PER_PARENT = 24; // cap arrows considered per zoom level
+export const EDGE_MAX_PER_PARENT = 10; // cap arrows per zoom level (only the strongest incident relations show, keeping it calm)
 export const EDGE_MIN_BOX_PX = 40; // skip edges to boxes smaller than this on screen
 export const ARROW_MIN_BOX_PX = 96; // suppress the arrowhead below this box size
 export const ARROW_SIZE_PX = 7; // arrowhead length in screen px
@@ -74,6 +83,6 @@ export const EDGE_FOCUS_ALPHA = 0.95; // relations touching the focused node
  * normal so the line bows around intervening boxes), and several edges sharing a
  * side fan out into distinct slots so they never collapse onto one another.
  */
-export const EDGE_CONTROL_PROJECTION = 0.4; // bezier control offset as a fraction of the endpoint gap
-export const EDGE_SLOT_GAP_FRACTION = 0.18; // slot spacing as a fraction of the box side length
-export const EDGE_MAX_SLOTS = 5; // distinct anchor slots per box side
+export const EDGE_CONTROL_PROJECTION = 0.55; // bezier control offset as a fraction of the endpoint gap (higher = more bow, edges clear the boxes)
+export const EDGE_SLOT_GAP_FRACTION = 0.26; // slot spacing as a fraction of the box side length (higher = fan spreads wider)
+export const EDGE_MAX_SLOTS = 6; // distinct anchor slots per box side

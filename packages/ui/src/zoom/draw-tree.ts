@@ -13,17 +13,18 @@ import { type Camera, type Rect, type Viewport, worldRectToScreen } from "./came
 import {
   ALPHA_EPSILON,
   ARROW_MIN_BOX_PX,
-  DOT_GRID_RADIUS_PX,
-  DOT_GRID_SPACING_PX,
   EDGE_FOCUS_ALPHA,
   EDGE_MAX_PER_PARENT,
   EDGE_MIN_BOX_PX,
+  GRID_MAJOR_EVERY,
+  GRID_SPACING_PX,
   MAX_CHILDREN_DRAWN,
   MIN_DRAW_PX,
 } from "./constants";
 import { isOnScreen, selectChildren } from "./cull";
 import { type EdgeInput, routeEdges } from "./edges";
 import { drawCard, drawEdge } from "./nodes";
+import type { PaperTexture } from "./paper";
 import { childNodes, type ZoomScene } from "./scene";
 import type { ZoomPalette } from "./theme";
 import type { ZoomNode } from "./types";
@@ -38,27 +39,55 @@ export interface DrawOptions {
   selectedId: string | null;
   hoveredId: string | null;
   lowDetail: boolean;
+  /** Shared ruled-paper card texture; null until the asset loads (or on SSR). */
+  paper?: PaperTexture | null;
 }
 
 /**
- * A faint dot-grid under the cards, anchored to the camera so it parallaxes on
- * pan and reads as a designed surface (not a blank fill). Cheap: 1px rects, and
- * the subtlety comes from the low-alpha `--color-canvas-dot` token.
+ * A faint graph-paper line grid under the cards, anchored to the camera so it
+ * parallaxes on pan (fixed screen spacing) and reads as a designed surface. Every
+ * `GRID_MAJOR_EVERY`-th line, counted from the world origin so majors stay put on
+ * pan, is drawn a touch firmer. Cheap: two batched stroke passes.
  */
-function drawDotGrid(
+function drawGrid(
   ctx: CanvasRenderingContext2D,
   cam: Camera,
   vp: Viewport,
   palette: ZoomPalette,
 ): void {
-  const sp = DOT_GRID_SPACING_PX;
-  const ox = (((vp.w / 2 - cam.cx * cam.scale) % sp) + sp) % sp;
-  const oy = (((vp.h / 2 - cam.cy * cam.scale) % sp) + sp) % sp;
-  ctx.fillStyle = palette.dot;
-  const r = DOT_GRID_RADIUS_PX;
-  for (let x = ox; x < vp.w; x += sp) {
-    for (let y = oy; y < vp.h; y += sp) ctx.fillRect(x, y, r, r);
-  }
+  const sp = GRID_SPACING_PX;
+  const maj = GRID_MAJOR_EVERY;
+  const baseX = vp.w / 2 - cam.cx * cam.scale; // screen x of world x = 0
+  const baseY = vp.h / 2 - cam.cy * cam.scale;
+  const ox = ((baseX % sp) + sp) % sp;
+  const oy = ((baseY % sp) + sp) % sp;
+  const startKx = Math.round((ox - baseX) / sp); // world-line index of the first line
+  const startKy = Math.round((oy - baseY) / sp);
+  const isMajor = (k: number): boolean => (((k % maj) + maj) % maj) === 0;
+
+  const pass = (major: boolean): void => {
+    ctx.beginPath();
+    let kx = startKx;
+    for (let x = ox; x < vp.w; x += sp, kx++) {
+      if (isMajor(kx) !== major) continue;
+      const xx = Math.round(x) + 0.5; // crisp 1px line
+      ctx.moveTo(xx, 0);
+      ctx.lineTo(xx, vp.h);
+    }
+    let ky = startKy;
+    for (let y = oy; y < vp.h; y += sp, ky++) {
+      if (isMajor(ky) !== major) continue;
+      const yy = Math.round(y) + 0.5;
+      ctx.moveTo(0, yy);
+      ctx.lineTo(vp.w, yy);
+    }
+    ctx.strokeStyle = major ? palette.gridStrong : palette.grid;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  };
+
+  pass(false); // minor lines
+  pass(true); // major lines on top
 }
 
 export interface PickEntry {
@@ -93,10 +122,12 @@ export function drawScene(
 ): DrawStats {
   const thresholds = expandThresholds(vp.w);
   const stats: DrawStats = { drawn: 0, culled: 0, maxDepthDrawn: 0, pick: [] };
+  // Resolve the paper pattern once per frame (lazily built against this ctx).
+  const paper = opts.paper?.get(ctx) ?? null;
 
   ctx.fillStyle = palette.bg;
   ctx.fillRect(0, 0, vp.w, vp.h);
-  if (!opts.lowDetail) drawDotGrid(ctx, cam, vp, palette);
+  drawGrid(ctx, cam, vp, palette);
 
   const root = scene.nodes.get(scene.rootId);
   if (!root) return stats;
@@ -133,7 +164,7 @@ export function drawScene(
         selected: node.id === opts.selectedId,
         hovered: node.id === opts.hoveredId,
         lowDetail: opts.lowDetail,
-      }, t);
+      }, t, paper);
     }
     stats.drawn++;
     stats.maxDepthDrawn = Math.max(stats.maxDepthDrawn, depth);
