@@ -6,7 +6,7 @@ import subprocess
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from .baseline import baseline_scores
+from .baseline import baseline_scores_cached
 from .features import (
     GIT_TIMEOUT_SECONDS,
     ChangeFeatures,
@@ -93,7 +93,7 @@ def score_live_change(
     priority: str | None = None
     baseline_sample_size = 0
     if baseline:
-        scores = baseline_scores(
+        scores = baseline_scores_cached(
             repo_path,
             anchor,
             baseline,

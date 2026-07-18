@@ -356,6 +356,17 @@ repo-relative `risk_percentile`, `review_priority`, and `classification`.
 Use the percentile and review priority for triage; the raw score is secondary
 context when no repository baseline is available.
 
+It also returns `impacted_tests`: the tests the per-test coverage map proves
+execute the change's changed *lines* (line-precise, so a narrower set than
+`get_risk`'s file-level `tests_to_run`), capped at ten with `total` and
+`truncated` reporting any overflow. Its `missing_tests` buckets flag
+`untested_changes` (covered file, uncovered change), `stale_test_candidates`
+(covered lines whose guarding test file is absent from the diff), `covered`, and
+`no_coverage_data` (files absent from the map). When no map is ingested,
+`status` is `no_map` and the change is reported as unknown ("run the full
+suite"), never as untested. Build the map with `coverage run --contexts=test`
+followed by `repowise coverage add`.
+
 **When to use:** Before merging a commit or PR range, especially when you need
 to assess the diff itself rather than the risk of an already-indexed file.
 

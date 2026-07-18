@@ -318,3 +318,70 @@ def test_score_live_change_below_min_baseline_yields_no_percentile(git_repo: Pat
     assert result.baseline_sample_size < 8
     assert result.percentile is None
     assert result.priority is None
+
+
+def test_baseline_cache_hits_on_second_call_and_busts_on_new_commit(
+    git_repo: Path, monkeypatch
+) -> None:
+    # The 200-commit baseline walk is the dominant cost of a default call and is
+    # identical for the same repo state, so it is memoized on the resolved anchor
+    # sha. Give the repo enough history to actually build a percentile.
+    from repowise.core.analysis.change_risk import baseline
+
+    for i in range(10):
+        _commit(git_repo, {f"src/f{i}.py": f"x = {i}\n"}, f"feat: file {i}", author="Dev")
+
+    baseline.clear_baseline_cache()
+    calls = {"n": 0}
+    real = baseline.baseline_scores
+
+    def _counting(*args, **kwargs):
+        calls["n"] += 1
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(baseline, "baseline_scores", _counting)
+
+    first = score_live_change(str(git_repo), "HEAD", baseline=200)
+    second = score_live_change(str(git_repo), "HEAD", baseline=200)
+    # Second identical call reuses the memo: no extra baseline walk.
+    assert calls["n"] == 1
+    assert first.percentile == second.percentile
+    assert first.baseline_sample_size == second.baseline_sample_size
+
+    # A new commit moves HEAD's sha, so the memo key changes and the walk reruns.
+    _commit(git_repo, {"src/new.py": "y = 1\n"}, "feat: bust", author="Dev")
+    score_live_change(str(git_repo), "HEAD", baseline=200)
+    assert calls["n"] == 2
+
+    baseline.clear_baseline_cache()
+
+
+def test_baseline_cache_isolated_by_filters(git_repo: Path, monkeypatch) -> None:
+    # Different filters produce different samples, so they must not share a memo
+    # entry even at the same anchor sha.
+    from repowise.core.analysis.change_risk import baseline
+
+    for i in range(10):
+        _commit(
+            git_repo,
+            {f"src/f{i}.py": f"x = {i}\n", f"docs/d{i}.md": f"# {i}\n"},
+            f"feat: file {i}",
+            author="Dev",
+        )
+
+    baseline.clear_baseline_cache()
+    calls = {"n": 0}
+    real = baseline.baseline_scores
+
+    def _counting(*args, **kwargs):
+        calls["n"] += 1
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(baseline, "baseline_scores", _counting)
+
+    score_live_change(str(git_repo), "HEAD", baseline=200)
+    score_live_change(str(git_repo), "HEAD", baseline=200, extensions=("py",))
+    # Distinct extension filters key separately, so both walked.
+    assert calls["n"] == 2
+
+    baseline.clear_baseline_cache()
