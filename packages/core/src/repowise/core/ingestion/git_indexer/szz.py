@@ -366,9 +366,7 @@ class SzzTracer:
             # carried-through test can never see the very moves it exists to
             # catch. Off, a move is a full delete plus a full add, which is
             # exactly the shape the test reads.
-            raw = self._get_repo().git.show(
-                "-U0", "--no-renames", "--no-color", "--format=", sha
-            )
+            raw = self._get_repo().git.show("-U0", "--no-renames", "--no-color", "--format=", sha)
         except Exception as exc:
             logger.debug("szz_move_check_failed", sha=sha[:12], error=str(exc))
             return empty

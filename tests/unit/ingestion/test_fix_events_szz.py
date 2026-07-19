@@ -45,9 +45,7 @@ def _repo(tmp_path):
 def _tracer(tmp_path, *, refactor_aware: bool = True) -> SzzTracer:
     import git as gitpython
 
-    return SzzTracer(
-        lambda: gitpython.Repo(tmp_path), refactor_aware=refactor_aware
-    )
+    return SzzTracer(lambda: gitpython.Repo(tmp_path), refactor_aware=refactor_aware)
 
 
 def _walk(tmp_path, paths):
@@ -106,8 +104,11 @@ class TestSzzTracer:
         diff = _file_diff(fix, tmp_path, "a.py")
         assert diff.old_ranges == []
         assert diff.insert_anchors == [2]
+        # Both anchor lines are blamed, one each, so which one ranks first is a
+        # tie-break rather than a claim. The contract is that the code the fix
+        # was inserted next to shows up at all.
         cands = _tracer(tmp_path).trace_file(fix, "a.py", diff)
-        assert cands and cands[0].sha == anchor_author
+        assert anchor_author in {c.sha for c in cands}
 
     def test_a_brand_new_file_has_nothing_to_blame(self, tmp_path) -> None:
         """The anchor fallback cannot invent history that does not exist yet."""
@@ -268,7 +269,9 @@ class TestBuildFixEvents:
         repo.index.add(["a.py", "b.py", "c.py"])
         repo.index.commit("fix: bump all three")
 
-        rows = build_fix_events(_walk(tmp_path, ["a.py", "b.py", "c.py"]), lambda: gitpython.Repo(tmp_path))
+        rows = build_fix_events(
+            _walk(tmp_path, ["a.py", "b.py", "c.py"]), lambda: gitpython.Repo(tmp_path)
+        )
         assert rows == sorted(rows, key=lambda r: (r["fix_sha"], r["file_path"]))
 
 
@@ -289,7 +292,8 @@ async def test_index_repo_emits_fix_events_and_window_boundary(tmp_path) -> None
     row = summary.fix_event_rows[0]
     assert row["file_path"] == "a.py"
     assert json.loads(row["inducing_shas_json"])[0]["lines"] == 1
-    assert summary.fix_window_start_ts > 0
+    assert summary.fix_oldest_ts > 0
+    assert summary.fix_events_traced is True
 
 
 @pytest.mark.asyncio
@@ -307,13 +311,15 @@ async def test_capture_new_fix_events_skips_known_commits(tmp_path) -> None:
 
     indexer = GitIndexer(tmp_path, tier=GitIndexTier.FULL)
 
-    everything, boundary = indexer.capture_new_fix_events()
+    everything, oldest, tracked = indexer.capture_new_fix_events()
     assert {r["fix_sha"] for r in everything} == {first, second}
-    assert boundary > 0
+    assert oldest > 0
+    assert tracked == {"a.py"}
 
-    new_only, boundary_again = indexer.capture_new_fix_events(known_shas={first})
+    new_only, oldest_again, _ = indexer.capture_new_fix_events(known_shas={first})
     assert {r["fix_sha"] for r in new_only} == {second}
-    assert boundary_again == boundary
+    # The cutoff is taken before the skip, so narrowing the trace must not move it.
+    assert oldest_again == oldest
 
 
 @pytest.mark.asyncio
@@ -327,10 +333,10 @@ async def test_update_capture_matches_a_full_index(tmp_path) -> None:
     _write(repo, tmp_path, "a.py", "x = 1\n", "feat: add a")
     _write(repo, tmp_path, "a.py", "x = 2\n", "fix: first")
     indexer = GitIndexer(tmp_path, tier=GitIndexTier.FULL)
-    seeded, _ = indexer.capture_new_fix_events()
+    seeded, _, _ = indexer.capture_new_fix_events()
 
     _write(repo, tmp_path, "a.py", "x = 3\n", "fix: second")
-    incremental, _ = indexer.capture_new_fix_events(known_shas={r["fix_sha"] for r in seeded})
+    incremental, _, _ = indexer.capture_new_fix_events(known_shas={r["fix_sha"] for r in seeded})
     merged = sorted(seeded + incremental, key=lambda r: (r["fix_sha"], r["file_path"]))
 
     summary, _ = await GitIndexer(tmp_path, tier=GitIndexTier.FULL).index_repo("repo1")

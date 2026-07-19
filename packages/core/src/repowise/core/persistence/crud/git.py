@@ -285,9 +285,7 @@ async def count_git_commits(
 ) -> int:
     """Count persisted commits for a repository."""
     stmt = (
-        select(func.count())
-        .select_from(GitCommit)
-        .where(GitCommit.repository_id == repository_id)
+        select(func.count()).select_from(GitCommit).where(GitCommit.repository_id == repository_id)
     )
     clause = _commit_authorship_clause(authorship)
     if clause is not None:
