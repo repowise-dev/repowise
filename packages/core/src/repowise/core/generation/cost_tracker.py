@@ -37,7 +37,7 @@ _PRICING: dict[str, dict[str, float]] = {
     "gpt-5-mini": {"input": 0.25, "output": 2.0},
     # Nano tier — $0.05/$0.40 per 1M. Without these keys the model name falls
     # through to ``_FALLBACK_PRICING`` (Sonnet $3/$15) and overstates a nano
-    # indexing run ~40×.
+    # indexing run ~40x.
     "gpt-5-nano": {"input": 0.05, "output": 0.40},
     "gpt-5.4-nano": {"input": 0.05, "output": 0.40},
     "gpt-4o": {"input": 2.5, "output": 10.0},
@@ -90,12 +90,48 @@ def is_local_model(model: str) -> bool:
     )
 
 
+#: Family-tier fallback, tried before the flat ``_FALLBACK_PRICING`` when a
+#: model id isn't an exact ``_PRICING`` key. A dated or point-variant id — a
+#: session transcript reporting ``claude-opus-4-8-20260514`` or a future
+#: ``claude-opus-4-9`` — carries its *tier* unambiguously in the name prefix.
+#: Matching the tier here stops an Opus coding session from being mispriced at
+#: the Sonnet fallback rate, which would undercount the agent savings it earned
+#: by ~5x. Ordered longest/most-specific prefix first.
+_CLAUDE_FAMILY_PRICING: tuple[tuple[str, dict[str, float]], ...] = (
+    ("claude-opus", {"input": 15.0, "output": 75.0}),
+    ("claude-sonnet", {"input": 3.0, "output": 15.0}),
+    ("claude-haiku", {"input": 0.8, "output": 4.0}),
+)
+
+
+def _family_pricing(model: str) -> dict[str, float] | None:
+    """Tier pricing inferred from a model-name family prefix, or ``None``.
+
+    Covers the Anthropic tiers by prefix and the GPT-5 tiers by the ``nano`` /
+    ``mini`` qualifier, so a variant id the exact table misses still resolves to
+    the right tier instead of the flat Sonnet-priced fallback.
+    """
+    for prefix, pricing in _CLAUDE_FAMILY_PRICING:
+        if model.startswith(prefix):
+            return pricing
+    if model.startswith("gpt-5"):
+        if "nano" in model:
+            return {"input": 0.05, "output": 0.40}
+        if "mini" in model:
+            return {"input": 0.25, "output": 2.0}
+        return {"input": 1.25, "output": 10.0}
+    return None
+
+
 def _get_pricing(model: str) -> dict[str, float]:
     """Return pricing for *model*, falling back and warning if unknown."""
     if is_local_model(model):
         return {"input": 0.0, "output": 0.0}
     if model in _PRICING:
         return _PRICING[model]
+    family = _family_pricing(model)
+    if family is not None:
+        return family
     if model not in _warned_models:
         log.warning("cost_tracker.unknown_model", model=model, fallback=_FALLBACK_PRICING)
         _warned_models.add(model)

@@ -262,8 +262,9 @@ export function DistillSavingsCard({ data }: DistillSavingsCardProps) {
         <p className="mt-3 text-xs leading-snug text-[var(--color-text-tertiary)]">
           Distill counts <code>repowise distill</code> command/hook savings; MCP counts the raw
           file exploration each tool answer replaced (plus any over-budget content trimmed). Saved
-          tokens are agent input, priced at the agent&apos;s input rate; counts are estimates
-          (~chars/4) and deliberately undersell. Everything stays on this machine.
+          tokens are agent input priced at the agent&apos;s input rate, plus a small credit for the
+          tool calls repowise let the agent skip; counts are estimates (~chars/4) and deliberately
+          undersell. Everything stays on this machine.
         </p>
       </CardContent>
     </Card>
