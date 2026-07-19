@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 import click
 from rich.table import Table
 
+from repowise.cli._setup import configure_cli_logging
 from repowise.cli.helpers import (
     console,
     find_workspace_root,
@@ -242,6 +243,13 @@ def _format_relative_time(iso_timestamp: str | None) -> str:
 @click.option(
     "--concurrency", type=int, default=10, help="Max concurrent LLM calls during doc generation."
 )
+@click.option(
+    "--verbose",
+    "-v",
+    is_flag=True,
+    default=False,
+    help="Show debug logs from the pipeline.",
+)
 def workspace_add(
     path: str,
     alias: str | None,
@@ -250,6 +258,7 @@ def workspace_add(
     provider_name: str | None,
     model: str | None,
     concurrency: int,
+    verbose: bool,
 ) -> None:
     """Add a repo to the workspace and (by default) index + generate docs for it.
 
@@ -263,6 +272,8 @@ def workspace_add(
     Use ``--no-index`` to only register the entry without indexing, or
     ``--no-docs`` to index without LLM generation.
     """
+    configure_cli_logging(verbose=verbose)
+
     from repowise.core.workspace.config import RepoEntry
 
     repo_path = Path(path).resolve()
@@ -766,8 +777,17 @@ def workspace_remove(alias: str) -> None:
     default=False,
     help="Auto-add all discovered repos without prompting.",
 )
-def workspace_scan(path: str | None, yes: bool) -> None:
+@click.option(
+    "--verbose",
+    "-v",
+    is_flag=True,
+    default=False,
+    help="Show debug logs from the pipeline.",
+)
+def workspace_scan(path: str | None, yes: bool, verbose: bool) -> None:
     """Scan the workspace root for new repos not yet in the config."""
+    configure_cli_logging(verbose=verbose)
+
     from repowise.core.workspace.config import RepoEntry
     from repowise.core.workspace.scanner import scan_for_repos
 
