@@ -29,6 +29,13 @@ export interface StatCalloutProps {
   hint?: string;
   icon?: React.ReactNode;
   tone?: CalloutTone;
+  /** Wraps the callout in a link to the surface that explains the figure. */
+  href?: string;
+  LinkComponent?: React.ElementType<{
+    href: string;
+    className?: string;
+    children: React.ReactNode;
+  }>;
   className?: string;
 }
 
@@ -44,14 +51,17 @@ export function StatCallout({
   hint,
   icon,
   tone = "default",
+  href,
+  LinkComponent = "a",
   className,
 }: StatCalloutProps) {
-  return (
+  const card = (
     <div
       title={hint}
       className={cn(
-        "rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-4",
+        "h-full rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-4",
         hint && "cursor-help",
+        href && "transition-colors hover:border-[var(--color-border-hover)]",
         className,
       )}
     >
@@ -73,5 +83,14 @@ export function StatCallout({
         <p className="mt-2 text-xs leading-snug text-[var(--color-text-secondary)]">{sub}</p>
       )}
     </div>
+  );
+
+  if (!href) return card;
+
+  const Link = LinkComponent;
+  return (
+    <Link href={href} className="block h-full no-underline">
+      {card}
+    </Link>
   );
 }

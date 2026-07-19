@@ -132,14 +132,14 @@ async def _scale(session: AsyncSession, repo_id: str, metrics: list[Any]) -> dic
     }
 
 
-def _punch_card_summary(
-    punch: list[list[int]], weekend_commits: int, dated_total: int
-) -> dict[str, Any]:
+def _punch_card_summary(punch: list[list[int]], dated_total: int) -> dict[str, Any]:
     """Fold the weekday x hour commit matrix into a renderable summary.
 
     ``matrix`` is 7 rows (0=Monday) x 24 hours in the stored UTC. Also names the
-    single hottest cell, the busiest weekday / peak hour (by marginal totals),
-    and the weekend share — the human-readable hooks the hero renders."""
+    single hottest cell and the busiest weekday / peak hour (by marginal
+    totals) — the human-readable hooks the hero renders. The weekend share is
+    deliberately not computed here: which days are the weekend is a reader
+    preference, and the matrix already carries every weekday total."""
     peak = {"weekday": 0, "hour": 0, "count": 0}
     for wd in range(7):
         for hr in range(24):
@@ -156,7 +156,6 @@ def _punch_card_summary(
         "peak": peak if peak["count"] > 0 else None,
         "busiest_weekday": busiest_weekday,
         "peak_hour": peak_hour,
-        "weekend_pct": round(weekend_commits / dated_total * 100.0, 1) if dated_total else 0.0,
         "total": dated_total,
     }
 
@@ -233,7 +232,6 @@ async def _activity(session: AsyncSession, repo_id: str, repo: Any) -> dict[str,
     # the stored tz). Plus the raw timestamps for the recent-vs-prior velocity
     # window and a low/moderate/high change-risk tally — all off this one scan.
     punch = [[0] * 24 for _ in range(7)]
-    weekend_commits = 0
     commit_times: list[Any] = []
     risk_mix = {"low": 0, "moderate": 0, "high": 0}
     # Top-2 commits by churn: the repo's very first commit is excluded from
@@ -276,10 +274,7 @@ async def _activity(session: AsyncSession, repo_id: str, repo: Any) -> dict[str,
                 last_at = committed_at
             commit_days.add(committed_at.date())
             commit_times.append(committed_at)
-            weekday = committed_at.weekday()
-            punch[weekday][committed_at.hour] += 1
-            if weekday >= 5:
-                weekend_commits += 1
+            punch[committed_at.weekday()][committed_at.hour] += 1
             key = committed_at.strftime("%Y-%m")
             b = months.setdefault(key, {"total": 0, "agent": 0})
             b["total"] += 1
@@ -309,7 +304,7 @@ async def _activity(session: AsyncSession, repo_id: str, repo: Any) -> dict[str,
     ]
     busiest = max(monthly, key=lambda r: r["total"], default=None)
 
-    punch_card = _punch_card_summary(punch, weekend_commits, len(commit_times))
+    punch_card = _punch_card_summary(punch, len(commit_times))
     velocity = _commit_velocity(commit_times, last_at)
 
     # Prefer the whole-history values stamped on the repo at index time; fall

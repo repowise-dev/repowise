@@ -4,6 +4,7 @@ import { ProviderSection } from "@/components/settings/provider-section";
 import { WebhookSection } from "@/components/settings/webhook-section";
 import { McpSection } from "@/components/settings/mcp-section";
 import { McpToolsSection } from "@/components/settings/mcp-tools-section";
+import { DisplaySection } from "@/components/settings/display-section";
 
 export const metadata: Metadata = { title: "Settings" };
 
@@ -13,12 +14,13 @@ export default function SettingsPage() {
       <div>
         <h1 className="text-xl font-semibold text-[var(--color-text-primary)]">Settings</h1>
         <p className="text-sm text-[var(--color-text-secondary)] mt-1">
-          API connection, provider defaults, and integration config.
+          API connection, provider defaults, display, and integration config.
         </p>
       </div>
 
       <ConnectionSection />
       <ProviderSection />
+      <DisplaySection />
       <WebhookSection />
       <McpSection />
       <McpToolsSection />

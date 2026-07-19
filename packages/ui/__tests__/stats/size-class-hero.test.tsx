@@ -39,11 +39,13 @@ describe("SizeClassHero", () => {
     expect(screen.getByText("3")).toBeInTheDocument();
   });
 
-  it("constrains figure values to their tiles", () => {
-    render(<SizeClassHero scale={makeScale()} />);
+  it("never clips a figure to an ellipsis", () => {
+    render(<SizeClassHero scale={makeScale({ total_nloc: 485_300 })} />);
 
-    const value = screen.getByText("1.2M");
-    expect(value).toHaveClass("truncate");
-    expect(value.parentElement).toHaveClass("min-w-0");
+    const value = screen.getByText("485.3K");
+    expect(value).toHaveClass("whitespace-nowrap");
+    expect(value).not.toHaveClass("truncate");
+    // The tile must not be allowed to shrink below its figure.
+    expect(value.parentElement).not.toHaveClass("min-w-0");
   });
 });

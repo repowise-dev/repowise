@@ -49,7 +49,7 @@ def _commit(sha: str, dt: datetime, risk: str = "low") -> dict:
 # ---------------------------------------------------------------------------
 
 
-def test_punch_card_summary_peak_and_weekend() -> None:
+def test_punch_card_summary_peak() -> None:
     punch = [[0] * 24 for _ in range(7)]
     punch[2][14] = 10  # Wednesday 2pm — the peak
     punch[0][9] = 4  # Monday 9am
@@ -57,20 +57,19 @@ def test_punch_card_summary_peak_and_weekend() -> None:
     punch[6][12] = 2  # Sunday (weekend)
     dated = 10 + 4 + 3 + 2
 
-    out = _punch_card_summary(punch, weekend_commits=5, dated_total=dated)
+    out = _punch_card_summary(punch, dated_total=dated)
 
     assert out["peak"] == {"weekday": 2, "hour": 14, "count": 10}
     assert out["busiest_weekday"] == 2
     assert out["peak_hour"] == 14
-    assert out["weekend_pct"] == round(5 / dated * 100, 1)
     assert out["total"] == dated
 
 
 def test_punch_card_summary_empty() -> None:
-    out = _punch_card_summary([[0] * 24 for _ in range(7)], weekend_commits=0, dated_total=0)
+    out = _punch_card_summary([[0] * 24 for _ in range(7)], dated_total=0)
     assert out["peak"] is None
     assert out["busiest_weekday"] is None
-    assert out["weekend_pct"] == 0.0
+    assert out["total"] == 0
 
 
 def test_commit_velocity_rising_and_no_prior() -> None:
@@ -160,7 +159,9 @@ async def test_activity_punch_card_and_risk_mix(client: AsyncClient, app) -> Non
     pc = activity["punch_card"]
     assert pc["matrix"][2][14] == 2  # both Wednesday-2pm commits landed in one cell
     assert pc["peak"] == {"weekday": 2, "hour": 14, "count": 2}
-    assert pc["weekend_pct"] == 50.0  # 2 of 4 commits on Sat/Sun
+    # Weekend rows carry their commits; which days count as the weekend is a
+    # reader preference resolved in the UI, not here.
+    assert pc["matrix"][5][11] + pc["matrix"][6][12] == 2
 
     assert activity["change_risk_mix"] == {"low": 1, "moderate": 1, "high": 2}
 

@@ -50,7 +50,6 @@ export interface StatsPunchCard {
   /** Weekday (0=Mon) and hour with the most commits by marginal total. */
   busiest_weekday: number | null;
   peak_hour: number | null;
-  weekend_pct: number;
   total: number;
 }
 
