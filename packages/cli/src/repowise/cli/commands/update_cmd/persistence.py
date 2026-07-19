@@ -683,6 +683,7 @@ def _git_metadata_to_dict(gm: Any) -> dict[str, Any]:
         "merge_commit_count_90d": gm.merge_commit_count_90d,
         "temporal_hotspot_score": gm.temporal_hotspot_score,
         "prior_defect_count": gm.prior_defect_count,
+        "prior_defect_raw_count": gm.prior_defect_raw_count,
         "change_entropy": gm.change_entropy,
         "change_entropy_pct": gm.change_entropy_pct,
     }

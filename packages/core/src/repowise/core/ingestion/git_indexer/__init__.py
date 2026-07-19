@@ -36,9 +36,10 @@ from .enrich import (
     meets_hotspot_floors,
 )
 from .file_history import index_file
+from .fix_shape import SHAPE_KINDS, classify_fix_shape
 from .identity import build_identity_resolver, canonicalize_author_email
 from .indexer import GitIndexer
-from .prior_defects import compute_prior_defects
+from .prior_defects import PriorDefects, compute_prior_defects
 from .records import (
     _FIELD_SEP,
     _LOG_FORMAT,
@@ -54,6 +55,7 @@ from .tiers import GitIndexTier
 __all__ = [
     "BACKFILL_PHASE",
     "HOTSPOT_HALFLIFE_DAYS",
+    "SHAPE_KINDS",
     # Re-exported for ``git_commit_index`` which builds the shared commit index.
     "_FIELD_SEP",
     "_LOG_FORMAT",
@@ -63,6 +65,7 @@ __all__ = [
     "GitIndexSummary",
     "GitIndexTier",
     "GitIndexer",
+    "PriorDefects",
     "_CommitRec",
     "_extract_rename_paths",
     "_parse_commit_record",
@@ -71,6 +74,7 @@ __all__ = [
     "build_identity_resolver",
     "canonicalize_author_email",
     "classifier_from_repo_config",
+    "classify_fix_shape",
     "compute_co_changes",
     "compute_co_changes_and_entropy",
     "compute_percentiles",

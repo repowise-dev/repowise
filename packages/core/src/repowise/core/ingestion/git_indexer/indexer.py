@@ -31,7 +31,7 @@ from ._constants import (
 from .co_change import compute_co_changes, compute_co_changes_and_entropy
 from .enrich import compute_percentiles
 from .file_history import index_file
-from .prior_defects import compute_prior_defects
+from .prior_defects import PriorDefects, compute_prior_defects
 from .records import GitIndexSummary, _CommitRec, _should_skip_index, capture_repo_totals
 from .tiers import GitIndexTier
 
@@ -259,7 +259,7 @@ class GitIndexer:
         # depth-capped commit index, which under-counts the busiest files —
         # exactly the ones this signal flags). Bounded to the trailing window,
         # so it's cheap regardless of total repo age and leakage-free at T0.
-        prior_defects: dict[str, int] = {}
+        prior_defects = PriorDefects()
         try:
             prior_defects = compute_prior_defects(repo, set(indexable_files), as_of_ts=as_of_ts)
         except Exception as exc:
@@ -278,8 +278,10 @@ class GitIndexer:
                 meta["co_change_partners_json"] = json.dumps(co_changes[fp])
             if fp in change_entropy:
                 meta["change_entropy"] = change_entropy[fp]
-            if fp in prior_defects:
-                meta["prior_defect_count"] = prior_defects[fp]
+            if fp in prior_defects.counts:
+                meta["prior_defect_count"] = prior_defects.counts[fp]
+            if fp in prior_defects.raw_counts:
+                meta["prior_defect_raw_count"] = prior_defects.raw_counts[fp]
             share = trace_line_shares.get(fp)
             if share:
                 meta["agent_line_count"] = share[0]
@@ -429,8 +431,11 @@ class GitIndexer:
                 repo, {m["file_path"] for m in results}, as_of_ts=as_of_ts
             )
             for meta in results:
-                if meta["file_path"] in prior_defects:
-                    meta["prior_defect_count"] = prior_defects[meta["file_path"]]
+                fp = meta["file_path"]
+                if fp in prior_defects.counts:
+                    meta["prior_defect_count"] = prior_defects.counts[fp]
+                if fp in prior_defects.raw_counts:
+                    meta["prior_defect_raw_count"] = prior_defects.raw_counts[fp]
         except Exception as exc:
             logger.debug("prior_defect_pass_failed", error=str(exc))
 

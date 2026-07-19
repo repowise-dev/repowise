@@ -445,7 +445,13 @@ class GitMetadata(Base):
     # Prior-defect history: bug-fix commits touching this file in the trailing
     # ~6-month defect window (anchored to the index's as_of reference). Consumed
     # by the ``prior_defect`` health biomarker — a leakage-aware process signal.
+    #
+    # ``prior_defect_count`` keeps only fixes whose diff changes production code
+    # (see ingestion.git_indexer.fix_shape); ``prior_defect_raw_count`` is every
+    # subject-matched fix, kept alongside so the filtered-out noise stays
+    # inspectable instead of silently vanishing from the count.
     prior_defect_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    prior_defect_raw_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     # Temporal hotspot score: exponentially time-decayed churn signal
     temporal_hotspot_score: Mapped[float | None] = mapped_column(Float, nullable=True, default=0.0)
