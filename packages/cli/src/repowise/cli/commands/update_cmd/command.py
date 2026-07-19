@@ -1123,14 +1123,21 @@ def run_update(
             gen_progress.update(gen_task, total=total)
 
     def _on_page_done(_page_id: str) -> None:
-        nonlocal completed_pages
+        nonlocal completed_pages, total_pages
         completed_pages += 1
+        # The total is an up-front estimate (see _announce_total); some page
+        # categories can't be predicted exactly, so keep it monotonic with the
+        # real count, so it never renders "43 of 41" (issue #922).
+        if total_pages is not None and completed_pages > total_pages:
+            total_pages = completed_pages
         if emitter is not None:
             emitter.page_done(
                 completed=completed_pages, total=total_pages, cost_usd=cost_tracker.session_cost
             )
         else:
-            gen_progress.update(gen_task, advance=1, cost=cost_tracker.session_cost)
+            gen_progress.update(
+                gen_task, advance=1, total=total_pages, cost=cost_tracker.session_cost
+            )
 
     # Checkpoint each page to the DB as it lands: a crash mid-generation used
     # to lose every finished page (persist ran only at the very end), so the
@@ -1171,6 +1178,13 @@ def run_update(
             if emitter is not None:
                 emitter.error(str(exc))
             raise
+
+        # Reconcile the bar to the pages actually produced. The up-front total
+        # is an estimate and onboarding slots may gate-skip, leaving it above
+        # the real count; snap total to completed so the bar reads N of N at
+        # 100% instead of stalling short (issue #922).
+        if gen_task is not None:
+            gen_progress.update(gen_task, total=completed_pages, completed=completed_pages)
 
     # Surface the FAQ-weighted budget tilt when session demand shaped this run
     # (silent when there is no history to weight; human console mode only).

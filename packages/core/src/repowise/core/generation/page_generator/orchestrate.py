@@ -307,6 +307,19 @@ class _GenerationRun:
                 for l in self.kg_ctx.get_layers()
                 if len([n for n in l.get("nodeIds", []) if n.startswith("file:")]) >= 3
             )
+        # Level-8 onboarding pages (the non-promoted slots) also emit, and
+        # were previously omitted here, which made the progress total read
+        # lower than the pages actually generated (issue #922: "43 of 41").
+        # Counted in full like every other category above; the completed-id
+        # subtraction below nets out any already-generated slot on resume.
+        # This is still an upper bound: a slot may gate-skip at generation
+        # time (build_context -> None), so the caller reconciles the bar to
+        # the real completed count when generation finishes.
+        onboarding_page_count = 0
+        if getattr(self.config, "enable_onboarding", True):
+            from .. import onboarding as _onboarding
+
+            onboarding_page_count = len(_onboarding.iter_specs())
         estimated_total = (
             counts["api_contract"]
             + counts["symbol_spotlight"]
@@ -317,6 +330,7 @@ class _GenerationRun:
             + int(self.selection.emit_repo_overview)
             + int(self.selection.emit_arch_diagram)
             + counts["infra_page"]
+            + onboarding_page_count
             # Deterministic coverage tail also produces (zero-LLM) pages.
             + len(getattr(self.selection, "deterministic_tail_paths", []))
         )
