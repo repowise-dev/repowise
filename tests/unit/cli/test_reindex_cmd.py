@@ -69,3 +69,40 @@ async def test_reindex_uses_shared_database_engine(
     assert created["url"] == db_url
     assert created["init_engine"] is created["engine"]
     assert created["engine"].disposed is True
+
+
+def test_reindex_command_forwards_verbose_to_configure_cli_logging(monkeypatch, tmp_path: Path) -> None:
+    """`--verbose` must reach configure_cli_logging before any pipeline work."""
+    seen: dict[str, object] = {}
+
+    def fake_configure(*, verbose: bool = False) -> None:
+        seen["verbose"] = verbose
+
+    def fake_resolve_repo_path(_path: str | None) -> Path:
+        return tmp_path
+
+    def fake_ensure_repowise_dir(_repo_path: Path) -> Path:
+        return tmp_path / ".repowise"
+
+    def fake_run_async(_coro) -> None:
+        # Do not execute the coroutine body; just close it.
+        _coro.close()
+
+    monkeypatch.setattr(reindex_cmd, "configure_cli_logging", fake_configure)
+    monkeypatch.setattr(reindex_cmd, "resolve_repo_path", fake_resolve_repo_path)
+    monkeypatch.setattr(reindex_cmd, "ensure_repowise_dir", fake_ensure_repowise_dir)
+    monkeypatch.setattr(reindex_cmd, "run_async", fake_run_async)
+    monkeypatch.setattr("repowise.cli.ui.load_dotenv", lambda _repo_path: None)
+
+    # Invoke the underlying function (not the Click wrapper) so we control kwargs.
+    reindex_cmd.reindex_command.callback(
+        path=None, embedder="mock", batch_size=32, verbose=True
+    )
+    assert seen.get("verbose") is True
+
+    seen.clear()
+    reindex_cmd.reindex_command.callback(
+        path=None, embedder="mock", batch_size=32, verbose=False
+    )
+    assert seen.get("verbose") is False
+
