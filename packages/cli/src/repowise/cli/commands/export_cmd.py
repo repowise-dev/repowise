@@ -8,6 +8,7 @@ from pathlib import Path
 import click
 from rich.progress import Progress
 
+from repowise.cli._setup import configure_cli_logging
 from repowise.cli.helpers import (
     console,
     ensure_repowise_dir,
@@ -40,13 +41,23 @@ from repowise.cli.helpers import (
     default=False,
     help="Include decisions, dead code, git metadata, and provenance in JSON export.",
 )
+@click.option(
+    "--verbose",
+    "-v",
+    is_flag=True,
+    default=False,
+    help="Show debug logs from the pipeline.",
+)
 def export_command(
     path: str | None,
     fmt: str,
     output_dir: str | None,
     full_export: bool = False,
+    verbose: bool = False,
 ) -> None:
     """Export wiki pages to files."""
+    configure_cli_logging(verbose=verbose)
+
     repo_path = resolve_repo_path(path)
     ensure_repowise_dir(repo_path)
 
