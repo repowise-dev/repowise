@@ -877,6 +877,7 @@ Generate or update `CLAUDE.md` with codebase intelligence. Custom instructions a
 | `--stdout` | Print generated content to stdout instead of writing a file |
 | `--workspace` / `-w` | Force workspace mode: generates a workspace-level `CLAUDE.md` at the workspace root with cross-repo contracts, co-changes, and per-repo summaries |
 | `--no-workspace` | Force single-repo mode even when invoked from a workspace |
+| `--verbose` / `-v` | Show debug logs from the pipeline |
 
 Auto-detects workspace mode when invoked from a workspace root.
 
@@ -885,6 +886,7 @@ repowise generate-claude-md
 repowise generate-claude-md -o custom-path.md
 repowise generate-claude-md --stdout
 repowise generate-claude-md --workspace    # workspace-level CLAUDE.md
+repowise generate-claude-md --verbose      # show pipeline debug logs
 ```
 
 `repowise init` and `repowise update` keep it current automatically; you rarely need to run this directly.

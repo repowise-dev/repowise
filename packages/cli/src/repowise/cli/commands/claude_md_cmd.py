@@ -7,6 +7,7 @@ from pathlib import Path
 
 import click
 
+from repowise.cli._setup import configure_cli_logging
 from repowise.cli.helpers import (
     console,
     ensure_repowise_dir,
@@ -51,12 +52,20 @@ from repowise.cli.helpers import (
     default=False,
     help="Force single-repo mode even when invoked from a workspace.",
 )
+@click.option(
+    "--verbose",
+    "-v",
+    is_flag=True,
+    default=False,
+    help="Show debug logs from the pipeline.",
+)
 def claude_md_command(
     path: str | None,
     output_path: str | None,
     to_stdout: bool,
     workspace_mode: bool,
     no_workspace: bool,
+    verbose: bool,
 ) -> None:
     """Generate or update CLAUDE.md with codebase intelligence context.
 
@@ -71,6 +80,8 @@ def claude_md_command(
     Auto-detects workspace mode when invoked from a workspace root. Use
     --workspace to force on, --no-workspace to force off.
     """
+    configure_cli_logging(verbose=verbose)
+
     target = resolve_command_target(
         path=path,
         workspace_flag=workspace_mode,
