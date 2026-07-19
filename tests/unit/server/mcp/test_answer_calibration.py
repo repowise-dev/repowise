@@ -840,9 +840,9 @@ async def test_small_union_still_answers_by_union(setup_mcp, monkeypatch, tmp_pa
 
 @pytest.mark.asyncio
 async def test_mechanism_question_defers_union_to_synthesis(setup_mcp, monkeypatch, tmp_path):
-    """Fix 1 (RC1): a "how does X work" question that merely NAMES a small-union
-    symbol defers to synthesis instead of dumping bodies with grounding=exact_symbol
-    — the mechanism it asks about may live in a different file the union never sees."""
+    """A "how does X work" question that merely NAMES a small-union symbol defers
+    to synthesis instead of dumping bodies with grounding=exact_symbol — the
+    mechanism it asks about may live in a different file the union never sees."""
     import repowise.server.mcp_server as mcp_mod
     import repowise.server.mcp_server.tool_answer.answer as answer_mod
     from repowise.server.mcp_server import get_answer
@@ -1060,11 +1060,11 @@ async def test_why_answer_with_grounded_frame_stays_high(setup_mcp, monkeypatch)
 
 @pytest.mark.asyncio
 async def test_claim_support_gate_covers_mechanism_questions(setup_mcp, monkeypatch):
-    """Fix 2 (RC2): the claim-support gate now covers "how" mechanism questions,
-    not only "why". A mechanism answer that names an ungrounded term (PageRank,
-    absent from every retrieved excerpt) is downgraded high→medium — the
-    "right file, wrong function inside it" failure. Flag off restores the old
-    why-only scope (mechanism question stays high)."""
+    """The claim-support gate covers "how" mechanism questions, not only "why".
+    A mechanism answer that names an ungrounded term (PageRank, absent from every
+    retrieved excerpt) is downgraded high→medium — the "right file, wrong function
+    inside it" failure. Flag off restores the why-only scope (question stays
+    high)."""
     import repowise.server.mcp_server.tool_answer.answer as answer_mod
     from repowise.server.mcp_server import get_answer
 

@@ -319,11 +319,11 @@ _HIGH_CONFIDENCE_SCORE_FLOOR = 1.5
 # pre-v9 rows carry the compressed-ratio grade and must bypass.
 # v10: (reserved for the agreement rollout above.)
 # v11: answer-grounding calibration — (1) a mechanism/"how" question that merely
-# names an indexed symbol no longer short-circuits to an exact_symbol body dump
-# (Fix 1); (2) the claim-support gate now covers how-questions, not only why
-# (Fix 2); (3) strong answer-grounding earns high on a non-dominant retrieval
-# (Fix 4). Cached pre-v11 rows carry the old union-hijack / dominance-only grade
-# and must bypass so the recalibrated confidence reaches callers.
+# names an indexed symbol no longer short-circuits to an exact_symbol body dump;
+# (2) the claim-support gate now covers how-questions, not only why; (3) strong
+# answer-grounding earns high on a non-dominant retrieval. Cached pre-v11 rows
+# carry the old body-dump / dominance-only grade and must bypass so the
+# recalibrated confidence reaches callers.
 _ANSWER_SCHEMA_VERSION = 11
 
 # Hard TTL on answer-cache rows. Commit-based invalidation (the payload's

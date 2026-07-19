@@ -150,14 +150,15 @@ _log = logging.getLogger("repowise.mcp.answer")
 # value (0/off/false/no) to restore the legacy abstain-on-ambiguous behaviour.
 _ALWAYS_SYNTHESIZE_ENV = "REPOWISE_ANSWER_ALWAYS_SYNTHESIZE"
 _AGREEMENT_CONFIDENCE_ENV = "REPOWISE_ANSWER_AGREEMENT_CONFIDENCE"
-# Fix 1: keep the exact_symbol union fast path from hijacking a "how does X
-# work" mechanism question (whose real answer often lives in a different file).
+# Keep the exact_symbol union fast path from hijacking a "how does X work"
+# mechanism question, whose real answer often lives in a different file than the
+# named symbol's body.
 _UNION_MECHANISM_DEFER_ENV = "REPOWISE_ANSWER_UNION_MECHANISM_DEFER"
-# Fix 2: require the answer's central named mechanism symbol to be served as a
-# hydrated body before a mechanism/how answer may be stamped high.
+# Require the answer's central named mechanism symbol to be grounded in served
+# source before a mechanism/how answer may be stamped high.
 _CLAIM_SUPPORT_GATE_ENV = "REPOWISE_ANSWER_CLAIM_SUPPORT_GATE"
-# Fix 4: let strong answer-grounding earn "high" on a non-dominant retrieval
-# (rank-1 gold buried in a sibling cluster), not only clear numeric dominance.
+# Let strong answer-grounding earn "high" on a non-dominant retrieval (a rank-1
+# hit buried in a sibling cluster), not only a clear numeric dominance margin.
 _EARN_HIGH_GROUNDING_ENV = "REPOWISE_ANSWER_EARN_HIGH_GROUNDING"
 
 
@@ -826,13 +827,13 @@ async def get_answer(
     union_groups = homonyms.get("union") or {}
     if union_groups and union_defers_to_synthesis(question, question_ids, union_groups):
         union_groups = {}
-    # Fix 1 (RC1): a mechanism/"how" question that merely NAMES an indexed symbol
-    # (e.g. "how does get_symbol verify bounds?") must not short-circuit to a dump
-    # of that symbol's bodies — the mechanism it asks about often lives in another
-    # file (_verify.py), which the union path never retrieves, yielding a
-    # confident-wrong "here are the definitions" non-answer. Defer to synthesis
-    # regardless of def count. Naming/lookup questions ("what does X return",
-    # "where is Y") are untouched and still answer by union.
+    # A mechanism/"how" question that merely NAMES an indexed symbol (e.g. "how
+    # does X verify its bounds?") must not short-circuit to a dump of that
+    # symbol's bodies: the mechanism it asks about often lives in another file the
+    # union path never retrieves, yielding a confidently-wrong "here are the
+    # definitions" non-answer. Defer to synthesis regardless of def count.
+    # Naming/lookup questions ("what does X return", "where is Y") are untouched
+    # and still answer by union.
     if union_groups and _flag_on(_UNION_MECHANISM_DEFER_ENV) and _is_mechanism_question(question):
         union_groups = {}
     if union_groups:
@@ -1248,18 +1249,18 @@ async def get_answer(
     # is naturally cleared — a rank-0-in-both hit scores ~6 after RRF scaling.
     _dominant_grade = _ratio >= _DOMINANCE_RATIO or agreement_dominant
 
-    # Fix 4 (RC3/RC4): strong answer-grounding can EARN "high" on a NON-dominant
-    # retrieval. RRF compresses sibling scores, so a rank-1 gold hit buried in a
-    # cluster of related files (E31: coupling/graph.py at 4.46 vs 4.28/3.77)
-    # never "dominates" numerically and was capped at medium even though the
+    # Strong answer-grounding can EARN "high" on a NON-dominant retrieval. RRF
+    # compresses sibling scores, so a rank-1 hit buried in a cluster of related
+    # files never "dominates" numerically and was capped at medium even when the
     # synthesised answer is fully grounded in served source. Earn high when
     # EITHER the question's named symbol body is served in-hand (tier-0 anchor),
     # OR every distinctive mechanism term the answer names is grounded in the
     # retrieval corpus AND a cited hit carries real symbol bodies. Conservative:
-    # a single ungrounded mechanism term disqualifies (that is the RC2 fabricate
-    # signal), and the score floor still applies — this lifts non-dominant *well
-    # grounded* answers, never weakly-retrieved ones. The demotion gates below
-    # (hedge, value, claim-support) still pull an earned high back down.
+    # a single ungrounded mechanism term disqualifies (that is the fabricated-
+    # mechanism signal), and the score floor still applies — this lifts
+    # non-dominant *well grounded* answers, never weakly-retrieved ones. The
+    # demotion gates below (hedge, value, claim-support) still pull an earned
+    # high back down.
     earn_high = False
     if _flag_on(_EARN_HIGH_GROUNDING_ENV) and _top_score >= _HIGH_CONFIDENCE_SCORE_FLOOR:
         _cited = set(citations)
@@ -1340,11 +1341,12 @@ async def get_answer(
     # are not outweighed by grounded ones, downgrade high→medium so the consumer
     # verifies instead of trusting.
     #
-    # Fix 2 (RC2): the original gate fired only on "why" questions — but the RC2
-    # failures are "how" questions that name the mechanism in the ANSWER, not the
-    # question. Broaden to mechanism/how questions too (behind the claim-support
-    # flag). Value questions have their own numeric gate above; naming/lookup
-    # questions legitimately just echo the named symbol, so they are excluded.
+    # The original gate fired only on "why" questions, but the same failure
+    # occurs on "how" questions that name the mechanism in the ANSWER, not the
+    # question — the "right file, wrong function inside it" case. Broaden to
+    # mechanism/how questions too (behind the claim-support flag). Value questions
+    # have their own numeric gate above; naming/lookup questions legitimately just
+    # echo the named symbol, so they are excluded.
     frame_unsupported: list[str] = []
     _claim_scope = _is_why_question(question) or (
         _flag_on(_CLAIM_SUPPORT_GATE_ENV) and _is_mechanism_question(question)
@@ -1362,9 +1364,9 @@ async def get_answer(
     # if all six gates passed. (A non-dominant retrieval already scores <high via
     # the ratio, so this is usually a no-op; it is explicit so the
     # always-synthesize contract — "answered, but verify" — is self-documenting.)
-    # Fix 4 exception: an answer that EARNED high via strong grounding (named
-    # symbol body in-hand, or every mechanism term grounded in a cited body) is
-    # not "cite without verifying" — the source IS in the payload — so the
+    # Exception: an answer that EARNED high via strong grounding (named symbol
+    # body in-hand, or every mechanism term grounded in a cited body) is not
+    # "cite without verifying" — the source IS in the payload — so the
     # non-dominance ceiling does not apply to it.
     if not dominant and not earn_high and confidence == "high":
         confidence = "medium"

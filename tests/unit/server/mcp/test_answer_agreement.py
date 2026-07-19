@@ -159,8 +159,8 @@ async def test_one_retriever_top_does_not_get_agreement_lift(setup_mcp, monkeypa
     from repowise.server.mcp_server import get_answer
 
     monkeypatch.setenv("REPOWISE_ANSWER_AGREEMENT_CONFIDENCE", "on")
-    # Isolate agreement: disable Fix 4's grounding-earn lift, which is a separate
-    # path to high (this well-grounded answer would otherwise earn high on its own).
+    # Isolate agreement: disable the grounding-earn lift, a separate path to high
+    # (this well-grounded answer would otherwise earn high on its own).
     monkeypatch.setenv("REPOWISE_ANSWER_EARN_HIGH_GROUNDING", "off")
     _patch_agreement_pipeline(monkeypatch, answer_mod, top_both=False)
     _patch_provider(monkeypatch, answer_mod, _GOOD_ANSWER)
@@ -185,15 +185,15 @@ async def test_demotion_gate_still_fires_on_agreement_hit(setup_mcp, monkeypatch
 
 @pytest.mark.asyncio
 async def test_earn_high_via_grounding_lifts_nondominant(setup_mcp, monkeypatch):
-    """Fix 4 (RC3): a NON-dominant retrieval (no agreement, ratio < 1.2) whose
-    answer is fully grounded — cites a hit carrying the named symbol body and
-    introduces no ungrounded mechanism term — EARNS high. Flag off → medium."""
+    """A NON-dominant retrieval (no agreement, ratio < 1.2) whose answer is fully
+    grounded — cites a hit carrying the named symbol body and introduces no
+    ungrounded mechanism term — EARNS high. Flag off → medium."""
     import repowise.server.mcp_server.tool_answer.answer as answer_mod
     from repowise.server.mcp_server import get_answer
 
     monkeypatch.setenv("REPOWISE_ANSWER_DISABLE_CACHE", "on")
     # No agreement lift (top found by one retriever); the only path to high is
-    # Fix 4's grounding-earn.
+    # the grounding-earn.
     monkeypatch.setenv("REPOWISE_ANSWER_AGREEMENT_CONFIDENCE", "off")
     _patch_agreement_pipeline(monkeypatch, answer_mod, top_both=False)
     _patch_provider(monkeypatch, answer_mod, _GOOD_ANSWER)
@@ -213,7 +213,7 @@ async def test_flag_off_restores_pure_ratio(setup_mcp, monkeypatch):
     from repowise.server.mcp_server import get_answer
 
     monkeypatch.setenv("REPOWISE_ANSWER_AGREEMENT_CONFIDENCE", "off")
-    # Isolate the ratio path: Fix 4's grounding-earn is a separate high-lift lever.
+    # Isolate the ratio path: the grounding-earn is a separate high-lift lever.
     monkeypatch.setenv("REPOWISE_ANSWER_EARN_HIGH_GROUNDING", "off")
     _patch_agreement_pipeline(monkeypatch, answer_mod, top_both=True)
     _patch_provider(monkeypatch, answer_mod, _GOOD_ANSWER)

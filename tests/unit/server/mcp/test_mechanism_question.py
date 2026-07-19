@@ -2,10 +2,11 @@
 
 The predicate decides whether a question that NAMES an indexed symbol should
 defer the exact_symbol union fast path to synthesis (mechanism/how questions) or
-answer by dumping the symbol's bodies (naming/lookup/value questions). These
-cases are deliberately NOT drawn from the get_answer gold eval set — they probe
-the question SHAPES the predicate must separate, so a pass here is evidence the
-signal generalises rather than fits the 22 benchmarked questions.
+answer by dumping the symbol's bodies (naming/lookup/value questions). The cases
+below span the question SHAPES the predicate must separate — mechanism vs
+naming/lookup/value, including adversarial phrasings (a mechanism verb inside a
+lookup, quantity-"how", "how come") — so a pass is evidence the signal
+generalises across phrasing rather than matching a fixed list.
 """
 
 from __future__ import annotations
