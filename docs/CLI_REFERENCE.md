@@ -282,12 +282,14 @@ Watch for file changes and auto-update wiki pages. Press `Ctrl+C` to stop.
 | `--workspace` / `-w` | Watch all workspace repos |
 | `--no-workspace` | Force single-repo mode |
 | `--repo` | Watch a single workspace repo by alias |
+| `--verbose` / `-v` | Show debug logs from the pipeline and triggered updates |
 
 ```bash
 repowise watch                           # single repo (auto-detects)
 repowise watch --debounce 5000           # 5s debounce
 repowise watch --workspace               # all workspace repos
 repowise watch --repo backend            # just one
+repowise watch --verbose                 # show pipeline debug logs
 ```
 
 ---

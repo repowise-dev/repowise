@@ -78,6 +78,7 @@ class TestCliBasics:
         result = runner.invoke(cli, ["watch", "--help"])
         assert result.exit_code == 0
         assert "--debounce" in result.output
+        assert "--verbose" in result.output
 
 
 # ---------------------------------------------------------------------------
