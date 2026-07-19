@@ -18,7 +18,7 @@ import click
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from rich.table import Table
 
-from repowise.cli._setup import setup_logging_silence
+from repowise.cli._setup import configure_cli_logging
 from repowise.cli.editor_integrations.defaults import (
     get_default_disabled_project_files,
     get_default_integration_overrides,
@@ -500,7 +500,10 @@ def _run_generation_phase(
     "-v",
     is_flag=True,
     default=False,
-    help="Show the full changed-file list and per-phase internals.",
+    help=(
+        "Show per-phase internals plus debug logs. Without it, debug/info "
+        "logging is suppressed so the progress bar is the only output."
+    ),
 )
 @click.option(
     "--progress",
@@ -678,8 +681,9 @@ def init_command(
     ensure_repowise_dir(repo_path)
     load_dotenv(repo_path)
 
-    # Suppress library/structlog output — progress bars are the only output needed.
-    setup_logging_silence()
+    # Quiet library/structlog output so the progress bars are the only output;
+    # `-v` lets repowise's debug lines through for troubleshooting.
+    configure_cli_logging(verbose=verbose)
 
     # On --resume, continue the prior run's git tier so a resumed fast index
     # doesn't silently fall back to the expensive FULL tier (issue #341). Done
