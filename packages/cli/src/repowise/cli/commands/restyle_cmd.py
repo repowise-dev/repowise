@@ -18,6 +18,7 @@ from typing import Any
 
 import click
 
+from repowise.cli._setup import configure_cli_logging
 from repowise.cli.helpers import (
     config_fingerprint,
     console,
@@ -145,6 +146,13 @@ async def _run_restyle(
 @click.option("--model", default=None, help="Model identifier override.")
 @click.option("--concurrency", type=int, default=12, help="Max concurrent LLM calls.")
 @click.option("--reasoning", default=None, help="Reasoning mode override.")
+@click.option(
+    "--verbose",
+    "-v",
+    is_flag=True,
+    default=False,
+    help="Show debug logs from the pipeline.",
+)
 @click.option("--yes", "-y", is_flag=True, default=False, help="Skip the confirmation prompt.")
 def restyle_command(
     style: str | None,
@@ -153,6 +161,7 @@ def restyle_command(
     model: str | None,
     concurrency: int,
     reasoning: str | None,
+    verbose: bool,
     yes: bool,
 ) -> None:
     """Switch a repo's wiki STYLE and regenerate every page in the new voice.
@@ -163,6 +172,8 @@ def restyle_command(
     This regenerates the whole wiki with LLM calls (a cost), reusing the existing
     index/graph/git so no re-resolution or re-blame is needed.
     """
+    configure_cli_logging(verbose=verbose)
+
     repo_path = resolve_repo_path(path)
     load_dotenv(repo_path)
     state = load_state(repo_path)
