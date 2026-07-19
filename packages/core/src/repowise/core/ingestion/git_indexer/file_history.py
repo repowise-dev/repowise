@@ -113,8 +113,10 @@ def new_meta(file_path: str) -> dict[str, Any]:
         # the trailing PRIOR_DEFECT_WINDOW_DAYS window (anchored to as_of_ts when
         # set, so T0 benchmark scoring stays leakage-free). Consumed by the
         # ``prior_defect`` health biomarker; mirrors the benchmark's
-        # prior-defects baseline definition (product == benchmark).
+        # prior-defects baseline definition (product == benchmark). The raw
+        # variant is the same walk before fix-shape filtering (fix_shape.py).
         "prior_defect_count": 0,
+        "prior_defect_raw_count": 0,
         # Agent provenance rollup: how much of this file's indexed history is
         # agent-attributed (local channels only — see agent_provenance module).
         # agent_authored_pct stays None when the file has no commits at all.

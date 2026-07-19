@@ -355,6 +355,7 @@ class TestGitMetadataToDict:
             merge_commit_count_90d=1,
             temporal_hotspot_score=0.8,
             prior_defect_count=5,
+            prior_defect_raw_count=9,
             change_entropy=0.42,
             change_entropy_pct=0.6,
         )
@@ -366,6 +367,7 @@ class TestGitMetadataToDict:
         assert d["bus_factor"] == 2
         # Columns added by the newer health biomarkers must flow through too.
         assert d["prior_defect_count"] == 5
+        assert d["prior_defect_raw_count"] == 9
         assert d["change_entropy"] == 0.42
         assert d["change_entropy_pct"] == 0.6
 

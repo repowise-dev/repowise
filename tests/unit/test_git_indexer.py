@@ -510,22 +510,47 @@ class TestPriorDefectCount:
     shared keyword rule, and attributes each fix to every indexable file it
     touched — mirroring the defect benchmark's prior-defects baseline."""
 
-    def _mock_repo(self, records: list[tuple[str, list[str]]]) -> MagicMock:
-        """records: list of (subject, [touched paths]). Builds the --name-only
-        log output and routes prior_sha resolution vs the windowed walk."""
+    @staticmethod
+    def _code_diff(paths: list[str]) -> str:
+        """A ``-U0`` patch that changes real code in each of *paths*."""
+        return "".join(
+            f"diff --git a/{p} b/{p}\n--- a/{p}\n+++ b/{p}\n"
+            f"@@ -10 +10 @@\n-    return None\n+    return value\n"
+            for p in paths
+        )
+
+    def _mock_repo(
+        self,
+        records: list[tuple[str, list[str]]],
+        diffs: dict[int, str] | None = None,
+    ) -> MagicMock:
+        """records: list of (subject, [touched paths]).
+
+        Builds the ``--name-only`` log output and routes the three ``git log``
+        shapes the pass issues: prior_sha resolution, the windowed walk, and the
+        batched ``--no-walk --patch`` shape pass. *diffs* overrides the patch for
+        a record by index; the default is a plain code change, so a commit that
+        the subject rule matches also classifies as ``code_fix``.
+        """
         mock_repo = MagicMock()
         mock_repo.head.commit.hexsha = "HEADSHA"
         chunks = []
+        patches = {}
         for i, (subject, paths) in enumerate(records):
+            sha = f"{i:040d}"
             body = "\n".join(paths)
-            chunks.append(f"\x00sha{i:04d}\x1f{subject}\n{body}")
+            chunks.append(f"\x00{sha}\x1f{subject}\n{body}")
+            patches[sha] = (diffs or {}).get(i, self._code_diff(paths))
         log_out = "\n".join(chunks)
 
         def _log(*args, **kwargs):
-            # prior_sha resolution carries --before / -1; the walk carries
-            # --name-only. Route on that.
+            # prior_sha resolution carries --before / -1; the shape pass carries
+            # --no-walk; the windowed walk carries --name-only. Route on that.
             if any(str(a).startswith("--before") for a in args):
                 return "PRIORSHA"
+            if "--no-walk" in args:
+                shas = [a for a in args if len(str(a)) == 40]
+                return "\n".join(f"\x00{sha}\n{patches[sha]}" for sha in shas)
             return log_out
 
         mock_repo.git.log.side_effect = _log
@@ -544,10 +569,11 @@ class TestPriorDefectCount:
                 ("fix lint", ["src/app.py"]),  # excluded keyword
             ]
         )
-        counts = compute_prior_defects(
+        result = compute_prior_defects(
             repo, {"src/app.py", "src/util.py"}, as_of_ts=1_700_000_000.0
         )
-        assert counts == {"src/app.py": 2, "src/util.py": 1}
+        assert result.counts == {"src/app.py": 2, "src/util.py": 1}
+        assert result.raw_counts == {"src/app.py": 2, "src/util.py": 1}
 
     def test_ignores_non_indexable_paths(self) -> None:
         from repowise.core.ingestion.git_indexer.prior_defects import (
@@ -559,8 +585,8 @@ class TestPriorDefectCount:
                 ("fix: bug", ["src/app.py", "docs/readme.md"]),
             ]
         )
-        counts = compute_prior_defects(repo, {"src/app.py"}, as_of_ts=1_700_000_000.0)
-        assert counts == {"src/app.py": 1}
+        result = compute_prior_defects(repo, {"src/app.py"}, as_of_ts=1_700_000_000.0)
+        assert result.counts == {"src/app.py": 1}
 
     def test_zero_when_no_fixes(self) -> None:
         from repowise.core.ingestion.git_indexer.prior_defects import (
@@ -573,8 +599,57 @@ class TestPriorDefectCount:
                 ("docs: update readme", ["src/app.py"]),
             ]
         )
-        counts = compute_prior_defects(repo, {"src/app.py"}, as_of_ts=1_700_000_000.0)
-        assert counts == {}
+        result = compute_prior_defects(repo, {"src/app.py"}, as_of_ts=1_700_000_000.0)
+        assert result.counts == {}
+        assert result.raw_counts == {}
+
+    def test_non_code_fixes_are_filtered_but_still_counted_raw(self) -> None:
+        """A docstring-only "fix" stops incrementing the biomarker's count.
+
+        The raw total keeps it, so the noise a repo carries stays inspectable
+        instead of silently disappearing from the signal.
+        """
+        from repowise.core.ingestion.git_indexer.prior_defects import (
+            compute_prior_defects,
+        )
+
+        repo = self._mock_repo(
+            [
+                ("fix: real crash", ["src/app.py"]),
+                ("fix: wording in the module docstring", ["src/app.py"]),
+            ],
+            diffs={
+                1: (
+                    "diff --git a/src/app.py b/src/app.py\n"
+                    "--- a/src/app.py\n+++ b/src/app.py\n"
+                    "@@ -3 +3 @@\n"
+                    "-    # returns the parsed thing\n"
+                    "+    # returns the parsed value\n"
+                )
+            },
+        )
+        result = compute_prior_defects(repo, {"src/app.py"}, as_of_ts=1_700_000_000.0)
+        assert result.counts == {"src/app.py": 1}
+        assert result.raw_counts == {"src/app.py": 2}
+
+    def test_unreadable_diff_counts_the_fix(self) -> None:
+        """A failed shape pass falls back to the raw behaviour, never to zero."""
+        from repowise.core.ingestion.git_indexer.prior_defects import (
+            compute_prior_defects,
+        )
+
+        repo = self._mock_repo([("fix: crash", ["src/app.py"])])
+
+        def _log(*args, **kwargs):
+            if any(str(a).startswith("--before") for a in args):
+                return "PRIORSHA"
+            if "--no-walk" in args:
+                raise RuntimeError("git exploded")
+            return "\x00" + "0" * 40 + "\x1ffix: crash\nsrc/app.py"
+
+        repo.git.log.side_effect = _log
+        result = compute_prior_defects(repo, {"src/app.py"}, as_of_ts=1_700_000_000.0)
+        assert result.counts == {"src/app.py": 1}
 
 
 # ---------------------------------------------------------------------------
