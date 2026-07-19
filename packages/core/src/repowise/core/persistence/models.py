@@ -451,6 +451,19 @@ class GitMetadata(Base):
     prior_defect_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     prior_defect_raw_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
+    # Bug-magnet rollup over this file's ``fix_events``, recomputed after every
+    # index and update. ``fix_mass`` is ``prior_defect_count`` with a 90-day
+    # half-life applied (analysis.health.fix_attribution), so a file whose fixes
+    # all sit at the window's trailing edge stops looking like one fixed three
+    # times this month; ``bug_magnet`` is that mass past the three-fresh-fixes
+    # trigger. ``fix_symbol_counts_json`` maps ``WikiSymbol.symbol_id`` to how
+    # many of those fixes landed in it. The mass is stored beside the flag on
+    # purpose: a bare boolean cannot be argued with.
+    fix_mass: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    bug_magnet: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    last_fix_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    fix_symbol_counts_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+
     # Temporal hotspot score: exponentially time-decayed churn signal
     temporal_hotspot_score: Mapped[float | None] = mapped_column(Float, nullable=True, default=0.0)
 
@@ -619,6 +632,16 @@ class FixEvent(Base):
 
     # Per-bucket changed-line counts from the fix taxonomy. Empty until Phase 5.
     taxonomy_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+
+    # ``WikiSymbol.symbol_id``s whose CURRENT line span overlaps this row's
+    # ``old_ranges_json``, so a file-level fix history can be read per symbol.
+    # ``attribution`` says how much to trust the join: ``exact`` only when
+    # nothing has touched the file since the fix (so the current spans are the
+    # spans the fix saw), ``approximate`` when lines may have shifted underneath,
+    # ``none`` when there was nothing to attribute — a pure insertion, an
+    # unparsed file. See analysis.health.fix_attribution.
+    symbol_ids_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    attribution: Mapped[str] = mapped_column(String(16), nullable=False, default="none")
 
     committed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 

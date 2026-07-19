@@ -397,6 +397,14 @@ export interface FileSignals {
   // Topology — how connected it is in the dependency graph.
   in_degree: number | null;
   out_degree: number | null;
+  // Defect history — how often this file gets bug-fixed, and where in it.
+  // `bug_magnet` is the decayed fix mass past its trigger, so it is a recency
+  // claim: any copy that shows it must show `last_fix_at` too.
+  // `fix_symbol_counts` maps symbol_id to how many recent fixes landed in it,
+  // top few only, already sorted by count.
+  bug_magnet: boolean | null;
+  last_fix_at: string | null;
+  fix_symbol_counts: Record<string, number> | null;
 }
 
 /* ------------------------------------------------------------------ *

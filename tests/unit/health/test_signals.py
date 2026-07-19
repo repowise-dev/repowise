@@ -96,3 +96,54 @@ def test_degrees_surfaced_when_node_present():
     assert s.prior_defect_count is None
     assert s.primary_owner_name is None
     assert s.has_any is True
+
+
+def test_old_callers_see_unchanged_fields_when_defect_columns_are_absent():
+    """A ``GitMetadata`` stub predating the fix-history columns still works.
+
+    The Protocol is duck-typed and both the MCP and REST paths pass live ORM
+    rows, but a pre-upgrade row (or an old stub like ``_Git`` above) simply has
+    no ``bug_magnet``. That must read as "no signal", not raise, and must leave
+    every field the caller already relied on untouched.
+    """
+    s = file_signals(_Git(prior_defect_count=4, commit_count_90d=9), None)
+    assert s.prior_defect_count == 4
+    assert s.commit_count_90d == 9
+    assert s.bug_magnet is None
+    assert s.last_fix_at is None
+    assert s.fix_symbol_counts is None
+
+
+def test_defect_history_surfaced_when_columns_are_present():
+    from datetime import UTC, datetime
+
+    @dataclass
+    class _GitWithFixes(_Git):
+        bug_magnet: bool = True
+        last_fix_at: datetime | None = datetime(2026, 6, 2, tzinfo=UTC)
+        fix_symbol_counts_json: str = '{"m.py::save": 4, "m.py::load": 1}'
+
+    s = file_signals(_GitWithFixes(prior_defect_count=5), None)
+    assert s.bug_magnet is True
+    # Serialized as a string: this dataclass goes through asdict() into MCP
+    # responses, which have no datetime encoder.
+    assert s.last_fix_at == "2026-06-02T00:00:00+00:00"
+    assert s.fix_symbol_counts == {"m.py::save": 4, "m.py::load": 1}
+
+
+def test_fix_symbol_counts_are_capped_and_bad_json_is_silent():
+    from repowise.core.analysis.health.signals import _TOP_FIX_SYMBOLS
+
+    @dataclass
+    class _GitJson(_Git):
+        fix_symbol_counts_json: str = ""
+
+    many = {f"m.py::s{i}": 20 - i for i in range(12)}
+    import json as _json
+
+    s = file_signals(_GitJson(fix_symbol_counts_json=_json.dumps(many)), None)
+    assert len(s.fix_symbol_counts) == _TOP_FIX_SYMBOLS
+    assert list(s.fix_symbol_counts) == [f"m.py::s{i}" for i in range(_TOP_FIX_SYMBOLS)]
+
+    assert file_signals(_GitJson(fix_symbol_counts_json="not json"), None).fix_symbol_counts is None
+    assert file_signals(_GitJson(fix_symbol_counts_json="{}"), None).fix_symbol_counts is None

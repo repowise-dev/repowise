@@ -699,6 +699,16 @@ async def persist_git(result: Any, session: Any, repo_id: str) -> None:
 
         await prune_fix_events_before(session, repo_id, datetime.fromtimestamp(oldest_ts, tz=UTC))
 
+    # Symbol attribution + bug-magnet rollups, over the rows just written.
+    # Failure-isolated: a rollup that cannot be computed leaves the previous
+    # values in place rather than blanking a surface mid-index.
+    try:
+        from repowise.core.pipeline.fix_rollups import apply_fix_rollups
+
+        await apply_fix_rollups(session, repo_id)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("fix_rollups_failed", repo_id=repo_id, error=str(exc))
+
     # Whole-history totals (true age / commit / contributor counts) also ride on
     # the summary — stamp them on the Repository row so the stats page reads them
     # instead of deriving them from the bounded ``git_commits`` sample (#730).

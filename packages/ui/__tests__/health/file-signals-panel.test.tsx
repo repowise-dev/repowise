@@ -17,6 +17,9 @@ function sig(partial: Partial<FileSignals>): FileSignals {
     recent_owner_commit_pct: null,
     in_degree: null,
     out_degree: null,
+    bug_magnet: null,
+    last_fix_at: null,
+    fix_symbol_counts: null,
     ...partial,
   };
 }

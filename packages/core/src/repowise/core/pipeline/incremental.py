@@ -625,6 +625,15 @@ async def persist_incremental_fix_events(session: Any, repo_id: str, indexer: An
     if tracked:
         await prune_fix_events_for_missing_paths(session, repo_id, tracked)
 
+    # Recompute over the whole stored window, not just the rows this update
+    # appended: decay ages every file's mass whether or not the file changed.
+    try:
+        from repowise.core.pipeline.fix_rollups import apply_fix_rollups
+
+        await apply_fix_rollups(session, repo_id)
+    except Exception as exc:
+        logger.debug("fix_rollups_failed", error=str(exc))
+
 
 async def refresh_external_systems(
     session: Any,
