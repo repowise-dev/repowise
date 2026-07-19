@@ -36,21 +36,32 @@ from repowise.core.persistence.models import DecisionRecord, GitMetadata
 # needs and doesn't want ADR-driven hedging).
 _WHY_PATTERN = re.compile(r"\bwhy\b", re.IGNORECASE)
 
-# Heuristic for "how does X work" mechanism questions. "how" as a whole word is
-# the dominant signal; a small set of mechanism verbs covers the rarer
-# imperative/verb-led phrasing ("verify the bounds", "route the union") that
-# omits "how". Deliberately does NOT include generic verbs like "return"/"do"/
-# "get" — those fire on plain what/where naming questions ("what does get_answer
-# RETURN when …"), which the union-of-bodies reply answers correctly and must
-# not be dragged into synthesis. Used to keep the exact_symbol union fast path
-# from hijacking a mechanism question whose real answer lives in another file.
-_MECHANISM_VERB_RE = re.compile(
-    r"\b(verif(?:y|ies)|route[sd]?|comput(?:e|es)|persist(?:s|ed)?|preserv(?:e|es)|"
-    r"resolv(?:e|es)|detect(?:s)?|rank(?:s)?|travers(?:e|es)|render(?:s)?|"
-    r"downweight|down-weight|reconcil(?:e|es)|heal(?:s)?)\b",
+# Heuristic for "how does X work" mechanism questions. Two precise signals, both
+# tuned to avoid the union path's two failure directions:
+#
+#   * ``_MECHANISM_HOW_RE`` — "how" as a whole word, but NOT the quantity/degree
+#     phrasings ("how many/much/long/large/big/old/often"), which are VALUE
+#     questions, nor "how come" (a "why" in disguise). "How does X verify …" is
+#     mechanism; "how many definitions of X" is not.
+#   * ``_MECHANISM_LEAD_RE`` — an imperative walkthrough verb at the START of the
+#     question ("explain …", "trace …", "walk me through …"). Anchored to the
+#     lead so it fires on "Explain how bounds heal" but not on a naming question
+#     that merely contains the word ("where is the trace helper defined").
+#
+# A bare mechanism VERB anywhere in the sentence is deliberately NOT a signal: it
+# false-fires on lookup questions ("where is compute_score defined", "what does
+# route_request return") that the union-of-bodies reply answers correctly. On the
+# real question distribution every mechanism question leads with "how" or an
+# imperative, so the verb-anywhere path bought recall we don't need at a precision
+# cost we can't afford — dropped.
+_MECHANISM_HOW_RE = re.compile(
+    r"\bhow\b(?!\s+(?:many|much|long|large|big|old|often|frequently|come)\b)",
     re.IGNORECASE,
 )
-_HOW_PATTERN = re.compile(r"\bhow\b", re.IGNORECASE)
+_MECHANISM_LEAD_RE = re.compile(
+    r"^\s*(?:explain|describe|trace|outline|walk(?:\s+me)?\s+through|step\s+through)\b",
+    re.IGNORECASE,
+)
 
 
 def is_mechanism_question(question: str) -> bool:
@@ -60,11 +71,12 @@ def is_mechanism_question(question: str) -> bool:
     live in a *different* file than the named symbol's body — so the exact-name
     union fast path (which just dumps the named symbol's definitions) is the wrong
     reply, even for a small union. A bare naming/lookup question ("what does X
-    return", "where is Y defined") is not a mechanism question and still unions.
+    return", "where is Y defined") or a value question ("how many definitions of
+    X") is not a mechanism question and still unions.
     """
     if not question:
         return False
-    return bool(_HOW_PATTERN.search(question) or _MECHANISM_VERB_RE.search(question))
+    return bool(_MECHANISM_HOW_RE.search(question) or _MECHANISM_LEAD_RE.search(question))
 
 
 # How many decision records to inject, and per-record truncation. Three is
