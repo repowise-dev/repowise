@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { MessageSquarePlus } from "lucide-react";
+import { MessageSquarePlus, Lock } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -76,20 +76,20 @@ export function FeedbackButton() {
       <button
         type="button"
         onClick={() => setOpen(true)}
-        aria-label="Send feedback"
-        className="flex w-full items-center gap-1.5 text-xs text-[var(--color-text-tertiary)] transition-colors hover:text-[var(--color-text-secondary)]"
+        aria-label="Help us improve Repowise"
+        className="flex w-full items-center gap-2 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-2 text-xs font-medium text-[var(--color-text-secondary)] transition-colors hover:border-[var(--color-accent-primary)]/50 hover:bg-[var(--color-accent-muted)] hover:text-[var(--color-text-primary)]"
       >
-        <MessageSquarePlus className="h-3.5 w-3.5 shrink-0" />
-        <span>Send feedback</span>
+        <MessageSquarePlus className="h-4 w-4 shrink-0 text-[var(--color-accent-primary)]" />
+        <span>Help us improve Repowise</span>
       </button>
 
       <Dialog open={open} onOpenChange={handleOpenChange}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>Send feedback</DialogTitle>
+            <DialogTitle>Help us improve Repowise</DialogTitle>
             <DialogDescription>
-              Found a bug or have an idea? It goes straight to the maintainers. We read every
-              message.
+              Found a bug or have an idea? It goes straight to the maintainers, and we read every
+              message. It&apos;s anonymous by default — no account needed.
             </DialogDescription>
           </DialogHeader>
 
@@ -160,6 +160,13 @@ export function FeedbackButton() {
                 className="w-full rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-2 text-sm text-[var(--color-text-primary)] placeholder:text-[var(--color-text-tertiary)] focus:border-[var(--color-accent-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent-primary)]"
               />
             </div>
+          </div>
+
+          <div className="flex items-start gap-1.5 text-[11px] text-[var(--color-text-tertiary)]">
+            <Lock className="mt-0.5 h-3 w-3 shrink-0" aria-hidden="true" />
+            <span>
+              Submitted anonymously. We only see your email if you add one above.
+            </span>
           </div>
 
           <DialogFooter>

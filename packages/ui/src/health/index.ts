@@ -34,7 +34,6 @@ export * from "./ai-prompt-modal";
 export * from "./ai-prompt-button";
 export * from "./hot-functions-panel";
 export * from "./hidden-coupling-list";
-export * from "./recalibration-banner";
 export * from "./defect-accuracy-card";
 export * from "./code-health-adapter";
 export * from "./triage-view";
