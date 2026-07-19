@@ -527,6 +527,7 @@ repowise coverage status                # show ingested coverage + the map
 |------|-------------|
 | `--path` | Repo path (defaults to cwd / workspace primary) |
 | `--format` | Force a parser instead of auto-detecting: `lcov`, `cobertura`, `clover`, `repowise-json` |
+| `--verbose` / `-v` | Show debug logs while discovering and ingesting coverage |
 
 `add` ingests per-file line/branch coverage from LCOV, Cobertura, Clover, or a
 coverage.py `.coverage` file. It auto-discovers `coverage/lcov.info`,
@@ -541,6 +542,7 @@ per-file coverage; it just skips the map.
 repowise coverage add                       # discover coverage/lcov.info, .coverage, etc.
 repowise coverage add coverage/lcov.info
 repowise coverage add web.lcov api.lcov     # merged, hit wins
+repowise coverage add --verbose             # show ingestion debug logs
 coverage run --contexts=test -m pytest      # produce .coverage with contexts
 repowise coverage add .coverage             # per-file coverage + per-test map
 repowise coverage status                    # coverage summary + "Test-to-code map" counts

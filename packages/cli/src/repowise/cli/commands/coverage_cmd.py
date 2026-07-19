@@ -14,6 +14,7 @@ from pathlib import Path
 
 import click
 
+from repowise.cli._setup import configure_cli_logging
 from repowise.cli.helpers import (
     console,
     ensure_repowise_dir,
@@ -65,7 +66,19 @@ def coverage_group() -> None:
     default=None,
     help="Force a parser instead of auto-detecting from content.",
 )
-def coverage_add(paths: tuple[str, ...], repo: str | None, coverage_format: str | None) -> None:
+@click.option(
+    "--verbose",
+    "-v",
+    is_flag=True,
+    default=False,
+    help="Show debug logs from the pipeline.",
+)
+def coverage_add(
+    paths: tuple[str, ...],
+    repo: str | None,
+    coverage_format: str | None,
+    verbose: bool,
+) -> None:
     """Ingest coverage (auto-discovers reports when none are given).
 
     Stores per-file line/branch coverage, and additionally the per-test
@@ -81,6 +94,8 @@ def coverage_add(paths: tuple[str, ...], repo: str | None, coverage_format: str 
         repowise coverage add .coverage            # per-test map from coverage.py
         repowise coverage add web.lcov api.lcov    # merged hit-wins
     """
+    configure_cli_logging(verbose=verbose)
+
     repo_path = _resolve_coverage_repo(repo)
     ensure_repowise_dir(repo_path)
 
