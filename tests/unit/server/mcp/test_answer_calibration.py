@@ -190,6 +190,77 @@ class TestFrameTermGrounding:
         assert ungrounded == []
 
 
+class TestLeanHigh:
+    """REPOWISE_ANSWER_LEAN_HIGH strips re-read evidence from mainline
+    high-confidence answers only — never grounded fast paths, never <high,
+    and only when the flag is on."""
+
+    from repowise.server.mcp_server.tool_answer.answer import _LEAN_HIGH_DROP_KEYS
+
+    def _payload(self, **over) -> dict:
+        base = {
+            "answer": "Retries are gated by MIN_COUNT.",
+            "citations": ["pkg/alpha/one.py"],
+            "confidence": "high",
+            "fallback_targets": ["pkg/alpha/two.py"],
+            "note": "High confidence.",
+            "symbol_bodies": [{"path": "pkg/alpha/one.py", "source": "..."}],
+            "quotes": [{"path": "pkg/alpha/one.py", "quote": "MIN_COUNT = 2"}],
+            "flow_path": ["a", "b"],
+            "best_guesses": [{"file": "pkg/alpha/one.py"}],
+            "code_rationale": [{"path": "pkg/alpha/one.py", "comment": "why"}],
+        }
+        base.update(over)
+        return base
+
+    _HOW_Q = "How does retry gating work?"
+    _WHY_Q = "Why are retries gated by MIN_COUNT?"
+
+    def test_flag_on_high_strips_evidence_keeps_core(self, monkeypatch) -> None:
+        from repowise.server.mcp_server.tool_answer.answer import _apply_lean_high
+
+        monkeypatch.setenv("REPOWISE_ANSWER_LEAN_HIGH", "1")
+        out = _apply_lean_high(self._payload(), self._HOW_Q)
+        for k in self._LEAN_HIGH_DROP_KEYS:
+            assert k not in out
+        for k in ("answer", "citations", "confidence", "fallback_targets", "note"):
+            assert k in out
+
+    def test_grounded_fast_path_untouched(self, monkeypatch) -> None:
+        from repowise.server.mcp_server.tool_answer.answer import _apply_lean_high
+
+        monkeypatch.setenv("REPOWISE_ANSWER_LEAN_HIGH", "1")
+        out = _apply_lean_high(self._payload(grounding="exact_symbol"), self._HOW_Q)
+        for k in self._LEAN_HIGH_DROP_KEYS:
+            assert k in out
+
+    def test_why_question_untouched(self, monkeypatch) -> None:
+        # A why-answer's rationale is grounded in the very evidence lean-high
+        # would strip, so why-questions are exempt even at high confidence.
+        from repowise.server.mcp_server.tool_answer.answer import _apply_lean_high
+
+        monkeypatch.setenv("REPOWISE_ANSWER_LEAN_HIGH", "1")
+        out = _apply_lean_high(self._payload(), self._WHY_Q)
+        for k in self._LEAN_HIGH_DROP_KEYS:
+            assert k in out
+
+    def test_medium_untouched(self, monkeypatch) -> None:
+        from repowise.server.mcp_server.tool_answer.answer import _apply_lean_high
+
+        monkeypatch.setenv("REPOWISE_ANSWER_LEAN_HIGH", "1")
+        out = _apply_lean_high(self._payload(confidence="medium"), self._HOW_Q)
+        for k in self._LEAN_HIGH_DROP_KEYS:
+            assert k in out
+
+    def test_flag_off_untouched(self, monkeypatch) -> None:
+        from repowise.server.mcp_server.tool_answer.answer import _apply_lean_high
+
+        monkeypatch.delenv("REPOWISE_ANSWER_LEAN_HIGH", raising=False)
+        out = _apply_lean_high(self._payload(), self._HOW_Q)
+        for k in self._LEAN_HIGH_DROP_KEYS:
+            assert k in out
+
+
 # ---------------------------------------------------------------------------
 # End-to-end gate behaviour through get_answer
 # ---------------------------------------------------------------------------

@@ -178,6 +178,47 @@ def _cache_disabled() -> bool:
     return os.environ.get(_DISABLE_CACHE_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+# Opt-in: strip re-read evidence from high-confidence answers. A high answer's
+# contract is "cite this, do not re-read the source" — so the symbol bodies,
+# quotes, flow_path, and candidate evidence are payload the consumer was told it
+# does not need, re-dragged through the agent's context every turn. Dropping them
+# at high (and ONLY at high, and ONLY for mainline synthesis) shrinks that
+# payload. Off by default; only safe once high-confidence answers are reliable
+# enough that the prose + citation suffices, so the agent rarely needs a dropped
+# body (else it calls get_symbol and adds a round-trip).
+#
+# Two carve-outs keep the evidence where it IS the answer: grounded fast paths
+# (their inlined body is the whole answer) and why-questions — a "because X" is
+# justified by exactly the code_rationale / quotes this strips, so a lean
+# why-answer loses the grounding its rationale stands on.
+_LEAN_HIGH_ENV = "REPOWISE_ANSWER_LEAN_HIGH"
+
+# Re-read evidence stripped from a lean high answer. NOT stripped: answer,
+# citations, confidence, retrieval_quality, fallback_targets, note, _meta.
+_LEAN_HIGH_DROP_KEYS = ("symbol_bodies", "quotes", "flow_path", "best_guesses", "code_rationale")
+
+
+def _lean_high() -> bool:
+    return os.environ.get(_LEAN_HIGH_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _apply_lean_high(payload: dict, question: str) -> dict:
+    """Strip re-read evidence from a mainline high-confidence answer, in place.
+
+    No-op unless the flag is on and confidence is high. Two carve-outs keep the
+    body where it IS the answer: grounded fast paths (extracted / exact_symbol /
+    symbol_body / data_shape, which carry a ``grounding`` key) and why-questions
+    (whose rationale is grounded in the stripped evidence — see module note).
+    """
+    if not _lean_high() or payload.get("confidence") != "high" or payload.get("grounding"):
+        return payload
+    if _is_why_question(question):
+        return payload
+    for k in _LEAN_HIGH_DROP_KEYS:
+        payload.pop(k, None)
+    return payload
+
+
 def _always_synthesize() -> bool:
     """Whether to always synthesize (default) or keep the legacy abstain gate."""
     return os.environ.get(_ALWAYS_SYNTHESIZE_ENV, "").strip().lower() not in {
@@ -670,6 +711,7 @@ async def get_answer(
                     repository=repository,
                     targets=[p for p in cached_paths if isinstance(p, str) and p],
                 )
+                _apply_lean_high(payload, question)
                 return payload
 
     # --- Retrieval pipeline ------------------------------------------------
@@ -1593,4 +1635,5 @@ async def get_answer(
         repository=repository,
         targets=[*citations, *fallback_targets],
     )
+    _apply_lean_high(payload, question)
     return payload
