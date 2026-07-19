@@ -135,6 +135,14 @@ def collect_fix_commits(
     is the part that costs real time, and an update with no new fix commits
     should not pay for it. Counting callers must not pass it - a skipped commit
     is missing from the walk entirely, not merely un-diffed.
+
+    Ceiling: the returned walk holds every fix commit's parsed patch, changed
+    line text included, for as long as the caller keeps it. Bounded in practice
+    by the window (a few hundred commits), but a repo whose fixes routinely touch
+    multi-megabyte generated files will hold all of that at once. If that ever
+    bites, drop ``removed``/``added`` after classification and carry the LOC
+    counts instead - the shape classifier is the only thing that needs the text
+    for non-code paths.
     """
     rev_range = _resolve_rev_range(repo, as_of_ts=as_of_ts, window_days=window_days)
     if rev_range is None:

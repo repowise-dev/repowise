@@ -26,13 +26,13 @@ moves within one file; it does nothing for a block lifted from another file, an
 import reshuffle, or a rename.
 
 So candidates get a second look, and the question asked is deliberately narrow:
-did this candidate *carry the buggy lines through unchanged*? If every line the
-fix deleted appears on both sides of the candidate's own diff, the candidate
+did this candidate *carry the lines it is blamed for through unchanged*? If each
+of them appears on both sides of the candidate's own diff, the candidate
 relocated that code rather than writing it, and the blame re-runs in a mode that
 can see past it: ``-C -C`` copy detection, the mover on ``--ignore-rev``, and the
 ``-L`` ranges padded outward.
 
-Per-line, not per-commit, because no real refactor is a byte-exact move.
+Per-blamed-line, not per-commit, because no real refactor is a byte-exact move.
 Measured on this repo's own package splits - the ones the frozen judgments call
 "verbatim", "no logic changes" - a 1,131-line move comes back as 1,332 lines: new
 module headers, re-sorted imports, an ``__all__``. A whole-commit multiset test
