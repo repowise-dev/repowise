@@ -36,8 +36,9 @@ interface SizeClassHeroProps {
 
 /**
  * The Stats page centerpiece: a warm-washed banner that names the codebase's
- * "size class" (derived from NLOC) and leads with the headline figures. Built
- * to look great in a screenshot — large type, generous spacing, one accent.
+ * "size class" (derived from NLOC) and leads with the headline figures. Reads
+ * as the centerpiece through spacing, the wash, and one accent — not through
+ * outsized type, which would put it out of step with every other page.
  */
 export function SizeClassHero({ scale, repoName }: SizeClassHeroProps) {
   const Icon = SIZE_ICON[scale.size_class.name] ?? Building2;
@@ -72,7 +73,7 @@ export function SizeClassHero({ scale, repoName }: SizeClassHeroProps) {
               <p className="text-[11px] font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
                 This codebase is a
               </p>
-              <h2 className="text-3xl font-bold leading-tight text-[var(--color-text-primary)] sm:text-4xl">
+              <h2 className="text-2xl font-bold leading-tight text-[var(--color-text-primary)] sm:text-3xl">
                 {scale.size_class.name}
               </h2>
             </div>
@@ -93,7 +94,7 @@ export function SizeClassHero({ scale, repoName }: SizeClassHeroProps) {
               title={f.hint}
               className={`rounded-xl border border-[var(--color-border-subtle,var(--color-border-default))] bg-[var(--color-bg-surface)]/70 px-4 py-3 backdrop-blur-sm${f.hint ? " cursor-help" : ""}`}
             >
-              <p className="whitespace-nowrap text-2xl font-bold tabular-nums text-[var(--color-text-primary)] sm:text-3xl">
+              <p className="whitespace-nowrap text-2xl font-bold tabular-nums text-[var(--color-text-primary)]">
                 {f.value}
               </p>
               <p className="mt-0.5 text-[11px] font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">

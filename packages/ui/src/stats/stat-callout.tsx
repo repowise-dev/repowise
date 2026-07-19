@@ -40,9 +40,10 @@ export interface StatCalloutProps {
 }
 
 /**
- * A large, single-figure callout card — the building block for the punchy
- * "headline" stats (AI authorship %, project age, defect-validation lift, …).
- * Bigger and more emphatic than `StatTile`, tuned for the showcase tabs.
+ * A single-figure callout card — the building block for the punchy "headline"
+ * stats (AI authorship %, project age, defect-validation lift, …). Carries a
+ * longer `sub` line than `MetricCard` but shares its type scale, so the stats
+ * tabs read at the same weight as every other page.
  */
 export function StatCallout({
   label,
@@ -73,7 +74,7 @@ export function StatCallout({
       </div>
       <p
         className={cn(
-          "mt-1.5 text-3xl font-bold leading-none tabular-nums",
+          "mt-1.5 text-2xl font-bold leading-none tabular-nums",
           TONE_VALUE[tone],
         )}
       >

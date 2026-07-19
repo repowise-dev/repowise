@@ -135,7 +135,7 @@ export function ByTheNumbersTab({ data }: { data: StatsHighlights }) {
               </span>
             </div>
             <p
-              className={`mt-1.5 text-3xl font-bold leading-none tabular-nums ${
+              className={`mt-1.5 text-2xl font-bold leading-none tabular-nums ${
                 vel?.pct_change == null
                   ? "text-[var(--color-text-primary)]"
                   : rising
@@ -204,7 +204,7 @@ export function ByTheNumbersTab({ data }: { data: StatsHighlights }) {
                   { v: formatCost(build.cost_usd), l: "to build" },
                 ].map((s) => (
                   <div key={s.l}>
-                    <p className="text-2xl font-bold tabular-nums text-[var(--color-text-primary)]">
+                    <p className="text-lg font-semibold tabular-nums text-[var(--color-text-primary)]">
                       {s.v}
                     </p>
                     <p className="mt-0.5 text-[11px] text-[var(--color-text-tertiary)]">{s.l}</p>
