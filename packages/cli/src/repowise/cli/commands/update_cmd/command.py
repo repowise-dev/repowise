@@ -16,6 +16,7 @@ from typing import Any
 import click
 import structlog
 
+from repowise.cli._setup import configure_cli_logging
 from repowise.cli.helpers import (
     clear_update_pending,
     clear_update_queued,
@@ -263,7 +264,9 @@ def _surface_release_news(*, written_by: str | None) -> None:
     help=(
         "Show the full changed-file list and per-phase internals (adaptive "
         "cascade budget, decision-marker/evolution counts, best-effort skip "
-        "warnings, and the detailed generation report)."
+        "warnings, and the detailed generation report), plus debug logs. "
+        "Without it, debug/info logging is suppressed so the progress bar is "
+        "the only output."
     ),
 )
 @click.option(
@@ -377,6 +380,11 @@ def run_update(
         click.get_current_context().call_on_close(lambda: setattr(console, "file", None))
         emitter = JsonProgressEmitter()
         emitter.start(repo=str(path or "."), since=since)
+    else:
+        # Human console mode: quiet library/structlog output so it doesn't
+        # interleave with the live progress bar (issue #922); `-v` lets
+        # repowise's debug lines through for troubleshooting.
+        configure_cli_logging(verbose=verbose)
 
     # --- Resolve target up front (single repo or workspace) ---
     target = resolve_command_target(

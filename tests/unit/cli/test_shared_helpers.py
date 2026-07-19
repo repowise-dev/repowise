@@ -161,5 +161,38 @@ def test_setup_logging_silence_runs() -> None:
     assert logging.getLogger("httpcore").level == logging.ERROR
 
 
+def test_configure_cli_logging_quiet_by_default() -> None:
+    import logging
+
+    prior = {n: logging.getLogger(n).level for n in ("repowise.core", "repowise.server")}
+    try:
+        _setup.configure_cli_logging(verbose=False)
+        assert logging.getLogger("repowise.core").level == logging.ERROR
+        assert logging.getLogger("repowise.server").level == logging.ERROR
+        # HTTP libs stay quiet regardless of verbosity.
+        assert logging.getLogger("httpx").level == logging.ERROR
+    finally:
+        for name, level in prior.items():
+            logging.getLogger(name).setLevel(level)
+
+
+def test_configure_cli_logging_verbose_shows_repowise_debug() -> None:
+    import logging
+
+    prior = {n: logging.getLogger(n).level for n in ("repowise.core", "repowise.server")}
+    try:
+        _setup.configure_cli_logging(verbose=True)
+        assert logging.getLogger("repowise.core").level == logging.DEBUG
+        assert logging.getLogger("repowise.server").level == logging.DEBUG
+        # HTTP libs are HTTP-level noise; kept at ERROR even in verbose mode.
+        assert logging.getLogger("httpx").level == logging.ERROR
+        assert logging.getLogger("httpcore").level == logging.ERROR
+    finally:
+        for name, level in prior.items():
+            logging.getLogger(name).setLevel(level)
+        # Restore the quiet default so verbose state doesn't leak to other tests.
+        _setup.configure_cli_logging(verbose=False)
+
+
 def test_repo_session_exposes_open_repo_db() -> None:
     assert callable(_repo_session.open_repo_db)
