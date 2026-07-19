@@ -31,7 +31,7 @@ from ._constants import (
 from .co_change import compute_co_changes, compute_co_changes_and_entropy
 from .enrich import compute_percentiles
 from .file_history import index_file
-from .prior_defects import PriorDefects, compute_prior_defects
+from .prior_defects import FixWalk, PriorDefects, collect_fix_commits, compute_prior_defects
 from .records import GitIndexSummary, _CommitRec, _should_skip_index, capture_repo_totals
 from .tiers import GitIndexTier
 
@@ -260,10 +260,21 @@ class GitIndexer:
         # exactly the ones this signal flags). Bounded to the trailing window,
         # so it's cheap regardless of total repo age and leakage-free at T0.
         prior_defects = PriorDefects()
+        fix_walk = FixWalk()
         try:
-            prior_defects = compute_prior_defects(repo, set(indexable_files), as_of_ts=as_of_ts)
+            fix_walk = collect_fix_commits(repo, set(indexable_files), as_of_ts=as_of_ts)
+            prior_defects = compute_prior_defects(
+                repo, set(indexable_files), as_of_ts=as_of_ts, walk=fix_walk
+            )
         except Exception as exc:
             logger.debug("prior_defect_pass_failed", error=str(exc))
+
+        # Per-file fix events + SZZ tracing ride the same walk: the diffs are
+        # already parsed, so this pass only adds blame. Off the event loop, since
+        # it fans blame subprocesses out across its own pool for long enough that
+        # progress callbacks would visibly stall. Failure-isolated — the counts
+        # above stand on their own if tracing breaks.
+        fix_event_rows, traced_ok = await asyncio.to_thread(self._trace_fix_events, fix_walk)
 
         # Per-file AI line share from the agent-trace records. Keyed by path
         # like the aggregates below, so it merges in the same pass and
@@ -312,6 +323,9 @@ class GitIndexer:
             stable_files=stable,
             duration_seconds=duration,
             commit_rows=commit_rows,
+            fix_event_rows=fix_event_rows,
+            fix_oldest_ts=fix_walk.oldest_fix_ts,
+            fix_events_traced=traced_ok,
             # Whole-history totals from cheap git calls on the still-open repo —
             # true project age / commit / contributor counts for the stats page,
             # which must not read them off the depth-capped sample (issue #730).
@@ -508,6 +522,69 @@ class GitIndexer:
             return []
         finally:
             repo.close()
+
+    def capture_new_fix_events(
+        self, *, known_shas: set[str] | None = None
+    ) -> tuple[list[dict], int, set[str]]:
+        """Build ``fix_events`` rows for fix commits not already persisted.
+
+        The incremental counterpart to the tracing ``index_repo`` runs inline,
+        and the same shape as :meth:`capture_new_commit_rows`: walk the trailing
+        window once, drop the fix commits *known_shas* already covers, and blame
+        the rest. An update with no new fix commits does the walk and stops,
+        which is why it stays inside the +1s budget.
+
+        Returns ``(rows, oldest_fix_ts, tracked_paths)``. Both trailing values
+        come back even when there are no new rows, because the caller still has
+        two prunes to do: events that aged out of the window, and events for
+        files that no longer exist. A fresh index never produces the latter, so
+        without that second prune an update accumulates rows for deleted files
+        and drifts away from what a re-index would hold.
+        """
+        repo = self._get_repo()
+        if repo is None:
+            return [], 0, set()
+        try:
+            tracked = {fp for fp in self._get_tracked_files(repo) if not _should_skip_index(fp)}
+            walk = collect_fix_commits(
+                repo,
+                tracked,
+                as_of_ts=self._resolve_as_of_ts(repo),
+                skip_shas=known_shas,
+            )
+            rows, ok = self._trace_fix_events(walk)
+            return rows, (walk.oldest_fix_ts if ok else 0), tracked
+        except Exception as exc:
+            logger.debug("incremental_fix_events_failed", error=str(exc))
+            return [], 0, set()
+        finally:
+            with contextlib.suppress(Exception):
+                repo.close()
+
+    def _trace_fix_events(self, walk: FixWalk) -> tuple[list[dict], bool]:
+        """SZZ-trace *walk*'s fix commits into ``(rows, traced_ok)``.
+
+        Blame needs its own thread-local repo handles (gitpython handles are not
+        shareable on Windows), so this opens a short-lived pool of its own rather
+        than reusing the per-file one, which is already closed by this point.
+
+        Failure-isolated: tracing never breaks the git phase. The flag matters
+        because "no rows" is ambiguous - a window with no new fixes and a pass
+        that blew up look the same from the outside, and only one of them should
+        let the caller prune.
+        """
+        if not walk.fixes:
+            return [], True
+        get_thread_repo, close_thread_repos = self._thread_repo_pool()
+        try:
+            from .fix_events import build_fix_events
+
+            return build_fix_events(walk, get_thread_repo), True
+        except Exception as exc:
+            logger.debug("fix_event_trace_failed", error=str(exc))
+            return [], False
+        finally:
+            close_thread_repos()
 
     def capture_repo_totals(self) -> Any:
         """Whole-history :class:`RepoTotals` for this repo (opens its own repo).

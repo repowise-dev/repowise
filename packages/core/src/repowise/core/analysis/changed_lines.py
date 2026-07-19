@@ -38,12 +38,15 @@ class FileDiff:
     deletion. *old_ranges* are inclusive ``(start, end)`` line spans on the
     pre-change file - the space ``git blame <sha>^`` is keyed in. A hunk with
     an old count of 0 is a pure insertion and contributes no range (there is
-    nothing to blame).
+    nothing it replaced); it records its *insert_anchors* instead - the old-side
+    line the new lines went in after, which is the only handle SZZ has on code
+    that was added rather than rewritten. 0 means "inserted at the top".
     """
 
     path: str
     new_lines: set[int] = field(default_factory=set)
     old_ranges: list[tuple[int, int]] = field(default_factory=list)
+    insert_anchors: list[int] = field(default_factory=list)
     removed: list[str] = field(default_factory=list)
     added: list[str] = field(default_factory=list)
 
@@ -97,6 +100,11 @@ def parse_unified_diff(diff: str) -> dict[str, FileDiff]:
                 new_count = int(m.group(4)) if m.group(4) is not None else 1
                 if old_count > 0:
                     current.old_ranges.append((old_start, old_start + old_count - 1))
+                elif new_count > 0:
+                    # ``@@ -N,0 +M,k @@``: git names the old-side line the block
+                    # was inserted *after*, which is 0 for an insertion at the
+                    # top of the file.
+                    current.insert_anchors.append(old_start)
                 if new_count > 0:
                     current.new_lines.update(range(new_start, new_start + new_count))
         elif current is not None:

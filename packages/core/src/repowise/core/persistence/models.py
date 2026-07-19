@@ -566,6 +566,72 @@ class GitCommit(Base):
     )
 
 
+class FixEvent(Base):
+    """One bug-fix commit's effect on one file, with its bug-introducing candidates.
+
+    ``GitMetadata.prior_defect_count`` is the aggregate of these rows; this table
+    is the evidence underneath it. Each row records what a fix commit did to one
+    file (:mod:`ingestion.git_indexer.fix_shape` kind, the old-side line ranges it
+    replaced, how many lines it changed) and, for ``code_fix`` rows, the ranked
+    commits that ``git blame`` puts on those lines at ``fix^`` — the SZZ
+    bug-introducing candidates.
+
+    ``committed_at`` is load-bearing. Rows are stored **undecayed**: every recency
+    weight downstream (biomarker mass, bug-magnet flag, rollups) is derived at read
+    time from this column, so changing a half-life is a read-time decision and
+    never needs a reindex.
+
+    Joins: ``fix_sha`` and each inducing sha to :class:`GitCommit` (which already
+    carries agent provenance), and ``file_path`` + ``old_ranges_json`` to
+    :class:`WikiSymbol` / :class:`GitFunctionBlame` line ranges.
+
+    Retention mirrors the ``prior_defect`` window: a full index seeds the trailing
+    window, updates append newer fix commits and prune rows that have aged out, so
+    the table always holds exactly the window a fresh index would produce.
+    """
+
+    __tablename__ = "fix_events"
+    __table_args__ = (
+        UniqueConstraint("repository_id", "fix_sha", "file_path", name="uq_fix_event"),
+        Index("ix_fix_events_repo_path", "repository_id", "file_path"),
+        Index("ix_fix_events_repo_time", "repository_id", "committed_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_uuid)
+    repository_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
+    )
+    fix_sha: Mapped[str] = mapped_column(String(40), nullable=False)
+    file_path: Mapped[str] = mapped_column(Text, nullable=False)
+
+    # fix_shape kind for the WHOLE commit, repeated on each of its file rows:
+    # the classification is a property of the diff, not of one file in it.
+    shape_kind: Mapped[str] = mapped_column(String(16), nullable=False, default="code_fix")
+
+    # Inclusive ``[[start, end], ...]`` spans on the PRE-fix file — the space
+    # ``git blame fix^`` is keyed in. Empty for a pure insertion (nothing to blame).
+    old_ranges_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    changed_loc: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    # Ranked SZZ candidates, ``[{"sha", "lines", "ts"}, ...]``, most blamed lines
+    # first. Stored ranked but complete, so a different ranking (earliest-commit,
+    # say) stays a read-time re-sort. Empty for non-code_fix rows, for pure
+    # insertions, and for fixes the tracer skipped (comment-only or oversized).
+    inducing_shas_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+
+    # Per-bucket changed-line counts from the fix taxonomy. Empty until Phase 5.
+    taxonomy_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+
+    committed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc, onupdate=_now_utc
+    )
+
+
 class GitFunctionBlame(Base):
     """Per-function blame rollup: function-granular git signals derived from the
     per-line ``BlameIndex`` during FULL-tier health analysis.

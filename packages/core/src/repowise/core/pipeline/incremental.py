@@ -24,6 +24,10 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import structlog
+
+logger = structlog.get_logger(__name__)
+
 LogFn = Callable[[str], None]
 
 
@@ -551,6 +555,10 @@ async def persist_incremental_commits(session: Any, repo_id: str, repo_path: Any
         repo_path,
         commit_limit=cfg.get("commit_limit"),
         follow_renames=cfg.get("follow_renames", False),
+        # The fix-event capture walks the tracked-file set itself, so without
+        # the repo's excludes an update would store events for files a full
+        # index never sees, and they would never age out.
+        exclude_patterns=cfg.get("exclude_patterns"),
     )
     newest = await get_latest_commit_committed_at(session, repo_id)
     since_ts: int | None = None
@@ -577,6 +585,45 @@ async def persist_incremental_commits(session: Any, repo_id: str, repo_path: Any
         total_contributor_count=totals.total_contributor_count,
         first_commit_author=totals.first_commit_author,
     )
+
+    await persist_incremental_fix_events(session, repo_id, indexer)
+
+
+async def persist_incremental_fix_events(session: Any, repo_id: str, indexer: Any) -> None:
+    """Trace + upsert ``fix_events`` for fix commits this index has not seen.
+
+    Two halves, and both are needed for an update to converge on what a fresh
+    index would produce: append the fix commits missing from the table, then drop
+    the ones that have aged out of the trailing defect window. Without the prune
+    the stored set only ever grows past the window's trailing edge; without the
+    append it goes stale. Failure-isolated, like every other git-phase refresh.
+    """
+    from repowise.core.persistence.crud import (
+        get_fix_event_shas,
+        prune_fix_events_before,
+        prune_fix_events_for_missing_paths,
+        upsert_fix_events_bulk,
+    )
+
+    try:
+        known = await get_fix_event_shas(session, repo_id)
+        rows, oldest_ts, tracked = await asyncio.to_thread(
+            indexer.capture_new_fix_events, known_shas=known
+        )
+    except Exception as exc:
+        logger.debug("incremental_fix_events_failed", error=str(exc))
+        return
+
+    if rows:
+        await upsert_fix_events_bulk(session, repo_id, rows)
+    # A zero cutoff means the walk or the trace failed; pruning then would drop
+    # rows nothing replaced.
+    if oldest_ts:
+        from datetime import UTC, datetime
+
+        await prune_fix_events_before(session, repo_id, datetime.fromtimestamp(oldest_ts, tz=UTC))
+    if tracked:
+        await prune_fix_events_for_missing_paths(session, repo_id, tracked)
 
 
 async def refresh_external_systems(

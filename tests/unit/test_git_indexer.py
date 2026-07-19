@@ -539,7 +539,7 @@ class TestPriorDefectCount:
         for i, (subject, paths) in enumerate(records):
             sha = f"{i:040d}"
             body = "\n".join(paths)
-            chunks.append(f"\x00{sha}\x1f{subject}\n{body}")
+            chunks.append(f"\x00{sha}\x1f{1_700_000_000 - i}\x1f{subject}\n{body}")
             patches[sha] = (diffs or {}).get(i, self._code_diff(paths))
         log_out = "\n".join(chunks)
 
@@ -645,7 +645,7 @@ class TestPriorDefectCount:
                 return "PRIORSHA"
             if "--no-walk" in args:
                 raise RuntimeError("git exploded")
-            return "\x00" + "0" * 40 + "\x1ffix: crash\nsrc/app.py"
+            return "\x00" + "0" * 40 + "\x1f1700000000\x1ffix: crash\nsrc/app.py"
 
         repo.git.log.side_effect = _log
         result = compute_prior_defects(repo, {"src/app.py"}, as_of_ts=1_700_000_000.0)

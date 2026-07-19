@@ -670,7 +670,9 @@ async def persist_git(result: Any, session: Any, repo_id: str) -> None:
     ``(repo_id, sha)`` — safe to call incrementally and on resume.
     """
     from repowise.core.persistence.crud import (
+        prune_fix_events_before,
         update_repo_git_totals,
+        upsert_fix_events_bulk,
         upsert_git_commits_bulk,
         upsert_git_metadata_bulk,
     )
@@ -684,6 +686,18 @@ async def persist_git(result: Any, session: Any, repo_id: str) -> None:
     commit_rows = getattr(summary, "commit_rows", None)
     if commit_rows:
         await upsert_git_commits_bulk(session, repo_id, commit_rows)
+
+    # Per fix-commit x file rows (with their SZZ candidates). The prune keeps a
+    # re-index of an already-indexed repo from leaving behind events that have
+    # since aged out of the defect window.
+    fix_event_rows = getattr(summary, "fix_event_rows", None)
+    if fix_event_rows:
+        await upsert_fix_events_bulk(session, repo_id, fix_event_rows)
+    oldest_ts = getattr(summary, "fix_oldest_ts", 0)
+    if oldest_ts and getattr(summary, "fix_events_traced", False):
+        from datetime import UTC, datetime
+
+        await prune_fix_events_before(session, repo_id, datetime.fromtimestamp(oldest_ts, tz=UTC))
 
     # Whole-history totals (true age / commit / contributor counts) also ride on
     # the summary — stamp them on the Repository row so the stats page reads them

@@ -36,10 +36,17 @@ from .enrich import (
     meets_hotspot_floors,
 )
 from .file_history import index_file
+from .fix_events import build_fix_events
 from .fix_shape import SHAPE_KINDS, classify_fix_shape
 from .identity import build_identity_resolver, canonicalize_author_email
 from .indexer import GitIndexer
-from .prior_defects import PriorDefects, compute_prior_defects
+from .prior_defects import (
+    FixCommit,
+    FixWalk,
+    PriorDefects,
+    collect_fix_commits,
+    compute_prior_defects,
+)
 from .records import (
     _FIELD_SEP,
     _LOG_FORMAT,
@@ -50,40 +57,48 @@ from .records import (
     _parse_commit_record,
     _should_skip_index,
 )
+from .szz import InducingCandidate, SzzTracer, rank_candidates
 from .tiers import GitIndexTier
 
 __all__ = [
-    "BACKFILL_PHASE",
-    "HOTSPOT_HALFLIFE_DAYS",
-    "SHAPE_KINDS",
+    "_CommitRec",
+    "_extract_rename_paths",
     # Re-exported for ``git_commit_index`` which builds the shared commit index.
     "_FIELD_SEP",
     "_LOG_FORMAT",
+    "_parse_commit_record",
     "_RECORD_SEP",
+    "_should_skip_index",
     "AgentProvenance",
     "AgentProvenanceClassifier",
-    "GitIndexSummary",
-    "GitIndexTier",
-    "GitIndexer",
-    "PriorDefects",
-    "_CommitRec",
-    "_extract_rename_paths",
-    "_parse_commit_record",
-    "_should_skip_index",
     "backfill_full_tier",
+    "BACKFILL_PHASE",
+    "build_fix_events",
     "build_identity_resolver",
     "canonicalize_author_email",
     "classifier_from_repo_config",
     "classify_fix_shape",
+    "collect_fix_commits",
     "compute_co_changes",
     "compute_co_changes_and_entropy",
     "compute_percentiles",
     "compute_prior_defects",
     "count_active_contributors",
     "detect_original_path",
+    "FixCommit",
+    "FixWalk",
     "get_blame_ownership",
+    "GitIndexer",
+    "GitIndexSummary",
+    "GitIndexTier",
+    "HOTSPOT_HALFLIFE_DAYS",
     "index_file",
+    "InducingCandidate",
     "is_fix_commit",
     "is_significant_commit",
     "meets_hotspot_floors",
+    "PriorDefects",
+    "rank_candidates",
+    "SHAPE_KINDS",
+    "SzzTracer",
 ]

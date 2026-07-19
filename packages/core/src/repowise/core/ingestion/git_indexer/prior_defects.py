@@ -33,7 +33,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
@@ -41,13 +41,18 @@ from ._constants import PRIOR_DEFECT_WINDOW_DAYS, is_fix_commit
 from .fix_shape import classify_fix_shape
 from .records import _RECORD_SEP, _extract_rename_paths
 
+if TYPE_CHECKING:
+    # Type-only: ``analysis.change_risk`` imports back into this package, so a
+    # runtime import would close an import cycle.
+    from ...analysis.changed_lines import FileDiff
+
 logger = structlog.get_logger(__name__)
 
-__all__ = ["PriorDefects", "compute_prior_defects"]
+__all__ = ["FixCommit", "FixWalk", "PriorDefects", "collect_fix_commits", "compute_prior_defects"]
 
-# sha <US> subject, one record per commit (NUL-separated); --name-only then
-# emits the touched paths on the lines that follow.
-_PRIOR_LOG_FORMAT = "%x00%H%x1f%s"
+# sha <US> committer-time <US> subject, one record per commit (NUL-separated);
+# --name-only then emits the touched paths on the lines that follow.
+_PRIOR_LOG_FORMAT = "%x00%H%x1f%ct%x1f%s"
 _FIELD_SEP = "\x1f"
 
 # Fix commits per ``git log --no-walk`` batch in the diff pass. One subprocess
@@ -71,11 +76,91 @@ class PriorDefects:
 
 
 @dataclass(frozen=True)
-class _FixCommit:
-    """A subject-matched fix commit and the indexable files it touched."""
+class FixCommit:
+    """A subject-matched fix commit: what it touched and what its diff looks like.
+
+    *paths* is the indexable subset of the files it changed. *files* is its
+    parsed ``-U0`` diff keyed by path — the old-side ranges and changed line text
+    the shape classifier reads and SZZ blames. *shape_kind* falls back to
+    ``code_fix`` when the diff pass failed for this commit, which keeps the count
+    on the pre-filter (safe) side of the change.
+    """
 
     sha: str
+    ts: int
     paths: list[str]
+    shape_kind: str = "code_fix"
+    files: dict[str, FileDiff] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class FixWalk:
+    """Every fix commit in the trailing window, plus the walk's own trailing edge.
+
+    *oldest_fix_ts* is the committer time of the oldest fix the walk found, taken
+    BEFORE any ``skip_shas`` narrowing (unix seconds; 0 when the walk found
+    nothing). Callers that persist per-commit rows prune below it, so what they
+    keep is exactly what the walk contains.
+
+    Deriving the cutoff from the walk rather than from the window's date matters,
+    and both halves of that are load-bearing. The rev range is
+    ``prior_sha..head``, which is reachability, not time: a merged long-lived
+    branch contributes commits older than the date boundary, and a date-based
+    prune would delete them immediately after every index inserted them, then
+    re-blame them on the next update, forever. And ``git log --before`` reads its
+    argument in local time while a Python timestamp is UTC, so the two cutoffs
+    would not even agree on the same instant.
+    """
+
+    fixes: list[FixCommit] = field(default_factory=list)
+    oldest_fix_ts: int = 0
+
+
+def collect_fix_commits(
+    repo: Any,
+    indexable_files: set[str],
+    *,
+    as_of_ts: float | None,
+    window_days: int = PRIOR_DEFECT_WINDOW_DAYS,
+    skip_shas: set[str] | None = None,
+) -> FixWalk:
+    """Walk the trailing window's fix commits and open each one's diff.
+
+    The shared front half of the defect pass: :func:`compute_prior_defects`
+    counts these, and :mod:`fix_events` turns them into per-file rows and blames
+    them. One walk, one batched diff pass, two consumers.
+
+    *skip_shas* drops commits before the diff pass, which is what keeps an update
+    cheap: the name-only walk is a single ``git log``, while opening 200 patches
+    is the part that costs real time, and an update with no new fix commits
+    should not pay for it. Counting callers must not pass it - a skipped commit
+    is missing from the walk entirely, not merely un-diffed.
+    """
+    rev_range = _resolve_rev_range(repo, as_of_ts=as_of_ts, window_days=window_days)
+    if rev_range is None:
+        return FixWalk()
+
+    fixes = _walk_fix_commits(repo, rev_range, indexable_files)
+    # Taken before the skip, so an update and a full index at the same HEAD agree
+    # on the trailing edge even though they trace different commits.
+    oldest = min((f.ts for f in fixes if f.ts > 0), default=0)
+    if skip_shas:
+        fixes = [f for f in fixes if f.sha not in skip_shas]
+    if not fixes:
+        return FixWalk(oldest_fix_ts=oldest)
+
+    diffs = _parse_fix_diffs(repo, [f.sha for f in fixes])
+    resolved_fixes = [
+        FixCommit(
+            sha=fix.sha,
+            ts=fix.ts,
+            paths=fix.paths,
+            shape_kind=classify_fix_shape(diffs[fix.sha]) if fix.sha in diffs else "code_fix",
+            files=diffs.get(fix.sha, {}),
+        )
+        for fix in fixes
+    ]
+    return FixWalk(fixes=resolved_fixes, oldest_fix_ts=oldest)
 
 
 def compute_prior_defects(
@@ -84,6 +169,7 @@ def compute_prior_defects(
     *,
     as_of_ts: float | None,
     window_days: int = PRIOR_DEFECT_WINDOW_DAYS,
+    walk: FixWalk | None = None,
 ) -> PriorDefects:
     """Return per-file bug-fix counts over the trailing window.
 
@@ -91,26 +177,23 @@ def compute_prior_defects(
     ``REPOWISE_GIT_WINDOW_ANCHOR``, else wall-clock now). Only commits reachable
     from HEAD are walked, so a historical T0 checkout never sees post-T0 fixes.
     Files outside *indexable_files* are ignored.
-    """
-    rev_range = _resolve_rev_range(repo, as_of_ts=as_of_ts, window_days=window_days)
-    if rev_range is None:
-        return PriorDefects()
 
-    fixes = _walk_fix_commits(repo, rev_range, indexable_files)
-    if not fixes:
+    *walk* lets a caller that already ran :func:`collect_fix_commits` reuse it
+    instead of paying for a second walk and diff pass.
+    """
+    if walk is None:
+        walk = collect_fix_commits(
+            repo, indexable_files, as_of_ts=as_of_ts, window_days=window_days
+        )
+    if not walk.fixes:
         return PriorDefects()
 
     raw_counts: dict[str, int] = {}
-    for fix in fixes:
+    counts: dict[str, int] = {}
+    for fix in walk.fixes:
         for path in fix.paths:
             raw_counts[path] = raw_counts.get(path, 0) + 1
-
-    shapes = _classify_shapes(repo, [f.sha for f in fixes])
-    counts: dict[str, int] = {}
-    for fix in fixes:
-        # Unknown shape (the diff pass failed) counts as a fix: falling back to
-        # the raw behaviour is the safe direction for a defect signal.
-        if shapes.get(fix.sha, "code_fix") != "code_fix":
+        if fix.shape_kind != "code_fix":
             continue
         for path in fix.paths:
             counts[path] = counts.get(path, 0) + 1
@@ -151,7 +234,7 @@ def _resolve_rev_range(repo: Any, *, as_of_ts: float | None, window_days: int) -
     return f"{prior_sha}..{head_sha}" if prior_sha else head_sha
 
 
-def _walk_fix_commits(repo: Any, rev_range: str, indexable_files: set[str]) -> list[_FixCommit]:
+def _walk_fix_commits(repo: Any, rev_range: str, indexable_files: set[str]) -> list[FixCommit]:
     """Subject-matched fix commits in *rev_range*, each with its indexable paths.
 
     Commits that touched nothing indexable are dropped here so the diff pass
@@ -171,19 +254,27 @@ def _walk_fix_commits(repo: Any, rev_range: str, indexable_files: set[str]) -> l
     if not raw:
         return []
 
-    fixes: list[_FixCommit] = []
+    fixes: list[FixCommit] = []
     for record in raw.split(_RECORD_SEP):
         record = record.strip("\n")
         if not record:
             continue
         header, _, body = record.partition("\n")
-        sha, _, subject = header.partition(_FIELD_SEP)
+        sha, _, rest = header.partition(_FIELD_SEP)
+        committed, _, subject = rest.partition(_FIELD_SEP)
         if not is_fix_commit(subject):
             continue
         paths = [p for p in _record_paths(body) if p in indexable_files]
         if paths:
-            fixes.append(_FixCommit(sha=sha, paths=paths))
+            fixes.append(FixCommit(sha=sha, ts=_as_ts(committed), paths=paths))
     return fixes
+
+
+def _as_ts(raw: str) -> int:
+    try:
+        return int(raw.strip())
+    except ValueError:
+        return 0
 
 
 def _record_paths(body: str) -> list[str]:
@@ -205,15 +296,16 @@ def _record_paths(body: str) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def _classify_shapes(repo: Any, shas: list[str]) -> dict[str, str]:
-    """Map each fix sha to its :mod:`fix_shape` kind.
+def _parse_fix_diffs(repo: Any, shas: list[str]) -> dict[str, dict[str, FileDiff]]:
+    """Map each fix sha to its parsed ``-U0`` diff, keyed by file path.
 
     Batched: one ``git log --no-walk -p`` subprocess per :data:`_SHAPE_BATCH_SIZE`
     commits rather than a ``git show`` spawn each, which is what keeps the pass
     affordable on Windows (where process spawn dominates git's own cost).
-    Failures degrade to an empty map, and the caller then counts the commit.
+    Failures degrade to a missing entry, and the caller then treats the commit as
+    a code fix.
     """
-    shapes: dict[str, str] = {}
+    diffs: dict[str, dict[str, FileDiff]] = {}
     for start in range(0, len(shas), _SHAPE_BATCH_SIZE):
         batch = shas[start : start + _SHAPE_BATCH_SIZE]
         try:
@@ -228,17 +320,17 @@ def _classify_shapes(repo: Any, shas: list[str]) -> dict[str, str]:
         except Exception as exc:
             logger.debug("prior_defect_shape_batch_failed", error=str(exc), commits=len(batch))
             continue
-        shapes.update(_parse_shape_batch(raw))
-    return shapes
+        diffs.update(_parse_diff_batch(raw))
+    return diffs
 
 
-def _parse_shape_batch(raw: str) -> dict[str, str]:
-    """Split a batched ``--format=%x00%H --patch`` log into per-sha shape kinds."""
+def _parse_diff_batch(raw: str) -> dict[str, dict[str, FileDiff]]:
+    """Split a batched ``--format=%x00%H --patch`` log into per-sha parsed diffs."""
     # Imported here, not at module scope: ``analysis.change_risk`` imports back
     # into this package, so a top-level import would close an import cycle.
     from ...analysis.changed_lines import parse_unified_diff
 
-    shapes: dict[str, str] = {}
+    diffs: dict[str, dict[str, FileDiff]] = {}
     for record in raw.split(_RECORD_SEP):
         record = record.strip("\n")
         if not record:
@@ -247,5 +339,5 @@ def _parse_shape_batch(raw: str) -> dict[str, str]:
         sha = sha.strip()
         if len(sha) != 40:
             continue
-        shapes[sha] = classify_fix_shape(parse_unified_diff(diff))
-    return shapes
+        diffs[sha] = parse_unified_diff(diff)
+    return diffs
