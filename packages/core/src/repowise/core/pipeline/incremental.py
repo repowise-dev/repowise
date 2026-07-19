@@ -579,6 +579,72 @@ async def persist_incremental_commits(session: Any, repo_id: str, repo_path: Any
     )
 
 
+async def refresh_external_systems(
+    session: Any,
+    repo_id: str,
+    repo_path: Any,
+    file_diffs: list,
+    *,
+    log: LogFn | None = None,
+) -> bool:
+    """Re-extract + reconcile external systems (C4 L1) when a manifest changed.
+
+    The incremental path historically never refreshed the ``external_systems``
+    table, so the C4 architecture panel served the init-time dependency list
+    until the next full re-index. Extraction is a bounded repo walk (no LLM, no
+    network), so it is gated on an actual dependency-manifest change in this
+    update's diff — the common no-manifest update pays nothing.
+
+    When a manifest did change, the *whole* repo is re-extracted: it's cheap,
+    and only a complete set supports a clean reconcile that also drops deps
+    removed from a manifest. The table is then replaced (removed deps pruned)
+    and ``external:{name}`` graph nodes re-linked so a brand-new dependency's
+    node isn't left with a NULL FK.
+
+    Ceiling: re-extraction walks the repo (depth ≤ 4) rather than parsing only
+    the changed manifests — fine because it runs only on a manifest change and
+    a partial parse can't see cross-manifest removals. Returns ``True`` when a
+    refresh actually ran.
+    """
+    log = log or _noop_log
+    from repowise.core.ingestion.external_systems import is_manifest_path
+
+    if not any(is_manifest_path(fd.path) for fd in file_diffs or []):
+        return False
+
+    from repowise.core.ingestion.external_systems import extract_external_systems
+
+    records = await asyncio.to_thread(extract_external_systems, Path(repo_path))
+    systems = [
+        {
+            "name": r.name,
+            "display_name": r.display_name,
+            "ecosystem": r.ecosystem,
+            "category": r.category,
+            "io_kind": r.io_kind,
+            "version": r.version,
+            "declared_in": r.declared_in,
+            "is_dev_dep": r.is_dev_dep,
+        }
+        for r in records
+    ]
+
+    from repowise.core.persistence.crud import (
+        link_graph_nodes_to_external_systems,
+        replace_external_systems,
+    )
+
+    id_map = await replace_external_systems(session, repo_id, systems)
+    # Collapse multi-manifest duplicates: any id for a given name works (the
+    # C4 renderer only needs name/category/ecosystem, stable across rows).
+    name_to_id: dict[str, int] = {}
+    for (name, _declared_in), sys_id in id_map.items():
+        name_to_id.setdefault(name, sys_id)
+    await link_graph_nodes_to_external_systems(session, repo_id, name_to_id)
+    log(f"External systems refreshed: [cyan]{len(systems)}[/cyan] deps")
+    return True
+
+
 async def persist_incremental_index(
     repo_path: Any,
     graph_builder: Any,
@@ -752,6 +818,15 @@ async def persist_incremental_index(
                     await persist_kg(knowledge_graph_result, session, repo_id)
                 except Exception as exc:
                     _skip("Knowledge-graph persist", exc)
+
+            # Refresh external systems (C4 L1) when a dependency manifest
+            # changed — otherwise the architecture panel serves the init-time
+            # dep list forever. Gated + no LLM (see refresh_external_systems).
+            if file_diffs:
+                try:
+                    await refresh_external_systems(session, repo_id, repo_path, file_diffs, log=log)
+                except Exception as exc:
+                    _skip("External systems refresh", exc)
 
             # One-shot drain of proposals from the removed code_comment
             # harvest (#751). Runs on the index-only path too, because the

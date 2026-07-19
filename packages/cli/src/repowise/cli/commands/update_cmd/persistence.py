@@ -586,6 +586,16 @@ async def _persist_full_update_async(
             except Exception as exc:
                 _skip("Graph edges persist", exc)
 
+            # Refresh external systems (C4 L1) when a manifest changed — the
+            # docs-mode persister mirrors the incremental one, which does the
+            # same. Gated + no LLM inside the shared core helper.
+            try:
+                from repowise.core.pipeline.incremental import refresh_external_systems
+
+                await refresh_external_systems(session, repo_id, repo_path, file_diffs)
+            except Exception as exc:
+                _skip("External systems refresh", exc)
+
             # Record a GenerationJob so the web UI "last synced" timestamp updates.
             try:
                 from datetime import UTC as _UTC

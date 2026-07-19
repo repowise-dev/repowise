@@ -70,6 +70,36 @@ async def bulk_upsert_external_systems(
     return id_map
 
 
+async def replace_external_systems(
+    session: AsyncSession,
+    repository_id: str,
+    systems: list[dict],
+) -> dict[tuple[str, str], int]:
+    """Reconcile a repository's external systems to exactly *systems*.
+
+    Like :func:`bulk_upsert_external_systems`, but also DELETES rows whose
+    ``(name, declared_in)`` key is absent from *systems* — so a dependency
+    dropped from a manifest stops being served (the plain upsert leaks it
+    forever). The ``graph_nodes.external_system_id`` FK is ``ON DELETE SET
+    NULL``, so a deleted row's links clear automatically; callers re-link from
+    the returned id_map. Returns ``(name, declared_in)`` → row ``id`` for the
+    surviving set (same shape as :func:`bulk_upsert_external_systems`).
+
+    Intended for the incremental update path, which re-extracts the whole repo
+    (a complete set) whenever a manifest changed. The full-init path stays on
+    the pure upsert — it delete-then-inserts elsewhere.
+    """
+    fresh_keys = {(s.get("name", ""), s.get("declared_in", "")) for s in systems if s.get("name")}
+    result = await session.execute(
+        select(ExternalSystem).where(ExternalSystem.repository_id == repository_id)
+    )
+    for row in result.scalars():
+        if (row.name, row.declared_in) not in fresh_keys:
+            await session.delete(row)
+    await session.flush()
+    return await bulk_upsert_external_systems(session, repository_id, systems)
+
+
 async def link_graph_nodes_to_external_systems(
     session: AsyncSession,
     repository_id: str,
