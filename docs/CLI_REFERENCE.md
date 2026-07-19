@@ -591,9 +591,11 @@ repowise expand a1b2c3d4e5f6 -q "FAILED"
 
 ### `repowise saved [PATH]`
 
-Report tokens (and estimated dollars) saved by `repowise distill`, direct
-invocations and hook rewrites. Covers the distill command/hook path only; MCP
-response truncation is not part of this ledger.
+Report tokens (and estimated dollars) saved for your coding agent. Combines
+`repowise distill` savings (direct invocations and hook rewrites) with MCP
+tool-response savings — each curated answer counted against the raw file
+exploration it replaced. Group `--by source` to split the `mcp:*` rows from the
+distill filters.
 
 | Flag | Description |
 |------|-------------|

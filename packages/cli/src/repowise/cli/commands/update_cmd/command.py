@@ -882,9 +882,12 @@ def run_update(
                 graph=graph_builder.graph(),
                 git_meta_map=git_meta_map,
             )
-            new_decision_markers = run_async(
-                extractor.scan_inline_markers(restrict_to_files=changed_paths)
-            )
+            # Label these calls as decision extraction so the Costs page can
+            # tell them apart from page regeneration (both ride this provider).
+            with cost_tracker.record_as("decision_extraction"):
+                new_decision_markers = run_async(
+                    extractor.scan_inline_markers(restrict_to_files=changed_paths)
+                )
             if new_decision_markers and verbose:
                 console.print(
                     f"New decision markers found: [green]{len(new_decision_markers)}[/green]"

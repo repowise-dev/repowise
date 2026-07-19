@@ -28,6 +28,7 @@ All LLM calls are wrapped in try/except - failures never propagate.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import re
 from collections.abc import Collection, Iterator
@@ -1411,6 +1412,20 @@ class DecisionExtractor:
     # Main entry point
     # ------------------------------------------------------------------
 
+    @contextlib.contextmanager
+    def _cost_operation(self, operation: str) -> Iterator[None]:
+        """Label this extractor's LLM spend as *operation* on the Costs page.
+
+        No-op when the provider has no cost tracker attached (server-side index
+        or cost tracking disabled), so extraction is never affected.
+        """
+        tracker = getattr(self._provider, "_cost_tracker", None)
+        if tracker is not None and hasattr(tracker, "record_as"):
+            with tracker.record_as(operation):
+                yield
+        else:
+            yield
+
     async def extract_all(
         self,
         *,
@@ -1465,7 +1480,8 @@ class DecisionExtractor:
                 logger.info("decision_extractor.sources_disabled", sources=disabled)
 
         logger.info("decision_extractor.extract_all_start")
-        results = await asyncio.gather(*[_safe_source(name, fn) for name, fn in sources])
+        with self._cost_operation("decision_extraction"):
+            results = await asyncio.gather(*[_safe_source(name, fn) for name, fn in sources])
         logger.info("decision_extractor.extract_all_done")
 
         # Raw per-source pool, then the anti-hallucination gate.
@@ -1492,9 +1508,7 @@ class DecisionExtractor:
     # Helpers
     # ------------------------------------------------------------------
 
-    def _iter_scan_targets(
-        self, restrict_to_files: list[str] | None
-    ) -> Iterator[tuple[str, str]]:
+    def _iter_scan_targets(self, restrict_to_files: list[str] | None) -> Iterator[tuple[str, str]]:
         """Yield ``(rel_path, text)`` for every file the marker scan covers.
 
         Three sources, in priority order:

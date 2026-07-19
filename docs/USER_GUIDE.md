@@ -910,9 +910,10 @@ repowise saved              # per-filter rollup, totals, est. dollars
 repowise saved --by day
 ```
 
-The Costs page in the web UI shows the same numbers on its *Cache & savings*
-tab. The ledger covers the distill command/hook path only, MCP response
-truncation is not counted.
+The Costs page in the web UI leads with the same results — total agent tokens
+and dollars saved, split across distill and the MCP tools — over the
+per-operation and per-provider spend breakdown. The ledger combines the distill
+command/hook path with MCP tool-response savings.
 
 ---
 

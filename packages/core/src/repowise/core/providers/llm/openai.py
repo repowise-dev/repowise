@@ -362,7 +362,7 @@ class OpenAIProvider(BaseProvider):
                     model=self._model,
                     input_tokens=result.input_tokens,
                     output_tokens=result.output_tokens,
-                    operation="doc_generation",
+                    operation=self._cost_tracker.operation,
                     file_path=None,
                 )
 

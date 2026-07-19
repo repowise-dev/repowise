@@ -76,6 +76,10 @@ ANSWER_READ_FLOOR_PER_FILE = 400
 #: exploration the agent cannot cheaply reproduce (git log/blame spelunking,
 #: ADR archaeology, README + entry-point skim) but whose size the result dict
 #: cannot ground — so a flat, deliberately-low floor per successful call.
+#: ``get_dead_code`` stands in for the agent grepping every export for
+#: usages across the tree to prove it unreachable — an expensive manual sweep.
+#: Floored conservatively between a single-file health call and a full overview.
+DEAD_CODE_FLOOR = 800
 RISK_FLOOR = 500
 WHY_FLOOR = 400
 HEALTH_FLOOR = 400
@@ -119,6 +123,7 @@ _ESTIMATORS: dict[str, Callable[[dict[str, Any]], int]] = {
     "get_why": _fixed_floor(WHY_FLOOR),
     "get_health": _fixed_floor(HEALTH_FLOOR),
     "get_overview": _fixed_floor(OVERVIEW_FLOOR),
+    "get_dead_code": _fixed_floor(DEAD_CODE_FLOOR),
 }
 
 
