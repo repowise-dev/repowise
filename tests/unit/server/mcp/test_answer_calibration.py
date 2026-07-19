@@ -49,7 +49,9 @@ class TestHedgeMarkers:
     def test_curly_apostrophe_hedge_detected(self) -> None:
         # LLMs routinely emit the curly U+2019; the markers use plain ASCII.
         # Without normalization this hedged answer rides through as high.
-        assert _answer_is_hedged("I can\u2019t determine why the threshold is 1.2 from the excerpts.")
+        assert _answer_is_hedged(
+            "I can\u2019t determine why the threshold is 1.2 from the excerpts."
+        )
 
 
 class TestValueQuestionShape:
@@ -123,9 +125,12 @@ class TestDistinctiveTerms:
         # Sentence-initial / markdown-header words are prose, not mechanisms.
         # A leading capital alone must not register as a frame term (the live
         # over-fire that flagged Because/Determine/Mechanism/Short/Since/What).
-        assert _distinctive_terms(
-            "## What happens. Because the Mechanism is Short, Determine it Since When."
-        ) == set()
+        assert (
+            _distinctive_terms(
+                "## What happens. Because the Mechanism is Short, Determine it Since When."
+            )
+            == set()
+        )
 
     def test_internal_caps_and_acronyms_kept(self) -> None:
         terms = _distinctive_terms("It wraps WikiSymbol over an HTTP transport.")
@@ -458,9 +463,7 @@ async def test_hedged_but_named_body_served_holds_medium(setup_mcp, monkeypatch,
 
     (tmp_path / "pkg" / "alpha").mkdir(parents=True)
     (tmp_path / "pkg" / "alpha" / "one.py").write_text(
-        "def min_count_policy() -> int:\n"
-        "    # gate retries at the floor\n"
-        "    return MIN_COUNT\n",
+        "def min_count_policy() -> int:\n    # gate retries at the floor\n    return MIN_COUNT\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(mcp_mod, "_repo_path", str(tmp_path))
@@ -669,10 +672,24 @@ def test_union_bodies_inlines_all_defs_under_budget(tmp_path):
     b = _write(tmp_path, "b/y.py", "def _sev(corr):\n    return corr < 0.1\n")
     union = {
         "_sev": [
-            {"name": "_sev", "kind": "function", "file_path": a, "start_line": 1, "end_line": 2,
-             "qualified_name": "_sev", "parent_name": None},
-            {"name": "_sev", "kind": "function", "file_path": b, "start_line": 1, "end_line": 2,
-             "qualified_name": "_sev", "parent_name": None},
+            {
+                "name": "_sev",
+                "kind": "function",
+                "file_path": a,
+                "start_line": 1,
+                "end_line": 2,
+                "qualified_name": "_sev",
+                "parent_name": None,
+            },
+            {
+                "name": "_sev",
+                "kind": "function",
+                "file_path": b,
+                "start_line": 1,
+                "end_line": 2,
+                "qualified_name": "_sev",
+                "parent_name": None,
+            },
         ]
     }
     bodies, more = build_homonym_union_bodies(tmp_path, union)
@@ -691,10 +708,24 @@ def test_union_bodies_overflow_lists_remainder_as_pointers(tmp_path):
     b = _write(tmp_path, "b/y.py", "def _sev(corr):\n    return corr < 0.1\n")
     union = {
         "_sev": [
-            {"name": "_sev", "kind": "function", "file_path": a, "start_line": 1, "end_line": 2,
-             "qualified_name": "_sev", "parent_name": None},
-            {"name": "_sev", "kind": "function", "file_path": b, "start_line": 1, "end_line": 2,
-             "qualified_name": "_sev", "parent_name": None},
+            {
+                "name": "_sev",
+                "kind": "function",
+                "file_path": a,
+                "start_line": 1,
+                "end_line": 2,
+                "qualified_name": "_sev",
+                "parent_name": None,
+            },
+            {
+                "name": "_sev",
+                "kind": "function",
+                "file_path": b,
+                "start_line": 1,
+                "end_line": 2,
+                "qualified_name": "_sev",
+                "parent_name": None,
+            },
         ]
     }
     bodies, more = build_homonym_union_bodies(tmp_path, union, char_budget=5)
@@ -729,7 +760,9 @@ def test_union_defers_only_when_prose_and_many_defs():
         _union("_severity_for", 4),
     )
     # Bare symbol lookup (prose does not dominate) still unions at any count.
-    assert not union_defers_to_synthesis("provider_name", {"provider_name"}, _union("provider_name", 12))
+    assert not union_defers_to_synthesis(
+        "provider_name", {"provider_name"}, _union("provider_name", 12)
+    )
     # No union → nothing to defer.
     assert not union_defers_to_synthesis(q_prose, {"provider_name"}, {})
 
@@ -767,7 +800,9 @@ async def test_prose_mention_of_generic_method_synthesizes(setup_mcp, monkeypatc
     _patch_anchor_union(monkeypatch, answer_mod, _union("to_dict", 12))
     _patch_provider(monkeypatch, answer_mod, "The page is serialized in pkg/alpha/one.py.")
 
-    result = await get_answer("How is a parsed file turned into a dict with to_dict before it is stored?")
+    result = await get_answer(
+        "How is a parsed file turned into a dict with to_dict before it is stored?"
+    )
     assert result.get("grounding") != "exact_symbol"
     assert "symbol_bodies" not in result or len(result.get("symbol_bodies") or []) < 12
 
@@ -796,9 +831,50 @@ async def test_small_union_still_answers_by_union(setup_mcp, monkeypatch, tmp_pa
     _patch_anchor_union(monkeypatch, answer_mod, {"render_widget": defs})
     _patch_provider(monkeypatch, answer_mod, "unused — union short-circuits before synthesis")
 
-    result = await get_answer("How does render_widget build its output?")
+    # A naming/lookup question ("what are the definitions") is exactly what the
+    # union-of-bodies reply is for; it must still short-circuit.
+    result = await get_answer("What are the definitions of render_widget in this repo?")
     assert result.get("grounding") == "exact_symbol"
     assert len(result["symbol_bodies"]) == 3
+
+
+@pytest.mark.asyncio
+async def test_mechanism_question_defers_union_to_synthesis(setup_mcp, monkeypatch, tmp_path):
+    """Fix 1 (RC1): a "how does X work" question that merely NAMES a small-union
+    symbol defers to synthesis instead of dumping bodies with grounding=exact_symbol
+    — the mechanism it asks about may live in a different file the union never sees."""
+    import repowise.server.mcp_server as mcp_mod
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    (tmp_path / "pkg").mkdir(parents=True)
+    defs = []
+    for i in range(3):
+        (tmp_path / "pkg" / f"f{i}.py").write_text(
+            f"class C:\n    def render_widget(self):\n        return {i}\n",
+            encoding="utf-8",
+        )
+        defs.append(
+            {"file_path": f"pkg/f{i}.py", "name": "render_widget", "start_line": 2, "end_line": 3}
+        )
+    monkeypatch.setattr(mcp_mod, "_repo_path", str(tmp_path))
+
+    # Same question is asked twice (flag on then off); bypass the answer cache
+    # so the second call re-synthesizes under the flipped flag instead of
+    # replaying the first call's cached payload.
+    monkeypatch.setenv("REPOWISE_ANSWER_DISABLE_CACHE", "on")
+    _patch_pipeline(monkeypatch, answer_mod, with_symbols=False)
+    _patch_anchor_union(monkeypatch, answer_mod, {"render_widget": defs})
+    _patch_provider(monkeypatch, answer_mod, "render_widget builds output by returning an index.")
+
+    result = await get_answer("How does render_widget build its output?")
+    # Deferred: synthesis ran, so grounding is NOT the exact_symbol union dump.
+    assert result.get("grounding") != "exact_symbol"
+
+    # Flag off restores the legacy union short-circuit for the same question.
+    monkeypatch.setenv("REPOWISE_ANSWER_UNION_MECHANISM_DEFER", "off")
+    result_off = await get_answer("How does render_widget build its output?")
+    assert result_off.get("grounding") == "exact_symbol"
 
 
 # ---------------------------------------------------------------------------
@@ -959,7 +1035,7 @@ async def test_why_answer_with_unsupported_frame_downgrades_to_medium(setup_mcp,
     result = await get_answer("why is the caller list limited the way it is")
     assert result["confidence"] == "medium"
     assert "PageRank" in result["note"]
-    assert "Frame-grounding" in result["note"]
+    assert "Claim-support gate" in result["note"]
     assert "next_action_hint" in result
 
 
@@ -974,8 +1050,7 @@ async def test_why_answer_with_grounded_frame_stays_high(setup_mcp, monkeypatch)
     _patch_provider(
         monkeypatch,
         answer_mod,
-        "The caller list is limited because MIN_COUNT bounds the retries "
-        "(pkg/alpha/one.py).",
+        "The caller list is limited because MIN_COUNT bounds the retries (pkg/alpha/one.py).",
     )
 
     result = await get_answer("why is the caller list limited the way it is")
@@ -984,22 +1059,30 @@ async def test_why_answer_with_grounded_frame_stays_high(setup_mcp, monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_frame_gate_scoped_to_why_questions(setup_mcp, monkeypatch):
-    """A mechanism (non-why) question with the same ungrounded term is NOT
-    gated — only rationale claims get the frame check."""
+async def test_claim_support_gate_covers_mechanism_questions(setup_mcp, monkeypatch):
+    """Fix 2 (RC2): the claim-support gate now covers "how" mechanism questions,
+    not only "why". A mechanism answer that names an ungrounded term (PageRank,
+    absent from every retrieved excerpt) is downgraded high→medium — the
+    "right file, wrong function inside it" failure. Flag off restores the old
+    why-only scope (mechanism question stays high)."""
     import repowise.server.mcp_server.tool_answer.answer as answer_mod
     from repowise.server.mcp_server import get_answer
 
+    monkeypatch.setenv("REPOWISE_ANSWER_DISABLE_CACHE", "on")
     _patch_pipeline(monkeypatch, answer_mod, with_symbols=True)
     _patch_provider(
         monkeypatch,
         answer_mod,
-        "The caller list is bounded by the PageRank centrality cap "
-        "(pkg/alpha/one.py).",
+        "The caller list is bounded by the PageRank centrality cap (pkg/alpha/one.py).",
     )
 
     result = await get_answer("how does the caller list get bounded")
-    assert result["confidence"] == "high"
+    assert result["confidence"] == "medium"
+    assert "PageRank" in result["note"]
+
+    monkeypatch.setenv("REPOWISE_ANSWER_CLAIM_SUPPORT_GATE", "off")
+    result_off = await get_answer("how does the caller list get bounded")
+    assert result_off["confidence"] == "high"
 
 
 @pytest.mark.asyncio
@@ -1014,8 +1097,7 @@ async def test_frame_gated_answer_surfaces_code_rationale(setup_mcp, monkeypatch
     _patch_provider(
         monkeypatch,
         answer_mod,
-        "The caller list is limited because the PageRank cap applies "
-        "(pkg/alpha/one.py).",
+        "The caller list is limited because the PageRank cap applies (pkg/alpha/one.py).",
     )
     (tmp_path / "pkg" / "alpha").mkdir(parents=True)
     (tmp_path / "pkg" / "alpha" / "one.py").write_text(

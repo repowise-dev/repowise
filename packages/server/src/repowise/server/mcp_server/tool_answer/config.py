@@ -124,6 +124,23 @@ _MAX_SYMBOL_DOC_CHARS = 120
 _DOMINANCE_RATIO = 1.2
 _COVERAGE_THRESHOLD = 0.66
 
+# Agreement-aware dominance. The dominance ratio above is computed on
+# RRF-fused scores, and RRF *compresses*: a page both retrievers rank #1
+# (2/60) barely outscores one they rank #2 (2/61) — ratio ~1.017, far below
+# _DOMINANCE_RATIO — so the numeric gate calls the *most* confident retrieval
+# (both retrievers agree on the top page) "non-dominant". These knobs let the
+# grade read the per-source ranks directly: when FTS and vector independently
+# put the SAME page at (or within one rank of) the top and the runner-up is
+# meaningfully weaker, that consensus is treated as dominance the ratio can't
+# see. Conservative by design — agreement only LIFTS a retrieval to high; the
+# six demotion gates still pull it back if the synthesised text is ungrounded.
+# The top hit must rank no lower than this in EACH retriever (0-indexed, so
+# 1 == "#1 or #2 in both").
+_AGREEMENT_TOP_RANK_MAX = 1
+# The runner-up must trail the top by at least this many ranks in at least one
+# source (when it was found by both). 1 == "top is strictly ahead somewhere".
+_AGREEMENT_RANK_GAP = 1
+
 # Hedge-phrase markers that indicate the LLM refused to synthesize even though
 # retrieval was dominant. When the answer contains any of these, we downgrade
 # confidence to "low" and drop the retrieval payload — the hits aren't useful
@@ -295,7 +312,19 @@ _HIGH_CONFIDENCE_SCORE_FLOOR = 1.5
 # carry synthesized prose + best_guesses/code_rationale evidence at medium/low
 # instead of an empty pointer list. Cached v8 gated (empty-answer) rows must
 # bypass so the new answered-with-evidence contract reaches callers.
-_ANSWER_SCHEMA_VERSION = 9
+# v9: agreement-aware confidence — the top hit is graded "dominant/high" when
+# both retrievers independently rank it at/near the top, not only when its
+# RRF-fused score numerically dominates. RRF compresses scores, so retriever
+# agreement (the most confident case) previously graded medium/low. Cached
+# pre-v9 rows carry the compressed-ratio grade and must bypass.
+# v10: (reserved for the agreement rollout above.)
+# v11: answer-grounding calibration — (1) a mechanism/"how" question that merely
+# names an indexed symbol no longer short-circuits to an exact_symbol body dump
+# (Fix 1); (2) the claim-support gate now covers how-questions, not only why
+# (Fix 2); (3) strong answer-grounding earns high on a non-dominant retrieval
+# (Fix 4). Cached pre-v11 rows carry the old union-hijack / dominance-only grade
+# and must bypass so the recalibrated confidence reaches callers.
+_ANSWER_SCHEMA_VERSION = 11
 
 # Hard TTL on answer-cache rows. Commit-based invalidation (the payload's
 # stamped ``_indexed_commit`` vs the repo's current head) is the primary

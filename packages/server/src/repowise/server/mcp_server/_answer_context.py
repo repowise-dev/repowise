@@ -36,6 +36,37 @@ from repowise.core.persistence.models import DecisionRecord, GitMetadata
 # needs and doesn't want ADR-driven hedging).
 _WHY_PATTERN = re.compile(r"\bwhy\b", re.IGNORECASE)
 
+# Heuristic for "how does X work" mechanism questions. "how" as a whole word is
+# the dominant signal; a small set of mechanism verbs covers the rarer
+# imperative/verb-led phrasing ("verify the bounds", "route the union") that
+# omits "how". Deliberately does NOT include generic verbs like "return"/"do"/
+# "get" — those fire on plain what/where naming questions ("what does get_answer
+# RETURN when …"), which the union-of-bodies reply answers correctly and must
+# not be dragged into synthesis. Used to keep the exact_symbol union fast path
+# from hijacking a mechanism question whose real answer lives in another file.
+_MECHANISM_VERB_RE = re.compile(
+    r"\b(verif(?:y|ies)|route[sd]?|comput(?:e|es)|persist(?:s|ed)?|preserv(?:e|es)|"
+    r"resolv(?:e|es)|detect(?:s)?|rank(?:s)?|travers(?:e|es)|render(?:s)?|"
+    r"downweight|down-weight|reconcil(?:e|es)|heal(?:s)?)\b",
+    re.IGNORECASE,
+)
+_HOW_PATTERN = re.compile(r"\bhow\b", re.IGNORECASE)
+
+
+def is_mechanism_question(question: str) -> bool:
+    """True when the question asks HOW a mechanism works, not merely names a symbol.
+
+    "How does get_symbol verify bounds?" is a mechanism question whose answer may
+    live in a *different* file than the named symbol's body — so the exact-name
+    union fast path (which just dumps the named symbol's definitions) is the wrong
+    reply, even for a small union. A bare naming/lookup question ("what does X
+    return", "where is Y defined") is not a mechanism question and still unions.
+    """
+    if not question:
+        return False
+    return bool(_HOW_PATTERN.search(question) or _MECHANISM_VERB_RE.search(question))
+
+
 # How many decision records to inject, and per-record truncation. Three is
 # usually enough — most files are governed by 0–2 active ADRs; 3 gives room
 # for one tangential overlap without blowing the context budget.

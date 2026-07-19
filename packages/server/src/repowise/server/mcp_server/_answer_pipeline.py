@@ -108,15 +108,22 @@ async def hybrid_retrieve(question: str, ctx: Any) -> list[dict]:
 
     # RRF merge. Each hit's contribution from a source is 1/(rank + k);
     # hits appearing in both sources sum their contributions naturally.
+    # Per-source rank is preserved alongside the fused score: RRF *compresses*
+    # scores (rank-0-in-both barely outscores rank-1-in-both), so the summed
+    # number loses the "both retrievers independently ranked this #1" signal.
+    # Downstream confidence uses these ranks to recover retriever *agreement*
+    # as a dominance signal the numeric ratio can't see.
     fused: dict[str, dict] = {}
     for rank, h in enumerate(fts_results):
         entry = fused.setdefault(h.page_id, _hit_dict_from_result(h))
         entry["score"] = entry.get("score", 0.0) + 1.0 / (rank + _RRF_K)
         entry["_sources"].add("fts")
+        entry["_fts_rank"] = rank
     for rank, h in enumerate(vec_results):
         entry = fused.setdefault(h.page_id, _hit_dict_from_result(h))
         entry["score"] = entry.get("score", 0.0) + 1.0 / (rank + _RRF_K)
         entry["_sources"].add("vector")
+        entry["_vec_rank"] = rank
 
     # Scale to BM25-range so downstream confidence/dominance gates (tuned
     # against the prior single-mode BM25 retrieval) keep behaving sanely.
