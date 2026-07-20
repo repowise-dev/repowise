@@ -1,52 +1,47 @@
-# Repowise User Guide
+# User Guide
 
-Everything you need to know to install, use, and get the most out of repowise.
+How repowise fits into a normal working week: what to run, when to run it, and
+what to do when something looks wrong.
+
+This guide is deliberately not a flag reference. When you need the exact options
+for a command, [CLI Reference](../reference/CLI_REFERENCE.md) has every one of
+them, and it is the file that stays in sync with the code.
+
+| If you want | Go to |
+|---|---|
+| To get running in five minutes | [Quickstart](QUICKSTART.md) |
+| Every command and flag | [CLI Reference](../reference/CLI_REFERENCE.md) |
+| Every config key and env var | [Config](../reference/CONFIG.md) |
+| What each MCP tool answers | [MCP Tools](../agent/MCP_TOOLS.md) |
+| The web dashboard, view by view | [Dashboard](DASHBOARD.md) |
+| What a metric actually means | [Glossary](../reference/COMPUTED_GLOSSARY.md) |
 
 ---
 
-## Table of Contents
+## Table of contents
 
 1. [Installation](#installation)
-2. [Getting Started](#getting-started)
-3. [CLI Command Reference](#cli-command-reference)
-   - [init](#repowise-init)
-   - [update](#repowise-update)
-   - [watch](#repowise-watch)
-   - [search](#repowise-search)
-   - [mcp](#repowise-mcp)
-   - [serve](#repowise-serve)
-   - [dead-code](#repowise-dead-code)
-   - [decision](#repowise-decision)
-   - [generate-claude-md](#repowise-generate-claude-md)
-   - [export](#repowise-export)
-   - [reindex](#repowise-reindex)
-   - [status](#repowise-status)
-   - [doctor](#repowise-doctor)
-   - [workspace](#repowise-workspace)
-   - [hook](#repowise-hook)
-4. [Web Dashboard](#web-dashboard)
-5. [MCP Integration with AI Editors](#mcp-integration-with-ai-editors)
-6. [Proactive Context Enrichment (Hooks)](#proactive-context-enrichment-hooks)
-7. [Output Distillation (Distill)](#output-distillation-distill)
-8. [Auto-Sync](#auto-sync)
-9. [Environment Variables](#environment-variables)
-10. [Common Workflows](#common-workflows)
-11. [Troubleshooting](#troubleshooting)
+2. [The mental model](#the-mental-model)
+3. [What gets created](#what-gets-created)
+4. [The commands you will actually use](#the-commands-you-will-actually-use)
+5. [Working with your agent](#working-with-your-agent)
+6. [Keeping the index fresh](#keeping-the-index-fresh)
+7. [Spending fewer tokens](#spending-fewer-tokens)
+8. [The dashboard](#the-dashboard)
+9. [Common workflows](#common-workflows)
+10. [Troubleshooting](#troubleshooting)
 
 ---
 
 ## Installation
 
-### From PyPI
-
 ```bash
 pip install repowise
 ```
 
-That is the whole install: the core engine, CLI, server, MCP tools, and every LLM
-provider SDK (Anthropic, OpenAI, Gemini, and LiteLLM for 100+ others via Together,
-Groq, Azure, Bedrock and friends). There are no provider extras to choose between,
-because you pick a provider at index time instead, and can change it later.
+That is the complete install. Every LLM provider SDK (Anthropic, OpenAI, Gemini,
+and LiteLLM for 100+ others) ships in the base package, so there is no provider
+extra to choose. You pick a provider at index time and can change it later.
 
 Two extras exist, and neither is about providers:
 
@@ -55,30 +50,9 @@ pip install "repowise[postgres]"     # PostgreSQL + pgvector instead of SQLite
 pip install "repowise[graph-extra]"  # optional graph algorithms via graspologic
 ```
 
-Codex CLI users can use the local subscription/auth flow without an API-key provider SDK:
+**Requirements:** Python 3.11+ and Git. On Windows, use `python -m pip install repowise`.
 
-```bash
-pip install repowise
-npm install -g @openai/codex
-codex login
-```
-
-### Requirements
-
-- Python 3.11 or later
-- Git (repowise analyzes your repository's git history)
-- An LLM API key or authenticated Codex CLI (for documentation generation, not needed for analysis-only mode)
-
-### Verify Installation
-
-```bash
-repowise --version
-repowise --help
-```
-
-### From Source with uv
-
-For local development, use the workspace lockfile from the repository root:
+For local development against a clone:
 
 ```bash
 git clone https://github.com/repowise-dev/repowise.git
@@ -87,994 +61,390 @@ uv sync --all-packages
 uv run repowise --version
 ```
 
+Step-by-step first run: [Quickstart](QUICKSTART.md).
+
 ---
 
-## Getting Started
+## The mental model
 
-### 1. Set your API key
+Three things happen, and only the first one is slow:
 
-```bash
-# Pick one:
-export ANTHROPIC_API_KEY="sk-ant-..."
-export OPENAI_API_KEY="sk-..."
-export GEMINI_API_KEY="..."
-```
+1. **Index.** `repowise init` parses every file to an AST, builds the dependency
+   graph, reads git history, and scores code health. With a provider it also
+   generates a wiki page per file and module. This is the one expensive step.
+2. **Ask.** Everything after that is a read against the index: your agent through
+   [MCP tools](../agent/MCP_TOOLS.md), you through the CLI or the dashboard.
+   Nothing re-analyzes anything.
+3. **Keep fresh.** `repowise update` catches the index up incrementally, in
+   seconds. Automate it once and forget it.
 
-For Codex CLI auth:
+The failure mode to avoid is a stale index, because a confidently wrong answer is
+worse than no answer. Every MCP response carries the indexed commit and warns when
+it has diverged from your live `HEAD`, but the real fix is step 3.
 
-```bash
-codex login status
-```
+**Two modes.** `--index-only` gives you the graph, git intelligence, code health,
+change risk and dead code, with no LLM, no key and no network. Adding a provider
+gives you the generated wiki, semantic search, decision mining and chat on top.
+You can start index-only and upgrade later without re-doing the parse.
 
-On Windows PowerShell:
+---
 
-```powershell
-$env:ANTHROPIC_API_KEY = "sk-ant-..."
-```
-
-### 2. Initialize your codebase
-
-```bash
-cd /path/to/your-repo
-repowise init
-```
-
-In interactive mode, repowise asks you to choose:
-
-- **Index-only**, free, no LLM. Parses code, builds dependency graph, indexes git history. Useful for analysis without documentation generation.
-- **Full**, uses your chosen LLM to generate human-readable wiki pages for every file and module.
-- **Advanced**, fine-tune every option (concurrency, exclusions, commit limits, etc.)
-
-A typical first run on a medium codebase (~500 files) takes 5-15 minutes and costs $1-5 depending on the provider.
-
-### 3. Start using the wiki
-
-After init completes, you have several ways to access the generated documentation:
-
-```bash
-repowise search "authentication"     # Search from the terminal
-repowise serve                       # Browse in a web UI at localhost:7337
-repowise mcp                         # Connect to Claude Code, Codex, Cursor, etc.
-```
-
-### What gets created
+## What gets created
 
 ```
 your-repo/
 ├── .repowise/
-│   ├── wiki.db           # SQLite database with all pages, symbols, graph, git data
-│   ├── state.json        # Sync metadata (last commit, pages, tokens used)
-│   ├── config.yaml       # Saved configuration (provider, model, excludes)
-│   ├── .env              # Saved API keys (gitignored)
-│   └── lancedb/          # Vector store for semantic search
-├── .claude/CLAUDE.md     # Auto-generated Claude Code context
-├── AGENTS.md             # Auto-generated Codex context when enabled
-└── .codex/               # Project-local Codex MCP/hooks config when --codex is used
+│   ├── wiki.db           # pages, symbols, graph, git data, health scores
+│   ├── state.json        # sync metadata (last commit, pages, tokens used)
+│   ├── config.yaml       # provider, model, embedder, excludes
+│   ├── .env              # saved API keys (gitignored)
+│   └── lancedb/          # vector store for semantic search
+├── .claude/CLAUDE.md     # generated Claude Code context
+├── AGENTS.md             # generated Codex context, when enabled
+└── .codex/               # project-local Codex MCP/hooks config, with --codex
 ```
+
+`.repowise/` is safe to delete and rebuild, and safe to gitignore. Committing it
+is a reasonable choice for a team that wants everyone on the same index without
+each person paying to generate it.
 
 ---
 
-## CLI Command Reference
+## The commands you will actually use
 
-### `repowise init`
+Grouped by what you are trying to do. Every flag for every command lives in the
+[CLI Reference](../reference/CLI_REFERENCE.md).
 
-Generate complete wiki documentation for a codebase. This is the starting point.
+**Index and keep it current**
 
-```bash
-repowise init [PATH]
-```
+| Command | What it is for |
+|---|---|
+| `repowise init` | First index. Interactive: asks for a provider, shows a cost estimate, waits for confirmation. `--index-only` skips the LLM entirely. |
+| `repowise update` | Incremental catch-up after pulling or committing. Seconds, not minutes. |
+| `repowise watch` | File watcher that updates continuously while you work. |
+| `repowise hook install` | Post-commit hook so syncing happens without you. |
+| `repowise status` | What is indexed, and how far behind it is. |
+| `repowise doctor` | Checks install, keys, index drift, store health. `--repair` fixes what it safely can. |
 
-**What it does (4 phases):**
+**Ask questions**
 
-1. **Ingestion**, walks every file, parses AST with tree-sitter, builds a dependency graph, indexes git history (churn, hotspots, ownership, bus factor)
-2. **Analysis**, detects dead code, extracts architectural decisions from inline markers, READMEs, and git history
-3. **Generation**, sends structured prompts to the LLM, generates file-level, module-level, and repo-level wiki pages, plus architecture diagrams
-4. **Persistence**, stores everything in `.repowise/wiki.db`, builds search indexes, generates managed editor instruction files
+| Command | What it is for |
+|---|---|
+| `repowise search "<q>"` | Search the wiki. `--mode fulltext\|semantic\|symbol`. |
+| `repowise health` | Lowest-scoring files and why. `--trend` for direction, `--refactoring-targets` for concrete plans. |
+| `repowise risk main..HEAD` | Defect risk for a commit or range, scored 0-10. |
+| `repowise dead-code` | What nothing references any more, by confidence tier. |
+| `repowise decision list` | Architectural decisions, their evidence and status. |
+| `repowise impacted-tests` | Only the tests a diff actually exercises. |
 
-**Options:**
+**Serve and connect**
 
-| Flag | Description |
-|------|-------------|
-| `--provider` | LLM provider: `anthropic`, `openai`, `openrouter`, `gemini`, `deepseek`, `kimi`, `ollama`, `litellm`, `codex_cli`, `mock`. Auto-detected from env vars if not set. |
-| `--model` | Model name override (e.g., `claude-sonnet-4-6`, `gpt-5.4-nano`) |
-| `--embedder` | Embedder for semantic search: `gemini`, `openai`, `mock`. Auto-detected from env vars. |
-| `--index-only` | Skip LLM generation entirely. Only parse, build graph, and index git. Free. |
-| `--wiki-style` | Documentation voice: `comprehensive` (default), `caveman` (token-condensed), `reference` (API-manual), `tutorial`. Saved to config; switch later with `repowise restyle`. See [WIKI_STYLES.md](../layers/WIKI_STYLES.md). |
-| `--language` | Output language for generated wiki pages (`en` default; also `zh`, `ru`, `hi`, `es`, `fr`, `de`, `ja`, `ko`, `it`, `pt`, `nl`, `pl`, `tr`, `ar`). Prose is translated; code, file paths, and symbol names are not. Saved to config so `update` keeps the language. |
-| `--dry-run` | Show generation plan and cost estimate without running anything. |
-| `--test-run` | Generate docs for only the top 10 files (by PageRank), quick validation. |
-| `--skip-tests` | Exclude test files from documentation generation. |
-| `--skip-infra` | Exclude infrastructure files (Dockerfiles, Makefiles, Terraform, shell scripts). |
-| `--exclude / -x` | Gitignore-style exclusion patterns. Repeatable: `-x vendor/ -x "*.generated.*"` |
-| `--concurrency` | Max concurrent LLM calls (default: 5). Higher = faster but more API pressure. |
-| `--reasoning` | Reasoning mode for supported providers: `auto`, `off`/`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max` (default: `auto`). |
-| `--resume` | Resume from the last checkpoint if a previous run was interrupted. |
-| `--force` | Regenerate all pages even if they already exist. |
-| `--commit-limit` | Max commits to analyze per file (default: 500, max: 10000). Saved to config. |
-| `--follow-renames` | Track file renames in git history (slower but more accurate). |
-| `--no-claude-md` | Don't generate `CLAUDE.md` at the end. |
-| `--agents / --no-agents` | Generate or skip managed `AGENTS.md` for Codex. Persists the preference. |
-| `--codex / --no-codex` | Generate or skip project-local Codex MCP config and hooks. |
-| `--yes / -y` | Skip cost confirmation prompt (auto-confirms if cost > $2). |
+| Command | What it is for |
+|---|---|
+| `repowise serve` | API, web dashboard and MCP server together. `--no-ui` for the API alone. |
+| `repowise mcp` | MCP server on stdio, for editors and agents. |
 
-**Examples:**
+**Spend fewer tokens**
 
-```bash
-# Interactive mode (asks questions)
-repowise init
+| Command | What it is for |
+|---|---|
+| `repowise distill <cmd>` | Run a command, compress its output before the agent reads it. |
+| `repowise expand <ref>` | Recover anything distill omitted. |
+| `repowise saved` | Tokens and dollars saved so far. |
 
-# Fully automated
-repowise init --provider anthropic --model claude-sonnet-4-6 --yes
+**More than one repo**
 
-# Use the authenticated local Codex CLI
-repowise init --provider codex_cli --codex --yes
+| Command | What it is for |
+|---|---|
+| `repowise workspace list` | Repos in the workspace and their status. |
+| `repowise workspace add <path>` | Add a repo. |
+| `repowise update --workspace` | Update every stale repo in one pass. |
 
-# Just index, no LLM cost
-repowise init --index-only
+**Occasional maintenance**
 
-# Preview what will happen
-repowise init --provider openai --dry-run
-
-# Quick test with 10 files
-repowise init --provider gemini --test-run
-
-# OpenRouter with minimal reasoning effort
-repowise init --provider openrouter --model openai/gpt-5 --reasoning minimal
-
-# Exclude vendor and generated code
-repowise init -x vendor/ -x "*.gen.go" -x "**/__generated__/**"
-```
+| Command | What it is for |
+|---|---|
+| `repowise reindex` | Rebuild the vector store from existing pages (embedding calls only, no LLM). |
+| `repowise restyle` | Re-render the wiki in a different [style](../layers/WIKI_STYLES.md). |
+| `repowise export` | Export the wiki, for static hosting or archival. |
+| `repowise costs` | What indexing has cost you, by provider and operation. |
+| `repowise generate-claude-md` | Regenerate `CLAUDE.md` / `AGENTS.md` on demand. |
+| `repowise telemetry disable` | Turn off anonymous usage telemetry. |
 
 ---
 
-### `repowise update`
+## Working with your agent
 
-Incrementally update wiki pages for files that changed since the last sync.
+This is the main event, and it has its own docs. The short version:
 
-```bash
-repowise update [PATH]
-```
+**Connect once.** `repowise mcp`, run from the repo directory, over stdio. For
+Claude Code the plugin wires the MCP server, hooks and slash commands together;
+for Codex, `repowise init --codex` writes project-local config. Setup per client
+is in [Quickstart](QUICKSTART.md#3-connect-your-agent), and
+[Codex](../agent/CODEX.md) / [opencode](../agent/OPENCODE.md) have their own guides.
 
-Much faster and cheaper than a full `init`, only regenerates pages for changed files and their dependents.
+**Ten tools, task-shaped.** Your agent gets architecture summaries, per-file
+triage cards with callers and ownership, symbol source with exact bounds, risk
+assessment for a set of changed files, decision lookups and health scores, each in
+one call rather than a chain. What each one answers, and worked multi-tool
+examples: [MCP Tools](../agent/MCP_TOOLS.md).
 
-**How it works:**
+**Context that arrives unasked.** Hooks push the relevant thing into the session
+at the right moment: a briefing at session start, the governing decision when your
+agent edits a file that decision covers, a warning on files with a run of recent
+bug fixes. They never call an LLM or the network, and they fail silently.
+Inventory and exact settings: [Hooks](../agent/HOOKS.md).
 
-1. Diffs `HEAD` against the last sync commit (stored in `state.json`)
-2. Re-parses changed files and rebuilds the dependency graph
-3. Determines affected pages (direct changes + dependents via cascade analysis)
-4. Regenerates only those pages
-5. Updates `state.json` and configured editor instruction files
-
-**Options:**
-
-| Flag | Description |
-|------|-------------|
-| `--provider` | Override LLM provider for this run |
-| `--model` | Override model |
-| `--since` | Git ref to diff from (overrides `state.json`). Example: `--since v1.0.0` |
-| `--reasoning` | Reasoning mode for supported providers: `auto`, `off`/`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. |
-| `--cascade-budget` | Max pages to regenerate per run (default: 30). Prevents runaway regeneration. |
-| `--dry-run` | Show what would be updated without regenerating. |
-| `--full` | Upgrade a fast (`--mode fast`) index to a full one (single-repo). See below. |
-| `--agents / --no-agents` | Generate or skip managed `AGENTS.md` after update. Persists the preference. |
-
-**Upgrading a fast index to full (`--full`):**
-
-If you first indexed a large repo with `repowise init --mode fast` (graph + essential git only, no LLM docs), `repowise update --full` upgrades it to a full index **without redoing the structural work**:
-
-1. Backfills the git tier from *essential* to *full*, per-file blame and repo-wide co-change, via a resumable, checkpointed worker (re-run `--full` to resume if interrupted).
-2. Rehydrates the dependency graph straight from the database instead of re-parsing and re-resolving it, so imports/calls/heritage resolution and centrality are **not** recomputed.
-3. Generates the LLM documentation that fast mode skipped.
-
-This is cheaper than re-running a full `init`, which would rebuild the graph from scratch. A provider is required, so pass `--provider`/`--model` or have one configured.
-
-**Examples:**
-
-```bash
-# Update after pulling changes
-git pull
-repowise update
-
-# See what changed without regenerating
-repowise update --dry-run
-
-# Update since a specific tag
-repowise update --since v2.0.0
-
-# Limit regeneration scope
-repowise update --cascade-budget 10
-
-# Disable reasoning for a supported provider/model for this run
-repowise update --reasoning off
-
-# Upgrade a fast index to a full one (backfill git + generate docs)
-repowise update --full --provider anthropic
-```
+**Agents that do not speak MCP** still benefit, because `init` generates
+`CLAUDE.md` and `AGENTS.md` from the real index.
 
 ---
 
-### `repowise watch`
+## Keeping the index fresh
 
-Watch for file changes and automatically update wiki pages.
+Five ways, in rough order of how little thought they need. Full guide:
+[Auto-Sync](../scale/AUTO_SYNC.md).
 
-```bash
-repowise watch [PATH]
-```
+| Method | Command | Best for |
+|--------|---------|----------|
+| Post-commit hook | `repowise hook install` | Set-and-forget local dev |
+| File watcher | `repowise watch` | Active development sessions |
+| GitHub webhook | Server endpoint | Teams, CI/CD |
+| GitLab webhook | Server endpoint | Teams, CI/CD |
+| Polling fallback | Automatic with `repowise serve` | Safety net |
 
-Runs continuously. Uses filesystem events (via watchdog) to detect saves, debounces them, and triggers `repowise update` automatically. Press `Ctrl+C` to stop.
+Both the hook and the watcher take `--workspace` to cover every repo at once.
 
-**Options:**
-
-| Flag | Description |
-|------|-------------|
-| `--provider` | LLM provider |
-| `--model` | Model override |
-| `--debounce` | Debounce delay in milliseconds (default: 2000). Collects changes for this long before triggering an update. |
-
-**Example:**
-
-```bash
-# Start watching, wiki syncs as you code
-repowise watch --debounce 3000
-```
+Working in a `git worktree`? A new worktree seeds its index from your main
+checkout on the first `init` or `update`, so there is no second full index and
+nothing to configure. See [Worktrees](../scale/WORKTREES.md).
 
 ---
 
-### `repowise search`
+## Spending fewer tokens
 
-Search wiki pages by keyword, meaning, or symbol name.
-
-```bash
-repowise search QUERY [PATH]
-```
-
-**Options:**
-
-| Flag | Description |
-|------|-------------|
-| `--mode` | Search mode: `fulltext` (default), `semantic`, `symbol` |
-| `--limit` | Max results (default: 10) |
-
-**Search modes:**
-
-- **fulltext**, SQLite FTS. Fast, exact keyword matching.
-- **semantic**, Vector similarity search via LanceDB. Understands meaning ("how does auth work?" finds authentication code even without the word "auth"). Falls back to fulltext if vector store is unavailable.
-- **symbol**, Searches the symbol index (function names, class names, etc.) with fuzzy matching.
-
-**Examples:**
+Most of an agent's context goes to command output it never needed: 300 lines of
+passing tests around 4 failures, a full `git log` for "what changed recently".
 
 ```bash
-# Keyword search
-repowise search "rate limiting"
-
-# Semantic search, understands intent
-repowise search "how are errors handled" --mode semantic
-
-# Find a symbol
-repowise search "AuthService" --mode symbol --limit 20
+repowise distill pytest -x       # errors first, exit code preserved
+repowise distill git log -50     # subjects and counts instead of full bodies
 ```
 
----
-
-### `repowise mcp`
-
-Start the MCP (Model Context Protocol) server for AI editor integration.
-
-```bash
-repowise mcp [PATH]
-```
-
-This is how you connect repowise to Claude Code, Cursor, Cline, Windsurf, and other MCP-compatible editors.
-
-**Options:**
-
-| Flag | Description |
-|------|-------------|
-| `--transport` | Protocol: `stdio` (default, for editors), `streamable-http` (for HTTP clients), or `sse` (legacy) |
-| `--port` | Port for HTTP/SSE transports (default: 7338) |
-
-**Default single-repo MCP tools (11 tools):**
-
-| Tool | What it does |
-|------|-------------|
-| `get_overview` | Repository architecture summary, key modules, entry points, git health, community summary |
-| `get_answer` | One-call RAG: confidence-gated synthesis over the wiki, with cited 2–5 sentence answers and a per-repository question cache |
-| `get_context` | Complete context for files/modules/symbols, docs, ownership, decisions, freshness, community membership. Defaults to `compact=True`; pass `compact=False` for the full structure block and importer list. In workspace mode, accepts `repo` parameter. |
-| `get_symbol` | Raw source bytes for one indexed symbol with exact line bounds (cheaper/safer than `Read` + offset math) |
-| `search_codebase` | Semantic search over wiki with git freshness boosting. In workspace mode, searches across all repos. |
-| `get_risk` | Modification risk assessment, hotspot score, dependents, co-change partners, bus factor, blast radius, test gaps, 0–10 risk score |
-| `get_change_risk` | Live commit or range risk score, ranked against recent commits in the same repository |
-| `get_why` | Why code is structured the way it is, architectural decisions, git archaeology. Three modes: NL search, path-based, health dashboard. |
-| `get_dead_code` | Tiered dead code report grouped by confidence with cleanup impact estimates |
-| `get_health` | 25-marker code-health scores, dashboard KPIs + lowest-scoring files, or per-file findings; `include` for refactoring suggestions and trend alerts |
-| `list_repos` | Repository aliases served by this MCP server |
-
-In workspace mode, tools are workspace-aware, pass `repo="backend"` to target a specific repo or `repo="all"` to query across the entire workspace. The default repo is used when `repo` is omitted.
-
-See [MCP Integration](#mcp-integration-with-ai-editors) for setup instructions. Full tool reference: [MCP_TOOLS.md](../agent/MCP_TOOLS.md)
-
----
-
-### `repowise serve`
-
-Start the API server and web UI.
-
-```bash
-repowise serve [PATH]
-```
-
-If Node.js 20+ is installed, the web frontend is automatically downloaded (once, ~50 MB) and started alongside the API. No separate setup needed.
-
-**Options:**
-
-| Flag | Description |
-|------|-------------|
-| `--port` | API server port (default: 7337) |
-| `--host` | Host to bind to (default: 127.0.0.1) |
-| `--workers` | Uvicorn workers (default: 1) |
-| `--ui-port` | Web UI port (default: 3000) |
-| `--no-ui` | Start API server only, skip the web UI. |
-
-**Examples:**
-
-```bash
-# Start everything (API + Web UI)
-repowise serve
-
-# API only
-repowise serve --no-ui
-
-# Custom ports
-repowise serve --port 8080 --ui-port 8081
-```
-
----
-
-### `repowise dead-code`
-
-Detect dead and unused code in your codebase.
-
-```bash
-repowise dead-code [PATH]
-```
-
-**Options:**
-
-| Flag | Description |
-|------|-------------|
-| `--min-confidence` | Minimum confidence threshold (default: 0.4) |
-| `--safe-only` | Only show findings marked safe to delete |
-| `--kind` | Filter: `unreachable_file`, `unused_export`, `unused_internal`, `zombie_package` |
-| `--format` | Output: `table` (default), `json`, `md` |
-
-**Examples:**
-
-```bash
-# Show all findings
-repowise dead-code
-
-# Only safe-to-delete items
-repowise dead-code --safe-only --min-confidence 0.8
-
-# JSON output for scripting
-repowise dead-code --format json
-
-# Only unused exports
-repowise dead-code --kind unused_export
-```
-
----
-
-### `repowise decision`
-
-Manage architectural decision records. Repowise automatically extracts decisions from inline markers (`// DECISION: ...`), READMEs, and git history. You can also add them manually.
-
-**Subcommands:**
-
-```bash
-repowise decision list [PATH]          # List decisions
-repowise decision show ID [PATH]       # Show full details of a decision
-repowise decision add [PATH]           # Interactively add a new decision
-repowise decision confirm ID [PATH]    # Confirm a proposed decision (set to active)
-repowise decision dismiss ID [PATH]    # Dismiss a proposal (sticky; never re-proposed)
-repowise decision deprecate ID [PATH]  # Mark as deprecated
-repowise decision health [PATH]        # Decision health dashboard
-```
-
-**List options:**
-
-| Flag | Description |
-|------|-------------|
-| `--status` | Filter: `active`, `proposed`, `deprecated`, `superseded`, `all` |
-| `--source` | Filter: `git_archaeology`, `inline_marker`, `readme_mining`, `cli`, `all` |
-| `--proposed` | Shortcut for `--status proposed` |
-| `--stale-only` | Only show stale decisions |
-
-**Examples:**
-
-```bash
-# See all active decisions
-repowise decision list --status active
-
-# Review auto-extracted proposals
-repowise decision list --proposed
-
-# Decision health overview
-repowise decision health
-
-# Confirm a proposed decision
-repowise decision confirm abc123
-
-# Deprecate, replaced by another
-repowise decision deprecate abc123 --superseded-by def456
-```
-
----
-
-### `repowise generate-claude-md`
-
-Generate or update `CLAUDE.md` with codebase intelligence.
-
-```bash
-repowise generate-claude-md [PATH]
-```
-
-`CLAUDE.md` gives AI editors (Claude Code, Cursor, etc.) instant context about your codebase, architecture, key modules, hotspots, entry points, and conventions.
-
-If you have custom instructions at the top of your `CLAUDE.md`, they are preserved. Only the auto-generated section (between markers) is updated.
-
-**Options:**
-
-| Flag | Description |
-|------|-------------|
-| `--output / -o` | Custom output path (default: `CLAUDE.md` in repo root) |
-| `--stdout` | Print to stdout instead of file |
-
----
-
-### `repowise export`
-
-Export wiki pages to files.
-
-```bash
-repowise export [PATH]
-```
-
-**Options:**
-
-| Flag | Description |
-|------|-------------|
-| `--format` | `markdown` (default), `html`, `json` |
-| `--output / -o` | Output directory (default: `.repowise/export`) |
-| `--full` | Include decisions, dead code findings, hotspots, and provenance metadata (JSON format only) |
-
-**Examples:**
-
-```bash
-# Export all pages as markdown files
-repowise export
-
-# Export as a single JSON file
-repowise export --format json --output ./wiki-export/
-
-# Export as HTML
-repowise export --format html
-```
-
----
-
-### `repowise reindex`
-
-Rebuild vector search index from existing wiki pages. Useful after changing embedders or if the vector store gets corrupted.
-
-```bash
-repowise reindex [PATH]
-```
-
-**Options:**
-
-| Flag | Description |
-|------|-------------|
-| `--embedder` | Embedder: `gemini`, `openai`, `auto` (default: auto-detect from config) |
-| `--batch-size` | Pages per embedding batch (default: 20) |
-
----
-
-### `repowise status`
-
-Show wiki sync state and page statistics.
-
-```bash
-repowise status [PATH]
-```
-
-Displays: last sync commit, total pages, pages by type, provider used, total tokens consumed.
-
----
-
-### `repowise doctor`
-
-Run health checks on the wiki setup.
-
-```bash
-repowise doctor [PATH]
-```
-
-Checks:
-- Git repository valid
-- `.repowise/` directory exists
-- Database connectable with page count
-- `state.json` valid
-- Providers installed and importable
-- Stale page count
-- **CLI version**, best-effort check of your installed CLI against the latest
-  PyPI release
-
-The CLI version row is advisory: when a newer release exists it prints the
-right upgrade command for your install method (`uv tool upgrade repowise`,
-`pipx upgrade repowise`, or `python -m pip install -U repowise`) plus a reminder
-to **restart Claude/Codex/Cursor or any MCP client** afterwards. It never
-upgrades automatically and never fails `doctor` when PyPI is unavailable.
-
----
-
-### `repowise workspace`
-
-Manage multi-repo workspaces. See [Workspaces](../scale/WORKSPACES.md) for the full guide.
-
-**Subcommands:**
-
-```bash
-repowise workspace list                         # Show all repos with index status
-repowise workspace add <path> [--alias NAME]    # Add a repo to the workspace
-repowise workspace remove <alias>               # Remove a repo (doesn't delete files)
-repowise workspace scan                         # Re-scan for new repos
-repowise workspace set-default <alias>          # Change the default repo for MCP queries
-```
-
-**Examples:**
-
-```bash
-# Initialize a workspace
-cd my-workspace/
-repowise init .
-
-# Add a repo that lives outside the workspace directory
-repowise workspace add /path/to/external-repo --alias api-gateway
-
-# Update all workspace repos. Each repo regenerates docs or refreshes
-# index-only based on its own docs_enabled, just like a single-repo update.
-repowise update --workspace
-
-# Force docs regeneration across every stale repo (needs a provider per repo)
-repowise update --workspace --docs
-
-# Update just one repo
-repowise update --repo backend
-```
-
----
-
-### `repowise hook`
-
-Manage post-commit git hooks that auto-sync the wiki after every commit.
-
-```bash
-repowise hook install              # Install hook for current repo
-repowise hook install --workspace  # Install for all workspace repos
-repowise hook status               # Check if hooks are installed
-repowise hook status --workspace   # Check all workspace repos
-repowise hook uninstall            # Remove the hook
-repowise hook uninstall --workspace
-```
-
-The hook is marker-delimited, so it coexists safely with other tools' hooks (linters, formatters, etc.) in the same `post-commit` file. The hook runs `repowise update` in the background, your terminal is never blocked.
-
----
-
-## Web Dashboard
-
-Repowise includes a full web dashboard built with Next.js, React, and D3.js.
-
-### Automatic (with Node.js)
-
-If you have Node.js 20+ installed, `repowise serve` handles everything:
-
-```bash
-repowise serve
-# API: http://localhost:7337
-# Web UI: http://localhost:3000
-```
-
-On first run, the pre-built frontend is downloaded (~50 MB) and cached in `~/.repowise/web/`. Subsequent runs start instantly.
-
-### Docker (no Node.js needed)
-
-```bash
-git clone https://github.com/repowise-dev/repowise.git
-cd repowise
-
-# Build the image (one-time)
-docker build -t repowise -f docker/Dockerfile .
-
-# Run with your indexed repo's .repowise directory
-docker run -p 7337:7337 -p 3000:3000 \
-  -v /path/to/your-repo/.repowise:/data \
-  -e GEMINI_API_KEY=your-key \
-  -e REPOWISE_EMBEDDER=gemini \
-  repowise
-```
-
-Or with docker compose:
-
-```bash
-git clone https://github.com/repowise-dev/repowise.git
-cd repowise
-export REPOWISE_DATA=/path/to/your-repo/.repowise
-export GEMINI_API_KEY=your-key
-docker compose -f docker/docker-compose.yml up
-```
-
-Open **http://localhost:3000** for the Web UI, **http://localhost:7337** for the API.
-
-### From source (for development)
-
-For working on the frontend code with hot reload:
-
-```bash
-# Terminal 1, API only
-repowise serve --no-ui
-
-# Terminal 2, Frontend with hot reload
-cd /path/to/repowise
-npm install
-REPOWISE_API_URL=http://localhost:7337 npm run dev --workspace packages/web
-```
-
-On Windows PowerShell:
-
-```powershell
-$env:REPOWISE_API_URL = "http://localhost:7337"
-npm run dev --workspace packages/web
-```
-
-Open **http://localhost:3000** in your browser.
-
-### Navigation
-
-Two global pages sit outside any repo: **Dashboard** (`/`, lists indexed repos and recent job status) and **Settings** (`/settings`, API connection, default provider/model, embedder, webhook/MCP setup).
-
-Everything else lives under a repo: `/repos/{id}/...`. The sidebar groups repo pages like this:
-
-| Page | Route | What it's for |
-|------|-------|----------------|
-| Overview | `/overview` | Repo health dashboard: aggregate score, attention panel (what needs action), hotspots, decisions timeline, community graph |
-| Docs | `/docs` | Wiki browser: AI-generated documentation for every file and module, with an Explorer tab and a Coverage/freshness tab |
-| Architecture | `/architecture` | One page, five tabs: Communities (default), Explore (full dependency graph with dead-code/hotspot overlays), Coupling (change-coupling graph), Dependencies (declared third-party deps), Symbols (functions, classes, exports) |
-| Knowledge Graph | `/knowledge-graph` | The curated, layered architecture view (guided tour, personas, drill-down from system to module to file) |
-| Code Health | `/code-health` | One page, seven tabs: Triage (default), Findings, Hotspots & churn, Coverage, Dead code, Impact (blast radius), Security |
-| Refactoring | `/refactoring` | Ranked refactoring plan cards, with copy-to-agent export |
-| Files | `/files` | Browsable file tree |
-| Commits / Contributors / Decisions | `/commits`, `/owners`, `/decisions` | Grouped under "People & History": git activity, ownership/bus-factor risk, and architectural decisions |
-| Chat | `/chat` | Natural-language Q&A over the codebase, using the same MCP tools as editor integrations |
-| Stats / Usage & savings / Settings | `/stats`, `/costs`, `/settings` | Grouped under repo Settings: "by the numbers" stats, distill/LLM cost tracking, per-repo config |
-
-A global command palette (`Ctrl+K` / `Cmd+K`, available on every page) is the fastest way to jump between pages or repos; it replaced the old standalone Search page.
-
-Older top-level routes (`/risk`, `/hotspots`, `/security`, `/health`, `/coverage`, `/graph`, `/c4`, `/coupling`, `/ownership`, `/blast-radius`) still resolve and redirect into the tabs above, but don't link to them directly; use the tabbed pages instead.
-
-**Index-only repos:** the dashboard itself isn't gated by mode. Views that depend on the generated wiki (Docs, Chat, and parts of Overview) just show empty or thin content if you ran `repowise init --index-only`; everything else (Architecture, Code Health, Files, Commits, Contributors) works off the parsed graph and git history alone.
-
-### Workspace mode
-
-In a multi-repo workspace, a collapsible **Workspace** nav section appears above the per-repo pages:
-
-| Page | Route | What it's for |
-|------|-------|----------------|
-| Overview | `/workspace` | Aggregate stats across all repos |
-| System Map | `/workspace/system-map` | Code-derived service diagram (HTTP, gRPC, events, package deps, co-change), health-colored, with drill-down into contracts |
-| Conformance | `/workspace/conformance` | Dependency-cycle detection and a dependency structure matrix (DSM) |
-| Contracts | `/workspace/contracts` | Detected API contracts (HTTP, gRPC, message topics) with provider/consumer matching |
-| Co-Changes | `/workspace/co-changes` | Cross-repo file pairs ranked by co-change strength |
-
----
-
-## MCP Integration with AI Editors
-
-### Claude Code
-
-Add to your project's `.claude/settings.json` or run:
-
-```bash
-repowise mcp /path/to/your-repo --transport stdio
-```
-
-Claude Code auto-detects the `.repowise/.mcp.json` generated by `repowise init`.
-
-### Codex
-
-Run:
-
-```bash
-repowise init --codex
-```
-
-This writes project-local `.codex/config.toml`, `.codex/hooks.json`, and managed `AGENTS.md`. The Codex config uses `repowise mcp` from the repository root, so it does not require editing global `~/.codex/config.toml`. See [Codex Integration](../agent/CODEX.md).
-
-### Cursor / Windsurf / Cline
-
-Add an MCP server entry pointing to:
-
-```json
-{
-  "command": "repowise",
-  "args": ["mcp", "/path/to/your-repo", "--transport", "stdio"]
-}
-```
-
-### HTTP MCP clients
-
-```bash
-repowise mcp /path/to/your-repo --transport streamable-http --port 7338
-```
-
-Connect to `http://localhost:7338/mcp`.
-
-### What AI editors can do with MCP
-
-Once connected, your AI editor can:
-- Get an architecture overview before starting any task
-- Fetch rich context for files before reading/modifying them (docs, ownership, decisions, freshness)
-- Assess modification risk before changing hotspot files
-- Understand *why* code is structured a certain way (architectural decisions)
-- Search the wiki semantically ("how do we handle retries?")
-- Trace dependency paths between modules
-- Find dead code to clean up
-- Generate architecture diagrams
-
----
-
-## Proactive Context Enrichment (Hooks)
-
-Repowise installs lightweight AI-agent hooks during editor setup so graph, git,
-health, and decision context reaches your agent (and your index stays fresh) with
-zero effort. They fire from editor lifecycle and tool-use events, never call an
-LLM or the network, and fail silently.
-
-The full inventory, the SessionStart freshness + relevant-decisions block, the
-PostToolUse Grep/Glob enrichment, git/edit freshness, read-intelligence, and
-edit-time "governed by" notices, the opt-in distill command-rewrite hook, the
-Codex hooks, and the exact `settings.json` entries, lives in a dedicated guide:
-**[HOOKS.md →](../agent/HOOKS.md)**.
-
-The post-commit git hook that auto-syncs the wiki is documented under
-[`repowise hook`](#repowise-hook) above and in [AUTO_SYNC.md](../scale/AUTO_SYNC.md).
-
----
-
-## Output Distillation (Distill)
-
-Most of an agent's context is spent on command output it never needed, 300
-lines of passing tests to find 4 failures, a full `git log` for "what changed
-recently". Distill compresses noisy output **before the agent reads it**,
-errors-first and fully reversible. Full guide: [DISTILL.md](../agent/DISTILL.md).
-
-**Try it from the terminal:**
-
-```bash
-repowise distill pytest -x       # compact errors-first rendering, exit code preserved
-repowise distill git log -50    # recent subjects + counts instead of full bodies
-```
-
-Dropped content is referenced by an inline marker and always recoverable:
+Nothing is lost. Omissions leave a marker that is always recoverable:
 
 ```
 [repowise#a1b2c3d4e5f6: 230 lines omitted (~6.1k tokens); restore: repowise expand a1b2c3d4e5f6]
 ```
 
 ```bash
-repowise expand a1b2c3d4e5f6              # full original output
+repowise expand a1b2c3d4e5f6              # the full original output
 repowise expand a1b2c3d4e5f6 -q "FAILED"  # just the matching lines
 ```
 
-**Make your agent use it.** Two complementary ways:
-
-1. `repowise init` adds an "Output Distillation" section to the managed
-   `CLAUDE.md`, so the agent prefers `repowise distill <cmd>` voluntarily -
-   works in any agent that runs shell commands.
-2. Opt into the **command-rewrite hook** (Claude Code): noisy commands are
-   rewritten to `repowise distill <cmd>` automatically, pending your approval.
+**Getting your agent to use it.** `repowise init` adds a section to the managed
+`CLAUDE.md` so the agent reaches for it voluntarily, which works in any agent that
+runs shell commands. For Claude Code you can also opt into the command-rewrite
+hook, which rewrites noisy commands automatically:
 
 ```bash
-repowise hook rewrite install     # or answer Yes at the `repowise init` prompt
+repowise hook rewrite install    # or answer Yes at the init prompt
 ```
 
-The hook never rewrites pipes/compound commands or watch modes, and defaults
-to `ask` so you see every rewritten command. Per-repo behavior lives under
-`distill.commands` in `.repowise/config.yaml` (see [CONFIG.md](../reference/CONFIG.md)).
+It never rewrites pipes, compound commands or watch modes, and defaults to `ask`
+so you see every rewrite before it runs.
 
-**Skeletons for large files.** For structure-level questions about an indexed
-file, `get_context(["path"], include=["skeleton"])` returns every signature
-plus the bodies of only the most central symbols, typically ~15% of the full
-file's tokens. After a large `Read`, the PostToolUse hook nudges the agent
-with the skeleton's cost once per file per session.
-
-**Track what you save:**
-
-```bash
-repowise saved              # per-filter rollup, totals, est. dollars
-repowise saved --by day
-```
-
-The Costs page in the web UI leads with the same results (total agent tokens and
-dollars saved, split across distill and the MCP tools) over the per-operation and
-per-provider spend breakdown. The ledger combines the distill
-command/hook path with MCP tool-response savings.
+Track it with `repowise saved`, or the Costs page in the dashboard. Full guide:
+[Distill](../agent/DISTILL.md).
 
 ---
 
-## Auto-Sync
-
-repowise supports five methods to keep your wiki in sync with code changes. See [Auto-Sync](../scale/AUTO_SYNC.md) for the full guide.
-
-| Method | Command | Best for |
-|--------|---------|----------|
-| **Post-commit hook** | `repowise hook install` | Set-and-forget local dev |
-| **File watcher** | `repowise watch` | Active development |
-| **GitHub webhook** | Server endpoint | Teams, CI/CD |
-| **GitLab webhook** | Server endpoint | Teams, CI/CD |
-| **Polling fallback** | Automatic with `repowise serve` | Safety net |
-
-### Quick setup
+## The dashboard
 
 ```bash
-# Post-commit hook (recommended)
-repowise hook install
-repowise hook install --workspace    # all workspace repos
-
-# File watcher
-repowise watch
-repowise watch --workspace           # all workspace repos
+repowise serve
 ```
 
----
+API on `http://localhost:7337`, dashboard on `http://localhost:3000`, MCP server
+alongside both. With Node.js 20+ the frontend downloads once (~50 MB), caches in
+`~/.repowise/web/` and starts automatically. Use `--no-ui` for the API alone, or
+the [Docker image](../../docker/README.md) if you would rather not install Node.
 
-## Environment Variables
+`Ctrl+K` / `Cmd+K` opens a command palette from any page, which is the fastest way
+to move between views and repos.
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `ANTHROPIC_API_KEY` | If using Anthropic | Anthropic API key |
-| `ANTHROPIC_BASE_URL` | No | Base URL override for Anthropic-compatible APIs |
-| `OPENAI_API_KEY` | If using OpenAI | OpenAI API key |
-| `OPENAI_BASE_URL` | No | Base URL override for OpenAI-compatible APIs |
-| `GEMINI_API_KEY` | If using Gemini | Google Gemini API key |
-| `GEMINI_BASE_URL` | No | Base URL override for Gemini-compatible APIs |
-| `OLLAMA_BASE_URL` | If using Ollama | Ollama server URL (default: `http://localhost:11434`) |
-| `LITELLM_BASE_URL` | No | Base URL override for LiteLLM proxy |
-| `LITELLM_API_BASE` | No | LiteLLM base URL alias (same as `LITELLM_BASE_URL`) |
-| `REPOWISE_DB_URL` | No | Database URL override (default: `.repowise/wiki.db`) |
-| `REPOWISE_EMBEDDER` | No | Embedder for semantic search: `gemini`, `openai`, `mock` |
-| `REPOWISE_API_URL` | Frontend only | Backend URL for the web UI (default: `http://localhost:7337`) |
-| `REPOWISE_API_KEY` | No | Optional API key to protect the server |
+Views that need the generated wiki (Docs, Chat, parts of Overview) show thin
+content on an index-only repo. Everything else, including Architecture, Code
+Health, Files, Commits and Contributors, works off the parsed graph and git
+history alone.
+
+Every view and what it answers: **[Dashboard](DASHBOARD.md)**.
 
 ---
 
-## Common Workflows
+## Common workflows
 
-### First-time setup for a single repo
+### First index, single repo
 
 ```bash
 pip install repowise
-export ANTHROPIC_API_KEY="sk-ant-..."
 cd /path/to/your-project
-repowise init
-repowise hook install    # auto-sync after every commit
+repowise init --index-only -y      # free, no key, seconds
+repowise hook install              # keep it current from here on
 ```
 
-### First-time setup for a multi-repo workspace
+Add the wiki and semantic search when you want them:
 
 ```bash
-pip install repowise
 export ANTHROPIC_API_KEY="sk-ant-..."
-cd /path/to/workspace/   # parent dir with backend/, frontend/, etc.
-repowise init .
+repowise init --provider anthropic
+```
+
+### First index, multi-repo workspace
+
+```bash
+cd /path/to/workspace/     # parent dir containing backend/, frontend/, ...
+repowise init .            # finds the repos, asks which to index
 repowise hook install --workspace
 ```
 
-### Daily development workflow
+Cross-repo contracts and co-change come out of this automatically. See
+[Workspaces](../scale/WORKSPACES.md).
+
+### Day to day
+
+Pick one and stop thinking about it:
 
 ```bash
-# Option A: Manual update after pulling
-git pull
-repowise update
-
-# Option B: Continuous sync while coding
-repowise watch
-
-# Option C: Set-and-forget (if hook installed)
-# Just code and commit, the hook handles it
+repowise hook install    # A: syncs on every commit, nothing else to do
+repowise watch           # B: syncs continuously while you code
+git pull && repowise update   # C: manual, when you prefer control
 ```
 
-### Before a code review
+### Before you open a pull request
 
 ```bash
-# Check what's at risk
-repowise dead-code --safe-only
-
-# Review decision health
-repowise decision health
-
-# See hotspots
-repowise status
+repowise risk main..HEAD       # how risky does this change look, and why
+repowise impacted-tests        # the tests this diff actually exercises
+repowise health --trend        # did anything you touched get worse
 ```
 
-### Team onboarding
+`repowise risk` in PR mode also tells you what a change is likely to break, which
+companion files usually move with the ones you touched, and where tests are
+missing.
+
+### Reviewing someone else's pull request
 
 ```bash
-# Generate full wiki for the new team member
-repowise init --provider openai
-
-# They can browse it
-repowise serve
-
-# Or use it in their editor
-repowise mcp --transport stdio
+repowise risk origin/main..their-branch
+repowise health --file path/to/the/scariest/file.py
 ```
 
-### CI/CD integration
+Or let the [PR bot](https://github.com/apps/repowise-bot) post it automatically on
+every pull request, with no LLM calls.
+
+### Onboarding someone new
+
+Index with a provider so they get the wiki, then hand them either the dashboard or
+their editor:
 
 ```bash
-# Index-only in CI (free, no LLM calls)
-repowise init --index-only
-
-# Export docs as markdown for static hosting
-repowise export --format markdown --output ./docs/wiki/
+repowise init --provider anthropic
+repowise serve                 # browsable wiki, graph, health
 ```
 
-### Switching LLM providers
+With the MCP server connected, their agent can answer "why is this like this"
+instead of them interrupting someone.
+
+### In CI
 
 ```bash
-# Re-generate with a different provider
-repowise init --provider openai --model gpt-5.4-nano --force
+repowise init --index-only              # free, no keys in CI
+repowise risk "$BASE_SHA..$HEAD_SHA"    # gate or annotate on risk
+repowise export --format markdown --output ./docs/wiki/   # static hosting
+```
 
-# Or just change the model for future updates
-# (edit .repowise/config.yaml, then:)
-repowise update --provider gemini
+### Changing provider or model
+
+```bash
+repowise init --provider openai --model gpt-5.4-nano --force   # regenerate
+repowise update --provider gemini                              # just future updates
+```
+
+Or edit `provider` / `model` in `.repowise/config.yaml`. The parse, graph, git and
+health layers are provider-independent, so switching only affects generated prose.
+
+### Cutting cost on a large repo
+
+```bash
+repowise init --dry-run                    # see the estimate before spending
+repowise init --test-run                   # generate the top 10 files only
+repowise init --skip-tests --skip-infra    # narrow the scope
+repowise init --provider ollama            # or spend nothing at all
 ```
 
 ---
 
 ## Troubleshooting
 
+Start with `repowise doctor`, which checks the install, API keys, index drift and
+store health, and `repowise doctor --repair` to fix what it safely can.
+
 **"Provider X requires the 'Y' package"**
 Every provider SDK ships with `repowise`, so this points at a broken or partial
 install rather than a missing extra. The error names the package it wants, so
-`pip install <package>` clears it immediately; `pip install --force-reinstall
-repowise` fixes the underlying install. Run `repowise doctor` either way.
+`pip install <package>` clears it immediately, and
+`pip install --force-reinstall repowise` fixes the underlying install.
 
-**Empty search results with semantic mode**
-Check that an embedder is configured. Run `repowise reindex --embedder gemini` to rebuild the vector store.
+**Empty results in semantic search mode**
+An embedder is probably not configured. Set `REPOWISE_EMBEDDER=gemini` (or
+`openai`) and rebuild the vector store with `repowise reindex --embedder gemini`.
 
 **"embedder.mock_active" warning**
-Set `REPOWISE_EMBEDDER=gemini` (or `openai`) for real vector search. Mock embedder produces random vectors, semantic search won't work meaningfully.
+The mock embedder produces random vectors, so semantic search cannot work
+meaningfully. Set a real embedder as above.
 
-**Stale pages after code changes**
-Run `repowise update` to sync. Or use `repowise watch` for automatic syncing.
+**Pages look stale after code changes**
+`repowise update`. To stop it happening, `repowise hook install` or
+`repowise watch`.
 
-**Cost seems high**
-Use `--dry-run` to see the cost estimate first. Use `--test-run` to validate with just 10 files. Use `--skip-tests --skip-infra` to reduce scope. Lower `--concurrency` to slow down API usage.
+**The agent is answering from an old version of the code**
+Check `repowise status` for drift. MCP responses carry the indexed commit and a
+staleness warning, so if your agent is not surfacing that, it is worth asking it
+to.
+
+**Indexing cost more than expected**
+Use `--dry-run` for the estimate before committing to a run, `--test-run` to
+validate on 10 files, and `--skip-tests --skip-infra` to cut scope. Lower
+`--concurrency` if you are hitting rate limits.
 
 **init was interrupted**
-Run `repowise init --resume` to pick up where it left off.
+`repowise init --resume` picks up from the last checkpoint.
 
-**Vector store corrupted**
-Run `repowise reindex` to rebuild from existing wiki pages.
+**Vector store looks corrupted**
+`repowise reindex` rebuilds it from the existing wiki pages, with no LLM calls.
 
-**Doctor says database has 0 pages**
-The init either failed or was run with `--index-only`. Run `repowise init` with a provider to generate pages.
+**Doctor reports 0 pages**
+Either init failed, or it ran with `--index-only`. Run `repowise init` with a
+provider to generate pages.
 
-**Frontend shows empty repo list**
-Make sure `REPOWISE_DB_URL` (or `REPOWISE_API_URL` for the frontend) points to the correct database. The backend and frontend must point to the same wiki DB.
+**Dashboard shows an empty repo list**
+The backend and frontend have to point at the same database. Check `REPOWISE_DB_URL`
+on the backend and `REPOWISE_API_URL` on the frontend.
 
 **CORS errors in the browser**
-Ensure both the backend (`repowise serve`) and frontend (`npm run dev`) are running. The backend allows all origins by default.
+`repowise serve` runs the API and the dashboard together, so this should not come
+up in normal use; the backend allows all origins by default. If you see it, the
+API is probably not up, or you are running a frontend separately from source and
+pointing it somewhere else with `REPOWISE_API_URL`.
+
+---
+
+## Where to go next
+
+- **[MCP Tools](../agent/MCP_TOOLS.md)** for what your agent can actually ask
+- **[Code Health](../layers/CODE_HEALTH.md)** for what the score measures and how it is validated
+- **[Workspaces](../scale/WORKSPACES.md)** for multi-repo intelligence
+- **[Config](../reference/CONFIG.md)** for every setting and environment variable
+- **[CLI Reference](../reference/CLI_REFERENCE.md)** for every command and flag
+- **[Architecture](../architecture/ARCHITECTURE.md)** for how repowise is built
