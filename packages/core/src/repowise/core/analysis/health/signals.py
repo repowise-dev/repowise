@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Protocol
 
 # How many symbols the per-file fix breakdown carries. Enough to say "mostly
@@ -107,8 +107,20 @@ def _entropy_pct(raw: float | None) -> float | None:
     return round(raw * 100.0, 1)
 
 
-def _iso(value: datetime | None) -> str | None:
-    return value.isoformat() if isinstance(value, datetime) else None
+def iso_utc(value: datetime | None) -> str | None:
+    """ISO-8601 with an explicit UTC offset, always.
+
+    SQLite's DATETIME bind processor drops ``tzinfo``, so these columns come
+    back naive even though they were written aware-UTC. A bare
+    ``2026-07-19T10:00:00`` is parsed as LOCAL time by every JS consumer, which
+    on a UTC-8 viewer reads a two-hour-old fix as six hours in the future, trips
+    ``formatRelativeTimeOrNull``'s future-guard, and makes the age silently
+    vanish from the copy that is required to carry it. Re-attach UTC here, once,
+    rather than in each of the four surfaces that render this.
+    """
+    if not isinstance(value, datetime):
+        return None
+    return (value if value.tzinfo else value.replace(tzinfo=UTC)).isoformat()
 
 
 def _top_fix_symbols(raw: str | None) -> dict[str, int] | None:
@@ -161,7 +173,7 @@ def file_signals(
         # ISO string, not a datetime: this dataclass goes through ``asdict`` into
         # MCP responses, which have to be JSON-serializable without a custom
         # encoder.
-        last_fix_at=_iso(getattr(g, "last_fix_at", None)) if g else None,
+        last_fix_at=iso_utc(getattr(g, "last_fix_at", None)) if g else None,
         fix_symbol_counts=_top_fix_symbols(getattr(g, "fix_symbol_counts_json", None))
         if g
         else None,

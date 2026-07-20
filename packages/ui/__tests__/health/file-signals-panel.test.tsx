@@ -87,3 +87,61 @@ describe("FileSignalsPanel", () => {
     expect(container).toBeEmptyDOMElement();
   });
 });
+
+describe("FileSignalsPanel bug history", () => {
+  it("shows the magnet badge only alongside the last-fix age", () => {
+    // The contract in types/health.ts is explicit: `bug_magnet` is a claim
+    // about RECENT fix pressure, so it never renders without recency beside
+    // it. A file fixed four times two years ago must not read like one fixed
+    // four times this month.
+    const twoWeeksAgo = new Date(Date.now() - 14 * 86400_000).toISOString();
+    render(
+      <FileSignalsPanel
+        signals={sig({ prior_defect_count: 5, bug_magnet: true, last_fix_at: twoWeeksAgo })}
+      />,
+    );
+
+    expect(screen.getByText("5 bug-fixes")).toBeInTheDocument();
+    expect(screen.getByText("Bug magnet")).toBeInTheDocument();
+    expect(screen.getByText(/last 2w ago/)).toBeInTheDocument();
+  });
+
+  it("omits the badge when the file is not a magnet", () => {
+    render(<FileSignalsPanel signals={sig({ prior_defect_count: 2, bug_magnet: false })} />);
+
+    expect(screen.getByText("2 bug-fixes")).toBeInTheDocument();
+    expect(screen.queryByText("Bug magnet")).not.toBeInTheDocument();
+  });
+
+  it("falls back to the plain caption when the last fix is unknown", () => {
+    render(<FileSignalsPanel signals={sig({ prior_defect_count: 3 })} />);
+
+    expect(screen.getByText("bug-fix commits in the last 6 months")).toBeInTheDocument();
+  });
+});
+
+describe("FileSignalsPanel magnet recency guard", () => {
+  it("drops the badge when there is no last-fix age to anchor it", () => {
+    // The badge claims RECENT fix pressure. With no timestamp the row would
+    // read identically for a file fixed four times last month and one fixed
+    // four times two years ago, so the flag goes quiet and the windowed count
+    // stands on its own.
+    render(
+      <FileSignalsPanel
+        signals={sig({ prior_defect_count: 5, bug_magnet: true, last_fix_at: null })}
+      />,
+    );
+
+    expect(screen.getByText("5 bug-fixes")).toBeInTheDocument();
+    expect(screen.queryByText("Bug magnet")).not.toBeInTheDocument();
+  });
+
+  it("drops the badge on a file with no counted fixes", () => {
+    render(
+      <FileSignalsPanel signals={sig({ prior_defect_count: 0, bug_magnet: true })} />,
+    );
+
+    expect(screen.getByText("No bug-fixes")).toBeInTheDocument();
+    expect(screen.queryByText("Bug magnet")).not.toBeInTheDocument();
+  });
+});

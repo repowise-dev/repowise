@@ -147,3 +147,23 @@ def test_fix_symbol_counts_are_capped_and_bad_json_is_silent():
 
     assert file_signals(_GitJson(fix_symbol_counts_json="not json"), None).fix_symbol_counts is None
     assert file_signals(_GitJson(fix_symbol_counts_json="{}"), None).fix_symbol_counts is None
+
+
+def test_naive_timestamps_are_serialized_with_an_explicit_utc_offset():
+    """The stored column is naive, and a naive ISO string is a real bug on the wire.
+
+    SQLite's DATETIME bind processor drops tzinfo, so `last_fix_at` reads back
+    naive even though the rollup wrote it aware-UTC. JS parses a date-time with
+    no offset as LOCAL time, so west of UTC a fresh fix lands in the future,
+    trips `formatRelativeTimeOrNull`'s future-guard, and the age disappears from
+    copy that is contractually required to carry it. Worst for the newest fixes,
+    which are the ones worth showing.
+    """
+    from datetime import datetime
+
+    @dataclass
+    class _GitNaive(_Git):
+        last_fix_at: datetime | None = datetime(2026, 6, 2, 10, 30)
+
+    s = file_signals(_GitNaive(prior_defect_count=1), None)
+    assert s.last_fix_at == "2026-06-02T10:30:00+00:00"

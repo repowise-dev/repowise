@@ -1,6 +1,7 @@
 "use client";
 
 import type { FileSignals } from "@repowise-dev/types/health";
+import { formatRelativeTimeOrNull } from "../lib/format";
 
 export interface FileSignalsPanelProps {
   signals: FileSignals | null | undefined;
@@ -36,8 +37,9 @@ export function FileSignalsPanel({ signals, hideHeading = false }: FileSignalsPa
         <Group label="Process">
           <Row
             value={priorDefectValue(signals.prior_defect_count)}
-            caption="bug-fix commits in the last 6 months"
+            caption={defectCaption(signals)}
             present={signals.prior_defect_count != null}
+            badge={magnetBadge(signals)}
           />
           <Row
             value={
@@ -123,6 +125,27 @@ function priorDefectValue(n: number | null): string | null {
   return n === 0 ? "No bug-fixes" : `${n} bug-fix${n === 1 ? "" : "es"}`;
 }
 
+/** The bug-fix caption, with recency folded in when we know it. */
+function defectCaption(s: FileSignals): string {
+  const base = "bug-fix commits in the last 6 months";
+  const last = formatRelativeTimeOrNull(s.last_fix_at, "");
+  return last ? `${base}, last ${last}` : base;
+}
+
+/**
+ * The magnet pill, and only when the caption can carry an age beside it.
+ *
+ * `bug_magnet` is a claim about *recent* fix pressure, so the contract requires
+ * any copy showing it to show `last_fix_at` too: a file fixed four times two
+ * years ago must not read like one fixed four times this month. Without a
+ * timestamp the badge would say exactly that, so it goes quiet instead. The
+ * count beside it is windowed and stands on its own.
+ */
+function magnetBadge(s: FileSignals): string | undefined {
+  if (!s.bug_magnet || !s.prior_defect_count) return undefined;
+  return formatRelativeTimeOrNull(s.last_fix_at, "") ? "Bug magnet" : undefined;
+}
+
 function velocityValue(s: FileSignals): string | null {
   if (s.commit_count_90d == null) return null;
   const added = s.lines_added_90d ?? 0;
@@ -164,16 +187,19 @@ function Row({
   caption,
   present,
   emphasize = false,
+  badge,
 }: {
   value: string | null;
   caption: string;
   present: boolean;
   emphasize?: boolean;
+  /** Optional pill beside the value (e.g. "Bug magnet"). */
+  badge?: string | undefined;
 }) {
   return (
     <div>
       <p
-        className={`text-xs font-semibold tabular-nums ${
+        className={`flex items-center gap-1.5 text-xs font-semibold tabular-nums ${
           present
             ? emphasize
               ? "text-[var(--color-accent-primary)]"
@@ -182,6 +208,11 @@ function Row({
         }`}
       >
         {present ? value : "No signal"}
+        {present && badge != null && (
+          <span className="rounded-full border border-[var(--color-accent-muted)] bg-[var(--color-accent-muted)] px-1.5 py-px text-[9px] font-medium uppercase tracking-wide text-[var(--color-accent-primary)]">
+            {badge}
+          </span>
+        )}
       </p>
       <p className="text-[10px] leading-tight text-[var(--color-text-tertiary)]">{caption}</p>
     </div>

@@ -5,7 +5,9 @@ import { listDecisions } from "@repowise-dev/api-client/decisions";
 import { getSymbolDetail, listSymbols } from "@repowise-dev/api-client/symbols";
 import type { RepowiseContext } from "../core/context";
 import { getFileFindings, repoRelativePath } from "../core/fileSignals";
+import { formatRelativeTimeOrNull } from "@repowise-dev/ui/lib/format";
 import type {
+  FileSignals,
   HealthFileBreakdownResponse,
   HealthFinding,
 } from "@repowise-dev/types/health";
@@ -72,6 +74,23 @@ export function registerHovers(ctx: RepowiseContext): vscode.Disposable {
     }
   }
 
+  /**
+   * One line of counted bug-fix history, or nothing.
+   *
+   * Recency is not optional in this copy: `bug_magnet` is a claim about recent
+   * fix pressure, so it is dropped rather than shown without the age beside it.
+   * Silent when the file has no counted fixes, so a clean file's hover is
+   * unchanged. Aggregate only, and no commit is named here or anywhere else.
+   */
+  function fixHistoryLine(signals: FileSignals | null | undefined): string | null {
+    const count = signals?.prior_defect_count;
+    if (count == null || count <= 0) return null;
+    const last = formatRelativeTimeOrNull(signals?.last_fix_at ?? null, "");
+    if (!last) return `Bug fixes: ${count} in 6 months`;
+    const magnet = signals?.bug_magnet ? " **bug magnet**" : "";
+    return `Bug fixes: ${count} in 6 months, last ${last}${magnet}`;
+  }
+
   async function fileHover(
     relPath: string,
   ): Promise<vscode.Hover | undefined> {
@@ -109,6 +128,11 @@ export function registerHovers(ctx: RepowiseContext): vscode.Disposable {
       md.appendMarkdown(
         `Owner: ${owner}${pct == null ? "" : ` (${Math.round(pct)}%)`}\n\n`,
       );
+    }
+
+    const bugHistory = fixHistoryLine(breakdown?.signals);
+    if (bugHistory) {
+      md.appendMarkdown(`${bugHistory}\n\n`);
     }
 
     if (governing.length > 0) {

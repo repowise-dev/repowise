@@ -16,6 +16,8 @@ import {
 import { BiomarkerDetails, type BiomarkerDetailsRecord } from "./biomarker-details";
 import { ScoreBreakdown, type ScoreBreakdownCategory } from "./score-breakdown";
 import { FileSignalsPanel } from "./file-signals-panel";
+import { CollapsibleSection } from "../shared/collapsible-section";
+import { formatRelativeTimeOrNull } from "../lib/format";
 import { Sparkline } from "./sparkline";
 import {
   SEVERITY_CHIP,
@@ -380,6 +382,8 @@ export function HealthFileDrawer({
 
               <FileSignalsPanel signals={signals} />
 
+              <BugHistorySection signals={signals} />
+
               {fileViewHref ? (
                 <a
                   href={fileViewHref}
@@ -442,6 +446,56 @@ export function HealthFileDrawer({
  * row, not seven — the P2 "looks padded" fix. Single-finding groups render
  * expanded; the caller expands the highest-impact group by default.
  */
+/**
+ * Which symbols this file's recent bug fixes landed in, behind a disclosure.
+ *
+ * Collapsed by default and silent without per-symbol data: the counts are a
+ * "where do the bugs cluster" question, not something every reader of the
+ * drawer needs answered. Two honesty rules show up in the copy. The heading
+ * carries the last-fix age because a fix count without recency reads the same
+ * at two weeks and two years. And the counts are labelled approximate, because
+ * symbol spans are current-tree while each fix's line ranges are numbered on
+ * its own parent commit, so a file that has moved since is matched on lines
+ * that shifted.
+ *
+ * No commit is named here. File-level SZZ ran at 74.5% precision against the
+ * frozen judgments, which is enough to count fixes and not enough to say which
+ * commit caused one.
+ */
+function BugHistorySection({ signals }: { signals: FileSignals | null | undefined }) {
+  const counts = signals?.fix_symbol_counts;
+  if (!counts || Object.keys(counts).length === 0) return null;
+
+  const lastFix = formatRelativeTimeOrNull(signals?.last_fix_at ?? null, "");
+  const entries = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+
+  return (
+    <CollapsibleSection
+      title="Bug history"
+      hint={lastFix ? `last fix ${lastFix}` : "last fix unknown"}
+    >
+      <ul className="space-y-1">
+        {entries.map(([symbolId, count]) => (
+          <li
+            key={symbolId}
+            className="flex items-baseline gap-2 text-xs text-[var(--color-text-secondary)]"
+          >
+            <code className="font-mono text-[var(--color-text-primary)]">
+              {symbolId.split("::").pop()}
+            </code>
+            <span className="ml-auto tabular-nums text-[var(--color-text-tertiary)]">
+              {count} {count === 1 ? "fix" : "fixes"}
+            </span>
+          </li>
+        ))}
+      </ul>
+      <p className="text-[10px] leading-tight text-[var(--color-text-tertiary)]">
+        Approximate: fixes are matched to symbols by line range, and lines move.
+      </p>
+    </CollapsibleSection>
+  );
+}
+
 function FunctionFindingsGroup({
   isFile,
   functionName,
