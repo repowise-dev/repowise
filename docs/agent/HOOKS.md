@@ -44,7 +44,7 @@ repowise hook uninstall            # remove it
 The hook is **marker-delimited**, so it coexists safely with other tools' hooks
 (linters, formatters, commit-msg checks) in the same `post-commit` file: repowise
 only ever touches the block between its own markers. See
-[AUTO_SYNC.md](AUTO_SYNC.md) for the full sync model, including how git worktrees
+[AUTO_SYNC.md](../scale/AUTO_SYNC.md) for the full sync model, including how git worktrees
 seed from the base checkout.
 
 > Prefer to keep updates manual? Skip this hook and run `repowise update`
@@ -133,8 +133,8 @@ Every injected decision id is recorded locally in
 checks whether the guidance was followed or contradicted by your corrections in
 that session, and relaxes or bumps the decision's staleness accordingly, so
 guidance that stops being true stops being injected. This is the feedback loop
-behind "learns from your sessions" (see the [README](../README.md) and
-[decisions layer](INTELLIGENCE_LAYERS.md)).
+behind "learns from your sessions" (see the [README](../../README.md) and
+[decisions layer](../layers/INTELLIGENCE_LAYERS.md)).
 
 ---
 
@@ -159,7 +159,7 @@ repowise hook rewrite uninstall
   re-prompting just because its string changed.
 
 Per-repo behavior lives under `distill.commands` in `.repowise/config.yaml`
-([CONFIG.md](CONFIG.md)). Track what it saved with `repowise saved`.
+([CONFIG.md](../reference/CONFIG.md)). Track what it saved with `repowise saved`.
 
 ---
 

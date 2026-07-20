@@ -122,7 +122,7 @@ repowise-rewrite = "repowise.cli.rewrite_hook:main"
 Homepage = "https://github.com/repowise-dev/repowise"
 Repository = "https://github.com/repowise-dev/repowise"
 Issues = "https://github.com/repowise-dev/repowise/issues"
-Documentation = "https://github.com/repowise-dev/repowise/blob/main/docs/USER_GUIDE.md"
+Documentation = "https://github.com/repowise-dev/repowise/blob/main/docs/start/USER_GUIDE.md"
 
 # ---------------------------------------------------------------------------
 # setuptools — auto-discover packages across three src/ roots

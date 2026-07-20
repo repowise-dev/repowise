@@ -5,7 +5,7 @@ keeps them in sync on every commit. This document is the deep dive; the README
 gives the one-paragraph version of each layer and links here for the detail.
 
 <div align="center">
-<img src="../.github/assets/intelligence-layers.svg" alt="repowise's five intelligence layers: one index (repowise init) fans into Graph, Git, Docs, Decisions, and Code Health, each surfaced through its signature MCP tool and delivered through 9 task-shaped tools, the CLI, the local dashboard, auto-generated CLAUDE.md/AGENTS.md, and the PR bot" width="100%" />
+<img src="../../.github/assets/intelligence-layers.svg" alt="repowise's five intelligence layers: one index (repowise init) fans into Graph, Git, Docs, Decisions, and Code Health, each surfaced through its signature MCP tool and delivered through 10 task-shaped tools, the CLI, the local dashboard, auto-generated CLAUDE.md/AGENTS.md, and the PR bot" width="100%" />
 </div>
 
 The layers compound. The graph locates what git flags,
@@ -28,7 +28,7 @@ Two cross-cutting capabilities sit on top of the layers:
 
 ## Graph Intelligence
 
-tree-sitter parses every file across 15 languages into a **two-tier dependency
+tree-sitter parses every file across 16 languages into a **two-tier dependency
 graph**: file nodes and symbol nodes (functions, classes, methods). A 3-tier
 call resolver with confidence scoring handles import aliases, barrel
 re-exports, and namespace imports. Heritage extraction covers `extends`,
@@ -43,8 +43,8 @@ re-exports, and namespace imports. Heritage extraction covers `extends`,
   Flask, ASP.NET, Spring Boot, Express/NestJS, Gin/Echo/Chi, Axum/Actix, Rails,
   Laravel, and more.
 
-See [`docs/LANGUAGE_SUPPORT.md`](LANGUAGE_SUPPORT.md) for per-language coverage
-and [`docs/COMPUTED_GLOSSARY.md`](COMPUTED_GLOSSARY.md) for every derived metric.
+See [`docs/layers/LANGUAGE_SUPPORT.md`](LANGUAGE_SUPPORT.md) for per-language coverage
+and [`docs/reference/COMPUTED_GLOSSARY.md`](../reference/COMPUTED_GLOSSARY.md) for every derived metric.
 
 ---
 
@@ -207,11 +207,11 @@ repowise status                       # one-line summary in the status report
   centrality × blast radius`, on the dashboard **Refactoring** tab, via `repowise
   health --refactoring-targets`, and via `get_health(include=["refactoring"])`. An
   opt-in LLM pass expands any plan into generated code + a diff. See
-  [`docs/REFACTORING.md`](REFACTORING.md).
+  [`docs/layers/REFACTORING.md`](REFACTORING.md).
 - **Per-file overrides** via `.repowise/health-rules.json`.
 
 Validated against real defect history; see
-[`docs/CODE_HEALTH.md`](CODE_HEALTH.md) for the full user guide, the per-marker
+[`docs/layers/CODE_HEALTH.md`](CODE_HEALTH.md) for the full user guide, the per-marker
 reference, and the calibration story, and
 [repowise-bench](https://github.com/repowise-dev/repowise-bench) for the
 reproducible defect-prediction and head-to-head benchmarks.
@@ -251,7 +251,7 @@ and notifies the agent:
 Run `repowise update` to refresh documentation and graph context.
 ```
 
-> **Related capability:** [Distill](DISTILL.md) reuses these layers' index
+> **Related capability:** [Distill](../agent/DISTILL.md) reuses these layers' index
 > (symbol bounds, centrality, hotspots) to compress noisy command output and
 > large file reads before the agent sees them, a capability built *on* the
 > five layers, not a sixth layer.
@@ -280,7 +280,7 @@ repowise watch --workspace        # all workspace repos
 ```
 
 A typical single-commit update touches 3–10 pages and completes in under 30
-seconds. Full guide: [`docs/AUTO_SYNC.md`](AUTO_SYNC.md).
+seconds. Full guide: [`docs/scale/AUTO_SYNC.md`](../scale/AUTO_SYNC.md).
 
 ---
 

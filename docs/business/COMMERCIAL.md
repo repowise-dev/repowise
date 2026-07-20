@@ -10,8 +10,8 @@ license adds on top, the honest GA / in-development / planned status of each
 commercial capability, the on-premise deployment model, and the available pricing
 models. Specific pricing figures are provided in a separate proposal.
 
-> **Looking for the open-source feature set?** The [README](../README.md) and
-> [docs/](.) cover everything in the AGPL distribution. This document is about what
+> **Looking for the open-source feature set?** The [README](../../README.md) and
+> [docs/](..) cover everything in the AGPL distribution. This document is about what
 > sits *on top* of it commercially.
 
 ---
@@ -19,7 +19,7 @@ models. Specific pricing figures are provided in a separate proposal.
 ## 1. Who the commercial license is for
 
 The open-source distribution covers the full developer-experience surface — the five
-intelligence layers, the nine MCP tools, multi-repo workspaces, the local dashboard,
+intelligence layers, the ten MCP tools, multi-repo workspaces, the local dashboard,
 auto-sync, and auto-generated `CLAUDE.md`. That is everything an engineer or a team
 needs to make their AI coding agents codebase-aware.
 
@@ -41,7 +41,7 @@ scale, in a regulated or security-sensitive environment**:
 
 All of the following ship in `pip install repowise` today, free for internal use.
 
-- **Five intelligence layers** — Graph (tree-sitter AST across 15 languages, two-tier
+- **Five intelligence layers** — Graph (tree-sitter AST across 16 languages, two-tier
   dependency graph, call resolution, heritage extraction, Leiden communities,
   PageRank / betweenness / SCC), Git (hotspots, ownership, co-change pairs, bus
   factor, significant commits, contributor profiles, module health), Documentation
@@ -68,20 +68,26 @@ All of the following ship in `pip install repowise` today, free for internal use
   Security (local pattern scan), Knowledge Map, and the workspace views.
 - **Dead-code detection** — pure graph traversal, confidence-tiered, framework-aware
   (ASP.NET, Django, FastAPI, Flask, Rails, Laravel), dynamic-import aware.
-- **Privacy** — self-hosted; source never leaves your infrastructure; BYOK or fully
-  offline via Ollama; zero telemetry. Stored: graph, non-reversible embeddings, wiki
-  pages, git metadata, decision records. Raw source is processed transiently and
-  never persisted.
+- **Privacy** (self-hosted): source never leaves your infrastructure, BYOK or fully
+  offline via Ollama. Anonymous, opt-out usage telemetry (command names and coarse
+  environment only, never code, paths or repo names) can be turned off with
+  `repowise telemetry disable`, `DO_NOT_TRACK=1`, or by running offline. Stored:
+  graph, non-reversible embeddings, wiki pages, git metadata, decision records. Raw
+  source is processed transiently and never persisted. Full detail:
+  [SECURITY_COMPLIANCE.md](SECURITY_COMPLIANCE.md) and
+  [TELEMETRY.md](../reference/TELEMETRY.md).
 
 ---
 
 ## 3. First-class language coverage
 
-Repowise treats **9 languages at Full tier** — Python, TypeScript, JavaScript, Java,
-Kotlin, Go, Rust, C++, and **C#** — with AST parsing, import resolution, named
-bindings, call resolution, heritage extraction, multi-project workspace resolvers,
-framework-aware edges, and per-language dynamic-hint extractors. A further 5 languages
-(C, Ruby, Swift, Scala, PHP) sit at Good tier.
+Repowise treats **11 languages at Full tier** (Python, TypeScript, JavaScript, Java,
+Kotlin, Go, Rust, C++, **C#**, Scala, and Ruby) with AST parsing, import resolution,
+named bindings, call resolution, heritage extraction, multi-project workspace
+resolvers, framework-aware edges, per-language dynamic-hint extractors, and
+code-health markers. A further 4 languages (C, Swift, PHP, Dart) sit at Good tier,
+and Luau is partial. SQL/dbt, shell, and the config formats are handled by dedicated
+extractors on top of that.
 
 For estates built on a particular stack, the relevant Full-tier capabilities are
 worth calling out. For **.NET**, as one example:

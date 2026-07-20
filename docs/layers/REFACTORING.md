@@ -20,7 +20,7 @@ computed with no re-parse, **no LLM, no network**, inside the same <30s budget. 
 LLM layer (code generation) is a separate, strictly opt-in step ([below](#opt-in-code-generation)).
 
 <div align="center">
-<img src="../.github/assets/health-loop.svg" alt="repowise code-health loop: markers fan into three signals, the graph and git history locate risk, and refactoring intelligence emits concrete plans an agent executes" width="100%" />
+<img src="../../.github/assets/health-loop.svg" alt="repowise code-health loop: markers fan into three signals, the graph and git history locate risk, and refactoring intelligence emits concrete plans an agent executes" width="100%" />
 </div>
 
 ## The six detectors
@@ -180,9 +180,9 @@ the same way a marker is:
 
 ## See also
 
-- [`docs/CODE_HEALTH.md`](CODE_HEALTH.md): the markers and the three health
+- [`docs/layers/CODE_HEALTH.md`](CODE_HEALTH.md): the markers and the three health
   signals the suggestions are built on.
-- [`docs/INTELLIGENCE_LAYERS.md`](INTELLIGENCE_LAYERS.md): how code health fits
+- [`docs/layers/INTELLIGENCE_LAYERS.md`](INTELLIGENCE_LAYERS.md): how code health fits
   the five-layer index.
-- [`docs/MCP_TOOLS.md`](MCP_TOOLS.md): the `get_health(include=["refactoring"])`
+- [`docs/agent/MCP_TOOLS.md`](../agent/MCP_TOOLS.md): the `get_health(include=["refactoring"])`
   response shape.

@@ -109,10 +109,10 @@ repowise/
 
 5. **Add tests** in `tests/unit/test_providers/` — mock the subprocess, test success/error/timeout paths (see `test_codex_cli_provider.py` for the pattern)
 
-6. **Write docs** — `docs/<NAME>.md` and `website/<name>.md`, following `docs/CODEX.md` and `docs/OPENCODE.md`.
+6. **Write docs** — `docs/<NAME>.md` and `website/<name>.md`, following `docs/agent/CODEX.md` and `docs/agent/OPENCODE.md`.
 
 Adding a new language or LLM provider has a dedicated recipe — see
-[docs/LANGUAGE_SUPPORT.md](../docs/LANGUAGE_SUPPORT.md).
+[docs/layers/LANGUAGE_SUPPORT.md](../docs/layers/LANGUAGE_SUPPORT.md).
 
 ## Testing
 

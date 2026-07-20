@@ -183,7 +183,7 @@ repowise init [PATH]
 | `--model` | Model name override (e.g., `claude-sonnet-4-6`, `gpt-5.4-nano`) |
 | `--embedder` | Embedder for semantic search: `gemini`, `openai`, `mock`. Auto-detected from env vars. |
 | `--index-only` | Skip LLM generation entirely. Only parse, build graph, and index git. Free. |
-| `--wiki-style` | Documentation voice: `comprehensive` (default), `caveman` (token-condensed), `reference` (API-manual), `tutorial`. Saved to config; switch later with `repowise restyle`. See [WIKI_STYLES.md](WIKI_STYLES.md). |
+| `--wiki-style` | Documentation voice: `comprehensive` (default), `caveman` (token-condensed), `reference` (API-manual), `tutorial`. Saved to config; switch later with `repowise restyle`. See [WIKI_STYLES.md](../layers/WIKI_STYLES.md). |
 | `--language` | Output language for generated wiki pages (`en` default; also `zh`, `ru`, `hi`, `es`, `fr`, `de`, `ja`, `ko`, `it`, `pt`, `nl`, `pl`, `tr`, `ar`). Prose is translated; code, file paths, and symbol names are not. Saved to config so `update` keeps the language. |
 | `--dry-run` | Show generation plan and cost estimate without running anything. |
 | `--test-run` | Generate docs for only the top 10 files (by PageRank), quick validation. |
@@ -395,7 +395,7 @@ This is how you connect repowise to Claude Code, Cursor, Cline, Windsurf, and ot
 
 In workspace mode, tools are workspace-aware, pass `repo="backend"` to target a specific repo or `repo="all"` to query across the entire workspace. The default repo is used when `repo` is omitted.
 
-See [MCP Integration](#mcp-integration-with-ai-editors) for setup instructions. Full tool reference: [MCP_TOOLS.md](MCP_TOOLS.md)
+See [MCP Integration](#mcp-integration-with-ai-editors) for setup instructions. Full tool reference: [MCP_TOOLS.md](../agent/MCP_TOOLS.md)
 
 ---
 
@@ -624,7 +624,7 @@ upgrades automatically and never fails `doctor` when PyPI is unavailable.
 
 ### `repowise workspace`
 
-Manage multi-repo workspaces. See [Workspaces](WORKSPACES.md) for the full guide.
+Manage multi-repo workspaces. See [Workspaces](../scale/WORKSPACES.md) for the full guide.
 
 **Subcommands:**
 
@@ -803,7 +803,7 @@ Run:
 repowise init --codex
 ```
 
-This writes project-local `.codex/config.toml`, `.codex/hooks.json`, and managed `AGENTS.md`. The Codex config uses `repowise mcp` from the repository root, so it does not require editing global `~/.codex/config.toml`. See [Codex Integration](CODEX.md).
+This writes project-local `.codex/config.toml`, `.codex/hooks.json`, and managed `AGENTS.md`. The Codex config uses `repowise mcp` from the repository root, so it does not require editing global `~/.codex/config.toml`. See [Codex Integration](../agent/CODEX.md).
 
 ### Cursor / Windsurf / Cline
 
@@ -849,10 +849,10 @@ The full inventory, the SessionStart freshness + relevant-decisions block, the
 PostToolUse Grep/Glob enrichment, git/edit freshness, read-intelligence, and
 edit-time "governed by" notices, the opt-in distill command-rewrite hook, the
 Codex hooks, and the exact `settings.json` entries, lives in a dedicated guide:
-**[HOOKS.md →](HOOKS.md)**.
+**[HOOKS.md →](../agent/HOOKS.md)**.
 
 The post-commit git hook that auto-syncs the wiki is documented under
-[`repowise hook`](#repowise-hook) above and in [AUTO_SYNC.md](AUTO_SYNC.md).
+[`repowise hook`](#repowise-hook) above and in [AUTO_SYNC.md](../scale/AUTO_SYNC.md).
 
 ---
 
@@ -861,7 +861,7 @@ The post-commit git hook that auto-syncs the wiki is documented under
 Most of an agent's context is spent on command output it never needed, 300
 lines of passing tests to find 4 failures, a full `git log` for "what changed
 recently". Distill compresses noisy output **before the agent reads it**,
-errors-first and fully reversible. Full guide: [DISTILL.md](DISTILL.md).
+errors-first and fully reversible. Full guide: [DISTILL.md](../agent/DISTILL.md).
 
 **Try it from the terminal:**
 
@@ -895,7 +895,7 @@ repowise hook rewrite install     # or answer Yes at the `repowise init` prompt
 
 The hook never rewrites pipes/compound commands or watch modes, and defaults
 to `ask` so you see every rewritten command. Per-repo behavior lives under
-`distill.commands` in `.repowise/config.yaml` (see [CONFIG.md](CONFIG.md)).
+`distill.commands` in `.repowise/config.yaml` (see [CONFIG.md](../reference/CONFIG.md)).
 
 **Skeletons for large files.** For structure-level questions about an indexed
 file, `get_context(["path"], include=["skeleton"])` returns every signature
@@ -919,7 +919,7 @@ command/hook path with MCP tool-response savings.
 
 ## Auto-Sync
 
-repowise supports five methods to keep your wiki in sync with code changes. See [Auto-Sync](AUTO_SYNC.md) for the full guide.
+repowise supports five methods to keep your wiki in sync with code changes. See [Auto-Sync](../scale/AUTO_SYNC.md) for the full guide.
 
 | Method | Command | Best for |
 |--------|---------|----------|

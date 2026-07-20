@@ -8,7 +8,7 @@ prose in the template and silently drifted from the live registry.
 Row style: one entry per tool, 1-3 sentences, leading with when to call it.
 The load-bearing response fields (symbol_bodies, verified, continuation,
 directive, search_method) stay named — they are what the trust protocol keys
-on. Reference detail lives in docs/MCP_TOOLS.md, not here.
+on. Reference detail lives in docs/agent/MCP_TOOLS.md, not here.
 """
 
 from __future__ import annotations

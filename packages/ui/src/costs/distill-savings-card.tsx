@@ -51,7 +51,7 @@ export interface DistillSavingsCardProps {
   data?: DistillSavingsData;
 }
 
-const DISTILL_DOCS = "https://github.com/repowise-dev/repowise/blob/main/docs/DISTILL.md";
+const DISTILL_DOCS = "https://github.com/repowise-dev/repowise/blob/main/docs/agent/DISTILL.md";
 
 /** Humanize the resolved pricing agent for the "priced at" caption. */
 function agentLabel(agent: string | undefined): string {

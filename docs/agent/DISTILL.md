@@ -396,7 +396,7 @@ and whether the rewrite hook is installed.
 
 ## See also
 
-- [CLI_REFERENCE.md](CLI_REFERENCE.md) — `distill`, `expand`, `saved`, `hook rewrite`
+- [CLI_REFERENCE.md](../reference/CLI_REFERENCE.md) — `distill`, `expand`, `saved`, `hook rewrite`
 - [MCP_TOOLS.md](MCP_TOOLS.md) — `_meta.omitted`, skeleton include, `get_symbol` ref overload
-- [CONFIG.md](CONFIG.md) — the `distill:` block
-- [INTELLIGENCE_LAYERS.md](INTELLIGENCE_LAYERS.md) — the five layers whose index Distill reuses
+- [CONFIG.md](../reference/CONFIG.md) — the `distill:` block
+- [INTELLIGENCE_LAYERS.md](../layers/INTELLIGENCE_LAYERS.md) — the five layers whose index Distill reuses

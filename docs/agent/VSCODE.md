@@ -136,4 +136,4 @@ and reads the index under `.repowise/`. It sends no telemetry of its own. The
 CLI's own telemetry opt-out is respected because the extension itself sends
 nothing.
 
-The extension source lives in [`packages/vscode`](../packages/vscode).
+The extension source lives in [`packages/vscode`](../../packages/vscode).

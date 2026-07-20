@@ -4,7 +4,7 @@ The 1-10 health score is the single number we surface. On top of it we put ONE
 categorical scheme: the 3 defect-backed buckets **Healthy / Warning / Alert**.
 Their cutoffs are not arbitrary - on our calibration corpus Alert files carry
 roughly 17x the per-file defect rate of Healthy files, so the boundaries are
-empirically defensible (see ``docs/CODE_HEALTH.md``).
+empirically defensible (see ``docs/layers/CODE_HEALTH.md``).
 
 This module is the SINGLE SOURCE OF TRUTH for the cutoffs. The TypeScript
 mirror lives in ``packages/types/src/health.ts`` (``ALERT_MAX`` / ``HEALTHY_MIN``

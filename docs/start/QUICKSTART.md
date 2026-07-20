@@ -101,7 +101,7 @@ repowise mcp --transport stdio
 > /plugin install repowise@repowise
 > ```
 
-> **Automatic for Codex:** run `repowise init --codex` to write project-local `.codex/config.toml`, `.codex/hooks.json`, and managed `AGENTS.md`. See [Codex Integration](CODEX.md).
+> **Automatic for Codex:** run `repowise init --codex` to write project-local `.codex/config.toml`, `.codex/hooks.json`, and managed `AGENTS.md`. See [Codex Integration](../agent/CODEX.md).
 
 **Cut your agent's context spend (optional):**
 
@@ -114,7 +114,7 @@ Distill compresses noisy command output (tests, builds, git, searches) before
 the agent reads it — **60–90% fewer tokens on noisy commands, with zero
 error-line loss** (measured on a public OSS repo). Opt into the Claude Code
 rewrite hook at `init` (or `repowise hook rewrite install`) to apply it
-automatically, with each rewrite shown for approval. See [Distill](DISTILL.md).
+automatically, with each rewrite shown for approval. See [Distill](../agent/DISTILL.md).
 
 ## 5. Keep It in Sync
 
@@ -136,9 +136,9 @@ Or run continuous sync while you work:
 repowise watch
 ```
 
-Working with `git worktree`? New worktrees seed their index from your main checkout automatically on the first `repowise init` or `repowise update`; no re-indexing. See [WORKTREES.md](WORKTREES.md).
+Working with `git worktree`? New worktrees seed their index from your main checkout automatically on the first `repowise init` or `repowise update`; no re-indexing. See [WORKTREES.md](../scale/WORKTREES.md).
 
-See [Auto-Sync](AUTO_SYNC.md) for all sync methods (hooks, file watcher, GitHub/GitLab webhooks, polling).
+See [Auto-Sync](../scale/AUTO_SYNC.md) for all sync methods (hooks, file watcher, GitHub/GitLab webhooks, polling).
 
 ---
 
@@ -160,7 +160,7 @@ repowise update --workspace          # update all stale repos
 repowise hook install --workspace    # install post-commit hooks for all repos
 ```
 
-Full guide: [Workspaces](WORKSPACES.md)
+Full guide: [Workspaces](../scale/WORKSPACES.md)
 
 ---
 
@@ -227,8 +227,8 @@ REPOWISE_API_URL=http://localhost:7337 npm run dev --workspace packages/web
 ## What's Next
 
 - **[User Guide](USER_GUIDE.md)** — full CLI reference, web UI features, MCP setup, common workflows, and troubleshooting
-- **[CLI Reference](CLI_REFERENCE.md)** — every command with every flag
-- **[MCP Tools](MCP_TOOLS.md)** — full tool reference, configuration, parameters, and examples
-- **[Workspaces](WORKSPACES.md)** — multi-repo workspace setup and cross-repo intelligence
-- **[Auto-Sync](AUTO_SYNC.md)** — hooks, file watcher, webhooks, polling
-- **[Architecture](architecture/ARCHITECTURE.md)** — how repowise is built internally
+- **[CLI Reference](../reference/CLI_REFERENCE.md)** — every command with every flag
+- **[MCP Tools](../agent/MCP_TOOLS.md)** — full tool reference, configuration, parameters, and examples
+- **[Workspaces](../scale/WORKSPACES.md)** — multi-repo workspace setup and cross-repo intelligence
+- **[Auto-Sync](../scale/AUTO_SYNC.md)** — hooks, file watcher, webhooks, polling
+- **[Architecture](../architecture/ARCHITECTURE.md)** — how repowise is built internally

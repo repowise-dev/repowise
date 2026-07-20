@@ -3,7 +3,7 @@
 Every registered MCP tool's docstring ships verbatim inside the tool schema
 that agent harnesses load (and may truncate). A docstring past ~400 tokens
 risks arriving cut off mid-sentence, and pushes schema-loading cost onto
-every session. The reference-manual detail belongs in docs/MCP_TOOLS.md.
+every session. The reference-manual detail belongs in docs/agent/MCP_TOOLS.md.
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ def test_every_tool_docstring_fits_the_schema_budget():
     assert not oversized, (
         f"Tool docstrings over {_MAX_DOCSTRING_CHARS} chars (~400 tokens): "
         f"{oversized}. Trim the docstring; move reference detail to "
-        "docs/MCP_TOOLS.md."
+        "docs/agent/MCP_TOOLS.md."
     )
 
 

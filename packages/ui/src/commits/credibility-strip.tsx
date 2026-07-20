@@ -9,7 +9,7 @@ import {
 
 /**
  * Honest credibility note for the change-risk model. The numbers are the
- * backtested leave-one-repo-out result from `docs/CHANGE_RISK.md` — we show
+ * backtested leave-one-repo-out result from `docs/layers/CHANGE_RISK.md` — we show
  * them rather than imply the score is infallible. The model edges churn-only
  * on average and is stronger on some repos; it is a ranking aid, not a verdict.
  */
