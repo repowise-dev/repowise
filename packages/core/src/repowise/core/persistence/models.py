@@ -850,13 +850,13 @@ class LlmCost(Base):
 class SecurityFinding(Base):
     """A security signal detected during file ingestion or full-history scan.
 
-    Working-tree findings (from indexing) leave ``commit_sha`` / ``commit_at``
-    NULL. Full-history scans (``repowise security scan --history``) populate
-    them so a finding can be tied to the commit that introduced it. The
-    ``(repository_id, file_path, kind, line_number, commit_sha)`` constraint
-    makes re-runs idempotent: the same signal in the same commit is never
-    double-inserted, while a signal that recurs across distinct commits stays
-    a separate row (its provenance differs).
+    Working-tree findings (from indexing) store ``""`` for ``commit_sha`` (not
+    NULL). Full-history scans (``repowise security scan --history``) populate
+    ``commit_sha`` / ``commit_at`` so a finding can be tied to the commit that
+    introduced it. The ``(repository_id, file_path, kind, line_number,
+    commit_sha)`` constraint makes re-runs idempotent: the same signal in the
+    same commit is never double-inserted, while a signal that recurs across
+    distinct commits stays a separate row (its provenance differs).
     """
 
     __tablename__ = "security_findings"
@@ -880,9 +880,9 @@ class SecurityFinding(Base):
     severity: Mapped[str] = mapped_column(String(20), nullable=False)
     snippet: Mapped[str | None] = mapped_column(Text, nullable=True)
     line_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    # Full-history provenance. NULL for working-tree findings. The constraint
-    # above uses these for dedup; for working-tree rows they default to the
-    # empty string so the unique key stays stable.
+    # Full-history provenance. Working-tree rows store "" (not NULL); history
+    # rows store the introducing commit SHA. The constraint above uses these
+    # for dedup.
     commit_sha: Mapped[str | None] = mapped_column(String(40), nullable=True, default="")
     commit_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     detected_at: Mapped[datetime] = mapped_column(

@@ -14,10 +14,9 @@ Design notes (in response to review)
 ------------------------------------
 * **Scan unique blobs, not commits x files.** ``git rev-list --objects --all``
   enumerates every object once, deduped by blob SHA, so each distinct blob's
-  content is scanned a single time. Hits are then attributed to the
-  first-introducing commit for provenance. Git already dedups content by blob,
-  so we get natural dedup + a big speedup for free (vs. ``git ls-tree`` per
-  commit, which re-reads identical content thousands of times).
+  content is scanned a single time. First-introducing commit provenance comes
+  from a single ``git log --reverse --raw`` pass (not ``git ls-tree`` per
+  commit). ``git cat-file --batch`` streams blob contents over one process.
 
 * **History mode defaults to the secret-oriented subset.** Most of the 11
   patterns are code smells (``eval``/``os.system``/``weak_hash``) rather than
@@ -79,6 +78,32 @@ def _parse_author_date(iso: str) -> datetime | None:
         return datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone(UTC)
     except ValueError:
         return None
+
+
+def _parse_cat_file_batch(data: bytes) -> dict[str, str]:
+    """Parse ``git cat-file --batch`` stdout into ``{blob_sha: content}``."""
+    contents: dict[str, str] = {}
+    pos = 0
+    while pos < len(data):
+        nl = data.find(b"\n", pos)
+        if nl == -1:
+            break
+        header = data[pos:nl].decode("ascii", errors="replace")
+        pos = nl + 1
+        parts = header.split()
+        if len(parts) < 3:
+            continue
+        sha = parts[0]
+        try:
+            size = int(parts[2])
+        except ValueError:
+            continue
+        chunk = data[pos : pos + size]
+        pos += size
+        if pos < len(data) and data[pos : pos + 1] == b"\n":
+            pos += 1
+        contents[sha] = chunk.decode("utf-8", errors="replace")
+    return contents
 
 
 @dataclass
@@ -159,21 +184,80 @@ class HistorySecurityScanner:
             line = line.strip()
             if not line:
                 continue
-            parts = line.split()
+            parts = line.split(maxsplit=1)
             if len(parts) < 2:
                 continue
-            obj_sha, obj_type = parts[0], parts[1]
-            if obj_type != "blob":
-                continue
-            path = parts[2] if len(parts) > 2 else ""
-            # Only the first reference to a blob is kept; later duplicates are
-            # ignored — that is the dedup the maintainer asked for.
+            obj_sha, path = parts[0], parts[1]
             blobs.setdefault(obj_sha, path)
         return blobs
 
-    def _read_blob(self, repo_path: Path, blob_sha: str) -> str:
-        """Return the textual content of *blob_sha* (empty on failure)."""
-        return _run_git(repo_path, ["cat-file", "-p", blob_sha], timeout=60.0)
+    def _blob_introductions(
+        self, repo_path: Path, since: str | None, to: str | None
+    ) -> tuple[dict[str, str], dict[str, str]]:
+        """Return ``({blob_sha: first_commit}, {commit_sha: author_iso})``.
+
+        One ``git log --reverse --raw`` pass attributes each blob to the oldest
+        commit that introduced it, avoiding an O(commits x files) ``ls-tree``
+        loop.
+        """
+        if since and to:
+            rev_range = f"{since}..{to}"
+        elif to:
+            rev_range = to
+        elif since:
+            rev_range = f"{since}..HEAD"
+        else:
+            rev_range = "--all"
+
+        raw = _run_git(
+            repo_path,
+            ["log", "--reverse", "--format=%H%x1f%aI", "--raw", rev_range],
+            timeout=120.0,
+        )
+        blob_introduced_at: dict[str, str] = {}
+        commit_dates: dict[str, str] = {}
+        current_commit: str | None = None
+
+        for line in raw.splitlines():
+            if not line:
+                continue
+            if line.startswith(":"):
+                if current_commit is None:
+                    continue
+                parts = line.split()
+                if len(parts) < 3:
+                    continue
+                blob_sha = parts[2]
+                blob_introduced_at.setdefault(blob_sha, current_commit)
+                continue
+            if "\x1f" not in line:
+                continue
+            sha, _, iso = line.partition("\x1f")
+            sha = sha.strip()
+            if not sha:
+                continue
+            current_commit = sha
+            commit_dates[sha] = iso.strip()
+
+        return blob_introduced_at, commit_dates
+
+    def _read_blobs_batch(self, repo_path: Path, blob_shas: list[str]) -> dict[str, str]:
+        """Return ``{blob_sha: content}`` via a single ``git cat-file --batch``."""
+        if not blob_shas:
+            return {}
+        try:
+            result = subprocess.run(
+                ["git", "cat-file", "--batch"],
+                cwd=str(repo_path),
+                input=("\n".join(blob_shas) + "\n").encode(),
+                capture_output=True,
+                timeout=120.0,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return {}
+        if result.returncode != 0:
+            return {}
+        return _parse_cat_file_batch(result.stdout)
 
     @staticmethod
     def _is_source(path: str) -> bool:
@@ -192,17 +276,6 @@ class HistorySecurityScanner:
         if secrets_only:
             return kind in SECRET_KINDS
         return True
-
-    def _blobs_in_commit(self, repo_path: Path, commit: str) -> list[str]:
-        """Return the blob SHAs tracked by *commit* (git ls-tree -r)."""
-        raw = _run_git(repo_path, ["ls-tree", "-r", commit])
-        out: list[str] = []
-        for line in raw.splitlines():
-            parts = line.split()
-            if len(parts) < 4 or parts[1] != "blob":
-                continue
-            out.append(parts[2])
-        return out
 
     # ------------------------------------------------------------------
     # Scan driver
@@ -241,39 +314,41 @@ class HistorySecurityScanner:
         if not commits:
             return summary
 
-        # Distinct blobs, deduped by content hash. Each blob is scanned once.
         blobs = self._unique_blobs(repo_path, since, to)
         summary.blobs_scanned = len(blobs)
+        blob_introduced_at, commit_dates = self._blob_introductions(repo_path, since, to)
 
-        # Attribute each blob to the oldest commit (by walk order) that
-        # contains it, so a hit is reported against its first introduction.
-        blob_introduced_at: dict[str, str] = {}
-        for commit, _iso in commits:
-            for blob_sha in self._blobs_in_commit(repo_path, commit):
-                blob_introduced_at.setdefault(blob_sha, commit)
+        source_items = [
+            (blob_sha, path)
+            for blob_sha, path in blobs.items()
+            if not path or self._is_source(path)
+        ]
+        contents_map = self._read_blobs_batch(
+            repo_path, [blob_sha for blob_sha, _ in source_items]
+        )
 
-        scanned = 0
-        for blob_sha, path in blobs.items():
-            scanned += 1
-            if path and not self._is_source(path):
-                continue
-            content = self._read_blob(repo_path, blob_sha)
+        for idx, (blob_sha, path) in enumerate(source_items, start=1):
+            summary.files_scanned += 1
+            if progress is not None:
+                progress(f"scanned blob {idx}/{len(source_items)}")
+
+            content = contents_map.get(blob_sha, "")
             findings = await self._scanner.scan_file(path, content, [])
             if not findings:
                 continue
-            # Gate to the secret-oriented subset by default.
+
             kept = [
                 f for f in findings
                 if self._passes_gate(f["kind"], secrets_only=secrets_only)
             ]
             if not kept:
                 continue
+
             commit_sha = blob_introduced_at.get(blob_sha)
             commit_at: datetime | None = None
-            for c, iso in commits:
-                if c == commit_sha:
-                    commit_at = _parse_author_date(iso)
-                    break
+            if commit_sha:
+                commit_at = _parse_author_date(commit_dates.get(commit_sha, ""))
+
             inserted = await self._scanner.persist(
                 path or "<unknown>",
                 kept,
@@ -287,8 +362,4 @@ class HistorySecurityScanner:
                 summary.by_severity[sev] = summary.by_severity.get(sev, 0) + 1
                 summary.by_kind[kind] = summary.by_kind.get(kind, 0) + 1
 
-            if progress is not None:
-                progress(f"scanned blob {scanned}/{summary.blobs_scanned}")
-
-        summary.files_scanned = scanned
         return summary

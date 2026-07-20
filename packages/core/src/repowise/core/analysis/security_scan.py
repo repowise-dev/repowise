@@ -22,8 +22,11 @@ import re
 from datetime import UTC, datetime
 from typing import Any
 
+import structlog
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
+
+logger = structlog.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Pattern registry: (compiled_pattern, kind_label, severity)
@@ -138,9 +141,9 @@ class SecurityScanner:
         ``INSERT OR IGNORE`` (``ON CONFLICT ON CONSTRAINT`` is unsupported).
 
         ``commit_sha`` / ``commit_at`` carry the git-history provenance; omit
-        them (working-tree scans) to leave the columns NULL/empty. The dedup key
-        uses ``""`` (not NULL) for working-tree findings so the constraint keys
-        identically across runs.
+        them (working-tree scans) and the dedup key stores ``""`` for
+        ``commit_sha`` (not NULL) so the unique constraint keys identically
+        across runs.
 
         A per-row failure is skipped (``continue``) rather than aborting the
         whole batch, so one malformed finding cannot silently drop the rest.
@@ -157,12 +160,13 @@ class SecurityScanner:
         sha_key = commit_sha or ""
         uses_sqlite = self._uses_sqlite()
         if uses_sqlite:
-            conflict_clause = "INSERT OR IGNORE INTO security_findings "
+            insert_prefix = "INSERT OR IGNORE INTO security_findings "
+            conflict_suffix = ""
         else:
-            conflict_clause = (
-                "INSERT INTO security_findings "
-                "ON CONFLICT ON CONSTRAINT uq_security_finding_provenance "
-                "DO NOTHING "
+            insert_prefix = "INSERT INTO security_findings "
+            conflict_suffix = (
+                " ON CONFLICT ON CONSTRAINT uq_security_finding_provenance "
+                "DO NOTHING"
             )
 
         inserted = 0
@@ -170,11 +174,12 @@ class SecurityScanner:
             try:
                 result = await self._session.execute(
                     text(
-                        conflict_clause
+                        insert_prefix
                         + "(repository_id, file_path, kind, severity, snippet, line_number, "
                         "commit_sha, commit_at, detected_at) "
                         "VALUES (:repo_id, :file_path, :kind, :severity, :snippet, :line, "
                         ":commit_sha, :commit_at, :detected_at)"
+                        + conflict_suffix
                     ),
                     {
                         "repo_id": self._repo_id,
@@ -190,5 +195,11 @@ class SecurityScanner:
                 )
                 inserted += max(result.rowcount or 0, 0)
             except Exception:
+                logger.warning(
+                    "security_finding_persist_failed",
+                    file_path=file_path,
+                    kind=finding.get("kind"),
+                    exc_info=True,
+                )
                 continue
         return inserted
