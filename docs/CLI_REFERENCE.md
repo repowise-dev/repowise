@@ -702,6 +702,7 @@ This defaults to `--index --docs` when a provider is configured, the added repo 
 | `--provider` / `--model` | Override the inherited provider/model |
 | `--concurrency` | Max concurrent LLM calls for this repo's generation |
 | `--primary` | Mark this repo as the workspace default |
+| `--verbose`, `-v` | Show debug logs from indexing and doc generation |
 
 ```bash
 repowise workspace add ../new-service --alias api-gateway
@@ -720,6 +721,7 @@ Re-scan the workspace directory for new repos not yet added.
 | Flag | Description |
 |------|-------------|
 | `--yes` / `-y` | Auto-add all discovered repos without prompting |
+| `--verbose`, `-v` | Show debug logs while scanning for repositories |
 
 ```bash
 repowise workspace scan
