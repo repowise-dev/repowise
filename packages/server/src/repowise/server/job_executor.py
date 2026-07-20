@@ -106,7 +106,10 @@ def _repo_wiki_style(repo: Any, repo_path: str) -> str:
     return resolve_style(style, repo_path=repo_path).name
 
 
-# Valid job execution modes handled by execute_job
+# Valid job execution modes handled by execute_job.
+# NOTE: "single_page" is intentionally excluded — routers/pages.py (line 121) creates
+# single_page job rows, but those are never dispatched to execute_job. The dormant
+# page-regeneration endpoint deserves its own dedicated handling (tracked separately).
 VALID_JOB_MODES: set[str] = {"sync", "full_resync", "initial_index", "index_only"}
 
 
@@ -344,7 +347,7 @@ async def execute_job(
             # Resolve the wiki style while ``repo`` is still session-attached.
             wiki_style = _repo_wiki_style(repo, repo_path)
             config = json.loads(job.config_json) if job.config_json else {}
-            mode = config.get("mode") or "sync"
+            mode = str(config.get("mode") or "sync")
             if mode not in VALID_JOB_MODES:
                 valid_str = ", ".join(sorted(VALID_JOB_MODES))
                 raise ValueError(
