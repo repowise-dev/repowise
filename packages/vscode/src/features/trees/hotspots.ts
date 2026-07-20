@@ -4,6 +4,7 @@ import type {
   HotspotResponse,
   OwnershipEntry,
 } from "@repowise-dev/api-client/types";
+import { summarizeFixHistory } from "@repowise-dev/ui/lib/fix-history";
 import {
   baseName,
   openFileCommand,
@@ -41,17 +42,34 @@ export class HotspotsTreeProvider extends RepowiseTreeProvider {
     return page.items.map((row) => this.hotspotNode(row));
   }
 
+  /**
+   * One hotspot row. Commit counts alone contradicted the file hover sitting
+   * beside this tree, which has shown counted bug fixes since the fix rollup
+   * landed, so the fix history rides along here too. Silent on files with no
+   * counted fixes, and aggregate only — no inducing commit is named.
+   */
   private hotspotNode(row: HotspotResponse): RepoTreeNode {
     const owner = row.primary_owner ?? "unknown";
+    const fix = summarizeFixHistory(
+      row.prior_defect_count,
+      row.last_fix_at,
+      row.bug_magnet,
+    );
     const tooltip = new vscode.MarkdownString();
     tooltip.appendMarkdown(`\`${row.file_path}\`\n\n`);
     tooltip.appendMarkdown(`- Churn percentile: ${Math.round(row.churn_percentile)}\n`);
+    if (fix) {
+      const magnet = fix.magnet ? " **bug magnet**" : "";
+      tooltip.appendMarkdown(`- Bug fixes: ${fix.label}${magnet}\n`);
+    }
     tooltip.appendMarkdown(`- Bus factor: ${row.bus_factor}\n`);
     tooltip.appendMarkdown(`- Contributors: ${row.contributor_count}\n`);
     return {
       key: `hotspot:${row.file_path}`,
       label: baseName(row.file_path),
-      description: `${row.commit_count_90d} commits · ${owner}`,
+      description: fix
+        ? `${row.commit_count_90d} commits · ${fix.countLabel} · ${owner}`
+        : `${row.commit_count_90d} commits · ${owner}`,
       tooltip,
       icon: new vscode.ThemeIcon("flame"),
       collapsibleState: vscode.TreeItemCollapsibleState.None,

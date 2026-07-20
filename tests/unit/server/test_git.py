@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 
 import pytest
 from httpx import AsyncClient
@@ -10,6 +11,8 @@ from httpx import AsyncClient
 from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
 from tests.unit.server.conftest import create_test_repo
+
+_LAST_FIX_AT = datetime(2026, 3, 1, 12, 0, tzinfo=UTC)
 
 
 async def _insert_git_metadata(session_factory, repo_id: str) -> None:
@@ -37,6 +40,8 @@ async def _insert_git_metadata(session_factory, repo_id: str) -> None:
             change_entropy=1.5,
             change_entropy_pct=0.9,
             prior_defect_count=4,
+            bug_magnet=True,
+            last_fix_at=_LAST_FIX_AT,
             temporal_hotspot_score=12.3,
             commit_count_capped=True,
             original_path="src/old_main.py",
@@ -109,6 +114,36 @@ async def test_get_hotspots(client: AsyncClient, app) -> None:
     assert data[0]["change_entropy_pct"] == 90.0
     assert data[0]["prior_defect_count"] == 4
     assert data[0]["original_path"] == "src/old_main.py"
+    # The magnet flag rides with its timestamp: consumers must be able to put
+    # an age beside it, or they drop the flag rather than show it unanchored.
+    assert data[0]["bug_magnet"] is True
+    assert data[0]["last_fix_at"].startswith("2026-03-01T12:00:00")
+
+
+@pytest.mark.asyncio
+async def test_hotspots_omit_fix_flag_when_never_fixed(client: AsyncClient, app) -> None:
+    """A file with no counted fixes reports the flag off and no timestamp."""
+    repo = await create_test_repo(client)
+    async with get_session(app.state.session_factory) as session:
+        await crud.upsert_git_metadata(
+            session,
+            repository_id=repo["id"],
+            file_path="src/clean.py",
+            commit_count_total=30,
+            commit_count_90d=9,
+            commit_count_30d=2,
+            is_hotspot=True,
+            is_stable=False,
+            churn_percentile=0.8,
+            age_days=100,
+        )
+
+    resp = await client.get(f"/api/repos/{repo['id']}/hotspots")
+    assert resp.status_code == 200
+    row = resp.json()["items"][0]
+    assert row["prior_defect_count"] == 0
+    assert row["bug_magnet"] is False
+    assert row["last_fix_at"] is None
 
 
 @pytest.mark.asyncio

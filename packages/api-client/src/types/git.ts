@@ -74,6 +74,10 @@ export interface HotspotResponse {
   change_entropy?: number;
   change_entropy_pct?: number;
   prior_defect_count?: number;
+  /** Decayed fix mass past its trigger. A recency claim, so any copy showing
+   *  it must show `last_fix_at` too. */
+  bug_magnet?: boolean;
+  last_fix_at?: string | null;
   original_path?: string | null;
 }
 

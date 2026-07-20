@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { useState, useMemo } from "react";
-import { TrendingUp, TrendingDown, Search, Flame, ArrowUpDown, ArrowUp, ArrowDown, GitBranch, BookOpen, Radius, ChevronRight, ChevronDown } from "lucide-react";
+import { TrendingUp, TrendingDown, Search, Flame, Bug, ArrowUpDown, ArrowUp, ArrowDown, GitBranch, BookOpen, Radius, ChevronRight, ChevronDown } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { Input } from "../ui/input";
 import { EmptyState } from "../shared/empty-state";
@@ -11,6 +11,7 @@ import { RowActions } from "../shared/row-actions";
 import { AiPromptButton } from "../health/ai-prompt-button";
 import { ChurnBar } from "./churn-bar";
 import { formatLOC } from "../lib/format";
+import { summarizeFixHistory } from "../lib/fix-history";
 import { cn } from "../lib/cn";
 import { useVirtualRows } from "../shared/virtualized-table";
 import { clickableRowProps, CLICKABLE_ROW_CLS } from "../shared/responsive-table";
@@ -54,9 +55,13 @@ interface HotspotTableProps {
   onGeneratePrompt?: (hotspot: Hotspot) => void;
 }
 
-type Filter = "all" | "hot" | "risk" | "accelerating";
-type SortKey = "trend" | "churn" | "commits";
+type Filter = "all" | "hot" | "risk" | "accelerating" | "magnet";
+type SortKey = "trend" | "churn" | "commits" | "fixes";
 type SortDir = "asc" | "desc";
+
+/** A row's fix history, or null when it has none. */
+const fixOf = (h: Hotspot) =>
+  summarizeFixHistory(h.prior_defect_count, h.last_fix_at, h.bug_magnet);
 
 function SortIcon({ column, sortKey, sortDir }: { column: SortKey; sortKey: SortKey; sortDir: SortDir }) {
   if (column !== sortKey) return <ArrowUpDown className="inline h-3 w-3 ml-1 opacity-60" />;
@@ -129,6 +134,9 @@ export function HotspotTable({
       case "accelerating":
         items = items.filter((h) => h.commit_count_30d * 3 > h.commit_count_90d);
         break;
+      case "magnet":
+        items = items.filter((h) => fixOf(h)?.magnet);
+        break;
     }
 
     const sign = sortDir === "desc" ? -1 : 1;
@@ -140,6 +148,8 @@ export function HotspotTable({
       }
       if (sortKey === "churn") return sign * (a.churn_percentile - b.churn_percentile);
       if (sortKey === "commits") return sign * (a.commit_count_90d - b.commit_count_90d);
+      if (sortKey === "fixes")
+        return sign * ((a.prior_defect_count ?? 0) - (b.prior_defect_count ?? 0));
       return 0;
     });
 
@@ -148,13 +158,23 @@ export function HotspotTable({
 
   // Memoize the filter chips' counts so the three full `hotspots` scans only
   // run when the dataset changes, not on every keystroke / sort / expand.
-  const filters: { key: Filter; label: string; count: number }[] = useMemo(
-    () => [
+  const filters: { key: Filter; label: string; count: number }[] = useMemo(() => {
+    const base: { key: Filter; label: string; count: number }[] = [
       { key: "all", label: "All", count: hotspots.length },
       { key: "hot", label: "Hot", count: hotspots.filter((h) => h.is_hotspot).length },
       { key: "risk", label: "Bus factor risk", count: hotspots.filter((h) => h.bus_factor <= 1).length },
       { key: "accelerating", label: "Accelerating", count: hotspots.filter((h) => h.commit_count_30d * 3 > h.commit_count_90d).length },
-    ],
+    ];
+    // A repo with no counted magnets gets no chip at all rather than a zero.
+    const magnets = hotspots.filter((h) => fixOf(h)?.magnet).length;
+    if (magnets > 0) base.push({ key: "magnet", label: "Bug magnet", count: magnets });
+    return base;
+  }, [hotspots]);
+
+  // Churn and bug-fix history are different claims, so the Fixes column only
+  // appears once the index actually carries fix data for this set of files.
+  const hasFixData = useMemo(
+    () => hotspots.some((h) => (h.prior_defect_count ?? 0) > 0),
     [hotspots],
   );
 
@@ -247,6 +267,22 @@ export function HotspotTable({
                     Commits 90d<SortIcon column="commits" sortKey={sortKey} sortDir={sortDir} />
                   </button>
                 </th>
+                {hasFixData && (
+                  <th
+                    scope="col"
+                    aria-sort={ariaSortFor("fixes", sortKey, sortDir)}
+                    className="px-3 py-2.5 text-right text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-24"
+                  >
+                    <button
+                      type="button"
+                      className="cursor-pointer select-none uppercase tracking-wider font-medium hover:text-[var(--color-text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] rounded"
+                      onClick={() => handleSort("fixes")}
+                      title="Bug-fix commits that touched this file in the trailing defect window. Churn counts every change; this counts only the ones that fixed something."
+                    >
+                      Fixes<SortIcon column="fixes" sortKey={sortKey} sortDir={sortDir} />
+                    </button>
+                  </th>
+                )}
                 <th
                   scope="col"
                   aria-sort={ariaSortFor("churn", sortKey, sortDir)}
@@ -298,6 +334,7 @@ export function HotspotTable({
               if (h === undefined) return null;
               const i = vr.index;
               const accelerating = h.commit_count_30d * 3 > h.commit_count_90d;
+              const fix = fixOf(h);
               const trendScore = h.temporal_hotspot_score;
               const isExpanded = expanded.has(h.file_path);
               return (
@@ -350,6 +387,34 @@ export function HotspotTable({
                         )}
                       </span>
                     </td>
+                    {hasFixData && (
+                      <td className="px-3 py-2.5 tabular-nums text-xs text-right">
+                        {fix ? (
+                          <span
+                            className={cn(
+                              "inline-flex items-center justify-end gap-1",
+                              fix.magnet
+                                ? "text-[var(--color-error)]"
+                                : "text-[var(--color-text-secondary)]",
+                            )}
+                            title={
+                              fix.magnet
+                                ? `Bug magnet: ${fix.label}`
+                                : `Bug fixes: ${fix.label}`
+                            }
+                          >
+                            <Bug className="h-3 w-3 shrink-0" />
+                            {fix.count}
+                            {/* The magnet emphasis never travels without its age. */}
+                            {fix.magnet && (
+                              <span className="text-[10px] font-normal">{fix.age}</span>
+                            )}
+                          </span>
+                        ) : (
+                          <span className="text-[var(--color-text-tertiary)]">—</span>
+                        )}
+                      </td>
+                    )}
                     <td className="px-3 py-2.5 hidden lg:table-cell">
                       <div className="flex items-center gap-2">
                         <ChurnBar percentile={h.churn_percentile} className="w-16" />
@@ -419,7 +484,7 @@ export function HotspotTable({
                   {expandable && isExpanded && (
                     <tr className="border-b border-[var(--color-table-divider)] bg-[var(--color-bg-subtle)] last:border-0">
                       <td className="px-1" />
-                      <td colSpan={9} className="px-3 py-3">
+                      <td colSpan={hasFixData ? 10 : 9} className="px-3 py-3">
                         {renderExpandedRow!(h)}
                       </td>
                     </tr>

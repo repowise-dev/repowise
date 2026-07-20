@@ -9,9 +9,11 @@ import {
   GitBranch,
   ArrowRight,
   Flame,
+  Bug,
 } from "lucide-react";
 import { cn } from "@/lib/utils/cn";
 import { getGitMetadata } from "@/lib/api/git";
+import { summarizeFixHistory } from "@repowise-dev/ui/lib/fix-history";
 import { DocsReader } from "@repowise-dev/ui/docs/docs-reader";
 import { Badge } from "@repowise-dev/ui/ui/badge";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
@@ -167,6 +169,12 @@ function AtAGlance({ repoId, targetPath }: { repoId: string; targetPath: string 
   if (!data || data.commit_count_total === 0) return null;
 
   const churnTop = Math.max(1, 100 - Math.round(data.churn_percentile));
+  // Null for a file with no counted fixes, so the panel says nothing new.
+  const fix = summarizeFixHistory(
+    data.prior_defect_count,
+    data.last_fix_at,
+    data.bug_magnet,
+  );
   return (
     <div>
       <div className="flex items-center gap-1.5 mb-2">
@@ -190,6 +198,16 @@ function AtAGlance({ repoId, targetPath }: { repoId: string; targetPath: string 
             Bus factor 1
           </Badge>
         )}
+        {fix?.magnet && (
+          <Badge
+            variant="outline"
+            className="text-[10px] border-[var(--color-error)]/40 text-[var(--color-error)]"
+            title={`Repeatedly bug-fixed, most recently ${fix.age}.`}
+          >
+            <Bug className="h-2.5 w-2.5 mr-1" />
+            Bug magnet
+          </Badge>
+        )}
       </div>
       <div className="mt-2 space-y-1 text-xs text-[var(--color-text-secondary)]">
         {data.primary_owner_name && (
@@ -206,6 +224,15 @@ function AtAGlance({ repoId, targetPath }: { repoId: string; targetPath: string 
           <span className="text-[var(--color-text-tertiary)]">Commits (90d)</span>
           <span className="font-mono">{data.commit_count_90d}</span>
         </div>
+        {fix && (
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[var(--color-text-tertiary)]">Bug fixes</span>
+            <span className="font-mono" title="Bug-fix commits that touched this file in the trailing defect window.">
+              {fix.count}
+              {fix.age && ` · last ${fix.age}`}
+            </span>
+          </div>
+        )}
         <div className="flex items-center justify-between gap-2">
           <span className="text-[var(--color-text-tertiary)]">Contributors</span>
           <span className="font-mono">{data.contributor_count}</span>

@@ -134,6 +134,11 @@ class HotspotResponse(BaseModel):
     change_entropy: float = 0.0
     change_entropy_pct: float = 0.0
     prior_defect_count: int = 0
+    # ``last_fix_at`` travels with ``bug_magnet`` because a magnet flag with no
+    # age describes "fixed 4x last month" and "fixed 4x two years ago"
+    # identically. Consumers drop the flag when the timestamp is missing.
+    bug_magnet: bool = False
+    last_fix_at: datetime | None = None
     original_path: str | None = None
 
 

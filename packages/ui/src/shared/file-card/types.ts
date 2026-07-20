@@ -19,6 +19,11 @@ export interface FileCardData {
     primary_owner?: string | null;
     is_hotspot?: boolean;
     temporal_hotspot_score?: number | null;
+    /** Counted bug fixes in the trailing defect window. */
+    prior_defect_count?: number;
+    /** A recency claim, so consumers only show it with `last_fix_at` beside it. */
+    bug_magnet?: boolean;
+    last_fix_at?: string | null;
   };
 
   /** Documentation status. When `has_doc` is false the section becomes a CTA. */
@@ -65,6 +70,9 @@ export interface HotspotLike {
   primary_owner?: string | null;
   is_hotspot?: boolean;
   temporal_hotspot_score?: number | null;
+  prior_defect_count?: number;
+  bug_magnet?: boolean;
+  last_fix_at?: string | null;
 }
 
 /**
@@ -83,6 +91,9 @@ export function hotspotToFileCard(h: HotspotLike): FileCardData {
   if (h.is_hotspot !== undefined) git.is_hotspot = h.is_hotspot;
   if (h.temporal_hotspot_score !== undefined)
     git.temporal_hotspot_score = h.temporal_hotspot_score;
+  if (h.prior_defect_count !== undefined) git.prior_defect_count = h.prior_defect_count;
+  if (h.bug_magnet !== undefined) git.bug_magnet = h.bug_magnet;
+  if (h.last_fix_at !== undefined) git.last_fix_at = h.last_fix_at;
   return { file_path: h.file_path, git };
 }
 

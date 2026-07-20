@@ -3,6 +3,7 @@ import { Badge } from "../ui/badge";
 import { CommitCategorySparkline } from "../git/commit-category-sparkline";
 import { CoChangeList } from "../git/co-change-list";
 import { ChangeHistoryCard } from "../git/change-history-card";
+import { FixHistoryBadge } from "../git/fix-history-badge";
 import { formatRelativeTime, formatDate, formatAgeDays } from "../lib/format";
 import type { GitMetadata } from "@repowise-dev/types/git";
 
@@ -74,6 +75,11 @@ export function GitHistoryPanel({ git }: GitHistoryPanelProps) {
             {git.is_stable && <Badge variant="fresh">Stable</Badge>}
             {!git.is_hotspot && !git.is_stable && <Badge variant="default">Active</Badge>}
             {git.test_gap === true && <Badge variant="outdated">No tests</Badge>}
+            <FixHistoryBadge
+              count={git.prior_defect_count ?? null}
+              lastFixAt={git.last_fix_at ?? null}
+              bugMagnet={git.bug_magnet ?? false}
+            />
             <span className={`text-xs ${velocity.color}`}>{velocity.label}</span>
           </div>
           <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
@@ -171,6 +177,7 @@ export function GitHistoryPanel({ git }: GitHistoryPanelProps) {
       <ChangeHistoryCard
         changeEntropyPct={git.change_entropy_pct ?? null}
         priorDefectCount={git.prior_defect_count ?? null}
+        lastFixAt={git.last_fix_at ?? null}
         originalPath={git.original_path ?? null}
         commitCountCapped={git.commit_count_capped ?? false}
       />

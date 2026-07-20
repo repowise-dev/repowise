@@ -107,6 +107,10 @@ export interface Hotspot {
   change_entropy_pct?: number;
   /** Bug-fix commits touching this file in the trailing defect window. */
   prior_defect_count?: number;
+  /** Decayed fix mass past its trigger. A recency claim, so any copy showing
+   *  it must show `last_fix_at` too. */
+  bug_magnet?: boolean;
+  last_fix_at?: string | null;
   /** The file's path before its most recent rename, if any. */
   original_path?: string | null;
 }

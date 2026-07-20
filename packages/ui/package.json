@@ -104,6 +104,7 @@
     "./lib/cn": "./src/lib/cn.ts",
     "./lib/confidence": "./src/lib/confidence.ts",
     "./lib/errors": "./src/lib/errors.ts",
+    "./lib/fix-history": "./src/lib/fix-history.ts",
     "./lib/format": "./src/lib/format.ts",
     "./lib/page-types": "./src/lib/page-types.ts"
   },

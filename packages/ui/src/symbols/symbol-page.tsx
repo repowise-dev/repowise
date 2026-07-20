@@ -7,6 +7,7 @@ import type {
   SymbolDetailData,
   SymbolDetailResponse,
 } from "@repowise-dev/types/symbols";
+import { FixHistoryBadge, SYMBOL_FIX_TITLE } from "../git/fix-history-badge";
 import { SymbolDetailBody } from "./symbol-detail-body";
 
 export interface SymbolPageProps {
@@ -139,6 +140,12 @@ export function SymbolPage({
                 <Flame className="h-2.5 w-2.5" /> hot file
               </Badge>
             )}
+            <FixHistoryBadge
+              count={data.fix_count ?? null}
+              lastFixAt={data.fix_last_at ?? null}
+              title={SYMBOL_FIX_TITLE}
+              className="h-5 text-[10px]"
+            />
             <a
               href={fileEntityPath(prefix, s.file_path)}
               title={`${s.file_path}:${s.start_line}`}

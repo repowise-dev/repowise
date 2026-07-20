@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { Badge } from "../../ui/badge";
 import { formatLOC } from "../../lib/format";
+import { summarizeFixHistory } from "../../lib/fix-history";
 import { cn } from "../../lib/cn";
 import type { FileCardData, FileCardLinks } from "./types";
 
@@ -64,6 +65,12 @@ export function FileCard({ data, links, hideHeader = false, className }: FileCar
   const { git, docs, symbols, deadCode, decisions, security } = data;
   const busFactor = git?.bus_factor;
   const isHotspot = git?.is_hotspot;
+  // Null for a file with no counted fixes, so the card gains no empty row.
+  const fix = summarizeFixHistory(
+    git?.prior_defect_count,
+    git?.last_fix_at,
+    git?.bug_magnet,
+  );
 
   return (
     <div className={cn("space-y-4", className)}>
@@ -130,6 +137,13 @@ export function FileCard({ data, links, hideHeader = false, className }: FileCar
                       ? "text-[var(--color-warning)]"
                       : "text-[var(--color-text-secondary)]"
                 }
+              />
+            )}
+            {fix && (
+              <Stat
+                label="Bug fixes"
+                value={fix.age ? `${fix.count} · last ${fix.age}` : String(fix.count)}
+                {...(fix.magnet ? { accent: "text-[var(--color-error)]" } : {})}
               />
             )}
           </Section>

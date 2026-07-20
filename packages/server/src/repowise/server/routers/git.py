@@ -100,6 +100,8 @@ def _hotspot_from_row(r: GitMetadata) -> HotspotResponse:
         # Normalize 0-1 -> 0-100 to match churn_percentile.
         change_entropy_pct=(r.change_entropy_pct or 0.0) * 100.0,
         prior_defect_count=r.prior_defect_count or 0,
+        bug_magnet=bool(r.bug_magnet),
+        last_fix_at=r.last_fix_at,
         original_path=r.original_path,
     )
 
