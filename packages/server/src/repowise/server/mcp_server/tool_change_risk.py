@@ -47,9 +47,8 @@ async def get_change_risk(
     """Score a live commit or ``base..head`` range from its diff shape.
 
     Use this for a pre-merge score of a commit or PR range. It is distinct from
-    ``get_risk``, which assesses indexed files and PR blast radius. ``extensions``
-    restricts counted suffixes; ``exclude_patterns`` omits gitignore-style paths.
-    Both filters also apply to the baseline used for the repository percentile.
+    ``get_risk``, which assesses indexed files and PR blast radius. Both filters
+    below also apply to the baseline used for the repository percentile.
 
     Prefer ``risk_percentile`` as the indicator of change risk: it ranks this
     change against sampled recent commits in the same repository. Summarize it
