@@ -161,7 +161,7 @@ The dependency graph is loaded into memory at server startup for fast traversal.
 
 ## The MCP server
 
-The MCP server sits on top of the persistence layer and exposes everything to AI coding assistants via 13 tools (10 single-repo + 3 workspace-only). It's the primary interface between repowise and Claude Code, Codex, Cursor, Cline, or any other MCP-compatible editor.
+The MCP server sits on top of the persistence layer and exposes everything to AI coding assistants through 17 registered tools: 11 by default in a single repository, 13 by default in workspace mode, and four opt-in tools. It's the primary interface between repowise and Claude Code, Codex, Cursor, Cline, or any other MCP-compatible editor.
 
 When you run `repowise mcp`, the server starts in stdio mode and your editor can begin calling tools. The tools are designed to answer the questions an AI needs to make good decisions about your code — not just "what is this file" but "should I edit it", "why is it structured this way", and "what will break if I change it".
 

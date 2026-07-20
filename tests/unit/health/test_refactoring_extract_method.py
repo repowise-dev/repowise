@@ -136,6 +136,193 @@ def test_extractions_are_deterministic():
         assert serialize() == first
 
 
+# -- prefix-sum equivalence -------------------------------------------------------
+#
+# find_extractions computes span metrics via per-statement prefix sums. This
+# reference reimplements the original per-span _span_metrics enumeration; the
+# two must produce identical candidate lists on any input.
+
+
+def _find_extractions_reference(analysis, lmap):
+    from repowise.core.analysis.health.dataflow.slice import (
+        _MAX_CANDIDATES,
+        _MAX_PARAMS,
+        _MAX_RETURNS,
+        _MIN_CCN_REMOVED,
+        _MIN_SLICE_NLOC,
+        _MIN_STMTS,
+        Extraction,
+        _all_blocks,
+        _infer_in_out,
+        _sorted,
+        _span_metrics,
+        _unwrap_container,
+        _var_lines,
+    )
+
+    fn_node = analysis.fn_node
+    if fn_node is None:
+        return []
+    body = fn_node.child_by_field_name("body")
+    if body is None:
+        return []
+    body_container = _unwrap_container(body, lmap.block_kinds)
+    def_lines, use_lines = _var_lines(analysis.def_use)
+    decision_kinds = (
+        lmap.branch_kinds
+        | lmap.loop_kinds
+        | lmap.case_kinds
+        | lmap.catch_kinds
+        | lmap.boolean_operator_kinds
+    )
+    jump_kinds = lmap.return_kinds | lmap.raise_kinds | lmap.break_kinds | lmap.continue_kinds
+    scope_kinds = lmap.function_kinds | lmap.lambda_kinds
+    tail_stmt_kinds = (
+        lmap.statement_wrapper_kinds | lmap.local_decl_kinds
+        if lmap.statement_wrapper_kinds
+        else None
+    )
+
+    out = []
+    evaluated = 0
+    for block in _all_blocks(fn_node, lmap.block_kinds, scope_kinds):
+        stmts = block.named_children
+        n = len(stmts)
+        is_body = block.id == body_container.id
+        for i in range(n):
+            for j in range(i, n):
+                evaluated += 1
+                if evaluated > _MAX_CANDIDATES:
+                    return _sorted(out)
+                length = j - i + 1
+                if length < _MIN_STMTS:
+                    continue
+                if is_body and length == n:
+                    continue
+                if (
+                    tail_stmt_kinds is not None
+                    and j == n - 1
+                    and stmts[j].type not in tail_stmt_kinds
+                ):
+                    continue
+                span = stmts[i : j + 1]
+                decisions, has_jump = _span_metrics(span, decision_kinds, jump_kinds, scope_kinds)
+                if has_jump or decisions < _MIN_CCN_REMOVED:
+                    continue
+                slice_nloc = sum(st.end_point[0] - st.start_point[0] + 1 for st in span)
+                if slice_nloc < _MIN_SLICE_NLOC:
+                    continue
+                s = span[0].start_point[0] + 1
+                e = span[-1].end_point[0] + 1
+                params, returns = _infer_in_out(def_lines, use_lines, s, e)
+                if len(params) > _MAX_PARAMS or len(returns) > _MAX_RETURNS:
+                    continue
+                out.append(
+                    Extraction(
+                        start_line=s,
+                        end_line=e,
+                        params=params,
+                        returns=returns,
+                        slice_nloc=slice_nloc,
+                        ccn_removed=decisions,
+                    )
+                )
+    return _sorted(out)
+
+
+_NESTED = """
+def transform(items, flags):
+    out = []
+    for it in items:
+        if it in flags:
+            for k in range(3):
+                if k and it:
+                    out.append((it, k))
+        else:
+            while it > 0:
+                it -= 1
+                out.append(it)
+    def helper(v):
+        if v:
+            return -v
+        return v
+    total = 0
+    for o in out:
+        total += helper(o if isinstance(o, int) else o[1])
+    if total > 10 or len(out) > 5:
+        total = total // 2
+    return total
+"""
+
+_JUMPY = """
+def scan(rows):
+    hits = 0
+    for r in rows:
+        if r is None:
+            continue
+        if r < 0:
+            break
+        hits += 1
+    try:
+        rate = hits / len(rows)
+    except ZeroDivisionError:
+        rate = 0.0
+    if rate > 0.5:
+        hits += 1
+    return hits, rate
+"""
+
+
+@pytest.mark.parametrize("src", [_PROCESS, _NESTED, _JUMPY])
+def test_prefix_sum_matches_per_span_reference(src):
+    lmap = get_language_map("python")
+    fn = _first(src)
+    assert find_extractions(fn, lmap) == _find_extractions_reference(fn, lmap)
+
+
+def test_prefix_sum_matches_per_span_reference_go():
+    try:
+        from repowise.core.ingestion.parser import _get_language
+    except Exception:
+        pytest.skip("tree-sitter language pack missing")
+    if _get_language("go") is None:
+        pytest.skip("tree-sitter language pack missing for go")
+    src = textwrap.dedent(
+        """
+        package main
+
+        func Transform(items []int, limit int) int {
+            total := 0
+            count := 0
+            for _, it := range items {
+                if it > limit {
+                    total += it
+                    count++
+                } else {
+                    total -= it
+                }
+            }
+            avg := 0
+            if count > 0 {
+                avg = total / count
+            }
+            for i := 0; i < avg; i++ {
+                if i%2 == 0 {
+                    total += i
+                }
+            }
+            return total
+        }
+        """
+    )
+    res = analyze_file("m.go", "go", src.encode(), flagged_only=False)
+    if res.stats.functions_seen == 0:
+        pytest.skip("go parse unavailable")
+    lmap = get_language_map("go")
+    for fn in res.functions:
+        assert find_extractions(fn, lmap) == _find_extractions_reference(fn, lmap)
+
+
 # -- detector -------------------------------------------------------------------
 
 

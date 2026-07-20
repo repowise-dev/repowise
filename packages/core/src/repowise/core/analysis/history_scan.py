@@ -8,7 +8,7 @@ with the commit that introduced it.
 
 Everything lands in the shared ``security_findings`` table. The
 ``(repository_id, file_path, kind, line_number, commit_sha)`` unique constraint
-(migration 0037) makes re-runs idempotent.
+(migration 0041) makes re-runs idempotent.
 
 Design notes (in response to review)
 ------------------------------------

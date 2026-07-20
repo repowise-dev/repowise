@@ -30,6 +30,7 @@ export function SymbolTableWrapper({ repoId }: Props) {
     visibility: "all",
     inHotFiles: false,
     inEntryPoints: false,
+    bugFixed: false,
     sort: "importance",
   });
   const debouncedQ = useDebounce(filters.q, 300);
@@ -61,6 +62,7 @@ export function SymbolTableWrapper({ repoId }: Props) {
         file_path: keyPayload.file || undefined,
         in_hot_files: keyPayload.inHotFiles || undefined,
         in_entry_points: keyPayload.inEntryPoints || undefined,
+        bug_fixed: keyPayload.bugFixed || undefined,
         sort: keyPayload.sort,
         limit: LIMIT,
         offset: pageIndex * LIMIT,

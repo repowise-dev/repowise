@@ -69,6 +69,14 @@ class TestGoSampleNoFalsePositives:
         for live in ("Store", "Config", "New", "NewMemStore", "MemStore"):
             assert live not in exports, f"{live} wrongly flagged unused_export"
 
+    def test_func_value_as_argument_not_flagged(self, go_report) -> None:
+        exports = _names(go_report, DeadCodeKind.UNUSED_EXPORT)
+        # Upper and Lower are passed as pkg.Func argument values to apply()
+        # — never called directly. The selector_expression in argument_list
+        # position must produce a call edge so they are not flagged as unused.
+        for live in ("Upper", "Lower"):
+            assert live not in exports, f"{live} wrongly flagged unused_export (function value passed as argument)"
+
     def test_sibling_helper_not_flagged_internal(self, go_report) -> None:
         internals = _names(go_report, DeadCodeKind.UNUSED_INTERNAL)
         # greeting() is private but called from the sibling service.go.

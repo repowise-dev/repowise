@@ -308,6 +308,8 @@ class _CFGBuilder:
                 cur = self._build_loop(st, cur)
             elif t in self.lmap.try_kinds:
                 cur = self._build_try(st, cur)
+            elif t in self.lmap.with_kinds:
+                cur = self._build_with(st, cur)
             elif t in self.lmap.return_kinds or t in self.lmap.raise_kinds:
                 self._record_stmt(cur, st)
                 self._edge(cur, self.exit_block)
@@ -430,6 +432,28 @@ class _CFGBuilder:
             self._edge(body_out, header)  # back-edge
         return after
 
+    def _build_with(self, with_node: Node, cur: BasicBlock) -> BasicBlock | None:
+        """Process a context-manager head and recurse into its body.
+
+        A with-body always executes. If every path in the body terminates,
+        statements following the with-statement cannot fall through.
+        """
+        self._record_head(cur, with_node)
+
+        body_entry = self._new()
+        self._edge(cur, body_entry)
+
+        body_out = self._process_seq(
+            self._body_stmts(with_node.child_by_field_name("body")),
+            body_entry,
+        )
+        if body_out is None:
+            return None
+
+        join = self._new("join")
+        self._edge(body_out, join)
+        return join
+
     def _build_try(self, try_node: Node, cur: BasicBlock) -> BasicBlock:
         # try-with-resources (Java) binds locals in its resource clause; record
         # a head so the def/use dialect sees those bindings. A plain ``try``
@@ -480,6 +504,10 @@ class _CFGBuilder:
         for handler in (c for c in try_node.children if c.type in self.lmap.catch_kinds):
             handler_entry = self._new("handler")
             self._edge(body_entry, handler_entry)
+            if finally_clause is not None:
+                # Finally also runs when a handler returns or re-raises. This
+                # edge lets handler definitions reach reads in the finally body.
+                self._edge(handler_entry, normal_join)
             handler_out = self._process_seq(
                 self._body_stmts(self._block_of(handler)), handler_entry
             )

@@ -21,6 +21,8 @@ import subprocess
 from collections.abc import Iterable
 from dataclasses import dataclass
 
+import pathspec
+
 from ...ingestion.git_indexer._constants import is_fix_commit
 
 
@@ -45,24 +47,42 @@ class ChangeFeatures:
     ref: str = ""  # the commit sha or "base..head" range scored
 
 
-def _git(args: list[str], cwd: str) -> str:
-    return subprocess.run(
+# Generous ceiling: even a 200-commit numstat walk finishes in seconds. The
+# point is that a stuck git (lock contention, network filesystem) must fail
+# loud instead of hanging the caller's thread forever.
+GIT_TIMEOUT_SECONDS = 60
+
+
+def _git(args: list[str], cwd: str, *, check: bool = True) -> str:
+    # stdin=DEVNULL: on MCP stdio transport a child that inherits the JSON-RPC
+    # pipe handles can wedge the session (same failure mode _meta.py guards
+    # against). check=True so a bad revspec raises instead of yielding empty
+    # stdout, which used to score as a zero-feature "low risk" change.
+    proc = subprocess.run(
         ["git", *args],
         cwd=cwd,
         capture_output=True,
         text=True,
         encoding="utf-8",
         errors="replace",
-    ).stdout
+        stdin=subprocess.DEVNULL,
+        timeout=GIT_TIMEOUT_SECONDS,
+    )
+    if check and proc.returncode != 0:
+        raise subprocess.CalledProcessError(
+            proc.returncode, proc.args, output=proc.stdout, stderr=proc.stderr
+        )
+    return proc.stdout
 
 
 def _accumulate_numstat(
-    numstat: str, extensions: tuple[str, ...]
+    numstat: str, extensions: tuple[str, ...], exclude_patterns: tuple[str, ...]
 ) -> tuple[int, int, int, set[str], set[str], list[int]]:
     la = ld = nf = 0
     dirs: set[str] = set()
     subs: set[str] = set()
     per_file: list[int] = []
+    exclude_spec = pathspec.PathSpec.from_lines("gitwildmatch", exclude_patterns)
     for row in numstat.strip().split("\n"):
         if not row:
             continue
@@ -71,6 +91,8 @@ def _accumulate_numstat(
             continue
         a_raw, d_raw, path = parts
         if extensions and not path.endswith(extensions):
+            continue
+        if exclude_spec.match_file(path):
             continue
         a = int(a_raw) if a_raw.isdigit() else 0
         d = int(d_raw) if d_raw.isdigit() else 0
@@ -98,9 +120,12 @@ def _author_experience(repo_path: str, author: str, upto_ref: str) -> int:
     """Author's prior commit count reachable from *upto_ref* (one cheap call)."""
     if not author:
         return 0
+    # check=False: --author is a regex, so a name with metacharacters can make
+    # git error; unknown experience degrades to 0 rather than failing the score.
     out = _git(
         ["rev-list", "--count", "--author", author, "--no-merges", upto_ref],
         repo_path,
+        check=False,
     ).strip()
     try:
         return int(out)
@@ -156,22 +181,63 @@ def features_from_file_changes(
     )
 
 
+def change_features_from_stored(
+    *,
+    la: int,
+    ld: int,
+    nf: int,
+    nd: int,
+    ns: int,
+    entropy: float,
+    exp: int | None,
+    is_fix: bool = False,
+    author: str = "",
+    subject: str = "",
+    ref: str = "",
+) -> ChangeFeatures:
+    """Rebuild a feature vector from already-computed (persisted) metrics.
+
+    The model ships its constants and is deterministic, so re-scoring these
+    reproduces the score that was stored alongside them. Used wherever a commit
+    has to be re-scored without its diff: the API's per-driver breakdown and the
+    update pass that repairs a stale ``exp``. Shared so both build the vector the
+    same way — a field that drifted between them would make the re-scored
+    breakdown disagree with the stored score.
+    """
+    return ChangeFeatures(
+        la=la or 0,
+        ld=ld or 0,
+        nf=nf or 0,
+        nd=nd or 0,
+        ns=ns or 0,
+        entropy=entropy or 0.0,
+        exp=exp,
+        is_fix=bool(is_fix),
+        author=author or "",
+        subject=subject or "",
+        ref=ref or "",
+    )
+
+
 def extract_commit_features(
     repo_path: str,
     sha: str,
     *,
     extensions: tuple[str, ...] = (),
+    exclude_patterns: tuple[str, ...] = (),
 ) -> ChangeFeatures:
     """Extract change features for a single commit.
 
     *extensions* optionally restricts the counted files to a set of suffixes
-    (e.g. ``(".py",)``); empty means count every changed file.
+    (e.g. ``(".py",)``); *exclude_patterns* uses gitignore syntax to omit
+    changed paths. Empty filters count every changed file.
     """
     meta = _git(["show", "-s", "--format=%an%x00%s", sha], repo_path).strip("\n")
     author, _, subject = meta.partition("\x00")
     numstat = _git(["show", sha, "--numstat", "--format="], repo_path)
-    la, ld, nf, dirs, subs, per_file = _accumulate_numstat(numstat, extensions)
-    parent = _git(["rev-parse", "--verify", "--quiet", f"{sha}^"], repo_path).strip()
+    la, ld, nf, dirs, subs, per_file = _accumulate_numstat(numstat, extensions, exclude_patterns)
+    # check=False: a root commit has no parent and that is not an error.
+    parent = _git(["rev-parse", "--verify", "--quiet", f"{sha}^"], repo_path, check=False).strip()
     exp = _author_experience(repo_path, author, parent or sha)
     return ChangeFeatures(
         la=la,
@@ -194,6 +260,7 @@ def extract_range_features(
     head: str,
     *,
     extensions: tuple[str, ...] = (),
+    exclude_patterns: tuple[str, ...] = (),
 ) -> ChangeFeatures:
     """Extract features for a ``base..head`` range scored as one change.
 
@@ -202,7 +269,7 @@ def extract_range_features(
     commit count at *base*.
     """
     numstat = _git(["diff", "--numstat", f"{base}..{head}"], repo_path)
-    la, ld, nf, dirs, subs, per_file = _accumulate_numstat(numstat, extensions)
+    la, ld, nf, dirs, subs, per_file = _accumulate_numstat(numstat, extensions, exclude_patterns)
     meta = _git(["show", "-s", "--format=%an%x00%s", head], repo_path).strip("\n")
     author, _, subject = meta.partition("\x00")
     # Any fix commit in the range marks the change as a fix (informational).

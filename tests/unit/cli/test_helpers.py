@@ -234,9 +234,7 @@ class TestConfigFingerprint:
         rw_dir = tmp_path / ".repowise"
         rw_dir.mkdir()
         (rw_dir / "config.yaml").write_text("exclude_patterns: [.claude/]", encoding="utf-8")
-        (rw_dir / "health-rules.json").write_text(
-            '{"disabled_biomarkers": []}', encoding="utf-8"
-        )
+        (rw_dir / "health-rules.json").write_text('{"disabled_biomarkers": []}', encoding="utf-8")
 
         fp1 = config_fingerprint(tmp_path)
         assert isinstance(fp1, str)
@@ -382,6 +380,21 @@ class TestValidateProviderConfig:
         assert "openai" in warnings[0]
         assert "OPENAI_API_KEY" in warnings[0]
 
+    def test_kimi_missing_key(self, monkeypatch):
+        monkeypatch.delenv("KIMI_API_KEY", raising=False)
+        monkeypatch.setenv("REPOWISE_PROVIDER", "kimi")
+
+        warnings = validate_provider_config()
+        assert len(warnings) == 1
+        assert "kimi" in warnings[0]
+        assert "KIMI_API_KEY" in warnings[0]
+
+    def test_kimi_valid_key(self, monkeypatch):
+        monkeypatch.setenv("KIMI_API_KEY", "sk-kimi-test")
+        monkeypatch.setenv("REPOWISE_PROVIDER", "kimi")
+
+        assert validate_provider_config() == []
+
     def test_gemini_with_gemini_key(self, monkeypatch):
         monkeypatch.setenv("GEMINI_API_KEY", "test-key")
         monkeypatch.setenv("REPOWISE_PROVIDER", "gemini")
@@ -465,6 +478,32 @@ class TestResolveProviderBaseUrl:
         assert result == "provider"
         assert captured["name"] == "openai"
         assert captured["kwargs"].get("base_url") == "http://proxy.local"
+
+    @staticmethod
+    def test_kimi_key_model_and_base_url_forwarded(monkeypatch, tmp_path):
+        captured: dict[str, Any] = {}
+
+        def fake_get_provider(name: str, **kwargs: Any):
+            captured["name"] = name
+            captured["kwargs"] = kwargs
+            return "provider"
+
+        monkeypatch.setattr("repowise.core.providers.get_provider", fake_get_provider)
+        monkeypatch.setattr(
+            "repowise.cli.helpers.validate_provider_config", lambda *_args, **_kw: []
+        )
+        monkeypatch.setenv("KIMI_API_KEY", "sk-kimi-test")
+        monkeypatch.setenv("KIMI_BASE_URL", "https://kimi.example/v1")
+
+        result = resolve_provider("kimi", "kimi-k2.6", repo_path=tmp_path)
+
+        assert result == "provider"
+        assert captured["name"] == "kimi"
+        assert captured["kwargs"] == {
+            "model": "kimi-k2.6",
+            "api_key": "sk-kimi-test",
+            "base_url": "https://kimi.example/v1",
+        }
 
     @staticmethod
     def test_config_base_url_used_when_env_missing(monkeypatch, tmp_path):

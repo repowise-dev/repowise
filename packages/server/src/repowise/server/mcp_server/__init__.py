@@ -1,12 +1,13 @@
 """repowise MCP Server — a curated, configurable tool surface for AI agents.
 
-By default a single-repo server exposes ten tools (get_answer, get_context,
-get_symbol, search_codebase, get_overview, get_risk, get_why, get_dead_code,
-get_health, list_repos); three more (get_blast_radius, get_conformance,
-get_architecture) are added automatically in workspace mode. Two further tools
-(get_dependency_path, get_execution_flows) are registered but off by default and
-can be opted in via the ``mcp.tools`` config block or the ``repowise mcp
---tools`` flag. The selection layer lives in :mod:`._tool_selection`.
+By default a single-repo server exposes eleven tools (get_answer, get_context,
+get_symbol, search_codebase, get_overview, get_risk, get_change_risk, get_why,
+get_dead_code, get_health, list_repos); two more (get_blast_radius, get_architecture) are added
+automatically in workspace mode. Four further tools (get_dependency_path,
+get_execution_flows, generate_refactoring_code, get_conformance) are registered
+but off by default and can be opted in via the ``mcp.tools`` config block or the
+``repowise mcp --tools`` flag; get_conformance only does useful work in workspace
+mode. The selection layer lives in :mod:`._tool_selection`.
 
 Exposes the full repowise wiki as queryable tools via the MCP protocol.
 Supports stdio transport (Claude Code, Cursor, Cline), streamable HTTP, and
@@ -52,6 +53,7 @@ from repowise.server.mcp_server._tool_selection import (
 from repowise.server.mcp_server.tool_answer import get_answer
 from repowise.server.mcp_server.tool_architecture import get_architecture
 from repowise.server.mcp_server.tool_blast_radius import get_blast_radius
+from repowise.server.mcp_server.tool_change_risk import get_change_risk
 from repowise.server.mcp_server.tool_conformance import get_conformance
 from repowise.server.mcp_server.tool_context import get_context
 from repowise.server.mcp_server.tool_dead_code import get_dead_code
@@ -132,16 +134,17 @@ __all__ = [
     "_get_repo",
     "_is_path",
     "create_mcp_server",
+    "generate_refactoring_code",
     "get_answer",
     "get_architecture",
     "get_blast_radius",
+    "get_change_risk",
     "get_conformance",
     "get_context",
     "get_dead_code",
     "get_dependency_path",
     "get_execution_flows",
     "get_health",
-    "generate_refactoring_code",
     "get_overview",
     "get_risk",
     "get_symbol",

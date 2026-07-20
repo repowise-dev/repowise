@@ -57,7 +57,7 @@ def _row_to_suggestion(row: Any) -> Any:
     return sug
 
 
-@mcp.tool()
+@mcp.tool(default=False)
 async def generate_refactoring_code(suggestion_id: str, repo: str | None = None) -> dict:
     """Generate refactored code + a unified diff for one refactoring plan.
 

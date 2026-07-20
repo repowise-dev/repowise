@@ -89,6 +89,7 @@ from .crud import (
     upsert_kg_tour_steps,
     upsert_page,
     upsert_page_from_generated,
+    upsert_pages_from_generated,
     upsert_repository,
 )
 from .database import (
@@ -287,5 +288,6 @@ __all__ = [
     "upsert_kg_tour_steps",
     "upsert_page",
     "upsert_page_from_generated",
+    "upsert_pages_from_generated",
     "upsert_repository",
 ]

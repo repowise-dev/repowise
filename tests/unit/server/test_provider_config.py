@@ -89,6 +89,34 @@ def test_get_chat_provider_passes_repo_key_model_and_base_url(clean_env, tmp_pat
     assert captured["base_url"] == "http://localhost:4000/v1"
 
 
+def test_kimi_repo_config_passes_key_model_and_base_url(clean_env, tmp_path, monkeypatch):
+    repo = _make_repo(
+        tmp_path / "repo",
+        config="""
+            provider: kimi
+            model: kimi-k2.6
+            embedder: mock
+        """,
+        env="KIMI_API_KEY=sk-kimi-test\nKIMI_BASE_URL=https://kimi.example/v1\n",
+    )
+
+    captured: dict = {}
+
+    def fake_get_provider(provider_id, **kwargs):
+        captured["provider_id"] = provider_id
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr("repowise.core.providers.llm.registry.get_provider", fake_get_provider)
+
+    pc.get_chat_provider_instance(repo_path=str(repo), repo_id="kimi-repo")
+
+    assert captured["provider_id"] == "kimi"
+    assert captured["model"] == "kimi-k2.6"
+    assert captured["api_key"] == "sk-kimi-test"
+    assert captured["base_url"] == "https://kimi.example/v1"
+
+
 # ---------------------------------------------------------------------------
 # Precedence + no cross-repo shadowing.
 # ---------------------------------------------------------------------------

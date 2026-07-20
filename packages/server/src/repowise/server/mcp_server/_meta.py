@@ -284,39 +284,6 @@ def freshness_from_repo(repository: Any | None, targets: list[str] | None = None
     return out
 
 
-# Question patterns where narrative wiki context wins over symbol-body slicing.
-# Used to suppress "use get_symbol" hints — those questions need surrounding prose.
-_EXPLAIN_TOKENS = (
-    "explain",
-    "why ",
-    "why is",
-    "why does",
-    "why was",
-    "how does",
-    "how do",
-    "how is",
-    "how are",
-    "what is the relationship",
-    "describe",
-    "walk me through",
-    "tell me about",
-    "purpose of",
-)
-
-
-def is_explanation_question(question: str | None) -> bool:
-    """True if the question reads like 'explain X', not 'find X'.
-
-    Used as a guard before any hint that would push the agent toward
-    symbol-level (narrower) retrieval. Conservative by design: any explanation
-    cue suppresses the hint.
-    """
-    if not question:
-        return False
-    q = question.strip().lower()
-    return any(tok in q for tok in _EXPLAIN_TOKENS)
-
-
 def build_meta(
     *,
     timing_ms: float | None = None,

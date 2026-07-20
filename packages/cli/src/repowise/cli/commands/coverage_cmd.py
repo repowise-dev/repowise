@@ -14,6 +14,7 @@ from pathlib import Path
 
 import click
 
+from repowise.cli._setup import configure_cli_logging
 from repowise.cli.helpers import (
     console,
     ensure_repowise_dir,
@@ -65,7 +66,19 @@ def coverage_group() -> None:
     default=None,
     help="Force a parser instead of auto-detecting from content.",
 )
-def coverage_add(paths: tuple[str, ...], repo: str | None, coverage_format: str | None) -> None:
+@click.option(
+    "--verbose",
+    "-v",
+    is_flag=True,
+    default=False,
+    help="Show debug logs from the pipeline.",
+)
+def coverage_add(
+    paths: tuple[str, ...],
+    repo: str | None,
+    coverage_format: str | None,
+    verbose: bool,
+) -> None:
     """Ingest coverage (auto-discovers reports when none are given).
 
     Stores per-file line/branch coverage, and additionally the per-test
@@ -81,6 +94,8 @@ def coverage_add(paths: tuple[str, ...], repo: str | None, coverage_format: str 
         repowise coverage add .coverage            # per-test map from coverage.py
         repowise coverage add web.lcov api.lcov    # merged hit-wins
     """
+    configure_cli_logging(verbose=verbose)
+
     repo_path = _resolve_coverage_repo(repo)
     ensure_repowise_dir(repo_path)
 
@@ -300,8 +315,9 @@ def coverage_status(repo: str | None) -> None:
             if not summary.get("file_count") and not map_summary.get("pair_count"):
                 console.print(
                     "[yellow]No coverage ingested.[/yellow] Run "
-                    "[cyan]repowise coverage add[/cyan] for per-file coverage, or "
-                    "[cyan]repowise coverage contexts[/cyan] for the per-test map."
+                    "[cyan]repowise coverage add <report>[/cyan]. A .coverage file "
+                    "recorded with [cyan]--contexts=test[/cyan] also builds the "
+                    "per-test map."
                 )
                 return
 
@@ -326,8 +342,9 @@ def coverage_status(repo: str | None) -> None:
                 )
             else:
                 console.print(
-                    "[dim]No test-to-code map yet - build one with "
-                    "[cyan]repowise coverage contexts[/cyan].[/dim]"
+                    "[dim]No test-to-code map yet - record one with "
+                    "[cyan]coverage run --contexts=test -m pytest[/cyan], then "
+                    "[cyan]repowise coverage add .coverage[/cyan].[/dim]"
                 )
 
     run_async(_do())

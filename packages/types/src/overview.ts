@@ -33,6 +33,19 @@ export interface OverviewStats {
   file_count: number;
   symbol_count: number;
   entry_point_count: number;
+  /**
+   * Total generated wiki pages. Optional: a server that predates this field
+   * omits it, and hosted bumps the ui/types packages independently of its
+   * backend deploy — treat absent as unknown rather than rendering NaN.
+   */
+  doc_page_count?: number;
+  /**
+   * Of `doc_page_count`, the deterministic template-generated ("Auto") pages —
+   * the zero-LLM coverage tail. AI-written pages are the remainder. Both sides
+   * derive this from the page's `provider_name === "template"`, the same
+   * discriminator behind the "Auto" badge.
+   */
+  doc_auto_page_count?: number;
   doc_coverage_pct: number;
   freshness_score: number;
   dead_export_count: number;

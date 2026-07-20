@@ -329,3 +329,46 @@ def test_unrelated_dot_command_function_still_flagged():
     report = analyzer.analyze({"detect_unreachable_files": False, "detect_zombie_packages": False})
     names = {f.symbol_name for f in report.findings if f.kind == DeadCodeKind.UNUSED_EXPORT}
     assert "expensive_lookup" in names
+
+
+@pytest.mark.parametrize(
+    "decorator",
+    [
+        # Route decorator on a receiver the prefix list doesn't know
+        # (``_repo_health_router = APIRouter()``): the HTTP-verb suffix match
+        # must rescue it regardless of the local variable name.
+        '@_repo_health_router.get("/health/coordinator")',
+        '@api.websocket("/ws")',
+        # Registry registration by side effect: consumers resolve the symbol
+        # by string key, never by import.
+        '@filter_registry.register("git_status")',
+        # ``from pytest import fixture`` leaves a bare, undotted decorator.
+        "@fixture",
+    ],
+)
+def test_renamed_receiver_and_registry_decorators_excluded(decorator):
+    g = _build_graph(
+        nodes={
+            "pkg/wired.py": {
+                "is_entry_point": False,
+                "is_test": False,
+                "is_api_contract": False,
+                "symbol_count": 1,
+                "symbols": [
+                    {
+                        "name": "wired_symbol",
+                        "kind": "function",
+                        "visibility": "public",
+                        "decorators": [decorator],
+                        "start_line": 1,
+                        "end_line": 10,
+                        "complexity_estimate": 1,
+                    },
+                ],
+            },
+        },
+    )
+    analyzer = DeadCodeAnalyzer(g, git_meta_map={})
+    report = analyzer.analyze({"detect_unreachable_files": False, "detect_zombie_packages": False})
+    names = {f.symbol_name for f in report.findings if f.kind == DeadCodeKind.UNUSED_EXPORT}
+    assert "wired_symbol" not in names

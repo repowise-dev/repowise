@@ -25,6 +25,7 @@ __all__ = [
     "ExternalSystemRecord",
     "ManifestParser",
     "extract_external_systems",
+    "is_manifest_path",
 ]
 
 _PARSERS: tuple[ModuleType, ...] = (npm, pypi, cargo, go, nuget, maven, cmake, bazel)
@@ -33,6 +34,7 @@ _PARSERS: tuple[ModuleType, ...] = (npm, pypi, cargo, go, nuget, maven, cmake, b
 _FILENAME_PARSERS: dict[str, ModuleType] = {
     fname: parser for parser in _PARSERS for fname in parser.filenames
 }
+
 
 # Filename patterns that match by predicate (pypi requirements*.txt, nuget *.csproj)
 def _matches_pattern(filename: str) -> ModuleType | None:
@@ -49,6 +51,16 @@ def _parser_for(path: Path) -> ModuleType | None:
     if parser is not None:
         return parser
     return _matches_pattern(path.name)
+
+
+def is_manifest_path(path: Path | str) -> bool:
+    """True if ``path``'s filename is a recognised dependency manifest.
+
+    Reuses the exact parser dispatch extraction uses, so the update path's
+    "did a manifest change?" gate can never drift from the set of files the
+    extractor actually parses. Only the basename matters.
+    """
+    return _parser_for(Path(path)) is not None
 
 
 def extract_external_systems(

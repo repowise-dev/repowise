@@ -201,11 +201,7 @@ def _validate_symbol_references(
     # (catches Click command names, decorator arguments, dict keys, etc.)
     # The source is in the context, but we only have the parsed file here.
     # Use docstring and symbol names as a cheap approximation.
-    if (
-        hasattr(parsed, "file_info")
-        and hasattr(parsed.file_info, "path")
-        and parsed.docstring
-    ):
+    if hasattr(parsed, "file_info") and hasattr(parsed.file_info, "path") and parsed.docstring:
         known.update(w for w in parsed.docstring.split() if w.isidentifier())
 
     warnings: list[str] = []
@@ -221,9 +217,17 @@ def _validate_symbol_references(
         # Skip all-uppercase (likely constants from other files: `MAX_RETRIES`)
         if ref.isupper():
             continue
+        # Skip dotted refs entirely: they are member/attribute accesses
+        # (`GeneratedPage.updated_at`, `config.coverage_pct`) or qualified
+        # module paths. Dataclass fields, ORM columns, and cross-file
+        # attribute chains are not AST symbols, so they cannot be verified
+        # here and were the dominant false-positive source in dogfooding.
+        # Whole-name hallucinations — the high-signal case — are
+        # single-segment and still flagged below.
+        if "." in ref:
+            continue
         # Check against known names
-        base = ref.split(".")[-1]
-        if ref in known or base in known:
+        if ref in known:
             continue
         # Skip if the ref is a substring of any known symbol (covers partial
         # references like `parse` when `parse_file` exists)

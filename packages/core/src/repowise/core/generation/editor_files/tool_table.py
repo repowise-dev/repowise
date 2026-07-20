@@ -8,7 +8,7 @@ prose in the template and silently drifted from the live registry.
 Row style: one entry per tool, 1-3 sentences, leading with when to call it.
 The load-bearing response fields (symbol_bodies, verified, continuation,
 directive, search_method) stay named — they are what the trust protocol keys
-on. Reference detail lives in docs/MCP_TOOLS.md, not here.
+on. Reference detail lives in docs/agent/MCP_TOOLS.md, not here.
 """
 
 from __future__ import annotations
@@ -58,7 +58,21 @@ TOOL_TABLE_ROWS: dict[str, tuple[str, str]] = {
         "get_risk(targets, changed_files?)",
         "What history says about touching these files: churn, owners, co-change "
         "partners, blast radius. PR mode (`changed_files`) leads with a `directive` "
-        "block — read `will_break` / `missing_cochanges` / `missing_tests` first.",
+        "block — read `will_break` / `missing_cochanges` / `missing_tests` / "
+        "`tests_to_run` first. `tests_to_run` is coverage-backed (the tests the "
+        "per-test map proves exercise the changed files); empty means unknown, "
+        "never no tests. To score a whole commit or diff range instead, use "
+        "`get_change_risk`.",
+    ),
+    "get_change_risk": (
+        "get_change_risk(revspec, extensions?, exclude_patterns?)",
+        "Pre-merge defect score for a whole commit or `base..head` range, computed "
+        "from its diff shape on the live checkout (no index, no LLM). Lead with "
+        "`risk_percentile` (this change ranked against sampled recent commits), "
+        "summarized by `review_priority` and `classification`; `score` / "
+        "`probability` / `level` are the corpus-calibrated fallback. Distinct from "
+        "`get_risk`, which scores indexed files by path. A `warning` field flags an "
+        "empty diff (bad revspec or over-tight extension / exclusion filters).",
     ),
     "get_health": (
         "get_health(targets?, include?)",

@@ -49,6 +49,8 @@ class PgVectorStore(VectorStore):
     level (keeps the base package installable without the extra).
     """
 
+    persists_across_runs = True
+
     def __init__(
         self,
         session_factory: async_sessionmaker[AsyncSession],

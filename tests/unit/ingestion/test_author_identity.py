@@ -12,7 +12,7 @@ from repowise.core.ingestion.git_indexer import (
     build_identity_resolver,
     canonicalize_author_email,
 )
-from repowise.core.ingestion.git_indexer.commit_rows import _author_key
+from repowise.core.ingestion.git_indexer.identity import author_identity_key
 from repowise.server.services.owner_profile import owner_key
 
 
@@ -68,9 +68,9 @@ class TestOwnerKey:
 
 class TestCommitExperienceKey:
     def test_noreply_variants_share_an_experience_tally(self) -> None:
-        assert _author_key("Jane", "1+jane@users.noreply.github.com") == _author_key(
-            "Jane", "999+jane@users.noreply.github.com"
-        )
+        assert author_identity_key(
+            "Jane", "1+jane@users.noreply.github.com"
+        ) == author_identity_key("Jane", "999+jane@users.noreply.github.com")
 
 
 class TestIdentityResolver:

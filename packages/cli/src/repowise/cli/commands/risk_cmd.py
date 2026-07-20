@@ -14,26 +14,23 @@ Examples:
 from __future__ import annotations
 
 import json
-from dataclasses import replace
 
 import click
 from rich.table import Table
 
 from repowise.cli.helpers import console, err_console
+from repowise.core.analysis.change_risk import (
+    change_risk_payload,
+    review_priority_classification,
+    score_live_change,
+)
 
-# Repo-relative tercile wording — mirrors the web UI's PriorityBadge so the same
-# commit reads the same in both surfaces.
-_PRIORITY_LABEL = {"high": "Elevated", "moderate": "Typical", "low": "Below typical"}
 _PRIORITY_COLOR = {"high": "yellow", "moderate": "dim", "low": "green"}
 _PRIORITY_LEAD = {
     "low": "Lower risk than a typical commit in this repo",
     "moderate": "About as risky as a typical commit in this repo",
     "high": "Riskier than most commits in this repo",
 }
-
-# Below this many sampled commits a percentile isn't worth showing — fall back
-# to the absolute calibrated band instead.
-_MIN_BASELINE = 8
 
 
 def _ordinal(n: int) -> str:
@@ -67,6 +64,14 @@ def _ordinal(n: int) -> str:
     "(0 disables; shows only the absolute calibrated band).",
 )
 @click.option(
+    "--exclude",
+    "-x",
+    "exclude",
+    multiple=True,
+    metavar="PATTERN",
+    help="Gitignore-style pattern to exclude. Repeatable; also applies to the baseline.",
+)
+@click.option(
     "--format",
     "fmt",
     default="table",
@@ -74,104 +79,54 @@ def _ordinal(n: int) -> str:
     help="Output format.",
 )
 def risk_command(
-    revspec: str, repo_path: str, ext: str | None, baseline: int, fmt: str
+    revspec: str,
+    repo_path: str,
+    ext: str | None,
+    baseline: int,
+    exclude: tuple[str, ...],
+    fmt: str,
 ) -> None:
     """Score the defect risk of a change (commit or ``base..head`` range)."""
-    from repowise.core.analysis.change_risk import (
-        baseline_scores,
-        extract_commit_features,
-        extract_range_features,
-        score_change,
-    )
-
-    extensions = tuple(e if e.startswith(".") else f".{e}" for e in ext.split(",")) if ext else ()
+    extensions = tuple(e.strip() for e in ext.split(",")) if ext else ()
     status = err_console if fmt != "table" else console
 
+    if baseline and fmt == "table":
+        status.print(f"[dim]Sampling up to {baseline} recent commits…[/dim]")
     try:
-        if ".." in revspec:
-            base, _, head = revspec.partition("..")
-            head = head or "HEAD"
-            features = extract_range_features(repo_path, base, head, extensions=extensions)
-        else:
-            features = extract_commit_features(repo_path, revspec, extensions=extensions)
+        result = score_live_change(
+            repo_path,
+            revspec,
+            extensions=extensions,
+            exclude_patterns=exclude,
+            baseline=baseline,
+        )
     except Exception as exc:
         # Surface git errors (bad revspec, not a repo) as a clean CLI message.
         raise click.ClickException(
             f"Could not read change {revspec!r} in {repo_path}: {exc}"
         ) from exc
 
+    features = result.features
+    risk = result.risk
+    percentile = result.percentile
+    priority = result.priority
+    request_excludes = result.request_excludes
+
     if features.nf == 0:
         status.print(
             f"[yellow]No counted file changes in {revspec!r} "
-            f"(check the revspec or --ext filter).[/yellow]"
+            f"(check the revspec, --ext, or exclusion filters).[/yellow]"
         )
-
-    risk = score_change(features)
-
-    # Repo-relative ranking: where this change sits in the repo's own recent
-    # distribution. The raw score is corpus-anchored and skews high on repos
-    # whose typical commit is large; the percentile is the portable signal.
-    percentile: float | None = None
-    priority: str | None = None
-    if baseline:
-        if ".." in revspec:
-            _, _, anchor = revspec.partition("..")
-            anchor, exclude = anchor or "HEAD", ""
-        else:
-            anchor, exclude = revspec, features.ref
-        if fmt == "table":
-            status.print(f"[dim]Sampling up to {baseline} recent commits…[/dim]")
-        scores = baseline_scores(repo_path, anchor, baseline, extensions, exclude)
-        if len(scores) >= _MIN_BASELINE:
-            from repowise.core.analysis.change_risk import RiskNormalizer
-
-            normalizer = RiskNormalizer.from_scores(scores)
-            # Rank with experience unknown, matching the baseline (diff-shape
-            # percentile within the repo) — keeps the comparison like-with-like.
-            rank_score = score_change(replace(features, exp=None)).score
-            percentile = normalizer.percentile(rank_score)
-            priority = normalizer.priority(rank_score)
 
     if fmt == "json":
-        click.echo(
-            json.dumps(
-                {
-                    "ref": features.ref,
-                    "score": risk.score,
-                    "probability": round(risk.probability, 4),
-                    "level": risk.level,
-                    "risk_percentile": round(percentile, 1) if percentile is not None else None,
-                    "review_priority": priority,
-                    "is_fix": features.is_fix,
-                    "features": {
-                        "la": features.la,
-                        "ld": features.ld,
-                        "nf": features.nf,
-                        "nd": features.nd,
-                        "ns": features.ns,
-                        "entropy": round(features.entropy, 4),
-                        "exp": features.exp,
-                    },
-                    "drivers": [
-                        {
-                            "feature": d.feature,
-                            "value": d.value,
-                            "contribution": round(d.contribution, 4),
-                            "label": d.label,
-                        }
-                        for d in risk.top_drivers
-                    ],
-                },
-                indent=2,
-            )
-        )
+        click.echo(json.dumps(change_risk_payload(result), indent=2))
         return
 
     if percentile is not None and priority is not None:
         pcolor = _PRIORITY_COLOR[priority]
         console.print(
             f"\n[bold]Change risk[/bold] for [cyan]{features.ref}[/cyan]: "
-            f"[{pcolor}]{_PRIORITY_LABEL[priority]}[/{pcolor}] · "
+            f"[{pcolor}]{review_priority_classification(priority)}[/{pcolor}] · "
             f"{_ordinal(round(percentile))} percentile of recent commits"
         )
     else:
@@ -184,6 +139,8 @@ def risk_command(
         )
     if features.subject:
         console.print(f"  [dim]{features.subject}[/dim]")
+    if request_excludes:
+        console.print(f"  [dim]Excluding {len(request_excludes)} pattern(s).[/dim]")
     console.print(
         f"  +{features.la} / -{features.ld} lines · {features.nf} files · "
         f"{features.nd} dirs · {features.ns} subsystems · "

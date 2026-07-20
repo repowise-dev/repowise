@@ -172,33 +172,69 @@ class EditorFileDataFetcher:
         return [row[0] for row in result.all()]
 
     async def _get_hotspots(self) -> list[HotspotFile]:
-        """Top hotspot files by churn_percentile with owner info."""
+        """Top attention-worthy files: bug-fix history first, churn as fallback.
+
+        Two populations, deliberately unioned rather than re-sorted. Ranking by
+        fix mass inside ``is_hotspot`` alone would still be churn-gated: a file
+        fixed four times last month that simply is not busy could never appear.
+        So the filter admits bug magnets too, and the order puts fix evidence
+        ahead of commit counts, because the section's own instruction is to call
+        ``get_risk`` (a defect tool) before editing.
+
+        Churn stays the fallback and the tie-break. A repo whose commit messages
+        do not follow a fix convention has zero fix mass everywhere, and this
+        degrades to exactly the churn ordering it had before rather than to an
+        empty section.
+
+        The fix columns come from the same row the churn columns already did, so
+        this is the same single query it was.
+        """
         result = await self._session.execute(
             select(
                 GitMetadata.file_path,
                 GitMetadata.churn_percentile,
                 GitMetadata.commit_count_90d,
                 GitMetadata.primary_owner_name,
+                GitMetadata.prior_defect_count,
+                GitMetadata.bug_magnet,
+                GitMetadata.last_fix_at,
             )
             .where(
                 GitMetadata.repository_id == self._repo_id,
-                GitMetadata.is_hotspot == True,  # noqa: E712
+                (GitMetadata.is_hotspot == True)  # noqa: E712
+                | (GitMetadata.bug_magnet == True),  # noqa: E712
             )
             .order_by(
+                GitMetadata.bug_magnet.desc(),
+                GitMetadata.fix_mass.desc(),
                 GitMetadata.churn_percentile.desc(),
                 GitMetadata.file_path.asc(),  # deterministic tie-break
             )
             .limit(_MAX_HOTSPOTS)
         )
-        return [
-            HotspotFile(
-                path=row[0],
-                churn_percentile=round(row[1] * 100, 1),  # stored as 0.0-1.0
-                commit_count_90d=row[2],
-                owner=row[3],
+        now = datetime.now(UTC)
+        hotspots: list[HotspotFile] = []
+        for row in result.all():
+            last_fix_at = row[6]
+            age: str | None = None
+            if isinstance(last_fix_at, datetime):
+                # SQLite hands these back naive; re-attach UTC before subtracting
+                # or the delta is wrong by the local offset (see signals.iso_utc).
+                moment = last_fix_at if last_fix_at.tzinfo else last_fix_at.replace(tzinfo=UTC)
+                age = _humanize_age(max(0, (now - moment).days))
+            hotspots.append(
+                HotspotFile(
+                    path=row[0],
+                    churn_percentile=round(row[1] * 100, 1),  # stored as 0.0-1.0
+                    commit_count_90d=row[2],
+                    owner=row[3],
+                    fix_count=row[4] or 0,
+                    # Never claim "bug magnet" without an age to anchor it.
+                    bug_magnet=bool(row[5]) and age is not None,
+                    last_fix_age=age,
+                )
             )
-            for row in result.all()
-        ]
+        return hotspots
 
     async def _get_decisions(self) -> list[DecisionSummary]:
         """Active decision records, least-stale first."""
@@ -387,7 +423,6 @@ class EditorFileDataFetcher:
             performance_skipped_files=perf_coverage.skipped_files,
             performance_unsupported_languages=perf_coverage.unsupported_languages,
             critical_biomarkers=critical,
-            untested_hotspots=[],  # Phase 2 fills this from coverage data
         )
 
     async def _get_kg_data(
@@ -481,6 +516,24 @@ def _get_head_short_sha(repo_path: Path) -> str:
         return result.stdout.strip() if result.returncode == 0 else ""
     except Exception:
         return ""
+
+
+def _humanize_age(days: int) -> str:
+    """Render an age as "2 weeks ago" / "3 months ago", never as a bare count.
+
+    Twin of the pre-edit hook's ``decision_inject._humanize_age``, which states
+    why the two are not shared: that module is on a sub-100ms budget and cannot
+    afford to import ``repowise.core``. Keep the phrasing in step by hand.
+    """
+    if days <= 1:
+        return "today" if days <= 0 else "yesterday"
+    if days < 14:
+        return f"{days} days ago"
+    if days < 60:
+        weeks = round(days / 7)
+        return f"{weeks} week{'' if weeks == 1 else 's'} ago"
+    months = round(days / 30)
+    return f"{months} month{'' if months == 1 else 's'} ago"
 
 
 def _extract_sentences(text: str, max_sentences: int) -> str:

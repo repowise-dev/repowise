@@ -22,6 +22,7 @@ import re
 import subprocess
 from pathlib import Path
 
+from repowise.core.exclusion import build_exclude_spec, is_excluded
 from repowise.server.mcp_server.tool_answer.config import (
     _DATA_SHAPE_ACCESS_WINDOW,
     _DATA_SHAPE_DOC_WINDOW,
@@ -175,7 +176,7 @@ def _run_grep(
         return None
 
 
-def _grep_identifier_files(repo_root: Path, identifier: str) -> list[str]:
+def _grep_identifier_files(repo_root: Path, identifier: str, spec: object = None) -> list[str]:
     """Source files naming ``identifier`` (whole word), repo-relative.
 
     Tracked ``git grep`` first (fast, skips ignored/vendored). If the tree isn't
@@ -184,6 +185,11 @@ def _grep_identifier_files(repo_root: Path, identifier: str) -> list[str]:
     per-file Python read that wedges on a large tree. Returns the full match set;
     the caller orders (doc files first) then caps, so the documenting file is
     never dropped by an unlucky order.
+
+    ``--no-index`` scans the raw filesystem and ignores ``.gitignore``, so a
+    gitignored stale wheel / vendored copy can surface as a match. The compiled
+    ``spec`` (gitignore + ``exclude_patterns``) filters those out authoritatively,
+    matching every other MCP read path.
     """
     proc = _run_grep(repo_root, [], identifier)
     if proc is not None and proc.returncode == 128:
@@ -191,7 +197,10 @@ def _grep_identifier_files(repo_root: Path, identifier: str) -> list[str]:
         proc = _run_grep(repo_root, ["--no-index"], identifier)
     if proc is None or proc.returncode not in (0, 1):
         return []
-    return [ln.strip().replace("\\", "/") for ln in proc.stdout.splitlines() if ln.strip()]
+    paths = [ln.strip().replace("\\", "/") for ln in proc.stdout.splitlines() if ln.strip()]
+    if spec is not None:
+        paths = [p for p in paths if not is_excluded(p, spec)]
+    return paths
 
 
 def _read_lines(repo_root: Path, rel_path: str) -> list[str] | None:
@@ -384,8 +393,13 @@ def mine_data_shape(repo_root: Path | None, question_ids: set[str]) -> dict | No
     except Exception:
         return None
 
+    # Compile the repo's exclusion rules once per query. The grep fallbacks
+    # (esp. ``git grep --no-index`` on a non-git tree) don't honour .gitignore,
+    # so filter their hits the same way every other MCP read path does.
+    exclude_spec = build_exclude_spec(root)
+
     for identifier in _specific_identifiers(question_ids):
-        files = _grep_identifier_files(root, identifier)
+        files = _grep_identifier_files(root, identifier, exclude_spec)
         if not files:
             continue
         # Scan documenting files first, then cap: the file that documents the

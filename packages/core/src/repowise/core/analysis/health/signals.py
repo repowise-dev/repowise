@@ -19,8 +19,14 @@ graph node.
 
 from __future__ import annotations
 
+import json
 from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from typing import Protocol
+
+# How many symbols the per-file fix breakdown carries. Enough to say "mostly
+# these", short enough to sit inside an MCP response without a budget argument.
+_TOP_FIX_SYMBOLS = 5
 
 
 class GitMetaLike(Protocol):
@@ -40,6 +46,9 @@ class GitMetaLike(Protocol):
     primary_owner_commit_pct: float | None
     recent_owner_name: str | None
     recent_owner_commit_pct: float | None
+    bug_magnet: bool | None
+    last_fix_at: datetime | None
+    fix_symbol_counts_json: str | None
 
 
 @dataclass
@@ -67,6 +76,14 @@ class FileSignals:
     # Topology — how connected it is in the dependency graph.
     in_degree: int | None
     out_degree: int | None
+    # Defect history — how often it gets bug-fixed, and where in the file.
+    # ``bug_magnet`` is the decayed fix mass past its trigger, ``last_fix_at``
+    # the recency that must accompany it in any copy, and ``fix_symbol_counts``
+    # the top few symbols the fixes landed in. See
+    # :mod:`~analysis.health.fix_attribution`.
+    bug_magnet: bool | None
+    last_fix_at: str | None
+    fix_symbol_counts: dict[str, int] | None
 
     @property
     def has_any(self) -> bool:
@@ -88,6 +105,42 @@ def _entropy_pct(raw: float | None) -> float | None:
     if raw is None:
         return None
     return round(raw * 100.0, 1)
+
+
+def iso_utc(value: datetime | None) -> str | None:
+    """ISO-8601 with an explicit UTC offset, always.
+
+    SQLite's DATETIME bind processor drops ``tzinfo``, so these columns come
+    back naive even though they were written aware-UTC. A bare
+    ``2026-07-19T10:00:00`` is parsed as LOCAL time by every JS consumer, which
+    on a UTC-8 viewer reads a two-hour-old fix as six hours in the future, trips
+    ``formatRelativeTimeOrNull``'s future-guard, and makes the age silently
+    vanish from the copy that is required to carry it. Re-attach UTC here, once,
+    rather than in each of the four surfaces that render this.
+    """
+    if not isinstance(value, datetime):
+        return None
+    return (value if value.tzinfo else value.replace(tzinfo=UTC)).isoformat()
+
+
+def _top_fix_symbols(raw: str | None) -> dict[str, int] | None:
+    """Parse the stored symbol->fix-count map, keeping only the top few.
+
+    The stored map is written in descending-count order, so "top few" is a
+    slice. Capping here rather than at the call sites keeps every consumer —
+    drawer, file page, MCP — on the same budget: this rides inside MCP
+    responses, and a 40-symbol file would otherwise spend a response on a tail
+    nobody reads.
+    """
+    if not raw:
+        return None
+    try:
+        counts = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(counts, dict) or not counts:
+        return None
+    return {str(k): int(v) for k, v in list(counts.items())[:_TOP_FIX_SYMBOLS]}
 
 
 def file_signals(
@@ -116,4 +169,12 @@ def file_signals(
         recent_owner_commit_pct=g.recent_owner_commit_pct if g else None,
         in_degree=degrees["in_degree"] if degrees else None,
         out_degree=degrees["out_degree"] if degrees else None,
+        bug_magnet=getattr(g, "bug_magnet", None) if g else None,
+        # ISO string, not a datetime: this dataclass goes through ``asdict`` into
+        # MCP responses, which have to be JSON-serializable without a custom
+        # encoder.
+        last_fix_at=iso_utc(getattr(g, "last_fix_at", None)) if g else None,
+        fix_symbol_counts=_top_fix_symbols(getattr(g, "fix_symbol_counts_json", None))
+        if g
+        else None,
     )

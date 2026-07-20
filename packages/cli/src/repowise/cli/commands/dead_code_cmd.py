@@ -153,6 +153,15 @@ def dead_code_command(
             graph_builder.add_file(parsed)
         except Exception:
             pass
+
+    from repowise.core.ingestion import wire_tsconfig_resolver
+
+    wire_tsconfig_resolver(
+        graph_builder,
+        repo_path,
+        include_submodules=include_submodules,
+        include_nested_repos=include_nested_repos,
+    )
     graph_builder.build()
 
     # Framework-aware synthetic edges (Django, Laravel, TYPO3, ...). Without
@@ -192,7 +201,12 @@ def dead_code_command(
         config["detect_unused_internals"] = kind == "unused_internal"
         config["detect_zombie_packages"] = kind == "zombie_package"
 
-    analyzer = DeadCodeAnalyzer(graph_builder.graph(), git_meta_map)
+    # parsed_files powers the source-scan rescues (dynamic-import markers,
+    # bundler resolve.alias targets, export-alias maps) — without it those
+    # classes false-positive on the CLI path while init stays clean.
+    analyzer = DeadCodeAnalyzer(
+        graph_builder.graph(), git_meta_map, parsed_files=graph_builder._parsed_files
+    )
     report = analyzer.analyze(config)
 
     findings = report.findings

@@ -145,6 +145,9 @@ def _file_signals_to_dict(s: FileSignals) -> dict:
         "recent_owner_commit_pct": s.recent_owner_commit_pct,
         "in_degree": s.in_degree,
         "out_degree": s.out_degree,
+        "bug_magnet": s.bug_magnet,
+        "last_fix_at": s.last_fix_at,
+        "fix_symbol_counts": s.fix_symbol_counts,
     }
 
 

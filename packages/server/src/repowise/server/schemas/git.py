@@ -39,6 +39,14 @@ class GitMetadataResponse(BaseModel):
     change_entropy: float = 0.0
     change_entropy_pct: float = 0.0
     prior_defect_count: int = 0
+    # Fix-event rollup. ``fix_symbol_counts`` maps WikiSymbol.symbol_id to how
+    # many counted fixes landed in that symbol, so a caller holding this row can
+    # answer "was THIS function bug-fixed?" without a second request.
+    # ``last_fix_at`` travels with it because a fix count without recency reads
+    # the same at two weeks and two years. Empty/None on a pre-rollup index.
+    fix_symbol_counts: dict = {}
+    bug_magnet: bool = False
+    last_fix_at: datetime | None = None
     temporal_hotspot_score: float | None = None
     commit_count_capped: bool = False
     # Rename lineage: the file's path before its most recent move, if any.
@@ -87,6 +95,9 @@ class GitMetadataResponse(BaseModel):
             # Normalize 0-1 -> 0-100 to match churn_percentile's contract.
             change_entropy_pct=(obj.change_entropy_pct or 0.0) * 100.0,  # type: ignore[attr-defined]
             prior_defect_count=obj.prior_defect_count or 0,  # type: ignore[attr-defined]
+            fix_symbol_counts=json.loads(getattr(obj, "fix_symbol_counts_json", None) or "{}"),
+            bug_magnet=bool(getattr(obj, "bug_magnet", False)),
+            last_fix_at=getattr(obj, "last_fix_at", None),
             temporal_hotspot_score=obj.temporal_hotspot_score,  # type: ignore[attr-defined]
             commit_count_capped=bool(obj.commit_count_capped),  # type: ignore[attr-defined]
             original_path=obj.original_path,  # type: ignore[attr-defined]
@@ -174,9 +185,16 @@ class CommitResponse(BaseModel):
     # open every detail sheet. Recomputed deterministically from the stored
     # Kamei features; None when the commit was never risk-scored.
     top_driver: str | None = None
-    # Cumulative prior-commit count at commit time. Low values flag a
-    # new-to-this-repo contributor.
+    # Cumulative prior-commit count at commit time, counted over the indexed
+    # history. A change-risk feature, so it is reported as-is; it is not a
+    # verdict on the author, since the window's oldest commits necessarily
+    # start everyone near zero.
     author_experience: int | None = None
+    # How many commits this author has in the indexed history, total. Unlike
+    # author_experience this does not depend on where in the window the commit
+    # sits, which is what makes it safe to draw a "new contributor" conclusion
+    # from. Identities are folded, so noreply variants of one person count once.
+    author_commit_count: int | None = None
     # Agent provenance (deterministic local-git attribution channels).
     # agent_name is None for human-authored commits.
     agent_name: str | None = None
@@ -284,6 +302,14 @@ class RiskRangeResponse(BaseModel):
     drivers: list[RiskDriverResponse]
 
 
+class RiskHistogramBucket(BaseModel):
+    """One bin of the repo's raw change-risk score distribution."""
+
+    start: float  # bin lower bound on the 0-10 raw score axis (inclusive)
+    end: float  # bin upper bound (exclusive, except the final bin)
+    count: int  # commits whose stored score falls in the bin
+
+
 class CommitStatsResponse(BaseModel):
     """Repo-wide commit aggregates for the commits-page headline stat cards.
 
@@ -298,3 +324,10 @@ class CommitStatsResponse(BaseModel):
     fix_commit_count: int  # subjects classified as bug-fixes
     agent_commit_count: int  # agent-attributed commits
     avg_entropy: float  # mean change-diffusion across all commits
+
+    # The distribution behind the tercile banding. Binned on the *raw* score
+    # rather than the percentile, because percentile ranks are uniform by
+    # construction — only the raw axis has a shape worth drawing.
+    risk_histogram: list[RiskHistogramBucket] = []
+    moderate_cut: float | None = None  # raw score at the low/moderate boundary
+    high_cut: float | None = None  # raw score at the moderate/high boundary

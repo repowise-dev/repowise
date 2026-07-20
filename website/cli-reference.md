@@ -44,7 +44,7 @@ repowise init [PATH] [OPTIONS]
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--provider` | string | auto | LLM provider: `anthropic`, `openai`, `openrouter`, `gemini`, `deepseek`, `ollama`, `litellm`, `codex_cli`, `opencode`, `mock` |
+| `--provider` | string | auto | LLM provider: `anthropic`, `openai`, `openrouter`, `gemini`, `deepseek`, `kimi`, `ollama`, `litellm`, `codex_cli`, `opencode`, `mock` |
 | `--model` | string | — | Model override (e.g., `claude-sonnet-4-6`, `gpt-4.1`) |
 | `--embedder` | choice | auto | Embedding provider: `gemini`, `openai`, `mock` |
 | `--index-only` | flag | false | Skip LLM generation — parse, graph, git, dead code only |
@@ -115,7 +115,7 @@ repowise init --resume
 If `--provider` is not specified, repowise checks in order:
 1. `REPOWISE_PROVIDER` environment variable
 2. `.repowise/config.yaml` from a previous run
-3. API key environment variables: `ANTHROPIC_API_KEY` → `OPENAI_API_KEY` → `OLLAMA_BASE_URL` → `GEMINI_API_KEY`
+3. API key environment variables: `ANTHROPIC_API_KEY` → `OPENAI_API_KEY` → `OPENROUTER_API_KEY` → `OLLAMA_BASE_URL` → `GEMINI_API_KEY` → `DEEPSEEK_API_KEY` → `KIMI_API_KEY`
 
 ---
 

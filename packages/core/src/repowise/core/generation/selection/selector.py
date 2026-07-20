@@ -8,7 +8,6 @@ emitted.
 
 from __future__ import annotations
 
-from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -625,10 +624,3 @@ def summarize_selection(sel: Selection) -> dict[str, int]:
     internals.
     """
     return sel.counts()
-
-
-def language_summary(parsed_files: list[Any]) -> dict[str, int]:
-    """Return ``{language: file_count}`` — used by the init UI to
-    describe the repo shape next to the coverage table.
-    """
-    return dict(Counter(p.file_info.language for p in parsed_files))

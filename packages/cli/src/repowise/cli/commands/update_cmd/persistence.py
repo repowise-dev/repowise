@@ -174,6 +174,8 @@ def _persist_index_only_update(
         "last_sync_commit": head,
         "config_fingerprint": config_fingerprint(repo_path),
     }
+    if "last_docs_commit" not in state and "last_sync_commit" in state:
+        new_state["last_docs_commit"] = state["last_sync_commit"]
     if knowledge_graph_result is not None:
         try:
             from repowise.cli.state_persistence import build_kg_state, save_knowledge_graph_json
@@ -357,7 +359,7 @@ async def _persist_full_update_async(
         create_session_factory,
         get_session,
         init_db,
-        upsert_page_from_generated,
+        upsert_pages_from_generated,
         upsert_repository,
     )
 
@@ -377,8 +379,9 @@ async def _persist_full_update_async(
 
             # Pages first and without a net: everything else is derived
             # metadata, but a docs-mode update that can't write pages failed.
-            for page in generated_pages:
-                await upsert_page_from_generated(session, page, repo_id)
+            # Batched (one SELECT + one flush); the checkpointer sink already
+            # streamed each page per-commit for durability.
+            await upsert_pages_from_generated(session, generated_pages, repo_id)
 
             # Tombstone pages for deleted/renamed files — regeneration only
             # rewrites pages for files that still exist.
@@ -391,6 +394,27 @@ async def _persist_full_update_async(
                 await mark_tombstone_pages(session, repo_id, tombstone_candidates(file_diffs))
             except Exception as exc:
                 _skip("Tombstone marking", exc)
+
+            # Refresh related-pages metadata repo-wide. The generation pass
+            # only touched this run's regenerated pages; this LLM-free
+            # backfill heals every other page (pre-feature pages, import
+            # drift) in the same transaction.
+            try:
+                from repowise.core.generation.related_pages import file_import_edges
+                from repowise.core.persistence.crud import backfill_related_pages
+
+                await backfill_related_pages(
+                    session,
+                    repo_id,
+                    import_edges=file_import_edges(graph_builder),
+                    git_meta_map=git_meta_map,
+                    pagerank=graph_builder.pagerank(),
+                    # This run's pages carry fresher metadata (including
+                    # module siblings) than the recompute could produce.
+                    skip_page_ids={p.page_id for p in generated_pages},
+                )
+            except Exception as exc:
+                _skip("Related-pages backfill", exc)
 
             # Weakly-affected pages (cascade overflow beyond the budget,
             # co-change partners, 2-hop rename fallout) decay to 'stale' so
@@ -562,6 +586,16 @@ async def _persist_full_update_async(
             except Exception as exc:
                 _skip("Graph edges persist", exc)
 
+            # Refresh external systems (C4 L1) when a manifest changed — the
+            # docs-mode persister mirrors the incremental one, which does the
+            # same. Gated + no LLM inside the shared core helper.
+            try:
+                from repowise.core.pipeline.incremental import refresh_external_systems
+
+                await refresh_external_systems(session, repo_id, repo_path, file_diffs)
+            except Exception as exc:
+                _skip("External systems refresh", exc)
+
             # Record a GenerationJob so the web UI "last synced" timestamp updates.
             try:
                 from datetime import UTC as _UTC
@@ -649,6 +683,7 @@ def _git_metadata_to_dict(gm: Any) -> dict[str, Any]:
         "merge_commit_count_90d": gm.merge_commit_count_90d,
         "temporal_hotspot_score": gm.temporal_hotspot_score,
         "prior_defect_count": gm.prior_defect_count,
+        "prior_defect_raw_count": gm.prior_defect_raw_count,
         "change_entropy": gm.change_entropy,
         "change_entropy_pct": gm.change_entropy_pct,
     }

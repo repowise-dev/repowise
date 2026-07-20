@@ -116,8 +116,8 @@ async def test_persist_postgres_sql_places_on_conflict_after_values() -> None:
     assert sql.index("VALUES") < sql.index("ON CONFLICT")
 
 
-def test_migration_0037_upgrades_sqlite() -> None:
-    """Migration 0037 must run on SQLite (batch_alter_table, not raw ALTER)."""
+def test_migration_0041_upgrades_sqlite() -> None:
+    """Migration 0041 must run on SQLite (batch_alter_table, not raw ALTER)."""
     core_root = Path("packages/core")
     with tempfile.TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "test.db"
@@ -129,8 +129,8 @@ def test_migration_0037_upgrades_sqlite() -> None:
             os.chdir(core_root)
             alembic_cfg = Config("alembic.ini")
             alembic_cfg.set_main_option("sqlalchemy.url", url)
-            command.upgrade(alembic_cfg, "0036")
-            command.upgrade(alembic_cfg, "0037")
+            command.upgrade(alembic_cfg, "0040")
+            command.upgrade(alembic_cfg, "0041")
         finally:
             os.chdir(prev_cwd)
             if prev_url is None:

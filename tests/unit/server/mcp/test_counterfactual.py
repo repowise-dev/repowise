@@ -86,6 +86,119 @@ def test_fixed_floor_tools_credit_successful_calls_only() -> None:
     assert cf.replaced_tokens_for("get_health", {"summary": {}}) == cf.HEALTH_FLOOR
 
 
+def test_get_context_module_credits_per_child_file() -> None:
+    # A module card lists child files the agent would otherwise open one by one.
+    result = {
+        "targets": {
+            "src/api": {
+                "target": "src/api",
+                "type": "module",
+                "docs": {"files": [{"path": "src/api/a.py"}, {"path": "src/api/b.py"}]},
+            }
+        }
+    }
+    assert cf.replaced_tokens_for("get_context", result) == 2 * cf.CONTEXT_MODULE_FILE_FLOOR
+
+
+def test_get_context_module_credit_is_capped() -> None:
+    # The child-page query is recursive, so a top-level module lists hundreds of
+    # files; the agent would never have opened them all. Credit stays capped.
+    many = [{"path": f"src/f{i}.py"} for i in range(500)]
+    result = {"targets": {"src": {"target": "src", "type": "module", "docs": {"files": many}}}}
+    assert cf.replaced_tokens_for("get_context", result) == cf.CONTEXT_MODULE_MAX
+
+
+def test_get_risk_unions_will_break_and_missing_cochanges() -> None:
+    # A file that both breaks and is a missed co-change partner is one file.
+    # Two targets so the total clears RISK_FLOOR — otherwise the floor masks
+    # whether the overlapping file was counted once or twice.
+    result = {
+        "targets": {"a.py": {}, "b.py": {}},
+        "directive": {"will_break": ["c.py"], "missing_cochanges": ["c.py"]},
+    }
+    expected = 2 * cf.RISK_PER_TARGET + 1 * cf.RISK_PER_RELATED_FILE
+    assert expected > cf.RISK_FLOOR
+    assert cf.replaced_tokens_for("get_risk", result) == expected
+
+
+def test_get_context_symbol_credits_fixed_floor() -> None:
+    result = {"targets": {"Foo": {"target": "Foo", "type": "symbol", "docs": {"name": "Foo"}}}}
+    assert cf.replaced_tokens_for("get_context", result) == cf.CONTEXT_SYMBOL_FLOOR
+
+
+def test_get_context_mixed_targets_sum() -> None:
+    # Skeleton file + module + symbol all contribute; error target is skipped.
+    result = {
+        "targets": {
+            "a.py": {"target": "a.py", "type": "file", "skeleton": {"full_tokens": 1500}},
+            "src/api": {
+                "target": "src/api",
+                "type": "module",
+                "docs": {"files": [{"path": "x.py"}]},
+            },
+            "Foo": {"target": "Foo", "type": "symbol"},
+            "gone.py": {"target": "gone.py", "error": "not found"},
+        }
+    }
+    expected = 1500 + cf.CONTEXT_MODULE_FILE_FLOOR + cf.CONTEXT_SYMBOL_FLOOR
+    assert cf.replaced_tokens_for("get_context", result) == expected
+
+
+def test_get_context_skeleton_file_not_double_counted() -> None:
+    # A file target carrying a skeleton counts once (full_tokens), never also
+    # as a per-type floor.
+    result = {
+        "targets": {"a.py": {"target": "a.py", "type": "file", "skeleton": {"full_tokens": 900}}}
+    }
+    assert cf.replaced_tokens_for("get_context", result) == 900
+
+
+def test_get_risk_scales_with_targets_and_blast() -> None:
+    result = {
+        "targets": {"a.py": {}, "b.py": {}},
+        "directive": {"will_break": ["c.py"], "missing_cochanges": ["d.py", "e.py"]},
+    }
+    expected = 2 * cf.RISK_PER_TARGET + 3 * cf.RISK_PER_RELATED_FILE
+    assert cf.replaced_tokens_for("get_risk", result) == expected
+
+
+def test_get_risk_floors_when_signal_thin() -> None:
+    assert cf.replaced_tokens_for("get_risk", {"targets": {}}) == cf.RISK_FLOOR
+    assert cf.replaced_tokens_for("get_risk", {"error": "nope"}) == 0
+
+
+def test_get_blast_radius_scales_and_caps() -> None:
+    assert cf.replaced_tokens_for("get_blast_radius", {"total_impacted": 3}) == max(
+        cf.BLAST_FLOOR, 3 * cf.BLAST_PER_IMPACTED
+    )
+    # No impact still floors a successful call.
+    assert cf.replaced_tokens_for("get_blast_radius", {"total_impacted": 0}) == cf.BLAST_FLOOR
+    # Huge fan-out is capped.
+    assert cf.replaced_tokens_for("get_blast_radius", {"total_impacted": 10_000}) == cf.BLAST_MAX
+    assert cf.replaced_tokens_for("get_blast_radius", {"error": "workspace only"}) == 0
+
+
+def test_get_execution_flows_scales_with_trace_nodes() -> None:
+    # 5 + 3 = 8 nodes, chosen so the scaled value clears FLOWS_FLOOR — otherwise
+    # max() collapses and the test would pass with the scaling deleted.
+    result = {"flows": [{"trace": [1, 2, 3, 4, 5]}, {"depth": 2}]}
+    scaled = 8 * cf.FLOWS_PER_NODE
+    assert scaled > cf.FLOWS_FLOOR
+    assert cf.replaced_tokens_for("get_execution_flows", result) == scaled
+    assert cf.replaced_tokens_for("get_execution_flows", {"flows": []}) == 0
+    assert cf.replaced_tokens_for("get_execution_flows", {"error": "no entry"}) == 0
+
+
+def test_newly_covered_tools_credit_successful_calls() -> None:
+    # Item 7: tools that previously fell through and could only ever take a
+    # dead-end debit now earn a floor on success.
+    assert cf.replaced_tokens_for("get_change_risk", {"summary": "x"}) == cf.CHANGE_RISK_FLOOR
+    assert cf.replaced_tokens_for("get_architecture", {"layers": []}) == cf.ARCHITECTURE_FLOOR
+    assert cf.replaced_tokens_for("get_dependency_path", {"path": []}) == cf.DEPENDENCY_FLOOR
+    assert cf.replaced_tokens_for("get_conformance", {"contracts": []}) == cf.CONFORMANCE_FLOOR
+    assert cf.replaced_tokens_for("get_change_risk", {"error": "bad revspec"}) == 0
+
+
 def test_dead_end_records_debit_row(tmp_path, monkeypatch) -> None:
     """An error response writes raw=0/distilled=N — a negative net at
     aggregation, so the ledger stops only ever crediting (E11)."""

@@ -7,8 +7,19 @@ and vector store so a single query covers the whole workspace. Pass
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, Query, Request
-from repowise.server.deps import get_fts, get_vector_store, verify_api_key
+from sqlalchemy import select
+
+from repowise.core.persistence.database import get_session
+from repowise.core.persistence.models import Page
+from repowise.server.deps import (
+    get_fts,
+    get_vector_store,
+    resolve_session_factory,
+    verify_api_key,
+)
 from repowise.server.schemas import SearchResultResponse
 
 router = APIRouter(
@@ -18,7 +29,7 @@ router = APIRouter(
 )
 
 
-def _to_response(r) -> SearchResultResponse:
+def _to_response(r, det_ids: set[str]) -> SearchResultResponse:
     """Convert a SearchResult dataclass into the API schema."""
     return SearchResultResponse(
         page_id=r.page_id,
@@ -28,7 +39,31 @@ def _to_response(r) -> SearchResultResponse:
         score=r.score,
         snippet=r.snippet,
         search_type=r.search_type,
+        is_deterministic=r.page_id in det_ids,
     )
+
+
+async def _deterministic_page_ids(
+    request: Request, repo_id: str | None, page_ids: list[str]
+) -> set[str]:
+    """Page ids among ``page_ids`` that are deterministic template pages.
+
+    One batch lookup against the resolved repo's DB. Best-effort: workspace
+    fan-out results whose page lives in another repo's DB simply aren't
+    flagged (the badge is a hint, not load-bearing), so a lookup miss or
+    error yields an empty set rather than failing the search.
+    """
+    if not page_ids:
+        return set()
+    try:
+        factory = resolve_session_factory(request.app.state, repo_id)
+        async with get_session(factory) as session:
+            rows = await session.execute(
+                select(Page.id).where(Page.id.in_(page_ids), Page.provider_name == "template")
+            )
+            return {row[0] for row in rows.all()}
+    except Exception:
+        return set()
 
 
 @router.get("", response_model=list[SearchResultResponse])
@@ -60,11 +95,10 @@ async def search(
     if search_type == "fulltext":
         results = await _fulltext(request, query, limit, repo_id=repo_id, primary_fts=fts)
     else:
-        results = await _semantic(
-            request, query, limit, repo_id=repo_id, primary_vs=vector_store
-        )
+        results = await _semantic(request, query, limit, repo_id=repo_id, primary_vs=vector_store)
 
-    return [_to_response(r) for r in results]
+    det_ids = await _deterministic_page_ids(request, repo_id, [r.page_id for r in results])
+    return [_to_response(r, det_ids) for r in results]
 
 
 # ---------------------------------------------------------------------------
@@ -114,30 +148,30 @@ async def _fulltext(request: Request, query: str, limit: int, *, repo_id, primar
 
 async def _semantic(request: Request, query: str, limit: int, *, repo_id, primary_vs):
     """Run a semantic search across the appropriate vector store(s)."""
-    from repowise.server.search_helpers import resolve_workspace_vector_store
+    from repowise.server.search_helpers import resolve_repo_vector_store
 
     ws_config = getattr(request.app.state, "workspace_config", None)
-    if ws_config is None:
-        # Single-repo mode.
-        return await primary_vs.search(query, limit=limit)
 
     if repo_id is not None:
         if repo_id.startswith("ws:"):
             return []
-        vs = await resolve_workspace_vector_store(request.app, repo_id)
+        vs = await resolve_repo_vector_store(request.app.state, repo_id)
         if vs is None:
             return await primary_vs.search(query, limit=limit)
         return await vs.search(query, limit=limit)
 
+    if ws_config is None:
+        # Single-repo mode. Startup resolves the primary store from the same
+        # repo-local database used by `repowise serve`.
+        return await primary_vs.search(query, limit=limit)
+
     # Fan-out: iterate over every workspace repo with an indexed wiki.db
     # and try to load its persisted LanceDB store. Repos without one
     # fall back to FTS so the user still gets some signal.
-    from pathlib import Path as _P
-
     ws_root = getattr(request.app.state, "workspace_root", None)
     if ws_root is None:
         return await primary_vs.search(query, limit=limit)
-    ws_root_path = _P(ws_root)
+    ws_root_path = Path(ws_root)
 
     all_results = []
     workspace_fts = getattr(request.app.state, "workspace_fts", {}) or {}
@@ -152,9 +186,7 @@ async def _semantic(request: Request, query: str, limit: int, *, repo_id, primar
 
         try:
             with _sql.connect(str(db_path)) as conn:
-                row = conn.execute(
-                    "SELECT id FROM repositories LIMIT 1"
-                ).fetchone()
+                row = conn.execute("SELECT id FROM repositories LIMIT 1").fetchone()
         except Exception:
             row = None
         rid = row[0] if row else None
@@ -164,7 +196,7 @@ async def _semantic(request: Request, query: str, limit: int, *, repo_id, primar
         vs = None
         if rid is not None:
             try:
-                vs = await resolve_workspace_vector_store(request.app, rid)
+                vs = await resolve_repo_vector_store(request.app.state, rid)
             except Exception:
                 vs = None
         if vs is not None:

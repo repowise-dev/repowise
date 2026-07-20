@@ -13,6 +13,7 @@ Popular models:
 
 from __future__ import annotations
 
+import contextlib
 import os
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
@@ -278,7 +279,7 @@ class OpenRouterProvider(BaseProvider):
         )
 
         try:
-            return await self._generate_with_retry(
+            result = await self._generate_with_retry(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 max_tokens=max_tokens,
@@ -291,6 +292,23 @@ class OpenRouterProvider(BaseProvider):
                 "openrouter",
                 f"All retries exhausted: {exc}",
             ) from exc
+
+        # Persist spend like the other providers do — without this, any repo
+        # generating docs through OpenRouter records zero cost and the Costs
+        # page shows $0. The tracker is attached externally by the orchestrator,
+        # so it may be absent (guard with getattr); record() swallows its own
+        # persistence errors, so generation is unaffected.
+        tracker = getattr(self, "_cost_tracker", None)
+        if tracker is not None:
+            with contextlib.suppress(Exception):
+                await tracker.record(
+                    model=self._model,
+                    input_tokens=result.input_tokens,
+                    output_tokens=result.output_tokens,
+                    operation=tracker.operation,
+                    file_path=None,
+                )
+        return result
 
     @retry(
         retry=provider_should_retry,

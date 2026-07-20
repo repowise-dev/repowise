@@ -31,7 +31,6 @@ import {
   type CodeHealthMapFile,
   type CodeHealthOverlay,
 } from "./code-health-map";
-import { RecalibrationBanner } from "./recalibration-banner";
 import { DefectAccuracyCard } from "./defect-accuracy-card";
 import { FileSpotlight } from "./code-health-controls";
 import { type Severity } from "./tokens";
@@ -166,8 +165,6 @@ export function TriageView({
         </div>
       ) : overview ? (
         <>
-          <RecalibrationBanner repoId={cacheKey} />
-
           {/* Proof, up front: the defect-validated headline that sets this score
               apart — a slim one-line banner that expands to the full breakdown. */}
           {overview.defect_accuracy ? (

@@ -11,6 +11,8 @@ import pytest
 
 pytest.importorskip("anthropic", reason="anthropic SDK not installed")
 
+from anthropic.types import TextBlock, ThinkingBlock
+
 from repowise.core.providers.llm.anthropic import AnthropicProvider
 from repowise.core.providers.llm.base import GeneratedResponse, ProviderError, RateLimitError
 
@@ -156,6 +158,29 @@ async def test_generate_sends_correct_params():
     assert kw["temperature"] == 0.1
     assert kw["system"] == "system msg"
     assert kw["messages"] == [{"role": "user", "content": "user msg"}]
+
+
+async def test_generate_skips_thinking_block_before_text():
+    provider = AnthropicProvider(api_key="sk-ant-test")
+    mock_response = _make_mock_response()
+    mock_response.content = [
+        ThinkingBlock(
+            type="thinking",
+            thinking="Internal reasoning",
+            signature="test-signature",
+        ),
+        TextBlock(
+            type="text",
+            text="Hello after thinking",
+        ),
+    ]
+
+    with patch("anthropic.AsyncAnthropic") as mock_client:
+        mock_client.return_value.messages.create = AsyncMock(return_value=mock_response)
+        provider._client = mock_client.return_value
+        result = await provider.generate("sys", "user")
+
+    assert result.content == "Hello after thinking"
 
 
 # ---------------------------------------------------------------------------

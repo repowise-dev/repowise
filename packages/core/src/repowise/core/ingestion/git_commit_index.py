@@ -83,6 +83,7 @@ def load_commit_index(
     commit_sink: list[dict] | None = None,
     since_ts: int | None = None,
     provenance_classifier: object | None = None,
+    trace_index: object | None = None,
 ) -> dict[str, list[_CommitRec]]:
     """Bucket every commit in the recent history by the files it touched.
 
@@ -132,7 +133,7 @@ def load_commit_index(
         _extract_rename_paths,
         _parse_commit_record,
     )
-    from .git_indexer.agent_provenance import AgentProvenanceClassifier
+    from .git_indexer.agent_provenance import AgentProvenanceClassifier, AgentTraceIndex
 
     if provenance_classifier is None:
         provenance_classifier = AgentProvenanceClassifier()
@@ -153,6 +154,11 @@ def load_commit_index(
 
     # git-ai authorship notes for this window (``{}`` unless the repo uses them).
     note_agents = load_git_ai_note_agents(repo, commit_limit)
+    # Agent-trace records (empty after one stat call unless the repo has them).
+    # The orchestrator may pass a shared instance so the trace file is read once
+    # per index rather than once per walk.
+    if trace_index is None:
+        trace_index = AgentTraceIndex.load(repo)
 
     bucket: dict[str, list[_CommitRec]] = {}
     commits_parsed = 0
@@ -175,21 +181,11 @@ def load_commit_index(
             continue
         commits_parsed += 1
 
-        # Agent provenance — classified ONCE per commit here (not per touched
-        # file): the per-file records below share the result by reference.
-        prov = provenance_classifier.classify(  # type: ignore[attr-defined]
-            header["author_name"],
-            header["author_email"],
-            header["committer_name"],
-            header["committer_email"],
-            f"{header['subject']}\n{header['body']}",
-            note_agent=note_agents.get(header["sha"]),
-        )
-
         # Full change footprint of this commit (every file, not just the
-        # indexable subset) — only accumulated when a sink is requested so the
-        # default path pays nothing.
-        commit_changes: list[tuple[str, int, int]] = [] if commit_sink is not None else None  # type: ignore[assignment]
+        # indexable subset). Parsed before classification because the
+        # agent-trace channel needs the changed-path set for its file-overlap
+        # check; the same list feeds the commit sink.
+        commit_changes: list[tuple[str, int, int]] = []
 
         for line in numstat_lines:
             cols = line.split("\t")
@@ -215,9 +211,27 @@ def load_commit_index(
                 added = 0
                 deleted = 0
 
-            if commit_changes is not None:
-                commit_changes.append((target, added, deleted))
+            commit_changes.append((target, added, deleted))
 
+        # Agent provenance — classified ONCE per commit here (not per touched
+        # file): the per-file records below share the result by reference.
+        trace_hit = (
+            trace_index.resolve(header["sha"], header["parents"], {t for t, _, _ in commit_changes})
+            if trace_index
+            else None
+        )
+        prov = provenance_classifier.classify(  # type: ignore[attr-defined]
+            header["author_name"],
+            header["author_email"],
+            header["committer_name"],
+            header["committer_email"],
+            f"{header['subject']}\n{header['body']}",
+            note_agent=note_agents.get(header["sha"]),
+            trace_agent=trace_hit[0] if trace_hit else None,
+            trace_confidence=trace_hit[1] if trace_hit else "high",
+        )
+
+        for target, added, deleted in commit_changes:
             if target not in indexable_files:
                 continue
 
@@ -252,6 +266,12 @@ def load_commit_index(
                     "agent_autonomy_tier": prov.autonomy_tier,
                     "agent_channel": prov.channel,
                     "agent_confidence": prov.confidence,
+                    # Model id only when the trace channel actually won: a note
+                    # or service-identity match can outrank the trace above, and
+                    # only the trace record carries a model.
+                    "agent_model_id": (
+                        trace_hit[2] if (trace_hit and prov.channel == "agent_trace") else None
+                    ),
                 }
             )
 
@@ -272,6 +292,7 @@ def load_deep_commit_index(
     skip: int,
     deep_limit: int,
     provenance_classifier: object | None = None,
+    trace_index: object | None = None,
 ) -> dict[str, list[_CommitRec]]:
     """Bucket commits OLDER than the recent window for *wanted_files* only.
 
@@ -308,7 +329,7 @@ def load_deep_commit_index(
         _extract_rename_paths,
         _parse_commit_record,
     )
-    from .git_indexer.agent_provenance import AgentProvenanceClassifier
+    from .git_indexer.agent_provenance import AgentProvenanceClassifier, AgentTraceIndex
 
     if not wanted_files:
         return {}
@@ -332,6 +353,10 @@ def load_deep_commit_index(
 
     # git-ai notes across the deep region (``{}`` unless the repo uses them).
     note_agents = load_git_ai_note_agents(repo, skip + deep_limit)
+    # Agent-trace records (empty after one stat call unless the repo has them).
+    # Reuse the orchestrator's shared instance when supplied (single file read).
+    if trace_index is None:
+        trace_index = AgentTraceIndex.load(repo)
 
     bucket: dict[str, list[_CommitRec]] = {}
     commits_parsed = 0
@@ -345,10 +370,13 @@ def load_deep_commit_index(
         header, numstat_lines = parsed
         commits_parsed += 1
 
-        # Classified lazily — only commits that actually touch a wanted
-        # file pay the provenance regexes (the window walk classifies
-        # every commit because the commit sink needs the labels).
-        prov = None
+        # Numstat parsed first so classification (below) can see the commit's
+        # full changed-path set, which the agent-trace channel's file-overlap
+        # check needs. Only commits that actually touch a wanted file pay the
+        # provenance work (the window walk classifies every commit because
+        # the commit sink needs the labels).
+        changes: list[tuple[str, int, int]] = []
+        touches_wanted = False
 
         for line in numstat_lines:
             cols = line.split("\t")
@@ -362,12 +390,6 @@ def load_deep_commit_index(
             else:
                 target = stat_path
 
-            if target not in wanted_files:
-                continue
-            records = bucket.setdefault(target, [])
-            if len(records) >= per_file_limit:
-                continue
-
             try:
                 added = int(cols[0]) if cols[0] != "-" else 0
                 deleted = int(cols[1]) if cols[1] != "-" else 0
@@ -375,15 +397,35 @@ def load_deep_commit_index(
                 added = 0
                 deleted = 0
 
-            if prov is None:
-                prov = provenance_classifier.classify(  # type: ignore[attr-defined]
-                    header["author_name"],
-                    header["author_email"],
-                    header["committer_name"],
-                    header["committer_email"],
-                    f"{header['subject']}\n{header['body']}",
-                    note_agent=note_agents.get(header["sha"]),
-                )
+            changes.append((target, added, deleted))
+            if target in wanted_files:
+                touches_wanted = True
+
+        if not touches_wanted:
+            continue
+
+        trace_hit = (
+            trace_index.resolve(header["sha"], header["parents"], {t for t, _, _ in changes})
+            if trace_index
+            else None
+        )
+        prov = provenance_classifier.classify(  # type: ignore[attr-defined]
+            header["author_name"],
+            header["author_email"],
+            header["committer_name"],
+            header["committer_email"],
+            f"{header['subject']}\n{header['body']}",
+            note_agent=note_agents.get(header["sha"]),
+            trace_agent=trace_hit[0] if trace_hit else None,
+            trace_confidence=trace_hit[1] if trace_hit else "high",
+        )
+
+        for target, added, deleted in changes:
+            if target not in wanted_files:
+                continue
+            records = bucket.setdefault(target, [])
+            if len(records) >= per_file_limit:
+                continue
 
             records.append(
                 _CommitRec(

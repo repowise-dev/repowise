@@ -8,6 +8,13 @@ import { usePages } from "@/lib/hooks/use-pages";
 import { DocsTree } from "@repowise-dev/ui/docs/docs-tree";
 import { DocsCommandPalette } from "@repowise-dev/ui/docs/command-palette";
 import {
+  PresentButton,
+  PresentOverlay,
+  buildPresentModel,
+  canPresent,
+  type PresentMode,
+} from "@repowise-dev/ui/present";
+import {
   DEFAULT_PERSONA,
   type ReaderPersona,
   isReaderPersona,
@@ -91,6 +98,40 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
     params.set("page", page.id);
     router.replace(`?${params.toString()}`, { scroll: false });
   }, [searchParams, router]);
+
+  // Present mode — an on-the-fly slide deck + guided walkthrough over the same
+  // loaded pages. Open state lives in ?present=deck|walkthrough so a specific
+  // mode is shareable. The model is derived, never generated or fetched.
+  const presentable = useMemo(
+    () => canPresent(pages as unknown as DocPage[]),
+    [pages],
+  );
+  const presentModel = useMemo(
+    () => (presentable ? buildPresentModel(pages as unknown as DocPage[]) : null),
+    [pages, presentable],
+  );
+  const presentParam = searchParams.get("present");
+  const presentMode: PresentMode | null =
+    presentParam === "walkthrough" ? "walkthrough" : presentParam === "deck" ? "deck" : null;
+  const setPresent = useCallback(
+    (mode: PresentMode | null, pageId?: string) => {
+      const params = new URLSearchParams(searchParams.toString());
+      if (mode) params.set("present", mode);
+      else params.delete("present");
+      if (pageId) params.set("page", pageId);
+      const qs = params.toString();
+      router.replace(qs ? `?${qs}` : "?", { scroll: false });
+    },
+    [searchParams, router],
+  );
+  const openInReaderFromPresent = useCallback(
+    (pageId: string) => {
+      const match = pages.find((p) => p.id === pageId);
+      if (match) setSelectedPage(match);
+      setPresent(null, pageId);
+    },
+    [pages, setPresent],
+  );
 
   // Server-backed search for the ⌘K palette: hit the semantic/full-text
   // endpoint, then map results back to the loaded page objects so selection
@@ -237,6 +278,7 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
           page={selectedPage}
           repoId={repoId}
         />
+        {presentable && <PresentButton onClick={() => setPresent("deck")} />}
         {selectedPage && (
           <SidebarToggle
             open={sidebarOpen}
@@ -246,6 +288,17 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
       </DocsHeader>
 
       <div className="flex-1 min-h-0">{body}</div>
+
+      {/* Present mode overlay — full-screen, escapes the dashboard chrome */}
+      {presentMode && presentModel && (
+        <PresentOverlay
+          model={presentModel}
+          initialMode={presentMode}
+          onClose={() => setPresent(null)}
+          onModeChange={(m) => setPresent(m)}
+          onOpenPage={openInReaderFromPresent}
+        />
+      )}
 
       {/* ⌘K full-text command palette over loaded pages */}
       <DocsCommandPalette

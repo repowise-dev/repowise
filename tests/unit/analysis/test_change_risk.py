@@ -10,10 +10,13 @@ import pytest
 
 from repowise.core.analysis.change_risk import (
     ChangeFeatures,
+    ChangeRiskResult,
+    change_risk_payload,
     extract_commit_features,
     extract_range_features,
     features_from_file_changes,
     score_change,
+    score_live_change,
 )
 from repowise.core.analysis.change_risk.model import _CONSTANTS, _sigmoid
 
@@ -84,6 +87,26 @@ def test_top_drivers_sorted_by_magnitude() -> None:
     assert contribs == sorted(contribs, reverse=True)
 
 
+def test_payload_includes_friendly_repo_relative_classification() -> None:
+    features = _feat(la=50, ld=10, nf=5, nd=3, ns=2, entropy=2.0, exp=8)
+    payload = change_risk_payload(
+        ChangeRiskResult(
+            features=features,
+            risk=score_change(features),
+            percentile=66.6,
+            priority="moderate",
+            baseline_sample_size=200,
+            riskignore_excludes=(),
+            request_excludes=(),
+        )
+    )
+
+    assert payload["risk_percentile"] == 66.6
+    assert payload["review_priority"] == "moderate"
+    assert payload["classification"] == "Typical"
+    assert payload["baseline_sample_size"] == 200
+
+
 # ---------------------------------------------------------------------------
 # Diff-only feature builder (no git repo — the bot's PR-API path).
 # ---------------------------------------------------------------------------
@@ -110,9 +133,12 @@ def test_features_from_file_changes_aggregates_diffusion() -> None:
     assert f.entropy > 0.0
     # The diff-only builder must score identically to the git path for the
     # same underlying counts.
-    assert score_change(f).score == score_change(
-        ChangeFeatures(la=15, ld=3, nf=3, nd=3, ns=2, entropy=f.entropy, exp=42)
-    ).score
+    assert (
+        score_change(f).score
+        == score_change(
+            ChangeFeatures(la=15, ld=3, nf=3, nd=3, ns=2, entropy=f.entropy, exp=42)
+        ).score
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -181,6 +207,44 @@ def test_extract_filters_by_extension(git_repo: Path) -> None:
     assert f.is_fix is False
 
 
+def test_extract_filters_by_gitignore_exclude_pattern(git_repo: Path) -> None:
+    _commit(
+        git_repo,
+        {
+            "src/app.py": "value = 1\n",
+            "tests/test_app.py": "def test_value():\n    assert True\n",
+            "web/app.spec.ts": "it('works', () => {})\n",
+        },
+        "feat: add application",
+        author="Dev",
+    )
+
+    f = extract_commit_features(str(git_repo), "HEAD", exclude_patterns=("tests/", "*.spec.ts"))
+
+    assert f.nf == 1
+    assert f.la == 1
+    assert f.nd == 1
+    assert f.ns == 1
+
+
+def test_extract_range_filters_by_gitignore_exclude_pattern(git_repo: Path) -> None:
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=git_repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    _commit(git_repo, {"src/app.py": "value = 1\n"}, "feat: app", author="Dev")
+    _commit(
+        git_repo,
+        {"tests/test_app.py": "def test_value():\n    assert True\n"},
+        "test: app",
+        author="Dev",
+    )
+
+    f = extract_range_features(str(git_repo), base, "HEAD", exclude_patterns=("tests/",))
+
+    assert f.nf == 1
+    assert f.la == 1
+
+
 def test_author_experience_accrues(git_repo: Path) -> None:
     _commit(git_repo, {"f1.py": "a=1\n"}, "feat: one", author="Repeat")
     _commit(git_repo, {"f2.py": "b=2\n"}, "feat: two", author="Repeat")
@@ -204,10 +268,120 @@ def test_extract_range_features_aggregates(git_repo: Path) -> None:
 
 
 def test_score_change_on_real_commit(git_repo: Path) -> None:
-    _commit(git_repo, {"big.py": "\n".join(f"line{i} = {i}" for i in range(120)) + "\n"},
-            "feat: big drop", author="New")
+    _commit(
+        git_repo,
+        {"big.py": "\n".join(f"line{i} = {i}" for i in range(120)) + "\n"},
+        "feat: big drop",
+        author="New",
+    )
     f = extract_commit_features(str(git_repo), "HEAD", extensions=(".py",))
     risk = score_change(f)
     assert 0.0 <= risk.score <= 10.0
     assert risk.features is f
     assert not math.isnan(risk.probability)
+
+
+def test_extract_commit_features_bad_revspec_raises(git_repo: Path) -> None:
+    # A bogus revspec must raise (git returns nonzero), not silently produce an
+    # all-zero feature vector that scores as a low-risk change.
+    with pytest.raises(subprocess.CalledProcessError):
+        extract_commit_features(str(git_repo), "no-such-ref")
+
+
+def test_score_live_change_bad_revspec_raises(git_repo: Path) -> None:
+    with pytest.raises(subprocess.CalledProcessError):
+        score_live_change(str(git_repo), "no-such-ref", baseline=0)
+
+
+def test_score_live_change_rejects_negative_baseline(git_repo: Path) -> None:
+    with pytest.raises(ValueError, match="baseline"):
+        score_live_change(str(git_repo), "HEAD", baseline=-1)
+
+
+def test_score_live_change_three_dot_range_is_valid(git_repo: Path) -> None:
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=git_repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    _commit(git_repo, {"r/a.py": "a=1\n"}, "feat: a", author="Dev")
+    # Three-dot syntax (base...HEAD) must degrade to a valid anchor rather than
+    # leaving a leading dot that git rejects as a ref.
+    result = score_live_change(str(git_repo), f"{base}...HEAD", baseline=0)
+    assert result.features.nf == 1
+    assert result.features.ref == f"{base}..HEAD"
+
+
+def test_score_live_change_below_min_baseline_yields_no_percentile(git_repo: Path) -> None:
+    # A shallow repo (fewer than the 8-commit floor) can't produce a
+    # representative percentile, so it degrades to no ranking, not a wrong one.
+    _commit(git_repo, {"a.py": "a=1\n"}, "feat: a", author="Dev")
+    result = score_live_change(str(git_repo), "HEAD", baseline=200)
+    assert result.baseline_sample_size < 8
+    assert result.percentile is None
+    assert result.priority is None
+
+
+def test_baseline_cache_hits_on_second_call_and_busts_on_new_commit(
+    git_repo: Path, monkeypatch
+) -> None:
+    # The 200-commit baseline walk is the dominant cost of a default call and is
+    # identical for the same repo state, so it is memoized on the resolved anchor
+    # sha. Give the repo enough history to actually build a percentile.
+    from repowise.core.analysis.change_risk import baseline
+
+    for i in range(10):
+        _commit(git_repo, {f"src/f{i}.py": f"x = {i}\n"}, f"feat: file {i}", author="Dev")
+
+    baseline.clear_baseline_cache()
+    calls = {"n": 0}
+    real = baseline.baseline_scores
+
+    def _counting(*args, **kwargs):
+        calls["n"] += 1
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(baseline, "baseline_scores", _counting)
+
+    first = score_live_change(str(git_repo), "HEAD", baseline=200)
+    second = score_live_change(str(git_repo), "HEAD", baseline=200)
+    # Second identical call reuses the memo: no extra baseline walk.
+    assert calls["n"] == 1
+    assert first.percentile == second.percentile
+    assert first.baseline_sample_size == second.baseline_sample_size
+
+    # A new commit moves HEAD's sha, so the memo key changes and the walk reruns.
+    _commit(git_repo, {"src/new.py": "y = 1\n"}, "feat: bust", author="Dev")
+    score_live_change(str(git_repo), "HEAD", baseline=200)
+    assert calls["n"] == 2
+
+    baseline.clear_baseline_cache()
+
+
+def test_baseline_cache_isolated_by_filters(git_repo: Path, monkeypatch) -> None:
+    # Different filters produce different samples, so they must not share a memo
+    # entry even at the same anchor sha.
+    from repowise.core.analysis.change_risk import baseline
+
+    for i in range(10):
+        _commit(
+            git_repo,
+            {f"src/f{i}.py": f"x = {i}\n", f"docs/d{i}.md": f"# {i}\n"},
+            f"feat: file {i}",
+            author="Dev",
+        )
+
+    baseline.clear_baseline_cache()
+    calls = {"n": 0}
+    real = baseline.baseline_scores
+
+    def _counting(*args, **kwargs):
+        calls["n"] += 1
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(baseline, "baseline_scores", _counting)
+
+    score_live_change(str(git_repo), "HEAD", baseline=200)
+    score_live_change(str(git_repo), "HEAD", baseline=200, extensions=("py",))
+    # Distinct extension filters key separately, so both walked.
+    assert calls["n"] == 2
+
+    baseline.clear_baseline_cache()

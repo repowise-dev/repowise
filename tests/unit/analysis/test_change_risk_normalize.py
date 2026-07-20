@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from repowise.core.analysis.change_risk import RiskNormalizer
+import pytest
+
+from repowise.core.analysis.change_risk import RiskNormalizer, review_priority_classification
 
 
 def test_empty_distribution_is_low_zero() -> None:
@@ -53,3 +55,46 @@ def test_priority_is_repo_relative_not_absolute() -> None:
     n = RiskNormalizer.from_scores([8.0, 8.2, 8.4, 8.6, 8.8, 9.0])
     assert n.priority(8.0) == "low"
     assert n.priority(9.0) == "high"
+
+
+def test_cut_is_empty_on_empty_distribution() -> None:
+    n = RiskNormalizer.from_scores([])
+    assert n.cut(50.0) is None
+    assert n.moderate_cut is None
+    assert n.high_cut is None
+
+
+@pytest.mark.parametrize(
+    "scores",
+    [
+        [float(i) for i in range(1, 10)],  # small and evenly spaced
+        [i / 7 for i in range(71)],  # dense, so mid-rank ties bite
+        [8.0, 8.2, 8.4, 8.6, 8.8, 9.0],  # narrow band, all high-absolute
+        [3.0, 3.0, 3.0, 7.0, 7.0, 7.0],  # heavy ties either side of the cut
+    ],
+)
+def test_cuts_agree_with_priority_banding(scores: list[float]) -> None:
+    # A chart draws the cuts and colours each bin by comparing against them.
+    # If that comparison disagreed with priority() for even one score, a bar
+    # and the row pill for the same commit would contradict each other.
+    n = RiskNormalizer.from_scores(scores)
+    assert n.moderate_cut is not None and n.high_cut is not None
+    assert n.moderate_cut <= n.high_cut
+    for s in scores:
+        expected = (
+            "high" if s >= n.high_cut else "moderate" if s >= n.moderate_cut else "low"
+        )
+        assert n.priority(s) == expected, s
+
+
+def test_no_cut_when_every_score_ties() -> None:
+    # Nothing reaches the top tercile, so there is no elevated line to draw.
+    n = RiskNormalizer.from_scores([7.0] * 10)
+    assert n.high_cut is None
+
+
+def test_review_priority_classification() -> None:
+    assert review_priority_classification("low") == "Below typical"
+    assert review_priority_classification("moderate") == "Typical"
+    assert review_priority_classification("high") == "Elevated"
+    assert review_priority_classification(None) is None

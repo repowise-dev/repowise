@@ -325,6 +325,20 @@ async def populated_db(session: AsyncSession, repo_id: str) -> str:
             community_id=2,
             created_at=_NOW,
         ),
+        GraphNode(
+            id="gn4",
+            repository_id=rid,
+            node_id="tests/test_service.py",
+            node_type="file",
+            language="python",
+            symbol_count=1,
+            is_test=True,
+            is_entry_point=False,
+            pagerank=0.1,
+            betweenness=0.0,
+            community_id=1,
+            created_at=_NOW,
+        ),
     ]
     for n in nodes:
         session.add(n)
@@ -343,6 +357,14 @@ async def populated_db(session: AsyncSession, repo_id: str) -> str:
             id="ge2",
             repository_id=rid,
             source_node_id="src/auth/middleware.py",
+            target_node_id="src/auth/service.py",
+            imported_names_json='["AuthService"]',
+            created_at=_NOW,
+        ),
+        GraphEdge(
+            id="ge3",
+            repository_id=rid,
+            source_node_id="tests/test_service.py",
             target_node_id="src/auth/service.py",
             imported_names_json='["AuthService"]',
             created_at=_NOW,

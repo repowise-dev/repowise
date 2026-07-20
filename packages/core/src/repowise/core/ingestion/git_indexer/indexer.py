@@ -31,8 +31,8 @@ from ._constants import (
 from .co_change import compute_co_changes, compute_co_changes_and_entropy
 from .enrich import compute_percentiles
 from .file_history import index_file
-from .prior_defects import compute_prior_defects
-from .records import GitIndexSummary, _CommitRec, _should_skip_index
+from .prior_defects import FixWalk, PriorDefects, collect_fix_commits, compute_prior_defects
+from .records import GitIndexSummary, _CommitRec, _should_skip_index, capture_repo_totals
 from .tiers import GitIndexTier
 
 logger = structlog.get_logger(__name__)
@@ -125,6 +125,12 @@ class GitIndexer:
         commit_sink: list[dict] = []
         prov_clf = self._provenance_classifier()
         deep_index: dict[str, list[_CommitRec]] = {}
+        # Agent-trace records read ONCE per index (one stat call for repos
+        # without a .agent-trace/ dir). Shared with both commit-index walks so
+        # the file isn't re-read per walk, and reused below for the per-file
+        # line-share merge — which is why it loads even in follow_renames mode,
+        # where neither commit-index walk runs.
+        trace_index = self._load_trace_index(repo)
         if not self.follow_renames:
             from ..git_commit_index import load_commit_index, load_deep_commit_index
 
@@ -134,6 +140,7 @@ class GitIndexer:
                 set(indexable_files),
                 commit_sink=commit_sink,
                 provenance_classifier=prov_clf,
+                trace_index=trace_index,
             )
 
             # Files the recent window never saw would each spawn a per-file
@@ -149,6 +156,7 @@ class GitIndexer:
                     skip=self.commit_limit,
                     deep_limit=_DEEP_WALK_COMMIT_LIMIT,
                     provenance_classifier=prov_clf,
+                    trace_index=trace_index,
                 )
 
         include_blame = self.tier.includes_blame
@@ -251,21 +259,44 @@ class GitIndexer:
         # depth-capped commit index, which under-counts the busiest files —
         # exactly the ones this signal flags). Bounded to the trailing window,
         # so it's cheap regardless of total repo age and leakage-free at T0.
-        prior_defects: dict[str, int] = {}
+        prior_defects = PriorDefects()
+        fix_walk = FixWalk()
         try:
-            prior_defects = compute_prior_defects(repo, set(indexable_files), as_of_ts=as_of_ts)
+            fix_walk = collect_fix_commits(repo, set(indexable_files), as_of_ts=as_of_ts)
+            prior_defects = compute_prior_defects(
+                repo, set(indexable_files), as_of_ts=as_of_ts, walk=fix_walk
+            )
         except Exception as exc:
             logger.debug("prior_defect_pass_failed", error=str(exc))
 
-        # Merge co-change partners + change entropy + prior defects into metadata.
+        # Per-file fix events + SZZ tracing ride the same walk: the diffs are
+        # already parsed, so this pass only adds blame. Off the event loop, since
+        # it fans blame subprocesses out across its own pool for long enough that
+        # progress callbacks would visibly stall. Failure-isolated — the counts
+        # above stand on their own if tracing breaks.
+        fix_event_rows, built_ok = await asyncio.to_thread(self._build_fix_events, fix_walk)
+
+        # Per-file AI line share from the agent-trace records. Keyed by path
+        # like the aggregates below, so it merges in the same pass and
+        # works regardless of which commit-index walk (if any) ran.
+        trace_line_shares = trace_index.line_shares() if trace_index else {}
+
+        # Merge co-change partners + change entropy + prior defects + AI line
+        # share into metadata.
         for meta in results:
             fp = meta["file_path"]
             if fp in co_changes:
                 meta["co_change_partners_json"] = json.dumps(co_changes[fp])
             if fp in change_entropy:
                 meta["change_entropy"] = change_entropy[fp]
-            if fp in prior_defects:
-                meta["prior_defect_count"] = prior_defects[fp]
+            if fp in prior_defects.counts:
+                meta["prior_defect_count"] = prior_defects.counts[fp]
+            if fp in prior_defects.raw_counts:
+                meta["prior_defect_raw_count"] = prior_defects.raw_counts[fp]
+            share = trace_line_shares.get(fp)
+            if share:
+                meta["agent_line_count"] = share[0]
+                meta["agent_line_model_json"] = json.dumps(share[1])
 
         compute_percentiles(results)
 
@@ -292,6 +323,13 @@ class GitIndexer:
             stable_files=stable,
             duration_seconds=duration,
             commit_rows=commit_rows,
+            fix_event_rows=fix_event_rows,
+            fix_oldest_ts=fix_walk.oldest_fix_ts,
+            fix_events_built=built_ok,
+            # Whole-history totals from cheap git calls on the still-open repo —
+            # true project age / commit / contributor counts for the stats page,
+            # which must not read them off the depth-capped sample (issue #730).
+            repo_totals=capture_repo_totals(repo),
         )
         repo.close()
 
@@ -407,8 +445,11 @@ class GitIndexer:
                 repo, {m["file_path"] for m in results}, as_of_ts=as_of_ts
             )
             for meta in results:
-                if meta["file_path"] in prior_defects:
-                    meta["prior_defect_count"] = prior_defects[meta["file_path"]]
+                fp = meta["file_path"]
+                if fp in prior_defects.counts:
+                    meta["prior_defect_count"] = prior_defects.counts[fp]
+                if fp in prior_defects.raw_counts:
+                    meta["prior_defect_raw_count"] = prior_defects.raw_counts[fp]
         except Exception as exc:
             logger.debug("prior_defect_pass_failed", error=str(exc))
 
@@ -482,6 +523,112 @@ class GitIndexer:
         finally:
             repo.close()
 
+    def list_reachable_shas(self) -> set[str] | None:
+        """Shas reachable from HEAD, or ``None`` when that cannot be trusted.
+
+        The commit walk is ``git log --no-merges`` from HEAD, so this is exactly
+        the set a full index would produce. An update run on a feature branch
+        captures that branch's commits; once the branch is squash-merged or
+        rebased those shas stop being reachable, and nothing else prunes them.
+
+        ``None`` means "do not prune": a shallow clone only knows part of its
+        history, so every commit below the graft point would look unreachable
+        and a prune would delete real rows. Any git failure degrades the same
+        way, since dropping rows is not something to guess at.
+        """
+        repo = self._get_repo()
+        if repo is None:
+            return None
+        try:
+            if repo.git.rev_parse("--is-shallow-repository").strip() == "true":
+                return None
+            out = repo.git.rev_list("--no-merges", "HEAD")
+        except Exception as exc:
+            logger.debug("reachable_shas_failed", error=str(exc))
+            return None
+        finally:
+            with contextlib.suppress(Exception):
+                repo.close()
+        shas = {line.strip() for line in out.split("\n") if line.strip()}
+        # An empty result on a repo that has rows is far more likely to be a
+        # broken call than a genuinely empty history.
+        return shas or None
+
+    def capture_new_fix_events(
+        self, *, known_shas: set[str] | None = None
+    ) -> tuple[list[dict], int, set[str]]:
+        """Build ``fix_events`` rows for fix commits not already persisted.
+
+        The incremental counterpart to the tracing ``index_repo`` runs inline,
+        and the same shape as :meth:`capture_new_commit_rows`: walk the trailing
+        window once, drop the fix commits *known_shas* already covers, and blame
+        the rest. An update with no new fix commits does the walk and stops,
+        which is why it stays inside the +1s budget.
+
+        Returns ``(rows, oldest_fix_ts, tracked_paths)``. Both trailing values
+        come back even when there are no new rows, because the caller still has
+        two prunes to do: events that aged out of the window, and events for
+        files that no longer exist. A fresh index never produces the latter, so
+        without that second prune an update accumulates rows for deleted files
+        and drifts away from what a re-index would hold.
+        """
+        repo = self._get_repo()
+        if repo is None:
+            return [], 0, set()
+        try:
+            tracked = {fp for fp in self._get_tracked_files(repo) if not _should_skip_index(fp)}
+            walk = collect_fix_commits(
+                repo,
+                tracked,
+                as_of_ts=self._resolve_as_of_ts(repo),
+                skip_shas=known_shas,
+            )
+            rows, ok = self._build_fix_events(walk)
+            return rows, (walk.oldest_fix_ts if ok else 0), tracked
+        except Exception as exc:
+            logger.debug("incremental_fix_events_failed", error=str(exc))
+            return [], 0, set()
+        finally:
+            with contextlib.suppress(Exception):
+                repo.close()
+
+    def _build_fix_events(self, walk: FixWalk) -> tuple[list[dict], bool]:
+        """Build *walk*'s fix commits into ``(rows, built_ok)``.
+
+        Failure-isolated: this never breaks the git phase. The flag matters
+        because "no rows" is ambiguous - a window with no new fixes and a pass
+        that blew up look the same from the outside, and only one of them should
+        let the caller prune.
+        """
+        if not walk.fixes:
+            return [], True
+        try:
+            from .fix_events import build_fix_events
+
+            return build_fix_events(walk), True
+        except Exception as exc:
+            logger.debug("fix_event_build_failed", error=str(exc))
+            return [], False
+
+    def capture_repo_totals(self) -> Any:
+        """Whole-history :class:`RepoTotals` for this repo (opens its own repo).
+
+        The incremental counterpart to the capture ``index_repo`` runs inline:
+        ``repowise update`` calls this so true project age / commit / contributor
+        counts stay fresh between full re-indexes. Returns an all-``None``
+        ``RepoTotals`` when git is unavailable rather than raising.
+        """
+        from .records import RepoTotals
+
+        repo = self._get_repo()
+        if repo is None:
+            return RepoTotals()
+        try:
+            return capture_repo_totals(repo)
+        finally:
+            with contextlib.suppress(Exception):
+                repo.close()
+
     # ------------------------------------------------------------------
     # Internal methods
     # ------------------------------------------------------------------
@@ -501,6 +648,20 @@ class GitIndexer:
             from .agent_provenance import AgentProvenanceClassifier
 
             return AgentProvenanceClassifier()
+
+    def _load_trace_index(self, repo: Any) -> Any:
+        """Agent-trace index, loaded once per index run (one stat call when the
+        repo has no ``.agent-trace/``). Failure-isolated: a broken trace file
+        yields an empty index, never breaks the git phase."""
+        try:
+            from .agent_provenance import AgentTraceIndex
+
+            return AgentTraceIndex.load(repo)
+        except Exception as exc:
+            logger.debug("agent_trace_index_failed", error=str(exc))
+            from .agent_provenance import AgentTraceIndex
+
+            return AgentTraceIndex()
 
     def _resolve_as_of_ts(
         self, repo: Any, commit_index: dict[str, list[_CommitRec]] | None = None

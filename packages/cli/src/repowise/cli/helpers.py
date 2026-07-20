@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, TypeVar
@@ -180,25 +179,6 @@ def get_db_url_for_repo(repo_path: Path) -> str:
     from repowise.core.persistence.database import resolve_db_url
 
     return resolve_db_url(repo_path)
-
-
-async def _ensure_db_async(repo_path: Path) -> tuple[Any, Any]:
-    from repowise.core.persistence import (
-        create_engine,
-        create_session_factory,
-        init_db,
-    )
-
-    url = get_db_url_for_repo(repo_path)
-    engine = create_engine(url)
-    await init_db(engine)
-    session_factory = create_session_factory(engine)
-    return engine, session_factory
-
-
-def ensure_db(repo_path: Path) -> tuple[Any, Any]:
-    """Create the DB engine, initialise the schema, and return ``(engine, session_factory)``."""
-    return run_async(_ensure_db_async(repo_path))
 
 
 # ---------------------------------------------------------------------------
@@ -610,6 +590,7 @@ def resolve_provider(
             "openai": ["OPENAI_BASE_URL"],
             "gemini": ["GEMINI_BASE_URL"],
             "deepseek": ["DEEPSEEK_BASE_URL"],
+            "kimi": ["KIMI_BASE_URL"],
             "ollama": ["OLLAMA_BASE_URL"],
             "litellm": ["LITELLM_BASE_URL", "LITELLM_API_BASE"],
         }
@@ -657,6 +638,8 @@ def resolve_provider(
             kwargs["api_key"] = os.environ["OPENROUTER_API_KEY"]
         elif provider_name == "deepseek" and os.environ.get("DEEPSEEK_API_KEY"):
             kwargs["api_key"] = os.environ["DEEPSEEK_API_KEY"]
+        elif provider_name == "kimi" and os.environ.get("KIMI_API_KEY"):
+            kwargs["api_key"] = os.environ["KIMI_API_KEY"]
         elif provider_name == "litellm" and os.environ.get("LITELLM_API_KEY"):
             kwargs["api_key"] = os.environ["LITELLM_API_KEY"]
         elif provider_name == "ollama" and os.environ.get("OLLAMA_BASE_URL"):
@@ -718,14 +701,70 @@ def resolve_provider(
         if base_url:
             kwargs["base_url"] = base_url
         return get_provider("deepseek", **kwargs)
+    if os.environ.get("KIMI_API_KEY") and os.environ["KIMI_API_KEY"].strip():
+        kwargs = (
+            {"model": model, "api_key": os.environ["KIMI_API_KEY"]}
+            if model
+            else {"api_key": os.environ["KIMI_API_KEY"]}
+        )
+        base_url = _resolve_base_url("kimi")
+        if base_url:
+            kwargs["base_url"] = base_url
+        return get_provider("kimi", **kwargs)
 
     raise click.ClickException(
         "No provider configured. Use --provider, set REPOWISE_PROVIDER, "
         "or set ANTHROPIC_API_KEY / OPENAI_API_KEY / OPENROUTER_API_KEY / "
         "OLLAMA_BASE_URL / GEMINI_API_KEY / GOOGLE_API_KEY / DEEPSEEK_API_KEY / "
-        "LITELLM_API_KEY. Use REPOWISE_PROVIDER=codex_cli to use an authenticated "
-        "Codex CLI subscription, or REPOWISE_PROVIDER=opencode to use opencode."
+        "KIMI_API_KEY / LITELLM_API_KEY. Use REPOWISE_PROVIDER=codex_cli to use "
+        "an authenticated Codex CLI subscription, or REPOWISE_PROVIDER=opencode "
+        "to use opencode."
     )
+
+
+def resolve_provider_or_prompt(
+    provider_name: str | None,
+    model: str | None,
+    repo_path: Path,
+    *,
+    reasoning: str | None = None,
+    interactive: bool,
+) -> Any:
+    """Resolve a provider, falling back to init's interactive setup on a miss.
+
+    Ordinary resolution is :func:`resolve_provider`. When that fails because no
+    provider/key is configured and ``interactive`` is set (an interactive
+    terminal, not a hook / CI / ``--progress json`` run), reuse init's exact
+    provider + API-key prompt, persist the choice, and retry — so a docs run
+    that only just gained ``docs_enabled`` onboards the same way ``init`` does
+    instead of dying with "No provider configured".
+
+    When ``interactive`` is False the original error propagates unchanged, so
+    background runs (post-commit hook, CI, machine-driven ``--progress json``)
+    keep their clean, non-blocking failure.
+
+    Persistence reuses init's helpers: the key lands in ``.repowise/.env`` (from
+    the prompt) and provider/model in ``.repowise/config.yaml`` here, so the
+    prompt only ever appears once per repo.
+    """
+    try:
+        return resolve_provider(provider_name, model, repo_path=repo_path)
+    except Exception:
+        if not interactive:
+            raise
+        from repowise.cli.ui import interactive_provider_config_select
+
+        selection = interactive_provider_config_select(
+            console, model, reasoning, repo_path=repo_path
+        )
+        # Persist provider/model so future runs resolve without re-prompting.
+        # The API key was already persisted to .repowise/.env by the prompt.
+        save_config_partial(
+            repo_path,
+            provider=selection.provider_name,
+            model=selection.model,
+        )
+        return resolve_provider(selection.provider_name, selection.model, repo_path=repo_path)
 
 
 # ---------------------------------------------------------------------------
@@ -760,6 +799,7 @@ def validate_provider_config(provider_name: str | None = None) -> list[str]:
         "openai": ["OPENAI_API_KEY"],
         "openrouter": ["OPENROUTER_API_KEY"],
         "deepseek": ["DEEPSEEK_API_KEY"],
+        "kimi": ["KIMI_API_KEY"],
         "gemini": ["GEMINI_API_KEY", "GOOGLE_API_KEY"],  # Either one
         "ollama": ["OLLAMA_BASE_URL"],
         "litellm": ["LITELLM_API_KEY"],  # May need others depending on backend
@@ -1123,15 +1163,3 @@ def resolve_command_target(
         reason="no workspace nearby",
         auto_detected=False,
     )
-
-
-def is_interactive_session() -> bool:
-    """Best-effort check for an interactive TTY.
-
-    Centralized so commands can share one definition; some test runners
-    fake stdin in ways that break ``sys.stdin.isatty()``.
-    """
-    try:
-        return sys.stdin.isatty()
-    except (AttributeError, ValueError):
-        return False

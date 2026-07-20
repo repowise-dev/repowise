@@ -69,7 +69,13 @@ class DjangoDynamicHints(DynamicHintExtractor):
         settings_files: list[Path] = list(self._rglob(repo_root, "settings.py"))
         for settings_dir in self._rglob(repo_root, "settings"):
             if settings_dir.is_dir():
-                settings_files.extend(settings_dir.glob("*.py"))
+                # Subtree query through _rglob, not a raw Path.glob: when the
+                # shared snapshot is fed from the traverser's file list this
+                # keeps gitignored files (local_settings.py) out of the scan.
+                # The parent check preserves glob's single-level semantics.
+                settings_files.extend(
+                    p for p in self._rglob(settings_dir, "*.py") if p.parent == settings_dir
+                )
 
         for settings_file in settings_files:
             try:

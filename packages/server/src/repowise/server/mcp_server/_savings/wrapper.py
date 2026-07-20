@@ -41,6 +41,69 @@ from .recorder import record_mcp_dead_end, record_mcp_saving
 
 logger = logging.getLogger(__name__)
 
+#: Coarse, non-identifying result fields worth reporting per tool call. All are
+#: enums or booleans (confidence tier, retrieval quality, staleness) — never
+#: query text, paths, or repo/symbol names. See the telemetry privacy contract.
+_META_FLAGS = ("index_behind", "embedder_degraded")
+_RESULT_ENUMS = ("confidence", "retrieval_quality", "grounding")
+
+
+def _results_count_bucket(result: Any) -> str | None:
+    """Bucket a search-shaped result count (never the results themselves)."""
+    if not isinstance(result, dict):
+        return None
+    items = result.get("results")
+    if not isinstance(items, list):
+        return None
+    n = len(items)
+    if n == 0:
+        return "0"
+    if n <= 3:
+        return "1-3"
+    if n <= 10:
+        return "4-10"
+    return "10+"
+
+
+def _telemetry_properties(tool: str, result: Any, duration_ms: int) -> dict[str, Any]:
+    """Build the anonymous ``mcp_tool_call`` properties for *result*.
+
+    Only coarse enums / booleans / bucketed counts — no user-identifying data.
+    """
+    is_error = isinstance(result, dict) and bool(result.get("error"))
+    props: dict[str, Any] = {
+        "tool": tool,
+        "status": "error" if is_error else "ok",
+        "duration_ms": duration_ms,
+    }
+    if isinstance(result, dict):
+        for key in _RESULT_ENUMS:
+            value = result.get(key)
+            if isinstance(value, str) and value:
+                props[key] = value
+        meta = result.get("_meta")
+        if isinstance(meta, dict):
+            for key in _META_FLAGS:
+                if isinstance(meta.get(key), bool):
+                    props[key] = meta[key]
+        bucket = _results_count_bucket(result)
+        if bucket is not None:
+            props["results_bucket"] = bucket
+    return props
+
+
+def _emit_telemetry(tool: str, result: Any, duration_ms: int) -> None:
+    """Emit one anonymous ``mcp_tool_call`` event. Best-effort, never raises.
+
+    This is the field-visibility counterpart to the local savings ledger: it
+    tells us which tools agents actually reach for, at what confidence, and how
+    often results come back stale/degraded — the adoption signal the local
+    ledger can't aggregate across installs.
+    """
+    from repowise.core.platform import telemetry
+
+    telemetry.record_event("mcp_tool_call", _telemetry_properties(tool, result, duration_ms))
+
 #: ``_meta`` key a tool sets to declare its own counterfactual (see
 #: :func:`declare_replaced`). The wrapper reads and then leaves it in place as a
 #: transparency annotation.
@@ -126,11 +189,19 @@ def instrument(fn: Callable[..., Any]) -> Callable[..., Any]:
 
     @functools.wraps(fn)
     async def _wrapped(*args: Any, **kwargs: Any) -> Any:
+        import time
+
+        _t0 = time.perf_counter()
         result = await fn(*args, **kwargs)
+        duration_ms = int((time.perf_counter() - _t0) * 1000)
         try:
             _record(tool, result)
         except Exception:  # pragma: no cover - defensive; savings never break a tool
             logger.debug("mcp savings instrumentation failed for %s", tool, exc_info=True)
+        try:
+            _emit_telemetry(tool, result, duration_ms)
+        except Exception:  # pragma: no cover - defensive; telemetry never breaks a tool
+            logger.debug("mcp telemetry emit failed for %s", tool, exc_info=True)
         return result
 
     # Preserve the original signature so FastMCP builds the correct tool schema.

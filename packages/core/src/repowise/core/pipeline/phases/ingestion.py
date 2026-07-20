@@ -210,25 +210,29 @@ async def _run_ingestion(
 
     # Parallel stat + header reads (I/O bound).
     # Use asyncio.wrap_future so the event loop stays responsive while waiting.
-    file_infos: list[Any] = []
+    # Results are kept in walk order, matching the update path's rebuild
+    # (pipeline/incremental.py): files are fed to GraphBuilder in this order,
+    # and ambiguous reference resolution tie-breaks on insertion order — a
+    # completion-ordered list made the init-built graph differ from the
+    # update-built one, so the first post-init update could never hit the
+    # centrality cache. Progress still ticks per completion via callbacks.
     io_pool = ThreadPoolExecutor(max_workers=8)
     try:
         aws = [
             asyncio.wrap_future(io_pool.submit(traverser._build_file_info, p)) for p in all_paths
         ]
-        for coro in asyncio.as_completed(aws):
-            try:
-                result = await coro
-            except Exception:
-                result = None
-            if result is not None:
-                file_infos.append(result)
-            if progress:
-                progress.on_item_done("traverse")
+        if progress is not None:
+            _traverse_tick = lambda _fut: progress.on_item_done("traverse")  # noqa: E731
+            for fut in aws:
+                fut.add_done_callback(_traverse_tick)
+        ordered = await asyncio.gather(*aws, return_exceptions=True)
+        file_infos: list[Any] = [
+            r for r in ordered if r is not None and not isinstance(r, BaseException)
+        ]
     finally:
         # shutdown(wait=True) is blocking — run in a thread to keep the
         # event loop responsive.  All submitted futures have already
-        # completed by the time we reach here (the for-loop awaited them).
+        # completed by the time we reach here (gather awaited them).
         await asyncio.to_thread(io_pool.shutdown, wait=True)
 
     repo_structure = traverser.get_repo_structure(file_infos)
@@ -341,23 +345,19 @@ async def _run_ingestion(
     # Only runs when the repo has TS/JS files. On large TS monorepos the
     # resolver indexes hundreds of tsconfig files up-front; without a phase
     # label this shows up as a silent gap right after parsing.
-    try:
-        from repowise.core.ingestion.tsconfig_resolver import TsconfigResolver
+    _ts_langs = {"typescript", "javascript"}
+    if any(pf.file_info.language in _ts_langs for pf in parsed_files):
+        if progress:
+            progress.on_phase_start("tsconfig", None)
+        from repowise.core.ingestion import wire_tsconfig_resolver
 
-        _ts_langs = {"typescript", "javascript"}
-        if any(pf.file_info.language in _ts_langs for pf in parsed_files):
-            if progress:
-                progress.on_phase_start("tsconfig", None)
-            _path_set = set(graph_builder._parsed_files.keys())
-            _resolver = TsconfigResolver(
-                repo_path=repo_path,
-                path_set=_path_set,
-                prune_nested_git=not (include_submodules or include_nested_repos),
-            )
-            graph_builder.set_tsconfig_resolver(_resolver)
-            _phase_done(progress, "tsconfig")
-    except Exception as _resolver_exc:
-        logger.warning("tsconfig_resolver_init_failed", error=str(_resolver_exc))
+        wire_tsconfig_resolver(
+            graph_builder,
+            repo_path,
+            include_submodules=include_submodules,
+            include_nested_repos=include_nested_repos,
+        )
+        _phase_done(progress, "tsconfig")
 
     # ---- Graph build phase -------------------------------------------------
     # Sub-phases (graph.imports / graph.heritage / graph.calls) are emitted
@@ -389,10 +389,14 @@ async def _run_ingestion(
         from repowise.core.ingestion.dynamic_hints import HintRegistry
 
         registry = HintRegistry()
+        # Feed the traversed file list so hints query the indexed set
+        # directly instead of re-walking the tree (keeps gitignored and
+        # generated files out of hint edges, and skips a full walk).
+        hint_paths = [fi.path for fi in file_infos]
         dynamic_edges = await loop.run_in_executor(
             None,
             lambda: registry.extract_all(
-                repo_path, dotnet_index=graph_builder.dotnet_index
+                repo_path, dotnet_index=graph_builder.dotnet_index, file_paths=hint_paths
             ),
         )
         graph_builder.add_dynamic_edges(dynamic_edges)

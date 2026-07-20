@@ -130,24 +130,3 @@ def path_has_dotnet_scan_skip_dir(path: Path, repo_root: Path) -> bool:
     except ValueError:
         parts = path.parts
     return any(part.casefold() in _DOTNET_SCAN_SKIP_DIRS_CASEFOLDED for part in parts)
-
-
-def find_directory_build_props(start: Path, repo_root: Path) -> list[Path]:
-    """Walk from *start* up to *repo_root* collecting Directory.Build.props.
-
-    The first match closer to start "wins" but MSBuild semantics merge them
-    bottom-up. Repowise just collects them so the resolver can union the
-    implicit-using flags and project usings.
-    """
-    out: list[Path] = []
-    cur = start.resolve()
-    repo_root = repo_root.resolve()
-    while True:
-        for name in ("Directory.Build.props", "Directory.Build.targets", "Directory.Packages.props"):
-            cand = cur / name
-            if cand.exists():
-                out.append(cand)
-        if cur == repo_root or cur.parent == cur:
-            break
-        cur = cur.parent
-    return out

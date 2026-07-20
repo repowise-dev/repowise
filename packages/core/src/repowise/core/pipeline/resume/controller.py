@@ -135,6 +135,7 @@ class ResumeController:
         git_summary: Any | None = None,
         external_systems: list[dict] | None = None,
         execution_flow_report: Any | None = None,
+        source_map: dict[str, bytes] | None = None,
     ) -> None:
         """Persist the INDEX phase (graph + symbols + git) and record it.
 
@@ -152,6 +153,11 @@ class ResumeController:
             git_summary=git_summary,
             external_systems=external_systems or [],
             execution_flow_report=execution_flow_report,
+            # The security scan needs raw bytes; without this the checkpoint
+            # persist degrades to the symbol-name scan and, because the final
+            # persist skips ingestion once the checkpoint marked it done, the
+            # line-pattern scan would silently never run on the init path.
+            source_map=source_map or {},
         )
         await self._ledger.mark_started(ResumePhase.INDEX)
         try:

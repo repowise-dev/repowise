@@ -69,6 +69,19 @@ PROVIDER_CATALOG: list[dict[str, Any]] = [
         "requires_key": True,
     },
     {
+        "id": "kimi",
+        "name": "Kimi",
+        "default_model": "kimi-for-coding",
+        "models": [
+            "kimi-for-coding",
+            "kimi-for-coding-highspeed",
+            "kimi-k2.5",
+            "kimi-k2.6",
+        ],
+        "env_keys": ["KIMI_API_KEY"],
+        "requires_key": True,
+    },
+    {
         "id": "ollama",
         "name": "Ollama (Local)",
         "default_model": "llama3.2",
@@ -88,7 +101,11 @@ PROVIDER_CATALOG: list[dict[str, Any]] = [
         "id": "opencode",
         "name": "OpenCode (Local CLI)",
         "default_model": "opencode/default",
-        "models": ["opencode/default", "opencode/openai/gpt-5", "opencode/deepseek/deepseek-v4-pro"],
+        "models": [
+            "opencode/default",
+            "opencode/openai/gpt-5",
+            "opencode/deepseek/deepseek-v4-pro",
+        ],
         "env_keys": [],
         "requires_key": False,
     },
@@ -140,6 +157,7 @@ _BASE_URL_ENV_VARS = {
     "gemini": ["GEMINI_BASE_URL"],
     "ollama": ["OLLAMA_BASE_URL"],
     "deepseek": ["DEEPSEEK_BASE_URL"],
+    "kimi": ["KIMI_BASE_URL"],
     "litellm": ["LITELLM_BASE_URL", "LITELLM_API_BASE"],
 }
 

@@ -263,14 +263,14 @@ export function AddRepoWizard({ adapter, open, onOpenChange }: AddRepoWizardProp
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="sm:max-w-md w-[calc(100vw-2rem)]">
+      <DialogContent className="sm:max-w-md w-[calc(100vw-2rem)] flex flex-col overflow-hidden">
         {step === "details" && (
           <>
             <DialogHeader>
               <DialogTitle>Add Repository</DialogTitle>
             </DialogHeader>
 
-            <form onSubmit={handleDetailsSubmit} className="space-y-4 py-2">
+            <form onSubmit={handleDetailsSubmit} className="space-y-4 py-2 min-w-0">
               <div className="space-y-1.5">
                 <Label htmlFor="repo-name">Name</Label>
                 <Input

@@ -41,6 +41,7 @@ from repowise.core.analysis.decisions.rationale_comments import (
     RATIONALE_MARKERS,
     extract_comment_blocks,
 )
+from repowise.core.exclusion import build_exclude_spec, is_excluded
 
 _log = logging.getLogger("repowise.mcp.code_rationale")
 
@@ -366,10 +367,14 @@ def grep_comment_candidates(
     noun_alt = "|".join(re.escape(n) for n in nouns)
     anchor_alt = "|".join(re.escape(a) for a in anchors)
     # A comment-leading line containing an anchor AND a content noun, in either
-    # order. ``git grep`` keeps the scan inside tracked files only.
+    # order. ``git grep`` keeps the scan inside tracked files only. Use the
+    # POSIX class ``[[:space:]]`` instead of ``\s``: ``\s`` is a GNU regex
+    # extension that git's ERE engine does not honor on macOS/BSD, so the
+    # pattern would silently match nothing there (and concept-anchoring would
+    # quietly disable itself).
     pat = (
-        rf"^\s*(#|//|--|\*).*({anchor_alt}).*({noun_alt})"
-        rf"|^\s*(#|//|--|\*).*({noun_alt}).*({anchor_alt})"
+        rf"^[[:space:]]*(#|//|--|\*).*({anchor_alt}).*({noun_alt})"
+        rf"|^[[:space:]]*(#|//|--|\*).*({noun_alt}).*({anchor_alt})"
     )
     try:
         proc = subprocess.run(
@@ -382,6 +387,10 @@ def grep_comment_candidates(
                 "git",
                 "--no-pager",
                 "grep",
+                # --no-color: this output is parsed, so a user's
+                # ``color.ui=always`` git config must not wrap paths in ANSI
+                # escapes (which would corrupt the path split below).
+                "--no-color",
                 "-n",
                 "-I",
                 "-i",
@@ -405,4 +414,9 @@ def grep_comment_candidates(
         path = line.split(":", 1)[0]
         if path:
             counts[path] += 1
-    return [p for p, _ in counts.most_common(max_files)]
+    # ``git grep`` only scans tracked files, but a gitignored copy can still be
+    # tracked (or land here via a future --no-index retry); filter the winners
+    # through the repo's exclusion rules so an ignored path is never anchored on.
+    spec = build_exclude_spec(root)
+    ranked = [p for p, _ in counts.most_common() if not is_excluded(p, spec)]
+    return ranked[:max_files]

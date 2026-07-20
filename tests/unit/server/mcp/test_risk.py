@@ -91,6 +91,80 @@ async def test_get_risk_stable_file(setup_mcp):
     assert t["risk_type"] == "stable"
 
 
+@pytest.mark.asyncio
+async def test_get_risk_pr_directive_splits_test_breakage(setup_mcp):
+    """PR mode splits test-file fallout out of will_break into will_break_tests (#672)."""
+    from repowise.server.mcp_server import get_risk
+
+    # Pass changed_files to trigger PR mode + blast-radius directive.
+    result = await get_risk(["src/auth/service.py"], changed_files=["src/auth/service.py"])
+    directive = result["directive"]
+
+    # middleware.py imports service.py → production breakage.
+    assert "src/auth/middleware.py" in directive["will_break"]
+    assert "src/auth/middleware.py" not in directive["will_break_tests"]
+
+    # test_service.py imports service.py but is is_test=True → segmented out.
+    assert "tests/test_service.py" in directive["will_break_tests"]
+    assert "tests/test_service.py" not in directive["will_break"]
+
+    # Summary reflects the test count.
+    assert "test(s) likely broken" in directive["summary"]
+
+
+@pytest.mark.asyncio
+async def test_get_risk_pr_directive_surfaces_coverage_backed_tests_to_run(setup_mcp, session):
+    """PR directive carries coverage-backed tests_to_run from the per-test map."""
+    from repowise.core.analysis.health.coverage import TestCoverage
+    from repowise.core.persistence.crud import save_test_coverage
+    from repowise.server.mcp_server import get_risk
+
+    # Seed a per-test map: two tests execute service.py.
+    await save_test_coverage(
+        session,
+        "repo1",
+        [
+            TestCoverage(
+                test_id="tests/test_service.py::test_login",
+                file_path="src/auth/service.py",
+                covered_lines=[1, 2],
+                source_format="coverage.py",
+                test_file="tests/test_service.py",
+            ),
+            TestCoverage(
+                test_id="tests/test_service.py::test_logout",
+                file_path="src/auth/service.py",
+                covered_lines=[3, 4],
+                source_format="coverage.py",
+                test_file="tests/test_service.py",
+            ),
+        ],
+        source_format="coverage.py",
+    )
+    await session.flush()
+
+    result = await get_risk(["src/auth/service.py"], changed_files=["src/auth/service.py"])
+    directive = result["directive"]
+
+    assert directive["tests_to_run"] == [
+        "tests/test_service.py::test_login",
+        "tests/test_service.py::test_logout",
+    ]
+    assert "coverage-backed test(s) guard the change" in directive["summary"]
+
+
+@pytest.mark.asyncio
+async def test_get_risk_pr_directive_tests_to_run_empty_without_map(setup_mcp):
+    """No per-test map -> tests_to_run is an empty list, never invented."""
+    from repowise.server.mcp_server import get_risk
+
+    result = await get_risk(["src/auth/service.py"], changed_files=["src/auth/service.py"])
+    directive = result["directive"]
+
+    assert directive["tests_to_run"] == []
+    assert "coverage-backed test(s) guard the change" not in directive["summary"]
+
+
 # ---- _classify_risk_type small-team calibration (issue #361) ---------------
 
 

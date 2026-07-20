@@ -60,7 +60,7 @@ class CommandRunEvent(TelemetryEvent):
     command: str
     subcommand: str | None = None
     flags: list[str] = field(default_factory=list)
-    status: str = "ok"  # "ok" | "error"
+    status: str = "ok"  # "ok" | "error" | "interrupted" | "usage_error"
     error_type: str | None = None  # exception class name only, no message
     duration_ms: int = 0
     # Open extension point for command-specific anonymous fields (bucketed

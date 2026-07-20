@@ -13,6 +13,7 @@ from pathlib import Path
 
 from click.testing import CliRunner
 
+from repowise.cli.commands import restyle_cmd
 from repowise.cli.main import cli
 
 
@@ -58,9 +59,29 @@ def test_restyle_no_style_shows_current_and_options():
     assert "caveman" in result.output  # catalogue shown
 
 
+def test_restyle_verbose_configures_cli_logging(monkeypatch, tmp_path):
+    calls: list[bool] = []
+    monkeypatch.setattr(
+        restyle_cmd,
+        "configure_cli_logging",
+        lambda *, verbose=False: calls.append(verbose),
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        ["restyle", "caveman", str(tmp_path), "--yes", "--verbose"],
+    )
+
+    assert result.exit_code == 1
+    assert "No index found" in result.output
+    assert calls == [True]
+
+
 def test_restyle_unknown_style_errors(tmp_path):
     result = CliRunner().invoke(cli, ["restyle", "bogus", str(tmp_path)])
-    assert result.exit_code == 1
+    # A mistyped STYLE is a usage error (Click convention: exit code 2), not a
+    # generic failure — see the telemetry usage_error classification.
+    assert result.exit_code == 2
     assert "Unknown style" in result.output
     assert "comprehensive" in result.output  # lists valid choices
 

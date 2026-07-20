@@ -271,9 +271,7 @@ async def _insert_agent_commit(session_factory, repo_id: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_commits_carry_agent_provenance_and_top_driver(
-    client: AsyncClient, app
-) -> None:
+async def test_commits_carry_agent_provenance_and_top_driver(client: AsyncClient, app) -> None:
     repo = await create_test_repo(client)
     await _insert_git_commits(app.state.session_factory, repo["id"])
     await _insert_agent_commit(app.state.session_factory, repo["id"])
@@ -297,23 +295,82 @@ async def test_commits_carry_agent_provenance_and_top_driver(
 
 
 @pytest.mark.asyncio
+async def test_commits_carry_the_author_total_behind_the_new_contributor_badge(
+    client: AsyncClient, app
+) -> None:
+    """The badge keys on this, not on ``author_experience``.
+
+    Experience is a running count, so it is near zero for everyone at the old
+    edge of the indexed window; a total does not move with a commit's position
+    in it. Ann's three commits must all report 3, including her earliest.
+    """
+    repo = await create_test_repo(client)
+    await _insert_git_commits(app.state.session_factory, repo["id"])
+    await _insert_agent_commit(app.state.session_factory, repo["id"])
+
+    resp = await client.get(f"/api/repos/{repo['id']}/commits", params={"sort": "date"})
+    assert resp.status_code == 200
+    items = {c["short_sha"]: c for c in resp.json()["items"]}
+
+    assert items["aaaaaaaa"]["author_commit_count"] == 3
+    assert items["bbbbbbbb"]["author_commit_count"] == 3
+    assert items["cccccccc"]["author_commit_count"] == 3
+    # A different author with a single commit is the genuine new contributor.
+    assert items["dddddddd"]["author_commit_count"] == 1
+
+    detail = await client.get(f"/api/repos/{repo['id']}/commits/aaaaaaaa")
+    assert detail.status_code == 200
+    assert detail.json()["author_commit_count"] == 3
+
+
+@pytest.mark.asyncio
 async def test_commits_authorship_filter(client: AsyncClient, app) -> None:
     repo = await create_test_repo(client)
     await _insert_git_commits(app.state.session_factory, repo["id"])
     await _insert_agent_commit(app.state.session_factory, repo["id"])
 
-    agents = await client.get(
-        f"/api/repos/{repo['id']}/commits", params={"authorship": "agent"}
-    )
+    agents = await client.get(f"/api/repos/{repo['id']}/commits", params={"authorship": "agent"})
     assert agents.status_code == 200
     assert agents.json()["total"] == 1
     assert agents.json()["items"][0]["agent_name"] == "claude-code"
 
-    humans = await client.get(
-        f"/api/repos/{repo['id']}/commits", params={"authorship": "human"}
-    )
+    humans = await client.get(f"/api/repos/{repo['id']}/commits", params={"authorship": "human"})
     assert humans.json()["total"] == 3
     assert all(c["agent_name"] is None for c in humans.json()["items"])
+
+
+@pytest.mark.asyncio
+async def test_commit_stats_risk_histogram(client: AsyncClient, app) -> None:
+    repo = await create_test_repo(client)
+    await _insert_git_commits(app.state.session_factory, repo["id"])
+
+    resp = await client.get(f"/api/repos/{repo['id']}/commits/stats")
+    assert resp.status_code == 200
+    data = resp.json()
+
+    hist = data["risk_histogram"]
+    assert len(hist) == 20  # 0.5-wide bins across the 0-10 score axis
+    assert sum(b["count"] for b in hist) == 3
+    # Fixture scores 2.0 / 5.0 / 8.5 land in their own bins, nowhere else.
+    filled = {b["start"]: b["count"] for b in hist if b["count"]}
+    assert filled == {2.0: 1, 5.0: 1, 8.5: 1}
+
+    # The cuts must sit inside the distribution and keep their order, so the
+    # chart's dashed lines land where the priority pills change.
+    assert data["moderate_cut"] < data["high_cut"]
+    assert 2.0 <= data["moderate_cut"] <= 8.5
+
+
+@pytest.mark.asyncio
+async def test_commit_stats_histogram_empty_without_scores(client: AsyncClient, app) -> None:
+    repo = await create_test_repo(client)
+
+    resp = await client.get(f"/api/repos/{repo['id']}/commits/stats")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["risk_histogram"] == []
+    assert data["moderate_cut"] is None
+    assert data["high_cut"] is None
 
 
 @pytest.mark.asyncio

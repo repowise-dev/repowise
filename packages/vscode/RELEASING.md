@@ -14,6 +14,24 @@ The extension publishes to the Visual Studio Marketplace (publisher
   pre-release channel. Cut a stable release from a tag once a pre-release has
   been dogfooded.
 
+## When to cut a release (don't let the bundled UI freeze)
+
+The webviews compile `@repowise-dev/ui` (`packages/ui`) into the VSIX at build
+time, so shared-component improvements reach extension users only on a rebuild.
+The extension source can go untouched for cycles while its bundled UI drifts,
+leaving users frozen on whatever `packages/ui` shipped at the last `vscode-v*`
+tag. Cut a release whenever `packages/ui` changed in a webview-consumed subpath
+since the last extension tag, even if `packages/vscode/` itself did not:
+
+```
+LAST_EXT_TAG=$(git tag --list 'vscode-v*' --sort=-v:refname | head -1)
+git log $LAST_EXT_TAG..origin/main --oneline -- packages/ui/src/
+```
+
+Webview-consumed subpaths: `graph/`, `health/`, `docs/`, `c4/`, `refactoring/`,
+`lib/format`, `ui/`, `shared`, `wiki/`. Confirm the live import set with
+`git grep -hoE 'from "@repowise-dev/ui[^"]*"' -- 'packages/vscode/webview/**'`.
+
 ## The one rule that has bitten us before
 
 **CI (and this checklist) must BUILD, not just type-check.** A barrel

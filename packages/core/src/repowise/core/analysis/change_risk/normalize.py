@@ -23,6 +23,16 @@ from dataclasses import dataclass
 # top third of its repo's risk distribution is the review-priority tier.
 _HIGH_PCT = 200.0 / 3.0  # ≈ 66.67
 _MODERATE_PCT = 100.0 / 3.0  # ≈ 33.33
+_PRIORITY_CLASSIFICATIONS = {
+    "low": "Below typical",
+    "moderate": "Typical",
+    "high": "Elevated",
+}
+
+
+def review_priority_classification(priority: str | None) -> str | None:
+    """Return the human-facing label for a repo-relative review priority."""
+    return _PRIORITY_CLASSIFICATIONS.get(priority) if priority is not None else None
 
 
 @dataclass
@@ -57,6 +67,45 @@ class RiskNormalizer:
         below = bisect_left(self.scores, score)
         equal = bisect_right(self.scores, score) - below
         return 100.0 * (below + 0.5 * equal) / n
+
+    def cut(self, pct: float) -> float | None:
+        """Lowest score whose percentile reaches *pct*, or ``None`` if none does.
+
+        The inverse of :meth:`percentile` — lets a display surface draw the
+        tercile boundaries on the *raw score* axis, where the distribution has
+        shape (percentile ranks are uniform by construction, so a histogram of
+        them says nothing).
+
+        Defined by searching the scores rather than indexing at ``n * pct``, so
+        ``priority(cut(p))`` is exactly the band at ``p``. Mid-rank percentiles
+        pull tied runs *below* their positional index, and a chart that colours
+        bins by comparing against the cut would otherwise disagree with the
+        per-commit priority on the boundary bin.
+
+        ``None`` when no score reaches *pct* — a fully tied repo has no
+        elevated band, and the caller should draw no line rather than a
+        misleading one.
+        """
+        lo, hi = 0, len(self.scores) - 1
+        found: float | None = None
+        while lo <= hi:  # percentile is monotone in score, so binary search
+            mid = (lo + hi) // 2
+            if self.percentile(self.scores[mid]) >= pct:
+                found = self.scores[mid]
+                hi = mid - 1
+            else:
+                lo = mid + 1
+        return found
+
+    @property
+    def moderate_cut(self) -> float | None:
+        """Score at the low/moderate boundary."""
+        return self.cut(_MODERATE_PCT)
+
+    @property
+    def high_cut(self) -> float | None:
+        """Score at the moderate/high boundary — the review-priority line."""
+        return self.cut(_HIGH_PCT)
 
     def priority(self, score: float | None) -> str:
         """Repo-relative review priority: ``high`` | ``moderate`` | ``low``.

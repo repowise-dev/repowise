@@ -251,16 +251,20 @@ async def test_medium_confidence_keeps_two_truncated_hits(setup_mcp, monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_gated_path_serves_clean_retrieval(setup_mcp, monkeypatch):
+async def test_non_dominant_synthesizes_with_evidence(setup_mcp, monkeypatch):
+    # 2.0 vs 1.9: top < 3.0 and ratio 1.05 < 1.2 → non-dominant. Under the
+    # always-synthesize default the tool no longer abstains: synthesis runs, the
+    # non-dominant ceiling caps confidence at medium, and the reply folds in the
+    # ambiguous-retrieval evidence (best_guesses) beside the prose.
     import repowise.server.mcp_server.tool_answer.answer as answer_mod
     from repowise.server.mcp_server import get_answer
 
-    # 2.0 vs 1.9: top < 3.0 and ratio 1.05 < 1.2 → gated, no synthesis.
     _patch_pipeline(monkeypatch, answer_mod, scores=(2.0, 1.9))
-    _patch_provider(monkeypatch, answer_mod, "unused")
+    _patch_provider(monkeypatch, answer_mod, "The go() function drives it (pkg/beta/one.py).")
 
     result = await get_answer("how does the beta module go function work")
-    assert result["confidence"] == "low"
+    assert result["confidence"] == "medium"
+    assert result["answer"], "non-dominant retrieval now carries synthesized prose"
     assert result["best_guesses"]
     for entry in result["retrieval"]:
         assert "page_id" not in entry

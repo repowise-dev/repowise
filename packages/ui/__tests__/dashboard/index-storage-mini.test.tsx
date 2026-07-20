@@ -3,7 +3,7 @@ import { render, screen } from "@testing-library/react";
 import { IndexStorageMini } from "../../src/dashboard/index-storage-mini";
 
 describe("IndexStorageMini", () => {
-  it("renders formatted storage and doc coverage", () => {
+  it("renders formatted storage and average doc confidence", () => {
     render(
       <IndexStorageMini
         data={{
@@ -16,6 +16,6 @@ describe("IndexStorageMini", () => {
 
     expect(screen.getByText("Index storage")).toBeInTheDocument();
     expect(screen.getByText("1.5 MB")).toBeInTheDocument();
-    expect(screen.getByText(/87% doc coverage/)).toBeInTheDocument();
+    expect(screen.getByText(/87% avg doc confidence/)).toBeInTheDocument();
   });
 });

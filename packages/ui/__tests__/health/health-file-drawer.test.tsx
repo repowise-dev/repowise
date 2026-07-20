@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import {
   HealthFileDrawer,
   type HealthDrawerFinding,
@@ -93,5 +93,66 @@ describe("HealthFileDrawer metric cards", () => {
     );
     expect(screen.queryByText("not measured")).not.toBeInTheDocument();
     expect(screen.getByText("12")).toBeInTheDocument();
+  });
+});
+
+describe("HealthFileDrawer bug history", () => {
+  const signals = {
+    prior_defect_count: 8,
+    change_entropy_pct: null,
+    lines_added_90d: null,
+    lines_deleted_90d: null,
+    commit_count_90d: null,
+    age_days: null,
+    primary_owner_name: null,
+    primary_owner_commit_pct: null,
+    recent_owner_name: null,
+    recent_owner_commit_pct: null,
+    in_degree: null,
+    out_degree: null,
+    bug_magnet: true,
+    last_fix_at: new Date(Date.now() - 3 * 86400_000).toISOString(),
+    fix_symbol_counts: { "pipeline.py::run_update": 4, "pipeline.py::persist": 2 },
+  };
+
+  it("hides per-symbol counts behind a disclosure that names the last fix", () => {
+    render(
+      <HealthFileDrawer
+        open
+        onClose={() => {}}
+        metric={metric()}
+        findings={[]}
+        signals={signals}
+      />,
+    );
+
+    const toggle = screen.getByRole("button", { name: /Bug history/ });
+    // Recency rides on the toggle itself: the counts are collapsed, the "is
+    // this still happening?" answer is not.
+    expect(toggle).toHaveTextContent(/last fix 3d ago/);
+    // Collapsed by default, because "where do the bugs cluster" is not a question
+    // every reader of the drawer has.
+    expect(screen.queryByText("run_update")).not.toBeInTheDocument();
+
+    fireEvent.click(toggle);
+    expect(screen.getByText("run_update")).toBeInTheDocument();
+    expect(screen.getByText("4 fixes")).toBeInTheDocument();
+    expect(screen.getByText("2 fixes")).toBeInTheDocument();
+    // The line-range mapping is approximate and says so, rather than letting
+    // the counts read as exact.
+    expect(screen.getByText(/lines move/)).toBeInTheDocument();
+  });
+
+  it("stays silent without per-symbol data", () => {
+    render(
+      <HealthFileDrawer
+        open
+        onClose={() => {}}
+        metric={metric()}
+        findings={[]}
+        signals={{ ...signals, fix_symbol_counts: null }}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: /Bug history/ })).not.toBeInTheDocument();
   });
 });

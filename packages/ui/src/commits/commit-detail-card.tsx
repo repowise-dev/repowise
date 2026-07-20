@@ -1,5 +1,5 @@
 import { Bug, GitCommitHorizontal, User } from "lucide-react";
-import { AgentBadge, NewContributorBadge } from "./agent-badge";
+import { AgentBadge, NewContributorBadge, isNewContributor } from "./agent-badge";
 import { PriorityBadge } from "./priority-badge";
 import { RiskDriverBreakdown } from "./risk-driver-breakdown";
 import { formatDateTime, formatLOC } from "../lib/format";
@@ -55,7 +55,7 @@ function riskSummary(c: CommitDetail): string {
     }
   }
 
-  if (c.author_experience != null && c.author_experience < 3) {
+  if (isNewContributor(c.author_commit_count)) {
     out += " The author is new to this code.";
   }
   return out;
@@ -119,11 +119,9 @@ export function CommitDetailCard({ commit, className }: CommitDetailCardProps) {
               confidence={c.agent_confidence}
             />
           )}
-          {!c.agent_name &&
-            c.author_experience != null &&
-            c.author_experience < 3 && (
-              <NewContributorBadge experience={c.author_experience} />
-            )}
+          {!c.agent_name && isNewContributor(c.author_commit_count) && (
+            <NewContributorBadge commitCount={c.author_commit_count as number} />
+          )}
           {c.committed_at && <span>{formatDateTime(c.committed_at)}</span>}
         </div>
         {c.agent_name && c.agent_channel && (
@@ -195,7 +193,7 @@ export function CommitDetailCard({ commit, className }: CommitDetailCardProps) {
           <Stat
             label="Author exp"
             value={String(c.author_experience)}
-            title="The author's cumulative prior-commit count at the time of this commit"
+            title="The author's prior commits at the time of this commit, counted across the indexed history"
           />
         )}
       </div>

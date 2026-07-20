@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { Bug, Search } from "lucide-react";
-import { AgentBadge, NewContributorBadge } from "./agent-badge";
+import { AgentBadge, NewContributorBadge, isNewContributor } from "./agent-badge";
 import { PriorityBadge } from "./priority-badge";
 import { ChurnBar } from "../git/churn-bar";
 import { Input } from "../ui/input";
@@ -15,9 +15,6 @@ import type { Commit, ReviewPriority } from "@repowise-dev/types/git";
 
 export type CommitSort = "risk" | "date";
 export type CommitAuthorship = "all" | "human" | "agent";
-
-/** Below this many prior commits the author gets a "new contributor" badge. */
-const NEW_CONTRIBUTOR_THRESHOLD = 3;
 
 export interface CommitTableProps {
   commits: Commit[];
@@ -74,11 +71,9 @@ const COLUMNS: ResponsiveColumn<CommitRow>[] = [
       <div className="flex items-center gap-1.5 min-w-0 text-xs text-[var(--color-text-secondary)]">
         <span className="truncate">{c.author_name || "—"}</span>
         {c.agent_name && <AgentBadge agentName={c.agent_name} tier={c.agent_autonomy_tier} />}
-        {!c.agent_name &&
-          c.author_experience != null &&
-          c.author_experience < NEW_CONTRIBUTOR_THRESHOLD && (
-            <NewContributorBadge experience={c.author_experience} />
-          )}
+        {!c.agent_name && isNewContributor(c.author_commit_count) && (
+          <NewContributorBadge commitCount={c.author_commit_count as number} />
+        )}
       </div>
     ),
     mobileRender: (c) => c.author_name || "—",

@@ -113,14 +113,22 @@ def new_meta(file_path: str) -> dict[str, Any]:
         # the trailing PRIOR_DEFECT_WINDOW_DAYS window (anchored to as_of_ts when
         # set, so T0 benchmark scoring stays leakage-free). Consumed by the
         # ``prior_defect`` health biomarker; mirrors the benchmark's
-        # prior-defects baseline definition (product == benchmark).
+        # prior-defects baseline definition (product == benchmark). The raw
+        # variant is the same walk before fix-shape filtering (fix_shape.py).
         "prior_defect_count": 0,
+        "prior_defect_raw_count": 0,
         # Agent provenance rollup: how much of this file's indexed history is
         # agent-attributed (local channels only — see agent_provenance module).
         # agent_authored_pct stays None when the file has no commits at all.
         "agent_commit_count": 0,
         "agent_authored_pct": None,
         "agent_tier_counts_json": "{}",
+        # Line-level agent share (agent-trace ranges[]): distinct AI-written
+        # lines + {model_id: line_count}. Merged in by the orchestrator from the
+        # repo-wide trace index (path-keyed, like co-change/prior-defects), so
+        # these stay at the default unless the repo ships .agent-trace/.
+        "agent_line_count": 0,
+        "agent_line_model_json": "{}",
         # Temporal hotspot score (exponentially decayed churn)
         "temporal_hotspot_score": 0.0,
         # Change entropy (Hassan HCM) — populated repo-wide by the co-change

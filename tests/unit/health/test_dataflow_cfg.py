@@ -192,6 +192,49 @@ def test_for_loop_shape():
     assert cfg.back_edges()
 
 
+# -- with statements -----------------------------------------------------------
+
+
+def test_with_body_recurses_into_nested_control_flow():
+    cfg = _cfg(
+        """
+        def f(ctx, cond):
+            with ctx.push():
+                if cond:
+                    result = 1
+                else:
+                    result = 2
+            return result
+        """
+    )
+
+    assert len(_by_kind(cfg, "branch")) == 1
+    assert len(_by_kind(cfg, "join")) == 2
+    assert any(
+        statement.kind == "with_statement" and statement.is_head
+        for block in cfg.blocks
+        for statement in block.statements
+    )
+    assert cfg.exit_id in cfg.reachable_ids()
+
+
+def test_return_inside_with_makes_following_code_unreachable():
+    cfg = _cfg(
+        """
+        def f(path):
+            with open(path) as handle:
+                return handle.read()
+            dead = 1
+        """
+    )
+
+    unreachable = _by_kind(cfg, "unreachable")
+    assert len(unreachable) == 1
+    assert unreachable[0].statements[0].start_line == 5
+    assert unreachable[0].predecessors == []
+    assert unreachable[0].id not in cfg.reachable_ids()
+
+
 def test_break_and_continue_targets():
     cfg = _cfg(
         """

@@ -745,3 +745,39 @@ class TestEntryPointFlag:
         assert "server.py" in flagged
         assert "pkg/helper.py" not in flagged
         assert "latest_app.py" not in flagged
+
+    def test_pyproject_console_scripts_flag_entry_modules(self, tmp_path: Path) -> None:
+        (tmp_path / "pyproject.toml").write_text(
+            "[project]\n"
+            'name = "demo"\n'
+            "[project.scripts]\n"
+            'demo-hook = "demo.cli.hook:main"\n'
+            "[project.entry-points.plugins]\n"
+            'demo-plugin = "demo.plugins:register"\n'
+        )
+        files = {
+            "src/demo/cli/hook.py": "def main(): pass",
+            "src/demo/plugins/__init__.py": "def register(): pass",
+            "src/demo/cli/other.py": "x = 1",
+        }
+        for rel, content in files.items():
+            p = tmp_path / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(content)
+        flagged = self._flagged(tmp_path)
+        assert "src/demo/cli/hook.py" in flagged
+        assert "src/demo/plugins/__init__.py" in flagged
+        assert "src/demo/cli/other.py" not in flagged
+
+    def test_single_segment_script_target_matches_exactly(self, tmp_path: Path) -> None:
+        # A bare ``main`` target must not suffix-match every ``.../main.py``.
+        (tmp_path / "pyproject.toml").write_text(
+            '[project]\nname = "demo"\n[project.scripts]\ndemo = "cli:main"\n'
+        )
+        (tmp_path / "cli.py").write_text("def main(): pass")
+        nested = tmp_path / "pkg" / "cli.py"
+        nested.parent.mkdir(parents=True)
+        nested.write_text("x = 1")
+        flagged = self._flagged(tmp_path)
+        assert "cli.py" in flagged
+        assert "pkg/cli.py" not in flagged

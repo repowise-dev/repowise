@@ -198,3 +198,118 @@ class TestCommandWrapper:
         res = CliRunner().invoke(cli, ["--help"])
         assert res.exit_code == 0
         assert recorded == []
+
+
+class TestOutcomeClassification:
+    """Ctrl-C / clean-exit must not read as failure (status='error')."""
+
+    def _run(self, monkeypatch: pytest.MonkeyPatch, body) -> list[dict]:
+        import click
+
+        from repowise.cli._instrumented_group import InstrumentedGroup
+
+        recorded: list[dict] = []
+        monkeypatch.setattr(
+            emitter.default_client, "post", lambda path, payload, **k: recorded.append(payload) or True
+        )
+        # Force synchronous delivery so the assert doesn't race the daemon send.
+        monkeypatch.setattr(
+            emitter.threading,
+            "Thread",
+            lambda target, args, daemon: type(
+                "T", (), {"start": lambda s: target(*args), "join": lambda s, timeout=None: None}
+            )(),
+        )
+
+        @click.group(cls=InstrumentedGroup)
+        def root() -> None: ...
+
+        @root.command()
+        def sub() -> None:
+            body()
+
+        CliRunner().invoke(root, ["sub"])
+        return recorded
+
+    def test_abort_is_interrupted(self, monkeypatch: pytest.MonkeyPatch):
+        import click
+
+        def body() -> None:
+            raise click.exceptions.Abort()
+
+        rec = self._run(monkeypatch, body)
+        assert rec and rec[0]["properties"]["status"] == "interrupted"
+
+    def test_sigint_exit_code_is_interrupted(self, monkeypatch: pytest.MonkeyPatch):
+        def body() -> None:
+            raise SystemExit(130)
+
+        rec = self._run(monkeypatch, body)
+        assert rec and rec[0]["properties"]["status"] == "interrupted"
+
+    def test_clean_exit_is_ok(self, monkeypatch: pytest.MonkeyPatch):
+        def body() -> None:
+            raise SystemExit(0)
+
+        rec = self._run(monkeypatch, body)
+        assert rec and rec[0]["properties"]["status"] == "ok"
+
+    def test_real_failure_is_error(self, monkeypatch: pytest.MonkeyPatch):
+        def body() -> None:
+            raise SystemExit(2)
+
+        rec = self._run(monkeypatch, body)
+        assert rec and rec[0]["properties"]["status"] == "error"
+
+    def test_usage_error_is_not_error(self, monkeypatch: pytest.MonkeyPatch):
+        # A bad/unknown flag is the user mis-invoking the command, not a
+        # product failure — it must not inflate the error rate.
+        import click
+
+        def body() -> None:
+            raise click.NoSuchOption("--bogus")
+
+        rec = self._run(monkeypatch, body)
+        assert rec and rec[0]["properties"]["status"] == "usage_error"
+        assert rec[0]["properties"]["error_type"] == "NoSuchOption"
+
+    def test_app_guard_stays_error(self, monkeypatch: pytest.MonkeyPatch):
+        # A plain ClickException (e.g. "run `repowise init` first") is still a
+        # real "could not proceed" outcome and stays in the error bucket.
+        import click
+
+        def body() -> None:
+            raise click.ClickException("no index found")
+
+        rec = self._run(monkeypatch, body)
+        assert rec and rec[0]["properties"]["status"] == "error"
+
+    def test_command_outcome_rides_the_event(self, monkeypatch: pytest.MonkeyPatch):
+        from repowise.cli.platform import telemetry
+
+        def body() -> None:
+            telemetry.add_command_outcome(file_count_bucket="500-999", docs_mode=False)
+
+        rec = self._run(monkeypatch, body)
+        assert rec
+        props = rec[0]["properties"]
+        assert props["file_count_bucket"] == "500-999"
+        assert props["docs_mode"] is False
+
+
+class TestBucketCount:
+    def test_buckets_are_coarse_ranges(self):
+        from repowise.cli.platform import telemetry
+
+        assert telemetry.bucket_count(0) == "0"
+        assert telemetry.bucket_count(5) == "1-9"
+        assert telemetry.bucket_count(742) == "500-999"
+        assert telemetry.bucket_count(20000) == "5k+"
+
+    def test_outcome_is_drained_once(self):
+        from repowise.cli.platform import telemetry
+
+        telemetry.add_command_outcome(a=1)
+        assert telemetry.drain_command_outcome() == {"a": 1}
+        # A second drain is empty — the field belongs to one invocation only.
+        assert telemetry.drain_command_outcome() == {}

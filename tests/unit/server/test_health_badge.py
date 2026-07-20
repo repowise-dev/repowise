@@ -117,6 +117,9 @@ def test_file_signals_to_dict_no_data_all_null() -> None:
         "recent_owner_commit_pct": None,
         "in_degree": None,
         "out_degree": None,
+        "bug_magnet": None,
+        "last_fix_at": None,
+        "fix_symbol_counts": None,
     }
 
 

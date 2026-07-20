@@ -6,14 +6,14 @@ authentication, secret handling, raw SQL, dangerous deserialization, etc.
 Two scan surfaces share the same pattern registry and persistence layer:
 
 * working-tree scans (during indexing) — ``SecurityScanner.scan_file`` +
-  ``persist`` with no commit provenance;
+  ``replace_findings`` with no commit provenance;
 * full-history scans (``repowise security scan --history``) — iterate every
   tracked revision of every source file and persist hits tagged with the
   introducing commit's SHA + author date.
 
 Both paths land in the ``security_findings`` table. The
 ``(repository_id, file_path, kind, line_number, commit_sha)`` unique
-constraint (migration 0037) makes re-runs idempotent.
+constraint (migration 0041) makes re-runs idempotent.
 """
 
 from __future__ import annotations
@@ -44,6 +44,11 @@ _PATTERNS: list[tuple[re.Pattern, str, str]] = [
     (re.compile(r"verify\s*=\s*False"), "tls_verify_false", "med"),
     (re.compile(r"\bmd5\b|\bsha1\b"), "weak_hash", "low"),
 ]
+
+# Combined prefilter: one search per line rejects the (overwhelmingly common)
+# clean lines before the per-pattern loop runs. Matches iff some pattern in
+# _PATTERNS matches, so findings are unchanged.
+_ANY_PATTERN = re.compile("|".join(f"(?:{p.pattern})" for p, _, _ in _PATTERNS))
 
 # Symbol names that are informational security hotspots
 _SYMBOL_KEYWORDS = re.compile(
@@ -88,6 +93,8 @@ class SecurityScanner:
 
         # Line-by-line pattern scan
         for lineno, line in enumerate(lines, start=1):
+            if not _ANY_PATTERN.search(line):
+                continue
             for pattern, kind, severity in _PATTERNS:
                 if pattern.search(line):
                     # Trim snippet to keep it concise
@@ -155,8 +162,6 @@ class SecurityScanner:
             return 0
 
         now = datetime.now(UTC)
-        # The dedup key uses "" (not NULL) for working-tree findings so the
-        # unique constraint keys identically across runs.
         sha_key = commit_sha or ""
         uses_sqlite = self._uses_sqlite()
         if uses_sqlite:
@@ -203,3 +208,66 @@ class SecurityScanner:
                 )
                 continue
         return inserted
+
+    async def replace_findings(
+        self,
+        findings_by_file: dict[str, list[dict]],
+        scanned_paths: list[str],
+    ) -> None:
+        """Replace the findings rows for every scanned file in one pass.
+
+        Deleting all *scanned* paths (not just those with findings) keeps the
+        table idempotent: re-indexing never accumulates duplicate rows, and a
+        file whose issues were fixed loses its stale rows. Only working-tree
+        rows (``commit_sha`` empty) are replaced — history findings from
+        ``scan --history`` are left intact. Uses raw SQL to stay independent of
+        any ORM session state; silently skips if the table doesn't exist yet
+        (pre-migration).
+        """
+        chunk_size = 400  # SQLite parameter-limit headroom, same as the CRUD layer
+
+        try:
+            for i in range(0, len(scanned_paths), chunk_size):
+                chunk = scanned_paths[i : i + chunk_size]
+                placeholders = ", ".join(f":p{j}" for j in range(len(chunk)))
+                params: dict[str, object] = {"repo_id": self._repo_id}
+                params.update({f"p{j}": p for j, p in enumerate(chunk)})
+                await self._session.execute(
+                    text(
+                        "DELETE FROM security_findings "
+                        "WHERE repository_id = :repo_id "
+                        f"AND file_path IN ({placeholders}) "
+                        "AND COALESCE(commit_sha, '') = ''"
+                    ),
+                    params,
+                )
+
+            now = datetime.now(UTC)
+            rows = [
+                {
+                    "repo_id": self._repo_id,
+                    "file_path": file_path,
+                    "kind": finding["kind"],
+                    "severity": finding["severity"],
+                    "snippet": finding.get("snippet", ""),
+                    "line": finding.get("line", 0),
+                    "commit_sha": "",
+                    "commit_at": None,
+                    "detected_at": now,
+                }
+                for file_path, findings in findings_by_file.items()
+                for finding in findings
+            ]
+            if rows:
+                await self._session.execute(
+                    text(
+                        "INSERT INTO security_findings "
+                        "(repository_id, file_path, kind, severity, snippet, line_number, "
+                        "commit_sha, commit_at, detected_at) "
+                        "VALUES (:repo_id, :file_path, :kind, :severity, :snippet, :line, "
+                        ":commit_sha, :commit_at, :detected_at)"
+                    ),
+                    rows,
+                )
+        except Exception:  # table may not exist pre-migration
+            return

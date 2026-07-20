@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from repowise.core.generation.editor_files.agents_md import AgentsMdGenerator
 from repowise.core.generation.editor_files.data import EditorFileData
+from repowise.core.generation.editor_files.tool_table import (
+    TOOL_TABLE_ROWS,
+    render_tool_table,
+)
 
 
 def _data() -> EditorFileData:
@@ -23,6 +27,22 @@ def test_agents_md_renders_repowise_workflows() -> None:
     assert "get_risk" in rendered
     assert "get_why" in rendered
     assert "get_dead_code" in rendered
+
+
+def test_agents_md_renders_the_full_shared_tool_table() -> None:
+    # AGENTS.md must reach the same tool surface as CLAUDE.md: both render the
+    # single shared table from tool_table.py. Asserting the whole rendered table
+    # is embedded means a future tool added to the registry (and therefore to
+    # TOOL_TABLE_ROWS, which test_tool_table_drift pins to the registry) fails CI
+    # here if AGENTS.md ever stops rendering it. This is the AGENTS.md twin of
+    # the CLAUDE.md guard so the two can never drift apart again.
+    rendered = AgentsMdGenerator().render(_data())
+
+    assert render_tool_table() in rendered
+    for signature, _row in TOOL_TABLE_ROWS.values():
+        assert signature in rendered, f"AGENTS.md omits tool row: {signature}"
+    # get_change_risk is the row that regressed before this guard existed.
+    assert "get_change_risk" in rendered
 
 
 def test_agents_md_writes_repo_root_file(tmp_path) -> None:

@@ -42,6 +42,7 @@ def _clear_provider_env(monkeypatch):
         "GEMINI_API_KEY",
         "GOOGLE_API_KEY",
         "DEEPSEEK_API_KEY",
+        "KIMI_API_KEY",
         "OLLAMA_BASE_URL",
     ):
         monkeypatch.delenv(key, raising=False)
@@ -50,7 +51,10 @@ def _clear_provider_env(monkeypatch):
 def test_explicit_yes_wins(ws):
     ws_root, cfg = ws
     docs, reason = _resolve_docs_flag(
-        run_docs=True, provider_name=None, ws_root=ws_root, ws_config=cfg,
+        run_docs=True,
+        provider_name=None,
+        ws_root=ws_root,
+        ws_config=cfg,
     )
     assert docs is True
     assert reason is None
@@ -59,7 +63,10 @@ def test_explicit_yes_wins(ws):
 def test_explicit_no_records_reason(ws):
     ws_root, cfg = ws
     docs, reason = _resolve_docs_flag(
-        run_docs=False, provider_name=None, ws_root=ws_root, ws_config=cfg,
+        run_docs=False,
+        provider_name=None,
+        ws_root=ws_root,
+        ws_config=cfg,
     )
     assert docs is False
     assert reason == "--no-docs flag"
@@ -87,25 +94,38 @@ def test_inherits_primary_config(ws, monkeypatch):
         encoding="utf-8",
     )
     docs, reason = _resolve_docs_flag(
-        run_docs=None, provider_name=None, ws_root=ws_root, ws_config=cfg,
+        run_docs=None,
+        provider_name=None,
+        ws_root=ws_root,
+        ws_config=cfg,
     )
     assert docs is True
     assert reason is None
 
 
-def test_env_provider_forces_on(ws, monkeypatch):
+@pytest.mark.parametrize("env_var", ["ANTHROPIC_API_KEY", "KIMI_API_KEY"])
+def test_env_provider_forces_on(ws, monkeypatch, env_var):
     ws_root, cfg = ws
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-fake")
+    monkeypatch.setenv(env_var, "sk-fake")
+
     docs, reason = _resolve_docs_flag(
-        run_docs=None, provider_name=None, ws_root=ws_root, ws_config=cfg,
+        run_docs=None,
+        provider_name=None,
+        ws_root=ws_root,
+        ws_config=cfg,
     )
+
     assert docs is True
+    assert reason is None
 
 
 def test_no_provider_anywhere_returns_off(ws):
     ws_root, cfg = ws
     docs, reason = _resolve_docs_flag(
-        run_docs=None, provider_name=None, ws_root=ws_root, ws_config=cfg,
+        run_docs=None,
+        provider_name=None,
+        ws_root=ws_root,
+        ws_config=cfg,
     )
     assert docs is False
     assert reason == "no provider configured"

@@ -57,6 +57,12 @@ def cosine_similarity(a: list[float], b: list[float]) -> float:
 class VectorStore(ABC):
     """Abstract vector store.  All methods are async."""
 
+    # Whether vectors written in a previous process survive into this one.
+    # Durable backends set True; generation uses this to skip re-embedding
+    # pages whose content is byte-identical to the prior run. Ephemeral
+    # stores (in-memory) start empty every run and must keep embedding them.
+    persists_across_runs: bool = False
+
     @abstractmethod
     async def embed_and_upsert(self, page_id: str, text: str, metadata: dict) -> None:
         """Embed *text* and upsert the vector under *page_id*."""

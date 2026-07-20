@@ -16,4 +16,9 @@ export interface SearchResultResponse {
   score: number;
   snippet: string;
   search_type: string;
+  /**
+   * True for deterministic template pages (the coverage tail) — drives the
+   * "Auto" badge on the result card. Optional so older payloads type-check.
+   */
+  is_deterministic?: boolean;
 }

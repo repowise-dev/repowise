@@ -108,15 +108,22 @@ async def hybrid_retrieve(question: str, ctx: Any) -> list[dict]:
 
     # RRF merge. Each hit's contribution from a source is 1/(rank + k);
     # hits appearing in both sources sum their contributions naturally.
+    # Per-source rank is preserved alongside the fused score: RRF *compresses*
+    # scores (rank-0-in-both barely outscores rank-1-in-both), so the summed
+    # number loses the "both retrievers independently ranked this #1" signal.
+    # Downstream confidence uses these ranks to recover retriever *agreement*
+    # as a dominance signal the numeric ratio can't see.
     fused: dict[str, dict] = {}
     for rank, h in enumerate(fts_results):
         entry = fused.setdefault(h.page_id, _hit_dict_from_result(h))
         entry["score"] = entry.get("score", 0.0) + 1.0 / (rank + _RRF_K)
         entry["_sources"].add("fts")
+        entry["_fts_rank"] = rank
     for rank, h in enumerate(vec_results):
         entry = fused.setdefault(h.page_id, _hit_dict_from_result(h))
         entry["score"] = entry.get("score", 0.0) + 1.0 / (rank + _RRF_K)
         entry["_sources"].add("vector")
+        entry["_vec_rank"] = rank
 
     # Scale to BM25-range so downstream confidence/dominance gates (tuned
     # against the prior single-mode BM25 retrieval) keep behaving sanely.
@@ -193,7 +200,12 @@ async def hydrate_hits(hits: list[dict], ctx: Any, *, scope: str | None = None) 
     async with get_session(ctx.session_factory) as session:
         res = await session.execute(
             select(
-                Page.id, Page.target_path, Page.summary, Page.page_type, Page.freshness_status
+                Page.id,
+                Page.target_path,
+                Page.summary,
+                Page.page_type,
+                Page.freshness_status,
+                Page.provider_name,
             ).where(Page.id.in_(page_ids))
         )
         meta_by_id = {
@@ -202,6 +214,7 @@ async def hydrate_hits(hits: list[dict], ctx: Any, *, scope: str | None = None) 
                 "summary": row[2] or "",
                 "page_type": row[3] or "",
                 "freshness": row[4] or "",
+                "provider_name": row[5] or "",
             }
             for row in res.all()
         }
@@ -221,6 +234,9 @@ async def hydrate_hits(hits: list[dict], ctx: Any, *, scope: str | None = None) 
         # Prefer the Page table's page_type when present — it's the source
         # of truth; retrievers sometimes carry stale or empty types.
         h["page_type"] = meta.get("page_type") or h.get("page_type", "")
+        # Deterministic template pages (the coverage tail) are down-weighted
+        # downstream so a thin projection can't displace a rich LLM page.
+        h["_deterministic"] = meta.get("provider_name") == "template"
         out.append(h)
     return out
 

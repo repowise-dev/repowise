@@ -380,7 +380,7 @@ async def get_health(
     perf_coverage: PerfCoverage | None = None
     perf_findings_count = 0
     async with get_session(ctx.session_factory) as session:
-        repository = await _get_repo(session, repo)
+        repository = await _get_repo(session)
 
         all_metrics_q = select(HealthFileMetric).where(
             HealthFileMetric.repository_id == repository.id

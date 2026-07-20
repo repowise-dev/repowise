@@ -46,6 +46,26 @@ def test_drop_is_idempotent_and_safe_without_blame_index() -> None:
     assert meta == {"file_path": "b.py", "commit_count_total": 1}
 
 
+def test_decision_sources_never_read_blame_index() -> None:
+    # The orchestrator runs decision extraction concurrently with health via
+    # asyncio.gather, while the transient BlameIndex is still attached to the
+    # shared git metadata dicts (health consumes it; the drop happens after
+    # the gather). That is only sound while no decision source reads it.
+    from pathlib import Path
+
+    import repowise.core.analysis.decisions as decisions_pkg
+
+    pkg_dir = Path(decisions_pkg.__file__).parent
+    offenders = [
+        py.name for py in pkg_dir.rglob("*.py") if "blame_index" in py.read_text(encoding="utf-8")
+    ]
+    assert not offenders, (
+        f"decision sources reference blame_index ({offenders}); they run "
+        "concurrently with health before drop_transient_git_signals, so this "
+        "needs a re-think of the analysis-phase gather in orchestrator.py"
+    )
+
+
 def test_drop_cleans_shared_git_meta_map_view() -> None:
     # git_meta_map is built from the same dict objects as git_metadata_list, so
     # stripping the list must clean the map view too.

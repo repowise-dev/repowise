@@ -28,6 +28,15 @@ router = APIRouter(
 )
 
 
+#: Output tokens credited per answered counterfactual MCP query. Each curated
+#: answer stands in for at least one raw exploration tool call the agent never
+#: had to emit (README markets "-70% tool calls"), and that invocation is output
+#: tokens we otherwise ignore. Deliberately one avoided call's worth (~a tool_use
+#: block), not the several reads a single answer often replaces, so the credit
+#: stays an undersell; priced at the agent's output rate below.
+_AVOIDED_CALL_OUTPUT_TOKENS = 60
+
+
 def _parse_since(since: str | None) -> datetime | None:
     """Parse an ISO date string (YYYY-MM-DD) into a datetime, or return None."""
     if since is None:
@@ -167,9 +176,7 @@ async def get_distill_savings(
     finally:
         conn.close()
 
-    per_filter = [
-        {"group": name, **stats} for name, stats in summary["per_filter"].items()
-    ]
+    per_filter = [{"group": name, **stats} for name, stats in summary["per_filter"].items()]
 
     # Missed savings: best-effort scan of local agent transcripts; the module
     # degrades to an empty report on any failure, never raises.
@@ -182,15 +189,28 @@ async def get_distill_savings(
     # Price at the coding agent's actual model — saved tokens are input tokens
     # that agent never had to read. Detection is best-effort (sonnet default).
     resolved = resolve_session_model(Path(repo.local_path))
-    rate = get_model_pricing(resolved.model)["input"]
+    pricing = get_model_pricing(resolved.model)
     total_saved = summary["saved_tokens"] + mcp["tokens"]
+    input_usd = total_saved * pricing["input"] / 1_000_000
+    # Add a small credit for the tool-call output the agent never had to emit:
+    # every answered counterfactual MCP query replaced at least one raw
+    # exploration call. Priced at the output rate; see _AVOIDED_CALL_OUTPUT_TOKENS.
+    # Counted over net-positive counterfactual rows only — a dead-end (error)
+    # call is recorded as a debit and saved the agent nothing, so crediting its
+    # output would flip that debit into a credit.
+    avoided_calls = sum(
+        row["events"]
+        for row in mcp["per_tool"]
+        if row.get("kind") == "counterfactual" and row.get("tokens", 0) > 0
+    )
+    output_usd = avoided_calls * _AVOIDED_CALL_OUTPUT_TOKENS * pricing["output"] / 1_000_000
     return DistillSavingsResponse(
         available=True,
         events=summary["events"],
         raw_tokens=summary["raw_tokens"],
         distilled_tokens=summary["distilled_tokens"],
         saved_tokens=summary["saved_tokens"],
-        estimated_usd_saved=total_saved * rate / 1_000_000,
+        estimated_usd_saved=input_usd + output_usd,
         pricing_model=resolved.model,
         pricing_agent=resolved.agent,
         pricing_source=resolved.source,

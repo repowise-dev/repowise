@@ -76,6 +76,41 @@ async def test_savings_endpoint_surfaces_mcp_drops_and_pricing(
     assert data["estimated_usd_saved"] > 0
 
 
+async def test_savings_endpoint_adds_avoided_tool_call_output_credit(
+    client: AsyncClient, tmp_path: Path
+) -> None:
+    """Each answered counterfactual MCP query credits a little output token
+    value (the tool call the agent skipped), on top of the input-priced saved
+    tokens. Priced at the resolved agent's output rate."""
+    import pytest
+
+    from repowise.server.routers.costs import _AVOIDED_CALL_OUTPUT_TOKENS
+
+    repo = await create_test_repo(client, tmp_path)
+    repo_dir = Path(repo["local_path"])
+    store = OmissionStore(repo_dir / ".repowise" / "omissions" / "omissions.db")
+    # A counterfactual MCP saving (savings table, mcp:<tool> source) — one query.
+    store.record_saving(
+        filter_name="get_risk",
+        source="mcp:get_risk",
+        command=None,
+        raw_tokens=5_000,
+        distilled_tokens=500,
+    )
+    store.close()
+
+    resp = await client.get(f"/api/repos/{repo['id']}/distill-savings")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["mcp_queries"] == 1
+    # Default agent (no transcripts) → sonnet $3 input / $15 output per 1M.
+    saved = data["saved_tokens"] + data["mcp_tokens"]  # 0 distill + 4_500 mcp
+    input_usd = saved * 3.0 / 1_000_000
+    output_usd = 1 * _AVOIDED_CALL_OUTPUT_TOKENS * 15.0 / 1_000_000
+    assert data["estimated_usd_saved"] == pytest.approx(input_usd + output_usd)
+    assert data["estimated_usd_saved"] > input_usd  # the credit actually applied
+
+
 async def test_savings_endpoint_no_store_is_unavailable(
     client: AsyncClient, tmp_path: Path
 ) -> None:

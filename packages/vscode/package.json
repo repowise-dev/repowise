@@ -2,7 +2,7 @@
   "name": "repowise",
   "displayName": "Repowise",
   "description": "Know what your change breaks before you push. Health signals, architecture maps, and refactoring plans in your editor, and the same intelligence for your AI agent via MCP. Local and free.",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "publisher": "repowise-dev",
   "license": "AGPL-3.0-or-later",
   "homepage": "https://www.repowise.dev",

@@ -71,6 +71,11 @@ log = structlog.get_logger(__name__)
 _BLOCKED_DIRS: frozenset[str] = frozenset(
     {
         ".git",
+        # Repowise's own state dir. Its contents change between init and any
+        # later update (state.json, caches), so indexing it makes the
+        # update-built graph diverge from the init-built one and defeats the
+        # structure-keyed centrality cache.
+        ".repowise",
         ".hg",
         ".svn",
         "node_modules",
@@ -266,6 +271,14 @@ class FileTraverser:
         self._submodule_paths: frozenset[str] = _parse_gitmodules(self.repo_root)
         self._include_submodules = include_submodules
         self._include_nested_repos = include_nested_repos
+        # Dotted-module targets of pyproject console scripts. A CLI entry
+        # module (``repowise-augment = "repowise.cli.augment_hook:main"``)
+        # has no in-repo importer, so without this it reads as unreachable
+        # unless its filename happens to match an entry-stem heuristic.
+        self._console_script_modules = _collect_console_script_modules(
+            self.repo_root,
+            prune_nested_git=not (include_submodules or include_nested_repos),
+        )
         self.stats = TraversalStats()
         self._count_lock = threading.Lock()
         log.info(
@@ -503,6 +516,7 @@ class FileTraverser:
                 filename in _ENTRY_POINT_NAMES
                 or filename.endswith(_ENTRY_POINT_NAME_SUFFIXES)
                 or _stem_is_entry_point(abs_path)
+                or _is_console_script_target(rel_str, self._console_script_modules)
             ),
         )
 
@@ -662,6 +676,73 @@ def _is_api_contract(abs_path: Path, language: LanguageTag) -> bool:
 def _stem_is_entry_point(abs_path: Path) -> bool:
     stem = abs_path.stem.lower()
     return stem in _ENTRY_POINT_STEMS
+
+
+def _collect_console_script_modules(
+    repo_root: Path, *, prune_nested_git: bool = True
+) -> frozenset[str]:
+    """Dotted-module targets declared in pyproject console-script tables.
+
+    Reads ``[project.scripts]``, ``[project.gui-scripts]``, and every
+    ``[project.entry-points.*]`` group from each ``pyproject.toml`` in the
+    repo. Values look like ``"repowise.cli.augment_hook:main"`` — the part
+    before the colon names the module a console launcher imports at runtime.
+    Best-effort: unparsable files are skipped.
+    """
+    import tomllib
+
+    from repowise.core.fs_walk import iter_glob
+
+    modules: set[str] = set()
+    try:
+        config_files = list(
+            iter_glob(repo_root, ("pyproject.toml",), prune_nested_git=prune_nested_git)
+        )
+    except OSError:
+        return frozenset()
+    for config_file in config_files:
+        try:
+            data = tomllib.loads(config_file.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        project = data.get("project")
+        if not isinstance(project, dict):
+            continue
+        groups = [project.get("scripts"), project.get("gui-scripts")]
+        entry_points = project.get("entry-points")
+        if isinstance(entry_points, dict):
+            groups.extend(entry_points.values())
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            for target in group.values():
+                if isinstance(target, str):
+                    module = target.split(":", 1)[0].strip()
+                    if module:
+                        modules.add(module)
+    return frozenset(modules)
+
+
+def _is_console_script_target(rel_path: str, modules: frozenset[str]) -> bool:
+    """True when *rel_path* is the file a console-script module target names.
+
+    The repo-relative path is compared as a dot-boundary suffix because the
+    dotted module omits source-root prefixes (``src/``, ``packages/*/src/``).
+    Single-segment module names must match exactly — a bare ``main`` target
+    must not blanket-flag every ``main.py``-adjacent path suffix.
+    """
+    if not modules or not rel_path.endswith(".py"):
+        return False
+    dotted = rel_path[: -len(".py")]
+    if dotted.endswith("/__init__"):
+        dotted = dotted[: -len("/__init__")]
+    dotted = dotted.replace("/", ".")
+    for module in modules:
+        if dotted == module:
+            return True
+        if "." in module and dotted.endswith("." + module):
+            return True
+    return False
 
 
 def _primary_language_in(directory: Path, *, prune_nested_git: bool = True) -> LanguageTag:

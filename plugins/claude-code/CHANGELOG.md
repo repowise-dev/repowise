@@ -2,6 +2,22 @@
 
 All notable changes to the Repowise Claude Code plugin are documented here.
 
+## 0.33.0
+
+### Added
+- `change-review` skill for reviewing a change against the risk and blast-radius
+  tools (shipped for both the Claude Code and Codex plugins).
+
+### Changed
+- Version bump to track the repowise 0.33.0 release.
+- `risk` command documents the new `-x/--exclude` flag and `.riskignore` support.
+
+## 0.32.0
+
+### Changed
+- Version bump to track the repowise 0.32.0 release. No command, skill, or MCP
+  tool-surface changes this cycle.
+
 ## 0.31.0
 
 ### Changed

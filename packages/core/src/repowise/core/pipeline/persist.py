@@ -626,22 +626,41 @@ async def persist_ingestion(result: Any, session: Any, repo_id: str) -> int:
         await batch_upsert_symbols(session, repo_id, all_symbols)
 
     # ---- Security scan -------------------------------------------------------
-    # There is already a clear per-file loop over parsed_files here, so the
-    # scan rides alongside symbol persistence. Best-effort — never breaks
-    # the rest of the phase.
+    # Best-effort — never breaks the rest of the phase.
     try:
-        from repowise.core.analysis.security_scan import SecurityScanner
-
-        scanner = SecurityScanner(session, repo_id)
-        for pf in result.parsed_files:
-            source_text = getattr(pf.file_info, "content", "") or ""
-            findings = await scanner.scan_file(pf.file_info.path, source_text, pf.symbols)
-            if findings:
-                await scanner.persist(pf.file_info.path, findings)
+        await persist_security_findings(result, session, repo_id)
     except Exception as _sec_err:
         logger.warning("security_scan_skipped", error=str(_sec_err))
 
     return len(all_symbols)
+
+
+async def persist_security_findings(result: Any, session: Any, repo_id: str) -> None:
+    """Scan every parsed file's source and replace its security findings.
+
+    Source bytes come from ``result.source_map`` (ingestion read them once);
+    ``FileInfo`` itself carries no content, only ``content_hash``, so reading
+    it off ``file_info`` yields empty text and a scan that can never fire.
+    Resume views without a ``source_map`` degrade to the symbol-name scan.
+    """
+    from repowise.core.analysis.security_scan import SecurityScanner
+
+    scanner = SecurityScanner(session, repo_id)
+    source_map = getattr(result, "source_map", None) or {}
+    findings_by_file: dict[str, list[dict]] = {}
+    scanned_paths: list[str] = []
+    for pf in result.parsed_files:
+        path = pf.file_info.path
+        raw = source_map.get(path, b"")
+        if isinstance(raw, (bytes, bytearray)):
+            source_text = raw.decode("utf-8", errors="replace")
+        else:
+            source_text = raw or ""
+        scanned_paths.append(path)
+        findings = await scanner.scan_file(path, source_text, pf.symbols)
+        if findings:
+            findings_by_file[path] = findings
+    await scanner.replace_findings(findings_by_file, scanned_paths)
 
 
 async def persist_git(result: Any, session: Any, repo_id: str) -> None:
@@ -651,6 +670,9 @@ async def persist_git(result: Any, session: Any, repo_id: str) -> None:
     ``(repo_id, sha)`` — safe to call incrementally and on resume.
     """
     from repowise.core.persistence.crud import (
+        prune_fix_events_before,
+        update_repo_git_totals,
+        upsert_fix_events_bulk,
         upsert_git_commits_bulk,
         upsert_git_metadata_bulk,
     )
@@ -658,10 +680,48 @@ async def persist_git(result: Any, session: Any, repo_id: str) -> None:
     if result.git_metadata_list:
         await upsert_git_metadata_bulk(session, repo_id, result.git_metadata_list)
 
+    summary = getattr(result, "git_summary", None)
+
     # Per-commit rows + change-risk ride on the git summary.
-    commit_rows = getattr(getattr(result, "git_summary", None), "commit_rows", None)
+    commit_rows = getattr(summary, "commit_rows", None)
     if commit_rows:
         await upsert_git_commits_bulk(session, repo_id, commit_rows)
+
+    # Per fix-commit x file rows (with their SZZ candidates). The prune keeps a
+    # re-index of an already-indexed repo from leaving behind events that have
+    # since aged out of the defect window.
+    fix_event_rows = getattr(summary, "fix_event_rows", None)
+    if fix_event_rows:
+        await upsert_fix_events_bulk(session, repo_id, fix_event_rows)
+    oldest_ts = getattr(summary, "fix_oldest_ts", 0)
+    if oldest_ts and getattr(summary, "fix_events_built", False):
+        from datetime import UTC, datetime
+
+        await prune_fix_events_before(session, repo_id, datetime.fromtimestamp(oldest_ts, tz=UTC))
+
+    # Symbol attribution + bug-magnet rollups, over the rows just written.
+    # Failure-isolated: a rollup that cannot be computed leaves the previous
+    # values in place rather than blanking a surface mid-index.
+    try:
+        from repowise.core.pipeline.fix_rollups import apply_fix_rollups
+
+        await apply_fix_rollups(session, repo_id)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("fix_rollups_failed", repo_id=repo_id, error=str(exc))
+
+    # Whole-history totals (true age / commit / contributor counts) also ride on
+    # the summary — stamp them on the Repository row so the stats page reads them
+    # instead of deriving them from the bounded ``git_commits`` sample (#730).
+    totals = getattr(summary, "repo_totals", None)
+    if totals is not None:
+        await update_repo_git_totals(
+            session,
+            repo_id,
+            total_commit_count=totals.total_commit_count,
+            first_commit_at=totals.first_commit_at,
+            total_contributor_count=totals.total_contributor_count,
+            first_commit_author=totals.first_commit_author,
+        )
 
 
 async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
@@ -840,12 +900,15 @@ async def persist_generation(result: Any, session: Any, repo_id: str) -> None:
     Pages upsert per ``page_id`` (archiving prior versions); KG layers/tour
     are full-replace. Both safe to call incrementally / on resume.
     """
-    from repowise.core.persistence import upsert_page_from_generated
+    from repowise.core.persistence import upsert_pages_from_generated
 
     # ---- Pages (if generated) -----------------------------------------------
+    # Batched: one SELECT + one flush instead of a SELECT+flush per page. The
+    # per-page durability sink already streamed these during generation; this
+    # end-of-run pass flushes the post-generation metadata enrichment. See
+    # upsert_pages_from_generated for the equivalence contract.
     if result.generated_pages:
-        for page in result.generated_pages:
-            await upsert_page_from_generated(session, page, repo_id)
+        await upsert_pages_from_generated(session, result.generated_pages, repo_id)
 
     # ---- Knowledge graph layers, tour steps & curated meta ------------------
     kg = getattr(result, "knowledge_graph_result", None)

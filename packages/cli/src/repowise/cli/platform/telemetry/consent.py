@@ -19,7 +19,8 @@ TELEMETRY_DOC_URL = "https://repowise.dev/telemetry"
 
 _NOTICE = (
     "Repowise collects completely anonymous usage telemetry (commands run, "
-    "versions, OS, success/duration) to help prioritize what to build.\n"
+    "MCP tools used, versions, OS, success/duration) to help prioritize what to "
+    "build.\n"
     "It never sees your code, file paths, or repo names. Opt out anytime with "
     "'repowise telemetry disable' or DO_NOT_TRACK=1.\n"
     f"Details: {TELEMETRY_DOC_URL}"

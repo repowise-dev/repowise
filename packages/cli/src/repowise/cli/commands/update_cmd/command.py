@@ -16,6 +16,7 @@ from typing import Any
 import click
 import structlog
 
+from repowise.cli._setup import configure_cli_logging
 from repowise.cli.helpers import (
     clear_update_pending,
     clear_update_queued,
@@ -28,7 +29,7 @@ from repowise.cli.helpers import (
     read_update_pending,
     release_update_lock,
     resolve_command_target,
-    resolve_provider,
+    resolve_provider_or_prompt,
     resolve_reasoning,
     rotate_update_log_if_needed,
     run_async,
@@ -62,6 +63,48 @@ from .reporting import (
 from .workspace import _workspace_update
 
 log = structlog.get_logger(__name__)
+
+
+def _docs_provider_prompt_allowed(emitter: Any) -> bool:
+    """Whether a docs run may block on an interactive provider prompt.
+
+    Requires a real terminal on *both* ends: a terminal stdout (so the table
+    renders) and a tty stdin (so the answer can actually be read). The stdin
+    check is what keeps a background post-commit hook or CI run from hanging
+    even when it inherits a ``FORCE_COLOR`` that makes ``console.is_terminal``
+    report True. ``--progress json`` (emitter set) is always non-interactive.
+    """
+    return console.is_terminal and sys.stdin.isatty() and emitter is None
+
+
+def _record_update_outcome(
+    *,
+    index_only: bool,
+    changed_count: int,
+    provider: Any = None,
+    generated_pages: list | None = None,
+) -> None:
+    """Attach an anonymous update-shape outcome to the ``command_run`` event.
+
+    Coarse buckets + enums only (changed-files bucket, docs mode, provider,
+    pages bucket). Best-effort; never breaks the command.
+    """
+    try:
+        from repowise.cli.platform import telemetry
+
+        outcome: dict[str, Any] = {
+            "outcome": "success",
+            "index_only": bool(index_only),
+            "docs_mode": not index_only and provider is not None,
+            "changed_files_bucket": telemetry.bucket_count(changed_count),
+        }
+        if not index_only and provider is not None:
+            outcome["provider"] = getattr(provider, "provider_name", None)
+            outcome["model"] = getattr(provider, "model_name", None)
+            outcome["pages_bucket"] = telemetry.bucket_count(len(generated_pages or []))
+        telemetry.add_command_outcome(**{k: v for k, v in outcome.items() if v is not None})
+    except Exception:
+        return
 
 
 def _refresh_editor_stamp(
@@ -221,7 +264,9 @@ def _surface_release_news(*, written_by: str | None) -> None:
     help=(
         "Show the full changed-file list and per-phase internals (adaptive "
         "cascade budget, decision-marker/evolution counts, best-effort skip "
-        "warnings, and the detailed generation report)."
+        "warnings, and the detailed generation report), plus debug logs. "
+        "Without it, debug/info logging is suppressed so the progress bar is "
+        "the only output."
     ),
 )
 @click.option(
@@ -302,10 +347,15 @@ def run_update(
     no_cost_tracking: bool = False,
     verbose: bool = False,
     progress: str = "rich",
+    skip_cross_repo_hooks: bool = False,
 ) -> None:
     """Incrementally update wiki pages for files changed since last sync.
 
     If `since` is None, the base commit is read from state.json's last_sync_commit.
+
+    ``skip_cross_repo_hooks`` is set only by the workspace docs flow, which
+    calls this per repo and then runs the cross-repo hooks once over every
+    updated repo instead of once per repo.
     """
     start = time.monotonic()
 
@@ -330,6 +380,11 @@ def run_update(
         click.get_current_context().call_on_close(lambda: setattr(console, "file", None))
         emitter = JsonProgressEmitter()
         emitter.start(repo=str(path or "."), since=since)
+    else:
+        # Human console mode: quiet library/structlog output so it doesn't
+        # interleave with the live progress bar (issue #922); `-v` lets
+        # repowise's debug lines through for troubleshooting.
+        configure_cli_logging(verbose=verbose)
 
     # --- Resolve target up front (single repo or workspace) ---
     target = resolve_command_target(
@@ -347,7 +402,22 @@ def run_update(
                 "(or pass --no-workspace / --repo <alias>)."
             )
         try:
-            _workspace_update(target, dry_run=dry_run, agents_md=agents_md, verbose=verbose)
+            _workspace_update(
+                target,
+                dry_run=dry_run,
+                agents_md=agents_md,
+                verbose=verbose,
+                docs_flag=docs_flag,
+                index_only=index_only,
+                since=since,
+                provider_name=provider_name,
+                model=model,
+                reasoning=reasoning,
+                cascade_budget=cascade_budget,
+                concurrency=concurrency,
+                no_cost_tracking=no_cost_tracking,
+                progress=progress,
+            )
         except Exception as exc:
             if emitter is not None:
                 emitter.error(str(exc))
@@ -426,9 +496,15 @@ def run_update(
     from repowise.cli.ui import load_dotenv
 
     load_dotenv(repo_path)
-
     state = load_state(repo_path)
-    base_ref = since or state.get("last_sync_commit")
+    resolved_index_only = _resolve_index_only_mode(
+        index_only=index_only, docs_flag=docs_flag, state=state
+    )
+    base_ref = since or (
+        state.get("last_sync_commit")
+        if resolved_index_only
+        else state.get("last_docs_commit", state.get("last_sync_commit"))
+    )
     head = get_head_commit(repo_path)
 
     if base_ref is None:
@@ -538,7 +614,7 @@ def run_update(
         save_state(repo_path, state)
 
     # --- Resolve effective mode (index-only vs full LLM regen) ---
-    index_only = _resolve_index_only_mode(index_only=index_only, docs_flag=docs_flag, state=state)
+    index_only = resolved_index_only
 
     # --- Store-format upgrade assessment --------------------------------
     # Single decision point for "does upgrading repowise need to touch this
@@ -581,10 +657,14 @@ def run_update(
 
     if not file_diffs and not config_changed:
         console.print("[green]No changed files detected.[/green]")
-        save_state(
-            repo_path,
-            {**state, "last_sync_commit": head, "config_fingerprint": curr_config_fp},
-        )
+        # Always advance the sync pointer so the on-disk freshness marker stays
+        # current on no-op syncs. In docs mode, no changed files means no docs
+        # work is pending, so the docs pointer can advance to head too, which
+        # also heals legacy state that never recorded one.
+        persisted = {**state, "last_sync_commit": head, "config_fingerprint": curr_config_fp}
+        if not resolved_index_only and head:
+            persisted["last_docs_commit"] = head
+        save_state(repo_path, persisted)
         # Keep the DB freshness stamp in lockstep with state.json: the server's
         # /repos endpoint reads head_commit from the row, not the state file.
         stamp_head_commit(repo_path, head)
@@ -661,7 +741,14 @@ def run_update(
         cascade_budget = compute_adaptive_budget(file_diffs, file_count)
         if verbose:
             console.print(f"Adaptive cascade budget: [cyan]{cascade_budget}[/cyan]")
-    affected = detector.get_affected_pages(file_diffs, graph_builder.graph(), cascade_budget)
+    # Pass the builder's cached file pagerank so the cascade ordering does
+    # not recompute a full-graph pagerank pass on every update.
+    affected = detector.get_affected_pages(
+        file_diffs,
+        graph_builder.graph(),
+        cascade_budget,
+        pagerank=graph_builder.pagerank(),
+    )
 
     console.print(f"Pages to regenerate: [cyan]{len(affected.regenerate)}[/cyan]")
     if affected.decay_only:
@@ -724,6 +811,7 @@ def run_update(
                 emitter.error(str(exc))
             raise
         _refresh_editor_stamp(repo_path, agents_md, degraded)
+        _record_update_outcome(index_only=True, changed_count=len(file_diffs))
         if emitter is not None:
             emitter.done(
                 ok=True,
@@ -762,7 +850,20 @@ def run_update(
         tier2_tail_dirs=tuple(tail_dirs_cfg) if tail_dirs_cfg else None,
     )
 
-    provider = resolve_provider(provider_name, model, repo_path=repo_path)
+    # Resolve the generation provider. If the repo wants docs but was never
+    # given a provider/key (e.g. it started --index-only and later flipped
+    # docs_enabled on, or `repowise update --docs`), onboard the same way init
+    # does: prompt for provider + key and persist, but only in an interactive
+    # terminal. Hooks / CI / --progress json keep the clean non-blocking error.
+    # In the workspace docs flow each member reaches this per-repo run; the
+    # first prompt sets the key in-process, so later members auto-resolve.
+    provider = resolve_provider_or_prompt(
+        provider_name,
+        model,
+        repo_path,
+        reasoning=reasoning,
+        interactive=_docs_provider_prompt_allowed(emitter),
+    )
 
     # Attach a DB-backed CostTracker so every LLM call made during this update
     # (decision rescan + page regeneration) is persisted to the `llm_costs`
@@ -789,9 +890,12 @@ def run_update(
                 graph=graph_builder.graph(),
                 git_meta_map=git_meta_map,
             )
-            new_decision_markers = run_async(
-                extractor.scan_inline_markers(restrict_to_files=changed_paths)
-            )
+            # Label these calls as decision extraction so the Costs page can
+            # tell them apart from page regeneration (both ride this provider).
+            with cost_tracker.record_as("decision_extraction"):
+                new_decision_markers = run_async(
+                    extractor.scan_inline_markers(restrict_to_files=changed_paths)
+                )
             if new_decision_markers and verbose:
                 console.print(
                     f"New decision markers found: [green]{len(new_decision_markers)}[/green]"
@@ -1027,14 +1131,21 @@ def run_update(
             gen_progress.update(gen_task, total=total)
 
     def _on_page_done(_page_id: str) -> None:
-        nonlocal completed_pages
+        nonlocal completed_pages, total_pages
         completed_pages += 1
+        # The total is an up-front estimate (see _announce_total); some page
+        # categories can't be predicted exactly, so keep it monotonic with the
+        # real count, so it never renders "43 of 41" (issue #922).
+        if total_pages is not None and completed_pages > total_pages:
+            total_pages = completed_pages
         if emitter is not None:
             emitter.page_done(
                 completed=completed_pages, total=total_pages, cost_usd=cost_tracker.session_cost
             )
         else:
-            gen_progress.update(gen_task, advance=1, cost=cost_tracker.session_cost)
+            gen_progress.update(
+                gen_task, advance=1, total=total_pages, cost=cost_tracker.session_cost
+            )
 
     # Checkpoint each page to the DB as it lands: a crash mid-generation used
     # to lose every finished page (persist ran only at the very end), so the
@@ -1075,6 +1186,13 @@ def run_update(
             if emitter is not None:
                 emitter.error(str(exc))
             raise
+
+        # Reconcile the bar to the pages actually produced. The up-front total
+        # is an estimate and onboarding slots may gate-skip, leaving it above
+        # the real count; snap total to completed so the bar reads N of N at
+        # 100% instead of stalling short (issue #922).
+        if gen_task is not None:
+            gen_progress.update(gen_task, total=completed_pages, completed=completed_pages)
 
     # Surface the FAQ-weighted budget tilt when session demand shaped this run
     # (silent when there is no history to weight; human console mode only).
@@ -1159,6 +1277,7 @@ def run_update(
             degraded.append(f"Knowledge-graph export: {exc}")
 
     state["last_sync_commit"] = head
+    state["last_docs_commit"] = head
     # Real DB total, not an accumulation: regeneration upserts existing pages,
     # so adding len(generated_pages) every run inflated the count forever.
     state["total_pages"] = db_total_pages
@@ -1176,9 +1295,12 @@ def run_update(
     if pending_head and pending_head == head:
         clear_update_pending(repo_path)
 
-    # Trigger cross-repo hooks if this repo is part of a workspace
+    # Trigger cross-repo hooks if this repo is part of a workspace. The
+    # workspace docs flow suppresses this per-repo and runs the hooks once
+    # over every updated repo, so the cross-repo layer isn't rebuilt from a
+    # half-updated set on every member.
     try:
-        ws_root = find_workspace_root(repo_path)
+        ws_root = find_workspace_root(repo_path) if not skip_cross_repo_hooks else None
         if ws_root is not None:
             from repowise.core.workspace import WorkspaceConfig
             from repowise.core.workspace.update import run_cross_repo_hooks
@@ -1202,6 +1324,12 @@ def run_update(
         degraded.append(f"Cross-repo analysis: {exc}")
 
     elapsed = time.monotonic() - start
+    _record_update_outcome(
+        index_only=False,
+        changed_count=len(file_diffs),
+        provider=provider,
+        generated_pages=generated_pages,
+    )
     if emitter is not None:
         emitter.done(
             ok=True,

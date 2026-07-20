@@ -13,6 +13,7 @@ from pathlib import Path
 import click
 from rich.table import Table
 
+from repowise.cli._setup import configure_cli_logging
 from repowise.cli.helpers import (
     console,
     err_console,
@@ -105,6 +106,13 @@ from .trends import _render_trend
     default=False,
     help="Print a ready-to-paste health badge (Markdown) for this repo's README.",
 )
+@click.option(
+    "--verbose",
+    "-v",
+    is_flag=True,
+    default=False,
+    help="Show debug logs from the pipeline.",
+)
 def health_command(
     path: str | None,
     file_filter: str | None,
@@ -117,12 +125,15 @@ def health_command(
     module_filter: str | None,
     trend_view: bool,
     badge_view: bool,
+    verbose: bool,
 ) -> None:
     """Compute code-health scores from markers (CCN, nesting, brain-method).
 
     Runs in-process — no LLM, no network. Re-uses the repowise ingestion
     parser, graph builder, and git indexer.
     """
+    configure_cli_logging(verbose=verbose)
+
     from pathlib import Path as PathlibPath
 
     from repowise.core.analysis.health import HealthAnalyzer
@@ -194,6 +205,15 @@ def health_command(
             parsed_files.append(parsed)
         except Exception:
             continue
+
+    from repowise.core.ingestion import wire_tsconfig_resolver
+
+    wire_tsconfig_resolver(
+        graph_builder,
+        repo_path,
+        include_submodules=include_submodules,
+        include_nested_repos=include_nested_repos,
+    )
     graph_builder.build()
 
     git_meta_map: dict = {}

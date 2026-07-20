@@ -12,7 +12,7 @@ import { FirstIndexExperience } from "@/components/repos/first-index-experience"
 import { HealthOverviewCard } from "@repowise-dev/ui/dashboard/health-overview-card";
 import { AttentionPanel } from "@repowise-dev/ui/dashboard/attention-panel";
 import { KpiStrip, kpiDelta, type KpiItem } from "@repowise-dev/ui/dashboard/kpi-strip";
-import { OverviewGrid } from "@repowise-dev/ui/dashboard/overview-grid";
+import { OverviewGrid, OverviewPanelPair } from "@repowise-dev/ui/dashboard/overview-grid";
 import { SavingsMini } from "@repowise-dev/ui/dashboard/savings-mini";
 import { IndexStorageMini } from "@repowise-dev/ui/dashboard/index-storage-mini";
 import { LanguageDonut } from "@repowise-dev/ui/dashboard/language-donut";
@@ -50,11 +50,17 @@ export default async function OverviewPage({ params }: Props) {
   const { repo, stats, health, sync } = summary;
   const isFresh = stats.file_count === 0;
 
+  // Fall back to the sync page count so the tile still reads on a server that
+  // predates the AI/auto split; the split line just hides.
+  const docPages = stats.doc_page_count ?? sync.page_count ?? 0;
+  const autoPages = stats.doc_auto_page_count;
+  const aiPages = autoPages != null ? Math.max(0, docPages - autoPages) : null;
+
   const kpis: KpiItem[] = [
     {
       label: "Files",
       value: formatNumber(stats.file_count),
-      href: `/repos/${id}/architecture?view=graph`,
+      href: `/repos/${id}/files`,
       // File-count growth is neutral, not "good" — render the delta uncolored.
       delta: kpiDelta(stats.deltas.file_count, true),
     },
@@ -64,10 +70,15 @@ export default async function OverviewPage({ params }: Props) {
       href: `/repos/${id}/architecture?view=symbols`,
     },
     {
-      label: "Doc Coverage",
-      value: `${Math.round(stats.doc_coverage_pct)}%`,
-      href: `/repos/${id}/docs/coverage`,
-      gauge: stats.doc_coverage_pct,
+      label: "Docs",
+      value: formatNumber(docPages),
+      href: `/repos/${id}/docs`,
+      // The AI/auto split is the interesting part of a page count: it says how
+      // much of the wiki a model wrote vs what was templated from structure.
+      description:
+        docPages > 0 && aiPages != null && autoPages != null
+          ? `${formatNumber(aiPages)} AI · ${formatNumber(autoPages)} auto`
+          : undefined,
     },
     {
       label: "Dead Exports",
@@ -148,21 +159,27 @@ export default async function OverviewPage({ params }: Props) {
                   repoId={id}
                   averageDelta={stats.deltas.average_health}
                   hotspotDelta={stats.deltas.hotspot_health}
+                  defectAccuracy={statsHighlights?.quality.defect_accuracy ?? null}
                 />
                 <ContributorsStripCard repoId={id} />
+                {/* The two short tiles sit two-up here rather than stacked in
+                    the rail: it keeps the main column from bottoming out well
+                    above the taller Attention panel beside it. */}
+                <OverviewPanelPair>
+                  <SavingsMini data={summary.savings} repoId={id} />
+                  <IndexStorageMini
+                    data={{
+                      index_storage_bytes: sync.index_storage_bytes ?? 0,
+                      page_count: sync.page_count,
+                      doc_coverage_pct: stats.doc_coverage_pct,
+                    }}
+                  />
+                </OverviewPanelPair>
               </>
             }
             rail={
               <>
                 {statsHighlights && <StatsTeaserCard repoId={id} data={statsHighlights} />}
-                <IndexStorageMini
-                  data={{
-                    index_storage_bytes: sync.index_storage_bytes ?? 0,
-                    page_count: sync.page_count,
-                    doc_coverage_pct: stats.doc_coverage_pct,
-                  }}
-                />
-                <SavingsMini data={summary.savings} repoId={id} />
                 <AttentionPanel items={attentionItems} repoId={id} previewCount={5} repoName={repo.name} />
               </>
             }

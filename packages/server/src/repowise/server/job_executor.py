@@ -316,7 +316,6 @@ async def execute_job(
         # leaving the row stuck in 'pending' forever.
         session_factory = session_factory_override or app_state.session_factory
         fts = app_state.fts
-        vector_store = app_state.vector_store
 
         # ---- Fetch job + repo metadata ------------------------------------
         async with get_session(session_factory) as session:
@@ -348,6 +347,21 @@ async def execute_job(
 
             # Mark running
             await update_job_status(session, job_id, "running")
+
+        # Vector writes and deletes must follow the repository, just like its
+        # routed SQL session. This opens/creates <repo>/.repowise/lancedb and
+        # caches it by repo id; the global primary store is only a fallback for
+        # partially initialized development app states.
+        from repowise.server.search_helpers import resolve_repo_vector_store
+
+        vector_store = await resolve_repo_vector_store(
+            app_state,
+            repo_id,
+            repo_path=repo_path,
+            create=True,
+        )
+        if vector_store is None:
+            vector_store = app_state.vector_store
 
         logger.info("job_started", job_id=job_id, repo_path=repo_path, mode=mode)
 
@@ -417,12 +431,12 @@ async def execute_job(
         async with get_session(session_factory) as session:
             swept_page_ids = await persist_pipeline_result(result, session, repo_id)
 
-            # Persist incrementally regenerated pages
+            # Persist incrementally regenerated pages (batched: one SELECT +
+            # one flush instead of a round-trip per page on the hosted DB).
             if incremental_pages:
-                from repowise.core.persistence import upsert_page_from_generated
+                from repowise.core.persistence import upsert_pages_from_generated
 
-                for page in incremental_pages:
-                    await upsert_page_from_generated(session, page, repo_id)
+                await upsert_pages_from_generated(session, incremental_pages, repo_id)
 
             # Drop swept pages from the vector store *before* the SQL session
             # commits. The vector store is a separate engine/file (pgvector DB,
@@ -764,7 +778,10 @@ async def _incremental_page_regen(
 
         cascade_budget = compute_adaptive_budget(file_diffs, result.file_count)
         affected = detector.get_affected_pages(
-            file_diffs, result.graph_builder.graph(), cascade_budget
+            file_diffs,
+            result.graph_builder.graph(),
+            cascade_budget,
+            pagerank=result.graph_builder.pagerank(),
         )
 
         if not affected.regenerate:
@@ -806,9 +823,7 @@ async def _incremental_page_regen(
             language=repo_cfg.get("language", "en"),
         )
         assembler = ContextAssembler(generation_config)
-        generator = PageGenerator(
-            llm_client, assembler, generation_config, repo_path=repo_path
-        )
+        generator = PageGenerator(llm_client, assembler, generation_config, repo_path=repo_path)
 
         pages = await generator.generate_all(
             affected_parsed,

@@ -22,7 +22,7 @@ from repowise.server.services.c4_builder.architecture import build_architecture_
 from repowise.server.services.c4_builder.models import ArchitectureView
 
 from .layout import lay_out
-from .metrics import rollup_metrics
+from .metrics import rollup_health, rollup_metrics
 from .models import ZoomMap, ZoomNode, ZoomRelation
 from .relations import aggregate_relations
 from .scoring import FileStat, compute_file_signals, score_tree
@@ -51,8 +51,16 @@ def assemble_zoom_map(
     *,
     max_depth: int | None = None,
     focus: str | None = None,
+    health: dict[str, tuple[float, int]] | None = None,
 ) -> ZoomMap:
-    """Pure assembly: ``ArchitectureView`` -> ``ZoomMap``. No DB."""
+    """Pure assembly: ``ArchitectureView`` -> ``ZoomMap``. No DB.
+
+    ``health`` maps a file path to ``(score, loc)`` where ``score`` is the 0..10
+    code-health score (higher = healthier) and ``loc`` is the rollup weight. It is
+    optional so the pure assembly still unit-tests without health data; files not
+    present in the map read as unscored (neutral), exactly like the treemap.
+    """
+    health = health or {}
     # The view is loaded file-only, but the curated node_type can be
     # config/document/service rather than "file"; a file node is reliably the
     # one whose id equals its own path and carries no symbol line range.
@@ -91,6 +99,7 @@ def assemble_zoom_map(
     leaf_info: dict[str, LeafInfo] = {}
     for n in file_nodes:
         sig = signals.get(n.id)
+        hscore, hloc = health.get(n.id, (None, 1))
         leaf_info[n.id] = LeafInfo(
             summary=n.summary,
             language=n.language,
@@ -99,6 +108,8 @@ def assemble_zoom_map(
             is_dead=n.is_dead,
             is_test=n.is_test,
             on_flow=bool(sig and sig.on_flow),
+            health_score=hscore,
+            loc=hloc,
         )
 
     layers = [
@@ -117,6 +128,7 @@ def assemble_zoom_map(
 
     root_id, nodes = build_tree(view.project_name, layers, leaf_info)
     nodes = rollup_metrics(root_id, nodes)
+    nodes = rollup_health(root_id, nodes)
     nodes = score_tree(root_id, nodes, signals)
     nodes = lay_out(root_id, nodes)
     relations = aggregate_relations(nodes, edges)
@@ -214,5 +226,20 @@ async def build_zoom_map(
     focus: str | None = None,
 ) -> ZoomMap:
     """Derive the zoom map for ``repo_id`` from the persisted graph."""
+    from repowise.core.persistence import crud
+
     view = await build_architecture_view(session, repo_id, include_symbols=False)
-    return assemble_zoom_map(view, max_depth=max_depth, focus=focus)
+    # One extra read: per-file health, keyed by path -> (effective score, loc).
+    # Effective score prefers the split ``defect_score`` and falls back to the
+    # overall ``score``, exactly like GET /api/repos/{id}/files, so the zoom card
+    # and the /files treemap color off the same number. loc (>=1) is the rollup
+    # weight for container means.
+    metrics = await crud.get_health_metrics(session, repo_id)
+    health = {
+        m.file_path: (
+            m.defect_score if m.defect_score is not None else m.score,
+            max(m.nloc or 1, 1),
+        )
+        for m in metrics
+    }
+    return assemble_zoom_map(view, max_depth=max_depth, focus=focus, health=health)

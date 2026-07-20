@@ -13,7 +13,7 @@ possible without forking.
 
 Concrete backends for the three storage seams. Nothing here is required
 reading for a user of repowise — the seams are documented at
-[`docs/architecture/pluggable-storage.md`](../../../../../../docs/architecture/pluggable-storage.md).
+[`docs/architecture/pluggable-storage.md`](../../../../../../../docs/architecture/pluggable-storage.md).
 
 ## Public API
 

@@ -10,6 +10,7 @@ from pathlib import Path
 from rich.console import Console
 from rich.panel import Panel
 
+from repowise.core.fs_walk import PRUNED_DIRS, walk_repo
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
 
 
@@ -51,39 +52,26 @@ for _lang, _exts in _LANG_MAP.items():
     for _ext in _exts:
         _EXT_TO_LANG[_ext] = _lang
 
-_SKIP_DIRS = {
-    "node_modules",
-    ".venv",
-    "venv",
-    "__pycache__",
-    "dist",
-    "build",
-    ".next",
-    "target",
-    "vendor",
-    ".git",
-    ".hg",
-    "env",
-    ".tox",
-    ".mypy_cache",
-    ".ruff_cache",
-    ".pytest_cache",
-    "site-packages",
-}
+# Shared junk set plus names too ambiguous for the global prune list; a
+# miscounted scan stat is harmless, a wrongly unindexed dir is not.
+_SKIP_DIRS = PRUNED_DIRS | frozenset({"dist", "build", "target", "vendor", "env", "site-packages"})
 
 
 def quick_repo_scan(repo_path: Path) -> RepoScanInfo:
     """Fast pre-scan: count files, detect languages, count git commits.
 
-    No AST parsing — just ``os.walk`` + extension histogram + ``git rev-list --count``.
-    Typically completes in <2s even on large repos.
+    No AST parsing — just the shared pruned walk + extension histogram +
+    ``git rev-list --count``. The walk skips junk dirs, nested git repos
+    (vendored/sibling checkouts must not inflate the stats), and junction
+    cycles. Typically completes in <2s even on large repos.
     """
     info = RepoScanInfo()
     dir_counts: dict[str, int] = {}
 
-    for dirpath, dirnames, filenames in os.walk(repo_path):
-        # Prune heavy/irrelevant directories in-place
-        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS and not d.startswith(".")]
+    for dirpath, dirnames, filenames in walk_repo(repo_path, prune_dirs=_SKIP_DIRS):
+        # Additionally skip all remaining dotdirs (IDE/tool config), like
+        # the pre-fs_walk scan always did.
+        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
 
         rel_dir = os.path.relpath(dirpath, repo_path)
         top_dir = rel_dir.split(os.sep)[0] if rel_dir != "." else "."

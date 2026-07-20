@@ -6,6 +6,8 @@ the ``llm_costs`` table for historical reporting via ``repowise costs``.
 
 from __future__ import annotations
 
+import contextlib
+from collections.abc import Iterator
 from datetime import datetime
 from typing import Any
 
@@ -35,7 +37,7 @@ _PRICING: dict[str, dict[str, float]] = {
     "gpt-5-mini": {"input": 0.25, "output": 2.0},
     # Nano tier — $0.05/$0.40 per 1M. Without these keys the model name falls
     # through to ``_FALLBACK_PRICING`` (Sonnet $3/$15) and overstates a nano
-    # indexing run ~40×.
+    # indexing run ~40x.
     "gpt-5-nano": {"input": 0.05, "output": 0.40},
     "gpt-5.4-nano": {"input": 0.05, "output": 0.40},
     "gpt-4o": {"input": 2.5, "output": 10.0},
@@ -57,18 +59,79 @@ _PRICING: dict[str, dict[str, float]] = {
 
 _FALLBACK_PRICING: dict[str, float] = {"input": 3.0, "output": 15.0}
 
+#: Model-name prefixes that identify a locally-served model (Ollama, LM Studio,
+#: llama.cpp, ...). Local inference has no per-token price, so anything under
+#: these prefixes is valued at $0 — for both indexing spend and agent-savings
+#: estimates. Prefix-based on purpose: a *hosted* ``meta-llama/*`` billed
+#: through OpenRouter must never be mistaken for a free local run.
+_LOCAL_MODEL_PREFIXES: tuple[str, ...] = (
+    "ollama/",
+    "ollama_chat/",
+    "local/",
+    "lmstudio/",
+    "llamacpp/",
+)
+
 # Track which unknown models we've already warned about (per-process)
 _warned_models: set[str] = set()
 
 
+def is_local_model(model: str) -> bool:
+    """True when *model* is served locally (or is the test ``mock`` model).
+
+    Both the cost ledger and the savings estimate price these at $0: no dollars
+    change hands per token. Covers Ollama/LM Studio/llama.cpp model strings and
+    the agent-CLI passthrough prefixes (``codex_cli/``, ``opencode/``).
+    """
+    return (
+        model == "mock"
+        or model.startswith(_LOCAL_MODEL_PREFIXES)
+        or model.startswith(("codex_cli/", "opencode/"))
+    )
+
+
+#: Family-tier fallback, tried before the flat ``_FALLBACK_PRICING`` when a
+#: model id isn't an exact ``_PRICING`` key. A dated or point-variant id — a
+#: session transcript reporting ``claude-opus-4-8-20260514`` or a future
+#: ``claude-opus-4-9`` — carries its *tier* unambiguously in the name prefix.
+#: Matching the tier here stops an Opus coding session from being mispriced at
+#: the Sonnet fallback rate, which would undercount the agent savings it earned
+#: by ~5x. Ordered longest/most-specific prefix first.
+_CLAUDE_FAMILY_PRICING: tuple[tuple[str, dict[str, float]], ...] = (
+    ("claude-opus", {"input": 15.0, "output": 75.0}),
+    ("claude-sonnet", {"input": 3.0, "output": 15.0}),
+    ("claude-haiku", {"input": 0.8, "output": 4.0}),
+)
+
+
+def _family_pricing(model: str) -> dict[str, float] | None:
+    """Tier pricing inferred from a model-name family prefix, or ``None``.
+
+    Covers the Anthropic tiers by prefix and the GPT-5 tiers by the ``nano`` /
+    ``mini`` qualifier, so a variant id the exact table misses still resolves to
+    the right tier instead of the flat Sonnet-priced fallback.
+    """
+    for prefix, pricing in _CLAUDE_FAMILY_PRICING:
+        if model.startswith(prefix):
+            return pricing
+    if model.startswith("gpt-5"):
+        if "nano" in model:
+            return {"input": 0.05, "output": 0.40}
+        if "mini" in model:
+            return {"input": 0.25, "output": 2.0}
+        return {"input": 1.25, "output": 10.0}
+    return None
+
+
 def _get_pricing(model: str) -> dict[str, float]:
     """Return pricing for *model*, falling back and warning if unknown."""
-    if model.startswith("codex_cli/"):
-        return {"input": 0.0, "output": 0.0}
-    if model.startswith("opencode/"):
+    if is_local_model(model):
         return {"input": 0.0, "output": 0.0}
     if model in _PRICING:
         return _PRICING[model]
+    family = _family_pricing(model)
+    if family is not None:
+        return family
     if model not in _warned_models:
         log.warning("cost_tracker.unknown_model", model=model, fallback=_FALLBACK_PRICING)
         _warned_models.add(model)
@@ -128,6 +191,11 @@ class CostTracker:
         self._buffered = buffered
         # Pending rows when buffered; flushed in one transaction by ``flush``.
         self._pending: list[dict[str, Any]] = []
+        # Operation label attached to rows recorded right now. Providers read
+        # this at ``record()`` time instead of hardcoding ``"doc_generation"``,
+        # so a caller can scope a distinct phase (e.g. decision extraction) via
+        # ``record_as`` and have it show up as its own bucket on the Costs page.
+        self._operation = "doc_generation"
 
     # ------------------------------------------------------------------
     # Properties
@@ -142,6 +210,31 @@ class CostTracker:
     def session_tokens(self) -> int:
         """Cumulative tokens (input + output) for this tracker instance."""
         return self._session_tokens
+
+    @property
+    def operation(self) -> str:
+        """Operation label rows are currently recorded under.
+
+        Defaults to ``"doc_generation"``; a caller narrows it for a bounded
+        window with :meth:`record_as`.
+        """
+        return self._operation
+
+    @contextlib.contextmanager
+    def record_as(self, operation: str) -> Iterator[None]:
+        """Label every LLM call recorded inside this block as *operation*.
+
+        Restores the previous label on exit. Relies on the pipeline running
+        distinct LLM phases sequentially (decision extraction then page
+        regeneration, not interleaved on one tracker), so the label read at
+        ``record()`` time is the intended one.
+        """
+        prev = self._operation
+        self._operation = operation
+        try:
+            yield
+        finally:
+            self._operation = prev
 
     # ------------------------------------------------------------------
     # Recording

@@ -22,7 +22,8 @@ import { AiPromptButton, AiPromptModal, buildCommitAiPrompt } from "@repowise-de
 import { CredibilityInfoButton } from "@repowise-dev/ui/commits/credibility-strip";
 import { CodeEvolutionChart } from "@repowise-dev/ui/commits/code-evolution-chart";
 import { AgentTrendStrip } from "@repowise-dev/ui/commits/agent-trend-strip";
-import { RiskDistributionChart } from "@repowise-dev/ui/git/risk-distribution-chart";
+import { CommitRiskHistogram } from "@repowise-dev/ui/commits/commit-risk-histogram";
+import { CommitRiskScatter } from "@repowise-dev/ui/commits/commit-risk-scatter";
 import { CollapsibleSection } from "@repowise-dev/ui/shared/collapsible-section";
 import {
   getAgentTrend,
@@ -30,11 +31,13 @@ import {
   getCommitEvolution,
   getCommitStats,
   getCommitsPage,
-  getHotspots,
 } from "@/lib/api/git";
 import type { CommitResponse, Paginated } from "@/lib/api/types";
 
 const PAGE_SIZE = 50;
+// The scatter's own window. Capped at the endpoint's `limit` ceiling; a few
+// hundred dots is also about where the plot stops being readable.
+const SCATTER_SAMPLE = 200;
 
 export function CommitsExplorer({ repoId }: { repoId: string }) {
   const [sort, setSort] = useState<CommitSort>("risk");
@@ -73,11 +76,12 @@ export function CommitsExplorer({ repoId }: { repoId: string }) {
     { revalidateOnFocus: false },
   );
 
-  // Repo-relative risk distribution — turns the credibility strip's
-  // "relative to this repo" claim into a picture.
-  const { data: hotspots } = useSWR(
-    `commits-risk-dist:${repoId}`,
-    () => getHotspots(repoId, 25),
+  // The scatter plots its own recency sample rather than `list`: the feed
+  // defaults to risk-sorted, so reusing it would draw only the top tercile and
+  // the "here's the whole spread" reading would be a lie.
+  const { data: recent } = useSWR(
+    `commits-recent:${repoId}`,
+    () => getCommitsPage(repoId, { sort: "date", limit: SCATTER_SAMPLE }),
     { revalidateOnFocus: false },
   );
 
@@ -90,6 +94,9 @@ export function CommitsExplorer({ repoId }: { repoId: string }) {
   const list = data?.items ?? [];
   const total = stats?.total_commits ?? data?.total ?? list.length;
   const hasMore = data?.has_more ?? false;
+  const recentCommits = recent?.items ?? [];
+  // Older indexes predate the histogram aggregate, so treat it as optional.
+  const hasHistogram = (stats?.risk_histogram?.length ?? 0) > 0;
 
   // Prefer the repo-wide aggregates; fall back to the loaded page only until
   // the stats request resolves so the cards aren't blank on first paint.
@@ -152,17 +159,45 @@ export function CommitsExplorer({ repoId }: { repoId: string }) {
         />
       </div>
 
-      {/* Secondary signals — smaller than the headline. Risk distribution is
-          collapsible (it's a demoted detail); the agent-trend strip is a thin
-          full-width band beneath it. */}
-      {hotspots && hotspots.length > 0 && (
+      {/* Secondary signals — smaller than the headline. Both panels are about
+          commits (the page's subject); the file-level hotspot view lives on the
+          Risk tab, where it isn't a duplicate. Collapsible because this is a
+          demoted detail; the agent-trend strip is a thin band beneath it. */}
+      {(hasHistogram || recentCommits.length > 0) && (
         <CollapsibleSection
-          title="Risk distribution across the riskiest files"
-          hint={`${Math.min(12, hotspots.length)} of ${hotspots.length}`}
+          title="How risky is a typical commit here?"
+          hint={`${total.toLocaleString()} scored`}
           defaultOpen
         >
-          <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-4">
-            <RiskDistributionChart hotspots={hotspots} maxBars={12} />
+          <div className="grid gap-3 lg:grid-cols-2">
+            {hasHistogram && stats && (
+              <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-4">
+                <h4 className="text-xs font-medium text-[var(--color-text-secondary)]">
+                  Score distribution
+                </h4>
+                <p className="mb-2 text-xs text-[var(--color-text-tertiary)]">
+                  Every scored commit in the repo. The dashed lines are the
+                  tercile cuts behind each row&apos;s priority pill.
+                </p>
+                <CommitRiskHistogram stats={stats} />
+              </div>
+            )}
+            {recentCommits.length > 0 && (
+              <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-4">
+                <h4 className="text-xs font-medium text-[var(--color-text-secondary)]">
+                  Size vs diffusion
+                </h4>
+                <p className="mb-2 text-xs text-[var(--color-text-tertiary)]">
+                  The {recentCommits.length.toLocaleString()} most recent
+                  commits. Big and scattered is what the model penalises — click
+                  a dot to open it.
+                </p>
+                <CommitRiskScatter
+                  commits={recentCommits}
+                  onSelect={(sha) => void setSelectedSha(sha)}
+                />
+              </div>
+            )}
           </div>
         </CollapsibleSection>
       )}

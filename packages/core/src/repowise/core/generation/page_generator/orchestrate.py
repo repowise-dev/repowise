@@ -307,6 +307,19 @@ class _GenerationRun:
                 for l in self.kg_ctx.get_layers()
                 if len([n for n in l.get("nodeIds", []) if n.startswith("file:")]) >= 3
             )
+        # Level-8 onboarding pages (the non-promoted slots) also emit, and
+        # were previously omitted here, which made the progress total read
+        # lower than the pages actually generated (issue #922: "43 of 41").
+        # Counted in full like every other category above; the completed-id
+        # subtraction below nets out any already-generated slot on resume.
+        # This is still an upper bound: a slot may gate-skip at generation
+        # time (build_context -> None), so the caller reconciles the bar to
+        # the real completed count when generation finishes.
+        onboarding_page_count = 0
+        if getattr(self.config, "enable_onboarding", True):
+            from .. import onboarding as _onboarding
+
+            onboarding_page_count = len(_onboarding.iter_specs())
         estimated_total = (
             counts["api_contract"]
             + counts["symbol_spotlight"]
@@ -317,6 +330,7 @@ class _GenerationRun:
             + int(self.selection.emit_repo_overview)
             + int(self.selection.emit_arch_diagram)
             + counts["infra_page"]
+            + onboarding_page_count
             # Deterministic coverage tail also produces (zero-LLM) pages.
             + len(getattr(self.selection, "deterministic_tail_paths", []))
         )
@@ -424,7 +438,15 @@ class _GenerationRun:
                             self.on_page_ready(result)
                         except Exception as exc:  # noqa: BLE001
                             log.debug("on_page_ready.failed", error=str(exc))
-                    if self.vector_store is not None:
+                    # A page reused verbatim from the prior run already has an
+                    # identical vector in any store that survives across runs;
+                    # re-embedding it re-bills the embedder for every unchanged
+                    # page on every update. Ephemeral stores start empty each
+                    # run and still need it.
+                    if self.vector_store is not None and not (
+                        result.metadata.get("reused_from_prior_run")
+                        and getattr(self.vector_store, "persists_across_runs", False)
+                    ):
                         embed_items.append(_embed_item(result))
                 return result
             except Exception as exc:
@@ -542,9 +564,34 @@ class _GenerationRun:
         try:
             from ..interlinking import attach_wiki_links_and_backlinks
 
-            attach_wiki_links_and_backlinks(all_pages, self.parsed_files)
+            attach_wiki_links_and_backlinks(
+                all_pages,
+                self.parsed_files,
+                # On incremental updates only the affected pages are in
+                # all_pages; the persisted ids keep resolution repo-wide.
+                prior_page_ids=list(self.gen._prior_pages or {}),
+            )
         except Exception as exc:
             log.debug("interlinking.failed", error=str(exc))
+
+        # Post-generation: graph-derived related pages. Runs AFTER
+        # interlinking so prose-derived wiki_links win dedup and related
+        # entries only fill the gaps.
+        try:
+            from ..related_pages import attach_related_pages
+
+            attach_related_pages(
+                all_pages,
+                import_edges=self._file_import_edges(),
+                git_meta_map=self.git_meta_map,
+                module_groups=self.sel_module_groups,
+                pagerank=self.pagerank,
+                # On incremental updates only the affected pages are in
+                # all_pages; the persisted ids keep resolution repo-wide.
+                prior_page_ids=list(self.gen._prior_pages or {}),
+            )
+        except Exception as exc:
+            log.debug("related_pages.failed", error=str(exc))
 
         # Post-generation: link KG tour steps to wiki page IDs.
         if self.kg_ctx.available and self.repo_path:

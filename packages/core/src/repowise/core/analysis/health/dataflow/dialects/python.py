@@ -88,6 +88,12 @@ class PythonDefUseDialect(BaseDefUseDialect):
                 self._process(node.child_by_field_name("condition"), defs, uses)
         elif node.type in lmap.branch_kinds:
             self._process(node.child_by_field_name("condition"), defs, uses)
+        elif node.type in lmap.with_kinds:
+            clause = next(
+                (child for child in node.named_children if child.type == "with_clause"),
+                None,
+            )
+            self._process(clause, defs, uses)
         else:
             self._process(node, defs, uses)
 

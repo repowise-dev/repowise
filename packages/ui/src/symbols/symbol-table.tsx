@@ -3,6 +3,7 @@
 import { type ReactNode } from "react";
 import {
   BookOpen,
+  Bug,
   Flame,
   GitBranch,
   Globe2,
@@ -41,6 +42,9 @@ export interface SymbolFilters {
   visibility: string;
   inHotFiles: boolean;
   inEntryPoints: boolean;
+  /** Only symbols a counted bug fix landed in. Symbol-level, unlike the two
+   *  file-level facets above. */
+  bugFixed: boolean;
   sort: SymbolSortKey;
 }
 
@@ -118,6 +122,16 @@ function SignalChips({ sym }: { sym: CodeSymbol }) {
         >
           <Flame className="h-2.5 w-2.5" />
           hot
+        </span>
+      )}
+      {(sym.fix_count ?? 0) > 0 && (
+        <span
+          className="inline-flex items-center gap-0.5 rounded bg-[var(--color-error)]/15 px-1 py-0.5 text-[10px] font-medium text-[var(--color-error)]"
+          title={`${sym.fix_count} bug fix(es) landed here in the last 6 months (approximate: matched by line range)`}
+        >
+          <Bug className="h-2.5 w-2.5" />
+          {sym.fix_count} fix
+          {sym.fix_count === 1 ? "" : "es"}
         </span>
       )}
       {complex && (
@@ -245,6 +259,12 @@ export function SymbolTable({
           onClick={() => patch({ inEntryPoints: !filters.inEntryPoints })}
           label="Entry points"
           icon={<Rocket className="h-3 w-3" />}
+        />
+        <FacetToggle
+          active={filters.bugFixed}
+          onClick={() => patch({ bugFixed: !filters.bugFixed })}
+          label="Bug-fixed"
+          icon={<Bug className="h-3 w-3" />}
         />
         <Select value={filters.sort} onValueChange={(v) => patch({ sort: v as SymbolSortKey })}>
           <SelectTrigger className="w-40">

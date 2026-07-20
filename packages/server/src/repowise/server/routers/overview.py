@@ -214,6 +214,17 @@ async def overview_summary(
     total_pages = (
         await session.scalar(select(func.count(Page.id)).where(Page.repository_id == repo_id)) or 0
     )
+    # Template-provider pages are the deterministic coverage tail (zero LLM);
+    # everything else came out of a model. Same discriminator the page schema
+    # uses for the "Auto" badge.
+    auto_pages = (
+        await session.scalar(
+            select(func.count(Page.id)).where(
+                Page.repository_id == repo_id, Page.provider_name == "template"
+            )
+        )
+        or 0
+    )
     fresh_pages = (
         await session.scalar(
             select(func.count(Page.id)).where(
@@ -406,6 +417,8 @@ async def overview_summary(
             "file_count": file_count,
             "symbol_count": symbol_count,
             "entry_point_count": entry_point_count,
+            "doc_page_count": total_pages,
+            "doc_auto_page_count": auto_pages,
             "doc_coverage_pct": doc_coverage_pct,
             "freshness_score": freshness_score,
             "dead_export_count": dead_export_count,

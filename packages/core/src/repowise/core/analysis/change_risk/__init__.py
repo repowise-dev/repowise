@@ -12,21 +12,36 @@ from __future__ import annotations
 from .baseline import baseline_scores
 from .features import (
     ChangeFeatures,
+    change_features_from_stored,
     extract_commit_features,
     extract_range_features,
     features_from_file_changes,
 )
 from .model import ChangeRisk, RiskDriver, score_change
-from .normalize import RiskNormalizer
+from .normalize import RiskNormalizer, review_priority_classification
+from .service import (
+    ChangeRiskResult,
+    change_risk_payload,
+    normalize_extensions,
+    riskignore_patterns,
+    score_live_change,
+)
 
 __all__ = [
     "ChangeFeatures",
     "ChangeRisk",
+    "ChangeRiskResult",
     "RiskDriver",
     "RiskNormalizer",
     "baseline_scores",
+    "change_features_from_stored",
+    "change_risk_payload",
     "extract_commit_features",
     "extract_range_features",
     "features_from_file_changes",
+    "normalize_extensions",
+    "review_priority_classification",
+    "riskignore_patterns",
     "score_change",
+    "score_live_change",
 ]

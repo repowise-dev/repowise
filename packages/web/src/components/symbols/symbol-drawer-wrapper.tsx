@@ -86,6 +86,16 @@ export function SymbolDrawerWrapper({ symbol, repoId, onClose }: Props) {
       docstring: symbol.docstring,
       importance_score: symbol.importance_score ?? null,
       complexity_estimate: symbol.complexity_estimate,
+      // The file rollup carries the whole symbol_id -> fix-count map, so this
+      // is a lookup on a response the drawer already fetched, no extra call.
+      // Keyed on the row's own symbol_id rather than a rebuilt
+      // `${file_path}::${name}`: some extractors mint ids from the QUALIFIED
+      // name, and those symbols would silently never match.
+      // A symbol with no fixes is simply absent from the map, and the body
+      // renders the tile only for a positive count, so null covers both "no
+      // rollup yet" and "never fixed here".
+      fix_count: git?.fix_symbol_counts?.[symbol.symbol_id] ?? null,
+      fix_last_at: git?.last_fix_at ?? null,
       graph: {
         in_degree: metrics?.in_degree ?? callData?.caller_count ?? 0,
         out_degree: metrics?.out_degree ?? callData?.callee_count ?? 0,

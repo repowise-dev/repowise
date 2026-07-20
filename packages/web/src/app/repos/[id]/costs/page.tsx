@@ -15,6 +15,8 @@ import {
   DistillSavingsCard,
   ProviderComparison,
   OperationBreakdown,
+  RoiCard,
+  SavingsTrendChart,
 } from "@repowise-dev/ui/costs";
 import { listCosts, getCostSummary, getDistillSavings } from "@/lib/api/costs";
 import type { CostGroup, CostSummary, DistillSavings } from "@/lib/api/costs";
@@ -65,6 +67,29 @@ export default function CostsPage() {
       {/* Hero: the honest results surface — all tokens & dollars saved for the
           coding agent, across distill (CLI + hook) and MCP tool responses. */}
       <DistillSavingsCard data={distillSavings} />
+
+      {/* ROI: ties the saved dollars above to the generation spend below, so the
+          reader doesn't have to do the division themselves. */}
+      {distillSavings?.available && summary ? (
+        <RoiCard
+          savedUsd={distillSavings.estimated_usd_saved}
+          spentUsd={summary.total_cost_usd}
+          savedTokens={distillSavings.saved_tokens + distillSavings.mcp_tokens}
+        />
+      ) : null}
+
+      {/* Savings over time — renders the per_day series the page already
+          fetches (total agent tokens saved per day, distill + MCP). */}
+      {distillSavings?.available && (distillSavings.per_day?.length ?? 0) > 0 ? (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">Agent tokens saved by day</CardTitle>
+          </CardHeader>
+          <CardContent className="pt-0">
+            <SavingsTrendChart groups={distillSavings.per_day} />
+          </CardContent>
+        </Card>
+      ) : null}
 
       <Tabs value={tab} onValueChange={setTab} className="w-full">
         <ScrollableTabsList>

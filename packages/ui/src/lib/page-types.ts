@@ -42,6 +42,39 @@ export function getPageTypeLabel(pageType: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Deterministic ("auto") pages
+// ---------------------------------------------------------------------------
+//
+// The Phase G coverage tail gives every parsed source file a template-generated
+// page (zero LLM) so the whole tree is browsable and retrievable. These are
+// factual but terse; the UI badges them "Auto" and the docs tree groups them so
+// human browsing of the AI-written pages stays clean.
+
+/** Fields any surface needs to recognise a deterministic page. All optional so
+ *  older payloads (DocPage / FileWikiPageRef / SearchResultResponse) type-check. */
+export interface DeterministicMarker {
+  is_deterministic?: boolean;
+  doc_tier?: number | null;
+  provider_name?: string;
+}
+
+/**
+ * True when a page is a deterministic (auto, no-LLM) page. Prefers the flat
+ * `is_deterministic` flag; falls back to `doc_tier >= 2` or the `template`
+ * provider for rows/payloads that only carry those.
+ */
+export function isDeterministicPage(page: DeterministicMarker | null | undefined): boolean {
+  if (!page) return false;
+  if (page.is_deterministic) return true;
+  if (typeof page.doc_tier === "number" && page.doc_tier >= 2) return true;
+  return page.provider_name === "template";
+}
+
+export const DETERMINISTIC_BADGE_LABEL = "Auto";
+export const DETERMINISTIC_BADGE_TITLE =
+  "Auto-documented from code structure (no AI). Factual but terse.";
+
+// ---------------------------------------------------------------------------
 // Onboarding collection
 // ---------------------------------------------------------------------------
 //

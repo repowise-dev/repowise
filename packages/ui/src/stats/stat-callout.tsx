@@ -29,13 +29,21 @@ export interface StatCalloutProps {
   hint?: string;
   icon?: React.ReactNode;
   tone?: CalloutTone;
+  /** Wraps the callout in a link to the surface that explains the figure. */
+  href?: string;
+  LinkComponent?: React.ElementType<{
+    href: string;
+    className?: string;
+    children: React.ReactNode;
+  }>;
   className?: string;
 }
 
 /**
- * A large, single-figure callout card — the building block for the punchy
- * "headline" stats (AI authorship %, project age, defect-validation lift, …).
- * Bigger and more emphatic than `StatTile`, tuned for the showcase tabs.
+ * A single-figure callout card — the building block for the punchy "headline"
+ * stats (AI authorship %, project age, defect-validation lift, …). Carries a
+ * longer `sub` line than `MetricCard` but shares its type scale, so the stats
+ * tabs read at the same weight as every other page.
  */
 export function StatCallout({
   label,
@@ -44,14 +52,17 @@ export function StatCallout({
   hint,
   icon,
   tone = "default",
+  href,
+  LinkComponent = "a",
   className,
 }: StatCalloutProps) {
-  return (
+  const card = (
     <div
       title={hint}
       className={cn(
-        "rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-4",
+        "h-full rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-4",
         hint && "cursor-help",
+        href && "transition-colors hover:border-[var(--color-border-hover)]",
         className,
       )}
     >
@@ -63,7 +74,7 @@ export function StatCallout({
       </div>
       <p
         className={cn(
-          "mt-1.5 text-3xl font-bold leading-none tabular-nums",
+          "mt-1.5 text-2xl font-bold leading-none tabular-nums",
           TONE_VALUE[tone],
         )}
       >
@@ -73,5 +84,14 @@ export function StatCallout({
         <p className="mt-2 text-xs leading-snug text-[var(--color-text-secondary)]">{sub}</p>
       )}
     </div>
+  );
+
+  if (!href) return card;
+
+  const Link = LinkComponent;
+  return (
+    <Link href={href} className="block h-full no-underline">
+      {card}
+    </Link>
   );
 }

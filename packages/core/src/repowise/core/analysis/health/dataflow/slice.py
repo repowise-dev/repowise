@@ -110,6 +110,18 @@ def find_extractions(analysis: FunctionAnalysis, lmap: LanguageNodeMap) -> list[
         stmts = block.named_children
         n = len(stmts)
         is_body = block.id == body_container.id
+        # One subtree walk per statement, then O(1) metrics per span via
+        # prefix sums. _span_metrics processes each span statement's subtree
+        # independently, so a span's decision count is the sum over its
+        # statements and its jump bit the OR — walking each statement once
+        # replaces the per-span re-walks that made this loop O(n^2 * subtree).
+        if n >= _MIN_STMTS:
+            dec_prefix = [0]
+            jump_prefix = [0]
+            for st in stmts:
+                d, jmp = _span_metrics([st], decision_kinds, jump_kinds, scope_kinds)
+                dec_prefix.append(dec_prefix[-1] + d)
+                jump_prefix.append(jump_prefix[-1] + (1 if jmp else 0))
         for i in range(n):
             for j in range(i, n):
                 evaluated += 1
@@ -127,10 +139,11 @@ def find_extractions(analysis: FunctionAnalysis, lmap: LanguageNodeMap) -> list[
                     and stmts[j].type not in tail_stmt_kinds
                 ):
                     continue
-                span = stmts[i : j + 1]
-                decisions, has_jump = _span_metrics(span, decision_kinds, jump_kinds, scope_kinds)
+                decisions = dec_prefix[j + 1] - dec_prefix[i]
+                has_jump = jump_prefix[j + 1] > jump_prefix[i]
                 if has_jump or decisions < _MIN_CCN_REMOVED:
                     continue
+                span = stmts[i : j + 1]
                 slice_nloc = sum(st.end_point[0] - st.start_point[0] + 1 for st in span)
                 if slice_nloc < _MIN_SLICE_NLOC:
                     continue

@@ -181,3 +181,65 @@ def test_deterministic_and_stable_order():
     second = [s.target_symbol for s in _detect(g, "c.py")]
     assert first == second
     assert len(first) == 2
+
+
+# -- methods-by-file index equivalence -------------------------------------------
+#
+# The engine precomputes graph_signals.build_methods_by_file once per pass; it
+# must agree with the detector's own per-file derivation (defines edges with a
+# prefix-scan fallback) for every file, and the detector must produce the same
+# suggestions whichever path supplies the methods.
+
+
+def _index_fixture_graph() -> nx.DiGraph:
+    g = _envy_graph()
+    # A fallback-only file: method symbol nodes with NO defines edges.
+    g.add_node("legacy.py", node_type="file")
+    g.add_node(
+        "legacy.py::L.only",
+        node_type="symbol",
+        kind="method",
+        name="only",
+        parent_name="L",
+        file_path="legacy.py",
+    )
+    # A methodless file and a non-method symbol that must never appear.
+    g.add_node("empty.py", node_type="file")
+    g.add_node("t.py::free_fn", node_type="symbol", kind="function", name="free_fn")
+    return g
+
+
+def test_methods_index_matches_per_file_derivation():
+    from repowise.core.analysis.health.refactoring.graph_signals import build_methods_by_file
+
+    g = _index_fixture_graph()
+    index = build_methods_by_file(g)
+    det = MoveMethodDetector()
+    files = [n for n, d in g.nodes(data=True) if d.get("node_type") == "file"]
+    assert files
+    for f in files:
+        assert list(index.get(f, ())) == det._methods_in_file(g, f)
+    # The fallback-only file is served by the prefix scan.
+    assert index["legacy.py"] == ("legacy.py::L.only",)
+    assert "empty.py" not in index
+
+
+def test_detector_equal_with_and_without_provided_index():
+    from repowise.core.analysis.health.refactoring.graph_signals import build_methods_by_file
+
+    g = _envy_graph()
+    index = build_methods_by_file(g)
+    for f in ("c.py", "t.py"):
+        derived = MoveMethodDetector().detect(_ctx(g, f))
+        provided = MoveMethodDetector().detect(
+            RefactoringContext(
+                file_path=f,
+                language="python",
+                nloc=40,
+                graph=g,
+                file_methods=index.get(f, ()),
+            )
+        )
+        assert [(s.target_symbol, s.plan) for s in provided] == [
+            (s.target_symbol, s.plan) for s in derived
+        ]

@@ -24,6 +24,10 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import structlog
+
+logger = structlog.get_logger(__name__)
+
 LogFn = Callable[[str], None]
 
 
@@ -64,7 +68,10 @@ def build_repo_graph(
     Returns ``(parsed_files, source_map, graph_builder, repo_structure,
     file_count)``.
     """
-    from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder, compute_content_hash
+    import os
+    from concurrent.futures import ThreadPoolExecutor
+
+    from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
 
     log = log or _noop_log
 
@@ -74,20 +81,28 @@ def build_repo_graph(
         include_submodules=include_submodules,
         include_nested_repos=include_nested_repos,
     )
-    file_infos = list(traverser.traverse())
-    repo_structure = traverser.get_repo_structure()
+    # Parallel stat + header sniffing, mirroring the init ingestion phase.
+    # A serial traverse() pays per-file I/O latency sequentially; on a cold
+    # OS file cache that was ~50s of every PowerToys-scale update. Passing
+    # the file_infos into get_repo_structure also avoids its re-walk.
+    all_paths = list(traverser._walk())
+    io_workers = min(32, max(4, (os.cpu_count() or 4) * 2))
+    with ThreadPoolExecutor(max_workers=io_workers) as io_pool:
+        maybe_infos = list(io_pool.map(traverser._build_file_info, all_paths))
+    file_infos = [fi for fi in maybe_infos if fi is not None]
+    repo_structure = traverser.get_repo_structure(file_infos)
 
-    # Content-hash parse cache: an incremental update re-ingests the whole
-    # repo, but only the changed files actually need a tree-sitter parse.
-    # Best-effort — any cache failure falls back to a full parse.
-    parse_cache = None
-    try:
-        from repowise.core.ingestion.parse_cache import ParseCache
+    # Thread-pool source reads + content-hash parse cache split, shared with
+    # the init parse phase: only changed files need a tree-sitter parse.
+    # Cache failures degrade to all-miss (full parse), as before.
+    from repowise.core.pipeline.phases.ingestion import (
+        _cache_parsed,
+        _read_sources,
+        _split_cached,
+    )
 
-        parse_cache = ParseCache(Path(repo_path) / ".repowise")
-        parse_cache.load()
-    except Exception:
-        parse_cache = None
+    fi_and_bytes = _read_sources(file_infos, None)
+    parse_cache, cached_hits, to_parse = _split_cached(Path(repo_path), fi_and_bytes, None)
 
     parser: Any = None  # constructed lazily — every-file-cached updates skip query compilation
     parsed_files: list = []
@@ -100,25 +115,46 @@ def build_repo_graph(
         include_nested_repos=include_nested_repos,
     )
 
-    skipped = 0
-    for fi in file_infos:
+    # Parse the misses in process and serially: on the update path they are
+    # change-sized. (Ceiling: a wiped/stale cache re-parses everything on one
+    # core; routing large miss counts through init's process pool would lift
+    # it, at the cost of Windows spawn overhead on every routine update.)
+    merged: dict[int, Any] = dict(cached_hits)
+    for idx, (fi, source), content_hash in to_parse:
         try:
-            source = Path(fi.abs_path).read_bytes()
-            content_hash = compute_content_hash(source)
-            parsed = parse_cache.get(fi, content_hash) if parse_cache is not None else None
-            if parsed is None:
-                if parser is None:
-                    parser = ASTParser()
-                parsed = parser.parse_file(fi, source)
-                if parse_cache is not None:
-                    parse_cache.put(parsed, content_hash)
+            if parser is None:
+                parser = ASTParser()
+            parsed = parser.parse_file(fi, source)
         except Exception:
+            continue
+        merged[idx] = parsed
+        if content_hash:
+            _cache_parsed(parse_cache, parsed, content_hash)
+
+    skipped = len(file_infos) - len(fi_and_bytes)  # unreadable files
+    for idx, (fi, source) in enumerate(fi_and_bytes):
+        parsed = merged.get(idx)
+        if parsed is None:
             skipped += 1
             continue
         parsed_files.append(parsed)
         if collect_sources:
             source_map[fi.path] = source
         graph_builder.add_file(parsed)
+
+    # TS/JS path aliases (``@/components/...``) resolve only when the
+    # tsconfig resolver is attached before build(); without it the alias
+    # targets read as external nodes and every aliased file looks
+    # unreachable to the dead-code analyzer (#648 — this rebuild path was
+    # missed when the CLI commands were wired).
+    from repowise.core.ingestion import wire_tsconfig_resolver
+
+    wire_tsconfig_resolver(
+        graph_builder,
+        repo_path,
+        include_submodules=include_submodules,
+        include_nested_repos=include_nested_repos,
+    )
     graph_builder.build()
     if parse_cache is not None:
         parse_cache.save()
@@ -145,7 +181,9 @@ def build_repo_graph(
         from repowise.core.ingestion.dynamic_hints import HintRegistry
 
         dynamic_edges = HintRegistry().extract_all(
-            Path(repo_path), dotnet_index=graph_builder.dotnet_index
+            Path(repo_path),
+            dotnet_index=graph_builder.dotnet_index,
+            file_paths=[fi.path for fi in file_infos],
         )
         graph_builder.add_dynamic_edges(dynamic_edges)
         if dynamic_edges:
@@ -310,7 +348,11 @@ def run_partial_analysis(
     try:
         from repowise.core.analysis.dead_code import DeadCodeAnalyzer
 
-        _analyzer_partial = DeadCodeAnalyzer(graph_builder.graph(), git_meta_map)
+        # parsed_files enables the source-scan rescues (dynamic markers,
+        # bundler aliases, export aliases) on the update path, matching init.
+        _analyzer_partial = DeadCodeAnalyzer(
+            graph_builder.graph(), git_meta_map, parsed_files=graph_builder._parsed_files
+        )
         _changed_paths_partial = [fd.path for fd in file_diffs]
         dead_code_report = _analyzer_partial.analyze_partial(_changed_paths_partial)
         if dead_code_report.total_findings:
@@ -503,6 +545,7 @@ async def persist_incremental_commits(session: Any, repo_id: str, repo_path: Any
     from repowise.core.ingestion.git_indexer import GitIndexer
     from repowise.core.persistence.crud import (
         get_latest_commit_committed_at,
+        update_repo_git_totals,
         upsert_git_commits_bulk,
     )
     from repowise.core.repo_config import load_repo_config
@@ -512,6 +555,10 @@ async def persist_incremental_commits(session: Any, repo_id: str, repo_path: Any
         repo_path,
         commit_limit=cfg.get("commit_limit"),
         follow_renames=cfg.get("follow_renames", False),
+        # The fix-event capture walks the tracked-file set itself, so without
+        # the repo's excludes an update would store events for files a full
+        # index never sees, and they would never age out.
+        exclude_patterns=cfg.get("exclude_patterns"),
     )
     newest = await get_latest_commit_committed_at(session, repo_id)
     since_ts: int | None = None
@@ -525,6 +572,268 @@ async def persist_incremental_commits(session: Any, repo_id: str, repo_path: Any
     rows = await asyncio.to_thread(indexer.capture_new_commit_rows, since_ts=since_ts)
     if rows:
         await upsert_git_commits_bulk(session, repo_id, rows)
+
+    await reconcile_commit_experience(session, repo_id, indexer)
+
+    # Refresh the repo-level whole-history totals so age / commit / contributor
+    # counts keep growing between full re-indexes (#730). Cheap git calls, and
+    # cheap to run every update since they don't touch the bounded sample.
+    totals = await asyncio.to_thread(indexer.capture_repo_totals)
+    await update_repo_git_totals(
+        session,
+        repo_id,
+        total_commit_count=totals.total_commit_count,
+        first_commit_at=totals.first_commit_at,
+        total_contributor_count=totals.total_contributor_count,
+        first_commit_author=totals.first_commit_author,
+    )
+
+    await persist_incremental_fix_events(session, repo_id, indexer)
+
+
+async def reconcile_commit_experience(session: Any, repo_id: str, indexer: Any) -> None:
+    """Re-tally author experience across the whole commit table and re-score.
+
+    ``build_commit_rows`` can only count the commits it is handed. On a full
+    index that is the entire window, so the number lands right; on an update it
+    is just the commits newer than the last one persisted, so every author's
+    count restarts at zero and an established author's new commits look like a
+    first-timer's. That is not only a cosmetic badge: ``author_experience`` is a
+    change-risk feature, so the stored ``change_risk_score`` inherits the error
+    and the review queue ranks on it.
+
+    Rather than seed the batch tally, this re-derives experience over the full
+    persisted history after the append. The batch-local pass then has no lasting
+    say, so there is no second code path to keep correct, and rows written by
+    earlier (wrong) updates are repaired on the next one instead of waiting for
+    a re-index.
+
+    Two things have to happen together. Unreachable commits are dropped first:
+    an update run on a feature branch persists that branch's shas, and once it
+    is squash-merged they survive as orphans that no full index would produce
+    and inflate every author's count. Then each surviving commit is re-scored
+    from its stored features, because a corrected experience that leaves the old
+    score in place would just move the inconsistency somewhere less visible.
+
+    Bounded by the commit count and git-free apart from one ``rev-list``, and
+    failure-isolated like the rest of the git-phase refreshes.
+    """
+    from repowise.core.persistence.crud import (
+        delete_git_commits_by_sha,
+        get_commit_experience_inputs,
+        upsert_git_commits_bulk,
+    )
+
+    try:
+        stored = await get_commit_experience_inputs(session, repo_id)
+        if not stored:
+            return
+
+        reachable = await asyncio.to_thread(indexer.list_reachable_shas)
+        if reachable is not None:
+            orphans = [r["sha"] for r in stored if r["sha"] not in reachable]
+            if orphans:
+                await delete_git_commits_by_sha(session, repo_id, orphans)
+                stored = [r for r in stored if r["sha"] in reachable]
+                logger.info("commit_orphans_pruned", repo_id=repo_id, count=len(orphans))
+
+        updates = _recompute_commit_experience(stored)
+        if updates:
+            await upsert_git_commits_bulk(session, repo_id, updates)
+            logger.info("commit_experience_reconciled", repo_id=repo_id, count=len(updates))
+    except Exception as exc:
+        logger.debug("commit_experience_reconcile_failed", error=str(exc))
+
+
+def _committed_ts(committed_at: Any) -> float:
+    """``committed_at`` as a sortable epoch, or 0 when the row has no date.
+
+    SQLite drops tzinfo, so a naive read has to be reinterpreted as UTC — the
+    column is stored tz-aware. Doing that first also keeps ``timestamp()`` off
+    the platform's local-time conversion, which fails outright on Windows for
+    pre-epoch dates.
+    """
+    if committed_at is None:
+        return 0.0
+    from datetime import UTC
+
+    if committed_at.tzinfo is None:
+        committed_at = committed_at.replace(tzinfo=UTC)
+    return committed_at.timestamp()
+
+
+def _recompute_commit_experience(stored: list[dict]) -> list[dict]:
+    """Rows whose experience or risk moved, as partial upserts keyed by sha.
+
+    Pure, so the ordering and re-scoring can be tested without a database.
+    Emits only changed rows: on a settled index that is a handful, which keeps a
+    whole-table read from turning into a whole-table write every update.
+    """
+    from repowise.core.analysis.change_risk import change_features_from_stored, score_change
+    from repowise.core.ingestion.git_indexer.commit_rows import author_experience_by_sha
+
+    exp_by_sha = author_experience_by_sha(
+        [
+            {
+                "sha": r["sha"],
+                "author_name": r["author_name"] or "",
+                "author_email": r["author_email"] or "",
+                # committed_at is the only ordering key the table stores; rows
+                # without one sort oldest, which is where an unknown date least
+                # disturbs everyone else's running count.
+                "ts": _committed_ts(r["committed_at"]),
+            }
+            for r in stored
+        ]
+    )
+
+    updates: list[dict] = []
+    for r in stored:
+        exp = exp_by_sha.get(r["sha"], 0)
+        risk = score_change(
+            change_features_from_stored(
+                la=r["lines_added"],
+                ld=r["lines_deleted"],
+                nf=r["files_changed"],
+                nd=r["dirs_changed"],
+                ns=r["subsystems_changed"],
+                entropy=r["entropy"],
+                exp=exp,
+                is_fix=r["is_fix"],
+                author=r["author_name"],
+                subject=r["subject"],
+                ref=r["sha"],
+            )
+        )
+        unchanged = (
+            r["author_experience"] == exp
+            and r["change_risk_level"] == risk.level
+            and r["change_risk_score"] is not None
+            and abs(r["change_risk_score"] - risk.score) < 1e-9
+        )
+        if unchanged:
+            continue
+        updates.append(
+            {
+                "sha": r["sha"],
+                "author_experience": exp,
+                "change_risk_score": risk.score,
+                "change_risk_level": risk.level,
+            }
+        )
+    return updates
+
+
+async def persist_incremental_fix_events(session: Any, repo_id: str, indexer: Any) -> None:
+    """Trace + upsert ``fix_events`` for fix commits this index has not seen.
+
+    Two halves, and both are needed for an update to converge on what a fresh
+    index would produce: append the fix commits missing from the table, then drop
+    the ones that have aged out of the trailing defect window. Without the prune
+    the stored set only ever grows past the window's trailing edge; without the
+    append it goes stale. Failure-isolated, like every other git-phase refresh.
+    """
+    from repowise.core.persistence.crud import (
+        get_fix_event_shas,
+        prune_fix_events_before,
+        prune_fix_events_for_missing_paths,
+        upsert_fix_events_bulk,
+    )
+
+    try:
+        known = await get_fix_event_shas(session, repo_id)
+        rows, oldest_ts, tracked = await asyncio.to_thread(
+            indexer.capture_new_fix_events, known_shas=known
+        )
+    except Exception as exc:
+        logger.debug("incremental_fix_events_failed", error=str(exc))
+        return
+
+    if rows:
+        await upsert_fix_events_bulk(session, repo_id, rows)
+    # A zero cutoff means the walk or the trace failed; pruning then would drop
+    # rows nothing replaced.
+    if oldest_ts:
+        from datetime import UTC, datetime
+
+        await prune_fix_events_before(session, repo_id, datetime.fromtimestamp(oldest_ts, tz=UTC))
+    if tracked:
+        await prune_fix_events_for_missing_paths(session, repo_id, tracked)
+
+    # Recompute over the whole stored window, not just the rows this update
+    # appended: decay ages every file's mass whether or not the file changed.
+    try:
+        from repowise.core.pipeline.fix_rollups import apply_fix_rollups
+
+        await apply_fix_rollups(session, repo_id)
+    except Exception as exc:
+        logger.debug("fix_rollups_failed", error=str(exc))
+
+
+async def refresh_external_systems(
+    session: Any,
+    repo_id: str,
+    repo_path: Any,
+    file_diffs: list,
+    *,
+    log: LogFn | None = None,
+) -> bool:
+    """Re-extract + reconcile external systems (C4 L1) when a manifest changed.
+
+    The incremental path historically never refreshed the ``external_systems``
+    table, so the C4 architecture panel served the init-time dependency list
+    until the next full re-index. Extraction is a bounded repo walk (no LLM, no
+    network), so it is gated on an actual dependency-manifest change in this
+    update's diff — the common no-manifest update pays nothing.
+
+    When a manifest did change, the *whole* repo is re-extracted: it's cheap,
+    and only a complete set supports a clean reconcile that also drops deps
+    removed from a manifest. The table is then replaced (removed deps pruned)
+    and ``external:{name}`` graph nodes re-linked so a brand-new dependency's
+    node isn't left with a NULL FK.
+
+    Ceiling: re-extraction walks the repo (depth ≤ 4) rather than parsing only
+    the changed manifests — fine because it runs only on a manifest change and
+    a partial parse can't see cross-manifest removals. Returns ``True`` when a
+    refresh actually ran.
+    """
+    log = log or _noop_log
+    from repowise.core.ingestion.external_systems import is_manifest_path
+
+    if not any(is_manifest_path(fd.path) for fd in file_diffs or []):
+        return False
+
+    from repowise.core.ingestion.external_systems import extract_external_systems
+
+    records = await asyncio.to_thread(extract_external_systems, Path(repo_path))
+    systems = [
+        {
+            "name": r.name,
+            "display_name": r.display_name,
+            "ecosystem": r.ecosystem,
+            "category": r.category,
+            "io_kind": r.io_kind,
+            "version": r.version,
+            "declared_in": r.declared_in,
+            "is_dev_dep": r.is_dev_dep,
+        }
+        for r in records
+    ]
+
+    from repowise.core.persistence.crud import (
+        link_graph_nodes_to_external_systems,
+        replace_external_systems,
+    )
+
+    id_map = await replace_external_systems(session, repo_id, systems)
+    # Collapse multi-manifest duplicates: any id for a given name works (the
+    # C4 renderer only needs name/category/ecosystem, stable across rows).
+    name_to_id: dict[str, int] = {}
+    for (name, _declared_in), sys_id in id_map.items():
+        name_to_id.setdefault(name, sys_id)
+    await link_graph_nodes_to_external_systems(session, repo_id, name_to_id)
+    log(f"External systems refreshed: [cyan]{len(systems)}[/cyan] deps")
+    return True
 
 
 async def persist_incremental_index(
@@ -674,6 +983,25 @@ async def persist_incremental_index(
             except Exception as exc:
                 _skip("Graph edges persist", exc)
 
+            # Refresh related-pages metadata across the whole wiki. LLM-free,
+            # so even index-only updates heal pages generated before the
+            # feature shipped (or drifted by new imports) in one run.
+            try:
+                from repowise.core.generation.related_pages import file_import_edges
+                from repowise.core.persistence.crud import backfill_related_pages
+
+                changed_rel = await backfill_related_pages(
+                    session,
+                    repo_id,
+                    import_edges=file_import_edges(graph_builder),
+                    git_meta_map=git_meta_map,
+                    pagerank=graph_builder.pagerank(),
+                )
+                if changed_rel:
+                    log(f"Related pages refreshed on {changed_rel} pages")
+            except Exception as exc:
+                _skip("Related-pages backfill", exc)
+
             if knowledge_graph_result is not None:
                 try:
                     from repowise.core.pipeline.persist import persist_kg
@@ -681,6 +1009,15 @@ async def persist_incremental_index(
                     await persist_kg(knowledge_graph_result, session, repo_id)
                 except Exception as exc:
                     _skip("Knowledge-graph persist", exc)
+
+            # Refresh external systems (C4 L1) when a dependency manifest
+            # changed — otherwise the architecture panel serves the init-time
+            # dep list forever. Gated + no LLM (see refresh_external_systems).
+            if file_diffs:
+                try:
+                    await refresh_external_systems(session, repo_id, repo_path, file_diffs, log=log)
+                except Exception as exc:
+                    _skip("External systems refresh", exc)
 
             # One-shot drain of proposals from the removed code_comment
             # harvest (#751). Runs on the index-only path too, because the

@@ -4,19 +4,18 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import click
 
+from repowise.cli._setup import configure_cli_logging
 from repowise.cli.helpers import (
     console,
     ensure_repowise_dir,
-    find_workspace_root,
     resolve_command_target,
-    resolve_repo_path,
     run_async,
 )
-
 
 # ---------------------------------------------------------------------------
 # Single-repo watch (existing behavior)
@@ -28,6 +27,7 @@ def _watch_single_repo(
     provider_name: str | None,
     model: str | None,
     debounce_ms: int,
+    verbose: bool,
 ) -> None:
     """Watch a single repo for changes and trigger updates."""
     from watchdog.events import FileSystemEventHandler
@@ -61,6 +61,8 @@ def _watch_single_repo(
                 args.extend(["--provider", provider_name])
             if model:
                 args.extend(["--model", model])
+            if verbose:
+                args.append("--verbose")
             result = runner.invoke(update_command, args, catch_exceptions=False)
             if result.output:
                 console.print(result.output)
@@ -130,7 +132,7 @@ def _watch_workspace(
         repo_changed[entry.alias] = set()
         repo_timers[entry.alias] = None
 
-    def _make_trigger(alias: str) -> callable:
+    def _make_trigger(alias: str) -> Callable[[], None]:
         """Create a trigger function for a specific repo."""
 
         def _on_trigger() -> None:
@@ -142,9 +144,7 @@ def _watch_workspace(
             if not paths:
                 return
 
-            console.print(
-                f"[cyan]{alias}: {len(paths)} changed file(s), updating...[/cyan]"
-            )
+            console.print(f"[cyan]{alias}: {len(paths)} changed file(s), updating...[/cyan]")
             try:
                 # Reload config in case it was updated
                 current_config = WorkspaceConfig.load(ws_root)
@@ -195,7 +195,8 @@ def _watch_workspace(
                 if old_timer is not None:
                     old_timer.cancel()
                 new_timer = threading.Timer(
-                    debounce_ms / 1000.0, _make_trigger(alias),
+                    debounce_ms / 1000.0,
+                    _make_trigger(alias),
                 )
                 new_timer.daemon = True
                 new_timer.start()
@@ -219,7 +220,9 @@ def _watch_workspace(
     observer.start()
 
     repo_list = ", ".join(e.alias for e in ws_config.repos)
-    console.print(f"[bold]Watching workspace ({scheduled} repos: {repo_list})... Ctrl+C to stop[/bold]")
+    console.print(
+        f"[bold]Watching workspace ({scheduled} repos: {repo_list})... Ctrl+C to stop[/bold]"
+    )
 
     try:
         while True:
@@ -253,6 +256,13 @@ def _watch_workspace(
     default=False,
     help="Force single-repo mode even when invoked from a workspace.",
 )
+@click.option(
+    "--verbose",
+    "-v",
+    is_flag=True,
+    default=False,
+    help="Show debug logs from the pipeline.",
+)
 def watch_command(
     path: str | None,
     provider_name: str | None,
@@ -260,11 +270,14 @@ def watch_command(
     debounce_ms: int,
     workspace: bool,
     no_workspace: bool,
+    verbose: bool,
 ) -> None:
     """Watch for file changes and auto-update wiki pages.
 
     Auto-detects workspace mode when invoked from a workspace root.
     """
+    configure_cli_logging(verbose=verbose)
+
     target = resolve_command_target(
         path=path,
         workspace_flag=workspace,
@@ -277,4 +290,10 @@ def watch_command(
         _watch_workspace(target.ws_root, debounce_ms)
     else:
         assert target.repo_path is not None
-        _watch_single_repo(target.repo_path, provider_name, model, debounce_ms)
+        _watch_single_repo(
+            target.repo_path,
+            provider_name,
+            model,
+            debounce_ms,
+            verbose,
+        )

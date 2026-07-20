@@ -44,6 +44,15 @@ _BC_CONSUMER_LIMIT = 5
 _CF_VIOLATION_LIMIT = 5
 _CF_CYCLE_LIMIT = 3
 
+#: Caps on the will-break split. Production impact leads the directive, so it
+#: keeps the larger budget; test fallout is a secondary signal capped tighter.
+_WILL_BREAK_LIMIT = 5
+_WILL_BREAK_TESTS_LIMIT = 3
+#: Cap on the coverage-backed run-list. A validate-this-change set can be longer
+#: than the will-break lists (it is what you actually run), but stays glanceable;
+#: the overflow and the full per-file map live in pr_blast_radius.guarding_tests.
+_TESTS_TO_RUN_LIMIT = 10
+
 
 def _breaking_change_directive(repo_alias: str) -> list[dict[str, Any]]:
     """Breaking-change half of the PR directive: incompatible provider changes.
@@ -269,6 +278,7 @@ def _build_pr_directive(
     exclude_spec: Any,
     collector: OmissionCollector,
     governance_risk: list[dict[str, Any]],
+    test_paths: set[str],
     alias: str,
 ) -> None:
     """Assemble PR-mode output: trim co-change lists + blast radius, then build
@@ -295,10 +305,13 @@ def _build_pr_directive(
     # entry is a file path (string), never a dossier. Designed to answer
     # "what should I do about this PR" in three lines.
 
-    will_break = filter_path_list(
+    affected = filter_path_list(
         [p for p in (_as_path(e) for e in trimmed_blast.get("transitive_affected", [])) if p],
         exclude_spec,
-    )[:5]
+    )
+    will_break = [p for p in affected if p not in test_paths][:_WILL_BREAK_LIMIT]
+    will_break_tests = [p for p in affected if p in test_paths][:_WILL_BREAK_TESTS_LIMIT]
+
     missing_cochanges = filter_path_list(
         [p for p in (_as_path(e) for e in trimmed_blast.get("cochange_warnings", [])) if p],
         exclude_spec,
@@ -320,6 +333,26 @@ def _build_pr_directive(
         ],
         exclude_spec,
     )[:3]
+
+    # Coverage-backed run-list: the tests the per-test map proves execute the
+    # changed files (the positive complement of missing_tests). Read from the
+    # untrimmed analyzer payload; _trim_blast_lists passes guarding_tests
+    # through, but reading it here keeps the source explicit. Test node ids,
+    # not file paths, so they are not exclude-filtered as paths.
+    guarding = pr_blast_radius.get("guarding_tests") or {}
+    all_tests_to_run = list(guarding.get("tests_to_run", []))
+    tests_to_run = all_tests_to_run[:_TESTS_TO_RUN_LIMIT]
+    if len(all_tests_to_run) > _TESTS_TO_RUN_LIMIT:
+        collector.add(
+            f"directive.tests_to_run beyond cap={_TESTS_TO_RUN_LIMIT} "
+            f"({len(all_tests_to_run) - _TESTS_TO_RUN_LIMIT} dropped)",
+            all_tests_to_run[_TESTS_TO_RUN_LIMIT:],
+        )
+    tests_to_run_suffix = (
+        f" {len(all_tests_to_run)} coverage-backed test(s) guard the change - run these."
+        if all_tests_to_run
+        else ""
+    )
 
     gov_count = len(governance_risk)
     gov_suffix = f" {gov_count} governance risk(s) detected." if gov_count > 0 else ""
@@ -364,8 +397,10 @@ def _build_pr_directive(
 
     response["directive"] = {
         "will_break": will_break,
+        "will_break_tests": will_break_tests,
         "missing_cochanges": missing_cochanges,
         "missing_tests": missing_tests,
+        "tests_to_run": tests_to_run,
         "will_break_consumers": will_break_consumers,
         "missing_cross_repo_cochanges": missing_cross_repo_cochanges,
         "breaking_changes": breaking_changes,
@@ -376,8 +411,9 @@ def _build_pr_directive(
         "summary": (
             f"PR touches {len(changed_files)} file(s). "
             f"~{len(will_break)} downstream file(s) likely affected, "
+            f"{len(will_break_tests)} test(s) likely broken, "
             f"{len(missing_cochanges)} historical co-changer(s) missing, "
             f"{len(missing_tests)} file(s) without tests."
-            f"{gov_suffix}{xr_suffix}{bc_suffix}{cf_suffix}"
+            f"{tests_to_run_suffix}{gov_suffix}{xr_suffix}{bc_suffix}{cf_suffix}"
         ),
     }

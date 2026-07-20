@@ -250,6 +250,7 @@ async def _run_decision_extraction(
     graph_builder: Any,
     git_meta_map: dict[str, dict],
     parsed_files: list[Any],
+    source_map: dict[str, bytes] | None = None,
     progress: ProgressCallback | None,
 ) -> Any | None:
     """Extract architectural decisions from source and git history."""
@@ -274,6 +275,7 @@ async def _run_decision_extraction(
             graph=graph_builder.graph(),
             git_meta_map=git_meta_map,
             parsed_files=parsed_files,
+            source_map=source_map,
         )
 
         def _decision_step(_source: str) -> None:

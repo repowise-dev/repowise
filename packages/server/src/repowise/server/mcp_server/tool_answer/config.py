@@ -65,6 +65,20 @@ _SYNTH_FULL_BODY_MAX_SYMBOLS = 2
 _HOMONYM_UNION_CHAR_BUDGET = 12000
 # Line cap per union body — same rationale as _INLINE_BODY_MAX_LINES.
 _HOMONYM_UNION_BODY_MAX_LINES = 120
+# Ceiling on how many same-named defs a *prose* question may answer-by-union.
+# The union is for a small set of genuine parallel implementations of one concept
+# (``_severity_for`` has 4 across the biomarkers); past a handful, the name is a
+# generic method implemented on many unrelated classes (``to_dict`` x33,
+# ``from_dict`` x26, ``provider_name`` x12), and inlining every body as a
+# confidence=high answer buries the actual question. So a prose question that
+# merely *mentions* such a name (measured: "how does a wiki page get its
+# provider_name during indexing?" dumped 12 unrelated provider stubs) falls
+# through to synthesis, which grounds in the file the question is really about.
+# An explicit symbol lookup (a bare name, where prose does not dominate) still
+# unions at any count — that caller asked for every definition. The gap between a
+# genuine union (<=4 seen) and a generic method (>=12 seen) is wide, so this is
+# not tuned to an exact count.
+_HOMONYM_UNION_PROSE_DEF_CEILING = 6
 
 # Data-shape grounding. "what fields does each entry in <blob> contain" is
 # answered directly by mining the field set from source instead of gating to a
@@ -109,6 +123,23 @@ _MAX_SYMBOL_DOC_CHARS = 120
 #   (b) synthesis hallucination on tangential top hits.
 _DOMINANCE_RATIO = 1.2
 _COVERAGE_THRESHOLD = 0.66
+
+# Agreement-aware dominance. The dominance ratio above is computed on
+# RRF-fused scores, and RRF *compresses*: a page both retrievers rank #1
+# (2/60) barely outscores one they rank #2 (2/61) — ratio ~1.017, far below
+# _DOMINANCE_RATIO — so the numeric gate calls the *most* confident retrieval
+# (both retrievers agree on the top page) "non-dominant". These knobs let the
+# grade read the per-source ranks directly: when FTS and vector independently
+# put the SAME page at (or within one rank of) the top and the runner-up is
+# meaningfully weaker, that consensus is treated as dominance the ratio can't
+# see. Conservative by design — agreement only LIFTS a retrieval to high; the
+# six demotion gates still pull it back if the synthesised text is ungrounded.
+# The top hit must rank no lower than this in EACH retriever (0-indexed, so
+# 1 == "#1 or #2 in both").
+_AGREEMENT_TOP_RANK_MAX = 1
+# The runner-up must trail the top by at least this many ranks in at least one
+# source (when it was found by both). 1 == "top is strictly ahead somewhere".
+_AGREEMENT_RANK_GAP = 1
 
 # Hedge-phrase markers that indicate the LLM refused to synthesize even though
 # retrieval was dominant. When the answer contains any of these, we downgrade
@@ -162,8 +193,12 @@ _HEDGE_MARKERS = (
 
 # When the gate triggers and we drop synthesis, fetch this many chars of
 # real page content per top hit so the agent has substantive raw material
-# to ground in (vs. one-line summary that's too thin to act on).
-_GATED_EXCERPT_CHARS = 600
+# to ground in (vs. one-line summary that's too thin to act on). 1500 chars
+# is enough for a page's opening section plus a code reference; at 600 the
+# excerpt stopped mid-context and agents fell back to native exploration
+# anyway (context-tool bench transcripts, 2026-07-17). Three hits at 1500
+# chars is ~1.1k tokens — well under any MCP output budget.
+_GATED_EXCERPT_CHARS = 1500
 _GATED_RETURN_HITS = 3
 
 # Path-prefix domain heuristics — down-weight cross-domain retrievals so a
@@ -238,6 +273,13 @@ _BACKEND_QUESTION_TOKENS = frozenset(
 # domain hit (real top score outlier) still survives.
 _DOMAIN_PENALTY = 0.5
 
+# Deterministic template pages (the Phase G coverage tail) are factual but
+# thin — they exist so every source file is retrievable, not to out-argue a
+# rich LLM page. Multiplicative, not absolute: a deterministic page that is
+# genuinely the best hit (its file has no LLM page) still surfaces, preserving
+# the coverage the tail adds; the factor only breaks ties toward the LLM page.
+_DETERMINISTIC_DOWNWEIGHT = 0.9
+
 # Floor on raw top-hit score for "high" confidence. Below this the answer
 # may be technically dominant but built on weak retrieval — downgrade to
 # "medium" so the agent verifies. Tuned against observed BM25 ranges on
@@ -266,7 +308,23 @@ _HIGH_CONFIDENCE_SCORE_FLOOR = 1.5
 # v7: concept anchoring - number-bearing why/value questions anchor the file
 # whose comment justifies the number and surface that comment as code_rationale
 # even on the high path. Cached v6 payloads predate the anchor + surfacing.
-_ANSWER_SCHEMA_VERSION = 7
+# v8: always-synthesize — retrievals that used to abstain (no dominant page) now
+# carry synthesized prose + best_guesses/code_rationale evidence at medium/low
+# instead of an empty pointer list. Cached v8 gated (empty-answer) rows must
+# bypass so the new answered-with-evidence contract reaches callers.
+# v9: agreement-aware confidence — the top hit is graded "dominant/high" when
+# both retrievers independently rank it at/near the top, not only when its
+# RRF-fused score numerically dominates. RRF compresses scores, so retriever
+# agreement (the most confident case) previously graded medium/low. Cached
+# pre-v9 rows carry the compressed-ratio grade and must bypass.
+# v10: (reserved for the agreement rollout above.)
+# v11: answer-grounding calibration — (1) a mechanism/"how" question that merely
+# names an indexed symbol no longer short-circuits to an exact_symbol body dump;
+# (2) the claim-support gate now covers how-questions, not only why; (3) strong
+# answer-grounding earns high on a non-dominant retrieval. Cached pre-v11 rows
+# carry the old body-dump / dominance-only grade and must bypass so the
+# recalibrated confidence reaches callers.
+_ANSWER_SCHEMA_VERSION = 11
 
 # Hard TTL on answer-cache rows. Commit-based invalidation (the payload's
 # stamped ``_indexed_commit`` vs the repo's current head) is the primary

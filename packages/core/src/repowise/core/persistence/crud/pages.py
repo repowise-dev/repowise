@@ -26,49 +26,43 @@ from ._shared import _parse_dt
 # ---------------------------------------------------------------------------
 
 
-async def upsert_page(
+def _apply_page_upsert(
     session: AsyncSession,
+    existing: Page | None,
     *,
     page_id: str,
     repository_id: str,
     page_type: str,
     title: str,
     content: str,
-    summary: str = "",
+    summary: str,
     target_path: str,
     source_hash: str,
     model_name: str,
     provider_name: str,
-    input_tokens: int = 0,
-    output_tokens: int = 0,
-    cached_tokens: int = 0,
-    generation_level: int = 0,
-    confidence: float = 1.0,
-    freshness_status: str = "fresh",
-    metadata: dict | None = None,
-    created_at: datetime | None = None,
-    updated_at: datetime | None = None,
+    input_tokens: int,
+    output_tokens: int,
+    cached_tokens: int,
+    generation_level: int,
+    confidence: float,
+    freshness_status: str,
+    meta_json: str,
+    created_at: datetime,
+    updated_at: datetime,
+    now: datetime,
 ) -> Page:
-    """Insert or update a wiki page, creating a PageVersion snapshot on update.
+    """Apply the insert / version-snapshot / idempotent-touch branch for one
+    page against a PRE-RESOLVED ``existing`` row.
 
-    First call  → inserts Page at version=1.
-    Subsequent  → archives the current Page as a PageVersion, then updates the
-                  Page in-place (version += 1, created_at preserved).
+    Extracted verbatim from :func:`upsert_page` so the single-page and batch
+    callers share one implementation of the version semantics. Does NOT flush:
+    the caller owns the flush (one per call for ``upsert_page``, one per batch
+    for :func:`upsert_pages_from_generated`).
     """
-    now = _now_utc()
-    page_created_at = created_at or now
-    page_updated_at = updated_at or now
-    meta_json = json.dumps(metadata or {})
-
-    existing_result = await session.execute(select(Page).where(Page.id == page_id))
-    existing = existing_result.scalar_one_or_none()
-
     if existing is not None:
-        # Idempotent no-op: when the content, prompt hash and model are all
-        # unchanged, re-persisting must not bump the version or spawn a
-        # PageVersion snapshot. This makes the write safe to repeat — e.g. an
-        # incremental per-page flush during generation followed by the
-        # end-of-run persist of the same page — without inflating history.
+        # Idempotent no-op: content, prompt hash and model all unchanged, so
+        # do not bump the version or spawn a PageVersion snapshot; only refresh
+        # the cheap derived fields (metadata enrichment lands here).
         if (
             existing.content == content
             and existing.source_hash == source_hash
@@ -78,7 +72,6 @@ async def upsert_page(
             existing.target_path = target_path
             existing.freshness_status = freshness_status
             existing.metadata_json = meta_json
-            await session.flush()
             return existing
 
         # Archive the current state before overwriting
@@ -117,36 +110,96 @@ async def upsert_page(
         existing.confidence = confidence
         existing.freshness_status = freshness_status
         existing.metadata_json = meta_json
-        existing.updated_at = page_updated_at
-
-        await session.flush()
+        existing.updated_at = updated_at
         return existing
-    else:
-        page = Page(
-            id=page_id,
-            repository_id=repository_id,
-            page_type=page_type,
-            title=title,
-            content=content,
-            summary=summary,
-            target_path=target_path,
-            source_hash=source_hash,
-            model_name=model_name,
-            provider_name=provider_name,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            cached_tokens=cached_tokens,
-            generation_level=generation_level,
-            version=1,
-            confidence=confidence,
-            freshness_status=freshness_status,
-            metadata_json=meta_json,
-            created_at=page_created_at,
-            updated_at=page_updated_at,
-        )
-        session.add(page)
-        await session.flush()
-        return page
+
+    page = Page(
+        id=page_id,
+        repository_id=repository_id,
+        page_type=page_type,
+        title=title,
+        content=content,
+        summary=summary,
+        target_path=target_path,
+        source_hash=source_hash,
+        model_name=model_name,
+        provider_name=provider_name,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cached_tokens=cached_tokens,
+        generation_level=generation_level,
+        version=1,
+        confidence=confidence,
+        freshness_status=freshness_status,
+        metadata_json=meta_json,
+        created_at=created_at,
+        updated_at=updated_at,
+    )
+    session.add(page)
+    return page
+
+
+async def upsert_page(
+    session: AsyncSession,
+    *,
+    page_id: str,
+    repository_id: str,
+    page_type: str,
+    title: str,
+    content: str,
+    summary: str = "",
+    target_path: str,
+    source_hash: str,
+    model_name: str,
+    provider_name: str,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    cached_tokens: int = 0,
+    generation_level: int = 0,
+    confidence: float = 1.0,
+    freshness_status: str = "fresh",
+    metadata: dict | None = None,
+    created_at: datetime | None = None,
+    updated_at: datetime | None = None,
+) -> Page:
+    """Insert or update a wiki page, creating a PageVersion snapshot on update.
+
+    First call  → inserts Page at version=1.
+    Subsequent  → archives the current Page as a PageVersion, then updates the
+                  Page in-place (version += 1, created_at preserved).
+    """
+    now = _now_utc()
+    meta_json = json.dumps(metadata or {})
+
+    existing_result = await session.execute(select(Page).where(Page.id == page_id))
+    existing = existing_result.scalar_one_or_none()
+
+    page = _apply_page_upsert(
+        session,
+        existing,
+        page_id=page_id,
+        repository_id=repository_id,
+        page_type=page_type,
+        title=title,
+        content=content,
+        summary=summary,
+        target_path=target_path,
+        source_hash=source_hash,
+        model_name=model_name,
+        provider_name=provider_name,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cached_tokens=cached_tokens,
+        generation_level=generation_level,
+        confidence=confidence,
+        freshness_status=freshness_status,
+        meta_json=meta_json,
+        created_at=created_at or now,
+        updated_at=updated_at or now,
+        now=now,
+    )
+    await session.flush()
+    return page
 
 
 async def load_prior_pages(
@@ -212,6 +265,173 @@ async def upsert_page_from_generated(
         created_at=_parse_dt(gp.created_at),  # type: ignore[attr-defined]
         updated_at=_parse_dt(gp.updated_at),  # type: ignore[attr-defined]
     )
+
+
+# Chunk the id SELECT to stay under SQLite's host-parameter limit (same reason
+# as ``persist._PRUNE_CHUNK``).
+_PAGE_SELECT_CHUNK = 500
+
+
+async def upsert_pages_from_generated(
+    session: AsyncSession,
+    generated_pages: list,  # list[GeneratedPage]
+    repository_id: str,
+) -> list[Page]:
+    """Batch equivalent of looping :func:`upsert_page_from_generated`.
+
+    The end-of-run generation persist re-upserts every page. The per-page
+    durability sink already wrote them once during generation; this pass
+    exists to flush the post-generation metadata enrichment (related-pages /
+    interlinking mutate ``page.metadata`` in place after the sink ran), which
+    lands through the idempotent-touch branch. Doing that one page at a time
+    is an N+1: a SELECT + flush each, i.e. one round-trip per page on a remote
+    DB. This resolves every existing row in one (chunked) SELECT and flushes
+    once, preserving :func:`upsert_page`'s exact semantics via the shared
+    :func:`_apply_page_upsert` (version snapshot on content change, no-op touch
+    on metadata-only change, insert on new).
+
+    NOT a drop-in for the per-page durability sinks: this flushes once at the
+    end, so an interrupt mid-batch persists nothing. The ``on_page_ready``
+    streaming sinks must keep calling :func:`upsert_page_from_generated`.
+
+    Assumes ``generated_pages`` carries no duplicate ``page_id`` (true by
+    construction: ids are deterministic, one page per target).
+    """
+    pages = list(generated_pages)
+    if not pages:
+        return []
+
+    # Resolve all existing rows up front. page_id (== Page.id) is unique per
+    # page within the run and each row is resolved independently, so one SELECT
+    # is equivalent to the per-page loop's fresh SELECT-per-page. No repo filter
+    # here, matching ``upsert_page``'s ``WHERE Page.id == page_id``.
+    ids = [gp.page_id for gp in pages]
+    existing_by_id: dict[str, Page] = {}
+    for start in range(0, len(ids), _PAGE_SELECT_CHUNK):
+        chunk = ids[start : start + _PAGE_SELECT_CHUNK]
+        rows = (await session.execute(select(Page).where(Page.id.in_(chunk)))).scalars().all()
+        for row in rows:
+            existing_by_id[row.id] = row
+
+    now = _now_utc()
+    out: list[Page] = []
+    for gp in pages:
+        out.append(
+            _apply_page_upsert(
+                session,
+                existing_by_id.get(gp.page_id),
+                page_id=gp.page_id,
+                repository_id=repository_id,
+                page_type=gp.page_type,
+                title=gp.title,
+                content=gp.content,
+                summary=getattr(gp, "summary", "") or "",
+                target_path=gp.target_path,
+                source_hash=gp.source_hash,
+                model_name=gp.model_name,
+                provider_name=gp.provider_name,
+                input_tokens=gp.input_tokens,
+                output_tokens=gp.output_tokens,
+                cached_tokens=gp.cached_tokens,
+                generation_level=gp.generation_level,
+                confidence=gp.confidence,
+                freshness_status=gp.freshness_status,
+                meta_json=json.dumps(gp.metadata or {}),
+                created_at=_parse_dt(gp.created_at) or now,
+                updated_at=_parse_dt(gp.updated_at) or now,
+                now=now,
+            )
+        )
+    await session.flush()
+    return out
+
+
+async def backfill_related_pages(
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    import_edges: list[tuple[str, str]] | None = None,
+    git_meta_map: dict[str, dict] | None = None,
+    pagerank: dict[str, float] | None = None,
+    skip_page_ids: set[str] | None = None,
+) -> int:
+    """Recompute ``metadata['related_pages']`` across every persisted page.
+
+    LLM-free, so every update flavor (docs, index-only, workspace) can heal
+    pages generated before related-pages shipped — or drifted by new
+    imports — without a regeneration run.
+
+    Selection module groups exist only during full generation, so this
+    recompute covers the other three reasons and *preserves* any existing
+    same-module entries instead of stripping them. ``skip_page_ids`` exempts
+    pages the current run already attached (their metadata is fresher than
+    anything this recompute could produce).
+
+    Returns the number of rows whose metadata changed.
+    """
+    # Import lazily — keeps persistence independent of generation models at
+    # module-load time (same pattern as load_prior_pages above).
+    from types import SimpleNamespace
+
+    from repowise.core.generation.related_pages import attach_related_pages
+
+    result = await session.execute(
+        select(Page).where(
+            Page.repository_id == repository_id,
+            Page.freshness_status != "tombstone",
+        )
+    )
+    rows = [r for r in result.scalars() if r.id not in (skip_page_ids or set())]
+    if not rows:
+        return 0
+
+    shims = []
+    prior_related: list[Any] = []
+    for row in rows:
+        try:
+            meta = json.loads(row.metadata_json or "{}")
+        except ValueError:
+            meta = {}
+        prior_related.append(meta.get("related_pages"))
+        shims.append(
+            SimpleNamespace(
+                page_id=row.id,
+                page_type=row.page_type,
+                title=row.title,
+                target_path=row.target_path,
+                metadata=meta,
+            )
+        )
+
+    attach_related_pages(
+        shims,  # type: ignore[arg-type]  # duck-typed GeneratedPage view
+        import_edges=import_edges,
+        git_meta_map=git_meta_map,
+        pagerank=pagerank,
+    )
+
+    changed = 0
+    for row, shim, before in zip(rows, shims, prior_related, strict=True):
+        after = shim.metadata.get("related_pages")
+        if after is None:
+            continue
+        # Preserve prior same-module entries — recomputing without module
+        # groups must not strip what a full generation attached.
+        if before:
+            seen_targets = {r.get("target_page_id") for r in after}
+            after.extend(
+                entry
+                for entry in before
+                if entry.get("reason") == "same-module"
+                and entry.get("target_page_id") not in seen_targets
+            )
+        if after == before:
+            continue
+        row.metadata_json = json.dumps(shim.metadata)
+        changed += 1
+    if changed:
+        await session.flush()
+    return changed
 
 
 async def get_page(session: AsyncSession, page_id: str) -> Page | None:

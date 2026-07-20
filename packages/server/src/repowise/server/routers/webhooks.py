@@ -121,7 +121,7 @@ async def github_webhook(
                     repository_id=repo.id,
                     status="pending",
                     config={
-                        "mode": "incremental",
+                        "mode": "sync",
                         "trigger": "webhook",
                         "before": payload.get("before", ""),
                         "after": payload.get("after", ""),
@@ -179,7 +179,7 @@ async def gitlab_webhook(
                     repository_id=repo.id,
                     status="pending",
                     config={
-                        "mode": "incremental",
+                        "mode": "sync",
                         "trigger": "webhook",
                         "before": payload.get("before", ""),
                         "after": payload.get("after", ""),

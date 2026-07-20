@@ -7,7 +7,11 @@ export interface IndexStorageMiniData {
   index_storage_bytes: number;
   /** Wiki page count — used for a secondary line when docs exist. */
   page_count?: number;
-  /** Average doc confidence as 0–100 — shown when pages exist. */
+  /**
+   * Average doc *confidence* as 0–100. Named `doc_coverage_pct` for the wire
+   * contract, but it is a mean page confidence, not a share of files covered —
+   * so it is labelled as confidence here rather than coverage.
+   */
   doc_coverage_pct?: number;
 }
 
@@ -21,7 +25,7 @@ interface IndexStorageMiniProps {
  */
 export function IndexStorageMini({ data }: IndexStorageMiniProps) {
   const hasDocs = (data.page_count ?? 0) > 0;
-  const coverage =
+  const confidence =
     data.doc_coverage_pct != null ? formatPercent(data.doc_coverage_pct / 100) : null;
 
   return (
@@ -39,7 +43,7 @@ export function IndexStorageMini({ data }: IndexStorageMiniProps) {
           </span>
           <p className="text-xs text-[var(--color-text-tertiary)]">
             wiki.db + vectors on disk
-            {hasDocs && coverage ? ` · ${coverage} doc coverage` : ""}
+            {hasDocs && confidence ? ` · ${confidence} avg doc confidence` : ""}
           </p>
         </div>
       </CardContent>

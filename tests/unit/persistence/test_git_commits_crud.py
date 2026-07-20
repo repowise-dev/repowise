@@ -9,6 +9,9 @@ import pytest
 from repowise.core.persistence.crud import (
     count_git_commits,
     delete_git_commits,
+    delete_git_commits_by_sha,
+    get_author_commit_counts,
+    get_commit_experience_inputs,
     get_commit_risk_scores,
     get_git_commit,
     get_git_commits,
@@ -150,6 +153,68 @@ async def test_author_experience_round_trips(async_session) -> None:
     got = await get_git_commit(async_session, repo.id, "exp1")
     assert got is not None
     assert got.author_experience == 42
+
+
+@pytest.mark.asyncio
+async def test_delete_git_commits_by_sha(async_session) -> None:
+    repo = await insert_repo(async_session)
+    await upsert_git_commits_bulk(
+        async_session,
+        repo.id,
+        [_row(s, risk=1.0, ts=1000) for s in ("keep", "drop1", "drop2")],
+    )
+    await async_session.commit()
+
+    removed = await delete_git_commits_by_sha(async_session, repo.id, ["drop1", "drop2"])
+    await async_session.commit()
+
+    assert removed == 2
+    assert await count_git_commits(async_session, repo.id) == 1
+    assert await get_git_commit(async_session, repo.id, "keep") is not None
+
+
+@pytest.mark.asyncio
+async def test_get_author_commit_counts_groups_raw_identities(async_session) -> None:
+    """Grouped raw, because the identity fold lives in the git-indexer."""
+    repo = await insert_repo(async_session)
+    await upsert_git_commits_bulk(
+        async_session,
+        repo.id,
+        [
+            _row("a1", risk=1.0, ts=1000),
+            _row("a2", risk=1.0, ts=2000),
+            _row("b1", risk=1.0, ts=3000, author_name="Bob", author_email="bob@x"),
+        ],
+    )
+    await async_session.commit()
+
+    counts = {
+        (name, email): n
+        for name, email, n in await get_author_commit_counts(async_session, repo.id)
+    }
+
+    assert counts[("Ann", "ann@x")] == 2
+    assert counts[("Bob", "bob@x")] == 1
+
+
+@pytest.mark.asyncio
+async def test_get_commit_experience_inputs_carries_the_scoring_features(async_session) -> None:
+    repo = await insert_repo(async_session)
+    await upsert_git_commits_bulk(
+        async_session, repo.id, [_row("a1", risk=6.0, ts=1000, author_experience=7)]
+    )
+    await async_session.commit()
+
+    rows = await get_commit_experience_inputs(async_session, repo.id)
+
+    assert len(rows) == 1
+    row = rows[0]
+    # Everything score_change needs, so the reconcile never has to touch git.
+    assert row["sha"] == "a1"
+    assert row["author_experience"] == 7
+    assert row["lines_added"] == 10
+    assert row["entropy"] == 0.5
+    assert row["change_risk_score"] == 6.0
 
 
 @pytest.mark.asyncio

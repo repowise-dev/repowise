@@ -77,7 +77,8 @@ class FileContext:
     repo_commit_counts: dict[str, int] = field(default_factory=dict)
     # Per-line blame index produced by the FULL git tier (see
     # ``ingestion.git_indexer.function_blame``). ``None`` on ESSENTIAL
-    # tier until ``backfill_blame()`` runs; function-level biomarkers
+    # tier until the FULL-tier backfill (``backfill_full_tier()``) runs;
+    # function-level biomarkers
     # must treat ``None`` (and an empty index) as the documented
     # "no signal" outcome and emit zero findings.
     blame_index: BlameIndex | None = None

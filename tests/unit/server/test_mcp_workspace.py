@@ -34,7 +34,14 @@ from repowise.core.workspace.registry import RepoContext
 _NOW = datetime(2026, 4, 12, 10, 0, 0, tzinfo=UTC)
 
 
-async def _make_repo_context(alias: str, repo_path: str, pages: list, extra_models: list | None = None) -> RepoContext:
+async def _make_repo_context(
+    alias: str,
+    repo_path: str,
+    pages: list,
+    extra_models: list | None = None,
+    *,
+    repo_name: str | None = None,
+) -> RepoContext:
     """Create an in-memory RepoContext with test data."""
     engine = create_async_engine(
         "sqlite+aiosqlite:///:memory:",
@@ -47,7 +54,7 @@ async def _make_repo_context(alias: str, repo_path: str, pages: list, extra_mode
     async with factory() as session:
         repo = Repository(
             id=f"repo-{alias}",
-            name=alias,
+            name=repo_name or alias,
             url=f"https://example.com/{alias}",
             local_path=repo_path,
             default_branch="main",
@@ -58,7 +65,7 @@ async def _make_repo_context(alias: str, repo_path: str, pages: list, extra_mode
         session.add(repo)
         for p in pages:
             session.add(p)
-        for m in (extra_models or []):
+        for m in extra_models or []:
             session.add(m)
         await session.commit()
 
@@ -188,7 +195,7 @@ async def workspace_mcp():
 
     frontend_ctx = await _make_repo_context(
         "frontend",
-        "/tmp/workspace/frontend",
+        "/tmp/workspace/web-client",
         pages=[
             Page(
                 id="repo_overview:frontend",
@@ -246,6 +253,7 @@ async def workspace_mcp():
                 affected_modules_json='["src"]',
             ),
         ],
+        repo_name="web-client",
     )
 
     registry = _MockRegistry(
@@ -276,6 +284,21 @@ async def workspace_mcp():
     mcp_mod._repo_path = None
     mcp_mod._vector_store_ready = None
     mcp_mod._cross_repo_enricher = None
+
+
+# ---------------------------------------------------------------------------
+# get_health — workspace alias routing
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_health_resolves_alias_different_from_repo_name(workspace_mcp):
+    from repowise.server.mcp_server import get_health
+
+    result = await get_health(repo="frontend")
+
+    assert result["mode"] == "dashboard"
+    assert result["kpis"]["file_count"] == 0
 
 
 # ---------------------------------------------------------------------------

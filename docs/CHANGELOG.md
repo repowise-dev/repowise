@@ -9,6 +9,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.33.0] — 2026-07-18
+
+### Added
+- **Line-level AI authorship from your agent sessions.** repowise reads agent-trace records to attribute commits (and now individual lines) to the agent and model that wrote them, and stamps a per-commit model id, so the contributors and provenance views can tell human-written code from agent-written code down to the line. (#861, #866)
+- **Docs that repair themselves.** Generation now self-repairs hallucinated symbol references, resolves cross-page links across the whole repo on updates, and backfills graph-derived "related pages" with a self-healing pass, so wiki pages link to real symbols and stay cross-linked as the code moves. (#871, #872)
+- **`get_change_risk` grew up.** The change-risk score gained a `-x/--exclude` flag with `.riskignore` support to drop vendored or generated paths from the diff, and now lists the line-level tests a change actually impacts. (#867, #903)
+- **Coverage-backed tests in PR risk.** `get_risk` PR mode now surfaces `tests_to_run` proven by the per-test coverage map, so a reviewer sees exactly which tests exercise the changed files. (#859)
+- **Fewer dead-code false positives.** Whole classes of systematic false positives (re-exports, dynamic references) are eliminated, so `get_dead_code` reports far less that is actually live. (#886)
+- **Better flow answers.** `get_answer` rescues un-named flow endpoints by re-ranking on the graph neighborhood, so "how does X get to Y" answers land on real endpoints more often. (#864)
+- **Leaner MCP entry point.** `get_why` joins the lean MCP profile and `get_answer` is the advertised entry point; `get_conformance` and `generate_refactoring_code` are now opt-in. `AGENTS.md` was brought to parity with the `CLAUDE.md` tool surface. (#889, #875, #900)
+
+### Changed
+- **Faster init and update.** A broad performance pass across indexing: analysis phases run concurrently and incremental re-ingest runs in parallel, init- and update-built graphs converge so the centrality cache hits on updates, self-call resolution and pagerank are cached for cascade ordering, pages reused verbatim skip re-embedding, end-of-run wiki-page upserts are batched, refactoring detectors drop repo-sized per-file work, and coverage discovery plus the repo pre-scan share the pruned file walk. (#894, #895, #891, #892, #904, #893, #898, #897)
+- **Cleaner UI.** The Overview got a visual-hierarchy pass and a denser health card with docs counts split by AI vs auto-generated, and "Attention Needed" is a triage panel again. (#882, #879, #883)
+- **TypeScript path resolution in the CLI.** `TsconfigResolver` is now wired into the CLI commands, so `tsconfig` path aliases resolve during indexing. (#675)
+
+### Fixed
+- **Docs pointer no longer drifts on index-only updates.** The docs commit pointer is preserved during index-only updates and kept separate from the sync pointer, fixing `update --docs` drift. (#849, #878)
+- **Wildcard re-exports are followed in call resolution.** `from x import *` re-exports (and the JS equivalent) are now traced, recovering call edges that were dropped. (#905)
+- **`get_answer` stops dropping substance.** Synthesis is no longer silently skipped when a usable API key exists, the gated low-confidence path serves real substance and unpins cached misses, gated-path excerpts no longer die to a swallowed error, and the live-grep fallback respects gitignore and exclude patterns. (#888, #887, #896, #856)
+- **Sturdier change-risk on the CLI.** A friendly revspec error is restored in `changed_lines`, and subprocess handling is hardened and aligned with the MCP tool conventions. (#902, #899)
+- **Security scan reads real source** and guards repo-root detection, instead of scanning stale or wrong content. (#890)
+- **Smaller fixes.** Unknown `restyle` style arguments raise a usage error; CLI usage errors are classified separately from failures in telemetry; decision staleness timestamps are normalized; webhook jobs run in sync mode; MCP health resolves the repository from the scoped session; and the code-rationale git-grep is hardened for macOS and color configs. (#908, #907, #877, #848, #865, #825)
+
+### Documentation
+- README now counts ten MCP tools, fixes the coverage example, and tightens the Code Health section. (#901)
+- Plugin: both the Claude Code and Codex plugins ship a `change-review` skill; the risk command documents the new `--exclude` flag.
+
+## [0.32.0] — 2026-07-15
+
+### Added
+- **Every file is now retrievable.** After the LLM budget picks its file pages, every remaining parsed code file gets a zero-LLM deterministic page, so concept search reaches the whole codebase instead of only the ~20% the budget covers. These tail pages are down-weighted in `search_codebase` and `get_answer` so a thin template page never displaces a rich page on a tie, and they carry `is_deterministic` / `doc_tier` in the API responses. (#817, #819)
+- **More signals on the stats page.** "By the Numbers" gained a coding-rhythm punch card (weekday × hour commit heatmap, UTC), 90-day momentum against the prior window, the wiki's own build cost stats, a change-risk mix, and a truck factor — all derived from data the index already holds, with no new indexing. (#828)
+- **Kimi is a first-class provider.** (#824)
+- **Decisions follow you into Codex.** The Codex SessionStart hook now delivers relevance-ranked standing decisions, matching what Claude Code already did. (#788)
+- **Test breakage is called out separately in risk.** `get_risk` PR mode splits test files into a new `will_break_tests` field, so a burst of broken tests can't crowd real structural impact out of the capped `will_break` list. (#739)
+- **Richer anonymous telemetry.** One event per MCP tool call, an interrupted status, and index-shape outcomes, so the collected numbers answer real questions. Consent and env vars are unchanged. (#820)
+
+### Fixed
+- **Search scores the identifier, not the whole question.** (#853)
+- **A generic method mention no longer hijacks the answer.** A prose `get_answer` question that merely mentioned a common method (`to_dict`, `provider_name`) was routed into the exact-name union path and returned the whole definition set instead of answering. Large unions on prose questions now defer to synthesis; small unions and bare symbol lookups are untouched. (#823)
+- **Key Concepts picks real concepts.** Ranking was by file PageRank, so every public symbol in a high-ranked file inherited that rank — surfacing five methods of one registry class as the codebase's core concepts, and leaking pytest fixtures into the prose. Symbols are now ranked directly and spread across clusters. (#813)
+- **Custom `serve` ports work again.** Next.js standalone compiled rewrites with build-time env vars, breaking custom port arguments; `/api/*`, `/health`, and `/metrics` now proxy through runtime middleware. (#838, #839)
+- **Persisted vector indexes load on startup.** (#835)
+- **Go dead-code false positives.** Function references in Go are now detected, rescuing live functions that were reported as dead. (#815)
+- **Dataflow recurses into `with`-statement bodies.** (#836)
+- **Stats report true project age, commit, and contributor counts**, with compact k/m formatting and years/months age in the hero. (#730, #827, #798)
+- **Source citations show normalized confidence**, not the raw score. (#846)
+- **Anthropic thinking blocks are handled.** (#787)
+- **Add Repository dialog no longer overflows its inputs.** (#843, #844)
+- **Friendlier empty state for documents.** (#822)
+
 ## [0.31.0] — 2026-07-12
 
 ### Added
@@ -43,7 +95,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **First-class output-language support.** `repowise init --language <code>` (15 languages: en, ru, es, fr, de, zh, ja, ko, it, pt, nl, pl, tr, ar, hi) sets the natural language for generated wiki pages; advanced interactive mode now asks for it too (English default). The choice persists to `.repowise/config.yaml` so `update` regenerates changed pages in the same language, and the workspace init, workspace generate, and server regenerate paths now honor it instead of silently defaulting to English. Code, file paths, and symbol names stay untranslated. Previously this was config-file-only (#99). (#756)
-- **Worktrees just work.** `repowise init` and `repowise update` inside a linked git worktree now auto-detect the base checkout and seed the worktree's index from it, then catch up incrementally; no flags needed. `--seed-from <base>` remains as an explicit override and `--no-seed` forces a cold init. See [WORKTREES.md](WORKTREES.md). (#655 introduced the manual flag; #747 makes it automatic.)
+- **Worktrees just work.** `repowise init` and `repowise update` inside a linked git worktree now auto-detect the base checkout and seed the worktree's index from it, then catch up incrementally; no flags needed. `--seed-from <base>` remains as an explicit override and `--no-seed` forces a cold init. See [WORKTREES.md](scale/WORKTREES.md). (#655 introduced the manual flag; #747 makes it automatic.)
 - **Ruby and Scala promoted to Full health tier.** Both languages now get the full complexity node map and performance-risk dialect, so health scores and perf findings match the depth Python/TypeScript/Go already had. (#745, #749)
 - **Git stats awards.** The contributor stats view gained biggest-commit, longest-streak, most-imported-file, and dependency awards. (#752)
 - **Workspace socket-contract detection.** Cross-repo analysis now detects socket-based service contracts alongside HTTP ones. (#710)
@@ -667,7 +719,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Pluggable storage seams + capability registries.** New async `IndexStore` / `GraphStore` / `JobStore` interfaces with SQL/in-process default implementations, and process-wide `cli_registry` / `mcp_tool_registry` / `pipeline_hooks` registries so downstream packages can extend the CLI, MCP tool list, and pipeline phases without monkey-patching internals. Behavior is unchanged for OSS users — same CLI commands, same MCP tools, same default storage (#219).
 
 ### Changed
-- **Code-health scoring recalibrated.** The organizational category cap is lifted from −1.0 to −3.5 so the strongest empirical predictors (`developer_congestion`, `untested_hotspot`, `hidden_coupling`) are no longer suppressed, and a per-biomarker weight multiplier was added (`developer_congestion` ×1.5, `untested_hotspot` ×1.3, `function_hotspot` ×1.2). `knowledge_loss` is de-rated to ×0.4 per OSS calibration (legacy code that works gets handed off) — enterprise users can raise it back via per-repo overrides. See the updated category-cap table in `docs/CODE_HEALTH.md` (#221).
+- **Code-health scoring recalibrated.** The organizational category cap is lifted from −1.0 to −3.5 so the strongest empirical predictors (`developer_congestion`, `untested_hotspot`, `hidden_coupling`) are no longer suppressed, and a per-biomarker weight multiplier was added (`developer_congestion` ×1.5, `untested_hotspot` ×1.3, `function_hotspot` ×1.2). `knowledge_loss` is de-rated to ×0.4 per OSS calibration (legacy code that works gets handed off) — enterprise users can raise it back via per-repo overrides. See the updated category-cap table in `docs/layers/CODE_HEALTH.md` (#221).
 - **Health web UI surfaces the new biomarkers.** Glossary entries and biomarker-specific detail views for all four new biomarkers (partner-file chip for `hidden_coupling`, operator count for `complex_conditional`, mod/p80 ratio for `function_hotspot`, median age + recent edits for `code_age_volatility`), recalibrated category caps in the score breakdown (now sorted by applied deduction), and a clickable `function:line` deep-link in the file drawer. The new biomarker details also flow into the AI refactor prompt (#223).
 - **Doc generation scales to very large repos.** Batch embedding (one model call per generation level instead of N upserts), pipeline checkpoint/resume over the new JobStore seam, and graph metrics computed in SQL. Default behavior is unchanged when the new knobs aren't set (#220).
 
@@ -682,7 +734,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.10.0] — 2026-05-18
 
 ### Added
-- **Code health layer — a fifth intelligence layer alongside graph / git / docs / decisions.** New `repowise health` command, `health_*` SQLite tables, biomarker engine, and `/repos/[id]/health` web UI surface what hotspots actually *cost* to maintain. Tree-sitter complexity walker feeds 10+ biomarkers across structural (`large_method`, `nested_complexity`, `bumpy_road`, `complex_method`, `brain_method`, `primitive_obsession`), organizational (`developer_congestion`, `knowledge_loss`), test (`untested_hotspot`, `coverage_gap`), and DRY (`dry_violation`, backed by a tokenizer + Rabin-Karp clone detector with co-change correlation) categories. A composite 0–10 score is rolled up per file, per module (NLOC-weighted), and per repo. Findings persist with deterministic refactoring suggestions and an `acknowledged | resolved | false_positive` lifecycle. `HealthSnapshot` writer + trend detector surface declining-health alerts. `.repowise/health-rules.json` supports per-file overrides. `repowise update` runs an incremental upsert so the dashboard stays fresh without re-running the full pipeline. New `repowise health --trend`, `--refactoring-targets`, `--module`, `--file`, and `--coverage` flags; `repowise status` prints a one-line health digest. Parallel biomarker analysis via `asyncio.gather`. Full architecture deep-dive in `docs/CODE_HEALTH.md` (#212).
+- **Code health layer — a fifth intelligence layer alongside graph / git / docs / decisions.** New `repowise health` command, `health_*` SQLite tables, biomarker engine, and `/repos/[id]/health` web UI surface what hotspots actually *cost* to maintain. Tree-sitter complexity walker feeds 10+ biomarkers across structural (`large_method`, `nested_complexity`, `bumpy_road`, `complex_method`, `brain_method`, `primitive_obsession`), organizational (`developer_congestion`, `knowledge_loss`), test (`untested_hotspot`, `coverage_gap`), and DRY (`dry_violation`, backed by a tokenizer + Rabin-Karp clone detector with co-change correlation) categories. A composite 0–10 score is rolled up per file, per module (NLOC-weighted), and per repo. Findings persist with deterministic refactoring suggestions and an `acknowledged | resolved | false_positive` lifecycle. `HealthSnapshot` writer + trend detector surface declining-health alerts. `.repowise/health-rules.json` supports per-file overrides. `repowise update` runs an incremental upsert so the dashboard stays fresh without re-running the full pipeline. New `repowise health --trend`, `--refactoring-targets`, `--module`, `--file`, and `--coverage` flags; `repowise status` prints a one-line health digest. Parallel biomarker analysis via `asyncio.gather`. Full architecture deep-dive in `docs/layers/CODE_HEALTH.md` (#212).
 - **Coverage ingestion (LCOV / Cobertura / Clover).** `repowise health --coverage report.lcov` parses one or more reports (format auto-detected, override with `--coverage-format`), persists per-file line + branch + covered-line sets to a new `coverage_files` table, and feeds two coverage-aware biomarkers — `untested_hotspot` (hotspot files with low coverage *or*, when no coverage is ingested, no paired test file) and `coverage_gap` (significant uncovered surface area on non-test files). New `/api/repos/{id}/health/coverage` endpoint + `/repos/[id]/health/coverage` page with risk × coverage scatter, module rollup, and per-file drilldown (#212).
 - **Code-health web UX overhaul — tabbed chrome, trend, scatter quadrants, file drawer.** `/health` is now a four-tab surface (Overview / Trend / Coverage / Refactoring) with shared `HealthPageChrome`, sparklines pulled from `/health/trend`, a 5th "Hotspot Health" KPI card, server-side paginated file table with sortable headers + filter chips (Hotspots / Untested / Failing) + path search, biomarker glossary tooltips, severity-distribution bars, slide-over `HealthFileDrawer` with score breakdown by category, impact × effort quadrant on the refactoring page, and one-click status mutation (Acknowledge / Resolved / False positive) wired to a new `PATCH /health/findings/{id}` endpoint. Inline `HealthBadge` chips appear on the hotspots / ownership / graph views so health context follows you across the app (#212).
 - **AI fix / test prompts on the refactoring and coverage pages.** Per-row `AI fix prompt` / `AI test prompt` buttons open a modal that picks a target agent (Generic / Claude Code / Cursor), previews the generated prompt (with biomarkers, line ranges, severities, score deductions, suggested directions, hard constraints, completion contract — and the explicit "verify each finding against the real code; treat analyzer output as leads, not ground truth" preamble), and copies to clipboard. Prompt builder is generic (`buildAiPrompt` / `buildCoverageAiPrompt`) so future surfaces can reuse it (#212).
@@ -779,7 +831,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.8.0] — 2026-05-11
 
 ### Added
-- **Workspace mode is now first-class across the CLI.** Every relevant command auto-detects whether it's running inside a workspace root and routes accordingly, with a one-line `[workspace] …` notice when it does. New flags `--no-workspace` (force single-repo) and `--repo <alias>` (scope to one repo) on `update`, `status`, `watch`, `doctor`, `costs`, `search`, `dead-code`, `decision`, `generate-claude-md`, `hook install/status/uninstall`. `costs` and `search` also gained `--all` for explicit workspace-wide fan-out. New `Workspace auto-detect` section in [CLI Reference](CLI_REFERENCE.md) (#173).
+- **Workspace mode is now first-class across the CLI.** Every relevant command auto-detects whether it's running inside a workspace root and routes accordingly, with a one-line `[workspace] …` notice when it does. New flags `--no-workspace` (force single-repo) and `--repo <alias>` (scope to one repo) on `update`, `status`, `watch`, `doctor`, `costs`, `search`, `dead-code`, `decision`, `generate-claude-md`, `hook install/status/uninstall`. `costs` and `search` also gained `--all` for explicit workspace-wide fan-out. New `Workspace auto-detect` section in [CLI Reference](reference/CLI_REFERENCE.md) (#173).
 - **`repowise update --workspace` now first-time-indexes previously-skipped repos.** Workspace entries without `.repowise/` no longer short-circuit with `"not_indexed"` — the full index pipeline runs (no LLM cost), `state.json` is written with a `docs_skip_reason` marker, and subsequent `update --repo <alias> --docs` cleanly picks up doc generation (#173).
 - **`repowise workspace add` defaults to full index + LLM doc generation** when a provider is configured. Inherits provider, model, embedder, and exclude patterns from the primary repo's `.repowise/config.yaml`. `--no-docs` / `--no-index` opt out. Cost-gate prompt still runs before any tokens are spent (#173).
 - **`repowise doctor --workspace`** validates every workspace entry: directory exists, has `.git/`, state.json ↔ workspace config drift, MCP registration. `--repair` syncs drifted entries from disk and drops dead entries whose directory no longer exists (#173).
@@ -939,7 +991,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Workspace dashboard** — contract summary now renders when contracts exist but no cross-repo links have been detected, instead of showing an empty state (#111).
 
 ### Documentation
-- **Computed glossary** — `docs/COMPUTED_GLOSSARY.md` documents every derived metric, score, and signal Repowise computes (PageRank, hotspot score, freshness, confidence tiers, etc.) so the surface vocabulary is discoverable in one place (#127).
+- **Computed glossary** — `docs/reference/COMPUTED_GLOSSARY.md` documents every derived metric, score, and signal Repowise computes (PageRank, hotspot score, freshness, confidence tiers, etc.) so the surface vocabulary is discoverable in one place (#127).
 - **README + UI/UX audit fixes** — confirmation dialogs, mobile responsiveness, accessibility, and empty/error/loading states across the dashboard (#117).
 
 ### Dependencies
@@ -1028,7 +1080,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Swift `extension_declaration` heritage** — extension conformance declarations now contribute heritage relations (`extension_declaration` was missing from Swift's `heritage_node_types`).
 
 ### Changed
-- **Language tier promotion** — C# moves from "Good" to "Full" in `README.md` and `docs/LANGUAGE_SUPPORT.md`. Eight languages now sit at Full tier (was: seven).
+- **Language tier promotion** — C# moves from "Good" to "Full" in `README.md` and `docs/layers/LANGUAGE_SUPPORT.md`. Eight languages now sit at Full tier (was: seven).
 - **Heritage / bindings / dead-code internals refactored into per-language subpackages** — `extractors/heritage.py` and `extractors/bindings.py` (previously 600+ LOC monoliths) and `analysis/dead_code.py` are now subpackages with one file per language plus a re-export shim. Public API (`extract_heritage`, `extract_import_bindings`, `DeadCodeAnalyzer`, etc.) is unchanged.
 
 ### Tests

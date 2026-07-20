@@ -27,6 +27,14 @@ export interface DocPage {
   confidence: number;
   freshness_status: FreshnessStatus;
   metadata: Record<string, unknown>;
+  /**
+   * Deterministic coverage-tail pages are template-generated (zero LLM).
+   * `is_deterministic` is the flat marker for badging / ranking; `doc_tier`
+   * (2 = in-budget template, 3 = coverage tail) mirrors `metadata.doc_tier`.
+   * Optional so older payloads without the fields still type-check.
+   */
+  is_deterministic?: boolean;
+  doc_tier?: number | null;
   human_notes: string | null;
   created_at: string;
   updated_at: string;

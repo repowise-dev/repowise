@@ -34,6 +34,10 @@ _BACKTICK_REF_RE = re.compile(r"(?<!`)` *([A-Za-z_/.][\w./\-]*?) *`(?!`)")
 # Markdown code fence — content inside is verbatim source, not refs.
 _FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
 
+# Page types whose target_path is a real file path. Shared with
+# related_pages, which widens the same index the same way.
+FILE_BACKED_PAGE_TYPES = frozenset({"file_page", "api_contract", "infra_page"})
+
 
 # ---------------------------------------------------------------------------
 # Link index
@@ -67,7 +71,7 @@ class LinkIndex:
             if not page.target_path:
                 continue
             idx.by_target[page.target_path] = page.page_id
-            if page.page_type in {"file_page", "api_contract", "infra_page"}:
+            if page.page_type in FILE_BACKED_PAGE_TYPES:
                 idx.by_path[page.target_path] = page.page_id
                 base = Path(page.target_path).name
                 # Don't overwrite — first wins to avoid ambiguous basename collisions.
@@ -75,9 +79,7 @@ class LinkIndex:
             elif page.page_type == "symbol_spotlight":
                 # target_path is "file::name" — map the qualified form
                 if "::" in page.target_path:
-                    idx.by_symbol_qname.setdefault(
-                        page.target_path, page.page_id
-                    )
+                    idx.by_symbol_qname.setdefault(page.target_path, page.page_id)
 
         # Augment with symbol qualified_names from the parser even when
         # the symbol itself didn't get a spotlight — the link resolves
@@ -92,11 +94,32 @@ class LinkIndex:
                     idx.by_symbol_qname.setdefault(qname, host_page)
                     # Last-segment match for `Foo.bar` → `bar`
                     if "." in qname:
-                        idx.by_symbol_qname.setdefault(
-                            qname.rsplit(".", 1)[-1], host_page
-                        )
+                        idx.by_symbol_qname.setdefault(qname.rsplit(".", 1)[-1], host_page)
 
         return idx
+
+    def add_prior_page_ids(self, prior_page_ids: Any) -> None:
+        """Widen resolution with page ids persisted from prior runs.
+
+        On an incremental update only the affected pages are in the run's
+        page set, so a ref to any unchanged file would fail to resolve and
+        the regenerated pages would lose their cross-page links. A page_id
+        is ``"{page_type}:{target_path}"``, so the persisted ids carry
+        enough to rebuild the path tables. Current-run pages always win
+        (``setdefault``); the reader drops links whose target no longer
+        exists, so stale prior ids are harmless. Only file-backed and
+        symbol pages are added — other page types are not path-shaped.
+        """
+        for pid in prior_page_ids or ():
+            ptype, _, tpath = str(pid).partition(":")
+            if not tpath:
+                continue
+            if ptype in FILE_BACKED_PAGE_TYPES:
+                self.by_target.setdefault(tpath, str(pid))
+                self.by_path.setdefault(tpath, str(pid))
+                self.by_basename.setdefault(Path(tpath).name, str(pid))
+            elif ptype == "symbol_spotlight" and "::" in tpath:
+                self.by_symbol_qname.setdefault(tpath, str(pid))
 
     def resolve(self, ref: str) -> str | None:
         """Resolve a single ref to a ``page_id``; ``None`` if unmatched."""
@@ -156,9 +179,12 @@ def resolve_wiki_links(
         if target in seen_targets:
             continue
         seen_targets.add(target)
-        kind = "file" if "/" in ref or ref.endswith(
-            (".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rs", ".java")
-        ) else "symbol"
+        kind = (
+            "file"
+            if "/" in ref
+            or ref.endswith((".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rs", ".java"))
+            else "symbol"
+        )
         links.append(WikiLink(anchor=ref, target_page_id=target, kind=kind))
         if len(links) >= max_links_per_page:
             break
@@ -173,17 +199,26 @@ def resolve_wiki_links(
 def attach_wiki_links_and_backlinks(
     pages: list[GeneratedPage],
     parsed_files: list[Any] | None = None,
+    prior_page_ids: Any = None,
 ) -> None:
     """Populate ``metadata['wiki_links']`` and ``metadata['backlinks']``.
 
     Mutates each :class:`GeneratedPage` in place. Idempotent and safe
     to call on a partially-populated page set — pages with no resolved
     refs simply get empty lists.
+
+    ``prior_page_ids`` widens forward-link resolution to pages persisted
+    from earlier runs (see :meth:`LinkIndex.add_prior_page_ids`); without
+    it an incremental update can only link within its own diff. Backlinks
+    are still built for current-run pages only — a prior page's stored
+    backlinks are not reachable from here and refresh on its next
+    regeneration.
     """
     if not pages:
         return
 
     index = LinkIndex.build(pages, parsed_files)
+    index.add_prior_page_ids(prior_page_ids)
     by_id: dict[str, GeneratedPage] = {p.page_id: p for p in pages}
 
     # First pass — resolve forward links per page.
@@ -235,12 +270,8 @@ def attach_wiki_links_and_backlinks(
     log.info(
         "wiki_links.resolved",
         pages=len(pages),
-        total_forward_links=sum(
-            len(p.metadata.get("wiki_links") or []) for p in pages
-        ),
-        pages_with_backlinks=sum(
-            1 for p in pages if p.metadata.get("backlinks")
-        ),
+        total_forward_links=sum(len(p.metadata.get("wiki_links") or []) for p in pages),
+        pages_with_backlinks=sum(1 for p in pages if p.metadata.get("backlinks")),
     )
 
 

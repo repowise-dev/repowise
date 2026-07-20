@@ -8,11 +8,14 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from repowise.core.analysis.knowledge_graph import KnowledgeGraphResult
 from repowise.core.generation.knowledge_graph import (
     _backfill_summaries,
     _parse_json_response,
     build_deterministic_tour,
     enrich_knowledge_graph,
+    enrich_knowledge_graph_structural,
+    finalize_knowledge_graph,
 )
 
 # ---------------------------------------------------------------------------
@@ -343,3 +346,102 @@ class TestParseJsonResponse:
     def test_empty_string(self):
         result = _parse_json_response("")
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Structural / finalize split (the init overlap seam)
+# ---------------------------------------------------------------------------
+
+
+class TestEnrichmentSplit:
+    """The orchestrator runs the page-independent half (layer naming + tour)
+    concurrently with page generation, then finalizes with the pages. These
+    pin that the split is behavior-preserving vs the serial wrapper and that
+    the structural half never depends on generated pages."""
+
+    @pytest.mark.asyncio
+    async def test_structural_returns_layers_and_tour_without_pages(self):
+        llm = _make_llm_client(
+            '{"layers": [{"id": "layer:core", "name": "Core Pipeline", "description": "d"}], '
+            '"tour": [{"order": 1, "title": "Start", "description": "s", "files": ["src/main.py"]}]}'
+        )
+        skeleton = _make_kg_skeleton()
+        builder = _make_graph_builder({"src/core.py": 0.5, "src/main.py": 0.3})
+        repo = _make_repo_structure()
+
+        enriched_layers, tour = await enrich_knowledge_graph_structural(
+            skeleton, llm, builder, repo, []
+        )
+        # Layer naming applied…
+        assert enriched_layers[0]["name"] == "Core Pipeline"
+        # …tour produced…
+        assert tour and tour[0]["title"] == "Start"
+        # …but the structural half has no pages, so no summary was backfilled
+        # and it did not assign layers/tour onto the skeleton (finalize's job).
+        assert all(n["summary"] == "" for n in skeleton.nodes)
+
+    def test_finalize_backfills_assigns_and_returns_skeleton(self):
+        skeleton = _make_kg_skeleton()
+        enriched_layers = [{"id": "layer:core", "name": "Renamed", "description": "d", "nodeIds": []}]
+        tour = [{"order": 1, "title": "T", "description": "", "nodeIds": []}]
+        pages = [SimpleNamespace(target_path="src/core.py", summary="Core logic")]
+
+        result = finalize_knowledge_graph(skeleton, enriched_layers, tour, pages)
+
+        assert result is skeleton
+        assert result.layers == enriched_layers
+        assert result.tour == tour
+        core = next(n for n in result.nodes if n["filePath"] == "src/core.py")
+        assert core["summary"] == "Core logic"
+
+    @pytest.mark.asyncio
+    async def test_split_matches_serial_wrapper(self):
+        # Equivalence: structural + finalize must produce the same skeleton the
+        # single-call wrapper does, given identical (deterministic) LLM output.
+        response = (
+            '{"layers": [{"id": "layer:core", "name": "Core Pipeline", "description": "d"}, '
+            '{"id": "layer:cli", "name": "CLI", "description": "c"}], '
+            '"tour": [{"order": 1, "title": "Start", "description": "s", "files": ["src/main.py"]}]}'
+        )
+        pages = [SimpleNamespace(target_path="src/core.py", summary="Core logic")]
+        builder = _make_graph_builder({"src/core.py": 0.5, "src/main.py": 0.3})
+        repo = _make_repo_structure()
+
+        wrapper_skel = _make_kg_skeleton()
+        wrapped = await enrich_knowledge_graph(
+            wrapper_skel, _make_llm_client(response), builder, repo, [], pages
+        )
+
+        split_skel = _make_kg_skeleton()
+        layers, tour = await enrich_knowledge_graph_structural(
+            split_skel, _make_llm_client(response), builder, repo, []
+        )
+        split = finalize_knowledge_graph(split_skel, layers, tour, pages)
+
+        assert split.layers == wrapped.layers
+        assert split.tour == wrapped.tour
+        assert [n["summary"] for n in split.nodes] == [n["summary"] for n in wrapped.nodes]
+
+    @pytest.mark.asyncio
+    async def test_generation_snapshot_insulated_from_concurrent_layer_naming(self):
+        # The orchestrator hands generation a to_dict() snapshot of the skeleton
+        # and lets structural enrichment run concurrently. Enrichment renames
+        # layers in place, so the snapshot generation holds must be a copy that
+        # a later rename cannot mutate.
+        result = KnowledgeGraphResult(
+            layers=[{"id": "layer:core", "name": "heuristic-core", "description": "", "nodeIds": ["file:src/core.py"]}],
+            nodes=[{"id": "file:src/core.py", "type": "file", "filePath": "src/core.py", "summary": ""}],
+        )
+        snapshot = result.to_dict()
+
+        llm = _make_llm_client(
+            '{"layers": [{"id": "layer:core", "name": "Renamed Core", "description": "d"}]}'
+        )
+        await enrich_knowledge_graph_structural(
+            result, llm, _make_graph_builder({"src/core.py": 0.5}), _make_repo_structure(), []
+        )
+
+        # In-place rename landed on the live skeleton…
+        assert result.layers[0]["name"] == "Renamed Core"
+        # …but the snapshot generation already holds is untouched.
+        assert snapshot["layers"][0]["name"] == "heuristic-core"

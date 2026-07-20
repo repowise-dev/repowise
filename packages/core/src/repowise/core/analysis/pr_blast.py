@@ -65,7 +65,11 @@ class PRBlastRadiusAnalyzer:
         # 5. Test gaps
         test_gaps = await self._find_test_gaps(all_affected_paths)
 
-        # 6. Overall risk score (0-10)
+        # 6. Guarding tests — the tests the per-test coverage map proves execute
+        #    the changed files (the "run these to validate" answer).
+        guarding_tests = await self._guarding_tests(changed_files)
+
+        # 7. Overall risk score (0-10)
         overall_risk_score = self._compute_overall_risk(direct_risks, transitive_affected)
 
         return {
@@ -74,6 +78,7 @@ class PRBlastRadiusAnalyzer:
             "cochange_warnings": cochange_warnings,
             "recommended_reviewers": recommended_reviewers,
             "test_gaps": test_gaps,
+            "guarding_tests": guarding_tests,
             "overall_risk_score": overall_risk_score,
         }
 
@@ -128,9 +133,7 @@ class PRBlastRadiusAnalyzer:
         """Compute file-level risk: centrality * (1 + temporal_hotspot_score)."""
         return centrality * (1.0 + temporal_hotspot_score)
 
-    async def _transitive_affected(
-        self, changed_files: list[str], max_depth: int
-    ) -> list[dict]:
+    async def _transitive_affected(self, changed_files: list[str], max_depth: int) -> list[dict]:
         """BFS over reverse graph edges (source_node_id -> target_node_id direction).
 
         We want files that *import* the changed files (i.e. are affected when a
@@ -288,6 +291,54 @@ class PRBlastRadiusAnalyzer:
                 gaps.append(path)
 
         return gaps
+
+    async def _guarding_tests(self, changed_files: list[str]) -> dict:
+        """Tests the per-test coverage map proves execute the *changed* files.
+
+        The inverse of ``test_gaps``: instead of "which changed file lacks a
+        test", this answers "which recorded tests actually exercise this
+        change" - the coverage-backed "run these to validate" list, keyed by
+        test id (a pytest-runnable node id when the report carried node-id
+        contexts). Reuses the Phase 1 reverse index ``tests_covering``.
+
+        Scoped to the changed files, NOT the transitively-affected set: the
+        Phase 3 gate showed that affected (importing) files are covered
+        overwhelmingly by the same mega parametrized suites, so an
+        affected-file run-list is near-useless noise. The actionable set is the
+        tests that execute the code you actually edited. Line precision is not
+        available here (get_risk takes file paths, not a diff), so this is
+        file-level; ``repowise impacted-tests`` gives the line-level answer from
+        a real diff.
+
+        Returns ``{map_present, tests_to_run, by_file}``. ``map_present`` is
+        False when no per-test map is ingested at all - the honest "unknown",
+        distinct from "this change has no guarding tests".
+        """
+        empty = {"map_present": False, "tests_to_run": [], "by_file": {}}
+        if not changed_files:
+            return empty
+
+        from repowise.core.persistence.crud import get_test_coverage_summary, tests_covering
+
+        summary = await get_test_coverage_summary(self._session, self._repo_id)
+        if summary.get("pair_count", 0) == 0:
+            return empty
+
+        by_file: dict[str, list[str]] = {}
+        all_ids: set[str] = set()
+        for path in changed_files:
+            rows = await tests_covering(self._session, self._repo_id, path, lines=None)
+            if not rows:
+                continue
+            ids = sorted({r["test_id"] for r in rows})
+            by_file[path] = ids
+            all_ids.update(ids)
+
+        return {
+            "map_present": True,
+            "tests_to_run": sorted(all_ids),
+            "by_file": by_file,
+        }
 
     @staticmethod
     def _compute_overall_risk(

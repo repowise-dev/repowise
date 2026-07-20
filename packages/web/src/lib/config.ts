@@ -10,6 +10,7 @@ const KEYS = {
   provider: "repowise_default_provider",
   model: "repowise_default_model",
   embedder: "repowise_embedder",
+  weekend: "repowise_weekend",
 } as const;
 
 function read(key: string): string {
@@ -41,4 +42,8 @@ export const config = {
 
   getEmbedder: () => read(KEYS.embedder) || "mock",
   setEmbedder: (v: string) => write(KEYS.embedder, v),
+
+  /** Weekend-days preset id; "" means unset, which resolves to Sat/Sun. */
+  getWeekend: () => read(KEYS.weekend),
+  setWeekend: (v: string) => write(KEYS.weekend, v),
 };

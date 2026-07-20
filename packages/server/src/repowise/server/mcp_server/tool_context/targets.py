@@ -45,6 +45,7 @@ from repowise.server.mcp_server.tool_context.kg import (
     _find_layer_for_file,
     _find_tour_step_for_file,
 )
+from repowise.server.mcp_server.tool_risk.assessment import fix_annotation
 
 
 # Skeleton-by-default threshold for file targets. Measured on this repo: a
@@ -555,6 +556,12 @@ async def _resolve_one_target(
     #   * ``hotspot``: lights the way to ``get_risk`` for files in the 95th+
     #     churn percentile. Just the boolean — the full risk dossier stays
     #     in ``get_risk`` so the triage card doesn't grow.
+    #   * ``fix_history``: the same pointer for the defect signal, and the
+    #     reason the card grew by one key. ``hotspot`` alone answers "is this
+    #     file busy", which is not the same question as "does this file break",
+    #     and get_risk already classifies targets bug-prone off these columns.
+    #     Count plus age plus the magnet flag, no symbols and no dossier;
+    #     omitted entirely on files with no counted fixes.
     #   * ``decision_records``: titles only, no body. Lights the way to
     #     ``get_why``. We deliberately don't inline the rationale here;
     #     duplicating it across every ``get_context`` response bloats the
@@ -565,14 +572,26 @@ async def _resolve_one_target(
     if target_type == "module" and page:
         triage_path = page.target_path
     if triage_path:
+        # Same single row, four columns instead of one: no extra round trip.
         triage_meta_res = await session.execute(
-            select(GitMetadata.is_hotspot).where(
+            select(
+                GitMetadata.is_hotspot,
+                GitMetadata.prior_defect_count,
+                GitMetadata.bug_magnet,
+                GitMetadata.last_fix_at,
+            ).where(
                 GitMetadata.repository_id == repo_id,
                 GitMetadata.file_path == triage_path,
             )
         )
-        triage_meta = triage_meta_res.scalar_one_or_none()
-        result_data["hotspot"] = bool(triage_meta) if triage_meta is not None else False
+        triage_meta = triage_meta_res.one_or_none()
+        result_data["hotspot"] = bool(triage_meta.is_hotspot) if triage_meta is not None else False
+        if triage_meta is not None:
+            # Row exposes the selected columns as attributes, which is exactly
+            # the shape fix_annotation reads off a full ORM row.
+            fixes = fix_annotation(triage_meta)
+            if fixes is not None:
+                result_data["fix_history"] = fixes
 
         # Governing decisions — opt-in only (``include=["decisions"]``).
         # The default triage card omits them: the rich form

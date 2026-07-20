@@ -77,6 +77,20 @@
   arguments: (argument_list) @call.arguments
 ) @call.site
 
+; Package-qualified function value passed as call argument: f(pkg.Handler, ...)
+; Rescues functions used as first-class values — passed as callbacks, middleware,
+; or handlers rather than called directly. Without this, pkg.Func referenced
+; only in argument position (never in function: position) has no call edges
+; and is incorrectly flagged as an unused export.
+(call_expression
+  arguments: (argument_list
+    (selector_expression
+      operand: (_) @call.receiver
+      field: (field_identifier) @call.target
+    )
+  )
+) @call.site
+
 ; ---------------------------------------------------------------------------
 ; Type references — drive file-level ``type_use`` edges
 ; ---------------------------------------------------------------------------

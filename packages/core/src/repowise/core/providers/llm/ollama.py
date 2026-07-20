@@ -20,6 +20,7 @@ Usage:
 
 from __future__ import annotations
 
+import contextlib
 import os
 from collections.abc import AsyncIterator
 from typing import Any
@@ -178,7 +179,7 @@ class OllamaProvider(BaseProvider):
         )
 
         try:
-            return await self._generate_with_retry(
+            result = await self._generate_with_retry(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 max_tokens=max_tokens,
@@ -190,6 +191,24 @@ class OllamaProvider(BaseProvider):
                 "ollama",
                 f"All {_MAX_RETRIES} retries exhausted: {exc}",
             ) from exc
+
+        # Record the call so a local index still shows accurate call/token
+        # counts on the Costs page — priced at $0, since the ``ollama/`` prefix
+        # marks it local (see ``is_local_model``). Recorded in the outer method
+        # (not the @retry-wrapped inner one) so a retry can never double-count.
+        # The tracker is attached externally by the orchestrator, so it may be
+        # absent.
+        tracker = getattr(self, "_cost_tracker", None)
+        if tracker is not None:
+            with contextlib.suppress(Exception):
+                await tracker.record(
+                    model=f"ollama/{self._model}",
+                    input_tokens=result.input_tokens,
+                    output_tokens=result.output_tokens,
+                    operation=tracker.operation,
+                    file_path=None,
+                )
+        return result
 
     @retry(
         retry=retry_if_exception_type(ProviderError),

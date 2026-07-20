@@ -51,7 +51,7 @@ export interface DistillSavingsCardProps {
   data?: DistillSavingsData;
 }
 
-const DISTILL_DOCS = "https://github.com/repowise-dev/repowise/blob/main/docs/DISTILL.md";
+const DISTILL_DOCS = "https://github.com/repowise-dev/repowise/blob/main/docs/agent/DISTILL.md";
 
 /** Humanize the resolved pricing agent for the "priced at" caption. */
 function agentLabel(agent: string | undefined): string {
@@ -262,8 +262,9 @@ export function DistillSavingsCard({ data }: DistillSavingsCardProps) {
         <p className="mt-3 text-xs leading-snug text-[var(--color-text-tertiary)]">
           Distill counts <code>repowise distill</code> command/hook savings; MCP counts the raw
           file exploration each tool answer replaced (plus any over-budget content trimmed). Saved
-          tokens are agent input, priced at the agent&apos;s input rate. Everything stays on this
-          machine.
+          tokens are agent input priced at the agent&apos;s input rate, plus a small credit for the
+          tool calls repowise let the agent skip; counts are estimates (~chars/4) and deliberately
+          undersell. Everything stays on this machine.
         </p>
       </CardContent>
     </Card>

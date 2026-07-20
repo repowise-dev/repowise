@@ -186,6 +186,7 @@ class LanguageNodeMap:
     raise_kinds: frozenset[str] = frozenset()
     break_kinds: frozenset[str] = frozenset()
     continue_kinds: frozenset[str] = frozenset()
+    with_kinds: frozenset[str] = frozenset()
     #   * ``statement_wrapper_kinds`` -- statement node(s) that merely wrap the
     #     node the CFG builder should classify, as their last named child.
     #     Expression-oriented grammars need this: tree-sitter-rust parses every
@@ -230,6 +231,7 @@ _PY = LanguageNodeMap(
     raise_kinds=frozenset({"raise_statement"}),
     break_kinds=frozenset({"break_statement"}),
     continue_kinds=frozenset({"continue_statement"}),
+    with_kinds=frozenset({"with_statement"}),
 )
 
 _TS = LanguageNodeMap(

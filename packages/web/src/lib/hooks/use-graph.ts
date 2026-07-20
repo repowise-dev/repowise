@@ -1,5 +1,6 @@
 "use client";
 
+import type { ZoomMap } from "@repowise-dev/ui/zoom";
 import useSWR from "swr";
 import {
   getArchitecture,
@@ -9,12 +10,12 @@ import {
   getCommunityDetail,
   getCommunitySlice,
   getDeadCodeGraph,
-  getEgoGraph,
   getExecutionFlows,
   getGraph,
   getGraphMetrics,
   getHotFilesGraph,
   getModuleGraph,
+  getZoomMap,
 } from "@/lib/api/graph";
 import type {
   ArchitectureGraphResponse,
@@ -23,7 +24,6 @@ import type {
   CommunitySliceResponse,
   CommunitySummaryItem,
   DeadCodeGraphResponse,
-  EgoGraphResponse,
   ExecutionFlowsResponse,
   GraphExportResponse,
   GraphMetricsResponse,
@@ -32,6 +32,21 @@ import type {
 } from "@/lib/api/types";
 
 const SWR_OPTS = { revalidateOnFocus: false, revalidateOnReconnect: false };
+
+export function useZoomMap(
+  repoId: string | null,
+  params?: { max_depth?: number; focus?: string },
+) {
+  const key = repoId
+    ? `zoom-map:${repoId}:${params?.max_depth ?? ""}:${params?.focus ?? ""}`
+    : null;
+  const { data, error, isLoading } = useSWR<ZoomMap>(
+    key,
+    () => getZoomMap(repoId!, params),
+    SWR_OPTS,
+  );
+  return { zoomMap: data, error, isLoading };
+}
 
 export function useGraph(repoId: string | null, limit?: number) {
   const { data, error, isLoading } = useSWR<GraphExportResponse>(
@@ -46,15 +61,6 @@ export function useModuleGraph(repoId: string | null) {
   const { data, error, isLoading } = useSWR<ModuleGraphResponse>(
     repoId ? `module-graph:${repoId}` : null,
     () => getModuleGraph(repoId!),
-    SWR_OPTS,
-  );
-  return { graph: data, error, isLoading };
-}
-
-export function useEgoGraph(repoId: string | null, nodeId: string | null, hops = 2) {
-  const { data, error, isLoading } = useSWR<EgoGraphResponse>(
-    repoId && nodeId ? `ego-graph:${repoId}:${nodeId}:${hops}` : null,
-    () => getEgoGraph(repoId!, nodeId!, hops),
     SWR_OPTS,
   );
   return { graph: data, error, isLoading };

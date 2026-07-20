@@ -14,7 +14,12 @@ import {
 import type { DocPage } from "@repowise-dev/types/docs";
 import { cn } from "../lib/cn";
 import { formatRelativeTime, formatTokens } from "../lib/format";
-import { getPageTypeLabel } from "../lib/page-types";
+import {
+  getPageTypeLabel,
+  isDeterministicPage,
+  DETERMINISTIC_BADGE_LABEL,
+  DETERMINISTIC_BADGE_TITLE,
+} from "../lib/page-types";
 import { computeDocNav } from "./doc-nav";
 import { filterMarkdownByPersona, type ReaderPersona } from "./reader-persona";
 import { WikiMarkdown } from "../wiki/wiki-markdown";
@@ -22,9 +27,18 @@ import { TableOfContents } from "../wiki/table-of-contents";
 import { BacklinksPanel } from "../wiki/backlinks-panel";
 import {
   getBacklinks,
+  getRelatedPages,
   getWikiLinks,
+  type RelatedReason,
 } from "../wiki/wiki-links-types";
 import { Breadcrumb } from "../shared/breadcrumb";
+
+const RELATED_REASON_LABELS: Record<RelatedReason, string> = {
+  imports: "imports",
+  "imported-by": "imported by",
+  "co-changes-with": "changes together",
+  "same-module": "same module",
+};
 
 /** Router-aware anchor — host injects Next.js Link / in-app interception. */
 export type ReaderLinkComponent = React.ElementType<{
@@ -176,7 +190,18 @@ function DocsReaderBody({
   const relatedLinks = useMemo(() => {
     const byId = new Map(pages.map((p) => [p.id, p]));
     const seen = new Set<string>();
-    const out: { id: string; title: string }[] = [];
+    const out: { id: string; title: string; reason?: RelatedReason }[] = [];
+    // Graph-derived neighbors first — they carry a reason and exist even
+    // when the prose never mentions the target. The backend dedups them
+    // against wiki_links, but stay defensive here.
+    for (const rel of getRelatedPages(page.metadata)) {
+      const target = rel.target_page_id;
+      if (target === page.id || seen.has(target)) continue;
+      const hit = byId.get(target);
+      if (!hit) continue;
+      seen.add(target);
+      out.push({ id: hit.id, title: hit.title, reason: rel.reason });
+    }
     for (const link of wikiLinks) {
       const target = link.target_page_id;
       if (target === page.id || seen.has(target)) continue;
@@ -186,7 +211,7 @@ function DocsReaderBody({
       out.push({ id: hit.id, title: hit.title });
     }
     return out;
-  }, [wikiLinks, pages, page.id]);
+  }, [wikiLinks, page.metadata, pages, page.id]);
 
   const layerName =
     typeof page.metadata?.layer_name === "string" ? page.metadata.layer_name : "";
@@ -296,6 +321,14 @@ function DocsReaderBody({
               <span className="rounded-full bg-[var(--color-bg-elevated)] px-2 py-0.5 uppercase tracking-wider">
                 {getPageTypeLabel(page.page_type)}
               </span>
+              {isDeterministicPage(page) && (
+                <span
+                  className="rounded-full border border-[var(--color-border-default)] px-2 py-0.5 uppercase tracking-wider text-[var(--color-text-tertiary)]"
+                  title={DETERMINISTIC_BADGE_TITLE}
+                >
+                  {DETERMINISTIC_BADGE_LABEL}
+                </span>
+              )}
               {moduleSeg && (
                 <button
                   onClick={() => goToPageId(moduleSeg.pageId!)}
@@ -422,6 +455,29 @@ function DocsReaderBody({
                   </ul>
                 </div>
               )}
+
+            {/* Related pages, bottom strip. The right rail is hidden below
+                lg (vscode webview panels rarely reach lg either), so narrow
+                viewports get the related links here instead. */}
+            {relatedLinks.length > 0 && (
+              <div className="mt-8 lg:hidden">
+                <p className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider mb-2">
+                  Related
+                </p>
+                <div className="flex flex-wrap gap-1.5">
+                  {relatedLinks.slice(0, 8).map((r) => (
+                    <button
+                      key={r.id}
+                      onClick={() => goToPageId(r.id)}
+                      className="rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2.5 py-1 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-accent-primary)] hover:border-[var(--color-accent-primary)] transition-colors"
+                      title={r.reason ? RELATED_REASON_LABELS[r.reason] : r.title}
+                    >
+                      {r.title}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -475,7 +531,7 @@ function DocsReaderBody({
                   Related
                 </p>
                 <ul className="space-y-1.5">
-                  {relatedLinks.slice(0, 5).map((r) => (
+                  {relatedLinks.slice(0, 8).map((r) => (
                     <li key={r.id} className="text-xs">
                       <button
                         onClick={() => goToPageId(r.id)}
@@ -484,12 +540,17 @@ function DocsReaderBody({
                       >
                         {r.title}
                       </button>
+                      {r.reason && (
+                        <span className="block text-[10px] text-[var(--color-text-tertiary)]">
+                          {RELATED_REASON_LABELS[r.reason]}
+                        </span>
+                      )}
                     </li>
                   ))}
                 </ul>
-                {relatedLinks.length > 5 && (
+                {relatedLinks.length > 8 && (
                   <p className="mt-1 text-[10px] text-[var(--color-text-tertiary)]">
-                    + {relatedLinks.length - 5} more
+                    + {relatedLinks.length - 8} more
                   </p>
                 )}
               </div>

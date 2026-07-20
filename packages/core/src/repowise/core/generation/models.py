@@ -145,6 +145,13 @@ class GenerationConfig:
     # that carry a decision; harvested candidates pass the same substring gate
     # as every other source before storage.
     harvest_decisions: bool = True
+    # ---- In-loop self-repair (hallucinated symbol refs) ----------------
+    # When the post-generation validator flags at least this many backtick
+    # identifiers that do not exist in the documented file, the tier-1 file
+    # page is re-generated ONCE with the invalid refs named in a corrective
+    # note, and the cleaner of the two drafts is kept. 0 disables the retry.
+    # Pages reused from a prior run are never retried (validated back then).
+    repair_warning_threshold: int = 2
     jobs_dir: str = ".repowise/jobs"
     large_file_source_pct: float = 0.4  # use structural summary when source tokens > budget * this
     language: str = "en"
@@ -374,45 +381,6 @@ def decay_confidence(
 def compute_source_hash(text: str) -> str:
     """Return the SHA-256 hex digest of *text* (used as source_hash)."""
     return hashlib.sha256(text.encode()).hexdigest()
-
-
-# ---------------------------------------------------------------------------
-# Git and Dead Code Config (Phase 5.5)
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class GitConfig:
-    """Configuration for git intelligence features."""
-
-    enabled: bool = True
-    commit_limit: int = 500
-    co_change_min_count: int = 3
-    blame_enabled: bool = True
-    prompt_commit_count: int = 10
-    depth_auto_upgrade: bool = True
-
-
-@dataclass(frozen=True)
-class DeadCodeConfig:
-    """Configuration for dead code detection."""
-
-    enabled: bool = True
-    detect_unreachable_files: bool = True
-    detect_unused_exports: bool = True
-    detect_unused_internals: bool = True
-    detect_zombie_packages: bool = True
-    min_confidence: float = 0.4
-    safe_to_delete_threshold: float = 0.7
-    dynamic_patterns: tuple[str, ...] = (
-        "*Plugin",
-        "*Handler",
-        "*Adapter",
-        "*Middleware",
-        "register_*",
-        "on_*",
-    )
-    analyze_on_update: bool = True
 
 
 # ---------------------------------------------------------------------------
