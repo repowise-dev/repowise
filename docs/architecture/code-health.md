@@ -1,6 +1,6 @@
 # Code Health: Architecture & Internals
 
-Companion to the user-facing [`docs/CODE_HEALTH.md`](../CODE_HEALTH.md). This
+Companion to the user-facing [`docs/layers/CODE_HEALTH.md`](../layers/CODE_HEALTH.md). This
 document is for contributors: where every piece lives, how data flows from
 parsed source to the dashboard, and the extension points for adding
 markers, languages, coverage formats, or alerts.
@@ -478,7 +478,7 @@ independent, expert-set weight table (the floored smells deduct at full weight
 there), and the **performance** signal under its own bounded `performance`
 category. The three signals share one scoring kernel against separate
 weight/category/cap tables and never feed back into each other; see the
-[user guide](../CODE_HEALTH.md#three-health-signals-defect-risk-maintainability-and-performance)
+[user guide](../layers/CODE_HEALTH.md#three-health-signals-defect-risk-maintainability-and-performance)
 for what each signal surfaces and why the overall score stays the defect score.
 
 ---
@@ -771,7 +771,7 @@ glob over the repo-relative POSIX path (`path`, with `path_glob` and `glob` as
 accepted aliases). `to_analyzer_config(file_paths)` resolves the globs to
 per-file disabled sets, which the engine honors in `_evaluate_file()`. The
 schema and examples are in the
-[user guide](../CODE_HEALTH.md#configuration).
+[user guide](../layers/CODE_HEALTH.md#configuration).
 
 ---
 
@@ -906,7 +906,7 @@ phases may revisit; the constraints kept v1 shippable.
 
 ## See also
 
-- [`docs/CODE_HEALTH.md`](../CODE_HEALTH.md): user-facing guide.
+- [`docs/layers/CODE_HEALTH.md`](../layers/CODE_HEALTH.md): user-facing guide.
 - [`packages/core/src/repowise/core/analysis/health/README.md`](../../packages/core/src/repowise/core/analysis/health/README.md): developer overview at the layer root.
 - Sub-package READMEs under `complexity/`, `coverage/`, `duplication/`, `biomarkers/`.
-- [`docs/architecture/graph-algorithms.md`](./graph-algorithms.md): the graph layer health depends on.
+- [`docs/architecture/graph-algorithms.md`](graph-algorithms.md): the graph layer health depends on.

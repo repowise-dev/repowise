@@ -194,7 +194,6 @@ Any model available in your local Ollama installation can be used.
 LiteLLM acts as a proxy supporting OpenAI, Azure, Cohere, Mistral, and dozens more.
 
 ```bash
-pip install "repowise[litellm]"
 export LITELLM_API_KEY="..."
 repowise init --provider litellm --model azure/gpt-4
 ```

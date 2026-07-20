@@ -1,4 +1,4 @@
-"""docs/MCP_TOOLS.md must track the live MCP tool registry.
+"""docs/agent/MCP_TOOLS.md must track the live MCP tool registry.
 
 The doc's tool inventory (headings) and surface counts used to be hand-edited
 and could silently drift from the registered surface; this pins both, the same
@@ -15,7 +15,7 @@ import pytest
 from repowise.core.registry import mcp_tool_registry
 from repowise.server.mcp_server._tool_selection import LEAN_TOOLS
 
-DOC = Path(__file__).parents[4] / "docs" / "MCP_TOOLS.md"
+DOC = Path(__file__).parents[4] / "docs" / "agent" / "MCP_TOOLS.md"
 
 
 @pytest.fixture(scope="module")

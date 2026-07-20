@@ -50,13 +50,13 @@ def test_render_returns_non_empty_string(gen):
 
 
 def test_render_never_references_repowise_repo_paths(gen):
-    # The generated file lands in USERS' repos — a `docs/CODE_HEALTH.md`-style
+    # The generated file lands in USERS' repos — a `docs/layers/CODE_HEALTH.md`-style
     # reference points at a file that only exists in the repowise repo itself.
     import dataclasses
 
     data = dataclasses.replace(_minimal_data(), code_health=_health_block(6.4))
     result = gen.render(data)
-    for repo_relative in ("docs/CODE_HEALTH.md", "docs/MCP_TOOLS.md", "docs/DISTILL.md"):
+    for repo_relative in ("docs/layers/CODE_HEALTH.md", "docs/agent/MCP_TOOLS.md", "docs/agent/DISTILL.md"):
         assert repo_relative not in result
 
 

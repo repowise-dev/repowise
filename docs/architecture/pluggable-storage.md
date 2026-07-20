@@ -216,7 +216,7 @@ broken plugin cannot derail the pipeline.
 The seams add a layer of indirection but no behavior change for users
 of the OSS defaults: `repowise init` still writes to
 `.repowise/wiki.db`, the in-process graph still owns ingestion, the
-nine MCP tools still expose the same surface, and `repowise --help`
+ten MCP tools still expose the same surface, and `repowise --help`
 lists the same commands in the same order. Plugins extend the
 defaults; they don't replace them unless an integration explicitly
 swaps an implementation in.

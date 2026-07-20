@@ -2,7 +2,7 @@
 
 How the language pipeline is built, and how to add a new language. For the
 user-facing "what works today" matrix, see
-[docs/LANGUAGE_SUPPORT.md](../LANGUAGE_SUPPORT.md).
+[docs/layers/LANGUAGE_SUPPORT.md](../layers/LANGUAGE_SUPPORT.md).
 
 The pipeline is fully modular. Language identity data lives in a centralised
 `LanguageRegistry`; per-language extraction logic lives in `extractors/`;
@@ -367,13 +367,13 @@ tuple, no orchestrator edits.
 | **gRPC** | `.proto` IDL, Go, Java, Python, NestJS (`@GrpcMethod`), C# (gRPC-dotnet) | Go, Java, Python, C# |
 | **Data** | DDL `CREATE`/`ALTER`, Alembic `op.create_table`, ORM entities (SQLAlchemy, SQLModel, Django, JPA, EF Core, ActiveRecord, Eloquent) | SQL string literals in app code (sqlglot-parsed, verb-anchored-regex fallback) |
 
-See [docs/WORKSPACES.md](../WORKSPACES.md) for the user-facing workspace guide.
+See [docs/scale/WORKSPACES.md](../scale/WORKSPACES.md) for the user-facing workspace guide.
 
 ---
 
 ## See also
 
-- [docs/LANGUAGE_SUPPORT.md](../LANGUAGE_SUPPORT.md), user-facing support matrix
-- [docs/CODE_HEALTH.md](../CODE_HEALTH.md), code-health markers and per-language precision hazards
+- [docs/layers/LANGUAGE_SUPPORT.md](../layers/LANGUAGE_SUPPORT.md), user-facing support matrix
+- [docs/layers/CODE_HEALTH.md](../layers/CODE_HEALTH.md), code-health markers and per-language precision hazards
 - [architecture/code-health.md](code-health.md), code-health layer internals
 - [architecture/ARCHITECTURE.md](ARCHITECTURE.md), full system architecture

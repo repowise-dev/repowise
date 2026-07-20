@@ -9,14 +9,14 @@ and more. **No LLM calls, no cloud requirement.** Pure Python over tree-sitter
 and git data, designed to finish in under 30 seconds on a 3,000-file repo.
 
 <div align="center">
-<img src="../.github/assets/health-loop.svg" alt="repowise code-health loop: 25 deterministic markers fan into three signals (defect risk, maintainability, performance), the graph and git history locate where risk concentrates, and refactoring intelligence emits concrete plans (Extract Class, Extract Helper, Move Method, Break Cycle, Split File) your agent executes" width="100%" />
+<img src="../../.github/assets/health-loop.svg" alt="repowise code-health loop: 25 deterministic markers fan into three signals (defect risk, maintainability, performance), the graph and git history locate where risk concentrates, and refactoring intelligence emits concrete plans (Extract Class, Extract Helper, Move Method, Break Cycle, Split File) your agent executes" width="100%" />
 </div>
 
 Code health runs as a loop: **measure** every file across three signals,
 **locate** where the risk concentrates through the dependency graph and git
 history, then **fix** it with a concrete refactoring plan an agent can execute
 (see [Refactoring targets](#refactoring-targets) and
-[docs/REFACTORING.md](REFACTORING.md)).
+[docs/layers/REFACTORING.md](REFACTORING.md)).
 
 Linters check patterns. The health score predicts risk. A linter flags a line
 that matches a known-bad shape; the score estimates which files are likely to
@@ -69,7 +69,7 @@ stays deterministic; only the learned constants ship. The strongest predictors
 are `co_change_scatter`, `change_entropy`, `ownership_risk`, and
 `nested_complexity`; widely-firing smells that proved weak under leakage-free
 scoring are floored. The full per-marker table lives in the
-[architecture doc](architecture/code-health.md#61-calibrated-weight-multipliers),
+[architecture doc](../architecture/code-health.md#61-calibrated-weight-multipliers),
 and the calibration with confidence intervals is in the
 [benchmark report](https://github.com/repowise-dev/repowise-bench/blob/master/health-defect/BENCHMARK_REPORT.md).
 
@@ -664,7 +664,7 @@ opt-in **Generate code** action that expands a plan into generated code plus a
 unified diff. Code generation runs only on an explicit request, never in the
 indexing hot path. It is enabled by default and can be turned off with
 `refactoring.llm.enabled: false`. Full reference:
-**[docs/REFACTORING.md](REFACTORING.md)**.
+**[docs/layers/REFACTORING.md](REFACTORING.md)**.
 
 ## Trends
 

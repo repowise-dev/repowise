@@ -1,6 +1,6 @@
 # CLI Reference
 
-Complete reference for all `repowise` commands. For a guided introduction, see the [Quickstart](QUICKSTART.md).
+Complete reference for all `repowise` commands. For a guided introduction, see the [Quickstart](../start/QUICKSTART.md).
 
 Command list (in `--help` order): `augment`, `init`, `delete`, `generate-claude-md`, `costs`, `update`, `dead-code`, `health`, `risk`, `decision`, `coverage`, `impacted-tests`, `search`, `distill`, `expand`, `saved`, `corrections`, `export`, `hook`, `status`, `doctor`, `watch`, `serve`, `mcp`, `reindex`, `restyle`, `wiki-styles`, `whats-new`, `telemetry`, `login`, `logout`, `whoami`, `workspace`. Two more ship as separate console scripts, not subcommands: `repowise-augment`, `repowise-rewrite` (both hook entry points, not meant to be run by hand).
 
@@ -77,7 +77,7 @@ All three reach the indexing knobs; the LLM-only knobs appear only when docs are
 | `--coverage-report` | Test-coverage report to ingest (LCOV / Cobertura / Clover). Repeatable. Auto-discovered when omitted. Distinct from `--coverage`, which controls documentation breadth. |
 | `--onboarding` / `--no-onboarding` | Generate the curated Onboarding collection (up to 8 overview pages). Default: on; slots without enough signal are skipped. |
 | `--harvest-decisions` / `--no-harvest-decisions` | Harvest architectural decisions during page generation (verified against source before storage). Default: on. |
-| `--wiki-style` | Documentation voice/density: `comprehensive` (default), `caveman` (token-condensed, AI-first), `reference` (API-manual), `tutorial` (beginner-friendly). Interactive full runs prompt when omitted. Saved to config so `update` keeps the style. See [WIKI_STYLES.md](WIKI_STYLES.md). |
+| `--wiki-style` | Documentation voice/density: `comprehensive` (default), `caveman` (token-condensed, AI-first), `reference` (API-manual), `tutorial` (beginner-friendly). Interactive full runs prompt when omitted. Saved to config so `update` keeps the style. See [WIKI_STYLES.md](../layers/WIKI_STYLES.md). |
 | `--language` | Output language for generated wiki pages: `en` (default), `ar`, `de`, `es`, `fr`, `hi`, `it`, `ja`, `ko`, `nl`, `pl`, `pt`, `ru`, `tr`, `zh`. Code, file paths, and symbol names stay untranslated. Saved to config so `update` keeps the language. Also asked in advanced interactive mode. To switch an existing wiki's language, set the flag and re-run `init --force`. |
 | `--resume` | Resume from the last checkpoint if interrupted |
 | `--force` | Regenerate all pages even if they exist |
@@ -86,8 +86,8 @@ All three reach the indexing knobs; the LLM-only knobs appear only when docs are
 | `--no-claude-md` | Don't generate `CLAUDE.md` |
 | `--agents` / `--no-agents` | Generate or skip managed `AGENTS.md` for Codex. Persists the preference. |
 | `--codex` / `--no-codex` | Generate or skip project-local Codex MCP/hooks setup. Interactive runs prompt when Codex CLI is installed and logged in; non-interactive runs require `--codex`. |
-| `--distill-hook` / `--no-distill-hook` | Install or skip the Distill command-rewrite hook (Claude Code PreToolUse). Strictly opt-in: interactive runs prompt (default No); `--no-distill-hook` also gates the repo off in config so a globally installed hook stays inert here. In workspace mode the verdict applies to every selected repo. See [DISTILL.md](DISTILL.md). |
-| `--seed-from` | Seed the index from an explicit base checkout instead of the auto-detected one. Rarely needed: inside a linked git worktree the base is detected and seeded automatically. See [WORKTREES.md](WORKTREES.md). |
+| `--distill-hook` / `--no-distill-hook` | Install or skip the Distill command-rewrite hook (Claude Code PreToolUse). Strictly opt-in: interactive runs prompt (default No); `--no-distill-hook` also gates the repo off in config so a globally installed hook stays inert here. In workspace mode the verdict applies to every selected repo. See [DISTILL.md](../agent/DISTILL.md). |
+| `--seed-from` | Seed the index from an explicit base checkout instead of the auto-detected one. Rarely needed: inside a linked git worktree the base is detected and seeded automatically. See [WORKTREES.md](../scale/WORKTREES.md). |
 | `--no-seed` | Disable worktree auto-seeding and run a full init even inside a linked worktree. |
 | `--yes` / `-y` | Skip confirmation prompts |
 | `--dry-run` | Show generation plan and cost estimate without running |
@@ -145,7 +145,7 @@ prompt-hash check skips them.
 
 Inside an unindexed linked git worktree, `update` first seeds the index from
 the base checkout automatically, then proceeds with the incremental update.
-See [WORKTREES.md](WORKTREES.md).
+See [WORKTREES.md](../scale/WORKTREES.md).
 
 **Options:**
 
@@ -200,7 +200,7 @@ With no `STYLE`, prints the current style and the available choices.
 
 Styles only differ in voice and density; the markdown structure (headings,
 sections) stays the same, so search, the table of contents, and cross-links keep
-working. See [WIKI_STYLES.md](WIKI_STYLES.md).
+working. See [WIKI_STYLES.md](../layers/WIKI_STYLES.md).
 
 **Options:**
 
@@ -402,7 +402,7 @@ repowise risk --ext .ts,.tsx  # restrict to specific suffixes
 repowise risk main..HEAD -x 'tests/' -x '*.spec.ts'  # omit tests from scoring
 ```
 
-See [`docs/CHANGE_RISK.md`](./CHANGE_RISK.md) for the scoring model.
+See [`docs/layers/CHANGE_RISK.md`](../layers/CHANGE_RISK.md) for the scoring model.
 
 ---
 
@@ -447,7 +447,7 @@ repowise impacted-tests main..HEAD --format list | xargs pytest
 
 ### `repowise health [PATH]`
 
-Compute per-file code-health scores from 25 deterministic markers (McCabe complexity, nesting, brain methods, LCOM4 cohesion, god classes, native clone detection, untested hotspots, coverage gradient, function/ownership/churn/change-entropy organizational risk, test-quality smells, and more). Zero LLM calls by default, pure Python over tree-sitter + git data. See [`docs/CODE_HEALTH.md`](./CODE_HEALTH.md) for the user guide and [`docs/architecture/code-health.md`](./architecture/code-health.md) for the internals.
+Compute per-file code-health scores from 25 deterministic markers (McCabe complexity, nesting, brain methods, LCOM4 cohesion, god classes, native clone detection, untested hotspots, coverage gradient, function/ownership/churn/change-entropy organizational risk, test-quality smells, and more). Zero LLM calls by default, pure Python over tree-sitter + git data. See [`docs/layers/CODE_HEALTH.md`](../layers/CODE_HEALTH.md) for the user guide and [`docs/architecture/code-health.md`](../architecture/code-health.md) for the internals.
 
 **Options:**
 
@@ -455,7 +455,7 @@ Compute per-file code-health scores from 25 deterministic markers (McCabe comple
 |------|-------------|
 | `--file <path>` | Deep-dive a single file (relative path) |
 | `--module <prefix>` | Restrict the report to files whose path starts with this prefix |
-| `--refactoring-targets` | Print structured, graph-aware refactoring plans (Extract Class / Helper / Move Method / Break Cycle), ranked `impact × centrality × blast radius`. See [REFACTORING.md](REFACTORING.md) |
+| `--refactoring-targets` | Print structured, graph-aware refactoring plans (Extract Class / Helper / Move Method / Break Cycle), ranked `impact × centrality × blast radius`. See [REFACTORING.md](../layers/REFACTORING.md) |
 | `--generate-code <selector>` | Generate an actual refactoring patch for one target. The only `health` flag that calls an LLM; needs a configured provider. |
 | `--trend` | Print the last 10 health snapshots + any active alerts (declining / predicted decline) |
 | `--badge` | Print a shields.io-compatible badge URL/JSON for the repo's health score |
@@ -566,7 +566,7 @@ Run a command and print a compact, reversible rendering of its output. Noise
 summaries always survive; the command's exit code is preserved. Dropped
 content is stored in `.repowise/omissions/` and referenced by an inline
 `[repowise#<ref>: ...]` marker. On any filter problem the raw output is
-printed unchanged. See [DISTILL.md](DISTILL.md) for the full feature guide.
+printed unchanged. See [DISTILL.md](../agent/DISTILL.md) for the full feature guide.
 
 ```bash
 repowise distill pytest -x
@@ -626,7 +626,7 @@ repowise saved --missed              # what's slipping past the hook
 Mine local agent transcripts for recurring command fumbles, consecutive runs
 of the same base command where the first failed and a later variant succeeded
 (wrong tool, wrong path, unknown flag, missing argument). Report-only by
-default; entirely local. See [DISTILL.md](DISTILL.md#repowise-corrections--recurring-command-fumbles).
+default; entirely local. See [DISTILL.md](../agent/DISTILL.md#repowise-corrections--recurring-command-fumbles).
 
 | Flag | Description |
 |------|-------------|
@@ -775,7 +775,7 @@ repowise workspace metrics
 repowise workspace metrics --json
 ```
 
-See [Workspaces](WORKSPACES.md) for the full multi-repo guide.
+See [Workspaces](../scale/WORKSPACES.md) for the full multi-repo guide.
 
 ---
 
@@ -808,7 +808,7 @@ repowise hook uninstall
 repowise hook uninstall --workspace
 ```
 
-See [Auto-Sync](AUTO_SYNC.md) for all sync methods (hooks, file watcher, webhooks, polling).
+See [Auto-Sync](../scale/AUTO_SYNC.md) for all sync methods (hooks, file watcher, webhooks, polling).
 
 ### `repowise hook rewrite install|uninstall|status`
 
@@ -832,7 +832,7 @@ every workspace repo with `--workspace`/`-w` (accepts an optional `PATH` and
 global hook entries plus the repo's AGENTS.md awareness section and leaves
 per-repo config untouched. Per-repo posture (`permission: ask | allow`,
 per-family overrides) lives under `distill.commands` in
-`.repowise/config.yaml`, see [DISTILL.md](DISTILL.md#configuration).
+`.repowise/config.yaml`, see [DISTILL.md](../agent/DISTILL.md#configuration).
 
 When `~/.codex` exists, `install` also writes a Codex hook entry to
 `~/.codex/hooks.json` (Codex ≥ 0.137 only, older builds can't apply a
@@ -840,7 +840,7 @@ rewrite) and maintains an "Output Distillation" section in the repo's
 `AGENTS.md` that works without any hook. Codex cannot show a rewritten
 command for approval, so there rewrites fire only for families set to
 `permission: allow`; `status` reports exactly what your build supports. See
-[DISTILL.md](DISTILL.md#3-the-command-rewrite-hook-claude-code--codex).
+[DISTILL.md](../agent/DISTILL.md#3-the-command-rewrite-hook-claude-code--codex).
 
 ---
 
@@ -870,7 +870,7 @@ repowise mcp --tools lean
 repowise mcp --all
 ```
 
-See [MCP Tools](MCP_TOOLS.md) for all exposed tools.
+See [MCP Tools](../agent/MCP_TOOLS.md) for all exposed tools.
 
 ---
 
@@ -982,7 +982,7 @@ repowise whats-new --all                 # full history
 `repowise update` shows a short "what's new" panel automatically after you
 upgrade to a newer version, and both `update` and `serve` print a one-line,
 non-blocking notice when a newer release is available on PyPI. See
-[docs/UPGRADING.md](UPGRADING.md) for the full upgrade flow.
+[docs/reference/UPGRADING.md](UPGRADING.md) for the full upgrade flow.
 
 ---
 

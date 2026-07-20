@@ -14,8 +14,7 @@ Run: `repowise --version`
 If the command fails or is not found, ask the user:
 
 "Repowise isn't installed yet. I can install it for you. Which do you prefer?"
-- `pip install repowise` (recommended)
-- `pip install "repowise[all]"` (includes all LLM provider dependencies)
+- `pip install repowise` (recommended, includes every LLM provider SDK)
 - "I'll install it myself"
 
 If they want you to install it, run `pip install repowise`. If that fails, try `python -m pip install repowise`.
@@ -127,11 +126,10 @@ Then ask them to set the required environment variable. Show the exact export co
 export ANTHROPIC_API_KEY="sk-ant-..."
 ```
 
-Also check if the provider's Python package is installed. If using anthropic and it's not installed:
-```
-pip install "repowise[anthropic]"
-```
-Similarly for openai (`repowise[openai]`) and gemini (`repowise[gemini]`).
+Every provider SDK (anthropic, openai, google-genai, litellm) ships with `repowise`
+itself, so there is no per-provider package to install. If a provider import fails,
+the install is broken rather than incomplete: reinstall with
+`pip install --force-reinstall repowise` and run `repowise doctor`.
 
 ## Step 5: Exclusions
 

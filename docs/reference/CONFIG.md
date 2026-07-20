@@ -97,7 +97,7 @@ an API call.
 `wiki_style` controls the voice and density of generated wiki pages. Set it with
 `init --wiki-style` or switch later with `repowise restyle <style>` (which also
 regenerates the wiki). Power users can define their own style under
-`.repowise/styles/<name>/style.yaml`. Full guide: [WIKI_STYLES.md](WIKI_STYLES.md).
+`.repowise/styles/<name>/style.yaml`. Full guide: [WIKI_STYLES.md](../layers/WIKI_STYLES.md).
 Note: hand-editing `wiki_style` here and running `update` does not regenerate
 existing pages, use `restyle`.
 
@@ -120,7 +120,7 @@ to `config.yaml`. `--include-submodules` is recorded in `state.json` instead
 
 ### The `distill:` block
 
-Controls [output distillation](DISTILL.md) for this repo. Everything defaults
+Controls [output distillation](../agent/DISTILL.md) for this repo. Everything defaults
 sensibly when the block is absent; `repowise doctor` validates it.
 
 ```yaml
@@ -172,7 +172,7 @@ mcp:
   workspace mode).
 - Workspace-only tools (`get_blast_radius`, `get_architecture`) are added
   automatically in workspace mode and ignored if named in single-repo mode. See
-  [MCP_TOOLS.md](MCP_TOOLS.md#configuring-the-tool-surface).
+  [MCP_TOOLS.md](../agent/MCP_TOOLS.md#configuring-the-tool-surface).
 
 ### The `decisions:` block
 
@@ -244,7 +244,7 @@ refactoring:
   only narrow further from this floor, not below it.
 - Per-path disables reuse the `.repowise/health-rules.json` glob mechanism (the
   same one markers use).
-- Full reference: [REFACTORING.md](REFACTORING.md).
+- Full reference: [REFACTORING.md](../layers/REFACTORING.md).
 
 ---
 
@@ -287,7 +287,7 @@ Valid severity labels are `low`, `medium`, `high`, `critical`. Only the
 severity **label** is overridable this way, never the underlying numeric
 weights or caps that produce the health score.
 
-Full reference: [CODE_HEALTH.md](CODE_HEALTH.md#configuration).
+Full reference: [CODE_HEALTH.md](../layers/CODE_HEALTH.md#configuration).
 
 ---
 
@@ -380,7 +380,6 @@ repowise init --provider ollama --model llama3.2
 ### LiteLLM (100+ providers)
 
 ```bash
-pip install "repowise[litellm]"
 export LITELLM_API_KEY="..."
 repowise init --provider litellm --model azure/gpt-4
 ```
@@ -576,7 +575,7 @@ honored. The schema is managed with Alembic migrations.
 
 ## Workspace config (`.repowise-workspace.yaml`)
 
-A multi-repo [workspace](WORKSPACES.md) is configured by a `.repowise-workspace.yaml` at the workspace root. Alongside the repo list it carries two optional blocks.
+A multi-repo [workspace](../scale/WORKSPACES.md) is configured by a `.repowise-workspace.yaml` at the workspace root. Alongside the repo list it carries two optional blocks.
 
 ### `repos[].tags`
 
@@ -594,7 +593,7 @@ repos:
 
 ### The `conformance:` block
 
-Declares architecture conformance rules (allow/deny dependency rules) checked by `repowise workspace check` and the workspace Conformance view. See [Architecture Conformance](WORKSPACES.md#architecture-conformance).
+Declares architecture conformance rules (allow/deny dependency rules) checked by `repowise workspace check` and the workspace Conformance view. See [Architecture Conformance](../scale/WORKSPACES.md#architecture-conformance).
 
 ```yaml
 conformance:

@@ -256,4 +256,4 @@ uv pip install -e "packages/core[search]"
 pytest tests/unit/core/
 ```
 
-See [ARCHITECTURE.md](../../docs/ARCHITECTURE.md) for a deep dive into how the ingestion pipeline, generation engine, and three stores fit together.
+See [ARCHITECTURE.md](../../docs/architecture/ARCHITECTURE.md) for a deep dive into how the ingestion pipeline, generation engine, and three stores fit together.

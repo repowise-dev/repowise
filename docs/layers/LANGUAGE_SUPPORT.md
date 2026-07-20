@@ -6,7 +6,7 @@ Everything else in your repo is still tracked through git history and appears in
 the wiki. This page is the "what works for my language today" reference.
 
 > **How to add a language, and how the pipeline works internally:** see
-> [architecture/language-support.md](architecture/language-support.md). Adding
+> [architecture/language-support.md](../architecture/language-support.md). Adding
 > a language needs one `.scm` query file and one config entry, with no changes
 > to the parser core.
 
@@ -91,7 +91,7 @@ implementations, and ORM entities to relationships:
 The dead-code analyzer understands each ecosystem's entry points, generated-file
 conventions, and never-flag globs so build products and framework-invoked code
 aren't reported as unreachable. (Full per-language detail:
-[architecture/language-support.md](architecture/language-support.md).)
+[architecture/language-support.md](../architecture/language-support.md).)
 
 ---
 
@@ -128,7 +128,7 @@ rather than tree-sitter, plus the lightweight import tier for dbt lineage.
 - **App-to-database contracts** (workspace mode), pairs table *providers* (DDL,
   Alembic, ORM entities) with table *consumers* (SQL string literals in app
   code) into `data` contracts on the Live System Map. See
-  [WORKSPACES.md](WORKSPACES.md).
+  [WORKSPACES.md](../scale/WORKSPACES.md).
 - **Health markers**, stored routines get cyclomatic complexity;
   `sql_select_star`, `sql_update_delete_without_where`, and `sql_cartesian_join`
   ride the sqlglot AST. All uncalibrated by construction and never move the
@@ -264,6 +264,6 @@ where a dialect isn't wired yet. Per-marker mechanics and precision hazards:
 
 ## See also
 
-- [architecture/language-support.md](architecture/language-support.md), pipeline internals + how to add a language
+- [architecture/language-support.md](../architecture/language-support.md), pipeline internals + how to add a language
 - [CODE_HEALTH.md](CODE_HEALTH.md), code-health markers and per-language precision
-- [WORKSPACES.md](WORKSPACES.md), cross-repo contracts and co-change
+- [WORKSPACES.md](../scale/WORKSPACES.md), cross-repo contracts and co-change

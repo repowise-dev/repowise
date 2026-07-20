@@ -315,8 +315,9 @@ def coverage_status(repo: str | None) -> None:
             if not summary.get("file_count") and not map_summary.get("pair_count"):
                 console.print(
                     "[yellow]No coverage ingested.[/yellow] Run "
-                    "[cyan]repowise coverage add[/cyan] for per-file coverage, or "
-                    "[cyan]repowise coverage contexts[/cyan] for the per-test map."
+                    "[cyan]repowise coverage add <report>[/cyan]. A .coverage file "
+                    "recorded with [cyan]--contexts=test[/cyan] also builds the "
+                    "per-test map."
                 )
                 return
 
@@ -341,8 +342,9 @@ def coverage_status(repo: str | None) -> None:
                 )
             else:
                 console.print(
-                    "[dim]No test-to-code map yet - build one with "
-                    "[cyan]repowise coverage contexts[/cyan].[/dim]"
+                    "[dim]No test-to-code map yet - record one with "
+                    "[cyan]coverage run --contexts=test -m pytest[/cyan], then "
+                    "[cyan]repowise coverage add .coverage[/cyan].[/dim]"
                 )
 
     run_async(_do())
