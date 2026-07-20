@@ -539,6 +539,137 @@ def _edit_decision_notice(repo_path: Path, rel: str, session_id: str, state: dic
 
 
 # ---------------------------------------------------------------------------
+# Edit-time bug-history notice
+# ---------------------------------------------------------------------------
+
+#: Silence past this age, no matter how large the historical count. A file fixed
+#: four times two years ago is history; the notice exists to interrupt an edit,
+#: and only a recent run of fixes earns that. Mirrors the ``prior_defect``
+#: window the count itself is drawn from.
+_FIX_NOTICE_MAX_AGE_DAYS = 180
+#: Below this many counted fixes the notice is not worth an agent's attention.
+_FIX_NOTICE_MIN_COUNT = 3
+
+
+def _humanize_age(days: int) -> str:
+    """Render an age as "2 weeks ago" / "3 months ago", never as a bare count."""
+    if days <= 1:
+        return "today" if days <= 0 else "yesterday"
+    if days < 14:
+        return f"{days} days ago"
+    if days < 60:
+        weeks = round(days / 7)
+        return f"{weeks} week{'' if weeks == 1 else 's'} ago"
+    months = round(days / 30)
+    return f"{months} month{'' if months == 1 else 's'} ago"
+
+
+def _edit_fix_history_notice(repo_path: Path, rel: str, session_id: str) -> str | None:
+    """One-line bug-history heads-up for an edited file, or ``None`` for silence.
+
+    Fires on files with a real recent run of fixes and nothing else. Three gates,
+    all of which have to hold: at least :data:`_FIX_NOTICE_MIN_COUNT` counted
+    fixes, a last fix inside :data:`_FIX_NOTICE_MAX_AGE_DAYS`, and one claim per
+    file per session (the same atomic ``INSERT OR IGNORE`` ledger the decision
+    notice uses, so two racing hook processes cannot double-fire).
+
+    The age is mandatory in the copy. A two-week-old fix and a two-year-old fix
+    must never read the same, which is also why the age gate exists rather than
+    a count gate alone.
+    """
+    conn = _open_wiki_ro(repo_path)
+    if conn is None:
+        return None
+    try:
+        row = conn.execute(
+            "SELECT prior_defect_count, bug_magnet, last_fix_at, fix_symbol_counts_json "
+            "FROM git_metadata WHERE file_path = ? LIMIT 1",
+            (rel,),
+        ).fetchone()
+    except sqlite3.Error:
+        # A pre-fix-events index has no such columns: silence, not an error.
+        return None
+    finally:
+        conn.close()
+    if row is None:
+        return None
+
+    count = row[0] or 0
+    if count < _FIX_NOTICE_MIN_COUNT:
+        return None
+    days = _days_since(row[2])
+    if days is None or days > _FIX_NOTICE_MAX_AGE_DAYS:
+        return None
+
+    line = (
+        f"[repowise] {rel} has been bug-fixed {count}x in the last 6 months, "
+        f"last {_humanize_age(days)}"
+    )
+    if row[1]:
+        line += " (bug magnet)"
+    symbol = _top_fix_symbol(row[3])
+    if symbol:
+        # Hedged on purpose: symbol spans are current-tree and the fix ranges
+        # are from each fix's own parent, so this is "mostly", not "exactly".
+        line += f"; mostly in {symbol}"
+    line += "."
+
+    if session_id:
+        claimed, shown = _claim_ledger(
+            repo_path,
+            session_id,
+            f"fix_history:{rel}",
+            node_id=rel,
+            surface="fix_history",
+            category="edit_notice",
+            chars=len(line),
+        )
+        if not claimed or shown > _MAX_EDIT_NOTICES:
+            return None
+    return line
+
+
+def _days_since(raw: object) -> int | None:
+    """Whole days between a stored ``last_fix_at`` and now, or ``None``.
+
+    The column round-trips through sqlite as a naive-UTC string (the ORM writes
+    naive UTC), so it is read here without a timezone and compared to a naive
+    UTC now. Anything unparseable is no signal.
+    """
+    from datetime import UTC, datetime
+
+    if isinstance(raw, str):
+        try:
+            moment = datetime.fromisoformat(raw)
+        except ValueError:
+            return None
+    elif isinstance(raw, datetime):
+        moment = raw
+    else:
+        return None
+    if moment.tzinfo is not None:
+        moment = moment.astimezone(UTC).replace(tzinfo=None)
+    return max(0, (datetime.now(UTC).replace(tzinfo=None) - moment).days)
+
+
+def _top_fix_symbol(raw: object) -> str | None:
+    """The most-fixed symbol's bare name, or ``None``.
+
+    The stored map is already in descending-count order, so the first key wins.
+    Keys are ``path/to/file.py::Name`` and the line already names the path.
+    """
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        counts = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(counts, dict) or not counts:
+        return None
+    return str(next(iter(counts))).rsplit("::", 1)[-1] or None
+
+
+# ---------------------------------------------------------------------------
 # Injection recording (usage feedback v1)
 # ---------------------------------------------------------------------------
 

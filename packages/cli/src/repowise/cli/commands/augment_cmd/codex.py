@@ -10,7 +10,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from ._shared import _find_repo_root
-from .decision_inject import _edit_decision_notice, _session_decision_block
+from .decision_inject import (
+    _edit_decision_notice,
+    _edit_fix_history_notice,
+    _session_decision_block,
+)
 from .read_state import _load_session_state, _save_session_state
 
 _MCP_CONTEXT = (
@@ -22,9 +26,7 @@ _MCP_CONTEXT = (
 )
 
 
-def _handle_codex_context_event(
-    event: str, cwd: str, session_id: str = ""
-) -> str | None:
+def _handle_codex_context_event(event: str, cwd: str, session_id: str = "") -> str | None:
     """Return Codex developer context + standing decisions on SessionStart."""
     if event not in ("SessionStart", "UserPromptSubmit"):
         return None
@@ -67,8 +69,9 @@ def _handle_post_edit_use(
         "risk checks, or dead-code results."
     )
 
-    # Governing-decision notice — same builder Claude Code's edit-time path uses.
-    notice: str | None = None
+    # Governing-decision and bug-history notices, from the same builders Claude
+    # Code's edit-time path uses, under the same per-session caps.
+    notices: list[str] = []
     if tool_input is not None and session_id:
         file_path = tool_input.get("file_path") if isinstance(tool_input, dict) else None
         if isinstance(file_path, str) and file_path.strip():
@@ -77,10 +80,16 @@ def _handle_post_edit_use(
             rel = _relativize(file_path, repo_path)
             if rel is not None:
                 state = _load_session_state(repo_path, session_id)
-                try:
-                    notice = _edit_decision_notice(repo_path, rel, session_id, state)
-                except Exception:
-                    notice = None
+                for emit in (
+                    lambda: _edit_decision_notice(repo_path, rel, session_id, state),
+                    lambda: _edit_fix_history_notice(repo_path, rel, session_id),
+                ):
+                    try:
+                        line = emit()
+                    except Exception:
+                        line = None
+                    if line:
+                        notices.append(line)
                 _save_session_state(repo_path, state)
 
-    return "\n".join(filter(None, (staleness, notice))) if notice else staleness
+    return "\n".join([staleness, *notices]) if notices else staleness

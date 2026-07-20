@@ -89,12 +89,14 @@ def _handle_edit_post(
     *,
     with_decisions: bool = True,
 ) -> str | None:
-    """Record an Edit/Write; surface the file's governing decision, if any.
+    """Record an Edit/Write; surface the file's governing decision and bug history.
 
-    The decision notice fires once per session per decision under a strict
-    per-session cap (see :func:`decision_inject._edit_decision_notice`) so a
-    governed file gets one heads-up, not a drumbeat. Codex lifecycle hooks
-    call this with ``with_decisions=False``: they get their own edit banner.
+    Both notices fire once per session per file under their own strict
+    per-session caps (see :func:`decision_inject._edit_decision_notice` and
+    :func:`decision_inject._edit_fix_history_notice`) so a governed or
+    much-fixed file gets a heads-up, not a drumbeat. A file that is both emits
+    two lines and never more. Codex lifecycle hooks call this with
+    ``with_decisions=False``: they get their own edit banner.
     """
     file_path = tool_input.get("file_path") if isinstance(tool_input, dict) else None
     if not isinstance(file_path, str) or not file_path.strip():
@@ -109,17 +111,23 @@ def _handle_edit_post(
     state["seq"] += 1
     state["edits"][rel] = state["seq"]
 
-    notice: str | None = None
+    notices: list[str] = []
     if with_decisions:
-        from .decision_inject import _edit_decision_notice
+        from .decision_inject import _edit_decision_notice, _edit_fix_history_notice
 
-        try:
-            notice = _edit_decision_notice(repo_path, rel, session_id, state)
-        except Exception:
-            notice = None
+        for emit in (
+            lambda: _edit_decision_notice(repo_path, rel, session_id, state),
+            lambda: _edit_fix_history_notice(repo_path, rel, session_id),
+        ):
+            try:
+                line = emit()
+            except Exception:
+                line = None
+            if line:
+                notices.append(line)
 
     _save_session_state(repo_path, state)
-    return notice
+    return "\n".join(notices) or None
 
 
 def _handle_read_post(
