@@ -65,7 +65,7 @@ def _query_top_language(db_path: Path) -> str:
         with sqlite3.connect(str(db_path)) as conn:
             row = conn.execute(
                 "SELECT language, COUNT(*) AS cnt FROM graph_nodes "
-                "WHERE language IS NOT NULL AND language != '' "
+                "WHERE node_type = 'file' AND language IS NOT NULL AND language != '' "
                 "GROUP BY language ORDER BY cnt DESC LIMIT 1"
             ).fetchone()
             return row[0] if row else "unknown"
@@ -143,8 +143,8 @@ def _query_repo_stats(db_path: Path) -> dict:
         if row:
             result["repo_id"] = row[0]
 
-        # file count (graph_nodes)
-        row = c.execute("SELECT COUNT(*) FROM graph_nodes").fetchone()
+        # file count (graph_nodes) 
+        row = c.execute("SELECT COUNT(*) FROM graph_nodes WHERE node_type = 'file'").fetchone()
         result["file_count"] = row[0] if row else 0
 
         # symbol count
