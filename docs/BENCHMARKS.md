@@ -163,8 +163,9 @@ correlated with strictly no leakage: nothing after T0 feeds the score.
 
 ### Cross-project validation
 
-Across **21 open-source repositories spanning all 9 Full-tier languages** and
-2,826 files:
+Across **21 open-source repositories spanning 9 languages** and 2,826 files
+(the study predates the promotion of Scala and Ruby to the Full tier, so it
+covers 9 of today's 11):
 
 - **Mean ROC AUC 0.74** (95% CI 0.68 to 0.79) at identifying the files that go
   on to receive bug fixes, reaching **0.90** on individual repos. ROC AUC is the
