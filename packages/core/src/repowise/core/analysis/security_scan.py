@@ -18,15 +18,15 @@ constraint (migration 0041) makes re-runs idempotent.
 
 from __future__ import annotations
 
+import logging
 import re
 from datetime import UTC, datetime
 from typing import Any
 
-import structlog
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-logger = structlog.get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Pattern registry: (compiled_pattern, kind_label, severity)
@@ -201,9 +201,9 @@ class SecurityScanner:
                 inserted += max(result.rowcount or 0, 0)
             except Exception:
                 logger.warning(
-                    "security_finding_persist_failed",
-                    file_path=file_path,
-                    kind=finding.get("kind"),
+                    "security_finding_persist_failed file_path=%s kind=%s",
+                    file_path,
+                    finding.get("kind"),
                     exc_info=True,
                 )
                 continue

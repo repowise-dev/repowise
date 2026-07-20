@@ -14,7 +14,7 @@ from __future__ import annotations
 import os
 import tempfile
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from alembic import command
@@ -129,8 +129,11 @@ def test_migration_0041_upgrades_sqlite() -> None:
             os.chdir(core_root)
             alembic_cfg = Config("alembic.ini")
             alembic_cfg.set_main_option("sqlalchemy.url", url)
-            command.upgrade(alembic_cfg, "0040")
-            command.upgrade(alembic_cfg, "0041")
+            # Alembic's env.py calls fileConfig(), which resets stdlib logging
+            # and breaks pytest caplog for later tests on Linux CI.
+            with patch("logging.config.fileConfig"):
+                command.upgrade(alembic_cfg, "0040")
+                command.upgrade(alembic_cfg, "0041")
         finally:
             os.chdir(prev_cwd)
             if prev_url is None:
