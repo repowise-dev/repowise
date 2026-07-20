@@ -259,7 +259,7 @@ sy = fy0 + 176
 add(f'<text x="{fx0+20}" y="{fy0+162}" class="cap">Every response carries index age, indexed commit, and a staleness warning.</text>')
 add(f'<rect x="{fx0+20}" y="{sy}" width="{fw-40}" height="46" rx="9" fill="{SAVE_BG}" stroke="{SAVE_BD}"/>')
 add(f'<text x="{fx0+34}" y="{sy+20}" class="chipval" fill="{ACCENT}" font-size="19">−96%<tspan class="chipunit" fill="{T_SEC}"> context tokens</tspan></text>')
-add(f'<text x="{fx0+34}" y="{sy+38}" class="cap">−70% tool calls · −89% file reads · answer quality at parity</text>')
+add(f'<text x="{fx0+34}" y="{sy+38}" class="cap">−70% tool calls · −89% file reads · fewer round-trips per answer</text>')
 outcome(fx0, fy0+RH-46, fw, "Claude Code, Codex, Cursor, VS Code.")
 add(f'<text x="{fx0+22}" y="{fy0+RH-25}" class="outsub">Plus hooks, so it arrives unasked.</text>')
 

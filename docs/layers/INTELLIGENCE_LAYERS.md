@@ -121,7 +121,7 @@ staleness as code evolves.
 
 Every decision is **evidence-backed**: each rationale traces to a verbatim
 source span (ADR quote, commit body, code comment), and an anti-hallucination
-substring gate stamps each as **verified / fuzzy / unverified**: corroborating
+substring gate stamps each as **exact / fuzzy / unverified**: corroborating
 sources raise confidence rather than overwrite each other.
 
 Decisions form a **graph**: typed edges (`supersedes` / `refines` /

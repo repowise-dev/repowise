@@ -77,7 +77,7 @@ Because the exploration work is already done, that phase mostly disappears:
 
 <div align="center">
 
-**up to −96% tokens to load context&nbsp;&nbsp;·&nbsp;&nbsp;−89% file reads&nbsp;&nbsp;·&nbsp;&nbsp;−70% tool calls&nbsp;&nbsp;·&nbsp;&nbsp;answer quality at parity**
+**up to −96% tokens to load context&nbsp;&nbsp;·&nbsp;&nbsp;−89% file reads&nbsp;&nbsp;·&nbsp;&nbsp;−70% tool calls**
 
 </div>
 
