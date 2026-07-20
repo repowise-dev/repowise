@@ -43,14 +43,16 @@ Everything you need to know to install, use, and get the most out of repowise.
 pip install repowise
 ```
 
-This installs the core engine, CLI, server, and MCP tools. No LLM provider SDK is included by default, install only the one you need:
+That is the whole install: the core engine, CLI, server, MCP tools, and every LLM
+provider SDK (Anthropic, OpenAI, Gemini, and LiteLLM for 100+ others via Together,
+Groq, Azure, Bedrock and friends). There are no provider extras to choose between,
+because you pick a provider at index time instead, and can change it later.
+
+Two extras exist, and neither is about providers:
 
 ```bash
-pip install "repowise[anthropic]"    # Claude (Anthropic)
-pip install "repowise[openai]"       # GPT (OpenAI)
-pip install "repowise[gemini]"       # Gemini (Google)
-pip install "repowise[litellm]"      # 100+ providers via LiteLLM (Together, Groq, Azure, Bedrock, etc.)
-pip install "repowise[all]"          # All LLM providers + PostgreSQL support
+pip install "repowise[postgres]"     # PostgreSQL + pgvector instead of SQLite
+pip install "repowise[graph-extra]"  # optional graph algorithms via graspologic
 ```
 
 Codex CLI users can use the local subscription/auth flow without an API-key provider SDK:
@@ -59,12 +61,6 @@ Codex CLI users can use the local subscription/auth flow without an API-key prov
 pip install repowise
 npm install -g @openai/codex
 codex login
-```
-
-If you plan to use PostgreSQL instead of the default SQLite:
-
-```bash
-pip install "repowise[postgres]"
 ```
 
 ### Requirements
@@ -910,9 +906,9 @@ repowise saved              # per-filter rollup, totals, est. dollars
 repowise saved --by day
 ```
 
-The Costs page in the web UI leads with the same results — total agent tokens
-and dollars saved, split across distill and the MCP tools — over the
-per-operation and per-provider spend breakdown. The ledger combines the distill
+The Costs page in the web UI leads with the same results (total agent tokens and
+dollars saved, split across distill and the MCP tools) over the per-operation and
+per-provider spend breakdown. The ledger combines the distill
 command/hook path with MCP tool-response savings.
 
 ---
@@ -968,7 +964,7 @@ repowise watch --workspace           # all workspace repos
 ### First-time setup for a single repo
 
 ```bash
-pip install "repowise[anthropic]"
+pip install repowise
 export ANTHROPIC_API_KEY="sk-ant-..."
 cd /path/to/your-project
 repowise init
@@ -978,7 +974,7 @@ repowise hook install    # auto-sync after every commit
 ### First-time setup for a multi-repo workspace
 
 ```bash
-pip install "repowise[anthropic]"
+pip install repowise
 export ANTHROPIC_API_KEY="sk-ant-..."
 cd /path/to/workspace/   # parent dir with backend/, frontend/, etc.
 repowise init .
@@ -1050,8 +1046,11 @@ repowise update --provider gemini
 
 ## Troubleshooting
 
-**"Provider X requires the Y package"**
-Install the optional dependency: `pip install "repowise[anthropic]"` (or openai, gemini, litellm).
+**"Provider X requires the 'Y' package"**
+Every provider SDK ships with `repowise`, so this points at a broken or partial
+install rather than a missing extra. The error names the package it wants, so
+`pip install <package>` clears it immediately; `pip install --force-reinstall
+repowise` fixes the underlying install. Run `repowise doctor` either way.
 
 **Empty search results with semantic mode**
 Check that an embedder is configured. Run `repowise reindex --embedder gemini` to rebuild the vector store.

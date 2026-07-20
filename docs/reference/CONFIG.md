@@ -380,7 +380,6 @@ repowise init --provider ollama --model llama3.2
 ### LiteLLM (100+ providers)
 
 ```bash
-pip install "repowise[litellm]"
 export LITELLM_API_KEY="..."
 repowise init --provider litellm --model azure/gpt-4
 ```
