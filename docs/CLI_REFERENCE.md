@@ -210,12 +210,14 @@ working. See [WIKI_STYLES.md](WIKI_STYLES.md).
 | `--model` | Override model |
 | `--concurrency` | Max concurrent LLM calls (default: 12) |
 | `--reasoning` | Reasoning mode for supported providers |
+| `--verbose` / `-v` | Show debug logs from the pipeline |
 | `--yes` / `-y` | Skip the confirmation prompt |
 
 ```bash
 repowise restyle                       # show current style + options
 repowise restyle caveman               # condensed, AI-first
 repowise restyle reference --yes       # API-manual, skip the confirm
+repowise restyle tutorial --verbose    # show pipeline debug logs
 ```
 
 > Editing `wiki_style` in `config.yaml` by hand and running `update` does **not**
