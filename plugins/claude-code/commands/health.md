@@ -31,8 +31,8 @@ Handle `$ARGUMENTS`:
 - "safe" → `repowise health --safe-only`
 - a coverage file (e.g. `cov.lcov`, `coverage.xml`, `.coverage`) → `repowise coverage add <file>` to ingest it (folds into health markers, and builds the per-test map when the report has contexts), then `repowise health`
 
-Other flags: `--format json` for machine-readable output, `--repo <alias>` /
-`--no-workspace` in workspace mode.
+Other flags: `--format json` for machine-readable output, `-v, --verbose` for
+pipeline debug logs, `--repo <alias>` / `--no-workspace` in workspace mode.
 
 ## Notes
 

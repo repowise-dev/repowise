@@ -2,6 +2,15 @@
 
 All notable changes to the Repowise Claude Code plugin are documented here.
 
+## 0.34.0
+
+### Changed
+- Version bump to track the repowise 0.34.0 release.
+- `pre-modification` skill reads the new `defect_profile` block on `get_risk`
+  (fix count, last fix age, `bug_magnet`, `top_symbols`) and leads with it.
+- `init`, `update`, and `health` commands document `-v, --verbose`; `init` and
+  `update` are now quiet by default.
+
 ## 0.33.0
 
 ### Added

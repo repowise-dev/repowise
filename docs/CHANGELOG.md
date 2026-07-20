@@ -9,6 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.34.0] — 2026-07-20
+
+### Added
+- **Bug-fix history is now a first-class signal.** repowise counts the bug fixes that landed on each file over the trailing six months, traces each fix back to the commit that introduced it, and attributes it down to the symbol. A file that keeps getting fixed is flagged a *bug magnet*, and that flag now leads everywhere risk is shown: `get_risk` and `get_change_risk` return a `defect_profile` (`fix_count`, `last_fix_days_ago`, `bug_magnet`, `top_symbols`), the generated `CLAUDE.md` attention list ranks on fix history instead of raw churn, `get_context`'s triage does the same, and the CLI warns at edit time when you touch a file with a recent run of fixes. Only fixes that change production code are counted, so a test-only touch-up no longer inflates the number. (#931, #939, #940, #946, #947, #954, #956)
+- **Bug-fix history in the UI.** The health drawer, panel and hover show per-file fix history; the symbols view shows and filters by per-symbol fix counts; and the commits view replaces the old file-risk bars with commit-level distribution views. (#948, #949, #950)
+- **A zoomable Knowledge Graph.** The zoom map is now the Knowledge Graph at `/knowledge-graph`, with per-node code health rendered on the map. (#918)
+- **Present mode for docs.** Wiki pages can be presented as a slide deck with a guided walkthrough, and architecture diagrams in wiki pages are now deterministic rather than LLM-drawn. (#914, #915)
+- **Costs page tells the whole story.** Spend is labelled by operation, local runs are recorded at $0 instead of being dropped, ROI framing was added, and the agent savings the ledger was silently discarding are now counted. (#925, #927)
+- **`--verbose/-v` across the CLI.** `init` and `update` are quiet by default and show per-phase internals plus debug logs under `--verbose`; the same flag was added to `health`, `watch`, `restyle`, `generate-claude-md`, `coverage add`, and `workspace add` / `workspace scan`. (#929, #936, #937, #941, #942, #943, #944)
+
+### Changed
+- **`get_answer` always synthesizes.** Confidence is graded after synthesis on how well the answer is grounded in retrieved content, rather than inferred beforehand from the shape of the retrieval. A leaner high-confidence payload is available behind `REPOWISE_ANSWER_LEAN_HIGH`. (#919, #923, #938)
+- **Update keeps more of the index fresh.** A workspace update regenerates docs per repo, onboards a provider when a docs update needs one, and refreshes external systems (C4 L1) when the manifest changes. (#916, #917, #921)
+- **Faster generation.** Knowledge-graph enrichment overlaps page generation, and the inline-marker scan for decisions reuses ingestion's source map instead of re-reading files. (#912, #913)
+- **The SZZ blame pass is gone** from the git indexer; fix attribution is derived without it. (#951)
+- **Feedback CTA sharpened** and the recalibration banner dropped from the web UI. (#920)
+
+### Fixed
+- **Author experience is counted over the whole history**, not just the current update batch, so contributor stats no longer collapse on incremental runs. (#953)
+- **Update progress counts onboarding pages** in the generation total, so the bar no longer overshoots. (#928)
+- **Headline stats stop assuming a Sat/Sun weekend** and are given room to breathe. (#926)
+
+### Documentation
+- README rewritten and the `docs/` tree restructured into `start/`, `reference/`, and `layers/`; the quickstart was rewritten and the user guide collapsed to a guide. Provider extras that don't exist are no longer documented. (#957)
+- Plugin: version bump plus `--verbose` on the `init`, `update`, and `health` commands, and the pre-modification skill now reads `defect_profile`.
+
+### Dependencies
+- `mcp` 1.26.0 → 1.28.1. (#958)
+
 ## [0.33.0] — 2026-07-18
 
 ### Added
