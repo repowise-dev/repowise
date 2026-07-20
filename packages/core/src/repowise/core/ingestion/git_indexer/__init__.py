@@ -57,7 +57,6 @@ from .records import (
     _parse_commit_record,
     _should_skip_index,
 )
-from .szz import InducingCandidate, SzzTracer, rank_candidates
 from .tiers import GitIndexTier
 
 __all__ = [
@@ -75,9 +74,7 @@ __all__ = [
     "GitIndexSummary",
     "GitIndexTier",
     "GitIndexer",
-    "InducingCandidate",
     "PriorDefects",
-    "SzzTracer",
     "_CommitRec",
     "_extract_rename_paths",
     "_parse_commit_record",
@@ -100,5 +97,4 @@ __all__ = [
     "is_fix_commit",
     "is_significant_commit",
     "meets_hotspot_floors",
-    "rank_candidates",
 ]

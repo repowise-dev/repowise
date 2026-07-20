@@ -694,7 +694,7 @@ async def persist_git(result: Any, session: Any, repo_id: str) -> None:
     if fix_event_rows:
         await upsert_fix_events_bulk(session, repo_id, fix_event_rows)
     oldest_ts = getattr(summary, "fix_oldest_ts", 0)
-    if oldest_ts and getattr(summary, "fix_events_traced", False):
+    if oldest_ts and getattr(summary, "fix_events_built", False):
         from datetime import UTC, datetime
 
         await prune_fix_events_before(session, repo_id, datetime.fromtimestamp(oldest_ts, tz=UTC))

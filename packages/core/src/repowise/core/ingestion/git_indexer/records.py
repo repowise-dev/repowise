@@ -143,11 +143,11 @@ class GitIndexSummary:
     # committer time of the oldest fix the walk saw (unix seconds). The cutoff
     # rides along so the persist step can prune events that have aged out and
     # keep the stored set equal to what a fresh index at this HEAD produces.
-    # ``fix_events_traced`` says the pass actually ran, so a failed trace does
+    # ``fix_events_built`` says the pass actually ran, so a failed trace does
     # not prune rows it never replaced.
     fix_event_rows: list[dict] = field(default_factory=list)
     fix_oldest_ts: int = 0
-    fix_events_traced: bool = False
+    fix_events_built: bool = False
     # Whole-history git totals captured via cheap ``git rev-list``/``shortlog``
     # calls that ignore ``commit_limit`` (unlike ``commit_rows``). Persisted to
     # the Repository row so the stats page reports true project age / commit /

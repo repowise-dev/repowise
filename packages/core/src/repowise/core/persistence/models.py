@@ -619,18 +619,20 @@ class FixEvent(Base):
     # the classification is a property of the diff, not of one file in it.
     shape_kind: Mapped[str] = mapped_column(String(16), nullable=False, default="code_fix")
 
-    # Inclusive ``[[start, end], ...]`` spans on the PRE-fix file — the space
-    # ``git blame fix^`` is keyed in. Empty for a pure insertion (nothing to blame).
+    # Inclusive ``[[start, end], ...]`` spans on the PRE-fix file. Empty for a
+    # pure insertion, which replaced nothing.
     old_ranges_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     changed_loc: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
-    # Ranked SZZ candidates, ``[{"sha", "lines", "ts"}, ...]``, most blamed lines
-    # first. Stored ranked but complete, so a different ranking (earliest-commit,
-    # say) stays a read-time re-sort. Empty for non-code_fix rows, for pure
-    # insertions, and for fixes the tracer skipped (comment-only or oversized).
+    # DEAD, always ``"[]"``. Once held ranked SZZ blame candidates naming the
+    # commit that introduced each bug. Nothing ever read it: the surfaces that
+    # would have are cut, so the blame pass that filled it was removed too. The
+    # column stays because emptying it is free and dropping it is a table
+    # rebuild. Do NOT read this as "traced and found nothing".
     inducing_shas_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
 
-    # Per-bucket changed-line counts from the fix taxonomy. Empty until Phase 5.
+    # Per-bucket changed-line counts from the fix taxonomy. Always empty: the
+    # taxonomy classifier was measured and cut, never built.
     taxonomy_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
 
     # ``WikiSymbol.symbol_id``s whose CURRENT line span overlaps this row's
