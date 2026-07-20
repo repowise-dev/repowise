@@ -1,14 +1,19 @@
 # The dashboard
 
-`repowise serve` starts a local web app on `http://localhost:7777` that reads
-the same `.repowise/wiki.db` the CLI and MCP server read. Nothing leaves your
-machine, and no view calls an LLM unless you click something that says it will
-(Chat, refactoring code generation, doc regeneration).
+`repowise serve` starts the API on `http://localhost:7337` and the local web
+dashboard on `http://localhost:3000`. Both read the same `.repowise/wiki.db`
+the CLI and MCP server read. Nothing leaves your machine, and no view calls an
+LLM unless you click something that says it will (Chat, refactoring code
+generation, doc regeneration).
 
 ```bash
-repowise serve                 # http://localhost:7777
-repowise serve --port 8080
+repowise serve                       # API on :7337, dashboard on :3000
+repowise serve --port 8080           # move the API
+repowise serve --ui-port 3001        # move the dashboard
+repowise serve --no-ui               # API only
 ```
+
+The dashboard needs Node >= 20. Without it, `serve` falls back to API-only.
 
 The URL shape is `/repos/<repo-id>/<view>`. Every view is directly linkable,
 including tab state, so a link you paste in a PR lands on exactly what you were

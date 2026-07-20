@@ -26,12 +26,13 @@
 
 <p align="center"><sub>
   <a href="#your-agent-stops-guessing">For your agent</a> ·
+  <a href="#what-one-index-actually-builds">The five layers</a> ·
   <a href="#stop-paying-for-output-nobody-reads">Distill</a> ·
   <a href="#know-whats-dangerous-before-you-merge">Change risk</a> ·
   <a href="#-know-exactly-what-to-fix">Code health</a> ·
   <a href="#see-all-of-it">Dashboard</a> ·
   <a href="#past-one-repo">Workspaces</a> ·
-  <a href="#quickstart">Quickstart</a> ·
+  <a href="#quickstart-under-5-minutes-no-api-key">Quickstart</a> ·
   <a href="#the-ten-mcp-tools">MCP tools</a> ·
   <a href="#how-it-compares">Comparison</a> ·
   <a href="#for-teams--enterprises">Teams</a>
@@ -41,7 +42,10 @@
 
 ### Your AI agent burns most of its budget rediscovering your codebase. Index it once, and it never has to again.
 
-<sub>Free and self-hosted, runs on your machine, and the first index needs no API key.</sub>
+### up to −96% tokens to load context&nbsp;&nbsp;·&nbsp;&nbsp;−89% file reads&nbsp;&nbsp;·&nbsp;&nbsp;−70% tool calls
+
+<sub>Paired runs, same model, same harness, with and without repowise ([the numbers, and what they do not show →](docs/BENCHMARKS.md)).<br />
+Free and self-hosted, runs on your machine, and the first index needs no API key.</sub>
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset=".github/assets/one-index-dark.svg" />
@@ -73,18 +77,10 @@ built around **tasks**: pass several targets in one call, get complete context b
 
 <img src=".github/assets/demo.gif" alt="Claude Code querying the codebase through repowise's MCP tools" width="100%" />
 
-Because the exploration work is already done, that phase mostly disappears:
-
-<div align="center">
-
-**up to −96% tokens to load context&nbsp;&nbsp;·&nbsp;&nbsp;−89% file reads&nbsp;&nbsp;·&nbsp;&nbsp;−70% tool calls**
-
-</div>
-
-Loading one commit's context through `get_context` costs **2,391 tokens instead of
-64,039** raw. On a long multi-step investigation that compounds to **−41% of the
-context re-read across the whole session**. Paired runs, same model, same harness,
-with and without repowise ([the numbers, and what they do not show →](docs/BENCHMARKS.md)).
+Because the exploration work is already done, that phase mostly disappears. Loading
+one commit's context through `get_context` costs **2,391 tokens instead of 64,039**
+raw. On a long multi-step investigation that compounds to **−41% of the context
+re-read across the whole session**.
 
 **And it arrives without being asked.** Optional [hooks](docs/agent/HOOKS.md) push
 context into the session at the moment it matters: the governing architectural
@@ -98,6 +94,28 @@ for the corrections you keep making ("use the shared HTTP client, not raw reques
 and turns the durable ones into tracked decisions it delivers back later. The wiki
 generation budget tilts toward the modules you and your agent ask about most. All
 local, all deterministic, no extra LLM calls.
+
+---
+
+## What one index actually builds
+
+Five layers, built in a single pass and kept in sync on every commit. Each one is
+queryable from the CLI, the MCP tools, and the local dashboard.
+
+| Layer | What it gives you | Edge |
+|---|---|---|
+| **◈ Graph** | Dependency graph across 16 languages · file + symbol nodes · 3-tier call resolution · Leiden communities · PageRank and execution flows · framework-aware route→handler edges | A real graph most tools never build |
+| **◈ Git** | Hotspots (churn × complexity) · ownership % · co-change pairs (hidden coupling) · bus factor · which files actually get bug-fixed, and how recently | Behavioural signals static analysis cannot see |
+| **◈ Docs** | A generated wiki page per module and file · rebuilt incrementally every commit · freshness and confidence scoring · hybrid search (full-text + vector) · selectable style and output language | Stays current instead of rotting |
+| **◈ Decisions** | Architectural decisions mined from eight sources, evidence-backed, linked to the graph nodes they govern, connected by supersedes / refines / conflicts_with, tracked for staleness | **★ Captured nowhere else** |
+| **★ Code health** | **25 deterministic markers**, 1 to 10 per file · three signals: defect risk · maintainability · performance · coverage ingestion · concrete refactoring plans (Extract Class / Helper, Move Method, Break Cycle, Split File) · **zero LLM, under 30s** | **★ Defect-validated, with the fix attached** |
+
+Only the Docs layer needs an LLM. `repowise init --index-only` builds the graph,
+git, decision, and health layers with no API key and no spend (seven of the eight
+decision sources are deterministic; only the one harvested during doc generation
+needs a provider).
+
+Full detail on every layer: **[docs/layers/INTELLIGENCE_LAYERS.md →](docs/layers/INTELLIGENCE_LAYERS.md)**
 
 ---
 
