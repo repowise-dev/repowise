@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import json
-import re
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import select, text
@@ -19,10 +19,13 @@ from repowise.server.mcp_server._helpers import (
     filter_dicts_by_key,
 )
 
-_FIX_PATTERN = re.compile(
-    r"\b(fix|bug|patch|hotfix|revert|regression|broken|crash|error)\b",
-    re.IGNORECASE,
-)
+#: A file carrying this many counted bug fixes reads as bug-prone. Same trigger
+#: the PR bot uses for prior defects, so the two surfaces agree on "a lot".
+_BUG_PRONE_FIXES = 3
+
+#: How many attributed symbols the defect profile names. Enough to say "mostly
+#: these", short enough to keep the block inside the per-file token budget.
+_TOP_FIX_SYMBOLS = 3
 
 
 def _derive_change_pattern(categories: dict[str, int]) -> str:
@@ -74,12 +77,16 @@ def _classify_risk_type(meta: Any, dep_count: int, team_size: int | None = None)
     expected operating model, so ``bus-factor-risk`` is reserved for
     hotspot-active files there (issue #361). ``None`` = unknown → keep
     the historical behaviour.
+
+    ``bug-prone`` reads the counted fix history rather than the old keyword
+    scan over ``significant_commits``: that scan matched "fix" anywhere in a
+    subject, counted doc and test commits, and had no recency at all, while
+    ``prior_defect_count`` is the shape-filtered windowed count and
+    ``bug_magnet`` is its decayed form. An index that predates the fix-event
+    rollup reports 0/None here and simply falls through to the next rule,
+    the same way every other backfilled column behaves until the next update.
     """
     from repowise.core.analysis.health.biomarkers.base import SMALL_TEAM_MAX_CONTRIBUTORS
-
-    # Count bug-fix commits from significant_commits messages
-    commits = json.loads(meta.significant_commits_json) if meta.significant_commits_json else []
-    fix_count = sum(1 for c in commits if _FIX_PATTERN.search(c.get("message", "")))
 
     churn_score = meta.churn_percentile or 0.0
     bus_factor = getattr(meta, "bus_factor", 0) or 0
@@ -87,8 +94,9 @@ def _classify_risk_type(meta: Any, dep_count: int, team_size: int | None = None)
 
     small_team = team_size is not None and team_size <= SMALL_TEAM_MAX_CONTRIBUTORS
 
-    # Bug-prone takes priority if fix ratio is high
-    if commits and fix_count / len(commits) >= 0.4:
+    # Bug-prone takes priority: real counted fixes, decayed or plain.
+    prior_defects = getattr(meta, "prior_defect_count", 0) or 0
+    if getattr(meta, "bug_magnet", False) or prior_defects >= _BUG_PRONE_FIXES:
         return "bug-prone"
     if churn_score >= 0.7:
         return "churn-heavy"
@@ -254,6 +262,65 @@ def _build_co_changes(meta: Any, import_related: set[str], exclude_spec: Any) ->
     )
 
 
+def _defect_profile(meta: Any) -> dict | None:
+    """What this file's counted bug fixes say about it, or ``None`` for silence.
+
+    Built from the fix-event rollup already loaded on the ``GitMetadata`` row,
+    so there is no second query. Silent when the file has no counted fixes, so a
+    clean file and a repo with no fix history both add nothing to the response
+    (the FileSignalsPanel convention).
+
+    Every field is aggregate. No inducing commit is named here or anywhere else:
+    file-level SZZ ran at 74.5% precision against the frozen judgments, which is
+    fine for counting and too thin to accuse a commit.
+
+    The approximation caveat on ``top_symbols`` lives in ``get_risk``'s docstring
+    rather than in each row. It is the same sentence every time, and a constant
+    string repeated once per target is exactly the per-file cost the lean-MCP
+    work went to some trouble to remove.
+    """
+    count = getattr(meta, "prior_defect_count", 0) or 0
+    if count <= 0:
+        return None
+
+    profile: dict[str, Any] = {"fix_count": count, "window": "6 months"}
+
+    last_fix_at = getattr(meta, "last_fix_at", None)
+    if isinstance(last_fix_at, datetime):
+        # Rows are stored naive-UTC; compare on the same footing.
+        moment = last_fix_at if last_fix_at.tzinfo else last_fix_at.replace(tzinfo=UTC)
+        profile["last_fix_days_ago"] = max(0, (datetime.now(UTC) - moment).days)
+        # The flag rides on the age, never alone. bug_magnet is a claim about
+        # RECENT fix pressure, so without a timestamp to anchor it the same
+        # word would describe a file fixed four times last month and one fixed
+        # four times two years ago.
+        if getattr(meta, "bug_magnet", False):
+            profile["bug_magnet"] = True
+
+    symbols = _top_fix_symbols(getattr(meta, "fix_symbol_counts_json", None))
+    if symbols:
+        profile["top_symbols"] = symbols
+    return profile
+
+
+def _top_fix_symbols(raw: str | None) -> dict[str, int]:
+    """Top few ``symbol -> fix count`` pairs, with the redundant path stripped.
+
+    Stored keys are ``path/to/file.py::Name`` and the caller already knows the
+    path, so the prefix is pure token cost in an MCP response. The stored map is
+    written in descending-count order, so "top few" is a slice.
+    """
+    if not raw:
+        return {}
+    try:
+        counts = json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(counts, dict):
+        return {}
+    return {str(k).rsplit("::", 1)[-1]: int(v) for k, v in list(counts.items())[:_TOP_FIX_SYMBOLS]}
+
+
 def _load_commit_categories(meta: Any) -> dict:
     """Parse the persisted commit-category counts, tolerating malformed JSON."""
     categories: dict = {}
@@ -361,6 +428,10 @@ async def _assess_one_target(
     merge_commit_count = getattr(meta, "merge_commit_count_90d", 0) or 0
     if merge_commit_count > 0:
         result_data["merge_commit_count_90d"] = merge_commit_count
+
+    defect_profile = _defect_profile(meta)
+    if defect_profile is not None:
+        result_data["defect_profile"] = defect_profile
 
     # C. Test gaps + security signals
     result_data["test_gap"] = await _check_test_gap(session, repo_id, target)

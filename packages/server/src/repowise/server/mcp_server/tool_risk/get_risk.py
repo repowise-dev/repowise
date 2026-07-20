@@ -47,6 +47,13 @@ async def get_risk(
     To score a live commit or ``base..head`` diff by revspec instead of file
     paths, use ``get_change_risk``.
 
+    defect_profile appears only on files with counted bug fixes: how many landed
+    in the trailing 6 months, how long ago the last one was, a bug_magnet flag
+    for sustained recent fix pressure, and top_symbols. Those per-symbol counts
+    are approximate, because symbol spans are current-tree while each fix's line
+    ranges are numbered on its own parent commit, so read them as "mostly here"
+    rather than exact. Nothing here names the commit that introduced a bug.
+
     Args:
         targets: file paths to assess.
         repo: usually omitted.

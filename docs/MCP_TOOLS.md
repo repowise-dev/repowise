@@ -367,6 +367,23 @@ execute the change's changed *lines* (line-precise, so a narrower set than
 suite"), never as untested. Build the map with `coverage run --contexts=test`
 followed by `repowise coverage add`.
 
+When the changed files carry counted bug fixes, the response also holds
+`prior_fixes`: per file, how many past bug-fix commits touched it
+(`fix_count`), how many of the change's lines fall inside the ranges one of
+those fixes replaced (`overlapping_lines`), and how long ago the most recent
+was (`last_fix_days_ago`). `total_fixes` counts distinct commits, not rows,
+and `files` is capped at ten with `truncated` reporting overflow.
+
+`overlapping_lines` is labelled `approximate` in the payload, and that label is
+load-bearing: a past fix's ranges are numbered against its own parent commit,
+so anything that moved lines in between shifts them. Read it as "this
+neighbourhood has been patched before", not "this exact line". The per-file
+`fix_count` beside it carries no such caveat. The whole block is aggregate and
+never names the commit that introduced a bug: file-level SZZ measured 74.5%
+precision on this repo's frozen judgments, which is enough to count fixes and
+not enough to accuse one commit of causing them. The block is absent entirely
+on an index with no fix history.
+
 **When to use:** Before merging a commit or PR range, especially when you need
 to assess the diff itself rather than the risk of an already-indexed file.
 
