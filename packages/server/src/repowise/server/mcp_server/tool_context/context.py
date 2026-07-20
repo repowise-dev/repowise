@@ -56,6 +56,8 @@ async def get_context(
 
     Returns title, summary, signatures, hotspot bit, decision_record titles,
     and symbol_ids to pipe into get_symbol (cheaper than Read for bodies).
+    fix_history appears only on files with counted bug fixes (count, age,
+    bug_magnet); hotspot is churn. Either one is a cue to call get_risk.
     Batch targets in one call. File targets above ~80 lines default to a
     skeleton (every signature + top-PageRank bodies, with a verified flag —
     a fraction of Read cost); ``mostly_full`` marks files where a direct

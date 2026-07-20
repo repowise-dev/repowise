@@ -262,6 +262,49 @@ def _build_co_changes(meta: Any, import_related: set[str], exclude_spec: Any) ->
     )
 
 
+def fix_annotation(meta: Any) -> dict | None:
+    """Counted fixes, their age, and the magnet flag, or ``None`` for silence.
+
+    The compact form every fix-history surface shares, so the recency contract
+    is enforced once: the ``bug_magnet`` flag rides on the age and is never
+    emitted alone. ``bug_magnet`` is a claim about RECENT fix pressure, so with
+    no timestamp to anchor it the same word would describe a file fixed four
+    times last month and one fixed four times two years ago.
+
+    Read off the ``GitMetadata`` row the caller already loaded: no query.
+    """
+    count = getattr(meta, "prior_defect_count", 0) or 0
+    if count <= 0:
+        return None
+
+    out: dict[str, Any] = {"fix_count": count}
+    last_fix_at = getattr(meta, "last_fix_at", None)
+    if isinstance(last_fix_at, datetime):
+        # Rows are stored naive-UTC; compare on the same footing.
+        moment = last_fix_at if last_fix_at.tzinfo else last_fix_at.replace(tzinfo=UTC)
+        out["last_fix_days_ago"] = max(0, (datetime.now(UTC) - moment).days)
+        if getattr(meta, "bug_magnet", False):
+            out["bug_magnet"] = True
+    return out
+
+
+def _fix_clause(profile: dict | None) -> str:
+    """Lead clause for ``risk_summary``, or empty when there is no fix history.
+
+    Trailing separator included so the caller concatenates without a dangling
+    comma on files that have never been fixed. Never renders a count without an
+    age: an unanchored count reads as a claim about the distant past.
+    """
+    if not profile or "last_fix_days_ago" not in profile:
+        return ""
+    n = profile["fix_count"]
+    magnet = " (bug magnet)" if profile.get("bug_magnet") else ""
+    return (
+        f"{n} bug fix{'es' if n != 1 else ''} in 6mo, "
+        f"last {profile['last_fix_days_ago']}d ago{magnet}, "
+    )
+
+
 def _defect_profile(meta: Any) -> dict | None:
     """What this file's counted bug fixes say about it, or ``None`` for silence.
 
@@ -279,23 +322,10 @@ def _defect_profile(meta: Any) -> dict | None:
     string repeated once per target is exactly the per-file cost the lean-MCP
     work went to some trouble to remove.
     """
-    count = getattr(meta, "prior_defect_count", 0) or 0
-    if count <= 0:
+    profile = fix_annotation(meta)
+    if profile is None:
         return None
-
-    profile: dict[str, Any] = {"fix_count": count, "window": "6 months"}
-
-    last_fix_at = getattr(meta, "last_fix_at", None)
-    if isinstance(last_fix_at, datetime):
-        # Rows are stored naive-UTC; compare on the same footing.
-        moment = last_fix_at if last_fix_at.tzinfo else last_fix_at.replace(tzinfo=UTC)
-        profile["last_fix_days_ago"] = max(0, (datetime.now(UTC) - moment).days)
-        # The flag rides on the age, never alone. bug_magnet is a claim about
-        # RECENT fix pressure, so without a timestamp to anchor it the same
-        # word would describe a file fixed four times last month and one fixed
-        # four times two years ago.
-        if getattr(meta, "bug_magnet", False):
-            profile["bug_magnet"] = True
+    profile["window"] = "6 months"
 
     symbols = _top_fix_symbols(getattr(meta, "fix_symbol_counts_json", None))
     if symbols:
@@ -449,8 +479,14 @@ async def _assess_one_target(
     # later by cross-repo enrichment. We store dep_count now and let the
     # outer function rebuild the summary after enrichment if needed.
     result_data["_base_dep_count"] = dep_count
+    # Lead with the bug-fix history when there is any. The summary used to open
+    # on a churn percentile even where risk_type said "bug-prone", so the first
+    # thing an agent read disagreed with the classification beside it. Counted
+    # fixes are the better grounded defect signal, so they go first and churn
+    # keeps its place as the next clause.
     result_data["risk_summary"] = (
-        f"{target} — hotspot score {hotspot_score:.0%} ({trend}), "
+        f"{target} — {_fix_clause(defect_profile)}"
+        f"hotspot score {hotspot_score:.0%} ({trend}), "
         f"{dep_count} dependents, {risk_type}, {change_pattern}, "
         f"{len(co_changes)} co-change partners, owned {pct:.0%} by {owner}"
         f"{bus_note}{capped_note}"

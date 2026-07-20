@@ -18,7 +18,9 @@ import pytest
 from repowise.server.mcp_server.tool_risk.assessment import (
     _classify_risk_type,
     _defect_profile,
+    _fix_clause,
     _top_fix_symbols,
+    fix_annotation,
 )
 
 
@@ -132,3 +134,64 @@ async def test_get_risk_omits_the_block_without_fix_data(setup_mcp):
 
     result = await get_risk(["src/auth/service.py"])
     assert "defect_profile" not in result["targets"]["src/auth/service.py"]
+
+
+# ---------------------------------------------------------------------------
+# The shared fix annotation, and the risk_summary clause built on it
+# ---------------------------------------------------------------------------
+
+
+def test_fix_annotation_is_silent_without_counted_fixes():
+    assert fix_annotation(_meta()) is None
+
+
+def test_fix_annotation_withholds_the_magnet_flag_without_an_age():
+    # bug_magnet is a claim about RECENT fix pressure. With no timestamp the
+    # same word would describe a file fixed four times last month and one
+    # fixed four times two years ago, so the flag drops rather than mislead.
+    out = fix_annotation(_meta(prior_defect_count=9, bug_magnet=True, last_fix_at=None))
+    assert out == {"fix_count": 9}
+    assert "bug_magnet" not in out
+
+
+def test_fix_annotation_carries_count_age_and_flag():
+    out = fix_annotation(
+        _meta(
+            prior_defect_count=5,
+            bug_magnet=True,
+            last_fix_at=datetime.now(UTC) - timedelta(days=14),
+        )
+    )
+    assert out == {"fix_count": 5, "last_fix_days_ago": 14, "bug_magnet": True}
+
+
+def test_defect_profile_still_builds_on_the_shared_annotation():
+    # The profile is the annotation plus a window and symbols, so the recency
+    # contract is enforced in exactly one place.
+    profile = _defect_profile(
+        _meta(
+            prior_defect_count=2,
+            bug_magnet=True,
+            last_fix_at=datetime.now(UTC) - timedelta(days=3),
+        )
+    )
+    assert profile["fix_count"] == 2
+    assert profile["last_fix_days_ago"] == 3
+    assert profile["bug_magnet"] is True
+    assert profile["window"] == "6 months"
+
+
+def test_risk_summary_clause_is_empty_without_fix_history():
+    # Files that have never been fixed must not gain a dangling separator.
+    assert _fix_clause(None) == ""
+    assert _fix_clause({"fix_count": 4}) == ""  # count with no age
+
+
+def test_risk_summary_clause_leads_with_fixes_and_closes_its_separator():
+    clause = _fix_clause({"fix_count": 5, "last_fix_days_ago": 14, "bug_magnet": True})
+    assert clause == "5 bug fixes in 6mo, last 14d ago (bug magnet), "
+
+
+def test_risk_summary_clause_singularizes_one_fix():
+    clause = _fix_clause({"fix_count": 1, "last_fix_days_ago": 2})
+    assert clause == "1 bug fix in 6mo, last 2d ago, "

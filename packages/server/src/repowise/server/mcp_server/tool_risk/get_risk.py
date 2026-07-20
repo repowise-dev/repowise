@@ -24,7 +24,7 @@ from repowise.server.mcp_server._helpers import (
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 
-from .assessment import _assess_one_target, _get_active_contributor_count
+from .assessment import _assess_one_target, _get_active_contributor_count, fix_annotation
 from .directives import _build_pr_directive, _governance_directive
 from .enrichment import _enrich_cross_repo, _enrich_health, _finalize_dep_summaries
 
@@ -35,11 +35,11 @@ async def get_risk(
     repo: str | None = None,
     changed_files: list[str] | None = None,
 ) -> dict:
-    """What history says about touching these files — churn, owners, blast radius.
+    """What history says about touching these files — bug fixes, churn, owners.
 
     Fuses git temporal signals (churn percentile, trend, bus factor) with
     graph topology (dependents, co-changes, impact surface) and security
-    findings. Consult before editing 95th+ churn-percentile files. Pass
+    findings. Consult before editing a file that is bug-fixed or busy. Pass
     changed_files for PR mode: the response leads with a directive block
     (will_break, missing_cochanges, missing_tests, tests_to_run) — read it
     first. tests_to_run is coverage-backed: the tests the per-test map proves
@@ -53,6 +53,7 @@ async def get_risk(
     are approximate, because symbol spans are current-tree while each fix's line
     ranges are numbered on its own parent commit, so read them as "mostly here"
     rather than exact. Nothing here names the commit that introduced a bug.
+    global_hotspots ranks the same way: fix history first, churn as fallback.
 
     Args:
         targets: file paths to assess.
@@ -115,27 +116,48 @@ async def get_risk(
             ]
         )
 
-        # Global hotspots (excluding requested targets)
+        # Elsewhere-in-the-repo attention list (excluding requested targets).
+        # Ranked on bug-fix history first, churn second. This list sits beside
+        # per-target verdicts that already read "bug-prone" off counted fixes,
+        # so ranking it purely on churn made the two halves of one response
+        # disagree about what deserves attention. Admitting bug magnets matters
+        # as much as the ordering: filtering on is_hotspot alone means a file
+        # fixed four times last month that is not busy can never appear.
+        # Churn stays the fallback, so a repo with no fix convention keeps
+        # exactly the list it had. These are full ORM rows, so the fix columns
+        # are already in memory and this adds no query.
         target_set = set(targets)
         res = await session.execute(
             select(GitMetadata)
             .where(
                 GitMetadata.repository_id == repo_id,
-                GitMetadata.is_hotspot == True,  # noqa: E712
+                (GitMetadata.is_hotspot == True)  # noqa: E712
+                | (GitMetadata.bug_magnet == True),  # noqa: E712
             )
-            .order_by(GitMetadata.churn_percentile.desc())
+            .order_by(
+                GitMetadata.bug_magnet.desc(),
+                GitMetadata.fix_mass.desc(),
+                GitMetadata.churn_percentile.desc(),
+            )
             .limit(len(targets) + 5)
         )
         all_hotspots = filter_rows_by_attr(list(res.scalars().all()), "file_path", exclude_spec)
-        global_hotspots = [
-            {
+        global_hotspots = []
+        for h in all_hotspots:
+            if h.file_path in target_set:
+                continue
+            entry = {
                 "file_path": h.file_path,
                 "hotspot_score": h.churn_percentile,
                 "primary_owner": h.primary_owner_name,
             }
-            for h in all_hotspots
-            if h.file_path not in target_set
-        ][:5]
+            # Silent on files with no counted fixes, so a repo without fix
+            # history pays nothing for this.
+            fixes = fix_annotation(h)
+            if fixes is not None:
+                entry.update(fixes)
+            global_hotspots.append(entry)
+        global_hotspots = global_hotspots[:5]
 
         # A. PR blast radius (only when caller passes changed_files)
         pr_blast_radius: dict | None = None
