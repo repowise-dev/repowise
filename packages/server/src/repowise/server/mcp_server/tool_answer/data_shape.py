@@ -156,6 +156,10 @@ def _run_grep(
                 "git",
                 "--no-pager",
                 "grep",
+                # --no-color: this output is parsed, so a user's
+                # ``color.ui=always`` git config must not wrap paths in ANSI
+                # escapes (which would corrupt exclusion filtering and reads).
+                "--no-color",
                 *args,
                 "-l",
                 "-I",
