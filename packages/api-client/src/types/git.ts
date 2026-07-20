@@ -31,6 +31,12 @@ export interface GitMetadataResponse {
   change_entropy?: number;
   change_entropy_pct?: number;
   prior_defect_count?: number;
+  /** `symbol_id` -> counted fixes that landed in it, same window as
+   *  `prior_defect_count`. Approximate: symbol spans are current-tree while
+   *  each fix's ranges are numbered on its own parent commit. */
+  fix_symbol_counts?: Record<string, number>;
+  bug_magnet?: boolean;
+  last_fix_at?: string | null;
   temporal_hotspot_score?: number | null;
   commit_count_capped?: boolean;
   original_path?: string | null;

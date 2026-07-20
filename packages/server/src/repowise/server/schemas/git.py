@@ -39,6 +39,14 @@ class GitMetadataResponse(BaseModel):
     change_entropy: float = 0.0
     change_entropy_pct: float = 0.0
     prior_defect_count: int = 0
+    # Fix-event rollup. ``fix_symbol_counts`` maps WikiSymbol.symbol_id to how
+    # many counted fixes landed in that symbol, so a caller holding this row can
+    # answer "was THIS function bug-fixed?" without a second request.
+    # ``last_fix_at`` travels with it because a fix count without recency reads
+    # the same at two weeks and two years. Empty/None on a pre-rollup index.
+    fix_symbol_counts: dict = {}
+    bug_magnet: bool = False
+    last_fix_at: datetime | None = None
     temporal_hotspot_score: float | None = None
     commit_count_capped: bool = False
     # Rename lineage: the file's path before its most recent move, if any.
@@ -87,6 +95,9 @@ class GitMetadataResponse(BaseModel):
             # Normalize 0-1 -> 0-100 to match churn_percentile's contract.
             change_entropy_pct=(obj.change_entropy_pct or 0.0) * 100.0,  # type: ignore[attr-defined]
             prior_defect_count=obj.prior_defect_count or 0,  # type: ignore[attr-defined]
+            fix_symbol_counts=json.loads(getattr(obj, "fix_symbol_counts_json", None) or "{}"),
+            bug_magnet=bool(getattr(obj, "bug_magnet", False)),
+            last_fix_at=getattr(obj, "last_fix_at", None),
             temporal_hotspot_score=obj.temporal_hotspot_score,  # type: ignore[attr-defined]
             commit_count_capped=bool(obj.commit_count_capped),  # type: ignore[attr-defined]
             original_path=obj.original_path,  # type: ignore[attr-defined]

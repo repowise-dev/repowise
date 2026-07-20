@@ -67,6 +67,10 @@ export interface CodeSymbol {
   blame_median_author_time?: number | null;
   blame_owner_name?: string | null;
   blame_owner_line_pct?: number | null;
+  /** Counted bug fixes attributed to this symbol, populated by the list
+   *  endpoint from the per-file rollup. Null when the index predates it,
+   *  0 when it ran and found no fixes here. */
+  fix_count?: number | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -104,6 +108,10 @@ export interface SymbolDetailResponse {
   graph: SymbolDetailGraph;
   governing_decisions: { id: string; title: string; status: string }[];
   file_context: SymbolFileContext;
+  /** Counted bug fixes attributed to this symbol, and the file's last counted
+   *  fix. Both null on an index that predates the fix-event rollup. */
+  fix_count?: number | null;
+  fix_last_at?: string | null;
 }
 
 export interface SymbolList {
@@ -189,6 +197,14 @@ export interface SymbolDetailData {
   blame_median_author_time?: number | null;
   blame_owner_name?: string | null;
   blame_owner_line_pct?: number | null;
+  /** Counted bug fixes whose replaced lines landed in this symbol, over the
+   *  same 6-month window as `prior_defect_count`. Approximate by construction:
+   *  symbol spans are current-tree while each fix's ranges are numbered on its
+   *  own parent commit, so any surface showing it must hedge. `fix_last_at` is
+   *  the file's most recent counted fix, because a count without recency reads the
+   *  same at two weeks and two years. */
+  fix_count?: number | null;
+  fix_last_at?: string | null;
   graph?: SymbolBodyGraph | null;
   /** Heritage relations (extends/implements + extended-by). Renders when present. */
   heritage?: SymbolHeritage | null;
