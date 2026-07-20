@@ -88,6 +88,7 @@ Git:
 Output:
   --no-claude-md         Don't generate/update CLAUDE.md
   -y, --yes              Skip cost confirmation prompt
+  -v, --verbose          Show per-phase internals plus debug logs (quiet by default)
 
 Recovery:
   --resume               Resume a previously interrupted init

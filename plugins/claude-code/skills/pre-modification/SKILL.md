@@ -18,6 +18,12 @@ Call `get_risk(targets=["path/to/file.py"])`. Per file it returns
 `hotspot_score`, `trend`, `risk_type`, `impact_surface` (top 3),
 `dependents_count`, `co_change_partners`, `primary_owner`, `bus_factor`,
 `test_gap`, and `security_signals`. Read it for:
+- **Bug-fix history** (`defect_profile`) — present only on files with counted
+  fixes: `fix_count` over the trailing 6 months, `last_fix_days_ago`, a
+  `bug_magnet` flag for sustained recent fix pressure, and `top_symbols` (the
+  per-symbol counts are approximate — read them as "mostly here"). A file that
+  keeps getting fixed is the strongest single signal that the next edit breaks
+  something; lead with it.
 - **Hotspot status** (`hotspot_score`, `trend`) — high-churn × complex? Extra care needed.
 - **Dependents** (`dependents_count`, `impact_surface`) — how wide is the blast radius?
 - **Co-change partners** — files that change together with this one (often without an import link); you may need to update them too.
@@ -31,6 +37,7 @@ Batch all targets into one call: `get_risk(targets=["file1.py", "file2.py", "mod
 ## When to warn the user
 
 If `get_risk` shows:
+- A `defect_profile` with `bug_magnet` set — say so plainly: this file has been fixed repeatedly and recently
 - Hotspot score above 90th percentile — mention this is a frequently-changed, high-risk file
 - More than 10 dependents — list the top dependents; API changes here will break consumers
 - Bus factor of 1 — note that a single person maintains this code
