@@ -76,6 +76,9 @@ async def test_export_graph_with_data(client: AsyncClient, app) -> None:
     assert data["links"][0]["source"] == "src/main.py"
     assert data["links"][0]["target"] == "src/utils.py"
     assert data["links"][0]["imported_names"] == ["helper_func"]
+    # End-to-end test: verify nodes are fully populated from database through API
+    assert data["nodes"][0]["symbol_count"] == 3
+    assert data["nodes"][1]["symbol_count"] == 5
 
 
 @pytest.mark.asyncio
