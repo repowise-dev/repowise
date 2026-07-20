@@ -14,9 +14,9 @@ from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.change_risk import (
-    ChangeFeatures,
     RiskNormalizer,
     baseline_scores,
+    change_features_from_stored,
     extract_range_features,
     score_change,
 )
@@ -24,6 +24,7 @@ from repowise.core.ingestion.git_indexer._constants import (
     EVOLUTION_CATEGORIES,
     classify_commit_category,
 )
+from repowise.core.ingestion.git_indexer.identity import author_identity_key
 from repowise.core.persistence import crud
 from repowise.core.persistence.models import GitCommit, GitMetadata, Repository
 from repowise.server.deps import get_db_session, verify_api_key
@@ -108,23 +109,38 @@ def _commit_risk(r: GitCommit):
     stored ``change_risk_score`` exactly. Returns None for unscored rows."""
     if r.change_risk_score is None:
         return None
-    feats = ChangeFeatures(
-        la=r.lines_added or 0,
-        ld=r.lines_deleted or 0,
-        nf=r.files_changed or 0,
-        nd=r.dirs_changed or 0,
-        ns=r.subsystems_changed or 0,
-        entropy=r.entropy or 0.0,
+    feats = change_features_from_stored(
+        la=r.lines_added,
+        ld=r.lines_deleted,
+        nf=r.files_changed,
+        nd=r.dirs_changed,
+        ns=r.subsystems_changed,
+        entropy=r.entropy,
         exp=r.author_experience,
-        is_fix=bool(r.is_fix),
-        author=r.author_name or "",
-        subject=r.subject or "",
+        is_fix=r.is_fix,
+        author=r.author_name,
+        subject=r.subject,
         ref=r.sha,
     )
     return score_change(feats)
 
 
-def _commit_fields(r: GitCommit, normalizer: RiskNormalizer) -> dict:
+async def _author_commit_counts(session: AsyncSession, repo_id: str) -> dict[str, int]:
+    """Commits per author in the index, keyed by folded identity.
+
+    One grouped query per request rather than a per-row lookup, and folded in
+    Python so it matches the tally that produced ``author_experience`` exactly.
+    """
+    counts: dict[str, int] = {}
+    for name, email, count in await crud.get_author_commit_counts(session, repo_id):
+        key = author_identity_key(name, email)
+        counts[key] = counts.get(key, 0) + int(count or 0)
+    return counts
+
+
+def _commit_fields(
+    r: GitCommit, normalizer: RiskNormalizer, author_counts: dict[str, int] | None = None
+) -> dict:
     """Shared CommitResponse field map (raw row + repo-relative normalization)."""
     risk = _commit_risk(r)
     top_driver = risk.top_drivers[0].label if risk and risk.top_drivers else None
@@ -148,17 +164,26 @@ def _commit_fields(r: GitCommit, normalizer: RiskNormalizer) -> dict:
         "review_priority": normalizer.priority(r.change_risk_score),
         "top_driver": top_driver,
         "author_experience": r.author_experience,
+        "author_commit_count": (
+            author_counts.get(author_identity_key(r.author_name, r.author_email))
+            if author_counts is not None
+            else None
+        ),
         "agent_name": r.agent_name,
         "agent_autonomy_tier": r.agent_autonomy_tier,
         "agent_confidence": r.agent_confidence,
     }
 
 
-def _commit_from_row(r: GitCommit, normalizer: RiskNormalizer) -> CommitResponse:
-    return CommitResponse(**_commit_fields(r, normalizer))
+def _commit_from_row(
+    r: GitCommit, normalizer: RiskNormalizer, author_counts: dict[str, int] | None = None
+) -> CommitResponse:
+    return CommitResponse(**_commit_fields(r, normalizer, author_counts))
 
 
-def _commit_detail_from_row(r: GitCommit, normalizer: RiskNormalizer) -> CommitDetailResponse:
+def _commit_detail_from_row(
+    r: GitCommit, normalizer: RiskNormalizer, author_counts: dict[str, int] | None = None
+) -> CommitDetailResponse:
     """Map a commit row to its detail view, recomputing the risk-driver
     breakdown from the persisted Kamei features + author experience.
 
@@ -177,7 +202,7 @@ def _commit_detail_from_row(r: GitCommit, normalizer: RiskNormalizer) -> CommitD
         for d in (risk.top_drivers if risk else [])
     ]
     return CommitDetailResponse(
-        **_commit_fields(r, normalizer),
+        **_commit_fields(r, normalizer, author_counts),
         drivers=drivers,
         agent_channel=r.agent_channel,
     )
@@ -205,7 +230,8 @@ async def get_commits(
         session, repo_id, limit=limit, offset=offset, sort=sort, authorship=authorship
     )
     normalizer = RiskNormalizer.from_scores(await crud.get_commit_risk_scores(session, repo_id))
-    items = [_commit_from_row(r, normalizer) for r in rows]
+    author_counts = await _author_commit_counts(session, repo_id)
+    items = [_commit_from_row(r, normalizer, author_counts) for r in rows]
     next_offset = offset + limit if offset + limit < total else None
     return Paginated[CommitResponse](
         items=items,
@@ -426,7 +452,8 @@ async def get_commit(
     if row is None:
         raise HTTPException(status_code=404, detail="Commit not found")
     normalizer = RiskNormalizer.from_scores(await crud.get_commit_risk_scores(session, repo_id))
-    return _commit_detail_from_row(row, normalizer)
+    author_counts = await _author_commit_counts(session, repo_id)
+    return _commit_detail_from_row(row, normalizer, author_counts)
 
 
 @router.get("/{repo_id}/git-metadata", response_model=GitMetadataResponse)

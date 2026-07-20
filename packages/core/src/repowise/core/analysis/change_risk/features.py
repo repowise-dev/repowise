@@ -181,6 +181,44 @@ def features_from_file_changes(
     )
 
 
+def change_features_from_stored(
+    *,
+    la: int,
+    ld: int,
+    nf: int,
+    nd: int,
+    ns: int,
+    entropy: float,
+    exp: int | None,
+    is_fix: bool = False,
+    author: str = "",
+    subject: str = "",
+    ref: str = "",
+) -> ChangeFeatures:
+    """Rebuild a feature vector from already-computed (persisted) metrics.
+
+    The model ships its constants and is deterministic, so re-scoring these
+    reproduces the score that was stored alongside them. Used wherever a commit
+    has to be re-scored without its diff: the API's per-driver breakdown and the
+    update pass that repairs a stale ``exp``. Shared so both build the vector the
+    same way — a field that drifted between them would make the re-scored
+    breakdown disagree with the stored score.
+    """
+    return ChangeFeatures(
+        la=la or 0,
+        ld=ld or 0,
+        nf=nf or 0,
+        nd=nd or 0,
+        ns=ns or 0,
+        entropy=entropy or 0.0,
+        exp=exp,
+        is_fix=bool(is_fix),
+        author=author or "",
+        subject=subject or "",
+        ref=ref or "",
+    )
+
+
 def extract_commit_features(
     repo_path: str,
     sha: str,
@@ -199,9 +237,7 @@ def extract_commit_features(
     numstat = _git(["show", sha, "--numstat", "--format="], repo_path)
     la, ld, nf, dirs, subs, per_file = _accumulate_numstat(numstat, extensions, exclude_patterns)
     # check=False: a root commit has no parent and that is not an error.
-    parent = _git(
-        ["rev-parse", "--verify", "--quiet", f"{sha}^"], repo_path, check=False
-    ).strip()
+    parent = _git(["rev-parse", "--verify", "--quiet", f"{sha}^"], repo_path, check=False).strip()
     exp = _author_experience(repo_path, author, parent or sha)
     return ChangeFeatures(
         la=la,

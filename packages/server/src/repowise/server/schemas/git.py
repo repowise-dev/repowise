@@ -185,9 +185,16 @@ class CommitResponse(BaseModel):
     # open every detail sheet. Recomputed deterministically from the stored
     # Kamei features; None when the commit was never risk-scored.
     top_driver: str | None = None
-    # Cumulative prior-commit count at commit time. Low values flag a
-    # new-to-this-repo contributor.
+    # Cumulative prior-commit count at commit time, counted over the indexed
+    # history. A change-risk feature, so it is reported as-is; it is not a
+    # verdict on the author, since the window's oldest commits necessarily
+    # start everyone near zero.
     author_experience: int | None = None
+    # How many commits this author has in the indexed history, total. Unlike
+    # author_experience this does not depend on where in the window the commit
+    # sits, which is what makes it safe to draw a "new contributor" conclusion
+    # from. Identities are folded, so noreply variants of one person count once.
+    author_commit_count: int | None = None
     # Agent provenance (deterministic local-git attribution channels).
     # agent_name is None for human-authored commits.
     agent_name: str | None = None

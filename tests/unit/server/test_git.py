@@ -271,9 +271,7 @@ async def _insert_agent_commit(session_factory, repo_id: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_commits_carry_agent_provenance_and_top_driver(
-    client: AsyncClient, app
-) -> None:
+async def test_commits_carry_agent_provenance_and_top_driver(client: AsyncClient, app) -> None:
     repo = await create_test_repo(client)
     await _insert_git_commits(app.state.session_factory, repo["id"])
     await _insert_agent_commit(app.state.session_factory, repo["id"])
@@ -297,21 +295,46 @@ async def test_commits_carry_agent_provenance_and_top_driver(
 
 
 @pytest.mark.asyncio
+async def test_commits_carry_the_author_total_behind_the_new_contributor_badge(
+    client: AsyncClient, app
+) -> None:
+    """The badge keys on this, not on ``author_experience``.
+
+    Experience is a running count, so it is near zero for everyone at the old
+    edge of the indexed window; a total does not move with a commit's position
+    in it. Ann's three commits must all report 3, including her earliest.
+    """
+    repo = await create_test_repo(client)
+    await _insert_git_commits(app.state.session_factory, repo["id"])
+    await _insert_agent_commit(app.state.session_factory, repo["id"])
+
+    resp = await client.get(f"/api/repos/{repo['id']}/commits", params={"sort": "date"})
+    assert resp.status_code == 200
+    items = {c["short_sha"]: c for c in resp.json()["items"]}
+
+    assert items["aaaaaaaa"]["author_commit_count"] == 3
+    assert items["bbbbbbbb"]["author_commit_count"] == 3
+    assert items["cccccccc"]["author_commit_count"] == 3
+    # A different author with a single commit is the genuine new contributor.
+    assert items["dddddddd"]["author_commit_count"] == 1
+
+    detail = await client.get(f"/api/repos/{repo['id']}/commits/aaaaaaaa")
+    assert detail.status_code == 200
+    assert detail.json()["author_commit_count"] == 3
+
+
+@pytest.mark.asyncio
 async def test_commits_authorship_filter(client: AsyncClient, app) -> None:
     repo = await create_test_repo(client)
     await _insert_git_commits(app.state.session_factory, repo["id"])
     await _insert_agent_commit(app.state.session_factory, repo["id"])
 
-    agents = await client.get(
-        f"/api/repos/{repo['id']}/commits", params={"authorship": "agent"}
-    )
+    agents = await client.get(f"/api/repos/{repo['id']}/commits", params={"authorship": "agent"})
     assert agents.status_code == 200
     assert agents.json()["total"] == 1
     assert agents.json()["items"][0]["agent_name"] == "claude-code"
 
-    humans = await client.get(
-        f"/api/repos/{repo['id']}/commits", params={"authorship": "human"}
-    )
+    humans = await client.get(f"/api/repos/{repo['id']}/commits", params={"authorship": "human"})
     assert humans.json()["total"] == 3
     assert all(c["agent_name"] is None for c in humans.json()["items"])
 
@@ -339,9 +362,7 @@ async def test_commit_stats_risk_histogram(client: AsyncClient, app) -> None:
 
 
 @pytest.mark.asyncio
-async def test_commit_stats_histogram_empty_without_scores(
-    client: AsyncClient, app
-) -> None:
+async def test_commit_stats_histogram_empty_without_scores(client: AsyncClient, app) -> None:
     repo = await create_test_repo(client)
 
     resp = await client.get(f"/api/repos/{repo['id']}/commits/stats")

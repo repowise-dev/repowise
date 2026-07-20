@@ -573,6 +573,8 @@ async def persist_incremental_commits(session: Any, repo_id: str, repo_path: Any
     if rows:
         await upsert_git_commits_bulk(session, repo_id, rows)
 
+    await reconcile_commit_experience(session, repo_id, indexer)
+
     # Refresh the repo-level whole-history totals so age / commit / contributor
     # counts keep growing between full re-indexes (#730). Cheap git calls, and
     # cheap to run every update since they don't touch the bounded sample.
@@ -587,6 +589,139 @@ async def persist_incremental_commits(session: Any, repo_id: str, repo_path: Any
     )
 
     await persist_incremental_fix_events(session, repo_id, indexer)
+
+
+async def reconcile_commit_experience(session: Any, repo_id: str, indexer: Any) -> None:
+    """Re-tally author experience across the whole commit table and re-score.
+
+    ``build_commit_rows`` can only count the commits it is handed. On a full
+    index that is the entire window, so the number lands right; on an update it
+    is just the commits newer than the last one persisted, so every author's
+    count restarts at zero and an established author's new commits look like a
+    first-timer's. That is not only a cosmetic badge: ``author_experience`` is a
+    change-risk feature, so the stored ``change_risk_score`` inherits the error
+    and the review queue ranks on it.
+
+    Rather than seed the batch tally, this re-derives experience over the full
+    persisted history after the append. The batch-local pass then has no lasting
+    say, so there is no second code path to keep correct, and rows written by
+    earlier (wrong) updates are repaired on the next one instead of waiting for
+    a re-index.
+
+    Two things have to happen together. Unreachable commits are dropped first:
+    an update run on a feature branch persists that branch's shas, and once it
+    is squash-merged they survive as orphans that no full index would produce
+    and inflate every author's count. Then each surviving commit is re-scored
+    from its stored features, because a corrected experience that leaves the old
+    score in place would just move the inconsistency somewhere less visible.
+
+    Bounded by the commit count and git-free apart from one ``rev-list``, and
+    failure-isolated like the rest of the git-phase refreshes.
+    """
+    from repowise.core.persistence.crud import (
+        delete_git_commits_by_sha,
+        get_commit_experience_inputs,
+        upsert_git_commits_bulk,
+    )
+
+    try:
+        stored = await get_commit_experience_inputs(session, repo_id)
+        if not stored:
+            return
+
+        reachable = await asyncio.to_thread(indexer.list_reachable_shas)
+        if reachable is not None:
+            orphans = [r["sha"] for r in stored if r["sha"] not in reachable]
+            if orphans:
+                await delete_git_commits_by_sha(session, repo_id, orphans)
+                stored = [r for r in stored if r["sha"] in reachable]
+                logger.info("commit_orphans_pruned", repo_id=repo_id, count=len(orphans))
+
+        updates = _recompute_commit_experience(stored)
+        if updates:
+            await upsert_git_commits_bulk(session, repo_id, updates)
+            logger.info("commit_experience_reconciled", repo_id=repo_id, count=len(updates))
+    except Exception as exc:
+        logger.debug("commit_experience_reconcile_failed", error=str(exc))
+
+
+def _committed_ts(committed_at: Any) -> float:
+    """``committed_at`` as a sortable epoch, or 0 when the row has no date.
+
+    SQLite drops tzinfo, so a naive read has to be reinterpreted as UTC — the
+    column is stored tz-aware. Doing that first also keeps ``timestamp()`` off
+    the platform's local-time conversion, which fails outright on Windows for
+    pre-epoch dates.
+    """
+    if committed_at is None:
+        return 0.0
+    from datetime import UTC
+
+    if committed_at.tzinfo is None:
+        committed_at = committed_at.replace(tzinfo=UTC)
+    return committed_at.timestamp()
+
+
+def _recompute_commit_experience(stored: list[dict]) -> list[dict]:
+    """Rows whose experience or risk moved, as partial upserts keyed by sha.
+
+    Pure, so the ordering and re-scoring can be tested without a database.
+    Emits only changed rows: on a settled index that is a handful, which keeps a
+    whole-table read from turning into a whole-table write every update.
+    """
+    from repowise.core.analysis.change_risk import change_features_from_stored, score_change
+    from repowise.core.ingestion.git_indexer.commit_rows import author_experience_by_sha
+
+    exp_by_sha = author_experience_by_sha(
+        [
+            {
+                "sha": r["sha"],
+                "author_name": r["author_name"] or "",
+                "author_email": r["author_email"] or "",
+                # committed_at is the only ordering key the table stores; rows
+                # without one sort oldest, which is where an unknown date least
+                # disturbs everyone else's running count.
+                "ts": _committed_ts(r["committed_at"]),
+            }
+            for r in stored
+        ]
+    )
+
+    updates: list[dict] = []
+    for r in stored:
+        exp = exp_by_sha.get(r["sha"], 0)
+        risk = score_change(
+            change_features_from_stored(
+                la=r["lines_added"],
+                ld=r["lines_deleted"],
+                nf=r["files_changed"],
+                nd=r["dirs_changed"],
+                ns=r["subsystems_changed"],
+                entropy=r["entropy"],
+                exp=exp,
+                is_fix=r["is_fix"],
+                author=r["author_name"],
+                subject=r["subject"],
+                ref=r["sha"],
+            )
+        )
+        unchanged = (
+            r["author_experience"] == exp
+            and r["change_risk_level"] == risk.level
+            and r["change_risk_score"] is not None
+            and abs(r["change_risk_score"] - risk.score) < 1e-9
+        )
+        if unchanged:
+            continue
+        updates.append(
+            {
+                "sha": r["sha"],
+                "author_experience": exp,
+                "change_risk_score": risk.score,
+                "change_risk_level": risk.level,
+            }
+        )
+    return updates
 
 
 async def persist_incremental_fix_events(session: Any, repo_id: str, indexer: Any) -> None:

@@ -117,6 +117,8 @@ export interface CommitResponse {
   top_driver?: string | null;
   /** Author's cumulative prior-commit count at commit time. */
   author_experience?: number | null;
+  /** Commits by this author across the indexed history (identities folded). */
+  author_commit_count?: number | null;
   /** Coding-agent attribution; null for human-authored commits. */
   agent_name?: string | null;
   /** 1 = near-autonomous bot, 2 = human-driven agent, 3 = assisted. */

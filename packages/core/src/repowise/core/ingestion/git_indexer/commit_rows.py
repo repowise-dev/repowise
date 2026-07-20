@@ -11,29 +11,26 @@ repository. Author experience — the one change-risk feature that costs a
 subprocess in the live ``repowise risk`` path — is reconstructed **in memory**
 here: walking commits oldest→newest, each author's prior-commit count is the
 running tally before their commit. That keeps the whole pass zero-extra-git.
+
+That tally can only see the commits it is handed, which is the whole window on
+a full index but just the new ones on an update. The update path therefore
+re-tallies against the full persisted history afterwards
+(``pipeline.incremental.reconcile_commit_experience``); this module stays pure
+and batch-local on purpose.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
+from typing import Any
 
 from ._constants import is_fix_commit
-from .identity import canonicalize_author_email
+from .identity import author_identity_key
 
 # Commit subjects are a headline (`%s`); cap defensively against a pathological
 # single-line subject so one row can't bloat the table.
 _MAX_SUBJECT_LEN = 500
-
-
-def _author_key(author_name: str, author_email: str) -> str:
-    """Stable identity for the in-memory experience tally.
-
-    GitHub ``noreply`` variants of one login are folded together first so a
-    person's prior-commit count doesn't reset when their email flips between
-    forms.
-    """
-    canonical = canonicalize_author_email(author_email) or author_email
-    return (canonical or author_name or "").strip().lower()
 
 
 def _committed_at(ts: int) -> datetime | None:
@@ -43,6 +40,28 @@ def _committed_at(ts: int) -> datetime | None:
         return datetime.fromtimestamp(ts, tz=UTC)
     except (OverflowError, OSError, ValueError):
         return None
+
+
+def author_experience_by_sha(commits: Iterable[Mapping[str, Any]]) -> dict[str, int]:
+    """Map each commit's sha to its author's prior-commit count.
+
+    Walks *commits* oldest→newest (by ``ts``) and returns, per sha, the running
+    tally for that author BEFORE the commit. Ties on the same timestamp are
+    ordered as-given, which is fine for a count. Identities are folded through
+    :func:`_author_key`, so ``noreply`` variants of one person share a tally.
+
+    The count is only ever "prior commits **within this set**". Callers that
+    persist it must therefore hand over the whole history they hold, not a
+    trailing batch — a batch-local tally restarts every author at zero.
+    """
+    ordered = sorted(commits, key=lambda c: c.get("ts", 0) or 0)
+    exp_by_sha: dict[str, int] = {}
+    tally: dict[str, int] = {}
+    for c in ordered:
+        key = author_identity_key(c.get("author_name", ""), c.get("author_email", ""))
+        exp_by_sha[c["sha"]] = tally.get(key, 0)
+        tally[key] = tally.get(key, 0) + 1
+    return exp_by_sha
 
 
 def build_commit_rows(parsed_commits: list[dict]) -> list[dict]:
@@ -62,16 +81,12 @@ def build_commit_rows(parsed_commits: list[dict]) -> list[dict]:
     # git_indexer._constants) and matches the codebase's hot-path import style.
     from ...analysis.change_risk import features_from_file_changes, score_change
 
-    # --- Author experience: cumulative prior-commit count, oldest→newest. ---
-    # Each commit's exp is the author's tally BEFORE this commit (ties on the
-    # same timestamp are ordered as-given, which is acceptable for a count).
-    ordered = sorted(parsed_commits, key=lambda c: c.get("ts", 0) or 0)
-    exp_by_sha: dict[str, int] = {}
-    tally: dict[str, int] = {}
-    for c in ordered:
-        key = _author_key(c.get("author_name", ""), c.get("author_email", ""))
-        exp_by_sha[c["sha"]] = tally.get(key, 0)
-        tally[key] = tally.get(key, 0) + 1
+    # Author experience: cumulative prior-commit count over THIS batch only.
+    # On the full index that batch is the whole window, so the count lands
+    # right; the incremental path hands over only the new commits, so its rows
+    # are provisional until the update's reconcile pass re-tallies them against
+    # the full persisted history (see ``pipeline.incremental``).
+    exp_by_sha = author_experience_by_sha(parsed_commits)
 
     rows: list[dict] = []
     for c in parsed_commits:

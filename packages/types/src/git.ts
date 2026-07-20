@@ -144,6 +144,8 @@ export interface Commit {
   /** Author's cumulative prior-commit count at the time of the commit.
    * Low values flag a new-to-this-repo contributor. */
   author_experience?: number | null;
+  /** Commits by this author across the indexed history (identities folded). */
+  author_commit_count?: number | null;
   /** Coding-agent attribution (deterministic local-git channels).
    * Null/undefined for human-authored commits. */
   agent_name?: string | null;

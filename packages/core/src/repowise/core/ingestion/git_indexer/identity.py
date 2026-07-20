@@ -51,6 +51,19 @@ def canonicalize_author_email(email: str | None) -> str | None:
     return lowered
 
 
+def author_identity_key(author_name: str | None, author_email: str | None) -> str:
+    """Stable per-person key for counting commits.
+
+    Folds noreply variants onto one login first, falling back to the display
+    name when there is no usable email. Anything that tallies commits per author
+    must key on this, or one person splits across buckets and every count that
+    depends on it (author experience, "is this a new contributor") comes out low
+    for exactly the people who commit through GitHub's web UI.
+    """
+    canonical = canonicalize_author_email(author_email) or author_email
+    return (canonical or author_name or "").strip().lower()
+
+
 def _is_github_noreply(canonical_email: str | None) -> bool:
     """True for a ``login@users.noreply.github.com`` identity (not the system
     ``noreply@github.com`` author, which lives on a different domain)."""

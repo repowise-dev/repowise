@@ -6,6 +6,7 @@ every public name, so existing imports are unaffected.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime
 
 from sqlalchemy import delete, func, or_, select, text
@@ -268,6 +269,74 @@ async def delete_git_commits(session: AsyncSession, repository_id: str) -> None:
     """Remove all per-commit rows for a repository (used before a clean reindex)."""
     await session.execute(delete(GitCommit).where(GitCommit.repository_id == repository_id))
     await session.flush()
+
+
+async def delete_git_commits_by_sha(
+    session: AsyncSession, repository_id: str, shas: Sequence[str]
+) -> int:
+    """Drop specific per-commit rows. Returns how many were removed."""
+    removed = 0
+    for start in range(0, len(shas), _BATCH_SIZE):
+        chunk = shas[start : start + _BATCH_SIZE]
+        if not chunk:
+            continue
+        result = await session.execute(
+            delete(GitCommit).where(
+                GitCommit.repository_id == repository_id, GitCommit.sha.in_(chunk)
+            )
+        )
+        removed += int(result.rowcount or 0)
+    await session.flush()
+    return removed
+
+
+async def get_commit_experience_inputs(session: AsyncSession, repository_id: str) -> list[dict]:
+    """Every persisted commit's identity, timestamp and stored risk features.
+
+    The input to the update-time reconcile: enough to re-tally author experience
+    across the whole history and re-score each commit without touching git or
+    the diffs. Deliberately column-scoped rather than whole ORM rows, since this
+    loads the full table on every update.
+    """
+    stmt = select(
+        GitCommit.sha,
+        GitCommit.author_name,
+        GitCommit.author_email,
+        GitCommit.committed_at,
+        GitCommit.lines_added,
+        GitCommit.lines_deleted,
+        GitCommit.files_changed,
+        GitCommit.dirs_changed,
+        GitCommit.subsystems_changed,
+        GitCommit.entropy,
+        GitCommit.is_fix,
+        GitCommit.subject,
+        GitCommit.author_experience,
+        GitCommit.change_risk_score,
+        GitCommit.change_risk_level,
+    ).where(GitCommit.repository_id == repository_id)
+    result = await session.execute(stmt)
+    return [dict(row) for row in result.mappings()]
+
+
+async def get_author_commit_counts(session: AsyncSession, repository_id: str) -> list[tuple]:
+    """``(author_name, author_email, count)`` per raw identity in the index.
+
+    Raw because identities are folded by the caller — the canonicalization that
+    decides whether two emails are one person lives in the git-indexer, not in
+    SQL, and splitting it across both would let the two drift.
+    """
+    stmt = (
+        select(
+            GitCommit.author_name,
+            GitCommit.author_email,
+            func.count(),
+        )
+        .where(GitCommit.repository_id == repository_id)
+        .group_by(GitCommit.author_name, GitCommit.author_email)
+    )
+    result = await session.execute(stmt)
+    return [tuple(row) for row in result.all()]
 
 
 def _commit_authorship_clause(authorship: str | None):

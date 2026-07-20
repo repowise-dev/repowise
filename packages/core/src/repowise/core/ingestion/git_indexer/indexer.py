@@ -523,6 +523,37 @@ class GitIndexer:
         finally:
             repo.close()
 
+    def list_reachable_shas(self) -> set[str] | None:
+        """Shas reachable from HEAD, or ``None`` when that cannot be trusted.
+
+        The commit walk is ``git log --no-merges`` from HEAD, so this is exactly
+        the set a full index would produce. An update run on a feature branch
+        captures that branch's commits; once the branch is squash-merged or
+        rebased those shas stop being reachable, and nothing else prunes them.
+
+        ``None`` means "do not prune": a shallow clone only knows part of its
+        history, so every commit below the graft point would look unreachable
+        and a prune would delete real rows. Any git failure degrades the same
+        way, since dropping rows is not something to guess at.
+        """
+        repo = self._get_repo()
+        if repo is None:
+            return None
+        try:
+            if repo.git.rev_parse("--is-shallow-repository").strip() == "true":
+                return None
+            out = repo.git.rev_list("--no-merges", "HEAD")
+        except Exception as exc:
+            logger.debug("reachable_shas_failed", error=str(exc))
+            return None
+        finally:
+            with contextlib.suppress(Exception):
+                repo.close()
+        shas = {line.strip() for line in out.split("\n") if line.strip()}
+        # An empty result on a repo that has rows is far more likely to be a
+        # broken call than a genuinely empty history.
+        return shas or None
+
     def capture_new_fix_events(
         self, *, known_shas: set[str] | None = None
     ) -> tuple[list[dict], int, set[str]]:

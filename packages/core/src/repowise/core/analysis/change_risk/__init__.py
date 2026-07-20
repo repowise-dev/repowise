@@ -12,6 +12,7 @@ from __future__ import annotations
 from .baseline import baseline_scores
 from .features import (
     ChangeFeatures,
+    change_features_from_stored,
     extract_commit_features,
     extract_range_features,
     features_from_file_changes,
@@ -33,6 +34,7 @@ __all__ = [
     "RiskDriver",
     "RiskNormalizer",
     "baseline_scores",
+    "change_features_from_stored",
     "change_risk_payload",
     "extract_commit_features",
     "extract_range_features",
