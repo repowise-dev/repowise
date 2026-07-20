@@ -5,7 +5,11 @@ from __future__ import annotations
 import pytest
 
 from repowise.core.generation.editor_files.base import BaseEditorFileGenerator
-from repowise.core.generation.editor_files.data import CodeHealthBlock, EditorFileData
+from repowise.core.generation.editor_files.data import (
+    CodeHealthBlock,
+    EditorFileData,
+    HotspotFile,
+)
 
 # ---------------------------------------------------------------------------
 # Minimal concrete subclass for testing
@@ -230,3 +234,73 @@ def test_render_full_matches_write_output(gen, tmp_path):
     gen.write(tmp_path, data)
     written = (tmp_path / "TEST.md").read_text(encoding="utf-8")
     assert preview == written
+
+
+# ---------------------------------------------------------------------------
+# Attention-list section: fix history leads, churn is the fallback
+# ---------------------------------------------------------------------------
+
+
+def _hotspot(path: str, **kw) -> HotspotFile:
+    base = {"churn_percentile": 99.0, "commit_count_90d": 28, "owner": None}
+    return HotspotFile(path=path, **{**base, **kw})
+
+
+def test_render_hotspot_section_no_longer_claims_to_rank_by_churn(gen):
+    # The header used to read "high churn" while telling the agent to call
+    # get_risk, a defect tool. The list and its own instruction disagreed.
+    import dataclasses
+
+    data = dataclasses.replace(_minimal_data(), hotspots=[_hotspot("src/a.py")])
+    result = gen.render(data)
+    assert "high churn" not in result
+    assert "get_risk" in result
+
+
+def test_render_hotspot_row_leads_with_fix_history(gen):
+    import dataclasses
+
+    data = dataclasses.replace(
+        _minimal_data(),
+        hotspots=[_hotspot("src/a.py", fix_count=5, bug_magnet=True, last_fix_age="2 weeks ago")],
+    )
+    result = gen.render(data)
+    assert "5 bug fixes, last fix 2 weeks ago (bug magnet); 28 commits/90d" in result
+
+
+def test_render_hotspot_row_singularizes_one_fix(gen):
+    import dataclasses
+
+    data = dataclasses.replace(
+        _minimal_data(),
+        hotspots=[_hotspot("src/a.py", fix_count=1, last_fix_age="yesterday")],
+    )
+    result = gen.render(data)
+    assert "1 bug fix, last fix yesterday" in result
+    assert "1 bug fixes" not in result
+
+
+def test_render_hotspot_row_falls_back_to_churn_without_fix_history(gen):
+    # A repo whose commit messages carry no fix convention has zero fix mass
+    # everywhere. The section must still render, on churn alone.
+    import dataclasses
+
+    data = dataclasses.replace(_minimal_data(), hotspots=[_hotspot("src/a.py")])
+    result = gen.render(data)
+    assert "- `src/a.py` — 28 commits/90d" in result
+    assert "bug fix" not in result
+
+
+def test_render_never_shows_a_fix_count_without_its_age(gen):
+    # The recency contract: a count with no timestamp reads as an accusation
+    # about 2019, so an unanchored count degrades to the churn row.
+    import dataclasses
+
+    data = dataclasses.replace(
+        _minimal_data(),
+        hotspots=[_hotspot("src/a.py", fix_count=9, bug_magnet=True, last_fix_age=None)],
+    )
+    result = gen.render(data)
+    assert "9 bug fixes" not in result
+    assert "bug magnet" not in result
+    assert "28 commits/90d" in result

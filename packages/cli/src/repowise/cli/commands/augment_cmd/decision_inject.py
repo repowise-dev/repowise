@@ -552,7 +552,15 @@ _FIX_NOTICE_MIN_COUNT = 3
 
 
 def _humanize_age(days: int) -> str:
-    """Render an age as "2 weeks ago" / "3 months ago", never as a bare count."""
+    """Render an age as "2 weeks ago" / "3 months ago", never as a bare count.
+
+    Deliberately duplicated by ``editor_files/fetcher.py``, which renders the
+    same recency phrasing into CLAUDE.md. Sharing it would mean this hook
+    importing ``repowise.core``, and the cheapest module that could host it
+    costs ~660ms to import (``analysis.health.__init__`` builds the whole
+    HealthAnalyzer) against this module's sub-100ms budget. Ten lines of copy
+    is the cheaper trade; keep the two phrasings in step by hand.
+    """
     if days <= 1:
         return "today" if days <= 0 else "yesterday"
     if days < 14:

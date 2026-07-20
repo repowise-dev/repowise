@@ -45,9 +45,9 @@ The MCP tools below serve pre-verified docs, symbols, history, and health from t
 {% endif %}
 {% if data.hotspots %}
 
-### Hotspots (high churn — check `get_risk` before editing)
+### Files that need care (bug-fix history first, then churn — check `get_risk` before editing)
 {% for h in data.hotspots %}
-- `{{ h.path }}` — {{ h.commit_count_90d }} commits/90d ({{ h.churn_percentile }}th %ile)
+- `{{ h.path }}` — {% if h.fix_count and h.last_fix_age %}{{ h.fix_count }} bug fix{{ 'es' if h.fix_count != 1 else '' }}, last fix {{ h.last_fix_age }}{% if h.bug_magnet %} (bug magnet){% endif %}; {% endif %}{{ h.commit_count_90d }} commits/90d
 {% endfor %}
 {% endif %}
 {% if data.code_health %}
@@ -59,13 +59,6 @@ Three co-equal signals: defect risk {{ data.code_health.average_health }}/10 avg
 Critical files:
 {% for b in data.code_health.critical_biomarkers %}
 - `{{ b.path }}` — {{ b.summary }}
-{% endfor %}
-{% endif %}
-{% if data.code_health.untested_hotspots %}
-
-Untested hotspots:
-{% for h in data.code_health.untested_hotspots %}
-- `{{ h.path }}` — {{ h.dependents }} dependents, {{ h.coverage_pct }}% coverage, {{ h.commits_90d }} commits/90d
 {% endfor %}
 {% endif %}
 {% endif %}
