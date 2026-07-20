@@ -82,6 +82,7 @@ from .git import (
     HotspotResponse,
     OwnershipEntry,
     RiskDriverResponse,
+    RiskHistogramBucket,
     RiskRangeResponse,
 )
 from .graph import (
@@ -323,6 +324,7 @@ __all__ = [
     "ReviewerSuggestion",
     "ReviewerSuggestionsResponse",
     "RiskDriverResponse",
+    "RiskHistogramBucket",
     "RiskRangeResponse",
     "SearchRequest",
     "SearchResultResponse",

@@ -216,6 +216,15 @@ export interface CommitEvolution {
   last_commit_at: string | null;
 }
 
+/** One bin of the repo's raw change-risk score distribution. */
+export interface RiskHistogramBucket {
+  /** Bin lower bound on the 0-10 raw score axis (inclusive). */
+  start: number;
+  /** Bin upper bound (exclusive, except the final bin). */
+  end: number;
+  count: number;
+}
+
 /** Repo-wide commit aggregates (over all commits, not the loaded page). */
 export interface CommitStats {
   total_commits: number;
@@ -223,6 +232,13 @@ export interface CommitStats {
   fix_commit_count: number;
   agent_commit_count: number;
   avg_entropy: number;
+  /** Binned on the raw score, not the percentile — percentile ranks are
+   * uniform by construction, so only the raw axis has a shape to draw. */
+  risk_histogram?: RiskHistogramBucket[];
+  /** Raw score at the low/moderate tercile boundary. */
+  moderate_cut?: number | null;
+  /** Raw score at the moderate/high boundary — the review-priority line. */
+  high_cut?: number | null;
 }
 
 export interface OwnershipEntry {

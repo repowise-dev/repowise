@@ -44,6 +44,7 @@ from repowise.server.schemas import (
     Paginated,
     ReviewerSuggestionsResponse,
     RiskDriverResponse,
+    RiskHistogramBucket,
     RiskRangeResponse,
 )
 from repowise.server.services.reviewer_suggestions import suggest_reviewers
@@ -308,7 +309,33 @@ async def get_commit_stats(
         fix_commit_count=int(fix_count or 0),
         agent_commit_count=int(agent_count or 0),
         avg_entropy=float(avg_entropy or 0.0),
+        risk_histogram=_risk_histogram(normalizer.scores),
+        moderate_cut=normalizer.moderate_cut,
+        high_cut=normalizer.high_cut,
     )
+
+
+_HISTOGRAM_BINS = 20  # 0.5-wide bins across the 0-10 raw change-risk score
+
+
+def _risk_histogram(sorted_scores: list[float]) -> list[RiskHistogramBucket]:
+    """Bin the repo's raw change-risk scores for the distribution chart.
+
+    Reuses the score list already fetched for the normalizer, so this costs no
+    extra query. The top bin is closed on the right so a perfect 10.0 lands
+    somewhere instead of falling off the end.
+    """
+    if not sorted_scores:
+        return []
+    width = 10.0 / _HISTOGRAM_BINS
+    counts = [0] * _HISTOGRAM_BINS
+    for s in sorted_scores:
+        idx = min(_HISTOGRAM_BINS - 1, max(0, int(s / width)))
+        counts[idx] += 1
+    return [
+        RiskHistogramBucket(start=i * width, end=(i + 1) * width, count=c)
+        for i, c in enumerate(counts)
+    ]
 
 
 @router.get("/{repo_id}/commits/evolution", response_model=CommitEvolutionResponse)

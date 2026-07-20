@@ -68,6 +68,45 @@ class RiskNormalizer:
         equal = bisect_right(self.scores, score) - below
         return 100.0 * (below + 0.5 * equal) / n
 
+    def cut(self, pct: float) -> float | None:
+        """Lowest score whose percentile reaches *pct*, or ``None`` if none does.
+
+        The inverse of :meth:`percentile` — lets a display surface draw the
+        tercile boundaries on the *raw score* axis, where the distribution has
+        shape (percentile ranks are uniform by construction, so a histogram of
+        them says nothing).
+
+        Defined by searching the scores rather than indexing at ``n * pct``, so
+        ``priority(cut(p))`` is exactly the band at ``p``. Mid-rank percentiles
+        pull tied runs *below* their positional index, and a chart that colours
+        bins by comparing against the cut would otherwise disagree with the
+        per-commit priority on the boundary bin.
+
+        ``None`` when no score reaches *pct* — a fully tied repo has no
+        elevated band, and the caller should draw no line rather than a
+        misleading one.
+        """
+        lo, hi = 0, len(self.scores) - 1
+        found: float | None = None
+        while lo <= hi:  # percentile is monotone in score, so binary search
+            mid = (lo + hi) // 2
+            if self.percentile(self.scores[mid]) >= pct:
+                found = self.scores[mid]
+                hi = mid - 1
+            else:
+                lo = mid + 1
+        return found
+
+    @property
+    def moderate_cut(self) -> float | None:
+        """Score at the low/moderate boundary."""
+        return self.cut(_MODERATE_PCT)
+
+    @property
+    def high_cut(self) -> float | None:
+        """Score at the moderate/high boundary — the review-priority line."""
+        return self.cut(_HIGH_PCT)
+
     def priority(self, score: float | None) -> str:
         """Repo-relative review priority: ``high`` | ``moderate`` | ``low``.
 

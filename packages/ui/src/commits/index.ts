@@ -6,3 +6,5 @@ export * from "./priority-badge";
 export * from "./credibility-strip";
 export * from "./agent-badge";
 export * from "./agent-trend-strip";
+export * from "./commit-risk-histogram";
+export * from "./commit-risk-scatter";

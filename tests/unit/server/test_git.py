@@ -317,6 +317,42 @@ async def test_commits_authorship_filter(client: AsyncClient, app) -> None:
 
 
 @pytest.mark.asyncio
+async def test_commit_stats_risk_histogram(client: AsyncClient, app) -> None:
+    repo = await create_test_repo(client)
+    await _insert_git_commits(app.state.session_factory, repo["id"])
+
+    resp = await client.get(f"/api/repos/{repo['id']}/commits/stats")
+    assert resp.status_code == 200
+    data = resp.json()
+
+    hist = data["risk_histogram"]
+    assert len(hist) == 20  # 0.5-wide bins across the 0-10 score axis
+    assert sum(b["count"] for b in hist) == 3
+    # Fixture scores 2.0 / 5.0 / 8.5 land in their own bins, nowhere else.
+    filled = {b["start"]: b["count"] for b in hist if b["count"]}
+    assert filled == {2.0: 1, 5.0: 1, 8.5: 1}
+
+    # The cuts must sit inside the distribution and keep their order, so the
+    # chart's dashed lines land where the priority pills change.
+    assert data["moderate_cut"] < data["high_cut"]
+    assert 2.0 <= data["moderate_cut"] <= 8.5
+
+
+@pytest.mark.asyncio
+async def test_commit_stats_histogram_empty_without_scores(
+    client: AsyncClient, app
+) -> None:
+    repo = await create_test_repo(client)
+
+    resp = await client.get(f"/api/repos/{repo['id']}/commits/stats")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["risk_histogram"] == []
+    assert data["moderate_cut"] is None
+    assert data["high_cut"] is None
+
+
+@pytest.mark.asyncio
 async def test_agent_trend(client: AsyncClient, app) -> None:
     repo = await create_test_repo(client)
     await _insert_git_commits(app.state.session_factory, repo["id"])

@@ -295,6 +295,14 @@ class RiskRangeResponse(BaseModel):
     drivers: list[RiskDriverResponse]
 
 
+class RiskHistogramBucket(BaseModel):
+    """One bin of the repo's raw change-risk score distribution."""
+
+    start: float  # bin lower bound on the 0-10 raw score axis (inclusive)
+    end: float  # bin upper bound (exclusive, except the final bin)
+    count: int  # commits whose stored score falls in the bin
+
+
 class CommitStatsResponse(BaseModel):
     """Repo-wide commit aggregates for the commits-page headline stat cards.
 
@@ -309,3 +317,10 @@ class CommitStatsResponse(BaseModel):
     fix_commit_count: int  # subjects classified as bug-fixes
     agent_commit_count: int  # agent-attributed commits
     avg_entropy: float  # mean change-diffusion across all commits
+
+    # The distribution behind the tercile banding. Binned on the *raw* score
+    # rather than the percentile, because percentile ranks are uniform by
+    # construction — only the raw axis has a shape worth drawing.
+    risk_histogram: list[RiskHistogramBucket] = []
+    moderate_cut: float | None = None  # raw score at the low/moderate boundary
+    high_cut: float | None = None  # raw score at the moderate/high boundary
