@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { SymbolTable, type SymbolFilters } from "../../src/symbols/symbol-table.js";
 import type { CodeSymbol } from "@repowise-dev/types/symbols";
 
@@ -29,6 +29,7 @@ const defaultFilters: SymbolFilters = {
   kind: "all",
   language: "all",
   visibility: "all",
+  bugFixed: false,
   inHotFiles: false,
   inEntryPoints: false,
   sort: "importance",
@@ -107,5 +108,49 @@ describe("SymbolTable", () => {
     // The "Load more" affordance also lives in the footer, outside the scroller.
     const loadMore = screen.getByRole("button", { name: "Load more" });
     expect(scroller?.contains(loadMore)).toBe(false);
+  });
+});
+
+describe("SymbolTable bug-fix signal", () => {
+  function renderTable(items: ReturnType<typeof sym>[], onFiltersChange = vi.fn()) {
+    render(
+      <SymbolTable
+        items={items}
+        isLoading={false}
+        isValidating={false}
+        hasMore={false}
+        total={items.length}
+        filters={defaultFilters}
+        onFiltersChange={onFiltersChange}
+        onLoadMore={vi.fn()}
+        onSelect={vi.fn()}
+      />,
+    );
+    return onFiltersChange;
+  }
+
+  it("chips a symbol that bug fixes have landed in", () => {
+    renderTable([sym({ fix_count: 3 })]);
+    expect(screen.getByText("3 fixes")).toBeTruthy();
+  });
+
+  it("says nothing for a symbol nobody has had to fix", () => {
+    // 0 is a real answer, not a chip: the chip exists to draw the eye, and a
+    // row of "0 fixes" on every clean symbol would draw it nowhere.
+    renderTable([sym({ fix_count: 0 })]);
+    expect(screen.queryByText(/fixes?$/)).toBeNull();
+  });
+
+  it("says nothing when the count is unknown", () => {
+    renderTable([sym({ fix_count: null })]);
+    expect(screen.queryByText(/fixes?$/)).toBeNull();
+  });
+
+  it("toggles the symbol-level bug-fixed facet", () => {
+    const onFiltersChange = renderTable([sym()]);
+    fireEvent.click(screen.getByRole("button", { name: /Bug-fixed/ }));
+    expect(onFiltersChange).toHaveBeenCalledWith(
+      expect.objectContaining({ bugFixed: true }),
+    );
   });
 });

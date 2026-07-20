@@ -61,6 +61,14 @@ export interface GitMetadata {
   change_entropy_pct?: number;
   /** Bug-fix commits touching this file in the trailing defect window. */
   prior_defect_count?: number;
+  /** `symbol_id` -> counted fixes that landed in it, over the same window.
+   *  Approximate: symbol spans are current-tree while each fix's ranges are
+   *  numbered on its own parent commit. Empty on a pre-rollup index. */
+  fix_symbol_counts?: Record<string, number>;
+  /** Decayed fix mass past its trigger. A recency claim, so any copy showing
+   *  it must show `last_fix_at` too. */
+  bug_magnet?: boolean;
+  last_fix_at?: string | null;
   /** The file's path before its most recent rename, if any. */
   original_path?: string | null;
   /** True when the per-file commit-history cap was hit during indexing. */

@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.health.signals import iso_utc
 from repowise.core.persistence import crud
 from repowise.core.persistence.decision_graph import get_governing_decisions
 from repowise.core.persistence.models import (
@@ -31,6 +33,11 @@ router = APIRouter(
 
 
 SortKey = Literal["importance", "name", "complexity", "kind"]
+
+#: Bound parameters per IN-clause. SQLite's ceiling is 32766 on current builds
+#: and it raises rather than degrading, so any list that grows with repo size
+#: gets split at a comfortable fraction of it.
+_IN_CLAUSE_CHUNK = 5000
 
 
 def _attach_signals(
@@ -84,6 +91,69 @@ async def _attach_blame(
     return items
 
 
+async def _fixed_symbol_ids(session: AsyncSession, repo_id: str) -> set[str]:
+    """Every symbol id with at least one counted bug fix, across the repo.
+
+    The rollup stores one ``symbol_id -> count`` map per file, so this is a scan
+    of the files that have fix history, not the ``fix_events`` table. Returned
+    as a set because both callers (the list filter and its counts) want
+    membership, and it is bounded by the defect window rather than by repo size.
+    """
+    rows = await session.execute(
+        select(GitMetadata.fix_symbol_counts_json).where(
+            GitMetadata.repository_id == repo_id,
+            GitMetadata.fix_symbol_counts_json.isnot(None),
+            GitMetadata.fix_symbol_counts_json != "{}",
+        )
+    )
+    fixed: set[str] = set()
+    for (raw,) in rows.all():
+        try:
+            counts = json.loads(raw or "{}")
+        except (TypeError, ValueError):
+            continue
+        if isinstance(counts, dict):
+            fixed.update(k for k, v in counts.items() if v)
+    return fixed
+
+
+async def _attach_fix_counts(
+    session: AsyncSession, repo_id: str, items: list[SymbolResponse]
+) -> list[SymbolResponse]:
+    """Join the page's symbols against the per-file fix rollup in one query.
+
+    Mirrors :func:`_attach_blame`, and deliberately scoped to the page's files
+    so the response carries one integer per symbol rather than whole-file maps.
+
+    ``None`` means the file has no ``git_metadata`` row at all, which is genuinely
+    unknown. It does NOT distinguish "the rollup has not run" from "the rollup
+    ran and found nothing", because the column stores ``"{}"`` for both; a file
+    with a row therefore reports a real ``0``.
+    """
+    paths = {s.file_path for s in items if s.file_path}
+    if not paths:
+        return items
+    rows = await session.execute(
+        select(GitMetadata.file_path, GitMetadata.fix_symbol_counts_json).where(
+            GitMetadata.repository_id == repo_id,
+            GitMetadata.file_path.in_(paths),
+        )
+    )
+    by_path: dict[str, dict] = {}
+    for path, raw in rows.all():
+        try:
+            counts = json.loads(raw or "{}")
+        except (TypeError, ValueError):
+            continue
+        if isinstance(counts, dict):
+            by_path[path] = counts
+    for s in items:
+        counts = by_path.get(s.file_path)
+        if counts is not None:
+            s.fix_count = int(counts.get(s.symbol_id, 0))
+    return items
+
+
 async def _file_signals(
     session: AsyncSession, repo_id: str, paths: set[str]
 ) -> tuple[dict[str, tuple[float, bool]], dict[str, tuple[float | None, bool | None]]]:
@@ -133,6 +203,7 @@ async def search_symbols(
     ),
     in_hot_files: bool = Query(False, description="Only symbols whose file is a hotspot"),
     in_entry_points: bool = Query(False, description="Only symbols in entry-point files"),
+    bug_fixed: bool = Query(False, description="Only symbols with a counted bug fix"),
     sort: SortKey = Query("importance", description="Sort key"),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
@@ -186,6 +257,25 @@ async def search_symbols(
             )
             ep_set = {r.node_id for r in ep_paths}
             base = base.where(WikiSymbol.file_path.in_(ep_set or {""}))
+
+    # Symbol-level, unlike the two file-level filters above: a bug-fixed file
+    # says little about the one function you are looking at.
+    if bug_fixed:
+        fixed = await _fixed_symbol_ids(session, repo_id)
+        if not fixed:
+            base = base.where(WikiSymbol.symbol_id.is_(None))
+        else:
+            # Chunked: `fixed` is every symbol repo-wide with a counted fix, and
+            # on a large actively-fixed repo that is thousands of ids. SQLite
+            # caps bound parameters (32766 on current builds) and hard-fails
+            # past it, so the IN-list is split rather than left to grow with the
+            # repo.
+            ids = sorted(fixed)
+            clauses = [
+                WikiSymbol.symbol_id.in_(ids[i : i + _IN_CLAUSE_CHUNK])
+                for i in range(0, len(ids), _IN_CLAUSE_CHUNK)
+            ]
+            base = base.where(or_(*clauses))
 
     total = await session.scalar(select(func.count()).select_from(base.subquery())) or 0
 
@@ -247,6 +337,7 @@ async def search_symbols(
             )
 
     items = await _attach_blame(session, repo_id, items)
+    items = await _attach_fix_counts(session, repo_id, items)
     next_offset = offset + limit if offset + limit < total else None
     return Paginated[SymbolResponse](
         items=items,
@@ -365,7 +456,33 @@ async def symbol_detail(
         },
         "governing_decisions": governing,
         "file_context": file_context,
+        # Symbol-level fix history, read off the file rollup already loaded
+        # above, so no extra query and no `fix_events` scan to recompute a
+        # number the rollup stores. None on a pre-rollup index.
+        "fix_count": _symbol_fix_count(git_meta, symbol_id),
+        # Reuses the health signals serializer so the offset is attached the
+        # same way here as on every other surface: SQLite hands these back
+        # naive, and a naive ISO string is parsed as LOCAL time by JS.
+        "fix_last_at": iso_utc(getattr(git_meta, "last_fix_at", None)),
     }
+
+
+def _symbol_fix_count(git_meta: object | None, symbol_id: str) -> int | None:
+    """How many counted bug fixes landed in *symbol_id*, or ``None`` if unknown.
+
+    The rollup stores the whole file's ``symbol_id -> count`` map, so this is a
+    dict lookup. ``None`` means there is no ``git_metadata`` row for the file;
+    a row with an empty map reports a real ``0``, since the column cannot tell
+    "the rollup has not run" from "it ran and found nothing".
+    """
+    if git_meta is None:
+        return None
+    raw = getattr(git_meta, "fix_symbol_counts_json", None) or "{}"
+    try:
+        counts = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    return int(counts.get(symbol_id, 0)) if isinstance(counts, dict) else None
 
 
 @router.get("/by-name/{name}", response_model=list[SymbolResponse])

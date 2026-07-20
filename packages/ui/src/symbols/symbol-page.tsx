@@ -62,6 +62,8 @@ export function normalizeSymbolDetailResponse(
     blame_median_author_time: s.blame_median_author_time ?? null,
     blame_owner_name: s.blame_owner_name ?? null,
     blame_owner_line_pct: s.blame_owner_line_pct ?? null,
+    fix_count: data.fix_count ?? null,
+    fix_last_at: data.fix_last_at ?? null,
     graph: {
       in_degree: data.graph.in_degree,
       out_degree: data.graph.out_degree,

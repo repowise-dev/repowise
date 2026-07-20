@@ -15,7 +15,7 @@ import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { StatGrid, StatTile } from "../shared/stat-grid";
 import { scoreBadgeClass } from "../health/tokens";
-import { truncatePath } from "../lib/format";
+import { formatRelativeTimeOrNull, truncatePath } from "../lib/format";
 import { cn } from "../lib/cn";
 import { SymbolCallGraph } from "./symbol-call-graph";
 
@@ -30,6 +30,18 @@ export interface SymbolDetailBodyProps {
   /** Loading flag for the optional graph/git feeds (modal streams them in). */
   metricsLoading?: boolean;
   className?: string;
+}
+
+/**
+ * The hint under the Bug fixes tile: recency plus the approximation caveat.
+ *
+ * Recency is not decoration. The count is windowed, but "3 fixes" alone reads
+ * the same whether the last one landed a fortnight or five months ago, so the
+ * age goes in wherever the file's last-fix timestamp is known.
+ */
+function fixHint(lastFixAt: string | null | undefined): string {
+  const last = formatRelativeTimeOrNull(lastFixAt ?? null, "");
+  return last ? `last ${last} · approximate` : "in 6 months · approximate";
 }
 
 function ageDays(t: number | null | undefined): number | null {
@@ -114,6 +126,18 @@ export function SymbolDetailBody({
             : {})}
         />
         <StatTile label="Median age" value={age != null ? `${age}d` : "—"} />
+        {data.fix_count != null && data.fix_count > 0 && (
+          // "How often changed" (Modifications) beside "how often broken" is
+          // the contrast that earns this tile. It appears only for a positive
+          // count, since a symbol nobody has had to fix says nothing worth a cell,
+          // and the hint hedges, because fixes are matched to symbols by line
+          // range and lines move.
+          <StatTile
+            label="Bug fixes"
+            value={String(data.fix_count)}
+            hint={fixHint(data.fix_last_at)}
+          />
+        )}
       </StatGrid>
 
       {/* ── Graph metrics ── */}
