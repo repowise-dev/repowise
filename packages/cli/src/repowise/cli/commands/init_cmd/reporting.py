@@ -200,11 +200,20 @@ def show_completion(
             build_completion_panel("repowise index complete", metrics, next_steps=next_steps)
         )
         console.print()
-        console.print(
-            "  [dim]Every page is derived from structure and says so in its footer. "
-            "Full-text\n  search works now; semantic search needs an embedder "
-            "(Ollama is the keyless one).[/dim]"
-        )
+        # Fast mode reaches this branch too, and it generates nothing, so the
+        # note has to check rather than assume.
+        if result.generated_pages:
+            console.print(
+                "  [dim]Every page is derived from structure and says so in its footer. "
+                "Full-text\n  search works now; semantic search needs an embedder "
+                "(Ollama is the keyless one).[/dim]"
+            )
+        else:
+            console.print(
+                "  [dim]No wiki pages: fast mode indexes the graph and git history only.\n"
+                "  Re-run without [bold]--mode fast[/bold] to render the wiki from "
+                "structure.[/dim]"
+            )
         console.print()
         _render_defect_accuracy(result)
     else:

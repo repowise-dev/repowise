@@ -68,10 +68,15 @@ Ranked by PageRank over the import graph: the files most of the codebase ultimat
 {% endif %}
 
 {% if ctx.language_distribution %}
+{# Same ordering and cap as the summary sentence above, or the two disagree. #}
+{% set langs = ctx.language_distribution.items() | sort(attribute='1', reverse=true) %}
 ## Languages
-{% for lang, pct in ctx.language_distribution.items() %}
+{% for lang, pct in langs[:8] %}
 - {{ lang }}: {{ "%.1f"|format(pct * 100) }}%
 {% endfor %}
+{%- if langs | length > 8 %}
+- ...and {{ langs | length - 8 }} more.
+{% endif %}
 {% endif %}
 
 {% if ctx.external_systems %}

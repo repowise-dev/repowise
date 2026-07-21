@@ -237,10 +237,6 @@ async def run_pipeline(
     # reads ``generate_docs`` / the git tier, not ``mode``.
     git_tier = mode.git_tier
     generate_docs = generate_docs and mode.allows_doc_generation
-    if generate_docs and mode.deterministic_docs and llm_client is None:
-        from repowise.core.providers.llm.template import TemplateProvider
-
-        llm_client = TemplateProvider()
 
     # Wrap the incoming progress callback so registered pipeline hooks fire
     # around each phase transition. Zero-op when no hooks are registered.
@@ -608,7 +604,19 @@ async def run_pipeline(
     # PipelineResult.authoritative_page_types). Stays empty unless curated
     # generation engaged below.
     authoritative_page_types: set[str] = set()
-    if generate_docs and llm_client is not None:
+    # DETERMINISTIC supplies its own null provider so a caller with no key can
+    # still get a wiki. Scoped to this phase rather than assigned over
+    # ``llm_client``: the analysis phase above shares that client, and its
+    # decision extractor branches on truthiness, so a non-None provider that
+    # raises on every call would cost it the heuristic fallbacks it would
+    # otherwise have taken with no provider at all.
+    generation_client = llm_client
+    if generate_docs and mode.deterministic_docs and generation_client is None:
+        from repowise.core.providers.llm.template import TemplateProvider
+
+        generation_client = TemplateProvider()
+
+    if generate_docs and generation_client is not None:
         if progress:
             progress.on_message("info", "Phase 3: Generation")
 
@@ -700,7 +708,7 @@ async def run_pipeline(
                 graph_builder=graph_builder,
                 repo_structure=repo_structure,
                 git_meta_map=git_meta_map,
-                llm_client=llm_client,
+                llm_client=generation_client,
                 embedder=embedder,
                 vector_store=vector_store,
                 concurrency=concurrency,

@@ -139,10 +139,12 @@ file reads. That is the whole point.
 > the wiki, which step 2 already built, so they answer from pages rendered from
 > structure. `search_codebase` is full-text only until you configure an embedder.
 
-## 4. Optional: add a provider for model-written prose and semantic search
+## 4. Optional: add a provider for model-written prose
 
 Everything so far was deterministic. A provider rewrites the wiki pages as prose
-and adds semantic search, architectural decision mining, and codebase chat.
+and unlocks architectural decision mining and codebase chat. Semantic search is a
+separate step: configure an embedder and run `repowise reindex` to build the
+vector store.
 
 ```bash
 export ANTHROPIC_API_KEY="sk-ant-..."        # or OPENAI_API_KEY / GEMINI_API_KEY

@@ -33,7 +33,7 @@ from repowise.cli.helpers import (
     save_state,
 )
 from repowise.cli.ui import load_dotenv
-from repowise.core.docs_mode import resolve_docs_mode
+from repowise.core.docs_mode import docs_mode_state_fields, resolve_docs_mode
 from repowise.core.generation.styles import (
     DEFAULT_STYLE,
     is_known_style,
@@ -263,6 +263,9 @@ def restyle_command(
 
     head = get_head_commit(repo_path)
     state["last_sync_commit"] = head
+    # A restyle rewrites every page with a model, so a template wiki stops
+    # being one here. Without this, `update` keeps defaulting to index-only.
+    state.update(docs_mode_state_fields("llm"))
     state["total_pages"] = len(generated_pages)
     state["config_fingerprint"] = config_fingerprint(repo_path)
     save_state(repo_path, state)

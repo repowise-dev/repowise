@@ -170,23 +170,29 @@ class TestInitFullMock:
 
 
 class TestInitIndexOnly:
-    def test_index_only_creates_db_and_state_no_pages(self, runner, work_repo):
+    def test_index_only_creates_db_and_template_pages(self, runner, work_repo):
         result = runner.invoke(
             cli,
             ["init", str(work_repo), "--index-only"],
             catch_exceptions=False,
         )
         assert result.exit_code == 0, result.output
-        assert (work_repo / ".repowise" / "wiki.db").exists()
+        db_path = work_repo / ".repowise" / "wiki.db"
+        assert db_path.exists()
         assert (work_repo / ".repowise" / "state.json").exists()
         assert "index complete" in result.output
 
         import json
 
         state = json.loads((work_repo / ".repowise" / "state.json").read_text(encoding="utf-8"))
+        assert state.get("docs_mode") == "deterministic"
+        # Still False on purpose: an older reader treats it as "do not
+        # LLM-regenerate", which is right for a repo with no provider.
         assert state.get("docs_enabled") is False
-        # No pages generated in index-only mode.
-        assert state.get("total_pages", 0) == 0
+
+        assert _db_scalar(db_path, "SELECT COUNT(*) FROM wiki_pages") > 0
+        providers = set(_db_column(db_path, "SELECT DISTINCT provider_name FROM wiki_pages"))
+        assert providers == {"template"}
 
     def test_index_only_persists_clamped_commit_limit_and_excludes(self, runner, work_repo):
         from repowise.cli.helpers import load_config

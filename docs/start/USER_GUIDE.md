@@ -85,9 +85,10 @@ it has diverged from your live `HEAD`, but the real fix is step 3.
 **Two modes.** `--index-only` gives you the graph, git intelligence, code health,
 change risk and dead code, plus a complete wiki rendered from the code's
 structure, with no LLM, no key and no network. Adding a provider rewrites those
-pages as model-written prose and adds semantic search, decision mining and chat.
-You can start index-only and upgrade later with `repowise update --full`, which
-reuses the persisted graph instead of re-parsing it.
+pages as model-written prose and unlocks decision mining and chat. You can start
+index-only and upgrade later with `repowise update --full`, which reuses the
+persisted graph instead of re-parsing it. Semantic search is separate: it needs
+an embedder, and `repowise reindex` is what builds the vector store.
 
 ---
 

@@ -144,6 +144,7 @@ def _run_deterministic_generation_phase(
     onboarding: bool,
     wiki_style: str,
     embedder_name_resolved: str,
+    embedder_was_requested: bool,
     resume: bool,
 ) -> None:
     """Render the whole wiki from templates, for ``init --index-only``.
@@ -157,6 +158,18 @@ def _run_deterministic_generation_phase(
     from repowise.core.generation import GenerationConfig
     from repowise.core.providers.llm.template import TemplateProvider
 
+    # This mode is sold as "no key, no spend", and embedding 2000+ pages
+    # through a hosted embedder is a real bill. ``resolve_embedder`` infers one
+    # from any LLM key it finds in the environment, which is the right default
+    # for a run that is already paying a model and the wrong one here: nobody
+    # who typed --index-only asked to be charged. So a hosted embedder is used
+    # only when the user named it, through --embedder or REPOWISE_EMBEDDER.
+    # Anything else falls back to the mock, which keeps full-text search
+    # working and leaves semantic search to be built later with
+    # ``repowise reindex``.
+    hosted = embedder_name_resolved not in ("mock", "ollama")
+    embedder = "mock" if hosted and not embedder_was_requested else embedder_name_resolved
+
     print_phase_header(
         console,
         3,
@@ -164,6 +177,13 @@ def _run_deterministic_generation_phase(
         "Generation",
         "Building wiki pages from the code's structure (no model, no cost)",
     )
+    if embedder != embedder_name_resolved:
+        console.print(
+            f"  [dim]Not embedding with [bold]{embedder_name_resolved}[/bold]: it was "
+            "inferred from a key in your environment, and this run is meant to cost "
+            "nothing. Pass [bold]--embedder "
+            f"{embedder_name_resolved}[/bold] if you want it.[/dim]"
+        )
 
     gen_config = GenerationConfig(
         deterministic=True,
@@ -901,6 +921,14 @@ def init_command(
         config["follow_renames"] = True
 
     embedder_name_resolved = resolve_embedder(embedder_name)
+    # Whether the user actually asked for this embedder, as opposed to
+    # resolve_embedder inferring one from an LLM key it found lying around.
+    # The deterministic generation phase needs the distinction: it advertises
+    # itself as costing nothing, so it will not put a hosted embedder on the
+    # user's bill unless they named it.
+    embedder_was_requested = bool(embedder_name) or bool(
+        os.environ.get("REPOWISE_EMBEDDER", "").strip()
+    )
 
     # ---- Resolve provider ----
     provider = None
@@ -979,9 +1007,10 @@ def init_command(
         console.print("  [green]✓[/green] Provider connection verified")
 
     # ---- Phase 1 & 2: Ingestion + Analysis (always) ----
-    # Four in both modes: index-only generates too, it just renders templates
-    # instead of prompting a model.
-    total_phases = 4
+    # Index-only generates too, it just renders templates instead of prompting
+    # a model, so it is four phases like a full run. Fast mode is the one that
+    # still stops at three: see the generation phase below for why.
+    total_phases = 3 if run_mode == "fast" else 4
     # Tracks whether the user declined the LLM cost gate. When True we
     # skip generation but still persist the index/graph/git/dead-code so
     # the run isn't wasted, and propagate the choice to the persisted docs
@@ -1080,7 +1109,21 @@ def init_command(
     # ---- Phase 3: Generation ----
     # Both modes generate. Index-only renders from templates; full mode picks
     # a coverage level, estimates the spend and prompts a model.
-    if index_only:
+    #
+    # Fast mode is the exception. It exists to get a very large repo indexed
+    # quickly, and it is offered precisely because the repo is large, so
+    # rendering and embedding a page per file is the cost it was chosen to
+    # avoid. It also runs ESSENTIAL git, which would leave the git-derived
+    # sections of those pages thinner than the pages claim. Fast stays a
+    # graph-and-git index; `repowise update --full` is the way out of it.
+    if index_only and run_mode == "fast":
+        console.print(
+            "  [dim]Skipping wiki generation in fast mode. Run "
+            "[bold]repowise init[/bold] without [bold]--mode fast[/bold] to "
+            "render it from structure, or [bold]repowise update --full[/bold] "
+            "to write it with a model.[/dim]"
+        )
+    elif index_only:
         _run_deterministic_generation_phase(
             repo_path=repo_path,
             result=result,
@@ -1090,6 +1133,7 @@ def init_command(
             onboarding=onboarding,
             wiki_style=wiki_style,
             embedder_name_resolved=embedder_name_resolved,
+            embedder_was_requested=embedder_was_requested,
             resume=resume,
         )
     else:
@@ -1121,8 +1165,8 @@ def init_command(
             # It only ever meant "not at that price", so fall back to the
             # free renderer rather than to nothing.
             console.print(
-                "  [dim]Building the wiki from structure instead. "
-                "run [bold]repowise update --full[/bold] to write it with a "
+                "  [dim]Building the wiki from structure instead. Run "
+                "[bold]repowise update --full[/bold] to write it with a "
                 "model later.[/dim]"
             )
             _run_deterministic_generation_phase(
@@ -1133,6 +1177,9 @@ def init_command(
                 language=language,
                 onboarding=onboarding,
                 wiki_style=wiki_style,
+                # The user has a provider and just declined a bill, not the
+                # embedder they configured, so honour it either way.
+                embedder_was_requested=True,
                 embedder_name_resolved=embedder_name_resolved,
                 resume=resume,
             )
@@ -1142,7 +1189,11 @@ def init_command(
     # this run, so persistence/state below treat it as index-only.
     effective_index_only = index_only or cost_declined
     print_phase_header(
-        console, 4, total_phases, "Persistence", "Saving to database and building search index"
+        console,
+        total_phases,
+        total_phases,
+        "Persistence",
+        "Saving to database and building search index",
     )
 
     with console.status("  Persisting to database…", spinner=OWL_SPINNER):
@@ -1196,14 +1247,21 @@ def init_command(
     head = get_head_commit(repo_path)
     base_state = load_state(repo_path)
     base_state["last_sync_commit"] = head
-    # Every run that reaches here produced pages: a full run wrote them with a
-    # model, an index-only run (or one where the cost gate was declined) fell
-    # back to the template renderer.
-    base_state.update(
-        docs_mode_state_fields(
-            "llm" if not effective_index_only and provider is not None else "deterministic"
-        )
-    )
+    # A full run wrote its pages with a model. An index-only run (or one where
+    # the cost gate was declined) fell back to the template renderer. Fast mode
+    # is the one path that reaches here with no pages at all.
+    if run_mode == "fast":
+        _docs_mode = "none"
+    elif not effective_index_only and provider is not None:
+        _docs_mode = "llm"
+    else:
+        _docs_mode = "deterministic"
+    base_state.update(docs_mode_state_fields(_docs_mode))
+    # Only the full-mode path went through save_full_state_and_config, which
+    # counts the pages in the database. An index-only run now produces pages
+    # too, so it has to record its own count or `status` reports a wiki of
+    # zero pages next to a docs mode that says there is one.
+    base_state["total_pages"] = len(getattr(result, "generated_pages", None) or [])
     # Record the git tier this run indexed so a later --resume continues the
     # same tier instead of silently upgrading ESSENTIAL → FULL (issue #341).
     base_state["run_mode"] = run_mode

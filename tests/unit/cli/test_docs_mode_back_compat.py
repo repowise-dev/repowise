@@ -47,9 +47,12 @@ class TestResolveDocsMode:
 class TestDocsModeStateFields:
     def test_writes_both_fields(self):
         assert docs_mode_state_fields("llm") == {"docs_mode": "llm", "docs_enabled": True}
+        # False on purpose for deterministic: an older reader takes it as
+        # "do not regenerate with a model", which is right for a repo that
+        # has pages but no provider.
         assert docs_mode_state_fields("deterministic") == {
             "docs_mode": "deterministic",
-            "docs_enabled": True,
+            "docs_enabled": False,
         }
         assert docs_mode_state_fields("none") == {"docs_mode": "none", "docs_enabled": False}
 

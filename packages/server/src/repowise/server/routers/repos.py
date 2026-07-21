@@ -238,7 +238,16 @@ async def list_repos(
             try:
                 state = _json.loads(state_path.read_text(encoding="utf-8"))
                 resp.docs_mode = resolve_docs_mode(state)
-                resp.docs_enabled = resp.docs_mode != "none"
+                # A state file predating every docs field used to report
+                # docs_enabled=True by default. Deriving the flag from the
+                # resolved mode alone would flip those old indexes to False,
+                # so keep the legacy default when nothing at all is recorded.
+                if not any(
+                    k in state for k in ("docs_mode", "docs_enabled", "provider", "model")
+                ):
+                    resp.docs_enabled = True
+                else:
+                    resp.docs_enabled = resp.docs_mode != "none"
                 resp.docs_skip_reason = state.get("docs_skip_reason")
                 resp.run_mode = state.get("run_mode")
                 resp.git_tier = state.get("git_tier")

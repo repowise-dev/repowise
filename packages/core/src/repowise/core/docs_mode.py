@@ -55,10 +55,17 @@ def resolve_docs_mode(state: Mapping[str, Any] | None) -> DocsMode:
 def docs_mode_state_fields(mode: DocsMode) -> dict[str, Any]:
     """Return the state.json fields recording *mode*.
 
-    Always write both: ``docs_enabled`` is what an older reader looks for, and
-    it stays truthful for the question that reader is actually asking, which is
-    "are there pages", not "who wrote them".
+    Both are written. ``docs_enabled`` is False for ``deterministic``, even
+    though such a repo does have pages, because of what the older reader does
+    with the answer rather than what the field's name suggests. The consumer
+    that matters is the pre-migration ``repowise update``, which read
+    ``docs_enabled is False`` as "do not regenerate with a model". A
+    deterministic repo has no provider configured, so an older CLI or an
+    already-installed post-commit hook seeing True would launch a full LLM
+    regeneration and die on a missing provider, which is the exact failure the
+    field was introduced to prevent. False keeps that reader doing the safe
+    thing; new readers ask ``resolve_docs_mode`` and get the whole truth.
     """
     if mode not in DOCS_MODES:
         raise ValueError(f"unknown docs mode: {mode!r}")
-    return {"docs_mode": mode, "docs_enabled": mode != "none"}
+    return {"docs_mode": mode, "docs_enabled": mode == "llm"}

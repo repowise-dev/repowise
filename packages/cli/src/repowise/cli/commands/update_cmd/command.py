@@ -233,10 +233,11 @@ def _surface_release_news(*, written_by: str | None) -> None:
     is_flag=True,
     default=False,
     help=(
-        "Upgrade a fast (`--mode fast`) index to a full one: backfill the git "
-        "tier ESSENTIAL -> FULL and generate the LLM docs that fast mode "
-        "skipped. Incremental — reuses the persisted graph instead of "
-        "re-parsing and re-resolving it. Single-repo only."
+        "Upgrade an index with a model: backfill the git tier ESSENTIAL -> "
+        "FULL if it was built with `--mode fast`, and write the pages with a "
+        "provider, replacing a template wiki from `--index-only`. Incremental: "
+        "reuses the persisted graph instead of re-parsing and re-resolving it. "
+        "Single-repo only."
     ),
 )
 @click.option(

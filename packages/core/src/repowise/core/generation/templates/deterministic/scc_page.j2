@@ -51,9 +51,8 @@ Ranked by how many of the cycle's edges each file carries. The file at the top i
 - `{{ s.name }}`{% if s.signature %}: `{{ s.signature | oneline(120) }}`{% endif %}
 {% endfor %}
 {% endfor %}
-{%- if ctx.member_symbols | length > 20 %}
-Symbols for the remaining {{ ctx.member_symbols | length - 20 }} files are on
-their own file pages.
+{% if ctx.member_symbols | length > 20 %}
+*Symbols for the remaining {{ ctx.member_symbols | length - 20 }} files are on their own file pages.*
 {% endif %}
 {% endif %}
 

@@ -261,15 +261,19 @@ def run_repo_generation(
             "then run 'repowise init --resume' to pick up where it stopped)[/dim]"
         )
 
-    with Progress(
+    # No cost column on a deterministic run: it would sit at $0.000 for the
+    # whole run, which reads as an unanswered question rather than an answer.
+    columns: list[Any] = [
         SpinnerColumn(spinner_name=OWL_SPINNER, style=BRAND_STYLE),
         TextColumn("[progress.description]{task.description}"),
         BarColumn(),
         MaybeCountColumn(),
         TimeElapsedColumn(),
-        TextColumn("[green]${task.fields[cost]:.3f}[/green]"),
-        console=console,
-    ) as gen_progress:
+    ]
+    if not deterministic:
+        columns.append(TextColumn("[green]${task.fields[cost]:.3f}[/green]"))
+
+    with Progress(*columns, console=console) as gen_progress:
         gen_callback = RichProgressCallback(gen_progress, console)
         generated_pages = run_async(
             run_generation_with_persistence(
