@@ -13,7 +13,10 @@
 
 ## Project Summary
 
-{% set _langs = ctx.language_distribution.items() | list -%}
+{# Sort by share, do not take the first key: language_distribution is an
+   unordered dict, and taking item 0 called a 59%-Python repo a "dockerfile
+   codebase" because that is what happened to hash first. #}
+{% set _langs = ctx.language_distribution.items() | sort(attribute='1', reverse=true) | list -%}
 `{{ ctx.repo_name }}` is a {% if ctx.is_monorepo %}multi-package {% endif %}
 {%- if _langs %}{{ _langs[0][0] }} {% endif %}codebase of {{ ctx.total_files }} files
 {%- if ctx.is_monorepo %}, split across {{ ctx.packages | length }} packages{% endif %}.
@@ -31,9 +34,14 @@
 {% if ctx.entry_points %}
 ## Entry Points
 Start here when reading the codebase.
-{% for ep in ctx.entry_points %}
+{# Capped: a monorepo where every UI folder has an index.ts produces 75 of
+   these, and a 75-item wall is not a place to start reading. #}
+{% for ep in ctx.entry_points[:15] %}
 - `{{ ep }}`
 {% endfor %}
+{%- if ctx.entry_points | length > 15 %}
+- ...and {{ ctx.entry_points | length - 15 }} more.
+{% endif %}
 {% endif %}
 
 {% if ctx.execution_flows %}

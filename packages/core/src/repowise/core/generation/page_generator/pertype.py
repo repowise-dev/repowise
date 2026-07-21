@@ -198,6 +198,7 @@ class PerTypeGenerationMixin:
             sccs,
             community,
             graph_builder=graph_builder,
+            repo_name=repo_name,
             external_systems=external_systems,
             decision_records=decision_records,
         )

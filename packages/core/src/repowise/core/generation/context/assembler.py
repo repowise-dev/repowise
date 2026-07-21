@@ -420,6 +420,7 @@ class ContextAssembler:
         sccs: list[Any],  # list[frozenset[str]]
         community: dict[str, int],
         graph_builder: Any | None = None,
+        repo_name: str | None = None,
         external_systems: list[dict] | None = None,
         decision_records: list[dict] | None = None,
     ) -> RepoOverviewContext:
@@ -474,7 +475,9 @@ class ContextAssembler:
                 pass
 
         return RepoOverviewContext(
-            repo_name=getattr(repo_structure, "name", "repo"),
+            # RepoStructure carries no name, so the old getattr fallback made
+            # every overview call the project "repo". The caller knows it.
+            repo_name=repo_name or getattr(repo_structure, "name", None) or "this repository",
             is_monorepo=repo_structure.is_monorepo,
             packages=repo_structure.packages,
             language_distribution=repo_structure.root_language_distribution,

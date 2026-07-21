@@ -16,9 +16,14 @@ Top to bottom, the order work flows through.
 
 {% if ctx.entry_points %}
 ## Entry points
-{% for ep in ctx.entry_points %}
+{#- Capped: a monorepo where every UI folder carries an index.ts produces
+    dozens, and the point of this section is to name a place to start. -#}
+{% for ep in ctx.entry_points[:15] %}
 - `{{ ep }}`
 {% endfor %}
+{%- if ctx.entry_points | length > 15 %}
+- ...and {{ ctx.entry_points | length - 15 }} more.
+{% endif %}
 {% endif %}
 
 ## Directories

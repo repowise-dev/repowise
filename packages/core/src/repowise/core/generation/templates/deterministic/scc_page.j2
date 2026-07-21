@@ -10,15 +10,25 @@
 {{ ctx.files | length }} files import each other in a loop, directly or transitively. Nothing in this group can be loaded, tested or extracted without the rest of it.
 
 ## Files in the cycle
-{% for f in ctx.files %}
+{# Capped, here and in the two listings below: a test-suite cycle routed
+   through a shared conftest can run to 80+ files and 200+ edges, and a page
+   that dumps all of them is 50KB of noise. The decouple ranking is the part
+   worth acting on. #}
+{% for f in ctx.files[:30] %}
 - `{{ f }}`
 {% endfor %}
+{%- if ctx.files | length > 30 %}
+- ...and {{ ctx.files | length - 30 }} more.
+{% endif %}
 
 {% if ctx.cross_imports %}
 ## The loop
-{% for edge in ctx.cross_imports %}
+{% for edge in ctx.cross_imports[:40] %}
 - `{{ edge.from }}` → `{{ edge.to }}`
 {% endfor %}
+{%- if ctx.cross_imports | length > 40 %}
+- ...and {{ ctx.cross_imports | length - 40 }} more edges.
+{% endif %}
 {% endif %}
 
 {% if decouple_ranking %}
@@ -35,12 +45,16 @@ Ranked by how many of the cycle's edges each file carries. The file at the top i
 
 {% if ctx.member_symbols %}
 ## Symbols defined in the cycle
-{% for m in ctx.member_symbols %}
+{% for m in ctx.member_symbols[:20] %}
 ### `{{ m.file_path }}`
 {% for s in m.symbols[:15] %}
 - `{{ s.name }}`{% if s.signature %}: `{{ s.signature | oneline(120) }}`{% endif %}
 {% endfor %}
 {% endfor %}
+{%- if ctx.member_symbols | length > 20 %}
+Symbols for the remaining {{ ctx.member_symbols | length - 20 }} files are on
+their own file pages.
+{% endif %}
 {% endif %}
 
 **Total symbols in cycle:** {{ ctx.total_symbols }}
