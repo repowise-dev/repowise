@@ -79,9 +79,10 @@ def interactive_mode_select(console: Console) -> str:
 
     body.append("  [2]", style=BRAND_STYLE)
     body.append("  Index only  ", style="bold")
-    body.append("(no LLM, no cost)\n", style="dim")
-    body.append("       Same minus the AI docs: graph, git history, code health,\n")
-    body.append("       dead code. Great for MCP agents; add docs anytime later.\n\n")
+    body.append("(no key, no spend)\n", style="dim")
+    body.append("       Same layers, and a complete wiki rendered from the code's\n")
+    body.append("       structure instead of written by a model. Upgrade it to\n")
+    body.append("       model-written prose later with update --full.\n\n")
 
     body.append("  [3]", style=BRAND_STYLE)
     body.append("  Advanced\n", style="bold")
@@ -115,10 +116,10 @@ def interactive_generate_docs_toggle(console: Console) -> bool:
     """
     console.print()
     console.print(
-        "  [dim]AI docs call the LLM (has a cost). Indexing — dependency graph, "
-        "git history,\n  code health, dead code — is always free.[/dim]"
+        "  [dim]Model-written docs call the LLM (has a cost). Say no and you still "
+        "get a wiki,\n  rendered from the code's structure, for free.[/dim]"
     )
-    return click.confirm("  Generate AI wiki docs?", default=True)
+    return click.confirm("  Generate model-written wiki docs?", default=True)
 
 
 def interactive_customize_offer(console: Console, *, generate_docs: bool) -> bool:
@@ -570,6 +571,9 @@ def print_index_only_intro(console: Console, has_provider: bool = False) -> None
         "  [green]✓[/] Index git history (hotspots, ownership, co-changes)",
         "  [green]✓[/] Detect dead code",
         "  [green]✓[/] Extract architectural decisions",
+        "  [green]✓[/] Render the wiki from structure: file, module, layer and",
+        "    cycle pages, the architecture diagram, the repo overview, API and",
+        "    infra pages, and the onboarding collection",
         "  [green]✓[/] Set up MCP server for AI assistants",
     ]
     if has_provider:
@@ -577,7 +581,12 @@ def print_index_only_intro(console: Console, has_provider: bool = False) -> None
             "  [green]✓[/] [dim]Decision extraction enhanced (provider key detected)[/dim]"
         )
     lines.append("")
-    lines.append("  [dim]No LLM calls. No cost.[/dim]")
+    lines.append("  [dim]No LLM calls. No API key. No cost.[/dim]")
+    lines.append(
+        "  [dim]Every page says it was derived from structure. Run "
+        "[bold]repowise update --full[/bold][/dim]"
+    )
+    lines.append("  [dim]later to rewrite the wiki with a model.[/dim]")
 
     console.print(
         Panel(

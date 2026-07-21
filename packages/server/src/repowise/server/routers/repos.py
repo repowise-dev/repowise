@@ -13,6 +13,7 @@ from fastapi.responses import PlainTextResponse, StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.docs_mode import resolve_docs_mode
 from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import (
@@ -230,14 +231,17 @@ async def list_repos(
         resp.workspace_status = "indexed"
         indexed_aliases.add(entry.alias)
 
-        # docs_enabled is recorded per-repo in state.json. Read it once
-        # per response — cheap, and never failing.
+        # The docs mode and index tier are recorded per-repo in state.json.
+        # Read it once per response: cheap, and never failing.
         state_path = _P(resp.local_path) / ".repowise" / "state.json"
         if state_path.is_file():
             try:
                 state = _json.loads(state_path.read_text(encoding="utf-8"))
-                resp.docs_enabled = bool(state.get("docs_enabled", True))
+                resp.docs_mode = resolve_docs_mode(state)
+                resp.docs_enabled = resp.docs_mode != "none"
                 resp.docs_skip_reason = state.get("docs_skip_reason")
+                resp.run_mode = state.get("run_mode")
+                resp.git_tier = state.get("git_tier")
             except Exception:
                 pass
 
@@ -272,6 +276,7 @@ async def list_repos(
                 workspace_status=status,
                 is_primary=bool(entry.is_primary),
                 docs_enabled=False,
+                docs_mode="none",
                 docs_skip_reason="not indexed yet",
             )
         )

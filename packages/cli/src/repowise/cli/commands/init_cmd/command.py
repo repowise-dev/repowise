@@ -66,6 +66,7 @@ from repowise.cli.ui import (
     quick_repo_scan,
     should_offer_fast_mode,
 )
+from repowise.core.docs_mode import docs_mode_state_fields
 from repowise.core.generation.languages import SUPPORTED_LANGUAGES
 from repowise.core.generation.styles import DEFAULT_STYLE, list_styles, resolve_style
 from repowise.core.reasoning import REASONING_MODES
@@ -131,6 +132,56 @@ def _record_init_outcome(
         telemetry.add_command_outcome(**{k: v for k, v in outcome.items() if v is not None})
     except Exception:
         return
+
+
+def _run_deterministic_generation_phase(
+    *,
+    repo_path: Path,
+    result: Any,
+    total_phases: int,
+    concurrency: int,
+    language: str,
+    onboarding: bool,
+    wiki_style: str,
+    embedder_name_resolved: str,
+    resume: bool,
+) -> None:
+    """Render the whole wiki from templates, for ``init --index-only``.
+
+    Every page type has a deterministic renderer, so an index-only run is no
+    longer a wiki-less index: it is a complete wiki whose pages are derived
+    from structure rather than written by a model. There is nothing to
+    estimate and nothing to gate, since no provider is involved and the run
+    costs nothing, so this skips the coverage chooser the LLM phase runs.
+    """
+    from repowise.core.generation import GenerationConfig
+    from repowise.core.providers.llm.template import TemplateProvider
+
+    print_phase_header(
+        console,
+        3,
+        total_phases,
+        "Generation",
+        "Building wiki pages from the code's structure (no model, no cost)",
+    )
+
+    gen_config = GenerationConfig(
+        deterministic=True,
+        max_concurrency=concurrency,
+        language=language,
+        enable_onboarding=onboarding,
+        wiki_style=wiki_style,
+    )
+    run_repo_generation(
+        repo_path=repo_path,
+        result=result,
+        provider=TemplateProvider(),
+        gen_config=gen_config,
+        concurrency=concurrency,
+        embedder_name_resolved=embedder_name_resolved,
+        resume=resume,
+        verbose=True,
+    )
 
 
 def _run_generation_phase(
@@ -928,11 +979,13 @@ def init_command(
         console.print("  [green]✓[/green] Provider connection verified")
 
     # ---- Phase 1 & 2: Ingestion + Analysis (always) ----
-    total_phases = 3 if index_only else 4
+    # Four in both modes: index-only generates too, it just renders templates
+    # instead of prompting a model.
+    total_phases = 4
     # Tracks whether the user declined the LLM cost gate. When True we
     # skip generation but still persist the index/graph/git/dead-code so
-    # the run isn't wasted, and propagate the choice to state.docs_enabled
-    # so subsequent updates default to index-only.
+    # the run isn't wasted, and propagate the choice to the persisted docs
+    # mode so subsequent updates default to index-only.
     cost_declined = False
     llm_client = provider if not index_only else decision_provider
 
@@ -1024,8 +1077,22 @@ def init_command(
     # ---- Analysis summary (shown between analysis and generation) ----
     show_analysis_summary(result)
 
-    # ---- Phase 3: Generation (full mode only) ----
-    if not index_only:
+    # ---- Phase 3: Generation ----
+    # Both modes generate. Index-only renders from templates; full mode picks
+    # a coverage level, estimates the spend and prompts a model.
+    if index_only:
+        _run_deterministic_generation_phase(
+            repo_path=repo_path,
+            result=result,
+            total_phases=total_phases,
+            concurrency=concurrency,
+            language=language,
+            onboarding=onboarding,
+            wiki_style=wiki_style,
+            embedder_name_resolved=embedder_name_resolved,
+            resume=resume,
+        )
+    else:
         gen_stop, cost_declined = _run_generation_phase(
             repo_path=repo_path,
             result=result,
@@ -1049,17 +1116,34 @@ def init_command(
         )
         if gen_stop:
             return
+        if cost_declined:
+            # Declining the gate used to mean leaving with no wiki at all.
+            # It only ever meant "not at that price", so fall back to the
+            # free renderer rather than to nothing.
+            console.print(
+                "  [dim]Building the wiki from structure instead. "
+                "run [bold]repowise update --full[/bold] to write it with a "
+                "model later.[/dim]"
+            )
+            _run_deterministic_generation_phase(
+                repo_path=repo_path,
+                result=result,
+                total_phases=total_phases,
+                concurrency=concurrency,
+                language=language,
+                onboarding=onboarding,
+                wiki_style=wiki_style,
+                embedder_name_resolved=embedder_name_resolved,
+                resume=resume,
+            )
 
     # ---- Persistence ----
     # `cost_declined` short-circuits any further LLM work for the rest of
     # this run, so persistence/state below treat it as index-only.
     effective_index_only = index_only or cost_declined
-    if effective_index_only:
-        print_phase_header(console, 3, total_phases, "Persistence", "Saving to database")
-    else:
-        print_phase_header(
-            console, 4, total_phases, "Persistence", "Saving to database and building search index"
-        )
+    print_phase_header(
+        console, 4, total_phases, "Persistence", "Saving to database and building search index"
+    )
 
     with console.status("  Persisting to database…", spinner=OWL_SPINNER):
         run_async(persist_result(result, repo_path))
@@ -1112,7 +1196,14 @@ def init_command(
     head = get_head_commit(repo_path)
     base_state = load_state(repo_path)
     base_state["last_sync_commit"] = head
-    base_state["docs_enabled"] = not effective_index_only and provider is not None
+    # Every run that reaches here produced pages: a full run wrote them with a
+    # model, an index-only run (or one where the cost gate was declined) fell
+    # back to the template renderer.
+    base_state.update(
+        docs_mode_state_fields(
+            "llm" if not effective_index_only and provider is not None else "deterministic"
+        )
+    )
     # Record the git tier this run indexed so a later --resume continues the
     # same tier instead of silently upgrading ESSENTIAL → FULL (issue #341).
     base_state["run_mode"] = run_mode

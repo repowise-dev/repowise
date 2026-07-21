@@ -34,7 +34,7 @@ def _workspace_update(
     over how the workspace was located (auto-detected vs explicit flag).
 
     Each stale repo resolves its own docs-vs-index-only mode the same way a
-    single-repo update does, from its persisted ``docs_enabled`` plus any
+    single-repo update does, from its persisted docs mode plus any
     ``--docs`` / ``--no-docs`` / ``--index-only`` override passed here. Repos
     that want docs are updated through the full single-repo docs path (so
     their wiki pages, diagrams, and decisions stay as current as they would

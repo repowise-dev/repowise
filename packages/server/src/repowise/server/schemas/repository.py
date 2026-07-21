@@ -8,6 +8,8 @@ from pathlib import Path
 
 from pydantic import BaseModel, field_validator
 
+from repowise.core.docs_mode import DocsMode
+
 
 class RepoCreate(BaseModel):
     name: str
@@ -58,8 +60,16 @@ class RepoResponse(BaseModel):
     workspace_alias: str | None = None
     workspace_status: str | None = None
     is_primary: bool | None = None
+    # ``docs_enabled`` only says whether pages exist; ``docs_mode`` says who
+    # wrote them, which is what a client needs to offer the "upgrade to
+    # model-written pages" path.
     docs_enabled: bool | None = None
+    docs_mode: DocsMode | None = None
     docs_skip_reason: str | None = None
+    # Mirrors of the same state.json read: which index tier this repo was
+    # built at.
+    run_mode: str | None = None
+    git_tier: str | None = None
     # Set on POST /api/repos responses when registration auto-enqueued the
     # first index; clients attach to /api/jobs/{id}/stream with it.
     initial_job_id: str | None = None

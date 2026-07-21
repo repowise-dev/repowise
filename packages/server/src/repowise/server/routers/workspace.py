@@ -13,6 +13,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
+from repowise.core.docs_mode import resolve_docs_mode
 from repowise.server.deps import (
     get_cross_repo_enricher,
     get_workspace_config,
@@ -125,7 +126,7 @@ def _query_repo_stats(db_path: Path) -> dict:
         state_path = db_path.parent / "state.json"
         if state_path.is_file():
             state = _json.loads(state_path.read_text(encoding="utf-8"))
-            result["docs_enabled"] = bool(state.get("docs_enabled", False))
+            result["docs_enabled"] = resolve_docs_mode(state) != "none"
             result["docs_skip_reason"] = state.get("docs_skip_reason")
     except Exception:
         pass

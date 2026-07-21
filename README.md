@@ -110,10 +110,10 @@ queryable from the CLI, the MCP tools, and the local dashboard.
 | **◈ Decisions** | Architectural decisions mined from eight sources, evidence-backed, linked to the graph nodes they govern, connected by supersedes / refines / conflicts_with, tracked for staleness | **★ Captured nowhere else** |
 | **★ Code health** | **25 deterministic markers**, 1 to 10 per file · three signals: defect risk · maintainability · performance · coverage ingestion · concrete refactoring plans (Extract Class / Helper, Move Method, Break Cycle, Split File) · **zero LLM, under 30s** | **★ Defect-validated, with the fix attached** |
 
-Only the Docs layer needs an LLM. `repowise init --index-only` builds the graph,
-git, decision, and health layers with no API key and no spend (seven of the eight
-decision sources are deterministic; only the one harvested during doc generation
-needs a provider).
+Only model-written prose needs an LLM. `repowise init --index-only` builds the
+graph, git, decision, and health layers with no API key and no spend, and renders
+the whole wiki from the code's structure (seven of the eight decision sources are
+deterministic; only the one harvested during doc generation needs a provider).
 
 Full detail on every layer: **[docs/layers/INTELLIGENCE_LAYERS.md →](docs/layers/INTELLIGENCE_LAYERS.md)**
 
@@ -341,8 +341,17 @@ repowise init --index-only -y
 ```
 
 That builds the dependency graph, git history, code-health scores and dead-code
-findings in seconds. Want the generated wiki and semantic search too? Use `repowise
-init --provider gemini|anthropic|openai` with the matching key.
+findings in seconds, and renders a complete wiki from the code's structure: file,
+module, layer and cycle pages, the architecture diagram, the repo overview, API
+and infra pages, and the onboarding collection. Every page carries a footer saying
+it was derived from structure, and the repo overview describes composition, entry
+points, clusters and dependencies rather than what the project does end to end,
+because no template can derive that. Full-text search works on this index;
+semantic search needs an embedder configured (Ollama is the keyless option).
+
+Want the wiki written by a model instead? Use `repowise init --provider
+gemini|anthropic|openai` with the matching key, or upgrade an existing index later
+with `repowise update --full`.
 
 **3. Connect your agent.** The MCP server is `repowise mcp`, served from the repo directory.
 
@@ -378,8 +387,10 @@ repo"*, or *"`get_context` for `src/auth.py`"*. You get graph-grounded architect
 per-file triage instead of a flurry of greps.
 
 > `get_overview` and `get_context` work in index-only mode with no key, synthesized
-> from the graph, git and health layers. `search_codebase`, `get_answer` and `get_why`
-> need full mode (the generated wiki).
+> from the graph, git and health layers. `search_codebase` and `get_answer` read the
+> wiki, which index-only mode does build, but they answer from pages rendered from
+> structure rather than model-written prose, and `search_codebase` is full-text only
+> until you configure an embedder.
 
 Full walkthrough: **[docs/start/QUICKSTART.md →](docs/start/QUICKSTART.md)**
 
@@ -496,7 +507,7 @@ Doing a security review? **[docs/business/SECURITY_COMPLIANCE.md →](docs/busin
 ## CLI
 
 ```bash
-repowise init [PATH]      # index a codebase (one-time; --index-only skips the LLM)
+repowise init [PATH]      # index a codebase (one-time; --index-only needs no LLM)
 repowise serve [PATH]     # MCP server + local dashboard
 repowise update [PATH]    # incremental update (seconds; --workspace for every repo)
 repowise watch            # auto-sync daemon, re-index on file change

@@ -138,7 +138,7 @@ def build_contextual_next_steps(
         # graph, hotspots, dead code, and decisions are easier to browse than
         # via the CLI.
         steps.append(("repowise serve", "launch the dashboard at http://localhost:3000"))
-        steps.append(("repowise init --provider gemini", "generate full documentation"))
+        steps.append(("repowise update --full", "rewrite the wiki with a model (needs a key)"))
     else:
         steps.append(("repowise mcp .", "start MCP server for AI assistants"))
         steps.append(("repowise search <query>", "search the generated wiki"))

@@ -21,6 +21,7 @@ from repowise.cli.helpers import (
     save_state,
 )
 from repowise.cli.state_persistence import build_kg_state, save_knowledge_graph_json
+from repowise.core.docs_mode import docs_mode_state_fields
 
 
 async def build_resume_controller(repo_path: Path, *, resume: bool) -> tuple[Any, Any]:
@@ -246,7 +247,7 @@ def save_full_state_and_config(
     state["total_pages"] = run_async(_count_db_pages())
     state["provider"] = provider.provider_name
     state["model"] = provider.model_name
-    state["docs_enabled"] = True
+    state.update(docs_mode_state_fields("llm"))
     # Full-mode docs runs always index the FULL git tier.
     state["run_mode"] = "standard"
     state["git_tier"] = "full"

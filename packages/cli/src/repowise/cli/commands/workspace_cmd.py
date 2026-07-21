@@ -17,6 +17,7 @@ from repowise.cli.helpers import (
     resolve_repo_path,
     run_async,
 )
+from repowise.core.docs_mode import docs_mode_state_fields, resolve_docs_mode
 
 if TYPE_CHECKING:
     from repowise.core.workspace.config import WorkspaceConfig
@@ -573,7 +574,9 @@ def _run_index_for_repo(
     state: dict = {
         "last_sync_commit": head,
         "total_pages": generated_pages,
-        "docs_enabled": bool(generate_docs and provider is not None),
+        # No template fallback on this path: without a provider the added repo
+        # is indexed with no pages at all.
+        **docs_mode_state_fields("llm" if generate_docs and provider is not None else "none"),
     }
     if generate_docs and provider is not None:
         state["provider"] = provider.provider_name
@@ -608,7 +611,7 @@ def _run_index_for_repo(
 
     # Honest completion notice — exact remediation command for the
     # docs-skipped case.
-    if not state["docs_enabled"]:
+    if resolve_docs_mode(state) == "none":
         reason = docs_skip_reason or "docs disabled"
         console.print(f"\n[yellow]Note:[/yellow] '{alias}' indexed without docs ({reason}).")
         console.print(

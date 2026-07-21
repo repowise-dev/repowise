@@ -38,7 +38,14 @@ repowise init --index-only -y
 This is the step worth doing first, because it costs nothing and answers the
 question "is this useful on my codebase". It parses every file to an AST, builds
 the dependency graph, reads your git history, scores every file for code health,
-and finds dead code. No LLM calls, no key, no network.
+and finds dead code. It also renders a complete wiki from that structure: file,
+module, layer and cycle pages, the architecture diagram, the repo overview, API
+and infra pages, and the onboarding collection. No LLM calls, no key, no network.
+
+Those pages are honest about where they came from. Each one ends with a footer
+saying it was derived from structure, and the repo overview covers composition,
+entry points, clusters and dependencies rather than what the project does end to
+end, because no template can derive that.
 
 When it finishes you have a working index. Try it:
 
@@ -128,14 +135,14 @@ file reads. That is the whole point.
 
 > **What works without a key:** `get_overview`, `get_context`, `get_symbol`,
 > `get_risk`, `get_change_risk`, `get_dead_code` and `get_health` all synthesize
-> from the graph, git and health layers. `search_codebase`, `get_answer` and
-> `get_why` need the generated wiki, which is step 4.
+> from the graph, git and health layers. `search_codebase` and `get_answer` read
+> the wiki, which step 2 already built, so they answer from pages rendered from
+> structure. `search_codebase` is full-text only until you configure an embedder.
 
-## 4. Optional: add a provider for the wiki and semantic search
+## 4. Optional: add a provider for model-written prose and semantic search
 
-Everything so far was deterministic. A provider adds the generated wiki (a
-documentation page per module and file), semantic search, architectural decision
-mining, and codebase chat.
+Everything so far was deterministic. A provider rewrites the wiki pages as prose
+and adds semantic search, architectural decision mining, and codebase chat.
 
 ```bash
 export ANTHROPIC_API_KEY="sk-ant-..."        # or OPENAI_API_KEY / GEMINI_API_KEY
@@ -156,7 +163,9 @@ Three ways to avoid paying a provider at all:
 - **Fully local:** point it at Ollama with a local embedding model for zero
   external calls. See [Config](../reference/CONFIG.md).
 - **Stay in index-only mode.** The graph, git, health, risk and dead-code layers
-  never needed a provider.
+  never needed a provider, and the wiki you already have was rendered without
+  one. Full-text search works on it; semantic search is the part that needs an
+  embedder, and Ollama is the keyless one.
 
 ## 5. Keep it in sync
 

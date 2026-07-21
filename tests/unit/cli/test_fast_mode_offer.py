@@ -39,7 +39,7 @@ def test_next_steps_fast_mode_leads_with_full_upgrade():
 def test_next_steps_index_only_without_fast():
     steps = build_contextual_next_steps(index_only=True, fast_mode=False)
     cmds = [c for c, _ in steps]
-    assert any("--provider" in c for c in cmds)  # the existing generate hint
+    assert any("update --full" in c for c in cmds)  # the upgrade-to-prose hint
 
 
 def test_next_steps_index_only_recommends_serve_as_first_step():

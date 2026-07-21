@@ -41,6 +41,7 @@ from repowise.cli.helpers import (
     run_async,
     save_state,
 )
+from repowise.core.docs_mode import docs_mode_state_fields
 
 
 def _reparse(repo_path: Path, exclude_patterns: list[str]) -> tuple[list[Any], dict[str, bytes], Any]:
@@ -372,9 +373,9 @@ def upgrade_to_full(
     )
 
     # Flip persisted state to full so subsequent `repowise update` runs the
-    # normal incremental LLM path (docs_enabled) rather than offering upgrade.
+    # normal incremental LLM path rather than offering upgrade.
     state["last_sync_commit"] = head
-    state["docs_enabled"] = True
+    state.update(docs_mode_state_fields("llm"))
     state["git_tier"] = "full"
     state["total_pages"] = len(generated_pages)
     save_state(repo_path, state)

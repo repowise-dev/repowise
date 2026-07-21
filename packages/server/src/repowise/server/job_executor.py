@@ -22,6 +22,7 @@ from repowise.core.cancellation import (
     get_active_token,
     set_active_token,
 )
+from repowise.core.docs_mode import DocsMode, docs_mode_state_fields
 from repowise.core.persistence.crud import (
     get_generation_job,
     get_repository,
@@ -501,7 +502,9 @@ async def execute_job(
                 _persist_initial_index_state(
                     Path(repo_path),
                     llm_client=llm_client,
-                    docs_enabled=generate_docs,
+                    # The API index path has no template fallback: without a
+                    # provider it produces an index and no pages.
+                    docs_mode="llm" if generate_docs else "none",
                     docs_skip_reason=docs_skip_reason,
                     total_pages=len(all_pages),
                     wiki_style=wiki_style,
@@ -648,7 +651,7 @@ def _persist_initial_index_state(
     repo_path: Path,
     *,
     llm_client: Any,
-    docs_enabled: bool,
+    docs_mode: DocsMode,
     docs_skip_reason: str | None,
     total_pages: int,
     wiki_style: str,
@@ -688,8 +691,8 @@ def _persist_initial_index_state(
     head = _read_head_sha(repo_path)
     if head:
         state["last_sync_commit"] = head
-    state["docs_enabled"] = docs_enabled
-    if docs_skip_reason and not docs_enabled:
+    state.update(docs_mode_state_fields(docs_mode))
+    if docs_skip_reason and docs_mode == "none":
         state["docs_skip_reason"] = docs_skip_reason
     state["run_mode"] = "standard"
     state["git_tier"] = "full"

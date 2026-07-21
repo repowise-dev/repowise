@@ -9,6 +9,11 @@ modes share one code path and differ only in the knobs they flip.
 - ``FAST``: graph + ESSENTIAL git only, no LLM doc generation. Intended for a
   quick first index of a very large repo; the deferred git signals can be
   backfilled later (see ``git_indexer.backfill``).
+- ``DETERMINISTIC``: everything ``STANDARD`` does, except pages render from
+  templates instead of a model. No provider, no key, no spend. This is what
+  ``repowise init --index-only`` produces, for callers that want the pipeline
+  to generate for them (the CLI runs its own generation phase after the
+  pipeline instead, so it does not use this mode).
 """
 
 from __future__ import annotations
@@ -25,6 +30,7 @@ class OrchestratorMode(enum.StrEnum):
 
     STANDARD = "standard"
     FAST = "fast"
+    DETERMINISTIC = "deterministic"
 
     @property
     def git_tier(self) -> GitIndexTier:
@@ -35,12 +41,21 @@ class OrchestratorMode(enum.StrEnum):
 
     @property
     def allows_doc_generation(self) -> bool:
-        """Whether LLM doc generation may run in this mode.
+        """Whether the generation phase may run in this mode.
 
         FAST never generates docs (and never makes LLM calls), regardless of
         the ``generate_docs`` flag passed to the pipeline.
         """
         return self is not OrchestratorMode.FAST
+
+    @property
+    def deterministic_docs(self) -> bool:
+        """Whether the generation phase renders templates instead of prompting.
+
+        When True the pipeline supplies its own null provider, so a caller can
+        ask for a full wiki without holding an API key.
+        """
+        return self is OrchestratorMode.DETERMINISTIC
 
     @property
     def sql_backed_metrics(self) -> bool:
@@ -51,8 +66,8 @@ class OrchestratorMode(enum.StrEnum):
         ``GraphBuilder.release_graph``), serving subsequent metric reads from
         the loaded snapshot — the large-repo scaling path.
 
-        Default off in ``STANDARD`` (doc generation traverses the live graph)
-        and on in ``FAST`` (which generates no docs, so nothing needs the
-        structural graph after build + persistence).
+        Default off in ``STANDARD`` and ``DETERMINISTIC`` (doc generation
+        traverses the live graph) and on in ``FAST`` (which generates no docs,
+        so nothing needs the structural graph after build + persistence).
         """
         return self is OrchestratorMode.FAST

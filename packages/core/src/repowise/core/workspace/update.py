@@ -31,6 +31,7 @@ from repowise.core.update_lock import (
     try_acquire_update_lock as _try_acquire_lock,
 )
 
+from ..docs_mode import docs_mode_state_fields
 from .config import WorkspaceConfig
 
 _log = logging.getLogger("repowise.workspace.update")
@@ -704,8 +705,10 @@ async def update_workspace(
                 # Mark first-time so downstream tooling (status, doctor) can
                 # distinguish a never-indexed repo from one that's been
                 # updated at least once.
-                if first_time and "docs_enabled" not in state:
-                    state["docs_enabled"] = False
+                if first_time and "docs_mode" not in state and "docs_enabled" not in state:
+                    # This path indexes only; nothing renders pages here, not
+                    # even from templates.
+                    state.update(docs_mode_state_fields("none"))
                     state["docs_skip_reason"] = (
                         "first-time index via update; run "
                         "`repowise update --repo " + alias + " --docs` to generate docs"

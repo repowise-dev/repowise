@@ -38,6 +38,7 @@ from repowise.cli.helpers import (
     try_acquire_update_lock,
     write_update_pending,
 )
+from repowise.core.docs_mode import docs_mode_state_fields, resolve_docs_mode
 from repowise.core.reasoning import REASONING_MODES
 
 from .incremental import (
@@ -46,7 +47,7 @@ from .incremental import (
     _refresh_knowledge_graph,
     _run_partial_analysis,
 )
-from .mode import _infer_legacy_docs_enabled, _resolve_index_only_mode
+from .mode import _resolve_index_only_mode
 from .persistence import (
     _persist_index_only_update,
     _run_full_health_rescore,
@@ -222,7 +223,7 @@ def _surface_release_news(*, written_by: str | None) -> None:
         "Override the persisted init mode for this run. --no-docs is "
         "equivalent to --index-only; --docs forces LLM page regeneration "
         "even when the repo was indexed without docs. Without either flag, "
-        "the value of `docs_enabled` from .repowise/state.json is used "
+        "the value of `docs_mode` from .repowise/state.json is used "
         "(set during `repowise init`)."
     ),
 )
@@ -597,11 +598,11 @@ def run_update(
     atexit.register(release_update_lock, repo_path)
     atexit.register(clear_update_queued, repo_path)
 
-    # Backfill docs_enabled on legacy state files using the same
-    # shape-based inference the resolver uses, so the post-commit hook
-    # and future runs stop relying on the inference. Done before mode
-    # resolution and only when no explicit override was passed, so a
-    # one-off `--docs` / `--no-docs` doesn't lock anything in.
+    # Backfill the docs mode on legacy state files using the same inference
+    # the resolver uses, so the post-commit hook and future runs stop relying
+    # on the inference. Done before mode resolution and only when no explicit
+    # override was passed, so a one-off `--docs` / `--no-docs` doesn't lock
+    # anything in.
     explicit_override = (
         # The CLI default of index_only is False; treat it like an
         # override only when the user actually passed the flag, which we
@@ -609,8 +610,8 @@ def run_update(
         # index_only=True is always treated as an override.
         index_only or docs_flag is not None
     )
-    if "docs_enabled" not in state and not explicit_override:
-        state["docs_enabled"] = _infer_legacy_docs_enabled(state)
+    if "docs_mode" not in state and not explicit_override:
+        state.update(docs_mode_state_fields(resolve_docs_mode(state)))
         save_state(repo_path, state)
 
     # --- Resolve effective mode (index-only vs full LLM regen) ---
@@ -851,8 +852,8 @@ def run_update(
     )
 
     # Resolve the generation provider. If the repo wants docs but was never
-    # given a provider/key (e.g. it started --index-only and later flipped
-    # docs_enabled on, or `repowise update --docs`), onboard the same way init
+    # given a provider/key (e.g. it started --index-only and later asked for
+    # LLM docs, or `repowise update --docs`), onboard the same way init
     # does: prompt for provider + key and persist, but only in an interactive
     # terminal. Hooks / CI / --progress json keep the clean non-blocking error.
     # In the workspace docs flow each member reaches this per-repo run; the

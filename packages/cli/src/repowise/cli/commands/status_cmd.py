@@ -19,6 +19,7 @@ from repowise.cli.helpers import (
     run_async,
 )
 from repowise.cli.ui.brand import format_bytes
+from repowise.core.docs_mode import resolve_docs_mode
 
 # ---------------------------------------------------------------------------
 # Workspace status
@@ -293,15 +294,18 @@ def _workspace_status(target: CommandTarget) -> None:
         indexed_ago = _format_relative_time(entry.indexed_at)
         page_count = _query_page_count(abs_path)
         storage_cell = format_bytes(_index_storage_bytes(repowise_dir))
-        docs_state = load_state(abs_path)
-        docs_enabled = docs_state.get("docs_enabled")
+        docs_mode = resolve_docs_mode(load_state(abs_path))
 
-        # Render the Docs column in plain English so the user instantly
-        # knows whether the LLM-generated wiki exists for this repo.
+        # Render the Docs column in plain English so the user instantly knows
+        # both whether a wiki exists and whether a model wrote it. A template
+        # wiki is complete but thinner, and `restyle` upgrades it.
         if page_count > 0:
-            docs_cell = f"[green]{page_count}[/green]"
-        elif docs_enabled is False:
-            docs_cell = "[yellow]skipped[/yellow]"
+            if docs_mode == "deterministic":
+                docs_cell = f"[cyan]{page_count} Template[/cyan]"
+            else:
+                docs_cell = f"[green]{page_count} LLM[/green]"
+        elif docs_mode == "none":
+            docs_cell = "[yellow]None[/yellow]"
             no_docs.append(entry.alias)
         else:
             docs_cell = "[yellow]0[/yellow]"

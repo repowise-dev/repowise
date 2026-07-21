@@ -58,6 +58,7 @@ from repowise.cli.ui import (
     load_dotenv,
     print_banner,
 )
+from repowise.core.docs_mode import docs_mode_state_fields
 from repowise.core.generation.styles import DEFAULT_STYLE
 
 from ._interactive import offer_distill_rewrite_hook, offer_hook_install
@@ -133,9 +134,9 @@ def _run_workspace_generation(
             "[dim]Index will be saved without docs; "
             "future `repowise update` runs default to index-only.[/dim]"
         )
-        # Sentinel — caller treats this exactly like an index-only run so
-        # state.docs_enabled lands as False and the post-commit hook
-        # doesn't surprise the user with LLM regen later.
+        # Sentinel: caller treats this exactly like an index-only run so the
+        # persisted docs mode is not "llm" and the post-commit hook doesn't
+        # surprise the user with LLM regen later.
         raise CostGateDeclined()
 
     return run_repo_generation(
@@ -264,7 +265,7 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
     index_only = ctx.index_only
 
     # Generation phase (per-repo, only when not index-only).
-    # Track per-repo whether the user declined cost so state.docs_enabled
+    # Track per-repo whether the user declined cost so the persisted docs mode
     # reflects the actual choice instead of the original init mode.
     repo_docs_enabled = not index_only and provider is not None
     skip_reason: str | None = None
@@ -329,7 +330,9 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
     state: dict[str, Any] = {
         "last_sync_commit": head,
         "total_pages": pages_count,
-        "docs_enabled": repo_docs_enabled,
+        # Workspace init has no template fallback yet, so a repo that skipped
+        # generation really does end up with no pages at all.
+        **docs_mode_state_fields("llm" if repo_docs_enabled else "none"),
     }
     if repo_docs_enabled and provider is not None:
         state["provider"] = provider.provider_name

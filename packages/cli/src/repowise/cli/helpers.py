@@ -736,7 +736,7 @@ def resolve_provider_or_prompt(
     provider/key is configured and ``interactive`` is set (an interactive
     terminal, not a hook / CI / ``--progress json`` run), reuse init's exact
     provider + API-key prompt, persist the choice, and retry — so a docs run
-    that only just gained ``docs_enabled`` onboards the same way ``init`` does
+    that only just asked for LLM pages onboards the same way ``init`` does
     instead of dying with "No provider configured".
 
     When ``interactive`` is False the original error propagates unchanged, so

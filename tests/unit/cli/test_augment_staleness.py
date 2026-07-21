@@ -340,11 +340,20 @@ class TestDocsEnabledWording:
         msg = _post(repo_path)
         assert "Wiki is stale" in msg
 
-    def test_defaults_to_wiki_when_field_missing(self, repo):
-        # Backward compat: pre-existing state.json files without
-        # docs_enabled should keep the old wording.
+    def test_says_index_when_no_docs_fields_and_no_provider(self, repo):
+        # A state file with neither docs field and no provider was written by
+        # a pre-migration index-only run, which really did leave no pages.
         repo_path, head = repo
         _state(repo_path, last_sync_commit=head)
+        _commit(repo_path)
+
+        msg = _post(repo_path)
+        assert "Index is stale" in msg
+
+    def test_says_wiki_when_no_docs_fields_but_provider_recorded(self, repo):
+        # Pre-migration full inits recorded provider/model and nothing else.
+        repo_path, head = repo
+        _state(repo_path, last_sync_commit=head, provider="openai")
         _commit(repo_path)
 
         msg = _post(repo_path)

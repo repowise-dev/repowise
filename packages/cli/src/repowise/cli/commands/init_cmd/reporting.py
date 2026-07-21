@@ -163,10 +163,12 @@ def show_completion(
         _lang_summary_final = str(len(result.languages))
 
     if effective_index_only:
+        _template_pages = len(result.generated_pages or [])
         metrics: list[tuple[str, str]] = [
             ("Files indexed", str(result.file_count)),
             ("Symbols", f"{result.symbol_count:,}"),
             ("Languages", _lang_summary_final),
+            ("Wiki pages", f"{_template_pages} rendered from structure"),
             ("Elapsed", format_elapsed(elapsed)),
             ("", ""),
             (
@@ -198,17 +200,23 @@ def show_completion(
             build_completion_panel("repowise index complete", metrics, next_steps=next_steps)
         )
         console.print()
+        console.print(
+            "  [dim]Every page is derived from structure and says so in its footer. "
+            "Full-text\n  search works now; semantic search needs an embedder "
+            "(Ollama is the keyless one).[/dim]"
+        )
+        console.print()
         _render_defect_accuracy(result)
     else:
         _pages = result.generated_pages or []
         total_tokens = sum(p.total_tokens for p in _pages)
-        # Split AI-written from the zero-LLM deterministic coverage tail so broad
-        # coverage reads as thoroughness, not padding.
+        # Split model-written from the zero-LLM deterministic coverage tail so
+        # broad coverage reads as thoroughness, not padding.
         _det = sum(1 for p in _pages if getattr(p, "provider_name", "") == "template")
         _ai = len(_pages) - _det
         _pages_label = str(len(_pages))
         if _det:
-            _pages_label = f"{len(_pages)} ({_ai} AI-written · {_det} deterministic)"
+            _pages_label = f"{len(_pages)} ({_ai} model-written · {_det} from structure)"
         metrics = [
             ("Pages generated", _pages_label),
             ("Total tokens", f"{total_tokens:,}"),

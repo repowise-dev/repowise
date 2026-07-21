@@ -33,6 +33,7 @@ from repowise.cli.helpers import (
     save_state,
 )
 from repowise.cli.ui import load_dotenv
+from repowise.core.docs_mode import resolve_docs_mode
 from repowise.core.generation.styles import (
     DEFAULT_STYLE,
     is_known_style,
@@ -195,13 +196,21 @@ def restyle_command(
         # classifier) records as a usage_error rather than an error.
         raise click.BadArgumentUsage(f"Unknown style '{style}'. Choose one of: {valid}.")
 
-    # Restyle only makes sense for a full index (one that has generated docs).
+    # Restyle only makes sense once there are pages to restyle.
     if not state:
         raise click.ClickException(f"No index found at {repo_path}. Run `repowise init` first.")
-    if not state.get("docs_enabled", False):
+    docs_mode = resolve_docs_mode(state)
+    if docs_mode == "none":
         raise click.ClickException(
-            "This repo is index-only (no wiki pages to restyle). "
+            "This repo has no wiki pages to restyle. "
             "Run `repowise update --full` to generate docs first."
+        )
+    if docs_mode == "deterministic":
+        # A template wiki is a legitimate starting point, not a dead end:
+        # restyling it is how a user upgrades to model-written pages.
+        console.print(
+            "[yellow]This repo's wiki was rendered from templates.[/yellow] "
+            "Restyling rewrites every page with a model, which costs money."
         )
 
     if style == current:

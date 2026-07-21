@@ -83,9 +83,11 @@ worse than no answer. Every MCP response carries the indexed commit and warns wh
 it has diverged from your live `HEAD`, but the real fix is step 3.
 
 **Two modes.** `--index-only` gives you the graph, git intelligence, code health,
-change risk and dead code, with no LLM, no key and no network. Adding a provider
-gives you the generated wiki, semantic search, decision mining and chat on top.
-You can start index-only and upgrade later without re-doing the parse.
+change risk and dead code, plus a complete wiki rendered from the code's
+structure, with no LLM, no key and no network. Adding a provider rewrites those
+pages as model-written prose and adds semantic search, decision mining and chat.
+You can start index-only and upgrade later with `repowise update --full`, which
+reuses the persisted graph instead of re-parsing it.
 
 ---
 
@@ -119,7 +121,7 @@ Grouped by what you are trying to do. Every flag for every command lives in the
 
 | Command | What it is for |
 |---|---|
-| `repowise init` | First index. Interactive: asks for a provider, shows a cost estimate, waits for confirmation. `--index-only` skips the LLM entirely. |
+| `repowise init` | First index. Interactive: asks for a provider, shows a cost estimate, waits for confirmation. `--index-only` builds the same wiki from structure, with no LLM. |
 | `repowise update` | Incremental catch-up after pulling or committing. Seconds, not minutes. |
 | `repowise watch` | File watcher that updates continuously while you work. |
 | `repowise hook install` | Post-commit hook so syncing happens without you. |
@@ -273,10 +275,10 @@ the [Docker image](../../docker/README.md) if you would rather not install Node.
 `Ctrl+K` / `Cmd+K` opens a command palette from any page, which is the fastest way
 to move between views and repos.
 
-Views that need the generated wiki (Docs, Chat, parts of Overview) show thin
-content on an index-only repo. Everything else, including Architecture, Code
-Health, Files, Commits and Contributors, works off the parsed graph and git
-history alone.
+An index-only repo has a full Docs section, rendered from structure rather than
+written by a model, so the pages read as structural summaries. Chat still needs a
+provider. Everything else, including Architecture, Code Health, Files, Commits and
+Contributors, works off the parsed graph and git history alone.
 
 Every view and what it answers: **[Dashboard](DASHBOARD.md)**.
 
@@ -293,7 +295,7 @@ repowise init --index-only -y      # free, no key, seconds
 repowise hook install              # keep it current from here on
 ```
 
-Add the wiki and semantic search when you want them:
+Rewrite the wiki with a model and add semantic search when you want them:
 
 ```bash
 export ANTHROPIC_API_KEY="sk-ant-..."
@@ -425,8 +427,8 @@ validate on 10 files, and `--skip-tests --skip-infra` to cut scope. Lower
 `repowise reindex` rebuilds it from the existing wiki pages, with no LLM calls.
 
 **Doctor reports 0 pages**
-Either init failed, or it ran with `--index-only`. Run `repowise init` with a
-provider to generate pages.
+init failed or was interrupted. Even `--index-only` writes pages, so an empty
+wiki means the run did not finish. Try `repowise init --resume`.
 
 **Dashboard shows an empty repo list**
 The backend and frontend have to point at the same database. Check `REPOWISE_DB_URL`
