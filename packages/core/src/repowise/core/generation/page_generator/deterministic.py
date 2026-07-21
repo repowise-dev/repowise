@@ -33,6 +33,26 @@ log = structlog.get_logger(__name__)
 # the prompt template makes the pairing obvious when reading either side.
 _DET_PREFIX = "deterministic"
 
+# Cap for free text folded into a list item or table cell. Long enough for a
+# real summary sentence, short enough that a bullet stays a bullet.
+_ONELINE_LIMIT = 200
+
+
+def oneline(value: object, limit: int = _ONELINE_LIMIT) -> str:
+    """Flatten free text so it can sit inside a markdown list item or cell.
+
+    Deterministic templates interpolate text the pipeline produced elsewhere:
+    docstrings, page summaries, decision rationales. That text is routinely
+    multi-paragraph, and a raw newline inside a bullet ends the list, dumping
+    the remainder as body text and restarting the numbering after it. The LLM
+    templates never had this problem because their output was a prompt, not
+    page content.
+    """
+    text = " ".join(str(value or "").split())
+    if len(text) > limit:
+        text = text[: limit - 1].rstrip() + "…"
+    return text
+
 
 class DeterministicRenderMixin:
     """Template-only ``_deterministic_*`` renderers, mixed into PageGenerator.

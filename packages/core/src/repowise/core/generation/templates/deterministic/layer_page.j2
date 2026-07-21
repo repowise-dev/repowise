@@ -38,7 +38,7 @@ This layer holds {{ ctx.file_count }} file{{ "s" if ctx.file_count != 1 else "" 
 {% if ctx.key_files %}
 ## Key files
 {% for kf in ctx.key_files %}
-- `{{ kf.path }}` *({{ kf.role }})*{% if kf.summary %}: {{ kf.summary }}{% endif %}
+- `{{ kf.path }}` *({{ kf.role }})*{% if kf.summary %}: {{ kf.summary | oneline }}{% endif %}
 {% endfor %}
 {% endif %}
 
@@ -63,7 +63,7 @@ Files where this layer meets the outside world.
 {% if ctx.tour_steps %}
 ## On the guided tour
 {% for s in ctx.tour_steps %}
-- Step {{ s.order }}: `{{ s.target_path if s.target_path is defined else s.path }}`{% if s.reason is defined and s.reason %} ({{ s.reason }}){% endif %}
+- Step {{ s.order }}: {{ s.title }}{% if s.description %}. {{ s.description | oneline }}{% endif %}
 {% endfor %}
 {% endif %}
 {% include "deterministic/_footer.j2" %}

@@ -49,7 +49,10 @@ def test_layer_page_renders(generator):
         key_files=[{"path": "src/parse.py", "role": "entry_point", "summary": "Parses files."}],
         deps_out=[{"target_layer": "Storage", "edge_count": 4}],
         deps_in=[{"source_layer": "CLI", "edge_count": 2}],
-        tour_steps=[{"order": 1, "target_path": "src/parse.py", "reason": "Where parsing starts."}],
+        # Exactly the shape KnowledgeGraphContext.get_file_context builds
+        # (order/title/description). Inventing a shape here is how the first
+        # version of this template shipped with a field that never exists.
+        tour_steps=[{"order": 1, "title": "Parsing", "description": "Where parsing starts."}],
         entry_points=["src/parse.py"],
         edge_connectors=["src/io.py"],
         diagram_mermaid="flowchart LR\n  a --> b",
@@ -66,6 +69,7 @@ def test_layer_page_renders(generator):
     # Sits between two layers, so the overview should say so rather than
     # calling it foundational or top-of-stack.
     assert "mid-stack" in page.content
+    assert "Step 1: Parsing. Where parsing starts." in page.content
     assert "Generated deterministically" in page.content
 
 
@@ -160,3 +164,80 @@ def test_active_landscape_renders(generator):
     assert "`src/core.py`" in page.content
     assert "Ada" in page.content
     assert "old_fn" in page.content
+
+
+def test_symbol_spotlight_renders(generator):
+    """Not reachable through generate_all (deterministic mode drops the
+    spotlight bucket), but the renderer stays for on-demand generation, so
+    it needs coverage of its own."""
+    from repowise.core.generation.context_assembler import SymbolSpotlightContext
+
+    ctx = SymbolSpotlightContext(
+        symbol_name="parse_file",
+        qualified_name="parser.ASTParser.parse_file",
+        kind="method",
+        signature="def parse_file(self, fi, src) -> ParsedFile",
+        docstring="Parse one file into an AST.",
+        file_path="src/parser.py",
+        decorators=["@lru_cache"],
+        is_async=False,
+        complexity_estimate=7,
+        callers=["src/pipeline.py"],
+        source_body="def parse_file(self, fi, src):\n    return ...",
+    )
+    page = generator._deterministic_symbol_spotlight(
+        ctx, "src/parser.py::parse_file", "Symbol: parser.ASTParser.parse_file"
+    )
+
+    assert page.page_type == "symbol_spotlight"
+    assert page.provider_name == "template"
+    assert "Parse one file into an AST." in page.content
+    assert "@lru_cache" in page.content
+    # Callers are module importers, not verified call sites. The page must
+    # not claim more than the graph knows.
+    assert "not confirmed call sites" in page.content
+
+
+def test_symbol_spotlight_tolerates_missing_kind(generator):
+    from repowise.core.generation.context_assembler import SymbolSpotlightContext
+
+    ctx = SymbolSpotlightContext(
+        symbol_name="x",
+        qualified_name="x",
+        kind="",
+        signature="",
+        docstring=None,
+        file_path="a.py",
+        decorators=[],
+        is_async=False,
+        complexity_estimate=0,
+        callers=[],
+    )
+    page = generator._deterministic_symbol_spotlight(ctx, "a.py::x", "Symbol: x")
+    assert "is a symbol defined in" in page.content
+
+
+def test_multiline_summaries_stay_inside_their_list_item(generator):
+    """A raw newline in a bullet ends the markdown list, dumping the rest as
+    body text. Page summaries are routinely multi-paragraph, so every text
+    field folded into a list item runs through the oneline filter."""
+    ctx = LayerPageContext(
+        layer_name="Core",
+        layer_id="layer:core",
+        layer_description="",
+        file_count=3,
+        key_files=[
+            {
+                "path": "a.py",
+                "role": "internal",
+                "summary": "First line.\n\nSecond paragraph that would break the list.",
+            },
+            {"path": "b.py", "role": "internal", "summary": "Short."},
+        ],
+    )
+    page = generator._deterministic_layer_page(ctx, "Layer: Core")
+
+    body = page.content.split("## Key files", 1)[1]
+    bullets = [ln for ln in body.splitlines() if ln.startswith("- ")]
+    assert len(bullets) == 2, f"list broke apart: {bullets}"
+    assert "First line. Second paragraph" in bullets[0]

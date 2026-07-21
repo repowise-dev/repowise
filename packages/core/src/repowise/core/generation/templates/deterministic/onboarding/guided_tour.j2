@@ -18,7 +18,7 @@ A reading order through `{{ ctx.repo_name }}`, {{ ctx.stops | length }} stops lo
 
 `{{ stop.target_path }}` *({{ stop.kind }})*
 
-{{ stop.reason }}
+{{ stop.reason | oneline(300) }}
 {% if stop.summary %}
 {{ stop.summary }}
 {% endif %}

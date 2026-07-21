@@ -17,7 +17,7 @@
 {% if ctx.endpoints %}
 ## Operations
 {% for e in ctx.endpoints %}
-- `{{ e | replace("\n", " ") | truncate(160, true, "…") }}`
+- `{{ e | oneline(160) }}`
 {% endfor %}
 {% endif %}
 

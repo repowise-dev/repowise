@@ -20,7 +20,7 @@ The types and functions the rest of `{{ ctx.repo_name }}` leans on most, ranked 
 
 **{{ s.kind }}** in `{{ s.file_path }}`{% if s.cluster %} · {{ s.cluster }}{% endif %}{% if s.cross_file_callers %} · used from {{ s.cross_file_callers }} other file{{ "s" if s.cross_file_callers != 1 else "" }}{% endif %}
 
-{% if s.docstring %}{{ s.docstring | trim }}{% else %}_No docstring._{% endif %}
+{% if s.docstring %}{{ s.docstring | oneline(400) }}{% else %}_No docstring._{% endif %}
 {% endfor %}
 {% endif %}
 

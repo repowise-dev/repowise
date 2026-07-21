@@ -26,7 +26,7 @@ Top to bottom, the order work flows through.
 | Directory | Files | Language | Clusters |
 | --- | --- | --- | --- |
 {% for d in ctx.directories -%}
-| `{{ d.path }}` | {{ d.file_count }} | {{ d.dominant_language }} | {{ d.community_labels | join(", ") if d.community_labels else "none" }} |
+| `{{ d.path }}` | {{ d.file_count }} | {{ d.dominant_language }} | {{ (d.community_labels | join(", ")) | oneline(60) if d.community_labels else "none" }} |
 {% endfor %}
 
 {% for d in ctx.directories %}

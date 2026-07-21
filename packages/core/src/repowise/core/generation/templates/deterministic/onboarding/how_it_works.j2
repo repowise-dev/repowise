@@ -27,7 +27,9 @@ Traced from the entry points outward: which files each run touches, in order. Wh
 {% if ctx.flows %}
 ## Traced flows
 {% for f in ctx.flows %}
-### From `{{ f.entry_point }}`
+{# entry_point is empty for symbol-rooted flows; fall back to the first hop
+   rather than emitting an empty heading. #}
+### From `{{ f.entry_point or (f.hops[0] if f.hops else "an unnamed entry point") }}`
 
 {% if f.hops %}
 {% for h in f.hops %}
@@ -44,7 +46,9 @@ _No downstream hops resolved._
 
 The guided tour walks these in sequence.
 {% for s in ctx.kg_tour_steps %}
-{{ loop.index }}. `{{ s.target_path if s.target_path is defined else s.path if s.path is defined else s }}`{% if s.reason is defined and s.reason %} ({{ s.reason }}){% endif %}
+{{ loop.index }}. {{ s.title }}{% if s.description %}. {{ s.description | oneline }}{% endif %}
+{% for nid in s.nodeIds[:3] %}   - `{{ nid | replace("file:", "") }}`
+{% endfor %}
 {% endfor %}
 {% endif %}
 {% include "deterministic/_footer.j2" %}

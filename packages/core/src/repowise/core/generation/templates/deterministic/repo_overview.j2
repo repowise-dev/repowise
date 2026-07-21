@@ -47,7 +47,7 @@ Start here when reading the codebase.
 ## Architectural Clusters
 Groups of files that depend on each other far more than on the rest of the repo.
 {% for c in ctx.communities %}
-- **{{ c.label or "Cluster " ~ c.id }}**: {{ c.size }} files (cohesion {{ c.cohesion }})
+- **{{ (c.label or "Cluster " ~ c.id) | oneline(60) }}**: {{ c.size }} files (cohesion {{ c.cohesion }})
 {% endfor %}
 {% endif %}
 
@@ -76,7 +76,7 @@ Ranked by PageRank over the import graph: the files most of the codebase ultimat
 {% if ctx.decision_records %}
 ## Recorded Decisions
 {% for dr in ctx.decision_records[:8] %}
-- **{{ dr.title }}**: {{ dr.decision }}{% if dr.rationale %} *(Why: {{ dr.rationale }})*{% endif %}
+- **{{ dr.title | oneline(80) }}**: {{ dr.decision | oneline }}{% if dr.rationale %} *(Why: {{ dr.rationale | oneline }})*{% endif %}
 {% endfor %}
 {% endif %}
 

@@ -11,7 +11,7 @@ Where `{{ ctx.repo_name }}` has actually been changing. {{ ctx.total_commits_90d
 | File | Commits (90d) | Owner | Hotspot | Age |
 | --- | --- | --- | --- | --- |
 {% for f in ctx.hot_files -%}
-| `{{ f.path }}` | {{ f.commit_count_90d }} | {{ f.primary_owner or "unknown" }} | {{ "yes" if f.is_hotspot else "no" }} | {{ f.age_days }}d |
+| `{{ f.path }}` | {{ f.commit_count_90d }} | {{ (f.primary_owner or "unknown") | oneline(40) }} | {{ "yes" if f.is_hotspot else "no" }} | {{ f.age_days }}d |
 {% endfor %}
 
 A hotspot is a file that is both high-churn and structurally complex. Those are the ones where changes are most likely to go wrong.
@@ -32,7 +32,7 @@ A hotspot is a file that is both high-churn and structurally complex. Those are 
 
 Worth deleting first: it is being carried through every edit.
 {% for f in ctx.dead_code_in_hot_files[:15] %}
-- `{{ f.get("symbol_name") or f.get("file_path") }}`{% if f.get("file_path") and f.get("symbol_name") %} in `{{ f.get("file_path") }}`{% endif %}{% if f.get("reason") %} ({{ f.get("reason") }}){% endif %}
+- `{{ f.get("symbol_name") or f.get("file_path") }}`{% if f.get("file_path") and f.get("symbol_name") %} in `{{ f.get("file_path") }}`{% endif %}{% if f.get("reason") %} ({{ f.get("reason") | oneline }}){% endif %}
 {% endfor %}
 {% endif %}
 {% include "deterministic/_footer.j2" %}

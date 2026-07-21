@@ -29,7 +29,7 @@
 {% if ctx.key_files %}
 Highest-PageRank first: the order to read them in.
 {% for kf in ctx.key_files %}
-- `{{ kf.path }}`{% if kf.is_entry_point %} *(entry point)*{% endif %}{% if kf.summary %}: {{ kf.summary }}{% endif %}
+- `{{ kf.path }}`{% if kf.is_entry_point %} *(entry point)*{% endif %}{% if kf.summary %}: {{ kf.summary | oneline }}{% endif %}
 {% endfor %}
 {% else %}
 {% for f in ctx.files %}
@@ -47,7 +47,7 @@ Highest-PageRank first: the order to read them in.
 {% if ctx.decision_records %}
 ## Recorded decisions
 {% for dr in ctx.decision_records[:5] %}
-- **{{ dr.title }}**: {{ dr.decision }}{% if dr.rationale %} *(Why: {{ dr.rationale }})*{% endif %}
+- **{{ dr.title | oneline(80) }}**: {{ dr.decision | oneline }}{% if dr.rationale %} *(Why: {{ dr.rationale | oneline }})*{% endif %}
 {% endfor %}
 {% endif %}
 
@@ -82,7 +82,7 @@ Highest-PageRank first: the order to read them in.
 {% if ctx.dead_code_findings %}
 ## Potentially unused code
 {% for finding in ctx.dead_code_findings[:10] %}
-- `{{ finding.symbol_name or '?' }}`: {{ finding.reason }} ({{ (finding.confidence * 100) | int }}%{% if finding.safe_to_delete %}, cleanup-ready{% endif %})
+- `{{ finding.symbol_name or '?' }}`: {{ finding.reason | oneline }} ({{ (finding.confidence * 100) | int }}%{% if finding.safe_to_delete %}, cleanup-ready{% endif %})
 {% endfor %}
 {% endif %}
 
