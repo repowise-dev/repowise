@@ -125,6 +125,12 @@ export interface FileDetailGit extends Hotspot {
   co_change_partners: CoChangePartner[];
   agent: FileAgentProvenance;
   first_commit_at: string | null;
+  /** `symbol_id` -> counted fixes that landed in it, over the same window as
+   *  `prior_defect_count`. Approximate: symbol spans are current-tree while
+   *  each fix's line ranges are numbered on its own parent commit. A symbol
+   *  with no fixes is absent from the map; the whole map is empty on an index
+   *  that predates the fix rollup. */
+  fix_symbol_counts?: Record<string, number>;
 }
 
 export interface FileDetailCoverage {

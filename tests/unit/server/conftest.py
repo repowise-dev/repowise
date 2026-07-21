@@ -33,6 +33,7 @@ def _create_test_app():
         dead_code,
         decisions,
         external_systems,
+        files,
         git,
         graph,
         health,
@@ -81,6 +82,7 @@ def _create_test_app():
     app.include_router(meta.router)
     app.include_router(webhooks.router)
     app.include_router(git.router)
+    app.include_router(files.router)
     app.include_router(dead_code.router)
     app.include_router(owners.router)
     app.include_router(modules.router)

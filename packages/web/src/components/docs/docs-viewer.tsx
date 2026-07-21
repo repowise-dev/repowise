@@ -245,6 +245,19 @@ function AtAGlance({ repoId, targetPath }: { repoId: string; targetPath: string 
             </span>
           </div>
         )}
+        {data.original_path && (
+          <div className="flex items-center justify-between gap-2">
+            <span className="shrink-0 text-[var(--color-text-tertiary)]">Renamed from</span>
+            <span className="truncate font-mono" title={data.original_path}>
+              {data.original_path}
+            </span>
+          </div>
+        )}
+        {data.commit_count_capped && (
+          <p className="text-[10px] text-[var(--color-text-tertiary)]">
+            History capped during indexing, so older commits are not counted above.
+          </p>
+        )}
       </div>
     </div>
   );

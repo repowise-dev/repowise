@@ -245,6 +245,10 @@ async def file_detail(
         git["significant_commits"] = _json_or(git_meta.significant_commits_json, [])
         git["top_authors"] = _json_or(git_meta.top_authors_json, [])
         git["co_change_partners"] = _json_or(git_meta.co_change_partners_json, [])
+        # symbol_id -> counted fixes that landed in it. Joined here rather than
+        # onto HotspotResponse so the hotspots list does not carry a per-symbol
+        # map on every row; only this page has symbols to spend it on.
+        git["fix_symbol_counts"] = _json_or(git_meta.fix_symbol_counts_json, {})
         git["agent"] = {
             "agent_commit_count": git_meta.agent_commit_count or 0,
             "agent_authored_pct": git_meta.agent_authored_pct,

@@ -1,10 +1,11 @@
-import { ArrowRight, Code2, Network } from "lucide-react";
+import { ArrowRight, Bug, Code2, Network } from "lucide-react";
 import type { FileDetailResponse } from "@repowise-dev/types/files";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Badge } from "../ui/badge";
 import { StatGrid, StatTile } from "../shared/stat-grid";
 import { scoreTextColor } from "../health/tokens";
 import { truncatePath } from "../lib/format";
+import { SYMBOL_FIX_TITLE } from "../git/fix-history-badge";
 
 interface FileOverviewTabProps {
   data: FileDetailResponse;
@@ -22,9 +23,39 @@ interface FileOverviewTabProps {
 export function FileOverviewTab({ data, symbolHref, fileHref }: FileOverviewTabProps) {
   const score = data.health.metric?.score;
   const deadLines = data.dead_code.reduce((s, f) => s + f.lines, 0);
-  const keySymbols = [...data.symbols]
-    .sort((a, b) => b.complexity_estimate - a.complexity_estimate)
-    .slice(0, 8);
+  // Keyed on the row's own symbol_id, not a rebuilt `${path}::${name}`: some
+  // extractors mint ids from the qualified name, and those would never match.
+  const rawFixCounts = data.git?.fix_symbol_counts ?? {};
+  const fixedCount = Object.values(rawFixCounts).filter((n) => n > 0).length;
+  // Attribution marks every symbol overlapping a fix's hunks, so one commit
+  // that fixed a bug and reformatted the file lands on all of them. A map
+  // covering most of the file says nothing about *which* symbol is the
+  // problem, and painting every chip red is noise, so the markers stand down
+  // and the file-level count on the History tab carries it instead.
+  const perSymbolSignal =
+    fixedCount > 0 && data.symbols.length > 0 && fixedCount * 2 <= data.symbols.length;
+  const fixesIn = (symbolId: string) =>
+    perSymbolSignal ? (rawFixCounts[symbolId] ?? 0) : 0;
+
+  // Complexity picks the list, as it always has: biasing the whole sort on a
+  // "was fixed" boolean would evict the file's most complex symbol in favour
+  // of eight trivial helpers that took one fix each.
+  const byComplexity = [...data.symbols].sort(
+    (a, b) => b.complexity_estimate - a.complexity_estimate,
+  );
+  const keySymbols = byComplexity.slice(0, 8);
+  // One reserved slot, so the symbol that keeps breaking cannot be hidden by
+  // seven complicated neighbours. Only reachable when something was cut.
+  if (byComplexity.length > keySymbols.length) {
+    const worst = [...data.symbols].sort(
+      (a, b) =>
+        fixesIn(b.symbol_id) - fixesIn(a.symbol_id) ||
+        b.complexity_estimate - a.complexity_estimate,
+    )[0];
+    if (worst && fixesIn(worst.symbol_id) > 0 && !keySymbols.includes(worst)) {
+      keySymbols[keySymbols.length - 1] = worst;
+    }
+  }
 
   return (
     <div className="space-y-4">
@@ -61,16 +92,28 @@ export function FileOverviewTab({ data, symbolHref, fileHref }: FileOverviewTabP
             </CardTitle>
           </CardHeader>
           <CardContent className="flex flex-wrap gap-1.5">
-            {keySymbols.map((s) => (
-              <a
-                key={s.symbol_id}
-                href={symbolHref(s.symbol_id)}
-                className="inline-flex items-center gap-1 rounded border border-[var(--color-border-default)] px-2 py-0.5 font-mono text-xs text-[var(--color-text-secondary)] transition-colors hover:border-[var(--color-accent-primary)] hover:text-[var(--color-accent-primary)]"
-              >
-                {s.name}
-                <span className="text-[10px] text-[var(--color-text-tertiary)]">{s.kind}</span>
-              </a>
-            ))}
+            {keySymbols.map((s) => {
+              const fixes = fixesIn(s.symbol_id);
+              return (
+                <a
+                  key={s.symbol_id}
+                  href={symbolHref(s.symbol_id)}
+                  className="inline-flex items-center gap-1 rounded border border-[var(--color-border-default)] px-2 py-0.5 font-mono text-xs text-[var(--color-text-secondary)] transition-colors hover:border-[var(--color-accent-primary)] hover:text-[var(--color-accent-primary)]"
+                >
+                  {s.name}
+                  <span className="text-[10px] text-[var(--color-text-tertiary)]">{s.kind}</span>
+                  {fixes > 0 && (
+                    <span
+                      className="inline-flex items-center gap-0.5 text-[10px] tabular-nums text-[var(--color-error)]"
+                      title={SYMBOL_FIX_TITLE}
+                    >
+                      <Bug className="h-2.5 w-2.5" />
+                      {fixes}
+                    </span>
+                  )}
+                </a>
+              );
+            })}
           </CardContent>
         </Card>
       )}

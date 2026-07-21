@@ -45,6 +45,7 @@ async def _insert_git_metadata(session_factory, repo_id: str) -> None:
             temporal_hotspot_score=12.3,
             commit_count_capped=True,
             original_path="src/old_main.py",
+            fix_symbol_counts_json=json.dumps({"src/main.py::run": 3}),
         )
         await crud.upsert_git_metadata(
             session,
@@ -85,6 +86,29 @@ async def test_get_git_metadata(client: AsyncClient, app) -> None:
     assert data["temporal_hotspot_score"] == 12.3
     assert data["commit_count_capped"] is True
     assert data["original_path"] == "src/old_main.py"
+
+
+@pytest.mark.asyncio
+async def test_file_detail_carries_symbol_fix_counts(client: AsyncClient, app) -> None:
+    """The file page answers "which symbol keeps breaking" without a second call.
+
+    The map is joined onto the file-detail git block rather than onto
+    HotspotResponse, so the hotspots list is not made to carry a per-symbol
+    dict on every row.
+    """
+    repo = await create_test_repo(client)
+    await _insert_git_metadata(app.state.session_factory, repo["id"])
+
+    resp = await client.get(f"/api/repos/{repo['id']}/files/src/main.py")
+    assert resp.status_code == 200, resp.text
+    git = resp.json()["git"]
+    assert git["fix_symbol_counts"] == {"src/main.py::run": 3}
+
+    # A file the rollup never touched reports an empty map, not a missing key,
+    # so a consumer can index into it unconditionally.
+    resp = await client.get(f"/api/repos/{repo['id']}/files/src/utils.py")
+    assert resp.status_code == 200
+    assert resp.json()["git"]["fix_symbol_counts"] == {}
 
 
 @pytest.mark.asyncio
