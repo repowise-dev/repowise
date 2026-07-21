@@ -446,6 +446,9 @@ def _build_summary_table(
             # Bullet-list when many patterns — comma-joined wraps unreadably.
             summary.add_row("Exclude", "\n".join(f"• {p}" for p in patterns))
 
+    if not generate_docs and result.get("embedder"):
+        summary.add_row("Embedder", result["embedder"])
+
     # ── Generation (docs only) ─────────────────────────────────────────────
     if generate_docs:
         summary.add_row("Concurrency", str(result["concurrency"]))
@@ -531,6 +534,8 @@ def interactive_advanced_config(
             wiki_style=wiki_style,
             language=language,
         )
+    else:
+        _prompt_index_only_search(console, result)
     result["generate_docs"] = generate_docs
 
     # ── Summary ───────────────────────────────────────────────────────────
@@ -548,6 +553,29 @@ def interactive_advanced_config(
     )
     console.print()
     return result
+
+
+def _prompt_index_only_search(console: Console, result: dict[str, Any]) -> None:
+    """Ask an index-only run which embedder its template wiki should use.
+
+    Index-only renders a full wiki now, and those pages embed like any other,
+    so the choice is real. It is not asked outside advanced mode because the
+    honest default is the one that cannot bill anyone: a hosted embedder is
+    picked up automatically from an API key in the environment, and this mode
+    promises no spend. Choosing one here counts as asking for it.
+    """
+    console.print()
+    console.print(f"  [{BRAND}]Search[/]")
+    console.print(
+        "  [dim]Full-text search always works. Semantic search needs an embedder;\n"
+        "  ollama is the keyless one, and the hosted ones charge per page.[/dim]"
+    )
+    console.print()
+    result["embedder"] = click.prompt(
+        "  Embedder for semantic search (mock = full-text only)",
+        default="mock",
+        type=click.Choice(["mock", "ollama", "gemini", "openai", "openrouter"]),
+    )
 
 
 def _resolve_embedder_from_env() -> str:

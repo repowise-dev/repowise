@@ -26,12 +26,18 @@ def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def _extract_summary(content: str, max_chars: int = 320) -> str:
+def _extract_summary(content: str, max_chars: int = 320, skip_metadata: bool = False) -> str:
     """Extract a 1-3 sentence purpose blurb from rendered wiki markdown.
 
     Strategy: walk lines top-to-bottom, skip blanks/headings/list-markers/HTML
     comments, and take the first prose paragraph. Truncate at sentence boundary
     near max_chars. Fully deterministic — no extra LLM call.
+
+    *skip_metadata* also skips a leading bold field line (``**Language:** Python
+    | **Files:** 412``). Several deterministic templates open with one, and it
+    is the persisted summary that the wiki list, search results and
+    ``get_context`` show, so a stats line there displaces the actual blurb. Off
+    by default: a model that opens with ``**Purpose:** …`` means it as prose.
     """
     if not content:
         return ""
@@ -45,6 +51,8 @@ def _extract_summary(content: str, max_chars: int = 320) -> str:
         if line.startswith(("#", ">", "```", "---", "<!--", "|", "- ", "* ", "1.")):
             if para_lines:
                 break
+            continue
+        if skip_metadata and not para_lines and line.startswith("**") and ":**" in line:
             continue
         para_lines.append(line)
     if not para_lines:

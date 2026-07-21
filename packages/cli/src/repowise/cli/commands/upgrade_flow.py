@@ -44,6 +44,40 @@ from repowise.cli.helpers import (
 from repowise.core.docs_mode import docs_mode_state_fields
 
 
+def _gate_cost(
+    parsed_files: list[Any],
+    graph_builder: Any,
+    config: Any,
+    provider: Any,
+    repo_path: Path,
+    *,
+    yes: bool,
+) -> None:
+    """Print the estimated spend and confirm past the gate. Raises on decline.
+
+    Best-effort: an estimator failure prints the reason and lets the run
+    proceed rather than blocking an upgrade on a number that is advisory
+    anyway.
+    """
+    from repowise.cli.commands.init_cmd.generation import (
+        cost_gate_declined,
+        format_cost,
+    )
+    from repowise.core.cost_estimator import build_generation_plan, estimate_cost
+
+    try:
+        plans = build_generation_plan(parsed_files, graph_builder, config)
+        est = estimate_cost(plans, provider.provider_name, provider.model_name, repo_path=repo_path)
+    except Exception as exc:
+        console.print(f"[yellow]Cost estimate unavailable ({exc}); continuing.[/yellow]")
+        return
+
+    pages = sum(p.count for p in plans)
+    console.print(f"Estimated: [bold]{pages}[/bold] pages, [bold]{format_cost(est)}[/bold].")
+    if cost_gate_declined(est, yes=yes, message="  Generate the wiki at this cost?"):
+        raise click.Abort()
+
+
 def _reparse(repo_path: Path, exclude_patterns: list[str]) -> tuple[list[Any], dict[str, bytes], Any]:
     """Parse files for ASTs + source bytes WITHOUT building/resolving the graph.
 
@@ -147,6 +181,8 @@ async def _run_upgrade(
     exclude_patterns: list[str],
     commit_limit: int | None,
     follow_renames: bool,
+    embedder_name: str | None,
+    yes: bool,
 ) -> list[Any]:
     """Drive the full upgrade and return the generated pages."""
     from repowise.cli.helpers import get_db_url_for_repo
@@ -195,6 +231,14 @@ async def _run_upgrade(
         "(graph reused from index — not re-resolved)."
     )
 
+    # Show the bill before running it. `init` gates its generation phase and
+    # this one did not, which mattered little while `--full` only ever followed
+    # an explicit `--mode fast`, and matters now that it is the advertised way
+    # to turn a template wiki into a written one: the user reaching for it has
+    # never been shown a cost for this repo.
+    _gate_cost(parsed_files, graph_builder, config, provider, repo_path, yes=yes)
+
+
     # 5. Generate the docs the fast index skipped. Honor the cost-tracking
     # opt-out (issue #326) so REPOWISE_NO_COST_TRACKING is respected here too;
     # an in-memory tracker still powers the live cost readout.
@@ -207,6 +251,21 @@ async def _run_upgrade(
         # they never contend with the generation writer (issue #326).
         cost_tracker = CostTracker(session_factory=sf, repo_id=repo_id, buffered=True)
     provider._cost_tracker = cost_tracker
+
+    # Embed as we generate. Leaving this None meant the upgrade produced a
+    # fully written wiki that semantic search could not see, and the user had
+    # no reason to suspect it: nothing in the output mentions embedding. The
+    # store is the same LanceDB directory `init` and `update` write to.
+    from repowise.cli.providers import build_embedder, build_vector_store, resolve_embedder
+
+    embedder = None
+    vector_store = None
+    try:
+        embedder = build_embedder(resolve_embedder(embedder_name))
+        vector_store = build_vector_store(repo_path, embedder)
+    except Exception as exc:
+        console.print(f"[yellow]Embedding skipped: {exc}[/yellow]")
+
     generated_pages = await run_generation(
         repo_path=repo_path,
         parsed_files=parsed_files,
@@ -215,8 +274,8 @@ async def _run_upgrade(
         repo_structure=repo_structure,
         git_meta_map=git_meta_map,
         llm_client=provider,
-        embedder=None,
-        vector_store=None,
+        embedder=embedder,
+        vector_store=vector_store,
         concurrency=config.max_concurrency,
         progress=None,
         cost_tracker=cost_tracker,
@@ -317,11 +376,14 @@ def upgrade_to_full(
     model: str | None,
     reasoning: str | None,
     concurrency: int,
+    yes: bool = False,
 ) -> None:
-    """Upgrade a fast (index-only / ESSENTIAL git) index to a full one.
+    """Write the repo's wiki with a model, reusing the persisted graph.
 
-    Backfills the git tier and generates the LLM docs the fast index skipped,
-    reusing the persisted graph instead of rebuilding it.
+    Two repos arrive here. A ``--mode fast`` index has no pages and an
+    ESSENTIAL git tier, both of which this fills in. An ``--index-only`` repo
+    has a full git tier and a wiki rendered from templates, and this replaces
+    those pages with written ones.
     """
     from repowise.cli.ui import load_dotenv
     from repowise.core.generation import GenerationConfig
@@ -361,16 +423,26 @@ def upgrade_to_full(
         f"[cyan]{provider.model_name}[/cyan]. This generates docs for the whole repo."
     )
 
-    generated_pages = run_async(
-        _run_upgrade(
-            repo_path,
-            provider,
-            config,
-            exclude_patterns=exclude_patterns,
-            commit_limit=commit_limit,
-            follow_renames=follow_renames,
+    try:
+        generated_pages = run_async(
+            _run_upgrade(
+                repo_path,
+                provider,
+                config,
+                exclude_patterns=exclude_patterns,
+                commit_limit=commit_limit,
+                follow_renames=follow_renames,
+                embedder_name=cfg.get("embedder"),
+                yes=yes,
+            )
         )
-    )
+    except click.Abort:
+        # Declined at the cost gate. The git backfill that ran before it is
+        # kept (it costs nothing to keep and everything to redo), and the
+        # persisted docs mode is left alone so the repo keeps whatever wiki it
+        # already had.
+        console.print("[yellow]Nothing generated.[/yellow] The index is unchanged.")
+        return
 
     # Flip persisted state to full so subsequent `repowise update` runs the
     # normal incremental LLM path rather than offering upgrade.

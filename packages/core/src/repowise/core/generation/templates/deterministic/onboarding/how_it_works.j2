@@ -10,7 +10,9 @@ Traced from the entry points outward: which files each run touches, in order. Wh
 
 ## Shape
 
-`{{ ctx.repo_name }}` looks like {{ "an" if ctx.archetype[0] in "aeiou" else "a" }} **{{ ctx.archetype }}**{% if ctx.archetype_evidence %}, based on:
+{#- archetype can come through empty on a repo with no recognised sources;
+    indexing it unguarded raises under StrictUndefined and loses the page. -#}
+`{{ ctx.repo_name }}` looks like {{ "an" if ctx.archetype and ctx.archetype[0] in "aeiou" else "a" }} **{{ ctx.archetype or "codebase" }}**{% if ctx.archetype_evidence %}, based on:
 {% for e in ctx.archetype_evidence %}
 - {{ e }}
 {% endfor %}

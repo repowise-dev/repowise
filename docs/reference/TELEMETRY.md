@@ -56,7 +56,7 @@ generation is used. Never exact counts, never repo or file names:
 |---|---|---|
 | `properties.file_count_bucket` | `500-999` | Repo size distribution (a range, not a count) |
 | `properties.top_language` | `python` | Which languages to prioritise |
-| `properties.docs_mode` | `true` / `false` | AI docs vs index-only adoption |
+| `properties.docs_mode` | `none` / `deterministic` / `llm` | How the wiki was produced: not at all, from templates, or by a model. Sent as `true` / `false` by versions before template wikis existed |
 | `properties.provider` / `properties.model` | `anthropic` / `claude-opus` | Which models generate docs |
 | `properties.embedder` | `openai` | Which embedders are in use |
 | `properties.pages_bucket` | `100-499` | Docs volume (a range) |

@@ -141,6 +141,7 @@ def _persist_index_only_update(
     knowledge_graph_result: Any | None = None,
     parsed_files: list | None = None,
     degraded: list[str] | None = None,
+    pages_rendered: int = 0,
 ) -> None:
     """Persist the index-only update (graph + symbols + git + dead-code + health + KG),
     save state, and print the completion line. No LLM regeneration.
@@ -196,6 +197,7 @@ def _persist_index_only_update(
         git_files=len(git_meta_map or {}),
         elapsed=elapsed,
         degraded=degraded,
+        pages_rendered=pages_rendered,
     )
 
 
