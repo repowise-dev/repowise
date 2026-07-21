@@ -126,7 +126,12 @@ def test_advanced_config_default_keys_no_fast(monkeypatch: pytest.MonkeyPatch) -
 def test_advanced_config_index_only_omits_generation_keys(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """generate_docs=False gathers indexing knobs only — no LLM-only keys."""
+    """generate_docs=False gathers indexing knobs only — no LLM-only keys.
+
+    ``embedder`` is the exception and is asked for: an index-only run renders a
+    template wiki, and those pages embed like any other, so the choice is real.
+    It defaults to the mock because this mode promises no spend.
+    """
     result = _drive_advanced_config(monkeypatch, scan=None, allow_fast=False, generate_docs=False)
     assert result == {
         "generate_docs": False,
@@ -137,9 +142,10 @@ def test_advanced_config_index_only_omits_generation_keys(
         "exclude": (),
         "commit_limit": 500,
         "follow_renames": False,
+        "embedder": "mock",
     }
-    # The generation-only knobs must not appear.
-    for key in ("concurrency", "embedder", "onboarding", "harvest_decisions", "wiki_style"):
+    # The knobs that only shape a model's writing must not appear.
+    for key in ("concurrency", "reasoning", "onboarding", "harvest_decisions", "wiki_style"):
         assert key not in result
 
 

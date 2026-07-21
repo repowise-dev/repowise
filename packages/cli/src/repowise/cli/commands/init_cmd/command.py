@@ -66,7 +66,7 @@ from repowise.cli.ui import (
     quick_repo_scan,
     should_offer_fast_mode,
 )
-from repowise.core.docs_mode import docs_mode_state_fields
+from repowise.core.docs_mode import docs_mode_state_fields, resolve_docs_mode
 from repowise.core.generation.languages import SUPPORTED_LANGUAGES
 from repowise.core.generation.styles import DEFAULT_STYLE, list_styles, resolve_style
 from repowise.core.reasoning import REASONING_MODES
@@ -115,16 +115,20 @@ def _record_init_outcome(
         if isinstance(lang_dist, dict) and lang_dist:
             outcome["top_language"] = max(lang_dist.items(), key=lambda kv: kv[1])[0]
 
+        # docs_mode carries the same three values as the state field of that
+        # name. It used to be a bool, which collapsed "template wiki" and "no
+        # wiki" into one number, and template runs are the ones worth counting.
+        pages = getattr(result, "generated_pages", None) or []
+        det = sum(1 for p in pages if getattr(p, "provider_name", "") == "template")
         if not effective_index_only and provider is not None:
-            outcome["docs_mode"] = True
+            outcome["docs_mode"] = "llm"
             outcome["provider"] = getattr(provider, "provider_name", None)
             outcome["model"] = getattr(provider, "model_name", None)
-            pages = getattr(result, "generated_pages", None) or []
-            outcome["pages_bucket"] = telemetry.bucket_count(len(pages))
-            det = sum(1 for p in pages if getattr(p, "provider_name", "") == "template")
-            outcome["deterministic_pages_bucket"] = telemetry.bucket_count(det)
         else:
-            outcome["docs_mode"] = False
+            outcome["docs_mode"] = "deterministic" if pages else "none"
+        if pages:
+            outcome["pages_bucket"] = telemetry.bucket_count(len(pages))
+            outcome["deterministic_pages_bucket"] = telemetry.bucket_count(det)
 
         if embedder_name_resolved:
             outcome["embedder"] = embedder_name_resolved
@@ -146,7 +150,7 @@ def _run_deterministic_generation_phase(
     embedder_name_resolved: str,
     embedder_was_requested: bool,
     resume: bool,
-) -> None:
+) -> str:
     """Render the whole wiki from templates, for ``init --index-only``.
 
     Every page type has a deterministic renderer, so an index-only run is no
@@ -154,6 +158,9 @@ def _run_deterministic_generation_phase(
     from structure rather than written by a model. There is nothing to
     estimate and nothing to gate, since no provider is involved and the run
     costs nothing, so this skips the coverage chooser the LLM phase runs.
+
+    Returns the embedder actually used, which the caller persists so a later
+    ``repowise update`` embeds the same way rather than re-deciding.
     """
     from repowise.core.generation import GenerationConfig
     from repowise.core.providers.llm.template import TemplateProvider
@@ -177,6 +184,21 @@ def _run_deterministic_generation_phase(
         "Generation",
         "Building wiki pages from the code's structure (no model, no cost)",
     )
+    # Both knobs only reach a model. Templates carry their own English prose
+    # and render without the style directive, so saying so beats letting the
+    # user find out from the output (and beats recording a style the pages do
+    # not have, which would leave `restyle` thinking there is nothing to do).
+    if language != "en":
+        console.print(
+            f"  [dim]Templates are written in English, so [bold]--language "
+            f"{language}[/bold] has no effect here. Run [bold]repowise update "
+            "--full[/bold] to write the wiki with a model in that language.[/dim]"
+        )
+    if wiki_style != DEFAULT_STYLE:
+        console.print(
+            f"  [dim]Wiki styles shape how a model writes, so [bold]--wiki-style "
+            f"{wiki_style}[/bold] has no effect here.[/dim]"
+        )
     if embedder != embedder_name_resolved:
         console.print(
             f"  [dim]Not embedding with [bold]{embedder_name_resolved}[/bold]: it was "
@@ -198,10 +220,11 @@ def _run_deterministic_generation_phase(
         provider=TemplateProvider(),
         gen_config=gen_config,
         concurrency=concurrency,
-        embedder_name_resolved=embedder_name_resolved,
+        embedder_name_resolved=embedder,
         resume=resume,
         verbose=True,
     )
+    return embedder
 
 
 def _run_generation_phase(
@@ -843,11 +866,15 @@ def init_command(
             exclude = adv["exclude"]
             include_submodules = adv.get("include_submodules", include_submodules)
             run_mode = adv.get("run_mode", run_mode)
+            # Asked in both branches: an index-only run renders a wiki too,
+            # and those pages embed like any other, so the answer applies
+            # either way. Read outside the docs-only block or the index-only
+            # run would show the user their choice and then ignore it.
+            embedder_name = adv.get("embedder") or embedder_name
             # Generation knobs (only gathered when docs are on).
             if generate_docs:
                 concurrency = adv["concurrency"]
                 reasoning = adv.get("reasoning") or reasoning
-                embedder_name = adv.get("embedder") or embedder_name
                 test_run = adv["test_run"]
                 tier1_top_n = adv.get("tier1_top_n")
                 tier2_tail_enabled = adv.get("tier2_tail_enabled", True)
@@ -925,10 +952,38 @@ def init_command(
     # resolve_embedder inferring one from an LLM key it found lying around.
     # The deterministic generation phase needs the distinction: it advertises
     # itself as costing nothing, so it will not put a hosted embedder on the
-    # user's bill unless they named it.
-    embedder_was_requested = bool(embedder_name) or bool(
-        os.environ.get("REPOWISE_EMBEDDER", "").strip()
+    # user's bill unless they named it. A repo whose config already names one
+    # counts as asked: the choice was made on an earlier run, and silently
+    # dropping to the mock here would re-embed the whole store at a different
+    # vector width, which the LanceDB writer resolves by dropping the table.
+    embedder_was_requested = (
+        bool(embedder_name)
+        or bool(os.environ.get("REPOWISE_EMBEDDER", "").strip())
+        or bool(config.get("embedder"))
     )
+
+    # A template wiki overwrites a model-written one page for page: the upsert
+    # replaces content and stamps provider_name="template", keeping the old
+    # text only as a version snapshot. That is a fine outcome when it is what
+    # the user meant and a bad surprise when they were reaching for a re-index,
+    # so ask. Non-interactive runs refuse rather than guess.
+    # ``--yes`` and ``--force`` both mean "do not ask me", which is the answer
+    # here as much as at the cost gate.
+    _prior_docs_mode = resolve_docs_mode(load_state(repo_path))
+    if index_only and _prior_docs_mode == "llm" and not (force or yes):
+        console.print(
+            "\n[yellow]This repo already has a model-written wiki.[/yellow] "
+            "Indexing without a model\nrewrites every page from templates; the "
+            "written versions stay in page history."
+        )
+        if not sys.stdin.isatty():
+            raise click.ClickException(
+                "Refusing to replace a model-written wiki with template pages. "
+                "Re-run with --yes to confirm, or drop --index-only."
+            )
+        if not click.confirm("  Replace the written wiki with template pages?", default=False):
+            console.print("[dim]Nothing changed.[/dim]")
+            return
 
     # ---- Resolve provider ----
     provider = None
@@ -1107,6 +1162,9 @@ def init_command(
     show_analysis_summary(result)
 
     # ---- Phase 3: Generation ----
+    # The embedder the template wiki was actually built with, persisted below
+    # so `repowise update` reuses it. None means no template wiki was rendered.
+    _index_only_embedder: str | None = None
     # Both modes generate. Index-only renders from templates; full mode picks
     # a coverage level, estimates the spend and prompts a model.
     #
@@ -1124,7 +1182,7 @@ def init_command(
             "to write it with a model.[/dim]"
         )
     elif index_only:
-        _run_deterministic_generation_phase(
+        _index_only_embedder = _run_deterministic_generation_phase(
             repo_path=repo_path,
             result=result,
             total_phases=total_phases,
@@ -1156,11 +1214,24 @@ def init_command(
             skip_tests=skip_tests,
             skip_infra=skip_infra,
             embedder_name_resolved=embedder_name_resolved,
-            resume=resume,
+            # Resume seeds "already done" from the page ids in the vector
+            # store, and a completed template wiki put one there for every
+            # file. Resuming against it would skip the entire model run and
+            # say nothing, so a template wiki is never a run to continue.
+            resume=resume and _prior_docs_mode != "deterministic",
         )
         if gen_stop:
             return
-        if cost_declined:
+        if cost_declined and _prior_docs_mode == "llm":
+            # The repo already has written pages. Declining the price of new
+            # ones is not a request to replace the old ones with templates,
+            # which is what the fallback below would do.
+            cost_declined = False
+            console.print(
+                "  [dim]Keeping the wiki this repo already has. Nothing was "
+                "generated and nothing was replaced.[/dim]"
+            )
+        elif cost_declined:
             # Declining the gate used to mean leaving with no wiki at all.
             # It only ever meant "not at that price", so fall back to the
             # free renderer rather than to nothing.
@@ -1169,7 +1240,7 @@ def init_command(
                 "[bold]repowise update --full[/bold] to write it with a "
                 "model later.[/dim]"
             )
-            _run_deterministic_generation_phase(
+            _index_only_embedder = _run_deterministic_generation_phase(
                 repo_path=repo_path,
                 result=result,
                 total_phases=total_phases,
@@ -1210,13 +1281,17 @@ def init_command(
     # re-passing the flag. Written before any config_fingerprint is computed
     # below so the first update doesn't false-positive on a config change. The
     # default is omitted to keep config files tidy — only an override is recorded.
-    if wiki_style != DEFAULT_STYLE:
+    #
+    # A template wiki records neither style nor language: it has neither, and
+    # recording them would make `restyle` believe the pages are already in that
+    # style and refuse the very run that would put them there.
+    if wiki_style != DEFAULT_STYLE and not effective_index_only:
         save_config_partial(repo_path, wiki_style=wiki_style)
 
     # Persist the output language so `repowise update` regenerates changed
     # pages in the same language. Written only when the run's language differs
     # from what config.yaml already holds; the default stays unrecorded.
-    if language != config.get("language", "en"):
+    if language != config.get("language", "en") and not effective_index_only:
         save_config_partial(repo_path, language=language)
 
     # ---- Post-run: config, state, MCP, editor project files ----
@@ -1278,10 +1353,24 @@ def init_command(
         save_knowledge_graph_json(repo_path, kg)
     if effective_index_only or provider is None:
         # Index-only mode skips save_config(); persist exclude_patterns/commit_limit here.
+        # The embedder rides along now that this mode produces pages: without
+        # it `repowise update` would re-resolve from the environment and could
+        # start embedding, at a different width, a store this run deliberately
+        # built with the mock.
+        # ``embedding_model`` rides with it, the way save_config() writes the
+        # pair: `serve` pins the model from it, and the store-format upgrade
+        # check reads it to notice an embedder change. Half the pair is not
+        # enough for either.
+        from repowise.cli.providers.embedders import resolve_embedding_model
+
         save_config_partial(
             repo_path,
             exclude_patterns=exclude_patterns if exclude_patterns else None,
             commit_limit=resolved_commit_limit if commit_limit is not None else None,
+            embedder=_index_only_embedder,
+            embedding_model=(
+                resolve_embedding_model(_index_only_embedder) if _index_only_embedder else None
+            ),
         )
         # Fingerprint after config writes so the first update doesn't false-positive.
         base_state["config_fingerprint"] = config_fingerprint(repo_path)

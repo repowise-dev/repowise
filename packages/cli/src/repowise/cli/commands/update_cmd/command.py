@@ -84,6 +84,7 @@ def _record_update_outcome(
     changed_count: int,
     provider: Any = None,
     generated_pages: list | None = None,
+    docs_mode: str | None = None,
 ) -> None:
     """Attach an anonymous update-shape outcome to the ``command_run`` event.
 
@@ -93,16 +94,26 @@ def _record_update_outcome(
     try:
         from repowise.cli.platform import telemetry
 
+        # docs_mode carries the same three values as the state field of that
+        # name; it was a bool until an index-only update started re-rendering
+        # template pages, which that shape could not express. It comes from the
+        # repo's persisted mode, not from this run's page count: a commit that
+        # touched no source file re-renders nothing, and that is not the same
+        # as the repo having no wiki.
+        pages = generated_pages or []
+        if docs_mode is None:
+            docs_mode = "llm" if (not index_only and provider is not None) else "none"
         outcome: dict[str, Any] = {
             "outcome": "success",
             "index_only": bool(index_only),
-            "docs_mode": not index_only and provider is not None,
+            "docs_mode": docs_mode,
             "changed_files_bucket": telemetry.bucket_count(changed_count),
         }
         if not index_only and provider is not None:
             outcome["provider"] = getattr(provider, "provider_name", None)
             outcome["model"] = getattr(provider, "model_name", None)
-            outcome["pages_bucket"] = telemetry.bucket_count(len(generated_pages or []))
+        if pages:
+            outcome["pages_bucket"] = telemetry.bucket_count(len(pages))
         telemetry.add_command_outcome(**{k: v for k, v in outcome.items() if v is not None})
     except Exception:
         return
@@ -228,6 +239,14 @@ def _surface_release_news(*, written_by: str | None) -> None:
     ),
 )
 @click.option(
+    "--yes",
+    "-y",
+    "yes",
+    is_flag=True,
+    default=False,
+    help="Skip the cost confirmation on `--full`.",
+)
+@click.option(
     "--full",
     "full",
     is_flag=True,
@@ -296,6 +315,7 @@ def update_command(
     index_only: bool = False,
     docs_flag: bool | None = None,
     full: bool = False,
+    yes: bool = False,
     agents_md: bool | None = None,
     concurrency: int = 10,
     no_cost_tracking: bool = False,
@@ -322,6 +342,7 @@ def update_command(
         index_only=index_only,
         docs_flag=docs_flag,
         full=full,
+        yes=yes,
         agents_md=agents_md,
         concurrency=concurrency,
         no_cost_tracking=no_cost_tracking,
@@ -344,6 +365,7 @@ def run_update(
     index_only: bool = False,
     docs_flag: bool | None = None,
     full: bool = False,
+    yes: bool = False,
     agents_md: bool | None = None,
     concurrency: int = 10,
     no_cost_tracking: bool = False,
@@ -478,6 +500,7 @@ def run_update(
                 model=model,
                 reasoning=reasoning,
                 concurrency=concurrency,
+                yes=yes,
             )
         except Exception as exc:
             if emitter is not None:
@@ -790,6 +813,48 @@ def run_update(
     )
 
     if index_only:
+        # A repo whose wiki was rendered from templates keeps it current here.
+        # Re-rendering is free, so the changed files' pages are refreshed on
+        # every update rather than frozen at the commit `init` ran on. Repos
+        # with no pages (fast mode, or an index from before templates existed)
+        # skip this and stay a pure index.
+        det_pages: list = []
+        docs_mode = resolve_docs_mode(state)
+        if docs_mode == "deterministic":
+            from .deterministic import (
+                load_prior_page_ids,
+                persist_deterministic_pages,
+                regenerate_deterministic_pages,
+            )
+
+            if emitter is not None:
+                emitter.stage("generate")
+            det_pages = regenerate_deterministic_pages(
+                repo_path=repo_path,
+                parsed_files=parsed_files,
+                source_map=source_map,
+                graph_builder=graph_builder,
+                repo_structure=repo_structure,
+                git_meta_map=git_meta_map,
+                regenerate_paths=affected.regenerate,
+                cfg=cfg,
+                concurrency=concurrency,
+                degraded=degraded,
+                dead_code_report=dead_code_report,
+                prior_page_ids=load_prior_page_ids(repo_path),
+            )
+            if det_pages:
+                state["total_pages"] = persist_deterministic_pages(
+                    repo_path=repo_path,
+                    generated_pages=det_pages,
+                    decay_paths=affected.decay_only,
+                    degraded=degraded,
+                )
+                state["last_docs_commit"] = head
+                console.print(
+                    f"  [green]✓[/green] Re-rendered [bold]{len(det_pages)}[/bold] "
+                    "wiki pages from structure"
+                )
         if emitter is not None:
             emitter.stage("persist")
         try:
@@ -807,17 +872,27 @@ def run_update(
                 knowledge_graph_result=knowledge_graph_result,
                 parsed_files=parsed_files,
                 degraded=degraded,
+                # The repo's docs mode, not this run's page count: a commit
+                # that touched no source file re-renders nothing, and that is
+                # not the same as having no wiki.
+                template_wiki=docs_mode == "deterministic",
+                pages_rendered=len(det_pages),
             )
         except Exception as exc:
             if emitter is not None:
                 emitter.error(str(exc))
             raise
         _refresh_editor_stamp(repo_path, agents_md, degraded)
-        _record_update_outcome(index_only=True, changed_count=len(file_diffs))
+        _record_update_outcome(
+            index_only=True,
+            changed_count=len(file_diffs),
+            generated_pages=det_pages,
+            docs_mode=docs_mode,
+        )
         if emitter is not None:
             emitter.done(
                 ok=True,
-                pages_generated=0,
+                pages_generated=len(det_pages),
                 cost_usd=0.0,
                 duration_s=time.monotonic() - start,
                 degraded=degraded,

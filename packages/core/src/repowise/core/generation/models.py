@@ -197,6 +197,18 @@ class GenerationConfig:
     # ``metadata["deterministic"]=True``, exactly like the tier-2 tail.
     deterministic: bool = False
 
+    # ---- Incremental regeneration: file-level pages only ---------------
+    # Levels 3 to 8 (cycles, modules, layers, repo overview, architecture
+    # diagram, infra, onboarding) describe the repository, not a file. They
+    # render from the graph and from ``parsed_files``, and an incremental run
+    # holds only the files that changed, so letting them run would overwrite a
+    # whole-repo page with a view of one commit: a codebase map with no
+    # directories, a module page claiming one file. Their inputs are also
+    # unchanged by most commits, so the work is wasted as well as wrong.
+    # Set by the incremental deterministic path, which regenerates the changed
+    # files' pages and leaves the repo-wide ones to a full run.
+    file_pages_only: bool = False
+
     def __post_init__(self) -> None:
         if self.embed_concurrency is None:
             object.__setattr__(self, "embed_concurrency", self.max_concurrency)

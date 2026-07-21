@@ -225,8 +225,15 @@ def show_index_only_completion(
     git_files: int,
     elapsed: float,
     degraded: list[str] | None = None,
+    pages_rendered: int = 0,
+    template_wiki: bool = False,
 ) -> None:
-    """Render the completion panel for an index-only update (no LLM regen)."""
+    """Render the completion panel for an index-only update (no LLM regen).
+
+    *pages_rendered* is non-zero on a repo whose wiki was rendered from
+    templates: those pages are re-rendered here for free, so the panel says so
+    rather than leaving the user to assume the wiki went stale.
+    """
     render_degraded(degraded)
     graph = graph_builder.graph()
     unreachable, unused = _dead_code_counts(dead_code_report)
@@ -236,6 +243,8 @@ def show_index_only_completion(
         ("Graph", f"{graph.number_of_nodes():,} nodes · {graph.number_of_edges():,} edges"),
         ("Dead code", f"{unreachable} unreachable · {unused} unused exports"),
     ]
+    if pages_rendered:
+        metrics.append(("Wiki pages", f"{pages_rendered} re-rendered from structure"))
     if degraded:
         metrics.append(("Degraded", f"{len(degraded)} step(s)"))
     if git_files:
@@ -244,8 +253,11 @@ def show_index_only_completion(
 
     next_steps = [
         ("repowise serve", "browse the index at localhost:3000"),
-        ("repowise update --docs", "regenerate docs for the changed files"),
     ]
+    if template_wiki:
+        next_steps.append(("repowise update --full", "rewrite the wiki with a model (needs a key)"))
+    else:
+        next_steps.append(("repowise update --docs", "regenerate docs for the changed files"))
     console.print()
     console.print(
         build_completion_panel("repowise index-only update complete", metrics, next_steps=next_steps)

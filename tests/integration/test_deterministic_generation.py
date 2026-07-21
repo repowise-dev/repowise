@@ -146,3 +146,71 @@ class TestDeterministicGeneration:
         for p in deterministic_pages:
             assert "Generate a complete wiki page" not in p.content, p.page_id
             assert not p.content.lstrip().startswith("You are "), p.page_id
+
+
+class TestFilePagesOnly:
+    """The incremental path: only the changed files' own pages.
+
+    An update holds only the files that changed. Levels 3 and up describe the
+    whole repository and read ``parsed_files``, so letting them run against
+    that slice rewrites a whole-repo page from a one-commit view: a codebase
+    map with no directories, a module page claiming one file. The flag stops
+    them, leaving those pages as the last full run wrote them.
+    """
+
+    @pytest.fixture(scope="class")
+    async def scoped_pages(self, tmp_path_factory):
+        tmp = tmp_path_factory.mktemp("det_scoped")
+        traverser = FileTraverser(SAMPLE_REPO)
+        parser = ASTParser()
+        builder = GraphBuilder()
+        parsed_files: list[ParsedFile] = []
+        source_map: dict[str, bytes] = {}
+        for fi in traverser.traverse():
+            try:
+                src = Path(fi.abs_path).read_bytes()
+                parsed = parser.parse_file(fi, src)
+                builder.add_file(parsed)
+                parsed_files.append(parsed)
+                source_map[fi.path] = src
+            except Exception:
+                pass
+        builder.build()
+        repo_structure = RepoStructure(
+            is_monorepo=False,
+            packages=[],
+            root_language_distribution={"python": 1.0},
+            total_files=len(parsed_files),
+            total_loc=0,
+            entry_points=[],
+        )
+        # One code file, the way an incremental run arrives. It has to be one
+        # the selector would pick: file pages are only built for code.
+        one = [p for p in parsed_files if p.file_info.language == "python"][:1]
+        one_src = {p.file_info.path: source_map[p.file_info.path] for p in one}
+        config = GenerationConfig(
+            deterministic=True,
+            file_pages_only=True,
+            max_concurrency=2,
+            jobs_dir=str(tmp / "jobs"),
+        )
+        generator = PageGenerator(TemplateProvider(), ContextAssembler(config), config)
+        return await generator.generate_all(
+            one, one_src, builder, repo_structure, "sample_repo", job_system=None
+        )
+
+    def test_no_repo_wide_pages(self, scoped_pages):
+        repo_wide = {
+            "scc_page",
+            "module_page",
+            "layer_page",
+            "repo_overview",
+            "architecture_diagram",
+            "onboarding",
+        }
+        produced = {p.page_type for p in scoped_pages}
+        assert not (produced & repo_wide), f"repo-wide pages rebuilt from one file: {produced}"
+
+    def test_still_produces_the_file_page(self, scoped_pages):
+        assert scoped_pages, "the changed file's own page must still be rendered"
+        assert all(p.provider_name == "template" for p in scoped_pages)

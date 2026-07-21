@@ -241,3 +241,23 @@ def test_multiline_summaries_stay_inside_their_list_item(generator):
     bullets = [ln for ln in body.splitlines() if ln.startswith("- ")]
     assert len(bullets) == 2, f"list broke apart: {bullets}"
     assert "First line. Second paragraph" in bullets[0]
+
+
+def test_summary_skips_the_stats_line():
+    """Several templates open with a bold field line under the H1.
+
+    The persisted summary is what the wiki list, search results and
+    get_context show, so a summary of "**Files:** 412 | **Lines:** 90210"
+    displaces the sentence that would have told the reader what the page is.
+    """
+    from repowise.core.generation.page_generator.helpers import _extract_summary
+
+    content = (
+        "# Module: core/ingestion\n\n"
+        "**Files:** 412 | **Lines:** 90210\n\n"
+        "## Overview\n\n"
+        "Walks the repository and parses every source file it recognises.\n"
+    )
+    assert _extract_summary(content, skip_metadata=True).startswith("Walks the repository")
+    # Off by default: a model that opens with **Purpose:** means it as prose.
+    assert _extract_summary(content).startswith("**Files:**")

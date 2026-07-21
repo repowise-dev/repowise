@@ -86,7 +86,7 @@ class DeterministicRenderMixin:
             page_type=page_type,
             title=title,
             content=content,
-            summary=_extract_summary(content),
+            summary=_extract_summary(content, skip_metadata=True),
             source_hash=compute_source_hash(content),
             model_name=self._provider.model_name,
             provider_name="template",
