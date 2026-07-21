@@ -27,12 +27,15 @@ Traced from the entry points outward: which files each run touches, in order. Wh
 {% if ctx.flows %}
 ## Traced flows
 {% for f in ctx.flows %}
-{# entry_point is empty for symbol-rooted flows; fall back to the first hop
-   rather than emitting an empty heading. #}
-### From `{{ f.entry_point or (f.hops[0] if f.hops else "an unnamed entry point") }}`
+{# entry_point is empty for symbol-rooted flows. Fall back to the first hop
+   rather than emitting an empty heading, and drop it from the step list
+   below so the heading is not immediately repeated as step 1. #}
+{% set root = f.entry_point or (f.hops[0] if f.hops else "") %}
+{% set steps = f.hops if f.entry_point else f.hops[1:] %}
+### From `{{ root or "an unnamed entry point" }}`
 
-{% if f.hops %}
-{% for h in f.hops %}
+{% if steps %}
+{% for h in steps %}
 {{ loop.index }}. `{{ h }}`
 {% endfor %}
 {% else %}

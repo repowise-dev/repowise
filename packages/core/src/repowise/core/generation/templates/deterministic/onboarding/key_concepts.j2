@@ -43,7 +43,7 @@ Dependency analysis named these groups. Their names are usually the codebase's o
 {% if ctx.decision_titles %}
 ## Decisions worth knowing early
 {% for d in ctx.decision_titles %}
-- {{ d }}
+- {{ d | oneline(80) }}
 {% endfor %}
 {% endif %}
 {% include "deterministic/_footer.j2" %}
