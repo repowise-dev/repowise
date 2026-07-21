@@ -226,6 +226,7 @@ def show_index_only_completion(
     elapsed: float,
     degraded: list[str] | None = None,
     pages_rendered: int = 0,
+    template_wiki: bool = False,
 ) -> None:
     """Render the completion panel for an index-only update (no LLM regen).
 
@@ -253,7 +254,7 @@ def show_index_only_completion(
     next_steps = [
         ("repowise serve", "browse the index at localhost:3000"),
     ]
-    if pages_rendered:
+    if template_wiki:
         next_steps.append(("repowise update --full", "rewrite the wiki with a model (needs a key)"))
     else:
         next_steps.append(("repowise update --docs", "regenerate docs for the changed files"))

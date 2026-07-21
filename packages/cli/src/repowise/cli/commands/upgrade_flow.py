@@ -25,6 +25,7 @@ when ``--full`` is passed.
 from __future__ import annotations
 
 import dataclasses
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -55,17 +56,18 @@ def _gate_cost(
 ) -> None:
     """Print the estimated spend and confirm past the gate. Raises on decline.
 
-    Best-effort: an estimator failure prints the reason and lets the run
-    proceed rather than blocking an upgrade on a number that is advisory
-    anyway.
+    Best-effort on the estimate itself: a failure there prints the reason and
+    lets the run proceed rather than blocking an upgrade on a number that is
+    advisory anyway.
     """
-    from repowise.cli.commands.init_cmd.generation import (
-        cost_gate_declined,
-        format_cost,
-    )
-    from repowise.core.cost_estimator import build_generation_plan, estimate_cost
-
     try:
+        from repowise.cli.commands.init_cmd.generation import (
+            COST_GATE_USD,
+            cost_gate_declined,
+            format_cost,
+        )
+        from repowise.core.cost_estimator import build_generation_plan, estimate_cost
+
         plans = build_generation_plan(parsed_files, graph_builder, config)
         est = estimate_cost(plans, provider.provider_name, provider.model_name, repo_path=repo_path)
     except Exception as exc:
@@ -74,6 +76,15 @@ def _gate_cost(
 
     pages = sum(p.count for p in plans)
     console.print(f"Estimated: [bold]{pages}[/bold] pages, [bold]{format_cost(est)}[/bold].")
+
+    # Nothing to ask on a run that cannot be asked. Without this the confirm
+    # reads EOF, raises, and the caller reports a successful run that generated
+    # nothing, which is the worst of the three possible answers.
+    if est.estimated_cost_usd > COST_GATE_USD and not yes and not sys.stdin.isatty():
+        raise click.ClickException(
+            f"This would spend about {format_cost(est)} and there is no terminal to "
+            "confirm on. Re-run with --yes to accept the cost."
+        )
     if cost_gate_declined(est, yes=yes, message="  Generate the wiki at this cost?"):
         raise click.Abort()
 
@@ -365,8 +376,31 @@ async def _run_upgrade(
     except Exception as exc:
         console.print(f"[yellow]Health recompute skipped: {exc}[/yellow]")
 
+    # The repo's real page count, not this run's. An upgrade regenerates rather
+    # than appends, and it does not necessarily cover every page the repo
+    # already had, so `len(generated_pages)` under-reports the wiki that
+    # `repowise status` then displays.
+    try:
+        from sqlalchemy import func as sa_func
+        from sqlalchemy import select as sa_select
+
+        from repowise.core.persistence.models import Page
+
+        async with get_session(sf) as session:
+            total_pages = int(
+                (
+                    await session.execute(
+                        sa_select(sa_func.count())
+                        .select_from(Page)
+                        .where(Page.repository_id == repo_id)
+                    )
+                ).scalar_one()
+            )
+    except Exception:
+        total_pages = len(generated_pages)
+
     await engine.dispose()
-    return generated_pages
+    return generated_pages, total_pages
 
 
 def upgrade_to_full(
@@ -423,8 +457,23 @@ def upgrade_to_full(
         f"[cyan]{provider.model_name}[/cyan]. This generates docs for the whole repo."
     )
 
+    # An index-only repo records the mock embedder, because that mode promises
+    # no spend and a hosted embedder is a real bill. That promise is void here:
+    # the user is already paying a model. Keeping the mock would leave the
+    # upgrade with a fully written wiki that semantic search cannot read, which
+    # is the failure this whole path exists to end. So re-resolve, and record
+    # the answer so later updates stay on it.
+    embedder_name = cfg.get("embedder")
+    if not embedder_name or embedder_name == "mock":
+        from repowise.cli.providers import resolve_embedder
+
+        resolved = resolve_embedder(None)
+        if resolved != (embedder_name or "mock"):
+            console.print(f"Embedder: [cyan]{resolved}[/cyan] (was mock, index-only's default).")
+            embedder_name = resolved
+
     try:
-        generated_pages = run_async(
+        generated_pages, total_pages = run_async(
             _run_upgrade(
                 repo_path,
                 provider,
@@ -432,7 +481,7 @@ def upgrade_to_full(
                 exclude_patterns=exclude_patterns,
                 commit_limit=commit_limit,
                 follow_renames=follow_renames,
-                embedder_name=cfg.get("embedder"),
+                embedder_name=embedder_name,
                 yes=yes,
             )
         )
@@ -449,8 +498,17 @@ def upgrade_to_full(
     state["last_sync_commit"] = head
     state.update(docs_mode_state_fields("llm"))
     state["git_tier"] = "full"
-    state["total_pages"] = len(generated_pages)
+    state["total_pages"] = total_pages
+    # Record who wrote the pages. Without this, `repowise status` on a repo
+    # upgraded this way reports its provider and model as unknown, which reads
+    # as "nothing wrote this wiki" right after a run that did.
+    state["provider"] = provider.provider_name
+    state["model"] = provider.model_name
     save_state(repo_path, state)
+    if embedder_name and embedder_name != cfg.get("embedder"):
+        from repowise.cli.helpers import save_config_partial
+
+        save_config_partial(repo_path, embedder=embedder_name)
 
     elapsed = time.monotonic() - start
     console.print(

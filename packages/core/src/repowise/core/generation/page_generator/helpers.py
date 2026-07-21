@@ -33,17 +33,24 @@ def _extract_summary(content: str, max_chars: int = 320, skip_metadata: bool = F
     comments, and take the first prose paragraph. Truncate at sentence boundary
     near max_chars. Fully deterministic — no extra LLM call.
 
-    *skip_metadata* also skips a leading bold field line (``**Language:** Python
-    | **Files:** 412``). Several deterministic templates open with one, and it
-    is the persisted summary that the wiki list, search results and
-    ``get_context`` show, so a stats line there displaces the actual blurb. Off
-    by default: a model that opens with ``**Purpose:** …`` means it as prose.
+    *skip_metadata* skips what several deterministic templates put between the
+    H1 and the prose: a bold field line (``**Language:** Python | **Files:**
+    412``) and a fenced signature block. Both would otherwise become the
+    summary, and the summary is what the wiki list, search results and
+    ``get_context`` display. Off by default: a model that opens with
+    ``**Purpose:** …`` means it as prose.
     """
     if not content:
         return ""
     para_lines: list[str] = []
+    in_lead_fence = False
     for raw in content.splitlines():
         line = raw.strip()
+        if in_lead_fence:
+            # Inside a fenced block that preceded any prose: the fence's
+            # contents are code, and its closing marker ends the skip.
+            in_lead_fence = not line.startswith("```")
+            continue
         if not line:
             if para_lines:
                 break
@@ -51,6 +58,8 @@ def _extract_summary(content: str, max_chars: int = 320, skip_metadata: bool = F
         if line.startswith(("#", ">", "```", "---", "<!--", "|", "- ", "* ", "1.")):
             if para_lines:
                 break
+            if skip_metadata and line.startswith("```"):
+                in_lead_fence = True
             continue
         if skip_metadata and not para_lines and line.startswith("**") and ":**" in line:
             continue

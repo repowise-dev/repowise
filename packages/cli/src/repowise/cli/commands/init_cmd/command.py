@@ -866,11 +866,15 @@ def init_command(
             exclude = adv["exclude"]
             include_submodules = adv.get("include_submodules", include_submodules)
             run_mode = adv.get("run_mode", run_mode)
+            # Asked in both branches: an index-only run renders a wiki too,
+            # and those pages embed like any other, so the answer applies
+            # either way. Read outside the docs-only block or the index-only
+            # run would show the user their choice and then ignore it.
+            embedder_name = adv.get("embedder") or embedder_name
             # Generation knobs (only gathered when docs are on).
             if generate_docs:
                 concurrency = adv["concurrency"]
                 reasoning = adv.get("reasoning") or reasoning
-                embedder_name = adv.get("embedder") or embedder_name
                 test_run = adv["test_run"]
                 tier1_top_n = adv.get("tier1_top_n")
                 tier2_tail_enabled = adv.get("tier2_tail_enabled", True)
@@ -963,8 +967,10 @@ def init_command(
     # text only as a version snapshot. That is a fine outcome when it is what
     # the user meant and a bad surprise when they were reaching for a re-index,
     # so ask. Non-interactive runs refuse rather than guess.
+    # ``--yes`` and ``--force`` both mean "do not ask me", which is the answer
+    # here as much as at the cost gate.
     _prior_docs_mode = resolve_docs_mode(load_state(repo_path))
-    if index_only and _prior_docs_mode == "llm" and not force:
+    if index_only and _prior_docs_mode == "llm" and not (force or yes):
         console.print(
             "\n[yellow]This repo already has a model-written wiki.[/yellow] "
             "Indexing without a model\nrewrites every page from templates; the "
@@ -973,7 +979,7 @@ def init_command(
         if not sys.stdin.isatty():
             raise click.ClickException(
                 "Refusing to replace a model-written wiki with template pages. "
-                "Re-run with --force to confirm, or drop --index-only."
+                "Re-run with --yes to confirm, or drop --index-only."
             )
         if not click.confirm("  Replace the written wiki with template pages?", default=False):
             console.print("[dim]Nothing changed.[/dim]")
@@ -1216,7 +1222,16 @@ def init_command(
         )
         if gen_stop:
             return
-        if cost_declined:
+        if cost_declined and _prior_docs_mode == "llm":
+            # The repo already has written pages. Declining the price of new
+            # ones is not a request to replace the old ones with templates,
+            # which is what the fallback below would do.
+            cost_declined = False
+            console.print(
+                "  [dim]Keeping the wiki this repo already has. Nothing was "
+                "generated and nothing was replaced.[/dim]"
+            )
+        elif cost_declined:
             # Declining the gate used to mean leaving with no wiki at all.
             # It only ever meant "not at that price", so fall back to the
             # free renderer rather than to nothing.
@@ -1342,11 +1357,20 @@ def init_command(
         # it `repowise update` would re-resolve from the environment and could
         # start embedding, at a different width, a store this run deliberately
         # built with the mock.
+        # ``embedding_model`` rides with it, the way save_config() writes the
+        # pair: `serve` pins the model from it, and the store-format upgrade
+        # check reads it to notice an embedder change. Half the pair is not
+        # enough for either.
+        from repowise.cli.providers.embedders import resolve_embedding_model
+
         save_config_partial(
             repo_path,
             exclude_patterns=exclude_patterns if exclude_patterns else None,
             commit_limit=resolved_commit_limit if commit_limit is not None else None,
             embedder=_index_only_embedder,
+            embedding_model=(
+                resolve_embedding_model(_index_only_embedder) if _index_only_embedder else None
+            ),
         )
         # Fingerprint after config writes so the first update doesn't false-positive.
         base_state["config_fingerprint"] = config_fingerprint(repo_path)

@@ -534,7 +534,8 @@ def interactive_advanced_config(
             wiki_style=wiki_style,
             language=language,
         )
-    else:
+    elif result.get("run_mode") != "fast":
+        # Fast mode renders no wiki at all, so there would be nothing to embed.
         _prompt_index_only_search(console, result)
     result["generate_docs"] = generate_docs
 

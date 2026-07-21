@@ -142,6 +142,7 @@ def _persist_index_only_update(
     parsed_files: list | None = None,
     degraded: list[str] | None = None,
     pages_rendered: int = 0,
+    template_wiki: bool = False,
 ) -> None:
     """Persist the index-only update (graph + symbols + git + dead-code + health + KG),
     save state, and print the completion line. No LLM regeneration.
@@ -198,6 +199,7 @@ def _persist_index_only_update(
         elapsed=elapsed,
         degraded=degraded,
         pages_rendered=pages_rendered,
+        template_wiki=template_wiki,
     )
 
 

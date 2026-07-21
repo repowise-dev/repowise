@@ -15,6 +15,7 @@ enrichment. All three are prompting, and this path has no model.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -33,11 +34,44 @@ def deterministic_embedder_name(cfg: dict) -> str:
     """
     from repowise.cli.providers import resolve_embedder
 
-    chosen = cfg.get("embedder")
+    chosen = cfg.get("embedder") or os.environ.get("REPOWISE_EMBEDDER", "").strip()
     if chosen:
         return str(chosen)
+    # Nothing was chosen, so whatever resolve_embedder returns was inferred
+    # from a key. Only the ones that cannot bill survive that.
     resolved = resolve_embedder(None)
     return resolved if resolved in ("mock", "ollama") else "mock"
+
+
+def load_prior_page_ids(repo_path: Path) -> dict:
+    """Every page id already in the wiki, mapped to a placeholder.
+
+    Interlinking and related-pages resolve references against this, so a
+    re-rendered page can still link to the pages this run did not touch.
+    Only the ids are read: the full ``load_prior_pages`` pulls every page's
+    content, and nothing here needs the bodies since template pages never go
+    through the content-reuse gate.
+    """
+    return run_async(_load_prior_page_ids(repo_path))
+
+
+async def _load_prior_page_ids(repo_path: Path) -> dict:
+    from repowise.cli.helpers import get_db_url_for_repo
+    from repowise.core.persistence import create_engine, create_session_factory, get_session
+
+    engine = create_engine(get_db_url_for_repo(repo_path))
+    try:
+        from sqlalchemy import select as sa_select
+
+        from repowise.core.persistence.models import Page
+
+        async with get_session(create_session_factory(engine)) as session:
+            rows = await session.execute(sa_select(Page.id))
+            return dict.fromkeys((r[0] for r in rows), None)
+    except Exception:
+        return {}
+    finally:
+        await engine.dispose()
 
 
 def regenerate_deterministic_pages(
@@ -52,8 +86,15 @@ def regenerate_deterministic_pages(
     cfg: dict,
     concurrency: int,
     degraded: list[str],
+    dead_code_report: Any = None,
+    prior_page_ids: dict | None = None,
 ) -> list:
     """Re-render the template pages for *regenerate_paths*. Never raises.
+
+    Only the changed files' own pages. The repo-wide pages (cycles, modules,
+    layers, overview, architecture diagram, onboarding) describe the whole
+    repository and would be rendered here from a view containing only the
+    changed files, so they are left as the last full run wrote them.
 
     A failure here degrades the run rather than failing it: the index half of
     an index-only update is the half the post-commit hook depends on, and it
@@ -71,20 +112,29 @@ def regenerate_deterministic_pages(
     try:
         config = GenerationConfig(
             deterministic=True,
+            file_pages_only=True,
             max_concurrency=concurrency,
             language=cfg.get("language", "en"),
             enable_onboarding=bool(cfg.get("enable_onboarding", True)),
             wiki_style=cfg.get("wiki_style", "comprehensive"),
         )
-        from repowise.cli.providers import build_embedder, build_vector_store
 
+        # Only build a store when there is a real embedder to build it with.
+        # The mock is the index-only default, and writing its 8-wide vectors
+        # into a store some earlier run filled at 1536 makes LanceDB drop the
+        # table, taking every page and decision embedding with it. Skipping
+        # leaves that store untouched; full-text search is unaffected either
+        # way. It also keeps the lancedb import off the post-commit hook's
+        # path, which is the one place in this command that avoids it.
         vector_store = None
-        try:
-            vector_store = build_vector_store(
-                repo_path, build_embedder(deterministic_embedder_name(cfg))
-            )
-        except Exception as exc:  # embedding is optional; FTS still indexes
-            degraded.append(f"Page embedding: {exc}")
+        embedder_name = deterministic_embedder_name(cfg)
+        if embedder_name != "mock":
+            from repowise.cli.providers import build_embedder, build_vector_store
+
+            try:
+                vector_store = build_vector_store(repo_path, build_embedder(embedder_name))
+            except Exception as exc:  # embedding is optional; FTS still indexes
+                degraded.append(f"Page embedding: {exc}")
 
         generator = PageGenerator(
             TemplateProvider(),
@@ -92,10 +142,11 @@ def regenerate_deterministic_pages(
             config,
             vector_store=vector_store,
             language=config.language,
-            # No prior-page reuse gate: template pages persist an empty
-            # content_hash precisely so a later model run cannot inherit their
-            # content, which also means there is nothing here to match against.
-            prior_pages={},
+            # Every persisted page id, so interlinking and related-pages can
+            # resolve references to pages outside this run's slice. Not a reuse
+            # gate: template pages persist an empty content_hash precisely so a
+            # later model run cannot inherit their content.
+            prior_pages=prior_page_ids or {},
             repo_path=repo_path,
         )
         with console.status("  Re-rendering wiki pages from structure…"):
@@ -108,6 +159,7 @@ def regenerate_deterministic_pages(
                     repo_path.name,
                     git_meta_map=git_meta_map,
                     repo_path=repo_path,
+                    dead_code_report=dead_code_report,
                 )
             )
     except Exception as exc:
@@ -119,25 +171,22 @@ def persist_deterministic_pages(
     *,
     repo_path: Path,
     generated_pages: list,
-    graph_builder: Any,
-    git_meta_map: dict,
     decay_paths: list[str],
     degraded: list[str],
 ) -> int:
-    """Write the re-rendered pages, then heal links and decay the rest.
+    """Write the re-rendered pages, decay the rest, and index them for search.
 
     Returns the repository's total page count, so the caller can stamp
     ``state["total_pages"]`` with the real DB number rather than accumulating.
-    Runs in its own session after ``persist_incremental_index`` rather than
-    inside it: page upserts are idempotent, so the worst case of a crash
-    between the two is a re-run, not a torn index.
+    Runs before ``persist_incremental_index`` and in its own session: the pages
+    must land before that call tombstones the ones whose files are gone, and
+    page upserts are idempotent, so an interrupted run re-runs rather than
+    tearing the index.
     """
     return run_async(
         _persist_async(
             repo_path=repo_path,
             generated_pages=generated_pages,
-            graph_builder=graph_builder,
-            git_meta_map=git_meta_map,
             decay_paths=decay_paths,
             degraded=degraded,
         )
@@ -148,8 +197,6 @@ async def _persist_async(
     *,
     repo_path: Path,
     generated_pages: list,
-    graph_builder: Any,
-    git_meta_map: dict,
     decay_paths: list[str],
     degraded: list[str],
 ) -> int:
@@ -175,20 +222,10 @@ async def _persist_async(
             repo_id = repo.id
             await upsert_pages_from_generated(session, generated_pages, repo_id)
 
-            try:
-                from repowise.core.generation.related_pages import file_import_edges
-                from repowise.core.persistence.crud import backfill_related_pages
-
-                await backfill_related_pages(
-                    session,
-                    repo_id,
-                    import_edges=file_import_edges(graph_builder),
-                    git_meta_map=git_meta_map,
-                    pagerank=graph_builder.pagerank(),
-                    skip_page_ids={p.page_id for p in generated_pages},
-                )
-            except Exception as exc:
-                degraded.append(f"Related-pages backfill: {exc}")
+            # No related-pages backfill here. ``persist_incremental_index``
+            # runs one repo-wide immediately after this, unskipped, so it
+            # already heals these pages; doing it first and exempting them
+            # would skip the only pages that need it.
 
             # Pages the cascade reached but the budget did not: marked stale so
             # the coverage view is honest about which template pages predate

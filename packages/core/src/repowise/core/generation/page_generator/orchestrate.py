@@ -283,8 +283,14 @@ class _GenerationRun:
         history, mining error) yields an empty map and selection stays
         uniform. Runs only on real generation — the cost estimator builds its
         own demand-free SelectionInputs, so estimates are untouched.
+
+        Skipped on a deterministic run. Demand exists to tilt a budget toward
+        the files agents ask about, and a template page costs nothing, so there
+        is no budget to tilt. The sweep reads every session transcript for the
+        repo, which grows with the user's chat history rather than the repo:
+        seconds of work per run, on the path a post-commit hook takes.
         """
-        if not self.repo_path:
+        if not self.repo_path or self.config.deterministic:
             return {}
         try:
             from repowise.core.repo_config import load_repo_config
@@ -521,6 +527,13 @@ class _GenerationRun:
         level2 = await _levels.build_level2_coros(self)
         all_pages.extend(await self.run_level(level2, 2))
 
+        # Levels 3 and up describe the repository rather than a file, and an
+        # incremental run holds only the changed files, so running them here
+        # would rewrite a whole-repo page from a one-commit view. They stay as
+        # the last full run left them.
+        if getattr(self.config, "file_pages_only", False):
+            return self._finalize(all_pages)
+
         # Level 3 (scc_page).
         all_pages.extend(await self.run_level(_levels.build_level3_coros(self), 3))
 
@@ -553,6 +566,15 @@ class _GenerationRun:
                         page.metadata["layer_order"] = self.layer_order
                     break
 
+        return self._finalize(all_pages)
+
+    def _finalize(self, all_pages: list[GeneratedPage]) -> list[GeneratedPage]:
+        """Run the post-generation passes and close out the job.
+
+        Shared with the ``file_pages_only`` early return, so an incremental
+        deterministic run still gets mermaid repair, interlinking, related
+        pages and tour links over the pages it did produce.
+        """
         # Post-generation: repair mermaid diagrams so illegal node IDs / unquoted
         # labels in LLM output don't break the whole diagram in the renderer.
         try:

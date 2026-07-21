@@ -84,6 +84,7 @@ def _record_update_outcome(
     changed_count: int,
     provider: Any = None,
     generated_pages: list | None = None,
+    docs_mode: str | None = None,
 ) -> None:
     """Attach an anonymous update-shape outcome to the ``command_run`` event.
 
@@ -95,12 +96,13 @@ def _record_update_outcome(
 
         # docs_mode carries the same three values as the state field of that
         # name; it was a bool until an index-only update started re-rendering
-        # template pages, which that shape could not express.
+        # template pages, which that shape could not express. It comes from the
+        # repo's persisted mode, not from this run's page count: a commit that
+        # touched no source file re-renders nothing, and that is not the same
+        # as the repo having no wiki.
         pages = generated_pages or []
-        if not index_only and provider is not None:
-            docs_mode = "llm"
-        else:
-            docs_mode = "deterministic" if pages else "none"
+        if docs_mode is None:
+            docs_mode = "llm" if (not index_only and provider is not None) else "none"
         outcome: dict[str, Any] = {
             "outcome": "success",
             "index_only": bool(index_only),
@@ -817,8 +819,10 @@ def run_update(
         # with no pages (fast mode, or an index from before templates existed)
         # skip this and stay a pure index.
         det_pages: list = []
-        if resolve_docs_mode(state) == "deterministic":
+        docs_mode = resolve_docs_mode(state)
+        if docs_mode == "deterministic":
             from .deterministic import (
+                load_prior_page_ids,
                 persist_deterministic_pages,
                 regenerate_deterministic_pages,
             )
@@ -836,13 +840,13 @@ def run_update(
                 cfg=cfg,
                 concurrency=concurrency,
                 degraded=degraded,
+                dead_code_report=dead_code_report,
+                prior_page_ids=load_prior_page_ids(repo_path),
             )
             if det_pages:
                 state["total_pages"] = persist_deterministic_pages(
                     repo_path=repo_path,
                     generated_pages=det_pages,
-                    graph_builder=graph_builder,
-                    git_meta_map=git_meta_map,
                     decay_paths=affected.decay_only,
                     degraded=degraded,
                 )
@@ -868,6 +872,10 @@ def run_update(
                 knowledge_graph_result=knowledge_graph_result,
                 parsed_files=parsed_files,
                 degraded=degraded,
+                # The repo's docs mode, not this run's page count: a commit
+                # that touched no source file re-renders nothing, and that is
+                # not the same as having no wiki.
+                template_wiki=docs_mode == "deterministic",
                 pages_rendered=len(det_pages),
             )
         except Exception as exc:
@@ -876,7 +884,10 @@ def run_update(
             raise
         _refresh_editor_stamp(repo_path, agents_md, degraded)
         _record_update_outcome(
-            index_only=True, changed_count=len(file_diffs), generated_pages=det_pages
+            index_only=True,
+            changed_count=len(file_diffs),
+            generated_pages=det_pages,
+            docs_mode=docs_mode,
         )
         if emitter is not None:
             emitter.done(
