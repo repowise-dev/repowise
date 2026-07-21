@@ -452,7 +452,9 @@ class ContextAssembler:
                             "cohesion": round(ci.cohesion, 2),
                         }
                     )
-                communities_list.sort(key=lambda c: (-c["size"], str(c["label"])))
+                # Id, not label: two same-size communities can carry the same
+                # label, so the label is not a total order.
+                communities_list.sort(key=lambda c: (-c["size"], c["id"]))
                 communities_list = communities_list[:10]
             except Exception:
                 pass
@@ -515,10 +517,18 @@ class ContextAssembler:
         )
         nodes = sorted(top_nodes)
 
-        # Only edges between selected nodes. Sorted for the same reason: the
-        # 200-edge cap is applied to graph iteration order otherwise.
+        # Only edges between selected nodes. Ranked by the endpoints' PageRank
+        # rather than alphabetically: the cap bites on dense repos, and a plain
+        # sort would fill all 200 slots from whichever package sorts first and
+        # draw nothing from the rest of the graph. Path breaks the tie.
         edges = sorted(
-            (src, dst) for src, dst in graph.edges() if src in top_nodes and dst in top_nodes
+            ((src, dst) for src, dst in graph.edges() if src in top_nodes and dst in top_nodes),
+            key=lambda e: (
+                -pagerank.get(e[0], 0.0),
+                -pagerank.get(e[1], 0.0),
+                str(e[0]),
+                str(e[1]),
+            ),
         )[:max_diagram_edges]
 
         # Community → members mapping (top-10 communities, cap members to 5)

@@ -11,6 +11,12 @@ Running the pipeline twice in one process would not catch this: the hash seed
 is fixed for the life of the process, so both runs would see the same order.
 These tests feed the graph the same files in two different orders instead,
 which is what actually varies in production.
+
+Read this file as the end-to-end contract, not as the regression test. The
+sample repo is small enough that most of the individual ties never arise in
+it, so these pass with several of the fixes reverted. The discriminating
+cases live in ``tests/unit/generation/test_selection_determinism.py``, which
+constructs the ties deliberately.
 """
 
 from __future__ import annotations
@@ -122,8 +128,9 @@ class TestPageIdStability:
 
 
 class TestSccSlug:
-    """SCC pages are the case that motivated the content-derived id: the
-    sample repo is a DAG and has none, so exercise the slug directly."""
+    """SCC pages motivated the content-derived id. The sample repo has exactly
+    one cycle, so its slug is stable whatever the ordering does; these exercise
+    the slug's properties directly instead."""
 
     def test_slug_ignores_member_order(self):
         assert scc_page_slug(["b.py", "a.py"]) == scc_page_slug(["a.py", "b.py"])

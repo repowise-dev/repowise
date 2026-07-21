@@ -86,7 +86,8 @@ class TestCommunityTies:
 
     def test_equal_sized_communities_get_stable_ids(self):
         """Three disconnected pairs: identical size, so the id each pair gets
-        is decided entirely by the tiebreak."""
+        is decided entirely by the tiebreak. The community id is a module
+        page's target_path, so a shuffled id deletes and recreates the page."""
         edges = [
             ("alpha/a.py", "alpha/b.py"),
             ("bravo/a.py", "bravo/b.py"),
@@ -95,6 +96,28 @@ class TestCommunityTies:
         forward, _, _ = detect_file_communities(self._graph(edges))
         reverse, _, _ = detect_file_communities(self._graph(list(reversed(edges))))
         assert forward == reverse
+
+    def test_reindex_is_a_total_order_on_equal_sizes(self):
+        """Goes straight at the re-index step, which is where the id is minted.
+
+        The graph-level tests above cannot fail while the partition input
+        happens to be sorted upstream, but Leiden (tried before Louvain, and
+        absent from CI) returns a partition ordered by its own internals. This
+        asserts the property the re-index has to hold on its own."""
+        from repowise.core.analysis.communities import detect_file_communities as _detect
+
+        groups = [["b/1.py", "b/2.py"], ["a/1.py", "a/2.py"], ["c/1.py", "c/2.py"]]
+
+        def rank(order):
+            g = nx.DiGraph()
+            for members in order:
+                for p in members:
+                    g.add_node(p, node_type="file", language="python")
+                g.add_edge(members[0], members[1], edge_type="imports")
+            return _detect(g)[0]
+
+        # Same three communities, three different arrival orders, one answer.
+        assert rank(groups) == rank(list(reversed(groups))) == rank([groups[i] for i in (1, 2, 0)])
 
     def test_community_labels_are_stable(self):
         edges = [

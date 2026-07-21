@@ -33,7 +33,11 @@ import structlog
 
 log = structlog.get_logger(__name__)
 
-_CACHE_VERSION = 1
+# Bumped to 2 when betweenness was made order-independent: the signature keys
+# on graph structure only, so a warm cache would keep serving the old,
+# insertion-order-dependent values and two installs at the same commit would
+# still disagree.
+_CACHE_VERSION = 2
 _CACHE_FILENAME = "centrality_cache.pkl"
 
 __all__ = ["CentralityCache", "subgraph_signature"]

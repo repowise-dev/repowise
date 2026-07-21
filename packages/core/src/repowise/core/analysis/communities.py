@@ -402,7 +402,7 @@ def _assign_tests_to_communities(
     prod_assignment: dict[str, int],
     graph: nx.DiGraph,
 ) -> dict[str, int]:
-    """Assign each test file to the community of its most-imported production file.
+    """Assign each test file to the community of a production file it links to.
 
     Falls back to a catch-all "tests" community when no import link exists.
     """
@@ -497,8 +497,12 @@ def detect_file_communities(
     # Split oversized communities
     split_lists = _split_oversized(undirected, raw_communities)
 
-    # Re-index by size descending for deterministic ordering
-    split_lists.sort(key=len, reverse=True)
+    # Re-index by size descending. The rank becomes the community id, which
+    # becomes a module page's target_path, so it has to be a total order:
+    # size alone leaves same-size communities in partition-iteration order,
+    # and Leiden (tried before Louvain) returns a partition dict ordered by
+    # its own internals rather than by the node list we sorted above.
+    split_lists.sort(key=lambda members: (-len(members), min(members)))
 
     # Build production file assignment
     prod_assignment: dict[str, int] = {}
@@ -613,8 +617,9 @@ def detect_symbol_communities(graph: nx.DiGraph) -> dict[str, int]:
         raw[next_cid] = [node]
         next_cid += 1
 
-    # Re-index by size descending
-    ordered = sorted(raw.values(), key=len, reverse=True)
+    # Re-index by size descending, first member breaking ties (same total-order
+    # argument as detect_file_communities).
+    ordered = sorted(raw.values(), key=lambda members: (-len(members), min(members)))
     result: dict[str, int] = {}
     for cid, members in enumerate(ordered):
         for node in members:
