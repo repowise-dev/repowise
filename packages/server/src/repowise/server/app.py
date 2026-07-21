@@ -219,7 +219,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.scheduler = scheduler
 
     # Initialize chat tool state (bridges FastAPI state to MCP tool globals)
-    from repowise.server.chat_tools import init_tool_state
+    from repowise.server.chat_tools import init_tool_state, set_tool_workspace
 
     init_tool_state(
         session_factory=session_factory,
@@ -231,6 +231,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.workspace_config = None
     app.state.workspace_root = None
     app.state.cross_repo_enricher = None
+    app.state.repo_registry = None  # RepoRegistry, workspace mode only
     app.state.workspace_sessions = {}  # repo_id → session_factory
     app.state.workspace_engines = []  # engines to dispose on shutdown
     # Per-repo FTS instances keyed by repo_id, used by the search router
@@ -313,6 +314,27 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                     extra={"count": len(app.state.workspace_sessions)},
                 )
 
+            # Give the MCP tool functions a RepoRegistry, the same one the
+            # stdio MCP lifespan builds (_server.py). Without it every chat
+            # tool call falls into the single-repo branch of
+            # _resolve_repo_context() and dies with "Repository not found:
+            # <alias>", because the alias is looked up in the primary repo's
+            # wiki.db only (issue #970). Contexts load lazily, so the repo
+            # the first chat call names pays the engine/FTS open cost inline.
+            # The registry holds its own handles on each repo's wiki.db,
+            # separate from app.state.workspace_sessions above; collapsing
+            # the two onto one set of connections is worth doing but is a
+            # bigger change than this fix.
+            from repowise.core.workspace.registry import RepoRegistry
+
+            repo_registry = RepoRegistry(
+                workspace_root=_Path(ws_root),
+                ws_config=ws_config,
+                embedder_factory=_build_embedder,
+            )
+            app.state.repo_registry = repo_registry
+            set_tool_workspace(registry=repo_registry, workspace_root=str(ws_root))
+
             # Reset stale jobs in non-primary workspace DBs too. The primary
             # DB was handled before workspace detection, but each secondary
             # repo has its own generation_jobs table and stale running rows
@@ -347,6 +369,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             )
             if enricher.has_data or enricher.has_contract_data or enricher.has_system_graph:
                 app.state.cross_repo_enricher = enricher
+                set_tool_workspace(cross_repo_enricher=enricher)
                 logger.info(
                     "repowise_workspace_detected",
                     extra={
@@ -379,24 +402,35 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.debug("repo_db_rediscovery_skipped", exc_info=True)
 
     logger.info("repowise_server_started", extra={"version": __version__})
-    yield
-
-    # Shutdown
-    scheduler.shutdown(wait=False)
-    await vector_store.close()
-    # Close cached per-repo vector stores (LanceDB connections).
     try:
-        from repowise.server.search_helpers import close_workspace_vector_stores
-
-        await close_workspace_vector_stores(app)
-    except Exception:
-        logger.debug("workspace_vector_store_close_failed", exc_info=True)
-    # Dispose workspace repo engines first
-    for ws_engine in getattr(app.state, "workspace_engines", []):
+        yield
+    finally:
+        # Shutdown. The finally matters for the workspace globals below: they
+        # outlive the app object, so skipping this on a shutdown exception
+        # would leave the tool layer pointing at disposed engines.
+        scheduler.shutdown(wait=False)
         with suppress(Exception):
-            await ws_engine.dispose()
-    await engine.dispose()
-    logger.info("repowise_server_stopped")
+            await vector_store.close()
+        # Close cached per-repo vector stores (LanceDB connections).
+        try:
+            from repowise.server.search_helpers import close_workspace_vector_stores
+
+            await close_workspace_vector_stores(app)
+        except Exception:
+            logger.debug("workspace_vector_store_close_failed", exc_info=True)
+        # Release the per-repo contexts the chat tools resolved through
+        _repo_registry = getattr(app.state, "repo_registry", None)
+        if _repo_registry is not None:
+            with suppress(Exception):
+                await _repo_registry.close()
+            # The enricher is only ever published alongside the registry.
+            set_tool_workspace(registry=None, workspace_root=None, cross_repo_enricher=None)
+        # Dispose workspace repo engines first
+        for ws_engine in getattr(app.state, "workspace_engines", []):
+            with suppress(Exception):
+                await ws_engine.dispose()
+        await engine.dispose()
+        logger.info("repowise_server_stopped")
 
 
 def create_app() -> FastAPI:

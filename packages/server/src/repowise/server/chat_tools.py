@@ -304,14 +304,45 @@ def _make_json_serializable(obj: Any) -> Any:
     return str(obj)
 
 
-async def execute_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    """Execute a tool by name and return JSON-serializable result."""
+def _scope_repo_arg(tool_def: ToolDef, arguments: dict[str, Any], repo: str | None) -> None:
+    """Point a tool call at the repo the chat page is on.
+
+    The model only sees the repo *name* in the system prompt, so left to
+    itself it passes a string that may not be a workspace alias at all. We
+    keep its value when it names a real repo (so "compare with gateway"
+    still works) and otherwise substitute the caller's alias.
+    """
+    if not repo or "repo" not in tool_def.parameters.get("properties", {}):
+        return
+
+    import repowise.server.mcp_server as mcp_mod
+
+    workspace = mcp_mod._registry
+    if workspace is None:
+        return
+
+    requested = arguments.get("repo")
+    if requested == "all" or requested in workspace.get_all_aliases():
+        return
+    arguments["repo"] = repo
+
+
+async def execute_tool(
+    name: str, arguments: dict[str, Any], repo: str | None = None
+) -> dict[str, Any]:
+    """Execute a tool by name and return JSON-serializable result.
+
+    ``repo`` is the alias of the repo the request is scoped to (workspace
+    mode). It backstops the ``repo`` argument the model supplies.
+    """
     registry = get_tool_registry()
     tool_def = registry.get(name)
     if not tool_def:
         return {"error": f"Unknown tool: {name}"}
 
     try:
+        arguments = dict(arguments)
+        _scope_repo_arg(tool_def, arguments, repo)
         result = await tool_def.function(**arguments)
         return _make_json_serializable(result)
     except Exception as exc:
@@ -348,3 +379,27 @@ def init_tool_state(
     if repo_path is not None:
         mcp_mod._repo_path = repo_path
     logger.info("Chat tool state initialized")
+
+
+_UNSET = object()
+
+
+def set_tool_workspace(
+    registry: Any = _UNSET,
+    workspace_root: Any = _UNSET,
+    cross_repo_enricher: Any = _UNSET,
+) -> None:
+    """Publish workspace state to the MCP tool globals.
+
+    The stdio MCP server sets these in its own lifespan; the HTTP server has
+    to do the same or the tools resolve every alias against the primary
+    repo's database alone (issue #970). Arguments left out are untouched.
+    """
+    import repowise.server.mcp_server as mcp_mod
+
+    if registry is not _UNSET:
+        mcp_mod._registry = registry
+    if workspace_root is not _UNSET:
+        mcp_mod._workspace_root = workspace_root
+    if cross_repo_enricher is not _UNSET:
+        mcp_mod._cross_repo_enricher = cross_repo_enricher

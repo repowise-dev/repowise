@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -71,6 +72,34 @@ async def _get_repo_info(factory: Any, repo_id: str) -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 
 
+def _workspace_alias(request: Request, repo_path: str, repo_name: str) -> str | None:
+    """Return the workspace alias owning *repo_path*, or None outside a workspace.
+
+    ``local_path`` is stored verbatim at index time, so it can be relative
+    (``repowise init .`` records ``"."``) and resolve against the server's
+    cwd rather than the repo. The name fallback covers that; a miss only
+    costs us the repo scoping, so it is logged rather than raised.
+    """
+    ws_config = getattr(request.app.state, "workspace_config", None)
+    ws_root = getattr(request.app.state, "workspace_root", None)
+    if ws_config is None or ws_root is None:
+        return None
+
+    resolved = Path(repo_path).resolve()
+    for entry in ws_config.repos:
+        if (Path(ws_root) / entry.path).resolve() == resolved:
+            return entry.alias
+    for entry in ws_config.repos:
+        if entry.alias == repo_name:
+            return entry.alias
+
+    logger.warning(
+        "chat_workspace_alias_unresolved",
+        extra={"repo_path": repo_path, "repo_name": repo_name},
+    )
+    return None
+
+
 @router.post("/api/repos/{repo_id}/chat/messages")
 async def chat_messages(repo_id: str, body: ChatRequest, request: Request):
     """Stream an agentic chat response via SSE."""
@@ -83,6 +112,9 @@ async def chat_messages(repo_id: str, body: ChatRequest, request: Request):
 
     # Resolve repo
     repo_name, repo_path = await _get_repo_info(factory, repo_id)
+    # In workspace mode the MCP tools address repos by alias, not by the id
+    # in this URL, so resolve it once and scope every tool call to it.
+    repo_alias = _workspace_alias(request, repo_path, repo_name)
 
     # Resolve provider. A per-request override (the UI model picker) applies to
     # THIS request only and is not persisted — an explicit selection is
@@ -151,7 +183,7 @@ async def chat_messages(repo_id: str, body: ChatRequest, request: Request):
             # Tool executor callback — used by providers that run the
             # agentic loop internally (e.g. Gemini for thought_signature).
             async def _tool_executor(name: str, args: dict) -> dict:
-                return await execute_tool(name, args)
+                return await execute_tool(name, args, repo=repo_alias)
 
             # Agentic loop
             assistant_text_parts: list[str] = []
@@ -271,7 +303,7 @@ async def chat_messages(repo_id: str, body: ChatRequest, request: Request):
 
                     # Execute each tool and add results
                     for tc in pending_tool_calls:
-                        result = await execute_tool(tc["name"], tc["arguments"])
+                        result = await execute_tool(tc["name"], tc["arguments"], repo=repo_alias)
                         artifact_type = get_artifact_type(tc["name"])
 
                         # Build summary from result
