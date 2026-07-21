@@ -1,0 +1,92 @@
+{#- Deterministic (no-LLM) repository overview.
+
+    This is the weakest of the deterministic pages, and deliberately so. The
+    one thing the LLM version contributes that matters is the opening
+    sentence answering "what does this repository do, end-to-end?", and no
+    template can derive intent from structure. Rather than bluff, the summary
+    below states what the repo is *made of* and points at the entry points to
+    read. It is the page most worth upgrading first.
+-#}
+# Repository Overview: {{ ctx.repo_name }}
+
+**Files:** {{ ctx.total_files }} | **Lines:** {{ ctx.total_loc }}{% if ctx.is_monorepo %} | **Monorepo:** {{ ctx.packages | length }} packages{% endif %}{% if ctx.circular_dependency_count > 0 %} | **Import cycles:** {{ ctx.circular_dependency_count }}{% endif %}
+
+## Project Summary
+
+{% set _langs = ctx.language_distribution.items() | list -%}
+`{{ ctx.repo_name }}` is a {% if ctx.is_monorepo %}multi-package {% endif %}
+{%- if _langs %}{{ _langs[0][0] }} {% endif %}codebase of {{ ctx.total_files }} files
+{%- if ctx.is_monorepo %}, split across {{ ctx.packages | length }} packages{% endif %}.
+{%- if ctx.entry_points %} Execution starts at {% for ep in ctx.entry_points[:3] %}`{{ ep }}`{% if not loop.last %}, {% endif %}{% endfor %}{% if ctx.entry_points | length > 3 %} and {{ ctx.entry_points | length - 3 }} other entry point{{ "s" if ctx.entry_points | length - 3 != 1 else "" }}{% endif %}.{% endif %}
+{%- if ctx.communities %} Dependency analysis splits it into {{ ctx.communities | length }} clusters{% set _named = ctx.communities | selectattr("label") | list %}{% if _named %}, led by {% for c in _named[:3] %}**{{ c.label }}**{% if not loop.last %}, {% endif %}{% endfor %}{% endif %}.{% endif %}
+{%- if ctx.external_systems %} It builds on {{ ctx.external_systems | length }} external {{ "dependency" if ctx.external_systems | length == 1 else "dependencies" }}, including {% for s in ctx.external_systems[:5] %}`{{ s.name }}`{% if not loop.last %}, {% endif %}{% endfor %}.{% endif %}
+
+{% if ctx.packages %}
+## Packages
+{% for pkg in ctx.packages %}
+- **{{ pkg.name }}** (`{{ pkg.path }}`, {{ pkg.language }})
+{% endfor %}
+{% endif %}
+
+{% if ctx.entry_points %}
+## Entry Points
+Start here when reading the codebase.
+{% for ep in ctx.entry_points %}
+- `{{ ep }}`
+{% endfor %}
+{% endif %}
+
+{% if ctx.execution_flows %}
+## Primary Execution Flows
+{% for f in ctx.execution_flows %}
+- `{{ f.entry_point }}`{% if f.trace_length %} ({{ f.trace_length }} steps){% endif %}
+{% endfor %}
+{% endif %}
+
+{% if ctx.communities %}
+## Architectural Clusters
+Groups of files that depend on each other far more than on the rest of the repo.
+{% for c in ctx.communities %}
+- **{{ (c.label or "Cluster " ~ c.id) | oneline(60) }}**: {{ c.size }} files (cohesion {{ c.cohesion }})
+{% endfor %}
+{% endif %}
+
+{% if ctx.top_files_by_pagerank %}
+## Most Central Files
+Ranked by PageRank over the import graph: the files most of the codebase ultimately depends on.
+{% for item in ctx.top_files_by_pagerank %}
+- `{{ item.path }}` ({{ "%.4f"|format(item.score) }})
+{% endfor %}
+{% endif %}
+
+{% if ctx.language_distribution %}
+## Languages
+{% for lang, pct in ctx.language_distribution.items() %}
+- {{ lang }}: {{ "%.1f"|format(pct * 100) }}%
+{% endfor %}
+{% endif %}
+
+{% if ctx.external_systems %}
+## External Systems
+{% for sys in ctx.external_systems[:25] %}
+- `{{ sys.name }}`{% if sys.category and sys.category != 'library' %} *({{ sys.category }})*{% endif %}{% if sys.ecosystem %} ({{ sys.ecosystem }}){% endif %}
+{% endfor %}
+{% endif %}
+
+{% if ctx.decision_records %}
+## Recorded Decisions
+{% for dr in ctx.decision_records[:8] %}
+- **{{ dr.title | oneline(80) }}**: {{ dr.decision | oneline }}{% if dr.rationale %} *(Why: {{ dr.rationale | oneline }})*{% endif %}
+{% endfor %}
+{% endif %}
+
+{% if repo_git_summary %}
+## Codebase health signals
+- **Hotspots:** {{ repo_git_summary.hotspot_count }} files are both high-churn and high-complexity
+- **Stable core:** {{ repo_git_summary.stable_count }} files unchanged in 90+ days
+{% if repo_git_summary.top_churn_files %}- **Most changed (90d):** {% for f in repo_git_summary.top_churn_files[:3] %}`{{ f }}`{% if not loop.last %}, {% endif %}{% endfor %}
+{% endif %}
+{%- if repo_git_summary.oldest_file %}- **Oldest file:** `{{ repo_git_summary.oldest_file }}` ({{ repo_git_summary.oldest_file_age_days }} days)
+{% endif %}
+{% endif %}
+{% include "deterministic/_footer.j2" %}

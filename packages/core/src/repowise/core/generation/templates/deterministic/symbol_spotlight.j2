@@ -1,0 +1,50 @@
+{#- Deterministic (no-LLM) symbol spotlight.
+
+    Note the wording around callers: ``ctx.callers`` holds files that import
+    the containing module, not verified call sites. The LLM template hedges
+    the same way; a template that claimed otherwise would over-state what the
+    graph actually knows.
+-#}
+# {{ ctx.qualified_name }}
+
+**Kind:** {{ ctx.kind }}{% if ctx.is_async %} (async){% endif %} | **Defined in:** `{{ ctx.file_path }}`{% if ctx.complexity_estimate %} | **Estimated complexity:** {{ ctx.complexity_estimate }}{% endif %}
+
+{% if ctx.signature %}
+```
+{{ ctx.signature }}
+```
+{% endif %}
+
+## Overview
+
+{% if ctx.docstring %}{{ ctx.docstring | trim }}
+{% else %}`{{ ctx.symbol_name }}` is {{ "an" if ctx.kind and ctx.kind[0] in "aeiou" else "a" }} {{ ctx.kind or "symbol" }} defined in `{{ ctx.file_path }}`. It carries no docstring.{% endif %}
+
+{% if ctx.decorators %}
+## Decorators
+{% for d in ctx.decorators %}
+- `{{ d }}`
+{% endfor %}
+{% endif %}
+
+{% if ctx.callers %}
+## Where it is used
+
+{{ ctx.callers | length }} file{{ "s" if ctx.callers | length != 1 else "" }} import the module that defines it. These are import-level references, not confirmed call sites.
+{% for c in ctx.callers %}
+- `{{ c }}`
+{% endfor %}
+{% else %}
+## Where it is used
+
+No importers of the defining module were resolved.
+{% endif %}
+
+{% if ctx.source_body %}
+## Implementation
+
+```
+{{ ctx.source_body }}
+```
+{% endif %}
+{% include "deterministic/_footer.j2" %}

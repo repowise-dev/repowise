@@ -1,0 +1,93 @@
+{#- Deterministic (no-LLM) module page.
+
+    The LLM version of this template is already almost a finished page; the
+    model's job there is the Overview / Architecture Notes prose. Here the
+    Overview is synthesised from the module's own signals (centrality, entry
+    points, cluster) and the structural sections carry the rest.
+-#}
+# Module: {{ ctx.module_path }}
+
+**Language:** {{ ctx.language }} | **Files:** {{ ctx.files | length }} | **Public symbols:** {{ ctx.public_symbols }} / {{ ctx.total_symbols }}{% if ctx.community_label %} | **Cluster:** {{ ctx.community_label }}{% if ctx.community_cohesion > 0 %} (cohesion {{ "%.2f"|format(ctx.community_cohesion) }}){% endif %}{% endif %}
+
+## Overview
+
+{% set _role = [] -%}
+{%- if ctx.entry_points %}{% set _ = _role.append("hosts " ~ ctx.entry_points | length ~ " entry point" ~ ("s" if ctx.entry_points | length != 1 else "") ~ " into this subsystem") %}{% endif -%}
+{%- if ctx.pagerank_mean is defined and ctx.pagerank_mean >= 0.005 %}{% set _ = _role.append("sits centrally in the import graph (mean PageRank " ~ "%.4f"|format(ctx.pagerank_mean) ~ ")") %}{% endif -%}
+{%- if ctx.dependents %}{% set _ = _role.append("is imported by " ~ ctx.dependents | length ~ " other module" ~ ("s" if ctx.dependents | length != 1 else "")) %}{% endif -%}
+{%- if ctx.dependencies %}{% set _ = _role.append("draws on " ~ ctx.dependencies | length ~ " internal module" ~ ("s" if ctx.dependencies | length != 1 else "")) %}{% endif -%}
+`{{ ctx.module_path }}` groups {{ ctx.files | length }} {{ ctx.language }} file{{ "s" if ctx.files | length != 1 else "" }} exposing {{ ctx.public_symbols }} public symbol{{ "s" if ctx.public_symbols != 1 else "" }}.{% if _role %} It {{ _role | join("; ") }}.{% endif %}
+
+{% if ctx.entry_points %}
+## Entry Points
+{% for ep in ctx.entry_points %}
+- `{{ ep }}`
+{% endfor %}
+{% endif %}
+
+## Files
+{% if ctx.key_files %}
+Highest-PageRank first: the order to read them in.
+{% for kf in ctx.key_files %}
+- `{{ kf.path }}`{% if kf.is_entry_point %} *(entry point)*{% endif %}{% if kf.summary %}: {{ kf.summary | oneline }}{% endif %}
+{% endfor %}
+{% else %}
+{% for f in ctx.files %}
+- `{{ f }}`
+{% endfor %}
+{% endif %}
+
+{% if ctx.key_classes %}
+## Type Hierarchy
+{% for h in ctx.key_classes %}
+- `{{ h.child }}` {{ h.kind }} `{{ h.parent }}`{% if h.parent_file is defined and h.parent_file %} (in `{{ h.parent_file }}`){% endif %}
+{% endfor %}
+{% endif %}
+
+{% if ctx.decision_records %}
+## Recorded decisions
+{% for dr in ctx.decision_records[:5] %}
+- **{{ dr.title | oneline(80) }}**: {{ dr.decision | oneline }}{% if dr.rationale %} *(Why: {{ dr.rationale | oneline }})*{% endif %}
+{% endfor %}
+{% endif %}
+
+{% if ctx.dependencies %}
+## Dependencies (modules this imports)
+{% for dep in ctx.dependencies[:25] %}
+- `{{ dep }}`
+{% endfor %}
+{% endif %}
+
+{% if ctx.dependents %}
+## Dependents (modules that import this)
+{% for dep in ctx.dependents[:25] %}
+- `{{ dep }}`
+{% endfor %}
+{% endif %}
+
+{% if ctx.external_systems %}
+## External systems used
+{% for sys in ctx.external_systems[:15] %}
+- `{{ sys.name }}`{% if sys.category and sys.category != 'library' %} *({{ sys.category }})*{% endif %}{% if sys.ecosystem %} ({{ sys.ecosystem }}){% endif %}
+{% endfor %}
+{% endif %}
+
+{% if ctx.top_owners %}
+## Ownership
+{% for o in ctx.top_owners %}
+- **{{ o.name }}**: primary maintainer of {{ o.file_count }} file{{ "s" if o.file_count != 1 else "" }}
+{% endfor %}
+{% endif %}
+
+{% if ctx.dead_code_findings %}
+## Potentially unused code
+{% for finding in ctx.dead_code_findings[:10] %}
+- `{{ finding.symbol_name or '?' }}`: {{ finding.reason | oneline }} ({{ (finding.confidence * 100) | int }}%{% if finding.safe_to_delete %}, cleanup-ready{% endif %})
+{% endfor %}
+{% endif %}
+
+{% if module_git_summary %}
+## Recent activity
+Most active file: `{{ module_git_summary.most_active_file }}` ({{ module_git_summary.most_active_commits_90d }} commits in the last 90 days).
+{% endif %}
+{% include "deterministic/_footer.j2" %}

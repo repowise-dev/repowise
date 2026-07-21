@@ -1,0 +1,30 @@
+{#- Deterministic (no-LLM) guided tour.
+
+    Stop order, kind and the per-stop `reason` strings are all produced by
+    generation/tour.py, so this page is close to its LLM counterpart. What a
+    model adds is the connective narration between stops ("the parser from
+    step 2 hands its output to..."), which structure cannot supply.
+-#}
+# Guided Tour
+
+A reading order through `{{ ctx.repo_name }}`, {{ ctx.stops | length }} stops long. Each stop is picked by how much of the codebase depends on it and how early it sits in the import graph, so following them in order means you rarely meet a name before it has been introduced.
+
+{% if ctx.layer_order %}
+**Layer order:** {% for l in ctx.layer_order %}{{ l }}{% if not loop.last %} → {% endif %}{% endfor %}
+{% endif %}
+
+{% for stop in ctx.stops %}
+## {{ stop.order }}. {{ stop.title }}
+
+`{{ stop.target_path }}` *({{ stop.kind }})*
+
+{{ stop.reason | oneline(300) }}
+{% if stop.summary %}
+{{ stop.summary }}
+{% endif %}
+{% endfor %}
+
+## Where to go next
+
+Read the layer pages for the architectural spine, then the module pages for the areas you will work in.
+{% include "deterministic/_footer.j2" %}

@@ -1,0 +1,31 @@
+{#- Deterministic (no-LLM) infrastructure page.
+
+    The thinnest context in the set: path, language, declared targets and the
+    raw source. What makes an infra page useful (what the Dockerfile builds,
+    which ports it opens, what the CI job gates on) needs either real
+    per-format extraction or a model, and this path has neither. So the page
+    is explicitly a source view rather than an explanation.
+-#}
+# Infrastructure: {{ ctx.file_path }}
+
+**Type:** {{ ctx.language }}{% if ctx.targets %} | **Declared targets:** {{ ctx.targets | length }}{% endif %}
+
+## Overview
+
+`{{ ctx.file_path }}` is an infrastructure file ({{ ctx.language }}).{% if ctx.targets %} It declares {{ ctx.targets | length }} named target{{ "s" if ctx.targets | length != 1 else "" }}, listed below.{% endif %} Its behaviour is not derivable from structure, so the source is reproduced in full.
+
+{% if ctx.targets %}
+## Declared targets
+{% for t in ctx.targets %}
+- `{{ t }}`
+{% endfor %}
+{% endif %}
+
+{% if ctx.raw_content %}
+## Source
+
+```{{ ctx.language }}
+{{ ctx.raw_content }}
+```
+{% endif %}
+{% include "deterministic/_footer.j2" %}

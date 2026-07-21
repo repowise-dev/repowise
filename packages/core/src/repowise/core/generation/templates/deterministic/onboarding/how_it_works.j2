@@ -1,0 +1,57 @@
+{#- Deterministic (no-LLM) how it works.
+
+    The other page where synthesis is the product. The traced flows below are
+    real (call/import paths out of each entry point), but a template can only
+    list the hops, not say what happens at each one. Framed accordingly.
+-#}
+# How It Works
+
+Traced from the entry points outward: which files each run touches, in order. What happens at each hop is not derivable from the call graph, so this page shows the shape of execution rather than the behaviour.
+
+## Shape
+
+`{{ ctx.repo_name }}` looks like {{ "an" if ctx.archetype[0] in "aeiou" else "a" }} **{{ ctx.archetype }}**{% if ctx.archetype_evidence %}, based on:
+{% for e in ctx.archetype_evidence %}
+- {{ e }}
+{% endfor %}
+{% else %}.
+{% endif %}
+
+{% if ctx.entry_points %}
+## Entry points
+{% for ep in ctx.entry_points %}
+- `{{ ep }}`
+{% endfor %}
+{% endif %}
+
+{% if ctx.flows %}
+## Traced flows
+{% for f in ctx.flows %}
+{# entry_point is empty for symbol-rooted flows. Fall back to the first hop
+   rather than emitting an empty heading, and drop it from the step list
+   below so the heading is not immediately repeated as step 1. #}
+{% set root = f.entry_point or (f.hops[0] if f.hops else "") %}
+{% set steps = f.hops if f.entry_point else f.hops[1:] %}
+### From `{{ root or "an unnamed entry point" }}`
+
+{% if steps %}
+{% for h in steps %}
+{{ loop.index }}. `{{ h }}`
+{% endfor %}
+{% else %}
+_No downstream hops resolved._
+{% endif %}
+{% endfor %}
+{% endif %}
+
+{% if ctx.kg_tour_steps %}
+## Reading order
+
+The guided tour walks these in sequence.
+{% for s in ctx.kg_tour_steps %}
+{{ loop.index }}. {{ s.title }}{% if s.description %}. {{ s.description | oneline }}{% endif %}
+{% for nid in s.nodeIds[:3] %}   - `{{ nid | replace("file:", "") }}`
+{% endfor %}
+{% endfor %}
+{% endif %}
+{% include "deterministic/_footer.j2" %}

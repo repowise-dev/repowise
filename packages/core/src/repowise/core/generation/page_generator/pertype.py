@@ -76,8 +76,12 @@ class PerTypeGenerationMixin:
             graph,
             source_bytes=(source_map or {}).get(parsed.file_info.path, b""),
         )
-        user_prompt = self._render("symbol_spotlight.j2", ctx=ctx)
         target = f"{parsed.file_info.path}::{symbol.name}"
+        if self._config.deterministic:
+            return self._deterministic_symbol_spotlight(
+                ctx, target, f"Symbol: {symbol.qualified_name}"
+            )
+        user_prompt = self._render("symbol_spotlight.j2", ctx=ctx)
         response = await self._call_provider(
             "symbol_spotlight", user_prompt, str(uuid.uuid4()), target_path=target
         )
@@ -136,8 +140,12 @@ class PerTypeGenerationMixin:
                     "most_active_file": most_active.get("file_path", ""),
                     "most_active_commits_90d": most_active.get("commit_count_90d", 0),
                 }
-        user_prompt = self._render("module_page.j2", ctx=ctx, module_git_summary=module_git_summary)
         page_target = target_path or module_path
+        if self._config.deterministic:
+            return self._deterministic_module_page(
+                ctx, page_target, f"Module: {module_path}", module_git_summary
+            )
+        user_prompt = self._render("module_page.j2", ctx=ctx, module_git_summary=module_git_summary)
         response = await self._call_provider(
             "module_page", user_prompt, str(uuid.uuid4()), target_path=page_target
         )
@@ -157,6 +165,8 @@ class PerTypeGenerationMixin:
         file_contexts: list[FilePageContext],
     ) -> GeneratedPage:
         ctx = self._assembler.assemble_scc_page(scc_id, scc_files, file_contexts)
+        if self._config.deterministic:
+            return self._deterministic_scc_page(ctx, scc_id, f"Circular Dependency: {scc_id}")
         user_prompt = self._render("scc_page.j2", ctx=ctx)
         response = await self._call_provider(
             "scc_page", user_prompt, str(uuid.uuid4()), target_path=scc_id
@@ -209,6 +219,10 @@ class PerTypeGenerationMixin:
             }
         if not repo_name:
             repo_name = getattr(repo_structure, "name", None) or "repo"
+        if self._config.deterministic:
+            return self._deterministic_repo_overview(
+                ctx, repo_name, f"Repository Overview: {repo_name}", repo_git_summary
+            )
         user_prompt = self._render("repo_overview.j2", ctx=ctx, repo_git_summary=repo_git_summary)
         response = await self._call_provider(
             "repo_overview", user_prompt, str(uuid.uuid4()), target_path=repo_name
@@ -234,6 +248,10 @@ class PerTypeGenerationMixin:
         ctx = self._assembler.assemble_architecture_diagram(
             graph, pagerank, community, sccs, repo_name
         )
+        if self._config.deterministic:
+            return self._deterministic_architecture_diagram(
+                ctx, repo_name, f"Architecture Diagram: {repo_name}", overview_mermaid
+            )
         user_prompt = self._render("architecture_diagram.j2", ctx=ctx)
         response = await self._call_provider(
             "architecture_diagram", user_prompt, str(uuid.uuid4()), target_path=repo_name
@@ -263,6 +281,10 @@ class PerTypeGenerationMixin:
         source_bytes: bytes,
     ) -> GeneratedPage:
         ctx = self._assembler.assemble_api_contract(parsed, source_bytes)
+        if self._config.deterministic:
+            return self._deterministic_api_contract(
+                ctx, parsed.file_info.path, f"API Contract: {parsed.file_info.path}"
+            )
         user_prompt = self._render("api_contract.j2", ctx=ctx)
         response = await self._call_provider(
             "api_contract", user_prompt, str(uuid.uuid4()), target_path=parsed.file_info.path
@@ -291,9 +313,14 @@ class PerTypeGenerationMixin:
             log.debug("onboarding.gate_skipped", slot=spec.slot)
             return None
 
+        target = _onboarding.target_path(spec.slot)
+        if self._config.deterministic:
+            # No grounding post-check: a template can only cite what the
+            # context handed it, so there is nothing ungrounded to strip.
+            return self._deterministic_onboarding_page(spec, ctx, target)
+
         template_name = f"onboarding/{spec.template}"
         user_prompt = self._render(template_name, ctx=ctx, slot=spec.slot)
-        target = _onboarding.target_path(spec.slot)
         # Fold the onboarding generation version into the reuse hash so a
         # builder/template upgrade forces a one-time regen of cached pages.
         salt = _onboarding.ONBOARDING_GENERATION_VERSION
@@ -344,11 +371,15 @@ class PerTypeGenerationMixin:
         self,
         ctx: LayerPageContext,
     ) -> GeneratedPage:
-        user_prompt = self._render("layer_page.j2", ctx=ctx)
         # target_path = the layer's STABLE slug id, so the page key survives
         # the post-generation LLM rename of ``layer_name``. The title still
         # uses the (heuristic) display name.
         target = ctx.layer_id
+        if self._config.deterministic:
+            # The template embeds ctx.diagram_mermaid itself, so there is no
+            # post-generation embed_mermaid step on this path.
+            return self._deterministic_layer_page(ctx, f"Layer: {ctx.layer_name}")
+        user_prompt = self._render("layer_page.j2", ctx=ctx)
         response = await self._call_provider(
             "layer_page", user_prompt, str(uuid.uuid4()), target_path=target
         )
@@ -376,6 +407,10 @@ class PerTypeGenerationMixin:
         source_bytes: bytes,
     ) -> GeneratedPage:
         ctx = self._assembler.assemble_infra_page(parsed, source_bytes)
+        if self._config.deterministic:
+            return self._deterministic_infra_page(
+                ctx, parsed.file_info.path, f"Infrastructure: {parsed.file_info.path}"
+            )
         user_prompt = self._render("infra_page.j2", ctx=ctx)
         response = await self._call_provider(
             "infra_page", user_prompt, str(uuid.uuid4()), target_path=parsed.file_info.path

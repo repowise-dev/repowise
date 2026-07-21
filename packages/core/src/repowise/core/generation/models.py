@@ -185,6 +185,17 @@ class GenerationConfig:
     tier2_tail_cap: int | None = None
     # Optional directory allow-list (repo-relative prefixes). None = all dirs.
     tier2_tail_dirs: tuple[str, ...] | None = None
+    # ---- Fully deterministic generation (index-only mode) -------------
+    # When True, EVERY page type is rendered from a Jinja template instead
+    # of being written by a model: no provider call, no tokens, no key. The
+    # selection budget is bypassed (a template page is free, so there is
+    # nothing to ration) and every candidate in every bucket gets a page.
+    # This is what ``repowise init --index-only`` produces: a complete,
+    # navigable, searchable wiki whose prose is structural rather than
+    # synthesised, with each page individually upgradable to an LLM page
+    # later. Pages are marked ``provider_name="template"`` and
+    # ``metadata["deterministic"]=True``, exactly like the tier-2 tail.
+    deterministic: bool = False
 
     def __post_init__(self) -> None:
         if self.embed_concurrency is None:

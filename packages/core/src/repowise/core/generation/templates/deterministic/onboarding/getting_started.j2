@@ -1,0 +1,46 @@
+{#- Deterministic (no-LLM) getting started.
+
+    README sections are quoted rather than rewritten: the repo's own setup
+    instructions are more reliable than anything derivable from structure,
+    and quoting keeps the page honest about where the text came from.
+-#}
+# Getting Started
+
+{% if ctx.package_managers %}
+## Toolchain
+
+`{{ ctx.repo_name }}` is managed with {% for pm in ctx.package_managers %}**{{ pm }}**{% if not loop.last %}, {% endif %}{% endfor %}. Install dependencies with your usual command for {{ ctx.package_managers[0] }} before anything else.
+{% endif %}
+
+{% if ctx.entry_points %}
+## Entry points
+{% for ep in ctx.entry_points %}
+- `{{ ep }}`
+{% endfor %}
+{% endif %}
+
+{% if ctx.readme_sections %}
+## From the README
+
+Quoted verbatim from the repository's own README.
+{% for s in ctx.readme_sections %}
+### {{ s.heading }}
+
+{{ s.body | trim }}
+{% endfor %}
+{% endif %}
+
+{% if ctx.runtime_dependencies %}
+## Runtime dependencies
+{% for d in ctx.runtime_dependencies[:30] %}
+- `{{ d.name }}`{% if d.version %} {{ d.version }}{% endif %}
+{% endfor %}
+{% endif %}
+
+{% if ctx.dev_dependencies %}
+## Development dependencies
+{% for d in ctx.dev_dependencies[:30] %}
+- `{{ d.name }}`{% if d.version %} {{ d.version }}{% endif %}
+{% endfor %}
+{% endif %}
+{% include "deterministic/_footer.j2" %}

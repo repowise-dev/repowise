@@ -1,0 +1,38 @@
+{#- Deterministic (no-LLM) API contract page.
+
+    An honest stub, and marked as one. The assembled context is only a
+    symbol-kind partition (functions -> "endpoints", classes -> "schemas"),
+    not real route extraction, so a template cannot say what any of these
+    accept, return or do. Listing the shapes and the source is the most this
+    page can truthfully offer until a model rewrites it.
+-#}
+# API Contract: {{ ctx.file_path }}
+
+**Language:** {{ ctx.language }} | **Operations:** {{ ctx.endpoints | length }} | **Types:** {{ ctx.schemas | length }}
+
+## Overview
+
+`{{ ctx.file_path }}` was classified as an API surface. It declares {{ ctx.endpoints | length }} callable{{ "s" if ctx.endpoints | length != 1 else "" }} and {{ ctx.schemas | length }} type{{ "s" if ctx.schemas | length != 1 else "" }}. The list below is taken from the parsed symbols, so it reflects what the file *declares*; request and response semantics are not derivable from structure alone.
+
+{% if ctx.endpoints %}
+## Operations
+{% for e in ctx.endpoints %}
+- `{{ e | oneline(160) }}`
+{% endfor %}
+{% endif %}
+
+{% if ctx.schemas %}
+## Types
+{% for s in ctx.schemas %}
+- `{{ s }}`
+{% endfor %}
+{% endif %}
+
+{% if ctx.raw_content %}
+## Source
+
+```{{ ctx.language }}
+{{ ctx.raw_content }}
+```
+{% endif %}
+{% include "deterministic/_footer.j2" %}

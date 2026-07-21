@@ -40,6 +40,7 @@ from .decision_harvest import (
     HARVESTABLE_PAGE_TYPES,
     harvest_decisions,
 )
+from .deterministic import DeterministicRenderMixin, oneline
 from .helpers import _extract_summary, _now_iso
 from .pertype import PerTypeGenerationMixin
 from .prompts import SUPPORTED_LANGUAGES, SYSTEM_PROMPTS
@@ -120,7 +121,7 @@ class PriorPage:
     content_hash: str = ""
 
 
-class PageGenerator(PerTypeGenerationMixin):
+class PageGenerator(PerTypeGenerationMixin, DeterministicRenderMixin):
     """Generate wiki pages by rendering prompts and calling an LLM provider.
 
     Args:
@@ -188,6 +189,9 @@ class PageGenerator(PerTypeGenerationMixin):
                 autoescape=False,
             )
         self._jinja_env = jinja_env
+        # Registered on whatever env we ended up with (including one a caller
+        # injected), since deterministic templates depend on it.
+        self._jinja_env.filters.setdefault("oneline", oneline)
 
     # ------------------------------------------------------------------
     # generate_all — orchestration (delegates to orchestrate.py)

@@ -1,0 +1,47 @@
+{#- Deterministic (no-LLM) circular-dependency page.
+
+    The context here is entirely structural, so this page loses almost
+    nothing against its LLM counterpart. The one thing a model adds is
+    advice on breaking the cycle; the decouple ranking below is the
+    structural stand-in for it.
+-#}
+# Circular Dependency: {{ ctx.scc_id }}
+
+{{ ctx.files | length }} files import each other in a loop, directly or transitively. Nothing in this group can be loaded, tested or extracted without the rest of it.
+
+## Files in the cycle
+{% for f in ctx.files %}
+- `{{ f }}`
+{% endfor %}
+
+{% if ctx.cross_imports %}
+## The loop
+{% for edge in ctx.cross_imports %}
+- `{{ edge.from }}` → `{{ edge.to }}`
+{% endfor %}
+{% endif %}
+
+{% if decouple_ranking %}
+## Where to break it
+
+Ranked by how many of the cycle's edges each file carries. The file at the top is the most entangled, so it is usually where an extracted interface or a moved import buys the most.
+
+| File | Imports in cycle | Imported by | Total |
+| --- | --- | --- | --- |
+{% for r in decouple_ranking -%}
+| `{{ r.path }}` | {{ r.out }} | {{ r["in"] }} | {{ r.total }} |
+{% endfor %}
+{% endif %}
+
+{% if ctx.member_symbols %}
+## Symbols defined in the cycle
+{% for m in ctx.member_symbols %}
+### `{{ m.file_path }}`
+{% for s in m.symbols[:15] %}
+- `{{ s.name }}`{% if s.signature %}: `{{ s.signature | oneline(120) }}`{% endif %}
+{% endfor %}
+{% endfor %}
+{% endif %}
+
+**Total symbols in cycle:** {{ ctx.total_symbols }}
+{% include "deterministic/_footer.j2" %}
