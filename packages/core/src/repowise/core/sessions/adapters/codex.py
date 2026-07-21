@@ -8,12 +8,12 @@ JSONL line into the shared session ``Event`` shape used by the miners.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 import json
-from datetime import datetime
 from pathlib import Path
 from typing import Any, ClassVar
 
-from repowise.core.sessions.adapters.base import HarnessAdapter
+from repowise.core.sessions.adapters.base import HarnessAdapter, RawPrefilter
 from repowise.core.sessions.events import Event, ToolResult, ToolUse
 from repowise.core.sessions.adapters.claude_code import parse_timestamp
 from repowise.core.fs_walk import iter_glob
@@ -49,7 +49,6 @@ class CodexAdapter(HarnessAdapter):
             session_id=_first_non_empty_str(
                 _str_or_none(payload.get("session_id")),
                 _str_or_none(entry.get("session_id")),
-                _str_or_none(payload.get("id")),
             ),
             cwd=_first_non_empty_str(_str_or_none(payload.get("cwd")), _str_or_none(entry.get("cwd"))),
             usage=None,
@@ -77,15 +76,37 @@ class CodexAdapter(HarnessAdapter):
             tool_id = tool_call.get("id")
             name = tool_call.get("name")
             if isinstance(tool_id, str) and isinstance(name, str):
+                tool_input = payload.get("input")
+
+                if(isinstance(tool_input,(dict, str))):
+                    normalized_input = tool_input
+                else:
+                    normalized_input = {}
                 event.tool_uses.append(
                     ToolUse(
                         id=tool_id,
                         name=_normalize_tool_name(name),
-                        input=tool_call.get("input") if isinstance(tool_call.get("input"), dict) else {},
+                        input=normalized_input,
                     )
                 )
 
         return event
+    
+    def iter_events(self, path:Path, *, prefilter: RawPrefilter | None = None)-> Iterator[Event]:
+        current_session = None
+        with path.open(encoding="utf-8", errors="replace") as fh:
+            for raw in fh:
+                if prefilter is not None and not prefilter(raw):
+                    continue
+                event = self.normalize(raw)
+                if event is None:
+                    continue
+                if event.kind == "session_meta":
+                    current_session = event.session_id 
+                if event.session_id is None:
+                    event.session_id = current_session
+                
+                yield event
 
     @staticmethod
     def _fill_response_item(event: Event, payload: dict[str, Any]) -> None:
@@ -104,11 +125,20 @@ class CodexAdapter(HarnessAdapter):
             tool_id = payload.get("call_id") or payload.get("id")
             name = payload.get("name")
             if isinstance(tool_id, str) and isinstance(name, str):
+                tool_input = payload.get("input")
+
+                if isinstance(tool_input, dict):
+                    normalized_input = tool_input
+                elif isinstance(tool_input, str):
+                    normalized_input = {"command": tool_input}
+                else:
+                    normalized_input = {}
+
                 event.tool_uses.append(
                     ToolUse(
                         id=tool_id,
                         name=_normalize_tool_name(name),
-                        input=payload.get("input") if isinstance(payload.get("input"), dict) else {},
+                        input=normalized_input,
                     )
                 )
             return

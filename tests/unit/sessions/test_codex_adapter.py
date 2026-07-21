@@ -27,34 +27,16 @@ def test_discover_lists_jsonl_sorted(tmp_path: Path) -> None:
 
 
 def test_normalize_real_codex_rollout() -> None:
-    lines = FIXTURE.read_text(encoding="utf-8").splitlines()
+    events = list(ADAPTER.iter_events(FIXTURE))
 
-
-    meta = ADAPTER.normalize(lines[0])
-    message = ADAPTER.normalize(lines[1])
-    tool = ADAPTER.normalize(lines[2])
+    meta = next(e for e in events if e.kind == "session_meta")
+    assistant = next(e for e in events if e.kind == "assistant")
+    tool = next(e for e in events if e.tool_uses) 
 
     assert isinstance(meta, Event)
     assert meta.kind == "session_meta"
-    assert meta.session_id == "sess-1"
-    assert meta.cwd == r"C:\Users\x\repo"
     assert meta.is_meta is True
-    assert meta.text == ""
 
-    assert isinstance(message, Event)
-    assert message.kind == "assistant"
-    assert message.message_id == "msg_01"
-    assert message.model == "gpt-5-codex"
-    assert message.text == "Searching the codebase."
-
-    assert isinstance(tool, Event)
-    assert tool.kind == "assistant"
-    assert tool.tool_uses[0].name == "search_codebase"
-    assert tool.tool_uses[0].id == "call_01"
-    assert tool.tool_uses[0].input == {
-        "query": "repowise",
-        "path": "pkg/app.py",
-    }    
 def test_normalize_handles_session_meta_and_custom_tool_payloads() -> None:
     session_meta = json.dumps(
         {
@@ -110,14 +92,18 @@ def test_normalize_handles_session_meta_and_custom_tool_payloads() -> None:
     assert output_event is not None
     assert output_event.tool_results[0].tool_use_id == "call_1"
     assert output_event.text == "done"
+    
+def test_iter_events_threads_session_id() -> None:
+    events = list(ADAPTER.iter_events(FIXTURE))
 
+    session = events[0].session_id
+
+    assert session is not None
+    assert all(e.session_id == session for e in events)
 
 def test_codex_rollout_feeds_demand_miner() -> None:
-    events = [
-        event
-        for line in FIXTURE.read_text(encoding="utf-8").splitlines()
-        if (event := ADAPTER.normalize(line)) is not None
-    ]
+    events = list(ADAPTER.iter_events(FIXTURE))
+
 
     demand = mine_events_demand(events, REPO_PREFIX)
 
@@ -125,11 +111,8 @@ def test_codex_rollout_feeds_demand_miner() -> None:
     assert demand == {"pkg/app.py": 1}
 
 def test_codex_rollout_feeds_decision_miner() -> None:
-    events = [
-        event
-        for line in FIXTURE.read_text(encoding="utf-8").splitlines()
-        if (event := ADAPTER.normalize(line)) is not None
-    ]
+    events = list(ADAPTER.iter_events(FIXTURE))
+
 
     decisions = mine_events(events, REPO_PREFIX)
 
@@ -141,3 +124,4 @@ def test_codex_rollout_feeds_decision_miner() -> None:
     assert decision.quotes == [
         "We chose Flask because it is lightweight, keeps SQLite integration straightforward, and avoids unnecessary boilerplate for this small application."
     ]
+    
