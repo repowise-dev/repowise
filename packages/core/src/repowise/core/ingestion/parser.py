@@ -300,6 +300,16 @@ class ASTParser:
                     tree = tsx_tree
                     root = tree.root_node
                     parse_errors = tsx_errors
+                    # Both grammar_tag AND language must be reassigned.
+                    # grammar_tag is consumed immediately below by
+                    # self._get_query(lang, language, grammar_tag), which
+                    # appends tsx.scm to the base typescript.scm query.
+                    # That append is what supplies the
+                    # jsx_opening_element / jsx_self_closing_element captures
+                    # that restore JSX component call-site edges.
+                    # Reassigning only ``tree`` / ``root`` would fix parse
+                    # errors but leave those edges missing — the dead-code
+                    # false-positive would remain.
                     grammar_tag = "tsx"
                     language = tsx_language
 

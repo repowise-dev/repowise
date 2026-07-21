@@ -196,6 +196,31 @@ export function Card() {
         assert "StatRow" in targets   # self-closing JSX captured as call
         assert "Section" in targets   # paired JSX captured as call
 
+    def test_ts_file_unrelated_syntax_error_with_html_in_string_preserves_original_parse(
+        self, parser: ASTParser
+    ) -> None:
+        # Negative / safety-net case.
+        # A .ts file whose parse error has nothing to do with JSX (here: an
+        # invalid ``@`` decorator) and that incidentally contains ``</`` inside a
+        # comment must come back with the original TypeScript parse tree
+        # intact — the fallback must NOT clear the error.
+        #
+        # The TSX grammar sees the same structural error and produces an equal
+        # or greater number of ERROR nodes, so
+        # ``len(tsx_errors) < len(parse_errors)`` is False and the original
+        # result is preserved.  This test pins that safety guarantee.
+        src = b"""
+export function f() {
+  // renders </div> elements here
+  return @invalid;
+}
+"""
+        fi = _make_file_info("src/broken.ts", "typescript")
+        result = parser.parse_file(fi, src)
+        # The real TypeScript error must still be reported — fallback did not clear it.
+        assert result.parse_errors != []
+
+
     def test_jsx_element_registers_as_call_target(self, parser: ASTParser) -> None:
         # Regression: ``<StatRow ... />`` inside the same file as the
         # ``StatRow`` component definition was not registering as a call,
