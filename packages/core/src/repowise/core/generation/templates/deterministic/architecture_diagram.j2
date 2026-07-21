@@ -1,0 +1,57 @@
+{#- Deterministic (no-LLM) architecture map.
+
+    The strongest of the deterministic pages: the mermaid diagram is built
+    from the knowledge graph on BOTH paths, and on the LLM path it replaces
+    whatever the model drew. So the only thing lost here is the prose around
+    an already-structural artifact.
+
+    ``overview_mermaid`` is the KG-derived diagram. When the KG can't produce
+    one, fall back to drawing the top-ranked nodes and edges the context
+    already carries.
+-#}
+# Architecture Diagram: {{ ctx.repo_name }}
+
+## Architecture map
+
+{% if overview_mermaid %}
+```mermaid
+{{ overview_mermaid }}
+```
+{% elif ctx.edges %}
+```mermaid
+graph TD
+{% for src, dst in ctx.edges[:60] %}
+    {{ src | replace("/", "_") | replace(".", "_") | replace("-", "_") }}["{{ src }}"] --> {{ dst | replace("/", "_") | replace(".", "_") | replace("-", "_") }}["{{ dst }}"]
+{% endfor %}
+```
+{% else %}
+_Not enough resolved dependencies to draw a map._
+{% endif %}
+
+## How to read this
+
+Nodes are the most central files and modules by PageRank; arrows point from importer to imported. Groups are the architectural clusters dependency analysis found. The map covers the top {{ ctx.nodes | length }} node{{ "s" if ctx.nodes | length != 1 else "" }}, not the whole repository.
+
+{% if ctx.communities %}
+## Clusters
+{% for cid, members in ctx.communities.items() %}
+- **Cluster {{ cid }}** ({{ members | length }} shown){% for m in members %}
+  - `{{ m }}`{% endfor %}
+{% endfor %}
+{% endif %}
+
+{% if ctx.scc_groups %}
+## Import cycles
+Groups whose members import each other in a loop. Each has its own page.
+{% for group in ctx.scc_groups %}
+- {{ group | length }} files: {% for f in group[:5] %}`{{ f }}`{% if not loop.last %}, {% endif %}{% endfor %}{% if group | length > 5 %} and {{ group | length - 5 }} more{% endif %}
+{% endfor %}
+{% endif %}
+
+{% if ctx.nodes %}
+## Nodes on the map
+{% for n in ctx.nodes %}
+- `{{ n }}`
+{% endfor %}
+{% endif %}
+{% include "deterministic/_footer.j2" %}

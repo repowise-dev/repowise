@@ -1,0 +1,51 @@
+{#- Deterministic (no-LLM) codebase map. Directory tables render well from
+    structure alone, so this page is near-parity with its LLM counterpart.
+-#}
+# Codebase Map
+
+`{{ ctx.repo_name }}` holds {{ ctx.total_files }} files and {{ ctx.total_loc }} lines across {{ ctx.directories | length }} significant director{{ "ies" if ctx.directories | length != 1 else "y" }}.
+
+{% if ctx.layer_order %}
+## Architectural layers
+
+Top to bottom, the order work flows through.
+{% for l in ctx.layer_order %}
+{{ loop.index }}. {{ l }}
+{% endfor %}
+{% endif %}
+
+{% if ctx.entry_points %}
+## Entry points
+{% for ep in ctx.entry_points %}
+- `{{ ep }}`
+{% endfor %}
+{% endif %}
+
+## Directories
+
+| Directory | Files | Language | Clusters |
+| --- | --- | --- | --- |
+{% for d in ctx.directories -%}
+| `{{ d.path }}` | {{ d.file_count }} | {{ d.dominant_language }} | {{ d.community_labels | join(", ") if d.community_labels else "none" }} |
+{% endfor %}
+
+{% for d in ctx.directories %}
+{% if d.top_files or d.entry_points %}
+### `{{ d.path }}`
+
+{{ d.file_count }} {{ d.dominant_language }} file{{ "s" if d.file_count != 1 else "" }}.
+{% if d.entry_points %}
+Entry points:
+{% for ep in d.entry_points %}
+- `{{ ep }}`
+{% endfor %}
+{% endif %}
+{% if d.top_files %}
+Most central files:
+{% for f in d.top_files %}
+- `{{ f }}`
+{% endfor %}
+{% endif %}
+{% endif %}
+{% endfor %}
+{% include "deterministic/_footer.j2" %}

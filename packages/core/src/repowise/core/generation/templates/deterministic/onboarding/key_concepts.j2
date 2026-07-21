@@ -1,0 +1,49 @@
+{#- Deterministic (no-LLM) key concepts.
+
+    One of the two onboarding pages where the synthesis IS the product: the
+    LLM version explains what each concept means and how they relate. A
+    template can only point at the symbols the graph says matter most. Framed
+    as a starting list rather than an explanation, so the gap is visible.
+-#}
+# Key Concepts
+
+The types and functions the rest of `{{ ctx.repo_name }}` leans on most, ranked by how many files across the codebase reach for them. This is a list of what to learn, not yet an explanation of it.
+
+{% if ctx.layer_order %}
+**Layers these sit in:** {% for l in ctx.layer_order %}{{ l }}{% if not loop.last %} → {% endif %}{% endfor %}
+{% endif %}
+
+{% if ctx.concept_symbols %}
+## Core symbols
+{% for s in ctx.concept_symbols %}
+### `{{ s.name }}`
+
+**{{ s.kind }}** in `{{ s.file_path }}`{% if s.cluster %} · {{ s.cluster }}{% endif %}{% if s.cross_file_callers %} · used from {{ s.cross_file_callers }} other file{{ "s" if s.cross_file_callers != 1 else "" }}{% endif %}
+
+{% if s.docstring %}{{ s.docstring | trim }}{% else %}_No docstring._{% endif %}
+{% endfor %}
+{% endif %}
+
+{% if ctx.relations %}
+## How they connect
+{% for r in ctx.relations %}
+- `{{ r.source }}` {{ r.kind }} `{{ r.target }}`
+{% endfor %}
+{% endif %}
+
+{% if ctx.community_labels %}
+## Vocabulary from the clusters
+
+Dependency analysis named these groups. Their names are usually the codebase's own words for its parts.
+{% for c in ctx.community_labels %}
+- {{ c }}
+{% endfor %}
+{% endif %}
+
+{% if ctx.decision_titles %}
+## Decisions worth knowing early
+{% for d in ctx.decision_titles %}
+- {{ d }}
+{% endfor %}
+{% endif %}
+{% include "deterministic/_footer.j2" %}

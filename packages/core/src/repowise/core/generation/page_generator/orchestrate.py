@@ -249,10 +249,14 @@ class _GenerationRun:
         # Tiered doc generation: split the selected file pages into a full-LLM
         # tier-1 and a deterministic template-only tier-2. When tier1_top_n is
         # None this puts every selected page in tier-1 (no behaviour change).
+        # A fully deterministic run has no tier-1 by definition: every file page
+        # goes through the same template renderer, so force the cap to 0 rather
+        # than making the tier split learn about the mode.
+        tier1_cap = 0 if self.config.deterministic else getattr(self.config, "tier1_top_n", None)
         self.tier1_paths, self.tier2_paths = partition_file_tiers(
             self.sel_file_paths,
             self.pagerank,
-            getattr(self.config, "tier1_top_n", None),
+            tier1_cap,
             kg_file_scores=kg_scores or None,
         )
 
@@ -436,7 +440,7 @@ class _GenerationRun:
                     if self.on_page_ready is not None:
                         try:
                             self.on_page_ready(result)
-                        except Exception as exc:  # noqa: BLE001
+                        except Exception as exc:
                             log.debug("on_page_ready.failed", error=str(exc))
                     # A page reused verbatim from the prior run already has an
                     # identical vector in any store that survives across runs;

@@ -1,0 +1,38 @@
+{#- Deterministic (no-LLM) active landscape. Pure git history, so this page
+    loses essentially nothing without a model.
+-#}
+# Active Landscape
+
+Where `{{ ctx.repo_name }}` has actually been changing. {{ ctx.total_commits_90d }} commits touched {{ ctx.files_touched_90d }} files in the last 90 days{% if ctx.stable_file_count %}; {{ ctx.stable_file_count }} files have not moved at all{% endif %}.
+
+{% if ctx.hot_files %}
+## Files under active change
+
+| File | Commits (90d) | Owner | Hotspot | Age |
+| --- | --- | --- | --- | --- |
+{% for f in ctx.hot_files -%}
+| `{{ f.path }}` | {{ f.commit_count_90d }} | {{ f.primary_owner or "unknown" }} | {{ "yes" if f.is_hotspot else "no" }} | {{ f.age_days }}d |
+{% endfor %}
+
+A hotspot is a file that is both high-churn and structurally complex. Those are the ones where changes are most likely to go wrong.
+{% endif %}
+
+{% if ctx.hot_dirs %}
+## Areas under active change
+
+| Directory | Commits (90d) | Files | Hotspots |
+| --- | --- | --- | --- |
+{% for d in ctx.hot_dirs -%}
+| `{{ d.path }}` | {{ d.total_commits_90d }} | {{ d.file_count }} | {{ d.hotspot_count }} |
+{% endfor %}
+{% endif %}
+
+{% if ctx.dead_code_in_hot_files %}
+## Unused code in files that keep changing
+
+Worth deleting first: it is being carried through every edit.
+{% for f in ctx.dead_code_in_hot_files[:15] %}
+- `{{ f.get("symbol_name") or f.get("file_path") }}`{% if f.get("file_path") and f.get("symbol_name") %} in `{{ f.get("file_path") }}`{% endif %}{% if f.get("reason") %} ({{ f.get("reason") }}){% endif %}
+{% endfor %}
+{% endif %}
+{% include "deterministic/_footer.j2" %}

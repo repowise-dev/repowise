@@ -40,6 +40,7 @@ from .decision_harvest import (
     HARVESTABLE_PAGE_TYPES,
     harvest_decisions,
 )
+from .deterministic import DeterministicRenderMixin
 from .helpers import _extract_summary, _now_iso
 from .pertype import PerTypeGenerationMixin
 from .prompts import SUPPORTED_LANGUAGES, SYSTEM_PROMPTS
@@ -120,7 +121,7 @@ class PriorPage:
     content_hash: str = ""
 
 
-class PageGenerator(PerTypeGenerationMixin):
+class PageGenerator(PerTypeGenerationMixin, DeterministicRenderMixin):
     """Generate wiki pages by rendering prompts and calling an LLM provider.
 
     Args:

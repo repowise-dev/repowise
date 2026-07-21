@@ -244,7 +244,20 @@ def _build_symbol_candidates(
             if s > 0.0:
                 scored.append((s, (p.file_info.path, sym.name)))
     scored.sort(key=lambda x: x[0], reverse=True)
-    return scored
+    # A spotlight page is keyed by ``(file_path, symbol_name)``, but one file
+    # can declare that pair twice: two classes in the same Java file each
+    # with a ``toString``, two Rust impl blocks each with a ``new``. Left in,
+    # the duplicates generate the same page id twice (the second silently
+    # overwriting the first, having spent a full LLM call to do it). Keep the
+    # highest-scoring occurrence; the list is already sorted, so first wins.
+    seen: set[tuple[str, str]] = set()
+    deduped: list[tuple[float, tuple[str, str]]] = []
+    for score, target in scored:
+        if target in seen:
+            continue
+        seen.add(target)
+        deduped.append((score, target))
+    return deduped
 
 
 def _build_curated_module_groups(
@@ -536,6 +549,51 @@ def _ensure_landmarks(selected: list[str], landmarks: list[str]) -> list[str]:
     return sel
 
 
+def _select_everything(
+    files: list,
+    modules: list,
+    apis: list,
+    infras: list,
+    sccs: list,
+    available: dict[str, int],
+) -> Selection:
+    """Return a Selection holding every scored candidate, budget bypassed.
+
+    Used by fully deterministic (no-LLM) generation, where every page is free
+    to produce. Candidates are already score-ordered, so the resulting page
+    order still puts the most central files first.
+    """
+    sel = Selection(
+        file_page_paths=[p for _, p in files],
+        deterministic_tail_paths=[],
+        # Symbol spotlights are the one bucket deterministic mode drops. A
+        # template spotlight carries the signature, docstring and importer
+        # list, all of which the file page for its containing file already
+        # renders, so taking every candidate would triple the index for no
+        # new information and dilute retrieval, the same failure the tier-2
+        # tail's importance floor exists to avoid. On the fixture repo that is
+        # 171 near-duplicate pages against 33 file pages. Users who want a
+        # spotlight on a specific symbol can generate one on demand.
+        symbol_spotlights=[],
+        module_groups=[m for _, m in modules],
+        api_contract_paths=[p for _, p in apis],
+        infra_paths=[p for _, p in infras],
+        scc_groups=[g for _, g in sccs],
+        emit_repo_overview=True,
+        emit_arch_diagram=True,
+        allocation=BucketAllocation(
+            file_page=available["file_page"],
+            symbol_spotlight=0,
+            module_page=available["module_page"],
+            api_contract=available["api_contract"],
+            infra_page=available["infra_page"],
+            scc_page=available["scc_page"],
+        ),
+    )
+    log.info("page_selection.complete", mode="deterministic", counts=sel.counts())
+    return sel
+
+
 def select_pages(inputs: SelectionInputs) -> Selection:
     """Return the allow-set of pages to generate for one run.
 
@@ -562,6 +620,15 @@ def select_pages(inputs: SelectionInputs) -> Selection:
         "infra_page": len(infras),
         "scc_page": len(sccs),
     }
+
+    # getattr, not attribute access: select_pages accepts any config-like
+    # object (the cost estimator passes its own), so a new field must not
+    # become a hard requirement on callers.
+    if getattr(cfg, "deterministic", False):
+        # Nothing to ration: a template page costs no tokens, so the coverage
+        # budget has no job to do. Take every candidate in every bucket. The
+        # tail stays empty because the file bucket already holds every file.
+        return _select_everything(files, modules, apis, infras, sccs, available)
 
     allocation = allocate_budget(
         budget=budget,

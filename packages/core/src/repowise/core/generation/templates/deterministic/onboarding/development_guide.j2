@@ -1,0 +1,42 @@
+{#- Deterministic (no-LLM) development guide. The conventions here are mined
+    from file naming and directory shape, so they are observations rather
+    than rules. Worded that way on purpose.
+-#}
+# Development Guide
+
+Conventions observed in `{{ ctx.repo_name }}` by looking at how files are named and arranged. These are patterns the codebase already follows, not rules anyone wrote down.
+
+{% if ctx.suffix_patterns %}
+## Naming patterns
+
+| Suffix | Files | Examples |
+| --- | --- | --- |
+{% for p in ctx.suffix_patterns -%}
+| `{{ p.suffix }}` | {{ p.file_count }} | {% for e in p.examples[:3] %}`{{ e }}`{% if not loop.last %}, {% endif %}{% endfor %} |
+{% endfor %}
+
+A new file that fits one of these categories should follow the matching suffix.
+{% endif %}
+
+{% if ctx.test_mirror %}
+## Where tests live
+
+Tests sit under `{{ ctx.test_mirror.test_root }}`, mirroring the source tree: {{ ctx.test_mirror.matched_files }} of {{ ctx.test_mirror.source_files }} source files have a matching test path. A new source file's test belongs at the mirrored path under `{{ ctx.test_mirror.test_root }}`.
+{% endif %}
+
+{% if ctx.parallel_dirs %}
+## Directories that move together
+
+These sit at the same level and tend to be structured alike, so a change in one usually has a counterpart in the others.
+{% for d in ctx.parallel_dirs %}
+- `{{ d }}`
+{% endfor %}
+{% endif %}
+
+{% if ctx.entry_points %}
+## Entry points to run
+{% for ep in ctx.entry_points %}
+- `{{ ep }}`
+{% endfor %}
+{% endif %}
+{% include "deterministic/_footer.j2" %}
