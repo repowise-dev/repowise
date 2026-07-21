@@ -7,6 +7,7 @@ export const FILE_PAGE_TABS = [
   "doc",
   "health",
   "history",
+  "decisions",
   "graph",
   "coverage",
 ] as const;

@@ -1,6 +1,6 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { useState, useEffect, type ReactNode } from "react";
 import { Flame, DoorOpen, Trash2, Users } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
@@ -12,6 +12,7 @@ import { FileOverviewTab } from "./file-overview-tab";
 import { FileDocTab } from "./file-doc-tab";
 import { FileHealthTab, type FindingStatus } from "./file-health-tab";
 import { FileHistoryTab } from "./file-history-tab";
+import { FileDecisionsTab } from "./file-decisions-tab";
 import { FileCoverageTab } from "./file-coverage-tab";
 import { FileGraphTab } from "./file-graph-tab";
 import type { FileDetailResponse } from "@repowise-dev/types/files";
@@ -42,7 +43,7 @@ export interface FilePageProps {
  * The canonical "everything about this file" page. A standardized entity
  * header (eyebrow, breadcrumb, identity, summary, primary health signal,
  * owner pill, governing decisions) over Overview / Doc / Health / History /
- * Graph / Coverage tabs. Overview leads so undocumented files are never empty.
+ * Decisions / Graph / Coverage tabs. Overview leads so undocumented files are never empty.
  */
 export function FilePage({
   data,
@@ -65,8 +66,24 @@ export function FilePage({
   const fileHref = (p: string) => fileEntityPath(prefix, p);
   const symbolHref = (s: string) => symbolEntityPath(prefix, s);
 
-  const defaultTab: FilePageTab =
+  const decisions = data.governing_decisions ?? [];
+  const hasDecisions = decisions.length > 0;
+
+  const rawTab: FilePageTab =
     initialTab && FILE_PAGE_TABS.includes(initialTab) ? initialTab : "overview";
+  const defaultTab: FilePageTab =
+    rawTab === "decisions" && !hasDecisions ? "overview" : rawTab;
+
+  const [activeTab, setActiveTab] = useState<FilePageTab>(defaultTab);
+
+  useEffect(() => {
+    setActiveTab(defaultTab);
+  }, [defaultTab]);
+
+  const handleTabChange = (tab: FilePageTab) => {
+    setActiveTab(tab);
+    onTabChange?.(tab);
+  };
 
   return (
     <div className="space-y-4">
@@ -127,28 +144,26 @@ export function FilePage({
           ) : undefined
         }
         decisions={
-          data.governing_decisions.length > 0 ? (
-            <div className="flex flex-wrap items-center gap-1.5">
+          hasDecisions ? (
+            <button
+              type="button"
+              onClick={() => handleTabChange("decisions")}
+              className="inline-flex items-center gap-1.5 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-accent-primary)] hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--color-accent-primary)] rounded"
+            >
               <span className="text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)]">
                 Governed by
               </span>
-              {data.governing_decisions.map((d) => (
-                <a
-                  key={d.id}
-                  href={`${prefix}/decisions/${d.id}`}
-                  className="rounded border border-[var(--color-border-default)] px-1.5 py-0.5 text-xs text-[var(--color-text-secondary)] transition-colors hover:border-[var(--color-accent-primary)] hover:text-[var(--color-accent-primary)]"
-                >
-                  {d.title}
-                </a>
-              ))}
-            </div>
+              <span className="font-medium text-[var(--color-text-primary)]">
+                {decisions.length} {decisions.length === 1 ? "decision" : "decisions"}
+              </span>
+            </button>
           ) : undefined
         }
         {...(LinkComponent ? { LinkComponent } : {})}
       />
 
       {/* ── Tabs ── */}
-      <Tabs defaultValue={defaultTab} onValueChange={(v) => onTabChange?.(v as FilePageTab)}>
+      <Tabs value={activeTab} onValueChange={(v) => handleTabChange(v as FilePageTab)}>
         <TabsList className="flex-wrap">
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="doc">Doc</TabsTrigger>
@@ -161,6 +176,14 @@ export function FilePage({
             )}
           </TabsTrigger>
           <TabsTrigger value="history">History</TabsTrigger>
+          {hasDecisions && (
+            <TabsTrigger value="decisions">
+              Decisions
+              <span className="ml-1 text-[10px] tabular-nums opacity-70">
+                {decisions.length}
+              </span>
+            </TabsTrigger>
+          )}
           <TabsTrigger value="graph">Graph</TabsTrigger>
           <TabsTrigger value="coverage">Coverage</TabsTrigger>
         </TabsList>
@@ -182,6 +205,15 @@ export function FilePage({
         <TabsContent value="history" className="mt-4">
           <FileHistoryTab git={data.git} linkPrefix={prefix} partnerHref={fileHref} />
         </TabsContent>
+        {hasDecisions && (
+          <TabsContent value="decisions" className="mt-4">
+            <FileDecisionsTab
+              decisions={decisions}
+              linkPrefix={prefix}
+              {...(LinkComponent ? { LinkComponent } : {})}
+            />
+          </TabsContent>
+        )}
         <TabsContent value="graph" className="mt-4">
           <FileGraphTab
             graph={data.graph}
