@@ -836,6 +836,10 @@ def run_update(
     # coverage. Without reading these back, every update would silently drop the
     # deterministic tail (and any tier-1 cap) to their defaults.
     tail_dirs_cfg = cfg.get("tier2_tail_dirs")
+    kwargs = {}
+    if cfg.get("coverage_pct") is not None:
+        kwargs["coverage_pct"] = float(cfg["coverage_pct"])
+
     config = GenerationConfig(
         max_concurrency=concurrency,
         language=language,
@@ -848,6 +852,7 @@ def run_update(
         tier2_tail_enabled=bool(cfg.get("tier2_tail_enabled", True)),
         tier2_tail_cap=cfg.get("tier2_tail_cap"),
         tier2_tail_dirs=tuple(tail_dirs_cfg) if tail_dirs_cfg else None,
+        **kwargs,
     )
 
     # Resolve the generation provider. If the repo wants docs but was never
