@@ -173,7 +173,12 @@ def _select_clone_representatives(
     for members in clusters.values():
         if len(members) < min_cluster_size:
             continue
-        members.sort(key=lambda p: pagerank.get(p.file_info.path, 0.0), reverse=True)
+        # Near-clones usually share a PageRank (often 0.0), so the path breaks
+        # the tie. Without it the survivor of each cluster changes between
+        # runs, and with it which file gets a page at all.
+        members.sort(
+            key=lambda p: (-pagerank.get(p.file_info.path, 0.0), p.file_info.path)
+        )
         for loser in members[1:]:
             drop.add(loser.file_info.path)
     return drop

@@ -57,7 +57,11 @@ class MetricsMixin:
         cd = self.community_detection()
         ind = self.in_degree()
         outd = self.out_degree()
-        nodes = set(pr) | set(bc) | set(cd) | set(ind) | set(outd)
+        # Sorted: this dict's order becomes the graph_metrics row order, which
+        # load_metrics_from_sql then replays into the metric caches. Set
+        # iteration order would carry a run's hash seed into the next run's
+        # rankings.
+        nodes = sorted(set(pr) | set(bc) | set(cd) | set(ind) | set(outd))
         return {
             n: {
                 "pagerank": pr.get(n, 0.0),
@@ -135,8 +139,20 @@ class MetricsMixin:
     # ------------------------------------------------------------------
 
     def strongly_connected_components(self) -> list[frozenset[str]]:
-        """Return SCCs as a list of frozensets."""
-        return [frozenset(scc) for scc in nx.strongly_connected_components(self.file_subgraph())]
+        """Return SCCs as a list of frozensets, in a run-stable order.
+
+        NetworkX yields components in graph-iteration order, and the graph's
+        node insertion order varies between runs (git-indexer threads finish
+        in whatever order they finish). Callers that index into this list, such
+        as the wiki's SCC page ids and the repo-overview cycle listing, would
+        otherwise name the same cycle differently on two runs at the same
+        HEAD. Sorting by size then by first member fixes the order to
+        something that depends only on the component contents.
+        """
+        return sorted(
+            (frozenset(scc) for scc in nx.strongly_connected_components(self.file_subgraph())),
+            key=lambda scc: (-len(scc), min(scc)),
+        )
 
     def pagerank(self, alpha: float = 0.85) -> dict[str, float]:
         """Return PageRank scores for file nodes only (cached)."""
@@ -377,7 +393,14 @@ class MetricsMixin:
     def _build_scc_map(self) -> dict[str, int]:
         """Assign a numeric SCC ID to each node."""
         result: dict[str, int] = {}
-        for scc_id, scc in enumerate(nx.strongly_connected_components(self.graph())):
+        # Sorted for the same reason as strongly_connected_components: the
+        # enumerate index is persisted as graph_nodes.scc_id, so it must not
+        # depend on graph insertion order.
+        components = sorted(
+            nx.strongly_connected_components(self.graph()),
+            key=lambda scc: (-len(scc), min(scc)),
+        )
+        for scc_id, scc in enumerate(components):
             for node in scc:
                 result[node] = scc_id
         return result
@@ -400,7 +423,10 @@ class MetricsMixin:
         """
         out: dict[str, dict[str, Any]] = {}
 
-        for scc_id, scc in enumerate(nx.strongly_connected_components(self.file_subgraph())):
+        # strongly_connected_components() is run-stably ordered, so the
+        # scc_id persisted on GraphNodeMembership names the same cycle across
+        # runs at the same HEAD.
+        for scc_id, scc in enumerate(self.strongly_connected_components()):
             if len(scc) < 2:
                 continue
             for node in scc:

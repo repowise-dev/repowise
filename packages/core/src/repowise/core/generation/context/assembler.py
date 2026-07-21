@@ -424,8 +424,11 @@ class ContextAssembler:
         decision_records: list[dict] | None = None,
     ) -> RepoOverviewContext:
         """Assemble context for the repo_overview template."""
-        # Top files sorted by PageRank descending
-        sorted_pr = sorted(pagerank.items(), key=lambda x: x[1], reverse=True)
+        # Top files sorted by PageRank descending, path breaking ties. Leaf
+        # files share a PageRank in bulk, and dict order here is graph
+        # insertion order, so without the tiebreak the overview's top-file
+        # list is a different list on every run.
+        sorted_pr = sorted(pagerank.items(), key=lambda x: (-x[1], x[0]))
         top_files = [
             _TopFile(path=p, score=s)
             for p, s in sorted_pr[:_MAX_TOP_FILES]
@@ -449,7 +452,7 @@ class ContextAssembler:
                             "cohesion": round(ci.cohesion, 2),
                         }
                     )
-                communities_list.sort(key=lambda c: c["size"], reverse=True)
+                communities_list.sort(key=lambda c: (-c["size"], str(c["label"])))
                 communities_list = communities_list[:10]
             except Exception:
                 pass
@@ -500,27 +503,33 @@ class ContextAssembler:
         max_diagram_nodes = 50
         max_diagram_edges = 200
 
-        # Top-N nodes by PageRank (exclude external nodes)
+        # Top-N nodes by PageRank (exclude external nodes). Path breaks the
+        # tie, otherwise which 50 nodes make the cut changes between runs and
+        # the diagram is not comparable to the one it replaces.
         top_nodes = set(
             p
-            for p, _ in sorted(pagerank.items(), key=lambda x: x[1], reverse=True)[
+            for p, _ in sorted(pagerank.items(), key=lambda x: (-x[1], str(x[0])))[
                 :max_diagram_nodes
             ]
             if not str(p).startswith("external:")
         )
         nodes = sorted(top_nodes)
 
-        # Only edges between selected nodes
-        edges = [(src, dst) for src, dst in graph.edges() if src in top_nodes and dst in top_nodes][
-            :max_diagram_edges
-        ]
+        # Only edges between selected nodes. Sorted for the same reason: the
+        # 200-edge cap is applied to graph iteration order otherwise.
+        edges = sorted(
+            (src, dst) for src, dst in graph.edges() if src in top_nodes and dst in top_nodes
+        )[:max_diagram_edges]
 
         # Community → members mapping (top-10 communities, cap members to 5)
         raw_communities: dict[int, list[str]] = {}
         for path, cid in community.items():
             if not path.startswith("external:"):
                 raw_communities.setdefault(cid, []).append(path)
-        comm_sorted = sorted(raw_communities.items(), key=lambda x: len(x[1]), reverse=True)[:10]
+        comm_sorted = sorted(
+            ((cid, sorted(members)) for cid, members in raw_communities.items()),
+            key=lambda x: (-len(x[1]), x[0]),
+        )[:10]
         communities: dict[int, list[str]] = {cid: members[:5] for cid, members in comm_sorted}
 
         # SCC groups (only non-singleton)

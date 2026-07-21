@@ -144,7 +144,8 @@ def _partition(G: nx.Graph) -> tuple[dict, str]:
         log.warning("louvain_failed_using_directory_fallback", error=str(exc))
 
     # Final fallback: directory-based grouping
-    return _directory_fallback(list(G.nodes())), "directory"
+    # Sorted: _directory_fallback numbers directories in first-seen order.
+    return _directory_fallback(sorted(G.nodes())), "directory"
 
 
 # ---------------------------------------------------------------------------
@@ -410,22 +411,14 @@ def _assign_tests_to_communities(
     test_community_id = next_cid  # shared fallback
 
     for test_path in test_nodes:
-        # Find which production file this test imports most
-        best_prod: str | None = None
-        best_weight = 0
-        for _, target, d in graph.out_edges(test_path, data=True):
-            if target in prod_assignment:
-                w = 1
-                best_prod = target if w > best_weight else best_prod
-                best_weight = max(best_weight, w)
-        for source, _, d in graph.in_edges(test_path, data=True):
-            if source in prod_assignment:
-                w = 1
-                best_prod = source if w > best_weight else best_prod
-                best_weight = max(best_weight, w)
+        # Production files this test links to, either direction. Every link
+        # weighs the same, so the tie is broken on the path. Edge iteration
+        # order is graph insertion order and varies between runs.
+        linked = {t for _, t in graph.out_edges(test_path) if t in prod_assignment}
+        linked |= {s for s, _ in graph.in_edges(test_path) if s in prod_assignment}
 
-        if best_prod is not None:
-            result[test_path] = prod_assignment[best_prod]
+        if linked:
+            result[test_path] = prod_assignment[min(linked)]
         else:
             result[test_path] = test_community_id
 
@@ -573,10 +566,13 @@ def detect_symbol_communities(graph: nx.DiGraph) -> dict[str, int]:
 
     Returns {symbol_id: community_id}.
     """
-    symbol_nodes = [
+    # Sorted for the same reason detect_file_communities sorts its node list:
+    # insertion order seeds the partition, and the graph's is not stable
+    # between runs. This half was left unsorted when the file half was fixed.
+    symbol_nodes = sorted(
         n for n, d in graph.nodes(data=True)
         if d.get("node_type") == "symbol"
-    ]
+    )
 
     if not symbol_nodes:
         return {}
@@ -586,15 +582,14 @@ def detect_symbol_communities(graph: nx.DiGraph) -> dict[str, int]:
     undirected = nx.Graph()
     undirected.add_nodes_from(symbol_nodes)
 
-    for u, v, d in graph.edges(data=True):
-        edge_type = d.get("edge_type")
-        if (
-            edge_type in _SYMBOL_COMMUNITY_EDGE_TYPES
-            and u in symbol_set
-            and v in symbol_set
-        ):
-            if not undirected.has_edge(u, v):
-                undirected.add_edge(u, v)
+    community_edges = sorted(
+        (u, v)
+        for u, v, d in graph.edges(data=True)
+        if d.get("edge_type") in _SYMBOL_COMMUNITY_EDGE_TYPES
+        and u in symbol_set
+        and v in symbol_set
+    )
+    undirected.add_edges_from(community_edges)
 
     # Separate isolates
     connected = [n for n in undirected.nodes() if undirected.degree(n) > 0]

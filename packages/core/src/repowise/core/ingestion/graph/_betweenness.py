@@ -134,7 +134,12 @@ def betweenness_centrality_fast(
         log.warning("betweenness_parallel_unavailable", reason="networkx internals moved")
         return nx.betweenness_centrality(g, normalized=normalized)
 
-    nodes = list(g)
+    # Sorted, not graph order: the node numbering fixes the order the partial
+    # sums are accumulated in, and float addition is not associative. Graph
+    # insertion order varies between runs, so an unsorted numbering shifts
+    # scores in the last ULP, which is enough to flip every downstream
+    # tie-break that ranks on betweenness.
+    nodes = sorted(g)
     index = {node: i for i, node in enumerate(nodes)}
     edges = [(index[u], index[v]) for u, v in g.edges()]
 

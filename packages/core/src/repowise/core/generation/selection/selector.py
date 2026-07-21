@@ -16,6 +16,7 @@ import structlog
 
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
 
+from ..models import scc_page_slug
 from ..tour import DEFAULT_MAX_LANDMARKS, tour_landmark_paths
 from .budget import (
     BucketAllocation,
@@ -225,7 +226,7 @@ def _build_file_candidates(
         )
         if s > 0.0:
             scored.append((s, path))
-    scored.sort(key=lambda x: x[0], reverse=True)
+    scored.sort(key=lambda x: (-x[0], x[1]))
     return scored
 
 
@@ -243,7 +244,7 @@ def _build_symbol_candidates(
             s = score_symbol(sym, file_pr, max_pr)
             if s > 0.0:
                 scored.append((s, (p.file_info.path, sym.name)))
-    scored.sort(key=lambda x: x[0], reverse=True)
+    scored.sort(key=lambda x: (-x[0], x[1]))
     # A spotlight page is keyed by ``(file_path, symbol_name)``, but one file
     # can declare that pair twice: two classes in the same Java file each
     # with a ``toString``, two Rust impl blocks each with a ``new``. Left in,
@@ -385,13 +386,13 @@ def _build_module_groups(inputs: SelectionInputs) -> list[tuple[float, ModuleGro
                     key=key,
                     display=group_display.get(key, key),
                     language=group_lang.get(key, "unknown"),
-                    file_paths=tuple(p.file_info.path for p in files),
+                    file_paths=tuple(sorted(p.file_info.path for p in files)),
                     label=group_label.get(key),
                     cohesion=group_cohesion.get(key),
                 ),
             )
         )
-    scored.sort(key=lambda x: x[0], reverse=True)
+    scored.sort(key=lambda x: (-x[0], x[1].key))
     return scored
 
 
@@ -401,7 +402,7 @@ def _build_api_candidates(inputs: SelectionInputs) -> list[tuple[float, str]]:
         if not p.file_info.is_api_contract:
             continue
         scored.append((score_api_contract(p), p.file_info.path))
-    scored.sort(key=lambda x: x[0], reverse=True)
+    scored.sort(key=lambda x: (-x[0], x[1]))
     return scored
 
 
@@ -411,7 +412,7 @@ def _build_infra_candidates(inputs: SelectionInputs) -> list[tuple[float, str]]:
         if not _is_infra_file(p):
             continue
         scored.append((score_infra(p), p.file_info.path))
-    scored.sort(key=lambda x: x[0], reverse=True)
+    scored.sort(key=lambda x: (-x[0], x[1]))
     return scored
 
 
@@ -419,13 +420,15 @@ def _build_scc_candidates(
     inputs: SelectionInputs,
 ) -> list[tuple[float, tuple[str, list[str]]]]:
     scored: list[tuple[float, tuple[str, list[str]]]] = []
-    for i, scc in enumerate(inputs.sccs):
-        files = list(scc)
+    for scc in inputs.sccs:
+        files = sorted(scc)
         s = score_scc(cycle_size=len(files))
         if s <= 0.0:
             continue
-        scored.append((s, (f"scc-{i}", sorted(files))))
-    scored.sort(key=lambda x: x[0], reverse=True)
+        scored.append((s, (scc_page_slug(files), files)))
+    # Tie-break on the slug: score alone leaves equal-sized cycles in list
+    # order, and the page-id set must not depend on how they got there.
+    scored.sort(key=lambda x: (-x[0], x[1][0]))
     return scored
 
 

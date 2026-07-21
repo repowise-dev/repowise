@@ -295,6 +295,24 @@ def compute_page_id(page_type: str, target_path: str) -> str:
     return f"{page_type}:{target_path}"
 
 
+def scc_page_slug(members: list[str]) -> str:
+    """Return the ``target_path`` for a cycle's ``scc_page``, keyed by contents.
+
+    An SCC has no name of its own, so the page id used to be the component's
+    position in the list the graph layer handed over. That position moved
+    whenever the cycle set changed, or (before the graph layer sorted its
+    components) between two runs at the same commit. A moved id means the
+    update path deletes and recreates the page instead of updating it, losing
+    its history.
+
+    Hashing the sorted member paths ties the id to the one thing that actually
+    identifies the cycle. It survives a re-ordering, an unrelated cycle
+    appearing or disappearing, and a change of detection algorithm.
+    """
+    digest = hashlib.sha256("\n".join(sorted(members)).encode("utf-8")).hexdigest()
+    return f"scc-{digest[:12]}"
+
+
 def _parse_datetime(ts: str) -> datetime:
     """Parse an ISO-8601 UTC timestamp to a timezone-aware datetime."""
     ts = ts.replace("Z", "+00:00")

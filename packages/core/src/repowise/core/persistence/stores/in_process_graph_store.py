@@ -140,13 +140,17 @@ class InProcessGraphStore(GraphStore):
             file_subgraph = self._file_subgraph().to_undirected()
             mapping: dict[str, int] = {}
             if file_subgraph.number_of_nodes():
-                # Use NetworkX's greedy modularity communities — deterministic,
-                # no external dependency, fine quality at this graph size.
+                # Use NetworkX's greedy modularity communities: no external
+                # dependency, fine quality at this graph size. Deterministic
+                # only for a fixed node order, which the graph does not
+                # guarantee, so sort the result before numbering it.
                 from networkx.algorithms.community import greedy_modularity_communities
 
-                for cid, members in enumerate(
-                    greedy_modularity_communities(file_subgraph)
-                ):
+                components = sorted(
+                    (sorted(members) for members in greedy_modularity_communities(file_subgraph)),
+                    key=lambda members: (-len(members), members[0] if members else ""),
+                )
+                for cid, members in enumerate(components):
                     for node in members:
                         mapping[node] = cid
             self._communities_cache = mapping
