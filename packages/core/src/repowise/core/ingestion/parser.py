@@ -279,6 +279,30 @@ class ASTParser:
         root = tree.root_node
 
         parse_errors = _collect_error_nodes(root)
+
+        # Adaptive TSX grammar fallback: if a .ts file contains JSX markup,
+        # tree-sitter-typescript produces ERROR nodes. Re-parse using the TSX
+        # grammar ONLY IF:
+        #   1. Initial parse yielded error nodes (parse_errors is non-empty)
+        #   2. The file is TypeScript (lang == "typescript" and grammar_tag != "tsx")
+        #   3. Source contains JSX-specific closing tokens (b"/>" or b"</")
+        if (
+            parse_errors
+            and lang == "typescript"
+            and grammar_tag != "tsx"
+            and (b"/>" in source or b"</" in source)
+        ):
+            tsx_language = _get_language("tsx")
+            if tsx_language is not None:
+                tsx_tree = Parser(tsx_language).parse(source)
+                tsx_errors = _collect_error_nodes(tsx_tree.root_node)
+                if len(tsx_errors) < len(parse_errors):
+                    tree = tsx_tree
+                    root = tree.root_node
+                    parse_errors = tsx_errors
+                    grammar_tag = "tsx"
+                    language = tsx_language
+
         query = self._get_query(lang, language, grammar_tag)
 
         # Execute the compiled query ONCE per file. The five extraction

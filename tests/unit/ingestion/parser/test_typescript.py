@@ -147,6 +147,55 @@ export function Card({ title }: { title: string }) {
         assert "Card" in names
         assert "handleClick" not in names
 
+    def test_ts_file_with_jsx_falls_back_to_tsx_grammar(self, parser: ASTParser) -> None:
+        # A .ts file (not .tsx) containing JSX markup normally produces ERROR nodes.
+        # The adaptive fallback detects parse errors and JSX tokens (/> or </)
+        # and re-parses with the TSX grammar, yielding 0 parse errors.
+        src = b"""
+export function Button({ label }: { label: string }) {
+  function handleClick() { console.log("clicked"); }
+  return <button onClick={handleClick}>{label}</button>;
+}
+"""
+        fi = _make_file_info("ui/src/Button.ts", "typescript")  # .ts extension
+        result = parser.parse_file(fi, src)
+        assert result.parse_errors == []
+        names = {s.name for s in result.symbols}
+        assert "Button" in names
+        assert "handleClick" not in names  # nested helper must not be hoisted
+
+    def test_ts_file_jsx_call_site_edges_captured_after_fallback(self, parser: ASTParser) -> None:
+        # After the TSX grammar fallback, JSX component usages (<StatRow />,
+        # <Section />) must appear in result.calls — the tsx.scm query file
+        # carries the jsx_self_closing_element and jsx_opening_element captures
+        # that map component tags to call-site edges.
+        # Without the fallback a .ts file with these components would show
+        # zero inbound callers, causing false-positive dead-code findings.
+        src = b"""
+export function StatRow({ value }: { value: number }) {
+  return <span>{value}</span>;
+}
+
+export function Section({ title }: { title: string }) {
+  return <h2>{title}</h2>;
+}
+
+export function Card() {
+  return (
+    <div>
+      <Section title="x" />
+      <StatRow value={1}></StatRow>
+    </div>
+  );
+}
+"""
+        fi = _make_file_info("ui/src/card.ts", "typescript")  # .ts NOT .tsx
+        result = parser.parse_file(fi, src)
+        assert result.parse_errors == []
+        targets = {c.target_name for c in result.calls}
+        assert "StatRow" in targets   # self-closing JSX captured as call
+        assert "Section" in targets   # paired JSX captured as call
+
     def test_jsx_element_registers_as_call_target(self, parser: ASTParser) -> None:
         # Regression: ``<StatRow ... />`` inside the same file as the
         # ``StatRow`` component definition was not registering as a call,
