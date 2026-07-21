@@ -72,3 +72,67 @@ describe("GitHistoryPanel fix history", () => {
     expect(screen.queryByText(/· last/)).toBeNull();
   });
 });
+
+describe("GitHistoryPanel age", () => {
+  it("renders a known age", () => {
+    render(<GitHistoryPanel git={meta({ age_days: 400 })} />);
+    expect(screen.getByText("1 year 1 month")).toBeTruthy();
+  });
+
+  it("keeps '< 1 day' for a file that really is new", () => {
+    render(<GitHistoryPanel git={meta({ age_days: 0, commit_count_total: 1 })} />);
+    expect(screen.getByText("< 1 day")).toBeTruthy();
+  });
+
+  it("drops the row for a file whose history never got indexed", () => {
+    // Indexing that timed out persists column defaults, so an unindexed file
+    // and a file created today are both age 0. Only one of them has commits.
+    render(<GitHistoryPanel git={meta({ age_days: 0, commit_count_total: 0 })} />);
+    expect(screen.queryByText("Age")).toBeNull();
+    expect(screen.queryByText("< 1 day")).toBeNull();
+  });
+
+  it("does not print NaN when the payload omits the age entirely", () => {
+    const { age_days: _drop, ...rest } = meta();
+    render(<GitHistoryPanel git={rest as GitMetadata} />);
+    expect(screen.queryByText(/NaN/)).toBeNull();
+  });
+});
+
+describe("GitHistoryPanel author share", () => {
+  const authors = [
+    { name: "Ada", email: "ada@example.com", commit_count: 30 },
+    { name: "Grace", email: "grace@example.com", commit_count: 10 },
+  ];
+
+  it("derives the share from commit counts when the rows carry no pct", () => {
+    // The file-detail endpoint serves these rows straight off the artifact,
+    // which has counts and no share at all.
+    render(<GitHistoryPanel git={meta({ top_authors: authors, commit_count_total: 40 })} />);
+    expect(screen.getByText("75%")).toBeTruthy();
+    expect(screen.getByText("25%")).toBeTruthy();
+    expect(screen.queryByText(/NaN/)).toBeNull();
+  });
+
+  it("prefers a served pct over the derived one", () => {
+    render(
+      <GitHistoryPanel
+        git={meta({
+          top_authors: [{ ...authors[0]!, pct: 0.5 }],
+          commit_count_total: 40,
+        })}
+      />,
+    );
+    expect(screen.getByText("50%")).toBeTruthy();
+  });
+
+  it("falls back to the raw count when there is no denominator", () => {
+    render(
+      <GitHistoryPanel
+        git={meta({ top_authors: [{ ...authors[0]!, commit_count: 0 }], commit_count_total: 0 })}
+      />,
+    );
+    expect(screen.getByText("0 commits")).toBeTruthy();
+    expect(screen.queryByText(/NaN/)).toBeNull();
+  });
+});

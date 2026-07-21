@@ -11,7 +11,10 @@ export interface FileAuthor {
   name: string;
   email: string;
   commit_count: number;
-  pct: number;
+  /** Share of the file's commits, 0–1. Optional: the file-detail endpoint
+   *  serves these rows straight off the stored artifact, which records counts
+   *  and no share. Derive from `commit_count` when it is absent. */
+  pct?: number;
 }
 
 export interface SignificantCommit {

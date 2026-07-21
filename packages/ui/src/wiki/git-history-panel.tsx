@@ -5,7 +5,7 @@ import { CoChangeList } from "../git/co-change-list";
 import { ChangeHistoryCard } from "../git/change-history-card";
 import { FixHistoryBadge } from "../git/fix-history-badge";
 import { formatRelativeTime, formatDate, formatAgeDays } from "../lib/format";
-import type { GitMetadata } from "@repowise-dev/types/git";
+import type { FileAuthor, GitMetadata } from "@repowise-dev/types/git";
 
 interface GitHistoryPanelProps {
   git: GitMetadata;
@@ -59,9 +59,43 @@ function getVelocityLabel(git: GitMetadata): { label: string; color: string } {
   return { label: "Steady", color: "text-[var(--color-text-secondary)]" };
 }
 
+/**
+ * Share of the file's commits belonging to an author, 0–1.
+ *
+ * `pct` is optional in practice: the file-detail endpoint serves `top_authors`
+ * straight off the stored artifact, whose rows carry counts and no share at
+ * all. Deriving it from `commit_count` keeps the bar honest instead of
+ * rendering `NaN%`. `commit_count_total` is the denominator when it is
+ * available, because `top_authors` is truncated and its own sum overstates
+ * everyone's share on a file with a long tail of contributors.
+ */
+function authorShare(author: FileAuthor, totalCommits: number): number | null {
+  const { pct, commit_count: count } = author;
+  if (typeof pct === "number" && Number.isFinite(pct)) {
+    return Math.min(1, Math.max(0, pct));
+  }
+  if (totalCommits > 0 && typeof count === "number" && Number.isFinite(count)) {
+    return Math.min(1, Math.max(0, count / totalCommits));
+  }
+  return null;
+}
+
 export function GitHistoryPanel({ git }: GitHistoryPanelProps) {
   const commits = git.significant_commits ?? [];
   const velocity = getVelocityLabel(git);
+  // `formatAgeDays(0)` reads "< 1 day", so an unset age claims the file was
+  // created today. The column is stored NOT NULL with a 0 default and the API
+  // coerces nulls to 0, so a zero cannot be told apart from an unknown on its
+  // own — but a file with no commits recorded is not a day old either, it is
+  // a file whose history never got indexed. Require one to believe the other.
+  // 0 stays meaningful for a genuinely new file, so the caller decides.
+  const hasAge =
+    Number.isFinite(git.age_days) && (git.age_days > 0 || git.commit_count_total > 0);
+  const authors = git.top_authors ?? [];
+  const authorDenominator =
+    git.commit_count_total > 0
+      ? git.commit_count_total
+      : authors.reduce((sum, a) => sum + (a.commit_count || 0), 0);
 
   return (
     <div className="space-y-4">
@@ -83,10 +117,14 @@ export function GitHistoryPanel({ git }: GitHistoryPanelProps) {
             <span className={`text-xs ${velocity.color}`}>{velocity.label}</span>
           </div>
           <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
-            <span className="text-[var(--color-text-tertiary)]">Age</span>
-            <span className="text-[var(--color-text-secondary)] tabular-nums">
-              {formatAgeDays(git.age_days)}
-            </span>
+            {hasAge && (
+              <>
+                <span className="text-[var(--color-text-tertiary)]">Age</span>
+                <span className="text-[var(--color-text-secondary)] tabular-nums">
+                  {formatAgeDays(git.age_days)}
+                </span>
+              </>
+            )}
             <span className="text-[var(--color-text-tertiary)]">Commits (90d)</span>
             <span className="text-[var(--color-text-secondary)] tabular-nums">
               {git.commit_count_90d}
@@ -132,35 +170,42 @@ export function GitHistoryPanel({ git }: GitHistoryPanelProps) {
         </div>
       )}
 
-      {git.top_authors && git.top_authors.length > 0 && (
+      {authors.length > 0 && (
         <div>
           <p className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider mb-2">
             Authors
           </p>
           <div className="space-y-2">
-            {git.top_authors.slice(0, 4).map((author) => (
-              <div key={author.email} className="space-y-0.5">
-                <div className="flex items-center gap-2 text-xs">
-                  <AuthorAvatar name={author.name} />
-                  <span className="flex-1 truncate text-[var(--color-text-secondary)]">
-                    {author.name}
-                  </span>
-                  <span className="text-[var(--color-text-tertiary)] tabular-nums shrink-0">
-                    {Math.round(author.pct * 100)}%
-                  </span>
+            {authors.slice(0, 4).map((author) => {
+              const share = authorShare(author, authorDenominator);
+              return (
+                <div key={author.email} className="space-y-0.5">
+                  <div className="flex items-center gap-2 text-xs">
+                    <AuthorAvatar name={author.name} />
+                    <span className="flex-1 truncate text-[var(--color-text-secondary)]">
+                      {author.name}
+                    </span>
+                    <span className="text-[var(--color-text-tertiary)] tabular-nums shrink-0">
+                      {share != null
+                        ? `${Math.round(share * 100)}%`
+                        : `${author.commit_count} commits`}
+                    </span>
+                  </div>
+                  {share != null && (
+                    <div className="h-1 w-full rounded-full bg-[var(--color-bg-elevated)] ml-7">
+                      <div
+                        className="h-1 rounded-full transition-all"
+                        style={{
+                          width: `${share * 100}%`,
+                          backgroundColor:
+                            AUTHOR_BAR_COLORS[authorColorIndex(author.name)] ?? AUTHOR_BAR_FALLBACK,
+                        }}
+                      />
+                    </div>
+                  )}
                 </div>
-                <div className="h-1 w-full rounded-full bg-[var(--color-bg-elevated)] ml-7">
-                  <div
-                    className="h-1 rounded-full transition-all"
-                    style={{
-                      width: `${Math.min(100, author.pct * 100)}%`,
-                      backgroundColor:
-                        AUTHOR_BAR_COLORS[authorColorIndex(author.name)] ?? AUTHOR_BAR_FALLBACK,
-                    }}
-                  />
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
@@ -216,7 +261,7 @@ export function GitHistoryPanel({ git }: GitHistoryPanelProps) {
         </div>
       )}
 
-      {commits.length === 0 && (!git.top_authors || git.top_authors.length === 0) && (
+      {commits.length === 0 && authors.length === 0 && (
         <p className="text-xs text-[var(--color-text-tertiary)]">No commit history available.</p>
       )}
     </div>

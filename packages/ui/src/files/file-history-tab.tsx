@@ -3,9 +3,13 @@ import { EmptyState } from "../shared/empty-state";
 import { CommitCategorySparkline } from "../git/commit-category-sparkline";
 import { AgentTierBar } from "../git/agent-tier-bar";
 import { OwnershipDonut } from "../git/ownership-donut";
+import { ChangeHistoryCard } from "../git/change-history-card";
+import { FixHistoryBadge } from "../git/fix-history-badge";
 import { StatGrid, StatTile } from "../shared/stat-grid";
+import { Badge } from "../ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
-import { formatRelativeTime, truncatePath } from "../lib/format";
+import { summarizeFixHistory } from "../lib/fix-history";
+import { formatAgeDays, formatRelativeTime, truncatePath } from "../lib/format";
 import type { FileDetailGit } from "@repowise-dev/types/files";
 
 interface FileHistoryTabProps {
@@ -29,15 +33,50 @@ export function FileHistoryTab({ git, linkPrefix, partnerHref }: FileHistoryTabP
   const hasCategories = Object.values(git.commit_categories ?? {}).some((v) => v > 0);
   const agentPct =
     git.agent.agent_authored_pct != null ? Math.round(git.agent.agent_authored_pct * 100) : null;
+  // Same helper the wiki sidebar uses, so one file's fix history reads
+  // identically on both surfaces. Null means no counted fixes: render nothing.
+  const fix = summarizeFixHistory(git.prior_defect_count, git.last_fix_at, git.bug_magnet);
+  // A file whose git indexing never completed lands with zeroes across the
+  // board, and `formatAgeDays(0)` reads "< 1 day". Anchor the age to having
+  // at least one commit so an unindexed file is not called brand new.
+  const commits = git.commit_count_total ?? 0;
+  const age =
+    commits > 0 && Number.isFinite(git.age_days) ? formatAgeDays(git.age_days as number) : null;
 
   return (
     <div className="space-y-4">
+      {(fix || git.is_stable) && (
+        <div className="flex flex-wrap items-center gap-2">
+          {git.is_stable && <Badge variant="fresh">Stable</Badge>}
+          <FixHistoryBadge
+            count={git.prior_defect_count ?? null}
+            lastFixAt={git.last_fix_at ?? null}
+            bugMagnet={git.bug_magnet ?? false}
+          />
+        </div>
+      )}
+
       <StatGrid columns={4}>
-        <StatTile label="Commits (total)" value={git.commit_count_total ?? 0} />
+        <StatTile
+          label="Commits (total)"
+          value={commits}
+          {...(age ? { hint: `over ${age}` } : {})}
+        />
         <StatTile label="Commits (90d)" value={git.commit_count_90d} />
         <StatTile label="Contributors" value={git.contributor_count} />
         <StatTile label="Bus factor" value={git.bus_factor} />
       </StatGrid>
+
+      {/* Self-contained: returns null when there is nothing to say, so an
+          entropy-less, never-fixed, never-renamed file loses no space to it. */}
+      <ChangeHistoryCard
+        changeEntropyPct={git.change_entropy_pct ?? null}
+        priorDefectCount={git.prior_defect_count ?? null}
+        lastFixAt={git.last_fix_at ?? null}
+        originalPath={git.original_path ?? null}
+        commitCountCapped={git.commit_count_capped ?? false}
+        className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-3"
+      />
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <Card>

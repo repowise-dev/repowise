@@ -520,8 +520,15 @@ nothing when the backlink list is empty.
 
 ## `wiki/git-history-panel` — `GitHistoryPanel`
 
-Sidebar panel summarising file lifecycle, commit categories, top
-authors with bars, co-change partners, and recent commits.
+Sidebar panel summarising file lifecycle, fix history, commit categories,
+top authors with bars, co-change partners, and recent commits.
+
+The Age row needs at least one recorded commit before it will render a zero
+age, because `formatAgeDays(0)` reads "< 1 day" and `age_days` is stored NOT
+NULL with a `0` default — so a file whose git indexing never completed is
+otherwise indistinguishable from one created today. Author shares fall back to
+`commit_count / commit_count_total` when a row carries no `pct`, which is what
+the file-detail endpoint serves.
 
 | Prop | Type | Required |
 |------|------|----------|
