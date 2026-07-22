@@ -75,6 +75,12 @@ interface DocsReaderProps {
   intelligenceSlot?: React.ReactNode;
   /** Data-bound version history (host owns the SWR fetch). */
   versionHistorySlot?: React.ReactNode;
+  /**
+   * A compact "Write with AI" affordance rendered inline in the metadata row,
+   * beside the "Auto" pill, on a template page. Host owns the launch; omit it
+   * on AI-written pages so only auto pages advertise the upgrade.
+   */
+  upgradeSlot?: React.ReactNode;
 }
 
 export function DocsReader({
@@ -90,6 +96,7 @@ export function DocsReader({
   LinkComponent,
   intelligenceSlot,
   versionHistorySlot,
+  upgradeSlot,
 }: DocsReaderProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -145,6 +152,7 @@ export function DocsReader({
       LinkComponent={LinkComponent}
       intelligenceSlot={intelligenceSlot}
       versionHistorySlot={versionHistorySlot}
+      upgradeSlot={upgradeSlot}
     />
   );
 }
@@ -161,6 +169,7 @@ function DocsReaderBody({
   LinkComponent,
   intelligenceSlot,
   versionHistorySlot,
+  upgradeSlot,
 }: {
   page: DocPage;
   pages: DocPage[];
@@ -173,6 +182,7 @@ function DocsReaderBody({
   LinkComponent: ReaderLinkComponent;
   intelligenceSlot?: React.ReactNode;
   versionHistorySlot?: React.ReactNode;
+  upgradeSlot?: React.ReactNode;
 }) {
   const nav = useMemo(() => computeDocNav(page, pages), [page, pages]);
   const wikiLinks = useMemo(() => getWikiLinks(page.metadata), [page.metadata]);
@@ -326,13 +336,16 @@ function DocsReaderBody({
                 {getPageTypeLabel(page.page_type)}
               </span>
               {isDeterministicPage(page) ? (
-                <span
-                  className="inline-flex items-center gap-1 rounded-full border border-[var(--color-info)]/35 bg-[var(--color-info)]/10 px-2 py-0.5 uppercase tracking-wider text-[var(--color-info)]"
-                  title={DETERMINISTIC_BADGE_TITLE}
-                >
-                  <Cog className="h-2.5 w-2.5" />
-                  {DETERMINISTIC_BADGE_LABEL}
-                </span>
+                <>
+                  <span
+                    className="inline-flex items-center gap-1 rounded-full border border-[var(--color-info)]/35 bg-[var(--color-info)]/10 px-2 py-0.5 uppercase tracking-wider text-[var(--color-info)]"
+                    title={DETERMINISTIC_BADGE_TITLE}
+                  >
+                    <Cog className="h-2.5 w-2.5" />
+                    {DETERMINISTIC_BADGE_LABEL}
+                  </span>
+                  {upgradeSlot}
+                </>
               ) : (
                 <span
                   className="inline-flex items-center gap-1 rounded-full border border-[var(--color-accent-primary)]/40 bg-[var(--color-accent-muted)] px-2 py-0.5 uppercase tracking-wider text-[var(--color-accent-primary)]"

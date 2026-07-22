@@ -258,6 +258,7 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
             onSelectPage={handleSelectPage}
             persona={persona}
             sidebarOpen={sidebarOpen}
+            onGenerated={handleGenerated}
           />
         </div>
       </div>

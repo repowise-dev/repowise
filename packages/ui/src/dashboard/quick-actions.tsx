@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState, type ReactNode, type ComponentType } from "react";
-import { RefreshCw, Trash2, AlertTriangle, Zap } from "lucide-react";
+import { RefreshCw, Trash2, AlertTriangle, Zap, Sparkles } from "lucide-react";
 import { Button } from "../ui/button";
 import {
   Dialog,
@@ -67,7 +67,7 @@ function estimateCost(pageCount: number, modelName: string) {
   return { inputTokens, outputTokens, cost };
 }
 
-export type QuickActionKey = "sync" | "resync" | "dead-code";
+export type QuickActionKey = "sync" | "resync" | "dead-code" | "generate-docs";
 
 export interface QuickActionDef {
   key: QuickActionKey;
@@ -79,6 +79,20 @@ export interface QuickActionDef {
   confirmTitle: string;
   confirmDescription: string;
 }
+
+/** Bulk "Write with AI" entry point. `needsConfirm` is false because the
+ *  wrapper opens its own cost-aware confirm dialog (real `/generate/estimate` +
+ *  cascade + no-provider routing), not the heuristic panel below. */
+export const GENERATE_DOCS_ACTION: QuickActionDef = {
+  key: "generate-docs",
+  label: "Write with AI",
+  description: "Upgrade pages generated from structure to model-written prose",
+  icon: Sparkles,
+  destructive: false,
+  needsConfirm: false,
+  confirmTitle: "",
+  confirmDescription: "",
+};
 
 export const DEFAULT_QUICK_ACTIONS: QuickActionDef[] = [
   {

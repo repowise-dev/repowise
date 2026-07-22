@@ -13,9 +13,11 @@ interface RepoLayoutProps {
 export default async function RepoLayout({ children, params }: RepoLayoutProps) {
   const { id } = await params;
   let repoName = id;
+  let docsMode: "none" | "deterministic" | "llm" | null = null;
   try {
     const repo = await getRepo(id);
     repoName = repo.name;
+    docsMode = repo.docs_mode ?? null;
   } catch {
     redirect("/");
   }
@@ -23,7 +25,7 @@ export default async function RepoLayout({ children, params }: RepoLayoutProps) 
     <>
       <ReindexHintBanner repoId={id} />
       <ActiveJobBanner repoId={id} />
-      <RepoBreadcrumb repoName={repoName} />
+      <RepoBreadcrumb repoName={repoName} docsMode={docsMode ?? "none"} />
       <PageTransition>{children}</PageTransition>
     </>
   );

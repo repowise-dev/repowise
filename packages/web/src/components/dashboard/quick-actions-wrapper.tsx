@@ -1,16 +1,21 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
   QuickActions as QuickActionsShell,
+  DEFAULT_QUICK_ACTIONS,
+  GENERATE_DOCS_ACTION,
   type QuickActionKey,
 } from "@repowise-dev/ui/dashboard/quick-actions";
 import { syncRepo, fullResyncRepo } from "@/lib/api/repos";
 import { listJobs } from "@/lib/api/jobs";
 import { analyzeDeadCode } from "@/lib/api/dead-code";
 import { GenerationProgressWrapper } from "@/components/jobs/generation-progress-wrapper";
+import { BulkGenerateConfirm } from "@/components/docs/bulk-generate-confirm";
+import { useBulkGenerate } from "@/lib/hooks/use-bulk-generate";
 import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
+import type { RepoResponse } from "@/lib/api/types";
 
 interface Props {
   repoId: string;
@@ -19,6 +24,9 @@ interface Props {
   modelName?: string;
   lastSyncAt?: string | null;
   lastResyncAt?: string | null;
+  /** When "deterministic" the repo still has template pages, so the "Write with
+   *  AI" bulk action is offered. */
+  docsMode?: RepoResponse["docs_mode"];
 }
 
 export function QuickActionsWrapper({
@@ -28,8 +36,10 @@ export function QuickActionsWrapper({
   modelName = "",
   lastSyncAt,
   lastResyncAt,
+  docsMode,
 }: Props) {
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
+  const bulk = useBulkGenerate(repoId);
 
   // Hydrate from any in-flight job so refreshes don't lose progress visibility.
   useEffect(() => {
@@ -52,7 +62,22 @@ export function QuickActionsWrapper({
     };
   }, [repoId]);
 
+  const actions = useMemo(
+    () =>
+      docsMode === "deterministic"
+        ? [GENERATE_DOCS_ACTION, ...DEFAULT_QUICK_ACTIONS]
+        : DEFAULT_QUICK_ACTIONS,
+    [docsMode],
+  );
+
   async function handleAction(key: QuickActionKey) {
+    if (key === "generate-docs") {
+      bulk.begin(
+        { kind: "unwritten" },
+        { label: "every page still generated from structure", defaultCascade: "none" },
+      );
+      return;
+    }
     try {
       if (key === "sync") {
         const job = await syncRepo(repoId);
@@ -91,22 +116,31 @@ export function QuickActionsWrapper({
     }
   }
 
-  const activeSlot = activeJobId ? (
+  // A bulk generate job shares the same progress slot as sync/resync.
+  const jobId = activeJobId ?? bulk.jobId;
+  const activeSlot = jobId ? (
     <GenerationProgressWrapper
-      jobId={activeJobId}
+      jobId={jobId}
       repoName={repoName}
-      onDone={() => setActiveJobId(null)}
+      onDone={() => {
+        setActiveJobId(null);
+        bulk.clearJob();
+      }}
     />
   ) : null;
 
   return (
-    <QuickActionsShell
-      onAction={handleAction}
-      lastSyncAt={lastSyncAt}
-      lastResyncAt={lastResyncAt}
-      pageCount={pageCount}
-      modelName={modelName}
-      activeJobSlot={activeSlot}
-    />
+    <>
+      <QuickActionsShell
+        actions={actions}
+        onAction={handleAction}
+        lastSyncAt={lastSyncAt}
+        lastResyncAt={lastResyncAt}
+        pageCount={pageCount}
+        modelName={modelName}
+        activeJobSlot={activeSlot}
+      />
+      <BulkGenerateConfirm flow={bulk} repoId={repoId} />
+    </>
   );
 }

@@ -15,6 +15,8 @@ import { cn } from "@/lib/utils/cn";
 import { getGitMetadata } from "@/lib/api/git";
 import { summarizeFixHistory } from "@repowise-dev/ui/lib/fix-history";
 import { DocsReader } from "@repowise-dev/ui/docs/docs-reader";
+import { isDeterministicPage } from "@repowise-dev/ui/lib/page-types";
+import { PageGenerateButton } from "./page-generate-button";
 import { Badge } from "@repowise-dev/ui/ui/badge";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 import { VersionHistoryWrapper } from "@/components/wiki/version-history";
@@ -273,6 +275,8 @@ interface DocsViewerProps {
   onSelectPage?: (page: PageResponse) => void;
   persona: ReaderPersona;
   sidebarOpen: boolean;
+  /** Called once an inline page upgrade completes so the host refreshes. */
+  onGenerated?: () => void;
 }
 
 /**
@@ -289,6 +293,7 @@ export function DocsViewer({
   onSelectPage,
   persona,
   sidebarOpen,
+  onGenerated,
 }: DocsViewerProps) {
   const buildPageHref = useCallback(
     (pageId: string) =>
@@ -326,6 +331,16 @@ export function DocsViewer({
       sidebarOpen={sidebarOpen}
       buildPageHref={buildPageHref}
       LinkComponent={Link}
+      upgradeSlot={
+        page && isDeterministicPage(page) ? (
+          <PageGenerateButton
+            page={page}
+            repoId={repoId}
+            onGenerated={onGenerated}
+            variant="inline"
+          />
+        ) : undefined
+      }
       versionHistorySlot={
         page ? (
           <VersionHistoryWrapper

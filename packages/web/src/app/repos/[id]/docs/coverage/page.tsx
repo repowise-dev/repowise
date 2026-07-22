@@ -6,7 +6,7 @@ import { ConfidenceVsFreshnessMatrix } from "@repowise-dev/ui/coverage/confidenc
 import { FreshnessTableWithRegenerate } from "@/components/coverage/freshness-table-wrapper";
 import type { DocPage } from "@repowise-dev/types/docs";
 import { MetricCard } from "@repowise-dev/ui/shared/metric-card";
-import { listPages } from "@/lib/api/pages";
+import { listAllPages } from "@/lib/api/pages";
 import { formatNumber } from "@repowise-dev/ui/lib/format";
 
 export const metadata: Metadata = { title: "Doc freshness" };
@@ -18,10 +18,13 @@ export default async function CoveragePage({
 }) {
   const { id } = await params;
 
-  let pages: Awaited<ReturnType<typeof listPages>> = [];
+  let pages: Awaited<ReturnType<typeof listAllPages>> = [];
 
   try {
-    pages = await listPages(id, { limit: 500 });
+    // Auto-paginate past the 500-item API cap so the counts, donut, and the
+    // "select all template pages" affordance see every page, not just the first
+    // page of results.
+    pages = await listAllPages(id);
   } catch {
     // API unavailable
   }
@@ -100,7 +103,7 @@ export default async function CoveragePage({
         <ConfidenceVsFreshnessMatrix pages={pages as DocPage[]} />
       )}
 
-      <FreshnessTableWithRegenerate pages={pages} />
+      <FreshnessTableWithRegenerate pages={pages} repoId={id} />
       </div>
     </div>
   );

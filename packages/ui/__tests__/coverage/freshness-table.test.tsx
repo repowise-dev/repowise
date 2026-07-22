@@ -75,4 +75,70 @@ describe("FreshnessTable", () => {
       screen.queryByRole("button", { name: "Regenerate" }),
     ).not.toBeInTheDocument();
   });
+
+  it("filters to auto (template) pages via the Auto tab", () => {
+    render(
+      <FreshnessTable
+        pages={[
+          makePage({ id: "1", target_path: "written.ts", provider_name: "openai" }),
+          makePage({ id: "2", target_path: "auto.ts", is_deterministic: true }),
+        ]}
+      />,
+    );
+    fireEvent.click(screen.getByRole("tab", { name: /Auto/ }));
+    expect(screen.getByText("auto.ts")).toBeInTheDocument();
+    expect(screen.queryByText("written.ts")).not.toBeInTheDocument();
+  });
+
+  describe("selection", () => {
+    it("renders a checkbox per row and toggles onToggleSelect", () => {
+      const onToggleSelect = vi.fn();
+      render(
+        <FreshnessTable
+          pages={[makePage({ id: "p1", target_path: "x.ts" })]}
+          selectable
+          selectedIds={new Set()}
+          onToggleSelect={onToggleSelect}
+        />,
+      );
+      fireEvent.click(screen.getByRole("checkbox", { name: /Select x\.ts/ }));
+      expect(onToggleSelect).toHaveBeenCalledWith("p1");
+    });
+
+    it("selects all template pages, not AI-written ones", () => {
+      const onSelectTemplates = vi.fn();
+      render(
+        <FreshnessTable
+          pages={[
+            makePage({ id: "t1", target_path: "a.ts", is_deterministic: true }),
+            makePage({ id: "t2", target_path: "b.ts", is_deterministic: true }),
+            makePage({ id: "w1", target_path: "c.ts", provider_name: "openai" }),
+          ]}
+          selectable
+          selectedIds={new Set()}
+          onSelectTemplates={onSelectTemplates}
+        />,
+      );
+      fireEvent.click(screen.getByText(/Select all 2 template pages/));
+      expect(onSelectTemplates).toHaveBeenCalledWith(["t1", "t2"]);
+    });
+
+    it("renders the caller-provided toolbar", () => {
+      render(
+        <FreshnessTable
+          pages={[makePage({ is_deterministic: true })]}
+          selectable
+          selectedIds={new Set(["p1"])}
+          toolbar={<div data-testid="sel-toolbar">1 selected</div>}
+        />,
+      );
+      expect(screen.getByTestId("sel-toolbar")).toBeInTheDocument();
+    });
+
+    it("does not render checkboxes or the select-all affordance when not selectable", () => {
+      render(<FreshnessTable pages={[makePage({ is_deterministic: true })]} />);
+      expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+      expect(screen.queryByText(/template pages/)).not.toBeInTheDocument();
+    });
+  });
 });

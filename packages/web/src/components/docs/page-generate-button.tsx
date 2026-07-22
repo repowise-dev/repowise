@@ -11,17 +11,8 @@ import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
 import { GenerationProgressWrapper } from "@/components/jobs/generation-progress-wrapper";
 import { regeneratePage } from "@/lib/api/pages";
 import { generateEstimate } from "@/lib/api/repos";
+import { formatEstimateCost } from "@/lib/generate-format";
 import type { PageResponse, GenerateEstimate } from "@/lib/api/types";
-
-/** Format the estimate's cost range into a compact string. */
-function formatCost(est: GenerateEstimate["estimate"]): string | null {
-  if (!est) return null;
-  const fmt = (n: number) => `$${n < 0.01 ? n.toFixed(4) : n.toFixed(2)}`;
-  if (est.cost_low_usd != null && est.cost_high_usd != null) {
-    return `${fmt(est.cost_low_usd)} to ${fmt(est.cost_high_usd)}`;
-  }
-  return fmt(est.estimated_cost_usd);
-}
 
 /**
  * Reader-side "Write with AI" / "Regenerate" for a single page. Owns the
@@ -32,11 +23,15 @@ export function PageGenerateButton({
   page,
   repoId,
   onGenerated,
+  variant = "button",
 }: {
   page: PageResponse;
   repoId: string;
   /** Called once a run completes so the host can refresh the page list. */
   onGenerated?: () => void;
+  /** "button" is the header toolbar affordance; "inline" is the compact,
+   *  link-like entry point rendered beside the provenance pill in the reader. */
+  variant?: "button" | "inline";
 }) {
   const mode = page.is_deterministic ? "write" : "regenerate";
   const settingsHref = `/repos/${repoId}/settings#provider`;
@@ -118,6 +113,7 @@ export function PageGenerateButton({
     <>
       <RegenerateButton
         mode={mode}
+        inline={variant === "inline"}
         onRegenerate={openConfirm}
         isLoading={launching && !jobId}
         isInProgress={jobId != null}
@@ -143,7 +139,7 @@ export function PageGenerateButton({
           estimate && !noProvider
             ? {
                 totalPages: estimate.total_pages,
-                costText: formatCost(estimate.estimate),
+                costText: formatEstimateCost(estimate.estimate),
                 staleCount: estimate.pages_to_mark_stale,
               }
             : null

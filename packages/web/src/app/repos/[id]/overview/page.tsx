@@ -143,6 +143,9 @@ export default async function OverviewPage({ params }: Props) {
           modelName={providers?.active.model ?? sync.last_sync_model ?? ""}
           lastSyncAt={sync.last_sync_at}
           lastResyncAt={sync.last_resync_at}
+          // Offer the bulk "Write with AI" action only when template (auto)
+          // pages actually exist to upgrade.
+          docsMode={autoPages != null && autoPages > 0 ? "deterministic" : undefined}
         />
       )}
 
