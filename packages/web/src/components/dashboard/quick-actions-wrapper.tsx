@@ -72,10 +72,13 @@ export function QuickActionsWrapper({
 
   async function handleAction(key: QuickActionKey) {
     if (key === "generate-docs") {
-      bulk.begin(
-        { kind: "unwritten" },
-        { label: "every page still generated from structure", defaultCascade: "none" },
-      );
+      // Open in coverage mode at the recommended percent, not silently
+      // targeting every unwritten page: a large repo is never one click from
+      // writing all N. "All" is the 100% bucket, one click away.
+      bulk.beginCoverage({
+        label: "the most important pages by coverage",
+        defaultCascade: "none",
+      });
       return;
     }
     try {

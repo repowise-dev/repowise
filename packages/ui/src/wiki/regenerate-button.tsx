@@ -159,6 +159,15 @@ export interface GenerateConfirmDialogProps {
   /** Phrasing of the cascade options: "page" (single-page reader upgrade) or
    *  "selection" (bulk generation). Defaults to "page". */
   cascadeScope?: "page" | "selection";
+  /** Ranked coverage buckets (fractions, e.g. `[0.1, 0.2, 0.3, 0.5, 1]`). When
+   *  set with `onCoverageChange`, a bucket picker renders above the cascade
+   *  choice and `1` shows as "All". Omit for an explicit selection. */
+  coverageOptions?: number[];
+  /** The currently-selected coverage bucket (a fraction). */
+  coveragePct?: number;
+  onCoverageChange?: (pct: number) => void;
+  /** The bucket to flag as recommended (e.g. `0.2`). */
+  recommendedCoverage?: number;
   cascade: RegenerateCascade;
   onCascadeChange: (next: RegenerateCascade) => void;
   /** Lazily-fetched estimate for the current cascade. `null` while unknown. */
@@ -190,6 +199,10 @@ export function GenerateConfirmDialog({
   description,
   confirmLabel,
   cascadeScope = "page",
+  coverageOptions,
+  coveragePct,
+  onCoverageChange,
+  recommendedCoverage,
   cascade,
   onCascadeChange,
   estimate,
@@ -205,6 +218,8 @@ export function GenerateConfirmDialog({
     cascadeScope === "selection" ? CASCADE_OPTIONS_SELECTION : CASCADE_OPTIONS_PAGE;
   const heading =
     title ?? (isWrite ? "Write this page with AI" : "Regenerate this page");
+  const showCoverage =
+    !!coverageOptions && coverageOptions.length > 0 && !!onCoverageChange;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -251,6 +266,44 @@ export function GenerateConfirmDialog({
                   with your configured model.
                 </p>
               )
+            )}
+
+            {showCoverage && (
+              <fieldset className="space-y-1.5">
+                <legend className="text-xs font-medium text-[var(--color-text-secondary)]">
+                  How much to write
+                </legend>
+                <div className="flex flex-wrap gap-1.5">
+                  {coverageOptions!.map((pct) => {
+                    const active =
+                      coveragePct != null && Math.abs(pct - coveragePct) < 1e-9;
+                    const isAll = pct >= 1;
+                    return (
+                      <button
+                        key={pct}
+                        type="button"
+                        aria-pressed={active}
+                        onClick={() => onCoverageChange!(pct)}
+                        className={cn(
+                          "rounded-full border px-3 py-1 text-xs font-medium transition-colors",
+                          active
+                            ? "border-[var(--color-border-active)] bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)]"
+                            : "border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-inset)]",
+                        )}
+                      >
+                        {isAll ? "All" : `${Math.round(pct * 100)}%`}
+                      </button>
+                    );
+                  })}
+                </div>
+                {recommendedCoverage != null && (
+                  <p className="text-xs text-[var(--color-text-tertiary)]">
+                    {Math.round(recommendedCoverage * 100)}% covers the most
+                    important pages, a good place to start. Pick All to write
+                    every page.
+                  </p>
+                )}
+              </fieldset>
             )}
 
             <fieldset className="space-y-1.5">

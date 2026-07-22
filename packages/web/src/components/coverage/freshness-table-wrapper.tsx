@@ -88,13 +88,12 @@ export function FreshnessTableWithRegenerate({
 
   function writeAllTemplates() {
     if (busy || templateCount === 0) return;
-    bulk.begin(
-      { kind: "unwritten" },
-      {
-        label: "every page still generated from structure",
-        defaultCascade: "none",
-      },
-    );
+    // The banner's "Write with AI" opens the coverage picker at the recommended
+    // percent rather than committing to every template page; "All" is one click.
+    bulk.beginCoverage({
+      label: "the most important pages by coverage",
+      defaultCascade: "none",
+    });
   }
 
   const toolbar =

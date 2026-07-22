@@ -547,21 +547,80 @@ async def full_resync(
 class GenerateSelectionBody(BaseModel):
     """Which pages a generate request targets.
 
-    Mirrors the CLI's explicit selection: ``all`` / ``unwritten`` / ``stale``,
-    an explicit ``page_ids`` list, or every page under a ``path_prefix``.
+    Two selection philosophies, kept distinct exactly as the CLI keeps them:
+
+    - **Explicit**: ``all`` / ``unwritten`` / ``stale``, an explicit ``page_ids``
+      list, or every page under a ``path_prefix`` — the caller names the pages.
+    - **Ranked** (``kind="ranked"``): write the most important slice by the same
+      importance model ``repowise init`` uses, sized by ``coverage_pct`` (a
+      fraction in ``(0, 1]``; ``1.0`` == everything) or ``top_n`` (a target page
+      count, not exact). The two are mutually exclusive.
+
+    The two philosophies cannot be combined; :func:`_validate_generate_selection`
+    enforces it with an actionable 400.
     """
 
-    kind: Literal["all", "unwritten", "stale", "page_ids", "path_prefix"] = "unwritten"
+    kind: Literal["all", "unwritten", "stale", "page_ids", "path_prefix", "ranked"] = "unwritten"
     page_ids: list[str] | None = None
     path_prefix: str | None = None
+    # Ranked selection only. ``coverage_pct`` is a fraction (0.2 == the top 20%);
+    # ``top_n`` targets ~N pages (mapped to a coverage fraction downstream).
+    coverage_pct: float | None = None
+    top_n: int | None = None
 
 
 class GenerateRequestBody(BaseModel):
-    """Body for the generate + estimate endpoints."""
+    """Body for the generate + estimate endpoints.
+
+    ``cascade`` is optional: left unset it resolves to ``none`` for a ranked
+    selection (the ranked set is already a coherent slice) and ``dependents`` for
+    an explicit one, matching the CLI ``generate`` defaults.
+    """
 
     selection: GenerateSelectionBody = Field(default_factory=GenerateSelectionBody)
-    cascade: Literal["none", "dependents", "full"] = "dependents"
+    cascade: Literal["none", "dependents", "full"] | None = None
     style: str | None = None
+
+
+def _validate_generate_selection(sel: GenerateSelectionBody) -> None:
+    """Reject an incoherent selection with an actionable 400.
+
+    Ranked and explicit selection are distinct philosophies (see
+    :class:`GenerateSelectionBody`) and may not be mixed; ``coverage_pct`` and
+    ``top_n`` are mutually exclusive and belong only to a ranked selection.
+    """
+    is_ranked = sel.kind == "ranked"
+    has_coverage = sel.coverage_pct is not None
+    has_top_n = sel.top_n is not None
+
+    if is_ranked:
+        if has_coverage == has_top_n:
+            raise HTTPException(
+                status_code=400,
+                detail="A ranked selection needs exactly one of coverage_pct or top_n.",
+            )
+        if has_coverage and not 0.0 < sel.coverage_pct <= 1.0:
+            raise HTTPException(
+                status_code=400,
+                detail="coverage_pct must be a fraction in (0, 1] (0.2 == the top 20%, 1.0 == all).",
+            )
+        if has_top_n and sel.top_n <= 0:
+            raise HTTPException(
+                status_code=400, detail="top_n must be a positive number of pages."
+            )
+        if sel.page_ids is not None or sel.path_prefix is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="A ranked selection cannot also carry page_ids or path_prefix.",
+            )
+    elif has_coverage or has_top_n:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "coverage_pct / top_n rank pages by importance and require "
+                'selection kind "ranked", not "' + sel.kind + '".'
+            ),
+        )
 
 
 def _validate_generate_style(style: str | None) -> None:
@@ -582,6 +641,11 @@ def _generate_job_config(body: GenerateRequestBody) -> dict:
         selection["page_ids"] = body.selection.page_ids or []
     elif body.selection.kind == "path_prefix":
         selection["path_prefix"] = body.selection.path_prefix
+    elif body.selection.kind == "ranked":
+        if body.selection.coverage_pct is not None:
+            selection["coverage_pct"] = body.selection.coverage_pct
+        if body.selection.top_n is not None:
+            selection["top_n"] = body.selection.top_n
     config: dict = {"mode": "generate", "selection": selection, "cascade": body.cascade}
     if body.style is not None:
         config["style"] = body.style
@@ -605,6 +669,7 @@ async def generate_pages(
     if repo is None:
         raise HTTPException(status_code=404, detail="Repository not found")
 
+    _validate_generate_selection(body.selection)
     _validate_generate_style(body.style)
     await _ensure_no_active_job(session, repo_id)
 
@@ -639,17 +704,17 @@ async def generate_estimate(
     if repo is None:
         raise HTTPException(status_code=404, detail="Repository not found")
 
+    _validate_generate_selection(body.selection)
     _validate_generate_style(body.style)
     repo_path = Path(repo.local_path)
 
-    from repowise.core.generation.scope import resolve_scope
     from repowise.core.pipeline.scoped_generation import rehydrate_repo
     from repowise.server.job_executor import (
-        _build_generate_intent,
         _build_generation_config,
         _load_state,
         _repo_exclude_patterns,
         _repo_wiki_style,
+        _resolve_generate_scope,
     )
 
     exclude_patterns = _repo_exclude_patterns(repo, str(repo_path))
@@ -701,12 +766,9 @@ async def generate_estimate(
             "note": note,
         }
 
-    plan = resolve_scope(
-        records=rehydrated.records,
-        intent=_build_generate_intent(job_config),
-        cascade_mode=body.cascade,
-        deps=rehydrated.deps,
-    )
+    # Resolve the exact same scope a launched job would, including a ranked
+    # coverage seed, so the estimate's page count and cost never under-quote.
+    plan = _resolve_generate_scope(job_config, rehydrated, gen_config)
     pages_by_type = {p.page_type: p.count for p in plan.cost_plans}
     total_pages = sum(pages_by_type.values())
 

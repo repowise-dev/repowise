@@ -110,10 +110,14 @@ queryable from the CLI, the MCP tools, and the local dashboard.
 | **◈ Decisions** | Architectural decisions mined from eight sources, evidence-backed, linked to the graph nodes they govern, connected by supersedes / refines / conflicts_with, tracked for staleness | **★ Captured nowhere else** |
 | **★ Code health** | **25 deterministic markers**, 1 to 10 per file · three signals: defect risk · maintainability · performance · coverage ingestion · concrete refactoring plans (Extract Class / Helper, Move Method, Break Cycle, Split File) · **zero LLM, under 30s** | **★ Defect-validated, with the fix attached** |
 
-Only model-written prose needs an LLM. `repowise init --index-only` builds the
-graph, git, decision, and health layers with no API key and no spend, and renders
-the whole wiki from the code's structure (seven of the eight decision sources are
-deterministic; only the one harvested during doc generation needs a provider).
+**The whole wiki is generated with no LLM, then upgraded to model-written prose on
+demand.** `repowise init --index-only` builds the graph, git, decision and health
+layers and renders every wiki page from your code's structure, with no API key and
+no spend. Convert any part of it to LLM-written prose whenever you want, one page,
+one directory, or a ranked coverage slice at a time, and pay only for what you pick,
+from the CLI or right in the dashboard with the cost shown before you confirm.
+(Seven of the eight decision sources are deterministic too; only the one harvested
+during doc generation needs a provider.)
 
 Full detail on every layer: **[docs/layers/INTELLIGENCE_LAYERS.md →](docs/layers/INTELLIGENCE_LAYERS.md)**
 

@@ -783,7 +783,76 @@ def _build_generate_intent(config: dict) -> Any:
     if kind == "path_prefix":
         prefix = sel.get("path_prefix")
         return PageSelectionIntent(path_globs=(prefix,) if prefix else ())
+    if kind == "ranked":
+        # The seed comes from build_ranked_seed and short-circuits resolve_scope,
+        # so the intent is unused; return an empty one rather than picking a kind.
+        return PageSelectionIntent()
     return PageSelectionIntent(unwritten=True)
+
+
+def _effective_cascade(config: dict) -> str:
+    """Resolve the cascade mode, honoring the same defaults the CLI uses.
+
+    An explicit ``cascade`` in the config always wins. Left unset, a ranked
+    coverage selection defaults to ``none`` (the ranked set is already a coherent
+    slice) and the legacy single-page alias to ``none``; everything else defaults
+    to ``dependents`` (an explicit selection pulls in its container pages).
+    """
+    explicit = config.get("cascade")
+    if explicit:
+        return explicit
+    sel = config.get("selection") or {}
+    if sel.get("kind") == "ranked" or config.get("mode") == "single_page":
+        return "none"
+    return "dependents"
+
+
+def _ranked_coverage_pct(selection: dict, n_files: int) -> float:
+    """The coverage fraction a ranked selection resolves to.
+
+    ``coverage_pct`` is used verbatim (a fraction in ``(0, 1]``); ``top_n`` maps
+    to ``n / n_files`` so the budget picks about N pages. ``top_n`` is a target,
+    not an exact count — per-type floors and always-emitted repo-wide/onboarding
+    pages nudge the real number, which the estimate and job report faithfully.
+    """
+    pct = selection.get("coverage_pct")
+    if pct is not None:
+        return float(pct)
+    top_n = int(selection.get("top_n") or 0)
+    return min(1.0, max(0.0, top_n / max(1, n_files)))
+
+
+def _resolve_generate_scope(config: dict, rehydrated: Any, gen_config: Any) -> Any:
+    """Resolve a generate config + rehydrated repo into a :class:`ScopePlan`.
+
+    The one place a ranked coverage seed is built, so the estimate endpoint and
+    the launched job resolve the *identical* page set — the estimate cannot
+    under-quote. A ranked selection runs the core ``build_ranked_seed`` (the same
+    importance model ``repowise init`` uses at that coverage); everything else
+    resolves its intent normally.
+    """
+    from repowise.core.generation.scope import build_ranked_seed, resolve_scope
+
+    selection = config.get("selection") or {}
+    ranked_seed: set[str] | None = None
+    if selection.get("kind") == "ranked":
+        pct = _ranked_coverage_pct(selection, len(rehydrated.parsed_files))
+        ranked_seed = build_ranked_seed(
+            parsed_files=rehydrated.parsed_files,
+            graph_builder=rehydrated.graph_builder,
+            config=gen_config,
+            kg_ctx=rehydrated.kg_ctx,
+            records=rehydrated.records,
+            repo_name=rehydrated.repo_name,
+            coverage_pct=pct,
+        )
+    return resolve_scope(
+        records=rehydrated.records,
+        intent=_build_generate_intent(config),
+        cascade_mode=_effective_cascade(config),
+        deps=rehydrated.deps,
+        ranked_seed=ranked_seed,
+    )
 
 
 def _build_generation_config(repo_path: Path, config: dict, wiki_style: str) -> Any:
@@ -832,7 +901,6 @@ async def _run_generate_job(
     generate/persist/heal half is the same code the CLI ``repowise generate``
     runs, so behaviour matches across the two surfaces.
     """
-    from repowise.core.generation.scope import resolve_scope
     from repowise.core.pipeline.scoped_generation import (
         execute_scoped_generation,
         rehydrate_repo,
@@ -853,18 +921,9 @@ async def _run_generate_job(
     if rehydrated is None:
         raise RuntimeError("Repository has no wiki pages yet; run an index first.")
 
-    intent = _build_generate_intent(config)
-    # Explicit selections pull in their container pages by default; the legacy
-    # single-page alias keeps its historical "just this page" behaviour.
-    cascade_mode = config.get("cascade") or (
-        "none" if config.get("mode") == "single_page" else "dependents"
-    )
-    plan = resolve_scope(
-        records=rehydrated.records,
-        intent=intent,
-        cascade_mode=cascade_mode,
-        deps=rehydrated.deps,
-    )
+    # Resolve the scope (ranked seed included) through the shared helper so the
+    # job writes exactly what its estimate priced.
+    plan = _resolve_generate_scope(config, rehydrated, gen_config)
 
     generated_pages: list = []
     marked_stale = 0

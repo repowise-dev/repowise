@@ -47,10 +47,50 @@ from tests.unit.server.conftest import create_test_repo
             {"mode": "single_page", "page_id": "file_page:a.py"},
             PageSelectionIntent(page_ids=("file_page:a.py",)),
         ),
+        # Ranked short-circuits resolve_scope via the seed, so the intent is empty.
+        ({"selection": {"kind": "ranked", "coverage_pct": 0.2}}, PageSelectionIntent()),
     ],
 )
 def test_build_generate_intent(config: dict, expected: PageSelectionIntent) -> None:
     assert _build_generate_intent(config) == expected
+
+
+# ---------------------------------------------------------------------------
+# cascade + ranked-coverage helpers
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("config", "expected"),
+    [
+        ({"cascade": "full"}, "full"),  # explicit always wins
+        ({"selection": {"kind": "ranked", "coverage_pct": 0.2}}, "none"),
+        ({"mode": "single_page"}, "none"),
+        ({"selection": {"kind": "unwritten"}}, "dependents"),
+        ({}, "dependents"),
+        # Explicit cascade wins even for a ranked selection.
+        ({"selection": {"kind": "ranked", "top_n": 5}, "cascade": "dependents"}, "dependents"),
+    ],
+)
+def test_effective_cascade(config: dict, expected: str) -> None:
+    from repowise.server.job_executor import _effective_cascade
+
+    assert _effective_cascade(config) == expected
+
+
+@pytest.mark.parametrize(
+    ("selection", "n_files", "expected"),
+    [
+        ({"coverage_pct": 0.3}, 100, 0.3),  # coverage_pct passes through
+        ({"top_n": 5}, 100, 0.05),  # top_n maps to n / n_files
+        ({"top_n": 500}, 100, 1.0),  # clamped to 1.0
+        ({}, 100, 0.0),  # neither set (guarded upstream) is a no-op fraction
+    ],
+)
+def test_ranked_coverage_pct(selection: dict, n_files: int, expected: float) -> None:
+    from repowise.server.job_executor import _ranked_coverage_pct
+
+    assert _ranked_coverage_pct(selection, n_files) == pytest.approx(expected)
 
 
 # ---------------------------------------------------------------------------
@@ -98,6 +138,50 @@ async def test_generate_endpoint_page_ids_selection(client: AsyncClient, app) ->
     cfg = await _job_config(app.state.session_factory, resp.json()["job_id"])
     assert cfg["selection"] == {"kind": "page_ids", "page_ids": ["file_page:a.py"]}
     assert cfg["style"] == "caveman"
+
+
+@pytest.mark.asyncio
+async def test_generate_endpoint_ranked_selection(client: AsyncClient, app) -> None:
+    """A ranked coverage selection is carried into the job config."""
+    repo = await create_test_repo(client)
+    with patch("repowise.server.routers.repos._launch_job_task"):
+        resp = await client.post(
+            f"/api/repos/{repo['id']}/generate",
+            json={"selection": {"kind": "ranked", "coverage_pct": 0.2}, "cascade": "none"},
+        )
+    assert resp.status_code == 202
+    cfg = await _job_config(app.state.session_factory, resp.json()["job_id"])
+    assert cfg["selection"] == {"kind": "ranked", "coverage_pct": 0.2}
+    assert cfg["cascade"] == "none"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("selection", "needle"),
+    [
+        # Ranked needs exactly one sizing knob.
+        ({"kind": "ranked"}, "exactly one"),
+        ({"kind": "ranked", "coverage_pct": 0.2, "top_n": 5}, "exactly one"),
+        # Out-of-range coverage / non-positive top_n.
+        ({"kind": "ranked", "coverage_pct": 1.5}, "fraction"),
+        ({"kind": "ranked", "coverage_pct": 0}, "fraction"),
+        ({"kind": "ranked", "top_n": 0}, "positive"),
+        # Ranked cannot also carry explicit page selectors.
+        ({"kind": "ranked", "coverage_pct": 0.2, "page_ids": ["file_page:a.py"]}, "page_ids"),
+        # coverage_pct / top_n only belong to a ranked selection.
+        ({"kind": "unwritten", "coverage_pct": 0.2}, "ranked"),
+        ({"kind": "all", "top_n": 5}, "ranked"),
+    ],
+)
+async def test_generate_endpoint_rejects_bad_ranked(
+    client: AsyncClient, selection: dict, needle: str
+) -> None:
+    repo = await create_test_repo(client)
+    resp = await client.post(
+        f"/api/repos/{repo['id']}/generate", json={"selection": selection}
+    )
+    assert resp.status_code == 400, resp.text
+    assert needle in resp.json()["detail"].lower()
 
 
 @pytest.mark.asyncio
@@ -241,6 +325,46 @@ async def test_generate_job_runs_scoped_engine(session_factory, tmp_path) -> Non
         assert job.status == "completed"
         cfg = json.loads(job.config_json)
         assert cfg["pages_generated"] == 1
+
+
+def test_resolve_generate_scope_ranked_uses_build_ranked_seed() -> None:
+    """A ranked config resolves through build_ranked_seed, so the estimate and
+    the job (both callers of this one helper) plan the identical page set."""
+    from repowise.server.job_executor import _resolve_generate_scope
+
+    template_ids = ["file_page:a.py", "file_page:b.py", "file_page:c.py"]
+    rehydrated = _fake_rehydrated(template_ids)
+    # A non-empty parsed_files so top_n mapping (if used) has a denominator.
+    rehydrated.parsed_files = [SimpleNamespace(path=f"{p}.py") for p in "abc"]
+    seed = {"file_page:a.py"}
+
+    config = {"selection": {"kind": "ranked", "coverage_pct": 0.2}, "cascade": "none"}
+    gen_config = SimpleNamespace(coverage_pct=0.2, max_pages_pct=0.2, deterministic=False)
+    with patch(
+        "repowise.core.generation.scope.build_ranked_seed", return_value=seed
+    ) as ranked:
+        plan = _resolve_generate_scope(config, rehydrated, gen_config)
+
+    ranked.assert_called_once()
+    assert ranked.call_args.kwargs["coverage_pct"] == pytest.approx(0.2)
+    assert ranked.call_args.kwargs["repo_name"] == "test-repo"
+    # Cascade none + empty deps: the plan is exactly the ranked seed, nothing
+    # invented and nothing dropped (the estimate's page count == the job's).
+    assert plan.generate_ids == seed
+
+
+def test_resolve_generate_scope_explicit_skips_ranked_seed() -> None:
+    """An explicit selection never builds a ranked seed."""
+    from repowise.server.job_executor import _resolve_generate_scope
+
+    rehydrated = _fake_rehydrated(["file_page:a.py", "file_page:b.py"])
+    config = {"selection": {"kind": "unwritten"}, "cascade": "none"}
+    gen_config = SimpleNamespace(coverage_pct=0.2, max_pages_pct=0.2, deterministic=False)
+    with patch("repowise.core.generation.scope.build_ranked_seed") as ranked:
+        plan = _resolve_generate_scope(config, rehydrated, gen_config)
+
+    ranked.assert_not_called()
+    assert plan.generate_ids == {"file_page:a.py", "file_page:b.py"}
 
 
 @pytest.mark.asyncio
