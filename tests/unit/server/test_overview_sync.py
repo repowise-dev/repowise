@@ -81,6 +81,55 @@ async def test_completed_sync_job_wins_over_fallback(client: AsyncClient, app) -
 
 
 @pytest.mark.asyncio
+async def test_head_commit_heals_from_state_json(client: AsyncClient, app, tmp_path) -> None:
+    """overview-summary serves state.json's last_sync_commit over a stale DB
+    head_commit, matching /api/repos and /health/overview so the dashboard's
+    indexed-commit display never reads "behind" after a no-op update left the
+    repositories row un-restamped.
+    """
+    from repowise.core.persistence.models import Repository
+
+    stale = "a" * 40
+    current = "c" * 40
+
+    repo = await create_test_repo(client, tmp_path)
+    repowise = Path(repo["local_path"]) / ".repowise"
+    repowise.mkdir(exist_ok=True)
+    (repowise / "state.json").write_text(f'{{"last_sync_commit": "{current}"}}', encoding="utf-8")
+
+    # DB row left at an older commit (the un-restamped case the heal repairs).
+    async with get_session(app.state.session_factory) as session:
+        row = (
+            await session.execute(select(Repository).where(Repository.id == repo["id"]))
+        ).scalar_one()
+        row.head_commit = stale
+
+    resp = await client.get(f"/api/repos/{repo['id']}/overview-summary")
+    assert resp.status_code == 200
+    assert resp.json()["repo"]["head_commit"] == current
+
+
+@pytest.mark.asyncio
+async def test_head_commit_falls_back_to_db_without_state_json(
+    client: AsyncClient, app, tmp_path
+) -> None:
+    """No state.json (e.g. a hosted index): fall back to the DB head_commit."""
+    from repowise.core.persistence.models import Repository
+
+    db_commit = "d" * 40
+    repo = await create_test_repo(client, tmp_path)
+    async with get_session(app.state.session_factory) as session:
+        row = (
+            await session.execute(select(Repository).where(Repository.id == repo["id"]))
+        ).scalar_one()
+        row.head_commit = db_commit
+
+    resp = await client.get(f"/api/repos/{repo['id']}/overview-summary")
+    assert resp.status_code == 200
+    assert resp.json()["repo"]["head_commit"] == db_commit
+
+
+@pytest.mark.asyncio
 async def test_sync_includes_index_storage_bytes(client: AsyncClient, tmp_path) -> None:
     """overview-summary reports total .repowise on-disk footprint."""
     repo = await create_test_repo(client, tmp_path)
