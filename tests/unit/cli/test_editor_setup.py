@@ -69,6 +69,55 @@ def test_register_editor_clients_skipped_when_env_set(monkeypatch) -> None:
     assert registered == [Path("repo")]  # runs when unset
 
 
+def test_detect_editor_setup_outcome_reads_ground_truth(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    """The snapshot reflects the real hook state and the skip-setup env flag."""
+    from repowise.cli import hooks as hooks_module
+    from repowise.cli.agent_adapters import claude_code as cc_module
+    from repowise.cli.agent_adapters import codex as codex_module
+    from repowise.cli.editor_setup import detect_editor_setup_outcome
+
+    monkeypatch.setattr(hooks_module, "status", lambda _p: "installed")
+
+    class _Adapter:
+        def __init__(self, installed: bool, detected: bool = True) -> None:
+            self._installed = installed
+            self._detected = detected
+
+        def detect(self) -> bool:
+            return self._detected
+
+        def rewrite_hook_installed(self) -> bool:
+            return self._installed
+
+    monkeypatch.setattr(cc_module, "ClaudeCodeAdapter", lambda: _Adapter(installed=False))
+    # Codex is detected and has the rewrite hook, so it counts as present.
+    monkeypatch.setattr(codex_module, "CodexAdapter", lambda: _Adapter(installed=True))
+    monkeypatch.delenv("REPOWISE_SKIP_EDITOR_SETUP", raising=False)
+
+    outcome = detect_editor_setup_outcome(tmp_path, interactive=True, first_index=True)
+    assert outcome.claude_code_connected is True
+    assert outcome.editor_setup_disabled is False
+    assert outcome.autosync_hook_installed is True
+    assert outcome.rewrite_hook_installed is True  # Codex surface has it
+    assert outcome.interactive is True
+    assert outcome.first_index is True
+
+
+def test_detect_editor_setup_outcome_skip_env_reports_disconnected(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    from repowise.cli.editor_setup import detect_editor_setup_outcome
+
+    monkeypatch.setenv("REPOWISE_SKIP_EDITOR_SETUP", "1")
+    outcome = detect_editor_setup_outcome(tmp_path, interactive=False, first_index=False)
+    assert outcome.editor_setup_disabled is True
+    assert outcome.claude_code_connected is False
+
+
 def test_resolve_editor_setup_options_delegates_to_integrations() -> None:
     calls: list[tuple[str, frozenset[str], bool]] = []
 

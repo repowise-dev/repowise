@@ -119,29 +119,60 @@ def build_contextual_next_steps(
     hotspot_count: int = 0,
     decision_count: int = 0,
     top_hotspot: str = "",
+    setup: Any = None,
 ) -> list[tuple[str, str]]:
-    """Build next-step suggestions based on what the analysis actually found.
+    """Build next-step suggestions from what the run actually did.
 
-    When *fast_mode* is set, the index used the essential git tier and skipped
-    LLM docs, so the suggestions lead with how to upgrade to the full result.
+    ``repowise serve`` is the headline in every mode: the dashboard is the one
+    place the graph, hotspots, dead code, decisions and wiki are all browsable.
+    The second row is the mode's natural next move (upgrade for fast/index-only,
+    search for a written wiki).
+
+    *setup* is an optional :class:`~repowise.cli.editor_setup.EditorSetupOutcome`.
+    When present, the panel reacts to it: a headless run gets a manual MCP row,
+    and a **non-interactive** run whose hooks are missing gets install rows
+    (an interactive run was already offered them live, so re-listing would nag).
+    The Claude Code "already connected, restart it" status is a note rendered
+    beside the panel, not a command row — see :func:`build_mcp_status_lines`.
     """
     steps: list[tuple[str, str]] = []
 
+    # Headline: the dashboard, always. Graph, hotspots and dead code are there
+    # even in fast/index-only mode, so it is useful before any upgrade.
+    steps.append(("repowise serve", "open the dashboard at http://localhost:3000"))
+
     if fast_mode:
-        # Fast index: graph + essential git, no docs. Tell them how to get the
-        # full thing — complete git history + generated wiki pages.
-        steps.append(("repowise init", "run full mode: complete git history + generate docs"))
-        steps.append(("repowise mcp .", "start MCP server for AI assistants now"))
+        # Fast index: graph + essential git, no docs. Point at the full result.
+        steps.append(("repowise init", "upgrade to full git history + a generated wiki"))
     elif index_only:
-        # MCP is already auto-registered by `init`, so `repowise serve` is a
-        # more useful headline next step — it launches the dashboard where the
-        # graph, hotspots, dead code, and decisions are easier to browse than
-        # via the CLI.
-        steps.append(("repowise serve", "launch the dashboard at http://localhost:3000"))
-        steps.append(("repowise update --full", "rewrite the wiki with a model (needs a key)"))
+        # `generate` is the scoped, cost-gated upgrade path — a coverage, a
+        # directory or one page at a time, each behind an estimate — not the
+        # all-or-nothing `update --full` this used to suggest.
+        steps.append(("repowise generate", "upgrade the wiki to model-written prose (needs a key)"))
     else:
-        steps.append(("repowise mcp .", "start MCP server for AI assistants"))
-        steps.append(("repowise search <query>", "search the generated wiki"))
+        steps.append(('repowise search "<query>"', "search the generated wiki"))
+
+    # MCP: only a manual row when nothing was auto-wired (headless/CI). When a
+    # client was registered, the "restart to load the tools" status goes in the
+    # note beside the panel instead of as a command.
+    if setup is not None and getattr(setup, "editor_setup_disabled", False):
+        steps.append(("repowise mcp .", "connect an MCP client (Cursor, Codex, Claude Code)"))
+
+    # Hooks the interactive offers would have covered live. Surface them here
+    # only for a non-interactive run (where the offers were skipped silently)
+    # and only when the hook is actually missing. A headless / skip-setup run
+    # opted out of all editor wiring, so it is never nagged to install hooks.
+    if (
+        setup is not None
+        and not getattr(setup, "interactive", False)
+        and not getattr(setup, "editor_setup_disabled", False)
+    ):
+        if not getattr(setup, "autosync_hook_installed", False):
+            steps.append(("repowise hook install", "auto-sync the index on every commit"))
+        if not getattr(setup, "rewrite_hook_installed", False):
+            steps.append(
+                ("repowise hook rewrite install", "compress noisy command output via distill")
+            )
 
     if dead_unreachable + dead_unused > 0:
         steps.append(
@@ -154,8 +185,35 @@ def build_contextual_next_steps(
     if decision_count > 0:
         steps.append(("repowise decisions", f"browse {decision_count} architectural decisions"))
 
-    if not steps:
-        steps.append(("repowise mcp .", "start MCP server for AI assistants"))
-        steps.append(("repowise search <query>", "search the index"))
-
     return steps
+
+
+def build_mcp_status_lines(setup: Any) -> list[str]:
+    """Rich-markup status lines about MCP wiring, shown beside the panel.
+
+    Separate from the command rows because "already connected, restart it" is a
+    state, not something to run. Returns an empty list for a headless run (the
+    manual ``repowise mcp .`` command row carries that case instead).
+    """
+    if setup is None or getattr(setup, "editor_setup_disabled", False):
+        return []
+
+    lines: list[str] = []
+    if getattr(setup, "claude_code_connected", False):
+        if getattr(setup, "first_index", True):
+            lines.append(
+                "  [dim]Claude Code is connected to this repo. Restart it (or run "
+                "[bold]/mcp[/bold]) to load the repowise tools.[/dim]"
+            )
+        else:
+            lines.append(
+                "  [dim]Claude Code stays connected; restart it only if the tools "
+                "aren't showing.[/dim]"
+            )
+    # Cursor and Codex are not auto-wired (init writes the Claude/VS Code configs
+    # and repo `.mcp.json`, not `.cursor/mcp.json`), so always point the way.
+    lines.append(
+        "  [dim]Cursor or Codex: run [bold]repowise mcp .[/bold] "
+        "(config in [bold].repowise/mcp.json[/bold]).[/dim]"
+    )
+    return lines

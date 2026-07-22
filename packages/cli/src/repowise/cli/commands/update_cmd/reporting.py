@@ -213,7 +213,9 @@ def show_full_completion(
         ("repowise search <query>", "search the wiki"),
     ]
     console.print()
-    console.print(build_completion_panel("repowise update complete", metrics, next_steps=next_steps))
+    console.print(
+        build_completion_panel("repowise update complete", metrics, next_steps=next_steps)
+    )
     console.print()
 
 
@@ -255,12 +257,18 @@ def show_index_only_completion(
         ("repowise serve", "browse the index at localhost:3000"),
     ]
     if template_wiki:
-        next_steps.append(("repowise update --full", "rewrite the wiki with a model (needs a key)"))
+        # The scoped, cost-gated upgrade path — a coverage, a directory or one
+        # page at a time — not the all-or-nothing `update --full`.
+        next_steps.append(
+            ("repowise generate", "upgrade the wiki to model-written prose (needs a key)")
+        )
     else:
         next_steps.append(("repowise update --docs", "regenerate docs for the changed files"))
     console.print()
     console.print(
-        build_completion_panel("repowise index-only update complete", metrics, next_steps=next_steps)
+        build_completion_panel(
+            "repowise index-only update complete", metrics, next_steps=next_steps
+        )
     )
     console.print()
 

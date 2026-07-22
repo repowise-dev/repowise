@@ -15,6 +15,7 @@ from repowise.cli.ui import (
     build_analysis_summary_panel,
     build_completion_panel,
     build_contextual_next_steps,
+    build_mcp_status_lines,
     format_elapsed,
 )
 
@@ -116,8 +117,14 @@ def show_completion(
     effective_index_only: bool,
     run_mode: str,
     provider: Any,
+    setup: Any = None,
 ) -> None:
-    """Render the final completion panel (index-only or full mode)."""
+    """Render the final completion panel (index-only or full mode).
+
+    *setup* is the :class:`~repowise.cli.editor_setup.EditorSetupOutcome`
+    snapshot, so the next-step panel and the MCP status note reflect what setup
+    actually did. Passed as ``None`` only by callers with nothing to report.
+    """
     elapsed = time.monotonic() - start
 
     _graph_final = result.graph_builder.graph()
@@ -194,6 +201,7 @@ def show_completion(
             hotspot_count=_hotspot_count_final,
             decision_count=_n_decisions,
             top_hotspot=_top_hotspot,
+            setup=setup,
         )
         console.print()
         console.print(
@@ -214,6 +222,8 @@ def show_completion(
                 "  Re-run without [bold]--mode fast[/bold] to render the wiki from "
                 "structure.[/dim]"
             )
+        for _line in build_mcp_status_lines(setup):
+            console.print(_line)
         console.print()
         _render_defect_accuracy(result)
     else:
@@ -250,9 +260,8 @@ def show_completion(
             hotspot_count=_hotspot_count_final,
             decision_count=_n_decisions,
             top_hotspot=_top_hotspot,
+            setup=setup,
         )
-
-        from repowise.cli.mcp_config import format_setup_instructions
 
         console.print()
         console.print(
@@ -260,7 +269,11 @@ def show_completion(
         )
         console.print()
         _render_defect_accuracy(result)
-        console.print(format_setup_instructions(repo_path))
+        # A concise, dynamic MCP note (who is connected, how others connect)
+        # replaces the old wall of manual per-client config: init already wrote
+        # the Claude Code / VS Code registrations and repo `.mcp.json`.
+        for _line in build_mcp_status_lines(setup):
+            console.print(_line)
         console.print()
 
 
@@ -293,13 +306,13 @@ def show_workspace_completion(
 
     if index_only or provider is None:
         next_steps = [
-            ("repowise mcp <repo-path>", "start MCP server for a repo"),
+            ("repowise serve", "open the workspace dashboard at http://localhost:3000"),
             ("repowise status --workspace", "show workspace status"),
-            ("repowise init <repo> --provider gemini", "generate full docs for a repo"),
+            ("repowise generate <repo>", "upgrade a repo's wiki to model-written prose"),
         ]
     else:
         next_steps = [
-            ("repowise mcp <repo-path>", "start MCP server for a repo"),
+            ("repowise serve", "open the workspace dashboard at http://localhost:3000"),
             ("repowise status --workspace", "show workspace status"),
             ("repowise search <query>", "search across all indexed repos"),
         ]

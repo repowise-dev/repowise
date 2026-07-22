@@ -52,6 +52,7 @@ from repowise.cli.ui.result_panels import (
     build_analysis_summary_panel,
     build_completion_panel,
     build_contextual_next_steps,
+    build_mcp_status_lines,
 )
 from repowise.cli.ui.workspace_selection import (
     interactive_primary_select,

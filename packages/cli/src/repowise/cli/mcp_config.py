@@ -518,32 +518,3 @@ def _has_repowise_hook_for_matcher(hook_list: list, matcher: object) -> bool:
             if _is_repowise_hook(hook):
                 return True
     return False
-
-
-def format_setup_instructions(repo_path: Path) -> str:
-    """Return human-readable setup instructions for MCP clients."""
-    config = generate_mcp_config(repo_path)
-    server_block = json.dumps(config["mcpServers"]["repowise"], indent=4)
-    abs_path = str(repo_path.resolve()).replace("\\", "/")
-
-    return f"""
-MCP Server Configuration
-========================
-
-Project .mcp.json: automatically written for MCP clients that support repo-local discovery.
-
-Cursor (.cursor/mcp.json):
-  {server_block}
-
-Cline (cline_mcp_settings.json):
-  "mcpServers": {{
-    "repowise": {server_block}
-  }}
-
-Or run directly:
-  repowise mcp {abs_path}
-  repowise mcp {abs_path} --transport streamable-http --port 7338
-  repowise mcp {abs_path} --transport sse --port 7338
-
-Config saved to: {repo_path / ".repowise" / "mcp.json"}
-""".strip()

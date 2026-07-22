@@ -32,6 +32,81 @@ def _editor_setup_disabled() -> bool:
 
 
 @dataclass(frozen=True)
+class EditorSetupOutcome:
+    """What editor setup actually ended up doing, for the completion panel.
+
+    Snapshotted once at the authoritative moment — after client registration
+    and the interactive hook offers have run — so the "what's next" panel can
+    react to reality instead of guessing. Every field is a plain fact the panel
+    turns into a suggestion (or stays quiet about).
+    """
+
+    #: repowise registered a Claude Code MCP entry this run (init always does,
+    #: unless setup was skipped for a headless/CI run).
+    claude_code_connected: bool = False
+    #: the git post-commit auto-sync hook is present for this repo.
+    autosync_hook_installed: bool = False
+    #: the Claude Code distill command-rewrite hook is present (user-level).
+    rewrite_hook_installed: bool = False
+    #: the run could prompt (a TTY, not ``--yes``); when False the interactive
+    #: hook offers were skipped, so the panel is the only place to surface them.
+    interactive: bool = False
+    #: no prior index existed before this run (first-time onboarding).
+    first_index: bool = True
+    #: REPOWISE_SKIP_EDITOR_SETUP was set (CI/benchmark) — nothing was wired up.
+    editor_setup_disabled: bool = False
+
+
+def detect_editor_setup_outcome(
+    repo_path: Path,
+    *,
+    interactive: bool,
+    first_index: bool,
+) -> EditorSetupOutcome:
+    """Read the ground-truth editor-setup state for the completion panel.
+
+    Called after registration and the hook offers, so what it reads is final.
+    Every probe is a cheap local file read and is defensive: a failure degrades
+    to "not set up" rather than crashing ``init``.
+    """
+    disabled = _editor_setup_disabled()
+
+    autosync = False
+    try:
+        from repowise.cli.hooks import status as _hook_status
+
+        autosync = _hook_status(repo_path) == "installed"
+    except Exception:
+        pass
+
+    # The distill rewrite hook is per-agent. Treat it as present when any agent
+    # surface has it (Claude Code always, Codex only when detected), mirroring
+    # `repowise hook rewrite status`, so a Codex-only user who set it up on
+    # Codex is never nagged to install it again.
+    rewrite = False
+    try:
+        from repowise.cli.agent_adapters.claude_code import ClaudeCodeAdapter
+        from repowise.cli.agent_adapters.codex import CodexAdapter
+
+        surfaces = [ClaudeCodeAdapter()]
+        codex = CodexAdapter()
+        if codex.detect():
+            surfaces.append(codex)
+        rewrite = any(surface.rewrite_hook_installed() for surface in surfaces)
+    except Exception:
+        pass
+
+    return EditorSetupOutcome(
+        claude_code_connected=not disabled,
+        autosync_hook_installed=autosync,
+        rewrite_hook_installed=rewrite,
+        interactive=interactive,
+        first_index=first_index,
+        editor_setup_disabled=disabled,
+    )
+
+
+@dataclass(frozen=True)
 class EditorSetupOptions:
     """Options shared across editor setup integrations."""
 

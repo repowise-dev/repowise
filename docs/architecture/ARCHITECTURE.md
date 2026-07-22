@@ -1064,9 +1064,11 @@ and supports two transports:
 
 ### Auto-generated Config
 
-`repowise init` automatically generates `.repowise/mcp.json` with ready-to-paste
-config blocks for Claude Code (`~/.claude/claude.json`), Cursor (`.cursor/mcp.json`),
-and Cline. This config is printed at the end of `repowise init`.
+`repowise init` registers the MCP server directly where it can: Claude Code
+(`~/.claude/settings.json`), Claude Desktop (if installed), VS Code
+(`.vscode/mcp.json`), and the repo-shared `.mcp.json`. It also writes
+`.repowise/mcp.json` for clients configured by hand. The completion panel says
+which client was wired up and how Cursor or Codex connect (`repowise mcp .`).
 
 ---
 

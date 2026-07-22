@@ -115,7 +115,7 @@ def mcp_command(
     protocol: eleven by default in single-repo mode, plus two more by default
     in workspace mode. Four more are opt-in via ``--tools`` or the
     ``mcp.tools`` config block. Supports stdio
-    (for Claude Code, Codex, Cursor, Cline), streamable HTTP, and legacy SSE
+    (for Claude Code, Codex, Cursor), streamable HTTP, and legacy SSE
     transports.
 
     Loads ``<repo>/.repowise/.env`` into the environment before starting so

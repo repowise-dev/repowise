@@ -969,7 +969,12 @@ def init_command(
     # so ask. Non-interactive runs refuse rather than guess.
     # ``--yes`` and ``--force`` both mean "do not ask me", which is the answer
     # here as much as at the cost gate.
-    _prior_docs_mode = resolve_docs_mode(load_state(repo_path))
+    _prior_state = load_state(repo_path)
+    # Whether this repo has ever been indexed, captured before the run writes
+    # its own state. Drives the completion panel's MCP note (a first index tells
+    # the user to restart Claude Code to load the tools; a re-index does not).
+    _first_index = not _prior_state.get("last_sync_commit")
+    _prior_docs_mode = resolve_docs_mode(_prior_state)
     if index_only and _prior_docs_mode == "llm" and not (force or yes):
         console.print(
             "\n[yellow]This repo already has a model-written wiki.[/yellow] "
@@ -1391,16 +1396,6 @@ def init_command(
             include_submodules=include_submodules,
         )
 
-    # ---- Completion panel ----
-    show_completion(
-        repo_path=repo_path,
-        result=result,
-        start=start,
-        effective_index_only=effective_index_only,
-        run_mode=run_mode,
-        provider=provider,
-    )
-
     _record_init_outcome(
         result=result,
         effective_index_only=effective_index_only,
@@ -1415,3 +1410,25 @@ def init_command(
     # Opt-in distill command-rewrite hook for Claude Code. The workspace flow
     # runs its own offer across all selected repos inside _workspace_init.
     offer_distill_rewrite_hook(console, [repo_path], distill_hook, yes=yes)
+
+    # ---- Completion panel (last, so it reflects what setup actually did) ----
+    # Snapshot the editor-setup state now that client registration and the two
+    # hook offers above have run, so the "what's next" panel and MCP note react
+    # to reality. `interactive` mirrors the offers' own gate: when False they
+    # were skipped, so the panel is the only place their hooks surface.
+    from repowise.cli.editor_setup import detect_editor_setup_outcome
+
+    _setup_outcome = detect_editor_setup_outcome(
+        repo_path,
+        interactive=(sys.stdin.isatty() and not yes),
+        first_index=_first_index,
+    )
+    show_completion(
+        repo_path=repo_path,
+        result=result,
+        start=start,
+        effective_index_only=effective_index_only,
+        run_mode=run_mode,
+        provider=provider,
+        setup=_setup_outcome,
+    )
