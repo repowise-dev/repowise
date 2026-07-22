@@ -17,6 +17,31 @@ import {
   analyzeDeadCode,
   patchDeadCodeFinding,
 } from "@/lib/api/dead-code";
+import { getJob } from "@/lib/api/jobs";
+
+const POLL_INTERVAL_MS = 3_000;
+/** Give up watching after this long; the job may still be running server-side. */
+const POLL_TIMEOUT_MS = 15 * 60_000;
+
+/**
+ * Resolve once the analysis job finishes. Polling rather than SSE: the view
+ * only needs the terminal state to know when to refetch, and a plain promise
+ * keeps the shared view free of any streaming dependency.
+ */
+async function waitForJob(jobId: string): Promise<void> {
+  const deadline = Date.now() + POLL_TIMEOUT_MS;
+  for (;;) {
+    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+    const job = await getJob(jobId);
+    if (job.status === "completed") return;
+    if (job.status === "failed" || job.status === "cancelled") {
+      throw new Error(job.error_message || `Analysis ${job.status}`);
+    }
+    if (Date.now() > deadline) {
+      throw new Error("Analysis is taking longer than expected. Reload to see the results.");
+    }
+  }
+}
 
 export function DeadCodeTab({ repoId }: { repoId: string }) {
   const router = useRouter();
@@ -27,11 +52,12 @@ export function DeadCodeTab({ repoId }: { repoId: string }) {
     repoId,
     getSummary: () => getDeadCodeSummary(repoId),
     listFindings: (opts) => listDeadCode(repoId, opts),
-    analyze: async () => {
-      await analyzeDeadCode(repoId);
-    },
+    analyze: () => analyzeDeadCode(repoId),
+    waitForAnalysis: waitForJob,
     patchFinding: (findingId, patch) => patchDeadCodeFinding(findingId, patch),
     fileHref: (path) => fileEntityPath(prefix, path),
+    graphHref: (path) =>
+      `${prefix}/architecture?view=graph&node=${encodeURIComponent(path)}`,
     navigate: (href) => router.push(href),
   };
 

@@ -12,7 +12,7 @@
  * and hosted render the same view from one source.
  */
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import useSWR from "swr";
 import { toast } from "sonner";
 import type {
@@ -21,9 +21,12 @@ import type {
   DeadCodeSummary,
 } from "@repowise-dev/types/dead-code";
 
+import { Trash2 } from "lucide-react";
+
 import { Button } from "../ui/button";
 import { Skeleton } from "../ui/skeleton";
 import { CollapsibleSection } from "../shared/collapsible-section";
+import { EmptyState } from "../shared/empty-state";
 import { AiPromptModal } from "../health/ai-prompt-modal";
 import { buildDeadCodeAiPrompt } from "../health/ai-prompt-builder";
 
@@ -35,9 +38,32 @@ import { FindingsTable } from "./findings-table";
 import type { DeadCodeAdapter } from "./dead-code-adapter";
 import { toFriendlyMessage } from "../lib/errors";
 
+/**
+ * Server ceiling for one findings page (`limit` is clamped to 500 server-side).
+ * Hitting it means the table shows a slice, and every count derived from that
+ * slice has to say so rather than reading as the whole repository.
+ */
+const FINDINGS_LIMIT = 500;
+
+/** The one failure card both fetches use, so a broken load never reads as "clean". */
+function RetryCard({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return (
+    <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] p-4 text-sm text-[var(--color-text-secondary)] flex items-center justify-between gap-2">
+      <span>{message}</span>
+      <Button size="sm" variant="outline" onClick={onRetry}>
+        Retry
+      </Button>
+    </div>
+  );
+}
+
 export function DeadCodeView({ adapter }: { adapter: DeadCodeAdapter }) {
   const [analyzing, setAnalyzing] = useState(false);
   const [promptIds, setPromptIds] = useState<string[] | null>(null);
+  // Optimistic row state lives here, not in the table: the pile, the cluster
+  // rollups and the table all read one slice, so resolving a row (or undoing
+  // it) moves every surface together.
+  const [overrides, setOverrides] = useState<Record<string, DeadCodeFinding>>({});
 
   const {
     data: summary,
@@ -52,34 +78,84 @@ export function DeadCodeView({ adapter }: { adapter: DeadCodeAdapter }) {
 
   // Single findings fetch feeds the pile, the cluster views, AND the drill-down
   // table (which filters this slice client-side) — no second fetch.
-  const { data: findings, isLoading: loadingFindings } = useSWR<DeadCodeFinding[]>(
+  const {
+    data: findings,
+    isLoading: loadingFindings,
+    error: findingsError,
+    mutate: mutateFindings,
+  } = useSWR<DeadCodeFinding[]>(
     `dead-code-findings:${adapter.cacheKey}:all`,
-    () => adapter.listFindings({ limit: 500 }),
+    () => adapter.listFindings({ limit: FINDINGS_LIMIT }),
     { revalidateOnFocus: false },
   );
 
-  const findingsList = findings ?? [];
-  const safeFindings = findingsList.filter((f) => f.safe_to_delete);
+  const fetched = useMemo(() => findings ?? [], [findings]);
+  // The server hands back at most FINDINGS_LIMIT rows with no total, so a full
+  // page means "there may be more" and the counts below have to be scoped.
+  const truncated = fetched.length >= FINDINGS_LIMIT;
+
+  const findingsList = useMemo(
+    () => fetched.map((f) => overrides[f.id] ?? f).filter((f) => f.status === "open"),
+    [fetched, overrides],
+  );
+  const safeFindings = useMemo(
+    () => findingsList.filter((f) => f.safe_to_delete),
+    [findingsList],
+  );
 
   // "Propose cleanup" opens the shared AI-prompt modal seeded with the safe
   // pile — same agent-flavor picker (incl. repowise MCP) and copy affordance as
   // every other AI action in the dashboard.
   const handlePropose = (findingIds: string[]) => setPromptIds(findingIds);
 
+  // Seeded from the whole open slice, not just the safe pile: a per-row or
+  // per-selection prompt can name any finding the table can show.
   const promptFindings = promptIds
-    ? safeFindings.filter((f) => promptIds.includes(f.id))
+    ? findingsList.filter((f) => promptIds.includes(f.id))
     : [];
 
   const handleAnalyze = async () => {
+    // Guard here rather than on each button: the empty-state action cannot
+    // disable itself, and two clicks would race a second job into a 409.
+    if (analyzing) return;
     setAnalyzing(true);
+    let jobId: string | undefined;
     try {
-      await adapter.analyze();
-      toast.success("Analysis started — results will appear shortly.");
+      const started = await adapter.analyze();
+      jobId = started?.job_id;
+      toast.success(
+        jobId && adapter.waitForAnalysis
+          ? "Analysis started — this page refreshes when it finishes."
+          : "Analysis started — results will appear shortly.",
+      );
+    } catch (err) {
+      // 409 is the one failure with a specific remedy: wait for the other job.
+      const status = (err as { status?: number } | null)?.status;
+      toast.error(
+        status === 409
+          ? "Another job is already running for this repository. Try again once it finishes."
+          : `Couldn't start analysis: ${toFriendlyMessage(err)}`,
+      );
+      setAnalyzing(false);
+      return;
+    }
+
+    // Separate from the launch above: the job is running now, so a failure
+    // past this point is a failure to *watch* it, not to start it, and saying
+    // "couldn't start analysis" about a live job would be wrong.
+    if (!jobId || !adapter.waitForAnalysis) {
+      setAnalyzing(false);
+      return;
+    }
+    try {
+      await adapter.waitForAnalysis(jobId);
+      // The pass rewrites the findings, so local optimistic state is stale.
+      setOverrides({});
+      await Promise.all([mutateSummary(), mutateFindings()]);
+      toast.success("Dead-code findings refreshed.");
     } catch (err) {
       toast.error(
-        err instanceof Error
-          ? `Couldn't start analysis: ${toFriendlyMessage(err)}`
-          : "Couldn't start analysis",
+        `Analysis is running, but this page stopped tracking it: ${toFriendlyMessage(err)}`,
       );
     } finally {
       setAnalyzing(false);
@@ -91,16 +167,18 @@ export function DeadCodeView({ adapter }: { adapter: DeadCodeAdapter }) {
     const finding = findingsList.find((f) => f.id === id);
     const previousStatus: DeadCodeStatus = finding?.status ?? "open";
     const updated = await adapter.patchFinding(id, patch);
+    setOverrides((prev) => ({ ...prev, [id]: updated }));
     toast.success(`Finding ${patch.status.replace(/_/g, " ")}`, {
       action: {
         label: "Undo",
         onClick: async () => {
           try {
-            await adapter.patchFinding(id, { status: previousStatus });
+            const reverted = await adapter.patchFinding(id, { status: previousStatus });
+            // Put the row back on screen; a server-confirmed revert that only
+            // lands in the database is indistinguishable from a failed undo.
+            setOverrides((prev) => ({ ...prev, [id]: reverted }));
           } catch (err) {
-            toast.error(
-              `Couldn't undo: ${toFriendlyMessage(err)}`,
-            );
+            toast.error(`Couldn't undo: ${toFriendlyMessage(err)}`);
           }
         },
       },
@@ -119,6 +197,17 @@ export function DeadCodeView({ adapter }: { adapter: DeadCodeAdapter }) {
         // continue; report partial below
       }
     }
+    // Reflect only the rows the server confirmed — never a positional guess.
+    if (succeededIds.length > 0) {
+      const confirmed = new Set(succeededIds);
+      setOverrides((prev) => {
+        const next = { ...prev };
+        for (const f of findingsList) {
+          if (confirmed.has(f.id)) next[f.id] = { ...f, status: "resolved" as DeadCodeStatus };
+        }
+        return next;
+      });
+    }
     const succeeded = succeededIds.length;
     if (succeeded === ids.length) {
       toast.success(`Resolved ${succeeded} finding${succeeded === 1 ? "" : "s"}`);
@@ -134,7 +223,7 @@ export function DeadCodeView({ adapter }: { adapter: DeadCodeAdapter }) {
     <div className="space-y-6">
       <div className="flex items-center justify-end">
         <Button size="sm" variant="outline" onClick={handleAnalyze} disabled={analyzing}>
-          {analyzing ? "Starting…" : "Re-analyze"}
+          {analyzing ? "Analyzing…" : "Re-analyze"}
         </Button>
       </div>
 
@@ -147,13 +236,13 @@ export function DeadCodeView({ adapter }: { adapter: DeadCodeAdapter }) {
       ) : summary ? (
         <SummaryBar summary={summary} />
       ) : summaryError ? (
-        <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] p-4 text-sm text-[var(--color-text-secondary)] flex items-center justify-between gap-2">
-          <span>Couldn&apos;t load summary.</span>
-          <Button size="sm" variant="outline" onClick={() => mutateSummary()}>
-            Retry
-          </Button>
-        </div>
+        <RetryCard message="Couldn't load summary." onRetry={() => void mutateSummary()} />
       ) : null}
+
+      {/* A failed findings fetch must never render as an empty repository. */}
+      {findingsError && !loadingFindings && (
+        <RetryCard message="Couldn't load findings." onRetry={() => void mutateFindings()} />
+      )}
 
       {/* Act now: the single "what do I delete" surface. */}
       {findings && safeFindings.length > 0 && (
@@ -161,7 +250,10 @@ export function DeadCodeView({ adapter }: { adapter: DeadCodeAdapter }) {
           findings={safeFindings}
           onPropose={handlePropose}
           onSelect={(f) => adapter.navigate(adapter.fileHref(f.file_path))}
-          {...(summary ? { reclaimableLines: summary.deletable_lines } : {})}
+          // The summary total covers the whole repo; the file and finding
+          // counts beside it come from a capped slice. Only pass it when the
+          // two describe the same population.
+          {...(summary && !truncated ? { reclaimableLines: summary.deletable_lines } : {})}
         />
       )}
 
@@ -190,20 +282,51 @@ export function DeadCodeView({ adapter }: { adapter: DeadCodeAdapter }) {
         </CollapsibleSection>
       )}
 
-      {/* Drill-down: the full interactive table, the single confidence control. */}
+      {/* A failed fetch already showed its retry card above; showing a table or
+          an empty state underneath it would restate the failure as "clean". */}
+      {findingsError && !findings ? null : loadingFindings && !findings ? (
+        <Skeleton className="h-40 w-full rounded-lg" />
+      ) : /* A clean repository gets said out loud, with the way to re-check it.
+          Keyed off the fetched payload, not the locally filtered list: resolving
+          the last row must not swap the table out for an empty state, because
+          undoing it would then bring the row back into a section that
+          remounted collapsed. */
+      fetched.length === 0 ? (
+        <EmptyState
+          icon={<Trash2 className="h-6 w-6" />}
+          title="No dead code found"
+          description="Nothing in this repository is currently flagged as unreachable, unused or zombie. Re-run the analysis after a large refactor."
+          action={{ label: analyzing ? "Analyzing…" : "Re-analyze", onClick: () => void handleAnalyze() }}
+        />
+      ) : (
+      /* Drill-down: the full interactive table, the single confidence control.
+         Rendered only once the findings settle so `defaultOpen` sees the real
+         pile: mounted mid-load it would always read "no pile" and open. */
       <CollapsibleSection
         title="All findings"
-        hint={`${findingsList.length} findings`}
-        defaultOpen={false}
+        hint={
+          loadingFindings
+            ? "Loading…"
+            : truncated && summary
+              ? `Showing ${findingsList.length} of ${summary.total_findings} findings`
+              : `${findingsList.length} findings`
+        }
+        // With no safe pile above it this is the only content on the page, so
+        // a collapsed section reads as an empty screen.
+        defaultOpen={safeFindings.length === 0}
       >
         <FindingsTable
           findings={findingsList}
-          repoId={adapter.repoId}
           onPatch={handlePatch}
           onBulkResolve={handleBulkResolve}
+          onGeneratePrompt={handlePropose}
+          fileHref={(p) => adapter.fileHref(p)}
+          onNavigate={(href) => adapter.navigate(href)}
+          {...(adapter.graphHref ? { graphHref: (p: string) => adapter.graphHref!(p) } : {})}
           isLoading={loadingFindings}
         />
       </CollapsibleSection>
+      )}
 
       <AiPromptModal
         open={promptIds !== null}

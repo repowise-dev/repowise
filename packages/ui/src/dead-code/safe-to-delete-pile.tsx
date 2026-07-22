@@ -1,7 +1,8 @@
 "use client";
 
 import * as React from "react";
-import { Trash2, ArrowRight, Sparkles } from "lucide-react";
+import { Trash2, ArrowRight } from "lucide-react";
+import { AiPromptButton } from "../health/ai-prompt-button";
 import { cn } from "../lib/cn";
 
 export interface SafeToDeletePileFinding {
@@ -102,17 +103,14 @@ export function SafeToDeletePile({
           </p>
         </div>
         {onPropose && findings.length > 0 && (
-          <button
-            type="button"
+          // The canonical AI affordance, not a bespoke red button: every other
+          // "hand this to an agent" action in the dashboard is this pill, and
+          // red read as destructive on a button that only writes a prompt.
+          <AiPromptButton
+            label="Propose cleanup"
             onClick={() => onPropose(findings.map((f) => f.id))}
-            className={cn(
-              "inline-flex items-center gap-1.5 rounded-md border border-[var(--color-error)]/40 bg-[var(--color-error)]/10 px-3 py-1.5",
-              "text-xs font-medium text-[var(--color-error)] transition hover:bg-[var(--color-error)]/20",
-            )}
-          >
-            <Sparkles className="h-3.5 w-3.5" />
-            Propose cleanup
-          </button>
+            className="shrink-0"
+          />
         )}
       </div>
 

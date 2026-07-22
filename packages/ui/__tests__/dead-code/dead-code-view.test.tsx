@@ -9,6 +9,14 @@ import type {
   DeadCodeSummary,
 } from "@repowise-dev/types/dead-code";
 
+// jsdom has no layout engine → stub ResizeObserver so the Radix slider mounts.
+class RO {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+vi.stubGlobal("ResizeObserver", RO);
+
 // Capture sonner toasts so we can assert the undo affordance without a Toaster.
 const toastSuccess = vi.fn();
 const toastError = vi.fn();
@@ -103,6 +111,20 @@ function renderView(node: ReactElement) {
   );
 }
 
+/**
+ * The most recent toast that actually carries an Undo action. Selecting by
+ * shape rather than by position keeps this immune to an unrelated toast (a
+ * refresh notice, say) landing last.
+ */
+function lastUndoAction(): { label: string; onClick: () => Promise<void> } {
+  const call = toastSuccess.mock.calls
+    .filter((c) => (c[1] as { action?: unknown } | undefined)?.action)
+    .at(-1);
+  const action = (call?.[1] as { action: { label: string; onClick: () => Promise<void> } }).action;
+  expect(action.label).toBe("Undo");
+  return action;
+}
+
 beforeEach(() => {
   toastSuccess.mockClear();
   toastError.mockClear();
@@ -148,5 +170,141 @@ describe("DeadCodeView", () => {
     fireEvent.click(await screen.findByText("Propose cleanup"));
 
     expect(await screen.findByText("AI cleanup prompt")).toBeInTheDocument();
+  });
+
+  it("surfaces a retry affordance when the findings fetch fails", async () => {
+    const adapter = makeAdapter({
+      listFindings: vi.fn(async () => {
+        throw new Error("boom");
+      }),
+    });
+    renderView(<DeadCodeView adapter={adapter} />);
+
+    // A failed fetch must never render as a clean repository, so the retry
+    // card has to be the whole story: no table, no "no findings" underneath it.
+    expect(await screen.findByText("Couldn't load findings.")).toBeInTheDocument();
+    expect(screen.queryByText("No dead code found")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("No open dead-code findings for this repository."),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /All findings/ })).not.toBeInTheDocument();
+  });
+
+  it("keeps the table mounted when the last row is resolved, so undo can restore it", async () => {
+    const only: DeadCodeFinding = { ...FINDINGS[0]!, safe_to_delete: false };
+    const adapter = makeAdapter({ listFindings: vi.fn(async () => [only]) });
+    renderView(<DeadCodeView adapter={adapter} />);
+
+    // No safe pile above it, so the section leads the page already open.
+    fireEvent.click(await screen.findByRole("button", { name: "Resolve src/old/legacy.ts" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Resolve" }));
+
+    // Emptying the list locally must not swap in the "No dead code found"
+    // state: that unmounts the section, and undo would restore the row into a
+    // section that remounted collapsed.
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("button", { name: "Resolve src/old/legacy.ts" }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(screen.queryByText("No dead code found")).not.toBeInTheDocument();
+
+    const undo = lastUndoAction();
+    await undo.onClick();
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Resolve src/old/legacy.ts" })).toBeInTheDocument(),
+    );
+  });
+
+  it("waits for the analysis job and refetches when it finishes", async () => {
+    let resolveJob: (() => void) | undefined;
+    const adapter = makeAdapter({
+      analyze: vi.fn(async () => ({ job_id: "job-1" })),
+      waitForAnalysis: vi.fn(
+        () =>
+          new Promise<void>((res) => {
+            resolveJob = res;
+          }),
+      ),
+    });
+    renderView(<DeadCodeView adapter={adapter} />);
+    await screen.findByText("lines in cleanup candidates");
+
+    const listCallsBefore = (adapter.listFindings as ReturnType<typeof vi.fn>).mock.calls.length;
+    fireEvent.click(screen.getByRole("button", { name: "Re-analyze" }));
+
+    await waitFor(() => expect(adapter.waitForAnalysis).toHaveBeenCalledWith("job-1"));
+    resolveJob?.();
+
+    // Without this the toast promised fresh results over an unchanged fetch.
+    await waitFor(() =>
+      expect(
+        (adapter.listFindings as ReturnType<typeof vi.fn>).mock.calls.length,
+      ).toBeGreaterThan(listCallsBefore),
+    );
+    // Settle the refresh before the test ends: leaving it in flight lets a
+    // late toast land inside a later test and pick up its assertions.
+    await waitFor(() =>
+      expect(toastSuccess).toHaveBeenCalledWith("Dead-code findings refreshed."),
+    );
+    expect((adapter.getSummary as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it("blames the watch, not the launch, when the job fails after it started", async () => {
+    const adapter = makeAdapter({
+      analyze: vi.fn(async () => ({ job_id: "job-1" })),
+      waitForAnalysis: vi.fn(async () => {
+        throw new Error("Gateway timeout");
+      }),
+    });
+    renderView(<DeadCodeView adapter={adapter} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Re-analyze" }));
+
+    // The job is running; "Couldn't start analysis" would be a false statement.
+    await waitFor(() => expect(toastError).toHaveBeenCalled());
+    expect(String(toastError.mock.calls[0]?.[0])).toMatch(/stopped tracking it/);
+    expect(String(toastError.mock.calls[0]?.[0])).not.toMatch(/start analysis/);
+  });
+
+  it("reports a 409 as another job running rather than a generic failure", async () => {
+    const conflict = Object.assign(new Error("A job is already in progress"), { status: 409 });
+    const adapter = makeAdapter({
+      analyze: vi.fn(async () => {
+        throw conflict;
+      }),
+    });
+    renderView(<DeadCodeView adapter={adapter} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Re-analyze" }));
+
+    await waitFor(() => expect(toastError).toHaveBeenCalled());
+    expect(String(toastError.mock.calls[0]?.[0])).toMatch(/Another job is already running/);
+  });
+
+  it("undo puts the row back on screen, not just in the database", async () => {
+    const adapter = makeAdapter();
+    renderView(<DeadCodeView adapter={adapter} />);
+
+    // Open the drill-down table (collapsed by default).
+    fireEvent.click(await screen.findByRole("button", { name: /All findings/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Resolve src/old/legacy.ts" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Resolve" }));
+
+    // Optimistically gone from the table.
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("button", { name: "Resolve src/old/legacy.ts" }),
+      ).not.toBeInTheDocument(),
+    );
+
+    // The toast's Undo action re-patches; the row has to come back with it.
+    const undo = lastUndoAction();
+    await undo.onClick();
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Resolve src/old/legacy.ts" })).toBeInTheDocument(),
+    );
   });
 });

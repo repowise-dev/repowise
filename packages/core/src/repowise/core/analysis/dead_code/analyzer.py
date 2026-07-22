@@ -1102,8 +1102,9 @@ class DeadCodeAnalyzer:
     ) -> list[DeadCodeFindingData]:
         """Detect private/internal symbols with zero incoming call edges.
 
-        Off by default (higher false-positive rate). Enable with
-        ``detect_unused_internals=True`` in the config dict.
+        On by default. These carry a higher false-positive rate than the other
+        detectors, which is why they land at a lower confidence. Disable with
+        ``detect_unused_internals=False`` in the config dict.
         """
         findings: list[DeadCodeFindingData] = []
 
