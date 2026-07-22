@@ -9,6 +9,7 @@ same helpers as the single-repo flow.
 
 from __future__ import annotations
 
+import os
 import sys
 import time
 from dataclasses import dataclass
@@ -151,6 +152,64 @@ def _run_workspace_generation(
     )
 
 
+def _run_workspace_deterministic_generation(
+    *,
+    repo_path: Path,
+    result: Any,
+    embedder_name_resolved: str,
+    embedder_was_requested: bool,
+    concurrency: int,
+    resume: bool,
+    onboarding: bool,
+    wiki_style: str,
+    language: str,
+) -> tuple[list[Any], str]:
+    """Render one workspace repo's wiki from templates (no model, no cost).
+
+    The multi-repo mirror of init's single-repo
+    ``_run_deterministic_generation_phase``: an index-only (or provider-less /
+    cost-declined) workspace repo gets a complete, upgradable template wiki
+    rather than no pages at all, so it reads as a real wiki in the UI. Returns
+    the generated pages plus the embedder actually used (persisted by the caller
+    so a later workspace update embeds the same way rather than re-deciding).
+    """
+    from repowise.core.generation import GenerationConfig
+    from repowise.core.providers.llm.template import TemplateProvider
+
+    # "No key, no spend": a template run must not put a hosted embedder on the
+    # bill unless the user named it. ``resolve_embedder`` infers one from any LLM
+    # key in the environment, which is the wrong default here. Mirror the
+    # single-repo phase — mock unless requested — so full-text search still works
+    # and semantic search can be built later with ``repowise reindex``.
+    # A previously-persisted embedder on THIS repo counts as requested (re-init
+    # case): silently dropping it to the mock would re-embed the store at a
+    # different vector width, which the LanceDB writer resolves by dropping the
+    # table (the single-repo phase reads config.get("embedder") for the same
+    # reason; the workspace flag is computed once, before any repo config loads).
+    requested = embedder_was_requested or bool(load_config(repo_path).get("embedder"))
+    hosted = embedder_name_resolved not in ("mock", "ollama")
+    embedder = "mock" if hosted and not requested else embedder_name_resolved
+
+    gen_config = GenerationConfig(
+        deterministic=True,
+        max_concurrency=concurrency,
+        language=language,
+        enable_onboarding=onboarding,
+        wiki_style=wiki_style,
+    )
+    generated_pages = run_repo_generation(
+        repo_path=repo_path,
+        result=result,
+        provider=TemplateProvider(),
+        gen_config=gen_config,
+        concurrency=concurrency,
+        embedder_name_resolved=embedder,
+        resume=resume,
+        verbose=False,
+    )
+    return generated_pages, embedder
+
+
 def _workspace_generation_provider_for_repo(provider: Any, repo_path: Path) -> Any:
     """Return a generation provider bound to the current workspace repo.
 
@@ -190,6 +249,7 @@ class _WorkspaceCtx:
     language: str
     resolved_reasoning: str
     embedder_name_resolved: str
+    embedder_was_requested: bool
     resolved_commit_limit: int
     run_mode: str = "standard"
 
@@ -264,62 +324,94 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
     provider = ctx.provider
     index_only = ctx.index_only
 
-    # Generation phase (per-repo, only when not index-only).
-    # Track per-repo whether the user declined cost so the persisted docs mode
-    # reflects the actual choice instead of the original init mode.
-    repo_docs_enabled = not index_only and provider is not None
+    # Generation phase (per-repo). ``docs_mode`` records what actually happened:
+    # "llm" when a model wrote the pages, "deterministic" when they were rendered
+    # from templates (index-only, no provider, or a declined cost gate), "none"
+    # when nothing was generated (dry run, fast mode, or a generation error).
+    # It drives the persisted state so `update` and the web UI see the truth.
+    docs_mode = "none"
     skip_reason: str | None = None
-    if index_only:
-        skip_reason = "index-only mode"
-    elif provider is None:
-        skip_reason = "no provider configured"
     pages_generated = 0
-    if not index_only and provider is not None:
-        if ctx.dry_run:
-            console.print("    [yellow]Dry run — skipping generation for this repo.[/yellow]\n")
-            skip_reason = "dry run"
-            repo_docs_enabled = False
-        else:
-            try:
-                repo_provider = _workspace_generation_provider_for_repo(provider, repo.path)
-                generated_pages = _run_workspace_generation(
-                    repo_path=repo.path,
-                    result=result,
-                    provider=repo_provider,
-                    embedder_name_resolved=ctx.embedder_name_resolved,
-                    concurrency=ctx.concurrency,
-                    yes=ctx.yes,
-                    resume=ctx.resume,
-                    skip_tests=ctx.skip_tests,
-                    skip_infra=ctx.skip_infra,
-                    test_run=ctx.test_run,
-                    reasoning=ctx.resolved_reasoning,
-                    onboarding=ctx.onboarding,
-                    coverage_pct=ctx.coverage_pct,
-                    harvest_decisions=ctx.harvest_decisions,
-                    wiki_style=ctx.wiki_style,
-                    language=ctx.language,
-                )
-                result.generated_pages = generated_pages
-                # (result.vector_store is set inside _run_workspace_generation
-                # so the Phase-2C decision dedup can reuse the same store.)
-                pages_generated = len(generated_pages)
-                console.print(f"    [green]✓[/green] Generated {len(generated_pages)} pages\n")
-            except CostGateDeclined:
-                repo_docs_enabled = False
-                result.generated_pages = []
-                skip_reason = "cost gate declined"
-            except Exception as gen_exc:
-                console.print(f"    [yellow]Generation failed: {gen_exc}[/yellow]\n")
-                skip_reason = f"generation error: {gen_exc}"
-                repo_docs_enabled = False
-    else:
-        console.print()
+    det_embedder: str | None = None
 
-    docs_outcome = (
-        len(result.generated_pages or []),
-        None if repo_docs_enabled else skip_reason,
-    )
+    def _render_from_templates() -> None:
+        """Render the whole wiki from templates and mark this repo deterministic."""
+        nonlocal pages_generated, docs_mode, det_embedder
+        generated_pages, det_embedder = _run_workspace_deterministic_generation(
+            repo_path=repo.path,
+            result=result,
+            embedder_name_resolved=ctx.embedder_name_resolved,
+            embedder_was_requested=ctx.embedder_was_requested,
+            concurrency=ctx.concurrency,
+            resume=ctx.resume,
+            onboarding=ctx.onboarding,
+            wiki_style=ctx.wiki_style,
+            language=ctx.language,
+        )
+        result.generated_pages = generated_pages
+        pages_generated = len(generated_pages)
+        docs_mode = "deterministic"
+        console.print(
+            f"    [green]✓[/green] Rendered {len(generated_pages)} pages from structure "
+            "(no model)\n"
+        )
+
+    if ctx.dry_run:
+        console.print("    [yellow]Dry run — skipping generation for this repo.[/yellow]\n")
+        skip_reason = "dry run"
+    elif ctx.run_mode == "fast":
+        # Fast mode is a graph-and-git index by design; it skips the wiki so a
+        # very large repo indexes quickly. Mirror single-repo init.
+        console.print()
+        skip_reason = "fast mode"
+    elif not index_only and provider is not None:
+        try:
+            repo_provider = _workspace_generation_provider_for_repo(provider, repo.path)
+            generated_pages = _run_workspace_generation(
+                repo_path=repo.path,
+                result=result,
+                provider=repo_provider,
+                embedder_name_resolved=ctx.embedder_name_resolved,
+                concurrency=ctx.concurrency,
+                yes=ctx.yes,
+                resume=ctx.resume,
+                skip_tests=ctx.skip_tests,
+                skip_infra=ctx.skip_infra,
+                test_run=ctx.test_run,
+                reasoning=ctx.resolved_reasoning,
+                onboarding=ctx.onboarding,
+                coverage_pct=ctx.coverage_pct,
+                harvest_decisions=ctx.harvest_decisions,
+                wiki_style=ctx.wiki_style,
+                language=ctx.language,
+            )
+            result.generated_pages = generated_pages
+            # (result.vector_store is set inside _run_workspace_generation
+            # so the Phase-2C decision dedup can reuse the same store.)
+            pages_generated = len(generated_pages)
+            docs_mode = "llm"
+            console.print(f"    [green]✓[/green] Generated {len(generated_pages)} pages\n")
+        except CostGateDeclined:
+            # Declining only ever meant "not at that price". Fall back to the
+            # free template renderer rather than leaving the repo with no wiki
+            # at all (parity with single-repo init).
+            console.print(
+                "    [dim]Building this repo's wiki from structure instead. Run "
+                "[bold]repowise update --repo "
+                f"{repo.alias} --full[/bold] to write it with a model later.[/dim]"
+            )
+            _render_from_templates()
+        except Exception as gen_exc:
+            console.print(f"    [yellow]Generation failed: {gen_exc}[/yellow]\n")
+            skip_reason = f"generation error: {gen_exc}"
+            result.generated_pages = []
+    else:
+        # Index-only, or provider setup failed and fell back to index-only: give
+        # the repo a complete template wiki so it is a real, upgradable wiki in
+        # the UI rather than an empty index with no upgrade target.
+        _render_from_templates()
+
+    docs_outcome = (len(result.generated_pages or []), skip_reason)
 
     # Persist to repo-local DB
     run_async(persist_result(result, repo.path))
@@ -330,11 +422,12 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
     state: dict[str, Any] = {
         "last_sync_commit": head,
         "total_pages": pages_count,
-        # Workspace init has no template fallback yet, so a repo that skipped
-        # generation really does end up with no pages at all.
-        **docs_mode_state_fields("llm" if repo_docs_enabled else "none"),
+        # "llm", "deterministic" (template wiki), or "none" — see the generation
+        # phase above. An index-only workspace repo now renders a template wiki
+        # like single-repo init, so it reads as "deterministic", not "none".
+        **docs_mode_state_fields(docs_mode),
     }
-    if repo_docs_enabled and provider is not None:
+    if docs_mode == "llm" and provider is not None:
         state["provider"] = provider.provider_name
         state["model"] = provider.model_name
     if repo_phase_timings:
@@ -361,7 +454,7 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
     )
 
     # Persist provider/model config per-repo when doing full generation
-    if not index_only and provider is not None:
+    if docs_mode == "llm" and provider is not None:
         from repowise.cli.providers.embedders import resolve_embedding_model
 
         save_config(
@@ -381,6 +474,24 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
         # Same for the output language, so update regenerates in it.
         if ctx.language != "en":
             save_config_partial(repo.path, language=ctx.language)
+    elif docs_mode == "deterministic":
+        # A template wiki still produces (and embeds) pages, so persist the
+        # embedder actually used and the index knobs. Without the embedder,
+        # a later `repowise update` would re-resolve from the environment and
+        # could re-embed the store at a different width, which the LanceDB
+        # writer resolves by dropping the table. Provider/model/style/language
+        # only reach a model, so they are intentionally not written here.
+        from repowise.cli.providers.embedders import resolve_embedding_model
+
+        save_config_partial(
+            repo.path,
+            exclude_patterns=ctx.exclude_patterns if ctx.exclude_patterns else None,
+            commit_limit=ctx.resolved_commit_limit if ctx.resolved_commit_limit else None,
+            embedder=det_embedder,
+            embedding_model=(
+                resolve_embedding_model(det_embedder) if det_embedder else None
+            ),
+        )
 
     return _RepoOutcome(
         file_count=result.file_count,
@@ -479,6 +590,14 @@ def _workspace_init(
     is_interactive = sys.stdin.isatty() and provider_name is None and not index_only and not yes
 
     embedder_name_resolved = resolve_embedder(embedder_name)
+    # Whether the user actually asked for this embedder, as opposed to
+    # resolve_embedder inferring one from an LLM key in the environment. The
+    # deterministic (index-only) path needs the distinction: it advertises
+    # itself as costing nothing, so it will not put a hosted embedder on the
+    # user's bill unless they named it.
+    embedder_was_requested = bool(embedder_name) or bool(
+        os.environ.get("REPOWISE_EMBEDDER", "").strip()
+    )
 
     if is_interactive:
         mode = interactive_mode_select(console)
@@ -612,6 +731,7 @@ def _workspace_init(
         language=language or "en",
         resolved_reasoning=resolved_reasoning,
         embedder_name_resolved=embedder_name_resolved,
+        embedder_was_requested=embedder_was_requested,
         resolved_commit_limit=resolved_commit_limit,
         run_mode=run_mode,
     )
