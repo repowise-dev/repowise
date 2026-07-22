@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type MouseEvent } from "react";
 import { GitBranch } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "../ui/button";
@@ -94,6 +94,17 @@ export function FindingRow({
   // a real href so middle-click and "open in new tab" keep working.
   const openFile = href && onNavigate ? () => onNavigate(href) : undefined;
 
+  // Hand a plain left click on the file name to the host router too, so it does
+  // not fall through to a full page load while the row around it routes
+  // client-side. Modified and non-primary clicks keep the browser's behavior.
+  const onLinkClick = (e: MouseEvent<HTMLAnchorElement>) => {
+    e.stopPropagation();
+    if (!openFile) return;
+    if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    e.preventDefault();
+    openFile();
+  };
+
   return (
     <tr
       className={cn(
@@ -116,7 +127,7 @@ export function FindingRow({
         {href ? (
           <a
             href={href}
-            onClick={(e) => e.stopPropagation()}
+            onClick={onLinkClick}
             className="truncate block hover:text-[var(--color-accent-primary)] hover:underline"
             title={finding.file_path}
           >

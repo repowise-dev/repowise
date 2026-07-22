@@ -171,6 +171,12 @@ describe("FindingsTable row affordances", () => {
 
     fireEvent.click(screen.getByRole("row", { name: /src\/a\.ts/ }));
     expect(onNavigate).toHaveBeenCalledWith("/repos/repo-1/files/src/a.ts");
+
+    // A plain click on the name routes through the host too, rather than
+    // falling through to a full page load inside a client-routed row.
+    onNavigate.mockClear();
+    fireEvent.click(link, { button: 0 });
+    expect(onNavigate).toHaveBeenCalledWith("/repos/repo-1/files/src/a.ts");
   });
 
   it("does not navigate when the checkbox is clicked", () => {
