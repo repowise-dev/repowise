@@ -63,6 +63,7 @@ def test_codex_plugin_skills_have_metadata_and_neutral_wording() -> None:
     assert {path.parent.name for path in skill_paths} == {
         "architectural-decisions",
         "change-review",
+        "code-health",
         "codebase-exploration",
         "dead-code-cleanup",
         "pre-modification-check",
