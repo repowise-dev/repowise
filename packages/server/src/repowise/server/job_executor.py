@@ -22,7 +22,7 @@ from repowise.core.cancellation import (
     get_active_token,
     set_active_token,
 )
-from repowise.core.docs_mode import DocsMode, docs_mode_state_fields
+from repowise.core.docs_mode import DocsMode, docs_mode_state_fields, resolve_docs_mode
 from repowise.core.persistence.crud import (
     get_generation_job,
     get_repository,
@@ -386,6 +386,31 @@ async def execute_job(
         events = create_event_buffer(app_state, job_id)
         progress = JobProgressCallback(job_id, session_factory, events)
 
+        # ---- Scoped generation mode ---------------------------------------
+        # `repowise generate` over HTTP: write an explicit subset of pages via
+        # the shared core engine, not a full re-index. `single_page` is the
+        # legacy per-page regenerate alias for the same path.
+        if mode in ("generate", "single_page"):
+            if llm_client is None:
+                raise RuntimeError(
+                    docs_skip_reason or "No LLM provider is configured for this repository."
+                )
+            await _run_generate_job(
+                job_id=job_id,
+                repo_id=repo_id,
+                repo_path=Path(repo_path),
+                config=config,
+                session_factory=session_factory,
+                provider=llm_client,
+                vector_store=vector_store,
+                fts=fts,
+                progress=progress,
+                exclude_patterns=exclude_patterns or [],
+                wiki_style=wiki_style,
+                start=start,
+            )
+            return
+
         generate_docs = (
             (is_full_resync or is_initial_index)
             and llm_client is not None
@@ -419,6 +444,14 @@ async def execute_job(
         # This keeps docs fresh without the cost of a full re-index.
         incremental_pages: list = []
         if mode == "sync" and llm_client is not None:
+            # D3: hand the incremental regen the vector store (so re-rendered
+            # pages are re-embedded, not silently dropped from semantic search)
+            # and the prior pages (so an unchanged page whose prompt still hashes
+            # the same is reused, not re-billed on every sync).
+            from repowise.core.persistence import load_prior_pages
+
+            async with get_session(session_factory) as session:
+                prior_pages = await load_prior_pages(session, repo_id)
             incremental_pages = await _incremental_page_regen(
                 Path(repo_path),
                 result,
@@ -426,6 +459,8 @@ async def execute_job(
                 config,
                 progress,
                 repo_wiki_style=wiki_style,
+                vector_store=vector_store,
+                prior_pages=prior_pages,
             )
 
         # ---- Persist results -----------------------------------------------
@@ -724,6 +759,230 @@ def _persist_initial_index_state(
 # ---------------------------------------------------------------------------
 
 
+def _build_generate_intent(config: dict) -> Any:
+    """Turn a generate job's config into a :class:`PageSelectionIntent`.
+
+    Understands the new ``selection`` block (all / unwritten / stale / page_ids /
+    path_prefix) and the legacy ``single_page`` shape (``page_id``). Defaults to
+    ``unwritten`` — the index-only upgrade case — when nothing is specified.
+    """
+    from repowise.core.generation.page_selection import PageSelectionIntent
+
+    if config.get("mode") == "single_page":
+        pid = config.get("page_id")
+        return PageSelectionIntent(page_ids=(pid,) if pid else ())
+
+    sel = config.get("selection") or {}
+    kind = sel.get("kind", "unwritten")
+    if kind == "all":
+        return PageSelectionIntent(all_pages=True)
+    if kind == "stale":
+        return PageSelectionIntent(stale=True)
+    if kind == "page_ids":
+        return PageSelectionIntent(page_ids=tuple(sel.get("page_ids") or ()))
+    if kind == "path_prefix":
+        prefix = sel.get("path_prefix")
+        return PageSelectionIntent(path_globs=(prefix,) if prefix else ())
+    return PageSelectionIntent(unwritten=True)
+
+
+def _build_generation_config(repo_path: Path, config: dict, wiki_style: str) -> Any:
+    """Build the ``GenerationConfig`` a generate job (or its estimate) runs with.
+
+    Shared by the executor and the estimate endpoint so both resolve the same
+    style / reasoning / language / concurrency, and therefore the same scope and
+    cost. A per-request ``style`` override (carried in the job config) wins over
+    the repo's default, matching the single-page regenerate contract.
+    """
+    from repowise.core.generation import GenerationConfig
+    from repowise.core.generation.styles import resolve_style
+    from repowise.core.reasoning import resolve_reasoning
+    from repowise.core.repo_config import load_repo_config
+
+    repo_cfg = load_repo_config(repo_path)
+    effective_style = resolve_style(config.get("style") or wiki_style, repo_path=repo_path).name
+    return GenerationConfig(
+        reasoning=resolve_reasoning(config=repo_cfg),
+        wiki_style=effective_style,
+        language=repo_cfg.get("language", "en"),
+        enable_onboarding=bool(repo_cfg.get("enable_onboarding", True)),
+        max_concurrency=int(config.get("concurrency") or 12),
+    )
+
+
+async def _run_generate_job(
+    *,
+    job_id: str,
+    repo_id: str,
+    repo_path: Path,
+    config: dict,
+    session_factory: Any,
+    provider: Any,
+    vector_store: Any | None,
+    fts: Any | None,
+    progress: JobProgressCallback,
+    exclude_patterns: list[str],
+    wiki_style: str,
+    start: float,
+) -> None:
+    """Run one scoped generation job through the shared core engine.
+
+    Rehydrates the graph + git, resolves the requested scope + cascade, writes
+    exactly that subset of pages, and records the terminal job status. The whole
+    generate/persist/heal half is the same code the CLI ``repowise generate``
+    runs, so behaviour matches across the two surfaces.
+    """
+    from repowise.core.generation.scope import resolve_scope
+    from repowise.core.pipeline.scoped_generation import (
+        execute_scoped_generation,
+        rehydrate_repo,
+    )
+
+    gen_config = _build_generation_config(repo_path, config, wiki_style)
+
+    state = _load_state(repo_path)
+    rehydrated = await rehydrate_repo(
+        session_factory,
+        repo_id,
+        repo_path,
+        generation_config=gen_config,
+        exclude_patterns=exclude_patterns,
+        include_submodules=bool(state.get("include_submodules", False)),
+        include_nested_repos=bool(state.get("include_nested_repos", False)),
+    )
+    if rehydrated is None:
+        raise RuntimeError("Repository has no wiki pages yet; run an index first.")
+
+    intent = _build_generate_intent(config)
+    # Explicit selections pull in their container pages by default; the legacy
+    # single-page alias keeps its historical "just this page" behaviour.
+    cascade_mode = config.get("cascade") or (
+        "none" if config.get("mode") == "single_page" else "dependents"
+    )
+    plan = resolve_scope(
+        records=rehydrated.records,
+        intent=intent,
+        cascade_mode=cascade_mode,
+        deps=rehydrated.deps,
+    )
+
+    generated_pages: list = []
+    marked_stale = 0
+    if plan.generate_ids:
+        progress.on_phase_start("generation", len(plan.generate_ids))
+        gen_result = await execute_scoped_generation(
+            session_factory=session_factory,
+            repo_id=repo_id,
+            repo_path=repo_path,
+            rehydrated=rehydrated,
+            plan=plan,
+            provider=provider,
+            generation_config=gen_config,
+            # The resolved server vector store carries its own embedder, exactly
+            # like the sync path — no separate embedder needed here.
+            embedder=None,
+            vector_store=vector_store,
+            fts=fts,
+            progress=progress,
+            # The server derives spend from the generated pages' token counts
+            # rather than a per-repo CostTracker, so none is wired here.
+            cost_tracker=None,
+            concurrency=gen_config.max_concurrency,
+        )
+        generated_pages = gen_result.generated_pages
+        marked_stale = gen_result.marked_stale
+    else:
+        logger.info(
+            "generate_job_empty_scope",
+            job_id=job_id,
+            unknown_page_ids=list(plan.unknown_page_ids),
+        )
+
+    await progress.drain_and_stop()
+
+    elapsed = time.monotonic() - start
+    total_input = sum(getattr(p, "input_tokens", 0) for p in generated_pages)
+    total_output = sum(getattr(p, "output_tokens", 0) for p in generated_pages)
+    pages_generated = len(generated_pages)
+
+    async with get_session(session_factory) as session:
+        job = await get_generation_job(session, job_id)
+        final_config = dict(config)
+        final_config.update(
+            {
+                "total_input_tokens": total_input,
+                "total_output_tokens": total_output,
+                "elapsed_seconds": round(elapsed, 1),
+                "pages_generated": pages_generated,
+                "pages_marked_stale": marked_stale,
+                # Surface requested-but-missing ids on the job record, not just in
+                # logs, so the UI can tell a caller a --page id resolved to nothing.
+                "unknown_page_ids": list(plan.unknown_page_ids),
+            }
+        )
+        if job is not None:
+            job.config_json = json.dumps(final_config)
+        await update_job_status(
+            session,
+            job_id,
+            "completed",
+            completed_pages=pages_generated,
+            total_pages=pages_generated,
+        )
+        total_pages, remaining_templates = await _repo_page_counts(session, repo_id)
+
+    # Keep state.json in step with what the server wrote: the sync baseline, the
+    # page count, and docs_mode — which flips to "llm" only once no template page
+    # remains, mirroring the CLI so a later `repowise update` reads the same mode.
+    try:
+        head = _read_head_sha(repo_path)
+        state = _load_state(repo_path)
+        if head:
+            state["last_sync_commit"] = head
+        state["total_pages"] = total_pages
+        if remaining_templates == 0 and pages_generated and resolve_docs_mode(state) != "llm":
+            state.update(docs_mode_state_fields("llm"))
+        _save_state(repo_path, state)
+    except Exception:
+        logger.debug("state_json_update_failed", job_id=job_id, exc_info=True)
+
+    logger.info(
+        "generate_job_completed",
+        job_id=job_id,
+        pages=pages_generated,
+        marked_stale=marked_stale,
+        elapsed=round(elapsed, 1),
+    )
+
+
+async def _repo_page_counts(session: Any, repo_id: str) -> tuple[int, int]:
+    """Return ``(total_pages, remaining_template_pages)`` for a repo."""
+    from sqlalchemy import func as sa_func
+    from sqlalchemy import select as sa_select
+
+    from repowise.core.persistence.models import Page
+
+    total = int(
+        (
+            await session.execute(
+                sa_select(sa_func.count())
+                .select_from(Page)
+                .where(Page.repository_id == repo_id)
+            )
+        ).scalar_one()
+    )
+    templates = int(
+        (
+            await session.execute(
+                sa_select(sa_func.count())
+                .select_from(Page)
+                .where(Page.repository_id == repo_id, Page.provider_name == "template")
+            )
+        ).scalar_one()
+    )
+    return total, templates
+
+
 async def _incremental_page_regen(
     repo_path: Path,
     result: Any,
@@ -731,6 +990,9 @@ async def _incremental_page_regen(
     job_config: dict,
     progress: Any | None,
     repo_wiki_style: str = "comprehensive",
+    *,
+    vector_store: Any | None = None,
+    prior_pages: dict[str, Any] | None = None,
 ) -> list:
     """Regenerate only wiki pages affected by recent changes.
 
@@ -826,7 +1088,18 @@ async def _incremental_page_regen(
             language=repo_cfg.get("language", "en"),
         )
         assembler = ContextAssembler(generation_config)
-        generator = PageGenerator(llm_client, assembler, generation_config, repo_path=repo_path)
+        # D3: pass the vector store (re-embed re-rendered pages) and prior pages
+        # (reuse an unchanged page instead of re-billing it), matching the CLI
+        # incremental path. Without these, every sync re-billed the repo-wide
+        # pages and dropped them from semantic search.
+        generator = PageGenerator(
+            llm_client,
+            assembler,
+            generation_config,
+            vector_store=vector_store,
+            prior_pages=prior_pages or {},
+            repo_path=repo_path,
+        )
 
         pages = await generator.generate_all(
             affected_parsed,

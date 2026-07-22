@@ -7,9 +7,11 @@ import io
 import logging
 import zipfile
 from pathlib import Path, PurePosixPath
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse, StreamingResponse
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -452,6 +454,25 @@ async def get_repo_stats(
     )
 
 
+async def _ensure_no_active_job(session: AsyncSession, repo_id: str) -> None:
+    """Raise 409 if a pending/running job already holds this repo.
+
+    The active-job guard is repo-wide: overlapping runs share a process-global
+    cancel-token slot, so a second concurrent job is refused rather than started.
+    Shared by every job-launching endpoint.
+    """
+    active = await session.execute(
+        select(GenerationJob.id)
+        .where(GenerationJob.repository_id == repo_id)
+        .where(GenerationJob.status.in_(["pending", "running"]))
+        .limit(1)
+    )
+    if active.scalar_one_or_none() is not None:
+        raise HTTPException(
+            status_code=409, detail="A job is already in progress for this repository"
+        )
+
+
 @router.post("/{repo_id}/sync", status_code=202)
 async def sync_repo(
     repo_id: str,
@@ -467,17 +488,7 @@ async def sync_repo(
     if repo is None:
         raise HTTPException(status_code=404, detail="Repository not found")
 
-    # Prevent concurrent pipeline runs on the same repo
-    active = await session.execute(
-        select(GenerationJob.id)
-        .where(GenerationJob.repository_id == repo_id)
-        .where(GenerationJob.status.in_(["pending", "running"]))
-        .limit(1)
-    )
-    if active.scalar_one_or_none() is not None:
-        raise HTTPException(
-            status_code=409, detail="A sync job is already in progress for this repository"
-        )
+    await _ensure_no_active_job(session, repo_id)
 
     job = await crud.upsert_generation_job(
         session,
@@ -507,17 +518,7 @@ async def full_resync(
     if repo is None:
         raise HTTPException(status_code=404, detail="Repository not found")
 
-    # Prevent concurrent pipeline runs on the same repo
-    active = await session.execute(
-        select(GenerationJob.id)
-        .where(GenerationJob.repository_id == repo_id)
-        .where(GenerationJob.status.in_(["pending", "running"]))
-        .limit(1)
-    )
-    if active.scalar_one_or_none() is not None:
-        raise HTTPException(
-            status_code=409, detail="A sync job is already in progress for this repository"
-        )
+    await _ensure_no_active_job(session, repo_id)
 
     job = await crud.upsert_generation_job(
         session,
@@ -530,6 +531,196 @@ async def full_resync(
     await session.commit()
     _launch_job_task(request, job.id, repo_id)
     return {"job_id": job.id, "status": "accepted"}
+
+
+class GenerateSelectionBody(BaseModel):
+    """Which pages a generate request targets.
+
+    Mirrors the CLI's explicit selection: ``all`` / ``unwritten`` / ``stale``,
+    an explicit ``page_ids`` list, or every page under a ``path_prefix``.
+    """
+
+    kind: Literal["all", "unwritten", "stale", "page_ids", "path_prefix"] = "unwritten"
+    page_ids: list[str] | None = None
+    path_prefix: str | None = None
+
+
+class GenerateRequestBody(BaseModel):
+    """Body for the generate + estimate endpoints."""
+
+    selection: GenerateSelectionBody = Field(default_factory=GenerateSelectionBody)
+    cascade: Literal["none", "dependents", "full"] = "dependents"
+    style: str | None = None
+
+
+def _validate_generate_style(style: str | None) -> None:
+    """Reject an unknown wiki style with a 400 listing the valid ones."""
+    if style is None:
+        return
+    from repowise.core.generation.styles import is_known_style, list_styles
+
+    if not is_known_style(style):
+        valid = ", ".join(s.name for s in list_styles())
+        raise HTTPException(status_code=400, detail=f"Unknown style '{style}'. Valid styles: {valid}.")
+
+
+def _generate_job_config(body: GenerateRequestBody) -> dict:
+    """Build the executor's job config from a validated request body."""
+    selection: dict = {"kind": body.selection.kind}
+    if body.selection.kind == "page_ids":
+        selection["page_ids"] = body.selection.page_ids or []
+    elif body.selection.kind == "path_prefix":
+        selection["path_prefix"] = body.selection.path_prefix
+    config: dict = {"mode": "generate", "selection": selection, "cascade": body.cascade}
+    if body.style is not None:
+        config["style"] = body.style
+    return config
+
+
+@router.post("/{repo_id}/generate", status_code=202)
+async def generate_pages(
+    repo_id: str,
+    request: Request,
+    body: GenerateRequestBody,
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+) -> dict:
+    """Write a subset of the wiki with a model (the HTTP ``repowise generate``).
+
+    Launches a background ``generate`` job that rehydrates the graph, resolves
+    the requested selection + cascade, and writes exactly those pages via the
+    shared core engine. Returns immediately with a job id to stream.
+    """
+    repo = await crud.get_repository(session, repo_id)
+    if repo is None:
+        raise HTTPException(status_code=404, detail="Repository not found")
+
+    _validate_generate_style(body.style)
+    await _ensure_no_active_job(session, repo_id)
+
+    job = await crud.upsert_generation_job(
+        session,
+        repository_id=repo_id,
+        status="pending",
+        config=_generate_job_config(body),
+    )
+    # Commit (not just flush) so the background task's separate session sees the
+    # job row.  See sync_repo comment for rationale.
+    await session.commit()
+    _launch_job_task(request, job.id, repo_id)
+    return {"job_id": job.id, "status": "accepted"}
+
+
+@router.post("/{repo_id}/generate/estimate")
+async def generate_estimate(
+    repo_id: str,
+    request: Request,
+    body: GenerateRequestBody,
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+) -> dict:
+    """Cost + page counts for a generate selection, including cascade fallout.
+
+    Resolves the exact same scope the job would (rehydrating the graph and
+    re-parsing), so the returned page count and estimate match what a launched
+    job spends. Heavier than the pre-index preflight because it walks the real
+    dependency graph rather than a file count.
+    """
+    repo = await crud.get_repository(session, repo_id)
+    if repo is None:
+        raise HTTPException(status_code=404, detail="Repository not found")
+
+    _validate_generate_style(body.style)
+    repo_path = Path(repo.local_path)
+
+    from repowise.core.generation.scope import resolve_scope
+    from repowise.core.pipeline.scoped_generation import rehydrate_repo
+    from repowise.server.job_executor import (
+        _build_generate_intent,
+        _build_generation_config,
+        _load_state,
+        _repo_exclude_patterns,
+        _repo_wiki_style,
+    )
+
+    exclude_patterns = _repo_exclude_patterns(repo, str(repo_path))
+    wiki_style = _repo_wiki_style(repo, str(repo_path))
+    job_config = _generate_job_config(body)
+    gen_config = _build_generation_config(repo_path, job_config, wiki_style)
+
+    # Price with the repo's configured provider/model, if one resolves.
+    provider_name: str | None = None
+    model_name: str | None = None
+    provider_error: str | None = None
+    try:
+        from repowise.server.provider_config import get_chat_provider_instance
+
+        llm_client = get_chat_provider_instance(repo_path=str(repo_path))
+        provider_name = getattr(llm_client, "provider_name", None)
+        model_name = getattr(llm_client, "model_name", None)
+    except Exception as exc:
+        provider_error = str(exc)
+
+    session_factory = _resolve_repo_session_factory(request.app.state, repo_id)
+    state = _load_state(repo_path)
+    # Read-only preflight: an un-indexed repo (no persisted graph) or one with no
+    # wiki pages yet is a zero estimate, not an error. A launched job would fail
+    # loudly instead; here we just report there is nothing to price.
+    note: str | None = None
+    rehydrated = None
+    try:
+        rehydrated = await rehydrate_repo(
+            session_factory,
+            repo_id,
+            repo_path,
+            generation_config=gen_config,
+            exclude_patterns=exclude_patterns,
+            include_submodules=bool(state.get("include_submodules", False)),
+            include_nested_repos=bool(state.get("include_nested_repos", False)),
+        )
+    except Exception as exc:
+        note = str(exc)
+
+    if rehydrated is None:
+        return {
+            "total_pages": 0,
+            "pages_by_type": {},
+            "pages_to_mark_stale": 0,
+            "unknown_page_ids": [],
+            "provider": {"name": provider_name, "model": model_name, "error": provider_error},
+            "estimate": None,
+            "note": note,
+        }
+
+    plan = resolve_scope(
+        records=rehydrated.records,
+        intent=_build_generate_intent(job_config),
+        cascade_mode=body.cascade,
+        deps=rehydrated.deps,
+    )
+    pages_by_type = {p.page_type: p.count for p in plan.cost_plans}
+    total_pages = sum(pages_by_type.values())
+
+    estimate: dict | None = None
+    if provider_name and model_name and plan.cost_plans:
+        from repowise.core.cost_estimator import estimate_cost
+
+        est = estimate_cost(plan.cost_plans, provider_name, model_name, repo_path=str(repo_path))
+        estimate = {
+            "estimated_cost_usd": round(est.estimated_cost_usd, 4),
+            "cost_low_usd": round(est.cost_range.low, 4) if est.cost_range else None,
+            "cost_high_usd": round(est.cost_range.high, 4) if est.cost_range else None,
+            "estimated_input_tokens": est.estimated_input_tokens,
+            "estimated_output_tokens": est.estimated_output_tokens,
+            "is_calibrated": est.is_calibrated,
+        }
+
+    return {
+        "total_pages": total_pages,
+        "pages_by_type": pages_by_type,
+        "pages_to_mark_stale": len(plan.stale_ids),
+        "unknown_page_ids": list(plan.unknown_page_ids),
+        "provider": {"name": provider_name, "model": model_name, "error": provider_error},
+        "estimate": estimate,
+    }
 
 
 @router.post("/{repo_id}/index", status_code=202)

@@ -7,7 +7,7 @@ parameter greedily matches the suffix as part of the page_id.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,6 +27,11 @@ router = APIRouter(
 async def list_pages(
     repo_id: str = Query(..., description="Repository ID"),
     page_type: str | None = Query(None, description="Filter by page type"),
+    deterministic: bool | None = Query(
+        None,
+        description="true = only unwritten (template) pages; false = only "
+        "model-written pages; omit for both.",
+    ),
     sort_by: str = Query(
         "updated_at", description="Sort field: updated_at, confidence, created_at"
     ),
@@ -40,6 +45,7 @@ async def list_pages(
         session,
         repo_id,
         page_type=page_type,
+        deterministic=deterministic,
         limit=limit,
         offset=offset,
         sort_by=sort_by,
@@ -101,24 +107,44 @@ async def update_page_notes(
 
 @router.post("/lookup/regenerate", status_code=202)
 async def regenerate_page_by_query(
+    request: Request,
     page_id: str = Query(..., description="Page ID"),
     style: str | None = Query(
         None,
         description="Optional wiki style to regenerate this page in (per-page override).",
     ),
+    cascade: str = Query(
+        "none",
+        description="What to do with the pages that summarize this one: "
+        "none / dependents / full.",
+    ),
     session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> dict:
     """Force-regenerate a single wiki page (page_id as query param).
 
-    An optional ``style`` overrides the repo's default style for this page only
-    (D10). It is validated here and carried in the job config; the executor
-    resolves it when regenerating.
+    Creates a ``single_page`` generation job and launches it immediately (D1):
+    the previous version created a ``pending`` row and never committed or
+    launched it, so the click did nothing until a 15-minute polling fallback
+    picked it up while the active-job guard blocked syncs.
+
+    An optional ``style`` overrides the repo's default style for this page only,
+    and ``cascade`` controls whether the pages summarizing this one are refreshed
+    too. Both are validated here and carried in the job config; the executor
+    resolves them.
     """
+    from repowise.server.routers.repos import _ensure_no_active_job, _launch_job_task
+
     page = await crud.get_page(session, page_id)
     if page is None:
         raise HTTPException(status_code=404, detail="Page not found")
 
-    job_config: dict = {"mode": "single_page", "page_id": page_id}
+    if cascade not in ("none", "dependents", "full"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown cascade '{cascade}'. Valid: none, dependents, full.",
+        )
+
+    job_config: dict = {"mode": "single_page", "page_id": page_id, "cascade": cascade}
     if style is not None:
         from repowise.core.generation.styles import is_known_style, list_styles
 
@@ -130,12 +156,18 @@ async def regenerate_page_by_query(
             )
         job_config["style"] = style
 
+    await _ensure_no_active_job(session, page.repository_id)
+
     job = await crud.upsert_generation_job(
         session,
         repository_id=page.repository_id,
         status="pending",
         config=job_config,
     )
+    # Commit (not just flush) so the background task's separate session sees the
+    # job row, then launch it — the fix for the click that did nothing.
+    await session.commit()
+    _launch_job_task(request, job.id, page.repository_id)
     return {"job_id": job.id, "status": "accepted"}
 
 

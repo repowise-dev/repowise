@@ -444,15 +444,25 @@ async def list_pages(
     repository_id: str,
     *,
     page_type: str | None = None,
+    deterministic: bool | None = None,
     limit: int = 100,
     offset: int = 0,
     sort_by: str = "updated_at",
     order: str = "desc",
 ) -> list[Page]:
-    """Return pages for a repository, optionally filtered by page_type."""
+    """Return pages for a repository, optionally filtered by page_type.
+
+    ``deterministic=True`` returns only unwritten (template) pages;
+    ``deterministic=False`` returns only model-written ones. ``None`` (default)
+    returns both. A template page is stamped ``provider_name='template'``.
+    """
     q = select(Page).where(Page.repository_id == repository_id)
     if page_type is not None:
         q = q.where(Page.page_type == page_type)
+    if deterministic is True:
+        q = q.where(Page.provider_name == "template")
+    elif deterministic is False:
+        q = q.where(Page.provider_name != "template")
     _sort_cols = {
         "updated_at": Page.updated_at,
         "confidence": Page.confidence,
