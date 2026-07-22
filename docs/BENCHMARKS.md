@@ -203,8 +203,6 @@ and significant.
 
 Full methodology and confidence intervals:
 **[health-defect/COMPARISON_REPORT.md](https://github.com/repowise-dev/repowise-bench/blob/master/health-defect/COMPARISON_REPORT.md)**.
-A wider capability comparison is in
-[COMPETITIVE_ANALYSIS.md](COMPETITIVE_ANALYSIS.md).
 
 ### The per-repo self-check
 
@@ -290,7 +288,5 @@ catalogue-level, not a measured head-to-head. Data and method:
   store, and the hook.
 - [docs/agent/MCP_TOOLS.md](agent/MCP_TOOLS.md): the tools the agent-efficiency
   study exercises.
-- [docs/COMPETITIVE_ANALYSIS.md](COMPETITIVE_ANALYSIS.md): capability-level
-  comparison against CodeScene, SonarQube, DeepWiki, and others.
 - [repowise-bench](https://github.com/repowise-dev/repowise-bench): harnesses,
   raw logs, and every full report.
