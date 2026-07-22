@@ -1,9 +1,12 @@
 """``repowise generate`` — write any subset of the wiki with a model.
 
 The single, cost-gated entry point for turning template (unwritten) pages into
-LLM prose, or regenerating written ones. Selection is explicit (all / unwritten
-/ stale / path / page) and defaults to ``--unwritten``; the cascade mode decides
-what happens to the pages that summarize a regenerated file.
+LLM prose, or regenerating written ones. Selection comes in two shapes: explicit
+(all / unwritten / stale / path / page, unioned) and ranked by importance
+(coverage / top). A bare ``generate`` on a terminal opens an interactive chooser
+(wiki state + coverage menu) instead of writing everything; piped / ``--yes`` /
+flagged runs default to ``--unwritten``. The cascade mode decides what happens to
+the pages that summarize a regenerated file.
 """
 
 from __future__ import annotations
@@ -58,6 +61,41 @@ def _build_intent(
     if intent.is_empty():
         return PageSelectionIntent(unwritten=True)
     return intent
+
+
+def _resolve_ranked_flags(
+    *, coverage: float | None, top_n: int | None, explicit: bool
+) -> float | None:
+    """Validate --coverage / --top and return the coverage fraction (or None).
+
+    ``--coverage`` accepts a percent from 1 to 100 (``20`` -> 0.20, ``100`` ->
+    everything) or a fraction below 1 (``0.2`` -> 0.20). The boundary is ``>= 1``
+    so ``--coverage 1`` reads as 1 percent (the smallest slice), never as 100
+    percent; use ``100`` or ``--all`` for everything. Ranked selection is its own
+    philosophy, so it may not be combined with an explicit selector or with the
+    other ranked flag. ``--top`` is handled downstream (it needs the file count),
+    so this only validates it here and returns None for the coverage fraction.
+    """
+    if coverage is not None and top_n is not None:
+        raise click.ClickException("Use either --coverage or --top, not both.")
+    if (coverage is not None or top_n is not None) and explicit:
+        raise click.ClickException(
+            "--coverage / --top rank pages by importance and cannot be combined with "
+            "--all / --unwritten / --stale / --path / --page."
+        )
+    if top_n is not None and top_n <= 0:
+        raise click.ClickException("--top must be a positive number of pages.")
+    if coverage is None:
+        return None
+    if coverage <= 0:
+        raise click.ClickException(
+            "--coverage must be positive: a percent from 1 to 100, or a fraction below 1."
+        )
+    # A value of 1 or more is a percent (1 -> 1%, 100 -> everything); below 1 it
+    # is a fraction (0.2 -> 20%). This keeps `--coverage 1` a tiny slice, not the
+    # whole wiki.
+    pct = coverage / 100 if coverage >= 1 else coverage
+    return min(pct, 1.0)
 
 
 def _make_gate(dry_run: bool):
@@ -132,10 +170,31 @@ def _make_gate(dry_run: bool):
     help="An explicit page id to generate (repeatable).",
 )
 @click.option(
+    "--coverage",
+    "coverage",
+    type=float,
+    default=None,
+    help=(
+        "Write the most important unwritten pages up to this coverage, ranked the "
+        "way `init` ranks coverage. A percent from 1 to 100 (--coverage 20) or a "
+        "fraction below 1 (0.2); use 100 for everything. Leaves the rest as templates."
+    ),
+)
+@click.option(
+    "--top",
+    "top_n",
+    type=int,
+    default=None,
+    help="Write about the N most important unwritten pages (a target, not exact).",
+)
+@click.option(
     "--cascade",
     type=click.Choice(["none", "dependents", "full"]),
-    default="dependents",
-    help="What to do with the module/overview pages that summarize a regenerated file.",
+    default=None,
+    help=(
+        "What to do with the module/overview pages that summarize a regenerated "
+        "file. Default: dependents for an explicit selection, none for --coverage/--top."
+    ),
 )
 @click.option("--provider", "provider_name", default=None, help="LLM provider name.")
 @click.option("--model", default=None, help="Model identifier override.")
@@ -153,7 +212,9 @@ def generate_command(
     stale: bool,
     path_globs: tuple[str, ...],
     page_ids: tuple[str, ...],
-    cascade: str,
+    coverage: float | None,
+    top_n: int | None,
+    cascade: str | None,
     provider_name: str | None,
     model: str | None,
     reasoning: str | None,
@@ -162,10 +223,17 @@ def generate_command(
     yes: bool,
     verbose: bool,
 ) -> None:
-    """Write wiki pages with a model. Defaults to every unwritten page.
+    """Write wiki pages with a model. Bare `generate` opens an interactive chooser.
+
+    Two ways to select: explicit (--all / --unwritten / --stale / --path / --page)
+    or ranked by importance (--coverage / --top). With no flag on a terminal, a
+    chooser shows the wiki's state and a coverage menu, so a big repo is never one
+    keystroke from writing everything.
 
     Examples:
-      repowise generate                 # write every template page
+      repowise generate                 # interactive chooser (coverage menu)
+      repowise generate --coverage 20   # write the most important 20% of templates
+      repowise generate --unwritten     # write every template page
       repowise generate --all           # rewrite the whole wiki
       repowise generate --path src/api  # just the pages under src/api
       repowise generate --page file_page:src/app.py --cascade none
@@ -179,6 +247,22 @@ def generate_command(
         raise click.ClickException(f"No index found at {repo_path}. Run `repowise init` first.")
 
     cfg = load_config(repo_path)
+
+    explicit = bool(all_pages or unwritten or stale or path_globs or page_ids)
+    coverage_pct = _resolve_ranked_flags(coverage=coverage, top_n=top_n, explicit=explicit)
+    ranked = coverage_pct is not None or top_n is not None
+
+    # Bare `generate` on a terminal opens the chooser rather than defaulting to
+    # writing every unwritten page. Piped / `--yes` / flagged runs keep the old
+    # non-interactive behaviour.
+    interactive = not explicit and not ranked and not yes and sys.stdin.isatty()
+
+    # Cascade default depends on the selection kind: an explicit pick pulls in
+    # its container pages (dependents); a ranked coverage set is already a
+    # curated, coherent slice, so it defaults to none (the interactive chooser
+    # asks when it would change the outcome).
+    cascade_mode = cascade if cascade is not None else ("none" if ranked else "dependents")
+
     intent = _build_intent(
         all_pages=all_pages,
         unwritten=unwritten,
@@ -219,12 +303,15 @@ def generate_command(
             provider,
             config,
             intent=intent,
-            cascade_mode=cascade,  # type: ignore[arg-type]
+            cascade_mode=cascade_mode,  # type: ignore[arg-type]
             exclude_patterns=exclude_patterns,
             embedder_name=embedder_name,
             yes=yes,
             dry_run=dry_run,
             gate_cost=_make_gate(dry_run),
+            coverage_pct=coverage_pct,
+            top_n=top_n,
+            interactive=interactive,
         )
     )
 

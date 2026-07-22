@@ -17,9 +17,18 @@ import sys
 from dataclasses import replace as _replace
 from typing import Any
 
-import click
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
+# The cost-gate helpers moved to ``repowise.cli.cost_gate`` so ``init`` and
+# ``generate`` share one gate. Re-exported here for the callers that still
+# import them from this module (init's command + workspace flows).
+from repowise.cli.cost_gate import (
+    COST_GATE_USD,
+    CostGateDeclined,
+    confirm_cost_gate,
+    cost_gate_declined,
+    format_cost,
+)
 from repowise.cli.helpers import console, run_async
 from repowise.cli.providers import (
     build_cost_tracker,
@@ -29,62 +38,15 @@ from repowise.cli.providers import (
 )
 from repowise.cli.ui import BRAND_STYLE, OWL_SPINNER, MaybeCountColumn, RichProgressCallback
 
-# The LLM-cost confirmation threshold. A run whose estimate exceeds this asks
-# for confirmation (unless ``--yes``); below it generation proceeds silently.
-COST_GATE_USD = 2.00
-
-
-class CostGateDeclined(Exception):  # noqa: N818 — a control-flow signal, not an error
-    """Raised when the user answers No at the LLM-cost confirmation prompt.
-
-    Carries no payload — the caller just needs to know that generation was
-    declined so it can persist state in index-only shape (no docs) and
-    return cleanly. Using an exception (vs. a sentinel return value) lets
-    us bail out of nested generation flows without rethreading return
-    types through every helper.
-    """
-
-
-def confirm_cost_gate(message: str) -> bool:
-    """Render the cost-gate ``[Y/n]`` prompt with visual padding.
-
-    Click's plain ``confirm`` interleaves with the trailing line of any
-    prior Rich output (progress-bar frames, status spinners), making the
-    confirm glyphs hard to spot — users have walked past it and approved
-    a $14 bill thinking they were still in cost-estimate territory. A
-    blank line + horizontal rule cleanly separates the prompt from
-    whatever was printed above it.
-
-    Default is Yes: the user just picked a coverage tier with the cost
-    range printed next to it, so Enter-through should continue the run
-    they configured — the gate exists to make the spend visible, not to
-    interrupt it.
-    """
-    console.line()
-    console.rule(style="yellow")
-    return click.confirm(message, default=True)
-
-
-def cost_gate_declined(est: Any, *, yes: bool, message: str) -> bool:
-    """Return ``True`` when the run should skip generation on cost grounds.
-
-    Only prompts when the estimate clears :data:`COST_GATE_USD` and ``--yes``
-    was not passed; a declined prompt yields ``True``.
-    """
-    return est.estimated_cost_usd > COST_GATE_USD and not yes and not confirm_cost_gate(message)
-
-
-def format_cost(est: Any) -> str:
-    """Render an estimate as a human-readable USD string (range when known)."""
-    if est.cost_range is not None:
-        cost_str = (
-            f"${est.cost_range.low:.2f} - ${est.cost_range.high:.2f} USD "
-            f"(median ${est.estimated_cost_usd:.2f})"
-        )
-        if est.is_calibrated:
-            cost_str += " [calibrated]"
-        return cost_str
-    return f"${est.estimated_cost_usd:.2f} USD"
+__all__ = [
+    "COST_GATE_USD",
+    "CostGateDeclined",
+    "confirm_cost_gate",
+    "cost_gate_declined",
+    "format_cost",
+    "run_repo_generation",
+    "select_coverage",
+]
 
 
 def select_coverage(
@@ -117,9 +79,7 @@ def select_coverage(
     # Curated modules from the in-memory index result, so the plan/cost
     # estimate selects the same module set generation will (the artifact
     # file is not on disk yet during a fresh init).
-    kg_modules = (
-        getattr(getattr(result, "knowledge_graph_result", None), "modules", None) or None
-    )
+    kg_modules = getattr(getattr(result, "knowledge_graph_result", None), "modules", None) or None
 
     if sys.stdin.isatty() and coverage_pct is None and not yes:
         options = compute_coverage_options(
@@ -298,9 +258,7 @@ def run_repo_generation(
                 # kg_ctx file fallback is empty and module selection silently
                 # degrades to community grouping.
                 kg_modules=(
-                    getattr(
-                        getattr(result, "knowledge_graph_result", None), "modules", None
-                    )
+                    getattr(getattr(result, "knowledge_graph_result", None), "modules", None)
                     or None
                 ),
                 kg_data=(

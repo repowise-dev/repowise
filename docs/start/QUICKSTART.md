@@ -151,16 +151,18 @@ Set a key, preview the cost, then write:
 ```bash
 export ANTHROPIC_API_KEY="sk-ant-..."        # or OPENAI_API_KEY / GEMINI_API_KEY
 
-repowise generate --dry-run        # what would it write, and what does it cost?
-repowise generate                  # write every unwritten page
+repowise generate                  # interactive: pick a coverage, see the cost, confirm
 ```
 
-On Windows PowerShell: `$env:ANTHROPIC_API_KEY = "sk-ant-..."`
+Bare `generate` shows the wiki's state and a coverage menu (page counts and cost
+per tier, 20% recommended), so you choose how much to write rather than getting
+the whole repo by default. On Windows PowerShell: `$env:ANTHROPIC_API_KEY = "sk-ant-..."`
 
-You do not have to write the whole wiki at once. Start with the part you care
-about and grow from there, each run behind its own cost estimate:
+You do not have to write the whole wiki at once. Pick a ranked slice, an area, or
+a single page, each run behind its own cost estimate:
 
 ```bash
+repowise generate --coverage 20                     # the most important 20%, ranked like init
 repowise generate --path src/api                    # just one area
 repowise generate --page file_page:src/app.py       # or a single page
 repowise generate --all                             # or rewrite everything

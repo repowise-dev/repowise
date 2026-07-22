@@ -5,12 +5,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from repowise.cli.commands.generate_cmd.scope import (
+    _ranked_ids_to_seed,
     build_cost_plans,
     load_page_records,
     resolve_scope,
+    selection_page_ids,
 )
 from repowise.core.generation.cascade import build_page_dependencies
-from repowise.core.generation.page_selection import PageSelectionIntent
+from repowise.core.generation.models import compute_page_id
+from repowise.core.generation.page_selection import PageRecord, PageSelectionIntent
 
 
 @dataclass
@@ -96,3 +99,92 @@ def test_resolve_scope_unwritten_with_cascade_none() -> None:
     # not stale. No repo-wide left (overview is regenerated).
     assert plan.stale_ids == set()
     assert plan.seed_count == 3
+
+
+class _FakeGroup:
+    """Duck-typed selection ``ModuleGroup``."""
+
+    def __init__(self, key: str) -> None:
+        self.key = key
+
+
+class _FakeSelection:
+    """Minimal duck-typed :class:`Selection` for ``selection_page_ids``."""
+
+    def __init__(self) -> None:
+        self.file_page_paths = ["src/a.py", "src/b.py"]
+        self.module_groups = [_FakeGroup("src")]
+        self.scc_groups = [("cycle-1", ["src/a.py", "src/b.py"])]
+        self.api_contract_paths = ["openapi.yaml"]
+        self.infra_paths = ["Dockerfile"]
+        self.symbol_spotlights = [("src/a.py", "Widget")]
+        self.emit_repo_overview = True
+        self.emit_arch_diagram = True
+
+
+def test_selection_page_ids_mirrors_generation_id_assignment() -> None:
+    ids = selection_page_ids(_FakeSelection(), "demo")
+    assert ids == {
+        compute_page_id("file_page", "src/a.py"),
+        compute_page_id("file_page", "src/b.py"),
+        compute_page_id("module_page", "src"),
+        compute_page_id("scc_page", "cycle-1"),
+        compute_page_id("api_contract", "openapi.yaml"),
+        compute_page_id("infra_page", "Dockerfile"),
+        compute_page_id("symbol_spotlight", "src/a.py::Widget"),
+        compute_page_id("repo_overview", "demo"),
+        compute_page_id("architecture_diagram", "demo"),
+    }
+
+
+def test_selection_page_ids_honors_emit_flags() -> None:
+    sel = _FakeSelection()
+    sel.emit_repo_overview = False
+    sel.emit_arch_diagram = False
+    ids = selection_page_ids(sel, "demo")
+    assert compute_page_id("repo_overview", "demo") not in ids
+    assert compute_page_id("architecture_diagram", "demo") not in ids
+
+
+def test_ranked_ids_to_seed_keeps_unwritten_and_adds_structural() -> None:
+    records = [
+        PageRecord("file_page:a.py", "file_page", "a.py", is_template=True),
+        PageRecord("file_page:b.py", "file_page", "b.py", is_template=False),
+        PageRecord("layer_page:core", "layer_page", "core", is_template=True),
+        PageRecord("onboarding:tour", "onboarding", "tour", is_template=True),
+        PageRecord("onboarding:map", "onboarding", "map", is_template=False),
+    ]
+    # Ranked picks both file pages; the written one (b.py) must drop, and the
+    # unwritten structural pages (layer + one onboarding) must be pulled in even
+    # though the ranked set never named them.
+    seed = _ranked_ids_to_seed({"file_page:a.py", "file_page:b.py"}, records)
+    assert seed == {"file_page:a.py", "layer_page:core", "onboarding:tour"}
+
+
+def test_ranked_ids_to_seed_drops_ids_with_no_page() -> None:
+    # A ranked id for a file added since indexing has no page row; it is dropped
+    # rather than fabricated (generate only rewrites existing pages).
+    records = [PageRecord("file_page:a.py", "file_page", "a.py", is_template=True)]
+    seed = _ranked_ids_to_seed({"file_page:a.py", "file_page:new.py"}, records)
+    assert seed == {"file_page:a.py"}
+
+
+def test_resolve_scope_uses_ranked_seed_verbatim() -> None:
+    records = [
+        PageRecord("file_page:a.py", "file_page", "a.py", is_template=True),
+        PageRecord("file_page:b.py", "file_page", "b.py", is_template=True),
+    ]
+    deps = build_page_dependencies(
+        module_groups=[], scc_groups=[], layer_page_of={}, repo_wide_ids=()
+    )
+    # An all-selecting intent would pick both; the ranked seed overrides it.
+    plan = resolve_scope(
+        records=records,
+        intent=PageSelectionIntent(all_pages=True),
+        cascade_mode="none",
+        deps=deps,
+        ranked_seed={"file_page:a.py"},
+    )
+    assert plan.generate_ids == {"file_page:a.py"}
+    assert plan.seed_count == 1
+    assert plan.unknown_page_ids == ()
