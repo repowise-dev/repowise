@@ -55,7 +55,7 @@ If a job is in flight, the progress and log stream here.
 
 **Answers:** how does this system work, in prose someone can read?
 
-<img src="../../.github/assets/dashboard/docs.png" alt="Repowise docs reader: page tree on the left, generated wiki page with confidence and freshness badges in the center" width="100%" />
+<video src="https://raw.githubusercontent.com/repowise-dev/repowise/main/.github/assets/dashboard/docs-page.mp4" alt="Repowise docs reader: page tree on the left, generated wiki page with confidence and freshness badges in the center" autoplay loop muted playsinline width="100%"></video>
 
 The generated wiki: a page tree on the left, the rendered page in the middle
 with mermaid diagrams, code blocks that link into the file views, a confidence
@@ -117,7 +117,7 @@ regenerating everything.
 
 **Answers:** what talks to what?
 
-<img src="../../.github/assets/dashboard/graph.png" alt="Repowise dependency graph: ELK-laid-out module graph with a context drawer showing a selected node's dependents" width="100%" />
+<video src="https://raw.githubusercontent.com/repowise-dev/repowise/main/.github/assets/dashboard/architecture-page.mp4" alt="Repowise dependency graph: ELK-laid-out module graph with a context drawer showing a selected node's dependents" autoplay loop muted playsinline width="100%"></video>
 
 Five views behind `?view=`:
 
@@ -181,8 +181,6 @@ a separate top-level tab.
 
 **Answers:** given that this file is in trouble, what exactly do I change?
 
-<video src="https://raw.githubusercontent.com/repowise-dev/repowise/main/.github/assets/dashboard/refactoring.mp4" alt="Repowise refactoring board: an Extract Class plan expanded into its split groups, evidence, and blast radius" autoplay loop muted playsinline width="100%"></video>
-
 A board of structured plans (Extract Class, Extract Helper, Move Method, Break
 Cycle, Split File), each rendered as a card with its split groups, the evidence
 that justifies it, its impact delta, an effort bucket, and the blast radius that
@@ -198,8 +196,6 @@ Reference: [docs/layers/REFACTORING.md](../layers/REFACTORING.md).
 `/repos/<id>/files`, `/repos/<id>/files/<path>`
 
 **Answers:** what is in this file, and should I be careful with it?
-
-<video src="https://raw.githubusercontent.com/repowise-dev/repowise/main/.github/assets/dashboard/files-page.mp4" alt="Repowise files view: treemap sized by lines and colored by health band, drilling into a single file page" autoplay loop muted playsinline width="100%"></video>
 
 A treemap of the repo sized by code volume and colored by health band, so where
 the risk sits is one glance rather than a sorted table. Drill into a file for
@@ -236,8 +232,6 @@ anywhere.
 
 **Answers:** what has been happening in this repo, and how risky was it?
 
-<video src="https://raw.githubusercontent.com/repowise-dev/repowise/main/.github/assets/dashboard/commits-page.mp4" alt="Repowise commits view: commit table with risk scores, a risk distribution histogram and the code-evolution chart" autoplay loop muted playsinline width="100%"></video>
-
 The commit table with a per-commit risk score, a risk distribution, a
 code-evolution chart, commit-category breakdowns, and AI-agent provenance
 badges plus their trend over time where the commits carry agent trailers. The
@@ -268,6 +262,8 @@ tried that" answer from being lost.
 ## Chat
 
 `/repos/<id>/chat`
+
+<video src="https://raw.githubusercontent.com/repowise-dev/repowise/main/.github/assets/dashboard/chat-page.mp4" alt="Repowise chat: a question answered against the index, with citations to the pages and files it came from and an artifacts panel" autoplay loop muted playsinline width="100%"></video>
 
 Ask questions against the indexed repo. Answers cite the pages and files they
 came from, an artifacts panel collects code the answer produced, and you can
