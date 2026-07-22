@@ -1,17 +1,25 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { Search } from "lucide-react";
 import { toast } from "sonner";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "../ui/tabs";
 import { Button } from "../ui/button";
+import { Input } from "../ui/input";
 import { Slider } from "../ui/slider";
 import { Switch } from "../ui/switch";
 import { TableSkeleton } from "../shared/loading-skeletons";
 import { ConfirmDialog } from "../ui/confirm-dialog";
 import { EmptyState } from "../shared/empty-state";
+import { ResponsiveTable, type ResponsiveColumn } from "../shared/responsive-table";
 import { toFriendlyMessage } from "../lib/errors";
 import { AiPromptButton } from "../health/ai-prompt-button";
-import { FindingRow } from "./finding-row";
+import {
+  FindingIdentity,
+  FindingConfidence,
+  FindingSafety,
+  FindingRowActions,
+} from "./finding-cells";
 import type { DeadCodeFinding, DeadCodeStatus } from "@repowise-dev/types/dead-code";
 
 /**
@@ -40,6 +48,22 @@ function labelForKind(kind: string): string {
     .join(" ");
 }
 
+type SortKey = "path" | "confidence" | "owner" | "lines";
+
+/** Sort value per column; strings compare with localeCompare, numbers subtract. */
+function sortValue(f: DeadCodeFinding, key: SortKey): string | number {
+  switch (key) {
+    case "path":
+      return `${f.file_path} ${f.symbol_name ?? ""}`;
+    case "owner":
+      return f.primary_owner ?? "";
+    case "lines":
+      return f.lines;
+    case "confidence":
+      return f.confidence;
+  }
+}
+
 export interface FindingsTableProps {
   /** Full open-findings slice; the table filters by kind / confidence / safety client-side. */
   findings: DeadCodeFinding[];
@@ -59,10 +83,16 @@ export interface FindingsTableProps {
 }
 
 /**
- * Canonical interactive dead-code table: kind tabs, a confidence slider (the
- * single confidence control for the spine), cleanup-ready filter, bulk resolve,
- * and per-row status actions. Pure presentation — the host injects the data
- * slice and the patch/bulk mutations, so this propagates via the package.
+ * Canonical interactive dead-code table: kind tabs, a search box, sortable
+ * columns, a confidence slider (the single confidence control for the spine),
+ * cleanup-ready filter, bulk resolve, and per-row status actions.
+ *
+ * Built on the shared `ResponsiveTable` so it collapses to stacked cards on
+ * small screens and windows its rows — the fetch is capped at 500, which is
+ * well past the point where rendering every `<tr>` costs a visible frame.
+ *
+ * Pure presentation — the host injects the data slice and the patch/bulk
+ * mutations, so this propagates via the package.
  */
 export function FindingsTable({
   findings,
@@ -77,6 +107,9 @@ export function FindingsTable({
   const [activeTab, setActiveTab] = useState<string | null>(null);
   const [minConfidence, setMinConfidence] = useState(0.4);
   const [safeOnly, setSafeOnly] = useState(false);
+  const [query, setQuery] = useState("");
+  const [sortKey, setSortKey] = useState<SortKey>("confidence");
+  const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkPending, setBulkPending] = useState(false);
   const [bulkConfirmOpen, setBulkConfirmOpen] = useState(false);
@@ -92,24 +125,58 @@ export function FindingsTable({
   }, [findings]);
 
   const byKind = useMemo(() => {
+    const needle = query.trim().toLowerCase();
     const buckets: Record<string, DeadCodeFinding[]> = {};
     for (const t of tabs) buckets[t.value] = [];
     for (const f of findings) {
       if (f.confidence < minConfidence) continue;
       if (safeOnly && !f.safe_to_delete) continue;
+      if (
+        needle &&
+        !f.file_path.toLowerCase().includes(needle) &&
+        !(f.symbol_name ?? "").toLowerCase().includes(needle) &&
+        !(f.primary_owner ?? "").toLowerCase().includes(needle) &&
+        !(f.reason ?? "").toLowerCase().includes(needle)
+      ) {
+        continue;
+      }
       buckets[f.kind]?.push(f);
     }
     return buckets;
-  }, [findings, tabs, minConfidence, safeOnly]);
+  }, [findings, tabs, minConfidence, safeOnly, query]);
 
   // The active tab can disappear when the slice changes (a refetch, a resolved
   // last row); fall back to the first tab rather than rendering nothing.
   const effectiveTab =
     activeTab && tabs.some((t) => t.value === activeTab) ? activeTab : (tabs[0]?.value ?? null);
-  const current = useMemo(
-    () => (effectiveTab ? (byKind[effectiveTab] ?? []) : []),
-    [byKind, effectiveTab],
-  );
+
+  // Rows arrived in server order (confidence desc) with no way to reorder them.
+  // The default keeps that order so the rewrite does not silently reshuffle
+  // anyone's table; every column can now take over.
+  const current = useMemo(() => {
+    const rows = effectiveTab ? (byKind[effectiveTab] ?? []) : [];
+    const dir = sortOrder === "asc" ? 1 : -1;
+    // Copy before sorting: never mutate the caller's findings array in place.
+    return [...rows].sort((a, b) => {
+      const av = sortValue(a, sortKey);
+      const bv = sortValue(b, sortKey);
+      const cmp =
+        typeof av === "string" && typeof bv === "string" ? av.localeCompare(bv) : Number(av) - Number(bv);
+      // Ties would otherwise fall back to bucket order, which shifts as filters
+      // change; the id is stable and unique.
+      return cmp !== 0 ? cmp * dir : a.id.localeCompare(b.id);
+    });
+  }, [byKind, effectiveTab, sortKey, sortOrder]);
+
+  const toggleSort = (key: string) => {
+    if (key === sortKey) {
+      setSortOrder((o) => (o === "asc" ? "desc" : "asc"));
+      return;
+    }
+    setSortKey(key as SortKey);
+    // Paths read best A→Z; every metric reads best biggest-first.
+    setSortOrder(key === "path" || key === "owner" ? "asc" : "desc");
+  };
 
   // Selection is scoped to what is on screen. Without this, raising the
   // confidence slider after selecting rows would resolve findings the user can
@@ -135,6 +202,14 @@ export function FindingsTable({
     setSelected(allVisibleSelected ? new Set() : new Set(current.map((f) => f.id)));
   };
 
+  const resetFilters = () => {
+    setMinConfidence(0.4);
+    setSafeOnly(false);
+    setQuery("");
+  };
+
+  const filtersActive = minConfidence > 0.4 || safeOnly || query.trim() !== "";
+
   const resolveSelected = async () => {
     if (!onBulkResolve) return;
     setBulkPending(true);
@@ -152,10 +227,152 @@ export function FindingsTable({
     }
   };
 
+  const columns = useMemo<ResponsiveColumn<DeadCodeFinding>[]>(() => {
+    const checkbox = (f: DeadCodeFinding) => (
+      <span onClick={(e) => e.stopPropagation()}>
+        <input
+          type="checkbox"
+          checked={selected.has(f.id)}
+          onChange={() => toggleSelect(f.id)}
+          aria-label={`Select finding ${f.file_path}`}
+          className="rounded border-[var(--color-border-default)]"
+        />
+      </span>
+    );
+
+    return [
+      {
+        key: "select",
+        header: (
+          <span onClick={(e) => e.stopPropagation()}>
+            <input
+              type="checkbox"
+              checked={allVisibleSelected}
+              onChange={toggleSelectAll}
+              aria-label="Select all findings"
+              className="rounded border-[var(--color-border-default)]"
+            />
+          </span>
+        ),
+        headerClassName: "w-8",
+        // Stacked cards give the first visible column to the card title, so the
+        // checkbox rides along with the identity cell there instead.
+        hideInCard: true,
+        render: checkbox,
+      },
+      {
+        key: "path",
+        header: "File / Symbol",
+        sortable: true,
+        cellClassName: "min-w-[200px] max-w-[480px]",
+        render: (f) => (
+          <FindingIdentity
+            finding={f}
+            href={fileHref?.(f.file_path)}
+            onNavigate={onNavigate}
+          />
+        ),
+        mobileRender: (f) => (
+          <span className="flex items-start gap-2">
+            {checkbox(f)}
+            <FindingIdentity
+              finding={f}
+              href={fileHref?.(f.file_path)}
+              onNavigate={onNavigate}
+            />
+          </span>
+        ),
+      },
+      {
+        key: "confidence",
+        header: "Confidence",
+        mobileLabel: "Confidence",
+        sortable: true,
+        headerClassName: "w-24",
+        render: (f) => <FindingConfidence finding={f} />,
+      },
+      {
+        key: "owner",
+        header: "Owner",
+        sortable: true,
+        priority: 2,
+        render: (f) => (
+          <span className="text-xs text-[var(--color-text-secondary)]">
+            {f.primary_owner ?? "—"}
+          </span>
+        ),
+      },
+      {
+        key: "lines",
+        header: "Lines",
+        sortable: true,
+        priority: 2,
+        align: "right",
+        headerClassName: "w-16",
+        render: (f) => (
+          <span className="text-xs tabular-nums text-[var(--color-text-tertiary)]">{f.lines}</span>
+        ),
+      },
+      {
+        key: "safety",
+        header: "Safety",
+        mobileLabel: "Safety",
+        // The badge's tooltip is the only place risk_factors surface, so keep
+        // it on tablet widths where the old markup showed it.
+        priority: 2,
+        headerClassName: "w-20",
+        render: (f) => <FindingSafety finding={f} />,
+      },
+      {
+        key: "actions",
+        header: <span className="sr-only">Actions</span>,
+        mobileLabel: "Actions",
+        headerClassName: "w-36",
+        align: "right",
+        render: (f) => (
+          <FindingRowActions
+            finding={f}
+            onPatch={onPatch}
+            graphHref={graphHref}
+            {...(onGeneratePrompt
+              ? { onGeneratePrompt: (id: string) => onGeneratePrompt([id]) }
+              : {})}
+          />
+        ),
+      },
+    ];
+    // `selected` and `allVisibleSelected` drive the checkbox state; the rest are
+    // the injected callbacks.
+  }, [
+    selected,
+    allVisibleSelected,
+    fileHref,
+    onNavigate,
+    graphHref,
+    onGeneratePrompt,
+    onPatch,
+    current,
+  ]);
+
+  const openFile =
+    fileHref && onNavigate
+      ? (f: DeadCodeFinding) => onNavigate(fileHref(f.file_path))
+      : undefined;
+
   return (
     <div className="space-y-4">
       {/* Controls — the confidence slider is the only confidence axis. */}
       <div className="flex flex-wrap items-center gap-4">
+        <div className="relative">
+          <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--color-text-tertiary)]" />
+          <Input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search path, symbol, owner, reason…"
+            aria-label="Search findings"
+            className="h-8 w-full pl-8 text-xs sm:w-72"
+          />
+        </div>
         <div className="flex items-center gap-2">
           <label htmlFor="min-confidence" className="text-xs text-[var(--color-text-secondary)]">
             Min confidence: {Math.round(minConfidence * 100)}%
@@ -171,7 +388,7 @@ export function FindingsTable({
             className="w-28"
           />
         </div>
-        <label className="flex items-center gap-1.5 text-xs text-[var(--color-text-secondary)] cursor-pointer select-none">
+        <label className="flex cursor-pointer select-none items-center gap-1.5 text-xs text-[var(--color-text-secondary)]">
           <Switch checked={safeOnly} onCheckedChange={setSafeOnly} />
           Cleanup-ready only
         </label>
@@ -213,98 +430,65 @@ export function FindingsTable({
           description="No open dead-code findings for this repository."
         />
       ) : (
-      <Tabs
-        // Non-null in this branch: tabs is non-empty, so effectiveTab resolved.
-        value={effectiveTab ?? ""}
-        onValueChange={(v) => {
-          setActiveTab(v);
-          // Selection is per-kind; clearing on tab change keeps "Resolve N
-          // selected" and the select-all checkbox scoped to the visible rows.
-          setSelected(new Set());
-        }}
-      >
-        <TabsList>
-          {tabs.map((t) => (
-            <TabsTrigger key={t.value} value={t.value}>
-              {t.label}
-              {(byKind[t.value]?.length ?? 0) > 0 && (
-                <span className="ml-1.5 text-xs text-[var(--color-text-tertiary)]">
-                  {byKind[t.value]?.length}
-                </span>
-              )}
-            </TabsTrigger>
-          ))}
-        </TabsList>
+        <Tabs
+          // Non-null in this branch: tabs is non-empty, so effectiveTab resolved.
+          value={effectiveTab ?? ""}
+          onValueChange={(v) => {
+            setActiveTab(v);
+            // Selection is per-kind; clearing on tab change keeps "Resolve N
+            // selected" and the select-all checkbox scoped to the visible rows.
+            setSelected(new Set());
+          }}
+        >
+          <TabsList>
+            {tabs.map((t) => (
+              <TabsTrigger key={t.value} value={t.value}>
+                {t.label}
+                {(byKind[t.value]?.length ?? 0) > 0 && (
+                  <span className="ml-1.5 text-xs text-[var(--color-text-tertiary)]">
+                    {byKind[t.value]?.length}
+                  </span>
+                )}
+              </TabsTrigger>
+            ))}
+          </TabsList>
 
-        {/* One content panel for the active tab only. Rendering a panel per tab
-            and filling each with the *active* tab's rows happened to work
-            because Radix unmounts inactive content, which is a trap waiting on
-            whoever adds forceMount. */}
-        <TabsContent value={effectiveTab ?? ""}>
-            {current.length === 0 ? (
-              <EmptyState
-                title="No findings"
-                description="No open findings for this category with current filters."
-              />
-            ) : (
-              <div className="border border-[var(--color-border-default)] overflow-x-auto overflow-hidden mt-2">
-                <table className="w-full text-sm">
-                  <caption className="sr-only">Dead code findings</caption>
-                  <thead className="sticky top-0 z-10 bg-[var(--color-bg-surface)]">
-                    <tr className="border-b border-[var(--color-border-default)] bg-[var(--color-bg-surface)]">
-                      <th scope="col" className="px-4 py-2.5 w-8">
-                        <input
-                          type="checkbox"
-                          checked={allVisibleSelected}
-                          onChange={toggleSelectAll}
-                          aria-label="Select all findings"
-                          className="rounded border-[var(--color-border-default)]"
-                        />
-                      </th>
-                      <th scope="col" className="px-4 py-2.5 text-left text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
-                        File / Symbol
-                      </th>
-                      <th scope="col" className="px-4 py-2.5 text-left text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-24">
-                        Confidence
-                      </th>
-                      <th scope="col" className="px-4 py-2.5 text-left text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider hidden md:table-cell">
-                        Owner
-                      </th>
-                      <th scope="col" className="px-4 py-2.5 text-left text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-16 hidden md:table-cell">
-                        Lines
-                      </th>
-                      <th scope="col" className="px-4 py-2.5 w-20 hidden sm:table-cell">
-                        <span className="sr-only">Safety</span>
-                      </th>
-                      {/* No status column: the fetch only ever asks for open
-                          findings, so the badge could only ever say "open". */}
-                      <th scope="col" className="px-4 py-2.5 w-36">
-                        <span className="sr-only">Actions</span>
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {current.map((f) => (
-                      <FindingRow
-                        key={f.id}
-                        finding={f}
-                        selected={selected.has(f.id)}
-                        onToggle={toggleSelect}
-                        onPatch={onPatch}
-                        fileHref={fileHref}
-                        onNavigate={onNavigate}
-                        graphHref={graphHref}
-                        {...(onGeneratePrompt
-                          ? { onGeneratePrompt: (id: string) => onGeneratePrompt([id]) }
-                          : {})}
-                      />
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-        </TabsContent>
-      </Tabs>
+          {/* One content panel for the active tab only. Rendering a panel per tab
+              and filling each with the *active* tab's rows happened to work
+              because Radix unmounts inactive content, which is a trap waiting on
+              whoever adds forceMount. */}
+          <TabsContent value={effectiveTab ?? ""} className="mt-2">
+            <ResponsiveTable<DeadCodeFinding>
+              columns={columns}
+              rows={current}
+              rowKey={(f) => f.id}
+              caption="Dead code findings"
+              stacked="sm"
+              sortField={sortKey}
+              sortOrder={sortOrder}
+              onSort={toggleSort}
+              virtualize={{ estimateRowHeight: 56, estimateCardHeight: 96 }}
+              // The hover class the primitive applies is a different Tailwind
+              // variant, so it survives the merge and would blank the selected
+              // tint the moment the pointer lands on a selected row.
+              rowClassName={(f) =>
+                selected.has(f.id)
+                  ? "bg-[var(--color-accent-muted)] hover:bg-[var(--color-accent-muted)]"
+                  : undefined
+              }
+              {...(openFile ? { onRowClick: openFile } : {})}
+              empty={
+                <EmptyState
+                  title="No findings"
+                  description="No open findings for this category with current filters."
+                  {...(filtersActive
+                    ? { action: { label: "Reset filters", onClick: resetFilters } }
+                    : {})}
+                />
+              }
+            />
+          </TabsContent>
+        </Tabs>
       )}
     </div>
   );

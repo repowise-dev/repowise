@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { FindingsTable } from "../../src/dead-code/findings-table.js";
 import type { DeadCodeFinding } from "@repowise-dev/types/dead-code";
 
@@ -51,6 +51,15 @@ function renderTable(findings: DeadCodeFinding[], props: Record<string, unknown>
       {...props}
     />,
   );
+}
+
+/**
+ * `stacked="sm"` renders the table and the mobile card list side by side and
+ * lets CSS pick one. jsdom applies no CSS, so both are present and every row
+ * control matches twice; scope row-level queries to the table.
+ */
+function inTable() {
+  return within(screen.getByRole("table"));
 }
 
 beforeEach(() => {
@@ -174,6 +183,67 @@ describe("FindingsTable selection", () => {
   });
 });
 
+describe("FindingsTable sort and search", () => {
+  /** File paths in render order, read off the real table (not the card list). */
+  function paths() {
+    return inTable()
+      .getAllByRole("row")
+      .slice(1)
+      .map((r) => r.querySelector("a,span[title]")?.getAttribute("title"))
+      .filter(Boolean);
+  }
+
+  it("defaults to the server's confidence-first order", () => {
+    renderTable([
+      finding({ id: "a", file_path: "src/a.ts", confidence: 0.5 }),
+      finding({ id: "b", file_path: "src/b.ts", confidence: 0.9 }),
+    ]);
+
+    expect(paths()).toEqual(["src/b.ts", "src/a.ts"]);
+  });
+
+  it("sorts by a column and flips direction on a second click", () => {
+    renderTable([
+      finding({ id: "a", file_path: "src/a.ts", lines: 5 }),
+      finding({ id: "b", file_path: "src/b.ts", lines: 90 }),
+    ]);
+
+    const header = inTable().getByRole("button", { name: /Lines/ });
+    fireEvent.click(header);
+    expect(paths()).toEqual(["src/b.ts", "src/a.ts"]);
+
+    fireEvent.click(header);
+    expect(paths()).toEqual(["src/a.ts", "src/b.ts"]);
+  });
+
+  it("searches across path, symbol, owner and reason", () => {
+    renderTable([
+      finding({ id: "a", file_path: "src/keep.ts", reason: "No importers" }),
+      finding({ id: "b", file_path: "src/other.ts", reason: "Only self-references" }),
+    ]);
+
+    fireEvent.change(screen.getByLabelText("Search findings"), {
+      target: { value: "self-ref" },
+    });
+
+    expect(paths()).toEqual(["src/other.ts"]);
+  });
+
+  it("offers a way back when the filters have emptied the table", () => {
+    renderTable([finding({ id: "a", file_path: "src/a.ts" })]);
+
+    fireEvent.change(screen.getByLabelText("Search findings"), {
+      target: { value: "nothing matches this" },
+    });
+    expect(screen.queryByRole("table")).not.toBeInTheDocument();
+
+    // Without this the user is left staring at an empty state with no hint
+    // that their own filter, not the repository, is why.
+    fireEvent.click(screen.getByRole("button", { name: "Reset filters" }));
+    expect(paths()).toEqual(["src/a.ts"]);
+  });
+});
+
 describe("FindingsTable row affordances", () => {
   it("links the file path and opens the row through the host router", () => {
     const onNavigate = vi.fn();
@@ -182,10 +252,10 @@ describe("FindingsTable row affordances", () => {
       onNavigate,
     });
 
-    const link = screen.getByRole("link", { name: "src/a.ts" });
+    const link = inTable().getByRole("link", { name: "src/a.ts" });
     expect(link).toHaveAttribute("href", "/repos/repo-1/files/src/a.ts");
 
-    fireEvent.click(screen.getByRole("row", { name: /src\/a\.ts/ }));
+    fireEvent.click(inTable().getByRole("row", { name: /src\/a\.ts/ }));
     expect(onNavigate).toHaveBeenCalledWith("/repos/repo-1/files/src/a.ts");
 
     // A plain click on the name routes through the host too, rather than
@@ -199,7 +269,7 @@ describe("FindingsTable row affordances", () => {
     const onNavigate = vi.fn();
     renderTable([finding({ id: "a" })], { fileHref: (p: string) => `/f/${p}`, onNavigate });
 
-    fireEvent.click(screen.getByLabelText("Select finding src/a.ts"));
+    fireEvent.click(inTable().getByLabelText("Select finding src/a.ts"));
 
     expect(onNavigate).not.toHaveBeenCalled();
   });
@@ -207,14 +277,14 @@ describe("FindingsTable row affordances", () => {
   it("shows the detector's reason, which previously only the AI prompt saw", () => {
     renderTable([finding({ id: "a", reason: "No importers in the dependency graph" })]);
 
-    expect(screen.getByText("No importers in the dependency graph")).toBeInTheDocument();
+    expect(inTable().getByText("No importers in the dependency graph")).toBeInTheDocument();
   });
 
   it("offers an AI prompt per row and for the current selection", () => {
     const onGeneratePrompt = vi.fn();
     renderTable([finding({ id: "a" }), finding({ id: "b" })], { onGeneratePrompt });
 
-    fireEvent.click(screen.getByRole("button", { name: "AI cleanup prompt for src/a.ts" }));
+    fireEvent.click(inTable().getByRole("button", { name: "AI cleanup prompt for src/a.ts" }));
     expect(onGeneratePrompt).toHaveBeenCalledWith(["a"]);
 
     fireEvent.click(screen.getByLabelText("Select all findings"));
@@ -226,7 +296,7 @@ describe("FindingsTable row affordances", () => {
     const { unmount } = renderTable([finding({ id: "a" })], {
       graphHref: (p: string) => `/repos/repo-1/architecture?node=${encodeURIComponent(p)}`,
     });
-    expect(screen.getByRole("link", { name: "Graph" })).toHaveAttribute(
+    expect(inTable().getByRole("link", { name: "Graph" })).toHaveAttribute(
       "href",
       "/repos/repo-1/architecture?node=src%2Fa.ts",
     );
@@ -260,7 +330,7 @@ describe("FindingsTable row actions", () => {
     });
     renderTable([finding({ id: "a" })], { onPatch });
 
-    fireEvent.click(screen.getByRole("button", { name: "Resolve src/a.ts" }));
+    fireEvent.click(inTable().getByRole("button", { name: "Resolve src/a.ts" }));
     fireEvent.click(await screen.findByRole("button", { name: "Resolve" }));
 
     await waitFor(() => expect(toastError).toHaveBeenCalled());

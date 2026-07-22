@@ -3,6 +3,7 @@
 import * as React from "react";
 import { ArrowDown, ArrowUp } from "lucide-react";
 import { cn } from "../../lib/cn";
+import { useVirtualRows } from "../virtualized-table/use-virtual-rows";
 
 /**
  * ResponsiveTable — shared table primitive with a column-priority API.
@@ -17,6 +18,11 @@ import { cn } from "../../lib/cn";
  * stacked card list below the given breakpoint: the first priority-1 column
  * renders as the card title and the remaining columns render as label/value
  * rows (via `mobileRender` when provided, else `render`).
+ *
+ * With `virtualize`, both the row body and the stacked card list are windowed
+ * through {@link useVirtualRows}. Stacked mode keeps both trees in the DOM (CSS
+ * picks one), so a long list has to window both or it only pays half the saving.
+ * Below the hook's threshold nothing is windowed and the markup is unchanged.
  *
  * Purely presentational: rows in, callbacks out. No routing, no data fetching.
  */
@@ -41,12 +47,28 @@ export interface ResponsiveColumn<T> {
   hideInCard?: boolean | undefined;
 }
 
+/** Windowing knobs; presence of the object is what turns virtualization on. */
+export interface ResponsiveTableVirtualization {
+  /** Estimated `<tr>` height in px. Default 44. */
+  estimateRowHeight?: number | undefined;
+  /** Estimated stacked-card height in px. Default 76 (title + one meta line). */
+  estimateCardHeight?: number | undefined;
+  /** Below this many rows, render everything. Default 60 (the hook's own). */
+  threshold?: number | undefined;
+  /** Max height of the scroll viewport. Default 600. */
+  maxHeight?: number | string | undefined;
+}
+
 export interface ResponsiveTableProps<T> {
   columns: ResponsiveColumn<T>[];
   rows: T[];
   rowKey: (row: T) => string;
   onRowClick?: ((row: T) => void) | undefined;
   selectedKey?: string | null | undefined;
+  /** Extra per-row classes — e.g. a multi-select highlight `selectedKey` can't express. */
+  rowClassName?: ((row: T) => string | undefined) | undefined;
+  /** Window the rows (and the stacked cards) instead of rendering all of them. */
+  virtualize?: ResponsiveTableVirtualization | undefined;
   sortField?: string | undefined;
   sortOrder?: "asc" | "desc" | undefined;
   onSort?: ((key: string) => void) | undefined;
@@ -103,12 +125,24 @@ export function clickableRowProps<E extends HTMLElement>(activate: () => void) {
 export const CLICKABLE_ROW_CLS =
   "cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-accent-primary)]";
 
+const NOOP_MEASURE = () => {};
+
+/** The window of rows to render plus the spacer heights standing in for the rest. */
+interface Window<T> {
+  items: { row: T; index: number }[];
+  paddingTop: number;
+  paddingBottom: number;
+  measure: (el: HTMLElement | null) => void;
+}
+
 export function ResponsiveTable<T>({
   columns,
   rows,
   rowKey,
   onRowClick,
   selectedKey,
+  rowClassName,
+  virtualize,
   sortField,
   sortOrder = "desc",
   onSort,
@@ -118,12 +152,61 @@ export function ResponsiveTable<T>({
   className,
   bare,
 }: ResponsiveTableProps<T>) {
+  // Hooks run unconditionally, so `count: 0` (not an early return) is how the
+  // non-virtualized path opts out.
+  const count = virtualize ? rows.length : 0;
+  const shared = {
+    ...(virtualize?.threshold !== undefined ? { threshold: virtualize.threshold } : {}),
+  };
+  const rowWindow = useVirtualRows<HTMLDivElement>({
+    count,
+    estimateSize: virtualize?.estimateRowHeight ?? 44,
+    ...shared,
+  });
+  const cardWindow = useVirtualRows<HTMLDivElement>({
+    count,
+    estimateSize: virtualize?.estimateCardHeight ?? 76,
+    ...shared,
+  });
+
+  const windowFor = (w: typeof rowWindow): Window<T> =>
+    virtualize
+      ? {
+          items: w.virtualRows.flatMap((vr) => {
+            const row = rows[vr.index];
+            return row === undefined ? [] : [{ row, index: vr.index }];
+          }),
+          paddingTop: w.paddingTop,
+          paddingBottom: w.paddingBottom,
+          measure: w.measureElement,
+        }
+      : {
+          items: rows.map((row, index) => ({ row, index })),
+          paddingTop: 0,
+          paddingBottom: 0,
+          // Module-level, not a fresh closure: a new ref identity per render
+          // makes React detach and re-attach every row's ref on every render,
+          // and most consumers never virtualize.
+          measure: NOOP_MEASURE,
+        };
+
   if (rows.length === 0 && empty) {
     return <>{empty}</>;
   }
 
+  const maxHeight = virtualize?.maxHeight ?? 600;
+  const tableWindow = windowFor(rowWindow);
+  const cardsWindow = windowFor(cardWindow);
+
   const table = (
-    <div className={cn("overflow-x-auto", stacked && STACKED_TABLE_CLS[stacked])}>
+    <div
+      ref={virtualize ? rowWindow.scrollRef : undefined}
+      className={cn(
+        virtualize ? "overflow-auto" : "overflow-x-auto",
+        stacked && STACKED_TABLE_CLS[stacked],
+      )}
+      style={virtualize ? { maxHeight } : undefined}
+    >
       <table className="w-full text-sm">
         {caption ? <caption className="sr-only">{caption}</caption> : null}
         <thead className="bg-[var(--color-bg-surface)] text-[var(--color-text-tertiary)] text-2xs uppercase tracking-wider sticky top-0 z-10 border-b border-[var(--color-border-default)]">
@@ -145,6 +228,7 @@ export function ResponsiveTable<T>({
               return (
                 <th
                   key={c.key}
+                  scope="col"
                   className={cn(
                     "px-3 py-2.5 font-medium whitespace-nowrap",
                     alignCls(c.align),
@@ -172,16 +256,24 @@ export function ResponsiveTable<T>({
           </tr>
         </thead>
         <tbody>
-          {rows.map((row) => {
+          {tableWindow.paddingTop > 0 && (
+            <tr aria-hidden>
+              <td style={{ height: tableWindow.paddingTop, padding: 0, border: 0 }} />
+            </tr>
+          )}
+          {tableWindow.items.map(({ row, index }) => {
             const key = rowKey(row);
             const isSelected = selectedKey != null && selectedKey === key;
             return (
               <tr
                 key={key}
+                ref={tableWindow.measure}
+                data-index={index}
                 className={cn(
                   "border-t border-[var(--color-table-divider)] hover:bg-[var(--color-bg-elevated)]",
                   isSelected && "bg-[var(--color-accent-muted)]/30",
                   onRowClick && CLICKABLE_ROW_CLS,
+                  rowClassName?.(row),
                 )}
                 {...(onRowClick ? clickableRowProps(() => onRowClick(row)) : {})}
               >
@@ -201,49 +293,67 @@ export function ResponsiveTable<T>({
               </tr>
             );
           })}
+          {tableWindow.paddingBottom > 0 && (
+            <tr aria-hidden>
+              <td style={{ height: tableWindow.paddingBottom, padding: 0, border: 0 }} />
+            </tr>
+          )}
         </tbody>
       </table>
     </div>
   );
 
   const cards = stacked ? (
-    <ul className={cn("divide-y divide-[var(--color-table-divider)]", STACKED_CARDS_CLS[stacked])}>
-      {rows.map((row) => {
-        const key = rowKey(row);
-        const isSelected = selectedKey != null && selectedKey === key;
-        const [titleCol, ...rest] = columns.filter((c) => !c.hideInCard);
-        if (!titleCol) return null;
-        return (
-          <li
-            key={key}
-            className={cn(
-              "px-3 py-2.5",
-              isSelected && "bg-[var(--color-accent-muted)]/30",
-              onRowClick && cn("hover:bg-[var(--color-bg-elevated)]", CLICKABLE_ROW_CLS),
-            )}
-            {...(onRowClick ? clickableRowProps(() => onRowClick(row)) : {})}
-          >
-            <div className="text-sm text-[var(--color-text-primary)]">
-              {(titleCol.mobileRender ?? titleCol.render)(row)}
-            </div>
-            <dl className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1">
-              {rest.map((c) => {
-                const value = (c.mobileRender ?? c.render)(row);
-                if (value == null || value === "") return null;
-                return (
-                  <div key={c.key} className="flex items-baseline gap-1.5 text-xs">
-                    <dt className="text-[var(--color-text-tertiary)]">
-                      {c.mobileLabel ?? (typeof c.header === "string" ? c.header : c.key)}
-                    </dt>
-                    <dd className="text-[var(--color-text-secondary)] tabular-nums">{value}</dd>
-                  </div>
-                );
-              })}
-            </dl>
-          </li>
-        );
-      })}
-    </ul>
+    <div
+      ref={virtualize ? cardWindow.scrollRef : undefined}
+      className={cn(virtualize && "overflow-auto", STACKED_CARDS_CLS[stacked])}
+      style={virtualize ? { maxHeight } : undefined}
+    >
+      {cardsWindow.paddingTop > 0 && <div style={{ height: cardsWindow.paddingTop }} aria-hidden />}
+      <ul className="divide-y divide-[var(--color-table-divider)]">
+        {cardsWindow.items.map(({ row, index }) => {
+          const key = rowKey(row);
+          const isSelected = selectedKey != null && selectedKey === key;
+          const [titleCol, ...rest] = columns.filter((c) => !c.hideInCard);
+          if (!titleCol) return null;
+          return (
+            <li
+              key={key}
+              ref={cardsWindow.measure}
+              data-index={index}
+              className={cn(
+                "px-3 py-2.5",
+                isSelected && "bg-[var(--color-accent-muted)]/30",
+                onRowClick && cn("hover:bg-[var(--color-bg-elevated)]", CLICKABLE_ROW_CLS),
+                rowClassName?.(row),
+              )}
+              {...(onRowClick ? clickableRowProps(() => onRowClick(row)) : {})}
+            >
+              <div className="text-sm text-[var(--color-text-primary)]">
+                {(titleCol.mobileRender ?? titleCol.render)(row)}
+              </div>
+              <dl className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1">
+                {rest.map((c) => {
+                  const value = (c.mobileRender ?? c.render)(row);
+                  if (value == null || value === "") return null;
+                  return (
+                    <div key={c.key} className="flex items-baseline gap-1.5 text-xs">
+                      <dt className="text-[var(--color-text-tertiary)]">
+                        {c.mobileLabel ?? (typeof c.header === "string" ? c.header : c.key)}
+                      </dt>
+                      <dd className="text-[var(--color-text-secondary)] tabular-nums">{value}</dd>
+                    </div>
+                  );
+                })}
+              </dl>
+            </li>
+          );
+        })}
+      </ul>
+      {cardsWindow.paddingBottom > 0 && (
+        <div style={{ height: cardsWindow.paddingBottom }} aria-hidden />
+      )}
+    </div>
   ) : null;
 
   return (

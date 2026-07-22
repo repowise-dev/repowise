@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { SWRConfig } from "swr";
 import type { ReactElement } from "react";
 import { DeadCodeView } from "../../src/dead-code/dead-code-view.js";
@@ -28,6 +28,22 @@ vi.mock("sonner", () => ({
     warning: (...a: unknown[]) => toastWarning(...a),
   },
 }));
+
+/**
+ * The findings table stacks into a mobile card list beside the real table and
+ * lets CSS pick one; jsdom applies no CSS, so a row control matches in both.
+ * These scope row queries to the table.
+ */
+const rowButton = (name: string) =>
+  within(screen.getByRole("table")).getByRole("button", { name });
+const queryRowButton = (name: string) => {
+  const table = screen.queryByRole("table");
+  return table ? within(table).queryByRole("button", { name }) : null;
+};
+const findRowButton = async (name: string) => {
+  await screen.findByRole("table");
+  return rowButton(name);
+};
 
 const SUMMARY: DeadCodeSummary = {
   total_findings: 3,
@@ -196,7 +212,7 @@ describe("DeadCodeView", () => {
     renderView(<DeadCodeView adapter={adapter} />);
 
     // No safe pile above it, so the section leads the page already open.
-    fireEvent.click(await screen.findByRole("button", { name: "Resolve src/old/legacy.ts" }));
+    fireEvent.click(await findRowButton("Resolve src/old/legacy.ts"));
     fireEvent.click(await screen.findByRole("button", { name: "Resolve" }));
 
     // Emptying the list locally must not swap in the "No dead code found"
@@ -204,7 +220,7 @@ describe("DeadCodeView", () => {
     // section that remounted collapsed.
     await waitFor(() =>
       expect(
-        screen.queryByRole("button", { name: "Resolve src/old/legacy.ts" }),
+        queryRowButton("Resolve src/old/legacy.ts"),
       ).not.toBeInTheDocument(),
     );
     expect(screen.queryByText("No dead code found")).not.toBeInTheDocument();
@@ -213,7 +229,7 @@ describe("DeadCodeView", () => {
     await undo.onClick();
 
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Resolve src/old/legacy.ts" })).toBeInTheDocument(),
+      expect(rowButton("Resolve src/old/legacy.ts")).toBeInTheDocument(),
     );
   });
 
@@ -289,13 +305,13 @@ describe("DeadCodeView", () => {
 
     // Open the drill-down table (collapsed by default).
     fireEvent.click(await screen.findByRole("button", { name: /All findings/ }));
-    fireEvent.click(await screen.findByRole("button", { name: "Resolve src/old/legacy.ts" }));
+    fireEvent.click(await findRowButton("Resolve src/old/legacy.ts"));
     fireEvent.click(await screen.findByRole("button", { name: "Resolve" }));
 
     // Optimistically gone from the table.
     await waitFor(() =>
       expect(
-        screen.queryByRole("button", { name: "Resolve src/old/legacy.ts" }),
+        queryRowButton("Resolve src/old/legacy.ts"),
       ).not.toBeInTheDocument(),
     );
 
@@ -304,7 +320,7 @@ describe("DeadCodeView", () => {
     await undo.onClick();
 
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Resolve src/old/legacy.ts" })).toBeInTheDocument(),
+      expect(rowButton("Resolve src/old/legacy.ts")).toBeInTheDocument(),
     );
   });
 });

@@ -68,4 +68,16 @@ describe("useVirtualRows", () => {
     // Windowed: far fewer rows rendered than the full 500.
     expect(result.current.virtualRows.length).toBeLessThan(500);
   });
+
+  it("gives the spacer the full list height while no window has been measured", () => {
+    // jsdom reports a zero-height viewport, which is also the state of any real
+    // scroll container on first paint. A zero spacer there is a deadlock: no
+    // rows means no height, and no height means the virtualizer never computes
+    // a range, so the container stays empty forever.
+    const { result } = renderHook(() =>
+      useVirtualRows({ count: 500, estimateSize: 40, threshold: 60 }),
+    );
+    expect(result.current.virtualRows).toHaveLength(0);
+    expect(result.current.paddingBottom).toBe(500 * 40);
+  });
 });
