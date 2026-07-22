@@ -404,13 +404,22 @@ async def overview_summary(
     savings = await _savings_headline(repo.local_path)
     repowise_dir = Path(repo.local_path) / ".repowise" if repo.local_path else Path(".repowise")
 
+    # Serve the same read-time self-healed "indexed commit" as /api/repos and
+    # /health/overview: prefer state.json's last_sync_commit over a possibly
+    # stale DB row so the dashboard's indexed-commit display (and any freshness
+    # signal derived from it) doesn't read "behind" after a no-op update left
+    # the repositories row un-restamped.
+    from repowise.server.mcp_server._meta import resolve_indexed_commit
+
+    indexed_commit = resolve_indexed_commit(repo.head_commit, repo.local_path)
+
     return {
         "repo": {
             "id": repo.id,
             "name": repo.name,
             "local_path": repo.local_path,
             "default_branch": repo.default_branch,
-            "head_commit": repo.head_commit,
+            "head_commit": indexed_commit,
             "updated_at": repo.updated_at.isoformat() if repo.updated_at else None,
         },
         "stats": {
