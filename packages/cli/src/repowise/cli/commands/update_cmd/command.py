@@ -563,6 +563,15 @@ def run_update(
 
     if head and head == base_ref and not config_changed:
         console.print("[green]Already up to date.[/green]")
+        # D7: on a template (index-only) wiki, "up to date" is true of the code
+        # but the pages are still unwritten. Point at the command that writes
+        # them rather than leaving the user at a dead end, the way `update
+        # --docs` used to (it computed base_ref == head and stopped here).
+        if resolve_docs_mode(state) == "deterministic":
+            console.print(
+                "[dim]The wiki is rendered from templates. "
+                "Run [bold]repowise generate[/bold] to write pages with a model.[/dim]"
+            )
         if prev_config_fp is None and not dry_run:
             save_state(repo_path, {**state, "config_fingerprint": curr_config_fp})
         # Self-heal a row a pre-fix run left behind: state.json can already be
@@ -925,6 +934,16 @@ def run_update(
         tier2_tail_enabled=bool(cfg.get("tier2_tail_enabled", True)),
         tier2_tail_cap=cfg.get("tier2_tail_cap"),
         tier2_tail_dirs=tuple(tail_dirs_cfg) if tail_dirs_cfg else None,
+        # An incremental update regenerates only the changed files' pages, and
+        # it feeds generate_all a parsed_files filtered to those files. Levels 3
+        # and up describe the whole repository from parsed_files, so without
+        # this a one-commit update would rewrite the codebase map, module and
+        # overview pages from a truncated view (a module page claiming one file,
+        # a codebase map with no directories). Stop the ladder after level 2 and
+        # leave the repo-wide pages for a full run — the same guard the
+        # deterministic index-only update already uses. `repowise generate`
+        # refreshes the repo-wide pages correctly, from the complete view.
+        file_pages_only=True,
     )
 
     # Resolve the generation provider. If the repo wants docs but was never

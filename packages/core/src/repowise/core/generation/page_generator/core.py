@@ -217,12 +217,21 @@ class PageGenerator(PerTypeGenerationMixin, DeterministicRenderMixin):
         on_page_ready: Callable[[GeneratedPage], None] | None = None,
         kg_modules: list[dict] | None = None,
         kg_data: dict | None = None,
+        only_page_ids: set[str] | None = None,
     ) -> list[GeneratedPage]:
         """Generate all wiki pages for a repository.
 
         Runs generation in ordered levels. Each level's pages are generated
         concurrently (up to config.max_concurrency). Failures within a level
         are logged but do not abort the remaining levels.
+
+        When ``only_page_ids`` is set, every level emits only the pages whose
+        id is in the set. The whole repository is still parsed and its graph
+        built, so a repo-wide page (overview, architecture, a module) that IS
+        requested is generated from the complete view rather than a truncated
+        one. This is the scoped-generation primitive behind ``repowise
+        generate`` and the fix for callers that used to regenerate ten
+        repo-wide pages as a side effect of asking for one file page.
         """
         from .orchestrate import run_generate_all
 
@@ -246,6 +255,7 @@ class PageGenerator(PerTypeGenerationMixin, DeterministicRenderMixin):
             on_page_ready=on_page_ready,
             kg_modules=kg_modules,
             kg_data=kg_data,
+            only_page_ids=only_page_ids,
         )
 
     # ------------------------------------------------------------------

@@ -139,24 +139,39 @@ file reads. That is the whole point.
 > the wiki, which step 2 already built, so they answer from pages rendered from
 > structure. `search_codebase` is full-text only until you configure an embedder.
 
-## 4. Optional: add a provider for model-written prose
+## 4. Optional: upgrade the wiki to model-written prose
 
-Everything so far was deterministic. A provider rewrites the wiki pages as prose
-and unlocks architectural decision mining and codebase chat. Semantic search is a
-separate step: configure an embedder and run `repowise reindex` to build the
-vector store.
+Everything so far was deterministic. When you want richer pages, point `repowise
+generate` at a provider and it rewrites the template pages as prose (and unlocks
+architectural decision mining and chat). You do not have to redo anything: it
+reuses the index you already built, so the graph is not re-parsed.
+
+Set a key, preview the cost, then write:
 
 ```bash
 export ANTHROPIC_API_KEY="sk-ant-..."        # or OPENAI_API_KEY / GEMINI_API_KEY
-repowise init --provider anthropic
+
+repowise generate --dry-run        # what would it write, and what does it cost?
+repowise generate                  # write every unwritten page
 ```
 
 On Windows PowerShell: `$env:ANTHROPIC_API_KEY = "sk-ant-..."`
 
-`repowise init` on its own is interactive: it asks which provider to use, shows a
-cost estimate, and waits for you to confirm before spending anything. How long it
-runs and what it costs depend on repo size and the model you pick, both of which
-the estimate shows you up front.
+You do not have to write the whole wiki at once. Start with the part you care
+about and grow from there, each run behind its own cost estimate:
+
+```bash
+repowise generate --path src/api                    # just one area
+repowise generate --page file_page:src/app.py       # or a single page
+repowise generate --all                             # or rewrite everything
+```
+
+Semantic search is a separate step: configure an embedder and run `repowise
+reindex` to build the vector store.
+
+Prefer to write the whole wiki as part of a fresh index instead? `repowise init`
+on its own is interactive: it asks which provider to use, shows a cost estimate,
+and waits for you to confirm before spending anything.
 
 Three ways to avoid paying a provider at all:
 

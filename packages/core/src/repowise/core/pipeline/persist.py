@@ -8,11 +8,16 @@ from __future__ import annotations
 
 import dataclasses
 import json
+from collections.abc import Iterable
 from typing import Any
 
 import structlog
 
 logger = structlog.get_logger(__name__)
+
+# Max page ids per UPDATE ... IN (...) so a large cascade cannot exceed
+# SQLite's bound-variable limit on the local CLI store.
+_STALE_ID_CHUNK = 500
 
 
 def tombstone_candidates(file_diffs: list[Any]) -> list[tuple[str, list[str]]]:
@@ -111,6 +116,45 @@ async def mark_stale_pages(session: Any, repo_id: str, paths: list[str]) -> int:
         .values(freshness_status="stale")
     )
     marked = int(res.rowcount or 0)
+    if marked:
+        logger.info("pages_decayed_stale", repo_id=repo_id, count=marked)
+    return marked
+
+
+async def mark_page_ids_stale(session: Any, repo_id: str, page_ids: Iterable[str]) -> int:
+    """Decay arbitrary pages to ``freshness_status='stale'`` by full page id.
+
+    The sibling of :func:`mark_stale_pages`, which only understands
+    ``file_page:<path>`` ids. Scoped generation's cascade needs to mark
+    dependents of every type — module, SCC, layer and the repo-wide overview /
+    architecture / onboarding pages — stale when the run regenerated a file but
+    not its summaries. Same ``fresh``-only downgrade so a tombstoned or
+    already-stale page keeps its stronger status.
+
+    Returns the number of pages marked.
+    """
+    ids = list(dict.fromkeys(page_ids))  # dedupe, preserve order
+    if not ids:
+        return 0
+    from sqlalchemy import update
+
+    from repowise.core.persistence.models import Page
+
+    # Chunk the IN list: SQLite (the local CLI store) binds one variable per id
+    # and caps at SQLITE_MAX_VARIABLE_NUMBER, so a large cascade could exceed it.
+    marked = 0
+    for i in range(0, len(ids), _STALE_ID_CHUNK):
+        batch = ids[i : i + _STALE_ID_CHUNK]
+        res = await session.execute(
+            update(Page)
+            .where(
+                Page.repository_id == repo_id,
+                Page.id.in_(batch),
+                Page.freshness_status == "fresh",
+            )
+            .values(freshness_status="stale")
+        )
+        marked += int(res.rowcount or 0)
     if marked:
         logger.info("pages_decayed_stale", repo_id=repo_id, count=marked)
     return marked

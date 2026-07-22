@@ -349,9 +349,19 @@ points, clusters and dependencies rather than what the project does end to end,
 because no template can derive that. Full-text search works on this index;
 semantic search needs an embedder configured (Ollama is the keyless option).
 
-Want the wiki written by a model instead? Use `repowise init --provider
-gemini|anthropic|openai` with the matching key, or upgrade an existing index later
-with `repowise update --full`.
+Want the wiki written by a model? You do not have to decide now. Upgrade the
+index-only wiki whenever you like with `repowise generate`, a page, a directory,
+or the whole thing at a time, each behind a cost estimate:
+
+```bash
+export ANTHROPIC_API_KEY="sk-ant-..."   # or OPENAI_API_KEY / GEMINI_API_KEY
+repowise generate --dry-run             # preview the plan and the cost
+repowise generate                       # write every unwritten page
+repowise generate --path src/api        # or just one area first
+```
+
+Or write the whole wiki as part of the first index with `repowise init --provider
+gemini|anthropic|openai`.
 
 **3. Connect your agent.** The MCP server is `repowise mcp`, served from the repo directory.
 
@@ -508,6 +518,7 @@ Doing a security review? **[docs/business/SECURITY_COMPLIANCE.md →](docs/busin
 
 ```bash
 repowise init [PATH]      # index a codebase (one-time; --index-only needs no LLM)
+repowise generate [PATH]  # write wiki pages with a model, on demand (upgrade an index-only wiki)
 repowise serve [PATH]     # MCP server + local dashboard
 repowise update [PATH]    # incremental update (seconds; --workspace for every repo)
 repowise watch            # auto-sync daemon, re-index on file change

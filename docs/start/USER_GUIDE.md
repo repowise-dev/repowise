@@ -82,13 +82,26 @@ The failure mode to avoid is a stale index, because a confidently wrong answer i
 worse than no answer. Every MCP response carries the indexed commit and warns when
 it has diverged from your live `HEAD`, but the real fix is step 3.
 
-**Two modes.** `--index-only` gives you the graph, git intelligence, code health,
-change risk and dead code, plus a complete wiki rendered from the code's
-structure, with no LLM, no key and no network. Adding a provider rewrites those
-pages as model-written prose and unlocks decision mining and chat. You can start
-index-only and upgrade later with `repowise update --full`, which reuses the
-persisted graph instead of re-parsing it. Semantic search is separate: it needs
-an embedder, and `repowise reindex` is what builds the vector store.
+**Two modes, one upgrade path.** `--index-only` gives you the graph, git
+intelligence, code health, change risk and dead code, plus a complete wiki
+rendered from the code's structure, with no LLM, no key and no network. Adding a
+provider rewrites those pages as model-written prose and unlocks decision mining
+and chat.
+
+You do not have to choose up front. Start index-only, then upgrade the wiki with
+`repowise generate` when you are ready, a page, a directory, or the whole thing
+at a time, each behind a cost estimate:
+
+```bash
+repowise generate --dry-run        # what it would write, and what it costs
+repowise generate                  # write every unwritten page
+repowise generate --path src/api   # or just the part you care about
+```
+
+`generate` reuses the persisted graph instead of re-parsing it, so the upgrade is
+cheap. (`repowise update --full` still does the whole wiki in one shot if you
+prefer.) Semantic search is separate: it needs an embedder, and `repowise
+reindex` is what builds the vector store.
 
 ---
 
@@ -123,6 +136,7 @@ Grouped by what you are trying to do. Every flag for every command lives in the
 | Command | What it is for |
 |---|---|
 | `repowise init` | First index. Interactive: asks for a provider, shows a cost estimate, waits for confirmation. `--index-only` builds the same wiki from structure, with no LLM. |
+| `repowise generate` | Write wiki pages with a model, on demand. The upgrade path for an index-only repo: `--unwritten` (default) writes everything still on a template, `--path`/`--page` writes a subset, all behind a cost estimate. |
 | `repowise update` | Incremental catch-up after pulling or committing. Seconds, not minutes. |
 | `repowise watch` | File watcher that updates continuously while you work. |
 | `repowise hook install` | Post-commit hook so syncing happens without you. |
@@ -277,8 +291,9 @@ the [Docker image](../../docker/README.md) if you would rather not install Node.
 to move between views and repos.
 
 An index-only repo has a full Docs section, rendered from structure rather than
-written by a model, so the pages read as structural summaries. Chat still needs a
-provider. Everything else, including Architecture, Code Health, Files, Commits and
+written by a model, so the pages read as structural summaries. Run `repowise
+generate` to write any of them as model prose later. Chat still needs a provider.
+Everything else, including Architecture, Code Health, Files, Commits and
 Contributors, works off the parsed graph and git history alone.
 
 Every view and what it answers: **[Dashboard](DASHBOARD.md)**.
@@ -296,12 +311,17 @@ repowise init --index-only -y      # free, no key, seconds
 repowise hook install              # keep it current from here on
 ```
 
-Rewrite the wiki with a model and add semantic search when you want them:
+Write the pages with a model when you want them, all at once or a piece at a
+time, each behind a cost estimate:
 
 ```bash
 export ANTHROPIC_API_KEY="sk-ant-..."
-repowise init --provider anthropic
+repowise generate --dry-run        # preview the plan and the cost
+repowise generate                  # write every unwritten page
+repowise generate --path src/api   # or just one area first
 ```
+
+Then add semantic search with `repowise reindex` once an embedder is configured.
 
 ### First index, multi-repo workspace
 

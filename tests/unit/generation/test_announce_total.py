@@ -41,6 +41,9 @@ def _fake_run(*, enable_onboarding: bool, completed_ids: set[str]) -> SimpleName
         kg_ctx=SimpleNamespace(available=False),
         config=SimpleNamespace(enable_onboarding=enable_onboarding),
         completed_ids=completed_ids,
+        # None: the selection-derived total path (a scoped run short-circuits
+        # to len(only_page_ids), tested in test_deterministic_generation).
+        only_page_ids=None,
         on_total_known=announced.append,
         job_system=None,
         job_id=None,

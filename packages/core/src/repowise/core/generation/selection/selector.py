@@ -137,6 +137,14 @@ class SelectionInputs:
     # modules. ``None``/empty reproduces the uniform, demand-free selection
     # byte-for-byte (fresh installs with no session history).
     demand: dict[str, int] | None = None
+    # Scoped generation: take every candidate in every bucket (no coverage
+    # budget), the same full-coverage set deterministic mode uses but keeping
+    # symbol spotlights so a caller can regenerate one on demand. The actual
+    # rationing is done downstream by ``generate_all(only_page_ids=...)``, which
+    # filters this full allow-set to exactly the requested pages. Without it,
+    # ``repowise generate --unwritten`` would silently emit only the budgeted
+    # ~20% of files instead of every template page the user asked to upgrade.
+    select_all: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -554,17 +562,26 @@ def _ensure_landmarks(selected: list[str], landmarks: list[str]) -> list[str]:
 
 def _select_everything(
     files: list,
+    symbols: list,
     modules: list,
     apis: list,
     infras: list,
     sccs: list,
     available: dict[str, int],
+    *,
+    include_symbols: bool,
 ) -> Selection:
     """Return a Selection holding every scored candidate, budget bypassed.
 
-    Used by fully deterministic (no-LLM) generation, where every page is free
-    to produce. Candidates are already score-ordered, so the resulting page
-    order still puts the most central files first.
+    Used by fully deterministic (no-LLM) generation and by scoped
+    ``select_all`` generation, where the coverage budget has no job to do —
+    the former because every page is free, the latter because
+    ``only_page_ids`` rations downstream. Candidates are already score-ordered,
+    so the resulting page order still puts the most central files first.
+
+    ``include_symbols`` keeps the symbol-spotlight bucket (scoped generation, so
+    a caller can regenerate a specific spotlight); deterministic mode drops it
+    (see below).
     """
     sel = Selection(
         file_page_paths=[p for _, p in files],
@@ -575,9 +592,10 @@ def _select_everything(
         # renders, so taking every candidate would triple the index for no
         # new information and dilute retrieval, the same failure the tier-2
         # tail's importance floor exists to avoid. On the fixture repo that is
-        # 171 near-duplicate pages against 33 file pages. Users who want a
-        # spotlight on a specific symbol can generate one on demand.
-        symbol_spotlights=[],
+        # 171 near-duplicate pages against 33 file pages. Scoped generation
+        # keeps them (``include_symbols``) since ``only_page_ids`` filters to the
+        # one the user asked for rather than emitting all of them.
+        symbol_spotlights=[t for _, t in symbols] if include_symbols else [],
         module_groups=[m for _, m in modules],
         api_contract_paths=[p for _, p in apis],
         infra_paths=[p for _, p in infras],
@@ -586,14 +604,18 @@ def _select_everything(
         emit_arch_diagram=True,
         allocation=BucketAllocation(
             file_page=available["file_page"],
-            symbol_spotlight=0,
+            symbol_spotlight=available["symbol_spotlight"] if include_symbols else 0,
             module_page=available["module_page"],
             api_contract=available["api_contract"],
             infra_page=available["infra_page"],
             scc_page=available["scc_page"],
         ),
     )
-    log.info("page_selection.complete", mode="deterministic", counts=sel.counts())
+    log.info(
+        "page_selection.complete",
+        mode="select_all" if include_symbols else "deterministic",
+        counts=sel.counts(),
+    )
     return sel
 
 
@@ -631,7 +653,17 @@ def select_pages(inputs: SelectionInputs) -> Selection:
         # Nothing to ration: a template page costs no tokens, so the coverage
         # budget has no job to do. Take every candidate in every bucket. The
         # tail stays empty because the file bucket already holds every file.
-        return _select_everything(files, modules, apis, infras, sccs, available)
+        return _select_everything(
+            files, symbols, modules, apis, infras, sccs, available, include_symbols=False
+        )
+
+    # Scoped generation (``repowise generate``): full-coverage allow-set so
+    # ``only_page_ids`` can name any page. Spotlights kept so one can be
+    # regenerated on demand.
+    if getattr(inputs, "select_all", False):
+        return _select_everything(
+            files, symbols, modules, apis, infras, sccs, available, include_symbols=True
+        )
 
     allocation = allocate_budget(
         budget=budget,
