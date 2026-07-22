@@ -34,9 +34,10 @@ def _shape_not_indexed() -> dict[str, Any]:
     return {
         "error": "This repository has no repowise index yet.",
         "remedy": (
-            "The user can build one by running 'repowise init' in the repo "
-            "root. Indexing is the user's decision — suggest it once, do not "
-            "run it yourself."
+            "The user can build one by running 'repowise init --yes' in the "
+            "repo root. No API key is required: without one it renders the "
+            "whole wiki from the code's structure. Indexing is the user's "
+            "decision — suggest it once, do not run it yourself."
         ),
         "guidance": (
             "Until an index exists, every repowise tool will return this "

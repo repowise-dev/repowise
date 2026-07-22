@@ -4,7 +4,7 @@ Complete reference for all `repowise` commands. For a guided introduction, see t
 
 Command list (in `--help` order): `augment`, `init`, `delete`, `generate-claude-md`, `costs`, `update`, `dead-code`, `health`, `risk`, `decision`, `coverage`, `impacted-tests`, `search`, `distill`, `expand`, `saved`, `corrections`, `export`, `hook`, `status`, `doctor`, `watch`, `serve`, `mcp`, `reindex`, `restyle`, `wiki-styles`, `whats-new`, `telemetry`, `login`, `logout`, `whoami`, `workspace`. Two more ship as separate console scripts, not subcommands: `repowise-augment`, `repowise-rewrite` (both hook entry points, not meant to be run by hand).
 
-**Do you need an LLM key?** Most commands are pure index/analysis and never call an LLM. The exceptions: `init` (unless `--index-only` or `--mode fast`), `update` (unless `--index-only` or `--no-docs`), `generate`, `restyle`, `watch` (when it regenerates a page), `health --generate-code`, and `workspace add --docs`. Everything else, `search`, `dead-code`, `health`, `risk`, `impacted-tests`, `decision`, `coverage`, `export`, `mcp`, `reindex`, `doctor`, and so on, works index-only, with no provider configured.
+**Do you need an LLM key?** Most commands are pure index/analysis and never call an LLM. `init` never requires a key: without one it renders the wiki from structure. It calls an LLM only when a provider is resolvable or `--docs llm` is passed. The exceptions: `update` (unless `--index-only` or `--no-docs`), `generate`, `restyle`, `watch` (when it regenerates a page), `health --generate-code`, and `workspace add --docs`. Everything else, `search`, `dead-code`, `health`, `risk`, `impacted-tests`, `decision`, `coverage`, `export`, `mcp`, `reindex`, `doctor`, and so on, works index-only, with no provider configured.
 
 ## Workspace auto-detect (cross-cutting)
 
@@ -50,13 +50,15 @@ repowise init .
 
 In workspace mode, adds: repo scanning, per-repo indexing, cross-repo analysis (co-changes, contracts, package deps), workspace CLAUDE.md generation.
 
-**Interactive modes.** Running a bare `repowise init` on a TTY (no `--provider`, `--index-only`, or `--yes`) opens a menu:
+**Interactive modes.** Running a bare `repowise init` on a TTY (no `--provider`, `--index-only`, `--docs`, or `--yes`) opens a menu:
 
 1. **Everything**, index + model-written docs. After picking a provider you can answer **"Customize?"** to tune any setting before the run.
 2. **Index only**, the same layers plus a wiki rendered from structure; no LLM, no key, no cost. Answer **"Customize indexing?"** to set exclude patterns, commit limit, skip-tests/infra, submodules, and fast mode.
 3. **Advanced**, full control. First choose **"Generate model-written wiki docs?"**; the prompts then split into an **Indexing** section (always) and a **Generation** section (provider, concurrency, embedder, wiki style, onboarding, decision harvesting, tiering, only when model-written docs are on).
 
-All three reach the indexing knobs; the LLM-only knobs appear only when model-written docs are enabled. Passing any of the flags below (or `--yes`) skips the menu and runs non-interactively.
+All three reach the indexing knobs; the LLM-only knobs appear only when model-written docs are enabled. Passing any of the flags below (or `--yes`) skips the menu and runs non-interactively. If the first prompt reads EOF (common when an agent pipes stdin), init prints a notice and continues with defaults instead of aborting.
+
+**Cost gate.** Before any tokens are spent, init shows the estimate and asks for confirmation. It never prompts when stdin is not a TTY: it auto-declines, keeps the index it already built, and renders the template wiki instead. The default answer is Yes up to $25 and flips to No above that.
 
 **Options:**
 
@@ -66,6 +68,7 @@ All three reach the indexing knobs; the LLM-only knobs appear only when model-wr
 | `--model` | Model name override (e.g., `claude-sonnet-4-6`) |
 | `--embedder` | Embedder for semantic search: `gemini`, `openai`, `openrouter`, `ollama`, `mock` (default: auto-detect) |
 | `--index-only` | No LLM calls, no API key, no spend. Parses, builds the graph, indexes git, and renders the whole wiki from that structure: file, module, layer and cycle (SCC) pages, the architecture diagram, the repo overview, API and infra pages, and the onboarding collection. Symbol spotlight pages are skipped, since the file pages already carry that content. Every page footer says it was derived from structure, and the repo overview covers composition, entry points, clusters and dependencies rather than what the project does end to end. Full-text search works; semantic search needs an embedder. Upgrade to model-written prose later, any subset at a time, with [`repowise generate`](#repowise-generate-path) (or `update --full` for the whole wiki in one shot). |
+| `--docs` | How to produce the wiki: `llm` or `deterministic`. The same choice as `--index-only`, named for what it does. `--docs llm` needs a key; `--docs deterministic` is identical to `--index-only`. Passing `--docs llm --index-only` together is a usage error (exit 2). |
 | `--mode` | Pipeline depth: `standard` (default) or `fast` (graph + essential-git only, no per-file blame/co-change, no LLM docs, for very large repos; upgrade later with `update --full`) |
 | `--skip-tests` | Exclude test files from doc generation |
 | `--skip-infra` | Exclude infrastructure files (Dockerfiles, Makefiles, Terraform) |

@@ -88,12 +88,13 @@ Registered automatically when the plugin is enabled:
 
 | Mode | What you get | Requirements |
 |------|-------------|-------------|
-| **Index-only** | Graph + Git + Code Health + Dead Code | Nothing (no LLM) |
-| **Full** | Index-only **plus** Docs, semantic search, and Decisions | LLM API key |
-| **Local (Ollama)** | Full mode, fully offline | Ollama running |
+| **Default (keyless)** | Graph + Git + Code Health + Dead Code + a full wiki rendered from structure | Nothing |
+| **Model-written wiki** | Same, with LLM-written pages and decision mining | Provider key |
+| **Local (Ollama)** | Model-written wiki, fully offline | Ollama running |
 
-Index-only builds with zero LLM calls; full mode adds the documentation layer on
-top, which can continue in the background. Run `/repowise:init` and Claude helps
+The keyless default makes zero LLM calls and still produces a complete wiki; a
+provider key changes who writes the pages, not whether you get them, and that
+layer can continue in the background. Run `/repowise:init` and Claude helps
 you choose.
 
 ## Proactive context (hooks)
@@ -119,9 +120,9 @@ MCP server, but the `repowise` binary must be installed and on PATH.
 
 **`pip install` fails on Windows:** try `python -m pip install repowise`.
 
-**Semantic search / `get_answer` returns nothing:** the repo may be in index-only
-mode (no wiki). Re-run `/repowise:init` with an LLM provider, or `/repowise:reindex`
-if pages exist but embeddings are missing.
+**Semantic search / `get_answer` returns nothing:** the wiki may be
+template-rendered (no embeddings). Run `/repowise:reindex`, or `repowise generate`
+to upgrade pages with a model.
 
 **Stale results after code changes:** run `/repowise:update`.
 

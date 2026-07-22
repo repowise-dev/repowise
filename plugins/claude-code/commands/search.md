@@ -31,6 +31,16 @@ Other flags:
 
 Show results as a clean list with the page title, type, and a brief snippet.
 
-## Analysis-only mode
+## When search comes up empty
 
-If the search returns no results and the repo appears to be in analysis-only mode (no wiki pages), tell the user: "Semantic and full-text search require documentation to be generated. Your repo is in analysis-only mode. Run `/repowise:init` again with an LLM provider to enable full documentation and search. Symbol search (`--mode symbol`) may still work."
+Search needs wiki pages, and every indexed repo has them: a keyless run renders
+the whole wiki from structure. So an empty result is usually not a missing wiki.
+
+- **No pages at all** means the index never finished, or the repo was indexed
+  with `--mode fast`, which is the one mode that writes no wiki. Suggest
+  `repowise init --yes` (no API key needed), or `repowise init --resume` if a
+  previous run was interrupted.
+- **Pages exist but semantic search finds nothing** means the wiki was embedded
+  with the mock embedder, which keeps full-text search working and leaves
+  semantic search to be built later. Suggest `repowise reindex` with an embedder
+  configured. Full-text and symbol search (`--mode symbol`) work regardless.

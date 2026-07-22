@@ -34,4 +34,4 @@ Lead with a risk level and the `directive` findings, each tied to a concrete fil
 
 ## Error Handling
 
-If `get_risk` or `get_change_risk` errors or returns nothing, the MCP server may be down or the repo unindexed. Say so, review from the raw diff, and suggest running `repowise init` if the repo is not indexed.
+If `get_risk` or `get_change_risk` errors or returns nothing, the MCP server may be down or the repo unindexed. Say so, review from the raw diff, and suggest running `repowise init --yes` if the repo is not indexed.

@@ -23,6 +23,6 @@ Call `get_context(targets=["path/or/symbol"], include=["callers", "callees"])` w
 
 ## Error Handling
 
-- If tools report that no repositories were found, suggest running `repowise init`.
-- If `search_codebase` has no useful results, the repository may be index-only; fall back to `get_context` with specific paths.
+- If tools report that no repositories were found, suggest running `repowise init --yes`.
+- If `search_codebase` has no useful results, the repository may have a template-rendered wiki; fall back to `get_context` with specific paths.
 - If MCP tools are unavailable, proceed with normal source inspection and mention that Repowise context was unavailable.

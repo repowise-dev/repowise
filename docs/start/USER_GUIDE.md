@@ -137,7 +137,7 @@ Grouped by what you are trying to do. Every flag for every command lives in the
 
 | Command | What it is for |
 |---|---|
-| `repowise init` | First index. Interactive: asks for a provider, shows a cost estimate, waits for confirmation. `--index-only` builds the same wiki from structure, with no LLM. |
+| `repowise init` | First index. Runs keyless by default; asks for a provider only when you want model-written pages, then shows a cost estimate and waits for confirmation. `--index-only` builds the same wiki from structure, with no LLM. |
 | `repowise generate` | Write wiki pages with a model, on demand. The upgrade path for an index-only repo: `--unwritten` (default) writes everything still on a template, `--path`/`--page` writes a subset, all behind a cost estimate. |
 | `repowise update` | Incremental catch-up after pulling or committing. Seconds, not minutes. |
 | `repowise watch` | File watcher that updates continuously while you work. |

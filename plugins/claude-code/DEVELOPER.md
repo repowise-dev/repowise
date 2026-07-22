@@ -145,7 +145,9 @@ The plugin version tracks the repowise release it ships alongside (e.g. `0.16.0`
    and `get_execution_flows` exist in the server but are **not** exposed — never
    reference them in commands/skills.
 6. **Verify CLI flags against the source.** Easy ones to get wrong:
-   `--index-only` (not `--no-llm`), `--concurrency` (not `--concurrent`),
+   `--index-only` (not `--no-llm`); prefer the self-describing
+   `--docs llm|deterministic` spelling when writing agent-facing commands.
+   `--concurrency` (not `--concurrent`),
    `--commit-limit` (not `--git-depth`), `--embedder` (not `--embedding-provider`).
    `dead-code` has no `--group-by` (that's a `get_dead_code` MCP param only).
 7. **`repowise risk` scores a whole change** (commit or `base..head`), not a

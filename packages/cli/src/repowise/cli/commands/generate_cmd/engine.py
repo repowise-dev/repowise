@@ -110,7 +110,7 @@ async def run_scoped_generation(
         if rehydrated is None:
             console.print(
                 "[yellow]This repo has no wiki pages yet.[/yellow] "
-                "Run `repowise init --index-only` or `repowise update --full` first."
+                "Run `repowise init --docs deterministic` or `repowise update --full` first."
             )
             return None
 

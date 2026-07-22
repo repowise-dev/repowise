@@ -58,5 +58,5 @@ not just *bigger*.
 ## Error handling
 
 If `get_health` reports no repository, suggest `/repowise:init`. Code health is
-computed even in index-only mode (no LLM needed), so it should be available
+computed even with a template-rendered wiki (no LLM needed), so it should be available
 whenever the repo is indexed.

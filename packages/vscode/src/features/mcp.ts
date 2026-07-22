@@ -168,7 +168,7 @@ async function configureMcp(ctx: RepowiseContext): Promise<void> {
 
   const note = repoRoot
     ? ""
-    : " The repo is not indexed yet, so the server points at the workspace folder; run repowise init to index it.";
+    : " The repo is not indexed yet, so the server points at the workspace folder; run `repowise init --yes` to index it (no API key needed).";
   const choice = await vscode.window.showInformationMessage(
     `Repowise MCP server configured in .vscode/mcp.json.${note}`,
     "Open File",

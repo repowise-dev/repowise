@@ -47,7 +47,8 @@ repowise init [PATH] [OPTIONS]
 | `--provider` | string | auto | LLM provider: `anthropic`, `openai`, `openrouter`, `gemini`, `deepseek`, `kimi`, `ollama`, `litellm`, `codex_cli`, `opencode`, `mock` |
 | `--model` | string | — | Model override (e.g., `claude-sonnet-4-6`, `gpt-4.1`) |
 | `--embedder` | choice | auto | Embedding provider: `gemini`, `openai`, `mock` |
-| `--index-only` | flag | false | Skip LLM generation — parse, graph, git, dead code only |
+| `--index-only` | flag | false | Render the wiki from structure instead of writing it with a model. No key, no spend. |
+| `--docs` | choice | — | How to produce the wiki: `llm` or `deterministic`. Same choice as `--index-only`, named for what it does. `--docs llm` needs a key. |
 | `--dry-run` | flag | false | Show generation plan and token estimate without running |
 | `--test-run` | flag | false | Limit to top 10 files by PageRank (for validation) |
 | `--skip-tests` | flag | false | Exclude test files |
@@ -107,7 +108,7 @@ repowise init --resume
 
 1. **Ingestion** — parses all files with tree-sitter, builds dependency graph
 2. **Analysis** — git churn/ownership, dead code detection, decision mining
-3. **Generation** — LLM writes wiki pages at repo/module/file level (skipped with `--index-only`)
+3. **Generation** — LLM writes wiki pages at repo/module/file level, or with `--index-only` / `--docs deterministic` they are rendered from parsed structure
 4. **Persistence** — writes to SQLite, builds vector index, generates managed editor instruction files
 
 ### Provider auto-detection

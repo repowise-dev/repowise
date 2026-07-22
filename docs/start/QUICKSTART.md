@@ -28,11 +28,18 @@ Check it landed:
 repowise --version
 ```
 
-## 2. Index your repo, with no API key
+## 2. Index your repo
 
 ```bash
 cd /path/to/your-repo
-repowise init --index-only -y
+repowise init --yes
+```
+
+No API key needed. If you want to be explicit that this run must not spend
+anything, spell it out:
+
+```bash
+repowise init --yes --docs deterministic
 ```
 
 This is the step worth doing first, because it costs nothing and answers the
@@ -272,8 +279,12 @@ repowise status          # what is indexed, and how stale it is
 
 ## Environment variables
 
+None of these are required. Every one of them is only needed for a model-written
+wiki.
+
 | Variable | When needed | Description |
 |----------|-------------|-------------|
+| `REPOWISE_PROVIDER` | Optional | Provider name. An empty value is treated as unset. |
 | `ANTHROPIC_API_KEY` | Using Anthropic | Anthropic API key |
 | `OPENAI_API_KEY` | Using OpenAI | OpenAI API key |
 | `GEMINI_API_KEY` | Using Gemini | Google Gemini API key |

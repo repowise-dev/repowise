@@ -12,9 +12,12 @@ import sys
 from types import SimpleNamespace
 
 import click
+import pytest
+from click.testing import CliRunner
 
 from repowise.cli import cost_gate
 from repowise.cli.commands.init_cmd._interactive import offer_hook_install
+from repowise.cli.main import cli
 
 
 def _est(usd: float) -> SimpleNamespace:
@@ -93,3 +96,42 @@ class TestHookOfferDegrades:
         offer_hook_install(
             SimpleNamespace(print=lambda *_a, **_k: None), [tmp_path], None, yes=False
         )
+
+
+class TestDocsFlag:
+    @pytest.fixture
+    def runner(self) -> CliRunner:
+        return CliRunner()
+
+    def test_docs_llm_conflicts_with_index_only(self, runner, tmp_path):
+        """Contradictory flags are a usage error, not a silent winner.
+
+        Exit 2 also keeps this out of the telemetry error bucket, which #907
+        split usage errors away from.
+        """
+        result = runner.invoke(cli, ["init", str(tmp_path), "--docs", "llm", "--index-only"])
+        assert result.exit_code == 2
+        assert "contradicts" in result.output
+
+    def test_docs_deterministic_needs_no_key(self, runner, tmp_path, monkeypatch):
+        """`--docs deterministic` is the scriptable spelling of --index-only."""
+        for var in (
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "OPENROUTER_API_KEY",
+            "DEEPSEEK_API_KEY",
+            "KIMI_API_KEY",
+            "GOOGLE_API_KEY",
+            "GEMINI_API_KEY",
+            "OLLAMA_BASE_URL",
+            "LITELLM_API_KEY",
+            "REPOWISE_PROVIDER",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        result = runner.invoke(cli, ["init", str(tmp_path), "--docs", "deterministic", "--yes"])
+        assert result.exit_code == 0, result.output
+
+    def test_docs_choice_is_constrained(self, runner, tmp_path):
+        """An unknown value is rejected by Click rather than reaching the pipeline."""
+        result = runner.invoke(cli, ["init", str(tmp_path), "--docs", "magic"])
+        assert result.exit_code == 2

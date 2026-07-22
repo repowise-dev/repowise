@@ -34,21 +34,27 @@ Then stop — do not continue to Step 3 unless the user asks to re-index.
 
 If `.repowise/` doesn't exist, move to Step 3.
 
-## Step 3: Ask about mode
+## Step 3: Offer the mode, but do not block on it
 
-Ask the user ONE question:
+Repowise needs **no API key at all**. Never make a key a precondition for
+setting it up, and never stop and wait if you cannot get an answer.
 
-"How would you like to set up Repowise?
+Tell the user:
 
-1. **Index-only mode** — no LLM needed. Builds the dependency graph, mines git history, scores code health, and detects dead code. Fast. You get graph intelligence, git ownership, hotspots, the 1–10 code-health score, and dead-code detection — but no generated documentation or semantic search.
-2. **Full mode** — everything in index-only **plus** an LLM-generated wiki, semantic search, and architectural-decision mining. Requires an API key (Anthropic, OpenAI, Google Gemini, or Ollama for local). The graph/git/health layers are ready in minutes; the documentation layer runs after and can continue in the background.
-3. **I'll configure it myself** — just show me the available flags."
+"Repowise indexes your repo and writes a complete wiki with no API key. I'll run
+`repowise init --yes` unless you'd rather pick:
 
-### If Index-only mode:
+1. **Default (no key)** — full index plus a wiki rendered from your code's structure. Free, fast, nothing to configure.
+2. **Model-written wiki** — everything above, but an LLM writes the wiki prose instead of rendering it from structure, which also enables decision mining. Needs a provider key (Anthropic, OpenAI, Gemini, or Ollama locally). You can start keyless and upgrade any page later with `repowise generate`.
+3. **Show me the flags.**"
 
-Skip provider selection. Construct:
+If the user does not answer, or you are running unattended, take option 1.
+
+### If Default (no key):
+
+Skip provider selection entirely. Construct:
 ```
-repowise init --index-only
+repowise init --docs deterministic --yes
 ```
 
 Jump to Step 5.
@@ -66,13 +72,19 @@ repowise init [PATH]
 Core flags:
   --provider NAME        LLM provider: anthropic, openai, gemini, ollama, litellm
   --model NAME           Model identifier override
-  --index-only           Analysis-only mode. No docs generation, no API key needed.
+  --index-only           Build the wiki from structure instead of writing it
+                         with a model. No key, no spend.
+  --docs llm|deterministic
+                         How to produce the wiki. Same choice as --index-only,
+                         named for what it does. --docs llm needs a key.
+                         (--docs llm together with --index-only is an error.)
+  --mode fast            Quick first pass on very large repos: no wiki at all.
 
 Embeddings:
   --embedder NAME        Embedding provider: gemini, openai, mock (default: auto-detect)
 
 Cost control:
-  --concurrency N        Max parallel LLM calls (default: 5)
+  --concurrency N        Max parallel LLM calls (default: 10)
   --test-run             Limit to top 10 files by PageRank for quick validation
 
 Exclusions:
@@ -100,7 +112,13 @@ Dry run:
 
 Then ask if they want you to construct a command or if they'll handle it.
 
-## Step 4: Provider selection (full mode only)
+## Step 4: Provider selection (model-written wiki only)
+
+**Skip this entire step unless the user chose the model-written wiki.** A
+missing key is not a blocker: `init` renders the template wiki and exits 0
+without one. If you cannot find a key, do not stop and do not ask again. Run
+`repowise init --yes` and tell the user their wiki is rendered from structure
+and can be upgraded per-page later with `repowise generate`.
 
 Check which API keys are already set by running:
 ```bash
@@ -141,6 +159,14 @@ Before running the command, ask:
 Add any exclusions as `-x` flags.
 
 ## Step 6: Run it
+
+For an unattended or non-interactive run, the canonical command is
+`repowise init --yes`, plus `--docs deterministic` when you want to guarantee no
+spend. `--yes` suppresses every prompt including the cost gate. You do not need
+to guard against prompts beyond that: init treats an unanswerable question as a
+signal to continue with defaults rather than a reason to fail, and the cost gate
+declines by itself when stdin is not a terminal, keeping the finished index and
+landing on the template wiki.
 
 Show the user the exact command you're about to run. Ask for confirmation.
 

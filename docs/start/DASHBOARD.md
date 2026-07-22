@@ -26,13 +26,16 @@ Repowise can index a repo without generating a wiki (`repowise init
 the AST, the dependency graph, and git history works in both modes. The views
 that read generated pages are the difference:
 
-| Needs a generated wiki | Works index-only |
+| Needs a model or an embedder | Works on any indexed repo |
 |---|---|
-| Docs, Doc freshness, Present mode, Chat, semantic Search | Overview, Architecture, Knowledge Graph, Code Health, Refactoring, Files, Symbols, Commits, Contributors, Decisions, Stats, Usage, Settings, all Workspace views |
+| Chat (needs a provider), semantic Search (needs an embedder) | Docs, Doc freshness, Present mode, Overview, Architecture, Knowledge Graph, Code Health, Refactoring, Files, Symbols, Commits, Contributors, Decisions, Stats, Usage, Settings, all Workspace views |
 
-In index-only mode the docs-related counters honestly read `0` rather than
-hiding, and the Docs view offers to run a generation job. You can upgrade an
-index-only repo to a full one later without re-indexing from scratch.
+Every indexed repo has a wiki, including one indexed without a key, so the Docs
+views are populated either way. What a keyless index lacks is model-written
+prose and semantic search: the Docs view offers to upgrade pages with
+`repowise generate`, and `repowise reindex` builds semantic search once an
+embedder is configured. Either upgrade works in place, with no re-index from
+scratch.
 
 ## Overview
 

@@ -419,7 +419,18 @@ def _run_generation_phase(
     "--index-only",
     is_flag=True,
     default=False,
-    help="Index files, git history, graph, and dead code — skip LLM page generation.",
+    help="Build the wiki from structure instead of writing it with a model. No key, no spend.",
+)
+@click.option(
+    "--docs",
+    "docs_opt",
+    type=click.Choice(["llm", "deterministic"]),
+    default=None,
+    help=(
+        "How to produce the wiki: 'llm' writes it with a model (needs a key), "
+        "'deterministic' renders it from structure for free. Same choice as "
+        "--index-only, named for what it does. Use --mode fast for no wiki at all."
+    ),
 )
 @click.option(
     "--mode",
@@ -627,6 +638,7 @@ def init_command(
     reasoning: str | None,
     test_run: bool,
     index_only: bool,
+    docs_opt: str | None,
     run_mode: str,
     exclude: tuple[str, ...],
     commit_limit: int | None,
@@ -653,9 +665,18 @@ def init_command(
     """Generate wiki documentation for a codebase.
 
     PATH defaults to the current directory.
-    Use --index-only to run ingestion (AST, graph, git, dead code) without LLM generation.
+    Use --docs deterministic (or --index-only) to render the wiki from structure
+    with no model and no key; --docs llm writes it with a model.
     Use --mode fast for a quick graph + essential-git index of a very large repo.
     """
+    # ``--docs`` is the same switch as ``--index-only`` named for what it
+    # produces rather than what it skips, since an index-only run has rendered
+    # a full wiki since #975. Kept as two spellings because --index-only is in
+    # every existing script and doc; they must not disagree.
+    if docs_opt is not None:
+        if index_only and docs_opt == "llm":
+            raise click.UsageError("--docs llm contradicts --index-only. Pass one.")
+        index_only = docs_opt == "deterministic"
     # --mode fast is a graph + essential-git index with no LLM work, so it
     # implies index-only on the CLI side; the orchestrator mode below switches
     # the git tier to ESSENTIAL.
@@ -843,7 +864,7 @@ def init_command(
             console.print(
                 "\n[yellow]No answer available on stdin[/yellow] "
                 "[dim]— continuing with defaults. Pass --yes to skip the "
-                "questions.[/dim]"
+                "questions, or --docs llm/deterministic to choose directly.[/dim]"
             )
 
         # Map the menu onto the two axes (docs on/off, customize yes/no):
@@ -1051,7 +1072,9 @@ def init_command(
             print_index_only_intro(console, has_provider=has_provider)
         else:
             console.print(f"[bold]repowise index-only[/bold] — {repo_path}")
-            console.print("[yellow]Skipping LLM page generation (--index-only)[/yellow]")
+            console.print(
+                "[yellow]Building the wiki from structure[/yellow] [dim]— no model, no spend.[/dim]"
+            )
             if decision_provider:
                 console.print(
                     f"Decision extraction provider: [cyan]{decision_provider.provider_name}[/cyan]"
@@ -1060,8 +1083,11 @@ def init_command(
         # No prompt here. ``is_interactive`` (line ~800) is already false only
         # when the user passed --provider, --index-only or --yes, or stdin is
         # not a terminal — so the old fallback picker in this branch fired
-        # exactly on ``--yes``, which means "do not ask me". A --yes run with
-        # no key now lands in the template wiki below rather than a question.
+        # exactly on ``--yes``, which means "do not ask me". On shells where
+        # isatty() claims a terminal it cannot actually read from (Windows
+        # mintty, ``docker run -t`` without -i) that prompt hit EOF and killed
+        # the run instead. A --yes run with no key now lands in the template
+        # wiki below rather than in a question or a crash.
         try:
             provider = resolve_provider(provider_name, model, repo_path)
         except click.ClickException:

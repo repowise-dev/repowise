@@ -52,8 +52,9 @@ Otherwise the response is current — act on it.
 ## Error handling
 
 - "No repositories found. Run 'repowise init' first." → suggest `/repowise:init`.
-- `get_answer`/`search_codebase` come back empty → the repo may be in index-only
-  mode (no wiki). Fall back to `get_context` with explicit paths, and note that
-  full mode (`/repowise:init` with an LLM provider) unlocks docs + semantic search.
+- `get_answer`/`search_codebase` come back empty → the repo may have a
+  template-rendered wiki. Fall back to `get_context` with explicit paths, and note
+  that model-written pages (`repowise generate`, or `/repowise:init` with an LLM
+  provider) unlock richer docs + semantic search.
 - Tools fail to connect at all → the `repowise` binary may not be installed;
   suggest `/repowise:init`.

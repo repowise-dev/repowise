@@ -38,7 +38,7 @@ cd /path/to/your/repo
 repowise init --index-only -y
 ```
 
-Builds the dependency graph, git history, code-health score, and dead-code findings in seconds. (Want the generated wiki + semantic search? Use `repowise init --provider gemini|anthropic|openai` with the matching key.)
+Builds the dependency graph, git history, code-health score, and dead-code findings in seconds. Also renders every wiki page from structure. Want model-written prose? `repowise init --docs llm --provider gemini|anthropic|openai`.
 
 **3. Connect your agent** — the MCP server is `repowise mcp`, served from the repo dir.
 
@@ -71,7 +71,7 @@ Or: `codex mcp add repowise -- repowise mcp`
 
 **4. First real call.** Ask your agent: *"Use repowise `get_overview` to summarize this repo,"* or *"`get_context` for `src/auth.py`."* You get graph-grounded architecture and per-file triage instead of a flurry of greps. ✅
 
-> `get_overview` / `get_context` work in **index-only mode** (no key) — they synthesize from the graph/git/health layers. `search_codebase` / `get_answer` / `get_why` need full mode (the generated wiki).
+> `get_overview` and `get_context` work in index-only mode with no key, synthesized from the graph, git and health layers. `search_codebase` and `get_answer` read the wiki, which index-only mode does build, but they answer from pages rendered from structure rather than model-written prose, and `search_codebase` is full-text only until you configure an embedder.
 
 Ready for the full picture? Run `repowise init --provider …` for the generated wiki + semantic search, or skip key management entirely with the [hosted tier](https://www.repowise.dev). The detailed setup paths below walk through each editor and mode.
 
@@ -273,22 +273,22 @@ Then add the MCP server to your editor's configuration. See [MCP Server →](mcp
 
 ---
 
-## Analysis-only mode (no API key needed)
+## The keyless path (the default)
 
-If you don't have an LLM API key — or just want the git intelligence and dead code detection without generated docs — use `--index-only`:
+You don't need an LLM API key at all. A bare `repowise init` with no key configured succeeds and produces a wiki, rendered from the parsed structure of your code:
 
 ```bash
-repowise init --index-only
+repowise init
 ```
 
-This runs the full ingestion and analysis pipeline (parsing, graph, git, dead code) but skips LLM generation. It's free, takes under a minute for most repos, and still gives you:
+`repowise init --docs deterministic` is the explicit spelling of the same thing, and guarantees no spend. Either way you get the full ingestion and analysis pipeline (parsing, graph, git, dead code) plus a complete wiki. It's free, takes under a minute for most repos, and still gives you:
 
 - Dependency graph
 - Hotspot detection
 - Dead code findings
 - Ownership data
 
-You can always run `repowise init` later to add docs on top of an existing index.
+You can always run `repowise init --docs llm` (or `repowise generate`) later to upgrade the pages to model-written prose on top of an existing index.
 
 ---
 
