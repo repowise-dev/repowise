@@ -137,3 +137,91 @@ def _strip_quotes(value: str) -> str:
     if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
         return value[1:-1]
     return value
+
+
+def save_repo_env_key(
+    repo_path: Path | str,
+    env_var: str,
+    value: str | None,
+    *,
+    ensure_gitignored: bool = True,
+) -> None:
+    """Set (``value``) or remove (``value=None``) ``env_var`` in ``.repowise/.env``.
+
+    The reusable filesystem primitive behind both the CLI's key persistence and
+    the server's ``set_api_key``, kept here (next to :func:`load_repo_env`) so
+    neither has to hand-roll a second dotenv writer. It rewrites only the one
+    matching line, so unrelated keys in the file are preserved; setting an
+    existing key updates it in place rather than appending a duplicate.
+
+    Only the ``env_var`` line is touched: comments, ``export`` prefixes on other
+    lines, and blank lines are left as-is. Removing a key that isn't present is a
+    no-op, and never creates the file.
+
+    A ``value`` containing a newline is rejected: it would otherwise inject extra
+    ``KEY=value`` lines that a later ``load_repo_env`` would parse as separate
+    environment variables. A real API key never contains one.
+    """
+    if value is not None and ("\n" in value or "\r" in value):
+        raise ValueError("env value must not contain a newline")
+    env_dir = get_repowise_dir(repo_path)
+    env_file = env_dir / ".env"
+
+    existing_lines: list[str] = []
+    found = False
+    if env_file.exists():
+        for line in env_file.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            # Match both `KEY=` and `export KEY=` forms for the target var.
+            bare = (
+                stripped[len("export ") :].lstrip() if stripped.startswith("export ") else stripped
+            )
+            if bare.startswith(f"{env_var}="):
+                found = True
+                if value is not None:
+                    existing_lines.append(f"{env_var}={value}")
+                # value is None: drop the line (removal).
+            else:
+                existing_lines.append(line)
+
+    if value is None:
+        if not found:
+            return  # nothing to remove, don't create an empty file
+    elif not found:
+        existing_lines.append(f"{env_var}={value}")
+
+    env_dir.mkdir(parents=True, exist_ok=True)
+    env_file.write_text("\n".join(existing_lines) + "\n", encoding="utf-8")
+    # The file holds API keys; keep it owner-only where the OS honours it
+    # (best-effort: a no-op on Windows).
+    try:
+        import os
+
+        os.chmod(env_file, 0o600)
+    except OSError:
+        pass
+
+    if ensure_gitignored:
+        _ensure_env_gitignored(repo_path)
+
+
+def _ensure_env_gitignored(repo_path: Path | str) -> None:
+    """Add ``.repowise/.env`` to the repo's ``.gitignore`` if not already listed."""
+    gitignore = Path(repo_path) / ".gitignore"
+    pattern = ".repowise/.env"
+
+    if gitignore.exists():
+        content = gitignore.read_text(encoding="utf-8")
+        # Line membership, not substring, so the pattern buried in an unrelated
+        # comment doesn't suppress the real ignore rule.
+        if pattern in {line.strip() for line in content.splitlines()}:
+            return
+        if not content.endswith("\n"):
+            content += "\n"
+        content += f"\n# repowise API keys (local)\n{pattern}\n"
+        gitignore.write_text(content, encoding="utf-8")
+    else:
+        gitignore.write_text(
+            f"# repowise API keys (local)\n{pattern}\n",
+            encoding="utf-8",
+        )

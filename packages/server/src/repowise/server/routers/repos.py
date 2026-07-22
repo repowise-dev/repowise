@@ -454,6 +454,17 @@ async def get_repo_stats(
     )
 
 
+def _accepted(job_id: str) -> dict:
+    """Standard 202 launch payload, carrying a stream token for the new job.
+
+    The token lets a client stream ``/api/jobs/{id}/stream`` immediately without
+    a second round-trip, and without putting the API key in the query string.
+    """
+    from repowise.server.stream_auth import mint_stream_token
+
+    return {"job_id": job_id, "status": "accepted", "stream_token": mint_stream_token(job_id)}
+
+
 async def _ensure_no_active_job(session: AsyncSession, repo_id: str) -> None:
     """Raise 409 if a pending/running job already holds this repo.
 
@@ -500,7 +511,7 @@ async def sync_repo(
     # other connections, so flush() alone is not sufficient.
     await session.commit()
     _launch_job_task(request, job.id, repo_id)
-    return {"job_id": job.id, "status": "accepted"}
+    return _accepted(job.id)
 
 
 @router.post("/{repo_id}/full-resync", status_code=202)
@@ -530,7 +541,7 @@ async def full_resync(
     # see the job row.  See sync_repo comment for rationale.
     await session.commit()
     _launch_job_task(request, job.id, repo_id)
-    return {"job_id": job.id, "status": "accepted"}
+    return _accepted(job.id)
 
 
 class GenerateSelectionBody(BaseModel):
@@ -607,7 +618,7 @@ async def generate_pages(
     # job row.  See sync_repo comment for rationale.
     await session.commit()
     _launch_job_task(request, job.id, repo_id)
-    return {"job_id": job.id, "status": "accepted"}
+    return _accepted(job.id)
 
 
 @router.post("/{repo_id}/generate/estimate")
@@ -767,7 +778,7 @@ async def index_repo(
         raise HTTPException(
             status_code=409, detail="A job is already in progress for this repository"
         )
-    return {"job_id": job_id, "status": "accepted"}
+    return _accepted(job_id)
 
 
 @router.post("/{repo_id}/preflight")

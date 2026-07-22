@@ -132,7 +132,7 @@ async def regenerate_page_by_query(
     too. Both are validated here and carried in the job config; the executor
     resolves them.
     """
-    from repowise.server.routers.repos import _ensure_no_active_job, _launch_job_task
+    from repowise.server.routers.repos import _accepted, _ensure_no_active_job, _launch_job_task
 
     page = await crud.get_page(session, page_id)
     if page is None:
@@ -168,7 +168,7 @@ async def regenerate_page_by_query(
     # job row, then launch it — the fix for the click that did nothing.
     await session.commit()
     _launch_job_task(request, job.id, page.repository_id)
-    return {"job_id": job.id, "status": "accepted"}
+    return _accepted(job.id)
 
 
 @router.get("/{page_id:path}", response_model=PageResponse)

@@ -20,6 +20,9 @@ class SetActiveProviderRequest(BaseModel):
 
 class SetApiKeyRequest(BaseModel):
     api_key: str
+    # When set, the key is also mirrored into this repo's ``.repowise/.env`` so
+    # a later CLI run in the repo picks it up. Omit for a server-global-only key.
+    repo_id: str | None = None
 
 
 class CostGroupResponse(BaseModel):

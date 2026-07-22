@@ -217,3 +217,82 @@ def test_global_selection_used_when_repo_has_no_config(clean_env, tmp_path):
 
     provider, model = pc.get_active_provider(repo_id="r1", repo_path=str(repo))
     assert (provider, model) == ("anthropic", "claude-sonnet-4-6")
+
+
+# ---------------------------------------------------------------------------
+# D6: set_api_key mirrors into the repo's .repowise/.env so the CLI sees it.
+# ---------------------------------------------------------------------------
+
+
+def test_set_api_key_mirrors_into_repo_env(clean_env, tmp_path):
+    repo = _make_repo(tmp_path / "repo", config="embedder: mock\n")
+
+    pc.set_api_key("anthropic", "sk-ant-xyz", repo_path=str(repo))
+
+    # Server store updated...
+    assert pc._get_key_for_provider("anthropic") == "sk-ant-xyz"
+    # ...and mirrored under the provider's canonical env var so a later CLI run
+    # (which reads .env, not the server store) picks it up.
+    from repowise.core.repo_config import load_repo_env
+
+    assert load_repo_env(repo)["ANTHROPIC_API_KEY"] == "sk-ant-xyz"
+
+
+def test_set_api_key_removal_clears_repo_env(clean_env, tmp_path):
+    repo = _make_repo(tmp_path / "repo", config="embedder: mock\n")
+    pc.set_api_key("anthropic", "sk-ant-xyz", repo_path=str(repo))
+
+    pc.set_api_key("anthropic", None, repo_path=str(repo))
+
+    from repowise.core.repo_config import load_repo_env
+
+    assert "ANTHROPIC_API_KEY" not in load_repo_env(repo)
+
+
+def test_set_api_key_without_repo_path_is_global_only(clean_env, tmp_path):
+    repo = _make_repo(tmp_path / "repo", config="embedder: mock\n")
+
+    pc.set_api_key("anthropic", "sk-ant-xyz")  # no repo_path
+
+    assert pc._get_key_for_provider("anthropic") == "sk-ant-xyz"
+    assert not (repo / ".repowise" / ".env").exists()
+
+
+def test_set_api_key_keyless_provider_writes_no_env(clean_env, tmp_path):
+    # Ollama takes no key (empty env_keys); there is nothing to mirror.
+    repo = _make_repo(tmp_path / "repo", config="embedder: mock\n")
+
+    pc.set_api_key("ollama", "irrelevant", repo_path=str(repo))
+
+    assert not (repo / ".repowise" / ".env").exists()
+
+
+def test_set_api_key_rejects_newline_in_value(clean_env, tmp_path):
+    # A value with a newline would inject extra env lines a later CLI run parses.
+    repo = _make_repo(tmp_path / "repo", config="embedder: mock\n")
+    with pytest.raises(ValueError, match="newline"):
+        pc.set_api_key("anthropic", "sk-ant\nEVIL=1", repo_path=str(repo))
+
+
+def test_config_path_defaults_to_home(monkeypatch, tmp_path):
+    # No REPOWISE_CONFIG_DIR: the store lives in ~/.repowise, not the CWD.
+    monkeypatch.setattr(pc.os, "environ", {})
+    monkeypatch.setattr(pc.Path, "home", classmethod(lambda cls: tmp_path))
+    assert pc._config_path() == tmp_path / ".repowise" / "provider_config.json"
+
+
+def test_list_provider_status_never_returns_key_material(clean_env, tmp_path):
+    repo = _make_repo(
+        tmp_path / "repo",
+        config="provider: openai\nmodel: gpt-5.4-nano\nembedder: openai\n",
+        env="OPENAI_API_KEY=super-secret-key\n",
+    )
+
+    status = pc.list_provider_status(repo_id="r1", repo_path=str(repo))
+
+    serialized = repr(status)
+    assert "super-secret-key" not in serialized
+    for provider in status["providers"]:
+        assert set(provider) == {"id", "name", "models", "default_model", "configured"}
+        assert "key" not in provider
+        assert "api_key" not in provider

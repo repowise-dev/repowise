@@ -20,7 +20,16 @@ export async function cancelJob(jobId: string): Promise<JobResponse> {
   return apiPost<JobResponse>(`/api/jobs/${jobId}/cancel`);
 }
 
-/** Returns the SSE stream URL for a job. Use with EventSource or the useSSE hook. */
-export function getJobStreamUrl(jobId: string): string {
-  return `${BASE_URL}/api/jobs/${jobId}/stream`;
+/** Returns the SSE stream URL for a job. Use with EventSource or the useSSE hook.
+ *
+ * An EventSource can't send the Authorization header, so when the server has a
+ * key set the browser authenticates the stream with a per-job `token` (from the
+ * job-launch response or `JobResponse.stream_token`) instead. The token is
+ * scoped to this one job id and expires quickly; the raw API key is never put
+ * in the query string. When no token is available (open local server) the URL
+ * is header-authenticated as before. */
+export function getJobStreamUrl(jobId: string, streamToken?: string | null): string {
+  const base = `${BASE_URL}/api/jobs/${jobId}/stream`;
+  if (!streamToken) return base;
+  return `${base}?token=${encodeURIComponent(streamToken)}`;
 }

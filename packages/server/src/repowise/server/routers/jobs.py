@@ -6,21 +6,48 @@ import asyncio
 import json
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Security
 from sqlalchemy import func, select
 from starlette.responses import StreamingResponse
 
 from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GenerationJob, LlmCost
-from repowise.server.deps import resolve_session_factory, verify_api_key
-from repowise.server.schemas import JobResponse
-
-router = APIRouter(
-    prefix="/api/jobs",
-    tags=["jobs"],
-    dependencies=[Depends(verify_api_key)],
+from repowise.server.deps import (
+    _header_scheme,
+    auth_is_open,
+    bearer_is_valid,
+    resolve_session_factory,
+    verify_api_key,
 )
+from repowise.server.schemas import JobResponse
+from repowise.server.stream_auth import verify_stream_token
+
+# The stream route can't sit under a router-level bearer dependency: an
+# EventSource can't send the Authorization header, so it authenticates with a
+# per-job ``?token=`` instead. Every other route keeps the bearer requirement
+# via its own ``Depends(verify_api_key)``.
+router = APIRouter(prefix="/api/jobs", tags=["jobs"])
+
+
+async def authorize_job_stream(
+    job_id: str,
+    token: str | None = Query(None),
+    auth: str | None = Security(_header_scheme),
+) -> None:
+    """Allow the job stream for an open server, a valid bearer, or a job token.
+
+    The ``?token=`` is accepted only for the job id in the path (the token
+    embeds and is signed over that id), so it can't be replayed against another
+    job. A bearer key still works, so non-browser clients are unaffected.
+    """
+    if auth_is_open():
+        return
+    if bearer_is_valid(auth):
+        return
+    if verify_stream_token(token, job_id):
+        return
+    raise HTTPException(status_code=401, detail="Missing or invalid job stream credentials")
 
 
 async def _find_job_factory(app_state, job_id: str):
@@ -59,7 +86,7 @@ def _created_sort_key(job: GenerationJob) -> datetime:
     return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
 
 
-@router.get("", response_model=list[JobResponse])
+@router.get("", response_model=list[JobResponse], dependencies=[Depends(verify_api_key)])
 async def list_jobs(
     request: Request,
     repo_id: str | None = Query(None),
@@ -107,7 +134,7 @@ async def list_jobs(
     return [JobResponse.from_orm(j) for j in jobs[offset : offset + limit]]
 
 
-@router.get("/{job_id}", response_model=JobResponse)
+@router.get("/{job_id}", response_model=JobResponse, dependencies=[Depends(verify_api_key)])
 async def get_job(job_id: str, request: Request) -> JobResponse:
     """Get a single generation job by ID."""
     _, job = await _find_job_factory(request.app.state, job_id)
@@ -116,7 +143,7 @@ async def get_job(job_id: str, request: Request) -> JobResponse:
     return JobResponse.from_orm(job)
 
 
-@router.post("/{job_id}/cancel", response_model=JobResponse)
+@router.post("/{job_id}/cancel", response_model=JobResponse, dependencies=[Depends(verify_api_key)])
 async def cancel_job(job_id: str, request: Request) -> JobResponse:
     """Cancel a pending or running generation job.
 
@@ -159,7 +186,7 @@ async def cancel_job(job_id: str, request: Request) -> JobResponse:
     return JobResponse.from_orm(job)
 
 
-@router.get("/{job_id}/stream")
+@router.get("/{job_id}/stream", dependencies=[Depends(authorize_job_stream)])
 async def stream_job(job_id: str, request: Request) -> StreamingResponse:
     """SSE progress stream for a generation job.
 

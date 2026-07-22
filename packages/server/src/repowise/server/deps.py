@@ -96,6 +96,25 @@ async def get_cross_repo_enricher(request: Request):
     return getattr(request.app.state, "cross_repo_enricher", None)
 
 
+def auth_is_open() -> bool:
+    """True when no key is required (no ``REPOWISE_API_KEY`` on a loopback bind)."""
+    return _API_KEY is None and _REPOWISE_HOST not in ("0.0.0.0", "::")
+
+
+def bearer_is_valid(auth: str | None) -> bool:
+    """True iff ``auth`` carries the configured API key as a bearer token.
+
+    Returns False (rather than raising) so callers that also accept another
+    credential — the SSE stream token — can fall through to it. Always False
+    when no key is configured; the open-access decision is ``auth_is_open``.
+    """
+    if _API_KEY is None:
+        return False
+    if not auth or not auth.startswith("Bearer "):
+        return False
+    return hmac.compare_digest(auth[7:], _API_KEY)
+
+
 async def verify_api_key(
     auth: str | None = Security(_header_scheme),
 ) -> None:

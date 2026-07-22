@@ -1,7 +1,23 @@
 """Provider configuration management — API keys, active provider, model selection.
 
-Stores configuration in a server-side JSON file. Environment variables take
-precedence over stored keys for each provider.
+Stores configuration in a server-side JSON file (``_config_path``). Two
+resolution chains run here, both most-specific-first:
+
+**API key** (:func:`_get_key_for_provider`):
+  1. process environment (``ANTHROPIC_API_KEY`` etc.)
+  2. the target repo's ``.repowise/.env`` (read into a dict, never applied to
+     ``os.environ``, so one repo's key can't leak into another in workspace
+     mode)
+  3. the server-global stored key set through :func:`set_api_key`
+
+**Active provider/model** (:func:`_resolve_active_for_repo`): per-repo UI
+selection > the repo's ``config.yaml`` > server-global active selection >
+``REPOWISE_PROVIDER`` / ``REPOWISE_MODEL`` env > auto-detect the first provider
+with a usable key. See that function's docstring for the full rationale.
+
+Because the CLI resolves keys from ``.repowise/.env`` (step 2) and never sees
+the server store, :func:`set_api_key` mirrors a UI-added key into that file so a
+later CLI run in the repo picks it up.
 """
 
 from __future__ import annotations
@@ -120,10 +136,18 @@ _CATALOG_BY_ID = {p["id"]: p for p in PROVIDER_CATALOG}
 
 
 def _config_path() -> Path:
+    """Return the server's provider-config JSON path.
+
+    ``REPOWISE_CONFIG_DIR`` wins when set; otherwise the file lives in the
+    per-user ``~/.repowise`` config directory (the same home the CLI's global
+    store and the default database use). The previous CWD-relative fallback
+    meant a key was saved next to wherever the server happened to be launched
+    and then invisible from any other working directory.
+    """
     config_dir = os.environ.get("REPOWISE_CONFIG_DIR", "")
     if config_dir:
         return Path(config_dir) / "provider_config.json"
-    return Path("provider_config.json")
+    return Path.home() / ".repowise" / "provider_config.json"
 
 
 def _load_config() -> dict[str, Any]:
@@ -371,10 +395,31 @@ def set_active_provider(
     _save_config(config)
 
 
-def set_api_key(provider_id: str, key: str | None) -> None:
-    """Store or remove an API key for a provider."""
+def set_api_key(
+    provider_id: str,
+    key: str | None,
+    repo_path: str | Path | None = None,
+) -> None:
+    """Store or remove an API key for a provider.
+
+    Always updates the server-global store. When ``repo_path`` is given, the
+    key is *also* mirrored into that repo's ``.repowise/.env`` under the
+    provider's canonical env var, so a later ``repowise`` CLI run in that repo
+    (which reads ``.env``, not the server store) picks up a key added from the
+    web UI. A ``None`` key removes it from both places.
+
+    Writing ``.env`` is a deliberately OSS-server-only step: a hosted
+    deployment resolves keys from its own vault, so it never passes
+    ``repo_path`` here. The low-level file write is the shared
+    ``core.repo_config.save_repo_env_key`` primitive (reused by the CLI), but
+    the decision to mirror a key to disk lives here in the server layer.
+    """
     if provider_id not in _CATALOG_BY_ID:
         raise ValueError(f"Unknown provider: {provider_id}")
+    if key is not None and ("\n" in key or "\r" in key):
+        # Reject before writing anything so a bad value can't inject extra env
+        # lines nor leave a partial store update. A real key has no newline.
+        raise ValueError("API key must not contain a newline")
     config = _load_config()
     keys = config.setdefault("keys", {})
     if key:
@@ -382,6 +427,32 @@ def set_api_key(provider_id: str, key: str | None) -> None:
     else:
         keys.pop(provider_id, None)
     _save_config(config)
+
+    if repo_path is not None:
+        _mirror_key_to_repo_env(provider_id, key, repo_path)
+
+
+def _mirror_key_to_repo_env(
+    provider_id: str,
+    key: str | None,
+    repo_path: str | Path,
+) -> None:
+    """Write (or clear) a provider key in a repo's ``.repowise/.env``.
+
+    Uses the provider's first catalog env var as the canonical name (e.g.
+    ``ANTHROPIC_API_KEY``). Providers that take no key (empty ``env_keys``,
+    e.g. Ollama) have nothing to mirror. Best-effort: a filesystem error here
+    must not fail the API call, since the server store was already updated.
+    """
+    env_keys = _CATALOG_BY_ID[provider_id].get("env_keys", [])
+    if not env_keys:
+        return
+    from repowise.core.repo_config import save_repo_env_key
+
+    try:
+        save_repo_env_key(repo_path, env_keys[0], key)
+    except OSError:
+        logger.warning("Failed to mirror %s key into %s/.repowise/.env", provider_id, repo_path)
 
 
 def get_chat_provider_instance(

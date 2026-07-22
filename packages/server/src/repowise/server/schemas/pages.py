@@ -116,13 +116,25 @@ class JobResponse(BaseModel):
     updated_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
+    # Short-lived token for the SSE progress stream (an EventSource can't send
+    # the bearer header). Only minted while the job is live; ``None`` once it
+    # reaches a terminal state, since there's nothing left to stream. Any client
+    # that can read this job (already authenticated) can therefore obtain a fresh
+    # stream token, which is what lets a reloaded page reconnect to the stream.
+    stream_token: str | None = None
 
     @classmethod
     def from_orm(cls, obj: object) -> JobResponse:
+        status = obj.status  # type: ignore[attr-defined]
+        stream_token: str | None = None
+        if status in ("pending", "running"):
+            from repowise.server.stream_auth import mint_stream_token
+
+            stream_token = mint_stream_token(obj.id)  # type: ignore[attr-defined]
         return cls(
             id=obj.id,  # type: ignore[attr-defined]
             repository_id=obj.repository_id,  # type: ignore[attr-defined]
-            status=obj.status,  # type: ignore[attr-defined]
+            status=status,
             provider_name=obj.provider_name,  # type: ignore[attr-defined]
             model_name=obj.model_name,  # type: ignore[attr-defined]
             total_pages=obj.total_pages,  # type: ignore[attr-defined]
@@ -135,4 +147,5 @@ class JobResponse(BaseModel):
             updated_at=obj.updated_at,  # type: ignore[attr-defined]
             started_at=obj.started_at,  # type: ignore[attr-defined]
             finished_at=obj.finished_at,  # type: ignore[attr-defined]
+            stream_token=stream_token,
         )

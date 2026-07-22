@@ -64,18 +64,32 @@ async def set_active(body: SetActiveProviderRequest, request: Request):
 
 
 @router.post("/{provider_id}/key", status_code=204)
-async def add_provider_key(provider_id: str, body: SetApiKeyRequest):
-    """Store an API key for a provider."""
+async def add_provider_key(provider_id: str, body: SetApiKeyRequest, request: Request):
+    """Store an API key for a provider.
+
+    With ``repo_id`` in the body, the key is also written to that repo's
+    ``.repowise/.env`` so a subsequent CLI run in the repo uses it.
+    """
+    repo_path = await _repo_path_for(request, body.repo_id)
     try:
-        set_api_key(provider_id, body.api_key)
+        set_api_key(provider_id, body.api_key, repo_path=repo_path)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 
 
 @router.delete("/{provider_id}/key", status_code=204)
-async def remove_provider_key(provider_id: str):
-    """Remove a provider's API key."""
+async def remove_provider_key(
+    provider_id: str,
+    request: Request,
+    repo_id: str | None = None,
+):
+    """Remove a provider's API key.
+
+    With ``?repo_id=``, the key is also cleared from that repo's
+    ``.repowise/.env`` (the mirror written when it was added).
+    """
+    repo_path = await _repo_path_for(request, repo_id)
     try:
-        set_api_key(provider_id, None)
+        set_api_key(provider_id, None, repo_path=repo_path)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc

@@ -66,6 +66,10 @@ export interface JobResponse {
   updated_at: string;
   started_at: string | null;
   finished_at: string | null;
+  /** Short-lived token authorizing this job's SSE stream (an EventSource can't
+   * send the bearer header). Present only while the job is live; pass it as
+   * `?token=` on the stream URL. */
+  stream_token?: string | null;
 }
 
 export interface JobProgressEvent {
