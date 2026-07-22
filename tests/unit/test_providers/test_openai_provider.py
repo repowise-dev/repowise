@@ -167,7 +167,7 @@ async def test_generate_token_counts():
 
 
 async def test_generate_sends_correct_messages():
-    provider = OpenAIProvider(api_key="sk-test", model="gpt-5.4-mini")
+    provider = OpenAIProvider(api_key="sk-test", model="gpt-4o")
     mock_response = _make_mock_chat_response()
     captured_kwargs: list[dict] = []
 
@@ -181,7 +181,7 @@ async def test_generate_sends_correct_messages():
         await provider.generate("system msg", "user msg", max_tokens=2048, temperature=0.5)
 
     kw = captured_kwargs[0]
-    assert kw["model"] == "gpt-5.4-mini"
+    assert kw["model"] == "gpt-4o"
     assert kw["max_completion_tokens"] == 2048
     assert kw["temperature"] == 0.5
     assert "reasoning_effort" not in kw
@@ -189,6 +189,25 @@ async def test_generate_sends_correct_messages():
     messages = kw["messages"]
     assert messages[0] == {"role": "system", "content": "system msg"}
     assert messages[1] == {"role": "user", "content": "user msg"}
+
+
+@pytest.mark.parametrize("model", ["gpt-5.6-luna", "gpt-5-mini", "o3", "o1", "o4-mini"])
+async def test_generate_clamps_temperature_for_reasoning_models(model):
+    """GPT-5+ / o-series models only accept the default temperature of 1."""
+    provider = OpenAIProvider(api_key="sk-test", model=model)
+    mock_response = _make_mock_chat_response()
+    captured_kwargs: list[dict] = []
+
+    async def fake_create(**kwargs):
+        captured_kwargs.append(kwargs)
+        return mock_response
+
+    with patch("openai.AsyncOpenAI") as mock_client:
+        mock_client.return_value.chat.completions.create = fake_create
+        provider._client = mock_client.return_value
+        await provider.generate("system msg", "user msg", temperature=0.3)
+
+    assert captured_kwargs[0]["temperature"] == 1.0
 
 
 async def test_generate_forwards_minimal_reasoning_effort():

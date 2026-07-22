@@ -132,6 +132,19 @@ def _openai_reasoning_kwargs(reasoning: ReasoningMode, *, model: str) -> dict[st
     return {}
 
 
+def _openai_temperature(model: str, requested: float) -> float:
+    """Clamp temperature for models that only accept the default value.
+
+    OpenAI's reasoning-era models (GPT-5+, o1/o3/o4) reject any explicit
+    ``temperature`` other than the default of ``1``; sending our usual low
+    sampling temperature returns a 400 ``unsupported_value`` error. For those
+    models we force ``1.0`` and pass the requested value through otherwise.
+    """
+    if _supports_openai_reasoning_effort(model):
+        return 1.0
+    return requested
+
+
 def _is_openai_text_model(model_id: str) -> bool:
     leaf = _model_leaf(model_id)
     if any(marker in leaf for marker in _OPENAI_NON_TEXT_MARKERS):
@@ -304,7 +317,7 @@ class OpenAIProvider(BaseProvider):
             kwargs: dict[str, Any] = {
                 "model": self._model,
                 "max_completion_tokens": max_tokens,
-                "temperature": temperature,
+                "temperature": _openai_temperature(self._model, temperature),
                 "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
@@ -391,7 +404,7 @@ class OpenAIProvider(BaseProvider):
         kwargs: dict[str, Any] = {
             "model": self._model,
             "max_completion_tokens": max_tokens,
-            "temperature": temperature,
+            "temperature": _openai_temperature(self._model, temperature),
             "messages": full_messages,
             "stream": True,
         }
