@@ -21,9 +21,12 @@ import type {
   DeadCodeSummary,
 } from "@repowise-dev/types/dead-code";
 
+import { Trash2 } from "lucide-react";
+
 import { Button } from "../ui/button";
 import { Skeleton } from "../ui/skeleton";
 import { CollapsibleSection } from "../shared/collapsible-section";
+import { EmptyState } from "../shared/empty-state";
 import { AiPromptModal } from "../health/ai-prompt-modal";
 import { buildDeadCodeAiPrompt } from "../health/ai-prompt-builder";
 
@@ -259,7 +262,20 @@ export function DeadCodeView({ adapter }: { adapter: DeadCodeAdapter }) {
         </CollapsibleSection>
       )}
 
-      {/* Drill-down: the full interactive table, the single confidence control. */}
+      {/* A clean repository gets said out loud, with the way to re-check it. */}
+      {findings && findingsList.length === 0 && !findingsError ? (
+        <EmptyState
+          icon={<Trash2 className="h-6 w-6" />}
+          title="No dead code found"
+          description="Nothing in this repository is currently flagged as unreachable, unused or zombie. Re-run the analysis after a large refactor."
+          action={{ label: analyzing ? "Analyzing…" : "Re-analyze", onClick: () => void handleAnalyze() }}
+        />
+      ) : loadingFindings && !findings ? (
+        <Skeleton className="h-40 w-full rounded-lg" />
+      ) : (
+      /* Drill-down: the full interactive table, the single confidence control.
+         Rendered only once the findings settle so `defaultOpen` sees the real
+         pile: mounted mid-load it would always read "no pile" and open. */
       <CollapsibleSection
         title="All findings"
         hint={
@@ -269,16 +285,22 @@ export function DeadCodeView({ adapter }: { adapter: DeadCodeAdapter }) {
               ? `Showing ${findingsList.length} of ${summary.total_findings} findings`
               : `${findingsList.length} findings`
         }
-        defaultOpen={false}
+        // With no safe pile above it this is the only content on the page, so
+        // a collapsed section reads as an empty screen.
+        defaultOpen={safeFindings.length === 0}
       >
         <FindingsTable
           findings={findingsList}
-          repoId={adapter.repoId}
           onPatch={handlePatch}
           onBulkResolve={handleBulkResolve}
+          onGeneratePrompt={handlePropose}
+          fileHref={(p) => adapter.fileHref(p)}
+          onNavigate={(href) => adapter.navigate(href)}
+          {...(adapter.graphHref ? { graphHref: (p: string) => adapter.graphHref!(p) } : {})}
           isLoading={loadingFindings}
         />
       </CollapsibleSection>
+      )}
 
       <AiPromptModal
         open={promptIds !== null}

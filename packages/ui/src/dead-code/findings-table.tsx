@@ -8,6 +8,7 @@ import { Switch } from "../ui/switch";
 import { TableSkeleton } from "../shared/loading-skeletons";
 import { ConfirmDialog } from "../ui/confirm-dialog";
 import { EmptyState } from "../shared/empty-state";
+import { AiPromptButton } from "../health/ai-prompt-button";
 import { FindingRow } from "./finding-row";
 import type { DeadCodeFinding, DeadCodeStatus } from "@repowise-dev/types/dead-code";
 
@@ -40,12 +41,18 @@ function labelForKind(kind: string): string {
 export interface FindingsTableProps {
   /** Full open-findings slice; the table filters by kind / confidence / safety client-side. */
   findings: DeadCodeFinding[];
-  /** Repo base path used to build row action links. */
-  repoId: string;
   /** Injected mutation — host owns the API call, optimistic toast + undo. */
   onPatch: (id: string, patch: { status: DeadCodeStatus }) => Promise<DeadCodeFinding>;
   /** Injected bulk resolve — host owns the toast/partial-failure messaging. Returns the ids that actually resolved. */
   onBulkResolve?: (ids: string[]) => Promise<string[]>;
+  /** Href for a file detail page; makes the path a link and the row clickable. */
+  fileHref?: ((path: string) => string) | undefined;
+  /** Client-side navigation for a row click. */
+  onNavigate?: ((href: string) => void) | undefined;
+  /** Href for the dependency graph focused on a file; omit to hide the action. */
+  graphHref?: ((path: string) => string) | undefined;
+  /** Open an AI cleanup prompt for the given findings (one row, or the selection). */
+  onGeneratePrompt?: ((ids: string[]) => void) | undefined;
   isLoading?: boolean;
 }
 
@@ -55,7 +62,16 @@ export interface FindingsTableProps {
  * and per-row status actions. Pure presentation — the host injects the data
  * slice and the patch/bulk mutations, so this propagates via the package.
  */
-export function FindingsTable({ findings, repoId, onPatch, onBulkResolve, isLoading }: FindingsTableProps) {
+export function FindingsTable({
+  findings,
+  onPatch,
+  onBulkResolve,
+  fileHref,
+  onNavigate,
+  graphHref,
+  onGeneratePrompt,
+  isLoading,
+}: FindingsTableProps) {
   const [activeTab, setActiveTab] = useState<string | null>(null);
   const [minConfidence, setMinConfidence] = useState(0.4);
   const [safeOnly, setSafeOnly] = useState(false);
@@ -165,6 +181,13 @@ export function FindingsTable({ findings, repoId, onPatch, onBulkResolve, isLoad
             {bulkPending ? "Resolving…" : `Resolve ${selectedCount} selected`}
           </Button>
         )}
+
+        {onGeneratePrompt && selectedCount > 0 && (
+          <AiPromptButton
+            label={`AI prompt for ${selectedCount} selected`}
+            onClick={() => onGeneratePrompt(visibleSelected)}
+          />
+        )}
       </div>
       <ConfirmDialog
         open={bulkConfirmOpen}
@@ -244,9 +267,8 @@ export function FindingsTable({ findings, repoId, onPatch, onBulkResolve, isLoad
                       <th scope="col" className="px-4 py-2.5 w-20 hidden sm:table-cell">
                         <span className="sr-only">Safety</span>
                       </th>
-                      <th scope="col" className="px-4 py-2.5 w-24 hidden sm:table-cell">
-                        <span className="sr-only">Status</span>
-                      </th>
+                      {/* No status column: the fetch only ever asks for open
+                          findings, so the badge could only ever say "open". */}
                       <th scope="col" className="px-4 py-2.5 w-36">
                         <span className="sr-only">Actions</span>
                       </th>
@@ -257,10 +279,15 @@ export function FindingsTable({ findings, repoId, onPatch, onBulkResolve, isLoad
                       <FindingRow
                         key={f.id}
                         finding={f}
-                        repoId={repoId}
                         selected={selected.has(f.id)}
                         onToggle={toggleSelect}
                         onPatch={onPatch}
+                        fileHref={fileHref}
+                        onNavigate={onNavigate}
+                        graphHref={graphHref}
+                        {...(onGeneratePrompt
+                          ? { onGeneratePrompt: (id: string) => onGeneratePrompt([id]) }
+                          : {})}
                       />
                     ))}
                   </tbody>

@@ -46,7 +46,6 @@ function renderTable(findings: DeadCodeFinding[], props: Record<string, unknown>
   return render(
     <FindingsTable
       findings={findings}
-      repoId="repo-1"
       onPatch={noopPatch}
       onBulkResolve={noopBulk}
       {...props}
@@ -156,6 +155,55 @@ describe("FindingsTable selection", () => {
     fireEvent.mouseDown(screen.getByRole("tab", { name: /Unused Exports/ }));
 
     expect(screen.queryByRole("button", { name: /Resolve \d+ selected/ })).not.toBeInTheDocument();
+  });
+});
+
+describe("FindingsTable row affordances", () => {
+  it("links the file path and opens the row through the host router", () => {
+    const onNavigate = vi.fn();
+    renderTable([finding({ id: "a" })], {
+      fileHref: (p: string) => `/repos/repo-1/files/${p}`,
+      onNavigate,
+    });
+
+    const link = screen.getByRole("link", { name: "src/a.ts" });
+    expect(link).toHaveAttribute("href", "/repos/repo-1/files/src/a.ts");
+
+    fireEvent.click(screen.getByRole("row", { name: /src\/a\.ts/ }));
+    expect(onNavigate).toHaveBeenCalledWith("/repos/repo-1/files/src/a.ts");
+  });
+
+  it("does not navigate when the checkbox is clicked", () => {
+    const onNavigate = vi.fn();
+    renderTable([finding({ id: "a" })], { fileHref: (p: string) => `/f/${p}`, onNavigate });
+
+    fireEvent.click(screen.getByLabelText("Select finding src/a.ts"));
+
+    expect(onNavigate).not.toHaveBeenCalled();
+  });
+
+  it("shows the detector's reason, which previously only the AI prompt saw", () => {
+    renderTable([finding({ id: "a", reason: "No importers in the dependency graph" })]);
+
+    expect(screen.getByText("No importers in the dependency graph")).toBeInTheDocument();
+  });
+
+  it("offers an AI prompt per row and for the current selection", () => {
+    const onGeneratePrompt = vi.fn();
+    renderTable([finding({ id: "a" }), finding({ id: "b" })], { onGeneratePrompt });
+
+    fireEvent.click(screen.getByRole("button", { name: "AI cleanup prompt for src/a.ts" }));
+    expect(onGeneratePrompt).toHaveBeenCalledWith(["a"]);
+
+    fireEvent.click(screen.getByLabelText("Select all findings"));
+    fireEvent.click(screen.getByRole("button", { name: "AI prompt for 2 selected" }));
+    expect(onGeneratePrompt).toHaveBeenLastCalledWith(["a", "b"]);
+  });
+
+  it("hides the graph action when the host exposes no graph route", () => {
+    renderTable([finding({ id: "a" })]);
+
+    expect(screen.queryByRole("link", { name: "Graph" })).not.toBeInTheDocument();
   });
 });
 

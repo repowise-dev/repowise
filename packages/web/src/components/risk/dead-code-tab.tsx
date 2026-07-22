@@ -56,6 +56,8 @@ export function DeadCodeTab({ repoId }: { repoId: string }) {
     waitForAnalysis: waitForJob,
     patchFinding: (findingId, patch) => patchDeadCodeFinding(findingId, patch),
     fileHref: (path) => fileEntityPath(prefix, path),
+    graphHref: (path) =>
+      `${prefix}/architecture?view=graph&node=${encodeURIComponent(path)}`,
     navigate: (href) => router.push(href),
   };
 

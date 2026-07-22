@@ -43,6 +43,12 @@ export interface DeadCodeAdapter {
 
   /** Build an href to a file detail page. */
   fileHref(path: string): string;
+  /**
+   * Build an href to the dependency graph focused on a file. Optional: hosts
+   * without a graph surface omit it and the row action disappears, which keeps
+   * the app's route map out of this package.
+   */
+  graphHref?(path: string): string;
   /** Navigate to an href (host wires this to its router). */
   navigate(href: string): void;
 }

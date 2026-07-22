@@ -1,12 +1,14 @@
 "use client";
 
 import { useState } from "react";
-import { GitBranch, Code2 } from "lucide-react";
+import { GitBranch } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "../ui/button";
 import { Badge } from "../ui/badge";
 import { ConfirmDialog } from "../ui/confirm-dialog";
 import { RowActions } from "../shared/row-actions";
+import { clickableRowProps, CLICKABLE_ROW_CLS } from "../shared/responsive-table";
+import { AiPromptButton } from "../health/ai-prompt-button";
 import { formatConfidence } from "../lib/format";
 import { toFriendlyMessage } from "../lib/errors";
 import { cn } from "../lib/cn";
@@ -37,31 +39,36 @@ const STATUS_LABELS: Record<
   },
 };
 
-const STATUS_COLORS: Record<string, string> = {
-  open: "bg-[var(--color-error)]/10 text-[var(--color-error)] border-[var(--color-error)]/20",
-  acknowledged:
-    "bg-[var(--color-warning)]/10 text-[var(--color-warning)] border-[var(--color-warning)]/20",
-  resolved:
-    "bg-[var(--color-success)]/10 text-[var(--color-success)] border-[var(--color-success)]/20",
-  false_positive:
-    "bg-[var(--color-bg-elevated)] text-[var(--color-text-tertiary)] border-[var(--color-border-default)]",
-};
-
 export interface FindingRowProps {
   finding: DeadCodeFinding;
-  /** Repo base path used to build the Graph / Symbol action links. */
-  repoId: string;
   selected: boolean;
   onToggle: (id: string) => void;
   /** Injected mutation — returns the updated finding (host owns the API + toasts). */
   onPatch: (id: string, patch: { status: DeadCodeStatus }) => Promise<DeadCodeFinding>;
+  /** Href for the file detail page; the path becomes a link and the row opens it. */
+  fileHref?: ((path: string) => string) | undefined;
+  /** Client-side navigation for a row click (falls back to the anchor alone). */
+  onNavigate?: ((href: string) => void) | undefined;
+  /** Href for the dependency graph focused on this file; omit to hide the action. */
+  graphHref?: ((path: string) => string) | undefined;
+  /** When set, the row offers an AI cleanup prompt scoped to this finding. */
+  onGeneratePrompt?: ((id: string) => void) | undefined;
 }
 
 /**
  * Pure dead-code findings row: presentation + row-level status actions. The host
  * injects the patch mutation so this component carries no data/transport deps.
  */
-export function FindingRow({ finding, repoId, selected, onToggle, onPatch }: FindingRowProps) {
+export function FindingRow({
+  finding,
+  selected,
+  onToggle,
+  onPatch,
+  fileHref,
+  onNavigate,
+  graphHref,
+  onGeneratePrompt,
+}: FindingRowProps) {
   const [pending, setPending] = useState(false);
   const [confirmStatus, setConfirmStatus] = useState<string | null>(null);
 
@@ -82,14 +89,21 @@ export function FindingRow({ finding, repoId, selected, onToggle, onPatch }: Fin
   const requestPatch = (status: string) => setConfirmStatus(status);
   const confirmConfig = confirmStatus ? STATUS_LABELS[confirmStatus] : null;
 
+  const href = fileHref?.(finding.file_path);
+  // Row click navigates only when the host can route; the anchor still carries
+  // a real href so middle-click and "open in new tab" keep working.
+  const openFile = href && onNavigate ? () => onNavigate(href) : undefined;
+
   return (
     <tr
       className={cn(
         "border-b border-[var(--color-table-divider)] transition-colors last:border-0",
         selected ? "bg-[var(--color-accent-muted)]" : "hover:bg-[var(--color-bg-elevated)]",
+        openFile && CLICKABLE_ROW_CLS,
       )}
+      {...(openFile ? clickableRowProps(openFile) : {})}
     >
-      <td className="px-4 py-2.5">
+      <td className="px-4 py-2.5" onClick={(e) => e.stopPropagation()}>
         <input
           type="checkbox"
           checked={selected}
@@ -99,12 +113,33 @@ export function FindingRow({ finding, repoId, selected, onToggle, onPatch }: Fin
         />
       </td>
       <td className="px-4 py-2.5 font-mono text-xs text-[var(--color-text-primary)] min-w-[200px] max-w-[480px]">
-        <span className="truncate block" title={finding.file_path}>
-          {finding.file_path}
-        </span>
+        {href ? (
+          <a
+            href={href}
+            onClick={(e) => e.stopPropagation()}
+            className="truncate block hover:text-[var(--color-accent-primary)] hover:underline"
+            title={finding.file_path}
+          >
+            {finding.file_path}
+          </a>
+        ) : (
+          <span className="truncate block" title={finding.file_path}>
+            {finding.file_path}
+          </span>
+        )}
         {finding.symbol_name && (
           <span className="block truncate text-[var(--color-text-tertiary)]" title={finding.symbol_name}>
             {finding.symbol_name}
+          </span>
+        )}
+        {/* The detector's justification. It was already being fed to the AI
+            prompt builder, so the model saw the reasoning and the human did not. */}
+        {finding.reason && (
+          <span
+            className="mt-0.5 block truncate font-sans text-[11px] text-[var(--color-text-tertiary)]"
+            title={finding.reason}
+          >
+            {finding.reason}
           </span>
         )}
       </td>
@@ -144,30 +179,26 @@ export function FindingRow({ finding, repoId, selected, onToggle, onPatch }: Fin
           </Badge>
         )}
       </td>
-      <td className="px-4 py-2.5 hidden sm:table-cell">
-        <span
-          className={cn(
-            "inline-flex items-center rounded border px-2 py-0.5 text-xs font-medium",
-            STATUS_COLORS[finding.status] ?? STATUS_COLORS.open,
-          )}
-        >
-          {finding.status.replace(/_/g, " ")}
-        </span>
-      </td>
-      <td className="px-4 py-2.5">
+      <td className="px-4 py-2.5" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center gap-1 flex-wrap justify-end">
-          <RowActions
-            actions={[
-              {
-                icon: GitBranch,
-                label: "Graph",
-                href: `/repos/${repoId}/architecture?view=graph&node=${encodeURIComponent(finding.file_path)}`,
-              },
-              ...(finding.symbol_name
-                ? [{ icon: Code2, label: "Symbol", href: `/repos/${repoId}/architecture?view=symbols` }]
-                : []),
-            ]}
-          />
+          {onGeneratePrompt && (
+            <AiPromptButton
+              variant="icon"
+              label={`AI cleanup prompt for ${finding.file_path}`}
+              onClick={() => onGeneratePrompt(finding.id)}
+            />
+          )}
+          {graphHref && (
+            <RowActions
+              actions={[
+                {
+                  icon: GitBranch,
+                  label: "Graph",
+                  href: graphHref(finding.file_path),
+                },
+              ]}
+            />
+          )}
           {finding.status === "open" && (
             <div className="flex items-center gap-1 flex-wrap justify-end">
               <Button
