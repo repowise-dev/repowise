@@ -193,25 +193,46 @@ repowise update --full --provider anthropic   # upgrade a fast index to full
 
 Write wiki pages with a model, on demand. This is the upgrade path for an
 `--index-only` repo: it turns the template (structure-rendered) pages into
-model-written prose, one page, one directory, or the whole wiki at a time,
-each behind a cost estimate. It also fills in the template tail a budgeted full
-`init` leaves behind, and rewrites already-written pages.
+model-written prose, one page, one directory, a ranked slice, or the whole wiki
+at a time, each behind a cost estimate. It also fills in the template tail a
+budgeted full `init` leaves behind, and rewrites already-written pages.
 
 Like `update --full` and `restyle`, it reuses the persisted index: the graph and
 git metadata are rehydrated from SQL, only the per-file parse and the LLM
 generation for the pages you selected run. A provider is required; a missing one
 is an actionable error naming the key-setup path.
 
-**Selection** (the default is `--unwritten`; combine freely, the result is their
-union):
+**Interactive chooser.** Run `repowise generate` with no selection flag on a
+terminal and it opens a chooser instead of writing everything: it prints the
+wiki's state (written / unwritten / stale), then the same coverage menu `init`
+uses (page counts and cost per tier, 20% recommended), asks about cascade only
+when the choice would change which pages get written, and ends at the normal cost
+confirm. A large repo is never one keystroke away from writing every page. Piped,
+`--yes`, or flagged runs stay non-interactive (the old `--unwritten` default).
+
+**Selection.** Two philosophies, and they do not mix. *Explicit* names exactly
+which pages (`--unwritten` / `--all` / `--stale` / `--path` / `--page`, combined
+as a union). *Ranked* writes the most important pages by the same importance
+ranking `init` uses (`--coverage` / `--top`).
 
 | Flag | Selects |
 |------|---------|
-| `--unwritten` | Every template (unwritten) page. The default. This is "finish writing the wiki". |
+| `--unwritten` | Every template (unwritten) page. The default for a non-interactive run. This is "finish writing the wiki". |
 | `--all` | Every page, template or already written. A full rewrite. |
 | `--stale` | Every page marked stale (its code changed since it was written). |
 | `--path <glob>` | Every page under a path prefix or glob, e.g. `--path src/api` (repeatable). |
 | `--page <id>` | One explicit page id, e.g. `--page file_page:src/app.py` (repeatable). |
+| `--coverage <pct>` | The most important unwritten pages up to this coverage, ranked the way `init` ranks coverage. `--coverage 20` writes the top 20% and leaves the rest as templates. Accepts a percent from 1 to 100 (`20`), or a fraction below 1 (`0.2`); use `100` for everything. |
+| `--top <n>` | About the `n` most important unwritten pages (a target, not an exact count: per-type floors and the always-included repo-wide/onboarding pages nudge it, and the real number shows before the gate). |
+
+`--coverage` / `--top` rank the file / module / cycle / symbol content pages; the
+repo-wide and structural pages (overview, architecture, layer, onboarding) are
+always included when unwritten, exactly as `init` emits them at every coverage.
+They cannot be combined with an explicit selector or with each other, and they
+default to `--cascade none` (the ranked set is already a coherent slice). On a
+small repo (20 files or fewer) the coverage budget floors to the whole repo, so
+any tier writes essentially every unwritten page, same as `init`; the plan report
+shows the real count before the gate.
 
 **Cascade.** Regenerating a file page makes the pages that summarize it drift:
 its module, cycle (SCC) and layer pages, and the repo overview, architecture and
@@ -229,19 +250,23 @@ The cost estimate includes the cascade fallout, so it does not under-quote.
 
 | Flag | Description |
 |------|-------------|
-| `--unwritten` / `--all` / `--stale` | Selection (see above). Default: `--unwritten`. |
+| `--unwritten` / `--all` / `--stale` | Explicit selection (see above). Default for a non-interactive run: `--unwritten`. |
 | `--path <glob>` | Restrict to a path prefix or glob (repeatable). |
 | `--page <id>` | An explicit page id (repeatable). |
-| `--cascade none\|dependents\|full` | Dependent-page policy (default: `dependents`). |
+| `--coverage <pct>` | Ranked: the most important unwritten pages up to this coverage. |
+| `--top <n>` | Ranked: about the `n` most important unwritten pages. |
+| `--cascade none\|dependents\|full` | Dependent-page policy. Default: `dependents` for an explicit selection, `none` for `--coverage`/`--top`. |
 | `--provider` / `--model` / `--reasoning` | LLM overrides for this run. |
 | `--concurrency` | Max concurrent LLM calls (default: 12). |
 | `--dry-run` | Print the plan and the cost estimate; generate nothing. |
-| `--yes` / `-y` | Skip the cost confirmation. |
+| `--yes` / `-y` | Skip the cost confirmation (and the interactive chooser). |
 | `--verbose` / `-v` | Show pipeline debug logs. |
 
 ```bash
-repowise generate --dry-run                 # what would it write, and cost?
-repowise generate                           # write every unwritten page
+repowise generate                           # interactive chooser (coverage menu)
+repowise generate --coverage 20             # write the most important 20% of templates
+repowise generate --coverage 20 --dry-run   # what would that write, and cost?
+repowise generate --unwritten               # write every unwritten page
 repowise generate --all                     # rewrite the whole wiki
 repowise generate --path src/api            # just the pages under src/api
 repowise generate --page file_page:src/app.py --cascade none   # one page, nothing else

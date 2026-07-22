@@ -10,7 +10,7 @@ fallout, so the estimate does not under-quote).
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from repowise.core.cost_estimator.types import PageTypePlan
@@ -28,10 +28,16 @@ from repowise.core.generation.page_selection import (
     PageSelectionIntent,
     resolve_page_selection,
 )
-from repowise.core.generation.selection import SelectionInputs, select_pages
+from repowise.core.generation.selection import Selection, SelectionInputs, select_pages
 
 # Page types that describe the whole repository (as opposed to one file/module).
 _REPO_WIDE_TYPES = frozenset({"repo_overview", "architecture_diagram", "onboarding"})
+
+# Structural pages the coverage budget does not rank: layer pages come from KG
+# membership and onboarding is curated, so init emits every one of them at every
+# coverage. A ranked run includes the unwritten ones rather than leaving holes in
+# the navigation. (repo_overview / architecture come from the Selection itself.)
+_STRUCTURAL_PAGE_TYPES = frozenset({"layer_page", "onboarding"})
 
 
 @dataclass(frozen=True)
@@ -89,6 +95,43 @@ def _layer_membership(kg_ctx: Any) -> dict[str, str]:
     return out
 
 
+def _selection_inputs(
+    *,
+    parsed_files: list[Any],
+    graph_builder: Any,
+    config: Any,
+    kg_ctx: Any,
+    select_all: bool,
+) -> SelectionInputs:
+    """Bundle the inputs :func:`select_pages` needs from the rehydrated graph.
+
+    Shared by the cascade-dependency selection (``select_all=True``) and the
+    ranked coverage selection (``select_all=False`` + a coverage-scoped config),
+    so both derive their page ids from the same graph metrics and KG modules.
+    """
+    try:
+        community_info_map = graph_builder.community_info() or {}
+    except Exception:
+        community_info_map = {}
+
+    kg_modules = None
+    if kg_ctx and getattr(kg_ctx, "available", False):
+        kg_modules = kg_ctx.get_modules() or None
+
+    return SelectionInputs(
+        parsed_files=parsed_files,
+        pagerank=graph_builder.pagerank(),
+        betweenness=graph_builder.betweenness_centrality(),
+        community=graph_builder.community_detection(),
+        community_info=community_info_map,
+        sccs=list(graph_builder.strongly_connected_components()),
+        git_meta_map=None,
+        config=config,
+        kg_modules=kg_modules,
+        select_all=select_all,
+    )
+
+
 def build_dependencies(
     *,
     parsed_files: list[Any],
@@ -105,26 +148,12 @@ def build_dependencies(
     generation emits. Repo-wide ids are the overview + architecture pages
     (keyed by repo name) plus every persisted onboarding page.
     """
-    try:
-        community_info_map = graph_builder.community_info() or {}
-    except Exception:
-        community_info_map = {}
-
-    kg_modules = None
-    if kg_ctx and getattr(kg_ctx, "available", False):
-        kg_modules = kg_ctx.get_modules() or None
-
     selection = select_pages(
-        SelectionInputs(
+        _selection_inputs(
             parsed_files=parsed_files,
-            pagerank=graph_builder.pagerank(),
-            betweenness=graph_builder.betweenness_centrality(),
-            community=graph_builder.community_detection(),
-            community_info=community_info_map,
-            sccs=list(graph_builder.strongly_connected_components()),
-            git_meta_map=None,
+            graph_builder=graph_builder,
             config=config,
-            kg_modules=kg_modules,
+            kg_ctx=kg_ctx,
             select_all=True,
         )
     )
@@ -141,6 +170,89 @@ def build_dependencies(
         layer_page_of=_layer_membership(kg_ctx),
         repo_wide_ids=repo_wide_ids,
     )
+
+
+def selection_page_ids(sel: Selection, repo_name: str) -> set[str]:
+    """Turn a budgeted :class:`Selection` into the page ids generation emits.
+
+    Mirrors the id assignment in the page generator's level builders exactly
+    (``levels.py``), so a ranked coverage pick names the same pages a full run
+    at that coverage would write. Repo-wide overview/architecture pages are
+    keyed by the repo name; onboarding is not budgeted here (the caller adds it).
+    """
+    ids: set[str] = set()
+    ids.update(compute_page_id("file_page", p) for p in sel.file_page_paths)
+    ids.update(compute_page_id("module_page", mg.key) for mg in sel.module_groups)
+    ids.update(compute_page_id("scc_page", scc_id) for scc_id, _ in sel.scc_groups)
+    ids.update(compute_page_id("api_contract", p) for p in sel.api_contract_paths)
+    ids.update(compute_page_id("infra_page", p) for p in sel.infra_paths)
+    ids.update(
+        compute_page_id("symbol_spotlight", f"{path}::{name}")
+        for path, name in sel.symbol_spotlights
+    )
+    if sel.emit_repo_overview:
+        ids.add(compute_page_id("repo_overview", repo_name))
+    if sel.emit_arch_diagram:
+        ids.add(compute_page_id("architecture_diagram", repo_name))
+    return ids
+
+
+def build_ranked_seed(
+    *,
+    parsed_files: list[Any],
+    graph_builder: Any,
+    config: Any,
+    kg_ctx: Any,
+    records: list[PageRecord],
+    repo_name: str,
+    coverage_pct: float,
+) -> set[str]:
+    """The unwritten pages inside the top ``coverage_pct`` by importance.
+
+    Runs the *budgeted* selection at ``coverage_pct`` (the same importance model
+    ``repowise init`` uses at that coverage) and maps it to page ids. The
+    file / module / cycle / symbol content pages are what coverage rations;
+    the repo-wide and structural pages (overview, architecture, layers,
+    onboarding) are always included when unwritten, as init emits them at every
+    coverage. Only ids that exist as template pages survive: a written page is
+    not re-billed, and a selected id with no page yet (a file added since
+    indexing) is dropped, since ``generate`` only rewrites existing pages.
+
+    One deliberate simplification: the selection here is demand-free
+    (``demand=None``), whereas a full init pass tilts its file-page picks by
+    mined session demand. On a fresh install the two are identical; where session
+    history exists they can pick the same *count* of files but a slightly
+    different set. Not worth reading every transcript on each generate run.
+    """
+    coverage_cfg = replace(
+        config, coverage_pct=coverage_pct, max_pages_pct=coverage_pct, deterministic=False
+    )
+    selection = select_pages(
+        _selection_inputs(
+            parsed_files=parsed_files,
+            graph_builder=graph_builder,
+            config=coverage_cfg,
+            kg_ctx=kg_ctx,
+            select_all=False,
+        )
+    )
+    return _ranked_ids_to_seed(selection_page_ids(selection, repo_name), records)
+
+
+def _ranked_ids_to_seed(ranked_ids: set[str], records: list[PageRecord]) -> set[str]:
+    """Restrict ranked ids to the unwritten pages, adding structural pages.
+
+    Layer + onboarding pages are structural: the budgeted selection does not
+    rank them (layers come from KG membership, onboarding is curated), and init
+    writes every one of them regardless of coverage. Add the unwritten ones so a
+    coverage upgrade produces the same navigable wiki init would, then keep only
+    ids that exist as template pages today.
+    """
+    structural_ids = {
+        r.page_id for r in records if r.page_type in _STRUCTURAL_PAGE_TYPES and r.is_template
+    }
+    template_ids = {r.page_id for r in records if r.is_template}
+    return (ranked_ids | structural_ids) & template_ids
 
 
 def build_cost_plans(generate_ids: set[str]) -> list[PageTypePlan]:
@@ -165,14 +277,31 @@ def resolve_scope(
     intent: PageSelectionIntent,
     cascade_mode: CascadeMode,
     deps: PageDependencies,
+    ranked_seed: set[str] | None = None,
 ) -> ScopePlan:
-    """Resolve intent -> seeds -> cascade -> the full scope plan."""
-    seeds = resolve_page_selection(records, intent)
-    cascade: CascadeResult = expand_cascade(set(seeds.page_ids), cascade_mode, deps)
+    """Resolve seeds -> cascade -> the full scope plan.
+
+    ``ranked_seed`` short-circuits the intent selectors: a ``--coverage`` /
+    ``--top`` run has already picked the exact page-id set by importance (see
+    :func:`build_ranked_seed`), so it is used verbatim as the seed. Otherwise
+    the intent (all / unwritten / stale / paths / ids) is resolved against the
+    existing records.
+    """
+    if ranked_seed is not None:
+        seed_ids = set(ranked_seed)
+        unknown: tuple[str, ...] = ()
+        seed_count = len(seed_ids)
+    else:
+        seeds = resolve_page_selection(records, intent)
+        seed_ids = set(seeds.page_ids)
+        unknown = seeds.unknown_page_ids
+        seed_count = len(seeds)
+
+    cascade: CascadeResult = expand_cascade(seed_ids, cascade_mode, deps)
     return ScopePlan(
         generate_ids=cascade.generate_ids,
         stale_ids=cascade.stale_ids,
         cost_plans=build_cost_plans(cascade.generate_ids),
-        unknown_page_ids=seeds.unknown_page_ids,
-        seed_count=len(seeds),
+        unknown_page_ids=unknown,
+        seed_count=seed_count,
     )

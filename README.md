@@ -355,10 +355,14 @@ or the whole thing at a time, each behind a cost estimate:
 
 ```bash
 export ANTHROPIC_API_KEY="sk-ant-..."   # or OPENAI_API_KEY / GEMINI_API_KEY
-repowise generate --dry-run             # preview the plan and the cost
-repowise generate                       # write every unwritten page
+repowise generate                       # interactive chooser: pick a coverage, see the cost
+repowise generate --coverage 20         # or write the most important 20%, leave the rest as templates
 repowise generate --path src/api        # or just one area first
 ```
+
+Bare `repowise generate` opens a chooser (wiki state, a coverage menu with cost
+per tier, then the confirm), so a big repo is never one keystroke from writing
+every page.
 
 Or write the whole wiki as part of the first index with `repowise init --provider
 gemini|anthropic|openai`.

@@ -15,7 +15,6 @@ from rich.table import Table
 from repowise.cli.cost_estimator import CoverageOption
 from repowise.cli.ui import BRAND, BRAND_STYLE
 
-
 # Columns shown in the coverage table. ``onboarding`` is constant
 # across percentages (curated slots) but we include it so the user
 # sees the full picture.
@@ -31,7 +30,9 @@ _DISPLAY_COLUMNS: tuple[tuple[str, str], ...] = (
 
 
 def _format_pct(option: CoverageOption) -> str:
-    label = f"{int(option.pct * 100)}%"
+    # ``repowise generate`` offers a 100% row meaning "every unwritten page";
+    # "All" reads better than "100%" for it. init never passes >= 1.0.
+    label = "All" if option.pct >= 1.0 else f"{int(option.pct * 100)}%"
     if option.is_recommended:
         label += " (rec)"
     return label
