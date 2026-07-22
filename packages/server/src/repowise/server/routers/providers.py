@@ -98,3 +98,42 @@ async def remove_provider_key(
         set_api_key(provider_id, None, repo_path=repo_path)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+
+
+@router.post("/{provider_id}/validate")
+async def validate_provider(
+    provider_id: str,
+    request: Request,
+    repo_id: str | None = None,
+):
+    """Live smoke test for a single provider's configured key.
+
+    Instantiates *this* provider (not the active one) with the key resolved for
+    the repo and does a tiny ``generate`` round-trip — the same probe the CLI
+    and pre-index preflight use, scoped to one provider so the settings UI can
+    confirm a key it just added actually works. A keyless provider (Ollama,
+    mock) still exercises reachability. Returns ``{ok, provider, model, error}``
+    rather than raising, so the UI renders a clean error state.
+    """
+    repo_path = await _repo_path_for(request, repo_id)
+
+    provider_name: str | None = None
+    model_name: str | None = None
+    llm_client = None
+    try:
+        from repowise.server.provider_config import get_chat_provider_instance
+
+        llm_client = get_chat_provider_instance(
+            repo_path=repo_path, repo_id=repo_id, provider_override=provider_id
+        )
+        provider_name = getattr(llm_client, "provider_name", None)
+        model_name = getattr(llm_client, "model_name", None)
+    except Exception as exc:
+        return {"ok": False, "provider": provider_id, "model": None, "error": str(exc)}
+
+    try:
+        await llm_client.generate("You are a test.", "Reply with OK.", max_tokens=50)
+    except Exception as exc:
+        return {"ok": False, "provider": provider_name, "model": model_name, "error": str(exc)}
+
+    return {"ok": True, "provider": provider_name, "model": model_name, "error": None}

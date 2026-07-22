@@ -10,6 +10,8 @@ import {
   Loader2,
   Layers,
   FileInput,
+  Sparkles,
+  Cog,
 } from "lucide-react";
 import type { DocPage } from "@repowise-dev/types/docs";
 import { cn } from "../lib/cn";
@@ -19,6 +21,8 @@ import {
   isDeterministicPage,
   DETERMINISTIC_BADGE_LABEL,
   DETERMINISTIC_BADGE_TITLE,
+  AI_WRITTEN_BADGE_LABEL,
+  AI_WRITTEN_BADGE_TITLE,
 } from "../lib/page-types";
 import { computeDocNav } from "./doc-nav";
 import { filterMarkdownByPersona, type ReaderPersona } from "./reader-persona";
@@ -321,12 +325,21 @@ function DocsReaderBody({
               <span className="rounded-full bg-[var(--color-bg-elevated)] px-2 py-0.5 uppercase tracking-wider">
                 {getPageTypeLabel(page.page_type)}
               </span>
-              {isDeterministicPage(page) && (
+              {isDeterministicPage(page) ? (
                 <span
-                  className="rounded-full border border-[var(--color-border-default)] px-2 py-0.5 uppercase tracking-wider text-[var(--color-text-tertiary)]"
+                  className="inline-flex items-center gap-1 rounded-full border border-[var(--color-info)]/35 bg-[var(--color-info)]/10 px-2 py-0.5 uppercase tracking-wider text-[var(--color-info)]"
                   title={DETERMINISTIC_BADGE_TITLE}
                 >
+                  <Cog className="h-2.5 w-2.5" />
                   {DETERMINISTIC_BADGE_LABEL}
+                </span>
+              ) : (
+                <span
+                  className="inline-flex items-center gap-1 rounded-full border border-[var(--color-accent-primary)]/40 bg-[var(--color-accent-muted)] px-2 py-0.5 uppercase tracking-wider text-[var(--color-accent-primary)]"
+                  title={AI_WRITTEN_BADGE_TITLE}
+                >
+                  <Sparkles className="h-2.5 w-2.5" />
+                  {AI_WRITTEN_BADGE_LABEL}
                 </span>
               )}
               {moduleSeg && (

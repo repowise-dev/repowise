@@ -23,6 +23,13 @@ export interface PageResponse {
   human_notes: string | null;
   created_at: string;
   updated_at: string;
+  /** True when the page was rendered from structure (a template) rather than
+   *  written by a model — the flat marker the server projects from
+   *  `provider_name === "template"`. Drives the "Write with AI" vs
+   *  "Regenerate" affordance. */
+  is_deterministic: boolean;
+  /** 2 = in-budget template, 3 = coverage tail; null on model-written pages. */
+  doc_tier: number | null;
 }
 
 export interface PageVersionResponse {
@@ -69,6 +76,15 @@ export interface JobResponse {
   /** Short-lived token authorizing this job's SSE stream (an EventSource can't
    * send the bearer header). Present only while the job is live; pass it as
    * `?token=` on the stream URL. */
+  stream_token?: string | null;
+}
+
+/** What a launch endpoint (`/generate`, `/pages/lookup/regenerate`, `/index`)
+ *  returns: the new job's id plus a short-lived token for its SSE stream. */
+export interface JobLaunchResponse {
+  job_id: string;
+  status: string;
+  /** Present while the job is live; pass as `?token=` on the stream URL. */
   stream_token?: string | null;
 }
 

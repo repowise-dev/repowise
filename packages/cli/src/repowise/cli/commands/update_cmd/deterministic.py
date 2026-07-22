@@ -74,6 +74,56 @@ async def _load_prior_page_ids(repo_path: Path) -> dict:
         await engine.dispose()
 
 
+def partition_regenerate_by_provenance(
+    repo_path: Path, regenerate_paths: list[str]
+) -> tuple[list[str], list[str]]:
+    """Split changed file paths into (template, model_written) by existing page.
+
+    A page a user upgraded to model prose must not silently revert to a template
+    on the next update. The re-render mode is therefore per-page, read from the
+    existing ``file_page:<path>`` provenance: ``provider_name == "template"`` (or
+    no page yet) stays a template; anything else was model-written and is kept so.
+    Order within each bucket follows ``regenerate_paths``. Never raises — on a
+    lookup failure every path is treated as model-written, so the free template
+    render can never overwrite (revert) a page whose provenance we could not read.
+    A provider then re-renders them; without one the caller keeps and marks them
+    stale. Erring toward "keep" is the safe direction for the Task 3 guarantee.
+    """
+    if not regenerate_paths:
+        return [], []
+    try:
+        model_paths = run_async(_load_model_written_paths(repo_path, regenerate_paths))
+    except Exception:
+        return [], list(regenerate_paths)
+    template = [p for p in regenerate_paths if p not in model_paths]
+    model = [p for p in regenerate_paths if p in model_paths]
+    return template, model
+
+
+async def _load_model_written_paths(repo_path: Path, paths: list[str]) -> set[str]:
+    from repowise.cli.helpers import get_db_url_for_repo
+    from repowise.core.persistence import create_engine, create_session_factory, get_session
+
+    engine = create_engine(get_db_url_for_repo(repo_path))
+    try:
+        from sqlalchemy import select as sa_select
+
+        from repowise.core.persistence.models import Page
+
+        wanted = {f"file_page:{p}": p for p in paths}
+        async with get_session(create_session_factory(engine)) as session:
+            rows = await session.execute(
+                sa_select(Page.id, Page.provider_name).where(Page.id.in_(list(wanted)))
+            )
+            return {
+                wanted[pid]
+                for pid, provider_name in rows
+                if provider_name and provider_name != "template"
+            }
+    finally:
+        await engine.dispose()
+
+
 def regenerate_deterministic_pages(
     *,
     repo_path: Path,
@@ -100,6 +150,90 @@ def regenerate_deterministic_pages(
     an index-only update is the half the post-commit hook depends on, and it
     has already been computed by the time this runs.
     """
+    return _render_pages(
+        repo_path=repo_path,
+        parsed_files=parsed_files,
+        source_map=source_map,
+        graph_builder=graph_builder,
+        repo_structure=repo_structure,
+        git_meta_map=git_meta_map,
+        regenerate_paths=regenerate_paths,
+        cfg=cfg,
+        concurrency=concurrency,
+        degraded=degraded,
+        dead_code_report=dead_code_report,
+        prior_page_ids=prior_page_ids,
+        provider=None,
+        degrade_label="Template page refresh",
+    )
+
+
+def regenerate_model_pages(
+    *,
+    repo_path: Path,
+    parsed_files: list,
+    source_map: dict,
+    graph_builder: Any,
+    repo_structure: Any,
+    git_meta_map: dict,
+    regenerate_paths: list[str],
+    cfg: dict,
+    concurrency: int,
+    degraded: list[str],
+    provider: Any,
+    dead_code_report: Any = None,
+    prior_page_ids: dict | None = None,
+) -> list:
+    """Re-render *regenerate_paths* with a real model, keeping them model-written.
+
+    The sibling of :func:`regenerate_deterministic_pages` for the pages a user
+    upgraded away from templates on an otherwise index-only repo. Scoped by
+    ``only_page_ids`` so the budget can't ration them down: exactly the requested
+    file pages render, from the same complete view. Never raises — a model
+    failure degrades the run, and the caller keeps the existing content and marks
+    those pages stale rather than reverting them.
+    """
+    return _render_pages(
+        repo_path=repo_path,
+        parsed_files=parsed_files,
+        source_map=source_map,
+        graph_builder=graph_builder,
+        repo_structure=repo_structure,
+        git_meta_map=git_meta_map,
+        regenerate_paths=regenerate_paths,
+        cfg=cfg,
+        concurrency=concurrency,
+        degraded=degraded,
+        dead_code_report=dead_code_report,
+        prior_page_ids=prior_page_ids,
+        provider=provider,
+        degrade_label="Model page refresh",
+    )
+
+
+def _render_pages(
+    *,
+    repo_path: Path,
+    parsed_files: list,
+    source_map: dict,
+    graph_builder: Any,
+    repo_structure: Any,
+    git_meta_map: dict,
+    regenerate_paths: list[str],
+    cfg: dict,
+    concurrency: int,
+    degraded: list[str],
+    dead_code_report: Any,
+    prior_page_ids: dict | None,
+    provider: Any,
+    degrade_label: str,
+) -> list:
+    """Shared render body for the template and model paths.
+
+    ``provider=None`` renders from templates (free, no LLM); a provider renders
+    the file pages with the model, scoped to exactly ``regenerate_paths`` via
+    ``only_page_ids`` so the coverage budget cannot drop any of them.
+    """
     from repowise.core.generation import ContextAssembler, GenerationConfig, PageGenerator
     from repowise.core.providers.llm.template import TemplateProvider
 
@@ -109,9 +243,10 @@ def regenerate_deterministic_pages(
     if not affected_parsed:
         return []
 
+    is_template = provider is None
     try:
         config = GenerationConfig(
-            deterministic=True,
+            deterministic=is_template,
             file_pages_only=True,
             max_concurrency=concurrency,
             language=cfg.get("language", "en"),
@@ -137,7 +272,7 @@ def regenerate_deterministic_pages(
                 degraded.append(f"Page embedding: {exc}")
 
         generator = PageGenerator(
-            TemplateProvider(),
+            provider if provider is not None else TemplateProvider(),
             ContextAssembler(config),
             config,
             vector_store=vector_store,
@@ -149,7 +284,16 @@ def regenerate_deterministic_pages(
             prior_pages=prior_page_ids or {},
             repo_path=repo_path,
         )
-        with console.status("  Re-rendering wiki pages from structure…"):
+        # A model render targets exactly the requested file pages so the coverage
+        # budget can't ration them; a template render takes every page it is fed
+        # (deterministic mode bypasses the budget already).
+        only_page_ids = None if is_template else {f"file_page:{p}" for p in regenerate_paths}
+        status_msg = (
+            "  Re-rendering wiki pages from structure…"
+            if is_template
+            else "  Re-writing upgraded pages with the model…"
+        )
+        with console.status(status_msg):
             return run_async(
                 generator.generate_all(
                     affected_parsed,
@@ -160,10 +304,11 @@ def regenerate_deterministic_pages(
                     git_meta_map=git_meta_map,
                     repo_path=repo_path,
                     dead_code_report=dead_code_report,
+                    only_page_ids=only_page_ids,
                 )
             )
     except Exception as exc:
-        degraded.append(f"Template page refresh: {exc}")
+        degraded.append(f"{degrade_label}: {exc}")
         return []
 
 

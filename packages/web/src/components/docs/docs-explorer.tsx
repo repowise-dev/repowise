@@ -27,6 +27,7 @@ import {
   ExportMenu,
   SidebarToggle,
 } from "./docs-page-actions";
+import { PageGenerateButton } from "./page-generate-button";
 import { search as searchPages } from "@/lib/api/search";
 import { downloadTextFile } from "@/lib/utils/download";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
@@ -38,7 +39,7 @@ interface DocsExplorerProps {
 }
 
 export function DocsExplorer({ repoId }: DocsExplorerProps) {
-  const { pages, isLoading } = usePages(repoId);
+  const { pages, isLoading, mutate } = usePages(repoId);
   const [selectedPage, setSelectedPage] = useState<PageResponse | null>(null);
   const [treePanelOpen, setTreePanelOpen] = useState(() => {
     if (typeof window === "undefined") return true;
@@ -90,6 +91,16 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
     const overview = pages.find((p) => p.page_type === "repo_overview");
     setSelectedPage(overview ?? pages[0]);
   }, [pages, pageParam, selectedPage]);
+
+  // After a page is (re)generated, pull the fresh page list and re-point the
+  // viewer at the updated object so its content and provenance flip in place.
+  const handleGenerated = useCallback(async () => {
+    const fresh = await mutate();
+    setSelectedPage((prev) => {
+      if (!prev || !fresh) return prev;
+      return fresh.find((p) => p.id === prev.id) ?? prev;
+    });
+  }, [mutate]);
 
   const handleSelectPage = useCallback((page: PageResponse) => {
     setSelectedPage(page);
@@ -210,7 +221,10 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
             pages={pages}
             selectedPageId={selectedPage?.id ?? null}
             onSelectPage={(p) => {
-              handleSelectPage(p);
+              // DocsTree yields its DocPage type; the elements are the real
+              // PageResponse objects we passed in (they carry the extra
+              // provenance fields), so this narrowing is safe.
+              handleSelectPage(p as unknown as PageResponse);
               if (typeof window !== "undefined" && !window.matchMedia("(min-width: 768px)").matches) {
                 setTreePanelOpen(false);
               }
@@ -259,6 +273,13 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
             persona={persona}
             setPersona={setPersona}
             personaHasEffect={personaHasEffect}
+          />
+        )}
+        {selectedPage && (
+          <PageGenerateButton
+            page={selectedPage}
+            repoId={repoId}
+            onGenerated={handleGenerated}
           />
         )}
         <button

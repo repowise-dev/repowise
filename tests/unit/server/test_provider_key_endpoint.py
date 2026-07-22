@@ -112,6 +112,65 @@ async def test_add_key_resolves_non_primary_workspace_repo(client: AsyncClient, 
         await ws_engine.dispose()
 
 
+class _FakeProvider:
+    provider_name = "anthropic"
+    model_name = "claude-x"
+
+    def __init__(self, raises: bool = False):
+        self._raises = raises
+
+    async def generate(self, *_a, **_k):
+        if self._raises:
+            raise RuntimeError("401 Unauthorized")
+        return "OK"
+
+
+@pytest.mark.asyncio
+async def test_validate_ok_when_probe_succeeds(client: AsyncClient, monkeypatch) -> None:
+    repo = await create_test_repo(client)
+    from repowise.server import provider_config as pc
+
+    monkeypatch.setattr(pc, "get_chat_provider_instance", lambda **_k: _FakeProvider())
+
+    resp = await client.post(f"/api/providers/anthropic/validate?repo_id={repo['id']}")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body == {"ok": True, "provider": "anthropic", "model": "claude-x", "error": None}
+
+
+@pytest.mark.asyncio
+async def test_validate_reports_probe_failure(client: AsyncClient, monkeypatch) -> None:
+    repo = await create_test_repo(client)
+    from repowise.server import provider_config as pc
+
+    monkeypatch.setattr(
+        pc, "get_chat_provider_instance", lambda **_k: _FakeProvider(raises=True)
+    )
+
+    resp = await client.post(f"/api/providers/anthropic/validate?repo_id={repo['id']}")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is False
+    assert "401" in body["error"]
+
+
+@pytest.mark.asyncio
+async def test_validate_reports_missing_key(client: AsyncClient, monkeypatch) -> None:
+    repo = await create_test_repo(client)
+    from repowise.server import provider_config as pc
+
+    def _boom(**_k):
+        raise ValueError("No active provider configured. Set an API key first.")
+
+    monkeypatch.setattr(pc, "get_chat_provider_instance", _boom)
+
+    resp = await client.post(f"/api/providers/anthropic/validate?repo_id={repo['id']}")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is False
+    assert "API key" in body["error"]
+
+
 @pytest.mark.asyncio
 async def test_get_providers_returns_no_key_material(client: AsyncClient) -> None:
     repo = await create_test_repo(client)
