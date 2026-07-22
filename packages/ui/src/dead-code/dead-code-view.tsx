@@ -115,20 +115,19 @@ export function DeadCodeView({ adapter }: { adapter: DeadCodeAdapter }) {
     : [];
 
   const handleAnalyze = async () => {
+    // Guard here rather than on each button: the empty-state action cannot
+    // disable itself, and two clicks would race a second job into a 409.
+    if (analyzing) return;
     setAnalyzing(true);
+    let jobId: string | undefined;
     try {
       const started = await adapter.analyze();
-      const jobId = started?.job_id;
-      if (jobId && adapter.waitForAnalysis) {
-        toast.success("Analysis started — this page refreshes when it finishes.");
-        await adapter.waitForAnalysis(jobId);
-        // The pass rewrites the findings, so local optimistic state is stale.
-        setOverrides({});
-        await Promise.all([mutateSummary(), mutateFindings()]);
-        toast.success("Dead-code findings refreshed.");
-      } else {
-        toast.success("Analysis started — results will appear shortly.");
-      }
+      jobId = started?.job_id;
+      toast.success(
+        jobId && adapter.waitForAnalysis
+          ? "Analysis started — this page refreshes when it finishes."
+          : "Analysis started — results will appear shortly.",
+      );
     } catch (err) {
       // 409 is the one failure with a specific remedy: wait for the other job.
       const status = (err as { status?: number } | null)?.status;
@@ -136,6 +135,27 @@ export function DeadCodeView({ adapter }: { adapter: DeadCodeAdapter }) {
         status === 409
           ? "Another job is already running for this repository. Try again once it finishes."
           : `Couldn't start analysis: ${toFriendlyMessage(err)}`,
+      );
+      setAnalyzing(false);
+      return;
+    }
+
+    // Separate from the launch above: the job is running now, so a failure
+    // past this point is a failure to *watch* it, not to start it, and saying
+    // "couldn't start analysis" about a live job would be wrong.
+    if (!jobId || !adapter.waitForAnalysis) {
+      setAnalyzing(false);
+      return;
+    }
+    try {
+      await adapter.waitForAnalysis(jobId);
+      // The pass rewrites the findings, so local optimistic state is stale.
+      setOverrides({});
+      await Promise.all([mutateSummary(), mutateFindings()]);
+      toast.success("Dead-code findings refreshed.");
+    } catch (err) {
+      toast.error(
+        `Analysis is running, but this page stopped tracking it: ${toFriendlyMessage(err)}`,
       );
     } finally {
       setAnalyzing(false);
@@ -203,7 +223,7 @@ export function DeadCodeView({ adapter }: { adapter: DeadCodeAdapter }) {
     <div className="space-y-6">
       <div className="flex items-center justify-end">
         <Button size="sm" variant="outline" onClick={handleAnalyze} disabled={analyzing}>
-          {analyzing ? "Starting…" : "Re-analyze"}
+          {analyzing ? "Analyzing…" : "Re-analyze"}
         </Button>
       </div>
 
@@ -262,16 +282,22 @@ export function DeadCodeView({ adapter }: { adapter: DeadCodeAdapter }) {
         </CollapsibleSection>
       )}
 
-      {/* A clean repository gets said out loud, with the way to re-check it. */}
-      {findings && findingsList.length === 0 && !findingsError ? (
+      {/* A failed fetch already showed its retry card above; showing a table or
+          an empty state underneath it would restate the failure as "clean". */}
+      {findingsError && !findings ? null : loadingFindings && !findings ? (
+        <Skeleton className="h-40 w-full rounded-lg" />
+      ) : /* A clean repository gets said out loud, with the way to re-check it.
+          Keyed off the fetched payload, not the locally filtered list: resolving
+          the last row must not swap the table out for an empty state, because
+          undoing it would then bring the row back into a section that
+          remounted collapsed. */
+      fetched.length === 0 ? (
         <EmptyState
           icon={<Trash2 className="h-6 w-6" />}
           title="No dead code found"
           description="Nothing in this repository is currently flagged as unreachable, unused or zombie. Re-run the analysis after a large refactor."
           action={{ label: analyzing ? "Analyzing…" : "Re-analyze", onClick: () => void handleAnalyze() }}
         />
-      ) : loadingFindings && !findings ? (
-        <Skeleton className="h-40 w-full rounded-lg" />
       ) : (
       /* Drill-down: the full interactive table, the single confidence control.
          Rendered only once the findings settle so `defaultOpen` sees the real

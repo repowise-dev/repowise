@@ -105,15 +105,31 @@ describe("FindingsTable kind bucketing", () => {
 });
 
 describe("FindingsTable selection", () => {
-  it("select-all covers only the visible rows", () => {
-    renderTable([
-      finding({ id: "a", confidence: 0.95 }),
-      finding({ id: "b", confidence: 0.95 }),
-    ]);
+  it("select-all covers the visible rows and not the filtered-out ones", async () => {
+    const onBulkResolve = vi.fn(async (ids: string[]) => ids);
+    renderTable(
+      [
+        finding({ id: "a", confidence: 1 }),
+        finding({ id: "hidden", confidence: 0.45 }),
+        finding({ id: "b", confidence: 1 }),
+      ],
+      { onBulkResolve },
+    );
+
+    // Push the low-confidence row out of view first, then select all.
+    const slider = screen.getByLabelText("Minimum confidence");
+    for (let i = 0; i < 12; i++) fireEvent.keyDown(slider, { key: "ArrowRight" });
+    await waitFor(() =>
+      expect(screen.queryByLabelText("Select finding src/hidden.ts")).not.toBeInTheDocument(),
+    );
 
     fireEvent.click(screen.getByLabelText("Select all findings"));
-
     expect(screen.getByRole("button", { name: "Resolve 2 selected" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Resolve 2 selected" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Resolve all" }));
+
+    await waitFor(() => expect(onBulkResolve).toHaveBeenCalledWith(["a", "b"]));
   });
 
   it("drops selected rows the confidence filter has hidden", async () => {
@@ -206,10 +222,34 @@ describe("FindingsTable row affordances", () => {
     expect(onGeneratePrompt).toHaveBeenLastCalledWith(["a", "b"]);
   });
 
-  it("hides the graph action when the host exposes no graph route", () => {
-    renderTable([finding({ id: "a" })]);
+  it("renders the graph action from the host's route, and hides it without one", () => {
+    const { unmount } = renderTable([finding({ id: "a" })], {
+      graphHref: (p: string) => `/repos/repo-1/architecture?node=${encodeURIComponent(p)}`,
+    });
+    expect(screen.getByRole("link", { name: "Graph" })).toHaveAttribute(
+      "href",
+      "/repos/repo-1/architecture?node=src%2Fa.ts",
+    );
+    unmount();
 
+    // No graph route on the host (the hosted frontend today) means no action,
+    // rather than a link into a page that does not exist there.
+    renderTable([finding({ id: "a" })]);
     expect(screen.queryByRole("link", { name: "Graph" })).not.toBeInTheDocument();
+  });
+
+  it("reports a rejecting bulk resolve instead of wedging the dialog open", async () => {
+    const onBulkResolve = vi.fn(async () => {
+      throw new Error("Service unavailable");
+    });
+    renderTable([finding({ id: "a" })], { onBulkResolve });
+
+    fireEvent.click(screen.getByLabelText("Select all findings"));
+    fireEvent.click(screen.getByRole("button", { name: "Resolve 1 selected" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Resolve all" }));
+
+    await waitFor(() => expect(toastError).toHaveBeenCalled());
+    expect(String(toastError.mock.calls[0]?.[0])).toMatch(/Couldn't resolve findings/);
   });
 });
 

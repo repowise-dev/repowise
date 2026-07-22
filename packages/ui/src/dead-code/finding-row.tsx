@@ -32,8 +32,11 @@ const STATUS_LABELS: Record<
   },
   false_positive: {
     title: "Mark as false positive?",
-    description:
-      "This finding will be excluded from future analyses. You can undo from the toast.",
+    // Deliberately does not promise exclusion from future analyses: a
+    // re-analysis re-inserts every detected finding under a fresh id, so the
+    // marking does not carry across passes. Upgrade path is a stable finding
+    // identity server-side, then this copy can make the stronger promise.
+    description: "This finding will be hidden from the list. You can undo from the toast.",
     confirmLabel: "Mark FP",
     destructive: true,
   },

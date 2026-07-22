@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { toast } from "sonner";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "../ui/tabs";
 import { Button } from "../ui/button";
 import { Slider } from "../ui/slider";
@@ -8,6 +9,7 @@ import { Switch } from "../ui/switch";
 import { TableSkeleton } from "../shared/loading-skeletons";
 import { ConfirmDialog } from "../ui/confirm-dialog";
 import { EmptyState } from "../shared/empty-state";
+import { toFriendlyMessage } from "../lib/errors";
 import { AiPromptButton } from "../health/ai-prompt-button";
 import { FindingRow } from "./finding-row";
 import type { DeadCodeFinding, DeadCodeStatus } from "@repowise-dev/types/dead-code";
@@ -141,6 +143,10 @@ export function FindingsTable({
       await onBulkResolve(visibleSelected);
       setSelected(new Set());
       setBulkConfirmOpen(false);
+    } catch (err) {
+      // The prop contract does not promise a host that swallows its own
+      // failures; without this the dialog wedges open on a rejection.
+      toast.error(`Couldn't resolve findings: ${toFriendlyMessage(err)}`);
     } finally {
       setBulkPending(false);
     }
@@ -230,8 +236,11 @@ export function FindingsTable({
           ))}
         </TabsList>
 
-        {tabs.map((t) => (
-          <TabsContent key={t.value} value={t.value}>
+        {/* One content panel for the active tab only. Rendering a panel per tab
+            and filling each with the *active* tab's rows happened to work
+            because Radix unmounts inactive content, which is a trap waiting on
+            whoever adds forceMount. */}
+        <TabsContent value={effectiveTab ?? ""}>
             {current.length === 0 ? (
               <EmptyState
                 title="No findings"
@@ -294,8 +303,7 @@ export function FindingsTable({
                 </table>
               </div>
             )}
-          </TabsContent>
-        ))}
+        </TabsContent>
       </Tabs>
       )}
     </div>
