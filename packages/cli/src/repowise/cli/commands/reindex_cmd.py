@@ -203,6 +203,21 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
     await vector_store.close()
     await engine.dispose()
 
+    # Record the embedder we actually built the table with. Without this, a
+    # repo indexed keyless keeps `embedder: mock` in config.yaml, and the next
+    # `repowise update` builds a mock store, writes 8-wide vectors into the
+    # 1536-wide table this run just built, and LanceDB resolves the mismatch by
+    # dropping the table — every page and decision vector gone, silently. The
+    # reindex undone by a routine update.
+    #
+    # Only when something was actually written: the pin describes the table, so
+    # a run where every item failed has nothing to describe, and claiming
+    # otherwise would point later writers at a width the table does not have.
+    if indexed:
+        from repowise.cli.helpers import save_config_partial
+
+        save_config_partial(Path(repo_path), embedder=embedder_name)
+
     console.print(
         f"\n[bold green]Done![/bold green] Indexed {indexed} items"
         + (f" ({failed} failed)" if failed else "")

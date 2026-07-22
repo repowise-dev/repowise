@@ -450,11 +450,14 @@ def _run_repo_checks(
 
                         from repowise.core.persistence.models import Page
 
+                        # Page's natural primary key is the column `id`; there
+                        # is no `page_id` attribute, so the old spelling raised
+                        # AttributeError and no repair ever ran.
                         rows = await session.execute(
-                            select(Page).where(Page.page_id.in_(list(missing_from_fts)))
+                            select(Page).where(Page.id.in_(list(missing_from_fts)))
                         )
                         for page in rows.scalars().all():
-                            await fts.index(page.page_id, page.title, page.content)
+                            await fts.index(page.id, page.title, page.content)
                             repaired += 1
                 for pid in orphaned_fts:
                     await fts.delete(pid)
@@ -464,14 +467,36 @@ def _run_repo_checks(
             lance_dir = repowise_dir / "lancedb"
             if lance_dir.exists() and (missing_from_vector or orphaned_vector):
                 try:
-                    from repowise.core.persistence.vector_store import LanceDBVectorStore
-                    from repowise.core.providers.embedding.base import MockEmbedder
+                    from repowise.cli.providers import (
+                        build_embedder,
+                        build_vector_store,
+                        resolve_embedder_for_repo,
+                    )
 
-                    # Use mock embedder for repair to avoid API costs;
-                    # user can re-run `repowise reindex` for real embeddings
-                    embedder = MockEmbedder()
-
-                    vs = LanceDBVectorStore(str(lance_dir), embedder=embedder)
+                    # Repair with the embedder that built this store, not a
+                    # hardcoded mock. The mock was chosen to avoid API costs,
+                    # but writing its 8-wide vectors into a real table makes
+                    # LanceDB drop the table: a repair that deletes the index
+                    # it was asked to fix. build_vector_store refuses that
+                    # combination and returns None, so a repo whose embedder is
+                    # unavailable is left alone instead of wrecked.
+                    embedder_name = resolve_embedder_for_repo(repo_path)
+                    embedder = build_embedder(embedder_name)
+                    vs = build_vector_store(_DoctorPath(repo_path), embedder)
+                    if vs is None:
+                        raise RuntimeError(
+                            "no embedder available that can write this store; "
+                            "set an embedder key and run `repowise reindex`"
+                        )
+                    # This repair has never actually run (it raised on a column
+                    # that does not exist), so a hosted embedder here is a new
+                    # charge on a command people run to diagnose, not to spend.
+                    # Say so. It is bounded by the missing pages, not the wiki.
+                    if missing_from_vector and embedder_name != "mock":
+                        console.print(
+                            f"  [dim]Embedding {len(missing_from_vector)} missing "
+                            f"page(s) with {embedder_name}.[/dim]"
+                        )
 
                     if missing_from_vector:
                         async with get_session(sf) as session:
@@ -480,11 +505,11 @@ def _run_repo_checks(
                             from repowise.core.persistence.models import Page
 
                             rows = await session.execute(
-                                select(Page).where(Page.page_id.in_(list(missing_from_vector)))
+                                select(Page).where(Page.id.in_(list(missing_from_vector)))
                             )
                             for page in rows.scalars().all():
                                 await vs.embed_and_upsert(
-                                    page.page_id,
+                                    page.id,
                                     page.content,
                                     {
                                         "title": page.title,

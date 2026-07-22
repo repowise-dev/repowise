@@ -44,6 +44,7 @@ from repowise.cli.helpers import (
     save_state,
 )
 from repowise.cli.providers import resolve_embedder
+from repowise.cli.providers.embedders import embedder_was_requested as _embedder_was_requested
 from repowise.cli.state_persistence import build_kg_state, save_knowledge_graph_json
 from repowise.cli.ui import (
     BRAND,
@@ -998,19 +999,7 @@ def init_command(
         config["follow_renames"] = True
 
     embedder_name_resolved = resolve_embedder(embedder_name)
-    # Whether the user actually asked for this embedder, as opposed to
-    # resolve_embedder inferring one from an LLM key it found lying around.
-    # The deterministic generation phase needs the distinction: it advertises
-    # itself as costing nothing, so it will not put a hosted embedder on the
-    # user's bill unless they named it. A repo whose config already names one
-    # counts as asked: the choice was made on an earlier run, and silently
-    # dropping to the mock here would re-embed the whole store at a different
-    # vector width, which the LanceDB writer resolves by dropping the table.
-    embedder_was_requested = (
-        bool(embedder_name)
-        or bool(os.environ.get("REPOWISE_EMBEDDER", "").strip())
-        or bool(config.get("embedder"))
-    )
+    embedder_was_requested = _embedder_was_requested(embedder_name, config.get("embedder"))
 
     # A template wiki overwrites a model-written one page for page: the upsert
     # replaces content and stamps provider_name="template", keeping the old

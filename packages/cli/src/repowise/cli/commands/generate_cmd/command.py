@@ -31,6 +31,7 @@ from repowise.cli.helpers import (
     run_async,
     save_state,
 )
+from repowise.cli.providers import resolve_embedder
 from repowise.cli.ui import load_dotenv
 from repowise.core.docs_mode import docs_mode_state_fields, resolve_docs_mode
 from repowise.core.generation.page_selection import PageSelectionIntent
@@ -294,7 +295,22 @@ def generate_command(
         config = dataclasses.replace(config, tier1_top_n=tier1_top_n)
 
     exclude_patterns = list(cfg.get("exclude_patterns") or [])
+
+    # A keyless init records `embedder: mock`, because that mode promises no
+    # spend and a hosted embedder is a real bill. The promise is void here: the
+    # user is already paying a model to write these pages. Honouring the pin
+    # would embed that paid prose as 8-dim SHA-256 hashes and leave semantic
+    # search as useless as it was before, with nothing in the output saying so.
+    # `update --full` has re-resolved here since it was written; `generate`
+    # never did. Same rule, same message.
     embedder_name = cfg.get("embedder")
+    embedder_upgraded = False
+    if not embedder_name or embedder_name == "mock":
+        resolved = resolve_embedder(None)
+        if resolved != (embedder_name or "mock"):
+            console.print(f"Embedder: [cyan]{resolved}[/cyan] (was mock, index-only's default).")
+            embedder_name = resolved
+            embedder_upgraded = True
 
     start = time.monotonic()
     outcome = run_async(
@@ -331,6 +347,41 @@ def generate_command(
         f"[bold green]Generated {len(outcome.generated_pages)} pages[/bold green] "
         f"in {elapsed:.1f}s{stale_note}{tail}."
     )
+    if embedder_upgraded:
+        _reembed_after_upgrade(repo_path, embedder_name)
+
+
+def _reembed_after_upgrade(repo_path: Path, embedder_name: str) -> None:
+    """Re-embed the whole wiki after the embedder was upgraded off the mock.
+
+    Switching vector width makes the LanceDB writer drop the old table, so at
+    this point the store holds only the pages this run happened to write. Every
+    page it did not touch is out of semantic search, which is the exact failure
+    this command's embedder fix exists to end — leaving the user a note to run
+    `reindex` themselves just moves the failure one step later.
+
+    So run it. It is the cheap half of the pipeline (embedding calls, no model)
+    and it persists the resolved embedder to config.yaml on the way out, which
+    is what keeps the next `update` from building a mock store against this
+    table. Best-effort: the pages are written and committed either way, so an
+    embedding failure is a degraded search index, not a failed generate.
+
+    Nothing is persisted on failure. The pin is a claim about what wrote the
+    table, and writing it after a run that wrote nothing makes it a false one.
+    Leaving it as it was keeps the store guarded rather than trusted.
+    """
+    from .. import reindex_cmd
+
+    console.print(f"\nRe-embedding the wiki with [cyan]{embedder_name}[/cyan] (no model calls)...")
+    tail = "The pages are written. Run [cyan]repowise reindex[/cyan] to finish the search index."
+    try:
+        run_async(reindex_cmd._reindex(repo_path, embedder_name, 32))
+    except click.Abort:
+        # _reindex already printed the reason and its own fix; str(Abort) is
+        # empty, so repeating it as "{exc}" would print a blank line instead.
+        console.print(tail)
+    except Exception as exc:
+        console.print(f"[yellow]Re-embedding failed:[/yellow] {exc}\n{tail}")
 
 
 def _write_state(repo_path: Path, state: dict, provider: Any, outcome: Any) -> None:

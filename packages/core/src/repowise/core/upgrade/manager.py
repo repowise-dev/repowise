@@ -58,6 +58,8 @@ def assess(
     current_store_version: int = STORE_FORMAT_VERSION,
     recorded_embedding_model: str | None = None,
     current_embedding_model: str | None = None,
+    stored_vector_dim: int | None = None,
+    current_vector_dim: int | None = None,
 ) -> UpgradeVerdict:
     """Decide what (if anything) upgrading this store requires.
 
@@ -70,6 +72,15 @@ def assess(
     with (the pinned ``embedding_model`` in ``config.yaml``, its canonical home;
     callers pass it explicitly). ``current_embedding_model`` is what the running
     build resolves now; a difference triggers a re-embed.
+
+    ``stored_vector_dim`` / ``current_vector_dim`` catch the same drift one
+    level down, and are the check that actually fires in practice: the model
+    names above both come from ``REPOWISE_EMBEDDING_MODEL``, which almost
+    nobody sets, so both sides are usually ``None`` and the comparison no-ops.
+    Vector width is not opt-in — the table on disk records what built it, and a
+    width the running embedder cannot produce means every stored vector is
+    unreadable. Callers pass ``None`` for either when it cannot be determined,
+    which keeps the check quiet rather than guessing.
     """
     from_version = _coerce_int(state.get(STORE_FORMAT_VERSION_KEY), default=0)
     written_by = _coerce_str(state.get(WRITTEN_BY_VERSION_KEY))
@@ -107,6 +118,22 @@ def assess(
             )
         )
 
+    if (
+        stored_vector_dim is not None
+        and current_vector_dim is not None
+        and stored_vector_dim != current_vector_dim
+    ):
+        tier = max(tier, UpgradeTier.AUTO)
+        actions.append(
+            UpgradeAction(
+                kind=UpgradeActionKind.REEMBED_VECTORS,
+                reason=(
+                    f"embedder changed (vectors are {stored_vector_dim}-wide, the configured "
+                    f"embedder produces {current_vector_dim}); re-embedding so search can read them"
+                ),
+            )
+        )
+
     user_notice = " ".join(notice_parts) if notice_parts else None
 
     return UpgradeVerdict(
@@ -131,6 +158,11 @@ async def apply_auto(verdict: UpgradeVerdict, ctx: UpgradeContext) -> list[Upgra
     """
     ran: list[UpgradeActionKind] = []
     for action in verdict.actions:
+        # Two independent checks can both conclude "re-embed" (a model-name
+        # change and a vector-width change usually travel together). Running it
+        # twice bills the embedding API twice for an identical result.
+        if action.kind in ran:
+            continue
         try:
             if action.kind == UpgradeActionKind.REEMBED_VECTORS:
                 await ctx.reembed_vectors()

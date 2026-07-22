@@ -238,8 +238,13 @@ def _load_local_provider_config() -> None:
         console.print(f"[dim]Using provider from config: {provider}[/dim]")
 
     # 3) Embedder from config so chat/search work without an interactive prompt.
+    # Including "mock": that pin is not a preference to be talked out of, it is
+    # the width the table on disk was written at. Skipping it sent a keyless
+    # repo down _setup_embedder's detection path, which picks up any exported
+    # API key and queries an 8-wide table with 1536-wide vectors — search
+    # returns nothing, and nothing says why.
     embedder = cfg.get("embedder")
-    if embedder and embedder != "mock" and not os.environ.get("REPOWISE_EMBEDDER"):
+    if embedder and not os.environ.get("REPOWISE_EMBEDDER"):
         os.environ["REPOWISE_EMBEDDER"] = str(embedder)
 
     # 4) Embedding model from config — without this the server rebuilds the
