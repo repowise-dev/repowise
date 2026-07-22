@@ -42,6 +42,7 @@ def _workspace_update(
     parallel index-only path. See :func:`_workspace_docs_update`.
     """
     from repowise.cli.helpers import load_state
+    from repowise.core.docs_mode import resolve_docs_mode
     from repowise.core.workspace import (
         check_repo_staleness,
         reconcile_repo_head_commit,
@@ -88,10 +89,20 @@ def _workspace_update(
         # collapse into a single count line unless -v lists everything.
         if is_stale:
             stale_count += 1
-            if indexed and not _resolve_index_only_mode(
-                index_only=index_only, docs_flag=docs_flag, state=load_state(abs_path)
-            ):
-                docs_aliases.add(entry.alias)
+            if indexed:
+                repo_state = load_state(abs_path)
+                if not _resolve_index_only_mode(
+                    index_only=index_only, docs_flag=docs_flag, state=repo_state
+                ):
+                    # LLM docs wanted: full single-repo docs regen.
+                    docs_aliases.add(entry.alias)
+                elif resolve_docs_mode(repo_state) == "deterministic":
+                    # A template wiki has pages too. The single-repo update path
+                    # re-renders the changed files' template pages for free
+                    # (file_pages_only), so route it there rather than the core
+                    # index-only path, which would freeze the wiki. Model-written
+                    # pages a user upgraded stay put; only the templates refresh.
+                    docs_aliases.add(entry.alias)
         if indexed and not is_stale:
             up_to_date_count += 1
             if head:

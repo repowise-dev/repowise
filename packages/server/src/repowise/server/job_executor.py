@@ -30,6 +30,7 @@ from repowise.core.persistence.crud import (
 )
 from repowise.core.persistence.database import get_session
 from repowise.core.pipeline import persist_pipeline_result, run_pipeline
+from repowise.core.pipeline.modes import OrchestratorMode
 from repowise.server.job_events import JobEventBuffer, create_event_buffer
 
 logger = structlog.get_logger(__name__)
@@ -411,21 +412,34 @@ async def execute_job(
             )
             return
 
-        generate_docs = (
-            (is_full_resync or is_initial_index)
-            and llm_client is not None
-            and bool(config.get("generate_docs", True))
+        want_docs = bool(config.get("generate_docs", True))
+        # LLM docs: an initial index or full resync with a provider configured.
+        generate_docs_llm = (
+            (is_full_resync or is_initial_index) and llm_client is not None and want_docs
         )
+        # Keyless deterministic fallback: a first index of a repo with NO
+        # provider still renders a complete template wiki (no model, no key, no
+        # cost), exactly like `repowise init --index-only`, so the repo reads as
+        # a real, upgradable wiki in the web UI rather than an empty index.
+        # Scoped to initial_index: a keyless full_resync of a model-written wiki
+        # must not overwrite every page with a template (and full_resync writes
+        # no docs_mode here anyway).
+        deterministic_docs = is_initial_index and llm_client is None and want_docs
+        generate_docs = generate_docs_llm or deterministic_docs
+        pipeline_mode = (
+            OrchestratorMode.DETERMINISTIC if deterministic_docs else OrchestratorMode.STANDARD
+        )
+
         if is_initial_index:
             # First index of an API-registered repo: make sure the repo-local
             # data directory exists before the pipeline writes artifacts.
             (Path(repo_path) / ".repowise").mkdir(parents=True, exist_ok=True)
-            if llm_client is None and config.get("generate_docs", True):
+            if deterministic_docs:
                 progress.on_message(
-                    "warning",
-                    "No LLM provider configured; indexing without documentation "
-                    "generation. Configure a provider and run a full resync to "
-                    "generate docs.",
+                    "info",
+                    "No LLM provider configured; rendering a template wiki from the "
+                    "code's structure (no model, no cost). Configure a provider and "
+                    "run a full resync to write the wiki with a model.",
                 )
 
         result = await run_pipeline(
@@ -436,6 +450,7 @@ async def execute_job(
             progress=progress,
             exclude_patterns=exclude_patterns or None,
             wiki_style=wiki_style,
+            mode=pipeline_mode,
         )
 
         # ---- Incremental page regeneration for sync mode ------------------
@@ -537,9 +552,16 @@ async def execute_job(
                 _persist_initial_index_state(
                     Path(repo_path),
                     llm_client=llm_client,
-                    # The API index path has no template fallback: without a
-                    # provider it produces an index and no pages.
-                    docs_mode="llm" if generate_docs else "none",
+                    # With a provider the pages are model-written ("llm"); with
+                    # none they are rendered from templates ("deterministic");
+                    # only a run that asked for no docs ends up with "none".
+                    docs_mode=(
+                        "llm"
+                        if generate_docs_llm
+                        else "deterministic"
+                        if deterministic_docs
+                        else "none"
+                    ),
                     docs_skip_reason=docs_skip_reason,
                     total_pages=len(all_pages),
                     wiki_style=wiki_style,
@@ -1145,6 +1167,13 @@ async def _incremental_page_regen(
             # Regenerate in the repo's configured output language, not default
             # English (PageGenerator picks the language up from the config).
             language=repo_cfg.get("language", "en"),
+            # A sync feeds generate_all a parsed_files filtered to the changed
+            # files. Levels 3 and up describe the whole repository from
+            # parsed_files, so without this a one-commit sync would rewrite the
+            # codebase map, module and overview pages from a truncated view (the
+            # D4 shape the CLI update path already fixed). Stop the ladder after
+            # level 2 and leave the repo-wide pages for a full run.
+            file_pages_only=True,
         )
         assembler = ContextAssembler(generation_config)
         # D3: pass the vector store (re-embed re-rendered pages) and prior pages

@@ -287,14 +287,19 @@ async def test_execute_job_initial_index_writes_state_baseline(session_factory, 
         assert refreshed.status == "completed"
 
     state = json.loads((repo_dir / ".repowise" / "state.json").read_text(encoding="utf-8"))
+    # A keyless first index now renders a deterministic template wiki rather
+    # than skipping docs: docs_mode is "deterministic" (not "none"), there is no
+    # skip reason, and docs_enabled stays False (a template wiki is not model
+    # docs, so a legacy hook must not launch a provider-less LLM regen).
     assert state["docs_enabled"] is False
-    assert "no provider configured" in state["docs_skip_reason"]
+    assert state["docs_mode"] == "deterministic"
+    assert not state.get("docs_skip_reason")
     assert state["run_mode"] == "standard"
     assert state["git_tier"] == "full"
     assert state["config_fingerprint"]
     assert state["store_format_version"]
 
-    # The no-provider warning reached the event buffer for the SSE stream.
+    # The template-wiki notice reached the event buffer for the SSE stream.
     events = app_state.job_events[job_id].since(0)
     assert any("No LLM provider configured" in e["text"] for e in events)
 
