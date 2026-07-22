@@ -77,7 +77,7 @@ class GenerationConfig:
         jobs_dir:                 Directory for job checkpoint JSON files.
     """
 
-    max_tokens: int = 20000
+    max_tokens: int = 16384
     temperature: float = 0.3
     token_budget: int = 48000
     max_concurrency: int = 12

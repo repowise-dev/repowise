@@ -144,7 +144,7 @@ def test_decay_confidence_beyond_expiry_is_zero():
 
 def test_generation_config_defaults():
     config = GenerationConfig()
-    assert config.max_tokens == 20000
+    assert config.max_tokens == 16384
     assert config.temperature == 0.3
     assert config.token_budget == 48000
     assert config.max_concurrency == 12
