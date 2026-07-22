@@ -92,37 +92,23 @@ def _gate_cost(
 def _reparse(repo_path: Path, exclude_patterns: list[str]) -> tuple[list[Any], dict[str, bytes], Any]:
     """Parse files for ASTs + source bytes WITHOUT building/resolving the graph.
 
-    The graph is rehydrated from SQL separately; here we only need the parsed
-    files and raw source the generator consumes. Skipping ``GraphBuilder.build``
-    is the whole point — that resolution pass is what the fast index already did.
+    Thin CLI wrapper over :func:`repowise.core.pipeline.reparse_repo`: reads the
+    persisted submodule/nested-repo semantics from ``state.json`` so a fast index
+    built with ``--include-submodules`` re-parses the same file set, then defers
+    to the shared core parser.
     """
-    from repowise.core.ingestion import ASTParser, FileTraverser
+    from repowise.core.pipeline import reparse_repo
 
     # Honor the persisted submodule semantics of the original index — a
     # fast index built with --include-submodules must not drop submodule
     # files from the docs re-parse (missing key → False, legacy behavior).
     state = load_state(repo_path)
-    traverser = FileTraverser(
+    return reparse_repo(
         repo_path,
-        extra_exclude_patterns=exclude_patterns or None,
+        exclude_patterns,
         include_submodules=bool(state.get("include_submodules", False)),
         include_nested_repos=bool(state.get("include_nested_repos", False)),
     )
-    file_infos = list(traverser.traverse())
-    repo_structure = traverser.get_repo_structure()
-
-    parser = ASTParser()
-    parsed_files: list[Any] = []
-    source_map: dict[str, bytes] = {}
-    for fi in file_infos:
-        try:
-            source = Path(fi.abs_path).read_bytes()
-            parsed = parser.parse_file(fi, source)
-            parsed_files.append(parsed)
-            source_map[fi.path] = source
-        except Exception:
-            pass  # unreadable / unparseable files are skipped, as in init
-    return parsed_files, source_map, repo_structure
 
 
 async def _backfill_git(

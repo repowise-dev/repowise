@@ -23,6 +23,7 @@ from .persist import (
 )
 from .phase_timing import PhaseTimingRecorder
 from .progress import LoggingProgressCallback, ProgressCallback
+from .reparse import reparse_repo
 from .upgrade import rehydrate_graph_builder
 
 __all__ = [
@@ -36,6 +37,7 @@ __all__ = [
     "persist_ingestion",
     "persist_pipeline_result",
     "rehydrate_graph_builder",
+    "reparse_repo",
     "run_generation",
     "run_pipeline",
     "sweep_stale_generated_pages",
