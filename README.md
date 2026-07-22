@@ -75,7 +75,7 @@ and anything else that speaks MCP. Most tools are built around data entities (on
 file, one symbol), which forces agents into long chains of sequential calls. These are
 built around **tasks**: pass several targets in one call, get complete context back.
 
-<img src=".github/assets/demo.gif" alt="Claude Code querying the codebase through repowise's MCP tools" width="100%" />
+<video src="https://raw.githubusercontent.com/repowise-dev/repowise/main/.github/assets/demo.mp4" alt="Claude Code querying the codebase through repowise's MCP tools" autoplay loop muted playsinline width="100%"></video>
 
 Because the exploration work is already done, that phase mostly disappears. Loading
 one commit's context through `get_context` costs **2,391 tokens instead of 64,039**
@@ -231,12 +231,12 @@ setup, all local.
 
 <table>
 <tr>
-<td width="50%"><img src=".github/assets/dashboard/code-health.gif" alt="Code health map: every file as a bubble, hover to inspect score, coverage and tests" /><br/><sub><b>Code Health</b> · every file as a bubble, hover any one to inspect its score, size, coverage and findings</sub></td>
-<td width="50%"><img src=".github/assets/dashboard/commits-page.gif" alt="Commits view: change-risk distribution, review priority queue, agent attribution" /><br/><sub><b>Commits</b> · change-risk distribution, size-versus-diffusion scatter, and a review-priority queue</sub></td>
+<td width="50%"><video src="https://raw.githubusercontent.com/repowise-dev/repowise/main/.github/assets/dashboard/code-health.mp4" alt="Code health map: every file as a bubble, hover to inspect score, coverage and tests" autoplay loop muted playsinline width="100%"></video><br/><sub><b>Code Health</b> · every file as a bubble, hover any one to inspect its score, size, coverage and findings</sub></td>
+<td width="50%"><video src="https://raw.githubusercontent.com/repowise-dev/repowise/main/.github/assets/dashboard/commits-page.mp4" alt="Commits view: change-risk distribution, review priority queue, agent attribution" autoplay loop muted playsinline width="100%"></video><br/><sub><b>Commits</b> · change-risk distribution, size-versus-diffusion scatter, and a review-priority queue</sub></td>
 </tr>
 <tr>
-<td width="50%"><img src=".github/assets/dashboard/refactoring.gif" alt="Refactoring plans grouped by type with a priority versus effort quadrant chart" /><br/><sub><b>Refactoring</b> · plans grouped by type, ranked on a priority-versus-effort quadrant</sub></td>
-<td width="50%"><img src=".github/assets/dashboard/files-page.gif" alt="Files treemap with per-file health, churn, lines and coverage" /><br/><sub><b>Files</b> · a treemap of the whole repo, sortable by health, churn, size or coverage</sub></td>
+<td width="50%"><video src="https://raw.githubusercontent.com/repowise-dev/repowise/main/.github/assets/dashboard/refactoring.mp4" alt="Refactoring plans grouped by type with a priority versus effort quadrant chart" autoplay loop muted playsinline width="100%"></video><br/><sub><b>Refactoring</b> · plans grouped by type, ranked on a priority-versus-effort quadrant</sub></td>
+<td width="50%"><video src="https://raw.githubusercontent.com/repowise-dev/repowise/main/.github/assets/dashboard/files-page.mp4" alt="Files treemap with per-file health, churn, lines and coverage" autoplay loop muted playsinline width="100%"></video><br/><sub><b>Files</b> · a treemap of the whole repo, sortable by health, churn, size or coverage</sub></td>
 </tr>
 </table>
 
