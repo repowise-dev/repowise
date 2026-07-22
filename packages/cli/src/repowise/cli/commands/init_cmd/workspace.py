@@ -173,9 +173,6 @@ def _run_workspace_deterministic_generation(
     the generated pages plus the embedder actually used (persisted by the caller
     so a later workspace update embeds the same way rather than re-deciding).
     """
-    from repowise.core.generation import GenerationConfig
-    from repowise.core.providers.llm.template import TemplateProvider
-
     # "No key, no spend": a template run must not put a hosted embedder on the
     # bill unless the user named it. ``resolve_embedder`` infers one from any LLM
     # key in the environment, which is the wrong default here. Mirror the
@@ -184,9 +181,17 @@ def _run_workspace_deterministic_generation(
     # A previously-persisted embedder on THIS repo counts as requested (re-init
     # case): silently dropping it to the mock would re-embed the store at a
     # different vector width, which the LanceDB writer resolves by dropping the
-    # table (the single-repo phase reads config.get("embedder") for the same
-    # reason; the workspace flag is computed once, before any repo config loads).
-    requested = embedder_was_requested or bool(load_config(repo_path).get("embedder"))
+    # table. The workspace flag is computed once, before any repo config loads,
+    # so only the per-repo pin is folded in here — the flag already accounts for
+    # the flag and env var, and re-reading them would override a caller that
+    # decided otherwise. ``mock`` is not a pin anyone chose, so it does not count.
+    from repowise.cli.providers.embedders import pin_names_an_embedder
+    from repowise.core.generation import GenerationConfig
+    from repowise.core.providers.llm.template import TemplateProvider
+
+    requested = embedder_was_requested or pin_names_an_embedder(
+        load_config(repo_path).get("embedder")
+    )
     hosted = embedder_name_resolved not in ("mock", "ollama")
     embedder = "mock" if hosted and not requested else embedder_name_resolved
 

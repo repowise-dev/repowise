@@ -153,12 +153,13 @@ def _search_semantic(repo_path, query: str, limit: int) -> None:
         lance_dir = Path(repo_path) / ".repowise" / "lancedb"
         if lance_dir.exists():
             try:
-                from repowise.cli.commands.init_cmd import _resolve_embedder
-                from repowise.cli.providers.embedders import build_embedder
+                from repowise.cli.providers.embedders import (
+                    build_embedder,
+                    resolve_embedder_for_repo,
+                )
                 from repowise.core.persistence.vector_store import LanceDBVectorStore
 
-                embedder_name = _resolve_embedder(None)
-                embedder = build_embedder(embedder_name)
+                embedder = build_embedder(resolve_embedder_for_repo(repo_path))
                 store = LanceDBVectorStore(str(lance_dir), embedder=embedder)
                 results = await store.search(query, limit=limit)
                 await store.close()
@@ -272,12 +273,13 @@ def _collect_semantic(repo_path, query: str, limit: int):
         lance_dir = Path(repo_path) / ".repowise" / "lancedb"
         if lance_dir.exists():
             try:
-                from repowise.cli.commands.init_cmd import _resolve_embedder
-                from repowise.cli.providers.embedders import build_embedder
+                from repowise.cli.providers.embedders import (
+                    build_embedder,
+                    resolve_embedder_for_repo,
+                )
                 from repowise.core.persistence.vector_store import LanceDBVectorStore
 
-                embedder_name = _resolve_embedder(None)
-                embedder = build_embedder(embedder_name)
+                embedder = build_embedder(resolve_embedder_for_repo(repo_path))
                 store = LanceDBVectorStore(str(lance_dir), embedder=embedder)
                 results = await store.search(query, limit=limit)
                 await store.close()

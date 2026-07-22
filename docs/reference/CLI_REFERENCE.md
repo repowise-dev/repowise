@@ -276,8 +276,14 @@ repowise generate --page file_page:src/app.py --cascade none   # one page, nothi
 repowise generate --stale                   # refresh pages whose code moved on
 ```
 
-> It does not build the vector store. If you want semantic search over the new
-> prose, run `repowise reindex` afterwards (embedding calls only, no LLM).
+> **Embedding.** `generate` embeds the pages it writes. On a repo indexed
+> without a key (`embedder: mock` in `config.yaml`), it re-resolves a real
+> embedder from your environment rather than honouring that pin, since you are
+> already paying a model to write the prose, and prints
+> `Embedder: openai (was mock, index-only's default)`. Switching embedder
+> changes the vector width, which rebuilds the store, so it then re-embeds the
+> whole wiki automatically (embedding calls only, no LLM) and records the
+> embedder in `config.yaml` so later `update` runs stay on it.
 
 ---
 

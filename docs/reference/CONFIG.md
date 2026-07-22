@@ -412,6 +412,17 @@ repowise init --embedder openai
 repowise reindex --embedder gemini   # switch embedder and rebuild index
 ```
 
+The `embedder` key in `config.yaml` is the record of what built the vector
+store, so it is what both writers and readers use. `search`, `serve`, and the
+MCP server resolve it from there first and only fall back to the environment
+when nothing is pinned; otherwise a repo indexed without a key would be queried
+with whatever API key happened to be exported, and the wider query vectors
+would match nothing in the narrower stored table.
+
+`reindex` writes the embedder it used back to `config.yaml`. Without that, the
+next `update` would read the old pin, write vectors at the old width, and the
+store would be rebuilt from scratch, discarding what the reindex just built.
+
 `REPOWISE_EMBEDDING_MODEL` overrides the model for whichever embedder is
 active. `REPOWISE_EMBEDDING_DIMS` and `REPOWISE_EMBEDDING_TIMEOUT` apply the
 same way; the `OLLAMA_EMBEDDING_*` variants below are Ollama-specific
