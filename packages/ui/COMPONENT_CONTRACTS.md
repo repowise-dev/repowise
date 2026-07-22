@@ -375,32 +375,68 @@ the caller. Co-change is a temporal hint, not a verified dependency, and
 Hierarchical edge-bundling diagram (`d3-hierarchy` radial cluster +
 `d3-shape` `curveBundle`). Files sit on a ring grouped by their directory
 hierarchy; bundled arcs link files that change together. Dots are colored by
-health band and sized by lines + coupling degree. Hovering a file lifts its
-couplings (colored by the partner's health band) and dims the rest. Focus is
-controllable (`focusedPath`/`onFocusChange`) for cross-highlight with a table,
-or falls back to internal hover state.
+health band and sized by lines + coupling degree. Hovering a file peeks its
+couplings (colored by the partner's health band) and dims the rest; clicking a
+file pins a sticky selection (persistent accent ring) and clicking empty canvas
+clears it. The effective focus (`focusedPath` = hover ?? pinned) is controlled
+for cross-highlight with a table, and falls back to internal hover/pin state.
 
 | Prop | Type | Required |
 |------|------|----------|
 | `nodes` | `CouplingNode[]` (`@repowise-dev/types/coupling`) | yes |
 | `edges` | `CouplingEdge[]` (`@repowise-dev/types/coupling`) | yes |
 | `totalEdges` | `number` (pre-cap count, for the "showing N of M" line) | no |
-| `focusedPath` | `string \| null` (controlled focus) | no |
-| `onFocusChange` | `(path: string \| null) => void` | no |
+| `focusedPath` | `string \| null` (effective focus: hover ?? pinned) | no |
+| `pinnedPath` | `string \| null` (sticky selection; draws the ring) | no |
+| `onHover` | `(path: string \| null) => void` (transient peek) | no |
+| `onPinToggle` | `(path: string \| null) => void` (click a dot / empty canvas) | no |
 | `size` | `number` (square viewBox edge, default 760) | no |
 
 ### `coupling/coupling-table` — `CouplingTable`
 
-The precise, ranked companion to the diagram: one row per coupling
-(strongest first) with a strength bar and last-shared-commit date. Clicking a
-row toggles focus on that file; rows incident to the focused file are
-emphasised. Uses `shared/responsive-table`.
+The precise, ranked companion to the diagram: one row per coupling with a
+strength bar and last-shared-commit date, sortable by Strength or Last. File
+names are links (when `linkForPath` is set); clicking a row pins its source
+file, and hovering a row (or a name) peeks that file. Uses
+`shared/responsive-table`.
 
 | Prop | Type | Required |
 |------|------|----------|
 | `edges` | `CouplingEdge[]` (`@repowise-dev/types/coupling`) | yes |
-| `focusedPath` | `string \| null` | no |
-| `onFocusChange` | `(path: string \| null) => void` | no |
+| `focusedPath` | `string \| null` (effective focus) | no |
+| `pinnedPath` | `string \| null` (drives the selected-row style) | no |
+| `onHover` | `(path: string \| null) => void` | no |
+| `onPinToggle` | `(path: string \| null) => void` | no |
+| `onGeneratePrompt` | `(edge: CouplingEdge) => void` (shows the AI decouple action) | no |
+| `linkForPath` | `(path: string) => string` (makes file names links) | no |
+| `LinkComponent` | link component for file links (defaults to `<a>`) | no |
+
+### `coupling/coupling-explorer` — `CouplingExplorer`
+
+The full change-coupling surface: the diagram over a sortable/filterable table,
+sharing one focus model, plus the AI-decouple modal and a default pin on the
+most-coupled hub. Lives in the shared package so OSS and hosted share the
+interaction; the host supplies only the link prefix and optional URL sync.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `data` | `CouplingGraphResponse` (`@repowise-dev/types/coupling`) | yes |
+| `repoLinkPrefix` | `string` (e.g. `/repos/abc`; makes file names links) | no |
+| `LinkComponent` | link component for file links (defaults to `<a>`) | no |
+| `initialFocus` | `string \| null` (seed pin, e.g. from a `?focus=` deep link) | no |
+| `onFocusChange` | `(path: string \| null) => void` (reflect the pin to the URL) | no |
+
+### `dashboard/coupling-mini-card` — `CouplingMiniCard`
+
+Overview front-door for the (sidebar-less) change-coupling view: previews the
+top few coupled pairs with strength bars and links to the full page. Fully
+presentational.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `edges` | `CouplingEdge[]` (top couplings, strongest-first) | yes |
+| `href` | `string` (link to the full coupling view) | yes |
+| `LinkComponent` | link component (defaults to `<a>`) | no |
 
 ---
 

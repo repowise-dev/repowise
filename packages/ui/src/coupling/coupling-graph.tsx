@@ -15,9 +15,18 @@ export interface CouplingGraphProps {
   edges: CouplingEdge[];
   /** Pre-cap edge count, for the honest "showing N of M" line. */
   totalEdges?: number;
-  /** Controlled focus (sync with the table); falls back to internal hover. */
+  /**
+   * Effective focus — the file whose couplings are lit and whose neighbors stay
+   * bright. The host passes `hover ?? pinned` so a transient hover peeks over a
+   * sticky pin. Falls back to internal hover/pin when uncontrolled.
+   */
   focusedPath?: string | null;
-  onFocusChange?: (path: string | null) => void;
+  /** The sticky selection (persistent ring). Falls back to internal pin. */
+  pinnedPath?: string | null;
+  /** Transient hover peek — mouse enters a dot, or leaves the canvas (null). */
+  onHover?: (path: string | null) => void;
+  /** Sticky selection changed — click a dot toggles it, click empty space clears it. */
+  onPinToggle?: (path: string | null) => void;
   /** Square render size in px (viewBox edge). */
   size?: number;
 }
@@ -104,7 +113,8 @@ function project(angle: number, radius: number): [number, number] {
  * frequently committed together. Edges are bundled through the folder tree so
  * the picture reads as module-to-module flow rather than a hairball. Dots are
  * colored by health band; hovering a file lifts its couplings (colored by the
- * partner's health) and dims the rest.
+ * partner's health) and dims the rest, and clicking a file pins that view so it
+ * survives the mouse leaving the canvas.
  *
  * Co-change is a temporal hint, not a verified dependency; edge thickness/
  * opacity encode the decay-weighted strength, never a fabricated trend.
@@ -114,14 +124,28 @@ export function CouplingGraph({
   edges,
   totalEdges,
   focusedPath,
-  onFocusChange,
+  pinnedPath,
+  onHover,
+  onPinToggle,
   size = 760,
 }: CouplingGraphProps) {
-  const [internalFocus, setInternalFocus] = useState<string | null>(null);
-  const focus = focusedPath !== undefined ? focusedPath : internalFocus;
-  const setFocus = (p: string | null) => {
-    if (onFocusChange) onFocusChange(p);
-    else setInternalFocus(p);
+  // Internal fallback for uncontrolled use (tests, standalone). When the host
+  // wires onHover/onPinToggle + focusedPath/pinnedPath these stay unused.
+  const [internalHover, setInternalHover] = useState<string | null>(null);
+  const [internalPin, setInternalPin] = useState<string | null>(null);
+
+  const pinned = pinnedPath !== undefined ? pinnedPath : internalPin;
+  const focus =
+    focusedPath !== undefined ? focusedPath : (internalHover ?? internalPin);
+
+  const hover = (p: string | null) => {
+    if (onHover) onHover(p);
+    else setInternalHover(p);
+  };
+  const togglePin = (p: string | null) => {
+    const next = p == null || p === pinned ? null : p;
+    if (onPinToggle) onPinToggle(next);
+    else setInternalPin(next);
   };
 
   const layout = useMemo(() => {
@@ -254,8 +278,20 @@ export function CouplingGraph({
         width="100%"
         role="img"
         aria-label="Change-coupling diagram: files arranged in a ring, arcs link files that change together"
-        onMouseLeave={() => setFocus(null)}
+        onMouseLeave={() => hover(null)}
       >
+        {/* Background target: entering empty canvas drops the hover peek so the
+            lit edges clear immediately, and clicking it clears the pin. Kept
+            transparent and behind everything; dot clicks stopPropagation. */}
+        <rect
+          x={0}
+          y={0}
+          width={size}
+          height={size}
+          fill="transparent"
+          onMouseEnter={() => hover(null)}
+          onClick={() => togglePin(null)}
+        />
         <g transform={`translate(${c},${c})`}>
           {/* Module arc bands + labels around the perimeter. Tiny (≈single
               file) arcs are left unlabelled so their names don't pile up near
@@ -323,6 +359,7 @@ export function CouplingGraph({
             if (!n) return null;
             const [x, y] = project(leaf.x!, leaf.y!);
             const isFocus = focus === n.file_path;
+            const isPinned = pinned === n.file_path;
             const isNeighbor = neighbors.has(n.file_path);
             const dim = focus != null && !isFocus && !isNeighbor;
             const isHub = hubPaths.has(n.file_path);
@@ -334,17 +371,35 @@ export function CouplingGraph({
             // left half so the text never renders upside-down.
             const onLeft = leaf.x! >= Math.PI;
             const labelRot = (leaf.x! * 180) / Math.PI - 90;
+            const r = dotR(n);
             return (
               <g
                 key={n.file_path}
                 style={{ transition: "opacity 160ms ease", opacity: dim ? 0.18 : 1 }}
-                onMouseEnter={() => setFocus(n.file_path)}
+                onMouseEnter={() => hover(n.file_path)}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  togglePin(n.file_path);
+                }}
                 className="cursor-pointer"
               >
+                {/* Persistent ring on the pinned file so the sticky selection
+                    stays readable even while hovering elsewhere. */}
+                {isPinned && (
+                  <circle
+                    cx={x}
+                    cy={y}
+                    r={r * 1.5 + 3}
+                    fill="none"
+                    stroke="var(--color-accent-primary)"
+                    strokeWidth={1.5}
+                    strokeOpacity={0.9}
+                  />
+                )}
                 <circle
                   cx={x}
                   cy={y}
-                  r={dotR(n) * (isFocus ? 1.5 : 1)}
+                  r={r * (isFocus ? 1.5 : 1)}
                   fill={inkFor(n.score)}
                   fillOpacity={0.92}
                   stroke="var(--color-bg-surface)"

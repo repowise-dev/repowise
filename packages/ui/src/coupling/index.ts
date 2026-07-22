@@ -1,5 +1,6 @@
 export { CouplingGraph, type CouplingGraphProps } from "./coupling-graph";
 export { CouplingTable } from "./coupling-table";
+export { CouplingExplorer, type CouplingExplorerProps } from "./coupling-explorer";
 
 /**
  * The single canonical disclaimer for every change-coupling surface. Co-change

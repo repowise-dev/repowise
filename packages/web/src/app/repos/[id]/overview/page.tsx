@@ -5,6 +5,7 @@ import Link from "next/link";
 import { getOverviewSummary } from "@/lib/api/overview";
 import { getProviders } from "@/lib/api/providers";
 import { getStatsHighlights } from "@/lib/api/stats";
+import { getCoupling } from "@/lib/api/coupling";
 import { StatsTeaserCard } from "@/components/overview/stats-teaser-card";
 import { Badge } from "@repowise-dev/ui/ui/badge";
 import { PageShell } from "@repowise-dev/ui/shared";
@@ -17,6 +18,7 @@ import { SavingsMini } from "@repowise-dev/ui/dashboard/savings-mini";
 import { IndexStorageMini } from "@repowise-dev/ui/dashboard/index-storage-mini";
 import { LanguageDonut } from "@repowise-dev/ui/dashboard/language-donut";
 import { KnowledgeGraphCard } from "@repowise-dev/ui/dashboard/explore-cards";
+import { CouplingMiniCard } from "@repowise-dev/ui/dashboard/coupling-mini-card";
 import { AskAnythingCardWrapper } from "@/components/overview/ask-anything-card-wrapper";
 import { QuickActionsWrapper as QuickActions } from "@/components/dashboard/quick-actions-wrapper";
 import { OverviewTabs } from "@/components/overview/overview-tabs";
@@ -40,10 +42,11 @@ async function safeFetch<T>(fn: () => Promise<T>): Promise<T | null> {
 export default async function OverviewPage({ params }: Props) {
   const { id } = await params;
 
-  const [summary, providers, statsHighlights] = await Promise.all([
+  const [summary, providers, statsHighlights, coupling] = await Promise.all([
     safeFetch(() => getOverviewSummary(id)),
     safeFetch(() => getProviders()),
     safeFetch(() => getStatsHighlights(id)),
+    safeFetch(() => getCoupling(id, { limit: 3 })),
   ]);
   if (!summary) notFound();
 
@@ -193,8 +196,10 @@ export default async function OverviewPage({ params }: Props) {
             decisions={summary.recent_decisions}
           />
 
-          {/* ── Languages + explore: donut alongside the graph and chat front-doors ── */}
-          <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+          {/* ── Languages + explore: donut alongside the graph, coupling, and
+              chat front-doors. Coupling has no sidebar entry, so this card is
+              its discoverable landing-page door. ── */}
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
             {summary.languages.length > 0 && (
               <LanguageDonut
                 distribution={langDistribution}
@@ -202,6 +207,11 @@ export default async function OverviewPage({ params }: Props) {
               />
             )}
             <KnowledgeGraphCard href={`/repos/${id}/knowledge-graph`} />
+            <CouplingMiniCard
+              edges={coupling?.edges ?? []}
+              href={`/repos/${id}/architecture?view=coupling`}
+              LinkComponent={Link}
+            />
             <AskAnythingCardWrapper repoId={id} />
           </div>
         </>
