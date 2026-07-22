@@ -74,6 +74,10 @@ export const DETERMINISTIC_BADGE_LABEL = "Auto";
 export const DETERMINISTIC_BADGE_TITLE =
   "Auto-documented from code structure (no AI). Factual but terse.";
 
+export const AI_WRITTEN_BADGE_LABEL = "AI";
+export const AI_WRITTEN_BADGE_TITLE =
+  "Written by AI from the code and its context.";
+
 // ---------------------------------------------------------------------------
 // Onboarding collection
 // ---------------------------------------------------------------------------

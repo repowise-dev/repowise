@@ -3,6 +3,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Settings } from "lucide-react";
 import { WebhookSection } from "@/components/settings/webhook-section";
+import { ProviderSettingsPanel } from "@/components/settings/provider-settings-panel";
 import { RefactoringSettingsSection } from "@/components/repos/refactoring-settings-section";
 import { getRepo } from "@/lib/api/repos";
 import { getCoordinatorHealth } from "@/lib/api/health";
@@ -67,6 +68,19 @@ export default async function RepoSettingsPage({ params }: Props) {
         </CardContent>
       </Card>
 
+      <Card id="provider">
+        <CardHeader>
+          <CardTitle className="text-sm font-medium">AI provider</CardTitle>
+          <CardDescription>
+            Add a model key to write documentation with AI. Keys are stored with this
+            repository and used by generation from the UI or the CLI.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="pt-0">
+          <ProviderSettingsPanel repoId={id} />
+        </CardContent>
+      </Card>
+
       <Card>
         <CardHeader>
           <CardTitle className="text-sm font-medium">Refactoring code generation</CardTitle>
@@ -98,7 +112,7 @@ export default async function RepoSettingsPage({ params }: Props) {
       <WebhookSection />
 
       <p className="text-xs text-[var(--color-text-tertiary)]">
-        Connection, provider and MCP configuration live in{" "}
+        Server connection and MCP configuration live in{" "}
         <Link
           href="/settings"
           className="text-[var(--color-accent-primary)] hover:underline"

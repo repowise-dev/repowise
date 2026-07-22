@@ -6,6 +6,9 @@ import type {
   JobResponse,
   RepoStatsResponse,
   PreflightResponse,
+  GenerateRequest,
+  GenerateEstimate,
+  JobLaunchResponse,
 } from "./types";
 
 export async function listRepos(): Promise<RepoResponse[]> {
@@ -51,6 +54,25 @@ export async function preflightIndex(
     undefined,
     coveragePct !== undefined ? { coverage_pct: coveragePct } : undefined,
   );
+}
+
+/** Cost + page counts for a generate selection, cascade fallout included.
+ *  Heavy (rehydrates the graph and re-parses), so fetch it lazily — never on
+ *  every render. */
+export async function generateEstimate(
+  repoId: string,
+  body: GenerateRequest,
+): Promise<GenerateEstimate> {
+  return apiPost<GenerateEstimate>(`/api/repos/${repoId}/generate/estimate`, body);
+}
+
+/** Launch a scoped generate job (writes the selected pages with a model).
+ *  Returns the job id + a short-lived stream token to watch progress. */
+export async function generatePages(
+  repoId: string,
+  body: GenerateRequest,
+): Promise<JobLaunchResponse> {
+  return apiPost<JobLaunchResponse>(`/api/repos/${repoId}/generate`, body);
 }
 
 export async function deleteRepo(repoId: string): Promise<{ ok: boolean; deleted_pages: number }> {

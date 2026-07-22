@@ -1,5 +1,10 @@
 import { apiGet, apiPatch, apiPost } from "./client";
-import type { PageResponse, PageVersionResponse } from "./types";
+import type {
+  PageResponse,
+  PageVersionResponse,
+  JobLaunchResponse,
+  GenerateCascade,
+} from "./types";
 
 export async function listPages(
   repoId: string,
@@ -55,15 +60,26 @@ export async function updatePageNotes(
 }
 
 /**
- * Force-regenerate a page by ID. Pass `style` to regenerate this page in a
- * specific wiki style (per-page override); omit it to use the repo's style.
+ * Force-regenerate a single page by ID. Launches the job immediately and
+ * returns its id + stream token (D1/D5).
+ *
+ * `cascade` controls the pages that summarize this one — `none` (default)
+ * touches only this page, `dependents` also refreshes its module/layer/overview
+ * containers, `full` refreshes repo-wide. Pass `style` for a per-page wiki-style
+ * override; omit it to use the repo's style.
  */
 export async function regeneratePage(
   pageId: string,
-  style?: string,
-): Promise<{ job_id: string }> {
-  return apiPost<{ job_id: string }>("/api/pages/lookup/regenerate", undefined, undefined, {
-    page_id: pageId,
-    ...(style ? { style } : {}),
-  });
+  opts?: { cascade?: GenerateCascade; style?: string },
+): Promise<JobLaunchResponse> {
+  return apiPost<JobLaunchResponse>(
+    "/api/pages/lookup/regenerate",
+    undefined,
+    undefined,
+    {
+      page_id: pageId,
+      ...(opts?.cascade ? { cascade: opts.cascade } : {}),
+      ...(opts?.style ? { style: opts.style } : {}),
+    },
+  );
 }

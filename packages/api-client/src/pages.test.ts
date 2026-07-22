@@ -23,7 +23,7 @@ describe("regeneratePage", () => {
   });
 
   it("includes the style param for a per-page override", async () => {
-    await regeneratePage("file_page:src/main.py", "caveman");
+    await regeneratePage("file_page:src/main.py", { style: "caveman" });
     expect(apiPost.mock.calls[0]![3]).toEqual({
       page_id: "file_page:src/main.py",
       style: "caveman",
@@ -31,7 +31,15 @@ describe("regeneratePage", () => {
   });
 
   it("omits the style param for an empty override", async () => {
-    await regeneratePage("file_page:src/main.py", "");
+    await regeneratePage("file_page:src/main.py", { style: "" });
     expect(apiPost.mock.calls[0]![3]).toEqual({ page_id: "file_page:src/main.py" });
+  });
+
+  it("includes the cascade param when given", async () => {
+    await regeneratePage("file_page:src/main.py", { cascade: "dependents" });
+    expect(apiPost.mock.calls[0]![3]).toEqual({
+      page_id: "file_page:src/main.py",
+      cascade: "dependents",
+    });
   });
 });
