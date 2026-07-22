@@ -4,7 +4,7 @@ Complete reference for all `repowise` commands. For a guided introduction, see t
 
 Command list (in `--help` order): `augment`, `init`, `delete`, `generate-claude-md`, `costs`, `update`, `dead-code`, `health`, `risk`, `decision`, `coverage`, `impacted-tests`, `search`, `distill`, `expand`, `saved`, `corrections`, `export`, `hook`, `status`, `doctor`, `watch`, `serve`, `mcp`, `reindex`, `restyle`, `wiki-styles`, `whats-new`, `telemetry`, `login`, `logout`, `whoami`, `workspace`. Two more ship as separate console scripts, not subcommands: `repowise-augment`, `repowise-rewrite` (both hook entry points, not meant to be run by hand).
 
-**Do you need an LLM key?** Most commands are pure index/analysis and never call an LLM. The exceptions: `init` (unless `--index-only` or `--mode fast`), `update` (unless `--index-only` or `--no-docs`), `restyle`, `watch` (when it regenerates a page), `health --generate-code`, and `workspace add --docs`. Everything else, `search`, `dead-code`, `health`, `risk`, `impacted-tests`, `decision`, `coverage`, `export`, `mcp`, `reindex`, `doctor`, and so on, works index-only, with no provider configured.
+**Do you need an LLM key?** Most commands are pure index/analysis and never call an LLM. The exceptions: `init` (unless `--index-only` or `--mode fast`), `update` (unless `--index-only` or `--no-docs`), `generate`, `restyle`, `watch` (when it regenerates a page), `health --generate-code`, and `workspace add --docs`. Everything else, `search`, `dead-code`, `health`, `risk`, `impacted-tests`, `decision`, `coverage`, `export`, `mcp`, `reindex`, `doctor`, and so on, works index-only, with no provider configured.
 
 ## Workspace auto-detect (cross-cutting)
 
@@ -65,7 +65,7 @@ All three reach the indexing knobs; the LLM-only knobs appear only when model-wr
 | `--provider` | LLM provider: `anthropic`, `openai`, `openrouter`, `gemini`, `deepseek`, `kimi`, `ollama`, `litellm`, `codex_cli`, `opencode`, `mock` |
 | `--model` | Model name override (e.g., `claude-sonnet-4-6`) |
 | `--embedder` | Embedder for semantic search: `gemini`, `openai`, `openrouter`, `ollama`, `mock` (default: auto-detect) |
-| `--index-only` | No LLM calls, no API key, no spend. Parses, builds the graph, indexes git, and renders the whole wiki from that structure: file, module, layer and cycle (SCC) pages, the architecture diagram, the repo overview, API and infra pages, and the onboarding collection. Symbol spotlight pages are skipped, since the file pages already carry that content. Every page footer says it was derived from structure, and the repo overview covers composition, entry points, clusters and dependencies rather than what the project does end to end. Full-text search works; semantic search needs an embedder. Upgrade to model-written prose later with `update --full`, or restyle with `restyle`. |
+| `--index-only` | No LLM calls, no API key, no spend. Parses, builds the graph, indexes git, and renders the whole wiki from that structure: file, module, layer and cycle (SCC) pages, the architecture diagram, the repo overview, API and infra pages, and the onboarding collection. Symbol spotlight pages are skipped, since the file pages already carry that content. Every page footer says it was derived from structure, and the repo overview covers composition, entry points, clusters and dependencies rather than what the project does end to end. Full-text search works; semantic search needs an embedder. Upgrade to model-written prose later, any subset at a time, with [`repowise generate`](#repowise-generate-path) (or `update --full` for the whole wiki in one shot). |
 | `--mode` | Pipeline depth: `standard` (default) or `fast` (graph + essential-git only, no per-file blame/co-change, no LLM docs, for very large repos; upgrade later with `update --full`) |
 | `--skip-tests` | Exclude test files from doc generation |
 | `--skip-infra` | Exclude infrastructure files (Dockerfiles, Makefiles, Terraform) |
@@ -189,12 +189,79 @@ repowise update --full --provider anthropic   # upgrade a fast index to full
 
 ---
 
+### `repowise generate [PATH]`
+
+Write wiki pages with a model, on demand. This is the upgrade path for an
+`--index-only` repo: it turns the template (structure-rendered) pages into
+model-written prose, one page, one directory, or the whole wiki at a time,
+each behind a cost estimate. It also fills in the template tail a budgeted full
+`init` leaves behind, and rewrites already-written pages.
+
+Like `update --full` and `restyle`, it reuses the persisted index: the graph and
+git metadata are rehydrated from SQL, only the per-file parse and the LLM
+generation for the pages you selected run. A provider is required; a missing one
+is an actionable error naming the key-setup path.
+
+**Selection** (the default is `--unwritten`; combine freely, the result is their
+union):
+
+| Flag | Selects |
+|------|---------|
+| `--unwritten` | Every template (unwritten) page. The default. This is "finish writing the wiki". |
+| `--all` | Every page, template or already written. A full rewrite. |
+| `--stale` | Every page marked stale (its code changed since it was written). |
+| `--path <glob>` | Every page under a path prefix or glob, e.g. `--path src/api` (repeatable). |
+| `--page <id>` | One explicit page id, e.g. `--page file_page:src/app.py` (repeatable). |
+
+**Cascade.** Regenerating a file page makes the pages that summarize it drift:
+its module, cycle (SCC) and layer pages, and the repo overview, architecture and
+onboarding pages. `--cascade` decides what happens to them:
+
+| Value | Behavior |
+|-------|----------|
+| `none` | Generate exactly what you asked for; mark the dependents stale (truthful, free, instant). |
+| `dependents` (default) | Also regenerate the module, SCC and layer pages that contain a selected file; mark the repo-wide pages stale. |
+| `full` | Also regenerate the repo overview, architecture and onboarding pages. Nothing is left stale. |
+
+The cost estimate includes the cascade fallout, so it does not under-quote.
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--unwritten` / `--all` / `--stale` | Selection (see above). Default: `--unwritten`. |
+| `--path <glob>` | Restrict to a path prefix or glob (repeatable). |
+| `--page <id>` | An explicit page id (repeatable). |
+| `--cascade none\|dependents\|full` | Dependent-page policy (default: `dependents`). |
+| `--provider` / `--model` / `--reasoning` | LLM overrides for this run. |
+| `--concurrency` | Max concurrent LLM calls (default: 12). |
+| `--dry-run` | Print the plan and the cost estimate; generate nothing. |
+| `--yes` / `-y` | Skip the cost confirmation. |
+| `--verbose` / `-v` | Show pipeline debug logs. |
+
+```bash
+repowise generate --dry-run                 # what would it write, and cost?
+repowise generate                           # write every unwritten page
+repowise generate --all                     # rewrite the whole wiki
+repowise generate --path src/api            # just the pages under src/api
+repowise generate --page file_page:src/app.py --cascade none   # one page, nothing else
+repowise generate --stale                   # refresh pages whose code moved on
+```
+
+> It does not build the vector store. If you want semantic search over the new
+> prose, run `repowise reindex` afterwards (embedding calls only, no LLM).
+
+---
+
 ### `repowise restyle [STYLE] [PATH]`
 
 Switch a repo's wiki **style** and regenerate every page in the new voice. Reuses
 the existing index, the dependency graph and git metadata are rehydrated from
 SQL (no re-resolution, no re-blame), so only the per-file parse + LLM generation
-run. Requires a full (docs-enabled) index and a provider; fails on index-only repos.
+run. Requires a provider and an existing wiki. On an `--index-only` (template)
+repo it doubles as the upgrade: it warns that it will spend, then writes every
+page in the chosen style. To write only part of a template wiki, or to preserve
+the current style, use [`repowise generate`](#repowise-generate-path) instead.
 
 With no `STYLE`, prints the current style and the available choices.
 

@@ -40,7 +40,7 @@ def build_level01_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
             gen.generate_api_contract(p, run.source_map.get(p.file_info.path, b"")),
         )
         for p in api_files
-        if compute_page_id("api_contract", p.file_info.path) not in run.completed_ids
+        if run._emit(compute_page_id("api_contract", p.file_info.path))
     ]
 
     # ---- Level 1: symbol_spotlight (allow-set filtered) ----
@@ -62,8 +62,7 @@ def build_level01_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
             ),
         )
         for sym, pf in top_symbols
-        if compute_page_id("symbol_spotlight", f"{pf.file_info.path}::{sym.name}")
-        not in run.completed_ids
+        if run._emit(compute_page_id("symbol_spotlight", f"{pf.file_info.path}::{sym.name}"))
     ]
     return level0 + level1
 
@@ -188,6 +187,13 @@ async def build_level2_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
     Context is assembled for ALL code files (module pages need it). Pages are
     emitted only for files in the selection allow-set. Tier-1 paths get the
     full LLM path; tier-2 paths get the deterministic template renderer.
+
+    Known cost on a scoped run (``only_page_ids``): this still assembles every
+    code file's context even when the scope emits a handful of pages, because
+    ``run.file_page_contexts`` feeds the module/SCC/layer builders. It is pure
+    CPU, no LLM, and bounded by the reparse the caller already paid. Upgrade
+    path if it bites on a very large repo: restrict assembly to the emitted file
+    pages plus the member files of the emitted module/SCC/layer pages.
     """
     gen = run.gen
     _topo_order_code_files(run)
@@ -226,7 +232,7 @@ async def build_level2_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
         return (
             path in run.sel_file_paths
             and path in run.tier1_paths
-            and compute_page_id("file_page", path) not in run.completed_ids
+            and run._emit(compute_page_id("file_page", path))
         )
 
     rag_prefetched = await _prefetch_rag_context(
@@ -238,7 +244,7 @@ async def build_level2_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
     for p, ctx in items:
         path = p.file_info.path
         pid = compute_page_id("file_page", path)
-        if pid in run.completed_ids:
+        if not run._emit(pid):
             continue
         if path in run.sel_file_paths:
             if path in run.tier1_paths:
@@ -260,7 +266,7 @@ def build_level3_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
     for scc_id, scc_files in run.sel_scc_groups:
         fc_list = [run.file_page_contexts[f] for f in scc_files if f in run.file_page_contexts]
         pid = compute_page_id("scc_page", scc_id)
-        if pid not in run.completed_ids:
+        if run._emit(pid):
             coros.append((pid, gen.generate_scc_page(scc_id, scc_files, fc_list)))
     return coros
 
@@ -274,7 +280,7 @@ def build_level4_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
         if not fcs:
             continue
         page_id = compute_page_id("module_page", mg.key)
-        if page_id in run.completed_ids:
+        if not run._emit(page_id):
             continue
         coros.append(
             (
@@ -329,7 +335,7 @@ def build_level5_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
         # time and never changes under enrichment.
         layer_id = layer.get("id", "") or f"layer:{_slugify(layer_name)}"
         page_id = compute_page_id("layer_page", layer_id)
-        if page_id in run.completed_ids:
+        if not run._emit(page_id):
             continue
 
         key_files: list[dict] = []
@@ -385,7 +391,7 @@ def build_level6_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
     """Level 6 (repo_overview + architecture_diagram)."""
     gen = run.gen
     coros: list[tuple[str, Any]] = []
-    if compute_page_id("repo_overview", run.repo_name) not in run.completed_ids:
+    if run._emit(compute_page_id("repo_overview", run.repo_name)):
         coros.append(
             (
                 compute_page_id("repo_overview", run.repo_name),
@@ -402,7 +408,7 @@ def build_level6_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
                 ),
             )
         )
-    if compute_page_id("architecture_diagram", run.repo_name) not in run.completed_ids:
+    if run._emit(compute_page_id("architecture_diagram", run.repo_name)):
         from ..architecture_mermaid import build_overview_mermaid
 
         overview_mermaid = build_overview_mermaid(run.kg_ctx)
@@ -434,7 +440,7 @@ def build_level7_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
             gen.generate_infra_page(p, run.source_map.get(p.file_info.path, b"")),
         )
         for p in infra_files
-        if compute_page_id("infra_page", p.file_info.path) not in run.completed_ids
+        if run._emit(compute_page_id("infra_page", p.file_info.path))
     ]
 
 
@@ -478,7 +484,7 @@ def build_level8_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
     )
     for spec in specs:
         page_id = compute_page_id("onboarding", _onboarding.target_path(spec.slot))
-        if page_id in run.completed_ids:
+        if not run._emit(page_id):
             continue
         coros.append((page_id, gen.generate_onboarding_page(spec, signals)))
     return coros

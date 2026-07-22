@@ -228,6 +228,13 @@ class TestBuildLevel5Coros:
         run.pagerank = {}
         run.completed_page_summaries = {}
         run.completed_ids = set()
+        run.only_page_ids = None
+        # Emission now flows through the real _emit gate, so the mock must use
+        # its real logic (completed_ids + only_page_ids) rather than a truthy
+        # auto-mock that would emit everything.
+        from repowise.core.generation.page_generator.orchestrate import _GenerationRun
+
+        run._emit = lambda pid: _GenerationRun._emit(run, pid)
         run.gen = MagicMock()
         return run
 

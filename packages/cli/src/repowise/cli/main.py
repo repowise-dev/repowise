@@ -18,6 +18,7 @@ from repowise.cli.commands.distill_cmd import distill_command
 from repowise.cli.commands.doctor_cmd import doctor_command
 from repowise.cli.commands.expand_cmd import expand_command
 from repowise.cli.commands.export_cmd import export_command
+from repowise.cli.commands.generate_cmd import generate_command
 from repowise.cli.commands.health_cmd import health_command
 from repowise.cli.commands.hook_cmd import hook_group
 from repowise.cli.commands.impacted_tests_cmd import impacted_tests_command
@@ -68,6 +69,7 @@ register_command(delete_command)
 register_command(claude_md_command)
 register_command(costs_command)
 register_command(update_command)
+register_command(generate_command)
 register_command(dead_code_command)
 register_command(health_command)
 register_command(risk_command)

@@ -62,10 +62,17 @@ class _GenerationRun:
         on_page_ready: Callable[[GeneratedPage], None] | None = None,
         kg_modules: list[dict] | None = None,
         kg_data: dict | None = None,
+        only_page_ids: set[str] | None = None,
     ) -> None:
         self.gen = gen
         self.config = gen._config
         self.vector_store = gen._vector_store
+        # Scoped generation: when set, a level emits a page only if its id is
+        # in this set (and not already completed). None means "every page the
+        # selection allows", the historical behaviour. The whole repo is still
+        # parsed and its graph built, so a requested repo-wide page is rendered
+        # from the complete view. See ``_emit`` for the single choke point.
+        self.only_page_ids = only_page_ids
         self.parsed_files = parsed_files
         self.source_map = source_map
         self.graph_builder = graph_builder
@@ -176,6 +183,19 @@ class _GenerationRun:
             self.gen._provider.model_name,
         )
 
+    def _emit(self, page_id: str) -> bool:
+        """Whether this run should generate ``page_id``.
+
+        The single gate every level builder consults. A page is emitted unless
+        it was already completed (resume) or a scoped run (``only_page_ids``)
+        did not ask for it. Because the builders call this in the ``if`` clause
+        that guards coroutine construction, a filtered-out page never even
+        allocates its coroutine.
+        """
+        if page_id in self.completed_ids:
+            return False
+        return self.only_page_ids is None or page_id in self.only_page_ids
+
     async def _seed_resume(self) -> None:
         if self.job_system is not None and self.resume and self.vector_store is not None:
             self.completed_ids = await self.vector_store.list_page_ids()
@@ -236,6 +256,10 @@ class _GenerationRun:
                 # file_page budget toward modules agents ask about. Empty (no
                 # session history / disabled) leaves selection uniform.
                 demand=self._compute_demand() or None,
+                # A scoped run (repowise generate) rations via only_page_ids, so
+                # the coverage budget must not pre-filter the allow-set — every
+                # requested page has to survive selection to be emittable.
+                select_all=self.only_page_ids is not None,
             )
         )
 
@@ -309,6 +333,18 @@ class _GenerationRun:
             return {}
 
     def _announce_total(self) -> None:
+        # A scoped run emits exactly the requested-and-not-yet-done ids, so the
+        # selection-derived estimate below would badly over-count. The set is
+        # still an upper bound (a page may gate-skip at build time), matching
+        # the contract the caller reconciles against the real completed count.
+        if self.only_page_ids is not None:
+            remaining = len(self.only_page_ids - self.completed_ids)
+            if self.on_total_known is not None:
+                self.on_total_known(remaining)
+            if self.job_system is not None and self.job_id is not None:
+                self.job_system.start_job(self.job_id, remaining)
+            return
+
         counts = self.selection.counts()
         layer_page_count = 0
         if self.kg_ctx.available:

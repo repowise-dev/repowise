@@ -214,3 +214,78 @@ class TestFilePagesOnly:
     def test_still_produces_the_file_page(self, scoped_pages):
         assert scoped_pages, "the changed file's own page must still be rendered"
         assert all(p.provider_name == "template" for p in scoped_pages)
+
+
+class TestOnlyPageIds:
+    """Scoped generation: emit an arbitrary subset from the complete view.
+
+    Unlike ``file_pages_only`` (which stops the level ladder), ``only_page_ids``
+    runs every level over the whole parsed repo and emits only the requested
+    ids. That is what lets ``repowise generate --page`` refresh one repo-wide
+    page correctly rather than from a truncated slice.
+    """
+
+    @pytest.fixture(scope="class")
+    async def full_ids(self, tmp_path_factory):
+        """Every page id a full deterministic run over the fixture produces."""
+        return {p.page_id for p in await _run_deterministic(tmp_path_factory, "only_full")}
+
+    async def test_emits_exactly_the_requested_subset(self, tmp_path_factory, full_ids):
+        # Ask for one file page plus the repo overview — a mix of a leaf page
+        # and a level-6 whole-repo page.
+        a_file = next(pid for pid in full_ids if pid.startswith("file_page:"))
+        overview = next(pid for pid in full_ids if pid.startswith("repo_overview:"))
+        requested = {a_file, overview}
+        pages = await _run_deterministic(
+            tmp_path_factory, "only_subset", only_page_ids=requested
+        )
+        produced = {p.page_id for p in pages}
+        assert produced == requested, f"scoped run leaked or dropped pages: {produced ^ requested}"
+
+    async def test_unrequested_repo_wide_page_is_absent(self, tmp_path_factory, full_ids):
+        a_file = next(pid for pid in full_ids if pid.startswith("file_page:"))
+        pages = await _run_deterministic(tmp_path_factory, "only_onefile", only_page_ids={a_file})
+        assert {p.page_id for p in pages} == {a_file}
+
+
+async def _run_deterministic(tmp_path_factory, name, *, only_page_ids=None):
+    """Run a full deterministic generate_all over the fixture repo."""
+    tmp = tmp_path_factory.mktemp(name)
+    traverser = FileTraverser(SAMPLE_REPO)
+    parser = ASTParser()
+    builder = GraphBuilder()
+    parsed_files: list[ParsedFile] = []
+    source_map: dict[str, bytes] = {}
+    for fi in traverser.traverse():
+        try:
+            src = Path(fi.abs_path).read_bytes()
+            parsed = parser.parse_file(fi, src)
+            builder.add_file(parsed)
+            parsed_files.append(parsed)
+            source_map[fi.path] = src
+        except Exception:
+            pass
+    builder.build()
+    repo_structure = RepoStructure(
+        is_monorepo=False,
+        packages=[],
+        root_language_distribution={"python": 1.0},
+        total_files=len(parsed_files),
+        total_loc=0,
+        entry_points=[],
+    )
+    config = GenerationConfig(
+        deterministic=True,
+        max_concurrency=3,
+        jobs_dir=str(tmp / "jobs"),
+    )
+    generator = PageGenerator(TemplateProvider(), ContextAssembler(config), config)
+    return await generator.generate_all(
+        parsed_files,
+        source_map,
+        builder,
+        repo_structure,
+        "sample_repo",
+        job_system=None,
+        only_page_ids=only_page_ids,
+    )

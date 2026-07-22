@@ -205,8 +205,15 @@ class GenerationConfig:
     # whole-repo page with a view of one commit: a codebase map with no
     # directories, a module page claiming one file. Their inputs are also
     # unchanged by most commits, so the work is wasted as well as wrong.
-    # Set by the incremental deterministic path, which regenerates the changed
-    # files' pages and leaves the repo-wide ones to a full run.
+    # Set by every incremental path (deterministic and LLM), which regenerates
+    # the changed files' pages and leaves the repo-wide ones for a full run.
+    #
+    # This is the coarse, structural sibling of ``generate_all``'s per-call
+    # ``only_page_ids``: it stops the level ladder entirely rather than
+    # building levels 3-8 and filtering them to an empty set, so an incremental
+    # run does no repo-wide work at all. ``only_page_ids`` is the general form
+    # (emit an arbitrary subset from the complete repo view) and is what
+    # ``repowise generate`` uses to refresh those repo-wide pages on demand.
     file_pages_only: bool = False
 
     def __post_init__(self) -> None:

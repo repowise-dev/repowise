@@ -42,6 +42,7 @@ async def run_generation(
     prior_pages: dict[str, Any] | None = None,
     kg_modules: list[dict] | None = None,
     kg_data: dict | None = None,
+    only_page_ids: set[str] | None = None,
 ) -> list[Any]:
     """Run LLM-powered page generation.
 
@@ -51,6 +52,9 @@ async def run_generation(
     lets the generator skip the LLM call for any page whose freshly rendered
     prompt still hashes to the persisted value under the same model — the same
     cross-run reuse ``repowise update`` relies on. Defaults to empty.
+
+    ``only_page_ids`` scopes the run to an explicit set of page ids (the
+    ``repowise generate`` path). None means the full selection, as before.
     """
     from repowise.core.generation import (
         ContextAssembler,
@@ -142,6 +146,7 @@ async def run_generation(
         on_page_ready=on_page_ready,
         kg_modules=kg_modules,
         kg_data=kg_data,
+        only_page_ids=only_page_ids,
     )
 
     # Onboarding summary — count generated slots and surface which ones
