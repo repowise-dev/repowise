@@ -173,6 +173,46 @@ def test_workspace_update_regenerates_docs_for_docs_enabled_repo(tmp_path: Path)
     )
 
 
+def test_workspace_docs_update_reports_deferral_not_regeneration(tmp_path: Path) -> None:
+    """A docs member whose single-flight lock is already held by an in-flight
+    update must be reported as *deferred*, never counted as "with docs
+    regenerated" (the false-success the summary used to print while a
+    background post-commit-hook update was still running), and its docs
+    pointer must not advance.
+    """
+    from repowise.core.update_lock import release_update_lock, try_acquire_update_lock
+
+    repo = _make_workspace(tmp_path)
+
+    _index_full(repo)
+    c0 = _git(repo, "rev-parse", "HEAD")
+    save_state(repo, {SYNC_POINTER_KEY: c0, DOCS_POINTER_KEY: c0, "docs_enabled": True})
+
+    c1 = _commit_change(repo, "c.py", "def gamma():\n    return 3\n", "add c.py")
+
+    # Simulate an update already in flight: hold the member's single-flight
+    # lock (alive PID) so the workspace docs run bails instead of regenerating.
+    assert try_acquire_update_lock(repo, c1) is None, "test should own the lock first"
+    try:
+        old_cwd = os.getcwd()
+        try:
+            os.chdir(str(repo))
+            result = CliRunner().invoke(cli, ["update", "--workspace", "--provider", "mock"])
+        finally:
+            os.chdir(old_cwd)
+    finally:
+        release_update_lock(repo)
+
+    assert result.exit_code == 0, result.output
+    assert "deferred to an in-flight update" in result.output, result.output
+    assert "with docs regenerated" not in result.output, (
+        "a lock-bail must not be reported as a regeneration"
+    )
+    # Nothing regenerated -> the docs pointer stays put (the in-flight update
+    # owns advancing it once it finishes).
+    assert _state(repo).get(DOCS_POINTER_KEY) == c0
+
+
 def test_docs_early_exit_advances_docs_pointer(tmp_path: Path) -> None:
     """When a docs run finds no changed files, it must advance the docs pointer to
     HEAD (and, on legacy state, the sync pointer as well). An empty commit advances

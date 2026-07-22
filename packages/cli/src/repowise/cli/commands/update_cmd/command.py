@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import sys
 import time
+from enum import StrEnum
 from typing import Any
 
 import click
@@ -328,7 +329,9 @@ def update_command(
     workspace exists upstream of the working directory. Use --no-workspace to
     force single-repo mode and --workspace to force workspace mode.
     """
-    return run_update(
+    # Click ignores the return value, so don't forward run_update's outcome
+    # here (keeps this command's ``-> None`` annotation honest).
+    run_update(
         path=path,
         provider_name=provider_name,
         model=model,
@@ -349,6 +352,21 @@ def update_command(
         verbose=verbose,
         progress=progress,
     )
+
+
+class UpdateOutcome(StrEnum):
+    """What a single-repo :func:`run_update` actually did.
+
+    The workspace docs loop used to count every non-raising ``run_update``
+    return as a regeneration, so a run that bailed on the single-flight lock
+    (another update already in flight) still printed "N with docs
+    regenerated". Returning the real outcome lets the caller report honestly.
+    """
+
+    REGENERATED = "regenerated"  # pages/index actually rewritten
+    DEFERRED = "deferred"  # another update held the single-flight lock; queued
+    NOOP = "noop"  # already current / no relevant changes to regenerate
+    DRY_RUN = "dry_run"  # dry run, nothing written
 
 
 def run_update(
@@ -372,7 +390,7 @@ def run_update(
     verbose: bool = False,
     progress: str = "rich",
     skip_cross_repo_hooks: bool = False,
-) -> None:
+) -> UpdateOutcome:
     """Incrementally update wiki pages for files changed since last sync.
 
     If `since` is None, the base commit is read from state.json's last_sync_commit.
@@ -448,9 +466,13 @@ def run_update(
             raise
         if emitter is not None:
             emitter.done(
-                ok=True, pages_generated=0, cost_usd=0.0, duration_s=time.monotonic() - start
+                ok=True,
+                pages_generated=0,
+                cost_usd=0.0,
+                duration_s=time.monotonic() - start,
+                outcome=UpdateOutcome.REGENERATED.value,
             )
-        return
+        return UpdateOutcome.REGENERATED
 
     # --- Single-repo path from here on. ---
     repo_path = target.repo_path
@@ -508,9 +530,13 @@ def run_update(
             raise
         if emitter is not None:
             emitter.done(
-                ok=True, pages_generated=0, cost_usd=0.0, duration_s=time.monotonic() - start
+                ok=True,
+                pages_generated=0,
+                cost_usd=0.0,
+                duration_s=time.monotonic() - start,
+                outcome=UpdateOutcome.REGENERATED.value,
             )
-        return
+        return UpdateOutcome.REGENERATED
     # Truncate the hook-managed log if it has grown past the cap. The hook
     # appends each run unconditionally — without this opportunistic rotation
     # at the start of every CLI update, a busy repo's ``.update.log`` would
@@ -581,9 +607,13 @@ def run_update(
             _refresh_editor_stamp(repo_path, agents_md)
         if emitter is not None:
             emitter.done(
-                ok=True, pages_generated=0, cost_usd=0.0, duration_s=time.monotonic() - start
+                ok=True,
+                pages_generated=0,
+                cost_usd=0.0,
+                duration_s=time.monotonic() - start,
+                outcome=UpdateOutcome.NOOP.value,
             )
-        return
+        return UpdateOutcome.NOOP
 
     # --- Single-flight lock ---------------------------------------------
     # A live lock from another process means a `repowise update` is already
@@ -610,13 +640,19 @@ def run_update(
         )
         console.print(
             f"[dim]HEAD {head[:8] if head else 'HEAD'} marked as pending; "
-            "the running update will roll forward to it.[/dim]"
+            "the running update will roll forward to it. This run regenerated "
+            "nothing; watch [bold].repowise/.update.log[/bold] for the one in "
+            "flight.[/dim]"
         )
         if emitter is not None:
             emitter.done(
-                ok=True, pages_generated=0, cost_usd=0.0, duration_s=time.monotonic() - start
+                ok=True,
+                pages_generated=0,
+                cost_usd=0.0,
+                duration_s=time.monotonic() - start,
+                outcome=UpdateOutcome.DEFERRED.value,
             )
-        return
+        return UpdateOutcome.DEFERRED
 
     # We own the lock from here on: the augment hook suppresses its
     # stale-wiki warning while this run is in flight (typical case: the
@@ -705,9 +741,13 @@ def run_update(
         _refresh_editor_stamp(repo_path, agents_md)
         if emitter is not None:
             emitter.done(
-                ok=True, pages_generated=0, cost_usd=0.0, duration_s=time.monotonic() - start
+                ok=True,
+                pages_generated=0,
+                cost_usd=0.0,
+                duration_s=time.monotonic() - start,
+                outcome=UpdateOutcome.NOOP.value,
             )
-        return
+        return UpdateOutcome.NOOP
 
     if config_changed:
         # Full re-score (not the partial update) so unchanged files pick up the
@@ -717,9 +757,13 @@ def run_update(
             console.print("[yellow]Dry run — health would be re-scored. No changes made.[/yellow]")
             if emitter is not None:
                 emitter.done(
-                    ok=True, pages_generated=0, cost_usd=0.0, duration_s=time.monotonic() - start
+                    ok=True,
+                    pages_generated=0,
+                    cost_usd=0.0,
+                    duration_s=time.monotonic() - start,
+                    outcome=UpdateOutcome.DRY_RUN.value,
                 )
-            return
+            return UpdateOutcome.DRY_RUN
         cfg = load_config(repo_path)
         exclude_patterns = list(cfg.get("exclude_patterns") or [])
         if emitter is not None:
@@ -733,9 +777,13 @@ def run_update(
         _refresh_editor_stamp(repo_path, agents_md)
         if emitter is not None:
             emitter.done(
-                ok=True, pages_generated=0, cost_usd=0.0, duration_s=time.monotonic() - start
+                ok=True,
+                pages_generated=0,
+                cost_usd=0.0,
+                duration_s=time.monotonic() - start,
+                outcome=UpdateOutcome.REGENERATED.value,
             )
-        return
+        return UpdateOutcome.REGENERATED
 
     render_changed_files(file_diffs, verbose=verbose)
 
@@ -792,9 +840,13 @@ def run_update(
         console.print("[yellow]Dry run — no pages regenerated.[/yellow]")
         if emitter is not None:
             emitter.done(
-                ok=True, pages_generated=0, cost_usd=0.0, duration_s=time.monotonic() - start
+                ok=True,
+                pages_generated=0,
+                cost_usd=0.0,
+                duration_s=time.monotonic() - start,
+                outcome=UpdateOutcome.DRY_RUN.value,
             )
-        return
+        return UpdateOutcome.DRY_RUN
 
     partial_health_report, dead_code_report = _run_partial_analysis(
         repo_path, graph_builder, git_meta_map, parsed_files, file_diffs
@@ -876,9 +928,7 @@ def run_update(
                 try:
                     from repowise.cli.helpers import resolve_provider
 
-                    model_provider = resolve_provider(
-                        provider_name, model, repo_path=repo_path
-                    )
+                    model_provider = resolve_provider(provider_name, model, repo_path=repo_path)
                 except Exception:
                     model_provider = None
 
@@ -994,8 +1044,9 @@ def run_update(
                 cost_usd=index_only_cost,
                 duration_s=time.monotonic() - start,
                 degraded=degraded,
+                outcome=UpdateOutcome.REGENERATED.value,
             )
-        return
+        return UpdateOutcome.REGENERATED
 
     # The generation/LLM layer is only needed past this point — importing it
     # above the index-only branch would make every index-only update (the
@@ -1522,8 +1573,9 @@ def run_update(
             cost_usd=cost_tracker.session_cost,
             duration_s=elapsed,
             degraded=degraded,
+            outcome=UpdateOutcome.REGENERATED.value,
         )
-        return
+        return UpdateOutcome.REGENERATED
     show_full_completion(
         generated_pages=generated_pages,
         decay_count=len(affected.decay_only),
@@ -1536,3 +1588,4 @@ def run_update(
     )
     if verbose:
         _render_update_report(generated_pages, affected, new_decision_markers, elapsed)
+    return UpdateOutcome.REGENERATED

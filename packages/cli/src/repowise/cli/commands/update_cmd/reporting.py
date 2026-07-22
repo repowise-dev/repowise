@@ -131,11 +131,17 @@ class JsonProgressEmitter:
         cost_usd: float,
         duration_s: float,
         degraded: list[str] | None = None,
+        outcome: str | None = None,
     ) -> None:
+        # ``outcome`` lets a supervising agent tell a real regeneration apart
+        # from a run that only deferred to an in-flight update or found nothing
+        # to do — all three otherwise emit ``ok=True, pages_generated=0``.
+        # Mirrors the ``UpdateOutcome`` values in ``command.py``.
         self._emit(
             {
                 "event": "done",
                 "ok": ok,
+                "outcome": outcome,
                 "pages_generated": pages_generated,
                 "cost_usd": cost_usd,
                 "duration_s": duration_s,

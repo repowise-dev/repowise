@@ -283,11 +283,13 @@ def _workspace_docs_update(
         sync_workspace_state_from_disk,
     )
 
-    from .command import run_update
+    from .command import UpdateOutcome, run_update
 
     changed_aliases: list[str] = []
     docs_updated = 0
     docs_failed = 0
+    docs_deferred = 0  # bailed on another update's single-flight lock
+    docs_noop = 0  # already current / nothing to regenerate
 
     # --- Index-only + first-time members: fast parallel core path ----------
     # only_aliases bounds the candidate set; update_workspace still re-checks
@@ -295,8 +297,7 @@ def _workspace_docs_update(
     core_aliases = {
         entry.alias
         for entry in ws_config.repos
-        if (repo_filter is None or entry.alias == repo_filter)
-        and entry.alias not in docs_aliases
+        if (repo_filter is None or entry.alias == repo_filter) and entry.alias not in docs_aliases
     }
     core_results: list[RepoUpdateResult] = []
     if core_aliases:
@@ -338,7 +339,7 @@ def _workspace_docs_update(
         repo_path = (ws_root / entry.path).resolve()
         console.print(f"  Updating [bold]{entry.alias}[/bold] (docs)...")
         try:
-            run_update(
+            outcome = run_update(
                 path=str(repo_path),
                 provider_name=provider_name,
                 model=model,
@@ -367,8 +368,21 @@ def _workspace_docs_update(
             docs_failed += 1
             console.print(f"    [red]✗ {entry.alias}: {exc}[/red]")
             continue
-        docs_updated += 1
-        changed_aliases.append(entry.alias)
+        # Count what actually happened. A run that bailed on another update's
+        # single-flight lock (DEFERRED) regenerated nothing — folding it into
+        # ``docs_updated`` was the "N with docs regenerated" lie the user saw
+        # while a background post-commit-hook update was still in flight.
+        # run_update already printed the "another update is in flight" note for
+        # the deferred case, so don't re-announce it here.
+        if outcome == UpdateOutcome.DEFERRED:
+            docs_deferred += 1
+        elif outcome == UpdateOutcome.REGENERATED:
+            docs_updated += 1
+            # Only a real regeneration feeds the cross-repo pass; a no-op or a
+            # deferral leaves the cross-repo layer untouched.
+            changed_aliases.append(entry.alias)
+        else:  # NOOP / DRY_RUN
+            docs_noop += 1
 
     # The single-repo path only writes each repo's state.json, not the
     # workspace config, so re-sync it: the docs repos' advanced last_sync_commit
@@ -401,19 +415,36 @@ def _workspace_docs_update(
     )
 
     core_updated = sum(1 for r in core_results if r.updated)
+    core_deferred = sum(1 for r in core_results if r.skipped_reason == "in_flight")
+    deferred = docs_deferred + core_deferred
     parts: list[str] = []
     if docs_updated:
         parts.append(f"{docs_updated} with docs regenerated")
     if core_updated:
         parts.append(f"{core_updated} re-indexed")
+    if deferred:
+        parts.append(f"{deferred} deferred to an in-flight update")
+    if docs_noop:
+        parts.append(f"{docs_noop} already current")
     if docs_failed:
         parts.append(f"[red]{docs_failed} failed[/red]")
     summary = ", ".join(parts) if parts else "nothing to update"
     console.print()
-    console.print(
-        f"[green]Workspace update complete[/green]: {summary} "
-        f"[dim]({time.monotonic() - start:.1f}s)[/dim]"
-    )
+    # When every stale repo only deferred (a background update already owns the
+    # work), "complete" would overclaim — the real regeneration is still
+    # running elsewhere. Say so, and point at the log the hook writes.
+    if deferred and not (docs_updated or core_updated):
+        console.print(
+            f"[yellow]Workspace update deferred[/yellow]: {summary}. "
+            "A background update is still running; watch "
+            "[bold].repowise/.update.log[/bold]. "
+            f"[dim]({time.monotonic() - start:.1f}s)[/dim]"
+        )
+    else:
+        console.print(
+            f"[green]Workspace update complete[/green]: {summary} "
+            f"[dim]({time.monotonic() - start:.1f}s)[/dim]"
+        )
 
 
 def _refresh_workspace_editor_project_files(

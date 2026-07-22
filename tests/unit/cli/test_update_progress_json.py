@@ -56,11 +56,22 @@ class TestJsonProgressEmitter:
         assert event == {
             "event": "done",
             "ok": True,
+            "outcome": None,
             "pages_generated": 5,
             "cost_usd": 0.42,
             "duration_s": 12.3,
             "degraded": [],
         }
+
+    def test_done_carries_outcome(self, capsys):
+        # A supervising agent needs to tell a run that regenerated nothing but
+        # deferred to an in-flight update apart from a real regeneration; both
+        # otherwise emit ok=True, pages_generated=0.
+        JsonProgressEmitter().done(
+            ok=True, pages_generated=0, cost_usd=0.0, duration_s=1.0, outcome="deferred"
+        )
+        (event,) = self._lines(capsys)
+        assert event["outcome"] == "deferred"
 
     def test_done_reports_degraded_steps(self, capsys):
         JsonProgressEmitter().done(
@@ -145,6 +156,7 @@ class TestUpdateProgressJsonCli:
         assert events[-1] == {
             "event": "done",
             "ok": True,
+            "outcome": "noop",
             "pages_generated": 0,
             "cost_usd": 0.0,
             "duration_s": events[-1]["duration_s"],
