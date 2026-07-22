@@ -488,9 +488,7 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
             exclude_patterns=ctx.exclude_patterns if ctx.exclude_patterns else None,
             commit_limit=ctx.resolved_commit_limit if ctx.resolved_commit_limit else None,
             embedder=det_embedder,
-            embedding_model=(
-                resolve_embedding_model(det_embedder) if det_embedder else None
-            ),
+            embedding_model=(resolve_embedding_model(det_embedder) if det_embedder else None),
         )
 
     return _RepoOutcome(
@@ -566,8 +564,13 @@ def _workspace_init(
     console.print(f"  Detected [bold]{len(scan.repos)}[/bold] repositories in {root}\n")
 
     # Step 1: Select repos to index
-    # --yes or --all: take every detected repo without prompting.
-    select_all = init_all or yes
+    # --yes or --all: take every detected repo without prompting. So does a
+    # non-terminal stdin: this is the first prompt in the workspace flow, it
+    # runs before any indexing, and asking a pipe would end the run with an
+    # EOFError before the tool had done anything at all. Agents drive init
+    # this way routinely. "Every repo the scan found" is also what --all
+    # means, so the fallback matches the flag a human would have passed.
+    select_all = init_all or yes or not sys.stdin.isatty()
     selected = list(scan.repos) if select_all else interactive_repo_select(console, scan.repos)
 
     if not selected:

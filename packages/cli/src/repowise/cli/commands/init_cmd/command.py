@@ -333,12 +333,11 @@ def _run_generation_phase(
         console.print("[yellow]Dry run — no pages generated.[/yellow]")
         return True, False
 
-    if cost_gate_declined(est, yes=yes, message="  Estimated cost exceeds $2.00. Continue?"):
+    if cost_gate_declined(est, yes=yes, message="  Write the wiki with the model at this cost?"):
         console.print(
-            "[yellow]Skipped LLM generation.[/yellow] "
-            "[dim]Index/graph/git/dead-code will be saved; future "
-            "`repowise update` runs default to index-only so the "
-            "post-commit hook won't trigger LLM regen.[/dim]"
+            "[yellow]Not writing it with the model.[/yellow] "
+            "[dim]Future `repowise update` runs stay index-only, so the "
+            "post-commit hook won't start a model run on its own.[/dim]"
         )
         return False, True
 
@@ -826,7 +825,26 @@ def init_command(
         with console.status("  Scanning repository…", spinner=OWL_SPINNER):
             scan_info = quick_repo_scan(repo_path)
         print_scan_summary(console, scan_info)
-        mode = interactive_mode_select(console)
+
+        # ``sys.stdin.isatty()`` is not a reliable answer to "can I read from
+        # stdin". On Windows under Git Bash, ``repowise init < /dev/null``
+        # reports a TTY and then reads EOF on the first question; the same goes
+        # for some pty wrappers and ``docker run -t`` without -i. Agents drive
+        # init through exactly those shapes, so the first prompt is treated as
+        # the probe: if it cannot be answered, drop to the non-interactive path
+        # and carry on rather than dying on a question nobody can hear. Only
+        # EOFError is caught. A real Ctrl-C raises KeyboardInterrupt/Abort and
+        # must still stop the run.
+        mode = None
+        try:
+            mode = interactive_mode_select(console)
+        except EOFError:
+            is_interactive = False
+            console.print(
+                "\n[yellow]No answer available on stdin[/yellow] "
+                "[dim]— continuing with defaults. Pass --yes to skip the "
+                "questions.[/dim]"
+            )
 
         # Map the menu onto the two axes (docs on/off, customize yes/no):
         #   full       -> docs on,  optional customize
@@ -838,14 +856,17 @@ def init_command(
         elif mode == "advanced":
             generate_docs = interactive_generate_docs_toggle(console)
             customize = True
-        else:  # full
+        elif mode is not None:  # full
             generate_docs = True
             customize = interactive_customize_offer(console, generate_docs=True)
-        index_only = not generate_docs
+        if mode is not None:
+            index_only = not generate_docs
 
         # Provider selection only when docs will be generated. Index-only runs
         # auto-detect a decision-extraction provider later without prompting.
-        if generate_docs:
+        # ``is_interactive`` can have been cleared just above by an unanswerable
+        # menu, in which case every remaining question here is unanswerable too.
+        if generate_docs and is_interactive:
             selection = interactive_provider_config_select(
                 console,
                 model,
@@ -897,7 +918,7 @@ def init_command(
             if run_mode == "fast":
                 index_only = True
                 generate_docs = False
-        else:
+        elif is_interactive:
             # No customization: still offer the fast first-index on large repos.
             # Default yes for an index-only run (docs already opted out), no for a
             # full run (the user explicitly asked for docs).
@@ -913,7 +934,7 @@ def init_command(
         # Wiki style: prompt for a docs run when not already chosen (via the
         # --wiki-style flag or the advanced generation section). Index-only runs
         # generate no pages, so the question is skipped. --yes uses the default.
-        if generate_docs and wiki_style is None and not yes:
+        if generate_docs and wiki_style is None and not yes and is_interactive:
             wiki_style = prompt_wiki_style(console)
 
     # Resolve the effective style (CLI flag > interactive prompt > default) and

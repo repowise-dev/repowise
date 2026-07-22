@@ -68,7 +68,15 @@ def offer_distill_rewrite_hook(
             f"  [dim]{scope}Each rewrite is shown for approval; raw output stays "
             "recoverable via `repowise expand`.[/dim]"
         )
-        flag = click.confirm("  Install the Claude Code rewrite hook?", default=True)
+        try:
+            flag = click.confirm("  Install the Claude Code rewrite hook?", default=True)
+        except (click.Abort, EOFError):
+            # Same unanswerable-terminal case as the post-commit hook offer
+            # above: decline an optional extra rather than fail a finished run.
+            console_obj.print(
+                "\n  [dim]Skipped. Run 'repowise hook rewrite install' later to set up.[/dim]"
+            )
+            return
 
     if flag:
         path = adapter.install_rewrite_hook()
@@ -108,6 +116,25 @@ def offer_hook_install(
     if not sys.stdin.isatty():
         return  # Non-interactive — skip
 
+    try:
+        _offer_hook_install_prompts(console_obj, repo_paths, aliases)
+    except (click.Abort, EOFError):
+        # isatty() claimed a terminal that cannot answer (Windows Git Bash
+        # ``< /dev/null``, pty wrappers, ``docker run -t`` without -i). This is
+        # the last step of a run whose index and wiki are already written, and
+        # an optional hook is not worth failing it over: decline and exit
+        # clean. Ctrl-C lands here too, which asks for the same outcome.
+        console_obj.print(
+            "\n  [dim]Skipped the hook. Run 'repowise hook install' later to set it up.[/dim]"
+        )
+
+
+def _offer_hook_install_prompts(
+    console_obj: Any,
+    repo_paths: list[Path],
+    aliases: list[str] | None,
+) -> None:
+    """Ask which repos get a post-commit hook, and install it. Prompts."""
     from repowise.cli.hooks import install, status
 
     # Filter to repos that don't already have the hook
