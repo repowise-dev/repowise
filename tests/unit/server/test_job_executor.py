@@ -326,3 +326,111 @@ async def test_incremental_page_regen_passes_repo_path(tmp_path):
 
     generator.generate_all.assert_awaited_once()
     assert generator.generate_all.await_args.kwargs["repo_path"] == Path(repo_path)
+
+
+@pytest.mark.asyncio
+async def test_execute_job_fails_on_unknown_mode(session_factory, tmp_path):
+    """An unrecognized job mode explicitly fails the job rather than running partial work."""
+    from repowise.core.persistence.crud import get_generation_job
+
+    async with session_factory() as session:
+        repo = await upsert_repository(session, name="test-repo", local_path=str(tmp_path))
+        job = await upsert_generation_job(
+            session,
+            repository_id=repo.id,
+            config={"mode": "incremental"},
+        )
+        await session.commit()
+        job_id = job.id
+
+    app_state = SimpleNamespace(session_factory=session_factory, fts=None, vector_store=None)
+
+    run_pipeline_mock = AsyncMock(return_value=_fake_result())
+    with (
+        patch("repowise.server.job_executor.run_pipeline", run_pipeline_mock),
+        patch("repowise.server.job_executor.persist_pipeline_result", AsyncMock()),
+    ):
+        await execute_job(job_id, app_state)
+
+    # Pipeline should not run when mode is invalid
+    run_pipeline_mock.assert_not_called()
+
+    # Job status should be recorded as failed in the DB with clear error message
+    async with session_factory() as session:
+        updated_job = await get_generation_job(session, job_id)
+        assert updated_job is not None
+        assert updated_job.status == "failed"
+        assert "Invalid job mode 'incremental'" in (updated_job.error_message or "")
+
+
+@pytest.mark.asyncio
+async def test_execute_job_defaults_to_sync_when_mode_absent(session_factory, tmp_path):
+    """A missing mode key (config={}) defaults to 'sync' and proceeds without failing."""
+    async with session_factory() as session:
+        repo = await upsert_repository(session, name="test-repo", local_path=str(tmp_path))
+        job = await upsert_generation_job(
+            session,
+            repository_id=repo.id,
+            config={},
+        )
+        await session.commit()
+        job_id = job.id
+
+    app_state = SimpleNamespace(session_factory=session_factory, fts=None, vector_store=None)
+
+    run_pipeline_mock = AsyncMock(return_value=_fake_result())
+    get_provider_mock = MagicMock(side_effect=RuntimeError("no provider"))
+    with (
+        patch("repowise.server.job_executor.run_pipeline", run_pipeline_mock),
+        patch("repowise.server.job_executor.persist_pipeline_result", AsyncMock()),
+        patch(
+            "repowise.server.provider_config.get_chat_provider_instance",
+            get_provider_mock,
+        ),
+    ):
+        await execute_job(job_id, app_state)
+
+    # Pipeline must have run
+    run_pipeline_mock.assert_awaited_once()
+    # Provider lookup was attempted — proves fallback is "sync", not "index_only"
+    # ("index_only" skips the provider block entirely)
+    get_provider_mock.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_execute_job_defaults_to_sync_when_mode_empty_string(session_factory, tmp_path):
+    """An explicit empty-string mode also defaults to 'sync' via the `or` fallback.
+
+    This is the case that actually exercises the ``or "sync"`` branch of
+    ``mode = str(config.get("mode") or "sync")``, and is most likely to
+    break in a future refactor of that line.
+    """
+    async with session_factory() as session:
+        repo = await upsert_repository(session, name="test-repo", local_path=str(tmp_path))
+        job = await upsert_generation_job(
+            session,
+            repository_id=repo.id,
+            config={"mode": ""},
+        )
+        await session.commit()
+        job_id = job.id
+
+    app_state = SimpleNamespace(session_factory=session_factory, fts=None, vector_store=None)
+
+    run_pipeline_mock = AsyncMock(return_value=_fake_result())
+    get_provider_mock = MagicMock(side_effect=RuntimeError("no provider"))
+    with (
+        patch("repowise.server.job_executor.run_pipeline", run_pipeline_mock),
+        patch("repowise.server.job_executor.persist_pipeline_result", AsyncMock()),
+        patch(
+            "repowise.server.provider_config.get_chat_provider_instance",
+            get_provider_mock,
+        ),
+    ):
+        await execute_job(job_id, app_state)
+
+    # Pipeline must have run
+    run_pipeline_mock.assert_awaited_once()
+    # Provider lookup was attempted — proves fallback is "sync", not "index_only"
+    get_provider_mock.assert_called_once()
+
