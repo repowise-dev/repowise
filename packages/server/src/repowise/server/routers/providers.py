@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
-from repowise.server.deps import resolve_request_session_factory, verify_api_key
+from repowise.server.deps import resolve_session_factory, verify_api_key
 from repowise.server.provider_config import (
     list_provider_status,
     set_active_provider,
@@ -27,11 +27,16 @@ async def _repo_path_for(request: Request, repo_id: str | None) -> str | None:
     Lets the providers endpoint report the active provider/model that *this*
     repo's chat will actually use. Returns ``None`` (server-global resolution)
     when no ``repo_id`` is given or the repo can't be found.
+
+    Routes by ``repo_id`` directly (not the request's path/query), so it reaches
+    a workspace repo's own ``wiki.db`` even when ``repo_id`` arrived in the body
+    (the ``POST .../key`` case). The primary DB does not hold the canonical row
+    for a non-primary workspace repo, so a request-scoped lookup would miss it.
     """
     if not repo_id:
         return None
     try:
-        factory = resolve_request_session_factory(request)
+        factory = resolve_session_factory(request.app.state, repo_id)
         async with get_session(factory) as session:
             repo = await crud.get_repository(session, repo_id)
             return repo.local_path if repo else None
