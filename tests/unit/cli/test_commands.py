@@ -110,20 +110,56 @@ class TestErrorCases:
         result = runner.invoke(cli, ["init", bad_path])
         assert result.exit_code != 0
 
-    def test_init_no_provider(self, runner, tmp_path, monkeypatch):
-        """init with no provider configured should error."""
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-        monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
-        monkeypatch.delenv("KIMI_API_KEY", raising=False)
-        monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
-        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-        monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
-        monkeypatch.delenv("LITELLM_API_KEY", raising=False)
-        monkeypatch.delenv("REPOWISE_PROVIDER", raising=False)
+    @staticmethod
+    def _clear_provider_env_impl(monkeypatch):
+        for var in (
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "OPENROUTER_API_KEY",
+            "DEEPSEEK_API_KEY",
+            "KIMI_API_KEY",
+            "GOOGLE_API_KEY",
+            "GEMINI_API_KEY",
+            "OLLAMA_BASE_URL",
+            "LITELLM_API_KEY",
+            "REPOWISE_PROVIDER",
+        ):
+            monkeypatch.delenv(var, raising=False)
+
+    def test_init_no_provider_falls_back_to_templates(self, runner, tmp_path, monkeypatch):
+        """init with no provider renders the wiki from structure instead of dying.
+
+        Workspace init, workspace update and the OSS server have all degraded
+        this way since #999; single-repo init was the last path that refused to
+        run without a key. An explicitly named --provider still errors, which
+        the test below covers.
+        """
+        self._clear_provider_env_impl(monkeypatch)
         result = runner.invoke(cli, ["init", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert "No model configured" in result.output
+
+    def test_init_explicit_provider_still_errors(self, runner, tmp_path, monkeypatch):
+        """A named --provider that cannot resolve is a real error, not a fallback.
+
+        The user asked for that provider by name, so silently rendering
+        templates instead would hide the thing they need to fix.
+        """
+        self._clear_provider_env_impl(monkeypatch)
+        result = runner.invoke(cli, ["init", str(tmp_path), "--provider", "anthropic"])
         assert result.exit_code != 0
+
+    def test_init_empty_provider_env_is_unset(self, runner, tmp_path, monkeypatch):
+        """``REPOWISE_PROVIDER=""`` means unset, not a provider named ''.
+
+        CI matrices and agent harnesses declare empty env vars routinely, and
+        this used to reach get_provider('') and raise a bare ValueError.
+        """
+        self._clear_provider_env_impl(monkeypatch)
+        monkeypatch.setenv("REPOWISE_PROVIDER", "")
+        result = runner.invoke(cli, ["init", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert "Unknown provider" not in result.output
 
     def test_status_no_repowise_dir(self, runner, tmp_path):
         result = runner.invoke(cli, ["status", str(tmp_path)])

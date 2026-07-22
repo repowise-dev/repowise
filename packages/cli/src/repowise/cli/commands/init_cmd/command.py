@@ -1001,6 +1001,10 @@ def init_command(
     # ---- Resolve provider ----
     provider = None
     decision_provider = None
+    # Set when a full run found no provider at all and fell back to the
+    # template renderer. Treated exactly like ``--index-only`` from the
+    # generation phase onward.
+    no_provider = False
 
     if index_only:
         try:
@@ -1032,47 +1036,66 @@ def init_command(
                     f"Decision extraction provider: [cyan]{decision_provider.provider_name}[/cyan]"
                 )
     else:
-        if not is_interactive and provider_name is None and sys.stdin.isatty():
-            from repowise.cli.ui import interactive_provider_config_select as _ipcs
-
-            selection = _ipcs(console, model, reasoning, repo_path=repo_path)
-            provider_name = selection.provider_name
-            model = selection.model
-            reasoning = selection.reasoning
-
-        provider = resolve_provider(provider_name, model, repo_path)
+        # No prompt here. ``is_interactive`` (line ~800) is already false only
+        # when the user passed --provider, --index-only or --yes, or stdin is
+        # not a terminal — so the old fallback picker in this branch fired
+        # exactly on ``--yes``, which means "do not ask me". A --yes run with
+        # no key now lands in the template wiki below rather than a question.
+        try:
+            provider = resolve_provider(provider_name, model, repo_path)
+        except click.ClickException:
+            # Nothing configured anywhere. Workspace init, workspace update
+            # and the OSS server all render a template wiki in this exact
+            # situation rather than refusing to run (#999); single-repo init
+            # was the last path that still died on it. An explicitly named
+            # --provider is a different question: the user asked for that
+            # provider by name, so the resolution failure is the real answer.
+            if provider_name is not None:
+                raise
+            no_provider = True
+            if not is_interactive:
+                console.print(f"[bold]repowise init[/bold] — {repo_path}")
+            console.print(
+                "[yellow]No model configured.[/yellow] Building the wiki from "
+                "structure instead — no key, no spend.\n"
+                "[dim]Set a key (or pass --provider) and run [bold]repowise "
+                "update --full[/bold] to have a model write it.[/dim]"
+            )
         # resolve_provider / interactive provider selection may have just set
         # the API key in os.environ. Re-resolve the embedder so the
         # display (and the embed path below) honors the key the user just
         # pasted, rather than the pre-prompt "mock" fallback.
         embedder_name_resolved = resolve_embedder(embedder_name)
-        if not is_interactive:
+        if not is_interactive and not no_provider:
             console.print(f"[bold]repowise init[/bold] — {repo_path}")
-        console.print(
-            f"  Provider: [cyan]{provider.provider_name}[/cyan] / Model: [cyan]{provider.model_name}[/cyan]"
-        )
+        if provider is not None:
+            console.print(
+                f"  Provider: [cyan]{provider.provider_name}[/cyan] / Model: [cyan]{provider.model_name}[/cyan]"
+            )
         console.print(f"  Embedder: [cyan]{embedder_name_resolved}[/cyan]")
         if language != "en":
             console.print(f"  Language: [cyan]{language}[/cyan]")
         if resolved_reasoning != "auto":
             console.print(f"  Reasoning: [cyan]{resolved_reasoning}[/cyan]")
 
-        # Validate provider connection
-        from repowise.core.providers.llm.base import ProviderError
+        # Validate provider connection. Nothing to verify when there is no
+        # provider: this run renders from templates and never calls a model.
+        if provider is not None:
+            from repowise.core.providers.llm.base import ProviderError
 
-        with console.status("  Verifying provider connection…", spinner=OWL_SPINNER):
-            try:
-                run_async(
-                    provider.generate(
-                        "You are a test.",
-                        "Reply with OK.",
-                        max_tokens=50,
-                        reasoning=resolved_reasoning,
+            with console.status("  Verifying provider connection…", spinner=OWL_SPINNER):
+                try:
+                    run_async(
+                        provider.generate(
+                            "You are a test.",
+                            "Reply with OK.",
+                            max_tokens=50,
+                            reasoning=resolved_reasoning,
+                        )
                     )
-                )
-            except ProviderError as exc:
-                raise click.ClickException(f"Provider validation failed: {exc}") from exc
-        console.print("  [green]✓[/green] Provider connection verified")
+                except ProviderError as exc:
+                    raise click.ClickException(f"Provider validation failed: {exc}") from exc
+            console.print("  [green]✓[/green] Provider connection verified")
 
     # ---- Phase 1 & 2: Ingestion + Analysis (always) ----
     # Index-only generates too, it just renders templates instead of prompting
@@ -1194,7 +1217,9 @@ def init_command(
             "render it from structure, or [bold]repowise update --full[/bold] "
             "to write it with a model.[/dim]"
         )
-    elif index_only:
+    elif index_only or no_provider:
+        # ``no_provider`` reaches here the same way ``--index-only`` does: a
+        # full run that found no key still gets the whole template wiki.
         _index_only_embedder = _run_deterministic_generation_phase(
             repo_path=repo_path,
             result=result,
@@ -1270,8 +1295,9 @@ def init_command(
 
     # ---- Persistence ----
     # `cost_declined` short-circuits any further LLM work for the rest of
-    # this run, so persistence/state below treat it as index-only.
-    effective_index_only = index_only or cost_declined
+    # this run, so persistence/state below treat it as index-only. So does
+    # `no_provider`: there is no model to do the work either way.
+    effective_index_only = index_only or cost_declined or no_provider
     print_phase_header(
         console,
         total_phases,

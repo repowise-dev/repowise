@@ -574,7 +574,13 @@ def resolve_provider(
         cfg = load_config(repo_path)
 
     if provider_name is None:
-        provider_name = os.environ.get("REPOWISE_PROVIDER")
+        # An empty or whitespace-only value means "not set", not "a provider
+        # named ''". CI systems and agent harnesses declare env vars with empty
+        # values routinely (``REPOWISE_PROVIDER: ""`` in a workflow matrix),
+        # and the explicit-provider branch below keys off ``is not None``, so
+        # an empty string reached get_provider() and raised a bare ValueError
+        # traceback instead of falling through to auto-detection.
+        provider_name = (os.environ.get("REPOWISE_PROVIDER") or "").strip() or None
 
     if provider_name is None and cfg.get("provider"):
         provider_name = cfg["provider"]
