@@ -2,11 +2,13 @@
 
 import { useState } from "react";
 import { GitBranch, Code2 } from "lucide-react";
+import { toast } from "sonner";
 import { Button } from "../ui/button";
 import { Badge } from "../ui/badge";
 import { ConfirmDialog } from "../ui/confirm-dialog";
 import { RowActions } from "../shared/row-actions";
 import { formatConfidence } from "../lib/format";
+import { toFriendlyMessage } from "../lib/errors";
 import { cn } from "../lib/cn";
 import type { DeadCodeFinding, DeadCodeStatus } from "@repowise-dev/types/dead-code";
 
@@ -53,23 +55,25 @@ export interface FindingRowProps {
   onToggle: (id: string) => void;
   /** Injected mutation — returns the updated finding (host owns the API + toasts). */
   onPatch: (id: string, patch: { status: DeadCodeStatus }) => Promise<DeadCodeFinding>;
-  onUpdate: (updated: DeadCodeFinding) => void;
 }
 
 /**
  * Pure dead-code findings row: presentation + row-level status actions. The host
  * injects the patch mutation so this component carries no data/transport deps.
  */
-export function FindingRow({ finding, repoId, selected, onToggle, onPatch, onUpdate }: FindingRowProps) {
+export function FindingRow({ finding, repoId, selected, onToggle, onPatch }: FindingRowProps) {
   const [pending, setPending] = useState(false);
   const [confirmStatus, setConfirmStatus] = useState<string | null>(null);
 
   const applyPatch = async (status: string) => {
     setPending(true);
     try {
-      const updated = await onPatch(finding.id, { status: status as DeadCodeStatus });
-      onUpdate(updated);
+      await onPatch(finding.id, { status: status as DeadCodeStatus });
       setConfirmStatus(null);
+    } catch (err) {
+      // Without this the rejection escapes to the console and the dialog sits
+      // open with no explanation of why nothing happened.
+      toast.error(`Couldn't update finding: ${toFriendlyMessage(err)}`);
     } finally {
       setPending(false);
     }

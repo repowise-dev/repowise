@@ -12,7 +12,7 @@
  * and hosted render the same view from one source.
  */
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import useSWR from "swr";
 import { toast } from "sonner";
 import type {
@@ -35,9 +35,32 @@ import { FindingsTable } from "./findings-table";
 import type { DeadCodeAdapter } from "./dead-code-adapter";
 import { toFriendlyMessage } from "../lib/errors";
 
+/**
+ * Server ceiling for one findings page (`limit` is clamped to 500 server-side).
+ * Hitting it means the table shows a slice, and every count derived from that
+ * slice has to say so rather than reading as the whole repository.
+ */
+const FINDINGS_LIMIT = 500;
+
+/** The one failure card both fetches use, so a broken load never reads as "clean". */
+function RetryCard({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return (
+    <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] p-4 text-sm text-[var(--color-text-secondary)] flex items-center justify-between gap-2">
+      <span>{message}</span>
+      <Button size="sm" variant="outline" onClick={onRetry}>
+        Retry
+      </Button>
+    </div>
+  );
+}
+
 export function DeadCodeView({ adapter }: { adapter: DeadCodeAdapter }) {
   const [analyzing, setAnalyzing] = useState(false);
   const [promptIds, setPromptIds] = useState<string[] | null>(null);
+  // Optimistic row state lives here, not in the table: the pile, the cluster
+  // rollups and the table all read one slice, so resolving a row (or undoing
+  // it) moves every surface together.
+  const [overrides, setOverrides] = useState<Record<string, DeadCodeFinding>>({});
 
   const {
     data: summary,
@@ -52,34 +75,64 @@ export function DeadCodeView({ adapter }: { adapter: DeadCodeAdapter }) {
 
   // Single findings fetch feeds the pile, the cluster views, AND the drill-down
   // table (which filters this slice client-side) — no second fetch.
-  const { data: findings, isLoading: loadingFindings } = useSWR<DeadCodeFinding[]>(
+  const {
+    data: findings,
+    isLoading: loadingFindings,
+    error: findingsError,
+    mutate: mutateFindings,
+  } = useSWR<DeadCodeFinding[]>(
     `dead-code-findings:${adapter.cacheKey}:all`,
-    () => adapter.listFindings({ limit: 500 }),
+    () => adapter.listFindings({ limit: FINDINGS_LIMIT }),
     { revalidateOnFocus: false },
   );
 
-  const findingsList = findings ?? [];
-  const safeFindings = findingsList.filter((f) => f.safe_to_delete);
+  const fetched = useMemo(() => findings ?? [], [findings]);
+  // The server hands back at most FINDINGS_LIMIT rows with no total, so a full
+  // page means "there may be more" and the counts below have to be scoped.
+  const truncated = fetched.length >= FINDINGS_LIMIT;
+
+  const findingsList = useMemo(
+    () => fetched.map((f) => overrides[f.id] ?? f).filter((f) => f.status === "open"),
+    [fetched, overrides],
+  );
+  const safeFindings = useMemo(
+    () => findingsList.filter((f) => f.safe_to_delete),
+    [findingsList],
+  );
 
   // "Propose cleanup" opens the shared AI-prompt modal seeded with the safe
   // pile — same agent-flavor picker (incl. repowise MCP) and copy affordance as
   // every other AI action in the dashboard.
   const handlePropose = (findingIds: string[]) => setPromptIds(findingIds);
 
+  // Seeded from the whole open slice, not just the safe pile: a per-row or
+  // per-selection prompt can name any finding the table can show.
   const promptFindings = promptIds
-    ? safeFindings.filter((f) => promptIds.includes(f.id))
+    ? findingsList.filter((f) => promptIds.includes(f.id))
     : [];
 
   const handleAnalyze = async () => {
     setAnalyzing(true);
     try {
-      await adapter.analyze();
-      toast.success("Analysis started — results will appear shortly.");
+      const started = await adapter.analyze();
+      const jobId = started?.job_id;
+      if (jobId && adapter.waitForAnalysis) {
+        toast.success("Analysis started — this page refreshes when it finishes.");
+        await adapter.waitForAnalysis(jobId);
+        // The pass rewrites the findings, so local optimistic state is stale.
+        setOverrides({});
+        await Promise.all([mutateSummary(), mutateFindings()]);
+        toast.success("Dead-code findings refreshed.");
+      } else {
+        toast.success("Analysis started — results will appear shortly.");
+      }
     } catch (err) {
+      // 409 is the one failure with a specific remedy: wait for the other job.
+      const status = (err as { status?: number } | null)?.status;
       toast.error(
-        err instanceof Error
-          ? `Couldn't start analysis: ${toFriendlyMessage(err)}`
-          : "Couldn't start analysis",
+        status === 409
+          ? "Another job is already running for this repository. Try again once it finishes."
+          : `Couldn't start analysis: ${toFriendlyMessage(err)}`,
       );
     } finally {
       setAnalyzing(false);
@@ -91,16 +144,18 @@ export function DeadCodeView({ adapter }: { adapter: DeadCodeAdapter }) {
     const finding = findingsList.find((f) => f.id === id);
     const previousStatus: DeadCodeStatus = finding?.status ?? "open";
     const updated = await adapter.patchFinding(id, patch);
+    setOverrides((prev) => ({ ...prev, [id]: updated }));
     toast.success(`Finding ${patch.status.replace(/_/g, " ")}`, {
       action: {
         label: "Undo",
         onClick: async () => {
           try {
-            await adapter.patchFinding(id, { status: previousStatus });
+            const reverted = await adapter.patchFinding(id, { status: previousStatus });
+            // Put the row back on screen; a server-confirmed revert that only
+            // lands in the database is indistinguishable from a failed undo.
+            setOverrides((prev) => ({ ...prev, [id]: reverted }));
           } catch (err) {
-            toast.error(
-              `Couldn't undo: ${toFriendlyMessage(err)}`,
-            );
+            toast.error(`Couldn't undo: ${toFriendlyMessage(err)}`);
           }
         },
       },
@@ -118,6 +173,17 @@ export function DeadCodeView({ adapter }: { adapter: DeadCodeAdapter }) {
       } catch {
         // continue; report partial below
       }
+    }
+    // Reflect only the rows the server confirmed — never a positional guess.
+    if (succeededIds.length > 0) {
+      const confirmed = new Set(succeededIds);
+      setOverrides((prev) => {
+        const next = { ...prev };
+        for (const f of findingsList) {
+          if (confirmed.has(f.id)) next[f.id] = { ...f, status: "resolved" as DeadCodeStatus };
+        }
+        return next;
+      });
     }
     const succeeded = succeededIds.length;
     if (succeeded === ids.length) {
@@ -147,13 +213,13 @@ export function DeadCodeView({ adapter }: { adapter: DeadCodeAdapter }) {
       ) : summary ? (
         <SummaryBar summary={summary} />
       ) : summaryError ? (
-        <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] p-4 text-sm text-[var(--color-text-secondary)] flex items-center justify-between gap-2">
-          <span>Couldn&apos;t load summary.</span>
-          <Button size="sm" variant="outline" onClick={() => mutateSummary()}>
-            Retry
-          </Button>
-        </div>
+        <RetryCard message="Couldn't load summary." onRetry={() => void mutateSummary()} />
       ) : null}
+
+      {/* A failed findings fetch must never render as an empty repository. */}
+      {findingsError && !loadingFindings && (
+        <RetryCard message="Couldn't load findings." onRetry={() => void mutateFindings()} />
+      )}
 
       {/* Act now: the single "what do I delete" surface. */}
       {findings && safeFindings.length > 0 && (
@@ -161,7 +227,10 @@ export function DeadCodeView({ adapter }: { adapter: DeadCodeAdapter }) {
           findings={safeFindings}
           onPropose={handlePropose}
           onSelect={(f) => adapter.navigate(adapter.fileHref(f.file_path))}
-          {...(summary ? { reclaimableLines: summary.deletable_lines } : {})}
+          // The summary total covers the whole repo; the file and finding
+          // counts beside it come from a capped slice. Only pass it when the
+          // two describe the same population.
+          {...(summary && !truncated ? { reclaimableLines: summary.deletable_lines } : {})}
         />
       )}
 
@@ -193,7 +262,13 @@ export function DeadCodeView({ adapter }: { adapter: DeadCodeAdapter }) {
       {/* Drill-down: the full interactive table, the single confidence control. */}
       <CollapsibleSection
         title="All findings"
-        hint={`${findingsList.length} findings`}
+        hint={
+          loadingFindings
+            ? "Loading…"
+            : truncated && summary
+              ? `Showing ${findingsList.length} of ${summary.total_findings} findings`
+              : `${findingsList.length} findings`
+        }
         defaultOpen={false}
       >
         <FindingsTable

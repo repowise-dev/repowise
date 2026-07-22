@@ -11,13 +11,31 @@ import { EmptyState } from "../shared/empty-state";
 import { FindingRow } from "./finding-row";
 import type { DeadCodeFinding, DeadCodeStatus } from "@repowise-dev/types/dead-code";
 
-type Kind = "unreachable_file" | "unused_export" | "zombie_package";
+/**
+ * Display names and tab order for the kinds we know about. Any other kind the
+ * detector emits still gets a tab, labelled from its own identifier — a hard
+ * allowlist here once hid every `unused_internal` finding, which the summary
+ * card and the breakdown grid were counting all along.
+ */
+const KIND_LABELS: Record<string, string> = {
+  unreachable_file: "Unreachable Files",
+  unused_export: "Unused Exports",
+  unused_internal: "Unused Internals",
+  zombie_package: "Zombie Packages",
+};
 
-const TABS: Array<{ value: Kind; label: string }> = [
-  { value: "unreachable_file", label: "Unreachable Files" },
-  { value: "unused_export", label: "Unused Exports" },
-  { value: "zombie_package", label: "Zombie Packages" },
-];
+const KIND_ORDER = Object.keys(KIND_LABELS);
+
+/** "unused_internal" -> "Unused Internals" for kinds we have no name for. */
+function labelForKind(kind: string): string {
+  const known = KIND_LABELS[kind];
+  if (known) return known;
+  return kind
+    .split(/[_\-\s]+/)
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
+}
 
 export interface FindingsTableProps {
   /** Full open-findings slice; the table filters by kind / confidence / safety client-side. */
@@ -38,42 +56,51 @@ export interface FindingsTableProps {
  * slice and the patch/bulk mutations, so this propagates via the package.
  */
 export function FindingsTable({ findings, repoId, onPatch, onBulkResolve, isLoading }: FindingsTableProps) {
-  const [activeTab, setActiveTab] = useState<Kind>("unreachable_file");
+  const [activeTab, setActiveTab] = useState<string | null>(null);
   const [minConfidence, setMinConfidence] = useState(0.4);
   const [safeOnly, setSafeOnly] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [overrides, setOverrides] = useState<Record<string, DeadCodeFinding>>({});
   const [bulkPending, setBulkPending] = useState(false);
   const [bulkConfirmOpen, setBulkConfirmOpen] = useState(false);
 
-  // Apply local optimistic overrides over the host-supplied slice so a resolved
-  // row updates without a refetch.
-  const merged = useMemo(
-    () => findings.map((f) => overrides[f.id] ?? f),
-    [findings, overrides],
-  );
+  // Tabs come from the unfiltered slice so the set stays put while the
+  // confidence slider empties a bucket, instead of tabs appearing and
+  // vanishing under the pointer.
+  const tabs = useMemo(() => {
+    const present = new Set(findings.map((f) => f.kind));
+    const known = KIND_ORDER.filter((k) => present.has(k));
+    const extra = [...present].filter((k) => !KIND_LABELS[k]).sort();
+    return [...known, ...extra].map((value) => ({ value, label: labelForKind(value) }));
+  }, [findings]);
 
   const byKind = useMemo(() => {
-    const buckets: Record<Kind, DeadCodeFinding[]> = {
-      unreachable_file: [],
-      unused_export: [],
-      zombie_package: [],
-    };
-    for (const f of merged) {
-      if (f.status !== "open") continue;
+    const buckets: Record<string, DeadCodeFinding[]> = {};
+    for (const t of tabs) buckets[t.value] = [];
+    for (const f of findings) {
       if (f.confidence < minConfidence) continue;
       if (safeOnly && !f.safe_to_delete) continue;
-      const kind = f.kind as Kind;
-      if (kind in buckets) buckets[kind].push(f);
+      buckets[f.kind]?.push(f);
     }
     return buckets;
-  }, [merged, minConfidence, safeOnly]);
+  }, [findings, tabs, minConfidence, safeOnly]);
 
-  const current = byKind[activeTab];
+  // The active tab can disappear when the slice changes (a refetch, a resolved
+  // last row); fall back to the first tab rather than rendering nothing.
+  const effectiveTab =
+    activeTab && tabs.some((t) => t.value === activeTab) ? activeTab : (tabs[0]?.value ?? null);
+  const current = useMemo(
+    () => (effectiveTab ? (byKind[effectiveTab] ?? []) : []),
+    [byKind, effectiveTab],
+  );
 
-  const handleUpdate = (updated: DeadCodeFinding) => {
-    setOverrides((prev) => ({ ...prev, [updated.id]: updated }));
-  };
+  // Selection is scoped to what is on screen. Without this, raising the
+  // confidence slider after selecting rows would resolve findings the user can
+  // no longer see.
+  const visibleSelected = useMemo(() => {
+    const visible = new Set(current.map((f) => f.id));
+    return Array.from(selected).filter((id) => visible.has(id));
+  }, [current, selected]);
+  const selectedCount = visibleSelected.length;
 
   const toggleSelect = (id: string) => {
     setSelected((prev) => {
@@ -84,29 +111,18 @@ export function FindingsTable({ findings, repoId, onPatch, onBulkResolve, isLoad
     });
   };
 
+  const allVisibleSelected = current.length > 0 && selectedCount === current.length;
+
   const toggleSelectAll = () => {
-    if (selected.size === current.length) {
-      setSelected(new Set());
-    } else {
-      setSelected(new Set(current.map((f) => f.id)));
-    }
+    setSelected(allVisibleSelected ? new Set() : new Set(current.map((f) => f.id)));
   };
 
   const resolveSelected = async () => {
     if (!onBulkResolve) return;
-    const ids = Array.from(selected);
     setBulkPending(true);
     try {
-      const succeededIds = await onBulkResolve(ids);
-      // Reflect only the rows that actually resolved — never a positional guess.
-      const resolvedIds = new Set(succeededIds);
-      setOverrides((prev) => {
-        const next = { ...prev };
-        for (const f of merged) {
-          if (resolvedIds.has(f.id)) next[f.id] = { ...f, status: "resolved" as DeadCodeStatus };
-        }
-        return next;
-      });
+      // Send the visible intersection, which is what the confirm dialog counted.
+      await onBulkResolve(visibleSelected);
       setSelected(new Set());
       setBulkConfirmOpen(false);
     } finally {
@@ -138,7 +154,7 @@ export function FindingsTable({ findings, repoId, onPatch, onBulkResolve, isLoad
           Cleanup-ready only
         </label>
 
-        {onBulkResolve && selected.size > 0 && (
+        {onBulkResolve && selectedCount > 0 && (
           <Button
             size="sm"
             variant="outline"
@@ -146,47 +162,54 @@ export function FindingsTable({ findings, repoId, onPatch, onBulkResolve, isLoad
             onClick={() => setBulkConfirmOpen(true)}
             className="text-[var(--color-success)] border-[var(--color-success)]/30 hover:bg-[var(--color-success)]/10"
           >
-            {bulkPending ? "Resolving…" : `Resolve ${selected.size} selected`}
+            {bulkPending ? "Resolving…" : `Resolve ${selectedCount} selected`}
           </Button>
         )}
       </div>
       <ConfirmDialog
         open={bulkConfirmOpen}
         onOpenChange={setBulkConfirmOpen}
-        title={`Resolve ${selected.size} finding${selected.size === 1 ? "" : "s"}?`}
+        title={`Resolve ${selectedCount} finding${selectedCount === 1 ? "" : "s"}?`}
         description="This will mark each selected finding as resolved."
         confirmLabel="Resolve all"
         loading={bulkPending}
         onConfirm={resolveSelected}
       />
 
+      {isLoading && findings.length === 0 ? (
+        <TableSkeleton className="mt-2" />
+      ) : tabs.length === 0 ? (
+        <EmptyState
+          title="No findings"
+          description="No open dead-code findings for this repository."
+        />
+      ) : (
       <Tabs
-        value={activeTab}
+        // Non-null in this branch: tabs is non-empty, so effectiveTab resolved.
+        value={effectiveTab ?? ""}
         onValueChange={(v) => {
-          setActiveTab(v as Kind);
+          setActiveTab(v);
           // Selection is per-kind; clearing on tab change keeps "Resolve N
           // selected" and the select-all checkbox scoped to the visible rows.
           setSelected(new Set());
         }}
       >
         <TabsList>
-          {TABS.map((t) => (
+          {tabs.map((t) => (
             <TabsTrigger key={t.value} value={t.value}>
               {t.label}
-              {byKind[t.value].length > 0 && (
+              {(byKind[t.value]?.length ?? 0) > 0 && (
                 <span className="ml-1.5 text-xs text-[var(--color-text-tertiary)]">
-                  {byKind[t.value].length}
+                  {byKind[t.value]?.length}
                 </span>
               )}
             </TabsTrigger>
           ))}
         </TabsList>
 
-        {TABS.map((t) => (
+        {tabs.map((t) => (
           <TabsContent key={t.value} value={t.value}>
-            {isLoading && current.length === 0 ? (
-              <TableSkeleton className="mt-2" />
-            ) : current.length === 0 ? (
+            {current.length === 0 ? (
               <EmptyState
                 title="No findings"
                 description="No open findings for this category with current filters."
@@ -200,7 +223,7 @@ export function FindingsTable({ findings, repoId, onPatch, onBulkResolve, isLoad
                       <th scope="col" className="px-4 py-2.5 w-8">
                         <input
                           type="checkbox"
-                          checked={selected.size === current.length && current.length > 0}
+                          checked={allVisibleSelected}
                           onChange={toggleSelectAll}
                           aria-label="Select all findings"
                           className="rounded border-[var(--color-border-default)]"
@@ -238,7 +261,6 @@ export function FindingsTable({ findings, repoId, onPatch, onBulkResolve, isLoad
                         selected={selected.has(f.id)}
                         onToggle={toggleSelect}
                         onPatch={onPatch}
-                        onUpdate={handleUpdate}
                       />
                     ))}
                   </tbody>
@@ -248,6 +270,7 @@ export function FindingsTable({ findings, repoId, onPatch, onBulkResolve, isLoad
           </TabsContent>
         ))}
       </Tabs>
+      )}
     </div>
   );
 }

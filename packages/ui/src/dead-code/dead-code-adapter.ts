@@ -24,8 +24,18 @@ export interface DeadCodeAdapter {
 
   getSummary(): Promise<DeadCodeSummary>;
   listFindings(opts?: { limit?: number }): Promise<DeadCodeFinding[]>;
-  /** Kick off a fresh analysis pass (host owns auth + job dispatch). */
-  analyze(): Promise<void>;
+  /**
+   * Kick off a fresh analysis pass (host owns auth + job dispatch). Returning
+   * the job id lets the view wait for the pass and refresh itself; hosts that
+   * cannot observe the job may return nothing, and the view falls back to
+   * "results will appear shortly".
+   */
+  analyze(): Promise<{ job_id?: string } | void>;
+  /**
+   * Resolve once the analysis job reaches a terminal state, rejecting if it
+   * fails. Optional: without it the view cannot know when to refetch.
+   */
+  waitForAnalysis?(jobId: string): Promise<void>;
   patchFinding(
     findingId: string,
     patch: DeadCodePatchInput,
