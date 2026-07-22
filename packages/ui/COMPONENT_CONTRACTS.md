@@ -193,10 +193,137 @@ Filter unions:
 
 ---
 
-## `dead-code/summary-bar` â€” `SummaryBar`
+## `dead-code/dead-code-view` - `DeadCodeView`
 
-Four-tile summary header for a dead-code report: total findings,
-deletable lines, breakdown by kind, breakdown by confidence band.
+The whole Dead Code page: summary tiles, the safe-to-delete pile, the
+"where it clusters" rollups, and the drill-down findings table. Owns the
+optimistic patch + undo toast, bulk resolve, the AI cleanup prompt modal,
+Re-analyze, and the status filter that switches which slice the table shows.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `adapter` | `DeadCodeAdapter` | yes | Everything host-specific: fetching, mutation, links, navigation. |
+
+Behaviour worth knowing:
+- Two fetches. The open slice feeds the pile, the rollups and the table;
+  a second, conditional fetch backs the status filter when it is not "open".
+  Both are capped at 500 rows. The open slice has a repo-wide total to
+  compare against, so its hint says "Showing N of M"; a non-open status has
+  no server-side total, so its hint can only say "First N".
+- A failed fetch with nothing to show renders a retry card and nothing else:
+  it must never fall through to an empty state, which would read as a clean
+  repository. A failed refresh over rows already in hand keeps the table and
+  puts the card above it.
+- Optimistic row state lives here, not in the table, so resolving a row moves
+  the pile and the rollups with it and undo can put it back.
+
+---
+
+## `dead-code/dead-code-adapter` - `DeadCodeAdapter`
+
+The host injection point. Hosted consumes this, so treat it as public API:
+adding a required member is a breaking change for every consumer.
+
+| Member | Type | Required | Notes |
+|--------|------|----------|-------|
+| `cacheKey` | `string` | yes | Seeds the view's SWR keys. Keep stable per repo/snapshot. |
+| `repoId` | `string` | yes | Repo identity for hosts that need it. Nothing in this package reads it today; links come from `fileHref` / `graphHref`. |
+| `getSummary` | `() => Promise<DeadCodeSummary>` | yes | |
+| `listFindings` | `(opts?: { limit?: number; status?: DeadCodeStatus }) => Promise<DeadCodeFinding[]>` | yes | `status` defaults to `"open"` server-side. |
+| `analyze` | `() => Promise<{ job_id?: string } \| void>` | yes | Returning a `job_id` lets the view wait and refresh itself. |
+| `waitForAnalysis` | `(jobId: string) => Promise<void>` | no | Without it the view cannot know when to refetch, and says so in its toast. |
+| `patchFinding` | `(id: string, patch: DeadCodePatchInput) => Promise<DeadCodeFinding>` | yes | Must return the updated finding; the view stores it as the optimistic override. |
+| `fileHref` | `(path: string) => string` | yes | Makes the path a link and the row clickable. |
+| `graphHref` | `(path: string) => string` | no | Omit and the per-row Graph action disappears, which keeps app routes out of this package. |
+| `navigate` | `(href: string) => void` | yes | Host router push. |
+
+---
+
+## `dead-code/findings-table` - `FindingsTable`
+
+The drill-down table: kind tabs driven by the data, a search box, sortable
+columns, the confidence slider, a cleanup-ready switch, bulk resolve, and
+per-row status actions. Built on `shared/responsive-table` with
+`stacked="sm"` and windowed rows.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `findings` | `DeadCodeFinding[]` | yes | One status slice; the table filters it by kind / confidence / safety client-side. |
+| `onPatch` | `(id, { status }) => Promise<DeadCodeFinding>` | yes | Host owns the API call and the undo toast. |
+| `onBulkResolve` | `(ids: string[]) => Promise<string[]>` | no | Must return the ids that actually resolved, not the ids it was given. The table reconciles against that, never against position. |
+| `fileHref` | `(path: string) => string` | no | |
+| `onNavigate` | `(href: string) => void` | no | Needed alongside `fileHref` for client-side row clicks. |
+| `graphHref` | `(path: string) => string` | no | |
+| `onGeneratePrompt` | `(ids: string[]) => void` | no | Drives both the per-row icon button and "AI prompt for N selected". |
+| `status` | `DeadCodeStatus` | no | Which slice is on screen. Defaults to `"open"`; bulk resolve only appears there. |
+| `isLoading` | `boolean` | no | Shows a skeleton instead of an empty state during the first fetch. |
+
+Selection is always intersected with the rows currently visible, so raising
+the confidence slider after selecting cannot resolve rows the user can no
+longer see.
+
+---
+
+## `dead-code/finding-cells` - cell renderers
+
+`FindingIdentity`, `FindingConfidence`, `FindingSafety` and
+`FindingRowActions` back the table's columns. `FindingRowActions` is separate
+because it owns per-row pending/confirm state that a plain `render(row)`
+closure cannot hold; it offers resolve/ack/FP on an open finding and Reopen
+on anything already actioned. `DEAD_CODE_STATUS_LABELS` is the shared label
+map for the status filter.
+
+---
+
+## `dead-code/safe-to-delete-pile` - `SafeToDeletePile`
+
+The "what do I delete" punchline: per-file rollup of the cleanup-ready
+findings with the AI cleanup CTA.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `findings` | `SafeToDeletePileFinding[]` | yes | Caller passes the safe slice; structural subset of `DeadCodeFinding`. |
+| `onPropose` | `(ids: string[]) => void` | no | Opens the AI prompt modal; omit and the CTA disappears. |
+| `onSelect` | `(finding: DeadCodeFinding) => void` | no | Row click. |
+| `reclaimableLines` | `number` | no | The repo-wide total. Pass it only when the findings are not a capped slice, otherwise it sits next to counts describing a different population. |
+
+---
+
+## `dead-code/owner-leaderboard` - `OwnerLeaderboard`
+
+Inline bar chart of dead-code lines per primary contributor. No charting
+dependency.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `findings` | `OwnerLeaderboardFinding[]` | yes | Structural subset of `DeadCodeFinding`. |
+| `topN` | `number` | no | Default 8. |
+| `safeOnly` | `boolean` | no | Count only cleanup-ready findings. |
+| `onSelect` | `(owner: string) => void` | no | Turns each bar into a button. |
+| `className` | `string` | no | |
+
+---
+
+## `dead-code/findings-breakdown-grid` - `FindingsBreakdownGrid`
+
+Confidence-tier by kind heat matrix. Its own `<table>` is deliberate:
+this is a matrix, not a list, so `ResponsiveTable` is the wrong primitive.
+Tier boundaries come from `DEAD_CODE_CONFIDENCE` in
+`@repowise-dev/types/dead-code`, which mirrors the engine's
+`SAFE_CONFIDENCE_THRESHOLD`. The low row renders only when something is in
+it, since the list endpoint floors at the medium boundary.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `findings` | `FindingsBreakdownItem[]` | yes | Needs only `kind` and `confidence`. |
+| `className` | `string` | no | |
+
+---
+
+## `dead-code/summary-bar` - `SummaryBar`
+
+Four-tile summary header for a dead-code report: total findings, candidate
+lines, breakdown by kind, breakdown by confidence band.
 
 | Prop | Type | Required | Notes |
 |------|------|----------|-------|

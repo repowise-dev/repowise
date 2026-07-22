@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { EmptyState } from "../shared/empty-state";
 import { cn } from "../lib/cn";
 
 export interface OwnerLeaderboardFinding {
@@ -51,14 +52,11 @@ export function OwnerLeaderboard({
 
   if (tallies.length === 0) {
     return (
-      <div
-        className={cn(
-          "rounded-md border border-dashed border-[var(--color-border-default)] p-4 text-center text-xs text-[var(--color-text-tertiary)]",
-          className,
-        )}
-      >
-        No owner attribution yet — run analysis to populate.
-      </div>
+      <EmptyState
+        title="No owner attribution yet"
+        description="Run the analysis to attribute dead code to its primary contributors."
+        {...(className ? { className } : {})}
+      />
     );
   }
 

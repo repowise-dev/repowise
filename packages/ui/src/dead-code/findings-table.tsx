@@ -19,8 +19,13 @@ import {
   FindingConfidence,
   FindingSafety,
   FindingRowActions,
+  DEAD_CODE_STATUS_LABELS,
 } from "./finding-cells";
-import type { DeadCodeFinding, DeadCodeStatus } from "@repowise-dev/types/dead-code";
+import {
+  DEAD_CODE_CONFIDENCE,
+  type DeadCodeFinding,
+  type DeadCodeStatus,
+} from "@repowise-dev/types/dead-code";
 
 /**
  * Display names and tab order for the kinds we know about. Any other kind the
@@ -65,7 +70,7 @@ function sortValue(f: DeadCodeFinding, key: SortKey): string | number {
 }
 
 export interface FindingsTableProps {
-  /** Full open-findings slice; the table filters by kind / confidence / safety client-side. */
+  /** One status slice; the table filters by kind / confidence / safety client-side. */
   findings: DeadCodeFinding[];
   /** Injected mutation — host owns the API call, optimistic toast + undo. */
   onPatch: (id: string, patch: { status: DeadCodeStatus }) => Promise<DeadCodeFinding>;
@@ -79,6 +84,12 @@ export interface FindingsTableProps {
   graphHref?: ((path: string) => string) | undefined;
   /** Open an AI cleanup prompt for the given findings (one row, or the selection). */
   onGeneratePrompt?: ((ids: string[]) => void) | undefined;
+  /**
+   * Which status slice is on screen. The host owns both the fetch and the
+   * control that switches it, because a clean repository replaces this table
+   * with an empty state and a control living in here would go with it.
+   */
+  status?: DeadCodeStatus | undefined;
   isLoading?: boolean;
 }
 
@@ -102,10 +113,13 @@ export function FindingsTable({
   onNavigate,
   graphHref,
   onGeneratePrompt,
+  status = "open",
   isLoading,
 }: FindingsTableProps) {
   const [activeTab, setActiveTab] = useState<string | null>(null);
-  const [minConfidence, setMinConfidence] = useState(0.4);
+  // The slider floor is the server's own `min_confidence` default: nothing
+  // below it is ever fetched, so a lower floor would be a control over nothing.
+  const [minConfidence, setMinConfidence] = useState<number>(DEAD_CODE_CONFIDENCE.MEDIUM);
   const [safeOnly, setSafeOnly] = useState(false);
   const [query, setQuery] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("confidence");
@@ -203,12 +217,12 @@ export function FindingsTable({
   };
 
   const resetFilters = () => {
-    setMinConfidence(0.4);
+    setMinConfidence(DEAD_CODE_CONFIDENCE.MEDIUM);
     setSafeOnly(false);
     setQuery("");
   };
 
-  const filtersActive = minConfidence > 0.4 || safeOnly || query.trim() !== "";
+  const filtersActive = minConfidence > DEAD_CODE_CONFIDENCE.MEDIUM || safeOnly || query.trim() !== "";
 
   const resolveSelected = async () => {
     if (!onBulkResolve) return;
@@ -248,6 +262,11 @@ export function FindingsTable({
             <input
               type="checkbox"
               checked={allVisibleSelected}
+              // A partial selection read as "nothing selected" before, so
+              // clicking through it silently discarded the user's picks.
+              ref={(el) => {
+                if (el) el.indeterminate = selectedCount > 0 && !allVisibleSelected;
+              }}
               onChange={toggleSelectAll}
               aria-label="Select all findings"
               className="rounded border-[var(--color-border-default)]"
@@ -345,6 +364,7 @@ export function FindingsTable({
     // the injected callbacks.
   }, [
     selected,
+    selectedCount,
     allVisibleSelected,
     fileHref,
     onNavigate,
@@ -374,16 +394,18 @@ export function FindingsTable({
           />
         </div>
         <div className="flex items-center gap-2">
-          <label htmlFor="min-confidence" className="text-xs text-[var(--color-text-secondary)]">
+          {/* A live value readout, not a <label>: the thing it describes is a
+              Radix span with role="slider", which htmlFor cannot reach. The
+              accessible name rides on the thumb's aria-label instead. */}
+          <span className="text-xs text-[var(--color-text-secondary)]">
             Min confidence: {Math.round(minConfidence * 100)}%
-          </label>
+          </span>
           <Slider
-            id="min-confidence"
-            min={0.4}
+            min={DEAD_CODE_CONFIDENCE.MEDIUM}
             max={1}
             step={0.05}
             value={[minConfidence]}
-            onValueChange={([v]) => setMinConfidence(v ?? 0.4)}
+            onValueChange={([v]) => setMinConfidence(v ?? DEAD_CODE_CONFIDENCE.MEDIUM)}
             aria-label="Minimum confidence"
             className="w-28"
           />
@@ -393,7 +415,8 @@ export function FindingsTable({
           Cleanup-ready only
         </label>
 
-        {onBulkResolve && selectedCount > 0 && (
+        {/* Bulk resolve only makes sense on findings that are still open. */}
+        {onBulkResolve && status === "open" && selectedCount > 0 && (
           <Button
             size="sm"
             variant="outline"
@@ -427,7 +450,7 @@ export function FindingsTable({
       ) : tabs.length === 0 ? (
         <EmptyState
           title="No findings"
-          description="No open dead-code findings for this repository."
+          description={`No ${DEAD_CODE_STATUS_LABELS[status].toLowerCase()} dead-code findings for this repository.`}
         />
       ) : (
         <Tabs
@@ -480,7 +503,7 @@ export function FindingsTable({
               empty={
                 <EmptyState
                   title="No findings"
-                  description="No open findings for this category with current filters."
+                  description="No findings in this category with the current filters."
                   {...(filtersActive
                     ? { action: { label: "Reset filters", onClick: resetFilters } }
                     : {})}

@@ -22,7 +22,8 @@ import type {
 } from "@repowise-dev/types/health";
 
 import { Skeleton } from "../ui/skeleton";
-import { Button } from "../ui/button";
+import { ApiError } from "../shared/api-error";
+import { toFriendlyMessage } from "../lib/errors";
 
 import { HealthKpiCards } from "./kpi-cards";
 import { BiomarkerList } from "./biomarker-list";
@@ -159,10 +160,11 @@ export function TriageView({
           </div>
         </div>
       ) : error ? (
-        <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] p-4 text-sm text-[var(--color-text-secondary)] flex items-center justify-between gap-2">
-          <span>Couldn&apos;t load health data. Index this repo to populate it.</span>
-          <Button size="sm" variant="outline" onClick={() => mutate()}>Retry</Button>
-        </div>
+        <ApiError
+          title="Couldn't load health data"
+          message={`${toFriendlyMessage(error)} Index this repo if it has not been indexed yet.`}
+          onRetry={() => void mutate()}
+        />
       ) : overview ? (
         <>
           {/* Proof, up front: the defect-validated headline that sets this score

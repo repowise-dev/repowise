@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import {
   QuickActions as QuickActionsShell,
@@ -29,6 +30,13 @@ interface Props {
   docsMode?: RepoResponse["docs_mode"];
 }
 
+/** Human label for an action key, for toast copy. */
+function labelFor(key: QuickActionKey): string {
+  return (
+    [GENERATE_DOCS_ACTION, ...DEFAULT_QUICK_ACTIONS].find((a) => a.key === key)?.label ?? key
+  );
+}
+
 export function QuickActionsWrapper({
   repoId,
   repoName,
@@ -38,7 +46,11 @@ export function QuickActionsWrapper({
   lastResyncAt,
   docsMode,
 }: Props) {
+  const router = useRouter();
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
+  // Which action started the job on screen, so its completion can be reported
+  // and refreshed in its own terms rather than as a generic doc generation.
+  const [activeKey, setActiveKey] = useState<QuickActionKey | null>(null);
   const bulk = useBulkGenerate(repoId);
 
   // Hydrate from any in-flight job so refreshes don't lose progress visibility.
@@ -70,6 +82,26 @@ export function QuickActionsWrapper({
     [docsMode],
   );
 
+  function startWatching(jobId: string, key: QuickActionKey | null) {
+    setActiveJobId(jobId);
+    setActiveKey(key);
+  }
+
+  function handleJobDone(status: "completed" | "failed" | "cancelled") {
+    const key = activeKey;
+    setActiveJobId(null);
+    setActiveKey(null);
+    bulk.clearJob();
+    if (key === "dead-code") {
+      if (status === "completed") toast.success("Dead code scan finished");
+      else if (status === "failed") toast.error("Dead code scan failed");
+    }
+    // This page is server-rendered: without a refresh the "Dead Exports" tile
+    // the scan exists to move keeps showing its pre-scan number, and the same
+    // goes for every stat a sync, re-index or bulk generate just changed.
+    if (status === "completed") router.refresh();
+  }
+
   async function handleAction(key: QuickActionKey) {
     if (key === "generate-docs") {
       bulk.begin(
@@ -81,15 +113,15 @@ export function QuickActionsWrapper({
     try {
       if (key === "sync") {
         const job = await syncRepo(repoId);
-        setActiveJobId(job.id);
+        startWatching(job.id, key);
         toast.info(`Sync started${repoName ? ` — ${repoName}` : ""}`);
       } else if (key === "resync") {
         const job = await fullResyncRepo(repoId);
-        setActiveJobId(job.id);
+        startWatching(job.id, key);
         toast.info(`Full resync started${repoName ? ` — ${repoName}` : ""}`);
       } else if (key === "dead-code") {
         const { job_id } = await analyzeDeadCode(repoId);
-        setActiveJobId(job_id);
+        startWatching(job_id, key);
         toast.info("Dead code analysis started");
       }
     } catch (e) {
@@ -102,7 +134,8 @@ export function QuickActionsWrapper({
           ]);
           const inflight = running[0] ?? pending[0];
           if (inflight) {
-            setActiveJobId(inflight.id);
+            // Someone else's job: watch it, but do not claim it as this action.
+            startWatching(inflight.id, null);
             toast.info(
               "Showing progress for the in-flight job. Cancel it from the panel to start a new one.",
             );
@@ -112,7 +145,7 @@ export function QuickActionsWrapper({
           // fall through
         }
       }
-      toast.error(`${key} failed`, { description: msg });
+      toast.error(`${labelFor(key)} failed`, { description: msg });
     }
   }
 
@@ -122,10 +155,11 @@ export function QuickActionsWrapper({
     <GenerationProgressWrapper
       jobId={jobId}
       repoName={repoName}
-      onDone={() => {
-        setActiveJobId(null);
-        bulk.clearJob();
-      }}
+      // A dead-code scan runs the index-only pipeline, so the generic
+      // "Documentation updated - 0 pages generated" toast would describe it
+      // wrongly. It reports itself below instead.
+      quiet={activeKey === "dead-code"}
+      onDone={handleJobDone}
     />
   ) : null;
 

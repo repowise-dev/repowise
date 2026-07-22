@@ -176,7 +176,7 @@ describe("DeadCodeView", () => {
     });
     renderView(<DeadCodeView adapter={adapter} />);
 
-    expect(await screen.findByText("Couldn't load summary.")).toBeInTheDocument();
+    expect(await screen.findByText("Couldn't load summary")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
   });
 
@@ -198,12 +198,79 @@ describe("DeadCodeView", () => {
 
     // A failed fetch must never render as a clean repository, so the retry
     // card has to be the whole story: no table, no "no findings" underneath it.
-    expect(await screen.findByText("Couldn't load findings.")).toBeInTheDocument();
+    expect(await screen.findByText("Couldn't load findings")).toBeInTheDocument();
     expect(screen.queryByText("No dead code found")).not.toBeInTheDocument();
     expect(
-      screen.queryByText("No open dead-code findings for this repository."),
+      screen.queryByText(/No open dead-code findings/),
     ).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /All findings/ })).not.toBeInTheDocument();
+  });
+
+  it("reviews and reopens an acknowledged finding, which the toast alone could not", async () => {
+    const acked: DeadCodeFinding = { ...FINDINGS[0]!, status: "acknowledged" };
+    const listFindings = vi.fn(async (opts?: { status?: string }) =>
+      opts?.status === "acknowledged" ? [acked] : [],
+    );
+    const adapter = makeAdapter({ listFindings });
+    renderView(<DeadCodeView adapter={adapter} />);
+
+    // With no open findings the page still has to offer the way back in, not
+    // just the "no dead code found" state.
+    fireEvent.change(await screen.findByLabelText("Status"), {
+      target: { value: "acknowledged" },
+    });
+
+    await waitFor(() =>
+      expect(listFindings).toHaveBeenCalledWith(
+        expect.objectContaining({ status: "acknowledged" }),
+      ),
+    );
+
+    fireEvent.click(await findRowButton("Reopen src/old/legacy.ts"));
+    fireEvent.click(await screen.findByRole("button", { name: "Reopen" }));
+
+    await waitFor(() =>
+      expect(adapter.patchFinding).toHaveBeenCalledWith("f1", { status: "open" }),
+    );
+    // Reopened, so it leaves the acknowledged slice it was being reviewed in.
+    await waitFor(() =>
+      expect(queryRowButton("Reopen src/old/legacy.ts")).not.toBeInTheDocument(),
+    );
+
+    // ...and it has to arrive in the open slice. The open payload predates the
+    // reopen and does not contain it, so without merging the override in, the
+    // finding is open on the server and invisible in the UI until a reload.
+    fireEvent.change(screen.getByLabelText("Status"), { target: { value: "open" } });
+
+    expect(screen.queryByText("No dead code found")).not.toBeInTheDocument();
+    // It is cleanup-ready, so a pile now exists and the section mounts closed.
+    fireEvent.click(await screen.findByRole("button", { name: /All findings/ }));
+    expect(await findRowButton("Resolve src/old/legacy.ts")).toBeInTheDocument();
+  });
+
+  it("keeps the table when a refresh fails over rows already on screen", async () => {
+    let calls = 0;
+    const listFindings = vi.fn(async () => {
+      calls += 1;
+      if (calls > 1) throw new Error("Service unavailable");
+      return FINDINGS;
+    });
+    const adapter = makeAdapter({
+      listFindings,
+      analyze: vi.fn(async () => ({ job_id: "job-1" })),
+      waitForAnalysis: vi.fn(async () => {}),
+    });
+    renderView(<DeadCodeView adapter={adapter} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /All findings/ }));
+    expect(await findRowButton("Resolve src/old/legacy.ts")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Re-analyze" }));
+
+    // A transient failure on the refresh must not take the working table away
+    // and lose the user's place; it reports itself above the rows.
+    expect(await screen.findByText("Couldn't refresh findings")).toBeInTheDocument();
+    expect(rowButton("Resolve src/old/legacy.ts")).toBeInTheDocument();
   });
 
   it("keeps the table mounted when the last row is resolved, so undo can restore it", async () => {

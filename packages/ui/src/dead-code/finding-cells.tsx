@@ -11,7 +11,11 @@ import { AiPromptButton } from "../health/ai-prompt-button";
 import { formatConfidence } from "../lib/format";
 import { toFriendlyMessage } from "../lib/errors";
 import { cn } from "../lib/cn";
-import type { DeadCodeFinding, DeadCodeStatus } from "@repowise-dev/types/dead-code";
+import {
+  deadCodeConfidenceTier,
+  type DeadCodeFinding,
+  type DeadCodeStatus,
+} from "@repowise-dev/types/dead-code";
 
 /**
  * The cell renderers behind the findings table's columns. They live apart from
@@ -45,6 +49,20 @@ const STATUS_LABELS: Record<
     confirmLabel: "Mark FP",
     destructive: true,
   },
+  open: {
+    title: "Reopen finding?",
+    description: "Put this finding back on the open list so cleanup picks it up again.",
+    confirmLabel: "Reopen",
+    destructive: false,
+  },
+};
+
+/** Human labels for the status filter and the section hint beside it. */
+export const DEAD_CODE_STATUS_LABELS: Record<DeadCodeStatus, string> = {
+  open: "Open",
+  acknowledged: "Acknowledged",
+  resolved: "Resolved",
+  false_positive: "False positive",
 };
 
 export interface FindingIdentityProps {
@@ -110,15 +128,16 @@ export function FindingIdentity({ finding, href, onNavigate }: FindingIdentityPr
   );
 }
 
-/** Confidence, coloured on the shared tier boundaries. */
+/** Confidence, coloured on the shared tier boundaries rather than local ones. */
 export function FindingConfidence({ finding }: { finding: DeadCodeFinding }) {
+  const tier = deadCodeConfidenceTier(finding.confidence);
   return (
     <span
       className={cn(
         "font-medium tabular-nums text-xs",
-        finding.confidence >= 0.8
+        tier === "high"
           ? "text-[var(--color-error)]"
-          : finding.confidence >= 0.6
+          : tier === "medium"
             ? "text-[var(--color-warning)]"
             : "text-[var(--color-text-secondary)]",
       )}
@@ -155,7 +174,11 @@ export interface FindingRowActionsProps {
   onGeneratePrompt?: ((id: string) => void) | undefined;
 }
 
-/** Per-row status actions: resolve, acknowledge, or mark false positive. */
+/**
+ * Per-row status actions: resolve, acknowledge or mark false positive while a
+ * finding is open, and the way back once it is not. Reopening used to be
+ * reachable only from a toast that expires after six seconds.
+ */
 export function FindingRowActions({
   finding,
   onPatch,
@@ -196,7 +219,7 @@ export function FindingRowActions({
             actions={[{ icon: GitBranch, label: "Graph", href: graphHref(finding.file_path) }]}
           />
         )}
-        {finding.status === "open" && (
+        {finding.status === "open" ? (
           <>
             <Button
               size="sm"
@@ -229,6 +252,17 @@ export function FindingRowActions({
               FP
             </Button>
           </>
+        ) : (
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={pending}
+            onClick={() => setConfirmStatus("open")}
+            className="h-6 px-2 text-xs"
+            aria-label={`Reopen ${finding.file_path}`}
+          >
+            Reopen
+          </Button>
         )}
       </span>
       {confirmConfig && (

@@ -9,6 +9,34 @@
 
 export type DeadCodeStatus = "open" | "acknowledged" | "resolved" | "false_positive";
 
+/**
+ * The one set of confidence boundaries, mirroring the engine.
+ *
+ * `HIGH` is `SAFE_CONFIDENCE_THRESHOLD` in
+ * `core/analysis/dead_code/risk_factors.py`: below it nothing is ever
+ * deletion-ready, and the summary endpoint counts the same way
+ * (`persistence/crud/analysis/dead_code.py`). `MEDIUM` is the list endpoint's
+ * default `min_confidence` floor, so anything under it is normally never
+ * fetched at all.
+ *
+ * Three surfaces used to disagree about these numbers, which put one 0.72
+ * finding in "high" on the summary card, "Medium" in the breakdown grid, and
+ * an unremarkable colour in the table while wearing a green Candidate badge.
+ */
+export const DEAD_CODE_CONFIDENCE = {
+  /** Deletion-ready floor; matches SAFE_CONFIDENCE_THRESHOLD. */
+  HIGH: 0.7,
+  /** The list endpoint's default floor; below this findings are not fetched. */
+  MEDIUM: 0.4,
+} as const;
+
+/** Which tier a confidence falls in, using the boundaries above. */
+export function deadCodeConfidenceTier(confidence: number): "high" | "medium" | "low" {
+  if (confidence >= DEAD_CODE_CONFIDENCE.HIGH) return "high";
+  if (confidence >= DEAD_CODE_CONFIDENCE.MEDIUM) return "medium";
+  return "low";
+}
+
 export interface DeadCodeFinding {
   id: string;
   kind: string;

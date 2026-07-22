@@ -12,7 +12,9 @@ import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
 interface Props {
   jobId: string;
   repoName?: string;
-  onDone?: () => void;
+  /** Fired once the job reaches a terminal state, with which one it reached
+   *  so the host can tell "finished" from "failed" without re-reading the job. */
+  onDone?: (status: "completed" | "failed" | "cancelled") => void;
   /** Start a fresh run after a failure or cancellation. */
   onRetry?: () => void;
   /** Suppress the completion/failure toasts (when the host surface renders
@@ -55,7 +57,7 @@ export function GenerationProgressWrapper({ jobId, repoName, onDone, onRetry, qu
           description: `${formatNumber(job.completed_pages)} pages generated`,
         });
       }
-      onDone?.();
+      onDone?.("completed");
     } else if (job?.status === "failed") {
       notifiedRef.current = true;
       if (!quiet) {
@@ -63,7 +65,7 @@ export function GenerationProgressWrapper({ jobId, repoName, onDone, onRetry, qu
           description: job.error_message ?? "Unknown error",
         });
       }
-      onDone?.();
+      onDone?.("failed");
     } else if (job?.status === "cancelled") {
       notifiedRef.current = true;
       if (!quiet) {
@@ -71,7 +73,7 @@ export function GenerationProgressWrapper({ jobId, repoName, onDone, onRetry, qu
           description: "The pipeline was stopped before completion.",
         });
       }
-      onDone?.();
+      onDone?.("cancelled");
     }
   }, [job?.status, job?.completed_pages, job?.error_message, repoName, onDone, quiet]);
 
