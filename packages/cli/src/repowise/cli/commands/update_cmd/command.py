@@ -19,15 +19,14 @@ import structlog
 
 from repowise.cli._setup import configure_cli_logging
 from repowise.cli.helpers import (
-    clear_update_pending,
     clear_update_queued,
     console,
+    consume_update_pending,
     ensure_repowise_dir,
     find_workspace_root,
     get_head_commit,
     load_config,
     load_state,
-    read_update_pending,
     release_update_lock,
     resolve_command_target,
     resolve_provider_or_prompt,
@@ -605,6 +604,11 @@ def run_update(
         if not dry_run:
             stamp_head_commit(repo_path, head)
             _refresh_editor_stamp(repo_path, agents_md)
+            # The index is current, so any pending marker a bailed update left
+            # is by definition caught-up (or older); drop it here too rather
+            # than waiting for the next content-changing update. This is the
+            # quiescent state a stale marker was observed lingering in.
+            consume_update_pending(repo_path, head)
         if emitter is not None:
             emitter.done(
                 ok=True,
@@ -739,6 +743,9 @@ def run_update(
         # /repos endpoint reads head_commit from the row, not the state file.
         stamp_head_commit(repo_path, head)
         _refresh_editor_stamp(repo_path, agents_md)
+        # We hold the lock and have advanced to head; drop any stale pending
+        # marker a bailed update left behind.
+        consume_update_pending(repo_path, head)
         if emitter is not None:
             emitter.done(
                 ok=True,
@@ -775,6 +782,7 @@ def run_update(
                 emitter.error(str(exc))
             raise
         _refresh_editor_stamp(repo_path, agents_md)
+        consume_update_pending(repo_path, head)
         if emitter is not None:
             emitter.done(
                 ok=True,
@@ -1031,6 +1039,9 @@ def run_update(
                 emitter.error(str(exc))
             raise
         _refresh_editor_stamp(repo_path, agents_md, degraded)
+        # Index-only is the post-commit hook's hot path; clear any stale pending
+        # marker here too, not just on the full-docs path.
+        consume_update_pending(repo_path, head)
         _record_update_outcome(
             index_only=True,
             changed_count=len(file_diffs),
@@ -1520,16 +1531,12 @@ def run_update(
     state["config_fingerprint"] = config_fingerprint(repo_path)
     save_state(repo_path, state)
 
-    # --- Roll forward to any commit that landed during this run ------------
+    # --- Pending-marker cleanup --------------------------------------------
     # Another `repowise update` (from a post-commit hook) may have written a
-    # ``.update.pending`` marker while we were generating pages. If the new
-    # HEAD points past where we just finished, clear the marker only if it's
-    # already caught up; otherwise leave it in place as a signal to the
-    # augment hook so its message can be "update done, new commits since"
-    # instead of the bare stale-wiki warning.
-    pending_head = read_update_pending(repo_path)
-    if pending_head and pending_head == head:
-        clear_update_pending(repo_path)
+    # ``.update.pending`` marker while we were generating pages. Drop it now
+    # that we've caught up; it is only kept when it points to a commit strictly
+    # newer than the one we just indexed.
+    consume_update_pending(repo_path, head)
 
     # Trigger cross-repo hooks if this repo is part of a workspace. The
     # workspace docs flow suppresses this per-repo and runs the hooks once

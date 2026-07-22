@@ -144,6 +144,41 @@ def commit_exists(repo_path: Path, sha: str) -> bool:
         return False
 
 
+def clear_stale_update_pending(repo_path: Path, indexed_head: str | None) -> None:
+    """Drop ``.repowise/.update.pending`` once the index has caught up to it.
+
+    The core in-flight bail (:func:`_update_one`) records the latest HEAD in
+    this marker, mirroring the CLI's ``write_update_pending``. The update that
+    holds the lock calls this on success: the marker is kept only when it
+    points to a commit strictly *ahead* of ``indexed_head`` (a newer commit not
+    yet indexed). Equal, ancestor, and no-longer-resolvable commits (rebased or
+    gc'd away) are cleared, so a bailed core update never leaves the marker
+    behind forever — the symmetric half of the CLI ``consume_update_pending``
+    fix.
+    """
+    pending_path = repo_path / ".repowise" / ".update.pending"
+    try:
+        pending_head = pending_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return
+    if pending_head and indexed_head and pending_head != indexed_head:
+        try:
+            # indexed_head is an ancestor of pending_head => strictly ahead,
+            # keep it. Non-zero (incl. unresolvable pending) => safe to clear.
+            ahead = subprocess.run(
+                ["git", "merge-base", "--is-ancestor", indexed_head, pending_head],
+                cwd=str(repo_path),
+                capture_output=True,
+                timeout=10,
+            )
+            if ahead.returncode == 0:
+                return
+        except Exception:
+            pass
+    with suppress(OSError):
+        pending_path.unlink(missing_ok=True)
+
+
 def read_repo_state(repo_path: Path) -> dict[str, Any]:
     """Return the parsed ``<repo>/.repowise/state.json``, or ``{}``."""
     state_path = repo_path / ".repowise" / "state.json"
@@ -722,6 +757,9 @@ async def update_workspace(
                 # without re-running DB persistence, so the row would otherwise
                 # lag HEAD; a no-op when persistence already stamped it.
                 await reconcile_repo_head_commit(path, new_head)
+                # Drop any stale pending marker now that we've advanced to
+                # new_head (a bailed sibling update may have written one).
+                clear_stale_update_pending(path, new_head)
 
             # Update workspace config entry
             if result.updated:

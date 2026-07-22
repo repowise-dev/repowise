@@ -344,6 +344,53 @@ def clear_update_pending(repo_path: Path) -> None:
         pass
 
 
+def _pending_commit_still_ahead(
+    repo_path: Path, pending_head: str, indexed_head: str | None
+) -> bool:
+    """True only when ``pending_head`` is a resolvable commit strictly ahead of
+    ``indexed_head`` — a newer commit the index has not caught up to yet.
+
+    Equal commits, ancestors of ``indexed_head``, and commits that no longer
+    resolve (rebased or gc'd away) all return ``False``, so the caller clears
+    them instead of leaving the marker behind forever.
+    """
+    if not indexed_head or pending_head == indexed_head:
+        return False
+    import subprocess
+
+    try:
+        # ``indexed_head`` is an ancestor of ``pending_head`` => pending is
+        # newer than what we indexed and worth keeping. A non-zero exit
+        # (including an unresolvable pending commit) means "not ahead".
+        result = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", indexed_head, pending_head],
+            cwd=str(repo_path),
+            capture_output=True,
+            timeout=10,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def consume_update_pending(repo_path: Path, indexed_head: str | None) -> None:
+    """Clear the ``.update.pending`` marker once the index has caught up to it.
+
+    A bailed update writes the latest HEAD to ``.update.pending`` (see
+    :func:`write_update_pending`) so the in-flight update can tell more commits
+    landed. The update that actually holds the lock calls this when it
+    finishes: the marker is obsolete unless it points to a commit strictly
+    *ahead* of the one just indexed. The previous consumer only cleared on an
+    exact ``pending == head`` match, so once HEAD advanced past the pending
+    commit (or that commit was rebased away) the marker leaked indefinitely.
+    """
+    pending_head = read_update_pending(repo_path)
+    if pending_head is None:
+        return
+    if not _pending_commit_still_ahead(repo_path, pending_head, indexed_head):
+        clear_update_pending(repo_path)
+
+
 # ---------------------------------------------------------------------------
 # Hook output log — capped, single-file rotation so the user can diagnose
 # why the post-commit hook didn't catch up without needing to chase down a
