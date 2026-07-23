@@ -47,6 +47,7 @@ provider: anthropic                  # LLM provider
 model: claude-sonnet-4-6             # Model identifier
 embedder: gemini                     # Embedding provider
 reasoning: auto                      # auto | off/none | minimal | low | medium | high | xhigh | max
+max_tokens: 16384                    # Max output tokens per generated documentation page
 exclude_patterns:                    # Gitignore-style patterns
   - vendor/
   - "*.generated.*"
@@ -73,6 +74,12 @@ providers and model families that expose them. Providers or models that cannot
 translate an explicit mode fail before making an API call. The interactive
 `serve` chat streaming path is separate and does not currently consume this
 setting.
+
+`max_tokens` bounds each model-written documentation response. It is a
+persistent repository setting used by `init`, `update`, `generate`, `restyle`,
+workspace generation, and server-triggered generation. If a provider reports
+that it reached this limit, repowise rejects the incomplete page instead of
+saving it.
 
 ---
 

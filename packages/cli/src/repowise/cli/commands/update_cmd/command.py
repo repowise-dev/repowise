@@ -1176,7 +1176,8 @@ def run_update(
     # on update yet — defaults to on to keep the onboarding collection
     # fresh as the codebase evolves.
     enable_onboarding_cfg = bool(cfg.get("enable_onboarding", True))
-    config = GenerationConfig(
+    config = GenerationConfig.from_repo_config(
+        cfg,
         max_concurrency=concurrency,
         language=language,
         reasoning=resolve_reasoning(reasoning, cfg),

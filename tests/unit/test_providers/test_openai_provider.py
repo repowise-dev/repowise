@@ -123,7 +123,11 @@ def test_available_model_options_falls_back_to_configured_model(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _make_mock_chat_response(text: str = "# Doc\nContent.") -> MagicMock:
+def _make_mock_chat_response(
+    text: str = "# Doc\nContent.",
+    *,
+    finish_reason: str = "stop",
+) -> MagicMock:
     usage = MagicMock()
     usage.prompt_tokens = 120
     usage.completion_tokens = 60
@@ -132,6 +136,7 @@ def _make_mock_chat_response(text: str = "# Doc\nContent.") -> MagicMock:
 
     choice = MagicMock()
     choice.message.content = text
+    choice.finish_reason = finish_reason
 
     response = MagicMock()
     response.choices = [choice]
@@ -150,6 +155,21 @@ async def test_generate_returns_generated_response():
 
     assert isinstance(result, GeneratedResponse)
     assert result.content == "Hello from OpenAI"
+    assert result.stop_reason == "end_turn"
+    assert result.provider_stop_reason == "stop"
+
+
+async def test_generate_maps_length_to_token_limit():
+    provider = OpenAIProvider(api_key="sk-test")
+    mock_response = _make_mock_chat_response(finish_reason="length")
+
+    with patch("openai.AsyncOpenAI") as mock_client:
+        mock_client.return_value.chat.completions.create = AsyncMock(return_value=mock_response)
+        provider._client = mock_client.return_value
+        result = await provider.generate("sys", "user")
+
+    assert result.stop_reason == "max_tokens"
+    assert result.provider_stop_reason == "length"
 
 
 async def test_generate_token_counts():

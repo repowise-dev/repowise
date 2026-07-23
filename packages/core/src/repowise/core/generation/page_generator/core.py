@@ -42,6 +42,7 @@ from .structural import (
     oneline,
     signature,
 )
+from .validation import _validate_symbol_references, validate_generated_response
 
 if TYPE_CHECKING:
     from pathlib import Path as _Path  # noqa: F401
@@ -354,6 +355,7 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
             reasoning=self._config.reasoning,
             cache_hints=cache_hints,
         )
+        validate_generated_response(response)
 
         if self._config.cache_enabled:
             self._cache[key] = response

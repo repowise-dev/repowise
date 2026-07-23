@@ -24,6 +24,35 @@ CacheSegment = Literal["system", "user_prefix"]
 ModelOptionSource = Literal["api", "local", "fallback"]
 
 
+def normalize_stop_reason(reason: object) -> tuple[str | None, str | None]:
+    """Return ``(normalized, provider-native)`` completion stop reasons.
+
+    Non-streaming adapters use the same neutral values as ``ChatStreamEvent``.
+    Unknown provider values are retained verbatim so failures remain
+    diagnosable without teaching the provider-neutral layer every vendor enum.
+    """
+    if reason is None:
+        return None, None
+
+    raw_reason = reason if isinstance(reason, str) else getattr(reason, "value", None)
+    if not isinstance(raw_reason, str) or not raw_reason.strip():
+        return None, None
+
+    provider_stop_reason = raw_reason.strip()
+    normalized_key = provider_stop_reason.lower()
+    aliases = {
+        "stop": "end_turn",
+        "end_turn": "end_turn",
+        "stop_sequence": "end_turn",
+        "length": "max_tokens",
+        "max_tokens": "max_tokens",
+        "tool_calls": "tool_use",
+        "function_call": "tool_use",
+        "tool_use": "tool_use",
+    }
+    return aliases.get(normalized_key), provider_stop_reason
+
+
 @dataclass(frozen=True)
 class ProviderModelOption:
     """A model choice exposed by a provider for interactive configuration."""
@@ -100,6 +129,11 @@ class GeneratedResponse:
                        when nothing was harvested. Each item is a raw dict
                        carrying at least ``title`` + ``source_quote``; the
                        generator gates them against the file source before use.
+        stop_reason:   Provider-neutral completion reason. Uses the same values
+                       as streaming chat (notably ``end_turn``, ``max_tokens``,
+                       and ``tool_use``).
+        provider_stop_reason:
+                       Provider-native completion reason retained for diagnosis.
     """
 
     content: str
@@ -108,6 +142,8 @@ class GeneratedResponse:
     cached_tokens: int = 0
     usage: dict[str, Any] = field(default_factory=dict)
     decisions: list[dict] | None = None
+    stop_reason: str | None = None
+    provider_stop_reason: str | None = None
 
     @property
     def total_tokens(self) -> int:

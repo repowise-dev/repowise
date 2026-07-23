@@ -628,7 +628,8 @@ async def run_pipeline(
             # Wiki style precedence: explicit param (server passes the DB-settings
             # value) > repo-local config.yaml (CLI/init) > default.
             _style = wiki_style or _cfg.get("wiki_style", "comprehensive")
-            resolved_generation_config = GenerationConfig(
+            resolved_generation_config = GenerationConfig.from_repo_config(
+                _cfg,
                 max_concurrency=concurrency,
                 reasoning=resolve_reasoning(config=_cfg),
                 wiki_style=_style,

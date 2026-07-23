@@ -98,7 +98,11 @@ def test_available_model_options_uses_models_endpoint(monkeypatch):
     )
 
 
-def _make_mock_chat_response(text: str = "# Doc\nContent.") -> MagicMock:
+def _make_mock_chat_response(
+    text: str = "# Doc\nContent.",
+    *,
+    finish_reason: str = "stop",
+) -> MagicMock:
     usage = MagicMock()
     usage.prompt_tokens = 120
     usage.completion_tokens = 60
@@ -106,6 +110,7 @@ def _make_mock_chat_response(text: str = "# Doc\nContent.") -> MagicMock:
 
     choice = MagicMock()
     choice.message.content = text
+    choice.finish_reason = finish_reason
 
     response = MagicMock()
     response.choices = [choice]
@@ -156,6 +161,8 @@ async def test_generate_returns_generated_response():
 
     assert isinstance(result, GeneratedResponse)
     assert result.content == "Hello from Kimi"
+    assert result.stop_reason == "end_turn"
+    assert result.provider_stop_reason == "stop"
     assert result.input_tokens == 120
     assert result.output_tokens == 60
 

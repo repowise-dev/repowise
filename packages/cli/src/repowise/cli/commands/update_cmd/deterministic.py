@@ -148,7 +148,8 @@ def _render_pages(
         return []
 
     try:
-        config = GenerationConfig(
+        config = GenerationConfig.from_repo_config(
+            cfg,
             deterministic=True,
             file_pages_only=True,
             max_concurrency=concurrency,

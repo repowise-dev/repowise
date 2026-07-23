@@ -7,9 +7,17 @@ from datetime import datetime
 import pytest
 
 from repowise.core.generation.context_assembler import ContextAssembler
-from repowise.core.generation.models import GeneratedPage, GenerationConfig
+from repowise.core.generation.models import (
+    GeneratedPage,
+    GenerationConfig,
+    compute_page_id,
+    compute_source_hash,
+)
 from repowise.core.generation.page_generator import SYSTEM_PROMPTS, PageGenerator
+from repowise.core.generation.page_generator.core import PriorPage
+from repowise.core.generation.page_generator.validation import InvalidGeneratedContentError
 from repowise.core.ingestion.models import ParsedFile, RepoStructure
+from repowise.core.providers.llm.base import GeneratedResponse
 from repowise.core.providers.llm.mock import MockProvider
 
 from .conftest import _make_file_info, _make_symbol
@@ -158,6 +166,117 @@ async def test_file_page_is_byte_identical_with_and_without_a_key(
     assert pages[0].content == pages[1].content
     assert pages[0].metadata == pages[1].metadata
     assert pages[0].page_id == pages[1].page_id
+
+
+async def test_provider_request_forwards_reasoning_config():
+    provider = MockProvider()
+    config = GenerationConfig(reasoning="off")
+    assembler = ContextAssembler(config)
+    gen = PageGenerator(provider, assembler, config)
+
+    await gen._call_provider("module_page", "Document this module.", "request-id")
+
+    assert provider.calls[0]["reasoning"] == "off"
+
+
+async def test_repo_output_limit_reaches_provider_request(sample_config):
+    """Exercise the public config-to-provider path without a network call."""
+    provider = MockProvider()
+    config = GenerationConfig.from_repo_config(
+        {"max_tokens": 2345},
+        token_budget=sample_config.token_budget,
+        cache_enabled=False,
+    )
+    generator = PageGenerator(provider, ContextAssembler(config), config)
+
+    await generator._call_provider("module_page", "Document this module.", "request-id")
+
+    assert provider.calls[0]["max_tokens"] == 2345
+
+
+async def test_invalid_provider_output_raises_and_is_not_cached(sample_config):
+    provider = MockProvider(
+        responses=[
+            GeneratedResponse(
+                content="# Queue status\n\nIncomplete",
+                input_tokens=10,
+                output_tokens=20,
+                stop_reason="max_tokens",
+                provider_stop_reason="length",
+            )
+        ]
+    )
+    generator = PageGenerator(provider, ContextAssembler(sample_config), sample_config)
+
+    for _ in range(2):
+        with pytest.raises(
+            InvalidGeneratedContentError,
+            match="token limit before the documentation was complete",
+        ):
+            await generator._call_provider("module_page", "Document this module.", "request-id")
+
+    assert provider.call_count == 2
+
+
+async def test_prior_page_reuse_bypasses_fresh_output_validation(sample_config):
+    provider = MockProvider()
+    prompt = "Document this module."
+    target_path = "pkg"
+    prior_pages = {
+        compute_page_id("module_page", target_path): PriorPage(
+            source_hash=compute_source_hash(prompt),
+            model_name=provider.model_name,
+            content=" \n ",
+        )
+    }
+    generator = PageGenerator(
+        provider,
+        ContextAssembler(sample_config),
+        sample_config,
+        prior_pages=prior_pages,
+    )
+
+    response = await generator._call_provider(
+        "module_page",
+        prompt,
+        "request-id",
+        target_path=target_path,
+    )
+
+    assert response.content == " \n "
+    assert provider.call_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Prompt cache
+# ---------------------------------------------------------------------------
+
+
+async def test_cache_hit_does_not_increment_call_count(sample_config):
+    provider = MockProvider()
+    config = GenerationConfig(
+        max_tokens=1024, token_budget=2000, max_concurrency=2, cache_enabled=True
+    )
+    assembler = ContextAssembler(config)
+    gen = PageGenerator(provider, assembler, config)
+
+    await gen._call_provider("module_page", "Document this module.", "request-id")
+    # Second call — identical inputs → cache hit
+    await gen._call_provider("module_page", "Document this module.", "request-id")
+    assert provider.call_count == 1
+
+
+async def test_cache_disabled_increments_every_call(sample_config):
+    provider = MockProvider()
+    config = GenerationConfig(
+        max_tokens=1024, token_budget=2000, max_concurrency=2, cache_enabled=False
+    )
+    assembler = ContextAssembler(config)
+    gen = PageGenerator(provider, assembler, config)
+
+    await gen._call_provider("module_page", "Document this module.", "request-id-one")
+    await gen._call_provider("module_page", "Document this module.", "request-id-two")
+    assert provider.call_count == 2
 
 
 # ---------------------------------------------------------------------------

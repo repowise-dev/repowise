@@ -923,7 +923,8 @@ def _build_generation_config(repo_path: Path, config: dict, wiki_style: str) -> 
 
     repo_cfg = load_repo_config(repo_path)
     effective_style = resolve_style(config.get("style") or wiki_style, repo_path=repo_path).name
-    return GenerationConfig(
+    return GenerationConfig.from_repo_config(
+        repo_cfg,
         reasoning=resolve_reasoning(config=repo_cfg),
         wiki_style=effective_style,
         language=repo_cfg.get("language", "en"),
@@ -1201,7 +1202,8 @@ async def _incremental_page_regen(
             job_config.get("style") or repo_wiki_style, repo_path=repo_path
         ).name
         repo_cfg = load_repo_config(repo_path)
-        generation_config = GenerationConfig(
+        generation_config = GenerationConfig.from_repo_config(
+            repo_cfg,
             reasoning=resolve_reasoning(config=repo_cfg),
             wiki_style=effective_style,
             # Regenerate in the repo's configured output language, not default

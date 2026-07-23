@@ -430,7 +430,8 @@ def upgrade_to_full(
     # not have one configured yet. resolve_provider surfaces a clear error.
     provider = resolve_provider(provider_name, model, repo_path=repo_path)
 
-    config = GenerationConfig(
+    config = GenerationConfig.from_repo_config(
+        cfg,
         max_concurrency=concurrency,
         language=cfg.get("language", "en"),
         reasoning=resolve_reasoning(reasoning, cfg),

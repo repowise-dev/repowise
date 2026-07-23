@@ -16,6 +16,7 @@ import pytest
 
 from repowise.core.persistence.crud import upsert_generation_job, upsert_repository
 from repowise.server.job_executor import (
+    _build_generation_config,
     _incremental_page_regen,
     _repo_exclude_patterns,
     execute_job,
@@ -196,6 +197,16 @@ def test_repo_wiki_style_defaults_and_tolerates_bad_input(tmp_path):
         _repo_wiki_style(SimpleNamespace(settings_json="{bad json"), str(tmp_path))
         == "comprehensive"
     )
+
+
+def test_server_generation_config_reads_repo_output_limit(tmp_path):
+    config_dir = tmp_path / ".repowise"
+    config_dir.mkdir()
+    (config_dir / "config.yaml").write_text("max_tokens: 2468\n", encoding="utf-8")
+
+    config = _build_generation_config(tmp_path, {}, "comprehensive")
+
+    assert config.max_tokens == 2468
 
 
 @pytest.mark.asyncio
@@ -413,9 +424,7 @@ def _no_provider():
 
 
 @pytest.mark.asyncio
-async def test_initial_index_without_provider_renders_deterministic_wiki(
-    session_factory, tmp_path
-):
+async def test_initial_index_without_provider_renders_deterministic_wiki(session_factory, tmp_path):
     """A keyless first index renders a template wiki instead of nothing.
 
     Without a provider, the pipeline runs in DETERMINISTIC mode (it supplies its
@@ -492,9 +501,7 @@ async def test_initial_index_with_provider_uses_llm_mode(session_factory, tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_initial_index_no_provider_generate_docs_false_writes_none(
-    session_factory, tmp_path
-):
+async def test_initial_index_no_provider_generate_docs_false_writes_none(session_factory, tmp_path):
     """An explicit generate_docs=False keyless index generates nothing ('none')."""
     from repowise.core.pipeline.modes import OrchestratorMode
 

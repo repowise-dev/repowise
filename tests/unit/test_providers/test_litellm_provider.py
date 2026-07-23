@@ -57,7 +57,10 @@ async def test_generate_forwards_reasoning_effort(monkeypatch):
                 type(
                     "Choice",
                     (),
-                    {"message": type("Message", (), {"content": "ok"})()},
+                    {
+                        "message": type("Message", (), {"content": "ok"})(),
+                        "finish_reason": "length",
+                    },
                 )()
             ],
             "usage": None,
@@ -73,6 +76,8 @@ async def test_generate_forwards_reasoning_effort(monkeypatch):
     )
 
     provider = LiteLLMProvider(model="vendor/reasoner")
-    await provider.generate("sys", "user", reasoning="high")
+    result = await provider.generate("sys", "user", reasoning="high")
 
     assert completion.call_args.kwargs["reasoning_effort"] == "high"
+    assert result.stop_reason == "max_tokens"
+    assert result.provider_stop_reason == "length"

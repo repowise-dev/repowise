@@ -95,7 +95,11 @@ def test_available_model_options_uses_models_endpoint(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _make_mock_response(text: str = "# Doc\nContent.") -> MagicMock:
+def _make_mock_response(
+    text: str = "# Doc\nContent.",
+    *,
+    stop_reason: str = "end_turn",
+) -> MagicMock:
     usage = MagicMock()
     usage.input_tokens = 200
     usage.output_tokens = 80
@@ -108,6 +112,7 @@ def _make_mock_response(text: str = "# Doc\nContent.") -> MagicMock:
     response = MagicMock()
     response.content = [content_block]
     response.usage = usage
+    response.stop_reason = stop_reason
     return response
 
 
@@ -122,6 +127,21 @@ async def test_generate_returns_generated_response():
 
     assert isinstance(result, GeneratedResponse)
     assert result.content == "Hello from Claude"
+    assert result.stop_reason == "end_turn"
+    assert result.provider_stop_reason == "end_turn"
+
+
+async def test_generate_preserves_max_tokens_stop_reason():
+    provider = AnthropicProvider(api_key="sk-ant-test")
+    mock_response = _make_mock_response(stop_reason="max_tokens")
+
+    with patch("anthropic.AsyncAnthropic") as mock_client:
+        mock_client.return_value.messages.create = AsyncMock(return_value=mock_response)
+        provider._client = mock_client.return_value
+        result = await provider.generate("sys", "user")
+
+    assert result.stop_reason == "max_tokens"
+    assert result.provider_stop_reason == "max_tokens"
 
 
 async def test_generate_token_counts_with_cache():
