@@ -178,14 +178,49 @@ async def apply_auto(verdict: UpgradeVerdict, ctx: UpgradeContext) -> list[Upgra
     return ran
 
 
-def stamp(state: dict[str, object], *, package_version: str | None) -> dict[str, object]:
+def _auto_reachable_version(from_version: int, target: int) -> int:
+    """Highest store-format version reachable without an un-run reindex.
+
+    A routine persist advances the recorded version only across migrations it
+    can satisfy automatically (``COMPATIBLE`` / ``AUTO`` / ``RE_PARSE``). A
+    ``REINDEX_RECOMMENDED`` migration is a hard gate: the store stays just below
+    it until a full re-index runs, so :func:`assess` keeps returning the notice
+    on every routine ``update`` until the user actually re-indexes. Without this
+    clamp the first persist after an upgrade would stamp the store current and
+    silence a recommendation the store has not yet earned.
+    """
+    ceiling = from_version
+    for migration in migrations_between(from_version, target):
+        if migration.tier >= UpgradeTier.REINDEX_RECOMMENDED:
+            break
+        ceiling = migration.to_version
+    return ceiling
+
+
+def stamp(
+    state: dict[str, object],
+    *,
+    package_version: str | None,
+    full_index: bool = False,
+) -> dict[str, object]:
     """Write the current store-format markers into *state* in place and return it.
 
     Called on every persist so the store always records the format and the build
     that wrote it. ``embedding_model`` is stamped separately by the persistence
     layer that knows the resolved embedder.
+
+    ``full_index`` distinguishes a full-repo (re)generation, which genuinely
+    brings the store to :data:`STORE_FORMAT_VERSION`, from a routine incremental
+    persist, which does not. Only the former stamps the terminal version; the
+    latter clamps at the first ``REINDEX_RECOMMENDED`` gate (see
+    :func:`_auto_reachable_version`) so a reindex recommendation is never
+    silenced by an ordinary ``update``.
     """
-    state[STORE_FORMAT_VERSION_KEY] = STORE_FORMAT_VERSION
+    if full_index:
+        state[STORE_FORMAT_VERSION_KEY] = STORE_FORMAT_VERSION
+    else:
+        recorded = _coerce_int(state.get(STORE_FORMAT_VERSION_KEY), default=0)
+        state[STORE_FORMAT_VERSION_KEY] = _auto_reachable_version(recorded, STORE_FORMAT_VERSION)
     if package_version:
         state[WRITTEN_BY_VERSION_KEY] = package_version
     return state

@@ -261,7 +261,10 @@ def save_full_state_and_config(
     kg = getattr(result, "knowledge_graph_result", None)
     if kg is not None:
         state["knowledge_graph"] = build_kg_state(kg)
-    save_state(repo_path, state)
+    # A full init/index genuinely brings the store to the current store format
+    # (its pages are the concept tree), so stamp the terminal version rather
+    # than clamping at the reindex gate a routine persist would stop below.
+    save_state(repo_path, state, full_index=True)
 
     if kg is not None:
         save_knowledge_graph_json(repo_path, kg)
@@ -281,4 +284,4 @@ def save_full_state_and_config(
 
     # Re-save state with the fingerprint now that config.yaml is written.
     state["config_fingerprint"] = config_fingerprint(repo_path)
-    save_state(repo_path, state)
+    save_state(repo_path, state, full_index=True)
