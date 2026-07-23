@@ -100,9 +100,9 @@ an API call.
 `max_tokens` bounds each model-written documentation response. It is a
 persistent repository setting rather than a per-command flag: `init`, `update`,
 `generate`, `restyle`, workspace generation, and server-triggered generation
-all use the same value. Providers may enforce a lower model limit. If a
-provider reports that it stopped at this limit, repowise rejects the incomplete
-page instead of saving it.
+all use the same value. Providers may enforce a lower model limit. If
+generation reaches a token limit before the page is complete, repowise rejects
+the partial page instead of saving it.
 
 `wiki_style` controls the voice and density of generated wiki pages. Set it with
 `init --wiki-style` or switch later with `repowise restyle <style>` (which also

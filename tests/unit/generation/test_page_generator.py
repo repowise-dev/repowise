@@ -165,7 +165,10 @@ async def test_invalid_provider_output_raises_and_is_not_cached(sample_config):
     generator = PageGenerator(provider, ContextAssembler(sample_config), sample_config)
 
     for _ in range(2):
-        with pytest.raises(InvalidGeneratedContentError, match="configured token limit"):
+        with pytest.raises(
+            InvalidGeneratedContentError,
+            match="token limit before the documentation was complete",
+        ):
             await generator._call_provider("file_page", "Document this file.", "request-id")
 
     assert provider.call_count == 2
