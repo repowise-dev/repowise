@@ -80,6 +80,39 @@ def test_claude_plugin_skills_have_metadata() -> None:
         assert re.search(r"^name: \S+", text, re.MULTILINE)
 
 
+def _has_command_frontmatter(text: str) -> bool:
+    if not text.startswith("---\n"):
+        return False
+    end = text.find("\n---", 4)
+    if end == -1:
+        return False
+    frontmatter = text[4:end]
+    return "description:" in frontmatter and "allowed-tools:" in frontmatter
+
+
+def test_claude_plugin_commands_have_frontmatter() -> None:
+    command_paths = sorted((PLUGIN_ROOT / "commands").glob("*.md"))
+
+    assert {path.stem for path in command_paths} == {
+        "dead-code",
+        "decision",
+        "doctor",
+        "health",
+        "init",
+        "reindex",
+        "risk",
+        "search",
+        "status",
+        "update",
+    }
+
+    for path in command_paths:
+        text = path.read_text(encoding="utf-8")
+        assert _has_command_frontmatter(text), path.name
+        assert re.search(r"^description: .+", text, re.MULTILINE)
+        assert re.search(r"^allowed-tools: .+", text, re.MULTILINE)
+
+
 def test_claude_plugin_marketplace_version_sync() -> None:
     manifest = _load_json(PLUGIN_ROOT / ".claude-plugin" / "plugin.json")
     marketplace = _load_json(ROOT / ".claude-plugin" / "marketplace.json")
