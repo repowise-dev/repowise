@@ -5,6 +5,7 @@ from __future__ import annotations
 import click
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
+from repowise.cli._setup import configure_cli_logging
 from repowise.cli.helpers import (
     console,
     ensure_repowise_dir,
@@ -24,13 +25,26 @@ from repowise.cli.ui import BRAND_STYLE, OWL_SPINNER
     help="Embedder to use. 'auto' detects from env vars / config.",
 )
 @click.option("--batch-size", type=int, default=32, help="Pages per embedding batch.")
-def reindex_command(path: str | None, embedder: str, batch_size: int) -> None:
+@click.option(
+    "--verbose",
+    "-v",
+    is_flag=True,
+    default=False,
+    help="Show debug logs from the pipeline.",
+)
+def reindex_command(
+    path: str | None, embedder: str, batch_size: int, verbose: bool = False
+) -> None:
     """Rebuild vector search index from existing wiki pages.
 
     Reads all pages from the database, embeds them using the configured
     embedder, and persists the vectors to LanceDB. No LLM calls — only
     embedding API calls. Fast and cheap.
     """
+    # Quiet library/structlog output so it doesn't interleave with the live
+    # progress bar; `-v` lets repowise's debug lines through for troubleshooting.
+    configure_cli_logging(verbose=verbose)
+
     repo_path = resolve_repo_path(path)
     ensure_repowise_dir(repo_path)
 
