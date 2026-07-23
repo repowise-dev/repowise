@@ -82,29 +82,19 @@ export const AI_WRITTEN_BADGE_TITLE =
 // Onboarding collection
 // ---------------------------------------------------------------------------
 //
-// Keep this list in lockstep with the Python side
-// (`packages/core/src/repowise/core/generation/onboarding/slots.py`).
 // Two slots — project_overview and architecture_guide — are *promoted*: their
 // content lives in the existing repo_overview / architecture_diagram pages,
-// tagged via `metadata.onboarding_slot`. The other six are dedicated
+// tagged via `metadata.onboarding_slot`. The other seven are dedicated
 // `page_type === "onboarding"` pages with `metadata.subkind` discriminating
 // them.
+//
+// This map is display text only. The *reading order* used to be duplicated
+// here as an ONBOARDING_ORDER array kept in lockstep with `slots.py` by
+// comment alone; it now arrives on the pages themselves as `display_order`,
+// assigned once at generation time, so there is one ordering rather than two
+// that can drift.
 
-export const ONBOARDING_ORDER = [
-  "project_overview",
-  "architecture_guide",
-  "guided_tour",
-  "getting_started",
-  "codebase_map",
-  "key_concepts",
-  "how_it_works",
-  "development_guide",
-  "active_landscape",
-] as const;
-
-export type OnboardingSlot = (typeof ONBOARDING_ORDER)[number];
-
-export const ONBOARDING_SLOT_TITLES: Record<OnboardingSlot, string> = {
+export const ONBOARDING_SLOT_TITLES = {
   project_overview: "Project Overview",
   architecture_guide: "Architecture Guide",
   guided_tour: "Guided Tour",
@@ -114,7 +104,16 @@ export const ONBOARDING_SLOT_TITLES: Record<OnboardingSlot, string> = {
   how_it_works: "How It Works",
   development_guide: "Development Guide",
   active_landscape: "Active Landscape",
-};
+} as const;
+
+export type OnboardingSlot = keyof typeof ONBOARDING_SLOT_TITLES;
+
+function isOnboardingSlot(value: unknown): value is OnboardingSlot {
+  // hasOwn, not `in`: `"toString" in obj` is true for every object, and a page
+  // whose subkind happened to be a prototype member would then resolve to a
+  // function where a title is expected.
+  return typeof value === "string" && Object.hasOwn(ONBOARDING_SLOT_TITLES, value);
+}
 
 /**
  * Return the onboarding slot a page belongs to, or null if it isn't part of
@@ -128,17 +127,10 @@ export const ONBOARDING_SLOT_TITLES: Record<OnboardingSlot, string> = {
 export function getOnboardingSlot(page: DocPage): OnboardingSlot | null {
   const meta = page.metadata ?? {};
   const fromSlot = meta["onboarding_slot"];
-  if (typeof fromSlot === "string" && (ONBOARDING_ORDER as readonly string[]).includes(fromSlot)) {
-    return fromSlot as OnboardingSlot;
-  }
+  if (isOnboardingSlot(fromSlot)) return fromSlot;
   if (page.page_type === "onboarding") {
     const subkind = meta["subkind"];
-    if (
-      typeof subkind === "string" &&
-      (ONBOARDING_ORDER as readonly string[]).includes(subkind)
-    ) {
-      return subkind as OnboardingSlot;
-    }
+    if (isOnboardingSlot(subkind)) return subkind;
   }
   return null;
 }
