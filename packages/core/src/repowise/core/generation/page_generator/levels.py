@@ -278,6 +278,15 @@ def build_level4_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
     for mg in run.sel_module_groups:
         fcs = [run.file_page_contexts[fp] for fp in mg.file_paths if fp in run.file_page_contexts]
         if not fcs:
+            # A concept group whose files all failed to build a context. The
+            # partition is total, so this is a hole in the tree rather than a
+            # page not worth writing, and it should be visible when it
+            # happens instead of leaving the reader to notice the gap.
+            log.warning(
+                "module_page.skipped_no_file_contexts",
+                target_path=mg.key,
+                members=len(mg.file_paths),
+            )
             continue
         page_id = compute_page_id("module_page", mg.key)
         if not run._emit(page_id):
@@ -300,6 +309,8 @@ def build_level4_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
                     community_label=mg.label,
                     community_cohesion=mg.cohesion,
                     target_path=mg.key,
+                    structural_key=mg.structural_key,
+                    members=list(mg.file_paths),
                 ),
             )
         )

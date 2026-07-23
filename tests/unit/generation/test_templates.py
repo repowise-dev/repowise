@@ -114,7 +114,7 @@ def test_file_page_contains_file_path(jinja_env, file_page_ctx):
 @pytest.fixture(scope="module")
 def module_page_ctx() -> ModulePageContext:
     return ModulePageContext(
-        module_path="python_pkg",
+        title="Calculation Engine",
         language="python",
         total_symbols=5,
         public_symbols=3,
@@ -123,6 +123,7 @@ def module_page_ctx() -> ModulePageContext:
         dependents=[],
         pagerank_mean=0.3,
         files=["python_pkg/calculator.py", "python_pkg/models.py"],
+        directories=["python_pkg"],
     )
 
 
@@ -136,9 +137,16 @@ def test_module_page_has_heading(jinja_env, module_page_ctx):
     assert "##" in result
 
 
-def test_module_page_contains_module_path(jinja_env, module_page_ctx):
+def test_module_page_names_the_group_and_where_it_lives(jinja_env, module_page_ctx):
+    """The title is prose and the directories are the path. Both must appear.
+
+    A concept page spans directories, so a reader who only gets the title has
+    no way to go and look, and one who only gets a path has to guess what the
+    group is for.
+    """
     result = render(jinja_env, "module_page.j2", module_page_ctx)
-    assert module_page_ctx.module_path in result
+    assert module_page_ctx.title in result
+    assert "python_pkg" in result
 
 
 # ---------------------------------------------------------------------------
@@ -339,5 +347,3 @@ def test_scc_page_has_heading(jinja_env, scc_page_ctx):
 def test_scc_page_contains_cycle_description(jinja_env, scc_page_ctx):
     result = render(jinja_env, "scc_page.j2", scc_page_ctx)
     assert scc_page_ctx.cycle_description in result
-
-

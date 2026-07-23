@@ -84,37 +84,12 @@ def test_windows_target_paths_normalize() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Test directories do not get a module page
+# Test files do not enter the concept tree
 # ---------------------------------------------------------------------------
-
-
-def _pf(path, is_test):
-    from types import SimpleNamespace
-
-    return SimpleNamespace(file_info=SimpleNamespace(path=path, is_test=is_test))
-
-
-def test_a_test_directory_is_not_a_module():
-    from repowise.core.generation.selection.selector import _is_test_group
-
-    assert _is_test_group([_pf("tests/test_a.py", True), _pf("tests/test_b.py", True)])
-
-
-def test_a_production_module_with_a_colocated_test_keeps_its_page():
-    """Go and Jest put the test beside the source; that is still a module."""
-    from repowise.core.generation.selection.selector import _is_test_group
-
-    files = [_pf("pkg/a.go", False), _pf("pkg/b.go", False), _pf("pkg/a_test.go", True)]
-    assert not _is_test_group(files)
-
-
-def test_an_even_split_is_not_a_test_group():
-    from repowise.core.generation.selection.selector import _is_test_group
-
-    assert not _is_test_group([_pf("pkg/a.py", False), _pf("pkg/a_test.py", True)])
-
-
-def test_empty_group_is_not_a_test_group():
-    from repowise.core.generation.selection.selector import _is_test_group
-
-    assert not _is_test_group([])
+#
+# The majority-vote group filter that used to live here is gone with the
+# per-directory grouping. Test files are now excluded before grouping runs,
+# one file at a time, so a production directory with a colocated test keeps
+# its page and the test file simply is not a member of it. That is asserted
+# against the real selector in
+# ``test_selection_concept_groups.py::test_test_files_never_enter_the_concept_tree``.

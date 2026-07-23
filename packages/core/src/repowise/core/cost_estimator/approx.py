@@ -16,12 +16,6 @@ from __future__ import annotations
 
 from .types import PageTypePlan
 
-# Observed module-page ratio: curated/community grouping lands near one
-# module page per ~25 selected file pages, floored at 1 and capped so a
-# monorepo estimate does not balloon.
-_FILES_PER_MODULE = 25
-_MAX_MODULE_PAGES = 24
-
 # The curated onboarding collection has 8 fixed slots; slots without
 # enough signal are skipped, so this biases slightly high on tiny repos.
 _ONBOARDING_SLOTS = 8
@@ -38,9 +32,27 @@ def approximate_generation_plan(
     file_pages = round(file_count * max(0.0, min(coverage_pct, 1.0)))
     if file_count > 0:
         file_pages = max(1, file_pages)
-    module_pages = (
-        min(_MAX_MODULE_PAGES, max(1, file_pages // _FILES_PER_MODULE)) if file_pages else 0
-    )
+    # Concept pages partition every production file, so they scale with the
+    # repository rather than with the budgeted file-page slice, and they are
+    # not capped: a cap would quote a number the run cannot honour. The size
+    # ladder the grouper actually uses gives the expected group size, so this
+    # estimate moves with the real bounds instead of a remembered ratio.
+    #
+    # The ladder is a step function and this is fed *documentable* files
+    # (tests and config included) while the grouper sees production code
+    # only, so near a band edge the two can sit in different bands. Taking
+    # the larger of this band and the one below keeps the error on the
+    # over-quote side, which is the only side that does not surprise someone
+    # with a bill.
+    module_pages = 0
+    if file_count:
+        from repowise.core.generation.concept_tree.grouping import params_for
+
+        estimates = [
+            max(1, round(file_count / ((bounds.min_files + bounds.max_files) / 2)))
+            for bounds in (params_for(file_count), params_for(int(file_count * 0.8)))
+        ]
+        module_pages = max(estimates)
 
     plans = [
         PageTypePlan(page_type="file_page", count=file_pages, level=0),

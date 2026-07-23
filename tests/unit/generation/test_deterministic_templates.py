@@ -374,3 +374,67 @@ def test_as_markdown_is_idempotent():
     ):
         once = as_markdown(src)
         assert as_markdown(once) == once
+
+
+# ---------------------------------------------------------------------------
+# The concept page's own header
+# ---------------------------------------------------------------------------
+
+
+def _module_ctx(assembler, files):
+    from repowise.core.generation.context_assembler import FilePageContext
+
+    contexts = [
+        FilePageContext(
+            file_path=f,
+            language="python",
+            symbols=[],
+            docstring=None,
+            imports=[],
+            exports=[],
+            dependencies=[],
+            dependents=[],
+            pagerank_score=0.1,
+            betweenness_score=0.0,
+            is_entry_point=False,
+            file_source_snippet="",
+            community_id=None,
+            is_api_contract=False,
+            is_test=False,
+            parse_errors=[],
+            estimated_tokens=10,
+        )
+        for f in files
+    ]
+    return assembler.assemble_module_page("Ingestion Pipeline", "python", contexts, None)
+
+
+def test_module_page_leads_with_the_concept_title(generator):
+    """The H1 is the group's name, and the directories sit under it.
+
+    A concept page covers several directories, so the old ``# Module: <path>``
+    heading had nothing honest to put after the colon. The title says what the
+    group is; the line beneath says where to go and look.
+    """
+    ctx = _module_ctx(generator._assembler, ["src/ingest/read.py", "src/parse/ast.py"])
+    page = generator._deterministic_module_page(ctx, "src/ingest", "Ingestion Pipeline", None)
+
+    assert page.title == "Ingestion Pipeline"
+    assert page.content.startswith("# Ingestion Pipeline\n")
+    assert "Module:" not in page.content
+    assert "`src/ingest`" in page.content and "`src/parse`" in page.content
+
+
+def test_module_page_of_root_files_says_so(generator):
+    """Files at the repository root have no directory to name.
+
+    ``PurePosixPath("setup.py").parent`` is ``"."``, and printing a bare dot
+    where a path belongs reads as a bug. Root-level files are a real case:
+    the grouper anchors a group there whenever a repository keeps code at the
+    top level.
+    """
+    ctx = _module_ctx(generator._assembler, ["setup.py", "main.py"])
+    page = generator._deterministic_module_page(ctx, "root", "Project Entry Points", None)
+
+    assert "Repository root" in page.content
+    assert "`.`" not in page.content

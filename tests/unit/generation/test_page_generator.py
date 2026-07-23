@@ -473,10 +473,7 @@ async def test_generate_all_uses_in_memory_kg_modules_without_artifact_file():
         max_tokens=256,
         token_budget=100_000,
         max_concurrency=2,
-        module_grouping="curated",
-        min_module_size=2,
         coverage_pct=1.0,
-        module_page_share=1.0,
         dedupe_near_clones=False,  # synthetic files are identical by design
     )
     provider = MockProvider()

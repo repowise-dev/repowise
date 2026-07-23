@@ -37,10 +37,10 @@ def build_generation_plan(
     config:
         GenerationConfig — its ``coverage_pct`` drives the budget.
     kg_modules:
-        Curated wiki modules from the KG artifact, when available. Must be
-        passed for ``module_grouping="curated"`` estimates to match the
-        actual run — without it the selector falls back to community
-        grouping, exactly as generation itself would without an artifact.
+        Curated wiki modules from the KG artifact, when available. Only
+        steers which adjacent directories merge into a concept group, so its
+        absence changes which pages exist rather than how many, and the
+        estimate holds either way.
     """
     files = parsed_files
     if skip_tests:

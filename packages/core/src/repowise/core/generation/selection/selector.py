@@ -8,7 +8,8 @@ emitted.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from collections import Counter
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,8 @@ import structlog
 
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
 
+from ..concept_tree.grouping import group_files
+from ..concept_tree.naming import deterministic_title, disambiguate_titles
 from ..models import scc_page_slug
 from ..tour import DEFAULT_MAX_LANDMARKS, tour_landmark_paths
 from .budget import (
@@ -29,7 +32,6 @@ from .scoring import (
     score_api_contract,
     score_file,
     score_infra,
-    score_module,
     score_scc,
     score_symbol,
 )
@@ -50,10 +52,17 @@ _CODE_LANGUAGES = _LANG_REGISTRY.code_languages()
 class ModuleGroup:
     """One ``module_page`` worth of files.
 
-    ``key`` is the stable identifier persisted as ``target_path``:
-    the module's real directory path when grouping by curated KG modules
-    (so path-prefix child lookups work), ``community-<id>`` when grouping
-    by community, the top-level directory when falling back to ``top_dir``.
+    ``key`` is the stable identifier persisted as ``target_path``, and it is
+    always a real directory: the shallowest directory the group's members
+    share. The bench gold set matches pages by exact equality against the
+    surfaced ``target_path``, so a group that merged several sibling
+    directories still has to name one of them.
+
+    ``structural_key`` is where the abstract identity lives — a hash of the
+    sorted member list, carrying the ``concept-`` prefix minted by the
+    grouper. It is set by whatever produced the group rather than recomputed
+    downstream, because two places agreeing about page identity is the
+    arrangement D2 exists to prevent.
     """
 
     key: str
@@ -62,6 +71,7 @@ class ModuleGroup:
     file_paths: tuple[str, ...]
     label: str | None = None
     cohesion: float | None = None
+    structural_key: str = ""
 
 
 @dataclass
@@ -127,9 +137,10 @@ class SelectionInputs:
     config: Any  # GenerationConfig — duck-typed to avoid the import cycle
     kg_file_scores: dict[str, float] | None = None
     # Curated wiki modules from the KG artifact (``modules`` top-level key),
-    # passed through — never re-derived here. Only read when
-    # ``config.module_grouping == "curated"``; ``None``/empty falls back to
-    # community grouping (the fallback-matrix "degraded" row).
+    # passed through — never re-derived here. Read for one thing only: the
+    # file -> layer map that steers which adjacent directories merge into a
+    # concept group. Absent or partial degrades the grouping's taste, never
+    # its coverage, because the partition itself needs no KG input.
     kg_modules: list[dict] | None = None
     # Per-file question demand mined from session transcripts
     # (``core.sessions.miners.demand.aggregate_file_demand``): repo-relative
@@ -180,24 +191,6 @@ def _passes_tail_floor(path: str, tail_dirs: tuple[str, ...] | None) -> bool:
     if tail_dirs:
         return any(norm == d.rstrip("/") or norm.startswith(d.rstrip("/") + "/") for d in tail_dirs)
     return True
-
-
-def _is_test_group(files: list[Any]) -> bool:
-    """Whether a module group is mostly test files.
-
-    Test directories do not deserve a module page. The same floor already
-    applies to the deterministic coverage tail, where excluding test files
-    raised retrieval rather than lowering it: they add pages that match on
-    vocabulary without carrying an answer. Tests keep their own file pages,
-    which is what an agent actually needs when it goes looking for one.
-
-    Majority rather than any, so a production module with a colocated test
-    beside it (the Go and Jest convention) keeps its page.
-    """
-    if not files:
-        return False
-    tests = sum(1 for p in files if getattr(p.file_info, "is_test", False))
-    return tests * 2 > len(files)
 
 
 def _select_deterministic_tail(
@@ -287,136 +280,94 @@ def _build_symbol_candidates(
     return deduped
 
 
-def _build_curated_module_groups(
-    inputs: SelectionInputs, min_size: int
-) -> list[tuple[float, ModuleGroup]] | None:
-    """Scored groups from curated KG modules, or ``None`` when unavailable.
+def _layer_map_from_kg(
+    inputs: SelectionInputs,
+) -> tuple[dict[str, str], dict[str, str]]:
+    """File -> curated layer id, and layer id -> display name.
 
-    ``key`` = the module's real directory path (its ``target_path``, so the
-    MCP child lookup ``target_path LIKE 'dir/%'`` works), ``display``/``label``
-    = the curated human name, ``cohesion`` = None (the community block in the
-    template is conditional and has no meaning for directory groups). Ranked
-    by Σ PageRank of members — better than ``score_module``'s cohesion term,
-    which is meaningless here. Returns ``None`` only when no curated modules
-    were passed in (→ community fallback); an artifact whose modules all fall
-    below the floor yields an empty list, not a vocabulary mix.
+    The layer signal only steers which adjacent runs of directories merge; it
+    never forces a split, so an absent or partial map degrades the grouping's
+    taste rather than its correctness. That is why this reads whatever the KG
+    artifact happens to carry instead of requiring it.
     """
-    if not inputs.kg_modules:
-        return None
+    layer_of_file: dict[str, str] = {}
+    for module in inputs.kg_modules or []:
+        layer_id = module.get("layerId")
+        if not isinstance(layer_id, str) or not layer_id:
+            continue
+        for nid in module.get("nodeIds", []):
+            if isinstance(nid, str) and nid.startswith("file:"):
+                layer_of_file[nid[5:]] = layer_id
+    labels = {
+        lid: lid.removeprefix("layer:").replace("-", " ").replace("_", " ").title()
+        for lid in set(layer_of_file.values())
+    }
+    return layer_of_file, labels
 
-    code_by_path = {p.file_info.path: p for p in inputs.parsed_files if _is_code_file(p)}
+
+def _build_module_groups(inputs: SelectionInputs) -> list[tuple[float, ModuleGroup]]:
+    """Return the concept groups, scored, one per ``module_page``.
+
+    This is the concept tree, not one page per directory. The partition comes
+    from :func:`group_files`, which bins the production files into bounded,
+    path-local subtrees with no model in the loop, so it is total (every
+    non-test production file lands in exactly one group) and deterministic
+    (the same file set always produces the same groups, and therefore the same
+    page identities).
+
+    Totality is the property that makes this a replacement rather than an
+    alternative. The per-directory grouping this supersedes covered a subset
+    of the tree under a worse grouping and gave eleven of its pages to test
+    directories, which D8 measured as pure dilution. There is no coexistence
+    mode: D1 forbids one page type existing in two forms, and a wiki holding
+    both populations would be exactly that.
+
+    Scored by summed PageRank so the most central subsystem sorts first. The
+    score no longer rations anything — see :func:`select_pages` — but page
+    order is still what the reader sees first.
+    """
+    files = [
+        p.file_info.path
+        for p in inputs.parsed_files
+        if _is_code_file(p) and not getattr(p.file_info, "is_test", False)
+    ]
+    if not files:
+        return []
+
+    layer_of_file, layer_labels = _layer_map_from_kg(inputs)
+    groups = group_files(files, layer_of_file=layer_of_file)
+
+    lang_of = {p.file_info.path: p.file_info.language for p in inputs.parsed_files}
+    # Names are decided over the whole set, not per group: two packages that
+    # each hold a ``ui`` directory derive the same name from their paths, and
+    # two identical rows in the tree are indistinguishable to a reader even
+    # though the pages behind them are not.
+    titles = disambiguate_titles(
+        [
+            (deterministic_title(g, layer_labels.get(g.dominant_layer, "")), g.target_path)
+            for g in groups
+        ]
+    )
     scored: list[tuple[float, ModuleGroup]] = []
-    seen_keys: set[str] = set()
-    for module in inputs.kg_modules:
-        if module.get("wholeLayer"):
-            # 1:1 with a layer page (single-module layers, flat libs) — a
-            # module doc would re-document the layer. Skip the page; the
-            # module stays in the KG artifact for canvas/coverage.
-            continue
-        member_paths = sorted(
-            path
-            for nid in module.get("nodeIds", [])
-            if isinstance(nid, str) and (path := nid.removeprefix("file:")) in code_by_path
-        )
-        if len(member_paths) < min_size:
-            continue
-        key = module.get("path") or (module.get("id") or "").removeprefix("module:")
-        if not key or key in seen_keys:
-            # Rare cross-layer dir collision: the slug id is still unique.
-            key = (module.get("id") or "").removeprefix("module:")
-        if not key or key in seen_keys:
-            continue
-        seen_keys.add(key)
-        name = module.get("name") or key
-        language = module.get("language") or code_by_path[member_paths[0]].file_info.language
-        score = sum(inputs.pagerank.get(p, 0.0) for p in member_paths)
+    for group, title in zip(groups, titles, strict=True):
+        langs = Counter(lang_of.get(m, "") for m in group.members)
+        langs.pop("", None)
+        score = sum(inputs.pagerank.get(m, 0.0) for m in group.members)
         scored.append(
             (
                 score,
                 ModuleGroup(
-                    key=key,
-                    display=name,
-                    language=language,
-                    file_paths=tuple(member_paths),
-                    label=name,
+                    # Taken as given. The grouper guarantees it is non-empty
+                    # and distinct across groups, and naming the root here
+                    # instead would sit outside the uniqueness check that
+                    # makes the guarantee.
+                    key=group.target_path,
+                    display=title,
+                    language=langs.most_common(1)[0][0] if langs else "unknown",
+                    file_paths=tuple(group.members),
+                    label=None,
                     cohesion=None,
-                ),
-            )
-        )
-    scored.sort(key=lambda x: (-x[0], x[1].key))
-    return scored
-
-
-def _build_module_groups(inputs: SelectionInputs) -> list[tuple[float, ModuleGroup]]:
-    """Return scored module groups — curated, community-based, or top-dir."""
-    cfg = inputs.config
-    min_size = max(1, getattr(cfg, "min_module_size", 3))
-    grouping = getattr(cfg, "module_grouping", "community")
-
-    if grouping == "curated":
-        curated = _build_curated_module_groups(inputs, min_size)
-        if curated is not None:
-            return curated
-        grouping = "community"  # no curated artifact → today's path, unchanged
-
-    use_communities = grouping == "community"
-
-    # Bucket files into groups.
-    groups: dict[str, list[Any]] = {}
-    group_lang: dict[str, str] = {}
-    group_label: dict[str, str | None] = {}
-    group_cohesion: dict[str, float | None] = {}
-    group_display: dict[str, str] = {}
-
-    if use_communities and inputs.community_info:
-        for p in inputs.parsed_files:
-            if not _is_code_file(p):
-                continue
-            cid = inputs.community.get(p.file_info.path)
-            if cid is None:
-                continue
-            key = f"community-{cid}"
-            groups.setdefault(key, []).append(p)
-            group_lang.setdefault(key, p.file_info.language)
-            if key not in group_display:
-                ci = inputs.community_info.get(cid)
-                label = getattr(ci, "label", "") or f"cluster_{cid}"
-                group_display[key] = label
-                group_label[key] = label
-                group_cohesion[key] = float(getattr(ci, "cohesion", 0.0) or 0.0)
-    else:
-        for p in inputs.parsed_files:
-            if not _is_code_file(p):
-                continue
-            parts = Path(p.file_info.path).parts
-            key = parts[0] if len(parts) > 1 else "root"
-            groups.setdefault(key, []).append(p)
-            group_lang.setdefault(key, p.file_info.language)
-            group_display.setdefault(key, key)
-            group_label.setdefault(key, None)
-            group_cohesion.setdefault(key, None)
-
-    scored: list[tuple[float, ModuleGroup]] = []
-    for key, files in groups.items():
-        if _is_test_group(files):
-            continue
-        s = score_module(
-            size=len(files),
-            cohesion=group_cohesion.get(key) or 0.0,
-            min_module_size=min_size,
-        )
-        if s <= 0.0:
-            continue
-        scored.append(
-            (
-                s,
-                ModuleGroup(
-                    key=key,
-                    display=group_display.get(key, key),
-                    language=group_lang.get(key, "unknown"),
-                    file_paths=tuple(sorted(p.file_info.path for p in files)),
-                    label=group_label.get(key),
-                    cohesion=group_cohesion.get(key),
+                    structural_key=group.structural_key,
                 ),
             )
         )
@@ -469,7 +420,10 @@ def _shares_from_config(cfg: Any) -> dict[str, float]:
     return {
         "file_page": getattr(cfg, "file_page_share", 0.50),
         "symbol_spotlight": getattr(cfg, "symbol_spotlight_share", 0.15),
-        "module_page": getattr(cfg, "module_page_share", 0.10),
+        # Zero, and not a knob. The concept pages are taken whole, so a share
+        # here would reserve budget for a bucket that does not spend it and
+        # quietly shrink the file-page coverage the user actually asked for.
+        "module_page": 0.0,
         "api_contract": getattr(cfg, "api_contract_share", 0.08),
         "infra_page": getattr(cfg, "infra_page_share", 0.05),
         "scc_page": getattr(cfg, "scc_share", 0.04),
@@ -691,6 +645,11 @@ def select_pages(inputs: SelectionInputs) -> Selection:
         shares=_shares_from_config(cfg),
         n_files=len(inputs.parsed_files),
     )
+    # The module bucket is not rationed (see the Selection below), so the
+    # allocation has to say so. Leaving the budgeted number here would make
+    # the cost estimator quote a figure the run does not honour, which is the
+    # one thing the "allow-set honored verbatim" contract exists to prevent.
+    allocation = replace(allocation, module_page=len(modules))
 
     # File pages, tilted toward the modules agents ask about most (demand-free
     # top-K when there is no session data, so fresh installs are unchanged).
@@ -720,7 +679,14 @@ def select_pages(inputs: SelectionInputs) -> Selection:
         file_page_paths=selected_files,
         deterministic_tail_paths=deterministic_tail,
         symbol_spotlights=[t for _, t in symbols[: allocation.symbol_spotlight]],
-        module_groups=[m for _, m in modules[: allocation.module_page]],
+        # Never truncated, unlike every other bucket. The concept groups are a
+        # total partition of the production files, so rationing them does not
+        # produce a smaller wiki — it produces one with files that belong to no
+        # page at all, and the tree stops being a map of the repository. The
+        # cost of not rationing is bounded by construction rather than by a
+        # budget: the grouper's size ladder holds the page count near 50-80 for
+        # a repository this size and scales sublinearly above it.
+        module_groups=[m for _, m in modules],
         api_contract_paths=[p for _, p in apis[: allocation.api_contract]],
         infra_paths=[p for _, p in infras[: allocation.infra_page]],
         scc_groups=[g for _, g in sccs[: allocation.scc_page]],
