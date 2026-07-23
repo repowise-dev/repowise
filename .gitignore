@@ -121,3 +121,8 @@ ehthumbs.db
 
 # Claude Code
 .claude/
+
+
+# .NET build output
+**/obj/
+**/bin/
