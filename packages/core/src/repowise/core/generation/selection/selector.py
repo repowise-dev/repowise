@@ -182,6 +182,24 @@ def _passes_tail_floor(path: str, tail_dirs: tuple[str, ...] | None) -> bool:
     return True
 
 
+def _is_test_group(files: list[Any]) -> bool:
+    """Whether a module group is mostly test files.
+
+    Test directories do not deserve a module page. The same floor already
+    applies to the deterministic coverage tail, where excluding test files
+    raised retrieval rather than lowering it: they add pages that match on
+    vocabulary without carrying an answer. Tests keep their own file pages,
+    which is what an agent actually needs when it goes looking for one.
+
+    Majority rather than any, so a production module with a colocated test
+    beside it (the Go and Jest convention) keeps its page.
+    """
+    if not files:
+        return False
+    tests = sum(1 for p in files if getattr(p.file_info, "is_test", False))
+    return tests * 2 > len(files)
+
+
 def _select_deterministic_tail(
     files: list[tuple[float, str]],
     selected_files: list[str],
@@ -380,6 +398,8 @@ def _build_module_groups(inputs: SelectionInputs) -> list[tuple[float, ModuleGro
 
     scored: list[tuple[float, ModuleGroup]] = []
     for key, files in groups.items():
+        if _is_test_group(files):
+            continue
         s = score_module(
             size=len(files),
             cohesion=group_cohesion.get(key) or 0.0,

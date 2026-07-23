@@ -81,3 +81,40 @@ def test_windows_target_paths_normalize() -> None:
     records = [PageRecord("file_page:src/a.py", "file_page", "src\\a.py", is_template=True)]
     result = resolve_page_selection(records, PageSelectionIntent(path_globs=("src",)))
     assert result.page_ids == {"file_page:src/a.py"}
+
+
+# ---------------------------------------------------------------------------
+# Test directories do not get a module page
+# ---------------------------------------------------------------------------
+
+
+def _pf(path, is_test):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(file_info=SimpleNamespace(path=path, is_test=is_test))
+
+
+def test_a_test_directory_is_not_a_module():
+    from repowise.core.generation.selection.selector import _is_test_group
+
+    assert _is_test_group([_pf("tests/test_a.py", True), _pf("tests/test_b.py", True)])
+
+
+def test_a_production_module_with_a_colocated_test_keeps_its_page():
+    """Go and Jest put the test beside the source; that is still a module."""
+    from repowise.core.generation.selection.selector import _is_test_group
+
+    files = [_pf("pkg/a.go", False), _pf("pkg/b.go", False), _pf("pkg/a_test.go", True)]
+    assert not _is_test_group(files)
+
+
+def test_an_even_split_is_not_a_test_group():
+    from repowise.core.generation.selection.selector import _is_test_group
+
+    assert not _is_test_group([_pf("pkg/a.py", False), _pf("pkg/a_test.py", True)])
+
+
+def test_empty_group_is_not_a_test_group():
+    from repowise.core.generation.selection.selector import _is_test_group
+
+    assert not _is_test_group([])
