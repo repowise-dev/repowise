@@ -49,9 +49,10 @@ All of the following ship in `pip install repowise` today, free for internal use
   decision records linked to graph nodes, staleness tracking), and Code Health
   (25 deterministic markers, 1–10 score per file, coverage ingestion, trend
   alerts).
-- **Nine task-shaped MCP tools** — `get_overview`, `get_answer`, `get_context`,
-  `get_symbol`, `search_codebase`, `get_risk`, `get_why`, `get_dead_code`,
-  `get_health`. Benchmarked at **−36 % cost / −49 % tool calls** on `pallets/flask`
+- **Ten task-shaped MCP tools** — `get_overview`, `get_answer`, `get_context`,
+  `get_symbol`, `search_codebase`, `get_risk`, `get_change_risk`, `get_why`,
+  `get_dead_code`, `get_health`. Benchmarked at **−36 % cost / −49 % tool calls**
+  on `pallets/flask`
   and **−29 % cost / −70 % tool calls** on `scikit-learn` versus a strong baseline
   agent, at parity answer quality — see [repowise-bench](https://github.com/repowise-dev/repowise-bench).
 - **Multi-repo workspace intelligence** — cross-repo co-changes, API contract
@@ -119,7 +120,7 @@ the items that matter most to you can be prioritized.
 | Capability | Open Source (AGPL) | Commercial License |
 |------------|:------------------:|:------------------:|
 | Five intelligence layers | ✅ | ✅ |
-| Nine MCP tools | ✅ | ✅ |
+| Ten MCP tools | ✅ | ✅ |
 | Multi-repo workspaces | ✅ | ✅ |
 | Full-tier language support (incl. C# / .NET) | ✅ | ✅ |
 | Local dashboard (incl. local security pattern scan) | ✅ | ✅ |
