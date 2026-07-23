@@ -96,7 +96,7 @@ class PerTypeGenerationMixin:
 
     async def generate_module_page(
         self,
-        module_path: str,
+        title: str,
         language: str,
         file_contexts: list[FilePageContext],
         graph: Any,
@@ -108,9 +108,11 @@ class PerTypeGenerationMixin:
         community_label: str | None = None,
         community_cohesion: float | None = None,
         target_path: str | None = None,
+        structural_key: str = "",
+        members: list[str] | None = None,
     ) -> GeneratedPage:
         ctx = self._assembler.assemble_module_page(
-            module_path,
+            title,
             language,
             file_contexts,
             graph,
@@ -140,17 +142,32 @@ class PerTypeGenerationMixin:
                     "most_active_file": most_active.get("file_path", ""),
                     "most_active_commits_90d": most_active.get("commit_count_90d", 0),
                 }
-        page_target = target_path or module_path
+        # The page id is built from this, so it has to be a path, and it has
+        # to be the same path the grouper chose: it computes one shared
+        # directory per group and guarantees the result is unique across
+        # groups. Picking a different one here (the first directory, say)
+        # would mint an id the rest of the run does not agree with, so a
+        # caller that supplies no target gets the group's own anchor or, for
+        # a group with no directory at all, the root name the grouper uses.
+        page_target = target_path or (min(ctx.directories) if ctx.directories else "root")
         # The files this page covers. Its own identity and its place in the
-        # tree both derive from them: a module's target_path can be a
-        # clustering ordinal rather than a directory, in which case the member
-        # list is the only thing that says where the page belongs.
-        members = sorted(fc.file_path for fc in file_contexts)
+        # tree both derive from them: the page groups several directories, so
+        # its target_path is one directory the group touches rather than a
+        # container for all of it, and the member list is the only thing that
+        # says where the page belongs.
+        #
+        # Taken from the group rather than from ``file_contexts``, and the
+        # difference is load-bearing. A file context only exists for a file the
+        # run built one for, so deriving members here would silently narrow the
+        # page to that subset while ``structural_key`` still hashed the whole
+        # group. Placement resolves file ownership from this list, so the
+        # dropped files would be parented somewhere else entirely, and the two
+        # records of what the page covers would disagree.
+        covered = sorted(members) if members else sorted(fc.file_path for fc in file_contexts)
         if self._config.deterministic:
-            page = self._deterministic_module_page(
-                ctx, page_target, f"Module: {module_path}", module_git_summary
-            )
-            page.metadata["file_paths"] = members
+            page = self._deterministic_module_page(ctx, page_target, title, module_git_summary)
+            page.metadata["file_paths"] = covered
+            page.structural_key = structural_key or page.structural_key
             return page
         user_prompt = self._render("module_page.j2", ctx=ctx, module_git_summary=module_git_summary)
         response = await self._call_provider(
@@ -159,12 +176,17 @@ class PerTypeGenerationMixin:
         page = self._build_generated_page(
             "module_page",
             page_target,
-            f"Module: {module_path}",
+            title,
             response,
             compute_source_hash(user_prompt),
             GENERATION_LEVELS["module_page"],
         )
-        page.metadata["file_paths"] = members
+        page.metadata["file_paths"] = covered
+        # Set by the producer, preserved by ``_stamp_structural_keys``. The
+        # grouper hashed exactly this member list when it decided what the
+        # group was, so recomputing it downstream would give two places that
+        # must agree about page identity — the arrangement D2 rules out.
+        page.structural_key = structural_key or page.structural_key
         return page
 
     async def generate_scc_page(

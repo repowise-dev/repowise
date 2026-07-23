@@ -1,10 +1,11 @@
-"""Tests for curated-grouping wiring in ``repowise workspace add``.
+"""Tests for knowledge-graph wiring in ``repowise workspace add``.
 
-``module_grouping="curated"`` is the default. Doc generation can only engage
-curated module grouping if (a) the KG artifact (``.repowise/knowledge-graph.json``)
-was saved during indexing and (b) the generator is told the ``repo_path`` so it
-can load that artifact. These tests pin both seams so a regression to community
-grouping is caught.
+Doc generation reads the curated KG for the file -> layer map that steers
+which adjacent directories merge into a concept page. It gets there only if
+(a) the artifact (``.repowise/knowledge-graph.json``) was saved during
+indexing and (b) the generator is told the ``repo_path`` so it can load it.
+Neither seam changes coverage if it breaks, which is exactly why a break is
+easy to miss: the wiki still has a page for every file, grouped worse.
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ from repowise.cli.commands.workspace_cmd import _generate_docs_for_added_repo
 
 
 def test_do_index_save_idiom_writes_artifact(tmp_path):
-    """The ``_do_index`` save idiom must persist the curated KG artifact.
+    """The ``_do_index`` save idiom must persist the KG artifact.
 
     ``_do_index`` is a nested closure, so we exercise the exact save call it
     performs: when the pipeline result carries a ``knowledge_graph_result``,
@@ -35,7 +36,7 @@ def test_do_index_save_idiom_writes_artifact(tmp_path):
 
 
 def test_generate_docs_for_added_repo_passes_repo_path(tmp_path):
-    """``generate_all`` must receive ``repo_path`` so the curated KG loads."""
+    """``generate_all`` must receive ``repo_path`` so the KG artifact loads."""
     repo_path = tmp_path
 
     generator = MagicMock()

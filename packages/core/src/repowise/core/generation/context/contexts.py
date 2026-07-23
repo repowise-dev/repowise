@@ -81,7 +81,12 @@ class SymbolSpotlightContext:
 
 @dataclass
 class ModulePageContext:
-    module_path: str
+    # The page's display title. A concept group spans several directories and
+    # is named for what it does, so this is prose ("Ingestion Pipeline") and
+    # not a path. Same split as LayerPageContext's layer_name/layer_id: what
+    # the reader sees is separate from what the page is keyed by, and only the
+    # key is stable across regenerations.
+    title: str
     language: str
     total_symbols: int
     public_symbols: int
@@ -90,6 +95,11 @@ class ModulePageContext:
     dependents: list[str]
     pagerank_mean: float
     files: list[str]
+    # The directories the page covers, shallowest first. The title says what
+    # the page is about; this says where it lives, which is what a reader
+    # needs to go and look. Derived from the members rather than passed in, so
+    # it cannot disagree with them.
+    directories: list[str] = field(default_factory=list)
     # Graph intelligence enrichment
     file_summaries: dict[str, str] = field(default_factory=dict)
     community_label: str = ""

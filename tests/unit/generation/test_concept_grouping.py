@@ -119,9 +119,7 @@ class TestStability:
     def test_input_order_does_not_change_the_grouping(self):
         files = _repo(SPEC)
         forward = [g.structural_key for g in group_files(files, params=TINY)]
-        reverse = [
-            g.structural_key for g in group_files(list(reversed(files)), params=TINY)
-        ]
+        reverse = [g.structural_key for g in group_files(list(reversed(files)), params=TINY)]
         assert forward == reverse
 
     def test_one_added_file_does_not_reshuffle_the_tree(self):
@@ -134,8 +132,7 @@ class TestStability:
         files = _repo(SPEC)
         before = {g.structural_key for g in group_files(files, params=TINY)}
         after = {
-            g.structural_key
-            for g in group_files([*files, "src/alpha/new_thing.py"], params=TINY)
+            g.structural_key for g in group_files([*files, "src/alpha/new_thing.py"], params=TINY)
         }
         assert len(before - after) == 1, "more than one group changed identity"
         assert len(after - before) == 1
@@ -195,25 +192,46 @@ class TestIdentity:
 
     def test_target_path_stays_a_real_directory(self):
         files = _repo(SPEC)
-        directories = {f.rsplit("/", 1)[0] if "/" in f else "" for f in files}
+        # The repository root is a real directory whose path is the empty
+        # string, and the empty string cannot be a page id, so it is the one
+        # target that is a name rather than a path.
+        directories = {f.rsplit("/", 1)[0] for f in files if "/" in f} | {"root"}
         for group in group_files(files, params=TINY):
-            assert group.target_path in directories, (
-                f"{group.target_path!r} is not a directory in this repository"
-            )
+            assert (
+                group.target_path in directories
+            ), f"{group.target_path!r} is not a directory in this repository"
 
-    def test_a_group_of_root_level_files_is_targeted_at_the_root(self):
+    def test_a_group_of_root_level_files_is_named_for_the_root(self):
         """The repository root is a directory whose path is the empty string.
 
         Treating that as "no directory found" sent the group to the
         identity-hash fallback, which then became its page id, its title
-        ("D 73789 F 001 Bd") and its scope sentence.
+        ("D 73789 F 001 Bd") and its scope sentence. It cannot keep the empty
+        string either, because the page id is built from the target and an
+        empty one mints ``module_page:``, so it gets a name here where
+        uniqueness is enforced.
         """
         files = _repo({"": 3, "src/pkg": 10})
         groups = group_files(files, params=GroupingParams(min_files=2, max_files=4))
         root = next(g for g in groups if "setup" in " ".join(g.members) or "f00.py" in g.members)
-        assert root.target_path == ""
-        assert "#" not in root.target_path
+        assert root.target_path == "root"
+        assert all(g.target_path for g in groups)
         assert all("#" not in g.target_path for g in groups)
+
+    def test_a_repository_with_its_own_root_directory_still_gets_unique_targets(self):
+        """A top-level directory literally called ``root`` is not a conflict.
+
+        The root group's name is picked against the directories that exist,
+        so it steps aside rather than colliding — a collision here would mint
+        one page id for two pages and silently drop one on persist.
+        """
+        files = _repo({"": 3, "root": 6, "src/pkg": 6})
+        groups = group_files(files, params=GroupingParams(min_files=2, max_files=8))
+        targets = [g.target_path for g in groups]
+
+        assert len(targets) == len(set(targets)), targets
+        assert "root" in targets
+        assert any(t.startswith("_root") for t in targets), targets
 
     def test_structural_key_follows_members_not_target(self):
         a = group_files(_repo({"src/one": 4}), params=TINY)[0]
@@ -341,7 +359,5 @@ class TestLayers:
         files = _repo({"src/x": 4})
         layers = {f: ("layer:a" if i % 2 else "layer:b") for i, f in enumerate(files)}
         first = group_files(files, layer_of_file=layers, params=TINY)[0]
-        second = group_files(
-            list(reversed(files)), layer_of_file=layers, params=TINY
-        )[0]
+        second = group_files(list(reversed(files)), layer_of_file=layers, params=TINY)[0]
         assert first.dominant_layer == second.dominant_layer

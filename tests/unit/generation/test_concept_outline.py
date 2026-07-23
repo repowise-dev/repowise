@@ -121,8 +121,7 @@ class TestModelCannotBreakStructure:
         groups = group_files(FILES, params=TINY)
         _payload, index = build_payload(groups)
         named, _ = decode_response(
-            {"sections": [{"title": "Core", "groups": [{"a": 1}, ["b"], None]}],
-             "names": {}},
+            {"sections": [{"title": "Core", "groups": [{"a": 1}, ["b"], None]}], "names": {}},
             index,
         )
         assert len(named) == len(index)
@@ -142,8 +141,7 @@ class TestModelCannotBreakStructure:
     @pytest.mark.asyncio
     async def test_junk_types_in_the_response_are_ignored(self):
         content = (
-            '{"sections": {"not": "a list"},'
-            ' "names": {"g01": ["not", "a", "dict"], "g02": 7}}'
+            '{"sections": {"not": "a list"}, "names": {"g01": ["not", "a", "dict"], "g02": 7}}'
         )
         outline, report = await plan_outline(
             _inputs(), provider=FakeProvider(content), params=TINY, repair=False
@@ -235,8 +233,7 @@ class TestValidator:
             ConceptSection(
                 title="All",
                 pages=[
-                    ConceptPage(title=f"Page {i}", scope="s", group=g)
-                    for i, g in enumerate(groups)
+                    ConceptPage(title=f"Page {i}", scope="s", group=g) for i, g in enumerate(groups)
                 ],
             )
         )
@@ -324,8 +321,7 @@ class TestPayload:
         from repowise.core.generation.concept_tree.grouping import ConceptGroup
 
         group = ConceptGroup(
-            members=[f"src/aaa/a{i}.py" for i in range(6)]
-            + [f"src/zzz/z{i}.py" for i in range(6)],
+            members=[f"src/aaa/a{i}.py" for i in range(6)] + [f"src/zzz/z{i}.py" for i in range(6)],
             dirs=["src/aaa", "src/zzz"],
             target_path="src/aaa",
         )
@@ -344,3 +340,43 @@ class TestPayload:
         )
         payload, _ = build_payload([group])
         assert sorted(payload["groups"][0]["subdirs"]) == ["git_indexer", "graph"]
+
+
+def test_layer_prefixed_title_does_not_repeat_the_layer_word():
+    """A ``docs`` group in a "Docs & Tooling" layer is not "Docs Tooling Docs".
+
+    The layer prefix exists to disambiguate a one-word directory name. When
+    the label already contains that word the prefix adds nothing and the
+    repetition reads as a generation bug.
+    """
+    from repowise.core.generation.concept_tree.grouping import ConceptGroup
+    from repowise.core.generation.concept_tree.naming import deterministic_title
+
+    group = ConceptGroup(
+        members=["docs/conf.py", "docs/build.py"],
+        dirs=["docs"],
+        target_path="docs",
+    )
+    title = deterministic_title(group, "Docs Tooling")
+
+    assert title == "Docs Tooling"
+    assert title.lower().split().count("docs") == 1
+
+
+def test_a_trailing_number_stays_with_its_word():
+    """``c4`` is the C4 model, not a C and a 4.
+
+    The camel-case splitter treats a digit run as its own token, which is
+    right for ``v2Api`` and wrong for every directory whose name ends in a
+    number. Titles are the one place that leak is visible.
+    """
+    from repowise.core.generation.concept_tree.grouping import ConceptGroup
+    from repowise.core.generation.concept_tree.naming import deterministic_title
+
+    group = ConceptGroup(
+        members=["src/ui/c4/nodes/a.ts", "src/ui/c4/nodes/b.ts"],
+        dirs=["src/ui/c4/nodes"],
+        target_path="src/ui/c4/nodes",
+    )
+
+    assert deterministic_title(group) == "C4 Nodes"

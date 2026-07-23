@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import PurePosixPath
 from typing import Any
 
 import structlog
@@ -278,7 +279,7 @@ class ContextAssembler:
 
     def assemble_module_page(
         self,
-        module_path: str,
+        title: str,
         language: str,
         file_contexts: list[FilePageContext],
         graph: Any,  # nx.DiGraph
@@ -369,8 +370,19 @@ class ContextAssembler:
                 key_classes.append(h)
         key_classes = key_classes[:10]  # cap total
 
+        # Where the page's files actually live: the directories that hold one
+        # directly, not every ancestor of every file, so the list reads as the
+        # set of places to go and look. Files at the repository root have
+        # ``"."`` for a parent and contribute no entry; a page that is only
+        # root files therefore has none, and the template says so rather than
+        # printing a dot.
+        directories = sorted(
+            {parent for f in files if (parent := str(PurePosixPath(f).parent)) != "."}
+        )
+
         return ModulePageContext(
-            module_path=module_path,
+            title=title,
+            directories=directories,
             language=language,
             total_symbols=total_symbols,
             public_symbols=public_symbols,

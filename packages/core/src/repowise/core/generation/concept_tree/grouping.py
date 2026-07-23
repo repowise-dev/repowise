@@ -116,9 +116,7 @@ class ConceptGroup:
 
     def __post_init__(self) -> None:
         if not self.structural_key:
-            self.structural_key = member_structural_key(
-                self.members, prefix=STRUCTURAL_KEY_PREFIX
-            )
+            self.structural_key = member_structural_key(self.members, prefix=STRUCTURAL_KEY_PREFIX)
 
     @property
     def file_count(self) -> int:
@@ -309,9 +307,7 @@ class _Partitioner:
         return []
 
 
-def _absorb_thin(
-    groups: list[ConceptGroup], part: _Partitioner
-) -> list[ConceptGroup]:
+def _absorb_thin(groups: list[ConceptGroup], part: _Partitioner) -> list[ConceptGroup]:
     """Fold groups too small to deserve a page into their closest neighbour.
 
     The recursion flushes a remainder wherever a subtree boundary falls, so a
@@ -382,6 +378,18 @@ def _assign_targets(groups: list[ConceptGroup]) -> None:
     wrong is two pages silently sharing a row, so the loop below checks the
     result and walks to the next candidate rather than trusting it.
     """
+    # The repository root's directory path is the empty string, which is a
+    # real directory but cannot be a page id: the id is ``"{type}:{path}"``,
+    # so an empty path mints ``module_page:`` and leaves the page with nothing
+    # for the tree, the breadcrumbs or a gold set to match on. It gets a name
+    # here, inside the function that owns uniqueness, rather than downstream —
+    # a caller remapping ``""`` to ``"root"`` afterwards would collide with a
+    # repository that has a top-level directory actually called ``root``.
+    all_dirs = {d for group in groups for d in group.dirs}
+    root_name = "root"
+    while root_name in all_dirs:
+        root_name = f"_{root_name}"
+
     taken: set[str] = set()
     # Largest first so the group with the strongest claim to a directory keeps
     # the shortest name; ties break on the key so the order never depends on
@@ -392,6 +400,12 @@ def _assign_targets(groups: list[ConceptGroup]) -> None:
         candidates.extend(d for d in group.dirs if d and d not in candidates)
         if owned and owned not in candidates:
             candidates.append(owned)
+        # The root is substituted before the uniqueness check, never after.
+        # Two groups can both reduce to it — one holding the root-level files,
+        # another spanning siblings whose only common ancestor is the root —
+        # and renaming afterwards would let the second reuse a name the first
+        # already holds.
+        candidates = [root_name if c == "" else c for c in candidates]
         # ``None`` rather than "" for "nothing chosen yet": the repository root
         # is a real, legitimate directory whose path *is* the empty string, and
         # a falsy check cannot tell it apart from failure. It could not, once —
@@ -407,7 +421,8 @@ def _assign_targets(groups: list[ConceptGroup]) -> None:
             # Every real directory is spoken for. Fall back to the members'
             # common prefix qualified by the group's identity, which is stable
             # and unique even though it is no longer only a directory.
-            chosen = f"{owned}#{group.structural_key.rsplit('-', 1)[-1]}"
+            prefix = owned or root_name
+            chosen = f"{prefix}#{group.structural_key.rsplit('-', 1)[-1]}"
         group.target_path = chosen
         taken.add(chosen)
 

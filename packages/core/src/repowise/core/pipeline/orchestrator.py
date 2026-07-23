@@ -298,9 +298,7 @@ async def run_pipeline(
         try:
             graph_builder, git_meta_map = await resume_controller.rehydrate_index(repo_path)
             if progress:
-                progress.on_message(
-                    "info", "  ↳ Resuming — reusing persisted graph + git index"
-                )
+                progress.on_message("info", "  ↳ Resuming — reusing persisted graph + git index")
             (
                 parsed_files,
                 file_infos,
@@ -601,8 +599,8 @@ async def run_pipeline(
     # ---- Phase 3: Generation (optional) ------------------------------------
     generated_pages: list[Any] | None = None
     # Structural page types this run was authoritative for (see
-    # PipelineResult.authoritative_page_types). Stays empty unless curated
-    # generation engaged below.
+    # PipelineResult.authoritative_page_types). Stays empty unless generation
+    # runs below, because a run that generated nothing decided nothing.
     authoritative_page_types: set[str] = set()
     # DETERMINISTIC supplies its own null provider so a caller with no key can
     # still get a wiki. Scoped to this phase rather than assigned over
@@ -642,9 +640,7 @@ async def run_pipeline(
         if mode.deterministic_docs and not resolved_generation_config.deterministic:
             from dataclasses import replace as _dc_replace
 
-            resolved_generation_config = _dc_replace(
-                resolved_generation_config, deterministic=True
-            )
+            resolved_generation_config = _dc_replace(resolved_generation_config, deterministic=True)
 
         # Phase 2 enrichment: flag framework-defined HTTP surfaces (FastAPI,
         # ASP.NET controllers, …) as api_contract so they route through the
@@ -727,9 +723,7 @@ async def run_pipeline(
                     else None
                 ),
                 kg_data=(
-                    knowledge_graph_result.to_dict()
-                    if knowledge_graph_result is not None
-                    else None
+                    knowledge_graph_result.to_dict() if knowledge_graph_result is not None else None
                 ),
             )
         except BaseException:
@@ -744,19 +738,33 @@ async def run_pipeline(
 
         # Record which structural page types this run authoritatively decided,
         # so the sweep can retire prior rows of a type even when this run
-        # legitimately emitted zero pages of it. Mirrors the selector's curated
-        # engagement test (_build_curated_module_groups returns None — i.e.
-        # falls back to community — only when kg_modules is empty) so the signal
-        # is set iff the curated grouping actually engaged. On the degraded
-        # community fallback both stay unset, preserving degradation honesty.
-        kg_modules_present = bool(
-            knowledge_graph_result is not None and knowledge_graph_result.modules
+        # legitimately emitted zero pages of it.
+        #
+        # ``module_page`` needs no KG and no budget: the concept grouping
+        # partitions every production file, so a run that produced any concept
+        # page produced all of them and prior rows should go. The condition
+        # that used to stand here tested whether a curated KG artifact had
+        # engaged a grouping mode that no longer exists, which stranded the
+        # superseded pages on exactly the repositories the KG failed on.
+        #
+        # It is still not unconditional, because "emitted zero" has causes
+        # other than "there is nothing to document": ``file_pages_only``
+        # returns before the concept level runs at all, and a provider error
+        # on that level is logged per page rather than raised. Claiming
+        # authority there would delete every concept page over a 429. So the
+        # claim is made on evidence — at least one page produced — with the
+        # genuinely empty repository as the one exception, since it has no
+        # page to show and its stale rows are exactly what wants sweeping.
+        produced_module_page = any(
+            getattr(page, "page_type", "") == "module_page" for page in (generated_pages or [])
+        )
+        has_code_to_group = any(
+            not getattr(p.file_info, "is_test", False) for p in (parsed_files or [])
         )
         kg_layers_present = bool(
             knowledge_graph_result is not None and knowledge_graph_result.layers
         )
-        module_grouping = getattr(resolved_generation_config, "module_grouping", "community")
-        if module_grouping == "curated" and kg_modules_present:
+        if produced_module_page or not has_code_to_group:
             authoritative_page_types.add("module_page")
         if kg_layers_present:
             authoritative_page_types.add("layer_page")

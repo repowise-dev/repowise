@@ -21,7 +21,7 @@ import threading
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pathspec
 import structlog
@@ -195,6 +195,28 @@ _ENTRY_POINT_NAMES: frozenset[str] = frozenset(
 
 _ENTRY_POINT_NAME_SUFFIXES: tuple[str, ...] = tuple(
     sorted(p[1:] for p in _LANG_REGISTRY.entry_point_names() if p.startswith("*"))
+)
+
+# Test-file conventions, from the same registry each language declares them
+# on. ``spec_`` is carried over from the rule these replaced: the registry
+# has the ``_spec`` suffix and the ``spec_helper`` stem but no prefix, and
+# dropping it would unclassify RSpec-style ``spec_foo.rb``.
+_TEST_STEM_PREFIXES: tuple[str, ...] = tuple(
+    sorted({*_LANG_REGISTRY.test_stem_prefixes(), "spec_"})
+)
+_TEST_STEM_SUFFIXES: tuple[str, ...] = _LANG_REGISTRY.test_stem_suffixes()
+_TEST_INFIXES: tuple[str, ...] = _LANG_REGISTRY.test_infixes()
+_TEST_FIXTURE_STEMS: frozenset[str] = _LANG_REGISTRY.test_fixture_stems()
+# Directory names that mark everything beneath them as test material.
+# ``__tests__`` is the JavaScript convention and is the reason this set is
+# not simply the registry's per-language tokens.
+_TEST_DIR_SEGMENTS: frozenset[str] = frozenset(
+    {"test", "tests", "__tests__", "__test__"}
+    | {
+        token
+        for tokens in _LANG_REGISTRY.test_dir_tokens_by_language().values()
+        for token in tokens
+    }
 )
 
 # Default file-size limit
@@ -650,13 +672,29 @@ def _is_generated(abs_path: Path) -> bool:
 
 
 def _is_test_file(rel_path: str, filename: str) -> bool:
-    stem = Path(filename).stem.lower()
-    if stem.startswith("test_") or stem.endswith("_test"):
+    """Whether *rel_path* is test material, by directory or by filename.
+
+    Conventions come from the language registry, which is where each
+    language already declares them, rather than from a second hard-coded
+    list. The two rules this replaced knew only ``test_x`` / ``x_test`` and a
+    slash-delimited ``/tests/`` substring, so both halves of the JavaScript
+    convention (``__tests__/`` directories and ``x.test.ts`` filenames) and
+    every root-level suite (``tests/conftest.py``) read as production code to
+    everything downstream of this flag.
+    """
+    name = filename.lower()
+    stem = PurePosixPath(name).stem
+    if (
+        stem in _TEST_FIXTURE_STEMS
+        or stem.startswith(_TEST_STEM_PREFIXES)
+        or stem.endswith(_TEST_STEM_SUFFIXES)
+        or any(infix in name for infix in _TEST_INFIXES)
+    ):
         return True
-    if stem.startswith("spec_") or stem.endswith("_spec"):
-        return True
-    path_lower = rel_path.lower()
-    return "/test/" in path_lower or "/tests/" in path_lower or "/spec/" in path_lower
+    # Directory segments, including the first: a repository-root ``tests/``
+    # is the usual layout, not the exception.
+    segments = rel_path.lower().replace("\\", "/").split("/")[:-1]
+    return any(seg in _TEST_DIR_SEGMENTS for seg in segments)
 
 
 def _is_config_file(language: LanguageTag) -> bool:

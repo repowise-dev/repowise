@@ -54,9 +54,7 @@ def parse_json_object(content: str) -> dict[str, Any]:
     """
     text = (content or "").strip()
     if text.startswith("```"):
-        text = "\n".join(
-            line for line in text.split("\n") if not line.strip().startswith("```")
-        )
+        text = "\n".join(line for line in text.split("\n") if not line.strip().startswith("```"))
     try:
         parsed = json.loads(text)
     except (json.JSONDecodeError, ValueError):
@@ -85,7 +83,17 @@ def _humanise(segment: str) -> str:
             continue
         # Split camelCase so ``pageGenerator`` reads as two words.
         parts = re.findall(r"[A-Z]+(?![a-z])|[A-Z][a-z]*|[a-z]+|\d+", word) or [word]
-        out.extend(p.capitalize() if p.islower() else p for p in parts)
+        cased = [p.capitalize() if p.islower() else p for p in parts]
+        # A trailing number belongs to the word it was written against: the
+        # ``c4`` directory is the C4 model, and "C 4 Nodes" reads as a
+        # tokeniser leaking into a page title.
+        merged: list[str] = []
+        for part in cased:
+            if part.isdigit() and merged:
+                merged[-1] += part
+            else:
+                merged.append(part)
+        out.extend(merged)
     return " ".join(out)
 
 
@@ -103,7 +111,12 @@ def deterministic_title(group: ConceptGroup, layer_label: str = "") -> str:
     tail = [_humanise(s) for s in meaningful[-2:]]
     title = " ".join(tail).strip()
     if layer_label and len(title.split()) < MIN_TITLE_WORDS:
-        title = f"{layer_label} {title}".strip()
+        # Drop what the label already says. A ``docs`` directory in a "Docs &
+        # Tooling" layer was titled "Docs Tooling Docs", which reads as a
+        # generation bug rather than a name.
+        label_words = {w.lower() for w in layer_label.split()}
+        kept = [w for w in title.split() if w.lower() not in label_words]
+        title = f"{layer_label} {' '.join(kept)}".strip()
     if not title:
         # The repository root has no path segments to name it by. It is a real
         # place and a common one — top-level entry points live there — so it
@@ -115,6 +128,42 @@ def deterministic_title(group: ConceptGroup, layer_label: str = "") -> str:
     if len(title.split()) < MIN_TITLE_WORDS:
         title = f"{title} Components".strip()
     return title
+
+
+def disambiguate_titles(titled: list[tuple[str, str]]) -> list[str]:
+    """Make a set of ``(title, target_path)`` pairs' titles unique.
+
+    Path-derived names collide easily: two packages that each hold a ``ui``
+    directory produce the same last-two-segments name. The pages themselves
+    stay distinct because identity is structural, but a reader sees two
+    identical rows in the tree and cannot tell which is which, and anything
+    that keys on a title (interlinking, an overview listing) has to guess.
+
+    A colliding title takes on the next path segment above the ones it
+    already used, and falls back to its full target path if even that
+    repeats. Input order does not matter: the pairs are resolved in path
+    order, so the same set always produces the same names.
+    """
+    order = sorted(range(len(titled)), key=lambda i: titled[i][1])
+    out = list(titled)
+    used: set[str] = set()
+    for i in order:
+        title, target = titled[i]
+        if title not in used:
+            used.add(title)
+            out[i] = (title, target)
+            continue
+        segments = [s for s in target.split("/") if s]
+        candidate = title
+        for extra in reversed(segments[:-2] or segments[:-1]):
+            candidate = f"{_humanise(extra)} {title}"
+            if candidate not in used:
+                break
+        if candidate in used:
+            candidate = f"{title} ({target})"
+        used.add(candidate)
+        out[i] = (candidate, target)
+    return [t for t, _ in out]
 
 
 def deterministic_scope(group: ConceptGroup) -> str:
@@ -210,9 +259,7 @@ def _sample_names(members: list[str], limit: int) -> list[str]:
     """
     by_dir: dict[str, list[str]] = {}
     for member in sorted(members):
-        by_dir.setdefault(member.rsplit("/", 1)[0], []).append(
-            member.rsplit("/", 1)[-1]
-        )
+        by_dir.setdefault(member.rsplit("/", 1)[0], []).append(member.rsplit("/", 1)[-1])
     out: list[str] = []
     order = sorted(by_dir)
     depth = 0
@@ -406,8 +453,9 @@ def decode_response(
             )
         )
 
-    named.sort(key=lambda n: (section_rank.get(n.section, len(sections)), n.order,
-                              n.group.target_path))
+    named.sort(
+        key=lambda n: (section_rank.get(n.section, len(sections)), n.order, n.group.target_path)
+    )
     return named, sorted(set(invented))
 
 

@@ -1,8 +1,8 @@
-You are documenting the module **{{ ctx.module_path }}** (language: {{ ctx.language }}).
+You are documenting **{{ ctx.title }}** (language: {{ ctx.language }}), a group of files that belong together, not a single directory. Write about what the group does as a whole.
 
 ## Module Overview
 
-**Module:** `{{ ctx.module_path }}` | **Language:** {{ ctx.language }} | **Files:** {{ ctx.files | length }} | **Public symbols:** {{ ctx.public_symbols }} / {{ ctx.total_symbols }}{% if ctx.community_label %} | **Community:** {{ ctx.community_label }}{% if ctx.community_cohesion > 0 %} (cohesion {{ "%.2f"|format(ctx.community_cohesion) }}){% endif %}{% endif %}
+**Covers:** {% if ctx.directories %}{% for d in ctx.directories[:6] %}`{{ d }}`{% if not loop.last %}, {% endif %}{% endfor %}{% if ctx.directories | length > 6 %} and {{ ctx.directories | length - 6 }} more{% endif %}{% else %}the repository root{% endif %} | **Language:** {{ ctx.language }} | **Files:** {{ ctx.files | length }} | **Public symbols:** {{ ctx.public_symbols }} / {{ ctx.total_symbols }}{% if ctx.community_label %} | **Community:** {{ ctx.community_label }}{% if ctx.community_cohesion > 0 %} (cohesion {{ "%.2f"|format(ctx.community_cohesion) }}){% endif %}{% endif %}
 
 {# The role-leading sentence is the highest-leverage signal a module page
    carries. Surface the module's position in the system so the LLM can frame

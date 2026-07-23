@@ -23,7 +23,6 @@ from .scoring import (
     score_api_contract,
     score_file,
     score_infra,
-    score_module,
     score_scc,
     score_symbol,
 )
@@ -46,7 +45,6 @@ __all__ = [
     "score_api_contract",
     "score_file",
     "score_infra",
-    "score_module",
     "score_scc",
     "score_symbol",
     "select_pages",

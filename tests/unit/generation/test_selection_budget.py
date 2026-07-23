@@ -9,7 +9,6 @@ configured ``coverage_pct``. They are the contract that prevents the
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -23,7 +22,6 @@ from repowise.core.generation.selection.budget import (
     allocate_budget,
     compute_budget,
 )
-
 
 # ---------------------------------------------------------------------------
 # Lightweight ParsedFile / Symbol stand-ins
@@ -179,7 +177,14 @@ def test_allocate_budget_respects_candidate_supply():
     ],
 )
 def test_select_pages_budget_tracks_coverage(coverage_pct, expected_total):
-    """Total page count tracks coverage_pct within ±10%."""
+    """Budgeted page count tracks coverage_pct.
+
+    ``module_page`` is excluded from the sum on purpose. The concept groups
+    are a total partition of the production files, so that bucket is taken
+    whole rather than rationed; folding it in would assert the opposite of the
+    contract it now has. Its own invariant is asserted separately by
+    :func:`test_module_bucket_is_not_rationed_by_coverage`.
+    """
     parsed, pagerank, betweenness, community = _build_synthetic_repo(958)
     cfg = GenerationConfig(coverage_pct=coverage_pct)
     inputs = SelectionInputs(
@@ -194,12 +199,58 @@ def test_select_pages_budget_tracks_coverage(coverage_pct, expected_total):
     )
 
     selection = select_pages(inputs)
-    total = sum(selection.counts().values())
+    counts = selection.counts()
+    total = sum(v for k, v in counts.items() if k != "module_page")
 
     tolerance = max(20, int(expected_total * 0.20))
-    assert abs(total - expected_total) <= tolerance, (
-        f"coverage={coverage_pct}: expected ~{expected_total}, got {total}"
-    )
+    assert (
+        abs(total - expected_total) <= tolerance
+    ), f"coverage={coverage_pct}: expected ~{expected_total}, got {total}"
+
+
+def test_module_bucket_is_not_rationed_by_coverage():
+    """Every concept group is emitted, whatever the coverage setting.
+
+    The partition is total, so a rationed module bucket does not make a
+    smaller wiki — it makes one with production files that belong to no page,
+    and the tree stops being a map of the repository. Asserted across the
+    coverage range because the budget is what used to truncate it.
+    """
+    parsed, pagerank, betweenness, community = _build_synthetic_repo(958)
+
+    def _selection_for(pct: float):
+        return select_pages(
+            SelectionInputs(
+                parsed_files=parsed,
+                pagerank=pagerank,
+                betweenness=betweenness,
+                community=community,
+                community_info=None,
+                sccs=[],
+                git_meta_map=None,
+                config=GenerationConfig(coverage_pct=pct),
+            )
+        )
+
+    selections = {pct: _selection_for(pct) for pct in (0.10, 0.20, 0.50)}
+    group_counts = {pct: len(s.module_groups) for pct, s in selections.items()}
+
+    assert (
+        len(set(group_counts.values())) == 1
+    ), f"coverage changed the concept page count: {group_counts}"
+    assert all(c > 0 for c in group_counts.values())
+
+    # The allocation must agree with what was emitted, or the cost estimator
+    # quotes a number the run does not honour.
+    for pct, sel in selections.items():
+        assert sel.allocation is not None
+        assert sel.allocation.module_page == len(sel.module_groups), pct
+
+    # Totality: every production file the grouper was given lands on exactly
+    # one page. This is the property rationing used to break.
+    for pct, sel in selections.items():
+        claimed = [p for g in sel.module_groups for p in g.file_paths]
+        assert len(claimed) == len(set(claimed)), f"double-claimed at {pct}"
 
 
 def test_select_pages_emits_no_pages_for_empty_repo():
@@ -283,15 +334,20 @@ def test_landmarks_are_pulled_into_budget_without_inflating_count():
 
 
 def test_landmarks_respect_coverage_across_sizes():
-    """The total page count still tracks coverage_pct with landmarks active."""
+    """The budgeted page count still tracks coverage_pct with landmarks active.
+
+    ``module_page`` is excluded for the same reason as
+    :func:`test_select_pages_budget_tracks_coverage`: the concept bucket is
+    taken whole, so it does not answer to the coverage budget.
+    """
     for n, pct in [(40, 0.10), (500, 0.20), (1200, 0.10)]:
         parsed, pr, bet, comm = _build_synthetic_repo(n, entry_points=5)
         sel = _select(parsed, pr, bet, comm, pct)
-        total = sum(sel.counts().values())
+        total = sum(v for k, v in sel.counts().items() if k != "module_page")
         # Landmark pull-in displaces rather than adds, so the total stays in
         # the same ±20% band the budget contract guarantees.
         expected = compute_budget(n, pct)
         tolerance = max(20, int(expected * 0.30))
-        assert abs(total - expected) <= tolerance, (
-            f"n={n} pct={pct}: expected ~{expected}, got {total}"
-        )
+        assert (
+            abs(total - expected) <= tolerance
+        ), f"n={n} pct={pct}: expected ~{expected}, got {total}"

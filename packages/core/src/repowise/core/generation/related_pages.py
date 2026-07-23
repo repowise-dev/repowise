@@ -61,7 +61,8 @@ def _module_siblings(
     for group in module_groups or []:
         paths = list(getattr(group, "file_paths", ()) or ())
         for path in paths:
-            # First group wins — curated groups precede fallbacks upstream.
+            # First group wins. The concept partition is disjoint, so this
+            # only matters if a caller ever passes overlapping groups.
             siblings.setdefault(path, [p for p in paths if p != path])
     return siblings
 

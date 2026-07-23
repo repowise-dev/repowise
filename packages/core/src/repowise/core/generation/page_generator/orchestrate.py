@@ -256,8 +256,9 @@ class _GenerationRun:
                 kg_file_scores=kg_scores or None,
                 # Curated wiki modules: prefer the in-memory pipeline
                 # result (fresh); the artifact file is absent on first init
-                # and one run stale on update. Inert unless
-                # module_grouping == "curated".
+                # and one run stale on update. Read only for the file -> layer
+                # map that steers concept grouping, so absence costs taste and
+                # never coverage.
                 kg_modules=self.kg_modules or self.kg_ctx.get_modules() or None,
                 # Per-file question demand from session transcripts: tilts the
                 # file_page budget toward modules agents ask about. Empty (no
