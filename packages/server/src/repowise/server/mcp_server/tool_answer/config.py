@@ -273,13 +273,6 @@ _BACKEND_QUESTION_TOKENS = frozenset(
 # domain hit (real top score outlier) still survives.
 _DOMAIN_PENALTY = 0.5
 
-# Deterministic template pages (the Phase G coverage tail) are factual but
-# thin — they exist so every source file is retrievable, not to out-argue a
-# rich LLM page. Multiplicative, not absolute: a deterministic page that is
-# genuinely the best hit (its file has no LLM page) still surfaces, preserving
-# the coverage the tail adds; the factor only breaks ties toward the LLM page.
-_DETERMINISTIC_DOWNWEIGHT = 0.9
-
 # Floor on raw top-hit score for "high" confidence. Below this the answer
 # may be technically dominant but built on weak retrieval — downgrade to
 # "medium" so the agent verifies. Tuned against observed BM25 ranges on

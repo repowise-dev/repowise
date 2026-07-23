@@ -19,7 +19,6 @@ from repowise.server.mcp_server.tool_answer.config import (
     _BACKEND_PATH_PREFIXES,
     _BACKEND_QUESTION_TOKENS,
     _COVERAGE_FLOOR,
-    _DETERMINISTIC_DOWNWEIGHT,
     _DOMAIN_PENALTY,
     _GATED_EXCERPT_CHARS,
     _GATED_RETURN_HITS,
@@ -164,9 +163,7 @@ async def _enrich_gated_excerpts(hits: list[dict], ctx: Any = None) -> None:
         return
     try:
         async with get_session(ctx.session_factory) as session:
-            res = await session.execute(
-                select(Page.id, Page.content).where(Page.id.in_(page_ids))
-            )
+            res = await session.execute(select(Page.id, Page.content).where(Page.id.in_(page_ids)))
             content_by_id = {row[0]: (row[1] or "") for row in res.all()}
     except Exception:
         return
@@ -217,24 +214,6 @@ def _apply_domain_penalty(hits: list[dict], question: str) -> None:
         if tp and any(tp.startswith(p) for p in bad_prefixes):
             h["score"] = h.get("score", 0.0) * _DOMAIN_PENALTY
             h["_domain_penalty"] = f"{domain} question; cross-domain path"
-            touched = True
-    if touched:
-        hits.sort(key=lambda h: h["score"], reverse=True)
-
-
-def _downweight_deterministic(hits: list[dict]) -> None:
-    """Down-weight deterministic-template hits in place, then re-sort by score.
-
-    The ``_deterministic`` marker is attached during hydration
-    (``provider_name == "template"``). A thin coverage-tail page should not
-    displace a rich LLM page when both match a conceptual question; the
-    multiplicative factor only breaks ties, so a deterministic page that is
-    clearly the best hit (its file has no LLM page) still ranks first.
-    """
-    touched = False
-    for h in hits:
-        if h.get("_deterministic") and h.get("score"):
-            h["score"] = h["score"] * _DETERMINISTIC_DOWNWEIGHT
             touched = True
     if touched:
         hits.sort(key=lambda h: h["score"], reverse=True)
