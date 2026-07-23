@@ -118,48 +118,61 @@ async def test_update_page_notes_not_found(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_list_pages_deterministic_filter(client: AsyncClient, app) -> None:
-    """?deterministic splits template (unwritten) pages from model-written ones."""
+async def test_list_pages_has_prose_filter(client: AsyncClient, app) -> None:
+    """?has_prose splits written concept pages from stubs, scoped to the
+    model-written types. A structural file page (never has prose) is in neither
+    filtered view but present when the filter is omitted."""
     repo = await create_test_repo(client)
     repo_id = repo["id"]
     async with get_session(app.state.session_factory) as session:
+        # A concept-tree stub: a model-written type still rendered as a template.
         await crud.upsert_page(
             session,
-            page_id="file_page:tmpl.py",
+            page_id="module_page:stub",
             repository_id=repo_id,
-            page_type="file_page",
-            title="tmpl",
-            content="template page",
-            target_path="tmpl.py",
+            page_type="module_page",
+            title="stub",
+            content="stub page",
+            target_path="src/stub",
             source_hash="",
             model_name="template",
             provider_name="template",
         )
+        # A written concept page.
         await crud.upsert_page(
             session,
-            page_id="file_page:written.py",
+            page_id="module_page:written",
             repository_id=repo_id,
-            page_type="file_page",
+            page_type="module_page",
             title="written",
             content="model page",
-            target_path="written.py",
+            target_path="src/written",
             source_hash="h",
             model_name="gpt",
             provider_name="openai",
         )
+        # A structural file page: template forever, outside the has_prose axis.
+        await crud.upsert_page(
+            session,
+            page_id="file_page:f.py",
+            repository_id=repo_id,
+            page_type="file_page",
+            title="f",
+            content="file page",
+            target_path="f.py",
+            source_hash="",
+            model_name="template",
+            provider_name="template",
+        )
 
-    unwritten = await client.get(
-        "/api/pages", params={"repo_id": repo_id, "deterministic": "true"}
-    )
-    assert {p["id"] for p in unwritten.json()} == {"file_page:tmpl.py"}
+    stubs = await client.get("/api/pages", params={"repo_id": repo_id, "has_prose": "false"})
+    assert {p["id"] for p in stubs.json()} == {"module_page:stub"}
 
-    written = await client.get(
-        "/api/pages", params={"repo_id": repo_id, "deterministic": "false"}
-    )
-    assert {p["id"] for p in written.json()} == {"file_page:written.py"}
+    written = await client.get("/api/pages", params={"repo_id": repo_id, "has_prose": "true"})
+    assert {p["id"] for p in written.json()} == {"module_page:written"}
 
     both = await client.get("/api/pages", params={"repo_id": repo_id})
-    assert len(both.json()) == 2
+    assert len(both.json()) == 3
 
 
 @pytest.mark.asyncio

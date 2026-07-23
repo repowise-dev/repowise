@@ -293,6 +293,15 @@ def compute_page_id(page_type: str, target_path: str) -> str:
 # next index. A new page type of this shape belongs here and nowhere else.
 STRUCTURALLY_KEYED_PAGE_TYPES: tuple[str, ...] = ("module_page", "layer_page", "scc_page")
 
+# The page types a model writes as prose. Every other type renders from
+# structure and is permanently ``provider_name='template'``, so "does this page
+# have prose yet" is only a meaningful question for these four. A stub is one of
+# these still stamped ``template``; a written one carries a real provider. The
+# CLI keeps its own mirror in ``generate_cmd/engine.py``.
+MODEL_WRITTEN_PAGE_TYPES: frozenset[str] = frozenset(
+    {"module_page", "repo_overview", "architecture_diagram", "onboarding"}
+)
+
 
 def member_structural_key(members: Iterable[str], *, prefix: str) -> str:
     """Return a stable identity for a page defined by the files it covers.

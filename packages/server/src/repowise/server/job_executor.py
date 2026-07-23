@@ -852,6 +852,25 @@ def _ranked_coverage_pct(selection: dict, n_files: int) -> float:
     return min(1.0, max(0.0, top_n / max(1, n_files)))
 
 
+def _narrow_plan_to_model_written(plan: Any) -> Any:
+    """Drop structural pages from a resolved plan so generate writes only prose.
+
+    A generate request resolves against every page type, but a structural page
+    has no model to write it: including it would re-render a template (a no-op
+    that leaves it "unwritten") and inflate the count. Keep only the
+    model-written pages in both the generate set and the cascade fallout, and
+    re-price from what remains. Mirrors the CLI's ``_narrow_to_model_written``.
+    """
+    from dataclasses import replace
+
+    from repowise.core.generation.models import MODEL_WRITTEN_PAGE_TYPES
+    from repowise.core.generation.scope import build_cost_plans
+
+    gen = {pid for pid in plan.generate_ids if pid.split(":", 1)[0] in MODEL_WRITTEN_PAGE_TYPES}
+    stale = {pid for pid in plan.stale_ids if pid.split(":", 1)[0] in MODEL_WRITTEN_PAGE_TYPES}
+    return replace(plan, generate_ids=gen, stale_ids=stale, cost_plans=build_cost_plans(gen))
+
+
 def _resolve_generate_scope(config: dict, rehydrated: Any, gen_config: Any) -> Any:
     """Resolve a generate config + rehydrated repo into a :class:`ScopePlan`.
 
@@ -859,7 +878,8 @@ def _resolve_generate_scope(config: dict, rehydrated: Any, gen_config: Any) -> A
     the launched job resolve the *identical* page set — the estimate cannot
     under-quote. A ranked selection runs the core ``build_ranked_seed`` (the same
     importance model ``repowise init`` uses at that coverage); everything else
-    resolves its intent normally.
+    resolves its intent normally. The plan is then narrowed to the model-written
+    types, so generate works on the concept layer only, mirroring the CLI.
     """
     from repowise.core.generation.scope import build_ranked_seed, resolve_scope
 
@@ -876,13 +896,14 @@ def _resolve_generate_scope(config: dict, rehydrated: Any, gen_config: Any) -> A
             repo_name=rehydrated.repo_name,
             coverage_pct=pct,
         )
-    return resolve_scope(
+    plan = resolve_scope(
         records=rehydrated.records,
         intent=_build_generate_intent(config),
         cascade_mode=_effective_cascade(config),
         deps=rehydrated.deps,
         ranked_seed=ranked_seed,
     )
+    return _narrow_plan_to_model_written(plan)
 
 
 def _build_generation_config(repo_path: Path, config: dict, wiki_style: str) -> Any:
@@ -1045,31 +1066,40 @@ async def _run_generate_job(
 
 
 async def _repo_page_counts(session: Any, repo_id: str) -> tuple[int, int]:
-    """Return ``(total_pages, remaining_template_pages)`` for a repo."""
+    """Return ``(total_pages, remaining_stub_pages)`` for a repo.
+
+    The stub count is scoped to the model-written page types: a structural page
+    is stamped ``template`` forever, so counting every template page would keep
+    the ``docs_mode -> llm`` flip below from ever firing once file pages exist.
+    A remaining stub is a concept/onboarding page a model has not written yet.
+    """
     from sqlalchemy import func as sa_func
     from sqlalchemy import select as sa_select
 
+    from repowise.core.generation.models import MODEL_WRITTEN_PAGE_TYPES
     from repowise.core.persistence.models import Page
 
     total = int(
         (
             await session.execute(
-                sa_select(sa_func.count())
-                .select_from(Page)
-                .where(Page.repository_id == repo_id)
+                sa_select(sa_func.count()).select_from(Page).where(Page.repository_id == repo_id)
             )
         ).scalar_one()
     )
-    templates = int(
+    stubs = int(
         (
             await session.execute(
                 sa_select(sa_func.count())
                 .select_from(Page)
-                .where(Page.repository_id == repo_id, Page.provider_name == "template")
+                .where(
+                    Page.repository_id == repo_id,
+                    Page.page_type.in_(sorted(MODEL_WRITTEN_PAGE_TYPES)),
+                    Page.provider_name == "template",
+                )
             )
         ).scalar_one()
     )
-    return total, templates
+    return total, stubs
 
 
 async def _incremental_page_regen(

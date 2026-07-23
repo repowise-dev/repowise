@@ -129,15 +129,28 @@ async def test_generate_endpoint_page_ids_selection(client: AsyncClient, app) ->
         resp = await client.post(
             f"/api/repos/{repo['id']}/generate",
             json={
-                "selection": {"kind": "page_ids", "page_ids": ["file_page:a.py"]},
+                "selection": {"kind": "page_ids", "page_ids": ["module_page:src/foo"]},
                 "cascade": "none",
                 "style": "caveman",
             },
         )
     assert resp.status_code == 202
     cfg = await _job_config(app.state.session_factory, resp.json()["job_id"])
-    assert cfg["selection"] == {"kind": "page_ids", "page_ids": ["file_page:a.py"]}
+    assert cfg["selection"] == {"kind": "page_ids", "page_ids": ["module_page:src/foo"]}
     assert cfg["style"] == "caveman"
+
+
+@pytest.mark.asyncio
+async def test_generate_endpoint_rejects_structural_page_id(client: AsyncClient) -> None:
+    """generate writes the concept layer only, so a structural page id is a clear
+    error rather than a silent no-op re-render of a template."""
+    repo = await create_test_repo(client)
+    resp = await client.post(
+        f"/api/repos/{repo['id']}/generate",
+        json={"selection": {"kind": "page_ids", "page_ids": ["file_page:a.py"]}},
+    )
+    assert resp.status_code == 400
+    assert "file_page:a.py" in resp.json()["detail"]
 
 
 @pytest.mark.asyncio
@@ -177,9 +190,7 @@ async def test_generate_endpoint_rejects_bad_ranked(
     client: AsyncClient, selection: dict, needle: str
 ) -> None:
     repo = await create_test_repo(client)
-    resp = await client.post(
-        f"/api/repos/{repo['id']}/generate", json={"selection": selection}
-    )
+    resp = await client.post(f"/api/repos/{repo['id']}/generate", json={"selection": selection})
     assert resp.status_code == 400, resp.text
     assert needle in resp.json()["detail"].lower()
 
@@ -266,12 +277,8 @@ def _fake_rehydrated(template_ids: list[str]) -> RehydratedRepo:
 
 async def _seed_generate_job(session_factory, repo_path: Path, config: dict) -> str:
     async with session_factory() as session:
-        repo = await crud.upsert_repository(
-            session, name="test-repo", local_path=str(repo_path)
-        )
-        job = await crud.upsert_generation_job(
-            session, repository_id=repo.id, config=config
-        )
+        repo = await crud.upsert_repository(session, name="test-repo", local_path=str(repo_path))
+        job = await crud.upsert_generation_job(session, repository_id=repo.id, config=config)
         await session.commit()
         return job.id
 
@@ -289,9 +296,11 @@ async def test_generate_job_runs_scoped_engine(session_factory, tmp_path) -> Non
     )
     app_state = SimpleNamespace(session_factory=session_factory, fts=None, vector_store=None)
 
-    template_ids = ["file_page:a.py", "file_page:b.py"]
+    # generate writes the concept layer, so the resolved plan is model-written
+    # ids; the scope helper narrows structural ids out.
+    template_ids = ["module_page:a", "module_page:b"]
     written = SimpleNamespace(
-        page_id="file_page:a.py", title="a", content="x", input_tokens=10, output_tokens=20
+        page_id="module_page:a", title="a", content="x", input_tokens=10, output_tokens=20
     )
     execute_mock = AsyncMock(
         return_value=ScopedGenerationResult(generated_pages=[written], marked_stale=0)
@@ -332,17 +341,15 @@ def test_resolve_generate_scope_ranked_uses_build_ranked_seed() -> None:
     the job (both callers of this one helper) plan the identical page set."""
     from repowise.server.job_executor import _resolve_generate_scope
 
-    template_ids = ["file_page:a.py", "file_page:b.py", "file_page:c.py"]
+    template_ids = ["module_page:a", "module_page:b", "module_page:c"]
     rehydrated = _fake_rehydrated(template_ids)
     # A non-empty parsed_files so top_n mapping (if used) has a denominator.
     rehydrated.parsed_files = [SimpleNamespace(path=f"{p}.py") for p in "abc"]
-    seed = {"file_page:a.py"}
+    seed = {"module_page:a"}
 
     config = {"selection": {"kind": "ranked", "coverage_pct": 0.2}, "cascade": "none"}
     gen_config = SimpleNamespace(coverage_pct=0.2, max_pages_pct=0.2, deterministic=False)
-    with patch(
-        "repowise.core.generation.scope.build_ranked_seed", return_value=seed
-    ) as ranked:
+    with patch("repowise.core.generation.scope.build_ranked_seed", return_value=seed) as ranked:
         plan = _resolve_generate_scope(config, rehydrated, gen_config)
 
     ranked.assert_called_once()
@@ -357,14 +364,14 @@ def test_resolve_generate_scope_explicit_skips_ranked_seed() -> None:
     """An explicit selection never builds a ranked seed."""
     from repowise.server.job_executor import _resolve_generate_scope
 
-    rehydrated = _fake_rehydrated(["file_page:a.py", "file_page:b.py"])
+    rehydrated = _fake_rehydrated(["module_page:a", "module_page:b"])
     config = {"selection": {"kind": "unwritten"}, "cascade": "none"}
     gen_config = SimpleNamespace(coverage_pct=0.2, max_pages_pct=0.2, deterministic=False)
     with patch("repowise.core.generation.scope.build_ranked_seed") as ranked:
         plan = _resolve_generate_scope(config, rehydrated, gen_config)
 
     ranked.assert_not_called()
-    assert plan.generate_ids == {"file_page:a.py", "file_page:b.py"}
+    assert plan.generate_ids == {"module_page:a", "module_page:b"}
 
 
 @pytest.mark.asyncio
@@ -407,9 +414,7 @@ async def test_sync_regen_receives_vector_store_and_prior_pages(session_factory,
     job_id = await _seed_generate_job(session_factory, tmp_path, {"mode": "sync"})
     app_state = SimpleNamespace(session_factory=session_factory, fts=None, vector_store=None)
 
-    fake_result = SimpleNamespace(
-        generated_pages=[], parsed_files=[], file_count=1, symbol_count=1
-    )
+    fake_result = SimpleNamespace(generated_pages=[], parsed_files=[], file_count=1, symbol_count=1)
     regen_mock = AsyncMock(return_value=[])
     with (
         patch("repowise.server.job_executor.run_pipeline", AsyncMock(return_value=fake_result)),

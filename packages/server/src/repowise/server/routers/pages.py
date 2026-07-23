@@ -27,10 +27,11 @@ router = APIRouter(
 async def list_pages(
     repo_id: str = Query(..., description="Repository ID"),
     page_type: str | None = Query(None, description="Filter by page type"),
-    deterministic: bool | None = Query(
+    has_prose: bool | None = Query(
         None,
-        description="true = only unwritten (template) pages; false = only "
-        "model-written pages; omit for both.",
+        description="Scoped to the model-written page types (the concept tree and "
+        "onboarding): true = only the ones a model has written, false = only the "
+        "ones still stubs; omit for every page of every type.",
     ),
     sort_by: str = Query(
         "updated_at", description="Sort field: updated_at, confidence, created_at"
@@ -45,7 +46,7 @@ async def list_pages(
         session,
         repo_id,
         page_type=page_type,
-        deterministic=deterministic,
+        has_prose=has_prose,
         limit=limit,
         offset=offset,
         sort_by=sort_by,
@@ -115,8 +116,7 @@ async def regenerate_page_by_query(
     ),
     cascade: str = Query(
         "none",
-        description="What to do with the pages that summarize this one: "
-        "none / dependents / full.",
+        description="What to do with the pages that summarize this one: none / dependents / full.",
     ),
     session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> dict:

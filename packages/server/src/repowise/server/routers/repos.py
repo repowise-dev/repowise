@@ -244,9 +244,7 @@ async def list_repos(
                 # docs_enabled=True by default. Deriving the flag from the
                 # resolved mode alone would flip those old indexes to False,
                 # so keep the legacy default when nothing at all is recorded.
-                if not any(
-                    k in state for k in ("docs_mode", "docs_enabled", "provider", "model")
-                ):
+                if not any(k in state for k in ("docs_mode", "docs_enabled", "provider", "model")):
                     resp.docs_enabled = True
                 else:
                     resp.docs_enabled = resp.docs_mode != "none"
@@ -589,6 +587,23 @@ def _validate_generate_selection(sel: GenerateSelectionBody) -> None:
     :class:`GenerateSelectionBody`) and may not be mixed; ``coverage_pct`` and
     ``top_n`` are mutually exclusive and belong only to a ranked selection.
     """
+    if sel.kind == "page_ids":
+        from repowise.core.generation.models import MODEL_WRITTEN_PAGE_TYPES
+
+        structural = [
+            pid
+            for pid in (sel.page_ids or [])
+            if pid.split(":", 1)[0] not in MODEL_WRITTEN_PAGE_TYPES
+        ]
+        if structural:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "generate writes the concept layer only; these pages render "
+                    "from structure and refresh on update, not generate: " + ", ".join(structural)
+                ),
+            )
+
     is_ranked = sel.kind == "ranked"
     has_coverage = sel.coverage_pct is not None
     has_top_n = sel.top_n is not None
@@ -605,9 +620,7 @@ def _validate_generate_selection(sel: GenerateSelectionBody) -> None:
                 detail="coverage_pct must be a fraction in (0, 1] (0.2 == the top 20%, 1.0 == all).",
             )
         if has_top_n and sel.top_n <= 0:
-            raise HTTPException(
-                status_code=400, detail="top_n must be a positive number of pages."
-            )
+            raise HTTPException(status_code=400, detail="top_n must be a positive number of pages.")
         if sel.page_ids is not None or sel.path_prefix is not None:
             raise HTTPException(
                 status_code=400,
@@ -631,7 +644,9 @@ def _validate_generate_style(style: str | None) -> None:
 
     if not is_known_style(style):
         valid = ", ".join(s.name for s in list_styles())
-        raise HTTPException(status_code=400, detail=f"Unknown style '{style}'. Valid styles: {valid}.")
+        raise HTTPException(
+            status_code=400, detail=f"Unknown style '{style}'. Valid styles: {valid}."
+        )
 
 
 def _generate_job_config(body: GenerateRequestBody) -> dict:

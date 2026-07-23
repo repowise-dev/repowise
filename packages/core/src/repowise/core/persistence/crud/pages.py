@@ -483,7 +483,7 @@ async def list_pages(
     repository_id: str,
     *,
     page_type: str | None = None,
-    deterministic: bool | None = None,
+    has_prose: bool | None = None,
     limit: int = 100,
     offset: int = 0,
     sort_by: str = "updated_at",
@@ -491,17 +491,25 @@ async def list_pages(
 ) -> list[Page]:
     """Return pages for a repository, optionally filtered by page_type.
 
-    ``deterministic=True`` returns only unwritten (template) pages;
-    ``deterministic=False`` returns only model-written ones. ``None`` (default)
-    returns both. A template page is stamped ``provider_name='template'``.
+    ``has_prose`` filters on whether a model has written a page's prose, which is
+    only a meaningful question for the model-written page types (the concept tree
+    and onboarding); every other type renders from structure and never has prose.
+    So the filter is scoped to those types: ``has_prose=True`` returns the ones a
+    model has written, ``has_prose=False`` the ones still stubs, and ``None``
+    (default) returns every page of every type. A stub is a model-written type
+    still stamped ``provider_name='template'``.
     """
     q = select(Page).where(Page.repository_id == repository_id)
     if page_type is not None:
         q = q.where(Page.page_type == page_type)
-    if deterministic is True:
-        q = q.where(Page.provider_name == "template")
-    elif deterministic is False:
-        q = q.where(Page.provider_name != "template")
+    if has_prose is not None:
+        from repowise.core.generation.models import MODEL_WRITTEN_PAGE_TYPES
+
+        q = q.where(Page.page_type.in_(sorted(MODEL_WRITTEN_PAGE_TYPES)))
+        if has_prose:
+            q = q.where(Page.provider_name != "template")
+        else:
+            q = q.where(Page.provider_name == "template")
     _sort_cols = {
         "updated_at": Page.updated_at,
         "confidence": Page.confidence,
