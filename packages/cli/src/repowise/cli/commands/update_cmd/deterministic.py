@@ -113,7 +113,6 @@ def regenerate_deterministic_pages(
         degraded=degraded,
         dead_code_report=dead_code_report,
         prior_page_ids=prior_page_ids,
-        provider=None,
         degrade_label="Template page refresh",
     )
 
@@ -176,7 +175,7 @@ def _render_pages(
                 degraded.append(f"Page embedding: {exc}")
 
         generator = PageGenerator(
-            provider if provider is not None else TemplateProvider(),
+            TemplateProvider(),
             ContextAssembler(config),
             config,
             vector_store=vector_store,
@@ -188,16 +187,9 @@ def _render_pages(
             prior_pages=prior_page_ids or {},
             repo_path=repo_path,
         )
-        # A model render targets exactly the requested file pages so the coverage
-        # budget can't ration them; a template render takes every page it is fed
-        # (deterministic mode bypasses the budget already).
-        only_page_ids = None if is_template else {f"file_page:{p}" for p in regenerate_paths}
-        status_msg = (
-            "  Re-rendering wiki pages from structure…"
-            if is_template
-            else "  Re-writing upgraded pages with the model…"
-        )
-        with console.status(status_msg):
+        # A template render takes every page it is fed; deterministic mode
+        # bypasses the budget already, so no page-id scoping is needed.
+        with console.status("  Re-rendering wiki pages from structure…"):
             return run_async(
                 generator.generate_all(
                     affected_parsed,
@@ -208,7 +200,7 @@ def _render_pages(
                     git_meta_map=git_meta_map,
                     repo_path=repo_path,
                     dead_code_report=dead_code_report,
-                    only_page_ids=only_page_ids,
+                    only_page_ids=None,
                 )
             )
     except Exception as exc:

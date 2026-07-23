@@ -74,7 +74,11 @@ def confirm_cost_gate(message: str, *, estimated_usd: float | None = None) -> bo
         "the subsystem pages later.[/dim]"
     )
     if not sys.stdin.isatty():
-        console.print("  [dim]Not a terminal, so nothing to ask: building from structure.[/dim]")
+        console.print(
+            "  [dim]Not a terminal, so nothing to ask: building from structure. "
+            "Re-run with --yes to accept the cost and write the subsystem pages "
+            "with a model.[/dim]"
+        )
         return False
     default = True
     if estimated_usd is not None and estimated_usd > COST_GATE_HARD_USD:

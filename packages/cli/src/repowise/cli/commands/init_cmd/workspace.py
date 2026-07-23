@@ -66,7 +66,7 @@ from ._interactive import offer_distill_rewrite_hook, offer_hook_install
 from .generation import (
     CostGateDeclined,
     concept_page_count,
-    cost_gate_blocks,
+    cost_gate_declined,
     estimate_generation,
     format_cost,
     run_repo_generation,
@@ -124,7 +124,13 @@ def _run_workspace_generation(
         f"{provider.model_name}. {format_cost(est)} ({est.total_pages} pages total)."
     )
 
-    if cost_gate_blocks(est, yes=yes, message=f"    Continue with {repo_path.name} at this cost?"):
+    # Declines rather than raises when it cannot ask (see the note in init's
+    # _run_generation_phase): a raise would land in the caller's generic error
+    # handler and leave this repo with zero pages, instead of the free template
+    # wiki the CostGateDeclined sentinel renders.
+    if cost_gate_declined(
+        est, yes=yes, message=f"    Continue with {repo_path.name} at this cost?"
+    ):
         console.print(
             "    [yellow]Skipped.[/yellow] "
             "[dim]Index will be saved without docs; "

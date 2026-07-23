@@ -51,7 +51,7 @@ def print_wiki_state(console: Console, records: list[PageRecord]) -> None:
     written = total - template
     stale = sum(1 for r in concept if r.is_stale)
     line = (
-        f"[bold]Subsystem pages:[/bold] {total} of {len(records)} wiki pages — "
+        f"[bold]Subsystem pages:[/bold] {total} of {len(records)} wiki pages. "
         f"[cyan]{written}[/cyan] written, [yellow]{template}[/yellow] unwritten"
     )
     if stale:

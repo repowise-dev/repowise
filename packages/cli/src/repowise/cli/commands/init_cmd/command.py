@@ -75,7 +75,7 @@ from repowise.core.reasoning import REASONING_MODES
 from ._interactive import offer_distill_rewrite_hook, offer_hook_install
 from .generation import (
     concept_page_count,
-    cost_gate_blocks,
+    cost_gate_declined,
     estimate_generation,
     format_cost,
     run_repo_generation,
@@ -330,16 +330,24 @@ def _run_generation_phase(
 
     # The single cost question. Every structural page is free; the spend is the
     # concept tree and the repo-wide synthesis pages, stated as one number.
+    #
+    # This gate declines rather than raises when it cannot ask (no terminal, over
+    # the gate, no --yes): init's index is built but not yet persisted, so
+    # raising here would discard the whole run. Declining hands control to the
+    # caller's fallback, which renders the free structural wiki and saves the
+    # index. `generate` and `update --full` raise instead, because their index
+    # already exists and re-running with --yes costs nothing.
     concept_n = concept_page_count(plans)
     console.print(
         f"Writing [bold]{concept_n}[/bold] concept pages with "
         f"[cyan]{provider.model_name}[/cyan]. Estimated [bold]{format_cost(est)}[/bold]."
     )
-    if cost_gate_blocks(est, yes=yes, message="  Continue?"):
+    if cost_gate_declined(est, yes=yes, message="  Continue?"):
         console.print(
             "[yellow]Not writing it with the model.[/yellow] "
-            "[dim]Future `repowise update` runs stay index-only, so the "
-            "post-commit hook won't start a model run on its own.[/dim]"
+            "[dim]Re-run with --yes to accept the cost, or run `repowise generate` "
+            "later to write the subsystem pages. Future `repowise update` runs stay "
+            "index-only, so the post-commit hook won't start a model run on its own.[/dim]"
         )
         return False, True
 
@@ -669,14 +677,24 @@ def init_command(
             "(structural, no key) or --prose (model-written). They still work "
             "this release.[/dim]"
         )
+    # Each of the three sources votes for "structural" (True) or "prose" (False).
+    # --index-only always means structural; --docs maps deterministic->structural,
+    # llm->prose; --prose/--no-prose is the direct switch. Two votes that disagree
+    # is a contradiction rather than a silent last-one-wins.
+    _structural_votes = []
+    if index_only:
+        _structural_votes.append(True)
     if docs_opt is not None:
-        if index_only and docs_opt == "llm":
-            raise click.UsageError("--docs llm contradicts --index-only. Pass one.")
-        index_only = docs_opt == "deterministic"
+        _structural_votes.append(docs_opt == "deterministic")
     if prose is not None:
-        if index_only and prose:
-            raise click.UsageError("--prose contradicts --no-prose / --index-only. Pass one.")
-        index_only = not prose
+        _structural_votes.append(not prose)
+    if len(set(_structural_votes)) > 1:
+        raise click.UsageError(
+            "This mix of --prose / --no-prose, --index-only and --docs contradicts "
+            "itself. Pass one."
+        )
+    if _structural_votes:
+        index_only = _structural_votes[0]
     # --mode fast is a graph + essential-git index with no LLM work, so it
     # implies index-only on the CLI side; the orchestrator mode below switches
     # the git tier to ESSENTIAL.
