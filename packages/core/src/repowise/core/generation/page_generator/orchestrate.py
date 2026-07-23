@@ -703,12 +703,20 @@ def _compute_kg_file_scores(kg_ctx: Any) -> dict[str, float]:
 
 
 def _embed_item(page: GeneratedPage) -> tuple[str, str, dict]:
-    """Build the ``(page_id, text, metadata)`` tuple for embedding."""
+    """Build the ``(page_id, text, metadata)`` tuple for embedding.
+
+    ``title`` is load-bearing, not decoration: it feeds the coverage rerank
+    haystack and the grounding corpus on the serving side. Omitting it here
+    (as this did until 2026-07) left every page embedded at generation time
+    with a blank title, while ``reindex`` and ``doctor --repair`` set it —
+    so the store disagreed with itself depending on how a page got there.
+    """
     summary = overview_summary(page.content)
     return (
         page.page_id,
         page.content,
         {
+            "title": page.title,
             "page_type": page.page_type,
             "target_path": page.target_path,
             "content": page.content[:600],
