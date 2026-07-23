@@ -2,6 +2,14 @@
 
 All notable changes to the Repowise Claude Code plugin are documented here.
 
+## 0.34.1
+
+### Added
+- `/repowise:coverage` — ingest or inspect coverage reports (`coverage add` /
+  `coverage status`).
+- `/repowise:impacted-tests` — map a commit / range / staged diff to the tests
+  that exercise changed lines.
+
 ## 0.34.0
 
 ### Changed
