@@ -1,4 +1,4 @@
-"""Tests for Jinja2 templates - 27 tests (3 per template x 9 templates)."""
+"""Tests that every shipped Jinja template renders against a real context."""
 
 from __future__ import annotations
 
@@ -17,6 +17,11 @@ from repowise.core.generation.context_assembler import (
     SccPageContext,
     SymbolSpotlightContext,
     _TopFile,
+)
+from repowise.core.generation.page_generator.structural import (
+    as_markdown,
+    oneline,
+    signature,
 )
 from repowise.core.ingestion.models import PackageInfo
 
@@ -38,15 +43,22 @@ def jinja_env() -> jinja2.Environment:
         / "templates"
     )
     assert templates_dir.exists(), f"Templates directory not found: {templates_dir}"
-    return jinja2.Environment(
+    env = jinja2.Environment(
         loader=jinja2.FileSystemLoader(str(templates_dir)),
         undefined=jinja2.StrictUndefined,
         autoescape=False,
     )
+    # The same filters PageGenerator registers. Structural templates render
+    # page content rather than a prompt, so they lean on these to keep
+    # docstrings and signatures inside a table cell or list item.
+    env.filters.setdefault("oneline", oneline)
+    env.filters.setdefault("as_markdown", as_markdown)
+    env.filters.setdefault("signature", signature)
+    return env
 
 
-def render(env: jinja2.Environment, template_name: str, ctx: object) -> str:
-    return env.get_template(template_name).render(ctx=ctx)
+def render(env: jinja2.Environment, template_name: str, ctx: object, **extra: object) -> str:
+    return env.get_template(template_name).render(ctx=ctx, **extra)
 
 
 # ---------------------------------------------------------------------------
@@ -335,15 +347,18 @@ def scc_page_ctx() -> SccPageContext:
 
 
 def test_scc_page_renders_without_error(jinja_env, scc_page_ctx):
-    result = render(jinja_env, "scc_page.j2", scc_page_ctx)
+    result = render(jinja_env, "scc_page.j2", scc_page_ctx, decouple_ranking=[])
     assert result
 
 
 def test_scc_page_has_heading(jinja_env, scc_page_ctx):
-    result = render(jinja_env, "scc_page.j2", scc_page_ctx)
+    result = render(jinja_env, "scc_page.j2", scc_page_ctx, decouple_ranking=[])
     assert "##" in result
 
 
 def test_scc_page_contains_cycle_description(jinja_env, scc_page_ctx):
-    result = render(jinja_env, "scc_page.j2", scc_page_ctx)
-    assert scc_page_ctx.cycle_description in result
+    result = render(jinja_env, "scc_page.j2", scc_page_ctx, decouple_ranking=[])
+    # The structural page writes its own sentence about the cycle rather than
+    # echoing the assembled description, so assert on the members it names.
+    for member in scc_page_ctx.files:
+        assert member in result

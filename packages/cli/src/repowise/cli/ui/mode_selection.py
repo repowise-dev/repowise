@@ -370,41 +370,6 @@ def _prompt_generation(
         default=True,
     )
 
-    # Tiered doc generation: cap the number of full-LLM (tier-1) file pages on
-    # large repos. The long tail is rendered from a deterministic template +
-    # embedded for search (no LLM). 0 = no cap (every selected page is tier-1).
-    # Only meaningful when docs actually generate (standard mode). This caps the
-    # full-LLM pages; the coverage chooser (shown later) sets how many files are
-    # documented at all.
-    result["tier1_top_n"] = None
-    if allow_fast and result["run_mode"] == "standard":
-        tier_default = 300 if is_large else 0
-        console.print()
-        console.print(
-            "  [dim]Tiered docs: cap full-LLM file pages; rest are template-only. "
-            "Coverage (how many files to document) is chosen just before generation.[/dim]"
-        )
-        tier_val = click.prompt(
-            "  Full-LLM file-page cap (tier-1, 0 = no cap)",
-            default=tier_default,
-            type=int,
-        )
-        result["tier1_top_n"] = tier_val if tier_val > 0 else None
-
-    # Deterministic coverage tail: give every remaining (budget-dropped) source
-    # file a free, no-LLM page so the whole codebase is retrievable by search.
-    result["tier2_tail_enabled"] = True
-    if result["run_mode"] == "standard":
-        console.print()
-        console.print(
-            "  [dim]Recommended: keep this on so search and get_answer can find "
-            "every source file, not just the documented slice (free, no tokens).[/dim]"
-        )
-        result["tier2_tail_enabled"] = click.confirm(
-            "  Document remaining files deterministically (no-LLM coverage)?",
-            default=True,
-        )
-
     # Documentation voice/density. An explicit --wiki-style wins; otherwise prompt
     # here so the choice lands inside the section, before the summary panel.
     result["wiki_style"] = wiki_style if wiki_style is not None else prompt_wiki_style(console)
@@ -462,12 +427,6 @@ def _build_summary_table(
                 "Language",
                 f"{result['language']} ({SUPPORTED_LANGUAGES.get(result['language'], '?')})",
             )
-        if allow_fast and result.get("tier1_top_n"):
-            summary.add_row("Full-LLM page cap", str(result["tier1_top_n"]))
-        summary.add_row(
-            "Deterministic coverage",
-            "yes" if result.get("tier2_tail_enabled", True) else "no",
-        )
         summary.add_row("Onboarding", "yes" if result.get("onboarding", True) else "no")
         summary.add_row(
             "Harvest decisions", "yes" if result.get("harvest_decisions", True) else "no"
@@ -501,7 +460,7 @@ def interactive_advanced_config(
     ``commit_limit``, ``follow_renames``, ``skip_tests``, ``skip_infra``,
     ``exclude``, ``include_submodules``, ``run_mode``, ``generate_docs`` (always),
     plus ``concurrency``, ``reasoning``, ``embedder``, ``test_run``,
-    ``tier1_top_n``, ``onboarding``, ``harvest_decisions``, ``wiki_style``,
+    ``onboarding``, ``harvest_decisions``, ``wiki_style``,
     ``language`` (docs only).
 
     Editor integration prompts are intentionally not asked here so that full and

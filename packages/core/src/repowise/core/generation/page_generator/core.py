@@ -14,9 +14,8 @@ The level-by-level orchestration of ``generate_all`` lives in
 from __future__ import annotations
 
 import hashlib
-import uuid
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -28,28 +27,21 @@ from repowise.core.providers.llm.base import BaseProvider, CacheHint, GeneratedR
 
 from ..context_assembler import ContextAssembler, FilePageContext
 from ..models import (
-    GENERATION_LEVELS,
     GeneratedPage,
     GenerationConfig,
     compute_page_id,
     compute_source_hash,
 )
 from ..styles import ONBOARDING_PAGE_TYPE, resolve_style
-from .decision_harvest import (
-    HARVEST_DIRECTIVE,
-    HARVESTABLE_PAGE_TYPES,
-    harvest_decisions,
-)
-from .deterministic import (
-    DeterministicRenderMixin,
+from .helpers import _extract_summary, _now_iso
+from .pertype import PerTypeGenerationMixin
+from .prompts import SUPPORTED_LANGUAGES, SYSTEM_PROMPTS
+from .structural import (
+    StructuralRenderMixin,
     as_markdown,
     oneline,
     signature,
 )
-from .helpers import _extract_summary, _now_iso
-from .pertype import PerTypeGenerationMixin
-from .prompts import SUPPORTED_LANGUAGES, SYSTEM_PROMPTS
-from .validation import _validate_symbol_references
 
 if TYPE_CHECKING:
     from pathlib import Path as _Path  # noqa: F401
@@ -76,9 +68,7 @@ def _attach_file_provenance(page: GeneratedPage, ctx: FilePageContext) -> None:
         # Guarantee every file page carries a layer so the Architecture tree
         # can group it. When the knowledge graph has no layer, fall back to
         # path-based inference.
-        page.metadata["layer_name"] = infer_layer(
-            ctx.file_path, getattr(ctx, "language", None)
-        )
+        page.metadata["layer_name"] = infer_layer(ctx.file_path, getattr(ctx, "language", None))
 
     # ``layer_id`` is the join key every consumer groups on, so guarantee it
     # unconditionally. A curated layer_name without an id used to leave the
@@ -116,11 +106,11 @@ class PriorPage:
     rendered prompt produces a matching ``source_hash`` under the same
     ``model_name``, the LLM call is skipped and ``content`` is reused.
 
-    ``content_hash`` (see :meth:`PageGenerator._reuse_content_hash`) is the
-    preferred reuse key when both sides have one: it stays stable across
-    runs even when the rendered prompt drifts (RAG context is rebuilt and
-    populated concurrently each run, so ``source_hash`` alone almost never
-    matches on a reindex).
+    ``content_hash`` is the preferred reuse key when both sides have one: it
+    stays stable across runs even when the rendered prompt drifts (RAG context
+    is rebuilt and populated concurrently each run, so ``source_hash`` alone
+    almost never matches on a reindex). Structural pages compute theirs in
+    :meth:`StructuralRenderMixin._structural_content_hash`.
     """
 
     source_hash: str
@@ -132,7 +122,7 @@ class PriorPage:
     content_hash: str = ""
 
 
-class PageGenerator(PerTypeGenerationMixin, DeterministicRenderMixin):
+class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
     """Generate wiki pages by rendering prompts and calling an LLM provider.
 
     Args:
@@ -172,13 +162,11 @@ class PageGenerator(PerTypeGenerationMixin, DeterministicRenderMixin):
         # table.
         self._prior_pages: dict[str, PriorPage] = prior_pages or {}
         self._reuse_count: int = 0
-        # One-line summary of the FAQ-weighted budget tilt for this run, set by
-        # the orchestrator when session demand was found (else None). The CLI
-        # surfaces it after generation so the usage-weighting is visible.
-        self.faq_demand_summary: str | None = None
-        # Lazily computed by _generation_fingerprint(); every input it folds
-        # is fixed for the generator's lifetime.
-        self._gen_fingerprint: str | None = None
+        # Per-template structural fingerprints, lazily computed; every input
+        # they fold is fixed for the generator's lifetime. Keyed by template
+        # name because each structural page type folds its own template source.
+        # See StructuralRenderMixin._structural_fingerprint.
+        self._structural_fingerprints: dict[str, str] = {}
 
         if jinja_env is None:
             templates_dir = Path(__file__).parent.parent / "templates"
@@ -275,223 +263,29 @@ class PageGenerator(PerTypeGenerationMixin, DeterministicRenderMixin):
     # File-page generation (LLM + deterministic tier-2)
     # ------------------------------------------------------------------
 
-    async def _generate_file_page_from_ctx(
-        self,
-        parsed: ParsedFile,
-        ctx: FilePageContext,
-        rag_prefetched: bool = False,
-    ) -> GeneratedPage:
-        """Generate a file_page from a pre-assembled context (avoids double-assembly).
+    async def _render_file_page(self, parsed: ParsedFile, ctx: FilePageContext) -> GeneratedPage:
+        """Render a file page from structure. The only renderer for this type.
 
-        *rag_prefetched* is set by the level-2 builder when RAG context was
-        already resolved for the whole level in one batched search (see
-        ``levels._prefetch_rag_context``) — the per-page search below would
-        re-fetch identical results inside the LLM semaphore, so it is skipped.
+        Built straight from the assembled context via a Jinja template: no
+        provider call, no tokens, and no hallucination check, because every
+        statement on the page came from the parse, the import graph or git.
+        The level runner embeds it for search like any other page.
+
+        ``async`` with nothing awaited: the level runner gathers a list of
+        page coroutines, and keeping this one shaped like the rest is cheaper
+        than teaching that runner about two kinds of item.
         """
-        # RAG context: query vector store for related pages (B1).
-        # Gated by two short-circuits so we don't burn an embedder
-        # round-trip on every page when the result wouldn't help:
-        #   1. ``enable_rag_context`` config flag (off → fully skip).
-        #   2. ``rag_min_store_size`` — early pages run against an empty
-        #      or near-empty store and the search returns nothing useful.
-        if (
-            not rag_prefetched
-            and self._vector_store is not None
-            and getattr(self._config, "enable_rag_context", True)
-        ):
-            min_store_size = max(0, int(getattr(self._config, "rag_min_store_size", 10) or 0))
-            store_ok = True
-            if min_store_size > 0:
-                try:
-                    current_ids = await self._vector_store.list_page_ids()
-                    store_ok = len(current_ids) >= min_store_size
-                except Exception:
-                    # If the store can't be sized cheaply, fall through to
-                    # the search — it'll either succeed or hit the
-                    # existing exception path.
-                    store_ok = True
-            if store_ok:
-                query_terms = parsed.exports or [
-                    s["name"] for s in ctx.symbols[:3] if s.get("visibility") == "public"
-                ]
-                if query_terms:
-                    try:
-                        results = await self._vector_store.search(
-                            ", ".join(query_terms[:5]), limit=3
-                        )
-                        self_id = f"file_page:{parsed.file_info.path}"
-                        ctx.rag_context = [
-                            f"[{r.page_id}]\n{r.snippet}" for r in results if r.page_id != self_id
-                        ]
-                    except Exception as e:
-                        log.debug("rag.search_failed", path=parsed.file_info.path, error=str(e))
-        user_prompt = self._render("file_page.j2", ctx=ctx)
-        content_hash = self._reuse_content_hash(parsed)
-        response = await self._call_provider(
-            "file_page",
-            user_prompt,
-            str(uuid.uuid4()),
-            target_path=parsed.file_info.path,
-            content_hash=content_hash,
-        )
-        harvested = self._strip_harvested_decisions(response, ctx, parsed.file_info.path)
-        # Cross-check LLM output against actual symbols
-        hal_warnings = _validate_symbol_references(response.content, parsed)
-        repair_outcome: str | None = None
-        threshold = self._config.repair_warning_threshold
-        if (
-            threshold > 0
-            and len(hal_warnings) >= threshold
-            and not response.usage.get("reused_from_prior_run")
-        ):
-            response, harvested, hal_warnings, repair_outcome = await self._repair_file_page(
-                parsed, ctx, user_prompt, response, harvested, hal_warnings
-            )
-        page = self._build_generated_page(
-            "file_page",
-            parsed.file_info.path,
-            f"File: {parsed.file_info.path}",
-            response,
-            compute_source_hash(user_prompt),
-            GENERATION_LEVELS["file_page"],
-            content_hash=content_hash,
-        )
-        if harvested:
-            page.metadata["harvested_decisions"] = harvested
-        if hal_warnings:
-            log.warning(
-                "hallucination_check",
-                path=parsed.file_info.path,
-                count=len(hal_warnings),
-                refs=hal_warnings[:5],
-            )
-            page.metadata["hallucination_warnings"] = hal_warnings
-        if repair_outcome:
-            page.metadata["self_repair"] = repair_outcome
-        _attach_file_provenance(page, ctx)
-        return page
-
-    def _strip_harvested_decisions(
-        self,
-        response: GeneratedResponse,
-        ctx: FilePageContext,
-        evidence_file: str,
-    ) -> list[dict]:
-        """Phase-2 harvest: pull any trailing decision block out of the page
-        before it is wrapped + stored. The gate verifies each quote against
-        ``file_source_snippet`` — exactly what the model was shown — so a
-        quote it can't have seen is dropped. Returned for page.metadata so the
-        persistence layer can fold it into the evidence pipeline.
-        """
-        if not self._config.harvest_decisions:
-            return []
-        clean_content, harvested = harvest_decisions(
-            response.content,
-            source_text=ctx.file_source_snippet or "",
-            evidence_file=evidence_file,
-        )
-        response.content = clean_content
-        return harvested
-
-    async def _repair_file_page(
-        self,
-        parsed: ParsedFile,
-        ctx: FilePageContext,
-        user_prompt: str,
-        response: GeneratedResponse,
-        harvested: list[dict],
-        hal_warnings: list[str],
-    ) -> tuple[GeneratedResponse, list[dict], list[str], str]:
-        """Bounded self-repair for hallucinated symbol references.
-
-        Re-calls the provider once with the invalid refs named in a corrective
-        note, re-validates, and keeps whichever draft validates cleaner. Both
-        calls' tokens are folded into the kept response so page-level token
-        accounting (and cost) reflects the real spend. One retry per page,
-        never recursive; the caller has already excluded reused prior pages.
-        """
-        path = parsed.file_info.path
-        correction = (
-            "\n\nIMPORTANT CORRECTION: a previous draft of this page referenced "
-            "identifiers that do not exist in this file: "
-            + ", ".join(f"`{r}`" for r in sorted(hal_warnings)[:15])
-            + ". Do not mention these names. Only reference symbols, imports, "
-            "exports, and files that appear in the context above."
-        )
-        # No target_path/content_hash here: the retry must reach the provider,
-        # since the cross-run reuse gate would hand back the draft that failed.
-        retry = await self._call_provider("file_page", user_prompt + correction, str(uuid.uuid4()))
-        retry_harvested = self._strip_harvested_decisions(retry, ctx, path)
-        retry_warnings = _validate_symbol_references(retry.content, parsed)
-        improved = len(retry_warnings) < len(hal_warnings)
-        log.info(
-            "hallucination_repair",
-            path=path,
-            warnings_before=len(hal_warnings),
-            warnings_after=len(retry_warnings),
-            kept="retry" if improved else "original",
-        )
-        if improved:
-            kept, kept_harvested, kept_warnings = retry, retry_harvested, retry_warnings
-        else:
-            kept, kept_harvested, kept_warnings = response, harvested, hal_warnings
-        # replace() rather than mutating: either draft may also live in the
-        # in-memory prompt cache, which must keep its per-call token counts.
-        kept = replace(
-            kept,
-            input_tokens=response.input_tokens + retry.input_tokens,
-            output_tokens=response.output_tokens + retry.output_tokens,
-            cached_tokens=response.cached_tokens + retry.cached_tokens,
-        )
-        return kept, kept_harvested, kept_warnings, "improved" if improved else "kept_original"
-
-    async def _generate_file_page_tier2(
-        self,
-        parsed: ParsedFile,
-        ctx: FilePageContext,
-        *,
-        tail: bool = False,
-    ) -> GeneratedPage:
-        """Render a deterministic (no-LLM) tier-2 file page.
-
-        Used for the long tail of selected files on large repos, and (with
-        ``tail=True``) for the Phase G coverage tail: code files the budget
-        dropped entirely, so the whole codebase is retrievable by concept
-        search. The page is built straight from the assembled context via a
-        Jinja template, marked as template-generated, and carries zero token
-        cost. It is embedded for search by the level runner like any other
-        page. No provider call and no hallucination check (the content is
-        factual by construction).
-
-        ``tail=True`` stamps ``doc_tier=3`` (vs 2 for the in-budget tail) so
-        serving/ranking and the UI can tell budget-tail coverage pages apart
-        and rank them below LLM pages; ``metadata["deterministic"]`` marks both.
-        """
-        content = self._render("file_page_tier2.j2", style_prefix=False, ctx=ctx)
-        now = _now_iso()
-        # content_hash deliberately stays empty: the cross-run reuse gate keys
-        # on model_name (not provider_name), so stamping it here would let a
-        # later tier-1 (LLM) run reuse this deterministic template content as
-        # if the LLM had written it. Tier-2 pages are free to rebuild anyway.
-        page = GeneratedPage(
-            page_id=compute_page_id("file_page", parsed.file_info.path),
+        page = self._structural_page(
             page_type="file_page",
-            title=f"File: {parsed.file_info.path}",
-            content=content,
-            summary=_extract_summary(content),
-            source_hash=compute_source_hash(content),
-            model_name=self._provider.model_name,
-            provider_name="template",
-            input_tokens=0,
-            output_tokens=0,
-            cached_tokens=0,
-            generation_level=GENERATION_LEVELS["file_page"],
             target_path=parsed.file_info.path,
-            created_at=now,
-            updated_at=now,
+            title=f"File: {parsed.file_info.path}",
+            template="file_page.j2",
+            subject_hash=parsed.content_hash or "",
+            ctx=ctx,
         )
-        page.metadata["doc_tier"] = 3 if tail else 2
-        page.metadata["deterministic"] = True
+        # _render_page extracts the summary skipping a metadata preamble the
+        # file template does not emit; keep this type's original extraction.
+        page.summary = _extract_summary(page.content)
         _attach_file_provenance(page, ctx)
         return page
 
@@ -505,7 +299,6 @@ class PageGenerator(PerTypeGenerationMixin, DeterministicRenderMixin):
         user_prompt: str,
         request_id: str,
         target_path: str | None = None,
-        content_hash: str = "",
         source_salt: str = "",
     ) -> GeneratedResponse:
         """Call the provider with caching, optionally prefixing a language instruction.
@@ -517,19 +310,13 @@ class PageGenerator(PerTypeGenerationMixin, DeterministicRenderMixin):
         other page type, so their reuse hashes are unchanged.
         """
         # Persistent cross-run cache: if the page exists from a prior run, was
-        # produced by the same model, and either the documented file's bytes
-        # (content_hash) or the prompt's source_hash matches, reuse the stored
-        # content without an LLM call. content_hash is checked first: the
-        # rendered prompt embeds RAG context rebuilt fresh each run, so the
-        # prompt hash alone misses on unchanged files.
+        # produced by the same model, and the prompt's source_hash matches,
+        # reuse the stored content without an LLM call.
         if self._config.cache_enabled and target_path is not None:
             page_id = compute_page_id(page_type, target_path)
             prior = self._prior_pages.get(page_id)
             if prior is not None and prior.model_name == self._provider.model_name:
-                reuse = bool(content_hash) and prior.content_hash == content_hash
-                if not reuse:
-                    reuse = prior.source_hash == compute_source_hash(user_prompt + source_salt)
-                if reuse:
+                if prior.source_hash == compute_source_hash(user_prompt + source_salt):
                     self._reuse_count += 1
                     log.debug(
                         "page_cache.persistent_hit",
@@ -575,11 +362,6 @@ class PageGenerator(PerTypeGenerationMixin, DeterministicRenderMixin):
 
     def _build_system_prompt(self, page_type: str) -> str:
         base_system = SYSTEM_PROMPTS[page_type]
-        # Phase-2 decision harvest: extend the (otherwise constant) system
-        # prompt with the harvest directive on the page types we harvest from.
-        # The directive is constant per run, so prefix caching still holds.
-        if self._config.harvest_decisions and page_type in HARVESTABLE_PAGE_TYPES:
-            base_system = base_system + HARVEST_DIRECTIVE
         # Wiki style: append the style's framing note. Constant per run (per page
         # type), so prefix caching still holds. Inert for the default style.
         base_system = base_system + self._style.system_prompt_suffix(
@@ -616,58 +398,6 @@ class PageGenerator(PerTypeGenerationMixin, DeterministicRenderMixin):
             f"{self._provider.model_name}:{self._language}:"
             f"{self._style.fingerprint}:{page_type}:{user_prompt}"
         )
-        return hashlib.sha256(raw.encode()).hexdigest()
-
-    def _generation_fingerprint(self) -> str:
-        """Hash of every fixed input (besides the file itself) that shapes a
-        file page's content.
-
-        The prompt-hash reuse path caught changes to any of these for free —
-        they all end up in the rendered prompt or system prompt. The
-        content-hash path deliberately ignores the prompt, so it must fold
-        them explicitly or a template upgrade / language switch / style
-        switch / harvest toggle would silently keep serving old pages for
-        unchanged files:
-
-        * the file_page prompt template source (a repowise upgrade that
-          improves the template must regenerate),
-        * the file_page system prompt constant (same reason),
-        * the output language,
-        * the wiki-style fingerprint (empty for the default style),
-        * the decision-harvest flag (its directive changes what pages carry).
-
-        Graph/RAG/neighbor context is deliberately NOT folded — drifting on
-        every run is exactly what made prompt-hash reuse never fire.
-        """
-        if self._gen_fingerprint is None:
-            try:
-                template_src = self._jinja_env.loader.get_source(  # type: ignore[union-attr]
-                    self._jinja_env, "file_page.j2"
-                )[0]
-            except Exception:
-                template_src = ""
-            raw = "\x00".join(
-                [
-                    template_src,
-                    SYSTEM_PROMPTS.get("file_page", ""),
-                    self._language or "en",
-                    self._style.fingerprint,
-                    "harvest" if self._config.harvest_decisions else "",
-                ]
-            )
-            self._gen_fingerprint = hashlib.sha256(raw.encode()).hexdigest()
-        return self._gen_fingerprint
-
-    def _reuse_content_hash(self, parsed: ParsedFile) -> str:
-        """Return the cross-run reuse key for a page built from *parsed*:
-        SHA256 of the file's raw-bytes hash folded with the generation
-        fingerprint. Stable across runs while the file and the generation
-        settings are unchanged; changes when either does. Empty when the
-        parse didn't produce a content hash (never matches — always
-        regenerates)."""
-        if not parsed.content_hash:
-            return ""
-        raw = f"{parsed.content_hash}:{self._generation_fingerprint()}"
         return hashlib.sha256(raw.encode()).hexdigest()
 
     def _build_generated_page(

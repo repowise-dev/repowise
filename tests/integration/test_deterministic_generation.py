@@ -96,9 +96,16 @@ class TestDeterministicGeneration:
             assert p.output_tokens == 0
             assert p.cached_tokens == 0
 
-    def test_every_page_marked_deterministic(self, deterministic_pages):
+    def test_every_page_is_template_rendered(self, deterministic_pages):
+        """``provider_name`` is the whole provenance record now.
+
+        The redundant ``metadata["deterministic"]`` and ``doc_tier`` copies are
+        gone: three fields saying the same thing is three chances to disagree.
+        """
         for p in deterministic_pages:
-            assert p.metadata.get("deterministic") is True, p.page_id
+            assert p.provider_name == "template", p.page_id
+            assert "deterministic" not in p.metadata, p.page_id
+            assert "doc_tier" not in p.metadata, p.page_id
 
     def test_every_page_has_content(self, deterministic_pages):
         for p in deterministic_pages:
@@ -110,10 +117,18 @@ class TestDeterministicGeneration:
         assert len(ids) == len(set(ids))
 
     def test_every_page_carries_the_provenance_footer(self, deterministic_pages):
-        """The footer is what tells a reader (and the UI) the page is
-        structural rather than written, so no page may skip it."""
+        """The footer is what tells a reader the page is structural rather
+        than written, so no page may skip it.
+
+        Two footers now, and the difference is the point. A page whose only
+        renderer this is says so plainly; a keyless stub says a key would buy
+        it prose, which is true only of the page types that keep a model path.
+        """
         for p in deterministic_pages:
-            assert "Generated deterministically" in p.content, p.page_id
+            assert (
+                "Built from the code itself" in p.content
+                or "Built from the code's structure" in p.content
+            ), p.page_id
 
     def test_covers_multiple_page_types(self, deterministic_pages):
         """Deterministic mode is only worth shipping if it produces a whole
@@ -133,12 +148,27 @@ class TestDeterministicGeneration:
         # dropped, so nothing should be tagged as tail (doc_tier 3).
         assert all(p.metadata.get("doc_tier") != 3 for p in file_pages)
 
-    def test_content_hash_left_empty(self, deterministic_pages):
-        """The cross-run reuse gate keys on model_name, not provider_name. A
-        stamped content_hash here would let a later LLM run serve template
-        content as if a model had written it."""
+    def test_sole_renderer_pages_carry_the_generation_salt(self, deterministic_pages):
+        """A file page's stored render key is the only way it ever improves.
+
+        No model will rewrite one, and ``update`` only re-renders files that
+        changed, so a template improvement reaches an existing wiki solely by
+        this hash disagreeing with the one the new renderer computes. Pages
+        that keep a model path deliberately store nothing: the reuse gate keys
+        on ``model_name``, so a stub with a hash could be served later as if a
+        model had written it.
+        """
+        by_type = {p.page_type: p for p in deterministic_pages}
+        assert by_type["file_page"].metadata.get("render_key")
+
         for p in deterministic_pages:
-            assert not p.content_hash, p.page_id
+            if p.page_type in (
+                "module_page",
+                "repo_overview",
+                "architecture_diagram",
+                "onboarding",
+            ):
+                assert not p.content_hash, p.page_id
 
     def test_pages_are_not_prompts(self, deterministic_pages):
         """A template rendered through the prompt path would carry
@@ -236,9 +266,7 @@ class TestOnlyPageIds:
         a_file = next(pid for pid in full_ids if pid.startswith("file_page:"))
         overview = next(pid for pid in full_ids if pid.startswith("repo_overview:"))
         requested = {a_file, overview}
-        pages = await _run_deterministic(
-            tmp_path_factory, "only_subset", only_page_ids=requested
-        )
+        pages = await _run_deterministic(tmp_path_factory, "only_subset", only_page_ids=requested)
         produced = {p.page_id for p in pages}
         assert produced == requested, f"scoped run leaked or dropped pages: {produced ^ requested}"
 

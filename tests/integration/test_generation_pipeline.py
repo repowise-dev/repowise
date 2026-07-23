@@ -51,7 +51,7 @@ class _TrackingProvider(MockProvider):
         reasoning: ReasoningMode = "auto",
         cache_hints: Any = None,
     ) -> GeneratedResponse:
-        if "Required sections: ## Overview, ## Public API" in system_prompt:
+        if "Required sections: ## Overview, ## Public API," in system_prompt:
             self.file_page_starts.append(time.perf_counter())
         await asyncio.sleep(self.delay)
         return await super().generate(
@@ -277,14 +277,14 @@ async def test_embedding_latency_does_not_gate_llm_concurrency():
     )
 
     file_pages = [page for page in pages if page.page_type == "file_page"]
-    # The selection layer may allocate one slot to symbol_spotlight on
-    # this tiny fixture; the test exists to observe LLM/embed interleave,
-    # so any count >= 3 is enough to assert ordering at index 2.
     assert len(file_pages) >= 3
-    assert len(provider.file_page_starts) >= 3
+    # File pages are rendered rather than written, so there are no provider
+    # calls left to interleave with the embeds. What still matters, and what
+    # this fixture's slow store exercises, is that the embed semaphore is
+    # honoured and never becomes the thing that serialises the run.
+    assert provider.file_page_starts == []
     assert vector_store.file_page_embed_finishes
     assert vector_store.max_active_embeds == 1
-    assert provider.file_page_starts[2] < vector_store.file_page_embed_finishes[0]
 
 
 # ---------------------------------------------------------------------------
@@ -325,22 +325,15 @@ class TestGenerationPipeline:
         for page in pipeline_result["pages"]:
             assert page.provider_name in ("mock", "template")
 
-    def test_deterministic_tail_pages_emitted(self, pipeline_result):
-        """Files outside the LLM budget get zero-LLM deterministic file pages.
-
-        With the default config (tier1_top_n=None) the only template pages are
-        the Phase G coverage tail, tagged doc_tier=3.
-        """
-        tail = [
-            p
-            for p in pipeline_result["pages"]
-            if p.provider_name == "template" and p.metadata.get("doc_tier") == 3
-        ]
-        assert tail, "expected deterministic coverage-tail pages"
-        for p in tail:
-            assert p.page_type == "file_page"
+    def test_every_file_page_is_free(self, pipeline_result):
+        """There is no budget and no tier split: every code file gets a page,
+        and not one of them costs a token."""
+        file_pages = [p for p in pipeline_result["pages"] if p.page_type == "file_page"]
+        assert file_pages
+        for p in file_pages:
+            assert p.provider_name == "template"
             assert p.input_tokens == 0 and p.output_tokens == 0
-            assert p.metadata.get("deterministic") is True
+            assert p.metadata.get("render_key"), p.page_id
 
     def test_generates_repo_overview(self, pipeline_result):
         types = [p.page_type for p in pipeline_result["pages"]]

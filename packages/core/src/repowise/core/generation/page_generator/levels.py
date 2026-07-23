@@ -130,63 +130,11 @@ async def _prefetch_dependency_summaries(run: _GenerationRun) -> None:
         log.debug("rag.batch_dep_prefetch_failed", error=str(exc))
 
 
-async def _prefetch_rag_context(
-    run: _GenerationRun, items: list[tuple[Any, FilePageContext]]
-) -> bool:
-    """Resolve RAG context for all tier-1 file pages in one batched search.
-
-    Replicates the per-page gating in ``_generate_file_page_from_ctx`` (flag,
-    store size, query-term derivation, self-exclusion) but runs BEFORE the
-    level starts, outside the LLM semaphore, with all queries embedded in a
-    single embedder call via :meth:`VectorStore.search_many`. The store is
-    static for the whole level (pages embed in one batch at level end), so
-    prefetched results are identical to what each page would have fetched.
-
-    Returns True when the per-page search can be skipped (results resolved,
-    or the per-page gate would have skipped every search anyway); False on
-    batch failure so pages fall back to the per-page path.
-    """
-    if run.vector_store is None or not getattr(run.config, "enable_rag_context", True):
-        return False
-    min_store_size = max(0, int(getattr(run.config, "rag_min_store_size", 10) or 0))
-    if min_store_size > 0:
-        try:
-            current_ids = await run.vector_store.list_page_ids()
-            if len(current_ids) < min_store_size:
-                # Store too small for useful RAG — the per-page gate would
-                # skip every search this level, so there is nothing to fetch.
-                return True
-        except Exception:
-            pass  # same as the per-page gate: fall through to the search
-    queries: list[str] = []
-    targets: list[tuple[Any, FilePageContext]] = []
-    for p, ctx in items:
-        query_terms = p.exports or [
-            s["name"] for s in ctx.symbols[:3] if s.get("visibility") == "public"
-        ]
-        if not query_terms:
-            continue
-        queries.append(", ".join(query_terms[:5]))
-        targets.append((p, ctx))
-    if not queries:
-        return True
-    try:
-        all_results = await run.vector_store.search_many(queries, limit=3)
-    except Exception as exc:
-        log.debug("rag.batch_search_failed", error=str(exc))
-        return False
-    for (p, ctx), results in zip(targets, all_results, strict=False):
-        self_id = f"file_page:{p.file_info.path}"
-        ctx.rag_context = [f"[{r.page_id}]\n{r.snippet}" for r in results if r.page_id != self_id]
-    return True
-
-
 async def build_level2_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
-    """Level 2 (file_page): topo-ordered context assembly + tier routing.
+    """Level 2 (file_page): topo-ordered context assembly, then one renderer.
 
     Context is assembled for ALL code files (module pages need it). Pages are
-    emitted only for files in the selection allow-set. Tier-1 paths get the
-    full LLM path; tier-2 paths get the deterministic template renderer.
+    emitted only for files in the selection allow-set.
 
     Known cost on a scoped run (``only_page_ids``): this still assembles every
     code file's context even when the scope emits a handful of pages, because
@@ -227,35 +175,12 @@ async def build_level2_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
         run.file_page_contexts[p.file_info.path] = ctx
         items.append((p, ctx))
 
-    def _emits_tier1(p: Any) -> bool:
-        path = p.file_info.path
-        return (
-            path in run.sel_file_paths
-            and path in run.tier1_paths
-            and run._emit(compute_page_id("file_page", path))
-        )
-
-    rag_prefetched = await _prefetch_rag_context(
-        run, [(p, ctx) for p, ctx in items if _emits_tier1(p)]
-    )
-
     coros: list[tuple[str, Any]] = []
-    tail_paths = getattr(run, "tail_paths", set())
     for p, ctx in items:
         path = p.file_info.path
         pid = compute_page_id("file_page", path)
-        if not run._emit(pid):
-            continue
-        if path in run.sel_file_paths:
-            if path in run.tier1_paths:
-                coros.append(
-                    (pid, gen._generate_file_page_from_ctx(p, ctx, rag_prefetched=rag_prefetched))
-                )
-            else:
-                coros.append((pid, gen._generate_file_page_tier2(p, ctx)))
-        elif path in tail_paths:
-            # Phase G coverage tail: budget-dropped code file -> zero-LLM page.
-            coros.append((pid, gen._generate_file_page_tier2(p, ctx, tail=True)))
+        if path in run.sel_file_paths and run._emit(pid):
+            coros.append((pid, gen._render_file_page(p, ctx)))
     return coros
 
 

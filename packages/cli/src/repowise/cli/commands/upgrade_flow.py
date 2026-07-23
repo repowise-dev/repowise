@@ -24,7 +24,6 @@ when ``--full`` is passed.
 
 from __future__ import annotations
 
-import dataclasses
 import sys
 import time
 from pathlib import Path
@@ -89,7 +88,9 @@ def _gate_cost(
         raise click.Abort()
 
 
-def _reparse(repo_path: Path, exclude_patterns: list[str]) -> tuple[list[Any], dict[str, bytes], Any]:
+def _reparse(
+    repo_path: Path, exclude_patterns: list[str]
+) -> tuple[list[Any], dict[str, bytes], Any]:
     """Parse files for ASTs + source bytes WITHOUT building/resolving the graph.
 
     Thin CLI wrapper over :func:`repowise.core.pipeline.reparse_repo`: reads the
@@ -151,9 +152,7 @@ async def _backfill_git(
             console.print(
                 "[dim]Found an interrupted git backfill — resuming (re-running FULL tier).[/dim]"
             )
-        summary, git_results = await backfill_full_tier(
-            indexer, repo_id, job_store=job_store
-        )
+        summary, git_results = await backfill_full_tier(indexer, repo_id, job_store=job_store)
         if git_results:
             await upsert_git_metadata_bulk(session, repo_id, git_results)
             await recompute_git_percentiles(session, repo_id)
@@ -234,7 +233,6 @@ async def _run_upgrade(
     # to turn a template wiki into a written one: the user reaching for it has
     # never been shown a cost for this repo.
     _gate_cost(parsed_files, graph_builder, config, provider, repo_path, yes=yes)
-
 
     # 5. Generate the docs the fast index skipped. Honor the cost-tracking
     # opt-out (issue #326) so REPOWISE_NO_COST_TRACKING is respected here too;
@@ -437,9 +435,6 @@ def upgrade_to_full(
         reasoning=resolve_reasoning(reasoning, cfg),
         enable_onboarding=bool(cfg.get("enable_onboarding", True)),
     )
-    tier1_top_n = cfg.get("tier1_top_n")
-    if tier1_top_n is not None:
-        config = dataclasses.replace(config, tier1_top_n=tier1_top_n)
 
     exclude_patterns = list(cfg.get("exclude_patterns") or [])
     commit_limit = cfg.get("commit_limit")

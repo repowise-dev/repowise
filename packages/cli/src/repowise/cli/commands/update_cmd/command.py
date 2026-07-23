@@ -368,6 +368,78 @@ class UpdateOutcome(StrEnum):
     DRY_RUN = "dry_run"  # dry run, nothing written
 
 
+def _renderer_inputs(repo_path):
+    """The (language, style fingerprint, style template dir) a file page uses.
+
+    Read from the persisted config so the fingerprint computed at the "up to
+    date" gate matches the one the pages actually store. A wrong triple here
+    would make every page look stale on every run (or none ever), so all three
+    come from the same place generation reads them. The template dir is a
+    custom style's own ``templates/`` (``None`` for a built-in style), tried
+    ahead of the shipped template exactly as the generator's Jinja loader does.
+    """
+    from repowise.cli.helpers import load_config
+    from repowise.core.generation.styles import resolve_style
+
+    cfg = load_config(repo_path)
+    style = resolve_style(cfg.get("wiki_style", "comprehensive"), repo_path=repo_path)
+    return cfg.get("language", "en"), style.fingerprint, style.template_dir
+
+
+def _current_renderer_fingerprint(repo_path) -> str:
+    """This release's fingerprint for the file-page renderer, or '' on failure.
+
+    Cheap: reads one template and a few constants, no parse. An empty result
+    disables the renderer-staleness gate for this run rather than risking a
+    spurious full re-render, which is the safe direction.
+    """
+    try:
+        from repowise.core.generation.page_generator.structural import (
+            FILE_PAGE_TEMPLATE,
+            structural_fingerprint,
+        )
+
+        language, style_fp, template_dir = _renderer_inputs(repo_path)
+        return structural_fingerprint(
+            FILE_PAGE_TEMPLATE,
+            language=language,
+            style_fingerprint=style_fp,
+            template_dir=template_dir,
+        )
+    except Exception as exc:
+        log.debug("update.renderer_fingerprint_failed", error=str(exc))
+        return ""
+
+
+def _stale_renderer_paths(repo_path, parsed_files) -> list[str]:
+    """File paths whose stored page predates the current structural renderer.
+
+    Never raises: a failure here means the run behaves exactly as it did
+    before the fingerprint existed, which is the safe direction. The style and
+    language have to match what generation will actually use, or every page
+    would look stale on every run.
+    """
+    try:
+        from repowise.core.generation.page_generator.structural import stale_file_page_paths
+
+        from .deterministic import load_file_page_render_keys
+
+        stored = load_file_page_render_keys(repo_path)
+        if not stored:
+            return []
+        language, style_fp, template_dir = _renderer_inputs(repo_path)
+        return stale_file_page_paths(
+            stored,
+            parsed_files,
+            language=language,
+            style_fingerprint=style_fp,
+            template_dir=template_dir,
+        )
+    except Exception as exc:
+        log.debug("update.stale_renderer_check_failed", error=str(exc))
+        return []
+
+
 def run_update(
     path: str | None,
     provider_name: str | None,
@@ -586,7 +658,19 @@ def run_update(
     curr_config_fp = config_fingerprint(repo_path)
     config_changed = prev_config_fp is not None and prev_config_fp != curr_config_fp
 
-    if head and head == base_ref and not config_changed:
+    # A structural renderer upgrade is not a code change and not a config
+    # change, but it still leaves every file page a release behind, because
+    # nothing rewrites a file page and a plain update only reaches files that
+    # changed. The renderer fingerprint is what makes a quiet repo notice: when
+    # it moves, the "already up to date" shortcut is retired for one run so the
+    # full reparse below happens and the per-page staleness sweep can pick up
+    # exactly the pages the old renderer wrote. Distinct from config_changed,
+    # which routes to a health re-score rather than to page regeneration.
+    prev_renderer_fp = state.get("renderer_fingerprint")
+    curr_renderer_fp = _current_renderer_fingerprint(repo_path)
+    renderer_changed = prev_renderer_fp is not None and prev_renderer_fp != curr_renderer_fp
+
+    if head and head == base_ref and not config_changed and not renderer_changed:
         console.print("[green]Already up to date.[/green]")
         # D7: on a template (index-only) wiki, "up to date" is true of the code
         # but the pages are still unwritten. Point at the command that writes
@@ -597,8 +681,22 @@ def run_update(
                 "[dim]The wiki is rendered from templates. "
                 "Run [bold]repowise generate[/bold] to write pages with a model.[/dim]"
             )
-        if prev_config_fp is None and not dry_run:
-            save_state(repo_path, {**state, "config_fingerprint": curr_config_fp})
+        # Backfill either fingerprint a pre-fingerprint index never wrote. Both
+        # are checked: a store indexed before the renderer fingerprint existed
+        # carries a config fingerprint but no renderer one, and leaving it unset
+        # would make the very next renderer upgrade look like the first stamp
+        # rather than a change, silently skipping the regeneration it should
+        # trigger.
+        needs_backfill = prev_config_fp is None or prev_renderer_fp is None
+        if needs_backfill and not dry_run:
+            save_state(
+                repo_path,
+                {
+                    **state,
+                    "config_fingerprint": curr_config_fp,
+                    "renderer_fingerprint": curr_renderer_fp,
+                },
+            )
         # Self-heal a row a pre-fix run left behind: state.json can already be
         # current here while the DB head_commit is still the last full index.
         if not dry_run:
@@ -729,13 +827,18 @@ def run_update(
     detector = ChangeDetector(repo_path)
     file_diffs = detector.get_changed_files(base_ref, head or "HEAD")
 
-    if not file_diffs and not config_changed:
+    if not file_diffs and not config_changed and not renderer_changed:
         console.print("[green]No changed files detected.[/green]")
         # Always advance the sync pointer so the on-disk freshness marker stays
         # current on no-op syncs. In docs mode, no changed files means no docs
         # work is pending, so the docs pointer can advance to head too, which
         # also heals legacy state that never recorded one.
-        persisted = {**state, "last_sync_commit": head, "config_fingerprint": curr_config_fp}
+        persisted = {
+            **state,
+            "last_sync_commit": head,
+            "config_fingerprint": curr_config_fp,
+            "renderer_fingerprint": curr_renderer_fp,
+        }
         if not resolved_index_only and head:
             persisted["last_docs_commit"] = head
         save_state(repo_path, persisted)
@@ -839,6 +942,16 @@ def run_update(
         cascade_budget,
         pagerank=graph_builder.pagerank(),
     )
+
+    # File pages a newer renderer would write differently. The cascade above
+    # only reaches files that changed, so without this a release that improves
+    # the file-page template never lands on a repository that has been quiet,
+    # and no model will come along later to fix it. Appended rather than merged
+    # so the cascade's own ordering is preserved.
+    stale_renderer_paths = _stale_renderer_paths(repo_path, parsed_files)
+    if stale_renderer_paths:
+        affected.regenerate = list(dict.fromkeys([*affected.regenerate, *stale_renderer_paths]))
+        console.print(f"Pages from an older renderer: [cyan]{len(stale_renderer_paths)}[/cyan]")
 
     console.print(f"Pages to regenerate: [cyan]{len(affected.regenerate)}[/cyan]")
     if affected.decay_only:
@@ -1069,10 +1182,6 @@ def run_update(
     # on update yet — defaults to on to keep the onboarding collection
     # fresh as the codebase evolves.
     enable_onboarding_cfg = bool(cfg.get("enable_onboarding", True))
-    # Honor the tiering knobs chosen at init so update regenerates with the same
-    # coverage. Without reading these back, every update would silently drop the
-    # deterministic tail (and any tier-1 cap) to their defaults.
-    tail_dirs_cfg = cfg.get("tier2_tail_dirs")
     config = GenerationConfig(
         max_concurrency=concurrency,
         language=language,
@@ -1081,10 +1190,6 @@ def run_update(
         # Honor the wiki style chosen at init (or via `repowise restyle`) so pages
         # regenerated for changed files match the rest of the wiki's voice.
         wiki_style=cfg.get("wiki_style", "comprehensive"),
-        tier1_top_n=cfg.get("tier1_top_n"),
-        tier2_tail_enabled=bool(cfg.get("tier2_tail_enabled", True)),
-        tier2_tail_cap=cfg.get("tier2_tail_cap"),
-        tier2_tail_dirs=tuple(tail_dirs_cfg) if tail_dirs_cfg else None,
         # An incremental update regenerates only the changed files' pages, and
         # it feeds generate_all a parsed_files filtered to those files. Levels 3
         # and up describe the whole repository from parsed_files, so without
@@ -1443,8 +1548,6 @@ def run_update(
 
     # Surface the FAQ-weighted budget tilt when session demand shaped this run
     # (silent when there is no history to weight; human console mode only).
-    if emitter is None and getattr(generator, "faq_demand_summary", None):
-        console.print(f"[dim]{generator.faq_demand_summary}[/dim]")
 
     if checkpointer.failure:
         degraded.append(f"Per-page crash checkpointing: {checkpointer.failure}")
@@ -1529,6 +1632,7 @@ def run_update(
     # so adding len(generated_pages) every run inflated the count forever.
     state["total_pages"] = db_total_pages
     state["config_fingerprint"] = config_fingerprint(repo_path)
+    state["renderer_fingerprint"] = _current_renderer_fingerprint(repo_path)
     save_state(repo_path, state)
 
     # --- Pending-marker cleanup --------------------------------------------

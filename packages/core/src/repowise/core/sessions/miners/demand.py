@@ -6,10 +6,10 @@ miner reads the shared :class:`~repowise.core.sessions.Event` stream and counts,
 per file, how many agent *questions* resolved to it: ``get_answer`` calls
 (attributed to the files their answer cited) and ``search_codebase`` calls
 (attributed to the files their hits resolved to). Rolled up to the module
-granularity the generation pipeline uses for wiki pages, those counts let the
-planner tilt documentation depth toward the modules agents keep asking about
-and lean out the cold ones (see
-``core.generation.selection.budget.allocate_module_file_pages``).
+granularity the generation pipeline uses for wiki pages, those counts once let
+the planner tilt documentation depth toward the modules agents keep asking
+about. Page selection no longer rations anything, so nothing reads this today;
+the miner is kept for a future demand-aware feature and its own tests.
 
 Read-only and local: transcripts are read from the user's own machine and never
 leave it. No LLM, no writes. A repo with no session history yields an empty

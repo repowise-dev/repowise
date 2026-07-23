@@ -20,7 +20,7 @@ from repowise.core.analysis.communities import detect_file_communities
 from repowise.core.generation.models import GenerationConfig
 from repowise.core.generation.selection import SelectionInputs, select_pages
 
-from .test_selection_budget import FakeFileInfo, FakeParsedFile, FakeSymbol
+from .test_selection_contract import FakeFileInfo, FakeParsedFile, FakeSymbol
 
 
 def _tied_repo(n_files: int = 60):
@@ -67,12 +67,17 @@ class TestSelectionTies:
         reverse = _select(list(reversed(parsed)), pr, bet, comm)
         assert set(forward.symbol_spotlights) == set(reverse.symbol_spotlights)
 
-    def test_budget_actually_drops_some_files(self):
-        """Guards the guard: if coverage took everything, the tests above
-        would pass no matter how the candidate list was ordered."""
+    def test_every_file_is_selected_in_a_stable_order(self):
+        """Guards the guard.
+
+        Nothing is dropped any more, so the ordering tests above are about the
+        order of the list rather than about which files survived a cut. Pin
+        both facts here so a silent return to rationing is visible.
+        """
         parsed, pr, bet, comm = _tied_repo()
         sel = _select(parsed, pr, bet, comm)
-        assert 0 < len(sel.file_page_paths) < len(parsed)
+        assert len(sel.file_page_paths) == len(parsed)
+        assert sel.file_page_paths == _select(parsed, pr, bet, comm).file_page_paths
 
 
 class TestCommunityTies:

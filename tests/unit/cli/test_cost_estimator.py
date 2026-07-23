@@ -153,12 +153,31 @@ class TestEstimateCost:
         assert est.total_pages == 5
 
     def test_anthropic_has_cost(self):
-        plans = [PageTypePlan("file_page", 10, 2)]
+        # module_page is written by a model, so it still costs tokens.
+        plans = [PageTypePlan("module_page", 10, 4)]
         est = estimate_cost(plans, "anthropic", "claude-sonnet-4-6")
         assert est.estimated_cost_usd > 0
         assert est.total_pages == 10
         assert est.estimated_input_tokens > 0
         assert est.estimated_output_tokens > 0
+
+    def test_structural_page_types_cost_nothing(self):
+        # The six types rendered from structure make no provider call, so
+        # however many are produced they price to zero. Counted as pages,
+        # billed as nothing.
+        plans = [
+            PageTypePlan("file_page", 500, 2),
+            PageTypePlan("symbol_spotlight", 300, 1),
+            PageTypePlan("api_contract", 20, 0),
+            PageTypePlan("infra_page", 10, 7),
+            PageTypePlan("scc_page", 5, 3),
+            PageTypePlan("layer_page", 8, 5),
+        ]
+        est = estimate_cost(plans, "anthropic", "claude-sonnet-4-6")
+        assert est.total_pages == 843
+        assert est.estimated_cost_usd == 0.0
+        assert est.estimated_input_tokens == 0
+        assert est.estimated_output_tokens == 0
 
     def test_empty_plans(self):
         est = estimate_cost([], "anthropic", "claude-sonnet-4-6")
@@ -172,5 +191,6 @@ class TestEstimateCost:
             PageTypePlan("repo_overview", 1, 6),
         ]
         est = estimate_cost(plans, "openai", "gpt-5.4-nano")
+        # api_contract + file_page are free; only the repo_overview costs.
         assert est.total_pages == 8
         assert est.estimated_cost_usd > 0

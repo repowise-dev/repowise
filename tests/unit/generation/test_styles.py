@@ -15,7 +15,7 @@ import pytest
 
 from repowise.core.generation.context_assembler import ContextAssembler
 from repowise.core.generation.models import GenerationConfig
-from repowise.core.generation.page_generator import PageGenerator, PriorPage
+from repowise.core.generation.page_generator import PageGenerator
 from repowise.core.generation.styles import (
     DEFAULT_STYLE,
     ONBOARDING_PAGE_TYPE,
@@ -209,61 +209,47 @@ async def _generate(gen, parsed, graph, metrics, source_bytes):
     )
 
 
-async def test_same_style_reuses_cross_run_cache(
+async def test_same_style_gives_a_file_page_the_same_reuse_hash(
     sample_parsed_file, sample_graph, graph_metrics, sample_source_bytes
 ):
-    """Baseline: identical inputs + same style → cross-run cache hit (no LLM call)."""
+    """Baseline for the salt: nothing changed, so the hash does not move."""
     config = GenerationConfig(wiki_style="caveman")
     _, gen1 = _make_gen(config, sample_source_bytes)
-    page = await _generate(
+    first = await _generate(
         gen1, sample_parsed_file, sample_graph, graph_metrics, sample_source_bytes
     )
-
-    prior = {
-        page.page_id: PriorPage(
-            source_hash=page.source_hash,
-            model_name=page.model_name,
-            content=page.content,
-        )
-    }
-    provider2, gen2 = _make_gen(config, sample_source_bytes, prior=prior)
-    await _generate(gen2, sample_parsed_file, sample_graph, graph_metrics, sample_source_bytes)
-    assert provider2.call_count == 0  # reused, no provider call
-    assert gen2._reuse_count == 1
-
-
-async def test_style_change_invalidates_cross_run_cache(
-    sample_parsed_file, sample_graph, graph_metrics, sample_source_bytes
-):
-    """THE CONTRACT: a style change must miss the cache and regenerate the page.
-
-    Generate under ``comprehensive``, hand the result to a generator running
-    ``caveman`` as a prior page, and assert the page is regenerated (provider
-    called, nothing reused). This is exactly what `repowise update` does after a
-    style switch.
-    """
-    base_cfg = GenerationConfig(wiki_style="comprehensive")
-    _, gen_base = _make_gen(base_cfg, sample_source_bytes)
-    page = await _generate(
-        gen_base, sample_parsed_file, sample_graph, graph_metrics, sample_source_bytes
-    )
-
-    prior = {
-        page.page_id: PriorPage(
-            source_hash=page.source_hash,
-            model_name=page.model_name,
-            content=page.content,
-        )
-    }
-    new_cfg = GenerationConfig(wiki_style="caveman")
-    provider2, gen2 = _make_gen(new_cfg, sample_source_bytes, prior=prior)
-    page2 = await _generate(
+    _, gen2 = _make_gen(config, sample_source_bytes)
+    second = await _generate(
         gen2, sample_parsed_file, sample_graph, graph_metrics, sample_source_bytes
     )
 
-    assert provider2.call_count == 1  # regenerated, not reused
-    assert gen2._reuse_count == 0
-    assert page2.source_hash != page.source_hash  # style folded into the hash
+    assert first.metadata["render_key"]
+    assert first.metadata["render_key"] == second.metadata["render_key"]
+
+
+async def test_style_change_moves_a_file_page_reuse_hash(
+    sample_parsed_file, sample_graph, graph_metrics, sample_source_bytes
+):
+    """THE CONTRACT, now carried by the structural salt rather than the LLM cache.
+
+    A file page has no model path, so a style switch cannot be caught by a
+    prompt-hash miss any more. It is caught because the style is folded into
+    the page's ``content_hash``, which is what ``update`` compares to decide a
+    page was rendered by an older configuration and has to be redone.
+    """
+    base_cfg = GenerationConfig(wiki_style="comprehensive")
+    _, gen_base = _make_gen(base_cfg, sample_source_bytes)
+    base_page = await _generate(
+        gen_base, sample_parsed_file, sample_graph, graph_metrics, sample_source_bytes
+    )
+
+    other_cfg = GenerationConfig(wiki_style="caveman")
+    _, gen_other = _make_gen(other_cfg, sample_source_bytes)
+    other_page = await _generate(
+        gen_other, sample_parsed_file, sample_graph, graph_metrics, sample_source_bytes
+    )
+
+    assert base_page.metadata["render_key"] != other_page.metadata["render_key"]
 
 
 async def test_onboarding_page_type_constant_matches_system_prompts():
@@ -288,8 +274,7 @@ def test_custom_style_resolves(tmp_path):
     _write_custom_style(
         tmp_path,
         "terse",
-        "description: My terse style\nuser_directive: Be very terse.\n"
-        "onboarding_condenses: true\n",
+        "description: My terse style\nuser_directive: Be very terse.\nonboarding_condenses: true\n",
     )
     spec = resolve_style("terse", repo_path=tmp_path)
     assert spec.name == "terse"
@@ -359,13 +344,9 @@ async def test_custom_style_reaches_rendered_prompt(
     """PageGenerator(repo_path=...) resolves a custom style and injects its voice."""
     from repowise.core.providers.llm.mock import MockProvider
 
-    _write_custom_style(
-        tmp_path, "terse", "user_directive: TERSE_MARKER be brief.\n"
-    )
+    _write_custom_style(tmp_path, "terse", "user_directive: TERSE_MARKER be brief.\n")
     config = GenerationConfig(wiki_style="terse")
-    gen = PageGenerator(
-        MockProvider(), ContextAssembler(config), config, repo_path=tmp_path
-    )
+    gen = PageGenerator(MockProvider(), ContextAssembler(config), config, repo_path=tmp_path)
     assert gen._style.name == "terse"
     ctx = gen._assembler.assemble_file_page(
         sample_parsed_file,

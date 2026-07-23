@@ -9,6 +9,14 @@ from .heuristics import HEURISTIC_VARIANCE, heuristic_tokens
 from .pricing import _lookup_cost
 from .types import CostEstimate, CostRange, PageTypePlan
 
+# Page types rendered from structure. They make no provider call, so they cost
+# zero tokens however many are produced. Checked before telemetry, because a
+# repo indexed before this change carries historical LLM averages for these
+# types that would otherwise price free pages as if a model still wrote them.
+_FREE_PAGE_TYPES = frozenset(
+    {"file_page", "symbol_spotlight", "api_contract", "infra_page", "scc_page", "layer_page"}
+)
+
 
 def _tokens_per_page(
     page_type: str,
@@ -17,10 +25,12 @@ def _tokens_per_page(
 ) -> tuple[float, float]:
     """Return ``(input, output)`` tokens for *page_type*.
 
-    Prefers telemetry averages when available — those reflect *this
-    repo's* actual prompt sizes. Falls back to heuristics for fresh
-    repos and unknown page types.
+    Structural types cost nothing. For the rest, prefer telemetry averages when
+    available (they reflect this repo's actual prompt sizes) and fall back to
+    heuristics for fresh repos and unknown page types.
     """
+    if page_type in _FREE_PAGE_TYPES:
+        return (0.0, 0.0)
     if page_type in telemetry:
         return telemetry[page_type]
     return heuristic_tokens(page_type)

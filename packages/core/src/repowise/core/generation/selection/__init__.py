@@ -6,19 +6,13 @@ running the LLM). Both paths call the same :func:`select_pages` function
 so the estimate and the actual run can never drift apart.
 
 The selection is a pure function of (parsed_files, graph metrics,
-config). It scores every candidate, allocates a share of the global
-budget to each page-type bucket, and returns the allow-set.
+config). It scores every candidate and returns the allow-set: every
+candidate that clears its bucket's floor, with nothing rationed.
 
 Import direction (one-way):
     ingestion.models  ←  generation.models  ←  selection
 """
 
-from .budget import (
-    BucketAllocation,
-    ModuleDemandRow,
-    allocate_budget,
-    allocate_module_file_pages,
-)
 from .scoring import (
     score_api_contract,
     score_file,
@@ -35,13 +29,9 @@ from .selector import (
 )
 
 __all__ = [
-    "BucketAllocation",
-    "ModuleDemandRow",
     "ModuleGroup",
     "Selection",
     "SelectionInputs",
-    "allocate_budget",
-    "allocate_module_file_pages",
     "score_api_contract",
     "score_file",
     "score_infra",

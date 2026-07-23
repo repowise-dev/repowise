@@ -240,11 +240,6 @@ def restyle_command(
         enable_onboarding=bool(cfg.get("enable_onboarding", True)),
         wiki_style=style,
     )
-    import dataclasses
-
-    tier1_top_n = cfg.get("tier1_top_n")
-    if tier1_top_n is not None:
-        config = dataclasses.replace(config, tier1_top_n=tier1_top_n)
 
     exclude_patterns = list(cfg.get("exclude_patterns") or [])
 

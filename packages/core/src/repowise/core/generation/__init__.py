@@ -67,7 +67,6 @@ _EXPORTS = {
     "SUPPORTED_LANGUAGES": ".languages",
     "SYSTEM_PROMPTS": ".page_generator",
     "PageGenerator": ".page_generator",
-    "BucketAllocation": ".selection",
     "ModuleGroup": ".selection",
     "Selection": ".selection",
     "SelectionInputs": ".selection",

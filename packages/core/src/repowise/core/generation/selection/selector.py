@@ -9,7 +9,7 @@ emitted.
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -20,14 +20,6 @@ from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTR
 from ..concept_tree.grouping import ConceptGroup, group_files
 from ..concept_tree.naming import deterministic_title, disambiguate_titles
 from ..models import scc_page_slug
-from ..tour import DEFAULT_MAX_LANDMARKS, tour_landmark_paths
-from .budget import (
-    BucketAllocation,
-    ModuleDemandRow,
-    allocate_budget,
-    allocate_module_file_pages,
-    compute_budget,
-)
 from .scoring import (
     score_api_contract,
     score_file,
@@ -115,11 +107,6 @@ class Selection:
     scc_groups: list[tuple[str, list[str]]] = field(default_factory=list)  # (scc_id, files)
     emit_repo_overview: bool = True
     emit_arch_diagram: bool = True
-    allocation: BucketAllocation | None = None
-    # Zero-LLM deterministic pages for the code files the budget did NOT pick
-    # (Phase G coverage tail). Kept separate from ``file_page_paths`` so cost
-    # estimation stays honest (these are free) and the CLI can report the split.
-    deterministic_tail_paths: list[str] = field(default_factory=list)
     # The concept partition behind ``module_groups``, one entry per group, plus
     # the layer names the grouper steered by. Carried so a caller holding a
     # provider can name these groups; selection itself stays free of the model
@@ -128,11 +115,12 @@ class Selection:
     layer_labels: dict[str, str] = field(default_factory=dict)
 
     def counts(self) -> dict[str, int]:
-        """Per-page-type counts of BUDGETED (LLM-costed) pages.
+        """Per-page-type counts of the pages this run will emit.
 
-        Deliberately excludes ``deterministic_tail_paths`` — those are free
-        zero-LLM pages, reported separately (``len(deterministic_tail_paths)``)
-        so cost estimation and the budget contract are not inflated by them.
+        Every type is counted, including the ones that cost nothing to render.
+        The cost estimator prices each type separately, so a free type
+        contributing zero to the bill is its price talking, not its absence
+        here, and a caller wanting a page total gets a true one.
         """
         return {
             "api_contract": len(self.api_contract_paths),
@@ -175,20 +163,6 @@ class SelectionInputs:
     # concept group. Absent or partial degrades the grouping's taste, never
     # its coverage, because the partition itself needs no KG input.
     kg_modules: list[dict] | None = None
-    # Per-file question demand mined from session transcripts
-    # (``core.sessions.miners.demand.aggregate_file_demand``): repo-relative
-    # path -> question count. Tilts the file_page budget toward high-demand
-    # modules. ``None``/empty reproduces the uniform, demand-free selection
-    # byte-for-byte (fresh installs with no session history).
-    demand: dict[str, int] | None = None
-    # Scoped generation: take every candidate in every bucket (no coverage
-    # budget), the same full-coverage set deterministic mode uses but keeping
-    # symbol spotlights so a caller can regenerate one on demand. The actual
-    # rationing is done downstream by ``generate_all(only_page_ids=...)``, which
-    # filters this full allow-set to exactly the requested pages. Without it,
-    # ``repowise generate --unwritten`` would silently emit only the budgeted
-    # ~20% of files instead of every template page the user asked to upgrade.
-    select_all: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -208,43 +182,24 @@ def _is_code_file(parsed: Any) -> bool:
     return not fi.is_api_contract and not _is_infra_file(parsed) and fi.language in _CODE_LANGUAGES
 
 
-def _passes_tail_floor(path: str, tail_dirs: tuple[str, ...] | None) -> bool:
-    """Importance floor for the deterministic coverage tail (Phase G).
+def _passes_importance_floor(path: str) -> bool:
+    """Whether *path* is worth a file page at all.
 
-    Two exclusions are ALWAYS applied because they were proven to only dilute
-    retrieval (test-file pages pushed real answers below rank 5 in dogfood):
-    test files and pure ``__init__.py`` re-export files. When ``tail_dirs`` is
-    set, the path must also live under one of those repo-relative prefixes.
+    Two exclusions, both measured rather than assumed: test files and pure
+    ``__init__.py`` re-export files. Pages for either only dilute retrieval
+    (test-file pages pushed real answers below rank 5 in dogfood), and neither
+    says anything a reader cannot get from the file it re-exports or tests.
+
+    This used to gate only the coverage tail, back when the budget picked a
+    fraction of the repo and the tail backfilled the rest. There is no tail any
+    more because every file that clears this floor gets a page, so the floor is
+    now simply what file-page selection means. The rule is unchanged; only the
+    set it applies to grew from the remainder to the whole.
     """
     norm = path.replace("\\", "/")
     if norm.startswith("tests/") or "/tests/" in norm:
         return False
-    if norm.rsplit("/", 1)[-1] == "__init__.py":
-        return False
-    if tail_dirs:
-        return any(norm == d.rstrip("/") or norm.startswith(d.rstrip("/") + "/") for d in tail_dirs)
-    return True
-
-
-def _select_deterministic_tail(
-    files: list[tuple[float, str]],
-    selected_files: list[str],
-    cfg: Any,
-) -> list[str]:
-    """Every code file the budget dropped, importance-floored and capped.
-
-    ``files`` is score-descending, so a cap keeps the highest-signal tail.
-    Returns [] when the tail is disabled, reproducing the prior behaviour.
-    """
-    if not getattr(cfg, "tier2_tail_enabled", True):
-        return []
-    selected = set(selected_files)
-    tail_dirs = getattr(cfg, "tier2_tail_dirs", None)
-    tail = [p for _, p in files if p not in selected and _passes_tail_floor(p, tail_dirs)]
-    cap = getattr(cfg, "tier2_tail_cap", None)
-    if cap is not None and cap >= 0:
-        tail = tail[:cap]
-    return tail
+    return norm.rsplit("/", 1)[-1] != "__init__.py"
 
 
 # ---------------------------------------------------------------------------
@@ -266,6 +221,8 @@ def _build_file_candidates(
         if not _is_code_file(p):
             continue
         path = p.file_info.path
+        if not _passes_importance_floor(path):
+            continue
         is_hotspot = bool(git.get(path, {}).get("is_hotspot", False))
         s = score_file(
             p,
@@ -310,7 +267,20 @@ def _build_symbol_candidates(
             continue
         seen.add(target)
         deduped.append((score, target))
-    return deduped
+    # A spotlight repeats what its file's page already renders: the signature,
+    # the docstring, the importer list. Taking every public symbol would bury
+    # the pages that say something new, so the bucket is held to the strongest
+    # slice by PageRank. This used to fall out of the coverage budget's 0.15
+    # share; with nothing costing tokens there is no budget to fall out of, so
+    # the percentile that always existed on the config now does the bounding.
+    pct = getattr(inputs.config, "top_symbol_percentile", 0.20) or 0.0
+    if pct <= 0:
+        return []
+    if pct >= 1.0:
+        return deduped
+    # At least one, so a repo with few public symbols still gets a spotlight.
+    keep = max(1, int(len(deduped) * pct))
+    return deduped[:keep]
 
 
 def _layer_map_from_kg(
@@ -484,196 +454,22 @@ def _build_scc_candidates(
 # ---------------------------------------------------------------------------
 
 
-def _shares_from_config(cfg: Any) -> dict[str, float]:
-    return {
-        "file_page": getattr(cfg, "file_page_share", 0.50),
-        "symbol_spotlight": getattr(cfg, "symbol_spotlight_share", 0.15),
-        # Zero, and not a knob. The concept pages are taken whole, so a share
-        # here would reserve budget for a bucket that does not spend it and
-        # quietly shrink the file-page coverage the user actually asked for.
-        "module_page": 0.0,
-        "api_contract": getattr(cfg, "api_contract_share", 0.08),
-        "infra_page": getattr(cfg, "infra_page_share", 0.05),
-        "scc_page": getattr(cfg, "scc_share", 0.04),
-    }
-
-
-def _coverage_pct(cfg: Any) -> float:
-    """Read ``coverage_pct``, falling back to legacy ``max_pages_pct``."""
-    return float(getattr(cfg, "coverage_pct", None) or getattr(cfg, "max_pages_pct", 0.20))
-
-
-def _build_file_module_map(
-    module_groups: list[tuple[float, ModuleGroup]],
-) -> dict[str, str]:
-    """Map each grouped file to its module key (the wiki-page granularity).
-
-    Built from every candidate module group, not just the selected top-K, so
-    demand attribution covers all grouped files. Files in no group fall back to
-    their top-level directory (:func:`_fallback_module`) at lookup time.
-    """
-    file_to_module: dict[str, str] = {}
-    for _, group in module_groups:
-        for path in group.file_paths:
-            file_to_module.setdefault(path, group.key)
-    return file_to_module
-
-
-def _fallback_module(path: str) -> str:
-    """Module key for a file in no group: its top-level directory.
-
-    Mirrors the ``top_dir`` grouping fallback the pipeline itself uses, so an
-    ungrouped file still attributes to a stable, human-legible bucket.
-    """
-    parts = Path(path).parts
-    return parts[0] if len(parts) > 1 else "root"
-
-
-def _select_file_pages(
-    files: list[tuple[float, str]],
-    file_page_budget: int,
-    module_groups: list[tuple[float, ModuleGroup]],
-    demand: dict[str, int] | None,
-) -> list[str]:
-    """The file_page allow-set, tilted toward high-demand modules.
-
-    Falls straight through to the demand-free top-``file_page_budget`` when
-    there is no demand, so behaviour is unchanged on fresh installs.
-    """
-    ranked = [p for _, p in files]
-    if not demand:
-        return ranked[:file_page_budget]
-
-    file_to_module = _build_file_module_map(module_groups)
-
-    def module_of(path: str) -> str:
-        return file_to_module.get(path) or _fallback_module(path)
-
-    selected, audit = allocate_module_file_pages(ranked, file_page_budget, demand, module_of)
-    _log_demand_tilt(audit, file_page_budget)
-    return selected
-
-
-def _log_demand_tilt(audit: list[ModuleDemandRow], file_page_budget: int) -> None:
-    """Emit the inspectable per-module reallocation table (dry-run audit)."""
-    if not audit:
-        return
-    moved = [r for r in audit if r.delta]
-    log.info(
-        "page_selection.demand_tilt",
-        file_page_budget=file_page_budget,
-        modules_reweighted=len(audit),
-        modules_moved=len(moved),
-        gained=sum(r.delta for r in moved if r.delta > 0),
-        table=[
-            {
-                "module": r.module,
-                "demand": r.demand,
-                "baseline": r.baseline_pages,
-                "allocated": r.allocated_pages,
-                "delta": r.delta,
-                "candidates": r.candidates,
-            }
-            for r in audit[:25]
-        ],
-    )
-
-
-def _ensure_landmarks(selected: list[str], landmarks: list[str]) -> list[str]:
-    """Guarantee every *landmark* is in *selected*, keeping the count honest.
-
-    For each landmark not already chosen, drop the lowest-scored *non-landmark*
-    file from the tail (``selected`` is score-ordered descending) and append the
-    landmark — so the total file_page count is unchanged. The only case the
-    count can grow is when there is nothing left to displace (e.g. a near-zero
-    budget where every selected file is itself a landmark); that overage is
-    bounded by ``len(landmarks)`` (at most ``DEFAULT_MAX_LANDMARKS``).
-    """
-    sel = list(selected)
-    landmark_set = set(landmarks)
-    for m in landmarks:
-        if m in sel:
-            continue
-        for i in range(len(sel) - 1, -1, -1):
-            if sel[i] not in landmark_set:
-                sel.pop(i)
-                break
-        sel.append(m)
-    return sel
-
-
-def _select_everything(
-    files: list,
-    symbols: list,
-    concepts: ConceptCandidates,
-    apis: list,
-    infras: list,
-    sccs: list,
-    available: dict[str, int],
-    *,
-    include_symbols: bool,
-) -> Selection:
-    """Return a Selection holding every scored candidate, budget bypassed.
-
-    Used by fully deterministic (no-LLM) generation and by scoped
-    ``select_all`` generation, where the coverage budget has no job to do —
-    the former because every page is free, the latter because
-    ``only_page_ids`` rations downstream. Candidates are already score-ordered,
-    so the resulting page order still puts the most central files first.
-
-    ``include_symbols`` keeps the symbol-spotlight bucket (scoped generation, so
-    a caller can regenerate a specific spotlight); deterministic mode drops it
-    (see below).
-    """
-    sel = Selection(
-        file_page_paths=[p for _, p in files],
-        deterministic_tail_paths=[],
-        # Symbol spotlights are the one bucket deterministic mode drops. A
-        # template spotlight carries the signature, docstring and importer
-        # list, all of which the file page for its containing file already
-        # renders, so taking every candidate would triple the index for no
-        # new information and dilute retrieval, the same failure the tier-2
-        # tail's importance floor exists to avoid. On the fixture repo that is
-        # 171 near-duplicate pages against 33 file pages. Scoped generation
-        # keeps them (``include_symbols``) since ``only_page_ids`` filters to the
-        # one the user asked for rather than emitting all of them.
-        symbol_spotlights=[t for _, t in symbols] if include_symbols else [],
-        module_groups=[m for _, m in concepts.scored],
-        concept_groups=list(concepts.groups),
-        layer_labels=dict(concepts.layer_labels),
-        api_contract_paths=[p for _, p in apis],
-        infra_paths=[p for _, p in infras],
-        scc_groups=[g for _, g in sccs],
-        emit_repo_overview=True,
-        emit_arch_diagram=True,
-        allocation=BucketAllocation(
-            file_page=available["file_page"],
-            symbol_spotlight=available["symbol_spotlight"] if include_symbols else 0,
-            module_page=available["module_page"],
-            api_contract=available["api_contract"],
-            infra_page=available["infra_page"],
-            scc_page=available["scc_page"],
-        ),
-    )
-    log.info(
-        "page_selection.complete",
-        mode="select_all" if include_symbols else "deterministic",
-        counts=sel.counts(),
-    )
-    return sel
-
-
 def select_pages(inputs: SelectionInputs) -> Selection:
     """Return the allow-set of pages to generate for one run.
 
-    Deterministic given identical inputs. Safe to call from both the
-    generator and the cost estimator.
-    """
-    cfg = inputs.config
-    pct = _coverage_pct(cfg)
-    budget = compute_budget(len(inputs.parsed_files), pct)
+    One path, whatever the caller. Every page type below the concept tree is
+    rendered from structure and costs no tokens, and the concept partition is a
+    total cover of the production files that would stop being a map of the
+    repository if it were rationed. So there is nothing left to ration: each
+    bucket takes every candidate that clears its floor.
 
-    # Build scored candidates for every bucket.
+    That this does not depend on whether an API key is present is the point.
+    Selection used to fork on it, which meant a keyed and a keyless index of the
+    same commit disagreed about which files had pages at all. Now they cannot.
+
+    Deterministic given identical inputs. Safe to call from both the generator
+    and the cost estimator.
+    """
     files = _build_file_candidates(inputs)
     symbols = _build_symbol_candidates(inputs)
     concepts = _build_module_groups(inputs)
@@ -682,98 +478,19 @@ def select_pages(inputs: SelectionInputs) -> Selection:
     infras = _build_infra_candidates(inputs)
     sccs = _build_scc_candidates(inputs)
 
-    available = {
-        "file_page": len(files),
-        "symbol_spotlight": len(symbols),
-        "module_page": len(modules),
-        "api_contract": len(apis),
-        "infra_page": len(infras),
-        "scc_page": len(sccs),
-    }
-
-    # getattr, not attribute access: select_pages accepts any config-like
-    # object (the cost estimator passes its own), so a new field must not
-    # become a hard requirement on callers.
-    if getattr(cfg, "deterministic", False):
-        # Nothing to ration: a template page costs no tokens, so the coverage
-        # budget has no job to do. Take every candidate in every bucket. The
-        # tail stays empty because the file bucket already holds every file.
-        return _select_everything(
-            files, symbols, concepts, apis, infras, sccs, available, include_symbols=False
-        )
-
-    # Scoped generation (``repowise generate``): full-coverage allow-set so
-    # ``only_page_ids`` can name any page. Spotlights kept so one can be
-    # regenerated on demand.
-    if getattr(inputs, "select_all", False):
-        return _select_everything(
-            files, symbols, concepts, apis, infras, sccs, available, include_symbols=True
-        )
-
-    allocation = allocate_budget(
-        budget=budget,
-        candidates_per_bucket=available,
-        shares=_shares_from_config(cfg),
-        n_files=len(inputs.parsed_files),
-    )
-    # The module bucket is not rationed (see the Selection below), so the
-    # allocation has to say so. Leaving the budgeted number here would make
-    # the cost estimator quote a figure the run does not honour, which is the
-    # one thing the "allow-set honored verbatim" contract exists to prevent.
-    allocation = replace(allocation, module_page=len(modules))
-
-    # File pages, tilted toward the modules agents ask about most (demand-free
-    # top-K when there is no session data, so fresh installs are unchanged).
-    selected_files = _select_file_pages(files, allocation.file_page, modules, inputs.demand)
-
-    # The guided tour wants its highest-value entry points to land on real
-    # pages. Force those landmarks into the file_page allow-set, displacing the
-    # lowest-scored picks so the budget total stays honest (see _ensure_landmarks).
-    if selected_files or allocation.file_page > 0:
-        file_candidate_set = {p for _, p in files}
-        landmarks = [
-            p
-            for p in tour_landmark_paths(
-                inputs.parsed_files,
-                inputs.pagerank,
-                max_landmarks=DEFAULT_MAX_LANDMARKS,
-            )
-            if p in file_candidate_set
-        ]
-        selected_files = _ensure_landmarks(selected_files, landmarks)
-
-    # Deterministic coverage tail: every code file the budget dropped gets a
-    # cheap zero-LLM page so the whole codebase is retrievable (Phase G).
-    deterministic_tail = _select_deterministic_tail(files, selected_files, cfg)
-
     sel = Selection(
-        file_page_paths=selected_files,
-        deterministic_tail_paths=deterministic_tail,
-        symbol_spotlights=[t for _, t in symbols[: allocation.symbol_spotlight]],
-        # Never truncated, unlike every other bucket. The concept groups are a
-        # total partition of the production files, so rationing them does not
-        # produce a smaller wiki — it produces one with files that belong to no
-        # page at all, and the tree stops being a map of the repository. The
-        # cost of not rationing is bounded by construction rather than by a
-        # budget: the grouper's size ladder holds the page count near 50-80 for
-        # a repository this size and scales sublinearly above it.
+        file_page_paths=[p for _, p in files],
+        symbol_spotlights=[t for _, t in symbols],
         module_groups=[m for _, m in modules],
         concept_groups=list(concepts.groups),
         layer_labels=dict(concepts.layer_labels),
-        api_contract_paths=[p for _, p in apis[: allocation.api_contract]],
-        infra_paths=[p for _, p in infras[: allocation.infra_page]],
-        scc_groups=[g for _, g in sccs[: allocation.scc_page]],
+        api_contract_paths=[p for _, p in apis],
+        infra_paths=[p for _, p in infras],
+        scc_groups=[g for _, g in sccs],
         emit_repo_overview=True,
         emit_arch_diagram=True,
-        allocation=allocation,
     )
-
-    log.info(
-        "page_selection.complete",
-        coverage_pct=pct,
-        budget=budget,
-        counts=sel.counts(),
-    )
+    log.info("page_selection.complete", counts=sel.counts())
     return sel
 
 

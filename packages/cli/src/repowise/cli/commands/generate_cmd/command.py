@@ -11,7 +11,6 @@ the pages that summarize a regenerated file.
 
 from __future__ import annotations
 
-import dataclasses
 import sys
 import time
 from pathlib import Path
@@ -290,9 +289,6 @@ def generate_command(
         enable_onboarding=bool(cfg.get("enable_onboarding", True)),
         wiki_style=cfg.get("wiki_style", "comprehensive"),
     )
-    tier1_top_n = cfg.get("tier1_top_n")
-    if tier1_top_n is not None:
-        config = dataclasses.replace(config, tier1_top_n=tier1_top_n)
 
     exclude_patterns = list(cfg.get("exclude_patterns") or [])
 

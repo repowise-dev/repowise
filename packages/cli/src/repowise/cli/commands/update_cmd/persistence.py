@@ -171,10 +171,19 @@ def _persist_index_only_update(
     )
     from repowise.cli.helpers import config_fingerprint
 
+    from .command import _current_renderer_fingerprint
+
     new_state = {
         **state,
         "last_sync_commit": head,
         "config_fingerprint": config_fingerprint(repo_path),
+        # Record the renderer this run rendered with. Without this an index-only
+        # update that regenerated stale file pages leaves the stored fingerprint
+        # at its old value, so ``renderer_changed`` stays true and every later
+        # update pays a full reparse forever even though nothing is stale. This
+        # is the keyless hot path (the post-commit hook), so a lingering reparse
+        # here is exactly the cost the mode exists to avoid.
+        "renderer_fingerprint": _current_renderer_fingerprint(repo_path),
     }
     if "last_docs_commit" not in state and "last_sync_commit" in state:
         new_state["last_docs_commit"] = state["last_sync_commit"]

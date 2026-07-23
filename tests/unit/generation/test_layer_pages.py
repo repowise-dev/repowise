@@ -4,13 +4,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
 
 import pytest
 
 from repowise.core.generation.context_assembler import LayerPageContext
 from repowise.core.generation.models import GENERATION_LEVELS, PageType
-
 
 # ---------------------------------------------------------------------------
 # Model tests
@@ -79,8 +77,29 @@ class TestLayerPageTemplate:
     def jinja_env(self):
         from jinja2 import Environment, FileSystemLoader
 
-        template_dir = Path(__file__).resolve().parents[3] / "packages" / "core" / "src" / "repowise" / "core" / "generation" / "templates"
-        return Environment(loader=FileSystemLoader(str(template_dir)))
+        from repowise.core.generation.page_generator.structural import (
+            as_markdown,
+            oneline,
+            signature,
+        )
+
+        template_dir = (
+            Path(__file__).resolve().parents[3]
+            / "packages"
+            / "core"
+            / "src"
+            / "repowise"
+            / "core"
+            / "generation"
+            / "templates"
+        )
+        env = Environment(loader=FileSystemLoader(str(template_dir)))
+        # The filters PageGenerator registers; the structural template renders
+        # page content rather than a prompt and depends on them.
+        env.filters["oneline"] = oneline
+        env.filters["as_markdown"] = as_markdown
+        env.filters["signature"] = signature
+        return env
 
     def test_renders_layer_name(self, jinja_env):
         tmpl = jinja_env.get_template("layer_page.j2")
@@ -90,7 +109,7 @@ class TestLayerPageTemplate:
             file_count=8,
         )
         rendered = tmpl.render(ctx=ctx)
-        assert "**Core Pipeline**" in rendered
+        assert "Core Pipeline" in rendered
         assert "**Files:** 8" in rendered
         assert "Handles data processing" in rendered
 
@@ -106,9 +125,9 @@ class TestLayerPageTemplate:
             ],
         )
         rendered = tmpl.render(ctx=ctx)
-        assert "## Key Components" in rendered
+        assert "## Key files" in rendered
         assert "`src/core.py`" in rendered
-        assert "*(edge connector)*" in rendered
+        assert "*(edge_connector)*" in rendered
         assert "`src/utils.py`" in rendered
 
     def test_renders_inter_layer_deps(self, jinja_env):
@@ -121,11 +140,11 @@ class TestLayerPageTemplate:
             deps_in=[{"source_layer": "CLI", "edge_count": 2}],
         )
         rendered = tmpl.render(ctx=ctx)
-        assert "## Inter-Layer Dependencies" in rendered
+        assert "## Neighbouring layers" in rendered
         assert "**Persistence**" in rendered
-        assert "4 imports" in rendered
+        assert "4 edges" in rendered
         assert "**CLI**" in rendered
-        assert "2 imports" in rendered
+        assert "2 edges" in rendered
 
     def test_renders_tour_steps(self, jinja_env):
         tmpl = jinja_env.get_template("layer_page.j2")
@@ -138,7 +157,7 @@ class TestLayerPageTemplate:
             ],
         )
         rendered = tmpl.render(ctx=ctx)
-        assert "## Codebase Tour References" in rendered
+        assert "## On the guided tour" in rendered
         assert "Step 2: Core Logic" in rendered
 
     def test_renders_entry_points_and_connectors(self, jinja_env):
@@ -151,9 +170,9 @@ class TestLayerPageTemplate:
             edge_connectors=["src/api.py"],
         )
         rendered = tmpl.render(ctx=ctx)
-        assert "## Entry Points" in rendered
+        assert "## Entry points" in rendered
         assert "`src/main.py`" in rendered
-        assert "## Edge Connectors" in rendered
+        assert "## Edge connectors" in rendered
         assert "`src/api.py`" in rendered
 
     def test_no_optional_sections_when_empty(self, jinja_env):
@@ -177,13 +196,13 @@ class TestLayerPageTemplate:
 
 
 class TestLayerPagePrompt:
-    def test_prompt_exists(self):
+    def test_layer_pages_have_no_prompt(self):
+        """A layer page is layer name, top files, dependencies, entry points
+        and a diagram the builder draws. All of that is known exactly, so
+        there is one renderer and nothing to prompt."""
         from repowise.core.generation.page_generator.prompts import SYSTEM_PROMPTS
 
-        assert "layer_page" in SYSTEM_PROMPTS
-        prompt = SYSTEM_PROMPTS["layer_page"]
-        assert "layer" in prompt.lower()
-        assert "## Overview" in prompt
+        assert "layer_page" not in SYSTEM_PROMPTS
 
 
 # ---------------------------------------------------------------------------
@@ -195,6 +214,7 @@ class TestBuildLevel5Coros:
     def _make_run(self, tmp_path, layers, nodes=None, edges=None, tour=None):
         """Build a minimal mock _GenerationRun with KG context."""
         from unittest.mock import MagicMock
+
         from repowise.core.generation.kg_context import KnowledgeGraphContext
 
         if nodes is None:
@@ -242,8 +262,12 @@ class TestBuildLevel5Coros:
         from repowise.core.generation.page_generator.levels import build_level5_coros
 
         layers = [
-            {"id": "layer:core", "name": "Core", "description": "Core logic",
-             "nodeIds": ["file:a.py", "file:b.py", "file:c.py"]},
+            {
+                "id": "layer:core",
+                "name": "Core",
+                "description": "Core logic",
+                "nodeIds": ["file:a.py", "file:b.py", "file:c.py"],
+            },
         ]
         run = self._make_run(tmp_path, layers)
         coros = build_level5_coros(run)
@@ -260,15 +284,32 @@ class TestBuildLevel5Coros:
         files_a = [f"core/a/f{i}.py" for i in range(4)]
         files_b = [f"core/b/f{i}.py" for i in range(3)]
         nodes = [{"id": f"file:{f}", "filePath": f} for f in files_a + files_b]
-        edges = [{"source": f"file:{files_a[0]}", "target": f"file:{files_b[0]}",
-                  "type": "imports"}]
-        layers = [{"id": "layer:core", "name": "Core", "description": "",
-                   "nodeIds": [f"file:{f}" for f in files_a + files_b]}]
+        edges = [
+            {"source": f"file:{files_a[0]}", "target": f"file:{files_b[0]}", "type": "imports"}
+        ]
+        layers = [
+            {
+                "id": "layer:core",
+                "name": "Core",
+                "description": "",
+                "nodeIds": [f"file:{f}" for f in files_a + files_b],
+            }
+        ]
         modules = [
-            {"id": "module:core-a", "name": "core/a", "path": "core/a",
-             "layerId": "layer:core", "nodeIds": [f"file:{f}" for f in files_a]},
-            {"id": "module:core-b", "name": "core/b", "path": "core/b",
-             "layerId": "layer:core", "nodeIds": [f"file:{f}" for f in files_b]},
+            {
+                "id": "module:core-a",
+                "name": "core/a",
+                "path": "core/a",
+                "layerId": "layer:core",
+                "nodeIds": [f"file:{f}" for f in files_a],
+            },
+            {
+                "id": "module:core-b",
+                "name": "core/b",
+                "path": "core/b",
+                "layerId": "layer:core",
+                "nodeIds": [f"file:{f}" for f in files_b],
+            },
         ]
         kg = {"nodes": nodes, "edges": edges, "layers": layers, "modules": modules, "tour": []}
         for n in nodes:
@@ -296,8 +337,7 @@ class TestBuildLevel5Coros:
         from repowise.core.generation.page_generator.levels import build_level5_coros
 
         layers = [
-            {"id": "layer:tiny", "name": "Tiny",
-             "nodeIds": ["file:a.py", "file:b.py"]},
+            {"id": "layer:tiny", "name": "Tiny", "nodeIds": ["file:a.py", "file:b.py"]},
         ]
         run = self._make_run(tmp_path, layers)
         coros = build_level5_coros(run)
@@ -312,6 +352,7 @@ class TestBuildLevel5Coros:
 
     def test_no_kg_returns_empty(self):
         from unittest.mock import MagicMock
+
         from repowise.core.generation.kg_context import KnowledgeGraphContext
         from repowise.core.generation.page_generator.levels import build_level5_coros
 
@@ -324,8 +365,11 @@ class TestBuildLevel5Coros:
         from repowise.core.generation.page_generator.levels import build_level5_coros
 
         layers = [
-            {"id": "layer:core", "name": "Core",
-             "nodeIds": ["file:a.py", "file:b.py", "file:c.py"]},
+            {
+                "id": "layer:core",
+                "name": "Core",
+                "nodeIds": ["file:a.py", "file:b.py", "file:c.py"],
+            },
         ]
         run = self._make_run(tmp_path, layers)
         run.completed_ids = {"layer_page:layer:core"}
@@ -336,12 +380,17 @@ class TestBuildLevel5Coros:
         from repowise.core.generation.page_generator.levels import build_level5_coros
 
         layers = [
-            {"id": "layer:core", "name": "Core",
-             "nodeIds": ["file:a.py", "file:b.py", "file:c.py"]},
-            {"id": "layer:api", "name": "API",
-             "nodeIds": ["file:d.py", "file:e.py", "file:f.py", "file:g.py"]},
-            {"id": "layer:tiny", "name": "Tiny",
-             "nodeIds": ["file:h.py"]},
+            {
+                "id": "layer:core",
+                "name": "Core",
+                "nodeIds": ["file:a.py", "file:b.py", "file:c.py"],
+            },
+            {
+                "id": "layer:api",
+                "name": "API",
+                "nodeIds": ["file:d.py", "file:e.py", "file:f.py", "file:g.py"],
+            },
+            {"id": "layer:tiny", "name": "Tiny", "nodeIds": ["file:h.py"]},
         ]
         run = self._make_run(tmp_path, layers)
         coros = build_level5_coros(run)
@@ -357,8 +406,11 @@ class TestBuildLevel5Coros:
         from repowise.core.generation.page_generator.levels import build_level5_coros
 
         layers = [
-            {"id": "layer:queue", "name": "Task Queue Core",
-             "nodeIds": ["file:a.py", "file:b.py", "file:c.py"]},
+            {
+                "id": "layer:queue",
+                "name": "Task Queue Core",
+                "nodeIds": ["file:a.py", "file:b.py", "file:c.py"],
+            },
         ]
         run = self._make_run(tmp_path, layers)
         coros = build_level5_coros(run)

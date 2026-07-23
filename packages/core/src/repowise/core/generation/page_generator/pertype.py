@@ -39,27 +39,18 @@ class PerTypeGenerationMixin:
         community: dict[str, int],
         source_bytes: bytes,
     ) -> GeneratedPage:
+        """Render a file page from structure. Never calls a model.
+
+        A file page states what a parser already knows exactly: symbols,
+        signatures, imports, dependents, git history. A model adds nothing to
+        that and introduces staleness, so there is one renderer and no key is
+        needed for it. ``async`` is kept because the level runner awaits every
+        page coroutine uniformly.
+        """
         ctx = self._assembler.assemble_file_page(
             parsed, graph, pagerank, betweenness, community, source_bytes
         )
-        user_prompt = self._render("file_page.j2", ctx=ctx)
-        content_hash = self._reuse_content_hash(parsed)
-        response = await self._call_provider(
-            "file_page",
-            user_prompt,
-            str(uuid.uuid4()),
-            target_path=parsed.file_info.path,
-            content_hash=content_hash,
-        )
-        return self._build_generated_page(
-            "file_page",
-            parsed.file_info.path,
-            f"File: {parsed.file_info.path}",
-            response,
-            compute_source_hash(user_prompt),
-            GENERATION_LEVELS["file_page"],
-            content_hash=content_hash,
-        )
+        return await self._render_file_page(parsed, ctx)
 
     async def generate_symbol_spotlight(
         self,
@@ -77,22 +68,7 @@ class PerTypeGenerationMixin:
             source_bytes=(source_map or {}).get(parsed.file_info.path, b""),
         )
         target = f"{parsed.file_info.path}::{symbol.name}"
-        if self._config.deterministic:
-            return self._deterministic_symbol_spotlight(
-                ctx, target, f"Symbol: {symbol.qualified_name}"
-            )
-        user_prompt = self._render("symbol_spotlight.j2", ctx=ctx)
-        response = await self._call_provider(
-            "symbol_spotlight", user_prompt, str(uuid.uuid4()), target_path=target
-        )
-        return self._build_generated_page(
-            "symbol_spotlight",
-            f"{parsed.file_info.path}::{symbol.name}",
-            f"Symbol: {symbol.qualified_name}",
-            response,
-            compute_source_hash(user_prompt),
-            GENERATION_LEVELS["symbol_spotlight"],
-        )
+        return self._structural_symbol_spotlight(ctx, target, f"Symbol: {symbol.qualified_name}")
 
     async def generate_module_page(
         self,
@@ -188,7 +164,7 @@ class PerTypeGenerationMixin:
             return page
 
         if self._config.deterministic:
-            page = self._deterministic_module_page(ctx, page_target, title, module_git_summary)
+            page = self._stub_module_page(ctx, page_target, title, module_git_summary)
             return _stamp_concept(page)
         user_prompt = self._render("module_page.j2", ctx=ctx, module_git_summary=module_git_summary)
         response = await self._call_provider(
@@ -212,22 +188,7 @@ class PerTypeGenerationMixin:
     ) -> GeneratedPage:
         ctx = self._assembler.assemble_scc_page(scc_id, scc_files, file_contexts)
         members = sorted(scc_files)
-        if self._config.deterministic:
-            page = self._deterministic_scc_page(ctx, scc_id, f"Circular Dependency: {scc_id}")
-            page.metadata["file_paths"] = members
-            return page
-        user_prompt = self._render("scc_page.j2", ctx=ctx)
-        response = await self._call_provider(
-            "scc_page", user_prompt, str(uuid.uuid4()), target_path=scc_id
-        )
-        page = self._build_generated_page(
-            "scc_page",
-            scc_id,
-            f"Circular Dependency: {scc_id}",
-            response,
-            compute_source_hash(user_prompt),
-            GENERATION_LEVELS["scc_page"],
-        )
+        page = self._structural_scc_page(ctx, scc_id, f"Circular Dependency: {scc_id}")
         page.metadata["file_paths"] = members
         return page
 
@@ -272,7 +233,7 @@ class PerTypeGenerationMixin:
         if not repo_name:
             repo_name = getattr(repo_structure, "name", None) or "repo"
         if self._config.deterministic:
-            return self._deterministic_repo_overview(
+            return self._stub_repo_overview(
                 ctx, repo_name, f"Repository Overview: {repo_name}", repo_git_summary
             )
         user_prompt = self._render("repo_overview.j2", ctx=ctx, repo_git_summary=repo_git_summary)
@@ -301,7 +262,7 @@ class PerTypeGenerationMixin:
             graph, pagerank, community, sccs, repo_name
         )
         if self._config.deterministic:
-            return self._deterministic_architecture_diagram(
+            return self._stub_architecture_diagram(
                 ctx, repo_name, f"Architecture Diagram: {repo_name}", overview_mermaid
             )
         user_prompt = self._render("architecture_diagram.j2", ctx=ctx)
@@ -333,21 +294,8 @@ class PerTypeGenerationMixin:
         source_bytes: bytes,
     ) -> GeneratedPage:
         ctx = self._assembler.assemble_api_contract(parsed, source_bytes)
-        if self._config.deterministic:
-            return self._deterministic_api_contract(
-                ctx, parsed.file_info.path, f"API Contract: {parsed.file_info.path}"
-            )
-        user_prompt = self._render("api_contract.j2", ctx=ctx)
-        response = await self._call_provider(
-            "api_contract", user_prompt, str(uuid.uuid4()), target_path=parsed.file_info.path
-        )
-        return self._build_generated_page(
-            "api_contract",
-            parsed.file_info.path,
-            f"API Contract: {parsed.file_info.path}",
-            response,
-            compute_source_hash(user_prompt),
-            GENERATION_LEVELS["api_contract"],
+        return self._structural_api_contract(
+            ctx, parsed.file_info.path, f"API Contract: {parsed.file_info.path}"
         )
 
     async def generate_onboarding_page(
@@ -369,7 +317,7 @@ class PerTypeGenerationMixin:
         if self._config.deterministic:
             # No grounding post-check: a template can only cite what the
             # context handed it, so there is nothing ungrounded to strip.
-            return self._deterministic_onboarding_page(spec, ctx, target)
+            return self._stub_onboarding_page(spec, ctx, target)
 
         template_name = f"onboarding/{spec.template}"
         user_prompt = self._render(template_name, ctx=ctx, slot=spec.slot)
@@ -423,35 +371,11 @@ class PerTypeGenerationMixin:
         self,
         ctx: LayerPageContext,
     ) -> GeneratedPage:
-        # target_path = the layer's STABLE slug id, so the page key survives
-        # the post-generation LLM rename of ``layer_name``. The title still
-        # uses the (heuristic) display name.
-        target = ctx.layer_id
-        if self._config.deterministic:
-            # The template embeds ctx.diagram_mermaid itself, so there is no
-            # post-generation embed_mermaid step on this path.
-            return self._deterministic_layer_page(ctx, f"Layer: {ctx.layer_name}")
-        user_prompt = self._render("layer_page.j2", ctx=ctx)
-        response = await self._call_provider(
-            "layer_page", user_prompt, str(uuid.uuid4()), target_path=target
-        )
-        # Embed the deterministic per-layer diagram (idempotent, applies to fresh
-        # and reused content so it lands on both init and update).
-        if ctx.diagram_mermaid:
-            response = replace(
-                response,
-                content=embed_mermaid(
-                    response.content, ctx.diagram_mermaid, heading="## Architecture"
-                ),
-            )
-        return self._build_generated_page(
-            "layer_page",
-            target,
-            f"Layer: {ctx.layer_name}",
-            response,
-            compute_source_hash(user_prompt),
-            GENERATION_LEVELS["layer_page"],
-        )
+        # target_path = the layer's STABLE slug id (the renderer reads it off
+        # ctx), so the page key survives a rename of ``layer_name``. The title
+        # still uses the display name. The template embeds ctx.diagram_mermaid
+        # itself, so there is no separate embed_mermaid step on this path.
+        return self._structural_layer_page(ctx, f"Layer: {ctx.layer_name}")
 
     async def generate_infra_page(
         self,
@@ -459,19 +383,6 @@ class PerTypeGenerationMixin:
         source_bytes: bytes,
     ) -> GeneratedPage:
         ctx = self._assembler.assemble_infra_page(parsed, source_bytes)
-        if self._config.deterministic:
-            return self._deterministic_infra_page(
-                ctx, parsed.file_info.path, f"Infrastructure: {parsed.file_info.path}"
-            )
-        user_prompt = self._render("infra_page.j2", ctx=ctx)
-        response = await self._call_provider(
-            "infra_page", user_prompt, str(uuid.uuid4()), target_path=parsed.file_info.path
-        )
-        return self._build_generated_page(
-            "infra_page",
-            parsed.file_info.path,
-            f"Infrastructure: {parsed.file_info.path}",
-            response,
-            compute_source_hash(user_prompt),
-            GENERATION_LEVELS["infra_page"],
+        return self._structural_infra_page(
+            ctx, parsed.file_info.path, f"Infrastructure: {parsed.file_info.path}"
         )

@@ -172,19 +172,15 @@ def _make_generator(harvest: bool) -> PageGenerator:
     return PageGenerator(provider, MagicMock(), config)
 
 
-def test_directive_appended_when_harvest_enabled():
+def test_directive_reaches_no_system_prompt():
+    """Harvesting only ever ran on ``file_page``, and a file page no longer
+    goes near a model, so nothing carries the directive.
+
+    The parser below still has tests because the payload format is worth
+    keeping intact, but there is no producer feeding it. Whether harvesting
+    gets a new host or is retired is a decision of its own rather than a side
+    effect of the file layer becoming structural.
+    """
     gen = _make_generator(harvest=True)
-    system = gen._build_system_prompt("file_page")
-    assert HARVEST_DIRECTIVE in system
-
-
-def test_directive_absent_when_harvest_disabled():
-    gen = _make_generator(harvest=False)
-    system = gen._build_system_prompt("file_page")
-    assert HARVEST_DIRECTIVE not in system
-
-
-def test_directive_not_added_to_non_harvestable_page_type():
-    gen = _make_generator(harvest=True)
-    system = gen._build_system_prompt("module_page")
-    assert HARVEST_DIRECTIVE not in system
+    for page_type in ("module_page", "repo_overview", "architecture_diagram", "onboarding"):
+        assert HARVEST_DIRECTIVE not in gen._build_system_prompt(page_type)

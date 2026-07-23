@@ -117,8 +117,6 @@ def test_advanced_config_default_keys_no_fast(monkeypatch: pytest.MonkeyPatch) -
         "test_run": False,
         "onboarding": True,
         "harvest_decisions": True,
-        "tier1_top_n": None,
-        "tier2_tail_enabled": True,
         "wiki_style": DEFAULT_STYLE,
         "language": "en",
     }
@@ -153,8 +151,7 @@ def test_advanced_config_index_only_omits_generation_keys(
 def test_advanced_config_allow_fast_small_repo(monkeypatch: pytest.MonkeyPatch) -> None:
     scan = RepoScanInfo(total_files=100)
     result = _drive_advanced_config(monkeypatch, scan=scan, allow_fast=True)
-    # Small repo: run mode defaults to standard, tier cap default 0 -> None.
+    # Small repo: run mode defaults to standard.
     assert result["run_mode"] == "standard"
-    assert result["tier1_top_n"] is None
     assert result["commit_limit"] == 1000  # <500 files -> deeper history default
     assert result["concurrency"] == 12  # <200 files -> higher concurrency default

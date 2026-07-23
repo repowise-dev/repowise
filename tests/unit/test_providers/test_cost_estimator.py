@@ -63,11 +63,22 @@ def test_estimate_cost_claude_opus():
 
 
 def test_estimate_cost_gemini_lite():
-    plans = [PageTypePlan("file_page", 10, 2)]
+    # A model-written type: file_page renders from structure and is free.
+    plans = [PageTypePlan("module_page", 10, 4)]
     est = estimate_cost(plans, "gemini", "gemini-3.1-flash-lite-preview")
-    inp, out = heuristic_tokens("file_page")
+    inp, out = heuristic_tokens("module_page")
     expected = (inp * 10 / 1000) * 0.00025 + (out * 10 / 1000) * 0.0015
     assert est.estimated_cost_usd == pytest.approx(expected, rel=1e-6)
+
+
+def test_structural_file_pages_are_free():
+    inp, _out = heuristic_tokens("file_page")
+    assert inp > 0  # a heuristic exists, but the estimator must not apply it
+    est = estimate_cost(
+        [PageTypePlan("file_page", 1000, 2)], "gemini", "gemini-3.1-flash-lite-preview"
+    )
+    assert est.total_pages == 1000
+    assert est.estimated_cost_usd == 0.0
 
 
 def test_estimate_cost_zero_for_mock():

@@ -24,7 +24,7 @@ from pathlib import Path
 from repowise.core.generation.models import GenerationConfig
 from repowise.core.generation.selection import SelectionInputs, select_pages
 from repowise.core.generation.selection.selector import _build_module_groups
-from tests.unit.generation.test_selection_budget import (
+from tests.unit.generation.test_selection_contract import (
     FakeFileInfo,
     FakeParsedFile,
     FakeSymbol,
@@ -118,9 +118,9 @@ def test_root_level_files_get_a_usable_target_path():
     assert any("main.py" in g.file_paths for g in groups)
     for g in groups:
         assert g.key, "a group persisted an empty target_path"
-    assert any(
-        g.key == "root" for g in owning
-    ), f"root-anchored group did not get the root target: {[g.key for g in owning]}"
+    assert any(g.key == "root" for g in owning), (
+        f"root-anchored group did not get the root target: {[g.key for g in owning]}"
+    )
 
 
 def test_test_files_never_enter_the_concept_tree():
@@ -224,9 +224,9 @@ def test_root_documentation_and_examples_get_no_concept_page():
 
     assert claimed, "fixture produced no groups"
     for prefix in ("docs/", "docs_src/", "examples/", "samples/"):
-        assert not any(
-            p.startswith(prefix) for p in claimed
-        ), f"{prefix} reached the concept tree: {[p for p in claimed if p.startswith(prefix)]}"
+        assert not any(p.startswith(prefix) for p in claimed), (
+            f"{prefix} reached the concept tree: {[p for p in claimed if p.startswith(prefix)]}"
+        )
     # The fixture is only meaningful if those files were in the input.
     assert any(p.startswith("docs_src/") for p in _support_paths())
 
@@ -293,15 +293,15 @@ def test_ranked_by_summed_pagerank_not_by_path():
     assert len(scored) > 1, "a one-group fixture cannot test ordering"
     # The fixture is only meaningful if path order disagrees with score order,
     # or the assertion below would pass on a sorted-by-path implementation.
-    assert ordered_keys != sorted(
-        ordered_keys
-    ), f"fixture is degenerate: score order equals path order ({ordered_keys})"
+    assert ordered_keys != sorted(ordered_keys), (
+        f"fixture is degenerate: score order equals path order ({ordered_keys})"
+    )
     # ui/c4 carries 1.0 per file against 0.1 elsewhere, so whichever group
     # holds it must come first.
     top_group = scored[0][1]
-    assert any(
-        "/ui/c4/" in p for p in top_group.file_paths
-    ), f"expected the ui/c4 mass to rank first, got {top_group.key}"
+    assert any("/ui/c4/" in p for p in top_group.file_paths), (
+        f"expected the ui/c4 mass to rank first, got {top_group.key}"
+    )
 
 
 def test_display_is_a_name_not_a_bare_path():
@@ -351,8 +351,7 @@ def test_select_pages_emits_every_group():
     selection = select_pages(inputs)
 
     assert len(selection.module_groups) == len(groups)
-    assert selection.allocation is not None
-    assert selection.allocation.module_page == len(groups)
+    assert len(selection.module_groups) == len(groups)
 
 
 def test_structural_key_survives_selection():

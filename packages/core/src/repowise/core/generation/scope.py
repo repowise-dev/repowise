@@ -131,7 +131,6 @@ def _selection_inputs(
         git_meta_map=None,
         config=config,
         kg_modules=kg_modules,
-        select_all=select_all,
     )
 
 
@@ -221,11 +220,10 @@ def build_ranked_seed(
     not re-billed, and a selected id with no page yet (a file added since
     indexing) is dropped, since ``generate`` only rewrites existing pages.
 
-    One deliberate simplification: the selection here is demand-free
-    (``demand=None``), whereas a full init pass tilts its file-page picks by
-    mined session demand. On a fresh install the two are identical; where session
-    history exists they can pick the same *count* of files but a slightly
-    different set. Not worth reading every transcript on each generate run.
+    ``coverage_pct`` no longer narrows anything: selection stopped rationing
+    when the pages it rationed stopped costing tokens, so this returns every
+    unwritten page rather than a top slice. The parameter and the flags behind
+    it are retired with the rest of the coverage chooser.
     """
     coverage_cfg = replace(
         config, coverage_pct=coverage_pct, max_pages_pct=coverage_pct, deterministic=False

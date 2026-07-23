@@ -35,4 +35,4 @@ Worth deleting first: it is being carried through every edit.
 - `{{ f.get("symbol_name") or f.get("file_path") }}`{% if f.get("file_path") and f.get("symbol_name") %} in `{{ f.get("file_path") }}`{% endif %}{% if f.get("reason") %} ({{ f.get("reason") | oneline }}){% endif %}
 {% endfor %}
 {% endif %}
-{% include "deterministic/_footer.j2" %}
+{% include "stub/_footer.j2" %}

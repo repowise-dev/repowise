@@ -34,7 +34,6 @@ from .helpers import (
     build_decision_maps,
     overview_summary,
 )
-from .tiering import partition_file_tiers
 
 if TYPE_CHECKING:
     from .core import PageGenerator
@@ -163,8 +162,6 @@ class _GenerationRun:
         self.sel_infra_paths: set[str] = set()
         self.sel_module_groups: list[Any] = []
         self.sel_scc_groups: list[Any] = []
-        self.tier1_paths: set[str] = set()
-        self.tier2_paths: set[str] = set()
 
     # ------------------------------------------------------------------
     # Setup
@@ -261,14 +258,6 @@ class _GenerationRun:
                 # map that steers concept grouping, so absence costs taste and
                 # never coverage.
                 kg_modules=self.kg_modules or self.kg_ctx.get_modules() or None,
-                # Per-file question demand from session transcripts: tilts the
-                # file_page budget toward modules agents ask about. Empty (no
-                # session history / disabled) leaves selection uniform.
-                demand=self._compute_demand() or None,
-                # A scoped run (repowise generate) rations via only_page_ids, so
-                # the coverage budget must not pre-filter the allow-set — every
-                # requested page has to survive selection to be emittable.
-                select_all=self.only_page_ids is not None,
             )
         )
 
@@ -286,25 +275,6 @@ class _GenerationRun:
         # what to call it. Kept out of ``select_pages`` so the cost estimator
         # and scope resolution, which call it too, stay free of the model.
         await self._name_concept_groups()
-
-        # Tiered doc generation: split the selected file pages into a full-LLM
-        # tier-1 and a deterministic template-only tier-2. When tier1_top_n is
-        # None this puts every selected page in tier-1 (no behaviour change).
-        # A fully deterministic run has no tier-1 by definition: every file page
-        # goes through the same template renderer, so force the cap to 0 rather
-        # than making the tier split learn about the mode.
-        tier1_cap = 0 if self.config.deterministic else getattr(self.config, "tier1_top_n", None)
-        self.tier1_paths, self.tier2_paths = partition_file_tiers(
-            self.sel_file_paths,
-            self.pagerank,
-            tier1_cap,
-            kg_file_scores=kg_scores or None,
-        )
-
-        # Deterministic coverage tail (Phase G): code files the budget dropped,
-        # rendered by the same zero-LLM template path as tier-2. Disjoint from
-        # sel_file_paths by construction (select_pages excludes the selected set).
-        self.tail_paths = set(getattr(selection, "deterministic_tail_paths", []) or [])
 
         # Sort code_files for stable level-2 ordering: selected files first
         # (so dep summaries land in the store earliest), then by PageRank desc.
@@ -349,7 +319,9 @@ class _GenerationRun:
         # update hook is a bill per commit for nothing.
         if getattr(self.config, "file_pages_only", False):
             return
-        if not any(self._emit(compute_page_id("module_page", mg.key)) for mg in self.sel_module_groups):
+        if not any(
+            self._emit(compute_page_id("module_page", mg.key)) for mg in self.sel_module_groups
+        ):
             return
 
         from ..concept_tree.planner import PlannerInputs, name_groups
@@ -432,38 +404,6 @@ class _GenerationRun:
             invented=len(report.invented_paths),
         )
 
-    def _compute_demand(self) -> dict[str, int]:
-        """Per-file question demand for the FAQ-weighted budget tilt.
-
-        Best-effort transcript sweep; any failure (no repo path, no session
-        history, mining error) yields an empty map and selection stays
-        uniform. Runs only on real generation — the cost estimator builds its
-        own demand-free SelectionInputs, so estimates are untouched.
-
-        Skipped on a deterministic run. Demand exists to tilt a budget toward
-        the files agents ask about, and a template page costs nothing, so there
-        is no budget to tilt. The sweep reads every session transcript for the
-        repo, which grows with the user's chat history rather than the repo:
-        seconds of work per run, on the path a post-commit hook takes.
-        """
-        if not self.repo_path or self.config.deterministic:
-            return {}
-        try:
-            from repowise.core.repo_config import load_repo_config
-            from repowise.core.sessions.miners.demand import (
-                aggregate_file_demand,
-                demand_summary_line,
-            )
-
-            repo_config = load_repo_config(self.repo_path)
-            demand = aggregate_file_demand(self.repo_path, repo_config=repo_config)
-            # Surface the usage-weighting to the CLI (shown after generation).
-            self.gen.faq_demand_summary = demand_summary_line(demand)
-            return demand
-        except Exception as exc:  # never let mining break generation
-            log.warning("page_selection.demand_failed", error=str(exc))
-            return {}
-
     def _announce_total(self) -> None:
         # A scoped run emits exactly the requested-and-not-yet-done ids, so the
         # selection-derived estimate below would badly over-count. The set is
@@ -509,8 +449,6 @@ class _GenerationRun:
             + int(self.selection.emit_arch_diagram)
             + counts["infra_page"]
             + onboarding_page_count
-            # Deterministic coverage tail also produces (zero-LLM) pages.
-            + len(getattr(self.selection, "deterministic_tail_paths", []))
         )
         remaining_total = max(0, estimated_total - len(self.completed_ids))
         if self.on_total_known is not None:

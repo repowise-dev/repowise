@@ -419,3 +419,46 @@ async def _persist_async(
     finally:
         await engine.dispose()
     return total
+
+
+def load_file_page_render_keys(repo_path: Path) -> dict[str, str]:
+    """``page_id -> render key`` for every file page already in the wiki.
+
+    A row with no key is kept rather than skipped: that is what a page written
+    before the renderer carried a fingerprint looks like, and it is exactly the
+    population the first run after that change has to refresh.
+    """
+    return run_async(_load_file_page_render_keys(repo_path))
+
+
+async def _load_file_page_render_keys(repo_path: Path) -> dict[str, str]:
+    from repowise.cli.helpers import get_db_url_for_repo
+    from repowise.core.persistence import create_engine, create_session_factory, get_session
+
+    engine = create_engine(get_db_url_for_repo(repo_path))
+    try:
+        import json
+
+        from sqlalchemy import select as sa_select
+
+        from repowise.core.generation.page_generator.structural import RENDER_KEY
+        from repowise.core.persistence.models import Page
+
+        async with get_session(create_session_factory(engine)) as session:
+            rows = await session.execute(
+                sa_select(Page.id, Page.metadata_json).where(Page.page_type == "file_page")
+            )
+            keys: dict[str, str] = {}
+            for pid, meta_json in rows:
+                try:
+                    meta = json.loads(meta_json or "{}")
+                except (TypeError, ValueError):
+                    meta = {}
+                keys[pid] = str(meta.get(RENDER_KEY) or "")
+            return keys
+    except Exception:
+        # Never block an update on this. Returning nothing means no page looks
+        # stale, so the run does what it would have done before the salt.
+        return {}
+    finally:
+        await engine.dispose()

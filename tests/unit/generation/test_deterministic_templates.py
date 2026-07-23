@@ -57,7 +57,7 @@ def test_layer_page_renders(generator):
         edge_connectors=["src/io.py"],
         diagram_mermaid="flowchart LR\n  a --> b",
     )
-    page = generator._deterministic_layer_page(ctx, "Layer: Ingestion")
+    page = generator._structural_layer_page(ctx, "Layer: Ingestion")
 
     assert page.page_id == "layer_page:layer:ingestion"
     assert page.provider_name == "template"
@@ -70,7 +70,7 @@ def test_layer_page_renders(generator):
     # calling it foundational or top-of-stack.
     assert "mid-stack" in page.content
     assert "Step 1: Parsing. Where parsing starts." in page.content
-    assert "Generated deterministically" in page.content
+    assert "Built from the code itself" in page.content
 
 
 def test_layer_page_without_diagram_renders(generator):
@@ -81,7 +81,7 @@ def test_layer_page_without_diagram_renders(generator):
         layer_description="",
         file_count=3,
     )
-    page = generator._deterministic_layer_page(ctx, "Layer: Utilities")
+    page = generator._structural_layer_page(ctx, "Layer: Utilities")
 
     assert "```mermaid" not in page.content
     assert "stands on its own" in page.content
@@ -107,7 +107,7 @@ def test_getting_started_renders(generator):
         readme_sections=[ReadmeSection(heading="Install", body="Run `uv sync`.")],
         entry_points=["src/main.py"],
     )
-    page = generator._deterministic_onboarding_page(
+    page = generator._stub_onboarding_page(
         _onboarding_spec("getting_started", "getting_started.j2"), ctx, "onboarding/getting_started"
     )
 
@@ -125,7 +125,7 @@ def test_development_guide_renders(generator):
         parallel_dirs=["packages/core", "packages/cli"],
         entry_points=["src/main.py"],
     )
-    page = generator._deterministic_onboarding_page(
+    page = generator._stub_onboarding_page(
         _onboarding_spec("development_guide", "development_guide.j2"),
         ctx,
         "onboarding/development_guide",
@@ -154,7 +154,7 @@ def test_active_landscape_renders(generator):
         dead_code_in_hot_files=[{"symbol_name": "old_fn", "file_path": "src/core.py"}],
         stable_file_count=8,
     )
-    page = generator._deterministic_onboarding_page(
+    page = generator._stub_onboarding_page(
         _onboarding_spec("active_landscape", "active_landscape.j2"),
         ctx,
         "onboarding/active_landscape",
@@ -167,9 +167,7 @@ def test_active_landscape_renders(generator):
 
 
 def test_symbol_spotlight_renders(generator):
-    """Not reachable through generate_all (deterministic mode drops the
-    spotlight bucket), but the renderer stays for on-demand generation, so
-    it needs coverage of its own."""
+    """The only renderer for this page type, so it always runs."""
     from repowise.core.generation.context_assembler import SymbolSpotlightContext
 
     ctx = SymbolSpotlightContext(
@@ -185,7 +183,7 @@ def test_symbol_spotlight_renders(generator):
         callers=["src/pipeline.py"],
         source_body="def parse_file(self, fi, src):\n    return ...",
     )
-    page = generator._deterministic_symbol_spotlight(
+    page = generator._structural_symbol_spotlight(
         ctx, "src/parser.py::parse_file", "Symbol: parser.ASTParser.parse_file"
     )
 
@@ -213,7 +211,7 @@ def test_symbol_spotlight_tolerates_missing_kind(generator):
         complexity_estimate=0,
         callers=[],
     )
-    page = generator._deterministic_symbol_spotlight(ctx, "a.py::x", "Symbol: x")
+    page = generator._structural_symbol_spotlight(ctx, "a.py::x", "Symbol: x")
     assert "is a symbol defined in" in page.content
 
 
@@ -235,7 +233,7 @@ def test_multiline_summaries_stay_inside_their_list_item(generator):
             {"path": "b.py", "role": "internal", "summary": "Short."},
         ],
     )
-    page = generator._deterministic_layer_page(ctx, "Layer: Core")
+    page = generator._structural_layer_page(ctx, "Layer: Core")
 
     body = page.content.split("## Key files", 1)[1]
     bullets = [ln for ln in body.splitlines() if ln.startswith("- ")]
@@ -269,20 +267,20 @@ def test_summary_skips_the_stats_line():
 
 
 def test_as_markdown_converts_sphinx_roles_to_code_spans():
-    from repowise.core.generation.page_generator.deterministic import as_markdown
+    from repowise.core.generation.page_generator.structural import as_markdown
 
     out = as_markdown("See :meth:`Store.get` and :class:`~pkg.Thing`.")
     assert out == "See `Store.get` and `pkg.Thing`."
 
 
 def test_as_markdown_converts_double_backtick_literals():
-    from repowise.core.generation.page_generator.deterministic import as_markdown
+    from repowise.core.generation.page_generator.structural import as_markdown
 
     assert as_markdown("Pass ``None`` to skip.") == "Pass `None` to skip."
 
 
 def test_as_markdown_drops_rest_directives():
-    from repowise.core.generation.page_generator.deterministic import as_markdown
+    from repowise.core.generation.page_generator.structural import as_markdown
 
     out = as_markdown("Body text.\n\n.. note:: internal only\n")
     assert ".. note::" not in out
@@ -291,7 +289,7 @@ def test_as_markdown_drops_rest_directives():
 
 def test_as_markdown_dedents_so_the_body_is_not_a_code_block():
     """Four leading spaces would make markdown render the body as code."""
-    from repowise.core.generation.page_generator.deterministic import as_markdown
+    from repowise.core.generation.page_generator.structural import as_markdown
 
     out = as_markdown("Summary line.\n\n    Indented continuation.\n")
     assert "\n    Indented" not in out
@@ -299,7 +297,7 @@ def test_as_markdown_dedents_so_the_body_is_not_a_code_block():
 
 
 def test_as_markdown_leaves_plain_text_alone():
-    from repowise.core.generation.page_generator.deterministic import as_markdown
+    from repowise.core.generation.page_generator.structural import as_markdown
 
     assert as_markdown("Just a sentence.") == "Just a sentence."
     assert as_markdown(None) == ""
@@ -307,14 +305,14 @@ def test_as_markdown_leaves_plain_text_alone():
 
 def test_signature_collapses_source_whitespace():
     """Signatures span source lines, so raw text carries runs of indentation."""
-    from repowise.core.generation.page_generator.deterministic import signature
+    from repowise.core.generation.page_generator.structural import signature
 
     raw = "def go(\n        a: int,\n        b: str,\n    ) -> None"
     assert signature(raw) == "def go( a: int, b: str, ) -> None"
 
 
 def test_signature_truncates_at_an_argument_boundary_not_mid_token():
-    from repowise.core.generation.page_generator.deterministic import signature
+    from repowise.core.generation.page_generator.structural import signature
 
     raw = "def go(" + ", ".join(f"argument_number_{i}: int = 0" for i in range(20)) + ") -> None"
     out = signature(raw, limit=80)
@@ -325,28 +323,28 @@ def test_signature_truncates_at_an_argument_boundary_not_mid_token():
 
 
 def test_signature_leaves_short_signatures_untouched():
-    from repowise.core.generation.page_generator.deterministic import signature
+    from repowise.core.generation.page_generator.structural import signature
 
     assert signature("def go(x: int) -> None") == "def go(x: int) -> None"
 
 
 def test_as_markdown_leaves_fenced_code_blocks_intact():
     """The double-backtick rule must not chew the fence delimiters."""
-    from repowise.core.generation.page_generator.deterministic import as_markdown
+    from repowise.core.generation.page_generator.structural import as_markdown
 
     src = "Run it.\n\nExample:\n\n```python\nx = 1\n```\n"
     assert "```python\nx = 1\n```" in as_markdown(src)
 
 
 def test_as_markdown_leaves_triple_backtick_spans_intact():
-    from repowise.core.generation.page_generator.deterministic import as_markdown
+    from repowise.core.generation.page_generator.structural import as_markdown
 
     assert as_markdown("Use ```code``` here.") == "Use ```code``` here."
 
 
 def test_as_markdown_does_not_eat_ordinary_colon_text():
     """A permissive role pattern deletes any word:word: before a backtick."""
-    from repowise.core.generation.page_generator.deterministic import as_markdown
+    from repowise.core.generation.page_generator.structural import as_markdown
 
     assert as_markdown("Time complexity: O(n:m:`k`)") == "Time complexity: O(n:m:`k`)"
     assert as_markdown("See http://x.io/a:b:`c`") == "See http://x.io/a:b:`c`"
@@ -354,7 +352,7 @@ def test_as_markdown_does_not_eat_ordinary_colon_text():
 
 def test_as_markdown_removes_a_directive_body_not_just_its_head():
     """A dangling indented body renders as a code block, the thing we avoid."""
-    from repowise.core.generation.page_generator.deterministic import as_markdown
+    from repowise.core.generation.page_generator.structural import as_markdown
 
     out = as_markdown(
         "Summary line.\n\n    Longer prose.\n\n    .. note::\n\n        Internal only.\n\n    More prose.\n"
@@ -364,7 +362,7 @@ def test_as_markdown_removes_a_directive_body_not_just_its_head():
 
 
 def test_as_markdown_is_idempotent():
-    from repowise.core.generation.page_generator.deterministic import as_markdown
+    from repowise.core.generation.page_generator.structural import as_markdown
 
     for src in (
         "See :meth:`Store.get`.",
@@ -417,7 +415,7 @@ def test_module_page_leads_with_the_concept_title(generator):
     group is; the line beneath says where to go and look.
     """
     ctx = _module_ctx(generator._assembler, ["src/ingest/read.py", "src/parse/ast.py"])
-    page = generator._deterministic_module_page(ctx, "src/ingest", "Ingestion Pipeline", None)
+    page = generator._stub_module_page(ctx, "src/ingest", "Ingestion Pipeline", None)
 
     assert page.title == "Ingestion Pipeline"
     assert page.content.startswith("# Ingestion Pipeline\n")
@@ -434,7 +432,7 @@ def test_module_page_of_root_files_says_so(generator):
     top level.
     """
     ctx = _module_ctx(generator._assembler, ["setup.py", "main.py"])
-    page = generator._deterministic_module_page(ctx, "root", "Project Entry Points", None)
+    page = generator._stub_module_page(ctx, "root", "Project Entry Points", None)
 
     assert "Repository root" in page.content
     assert "`.`" not in page.content

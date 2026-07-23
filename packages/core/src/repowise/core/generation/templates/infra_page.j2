@@ -1,21 +1,31 @@
-You are documenting the infrastructure file `{{ ctx.file_path }}`.
+{#- Deterministic (no-LLM) infrastructure page.
 
-## Infrastructure File
-- **File**: `{{ ctx.file_path }}`
-- **Language**: {{ ctx.language }}
+    The thinnest context in the set: path, language, declared targets and the
+    raw source. What makes an infra page useful (what the Dockerfile builds,
+    which ports it opens, what the CI job gates on) needs either real
+    per-format extraction or a model, and this path has neither. So the page
+    is explicitly a source view rather than an explanation.
+-#}
+# Infrastructure: {{ ctx.file_path }}
 
-## Key Targets / Stages
+**Type:** {{ ctx.language }}{% if ctx.targets %} | **Declared targets:** {{ ctx.targets | length }}{% endif %}
+
+## Overview
+
+`{{ ctx.file_path }}` is an infrastructure file ({{ ctx.language }}).{% if ctx.targets %} It declares {{ ctx.targets | length }} named target{{ "s" if ctx.targets | length != 1 else "" }}, listed below.{% endif %} Its behaviour is not derivable from structure, so the source is reproduced in full.
+
 {% if ctx.targets %}
-{% for target in ctx.targets %}
-- {{ target }}
+## Declared targets
+{% for t in ctx.targets %}
+- `{{ t }}`
 {% endfor %}
-{% else %}
-No targets explicitly extracted. See raw content below.
 {% endif %}
 
-## Raw Content
+{% if ctx.raw_content %}
+## Source
+
 ```{{ ctx.language }}
 {{ ctx.raw_content }}
 ```
-
-Generate a complete wiki page following the sections above.
+{% endif %}
+{% include "_footer.j2" %}
