@@ -6,7 +6,7 @@
     "url": "https://repowise.dev"
   },
   "metadata": {
-    "description": "The codebase intelligence layer for AI coding agents — graph, git, docs, decisions, and a defect-validated code-health score, exposed to Claude through nine task-shaped MCP tools.",
+    "description": "The codebase intelligence layer for AI coding agents — graph, git, docs, decisions, and a defect-validated code-health score, exposed to Claude through ten task-shaped MCP tools.",
     "homepage": "https://repowise.dev"
   },
   "plugins": [

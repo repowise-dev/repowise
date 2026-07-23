@@ -63,14 +63,16 @@ Claude uses these when relevant — no slash command needed:
 
 - **Codebase exploration** — routes questions to `get_overview` / `get_answer` / `search_codebase` / `get_context` / `get_symbol` instead of raw file reads.
 - **Pre-modification check** — calls `get_risk` (and `get_health` for refactors) before editing to assess blast radius.
-- **Change review** — for a PR / branch / working-tree diff, combines `repowise risk` (whole-change score) with `get_risk`'s per-file `directive` block (will-break / missing co-changes / missing tests).
+- **Change review** — for a PR / branch / working-tree diff, combines `get_change_risk` (whole-change score) with `get_risk`'s per-file `directive` block (will-break / missing co-changes / missing tests).
 - **Code health** — answers quality / complexity / "what to refactor" via `get_health`.
 - **Architectural decisions** — queries `get_why` for the *why* before architectural changes.
 - **Dead-code cleanup** — uses `get_dead_code`, conservatively, during cleanup.
 
-### MCP tools (9)
+### MCP tools (10 flagship + `list_repos`)
 
-Registered automatically when the plugin is enabled:
+Registered automatically when the plugin is enabled. The default single-repo
+surface is the ten flagship tools below plus `list_repos` (see
+[MCP_TOOLS.md](../../docs/agent/MCP_TOOLS.md)):
 
 | Tool | What it answers |
 |------|-----------------|
@@ -80,6 +82,7 @@ Registered automatically when the plugin is enabled:
 | `get_symbol` | Raw source of one symbol with exact line bounds |
 | `search_codebase` | Hybrid code search — `mode="auto"` routes identifiers to indexed symbols, paths to files, prose to semantic wiki search |
 | `get_risk` | Per-file hotspot, dependents, co-changes, owners; PR `directive` block with `changed_files` |
+| `get_change_risk` | Whole-change defect-risk score for a commit or `base..head` range |
 | `get_why` | Architectural decisions — search, path-anchored, or health dashboard |
 | `get_dead_code` | Unused/unreachable findings tiered by confidence |
 | `get_health` | 1–10 code-health score and marker findings per file |
@@ -99,11 +102,18 @@ you choose.
 
 ## Proactive context (hooks)
 
-The plugin registers a `PostToolUse` hook that runs `repowise-augment` after
-`Bash` / `Grep` / `Glob`. It stays silent unless it has something asymmetric to
-add — rescuing a zero-result grep with the closest indexed symbol, ranking a
-flood of matches by graph centrality, or flagging a stale index after a commit.
-No LLM, no network. (`repowise init` installs the same hook in
+The plugin registers two hooks that run `repowise-augment`:
+
+- **`SessionStart`** (`startup|resume|clear`) — emits live index-freshness /
+  trust context at session start.
+- **`PostToolUse`** after
+  `Bash|PowerShell|Grep|Glob|Read|Edit|Write|mcp__.*[Rr]epowise.*__.*` —
+  stays silent unless it has something asymmetric to add (rescuing a
+  zero-result grep with the closest indexed symbol, ranking a flood of
+  matches by graph centrality, flagging a stale read, or recording
+  read-after-served MCP traffic).
+
+No LLM, no network. (`repowise init` installs the same hooks in
 `~/.claude/settings.json`; running both is safe — duplicate enrichment is
 de-duplicated.)
 

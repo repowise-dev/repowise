@@ -5,6 +5,9 @@ All notable changes to the Repowise Claude Code plugin are documented here.
 ## 0.34.0
 
 ### Changed
+- Plugin docs: MCP tool surface is the **ten flagship tools** (including
+  `get_change_risk`) plus `list_repos`; hooks docs now match bundled
+  `SessionStart` + full `PostToolUse` matcher.
 - Version bump to track the repowise 0.34.0 release.
 - `pre-modification` skill reads the new `defect_profile` block on `get_risk`
   (fix count, last fix age, `bug_magnet`, `top_symbols`) and leads with it.

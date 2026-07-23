@@ -23,7 +23,7 @@ repowise/                              # main repo root
 └── plugins/claude-code/               # the plugin
     ├── .claude-plugin/
     │   └── plugin.json                # plugin identity (name, version, author)
-    ├── .mcp.json                      # auto-registers the repowise MCP server (9 tools)
+    ├── .mcp.json                      # auto-registers the repowise MCP server (10 flagship + list_repos)
     ├── hooks/
     │   └── hooks.json                 # PostToolUse → repowise-augment (proactive context)
     ├── commands/                      # user-invoked slash commands (/repowise:<name>)
@@ -56,14 +56,17 @@ and metadata. Do **not** put a `marketplace.json` next to it — the marketplace
 lives at the repo root.
 
 **`.mcp.json`** — When the plugin is enabled, Claude Code auto-starts
-`repowise mcp` as an MCP server, giving Claude the **9 tools** (`get_overview`,
-`get_answer`, `get_context`, `get_symbol`, `search_codebase`, `get_risk`,
-`get_why`, `get_dead_code`, `get_health`). Uses the `mcpServers` wrapper key.
+`repowise mcp` as an MCP server, giving Claude the **ten flagship tools**
+(`get_overview`, `get_answer`, `get_context`, `get_symbol`, `search_codebase`,
+`get_risk`, `get_change_risk`, `get_why`, `get_dead_code`, `get_health`) plus
+`list_repos` by default. Uses the `mcpServers` wrapper key.
 The `repowise` binary must be on PATH (`/repowise:init` installs it).
 
-**`hooks/hooks.json`** — Registers a `PostToolUse` hook
-(`Bash|Grep|Glob|Read|Edit|Write` → `repowise-augment`) so context enrichment works as soon as
-the plugin is installed. This mirrors the hook `repowise init` writes to
+**`hooks/hooks.json`** — Registers `SessionStart`
+(`startup|resume|clear` → `repowise-augment`) and `PostToolUse`
+(`Bash|PowerShell|Grep|Glob|Read|Edit|Write|mcp__.*[Rr]epowise.*__.*` →
+`repowise-augment`) so context enrichment works as soon as the plugin is
+installed. This mirrors the hooks `repowise init` writes to
 `~/.claude/settings.json`; both firing is safe — see "Hook de-duplication".
 
 **`commands/*.md`** — Become `/repowise:<filename>`. Frontmatter sets
@@ -140,18 +143,20 @@ The plugin version tracks the repowise release it ships alongside (e.g. `0.16.0`
 4. **Only `plugin.json` goes in `plugins/claude-code/.claude-plugin/`.** Everything
    else (`commands/`, `skills/`, `hooks/`) sits at the plugin root. The
    **marketplace** manifest lives at the **repo** root, not the plugin's.
-5. **There are 13 exposed MCP tools** (10 single-repo, plus 3 workspace-only:
-   `get_blast_radius`, `get_conformance`, `get_architecture`). `get_dependency_path`
-   and `get_execution_flows` exist in the server but are **not** exposed — never
-   reference them in commands/skills.
+5. **Default single-repo surface is 11 tools** (the ten flagship tools plus
+   `list_repos`). Workspace mode adds `get_architecture` and
+   `get_blast_radius` automatically (13). Opt-in tools such as
+   `get_conformance` stay off unless configured — see
+   `docs/agent/MCP_TOOLS.md`. Never reference unexposed tools in
+   commands/skills.
 6. **Verify CLI flags against the source.** Easy ones to get wrong:
    `--index-only` (not `--no-llm`); prefer the self-describing
    `--docs llm|deterministic` spelling when writing agent-facing commands.
    `--concurrency` (not `--concurrent`),
    `--commit-limit` (not `--git-depth`), `--embedder` (not `--embedding-provider`).
    `dead-code` has no `--group-by` (that's a `get_dead_code` MCP param only).
-7. **`repowise risk` scores a whole change** (commit or `base..head`), not a
-   file, and is **CLI/REST only** — it is *not* an MCP tool. The MCP `get_risk`
-   is per-file blast radius + the PR `directive` block.
+7. **`repowise risk` / MCP `get_change_risk` score a whole change**
+   (commit or `base..head`), not a file. MCP `get_risk` is per-file blast
+   radius + the PR `directive` block.
 8. **Graceful degradation.** Skills/commands must handle repowise-not-installed
    and repo-not-indexed, pointing back to `/repowise:init`.
