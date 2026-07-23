@@ -42,6 +42,13 @@ _INFRA_LANGUAGES = _LANG_REGISTRY.infra_languages()
 _INFRA_FILENAMES = frozenset({"Dockerfile", "Makefile", "GNUmakefile"})
 _CODE_LANGUAGES = _LANG_REGISTRY.code_languages()
 
+# Top-level directories whose contents document or illustrate the repository
+# rather than being it. Matched as a whole first path segment only. See
+# ``_is_support_file`` for why the anchoring is the point.
+_SUPPORT_ROOT_DIRS = frozenset(
+    {"docs", "doc", "documentation", "docs_src", "examples", "example", "samples", "sample"}
+)
+
 
 # ---------------------------------------------------------------------------
 # Output dataclasses
@@ -331,6 +338,27 @@ def _layer_map_from_kg(
     return layer_of_file, labels
 
 
+def _is_support_file(path: str) -> bool:
+    """Whether *path* is documentation or example source rather than the subject.
+
+    Anchored at the repository root and matched on whole path segments, which
+    is the difference between this rule and the substring match the test rule
+    originally shipped with. A package that has a ``docs`` directory as a
+    *feature* keeps its pages; a ``docs/`` tree at the top of the repository
+    does not, because it is the subject's documentation and not the subject.
+
+    Measured rather than assumed, the same way the test exclusion was: on one
+    web framework 10 of 15 concept pages documented the example snippets that
+    illustrate the library while the library itself got 4. These files match a
+    concept query on vocabulary without answering how the system works, and a
+    wiki that documents its subject's documentation has said nothing about the
+    subject. They keep their deterministic file pages, so nothing becomes
+    unreachable.
+    """
+    head = path.split("/", 1)[0].lower()
+    return head in _SUPPORT_ROOT_DIRS
+
+
 def _build_module_groups(inputs: SelectionInputs) -> ConceptCandidates:
     """Return the concept groups, scored, one per ``module_page``.
 
@@ -352,11 +380,25 @@ def _build_module_groups(inputs: SelectionInputs) -> ConceptCandidates:
     score no longer rations anything — see :func:`select_pages` — but page
     order is still what the reader sees first.
     """
-    files = [
+    production = [
         p.file_info.path
         for p in inputs.parsed_files
         if _is_code_file(p) and not getattr(p.file_info, "is_test", False)
     ]
+    files = [p for p in production if not _is_support_file(p)]
+    if not files:
+        # A repository whose production code is entirely under one of those
+        # roots. Documenting the docs is a bad wiki; having no wiki at all is
+        # a worse one, so the floor yields rather than emptying the tree.
+        if production:
+            log.info("page_selection.support_floor_skipped", files=len(production))
+        files = production
+    elif len(files) != len(production):
+        log.info(
+            "page_selection.support_floor",
+            excluded=len(production) - len(files),
+            kept=len(files),
+        )
     if not files:
         return ConceptCandidates()
 

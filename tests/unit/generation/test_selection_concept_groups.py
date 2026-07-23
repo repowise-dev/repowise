@@ -203,6 +203,84 @@ def test_identity_is_stable_across_processes():
 
 
 # ---------------------------------------------------------------------------
+# The importance floor covers documentation and example source too
+# ---------------------------------------------------------------------------
+
+
+def _support_paths() -> list[str]:
+    """Documentation and example source at the repository root."""
+    return (
+        [f"docs/conf{i}.py" for i in range(4)]
+        + [f"docs_src/tutorial/app{i}.py" for i in range(8)]
+        + [f"examples/basic/demo{i}.py" for i in range(5)]
+        + ["samples/quickstart.py"]
+    )
+
+
+def test_root_documentation_and_examples_get_no_concept_page():
+    """Measured, not assumed: on one framework these outnumbered the library."""
+    groups = [g for _, g in _build_module_groups(_inputs(paths=_paths() + _support_paths())).scored]
+    claimed = [p for g in groups for p in g.file_paths]
+
+    assert claimed, "fixture produced no groups"
+    for prefix in ("docs/", "docs_src/", "examples/", "samples/"):
+        assert not any(
+            p.startswith(prefix) for p in claimed
+        ), f"{prefix} reached the concept tree: {[p for p in claimed if p.startswith(prefix)]}"
+    # The fixture is only meaningful if those files were in the input.
+    assert any(p.startswith("docs_src/") for p in _support_paths())
+
+
+def test_a_docs_directory_inside_a_package_keeps_its_pages():
+    """The rule is anchored at the repository root, so a docs *feature* stays.
+
+    This is the case the amendment names: a source directory that happens to
+    be called ``docs`` deep inside a package is code, and excluding it would
+    be the substring bug the test rule originally shipped with, wearing a
+    different hat.
+    """
+    feature = [f"packages/app/src/core/docs/render{i}.py" for i in range(7)]
+    groups = [g for _, g in _build_module_groups(_inputs(paths=_paths() + feature)).scored]
+    claimed = {p for g in groups for p in g.file_paths}
+
+    assert set(feature) <= claimed, f"a docs feature was excluded: {set(feature) - claimed}"
+
+
+def test_production_paths_that_merely_begin_with_the_word_are_kept():
+    """Segment match, not prefix-of-string match."""
+    lookalikes = [
+        "documentation_builder/render.py",
+        "docsearch/index.py",
+        "examples_runner/main.py",
+        "sampler/draw.py",
+    ]
+    groups = [g for _, g in _build_module_groups(_inputs(paths=_paths() + lookalikes)).scored]
+    claimed = {p for g in groups for p in g.file_paths}
+
+    assert set(lookalikes) <= claimed, f"excluded by a prefix match: {set(lookalikes) - claimed}"
+
+
+def test_dropping_support_files_does_not_change_the_partition():
+    """The floor is a pure filter: it must not reshape the remaining groups."""
+    with_support = [
+        g.structural_key
+        for _, g in _build_module_groups(_inputs(paths=_paths() + _support_paths())).scored
+    ]
+    without = [g.structural_key for _, g in _build_module_groups(_inputs(paths=_paths())).scored]
+
+    assert with_support == without
+
+
+def test_a_repository_that_is_only_documentation_still_gets_a_tree():
+    """Documenting the docs is a bad wiki. Having none at all is a worse one."""
+    groups = [g for _, g in _build_module_groups(_inputs(paths=_support_paths())).scored]
+    claimed = [p for g in groups for p in g.file_paths]
+
+    assert groups, "the floor emptied the tree instead of yielding"
+    assert sorted(claimed) == sorted(_support_paths())
+
+
+# ---------------------------------------------------------------------------
 # Ordering and naming
 # ---------------------------------------------------------------------------
 
