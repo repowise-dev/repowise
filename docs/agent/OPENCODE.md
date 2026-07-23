@@ -115,3 +115,7 @@ The provider enforces several safety measures:
 - [OpenCode GitHub](https://github.com/anomalyco/opencode)
 - [OpenCode Docs](https://opencode.ai/docs)
 - [OpenCode Download](https://opencode.ai/download)
+
+## Example walkthrough
+
+Short smoke path: [examples/opencode/](../../examples/opencode/).
