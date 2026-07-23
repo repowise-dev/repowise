@@ -543,7 +543,8 @@ repowise doctor           # check setup, API keys, index drift
 ```
 
 Every command and flag: **[docs/reference/CLI_REFERENCE.md](docs/reference/CLI_REFERENCE.md)** ·
-config: **[docs/reference/CONFIG.md](docs/reference/CONFIG.md)**
+config: **[docs/reference/CONFIG.md](docs/reference/CONFIG.md)** ·
+examples: **[examples/](examples/)**
 
 ---
 

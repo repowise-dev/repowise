@@ -8,6 +8,8 @@ Repowise supports Codex in three separate ways:
 
 These features use project-local files. `repowise init --codex` writes under the repository, not to global `~/.codex/config.toml`.
 
+For a short smoke walkthrough, see [examples/codex/](../../examples/codex/).
+
 ## Prerequisites
 
 Install and authenticate the Codex CLI:

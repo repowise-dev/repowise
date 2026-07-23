@@ -67,6 +67,7 @@ your agent in under five minutes, with no API key.
 | [scale/WORKTREES.md](scale/WORKTREES.md) | Linked git worktrees seed their index from the base checkout, with no flags |
 | [scale/AUTO_SYNC.md](scale/AUTO_SYNC.md) | Keep the index fresh automatically on every commit |
 | [../docker/README.md](../docker/README.md) | Running repowise in Docker |
+| [../examples/](../examples/) | Copy-paste walkthroughs (Codex setup and more) |
 
 ## Reference
 

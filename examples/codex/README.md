@@ -47,3 +47,5 @@ codex
 ```
 
 Install the Repowise plugin from the local marketplace. The plugin bundles Repowise MCP, hooks, and Codex-neutral skills; it does not add slash commands. Plugin-bundled hooks require `[features] plugin_hooks = true` in current Codex releases.
+
+Full integration notes: [docs/agent/CODEX.md](../../docs/agent/CODEX.md).
