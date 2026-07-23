@@ -65,7 +65,8 @@ def _attach_file_provenance(page: GeneratedPage, ctx: FilePageContext) -> None:
     renders ``layer_name`` as a zoom-out chip and ``sources`` as a "built
     from" provenance list.
     """
-    from ..layers import infer_layer, layer_key
+    from ...analysis.knowledge_graph import _slugify
+    from ..layers import infer_layer
 
     if ctx.kg_layer_name:
         page.metadata["layer_name"] = ctx.kg_layer_name
@@ -83,8 +84,11 @@ def _attach_file_provenance(page: GeneratedPage, ctx: FilePageContext) -> None:
     # unconditionally. A curated layer_name without an id used to leave the
     # page unjoinable. The id is the stable slug; ``layer_name`` is display
     # text the LLM enrichment pass rewrites, and must never be a grouping key.
+    # Derived with kg_curation's own slugify, so a fallback id is byte-identical
+    # to the id that pass would mint for the same layer. A near-miss here points
+    # a file page at a layer page that does not exist.
     page.metadata["layer_id"] = ctx.kg_layer_id or "layer:{}".format(
-        layer_key(str(page.metadata["layer_name"]))
+        _slugify(str(page.metadata["layer_name"]))
     )
 
     sources: list[dict[str, str]] = []

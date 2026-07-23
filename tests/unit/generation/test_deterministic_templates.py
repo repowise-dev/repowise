@@ -328,3 +328,49 @@ def test_signature_leaves_short_signatures_untouched():
     from repowise.core.generation.page_generator.deterministic import signature
 
     assert signature("def go(x: int) -> None") == "def go(x: int) -> None"
+
+
+def test_as_markdown_leaves_fenced_code_blocks_intact():
+    """The double-backtick rule must not chew the fence delimiters."""
+    from repowise.core.generation.page_generator.deterministic import as_markdown
+
+    src = "Run it.\n\nExample:\n\n```python\nx = 1\n```\n"
+    assert "```python\nx = 1\n```" in as_markdown(src)
+
+
+def test_as_markdown_leaves_triple_backtick_spans_intact():
+    from repowise.core.generation.page_generator.deterministic import as_markdown
+
+    assert as_markdown("Use ```code``` here.") == "Use ```code``` here."
+
+
+def test_as_markdown_does_not_eat_ordinary_colon_text():
+    """A permissive role pattern deletes any word:word: before a backtick."""
+    from repowise.core.generation.page_generator.deterministic import as_markdown
+
+    assert as_markdown("Time complexity: O(n:m:`k`)") == "Time complexity: O(n:m:`k`)"
+    assert as_markdown("See http://x.io/a:b:`c`") == "See http://x.io/a:b:`c`"
+
+
+def test_as_markdown_removes_a_directive_body_not_just_its_head():
+    """A dangling indented body renders as a code block, the thing we avoid."""
+    from repowise.core.generation.page_generator.deterministic import as_markdown
+
+    out = as_markdown(
+        "Summary line.\n\n    Longer prose.\n\n    .. note::\n\n        Internal only.\n\n    More prose.\n"
+    )
+    assert "Internal only." not in out
+    assert "Longer prose." in out and "More prose." in out
+
+
+def test_as_markdown_is_idempotent():
+    from repowise.core.generation.page_generator.deterministic import as_markdown
+
+    for src in (
+        "See :meth:`Store.get`.",
+        "Pass ``None``.",
+        "Fence:\n\n```py\nx=1\n```\n",
+        "Body.\n\n.. note:: hi\n",
+    ):
+        once = as_markdown(src)
+        assert as_markdown(once) == once

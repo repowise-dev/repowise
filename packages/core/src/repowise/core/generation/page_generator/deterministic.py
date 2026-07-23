@@ -59,9 +59,21 @@ def oneline(value: object, limit: int = _ONELINE_LIMIT) -> str:
 # literal. Our docstrings are predominantly Sphinx flavoured, and markdown
 # renders none of it: ``:meth:`foo``` shows the role name as body text and the
 # double backticks come out as a stray empty code span.
-_REST_ROLE_RE = re.compile(r":[a-z:]+:`~?([^`]+)`")
-_REST_DIRECTIVE_RE = re.compile(r"^\s*\.\.\s+[a-z-]+::.*$", re.MULTILINE)
-_DOUBLE_TICK_RE = re.compile(r"``([^`]+)``")
+# Allow-listed rather than ``:[a-z:]+:`` so ordinary prose is left alone. A
+# permissive pattern eats any "word:word:" that happens to precede a backtick,
+# which turns "O(n:m:`k`)" into "O(n`k`)".
+_REST_ROLE_RE = re.compile(
+    r":(?:py:)?(?:meth|class|func|attr|mod|ref|data|exc|obj|const|term|doc|file):`~?([^`]+)`"
+)
+# A directive owns its indented body, so dropping only the ``.. note::`` line
+# leaves the body dangling at +4 spaces, which markdown then renders as a code
+# block. Consume the body with it.
+_REST_DIRECTIVE_RE = re.compile(
+    r"^([ \t]*)\.\.[ \t]+[a-z-]+::.*(?:\n(?:\1[ \t]+.*|[ \t]*(?=\n|$)))*", re.MULTILINE
+)
+# Not preceded or followed by a third backtick, so a ``` fence is left intact.
+_DOUBLE_TICK_RE = re.compile(r"(?<!`)``([^`\n]+)``(?!`)")
+_FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
 
 
 def as_markdown(value: object) -> str:
@@ -75,12 +87,25 @@ def as_markdown(value: object) -> str:
     text = str(value or "")
     if not text.strip():
         return ""
+
+    # Fenced blocks are already markdown and must survive untouched, so lift
+    # them out, rewrite the prose around them, and put them back.
+    fences: list[str] = []
+
+    def _stash(match: re.Match[str]) -> str:
+        fences.append(match.group(0))
+        return f"\x00FENCE{len(fences) - 1}\x00"
+
+    text = _FENCE_RE.sub(_stash, text)
     text = _REST_DIRECTIVE_RE.sub("", text)
     # ``:meth:`Store.get``` -> ``Store.get``, keeping the reference visible as
     # code rather than dropping it.
     text = _REST_ROLE_RE.sub(r"`\1`", text)
     text = _DOUBLE_TICK_RE.sub(r"`\1`", text)
-    return dedent_body(text).strip()
+    text = dedent_body(text).strip()
+    for i, fence in enumerate(fences):
+        text = text.replace(f"\x00FENCE{i}\x00", fence)
+    return text
 
 
 def dedent_body(text: str) -> str:

@@ -45,7 +45,7 @@ function readTour(overview: DocPage | undefined): TourStop[] {
 }
 
 function readLayerOrder(overview: DocPage | undefined): string[] {
-  const raw = overview?.metadata?.["layer_order"];
+  const raw = overview?.metadata?.["layer_order_ids"] ?? overview?.metadata?.["layer_order"];
   return Array.isArray(raw) ? raw.filter((x): x is string => typeof x === "string") : [];
 }
 
