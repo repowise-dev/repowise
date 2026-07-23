@@ -373,19 +373,24 @@ export const DOMAIN_SECTION_KEYS = Object.values(SECTION_KEYS);
 // overview page at generation time. Used to order the Architecture section and
 // the Modules section so the tree reads as a dependency hierarchy rather than
 // alphabetically. Returns a rank lookup (lower = closer to the top).
-function layerRankLookup(pages: DocPage[]): (layer: string) => number {
+//
+// Keyed on layer_id, not layer_name. layer_name is display text the LLM
+// enrichment pass rewrites, so it drifts between generations. Measured
+// 2026-07-23, 11 curated layers against 62 distinct layer_name values, and
+// only 82 of 1108 file pages resolved to a rank. layer_id is a stable slug.
+function layerRankLookup(pages: DocPage[]): (layerId: string) => number {
   const overview = pages.find((p) => p.page_type === "repo_overview");
   const raw = overview?.metadata?.["layer_order"];
   const order = Array.isArray(raw) ? (raw.filter((x) => typeof x === "string") as string[]) : [];
-  const index = new Map(order.map((name, i) => [name, i]));
-  return (layer: string) => index.get(layer) ?? Number.MAX_SAFE_INTEGER;
+  const index = new Map(order.map((id, i) => [id, i]));
+  return (layerId: string) => index.get(layerId) ?? Number.MAX_SAFE_INTEGER;
 }
 
-// The layer a module belongs to = the most common layer_name across its files.
+// The layer a module belongs to = the most common layer_id across its files.
 function dominantLayer(files: DocPage[]): string {
   const counts = new Map<string, number>();
   for (const f of files) {
-    const layer = f.metadata?.["layer_name"];
+    const layer = f.metadata?.["layer_id"];
     if (typeof layer === "string" && layer) {
       counts.set(layer, (counts.get(layer) ?? 0) + 1);
     }

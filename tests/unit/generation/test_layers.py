@@ -7,6 +7,7 @@ from repowise.core.generation.layers import (
     DOCS_TOOLING_LAYER,
     compute_layer_order,
     infer_layer,
+    layer_key,
 )
 
 # ---------------------------------------------------------------------------
@@ -275,6 +276,45 @@ def test_compute_layer_order_stable_without_edges():
     order = compute_layer_order(file_layers, [])
     # Falls back to canonical rank: API above Data above Utility.
     assert order == ["API", "Data", "Utility"]
+
+
+def test_compute_layer_order_ranks_layer_ids_like_layer_names():
+    """The spine is keyed on the stable ``layer:<slug>`` id, not the display name.
+
+    ``layer_name`` is rewritten by the layer-enrichment pass, so it drifts
+    between generations and cannot be a join key. Ordering must produce the
+    same stack whichever spelling it is handed.
+    """
+    by_name = compute_layer_order(
+        {"api/h.py": "API", "services/s.py": "Service", "models/m.py": "Data"},
+        [("api/h.py", "services/s.py"), ("services/s.py", "models/m.py")],
+    )
+    by_id = compute_layer_order(
+        {
+            "api/h.py": "layer:api",
+            "services/s.py": "layer:service",
+            "models/m.py": "layer:data",
+        },
+        [("api/h.py", "services/s.py"), ("services/s.py", "models/m.py")],
+    )
+    assert by_id == [f"layer:{name.lower()}" for name in by_name]
+
+
+def test_compute_layer_order_pins_tests_when_given_layer_ids():
+    """The pinning rule keys on the slug, so it survives the id spelling."""
+    file_layers = {
+        "api/h.py": "layer:api",
+        "services/s.py": "layer:service",
+        "tests/test_h.py": "layer:test",
+    }
+    edges = [("api/h.py", "services/s.py"), ("tests/test_h.py", "api/h.py")]
+    order = compute_layer_order(file_layers, edges)
+    assert order[-1] == "layer:test"
+
+
+def test_layer_key_normalises_both_spellings():
+    assert layer_key("UI") == layer_key("layer:ui") == "ui"
+    assert layer_key("Docs & Tooling") == layer_key("layer:docs-tooling") == "docs-tooling"
 
 
 def test_compute_layer_order_single_layer():

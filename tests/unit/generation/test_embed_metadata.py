@@ -3,7 +3,7 @@
 ``title`` is in the coverage-rerank haystack and the grounding corpus on the
 serving side, so a blank one is a silent ranking tax rather than a cosmetic
 bug. It was blank for every page embedded during generation until 2026-07,
-while ``reindex`` and ``doctor --repair`` set it correctly — meaning the same
+while ``reindex`` and ``doctor --repair`` set it correctly, meaning the same
 page scored differently depending on which code path last wrote it.
 """
 
@@ -21,7 +21,7 @@ def _page(**overrides) -> GeneratedPage:
     fields = {
         "page_id": "file_page:pkg/mod.py",
         "page_type": "file_page",
-        "title": "mod.py — Ingestion",
+        "title": "mod.py (ingestion)",
         "content": "# mod.py\n\n## Overview\n\nParses a module into symbols.\n",
         "source_hash": "abc123",
         "model_name": "template",
@@ -40,7 +40,7 @@ def _page(**overrides) -> GeneratedPage:
 
 def test_embed_metadata_carries_the_page_title():
     _pid, _text, meta = _embed_item(_page())
-    assert meta["title"] == "mod.py — Ingestion"
+    assert meta["title"] == "mod.py (ingestion)"
 
 
 def test_embed_metadata_title_is_never_silently_blank():
@@ -57,4 +57,4 @@ async def test_title_survives_into_the_vector_store():
 
     results = await store.search("parses a module", limit=1)
     assert results
-    assert results[0].title == "mod.py — Ingestion"
+    assert results[0].title == "mod.py (ingestion)"

@@ -20,6 +20,7 @@ strings and edge tuples, which keeps them trivially unit-testable.
 
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
 from pathlib import PurePosixPath
@@ -259,6 +260,34 @@ _CANONICAL_RANK: dict[str, int] = {
 _PINNED_AFTER_RUNTIME: frozenset[str] = ADJACENT_LAYERS | {DOCS_TOOLING_LAYER}
 
 
+def layer_key(layer: str) -> str:
+    """Normalise a layer to its stable slug, from either spelling.
+
+    Callers hand us one of two things: a canonical heuristic name from
+    :func:`infer_layer` ("UI", "Docs & Tooling") or a curated layer id
+    ("layer:ui"). Both must rank identically, because the curated id *is*
+    ``layer:`` plus the slug of the heuristic name. See ``kg_curation`` where the
+    id is minted. Normalising at lookup lets ordering key on the stable id
+    without a second rank table, and keeps older callers passing names working.
+    """
+    slug = re.sub(r"[^a-z0-9]+", "-", layer.lower().strip()).strip("-")
+    return slug.removeprefix("layer-") or "unknown"
+
+
+_PINNED_KEYS: frozenset[str] = frozenset(layer_key(la) for la in _PINNED_AFTER_RUNTIME)
+_CANONICAL_RANK_BY_KEY: dict[str, int] = {
+    layer_key(name): rank for name, rank in _CANONICAL_RANK.items()
+}
+
+
+def _is_pinned(layer: str) -> bool:
+    return layer_key(layer) in _PINNED_KEYS
+
+
+def _canonical_rank(layer: str) -> int:
+    return _CANONICAL_RANK_BY_KEY.get(layer_key(layer), len(_CANONICAL_RANK))
+
+
 def infer_layer(path: str, language: str | None = None) -> str:
     """Return the architectural layer name for *path*.
 
@@ -371,7 +400,7 @@ def layer_order_basis(
         ld = file_layers.get(dst)
         if not ls or not ld or ls == ld:
             continue
-        if ls in _PINNED_AFTER_RUNTIME or ld in _PINNED_AFTER_RUNTIME:
+        if _is_pinned(ls) or _is_pinned(ld):
             continue
         return "imports"
     return "canonical"
@@ -408,8 +437,8 @@ def compute_layer_order(
     if len(layers) <= 1:
         return layers
 
-    runtime = [layer for layer in layers if layer not in _PINNED_AFTER_RUNTIME]
-    adjacent = [layer for layer in layers if layer in _PINNED_AFTER_RUNTIME]
+    runtime = [layer for layer in layers if not _is_pinned(layer)]
+    adjacent = [layer for layer in layers if _is_pinned(layer)]
 
     out_deg: dict[str, int] = defaultdict(int)  # edges leaving the layer
     in_deg: dict[str, int] = defaultdict(int)  # edges entering the layer
@@ -420,7 +449,7 @@ def compute_layer_order(
         ld = file_layers.get(dst)
         if not ls or not ld or ls == ld:
             continue
-        if ls in _PINNED_AFTER_RUNTIME or ld in _PINNED_AFTER_RUNTIME:
+        if _is_pinned(ls) or _is_pinned(ld):
             continue
         out_deg[ls] += 1
         in_deg[ld] += 1
@@ -429,8 +458,8 @@ def compute_layer_order(
         # Net "imported-ness": more incoming than outgoing → foundational →
         # sorts later (bottom). Negate out so consumers float to the top.
         net = in_deg[layer] - out_deg[layer]
-        return (net, _CANONICAL_RANK.get(layer, len(_CANONICAL_RANK)))
+        return (net, _canonical_rank(layer))
 
     ordered = sorted(runtime, key=sort_key)
-    ordered += sorted(adjacent, key=lambda la: _CANONICAL_RANK.get(la, len(_CANONICAL_RANK)))
+    ordered += sorted(adjacent, key=_canonical_rank)
     return ordered

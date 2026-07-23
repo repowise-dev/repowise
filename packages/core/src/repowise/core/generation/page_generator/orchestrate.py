@@ -404,7 +404,7 @@ class _GenerationRun:
         the import graph) and reference only pages that will exist, so neither
         spawns new LLM work.
         """
-        from ..layers import compute_layer_order, infer_layer
+        from ..layers import compute_layer_order, infer_layer, layer_key
         from ..tour import build_tour
 
         import_edges = self._file_import_edges()
@@ -437,12 +437,22 @@ class _GenerationRun:
             for p in self.parsed_files
             if getattr(p, "file_info", None)
         }
+        # Key the spine on the curated layer *id*, never on ``layer_name``.
+        # The name is a display string an LLM rewrites every enrichment pass.
+        # measured 2026-07-23: 11 curated layers against 62 distinct
+        # layer_name values on file pages, so only 82 of 1108 pages resolved
+        # to a rank and the tree lost its dependency ordering for the other
+        # 93%. The id is stable by construction (kg_curation mints it as
+        # ``layer:`` + slug) and matches what ``_attach_file_provenance``
+        # stamps on each page, so consumers can join on it.
         file_layers: dict[str, str] = {}
         for path in self.sel_file_paths:
             kg_fc = self.kg_ctx.get_file_context(path) if self.kg_ctx.available else None
-            file_layers[path] = (
-                kg_fc.layer_name if kg_fc and kg_fc.layer_name else ""
-            ) or infer_layer(path, lang_by_path.get(path))
+            if kg_fc and kg_fc.layer_id:
+                file_layers[path] = kg_fc.layer_id
+            else:
+                inferred = infer_layer(path, lang_by_path.get(path))
+                file_layers[path] = f"layer:{layer_key(inferred)}"
         self.layer_order = compute_layer_order(file_layers, import_edges)
 
     # ------------------------------------------------------------------
@@ -708,7 +718,7 @@ def _embed_item(page: GeneratedPage) -> tuple[str, str, dict]:
     ``title`` is load-bearing, not decoration: it feeds the coverage rerank
     haystack and the grounding corpus on the serving side. Omitting it here
     (as this did until 2026-07) left every page embedded at generation time
-    with a blank title, while ``reindex`` and ``doctor --repair`` set it —
+    with a blank title, while ``reindex`` and ``doctor --repair`` set it, so
     so the store disagreed with itself depending on how a page got there.
     """
     summary = overview_summary(page.content)

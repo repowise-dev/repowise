@@ -83,7 +83,7 @@ describe("buildPresentModel", () => {
     target_path: "repo",
     content: "# Acme\n\nA build tool.\n\n## Details\nmore",
     metadata: {
-      layer_order: ["API", "Core"],
+      layer_order: ["layer:api", "layer:core"],
       guided_tour: [
         { order: 1, title: "main.py", target_path: "src/main.py", reason: "entry point" },
         { order: 2, title: "core.py", target_path: "src/core.py", reason: "the engine" },
@@ -100,15 +100,19 @@ describe("buildPresentModel", () => {
     id: "lc",
     page_type: "layer_page",
     title: "Core layer",
+    target_path: "layer:core",
     content: "# Core\n\nThe core does the work and holds the pipeline together nicely.",
-    metadata: { layer_name: "Core" },
+    // Display name deliberately unlike the id: the enrichment pass rewrites
+    // layer_name, so ordering must not depend on it.
+    metadata: { layer_name: "Engine and Pipeline Core" },
   });
   const layerApi = makePage({
     id: "la",
     page_type: "layer_page",
     title: "API layer",
+    target_path: "layer:api",
     content: "# API\n\nThe API exposes endpoints to callers over HTTP with care.",
-    metadata: { layer_name: "API" },
+    metadata: { layer_name: "Typed RPC Interfaces" },
   });
   const mainFile = makePage({ id: "mf", target_path: "src/main.py", title: "main.py", content: "# main\n\nStarts the program and wires everything up on boot." });
 
@@ -142,6 +146,7 @@ describe("buildPresentModel", () => {
       id: "ld",
       page_type: "layer_page",
       title: "Data layer",
+      target_path: "layer:data",
       content:
         "# Data\n\nThe data layer persists and indexes everything the pipeline produces, and it is the durable backbone every other layer leans on.\n\n## Architecture\n\n```mermaid\nflowchart TD\nX-->Y\n```",
       metadata: { layer_name: "Data" },

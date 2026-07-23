@@ -56,6 +56,29 @@ def test_layer_metadata_attached():
     assert page.metadata["layer_role"] == "entry_point"
 
 
+def test_curated_layer_without_an_id_still_gets_one():
+    """A curated layer_name with no id used to leave the page unjoinable.
+
+    Consumers group on layer_id, so a page carrying only the display name
+    dropped out of the architecture ordering entirely.
+    """
+    page = _page()
+    _attach_file_provenance(page, _ctx(kg_layer_name="Shared UI Components"))
+    assert page.metadata["layer_id"] == "layer:shared-ui-components"
+
+
+def test_every_file_page_carries_a_layer_id():
+    for ctx in (
+        _ctx(),
+        _ctx(kg_layer_name="Domain", kg_layer_id="layer:domain"),
+        _ctx(kg_layer_name="Ingestion and Reasoning"),
+        _ctx(file_path="src/api/users.py"),
+    ):
+        page = _page()
+        _attach_file_provenance(page, ctx)
+        assert page.metadata.get("layer_id", "").startswith("layer:")
+
+
 def test_no_kg_layer_falls_back_to_inferred_layer():
     # Every file page must carry a layer_name so the Architecture tree can
     # group it; with no KG layer it is inferred from the path, and the

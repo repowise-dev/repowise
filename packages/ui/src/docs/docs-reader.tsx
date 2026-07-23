@@ -227,6 +227,10 @@ function DocsReaderBody({
     return out;
   }, [wikiLinks, page.metadata, pages, page.id]);
 
+  // layer_name is display text only. Joining to the layer page goes through
+  // layer_id, whose value is the stable "layer:<slug>" the layer page is keyed
+  // by. Reconstructing an id from the name never matched once the enrichment
+  // pass had renamed a layer.
   const layerName =
     typeof page.metadata?.layer_name === "string" ? page.metadata.layer_name : "";
   const layerId =
@@ -234,24 +238,9 @@ function DocsReaderBody({
   const layerPage = useMemo(
     () =>
       layerId
-        ? pages.find(
-            (p) => p.page_type === "layer_page" && p.target_path === layerId,
-          ) ??
-          (layerName
-            ? pages.find(
-                (p) =>
-                  p.page_type === "layer_page" &&
-                  p.target_path === `layer:${layerName}`,
-              )
-            : undefined)
-        : layerName
-          ? pages.find(
-              (p) =>
-                p.page_type === "layer_page" &&
-                p.target_path === `layer:${layerName}`,
-            )
-          : undefined,
-    [pages, layerId, layerName],
+        ? pages.find((p) => p.page_type === "layer_page" && p.target_path === layerId)
+        : undefined,
+    [pages, layerId],
   );
 
   const sources = useMemo(() => {
