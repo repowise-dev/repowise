@@ -192,12 +192,23 @@ function DocsReaderBody({
     [page.content, persona],
   );
 
+  // The nearest ancestor that is actually a module. Breadcrumbs now come from
+  // the stored tree, whose ancestors can be a layer or the file a symbol was
+  // spotted in; showing either as "in <name>" would repeat the layer chip
+  // rendered right beside it, or claim a file is a module.
   const moduleSeg = useMemo(
     () =>
       [...nav.breadcrumbs]
         .slice(0, -1)
         .reverse()
-        .find((s) => s.pageId && s.pageId !== page.id),
+        .find(
+          (s) =>
+            s.pageId &&
+            s.pageId !== page.id &&
+            // Older callers (and the path-split fallback) carry no page type;
+            // those segments were always module-or-directory, so they stand.
+            (s.pageType === undefined || s.pageType === "module_page"),
+        ),
     [nav.breadcrumbs, page.id],
   );
 
