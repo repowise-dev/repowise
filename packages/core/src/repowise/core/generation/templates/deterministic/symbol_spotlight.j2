@@ -17,7 +17,7 @@
 
 ## Overview
 
-{% if ctx.docstring %}{{ ctx.docstring | trim }}
+{% if ctx.docstring %}{{ ctx.docstring | as_markdown }}
 {% else %}`{{ ctx.symbol_name }}` is {{ "an" if ctx.kind and ctx.kind[0] in "aeiou" else "a" }} {{ ctx.kind or "symbol" }} defined in `{{ ctx.file_path }}`. It carries no docstring.{% endif %}
 
 {% if ctx.decorators %}

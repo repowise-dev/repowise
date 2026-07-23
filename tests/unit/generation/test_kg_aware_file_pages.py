@@ -249,8 +249,20 @@ class TestFilePageTemplate:
         from jinja2 import Environment, FileSystemLoader
         from pathlib import Path
 
+        from repowise.core.generation.page_generator.deterministic import (
+            as_markdown,
+            oneline,
+            signature,
+        )
+
         template_dir = Path(__file__).resolve().parents[3] / "packages" / "core" / "src" / "repowise" / "core" / "generation" / "templates"
-        return Environment(loader=FileSystemLoader(str(template_dir)))
+        env = Environment(loader=FileSystemLoader(str(template_dir)))
+        # Mirror the production environment, which registers these in
+        # PageGenerator.__init__. Without them the templates fail to compile.
+        env.filters["oneline"] = oneline
+        env.filters["as_markdown"] = as_markdown
+        env.filters["signature"] = signature
+        return env
 
     def test_tier1_template_renders_kg_layer(self, jinja_env):
         tmpl = jinja_env.get_template("file_page.j2")

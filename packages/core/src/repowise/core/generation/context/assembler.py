@@ -35,6 +35,19 @@ from .token_budget import (
 
 log = structlog.get_logger(__name__)
 
+
+def _is_foreign_edge(node: str, path: str) -> bool:
+    """Whether a graph neighbour is a real dependency rather than this file itself.
+
+    Graph node ids are either a file path or ``<file path>::<symbol>``. Both
+    spellings of "this file" are dropped so a dependency list only ever names
+    other files.
+    """
+    if node.startswith("external:"):
+        return False
+    return node != path and node.split("::", 1)[0] != path
+
+
 # Maximum imports to include before truncating
 _MAX_IMPORTS = 30
 # Maximum top-files to include in repo overview
@@ -138,9 +151,14 @@ class ContextAssembler:
         # Graph edges
         in_edges = list(graph.predecessors(path)) if path in graph else []
         out_edges = list(graph.successors(path)) if path in graph else []
-        # Filter out external nodes
-        in_edges = [e for e in in_edges if not e.startswith("external:")]
-        out_edges = [e for e in out_edges if not e.startswith("external:")]
+        # Filter out external nodes, and edges that point back into this same
+        # file. The graph carries file->symbol edges, so a file's successors
+        # include its own symbols ("thisfile.py::Thing"). Left in, those
+        # dominate the rendered dependency list: measured over the current
+        # index, 70% of all dependency lines were self-references and 121
+        # pages listed nothing else. A file's dependencies are other files.
+        in_edges = [e for e in in_edges if _is_foreign_edge(e, path)]
+        out_edges = [e for e in out_edges if _is_foreign_edge(e, path)]
 
         # Source snippet — use structural summary for large files
         source_text = source_bytes.decode("utf-8", errors="replace")

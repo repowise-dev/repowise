@@ -261,3 +261,70 @@ def test_summary_skips_the_stats_line():
     assert _extract_summary(content, skip_metadata=True).startswith("Walks the repository")
     # Off by default: a model that opens with **Purpose:** means it as prose.
     assert _extract_summary(content).startswith("**Files:**")
+
+
+# ---------------------------------------------------------------------------
+# Docstring and signature rendering
+# ---------------------------------------------------------------------------
+
+
+def test_as_markdown_converts_sphinx_roles_to_code_spans():
+    from repowise.core.generation.page_generator.deterministic import as_markdown
+
+    out = as_markdown("See :meth:`Store.get` and :class:`~pkg.Thing`.")
+    assert out == "See `Store.get` and `pkg.Thing`."
+
+
+def test_as_markdown_converts_double_backtick_literals():
+    from repowise.core.generation.page_generator.deterministic import as_markdown
+
+    assert as_markdown("Pass ``None`` to skip.") == "Pass `None` to skip."
+
+
+def test_as_markdown_drops_rest_directives():
+    from repowise.core.generation.page_generator.deterministic import as_markdown
+
+    out = as_markdown("Body text.\n\n.. note:: internal only\n")
+    assert ".. note::" not in out
+    assert "Body text." in out
+
+
+def test_as_markdown_dedents_so_the_body_is_not_a_code_block():
+    """Four leading spaces would make markdown render the body as code."""
+    from repowise.core.generation.page_generator.deterministic import as_markdown
+
+    out = as_markdown("Summary line.\n\n    Indented continuation.\n")
+    assert "\n    Indented" not in out
+    assert "Indented continuation." in out
+
+
+def test_as_markdown_leaves_plain_text_alone():
+    from repowise.core.generation.page_generator.deterministic import as_markdown
+
+    assert as_markdown("Just a sentence.") == "Just a sentence."
+    assert as_markdown(None) == ""
+
+
+def test_signature_collapses_source_whitespace():
+    """Signatures span source lines, so raw text carries runs of indentation."""
+    from repowise.core.generation.page_generator.deterministic import signature
+
+    raw = "def go(\n        a: int,\n        b: str,\n    ) -> None"
+    assert signature(raw) == "def go( a: int, b: str, ) -> None"
+
+
+def test_signature_truncates_at_an_argument_boundary_not_mid_token():
+    from repowise.core.generation.page_generator.deterministic import signature
+
+    raw = "def go(" + ", ".join(f"argument_number_{i}: int = 0" for i in range(20)) + ") -> None"
+    out = signature(raw, limit=80)
+    assert out.endswith(" …")
+    # The visible tail must be a whole parameter, never half an identifier.
+    assert not out.rstrip(" …").rstrip(",").endswith("argument_number")
+    assert "argument_number_0: int = 0" in out
+
+
+def test_signature_leaves_short_signatures_untouched():
+    from repowise.core.generation.page_generator.deterministic import signature
+
+    assert signature("def go(x: int) -> None") == "def go(x: int) -> None"

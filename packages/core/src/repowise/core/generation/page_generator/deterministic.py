@@ -20,6 +20,7 @@ the UI can offer to rewrite it with a model.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import structlog
@@ -52,6 +53,70 @@ def oneline(value: object, limit: int = _ONELINE_LIMIT) -> str:
     if len(text) > limit:
         text = text[: limit - 1].rstrip() + "…"
     return text
+
+
+# reStructuredText roles (:meth:`x`, :class:`~pkg.X`) and the double-backtick
+# literal. Our docstrings are predominantly Sphinx flavoured, and markdown
+# renders none of it: ``:meth:`foo``` shows the role name as body text and the
+# double backticks come out as a stray empty code span.
+_REST_ROLE_RE = re.compile(r":[a-z:]+:`~?([^`]+)`")
+_REST_DIRECTIVE_RE = re.compile(r"^\s*\.\.\s+[a-z-]+::.*$", re.MULTILINE)
+_DOUBLE_TICK_RE = re.compile(r"``([^`]+)``")
+
+
+def as_markdown(value: object) -> str:
+    """Convert a source docstring into markdown that renders as intended.
+
+    Docstrings reach a deterministic page verbatim, so whatever dialect the
+    author used lands in the rendered wiki. Sphinx roles and directives are by
+    far the most common here and are also the ones markdown mangles worst, so
+    those are converted; everything else is left alone rather than guessed at.
+    """
+    text = str(value or "")
+    if not text.strip():
+        return ""
+    text = _REST_DIRECTIVE_RE.sub("", text)
+    # ``:meth:`Store.get``` -> ``Store.get``, keeping the reference visible as
+    # code rather than dropping it.
+    text = _REST_ROLE_RE.sub(r"`\1`", text)
+    text = _DOUBLE_TICK_RE.sub(r"`\1`", text)
+    return dedent_body(text).strip()
+
+
+def dedent_body(text: str) -> str:
+    """Strip the common indent from every line after the first.
+
+    A docstring's first line starts at the quote, later lines carry the source
+    indentation. Left in, four or more leading spaces make markdown treat the
+    body as a code block.
+    """
+    lines = text.splitlines()
+    if len(lines) < 2:
+        return text
+    rest = [ln for ln in lines[1:] if ln.strip()]
+    if not rest:
+        return lines[0]
+    indent = min(len(ln) - len(ln.lstrip()) for ln in rest)
+    return "\n".join([lines[0]] + [ln[indent:] if ln.strip() else "" for ln in lines[1:]])
+
+
+def signature(value: object, limit: int = 120) -> str:
+    """Render a symbol signature for a table cell without cutting mid-token.
+
+    Signatures are captured across source lines, so collapsing whitespace is
+    needed before anything else or the cell fills with runs of indentation.
+    When one is still too long we cut back to the last argument boundary, so
+    the reader sees a whole parameter list prefix rather than half an
+    identifier.
+    """
+    text = " ".join(str(value or "").split())
+    if len(text) <= limit:
+        return text
+    head = text[:limit]
+    cut = max(head.rfind(", "), head.rfind("("))
+    if cut > limit // 3:
+        head = head[: cut + 1]
+    return head.rstrip().rstrip(",") + " …"
 
 
 class DeterministicRenderMixin:
