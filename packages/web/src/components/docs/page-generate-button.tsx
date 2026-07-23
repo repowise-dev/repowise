@@ -8,6 +8,7 @@ import {
   type RegenerateCascade,
 } from "@repowise-dev/ui/wiki/regenerate-button";
 import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
+import { isStubPage } from "@repowise-dev/ui/lib/page-types";
 import { GenerationProgressWrapper } from "@/components/jobs/generation-progress-wrapper";
 import { regeneratePage } from "@/lib/api/pages";
 import { generateEstimate } from "@/lib/api/repos";
@@ -33,7 +34,10 @@ export function PageGenerateButton({
    *  link-like entry point rendered beside the provenance pill in the reader. */
   variant?: "button" | "inline";
 }) {
-  const mode = page.is_deterministic ? "write" : "regenerate";
+  // "Write" on a stub concept page, "Regenerate" on a written one. Callers only
+  // mount this on the model-written page types, so a stub here is genuinely a
+  // page awaiting its first prose, never a structural file page.
+  const mode = isStubPage(page) ? "write" : "regenerate";
   const settingsHref = `/repos/${repoId}/settings#provider`;
 
   const [confirmOpen, setConfirmOpen] = useState(false);

@@ -54,10 +54,8 @@ export default async function OverviewPage({ params }: Props) {
   const isFresh = stats.file_count === 0;
 
   // Fall back to the sync page count so the tile still reads on a server that
-  // predates the AI/auto split; the split line just hides.
+  // predates the doc page count.
   const docPages = stats.doc_page_count ?? sync.page_count ?? 0;
-  const autoPages = stats.doc_auto_page_count;
-  const aiPages = autoPages != null ? Math.max(0, docPages - autoPages) : null;
 
   const kpis: KpiItem[] = [
     {
@@ -76,12 +74,6 @@ export default async function OverviewPage({ params }: Props) {
       label: "Docs",
       value: formatNumber(docPages),
       href: `/repos/${id}/docs`,
-      // The AI/auto split is the interesting part of a page count: it says how
-      // much of the wiki a model wrote vs what was templated from structure.
-      description:
-        docPages > 0 && aiPages != null && autoPages != null
-          ? `${formatNumber(aiPages)} AI · ${formatNumber(autoPages)} auto`
-          : undefined,
     },
     {
       label: "Dead Exports",
@@ -143,9 +135,6 @@ export default async function OverviewPage({ params }: Props) {
           modelName={providers?.active.model ?? sync.last_sync_model ?? ""}
           lastSyncAt={sync.last_sync_at}
           lastResyncAt={sync.last_resync_at}
-          // Offer the bulk "Write with AI" action only when template (auto)
-          // pages actually exist to upgrade.
-          docsMode={autoPages != null && autoPages > 0 ? "deterministic" : undefined}
         />
       )}
 

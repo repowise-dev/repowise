@@ -1,22 +1,18 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import {
   QuickActions as QuickActionsShell,
   DEFAULT_QUICK_ACTIONS,
-  GENERATE_DOCS_ACTION,
   type QuickActionKey,
 } from "@repowise-dev/ui/dashboard/quick-actions";
 import { syncRepo, fullResyncRepo } from "@/lib/api/repos";
 import { listJobs } from "@/lib/api/jobs";
 import { analyzeDeadCode } from "@/lib/api/dead-code";
 import { GenerationProgressWrapper } from "@/components/jobs/generation-progress-wrapper";
-import { BulkGenerateConfirm } from "@/components/docs/bulk-generate-confirm";
-import { useBulkGenerate } from "@/lib/hooks/use-bulk-generate";
 import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
-import type { RepoResponse } from "@/lib/api/types";
 
 interface Props {
   repoId: string;
@@ -25,16 +21,11 @@ interface Props {
   modelName?: string;
   lastSyncAt?: string | null;
   lastResyncAt?: string | null;
-  /** When "deterministic" the repo still has template pages, so the "Write with
-   *  AI" bulk action is offered. */
-  docsMode?: RepoResponse["docs_mode"];
 }
 
 /** Human label for an action key, for toast copy. */
 function labelFor(key: QuickActionKey): string {
-  return (
-    [GENERATE_DOCS_ACTION, ...DEFAULT_QUICK_ACTIONS].find((a) => a.key === key)?.label ?? key
-  );
+  return DEFAULT_QUICK_ACTIONS.find((a) => a.key === key)?.label ?? key;
 }
 
 export function QuickActionsWrapper({
@@ -44,14 +35,12 @@ export function QuickActionsWrapper({
   modelName = "",
   lastSyncAt,
   lastResyncAt,
-  docsMode,
 }: Props) {
   const router = useRouter();
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
   // Which action started the job on screen, so its completion can be reported
   // and refreshed in its own terms rather than as a generic doc generation.
   const [activeKey, setActiveKey] = useState<QuickActionKey | null>(null);
-  const bulk = useBulkGenerate(repoId);
 
   // Hydrate from any in-flight job so refreshes don't lose progress visibility.
   useEffect(() => {
@@ -74,14 +63,6 @@ export function QuickActionsWrapper({
     };
   }, [repoId]);
 
-  const actions = useMemo(
-    () =>
-      docsMode === "deterministic"
-        ? [GENERATE_DOCS_ACTION, ...DEFAULT_QUICK_ACTIONS]
-        : DEFAULT_QUICK_ACTIONS,
-    [docsMode],
-  );
-
   function startWatching(jobId: string, key: QuickActionKey | null) {
     setActiveJobId(jobId);
     setActiveKey(key);
@@ -91,7 +72,6 @@ export function QuickActionsWrapper({
     const key = activeKey;
     setActiveJobId(null);
     setActiveKey(null);
-    bulk.clearJob();
     if (key === "dead-code") {
       if (status === "completed") toast.success("Dead code scan finished");
       else if (status === "failed") toast.error("Dead code scan failed");
@@ -103,16 +83,6 @@ export function QuickActionsWrapper({
   }
 
   async function handleAction(key: QuickActionKey) {
-    if (key === "generate-docs") {
-      // Open in coverage mode at the recommended percent, not silently
-      // targeting every unwritten page: a large repo is never one click from
-      // writing all N. "All" is the 100% bucket, one click away.
-      bulk.beginCoverage({
-        label: "the most important pages by coverage",
-        defaultCascade: "none",
-      });
-      return;
-    }
     try {
       if (key === "sync") {
         const job = await syncRepo(repoId);
@@ -152,11 +122,9 @@ export function QuickActionsWrapper({
     }
   }
 
-  // A bulk generate job shares the same progress slot as sync/resync.
-  const jobId = activeJobId ?? bulk.jobId;
-  const activeSlot = jobId ? (
+  const activeSlot = activeJobId ? (
     <GenerationProgressWrapper
-      jobId={jobId}
+      jobId={activeJobId}
       repoName={repoName}
       // A dead-code scan runs the index-only pipeline, so the generic
       // "Documentation updated - 0 pages generated" toast would describe it
@@ -167,17 +135,14 @@ export function QuickActionsWrapper({
   ) : null;
 
   return (
-    <>
-      <QuickActionsShell
-        actions={actions}
-        onAction={handleAction}
-        lastSyncAt={lastSyncAt}
-        lastResyncAt={lastResyncAt}
-        pageCount={pageCount}
-        modelName={modelName}
-        activeJobSlot={activeSlot}
-      />
-      <BulkGenerateConfirm flow={bulk} repoId={repoId} />
-    </>
+    <QuickActionsShell
+      actions={DEFAULT_QUICK_ACTIONS}
+      onAction={handleAction}
+      lastSyncAt={lastSyncAt}
+      lastResyncAt={lastResyncAt}
+      pageCount={pageCount}
+      modelName={modelName}
+      activeJobSlot={activeSlot}
+    />
   );
 }

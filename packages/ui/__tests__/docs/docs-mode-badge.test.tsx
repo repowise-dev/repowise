@@ -8,18 +8,13 @@ describe("DocsModeBadge", () => {
     expect(container).toBeEmptyDOMElement();
   });
 
-  it("labels a template repo as Auto docs, never fully written", () => {
+  it("flags a repo whose subsystem pages are still stubs", () => {
     render(<DocsModeBadge mode="deterministic" />);
-    expect(screen.getByText("Auto docs")).toBeInTheDocument();
+    expect(screen.getByText("Subsystem pages unwritten")).toBeInTheDocument();
   });
 
-  it("labels a partly-upgraded repo as Mixed docs", () => {
-    render(<DocsModeBadge mode="mixed" />);
-    expect(screen.getByText("Mixed docs")).toBeInTheDocument();
-  });
-
-  it("labels a fully model-written repo as AI docs", () => {
-    render(<DocsModeBadge mode="llm" />);
-    expect(screen.getByText("AI docs")).toBeInTheDocument();
+  it("renders nothing on a fully written wiki", () => {
+    const { container } = render(<DocsModeBadge mode="llm" />);
+    expect(container).toBeEmptyDOMElement();
   });
 });

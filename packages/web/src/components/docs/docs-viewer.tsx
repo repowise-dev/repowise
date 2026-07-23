@@ -15,7 +15,7 @@ import { cn } from "@/lib/utils/cn";
 import { getGitMetadata } from "@/lib/api/git";
 import { summarizeFixHistory } from "@repowise-dev/ui/lib/fix-history";
 import { DocsReader } from "@repowise-dev/ui/docs/docs-reader";
-import { isDeterministicPage } from "@repowise-dev/ui/lib/page-types";
+import { isModelWrittenType } from "@repowise-dev/ui/lib/page-types";
 import { PageGenerateButton } from "./page-generate-button";
 import { Badge } from "@repowise-dev/ui/ui/badge";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
@@ -332,7 +332,7 @@ export function DocsViewer({
       buildPageHref={buildPageHref}
       LinkComponent={Link}
       upgradeSlot={
-        page && isDeterministicPage(page) ? (
+        page && isModelWrittenType(page.page_type) ? (
           <PageGenerateButton
             page={page}
             repoId={repoId}

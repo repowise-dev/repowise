@@ -42,41 +42,38 @@ export function getPageTypeLabel(pageType: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Deterministic ("auto") pages
+// Model-written pages
 // ---------------------------------------------------------------------------
 //
-// The Phase G coverage tail gives every parsed source file a template-generated
-// page (zero LLM) so the whole tree is browsable and retrievable. These are
-// factual but terse; the UI badges them "Auto" and the docs tree groups them so
-// human browsing of the AI-written pages stays clean.
+// Every file / symbol / api / infra / scc / layer page renders from structure
+// and is a template forever. Only the concept tree and onboarding are written
+// by a model, so "does this page have prose yet" is a question that only makes
+// sense for these four types. This mirrors core's MODEL_WRITTEN_PAGE_TYPES.
 
-/** Fields any surface needs to recognise a deterministic page. All optional so
- *  older payloads (DocPage / FileWikiPageRef / SearchResultResponse) type-check. */
-export interface DeterministicMarker {
-  is_deterministic?: boolean;
-  doc_tier?: number | null;
-  provider_name?: string;
+export const MODEL_WRITTEN_PAGE_TYPES = new Set([
+  "module_page",
+  "repo_overview",
+  "architecture_diagram",
+  "onboarding",
+]);
+
+/** True for the page types a model writes (the concept tree and onboarding).
+ *  The regenerate affordance renders only on these; every other type is
+ *  structural and has nothing to write into. */
+export function isModelWrittenType(pageType: string | null | undefined): boolean {
+  return !!pageType && MODEL_WRITTEN_PAGE_TYPES.has(pageType);
 }
 
-/**
- * True when a page is a deterministic (auto, no-LLM) page. Prefers the flat
- * `is_deterministic` flag; falls back to `doc_tier >= 2` or the `template`
- * provider for rows/payloads that only carry those.
- */
-export function isDeterministicPage(page: DeterministicMarker | null | undefined): boolean {
-  if (!page) return false;
-  if (page.is_deterministic) return true;
-  if (typeof page.doc_tier === "number" && page.doc_tier >= 2) return true;
+/** True when a model-written page is still a structural stub (no prose yet).
+ *  Scoped to the model-written types: a stub carries `provider_name ===
+ *  "template"`, a written page a real provider. Returns false for every
+ *  structural page type, which is never a stub in this sense. */
+export function isStubPage(
+  page: { page_type?: string; provider_name?: string } | null | undefined,
+): boolean {
+  if (!page || !isModelWrittenType(page.page_type)) return false;
   return page.provider_name === "template";
 }
-
-export const DETERMINISTIC_BADGE_LABEL = "Auto";
-export const DETERMINISTIC_BADGE_TITLE =
-  "Auto-documented from code structure (no AI). Factual but terse.";
-
-export const AI_WRITTEN_BADGE_LABEL = "AI";
-export const AI_WRITTEN_BADGE_TITLE =
-  "Written by AI from the code and its context.";
 
 // ---------------------------------------------------------------------------
 // Onboarding collection

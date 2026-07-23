@@ -77,30 +77,11 @@ describe("GenerateConfirmDialog (bulk overrides)", () => {
     expect(link).toHaveAttribute("href", "/repos/r1/settings#provider");
   });
 
-  it("renders a coverage bucket picker (100% as 'All') and fires onCoverageChange", () => {
-    const onCoverageChange = vi.fn();
-    render(
-      <GenerateConfirmDialog
-        {...base}
-        cascadeScope="selection"
-        coverageOptions={[0.1, 0.2, 0.3, 0.5, 1]}
-        coveragePct={0.2}
-        onCoverageChange={onCoverageChange}
-        recommendedCoverage={0.2}
-      />,
-    );
-    // Buckets render, with 1.0 shown as "All".
-    expect(screen.getByRole("button", { name: "20%", pressed: true })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "All" })).toBeInTheDocument();
-    // The recommended hint mentions the recommended percent.
-    expect(screen.getByText(/20% covers the most important pages/)).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: "All" }));
-    expect(onCoverageChange).toHaveBeenCalledWith(1);
-  });
-
-  it("omits the coverage picker for an explicit selection", () => {
+  it("never renders a coverage bucket picker", () => {
+    // Bulk generation writes every unwritten concept page as one action; a free
+    // file layer has nothing to ration, so the picker is gone.
     render(<GenerateConfirmDialog {...base} cascadeScope="selection" />);
     expect(screen.queryByText("How much to write")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "All" })).not.toBeInTheDocument();
   });
 });

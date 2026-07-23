@@ -2,16 +2,12 @@
 
 import { GenerateConfirmDialog } from "@repowise-dev/ui/wiki/regenerate-button";
 import { formatEstimateCost } from "@/lib/generate-format";
-import {
-  COVERAGE_OPTIONS,
-  RECOMMENDED_COVERAGE,
-  type useBulkGenerate,
-} from "@/lib/hooks/use-bulk-generate";
+import { type useBulkGenerate } from "@/lib/hooks/use-bulk-generate";
 
 /**
  * Maps a `useBulkGenerate` flow onto the shared, presentational
- * `GenerateConfirmDialog` (selection-scoped cascade wording). Kept tiny so the
- * quick action, banner, and coverage toolbar reuse one mapping.
+ * `GenerateConfirmDialog` (selection-scoped cascade wording). One estimate, one
+ * confirm: no coverage picker, since a free file layer has nothing to ration.
  */
 export function BulkGenerateConfirm({
   flow,
@@ -20,33 +16,20 @@ export function BulkGenerateConfirm({
 }: {
   flow: ReturnType<typeof useBulkGenerate>;
   repoId: string;
-  /** Dialog title, e.g. "Write documentation with AI". */
+  /** Dialog title, e.g. "Write the subsystem pages". */
   title?: string;
 }) {
-  const { estimate, noProvider, label, coveragePct } = flow;
+  const { estimate, noProvider } = flow;
   const pages = estimate?.total_pages ?? 0;
-  const isCoverage = coveragePct != null;
 
   return (
     <GenerateConfirmDialog
       open={flow.confirmOpen}
       onOpenChange={flow.setConfirmOpen}
       mode="write"
-      title={title ?? "Write documentation with AI"}
+      title={title ?? "Write the subsystem pages"}
       cascadeScope="selection"
-      coverageOptions={isCoverage ? [...COVERAGE_OPTIONS] : undefined}
-      coveragePct={coveragePct ?? undefined}
-      onCoverageChange={isCoverage ? flow.changeCoverage : undefined}
-      recommendedCoverage={isCoverage ? RECOMMENDED_COVERAGE : undefined}
-      description={
-        <>
-          Write{" "}
-          <span className="font-medium text-[var(--color-text-primary)]">
-            {label ?? "the selected pages"}
-          </span>{" "}
-          with your configured model.
-        </>
-      }
+      description="Write every subsystem page still generated from structure, with your configured model."
       confirmLabel={pages > 0 ? `Write ${pages} ${pages === 1 ? "page" : "pages"}` : "Write with AI"}
       cascade={flow.cascade}
       onCascadeChange={flow.changeCascade}

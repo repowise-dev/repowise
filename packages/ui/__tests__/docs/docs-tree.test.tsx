@@ -290,22 +290,20 @@ describe("DocsTree", () => {
     expect(screen.getByText("infra-0.yml")).toBeInTheDocument();
   });
 
-  it("does not bucket the whole file layer on a deterministic-mode wiki", () => {
-    // Every file page is template-generated. The "Auto-documented" group
-    // exists to keep that tail from drowning AI-written pages; with no
-    // AI-written file pages to protect it would swallow the entire leaf level.
-    const auto = (id: string, path: string) =>
+  it("places file pages under their module, never in a provenance bucket", () => {
+    // Every page renders from one place now: file pages sit under their module
+    // in the tree, with no separate "Auto-documented" group to partition into.
+    const file = (id: string, path: string) =>
       makePage({
         id,
         target_path: path,
         title: path,
         parent_page_id: MODULE.id,
         display_order: 1,
-        is_deterministic: true,
       });
     render(
       <DocsTree
-        pages={[ROOT, LAYER_RUNTIME, MODULE, auto("f1", "runtime/engine/a.py"), auto("f2", "runtime/engine/b.py")]}
+        pages={[ROOT, LAYER_RUNTIME, MODULE, file("f1", "runtime/engine/a.py"), file("f2", "runtime/engine/b.py")]}
         selectedPageId={null}
         onSelectPage={() => {}}
       />,
@@ -314,25 +312,5 @@ describe("DocsTree", () => {
     fireEvent.click(screen.getByText("Zebra Runtime"));
     fireEvent.click(screen.getByText("runtime/engine"));
     expect(screen.getByText("a.py")).toBeInTheDocument();
-  });
-
-  it("still groups the coverage tail when AI-written file pages exist", () => {
-    render(
-      <DocsTree
-        pages={[
-          ...SPINE,
-          makePage({
-            id: "auto1",
-            target_path: "runtime/engine/generated.py",
-            title: "generated.py",
-            parent_page_id: MODULE.id,
-            is_deterministic: true,
-          }),
-        ]}
-        selectedPageId={null}
-        onSelectPage={() => {}}
-      />,
-    );
-    expect(screen.getByText(/Auto-documented \(1\)/)).toBeInTheDocument();
   });
 });

@@ -2,11 +2,6 @@ import type { ReactNode } from "react";
 import { BookOpen } from "lucide-react";
 import { EmptyState } from "../shared/empty-state";
 import { Badge } from "../ui/badge";
-import {
-  isDeterministicPage,
-  DETERMINISTIC_BADGE_LABEL,
-  DETERMINISTIC_BADGE_TITLE,
-} from "../lib/page-types";
 import { formatRelativeTime } from "../lib/format";
 import type { FileWikiPageRef } from "@repowise-dev/types/files";
 
@@ -44,11 +39,6 @@ export function FileDocTab({ wikiPage, docSlot, wikiHref }: FileDocTabProps) {
         >
           {wikiPage.freshness_status}
         </Badge>
-        {isDeterministicPage(wikiPage) && (
-          <Badge variant="outline" className="text-[10px] h-5" title={DETERMINISTIC_BADGE_TITLE}>
-            {DETERMINISTIC_BADGE_LABEL}
-          </Badge>
-        )}
         {wikiPage.updated_at && (
           <span
             className="text-xs text-[var(--color-text-tertiary)]"

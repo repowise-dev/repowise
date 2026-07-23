@@ -22,8 +22,7 @@ export default async function CoveragePage({
 
   try {
     // Auto-paginate past the 500-item API cap so the counts, donut, and the
-    // "select all template pages" affordance see every page, not just the first
-    // page of results.
+    // freshness table see every page, not just the first page of results.
     pages = await listAllPages(id);
   } catch {
     // API unavailable

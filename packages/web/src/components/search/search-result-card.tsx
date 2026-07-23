@@ -1,12 +1,7 @@
 import Link from "next/link";
 import { Badge } from "@repowise-dev/ui/ui/badge";
 import { truncatePath } from "@repowise-dev/ui/lib/format";
-import {
-  getPageTypeLabel,
-  isDeterministicPage,
-  DETERMINISTIC_BADGE_LABEL,
-  DETERMINISTIC_BADGE_TITLE,
-} from "@repowise-dev/ui/lib/page-types";
+import { getPageTypeLabel } from "@repowise-dev/ui/lib/page-types";
 import { cn } from "@/lib/utils/cn";
 import { pageHref } from "@/lib/utils/page-href";
 import type { SearchResultResponse } from "@/lib/api/types";
@@ -48,11 +43,6 @@ export function SearchResultCard({ result, query, repoId }: SearchResultCardProp
           {result.title}
         </h3>
         <div className="flex items-center gap-1.5 shrink-0">
-          {isDeterministicPage(result) && (
-            <Badge variant="outline" title={DETERMINISTIC_BADGE_TITLE}>
-              {DETERMINISTIC_BADGE_LABEL}
-            </Badge>
-          )}
           <Badge variant="default">{getPageTypeLabel(result.page_type)}</Badge>
           <span
             className={cn(

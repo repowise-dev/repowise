@@ -28,6 +28,8 @@ import {
   SidebarToggle,
 } from "./docs-page-actions";
 import { PageGenerateButton } from "./page-generate-button";
+import { BulkGenerateButton } from "./bulk-generate-button";
+import { isModelWrittenType, isStubPage } from "@repowise-dev/ui/lib/page-types";
 import { search as searchPages } from "@/lib/api/search";
 import { downloadTextFile } from "@/lib/utils/download";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
@@ -71,6 +73,13 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
   const personaHasEffect = useMemo(
     () => (selectedPage ? personaFilteringApplies(selectedPage.content) : false),
     [selectedPage],
+  );
+
+  // The docs header offers one bulk "write the subsystem pages" action, shown
+  // only while concept pages are still stubs. A structural page is never a stub.
+  const hasStubs = useMemo(
+    () => (pages as DocPage[]).some((p) => isStubPage(p)),
+    [pages],
   );
 
   // Keep the selected page in sync with the ?page= URL param. This fires on
@@ -276,13 +285,14 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
             personaHasEffect={personaHasEffect}
           />
         )}
-        {selectedPage && (
+        {selectedPage && isModelWrittenType(selectedPage.page_type) && (
           <PageGenerateButton
             page={selectedPage}
             repoId={repoId}
             onGenerated={handleGenerated}
           />
         )}
+        {hasStubs && <BulkGenerateButton repoId={repoId} onGenerated={handleGenerated} />}
         <button
           onClick={() => setSearchOpen(true)}
           className="flex items-center gap-2 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2.5 py-1.5 text-xs text-[var(--color-text-tertiary)] transition-colors hover:text-[var(--color-text-secondary)]"
