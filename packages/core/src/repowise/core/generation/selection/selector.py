@@ -17,7 +17,7 @@ import structlog
 
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
 
-from ..concept_tree.grouping import group_files
+from ..concept_tree.grouping import ConceptGroup, group_files
 from ..concept_tree.naming import deterministic_title, disambiguate_titles
 from ..models import scc_page_slug
 from ..tour import DEFAULT_MAX_LANDMARKS, tour_landmark_paths
@@ -72,6 +72,26 @@ class ModuleGroup:
     label: str | None = None
     cohesion: float | None = None
     structural_key: str = ""
+    #: The section this page belongs to, and its position in the reading order
+    #: the namer chose. Display only: neither takes part in page identity, so a
+    #: re-run that re-sections the wiki renumbers it and mints nothing.
+    section: str = ""
+    order: int = 0
+
+
+@dataclass
+class ConceptCandidates:
+    """The concept partition, in both the shapes the run needs.
+
+    ``scored`` is what the budget and the generator consume. ``groups`` is the
+    partition itself, carried out so the namer can title the exact groups that
+    were computed here instead of asking the grouper for a second partition
+    and hoping the two agree.
+    """
+
+    scored: list[tuple[float, ModuleGroup]] = field(default_factory=list)
+    groups: list[ConceptGroup] = field(default_factory=list)
+    layer_labels: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -93,6 +113,12 @@ class Selection:
     # (Phase G coverage tail). Kept separate from ``file_page_paths`` so cost
     # estimation stays honest (these are free) and the CLI can report the split.
     deterministic_tail_paths: list[str] = field(default_factory=list)
+    # The concept partition behind ``module_groups``, one entry per group, plus
+    # the layer names the grouper steered by. Carried so a caller holding a
+    # provider can name these groups; selection itself stays free of the model
+    # so the cost estimator and scope resolution keep costing nothing.
+    concept_groups: list[ConceptGroup] = field(default_factory=list)
+    layer_labels: dict[str, str] = field(default_factory=dict)
 
     def counts(self) -> dict[str, int]:
         """Per-page-type counts of BUDGETED (LLM-costed) pages.
@@ -305,7 +331,7 @@ def _layer_map_from_kg(
     return layer_of_file, labels
 
 
-def _build_module_groups(inputs: SelectionInputs) -> list[tuple[float, ModuleGroup]]:
+def _build_module_groups(inputs: SelectionInputs) -> ConceptCandidates:
     """Return the concept groups, scored, one per ``module_page``.
 
     This is the concept tree, not one page per directory. The partition comes
@@ -332,7 +358,7 @@ def _build_module_groups(inputs: SelectionInputs) -> list[tuple[float, ModuleGro
         if _is_code_file(p) and not getattr(p.file_info, "is_test", False)
     ]
     if not files:
-        return []
+        return ConceptCandidates()
 
     layer_of_file, layer_labels = _layer_map_from_kg(inputs)
     groups = group_files(files, layer_of_file=layer_of_file)
@@ -372,7 +398,7 @@ def _build_module_groups(inputs: SelectionInputs) -> list[tuple[float, ModuleGro
             )
         )
     scored.sort(key=lambda x: (-x[0], x[1].key))
-    return scored
+    return ConceptCandidates(scored=scored, groups=groups, layer_labels=layer_labels)
 
 
 def _build_api_candidates(inputs: SelectionInputs) -> list[tuple[float, str]]:
@@ -537,7 +563,7 @@ def _ensure_landmarks(selected: list[str], landmarks: list[str]) -> list[str]:
 def _select_everything(
     files: list,
     symbols: list,
-    modules: list,
+    concepts: ConceptCandidates,
     apis: list,
     infras: list,
     sccs: list,
@@ -570,7 +596,9 @@ def _select_everything(
         # keeps them (``include_symbols``) since ``only_page_ids`` filters to the
         # one the user asked for rather than emitting all of them.
         symbol_spotlights=[t for _, t in symbols] if include_symbols else [],
-        module_groups=[m for _, m in modules],
+        module_groups=[m for _, m in concepts.scored],
+        concept_groups=list(concepts.groups),
+        layer_labels=dict(concepts.layer_labels),
         api_contract_paths=[p for _, p in apis],
         infra_paths=[p for _, p in infras],
         scc_groups=[g for _, g in sccs],
@@ -606,7 +634,8 @@ def select_pages(inputs: SelectionInputs) -> Selection:
     # Build scored candidates for every bucket.
     files = _build_file_candidates(inputs)
     symbols = _build_symbol_candidates(inputs)
-    modules = _build_module_groups(inputs)
+    concepts = _build_module_groups(inputs)
+    modules = concepts.scored
     apis = _build_api_candidates(inputs)
     infras = _build_infra_candidates(inputs)
     sccs = _build_scc_candidates(inputs)
@@ -628,7 +657,7 @@ def select_pages(inputs: SelectionInputs) -> Selection:
         # budget has no job to do. Take every candidate in every bucket. The
         # tail stays empty because the file bucket already holds every file.
         return _select_everything(
-            files, symbols, modules, apis, infras, sccs, available, include_symbols=False
+            files, symbols, concepts, apis, infras, sccs, available, include_symbols=False
         )
 
     # Scoped generation (``repowise generate``): full-coverage allow-set so
@@ -636,7 +665,7 @@ def select_pages(inputs: SelectionInputs) -> Selection:
     # regenerated on demand.
     if getattr(inputs, "select_all", False):
         return _select_everything(
-            files, symbols, modules, apis, infras, sccs, available, include_symbols=True
+            files, symbols, concepts, apis, infras, sccs, available, include_symbols=True
         )
 
     allocation = allocate_budget(
@@ -687,6 +716,8 @@ def select_pages(inputs: SelectionInputs) -> Selection:
         # budget: the grouper's size ladder holds the page count near 50-80 for
         # a repository this size and scales sublinearly above it.
         module_groups=[m for _, m in modules],
+        concept_groups=list(concepts.groups),
+        layer_labels=dict(concepts.layer_labels),
         api_contract_paths=[p for _, p in apis[: allocation.api_contract]],
         infra_paths=[p for _, p in infras[: allocation.infra_page]],
         scc_groups=[g for _, g in sccs[: allocation.scc_page]],
