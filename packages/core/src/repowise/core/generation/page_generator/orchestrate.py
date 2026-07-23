@@ -750,9 +750,19 @@ def _stamp_structural_keys(pages: list[GeneratedPage]) -> None:
 
     A page keyed on a real file path has no identity separate from that path,
     so it is left unset rather than given a copy of the path.
+
+    A key already set by whatever produced the page is kept. The concept-tree
+    planner computes its groups' identities as part of deciding what the
+    groups *are*, and hashes exactly the same member list this would; letting
+    the stamp recompute it would give two places that must agree about page
+    identity, which is the arrangement D2 exists to avoid. It also lets the
+    key say which algorithm produced the page, so a wiki holding both the old
+    per-directory modules and the new concept groups can tell them apart.
     """
     for page in pages:
         if page.page_type not in STRUCTURALLY_KEYED_PAGE_TYPES:
+            continue
+        if page.structural_key:
             continue
         prefix = _MEMBER_KEYED_PREFIX.get(page.page_type)
         members = page.metadata.get("file_paths") or []

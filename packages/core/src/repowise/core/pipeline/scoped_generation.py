@@ -26,7 +26,7 @@ code, so hosted reuses it as-is.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -67,6 +67,10 @@ class ScopedGenerationResult:
 
     generated_pages: list[Any]
     marked_stale: int
+    #: Rows retired because pages this run produced now cover everything they
+    #: covered. Reported so an update can say it removed a duplicate rather
+    #: than doing it silently.
+    swept_page_ids: list[str] = field(default_factory=list)
 
 
 def load_kg_context(repo_path: Path) -> Any:
@@ -202,7 +206,10 @@ async def execute_scoped_generation(
     from repowise.core.persistence import get_session, upsert_pages_from_generated
     from repowise.core.persistence.crud import backfill_related_pages
     from repowise.core.pipeline import run_generation
-    from repowise.core.pipeline.persist import mark_page_ids_stale
+    from repowise.core.pipeline.persist import (
+        mark_page_ids_stale,
+        sweep_superseded_generated_pages,
+    )
 
     # Bill this run's LLM calls to the caller's tracker. run_generation reads the
     # passed tracker; some providers additionally consult ``_cost_tracker``.
@@ -229,11 +236,22 @@ async def execute_scoped_generation(
         await cost_tracker.flush()
 
     marked_stale = 0
+    swept_page_ids: list[str] = []
     async with get_session(session_factory) as session:
         await upsert_pages_from_generated(session, generated_pages, repo_id)
+        # A page whose identity is its members can change which directory names
+        # it when those members change, and the new row is written under a new
+        # id. Without this the old row survives as a duplicate until somebody
+        # runs a full index, because the full sweep cannot run here — it would
+        # delete every page of a type this run did not reproduce, which on a
+        # scoped run is nearly all of them.
+        swept_page_ids = await sweep_superseded_generated_pages(
+            session, repo_id, generated_pages
+        )
         # A scoped run holds only the pages it was asked for, so it cannot
         # work out where they sit. Placement comes from the store, which has
         # the whole set; without this the pages it touched lose their place.
+        # After the sweep, so a retired row cannot be given a place.
         from .page_tree_sync import rebuild_page_tree
 
         await rebuild_page_tree(session, repo_id)
@@ -260,8 +278,22 @@ async def execute_scoped_generation(
         except Exception as exc:
             logger.debug("related_pages_backfill_skipped", error=str(exc))
 
+        # Same ordering rule the full-index path follows: the vector delete
+        # goes before the SQL commit, because the store is a separate engine
+        # and an interrupted run then self-heals rather than leaving an
+        # embedding for a row that no longer exists.
+        if swept_page_ids and vector_store is not None:
+            try:
+                await vector_store.delete_many(swept_page_ids)
+            except Exception as exc:
+                logger.debug("vector_sweep_skipped", error=str(exc))
+
+    # FTS lives in the same SQLite file as the session, so it is only safe to
+    # touch after that session has closed.
     if fts is not None:
         try:
+            if swept_page_ids:
+                await fts.delete_many(swept_page_ids)
             for page in generated_pages:
                 await fts.index(page.page_id, page.title, page.content)
         except Exception as exc:
@@ -270,4 +302,5 @@ async def execute_scoped_generation(
     return ScopedGenerationResult(
         generated_pages=generated_pages,
         marked_stale=marked_stale,
+        swept_page_ids=swept_page_ids,
     )

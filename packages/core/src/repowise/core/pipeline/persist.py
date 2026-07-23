@@ -598,6 +598,100 @@ async def _sweep_stale_generated_pages(
     return swept
 
 
+async def sweep_superseded_generated_pages(
+    session: Any,
+    repo_id: str,
+    generated_pages: list[Any] | None,
+) -> list[str]:
+    """Retire structurally-keyed rows whose coverage a scoped run just took over.
+
+    :func:`_sweep_stale_generated_pages` cannot be used on the update path. It
+    deletes every row of a page type the run did not reproduce, which is right
+    for a full index and catastrophic for a scoped one: regenerating a single
+    page would wipe the other fifty.
+
+    That left a real gap. A structurally-keyed page's id is its
+    ``target_path``, and a page that groups files can legitimately change which
+    directory names it when its membership changes. ``repowise update`` goes
+    through ``scoped_generation`` and never swept, so the regenerated page was
+    written under its new id and the old row stayed behind as a duplicate until
+    somebody ran a full index. Harmless while module and cycle pages were never
+    regenerated incrementally, and not harmless once concept pages are.
+
+    The rule here is narrower and does not need to know what the caller asked
+    for: a prior row is superseded when **every file it covered is now covered
+    by pages this run produced**, of the same type. That is exactly the
+    condition under which the old row documents nothing that is not documented
+    elsewhere. A page that failed to generate keeps files no produced page
+    claims, so it survives — which matters, because deleting a page because its
+    generation errored would be a worse bug than the one this fixes.
+
+    Returns the swept page ids so the caller can drop them from FTS after the
+    session closes.
+    """
+    from sqlalchemy import delete, select
+
+    from repowise.core.persistence.models import Page, PageVersion
+
+    produced_ids: dict[str, set[str]] = {}
+    covered: dict[str, set[str]] = {}
+    for page in generated_pages or []:
+        page_type = page.page_type
+        if page_type not in _SWEPT_GENERATED_PAGE_TYPES:
+            continue
+        produced_ids.setdefault(page_type, set()).add(page.page_id)
+        metadata = getattr(page, "metadata", None) or {}
+        members = metadata.get("file_paths") or metadata.get("files") or []
+        covered.setdefault(page_type, set()).update(
+            m for m in members if isinstance(m, str)
+        )
+
+    swept: list[str] = []
+    for page_type, current in produced_ids.items():
+        union = covered.get(page_type) or set()
+        if not union:
+            # Nothing to compare against: a run that recorded no membership
+            # cannot prove it superseded anything, so it retires nothing.
+            continue
+        rows = (
+            await session.execute(
+                select(Page.id, Page.metadata_json).where(
+                    Page.repository_id == repo_id, Page.page_type == page_type
+                )
+            )
+        ).all()
+        stale: list[str] = []
+        for page_id, raw in rows:
+            if page_id in current:
+                continue
+            try:
+                metadata = json.loads(raw) if isinstance(raw, str) else (raw or {})
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(metadata, dict):
+                continue
+            members = metadata.get("file_paths") or metadata.get("files") or []
+            members = {m for m in members if isinstance(m, str)}
+            # No recorded membership means no proof of supersession. Those rows
+            # are the pre-membership ones (backlog B20) and they are left for a
+            # full index to retire.
+            if members and members <= union:
+                stale.append(page_id)
+        for i in range(0, len(stale), _PRUNE_CHUNK):
+            batch = stale[i : i + _PRUNE_CHUNK]
+            await session.execute(delete(PageVersion).where(PageVersion.page_id.in_(batch)))
+            await session.execute(
+                delete(Page).where(Page.repository_id == repo_id, Page.id.in_(batch))
+            )
+        swept.extend(stale)
+
+    if swept:
+        logger.info(
+            "superseded_generated_pages_swept", repo_id=repo_id, count=len(swept)
+        )
+    return swept
+
+
 async def persist_ingestion(result: Any, session: Any, repo_id: str) -> int:
     """Persist ingestion-phase outputs: graph nodes/edges, external systems,
     symbols, and the per-file security scan.
