@@ -31,11 +31,12 @@ should not be committed; it's a local cache, not a source of truth.
 The main configuration file. Created after first `init`, updated when you pass
 flags like `--commit-limit`, `--follow-renames`, or `--wiki-style`.
 
-> **No schema validation.** `config.yaml` is loaded as a plain YAML dict.
+> **Limited schema validation.** `config.yaml` is loaded as a plain YAML dict.
 > Unknown or misspelled keys are silently ignored, they won't error and won't
-> take effect. The only part that's validated is the `distill:` block, and
-> only when you run `repowise doctor`. If a setting doesn't seem to be taking
-> effect, check spelling and indentation first.
+> take effect. `max_tokens` must be a positive integer when documentation is
+> generated. The `distill:` block is validated only when you run
+> `repowise doctor`. If a setting doesn't seem to be taking effect, check
+> spelling and indentation first.
 
 ```yaml
 provider: anthropic                  # LLM provider (auto-detected if omitted)
@@ -43,6 +44,7 @@ model: claude-sonnet-4-6             # Model identifier (provider default if omi
 embedder: mock                       # Embedding provider (mock if no key detected)
 embedding_model: text-embedding-3-small  # Embedding model (provider default if omitted)
 reasoning: auto                      # auto | off | none | minimal | low | medium | high | xhigh | max
+max_tokens: 16384                    # Max output tokens for each generated documentation page
 commit_limit: 500                    # Max commits per file for git analysis (clamped 1-10000)
 follow_renames: false                # Track file renames in git history
 wiki_style: comprehensive            # comprehensive | caveman | reference | tutorial | custom
@@ -73,6 +75,7 @@ You can edit this file directly. Changes take effect on the next `init`,
 | `embedder` | `mock` | `openai`, `gemini`, `ollama`, `openrouter`, `mock` |
 | `embedding_model` | provider default | Embedding model identifier |
 | `reasoning` | `auto` | `auto`, `off`, `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
+| `max_tokens` | `16384` | Maximum output tokens requested for each model-written documentation page |
 | `commit_limit` | `500` | Max commits per file walked for git analysis, clamped to 1-10000 |
 | `follow_renames` | `false` | Track file renames through git history |
 | `exclude_patterns` | `[]` | Extra gitignore-style patterns, on top of `.gitignore` |
@@ -93,6 +96,13 @@ matching effort level from providers and model families that support it (for
 example OpenAI reasoning models and OpenRouter's `reasoning.effort`).
 Providers or models that cannot translate an explicit mode fail before making
 an API call.
+
+`max_tokens` bounds each model-written documentation response. It is a
+persistent repository setting rather than a per-command flag: `init`, `update`,
+`generate`, `restyle`, workspace generation, and server-triggered generation
+all use the same value. Providers may enforce a lower model limit. If
+generation reaches a token limit before the page is complete, repowise rejects
+the partial page instead of saving it.
 
 `wiki_style` controls the voice and density of generated wiki pages. Set it with
 `init --wiki-style` or switch later with `repowise restyle <style>` (which also

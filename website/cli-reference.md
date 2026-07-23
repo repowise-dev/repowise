@@ -442,11 +442,15 @@ Settings are saved to `.repowise/config.yaml` after the first `init`. You can ed
 provider: anthropic
 model: claude-sonnet-4-6
 embedder: gemini
+max_tokens: 16384
 exclude_patterns:
   - vendor/
   - "*.generated.*"
 commit_limit: 500
 follow_renames: false
 ```
+
+`max_tokens` is the persistent per-page documentation output limit used by all
+CLI and server generation paths.
 
 See [Configuration →](configuration) for the full reference.

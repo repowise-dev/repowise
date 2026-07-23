@@ -159,6 +159,17 @@ def test_generation_config_defaults():
     assert config.reasoning == "auto"
 
 
+def test_generation_config_reads_repo_max_tokens():
+    config = GenerationConfig.from_repo_config({"max_tokens": "2345"})
+    assert config.max_tokens == 2345
+
+
+@pytest.mark.parametrize("value", [0, -1, True, 1.5, "not-a-number"])
+def test_generation_config_rejects_invalid_repo_max_tokens(value):
+    with pytest.raises(ValueError, match="positive integer"):
+        GenerationConfig.from_repo_config({"max_tokens": value})
+
+
 def test_generation_config_embed_concurrency_defaults_to_max_concurrency():
     config = GenerationConfig(max_concurrency=3)
     assert config.embed_concurrency == 3

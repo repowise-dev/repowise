@@ -102,7 +102,8 @@ def _run_workspace_generation(
     """
     from repowise.core.generation import GenerationConfig
 
-    gen_config = GenerationConfig(
+    gen_config = GenerationConfig.from_repo_config(
+        load_config(repo_path),
         max_concurrency=concurrency,
         reasoning=resolve_reasoning(reasoning),
         enable_onboarding=onboarding,

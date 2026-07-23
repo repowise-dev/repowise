@@ -233,7 +233,8 @@ def restyle_command(
 
     from repowise.core.generation import GenerationConfig
 
-    config = GenerationConfig(
+    config = GenerationConfig.from_repo_config(
+        cfg,
         max_concurrency=concurrency,
         language=cfg.get("language", "en"),
         reasoning=resolve_reasoning(reasoning, cfg),

@@ -267,7 +267,8 @@ def _run_generation_phase(
         f"Generating wiki pages with {provider.provider_name} / {provider.model_name}",
     )
 
-    gen_config = GenerationConfig(
+    gen_config = GenerationConfig.from_repo_config(
+        load_config(repo_path),
         max_concurrency=concurrency,
         language=language,
         reasoning=resolved_reasoning,

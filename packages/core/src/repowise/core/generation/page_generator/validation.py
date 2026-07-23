@@ -1,15 +1,80 @@
-"""LLM-output validation — hallucination detection for generated pages.
+"""LLM-output validation for generated documentation pages.
 
-Cross-checks backtick-quoted names in LLM output against the symbols,
-exports, and imports of the source ``ParsedFile`` so that references the
-model invented (but that do not exist in the AST) can be surfaced.
+Rejects unusable provider responses before persistence and cross-checks
+backtick-quoted names against the source ``ParsedFile`` so invented symbols
+can be surfaced.
 """
 
 from __future__ import annotations
 
 import re
+from collections import Counter
 
 from repowise.core.ingestion.models import ParsedFile
+from repowise.core.providers.llm.base import GeneratedResponse
+
+_REPETITION_SHINGLE_WORDS = 12
+_REPETITION_MIN_WORDS = 240
+_REPETITION_MIN_OCCURRENCES = 20
+_REPETITION_MAX_UNIQUE_RATIO = 0.25
+_WORD_RE = re.compile(r"\w+", re.UNICODE)
+
+
+class InvalidGeneratedContentError(ValueError):
+    """Raised when a fresh LLM response cannot be persisted as documentation."""
+
+
+def _pathological_repetition_detail(content: str) -> str | None:
+    """Describe gross repetition, using deliberately conservative thresholds.
+
+    Twelve-word shingles tolerate ordinary repeated headings, table columns,
+    API-list phrasing, and identifiers because the output must also be long,
+    repeat one exact shingle at least twenty times, and have fewer than one
+    unique shingle per four windows.
+    """
+    words = [match.group(0).casefold() for match in _WORD_RE.finditer(content)]
+    if len(words) < _REPETITION_MIN_WORDS:
+        return None
+
+    shingle_count = len(words) - _REPETITION_SHINGLE_WORDS + 1
+    if shingle_count <= 0:
+        return None
+    shingles = Counter(
+        tuple(words[index : index + _REPETITION_SHINGLE_WORDS]) for index in range(shingle_count)
+    )
+    maximum_occurrences = max(shingles.values(), default=0)
+    unique_ratio = len(shingles) / shingle_count
+    if (
+        maximum_occurrences >= _REPETITION_MIN_OCCURRENCES
+        and unique_ratio <= _REPETITION_MAX_UNIQUE_RATIO
+    ):
+        return (
+            f"12-word shingle repeated {maximum_occurrences} times "
+            f"(unique ratio {unique_ratio:.3f})"
+        )
+    return None
+
+
+def validate_generated_response(response: GeneratedResponse) -> None:
+    """Reject fresh provider output that is unsafe to persist as a wiki page."""
+    if response.stop_reason == "max_tokens":
+        detail = (
+            f" (provider reason: {response.provider_stop_reason})"
+            if response.provider_stop_reason
+            else ""
+        )
+        raise InvalidGeneratedContentError(
+            f"generation reached a token limit before the documentation was complete{detail}"
+        )
+    if not response.content.strip():
+        raise InvalidGeneratedContentError("provider returned empty documentation")
+
+    repetition_detail = _pathological_repetition_detail(response.content)
+    if repetition_detail is not None:
+        raise InvalidGeneratedContentError(
+            f"provider returned pathologically repetitive documentation: {repetition_detail}"
+        )
+
 
 # Common words that appear in backticks but are not code symbols.
 _BACKTICK_SKIP = frozenset(

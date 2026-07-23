@@ -119,6 +119,12 @@ repowise init . --index-only -x "node_modules/"      # workspace, no LLM
 repowise init . --no-workspace                        # force single-repo, even in a workspace root
 ```
 
+**Documentation output limit.** Set `max_tokens` in
+`.repowise/config.yaml` to bound each model-written page. It is persistent, not
+a per-run flag, and is honored by `init`, `update`, `generate`, `restyle`,
+workspace generation, and server-triggered generation. See
+[Configuration](CONFIG.md#configyaml).
+
 ---
 
 ### `repowise update [PATH]`

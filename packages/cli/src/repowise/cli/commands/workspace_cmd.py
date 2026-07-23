@@ -683,7 +683,8 @@ def _generate_docs_for_added_repo(
     from repowise.core.repo_config import load_repo_config
 
     repo_cfg = load_repo_config(repo_path)
-    config = GenerationConfig(
+    config = GenerationConfig.from_repo_config(
+        repo_cfg,
         max_concurrency=concurrency,
         reasoning=reasoning,
         wiki_style=repo_cfg.get("wiki_style", "comprehensive"),

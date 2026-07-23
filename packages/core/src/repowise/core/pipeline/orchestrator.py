@@ -298,9 +298,7 @@ async def run_pipeline(
         try:
             graph_builder, git_meta_map = await resume_controller.rehydrate_index(repo_path)
             if progress:
-                progress.on_message(
-                    "info", "  ↳ Resuming — reusing persisted graph + git index"
-                )
+                progress.on_message("info", "  ↳ Resuming — reusing persisted graph + git index")
             (
                 parsed_files,
                 file_infos,
@@ -630,7 +628,8 @@ async def run_pipeline(
             # Wiki style precedence: explicit param (server passes the DB-settings
             # value) > repo-local config.yaml (CLI/init) > default.
             _style = wiki_style or _cfg.get("wiki_style", "comprehensive")
-            resolved_generation_config = GenerationConfig(
+            resolved_generation_config = GenerationConfig.from_repo_config(
+                _cfg,
                 max_concurrency=concurrency,
                 reasoning=resolve_reasoning(config=_cfg),
                 wiki_style=_style,
@@ -642,9 +641,7 @@ async def run_pipeline(
         if mode.deterministic_docs and not resolved_generation_config.deterministic:
             from dataclasses import replace as _dc_replace
 
-            resolved_generation_config = _dc_replace(
-                resolved_generation_config, deterministic=True
-            )
+            resolved_generation_config = _dc_replace(resolved_generation_config, deterministic=True)
 
         # Phase 2 enrichment: flag framework-defined HTTP surfaces (FastAPI,
         # ASP.NET controllers, …) as api_contract so they route through the
@@ -727,9 +724,7 @@ async def run_pipeline(
                     else None
                 ),
                 kg_data=(
-                    knowledge_graph_result.to_dict()
-                    if knowledge_graph_result is not None
-                    else None
+                    knowledge_graph_result.to_dict() if knowledge_graph_result is not None else None
                 ),
             )
         except BaseException:

@@ -1073,7 +1073,8 @@ def run_update(
     # coverage. Without reading these back, every update would silently drop the
     # deterministic tail (and any tier-1 cap) to their defaults.
     tail_dirs_cfg = cfg.get("tier2_tail_dirs")
-    config = GenerationConfig(
+    config = GenerationConfig.from_repo_config(
+        cfg,
         max_concurrency=concurrency,
         language=language,
         reasoning=resolve_reasoning(reasoning, cfg),

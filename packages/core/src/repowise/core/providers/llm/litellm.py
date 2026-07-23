@@ -37,6 +37,7 @@ from repowise.core.providers.llm.base import (
     RateLimitError,
     ensure_reasoning_supported,
     fallback_model_option,
+    normalize_stop_reason,
     parse_retry_after,
     provider_retry_stop,
     provider_retry_wait,
@@ -263,11 +264,15 @@ class LiteLLMProvider(BaseProvider):
             raise ProviderError("litellm", f"{type(exc).__name__}: {exc}") from exc
 
         usage = response.usage
+        choice = response.choices[0]
+        stop_reason, provider_stop_reason = normalize_stop_reason(choice.finish_reason)
         result = GeneratedResponse(
-            content=response.choices[0].message.content or "",
+            content=choice.message.content or "",
             input_tokens=getattr(usage, "prompt_tokens", 0) if usage else 0,
             output_tokens=getattr(usage, "completion_tokens", 0) if usage else 0,
             cached_tokens=0,
+            stop_reason=stop_reason,
+            provider_stop_reason=provider_stop_reason,
             usage=dict(usage) if usage else {},
         )
         log.debug(

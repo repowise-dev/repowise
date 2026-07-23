@@ -245,7 +245,8 @@ def _render_pages(
 
     is_template = provider is None
     try:
-        config = GenerationConfig(
+        config = GenerationConfig.from_repo_config(
+            cfg,
             deterministic=is_template,
             file_pages_only=True,
             max_concurrency=concurrency,

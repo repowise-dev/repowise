@@ -10,9 +10,10 @@ import graph stays one-directional:
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Any, Literal
 
 from repowise.core.reasoning import ReasoningMode, normalize_reasoning
 
@@ -51,6 +52,7 @@ GENERATION_LEVELS: dict[str, int] = {
 }
 
 FreshnessStatus = Literal["fresh", "stale", "expired", "unknown"]
+DEFAULT_MAX_TOKENS = 16384
 
 
 # ---------------------------------------------------------------------------
@@ -77,7 +79,7 @@ class GenerationConfig:
         jobs_dir:                 Directory for job checkpoint JSON files.
     """
 
-    max_tokens: int = 16384
+    max_tokens: int = DEFAULT_MAX_TOKENS
     temperature: float = 0.3
     token_budget: int = 48000
     max_concurrency: int = 12
@@ -216,7 +218,40 @@ class GenerationConfig:
     # ``repowise generate`` uses to refresh those repo-wide pages on demand.
     file_pages_only: bool = False
 
+    @classmethod
+    def from_repo_config(
+        cls,
+        config: Mapping[str, Any],
+        **overrides: Any,
+    ) -> GenerationConfig:
+        """Build a generation config with the repo's documentation output limit.
+
+        ``max_tokens`` is the persisted user-facing setting. Keeping its parsing
+        here gives CLI, server, and core entry points one owner for translating
+        repo configuration into the provider request budget.
+        """
+        raw_max_tokens = config.get("max_tokens", DEFAULT_MAX_TOKENS)
+        if isinstance(raw_max_tokens, bool):
+            raise ValueError("max_tokens must be a positive integer")
+        if isinstance(raw_max_tokens, int):
+            max_tokens = raw_max_tokens
+        elif isinstance(raw_max_tokens, str) and raw_max_tokens.strip().isdigit():
+            max_tokens = int(raw_max_tokens)
+        else:
+            raise ValueError("max_tokens must be a positive integer")
+        if max_tokens <= 0:
+            raise ValueError("max_tokens must be a positive integer")
+
+        values = {"max_tokens": max_tokens, **overrides}
+        return cls(**values)
+
     def __post_init__(self) -> None:
+        if (
+            isinstance(self.max_tokens, bool)
+            or not isinstance(self.max_tokens, int)
+            or self.max_tokens <= 0
+        ):
+            raise ValueError("max_tokens must be a positive integer")
         if self.embed_concurrency is None:
             object.__setattr__(self, "embed_concurrency", self.max_concurrency)
         object.__setattr__(self, "reasoning", normalize_reasoning(self.reasoning))

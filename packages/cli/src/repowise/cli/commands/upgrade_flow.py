@@ -89,7 +89,9 @@ def _gate_cost(
         raise click.Abort()
 
 
-def _reparse(repo_path: Path, exclude_patterns: list[str]) -> tuple[list[Any], dict[str, bytes], Any]:
+def _reparse(
+    repo_path: Path, exclude_patterns: list[str]
+) -> tuple[list[Any], dict[str, bytes], Any]:
     """Parse files for ASTs + source bytes WITHOUT building/resolving the graph.
 
     Thin CLI wrapper over :func:`repowise.core.pipeline.reparse_repo`: reads the
@@ -151,9 +153,7 @@ async def _backfill_git(
             console.print(
                 "[dim]Found an interrupted git backfill — resuming (re-running FULL tier).[/dim]"
             )
-        summary, git_results = await backfill_full_tier(
-            indexer, repo_id, job_store=job_store
-        )
+        summary, git_results = await backfill_full_tier(indexer, repo_id, job_store=job_store)
         if git_results:
             await upsert_git_metadata_bulk(session, repo_id, git_results)
             await recompute_git_percentiles(session, repo_id)
@@ -234,7 +234,6 @@ async def _run_upgrade(
     # to turn a template wiki into a written one: the user reaching for it has
     # never been shown a cost for this repo.
     _gate_cost(parsed_files, graph_builder, config, provider, repo_path, yes=yes)
-
 
     # 5. Generate the docs the fast index skipped. Honor the cost-tracking
     # opt-out (issue #326) so REPOWISE_NO_COST_TRACKING is respected here too;
@@ -423,7 +422,8 @@ def upgrade_to_full(
     # not have one configured yet. resolve_provider surfaces a clear error.
     provider = resolve_provider(provider_name, model, repo_path=repo_path)
 
-    config = GenerationConfig(
+    config = GenerationConfig.from_repo_config(
+        cfg,
         max_concurrency=concurrency,
         language=cfg.get("language", "en"),
         reasoning=resolve_reasoning(reasoning, cfg),
