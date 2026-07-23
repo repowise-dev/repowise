@@ -77,9 +77,9 @@ setting.
 
 `max_tokens` bounds each model-written documentation response. It is a
 persistent repository setting used by `init`, `update`, `generate`, `restyle`,
-workspace generation, and server-triggered generation. If a provider reports
-that it reached this limit, repowise rejects the incomplete page instead of
-saving it.
+workspace generation, and server-triggered generation. If generation reaches a
+token limit before the page is complete, repowise rejects the partial page
+instead of saving it.
 
 ---
 

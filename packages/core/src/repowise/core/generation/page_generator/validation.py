@@ -64,7 +64,7 @@ def validate_generated_response(response: GeneratedResponse) -> None:
             else ""
         )
         raise InvalidGeneratedContentError(
-            f"provider stopped at the configured token limit{detail}"
+            f"generation reached a token limit before the documentation was complete{detail}"
         )
     if not response.content.strip():
         raise InvalidGeneratedContentError("provider returned empty documentation")

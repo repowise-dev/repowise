@@ -45,7 +45,10 @@ def test_rejects_whitespace_documentation() -> None:
 
 
 def test_rejects_provider_declared_token_limit() -> None:
-    with pytest.raises(InvalidGeneratedContentError, match="configured token limit"):
+    with pytest.raises(
+        InvalidGeneratedContentError,
+        match="token limit before the documentation was complete",
+    ):
         validate_generated_response(
             _response(
                 "# Queue status\n\nThis sentence stops midway",
