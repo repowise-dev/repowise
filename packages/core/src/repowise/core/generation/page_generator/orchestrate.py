@@ -636,6 +636,15 @@ class _GenerationRun:
         """
         _stamp_structural_keys(all_pages)
 
+        # Place every page in the tree that MCP, the web app and the editor
+        # extension all read, instead of each deriving its own from paths.
+        try:
+            from ..page_tree import assign_page_tree
+
+            assign_page_tree(all_pages, self.layer_order_ids)
+        except Exception as exc:
+            log.debug("page_tree.failed", error=str(exc))
+
         # Post-generation: repair mermaid diagrams so illegal node IDs / unquoted
         # labels in LLM output don't break the whole diagram in the renderer.
         try:

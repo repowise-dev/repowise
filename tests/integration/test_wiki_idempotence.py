@@ -314,3 +314,70 @@ class TestStructuralKeys:
         first = {p.page_id: p.structural_key for p in two_indexes["first_pages"]}
         second = {p.page_id: p.structural_key for p in two_indexes["second_pages"]}
         assert first == second
+
+
+class TestTreeOnRealOutput:
+    """The synthetic tree tests cover the shape rules. These check the tree
+    that a real generation run actually produces, and that it survives a
+    second index unchanged."""
+
+    async def test_the_tree_is_populated(self, two_indexes):
+        placed = [p for p in two_indexes["second_pages"] if p.parent_page_id]
+        assert len(placed) > 1, "generation produced no tree"
+
+    async def test_no_page_points_at_a_parent_that_does_not_exist(self, two_indexes):
+        """A dangling parent breaks every walk of the tree."""
+        known = {pid for pid, _, _ in two_indexes["second_rows"]}
+        sf = two_indexes["sf"]
+        async with sf() as session:
+            rows = await session.execute(
+                select(Page.id, Page.parent_page_id).where(
+                    Page.repository_id == two_indexes["repo_id"],
+                    Page.parent_page_id.is_not(None),
+                )
+            )
+            dangling = [(pid, parent) for pid, parent in rows.all() if parent not in known]
+        assert dangling == []
+
+    async def test_the_tree_has_no_cycles(self, two_indexes):
+        sf = two_indexes["sf"]
+        async with sf() as session:
+            rows = await session.execute(
+                select(Page.id, Page.parent_page_id).where(
+                    Page.repository_id == two_indexes["repo_id"]
+                )
+            )
+            parent = dict(rows.all())
+        for start in parent:
+            seen, node = set(), start
+            while node is not None:
+                assert node not in seen, f"cycle through {start}"
+                seen.add(node)
+                node = parent.get(node)
+
+    async def test_the_tree_is_identical_after_the_second_index(self, two_indexes):
+        """Placement is derived from structure, so an unchanged repo must
+        place its pages exactly where the previous run did."""
+
+        def placement(pages):
+            return {
+                p.page_id: (p.parent_page_id, p.display_order, p.section_number) for p in pages
+            }
+
+        assert placement(two_indexes["second_pages"]) == placement(two_indexes["first_pages"])
+
+    async def test_placement_reached_the_database(self, two_indexes):
+        """The tree is only useful if it is stored, not just computed."""
+        expected = {
+            p.page_id: (p.parent_page_id, p.display_order, p.section_number)
+            for p in two_indexes["second_pages"]
+        }
+        sf = two_indexes["sf"]
+        async with sf() as session:
+            rows = await session.execute(
+                select(
+                    Page.id, Page.parent_page_id, Page.display_order, Page.section_number
+                ).where(Page.repository_id == two_indexes["repo_id"])
+            )
+            stored = {pid: (parent, order, section) for pid, parent, order, section in rows.all()}
+        assert stored == expected
