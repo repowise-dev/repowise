@@ -311,6 +311,8 @@ def build_level4_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
                     target_path=mg.key,
                     structural_key=mg.structural_key,
                     members=list(mg.file_paths),
+                    section=mg.section,
+                    order=mg.order,
                 ),
             )
         )

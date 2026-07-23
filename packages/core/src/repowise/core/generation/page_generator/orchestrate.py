@@ -22,6 +22,7 @@ from ..context_assembler import FilePageContext
 from ..models import (
     STRUCTURALLY_KEYED_PAGE_TYPES,
     GeneratedPage,
+    compute_page_id,
     member_structural_key,
 )
 from . import levels as _levels
@@ -212,7 +213,7 @@ class _GenerationRun:
                     already_completed=len(self.completed_ids),
                 )
 
-    def _compute_selection(self) -> None:
+    async def _compute_selection(self) -> None:
         """Run the selection subsystem and derive the level allow-sets."""
         code_files = [
             p
@@ -278,6 +279,14 @@ class _GenerationRun:
         self.sel_module_groups = list(selection.module_groups)
         self.sel_scc_groups = list(selection.scc_groups)
 
+        # One model call names every concept group. It runs here, after the
+        # partition exists and before any page id is computed, because naming
+        # is the one part of the concept tree that is judgement rather than
+        # structure: the grouper decides what a page covers, the model decides
+        # what to call it. Kept out of ``select_pages`` so the cost estimator
+        # and scope resolution, which call it too, stay free of the model.
+        await self._name_concept_groups()
+
         # Tiered doc generation: split the selected file pages into a full-LLM
         # tier-1 and a deterministic template-only tier-2. When tier1_top_n is
         # None this puts every selected page in tier-1 (no behaviour change).
@@ -306,6 +315,121 @@ class _GenerationRun:
                 not p.file_info.is_entry_point,
                 -self.pagerank.get(p.file_info.path, 0.0),
             ),
+        )
+
+    async def _name_concept_groups(self) -> None:
+        """Give every concept group a title, a scope and a section, in one call.
+
+        The model receives opaque group ids and returns a name per id. It never
+        sees the membership question, so the two failures the probes measured
+        have no entry point here: a group it skips keeps the deterministic
+        title selection already gave it, and an id it invents is discarded.
+
+        Both the keyless and the named path read the *same* partition, because
+        selection computed it once and this only relabels it. D5's guarantee
+        that adding a key changes the prose and never the shape is therefore
+        structural rather than a property two code paths have to agree on.
+
+        Every failure mode degrades to those deterministic titles rather than
+        failing the run: no provider, deterministic mode, a provider that
+        raises, a response that will not parse, or a group the model left out.
+        """
+        groups = list(getattr(self.selection, "concept_groups", None) or [])
+        deterministic = bool(getattr(self.config, "deterministic", False))
+        provider = getattr(self.gen, "_provider", None)
+        if not groups or deterministic or provider is None:
+            return
+
+        # Naming is only worth a call if this run is going to write a concept
+        # page with the result. Three runs reach here and do not: an
+        # incremental update sets ``file_pages_only`` and returns before level
+        # 4, a scoped run may have asked for pages of other types only, and a
+        # resumed run may already hold every concept page. Each would otherwise
+        # buy a whole-repository outline and discard it, which on a post-commit
+        # update hook is a bill per commit for nothing.
+        if getattr(self.config, "file_pages_only", False):
+            return
+        if not any(self._emit(compute_page_id("module_page", mg.key)) for mg in self.sel_module_groups):
+            return
+
+        from ..concept_tree.planner import PlannerInputs, name_groups
+
+        inputs = PlannerInputs(
+            repo_name=self.repo_name or "",
+            # The grouping is total, so the union of the members is exactly the
+            # file set the grouper partitioned. Rebuilt from the groups rather
+            # than re-filtered from ``parsed_files`` so the validator measures
+            # coverage against the set that was actually grouped.
+            production_files=[m for g in groups for m in g.members],
+            repo_root=Path(self.repo_path) if self.repo_path else None,
+            layer_labels=dict(getattr(self.selection, "layer_labels", None) or {}),
+            entry_points={
+                p.file_info.path
+                for p in self.parsed_files
+                if getattr(p.file_info, "is_entry_point", False)
+            },
+        )
+
+        try:
+            outline, report = await name_groups(
+                groups,
+                inputs,
+                provider=provider,
+                reasoning=getattr(self.config, "reasoning", None),
+            )
+        except Exception as exc:
+            # ``name_groups`` guards the call and the decode itself, so reaching
+            # here means a defect rather than a bad response. The titles from
+            # selection are already correct, so the wiki is worse-named and not
+            # broken, and that is the trade this whole step is allowed to make.
+            log.warning("concept_naming.failed", error=str(exc))
+            return
+
+        title_of: dict[str, str] = {}
+        section_of: dict[str, str] = {}
+        order_of: dict[str, int] = {}
+        position = 0
+        for section in outline.sections:
+            for page in section.pages:
+                title_of[page.structural_key] = page.title
+                section_of[page.structural_key] = section.title
+                order_of[page.structural_key] = position
+                position += 1
+
+        from dataclasses import replace as _replace
+
+        renamed = 0
+        groups_out = []
+        for mg in self.sel_module_groups:
+            title = title_of.get(mg.structural_key)
+            if title is None:
+                # The outline covers every group it was given, so this is a
+                # group that never reached the namer. It keeps what it had.
+                groups_out.append(mg)
+                continue
+            if title != mg.display:
+                renamed += 1
+            groups_out.append(
+                _replace(
+                    mg,
+                    display=title,
+                    section=section_of.get(mg.structural_key, ""),
+                    order=order_of.get(mg.structural_key, 0),
+                )
+            )
+        # Generation order is left alone: it is summed PageRank, so the most
+        # central subsystem is written first and lands in the store earliest.
+        # Where the reader meets each page is ``order``, applied by the tree.
+        self.sel_module_groups = groups_out
+
+        log.info(
+            "concept_naming.applied",
+            groups=len(groups),
+            renamed=renamed,
+            sections=len(outline.sections),
+            naming_mode=outline.naming_mode,
+            duplicate_titles=len(report.duplicate_titles),
+            invented=len(report.invented_paths),
         )
 
     def _compute_demand(self) -> dict[str, int]:
@@ -574,7 +698,7 @@ class _GenerationRun:
     async def execute(self) -> list[GeneratedPage]:
         self._setup_job()
         await self._seed_resume()
-        self._compute_selection()
+        await self._compute_selection()
         self._announce_total()
         self._compute_ia()
 

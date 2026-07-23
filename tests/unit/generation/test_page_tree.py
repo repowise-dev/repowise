@@ -270,3 +270,73 @@ class TestDanglingParents:
             for p in pages
             if p.parent_page_id is not None and p.parent_page_id not in known
         ] == []
+
+
+class TestConceptReadingOrder:
+    """Concept pages sort by the order the namer chose, not by the alphabet.
+
+    Sibling order is what ``display_order`` and ``section_number`` are computed
+    from, so this is the whole reader-visible payoff of naming the tree. It
+    also has to survive the store: every ``update`` rebuilds the tree from
+    ``TreeNode``s rehydrated out of ``metadata_json`` rather than from the
+    pages a run just produced.
+    """
+
+    def _concepts(self, *specs):
+        """Concept pages under one layer. Path order is deliberately reversed."""
+        pages = [_page("repo_overview", "demo"), _page("layer_page", "layer:service")]
+        for target, order in specs:
+            meta = {"file_paths": [f"{target}/a.py"], "layer_id": "layer:service"}
+            if order is not None:
+                meta["concept_order"] = order
+            pages.append(_page("module_page", target, **meta))
+        return pages
+
+    def _ordered(self, pages):
+        concepts = [p for p in pages if p.page_type == "module_page"]
+        return [p.target_path for p in sorted(concepts, key=lambda p: p.display_order)]
+
+    def test_the_namers_order_wins_over_the_path(self):
+        # src/aaa sorts first alphabetically and is meant to be read last.
+        pages = self._concepts(("src/aaa", 2), ("src/mmm", 1), ("src/zzz", 0))
+        assign_page_tree(pages, LAYER_ORDER)
+
+        assert self._ordered(pages) == ["src/zzz", "src/mmm", "src/aaa"]
+        # The fixture is only meaningful if it disagrees with path order.
+        assert self._ordered(pages) != sorted(p.target_path for p in pages if p.page_type == "module_page")
+
+    def test_pages_written_before_naming_keep_their_path_order(self):
+        """A wiki indexed before this existed carries no order at all."""
+        pages = self._concepts(("src/aaa", None), ("src/mmm", None), ("src/zzz", None))
+        assign_page_tree(pages, LAYER_ORDER)
+
+        assert self._ordered(pages) == ["src/aaa", "src/mmm", "src/zzz"]
+
+    def test_an_unnamed_page_sorts_after_every_named_one(self):
+        """Position zero is a real place. An unnamed page must not borrow it."""
+        pages = self._concepts(("src/aaa", None), ("src/mmm", 1), ("src/zzz", 0))
+        assign_page_tree(pages, LAYER_ORDER)
+
+        assert self._ordered(pages) == ["src/zzz", "src/mmm", "src/aaa"]
+
+    def test_the_order_survives_the_store_round_trip(self):
+        """``update`` rebuilds from JSON metadata, not from generated pages."""
+        import json
+
+        from repowise.core.generation.page_tree import TreeNode
+
+        pages = self._concepts(("src/aaa", 2), ("src/mmm", 1), ("src/zzz", 0))
+        nodes = [
+            TreeNode(
+                page_id=p.page_id,
+                page_type=p.page_type,
+                target_path=p.target_path,
+                # Exactly what page_tree_sync does: store as JSON, read it back.
+                metadata=json.loads(json.dumps(p.metadata)),
+            )
+            for p in pages
+        ]
+        assign_page_tree(nodes, LAYER_ORDER)
+
+        assert self._ordered(nodes) == ["src/zzz", "src/mmm", "src/aaa"]
+        assert [n.section_number for n in nodes if n.page_type == "module_page"]

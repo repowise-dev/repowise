@@ -110,6 +110,8 @@ class PerTypeGenerationMixin:
         target_path: str | None = None,
         structural_key: str = "",
         members: list[str] | None = None,
+        section: str = "",
+        order: int = 0,
     ) -> GeneratedPage:
         ctx = self._assembler.assemble_module_page(
             title,
@@ -164,11 +166,30 @@ class PerTypeGenerationMixin:
         # dropped files would be parented somewhere else entirely, and the two
         # records of what the page covers would disagree.
         covered = sorted(members) if members else sorted(fc.file_path for fc in file_contexts)
-        if self._config.deterministic:
-            page = self._deterministic_module_page(ctx, page_target, title, module_git_summary)
+
+        def _stamp_concept(page: GeneratedPage) -> GeneratedPage:
+            """Record where the namer put this page in the reading order.
+
+            Only stamped when a namer ran, so an absent key means "nobody
+            decided", which is what the tree needs to tell apart from "first".
+            Display only: the tree reads ``concept_order`` to order siblings,
+            and neither field takes part in page identity, so re-sectioning a
+            wiki renumbers it and mints no new pages.
+            """
             page.metadata["file_paths"] = covered
+            if section:
+                page.metadata["concept_section"] = section
+                page.metadata["concept_order"] = order
+            # Set by the producer, preserved by ``_stamp_structural_keys``. The
+            # grouper hashed exactly this member list when it decided what the
+            # group was, so recomputing it downstream would give two places
+            # that must agree about page identity — the arrangement D2 rules out.
             page.structural_key = structural_key or page.structural_key
             return page
+
+        if self._config.deterministic:
+            page = self._deterministic_module_page(ctx, page_target, title, module_git_summary)
+            return _stamp_concept(page)
         user_prompt = self._render("module_page.j2", ctx=ctx, module_git_summary=module_git_summary)
         response = await self._call_provider(
             "module_page", user_prompt, str(uuid.uuid4()), target_path=page_target
@@ -181,13 +202,7 @@ class PerTypeGenerationMixin:
             compute_source_hash(user_prompt),
             GENERATION_LEVELS["module_page"],
         )
-        page.metadata["file_paths"] = covered
-        # Set by the producer, preserved by ``_stamp_structural_keys``. The
-        # grouper hashed exactly this member list when it decided what the
-        # group was, so recomputing it downstream would give two places that
-        # must agree about page identity — the arrangement D2 rules out.
-        page.structural_key = structural_key or page.structural_key
-        return page
+        return _stamp_concept(page)
 
     async def generate_scc_page(
         self,

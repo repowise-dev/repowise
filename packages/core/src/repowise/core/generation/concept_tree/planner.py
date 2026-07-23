@@ -33,6 +33,7 @@ from .naming import (
     decode_response,
     deterministic_scope,
     deterministic_title,
+    disambiguate_titles,
     ground_scopes,
     parse_json_object,
 )
@@ -69,6 +70,17 @@ class PlannerInputs:
     entry_points: set[str] = field(default_factory=set)
     #: Test files, kept only so the validator can prove none leaked in.
     test_files: set[str] = field(default_factory=set)
+
+
+def _reasoning_kwargs(reasoning: str | None) -> dict[str, str]:
+    """Pass the run's reasoning setting through, or nothing when unset.
+
+    A user who turned thinking off did so for the whole run, and a naming call
+    that quietly re-enables it bills them for what they declined. Omitted
+    rather than defaulted when unset so a provider that does not take the
+    keyword is not handed one.
+    """
+    return {"reasoning": reasoning} if reasoning else {}
 
 
 @contextlib.contextmanager
@@ -154,24 +166,15 @@ def _disambiguate_titles(named: list[NamedGroup]) -> None:
         seen[entry.title.lower()] = 1
 
 
-def plan_deterministic(
-    inputs: PlannerInputs, *, params: GroupingParams | None = None
-) -> tuple[ConceptOutline, list[ConceptGroup]]:
-    """The keyless outline: real structure, names derived from paths and layers.
+def name_deterministically(groups: list[ConceptGroup], inputs: PlannerInputs) -> ConceptOutline:
+    """Title and section already-computed *groups* from paths and layers only.
 
-    Per D5 this is the same tree the LLM path produces — identical grouping,
-    identical identities — with plainer titles. Adding a key upgrades the
-    prose, never the shape, so a user who adds one later does not get their
-    wiki re-partitioned underneath them.
-
-    That guarantee only holds if both paths partition with the same bounds, so
-    *params* is threaded rather than re-derived. It was not, once: the caller's
-    bounds were dropped here and the two paths produced different page counts
-    for the same repository.
+    Split out from :func:`plan_deterministic` so a caller that has already
+    partitioned the files can name that exact partition rather than asking for
+    a second one. Two callers each running the grouper is two places that have
+    to agree about page identity, which is the arrangement D2 exists to
+    prevent.
     """
-    groups = group_files(
-        inputs.production_files, layer_of_file=inputs.layer_of_file, params=params
-    )
     named = [
         NamedGroup(
             group=g,
@@ -187,7 +190,26 @@ def plan_deterministic(
     outline = _build_outline(named)
     _merge_thin_sections(outline)
     outline.naming_mode = "deterministic"
-    return outline, groups
+    return outline
+
+
+def plan_deterministic(
+    inputs: PlannerInputs, *, params: GroupingParams | None = None
+) -> tuple[ConceptOutline, list[ConceptGroup]]:
+    """The keyless outline: real structure, names derived from paths and layers.
+
+    Per D5 this is the same tree the LLM path produces — identical grouping,
+    identical identities — with plainer titles. Adding a key upgrades the
+    prose, never the shape, so a user who adds one later does not get their
+    wiki re-partitioned underneath them.
+
+    That guarantee only holds if both paths partition with the same bounds, so
+    *params* is threaded rather than re-derived. It was not, once: the caller's
+    bounds were dropped here and the two paths produced different page counts
+    for the same repository.
+    """
+    groups = group_files(inputs.production_files, layer_of_file=inputs.layer_of_file, params=params)
+    return name_deterministically(groups, inputs), groups
 
 
 _REPAIR_INSTRUCTIONS = """\
@@ -243,6 +265,20 @@ def _usable_scope(scope: str, target_path: str) -> bool:
     return "/" not in text.split(" ", 1)[0] or " " in text.strip()
 
 
+def _force_unique_titles(outline: ConceptOutline) -> int:
+    """Qualify any title still shared by two pages. Returns how many moved."""
+    pages = outline.pages
+    unique = disambiguate_titles([(p.title, p.target_path) for p in pages])
+    changed = 0
+    for page, title in zip(pages, unique, strict=True):
+        if title != page.title:
+            page.title = title
+            changed += 1
+    if changed:
+        logger.info("concept_outline_titles_disambiguated", changed=changed)
+    return changed
+
+
 def _repair_targets(outline: ConceptOutline, report: OutlineReport) -> set[str]:
     """The page titles worth a second call. Everything else is left alone.
 
@@ -267,18 +303,46 @@ async def plan_outline(
     deterministic: bool = False,
     params: GroupingParams | None = None,
     repair: bool = True,
+    reasoning: str | None = None,
 ) -> tuple[ConceptOutline, OutlineReport]:
-    """Produce a validated outline for *inputs*.
+    """Group *inputs* and produce a validated outline over that grouping."""
+    groups = group_files(inputs.production_files, layer_of_file=inputs.layer_of_file, params=params)
+    return await name_groups(
+        groups,
+        inputs,
+        provider=provider,
+        deterministic=deterministic,
+        params=params,
+        repair=repair,
+        reasoning=reasoning,
+    )
 
-    Falls back to :func:`plan_deterministic` whenever there is no provider, the
-    run is in deterministic mode, or the model's response cannot be used. A
-    failed naming call costs the wiki its titles, never its structure.
+
+async def name_groups(
+    groups: list[ConceptGroup],
+    inputs: PlannerInputs,
+    *,
+    provider: Any | None = None,
+    deterministic: bool = False,
+    params: GroupingParams | None = None,
+    repair: bool = True,
+    reasoning: str | None = None,
+) -> tuple[ConceptOutline, OutlineReport]:
+    """Name and section an already-computed partition, then validate it.
+
+    One call names every group. The model receives opaque ids and returns a
+    title, a scope and a section per id; it never decides membership, so a
+    response that is late, partial, malformed or full of invented ids costs
+    the wiki its titles and never its structure or its coverage.
+
+    Falls back to :func:`name_deterministically` whenever there is no provider,
+    the run is in deterministic mode, or the model's response cannot be used.
     """
     all_files = set(inputs.production_files)
     resolved = params or params_for(len(all_files))
 
     if deterministic or provider is None:
-        outline, _groups = plan_deterministic(inputs, params=params)
+        outline = name_deterministically(groups, inputs)
         report = validate_outline(
             outline,
             all_files=all_files,
@@ -287,9 +351,6 @@ async def plan_outline(
         )
         return outline, report
 
-    groups = group_files(
-        inputs.production_files, layer_of_file=inputs.layer_of_file, params=params
-    )
     payload, index = build_payload(
         groups,
         layer_labels=inputs.layer_labels,
@@ -333,6 +394,7 @@ async def plan_outline(
                 user_prompt=instructions + body,
                 max_tokens=16000,
                 temperature=0.2,
+                **_reasoning_kwargs(reasoning),
             )
         data = parse_json_object(getattr(response, "content", "") or "")
     except Exception as exc:
@@ -343,9 +405,7 @@ async def plan_outline(
     # and could take the run down — the one failure mode this design exists to
     # rule out. Decoding is defensive in its own right; this is the second line.
     try:
-        named, invented_ids = decode_response(
-            data, index, layer_labels=inputs.layer_labels
-        )
+        named, invented_ids = decode_response(data, index, layer_labels=inputs.layer_labels)
     except Exception as exc:
         logger.warning("concept_outline_decode_failed", error=str(exc))
         named, invented_ids = decode_response({}, index, layer_labels=inputs.layer_labels)
@@ -369,7 +429,7 @@ async def plan_outline(
     if repair:
         targets = _repair_targets(outline, report)
         if targets:
-            await _repair_titles(outline, index, targets, provider=provider)
+            await _repair_titles(outline, index, targets, provider=provider, reasoning=reasoning)
             # Repair writes new prose, so it has to face the same citation
             # check the first pass did. Grounding after the last write rather
             # than after the first is the difference between checking the page
@@ -383,6 +443,21 @@ async def plan_outline(
             )
             report.invented_paths = sorted(set(report.invented_paths) | set(ungrounded))
 
+    # Last line of defence on titles. Repair is a second model call and can
+    # decline, run out of ids, or hand back a name already in use, so a
+    # duplicate can still reach here. Identity is structural, so nothing is
+    # lost when two titles collide, but a reader sees two identical rows and
+    # cannot tell which is which. Qualifying them by path is the same rule the
+    # deterministic path already applies, and it cannot fail.
+    if _force_unique_titles(outline):
+        report = validate_outline(
+            outline,
+            all_files=all_files,
+            test_files=inputs.test_files,
+            max_files_per_page=resolved.max_files,
+        )
+        report.invented_paths = sorted(set(report.invented_paths) | set(ungrounded))
+
     logger.info(
         "concept_outline_planned",
         pages=report.page_count,
@@ -390,6 +465,11 @@ async def plan_outline(
         coverage=round(report.coverage, 4),
         invented=len(report.invented_paths),
         naming_mode=outline.naming_mode,
+        # How many titles the model actually decided. ``naming_mode`` only says
+        # that at least one did, so a run where the response was unusable and
+        # every page fell back to its path still reads as "llm". That happened
+        # and looked like success; this is the number that shows it.
+        named_by_model=sum(1 for p in outline.pages if p.named_by_model),
     )
     return outline, report
 
@@ -400,6 +480,7 @@ async def _repair_titles(
     targets: set[str],
     *,
     provider: Any,
+    reasoning: str | None = None,
 ) -> None:
     """Re-ask for just the failing titles, then apply only what improved.
 
@@ -436,13 +517,22 @@ async def _repair_titles(
         taken="\n".join(f"- {t}" for t in taken) or "(none)",
         failures="\n".join(lines),
     )
+    # Budgeted per failing group rather than flat. Repair was written for the
+    # handful a long request loses near the end of the list, and a flat 2000
+    # tokens covers that. It does not cover the case that actually matters: a
+    # first call that comes back with no usable names at all, where repair is
+    # asked to name the whole repository and truncates, so an outline that
+    # could have been recovered ships with every title derived from a path.
+    # Observed on this repository at 82 groups.
+    budget = max(2000, min(16000, 200 + 150 * len(failing)))
     try:
         with _billed_as(provider, COST_OPERATION):
             response = await provider.generate(
                 system_prompt=SYSTEM_PROMPT,
                 user_prompt=prompt,
-                max_tokens=2000,
+                max_tokens=budget,
                 temperature=0.2,
+                **_reasoning_kwargs(reasoning),
             )
         data = parse_json_object(getattr(response, "content", "") or "")
     except Exception as exc:

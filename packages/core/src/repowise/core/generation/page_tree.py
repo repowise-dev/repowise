@@ -102,6 +102,8 @@ def _sort_key(page: GeneratedPage, layer_rank: dict[str, int]) -> tuple:
         rank = _onboarding_rank(page)
     elif page.page_type == "layer_page":
         rank = layer_rank.get(page.target_path, len(layer_rank))
+    elif page.page_type == "module_page":
+        rank = _concept_rank(page)
     else:
         rank = 0
     return (
@@ -110,6 +112,29 @@ def _sort_key(page: GeneratedPage, layer_rank: dict[str, int]) -> tuple:
         page.target_path,
         page.page_id,
     )
+
+
+def _concept_rank(page: GeneratedPage) -> int:
+    """Where the namer put this concept page in the reading order.
+
+    A concept page's siblings are the other concept pages under the same
+    layer, and sorting them by target path puts the reader wherever the
+    alphabet lands. The namer already decided an order as a narrative, so use
+    it when it exists.
+
+    Pages with no order come from a run that never named them (keyless, or a
+    wiki written before naming shipped) and sort after the named ones, where
+    the tie-break on ``target_path`` gives them the order they have today.
+    Deliberately not zero: that is a real position, and borrowing it would
+    interleave unnamed pages through the narrative.
+    """
+    order = page.metadata.get("concept_order")
+    return order if isinstance(order, int) else _UNRANKED_CONCEPT
+
+
+# Larger than any real position, so unnamed pages sort after named ones for
+# any outline the grouper's size ladder can produce.
+_UNRANKED_CONCEPT = 1_000_000
 
 
 def _dominant_layer(paths: Iterable[str], layer_of_file: dict[str, str]) -> str:

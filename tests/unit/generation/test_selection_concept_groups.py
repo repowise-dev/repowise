@@ -96,7 +96,7 @@ def _inputs(
 
 
 def test_every_production_file_is_covered_exactly_once():
-    groups = [g for _, g in _build_module_groups(_inputs())]
+    groups = [g for _, g in _build_module_groups(_inputs()).scored]
     claimed = [p for g in groups for p in g.file_paths]
 
     assert sorted(claimed) == sorted(_paths()), "the partition is not total"
@@ -111,7 +111,7 @@ def test_root_level_files_get_a_usable_target_path():
     and leaves the page with nothing for the tree, the breadcrumbs or the
     bench gold set to match on.
     """
-    groups = [g for _, g in _build_module_groups(_inputs())]
+    groups = [g for _, g in _build_module_groups(_inputs()).scored]
     owning = [g for g in groups if "setup.py" in g.file_paths]
 
     assert owning, "root-level files were dropped from the partition"
@@ -125,7 +125,7 @@ def test_root_level_files_get_a_usable_target_path():
 
 def test_test_files_never_enter_the_concept_tree():
     """D8: tests keep file pages, they do not get concept pages."""
-    groups = [g for _, g in _build_module_groups(_inputs())]
+    groups = [g for _, g in _build_module_groups(_inputs()).scored]
     claimed = {p for g in groups for p in g.file_paths}
 
     assert not any(p.startswith("tests/") for p in claimed)
@@ -135,8 +135,8 @@ def test_test_files_never_enter_the_concept_tree():
 
 def test_dropping_the_test_files_does_not_change_the_partition():
     """Excluding tests must be a filter, not a force that reshapes groups."""
-    with_tests = [g.structural_key for _, g in _build_module_groups(_inputs())]
-    without = [g.structural_key for _, g in _build_module_groups(_inputs(with_tests=False))]
+    with_tests = [g.structural_key for _, g in _build_module_groups(_inputs()).scored]
+    without = [g.structural_key for _, g in _build_module_groups(_inputs(with_tests=False)).scored]
 
     assert with_tests == without
 
@@ -148,7 +148,7 @@ def test_dropping_the_test_files_does_not_change_the_partition():
 
 def test_groups_carry_a_concept_prefixed_structural_key():
     """The prefix is what lets a wiki tell a concept page from an old one."""
-    groups = [g for _, g in _build_module_groups(_inputs())]
+    groups = [g for _, g in _build_module_groups(_inputs()).scored]
 
     assert groups
     assert all(g.structural_key.startswith("concept-") for g in groups)
@@ -162,7 +162,7 @@ def test_target_paths_are_unique():
     Two groups resolving to one target is a row collision: the second page
     silently overwrites the first on persist.
     """
-    groups = [g for _, g in _build_module_groups(_inputs())]
+    groups = [g for _, g in _build_module_groups(_inputs()).scored]
     keys = [g.key for g in groups]
 
     assert len(keys) == len(set(keys)), f"duplicate target paths: {keys}"
@@ -180,7 +180,7 @@ def test_identity_is_stable_across_processes():
         from tests.unit.generation.test_selection_concept_groups import (
             _build_module_groups, _inputs,
         )
-        groups = [g for _, g in _build_module_groups(_inputs())]
+        groups = [g for _, g in _build_module_groups(_inputs()).scored]
         print("|".join(f"{g.key}={g.structural_key}" for g in groups))
         """
     )
@@ -203,13 +203,91 @@ def test_identity_is_stable_across_processes():
 
 
 # ---------------------------------------------------------------------------
+# The importance floor covers documentation and example source too
+# ---------------------------------------------------------------------------
+
+
+def _support_paths() -> list[str]:
+    """Documentation and example source at the repository root."""
+    return (
+        [f"docs/conf{i}.py" for i in range(4)]
+        + [f"docs_src/tutorial/app{i}.py" for i in range(8)]
+        + [f"examples/basic/demo{i}.py" for i in range(5)]
+        + ["samples/quickstart.py"]
+    )
+
+
+def test_root_documentation_and_examples_get_no_concept_page():
+    """Measured, not assumed: on one framework these outnumbered the library."""
+    groups = [g for _, g in _build_module_groups(_inputs(paths=_paths() + _support_paths())).scored]
+    claimed = [p for g in groups for p in g.file_paths]
+
+    assert claimed, "fixture produced no groups"
+    for prefix in ("docs/", "docs_src/", "examples/", "samples/"):
+        assert not any(
+            p.startswith(prefix) for p in claimed
+        ), f"{prefix} reached the concept tree: {[p for p in claimed if p.startswith(prefix)]}"
+    # The fixture is only meaningful if those files were in the input.
+    assert any(p.startswith("docs_src/") for p in _support_paths())
+
+
+def test_a_docs_directory_inside_a_package_keeps_its_pages():
+    """The rule is anchored at the repository root, so a docs *feature* stays.
+
+    This is the case the amendment names: a source directory that happens to
+    be called ``docs`` deep inside a package is code, and excluding it would
+    be the substring bug the test rule originally shipped with, wearing a
+    different hat.
+    """
+    feature = [f"packages/app/src/core/docs/render{i}.py" for i in range(7)]
+    groups = [g for _, g in _build_module_groups(_inputs(paths=_paths() + feature)).scored]
+    claimed = {p for g in groups for p in g.file_paths}
+
+    assert set(feature) <= claimed, f"a docs feature was excluded: {set(feature) - claimed}"
+
+
+def test_production_paths_that_merely_begin_with_the_word_are_kept():
+    """Segment match, not prefix-of-string match."""
+    lookalikes = [
+        "documentation_builder/render.py",
+        "docsearch/index.py",
+        "examples_runner/main.py",
+        "sampler/draw.py",
+    ]
+    groups = [g for _, g in _build_module_groups(_inputs(paths=_paths() + lookalikes)).scored]
+    claimed = {p for g in groups for p in g.file_paths}
+
+    assert set(lookalikes) <= claimed, f"excluded by a prefix match: {set(lookalikes) - claimed}"
+
+
+def test_dropping_support_files_does_not_change_the_partition():
+    """The floor is a pure filter: it must not reshape the remaining groups."""
+    with_support = [
+        g.structural_key
+        for _, g in _build_module_groups(_inputs(paths=_paths() + _support_paths())).scored
+    ]
+    without = [g.structural_key for _, g in _build_module_groups(_inputs(paths=_paths())).scored]
+
+    assert with_support == without
+
+
+def test_a_repository_that_is_only_documentation_still_gets_a_tree():
+    """Documenting the docs is a bad wiki. Having none at all is a worse one."""
+    groups = [g for _, g in _build_module_groups(_inputs(paths=_support_paths())).scored]
+    claimed = [p for g in groups for p in g.file_paths]
+
+    assert groups, "the floor emptied the tree instead of yielding"
+    assert sorted(claimed) == sorted(_support_paths())
+
+
+# ---------------------------------------------------------------------------
 # Ordering and naming
 # ---------------------------------------------------------------------------
 
 
 def test_ranked_by_summed_pagerank_not_by_path():
     """The heaviest subsystem sorts first even though its path sorts last."""
-    scored = _build_module_groups(_inputs())
+    scored = _build_module_groups(_inputs()).scored
     ordered_keys = [g.key for _, g in scored]
 
     assert len(scored) > 1, "a one-group fixture cannot test ordering"
@@ -227,7 +305,7 @@ def test_ranked_by_summed_pagerank_not_by_path():
 
 
 def test_display_is_a_name_not_a_bare_path():
-    groups = [g for _, g in _build_module_groups(_inputs())]
+    groups = [g for _, g in _build_module_groups(_inputs()).scored]
 
     for g in groups:
         assert g.display, f"{g.key} has no title"
@@ -244,8 +322,8 @@ def test_layer_labels_from_the_kg_reach_the_title():
             "nodeIds": [f"file:{p}" for p in _paths() if "/ui/c4/" in p],
         }
     ]
-    with_kg = [g for _, g in _build_module_groups(_inputs(kg_modules=modules))]
-    without_kg = [g for _, g in _build_module_groups(_inputs())]
+    with_kg = [g for _, g in _build_module_groups(_inputs(kg_modules=modules)).scored]
+    without_kg = [g for _, g in _build_module_groups(_inputs()).scored]
 
     # Membership is unchanged by the layer signal: it steers merging of
     # adjacent runs, it never forces a split.
@@ -269,7 +347,7 @@ def test_layer_labels_from_the_kg_reach_the_title():
 
 def test_select_pages_emits_every_group():
     inputs = _inputs()
-    groups = _build_module_groups(inputs)
+    groups = _build_module_groups(inputs).scored
     selection = select_pages(inputs)
 
     assert len(selection.module_groups) == len(groups)
@@ -302,7 +380,7 @@ def test_two_groups_never_share_a_title():
         + [f"packages/beta/src/ui/f{i}.py" for i in range(8)]
         + ["setup.py"]
     )
-    groups = [g for _, g in _build_module_groups(_inputs(paths=paths))]
+    groups = [g for _, g in _build_module_groups(_inputs(paths=paths)).scored]
 
     titles = [g.display for g in groups]
     assert len(titles) == len(set(titles)), titles
