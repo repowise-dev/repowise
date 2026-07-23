@@ -191,9 +191,17 @@ def assign_page_tree(
             page.parent_page_id = file_parent(page.target_path)
 
     # A spotlight belongs to the file it documents: "path/to/file.py::Symbol".
+    # The file's own page may not exist: selection can spotlight a symbol in a
+    # file that did not earn a page of its own. Fall back to where that file
+    # would have sat rather than pointing at a row that is not there.
+    file_page_ids = {p.page_id for p in by_type.get("file_page", [])}
     for page in by_type.get("symbol_spotlight", []):
         owner = page.target_path.split("::", 1)[0]
-        page.parent_page_id = f"file_page:{owner}" if owner else root_id
+        owner_id = f"file_page:{owner}" if owner else ""
+        if owner_id in file_page_ids:
+            page.parent_page_id = owner_id
+        else:
+            page.parent_page_id = file_parent(owner) if owner else root_id
 
     # A cycle spans files, often across modules. Hang it off the layer its
     # members mostly live in rather than picking one member's module.
@@ -210,6 +218,16 @@ def assign_page_tree(
 
     if root is not None:
         root.parent_page_id = None
+
+    # Last line of defence: a parent that is not in the set breaks every walk
+    # of the tree, and the rules above each resolve against a different
+    # source. Rather than trust them all to agree, drop any edge that does not
+    # land on a real page. Falling back to the root reads as "somewhere in
+    # this wiki", which is true; a dangling id reads as a page that exists.
+    known = {p.page_id for p in pages}
+    for page in pages:
+        if page.parent_page_id is not None and page.parent_page_id not in known:
+            page.parent_page_id = root_id if page.page_id != root_id else None
 
     _number(pages, root_id, layer_rank, module_ids)
 

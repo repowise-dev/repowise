@@ -202,3 +202,46 @@ class TestPartialSets:
 
     def test_empty_input_is_harmless(self):
         assign_page_tree([], LAYER_ORDER)
+
+
+class TestDanglingParents:
+    """Found on a real 1,775-page wiki, not on the fixture: a spotlight whose
+    file never earned a page of its own pointed at a row that did not exist."""
+
+    def test_spotlight_without_a_file_page_falls_back(self):
+        pages = [
+            _page("repo_overview", "demo"),
+            _page("layer_page", "layer:service"),
+            _page("module_page", "src/ingest", file_paths=["src/ingest/a.py"]),
+            _page("symbol_spotlight", "src/ingest/a.py::Parser"),
+        ]
+        assign_page_tree(pages, LAYER_ORDER)
+        spotlight = _by_id(pages)["symbol_spotlight:src/ingest/a.py::Parser"]
+        assert spotlight.parent_page_id == "module_page:src/ingest"
+        assert spotlight.parent_page_id in {p.page_id for p in pages}
+
+    def test_spotlight_with_no_home_at_all_lands_on_the_root(self):
+        pages = [
+            _page("repo_overview", "demo"),
+            _page("symbol_spotlight", "vendor/x.py::Thing"),
+        ]
+        assign_page_tree(pages, LAYER_ORDER)
+        assert _by_id(pages)["symbol_spotlight:vendor/x.py::Thing"].parent_page_id == (
+            "repo_overview:demo"
+        )
+
+    def test_no_page_ever_points_outside_the_set(self):
+        """The invariant, asserted over a set with several broken references."""
+        pages = [
+            _page("repo_overview", "demo"),
+            _page("symbol_spotlight", "gone.py::A"),
+            _page("file_page", "orphan.py", layer_id="layer:nonexistent"),
+            _page("scc_page", "scc-abc", files=["gone.py", "orphan.py"]),
+        ]
+        assign_page_tree(pages, LAYER_ORDER)
+        known = {p.page_id for p in pages}
+        assert [
+            (p.page_id, p.parent_page_id)
+            for p in pages
+            if p.parent_page_id is not None and p.parent_page_id not in known
+        ] == []
