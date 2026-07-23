@@ -781,3 +781,56 @@ class TestEntryPointFlag:
         flagged = self._flagged(tmp_path)
         assert "cli.py" in flagged
         assert "pkg/cli.py" not in flagged
+
+
+# ---------------------------------------------------------------------------
+# Test-file classification
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "rel_path",
+    [
+        "tests/conftest.py",
+        "tests/type_check/typing_app.py",
+        "packages/ui/__tests__/brand.test.ts",
+        "packages/ui/__tests__/chat/panel.tsx",
+        "src/components/Button.test.tsx",
+        "src/lib/parse.spec.ts",
+        "test/fixtures/app.py",
+        "spec/support/helper.rb",
+        "src/pkg/tests/helpers.py",
+        "pkg/test_thing.py",
+        "pkg/thing_test.go",
+    ],
+)
+def test_test_files_are_recognised_including_root_level_suites(rel_path):
+    """Directory and filename conventions across languages, not just Python.
+
+    Two gaps, both of which let test files into the concept tree. ``"/tests/"
+    in path`` needs a slash on both sides, so a root-level ``tests/`` — the
+    usual layout — read as production code. And the stem rule knew only
+    ``test_x`` / ``x_test``, so the whole JavaScript convention
+    (``__tests__/`` directories, ``x.test.ts`` filenames) was invisible:
+    measured on this repository, 122 test files survived into the production
+    set and five concept pages were nothing but tests.
+    """
+    from repowise.core.ingestion.traverser import _is_test_file
+
+    assert _is_test_file(rel_path, Path(rel_path).name)
+
+
+@pytest.mark.parametrize(
+    "rel_path",
+    [
+        "src/latest/api.py",
+        "src/contest/rules.py",
+        "protests/model.py",
+        "src/testing_utils.py",
+    ],
+)
+def test_production_paths_that_merely_contain_the_word_are_not_tests(rel_path):
+    """Segment match, not substring: ``contest`` and ``latest`` are not tests."""
+    from repowise.core.ingestion.traverser import _is_test_file
+
+    assert not _is_test_file(rel_path, Path(rel_path).name)
