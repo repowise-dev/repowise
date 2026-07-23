@@ -23,7 +23,7 @@ should be proposed for removal.
 - "files" → `--kind unreachable_file`
 - "exports" → `--kind unused_export`
 - "packages" / "zombie" → `--kind zombie_package`
-- "strict" → `--min-confidence 0.7` (default is 0.4)
+- "strict" → `--min-confidence 0.7` (default is 0.5)
 
 Other flags: `--format json`, `--include-internals` (aggressive, private-symbol
 scan; higher false-positive rate), `--include-zombie-packages` /

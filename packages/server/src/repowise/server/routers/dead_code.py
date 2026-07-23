@@ -27,7 +27,7 @@ router = APIRouter(
 async def list_dead_code(
     repo_id: str,
     kind: str | None = Query(None, description="Filter by finding kind"),
-    min_confidence: float = Query(0.4, ge=0.0, le=1.0),
+    min_confidence: float = Query(0.5, ge=0.0, le=1.0),
     status: str = Query("open"),
     safe_only: bool = Query(False),
     limit: int = Query(100, ge=1, le=500),
