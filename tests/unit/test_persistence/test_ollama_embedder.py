@@ -149,3 +149,19 @@ async def test_env_timeout_is_applied_to_the_request(monkeypatch: pytest.MonkeyP
     await embedder.embed(["one"])
 
     assert _FakeAsyncClient.calls[0]["timeout"] == 300.0
+
+
+def test_timeout_invalid_raises_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    from repowise.core.providers.embedding.base import EmbedderConfigError
+
+    monkeypatch.setenv("OLLAMA_EMBEDDING_TIMEOUT", "invalid")
+    with pytest.raises(EmbedderConfigError, match="Invalid OLLAMA_EMBEDDING_TIMEOUT: 'invalid'"):
+        OllamaEmbedder(model="embeddinggemma")
+
+
+def test_dimensions_invalid_raises_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    from repowise.core.providers.embedding.base import EmbedderConfigError
+
+    monkeypatch.setenv("OLLAMA_EMBEDDING_DIMS", "-5")
+    with pytest.raises(EmbedderConfigError, match="Invalid OLLAMA_EMBEDDING_DIMS: '-5'"):
+        OllamaEmbedder(model="embeddinggemma")
