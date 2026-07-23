@@ -1067,6 +1067,12 @@ async def persist_pipeline_result(
         getattr(result, "authoritative_page_types", None),
     )
 
+    # Placement depends on the whole page set, so it is computed here rather
+    # than during generation, after the sweep has retired anything stale.
+    from .page_tree_sync import rebuild_page_tree
+
+    await rebuild_page_tree(session, repo_id)
+
     logger.info(
         "pipeline_result_persisted",
         repo_id=repo_id,

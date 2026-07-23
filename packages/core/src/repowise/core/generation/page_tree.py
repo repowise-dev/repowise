@@ -31,8 +31,29 @@ an id that moves.
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import dataclass, field
+from typing import Any
 
 from .models import GeneratedPage
+
+
+@dataclass
+class TreeNode:
+    """The part of a page the tree cares about.
+
+    Lets the placement run over rows loaded from the store as well as over
+    freshly generated pages, so an incremental update can rebuild the tree
+    from the complete page set rather than from the handful it regenerated.
+    ``GeneratedPage`` already carries these attributes and is passed directly.
+    """
+
+    page_id: str
+    page_type: str
+    target_path: str
+    metadata: dict[str, Any] = field(default_factory=dict)
+    parent_page_id: str | None = None
+    display_order: int = 0
+    section_number: str | None = None
 
 # Rank of each page type among siblings sharing a parent. Lower sorts first.
 # Onboarding is ranked by its slot rather than this table.
@@ -114,7 +135,9 @@ def _nearest_module(path: str, module_paths: list[str]) -> str:
     return ""
 
 
-def assign_page_tree(pages: list[GeneratedPage], layer_order_ids: list[str] | None = None) -> None:
+def assign_page_tree(
+    pages: list[GeneratedPage] | list[TreeNode], layer_order_ids: list[str] | None = None
+) -> None:
     """Fill in ``parent_page_id``, ``display_order`` and ``section_number``.
 
     Mutates the pages in place. Safe to run on a partial set: an incremental

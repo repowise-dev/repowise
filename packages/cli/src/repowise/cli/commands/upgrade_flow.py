@@ -286,6 +286,14 @@ async def _run_upgrade(
     async with get_session(sf) as session:
         await upsert_pages_from_generated(session, generated_pages, repo_id)
         try:
+            from repowise.core.pipeline.page_tree_sync import rebuild_page_tree
+
+            await rebuild_page_tree(session, repo_id)
+        except Exception:
+            # Placement is navigation, not content. An upgrade that produced
+            # pages should not fail because they could not be ordered.
+            pass
+        try:
             from datetime import UTC, datetime
 
             from repowise.core.persistence.crud import upsert_generation_job

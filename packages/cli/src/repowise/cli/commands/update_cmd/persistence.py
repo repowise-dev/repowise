@@ -432,6 +432,15 @@ async def _persist_full_update_async(
             except Exception as exc:
                 _skip("Stale-page decay", exc)
 
+            # Placement depends on the whole page set, which on an incremental
+            # run lives in the store rather than in the pages just generated.
+            try:
+                from repowise.core.pipeline.page_tree_sync import rebuild_page_tree
+
+                await rebuild_page_tree(session, repo_id)
+            except Exception as exc:
+                _skip("Page tree rebuild", exc)
+
             # Refreshed knowledge graph — same writers as the init pipeline
             # (full-replace layers/tour/curated meta).
             if knowledge_graph_result is not None:

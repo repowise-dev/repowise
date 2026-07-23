@@ -382,6 +382,15 @@ async def _persist_async(
             except Exception as exc:
                 degraded.append(f"Stale-page decay: {exc}")
 
+            # Placement depends on the whole page set, which on an incremental
+            # run lives in the store rather than in the pages just generated.
+            try:
+                from repowise.core.pipeline.page_tree_sync import rebuild_page_tree
+
+                await rebuild_page_tree(session, repo_id)
+            except Exception as exc:
+                degraded.append(f"Page tree rebuild: {exc}")
+
             # Real DB total, not an accumulation: regeneration upserts, so
             # adding len(generated_pages) each run inflates the count forever.
             total = len(generated_pages)

@@ -909,6 +909,15 @@ async def persist_incremental_index(
                 except Exception as exc:
                     _skip("Tombstone marking", exc)
 
+            # Placement depends on the whole page set, which on an incremental
+            # run lives in the store rather than in the pages just generated.
+            try:
+                from repowise.core.pipeline.page_tree_sync import rebuild_page_tree
+
+                await rebuild_page_tree(session, repo_id)
+            except Exception as exc:
+                _skip("Page tree rebuild", exc)
+
             if git_meta_map:
                 try:
                     from repowise.core.persistence.crud import (

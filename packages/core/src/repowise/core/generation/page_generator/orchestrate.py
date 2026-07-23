@@ -638,12 +638,17 @@ class _GenerationRun:
 
         # Place every page in the tree that MCP, the web app and the editor
         # extension all read, instead of each deriving its own from paths.
-        try:
-            from ..page_tree import assign_page_tree
+        # Skipped on a scoped run: placement depends on the pages that are NOT
+        # in hand (which module a file sits under, who its siblings are), so a
+        # partial answer here would overwrite a correct stored one. Those runs
+        # are placed by the post-persist rebuild, which sees the whole set.
+        if not self.only_page_ids:
+            try:
+                from ..page_tree import assign_page_tree
 
-            assign_page_tree(all_pages, self.layer_order_ids)
-        except Exception as exc:
-            log.debug("page_tree.failed", error=str(exc))
+                assign_page_tree(all_pages, self.layer_order_ids)
+            except Exception as exc:
+                log.debug("page_tree.failed", error=str(exc))
 
         # Post-generation: repair mermaid diagrams so illegal node IDs / unquoted
         # labels in LLM output don't break the whole diagram in the renderer.
