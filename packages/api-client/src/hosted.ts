@@ -270,11 +270,6 @@ export function mapHostedPage(raw: Record<string, unknown>, repoId: string): Pag
     human_notes: null,
     created_at: str("created_at"),
     updated_at: str("updated_at") || str("created_at"),
-    is_deterministic:
-      typeof raw.is_deterministic === "boolean"
-        ? (raw.is_deterministic as boolean)
-        : str("provider_name") === "template",
-    doc_tier: typeof raw.doc_tier === "number" ? (raw.doc_tier as number) : null,
   };
 }
 
@@ -314,7 +309,6 @@ export function mapHostedSearchResult(raw: Record<string, unknown>): SearchResul
     score: partial.score ?? 0,
     snippet: partial.snippet ?? "",
     search_type: partial.search_type ?? "keyword",
-    is_deterministic: partial.is_deterministic ?? false,
   };
 }
 

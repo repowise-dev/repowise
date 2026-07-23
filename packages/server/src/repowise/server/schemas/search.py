@@ -19,7 +19,3 @@ class SearchResultResponse(BaseModel):
     score: float
     snippet: str
     search_type: str
-    # True for deterministic template pages (the coverage tail) — drives the
-    # "Auto" badge on the search result card. Defaults False so older callers
-    # and unresolved pages read as regular LLM pages.
-    is_deterministic: bool = False

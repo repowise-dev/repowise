@@ -23,13 +23,6 @@ export interface PageResponse {
   human_notes: string | null;
   created_at: string;
   updated_at: string;
-  /** True when the page was rendered from structure (a template) rather than
-   *  written by a model — the flat marker the server projects from
-   *  `provider_name === "template"`. Drives the "Write with AI" vs
-   *  "Regenerate" affordance. */
-  is_deterministic: boolean;
-  /** 2 = in-budget template, 3 = coverage tail; null on model-written pages. */
-  doc_tier: number | null;
   /** Position in the wiki outline, computed once at generation time so every
    *  reader navigates the same tree. Optional: pages written before the wiki
    *  carried a tree have no placement, which reads as flat. */

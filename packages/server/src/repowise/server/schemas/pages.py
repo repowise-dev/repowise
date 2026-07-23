@@ -26,13 +26,6 @@ class PageResponse(BaseModel):
     confidence: float
     freshness_status: str
     metadata: dict
-    # Deterministic coverage-tail pages are template-generated (zero LLM).
-    # ``is_deterministic`` is the flat marker for UI badging / ranking;
-    # ``doc_tier`` (2 = in-budget template, 3 = coverage tail) mirrors
-    # ``metadata.doc_tier`` at the top level so consumers don't dig into the
-    # metadata blob. Both default to the LLM-page values for older rows.
-    is_deterministic: bool = False
-    doc_tier: int | None = None
     human_notes: str | None = None
     # Position in the wiki outline. Older rows carry no placement, which reads
     # as a flat wiki and is what those rows actually describe.
@@ -64,8 +57,6 @@ class PageResponse(BaseModel):
             confidence=obj.confidence,  # type: ignore[attr-defined]
             freshness_status=obj.freshness_status,  # type: ignore[attr-defined]
             metadata=metadata,
-            is_deterministic=obj.provider_name == "template",  # type: ignore[attr-defined]
-            doc_tier=metadata.get("doc_tier"),
             human_notes=obj.human_notes,  # type: ignore[attr-defined]
             parent_page_id=obj.parent_page_id,  # type: ignore[attr-defined]
             display_order=obj.display_order,  # type: ignore[attr-defined]

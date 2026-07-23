@@ -1,9 +1,9 @@
-"""Tests for the docs counts in /api/repos/{id}/overview-summary.
+"""Tests for the docs count in /api/repos/{id}/overview-summary.
 
-The Overview's Docs tile reports total generated pages plus how many of them
-are the deterministic template ("Auto") coverage tail, so a reader can tell
-model-written docs from structure-derived ones. ``provider_name == "template"``
-is the discriminator, matching the page schema's ``is_deterministic``.
+The Overview's Docs tile reports the total generated page count. The
+template-vs-AI split it used to carry was retired with the provenance axis: the
+file layer is structural for every repo, so a per-page "who wrote this" count
+said nothing.
 """
 
 from __future__ import annotations
@@ -42,8 +42,8 @@ def _page(repo_id: str, path: str, provider: str) -> Page:
 
 
 @pytest.mark.asyncio
-async def test_docs_counts_split_ai_from_template_pages(client: AsyncClient, app) -> None:
-    """Total counts every page; auto counts only the template-provider ones."""
+async def test_docs_count_totals_every_page(client: AsyncClient, app) -> None:
+    """The Docs tile counts every generated page, of every provenance."""
     repo = await create_test_repo(client)
 
     async with get_session(app.state.session_factory) as session:
@@ -56,12 +56,12 @@ async def test_docs_counts_split_ai_from_template_pages(client: AsyncClient, app
     stats = resp.json()["stats"]
 
     assert stats["doc_page_count"] == 3
-    assert stats["doc_auto_page_count"] == 1
+    assert "doc_auto_page_count" not in stats
 
 
 @pytest.mark.asyncio
-async def test_docs_counts_are_zero_without_pages(client: AsyncClient) -> None:
-    """An index-only repo has no wiki: both counts read zero, not null."""
+async def test_docs_count_is_zero_without_pages(client: AsyncClient) -> None:
+    """An index-only repo has no wiki: the count reads zero, not null."""
     repo = await create_test_repo(client)
 
     resp = await client.get(f"/api/repos/{repo['id']}/overview-summary")
@@ -69,4 +69,3 @@ async def test_docs_counts_are_zero_without_pages(client: AsyncClient) -> None:
     stats = resp.json()["stats"]
 
     assert stats["doc_page_count"] == 0
-    assert stats["doc_auto_page_count"] == 0

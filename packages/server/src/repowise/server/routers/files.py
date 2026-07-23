@@ -217,11 +217,6 @@ async def file_detail(
             "confidence": page_row.confidence,
             "human_notes": page_row.human_notes,
             "updated_at": page_row.updated_at.isoformat() if page_row.updated_at else None,
-            # Deterministic template pages (the coverage tail) are badged in
-            # the file docs tab. provider_name is the marker; doc_tier (2/3)
-            # mirrors metadata.doc_tier for the reader that wants the tier.
-            "is_deterministic": page_row.provider_name == "template",
-            "doc_tier": json.loads(page_row.metadata_json or "{}").get("doc_tier"),
         }
         if page_row
         else None
