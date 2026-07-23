@@ -41,6 +41,31 @@ _MAX_IMPORTS = 30
 _MAX_TOP_FILES = 20
 
 
+def _file_dependency_neighbors(graph: Any, path: str, *, incoming: bool) -> list[str]:
+    """Return structural file neighbors in the requested direction.
+
+    The file graph treats every file-to-file edge except ``co_changes`` as a
+    dependency. This keeps import, type-use, framework, and future structural
+    edge types while excluding symbol containment and historical association.
+    """
+    if path not in graph:
+        return []
+
+    edges = graph.in_edges(path, data=True) if incoming else graph.out_edges(path, data=True)
+    neighbors: list[str] = []
+    for source, target, edge_data in edges:
+        neighbor = source if incoming else target
+        neighbor_data = graph.nodes[neighbor]
+        if neighbor_data.get("node_type", "file") != "file":
+            continue
+        if neighbor_data.get("language") == "external" or neighbor.startswith("external:"):
+            continue
+        if edge_data.get("edge_type", "imports") == "co_changes":
+            continue
+        neighbors.append(neighbor)
+    return neighbors
+
+
 # ---------------------------------------------------------------------------
 # ContextAssembler
 # ---------------------------------------------------------------------------
@@ -135,12 +160,10 @@ class ContextAssembler:
         else:
             import_list = []
 
-        # Graph edges
-        in_edges = list(graph.predecessors(path)) if path in graph else []
-        out_edges = list(graph.successors(path)) if path in graph else []
-        # Filter out external nodes
-        in_edges = [e for e in in_edges if not e.startswith("external:")]
-        out_edges = [e for e in out_edges if not e.startswith("external:")]
+        # Structural file dependencies only. The full graph also contains
+        # file→symbol containment and historical co-change edges.
+        in_edges = _file_dependency_neighbors(graph, path, incoming=True)
+        out_edges = _file_dependency_neighbors(graph, path, incoming=False)
 
         # Source snippet — use structural summary for large files
         source_text = source_bytes.decode("utf-8", errors="replace")

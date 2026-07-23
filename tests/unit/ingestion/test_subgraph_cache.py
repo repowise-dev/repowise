@@ -62,6 +62,22 @@ class TestSubgraphCache:
             d.get("edge_type") == "co_changes" for _, _, d in sub.edges(data=True)
         )
 
+    def test_file_subgraph_keeps_non_import_structural_edges(self, tmp_path: Path) -> None:
+        gb = _builder(tmp_path)
+        graph = gb.graph()
+        graph.add_node("type_provider.py", node_type="file")
+        graph.add_node("framework_entrypoint.py", node_type="file")
+        graph.add_node("history_only.py", node_type="file")
+        graph.add_edge("a.py", "type_provider.py", edge_type="type_use")
+        graph.add_edge("framework_entrypoint.py", "a.py", edge_type="framework")
+        graph.add_edge("a.py", "history_only.py", edge_type="co_changes")
+
+        sub = gb.file_subgraph()
+
+        assert sub["a.py"]["type_provider.py"]["edge_type"] == "type_use"
+        assert sub["framework_entrypoint.py"]["a.py"]["edge_type"] == "framework"
+        assert not sub.has_edge("a.py", "history_only.py")
+
     def test_invalidated_on_add_file(self, tmp_path: Path) -> None:
         gb = _builder(tmp_path)
         before = gb.file_subgraph()

@@ -151,11 +151,11 @@ def sample_graph(sample_parsed_file: ParsedFile) -> nx.DiGraph:
     calc = sample_parsed_file.file_info.path
     models = "python_pkg/models.py"
     utils = "python_pkg/utils.py"
-    g.add_node(calc, language="python", symbol_count=3, has_error=False)
-    g.add_node(models, language="python", symbol_count=2, has_error=False)
-    g.add_node(utils, language="python", symbol_count=1, has_error=False)
-    g.add_edge(calc, models, imported_names=["models"])
-    g.add_edge(calc, utils, imported_names=["utils"])
+    g.add_node(calc, node_type="file", language="python", symbol_count=3, has_error=False)
+    g.add_node(models, node_type="file", language="python", symbol_count=2, has_error=False)
+    g.add_node(utils, node_type="file", language="python", symbol_count=1, has_error=False)
+    g.add_edge(calc, models, edge_type="imports", imported_names=["models"])
+    g.add_edge(calc, utils, edge_type="imports", imported_names=["utils"])
     return g
 
 

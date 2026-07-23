@@ -1,4 +1,4 @@
-"""Tests for generation/context_assembler.py — 22 tests."""
+"""Tests for generation/context_assembler.py."""
 
 from __future__ import annotations
 
@@ -121,6 +121,47 @@ def test_assemble_file_page_dependencies_from_graph(
     )
     assert "python_pkg/models.py" in ctx.dependencies
     assert "python_pkg/utils.py" in ctx.dependencies
+
+
+def test_assemble_file_page_filters_dependency_edges_by_semantics(
+    sample_config, sample_parsed_file, graph_metrics, sample_source_bytes
+):
+    """Only structural file-to-file edges become dependencies or dependents."""
+    path = sample_parsed_file.file_info.path
+    graph = nx.DiGraph()
+    file_nodes = (
+        path,
+        "imported.py",
+        "importer.py",
+        "type_provider.py",
+        "framework_entrypoint.py",
+        "historical_dependency.py",
+        "historical_dependent.py",
+    )
+    graph.add_nodes_from((node, {"node_type": "file"}) for node in file_nodes)
+    graph.add_node(f"{path}::Calculator", node_type="symbol")
+    graph.add_node("external:third-party", node_type="external")
+
+    graph.add_edge(path, "imported.py", edge_type="imports")
+    graph.add_edge("importer.py", path, edge_type="imports")
+    graph.add_edge(path, "type_provider.py", edge_type="type_use")
+    graph.add_edge("framework_entrypoint.py", path, edge_type="framework")
+    graph.add_edge(path, f"{path}::Calculator", edge_type="defines")
+    graph.add_edge(path, "historical_dependency.py", edge_type="co_changes")
+    graph.add_edge("historical_dependent.py", path, edge_type="co_changes")
+    graph.add_edge(path, "external:third-party", edge_type="imports")
+
+    ctx = ContextAssembler(sample_config).assemble_file_page(
+        sample_parsed_file,
+        graph,
+        graph_metrics["pagerank"],
+        graph_metrics["betweenness"],
+        graph_metrics["community"],
+        sample_source_bytes,
+    )
+
+    assert ctx.dependencies == ["imported.py", "type_provider.py"]
+    assert ctx.dependents == ["importer.py", "framework_entrypoint.py"]
 
 
 def test_assemble_file_page_token_budget_respected(
