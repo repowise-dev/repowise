@@ -9,18 +9,39 @@ in core so the OSS server and hosted share it.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 from repowise.cli.helpers import console, load_state
 from repowise.core.generation.cascade import CascadeMode
 from repowise.core.generation.page_selection import PageSelectionIntent
-from repowise.core.generation.scope import ScopePlan, resolve_scope
+from repowise.core.generation.scope import ScopePlan, build_cost_plans, resolve_scope
 from repowise.core.pipeline.scoped_generation import (
     execute_scoped_generation,
     rehydrate_repo,
 )
+
+# The page types a model writes. Everything else is structural and refreshes on
+# `repowise update`, so `generate` never writes one: it works on the concept
+# layer only. Its complement is the structural set in generate_cmd/command.py.
+_MODEL_WRITTEN_PAGE_TYPES = frozenset(
+    {"module_page", "repo_overview", "architecture_diagram", "onboarding"}
+)
+
+
+def _narrow_to_model_written(plan: ScopePlan) -> ScopePlan:
+    """Drop structural pages from a resolved plan, so generate writes only prose.
+
+    ``--unwritten`` / ``--all`` / ``--path`` resolve against every page type, but
+    a structural page has no model to write it: including it would re-render it
+    from templates (a no-op that leaves it "unwritten") and inflate the headline
+    count. Keep only the model-written pages, in both the generate set and the
+    cascade fallout marked stale, and re-price from what remains.
+    """
+    gen = {pid for pid in plan.generate_ids if pid.split(":", 1)[0] in _MODEL_WRITTEN_PAGE_TYPES}
+    stale = {pid for pid in plan.stale_ids if pid.split(":", 1)[0] in _MODEL_WRITTEN_PAGE_TYPES}
+    return replace(plan, generate_ids=gen, stale_ids=stale, cost_plans=build_cost_plans(gen))
 
 
 @dataclass
@@ -96,7 +117,7 @@ async def run_scoped_generation(
         if rehydrated is None:
             console.print(
                 "[yellow]This repo has no wiki pages yet.[/yellow] "
-                "Run `repowise init --docs deterministic` or `repowise update --full` first."
+                "Run `repowise init --no-prose` or `repowise update --full` first."
             )
             return None
 
@@ -126,6 +147,9 @@ async def run_scoped_generation(
             deps=rehydrated.deps,
             ranked_seed=None,
         )
+        # generate writes the concept layer only; structural pages refresh on
+        # `repowise update`, so drop them from whatever the intent resolved to.
+        plan = _narrow_to_model_written(plan)
 
         if plan.unknown_page_ids:
             console.print(
@@ -203,7 +227,15 @@ async def run_scoped_generation(
 
 
 async def _page_stats(sf: Any, repo_id: str) -> tuple[int, int]:
-    """Return ``(total_pages, remaining_template_pages)`` from the DB."""
+    """Return ``(total_pages, remaining_stub_pages)`` from the DB.
+
+    A "stub" is a page a model was meant to write but has not yet: a
+    model-written page type still stamped ``provider_name='template'``.
+    Structural pages are permanently ``template`` by design, so counting them
+    would mean ``docs_mode`` could never flip to ``llm`` no matter how much
+    prose was written. The remaining-stub count is scoped to the concept layer
+    for exactly that reason.
+    """
     from sqlalchemy import func as sa_func
     from sqlalchemy import select as sa_select
 
@@ -220,7 +252,7 @@ async def _page_stats(sf: Any, repo_id: str) -> tuple[int, int]:
                 )
             ).scalar_one()
         )
-        templates = int(
+        stubs = int(
             (
                 await session.execute(
                     sa_select(sa_func.count())
@@ -228,11 +260,12 @@ async def _page_stats(sf: Any, repo_id: str) -> tuple[int, int]:
                     .where(
                         Page.repository_id == repo_id,
                         Page.provider_name == "template",
+                        Page.page_type.in_(list(_MODEL_WRITTEN_PAGE_TYPES)),
                     )
                 )
             ).scalar_one()
         )
-    return total, templates
+    return total, stubs
 
 
 def _report_plan(plan: ScopePlan, cascade_mode: CascadeMode) -> None:

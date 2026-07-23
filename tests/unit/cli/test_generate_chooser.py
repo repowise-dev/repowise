@@ -105,16 +105,20 @@ def test_run_interactive_chooser_bails_when_nothing_unwritten() -> None:
     assert _run(records, deps) is None
 
 
-def test_print_wiki_state_counts_by_provenance() -> None:
+def test_print_wiki_state_counts_concept_layer_only() -> None:
+    # Only model-written page types are counted; the file page is structural and
+    # is excluded from the written/unwritten split but still counts toward the
+    # wiki total.
     records = [
-        PageRecord("a", "file_page", "a.py", is_template=True),
-        PageRecord("b", "file_page", "b.py", is_template=False),
-        PageRecord("c", "file_page", "c.py", is_template=True, freshness_status="stale"),
+        PageRecord("a", "module_page", "src/a", is_template=True),
+        PageRecord("b", "module_page", "src/b", is_template=False),
+        PageRecord("c", "module_page", "src/c", is_template=True, freshness_status="stale"),
+        PageRecord("d", "file_page", "d.py", is_template=True),
     ]
     console = _RecordingConsole()
     print_wiki_state(console, records)
     line = console.lines[0]
-    assert "3 pages" in line
+    assert "3 of 4 wiki pages" in line
     assert "written" in line and "unwritten" in line and "stale" in line
     # Numbers are wrapped in rich color markup, so match the wrapped forms.
     assert "1[/cyan] written" in line

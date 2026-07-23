@@ -28,19 +28,30 @@ class InteractiveChoice:
     cascade_mode: CascadeMode
 
 
-def print_wiki_state(console: Console, records: list[PageRecord]) -> None:
-    """Print the written / unwritten / stale breakdown of the current wiki.
+def _concept_records(records: list[PageRecord]) -> list[PageRecord]:
+    """The pages a model writes. Everything else is structural, and generate
+    never touches it, so the wiki-state count and the "nothing unwritten" guard
+    both read the concept layer only (a structural page is permanently a
+    template, so counting it would always report the wiki as unwritten)."""
+    from .engine import _MODEL_WRITTEN_PAGE_TYPES
 
-    ``written`` + ``unwritten`` partition the wiki and sum to the total; ``stale``
-    is a cross-cutting count (a page of either kind whose code moved on), shown
-    after a separator so it does not read as a third slice of the total.
+    return [r for r in records if r.page_type in _MODEL_WRITTEN_PAGE_TYPES]
+
+
+def print_wiki_state(console: Console, records: list[PageRecord]) -> None:
+    """Print the written / unwritten / stale breakdown of the concept layer.
+
+    Scoped to the pages a model writes: ``written`` + ``unwritten`` partition
+    those and ``stale`` is a cross-cutting count of ones whose code moved on. The
+    total wiki size (structural pages included) is shown for context.
     """
-    total = len(records)
-    template = sum(1 for r in records if r.is_template)
+    concept = _concept_records(records)
+    total = len(concept)
+    template = sum(1 for r in concept if r.is_template)
     written = total - template
-    stale = sum(1 for r in records if r.is_stale)
+    stale = sum(1 for r in concept if r.is_stale)
     line = (
-        f"[bold]Wiki:[/bold] {total} pages — "
+        f"[bold]Subsystem pages:[/bold] {total} of {len(records)} wiki pages — "
         f"[cyan]{written}[/cyan] written, [yellow]{template}[/yellow] unwritten"
     )
     if stale:
@@ -101,9 +112,9 @@ def run_interactive_chooser(
     outcome.
     """
     print_wiki_state(console, records)
-    unwritten = {r.page_id for r in records if r.is_template}
+    unwritten = {r.page_id for r in _concept_records(records) if r.is_template}
     if not unwritten:
-        console.print("[green]Every page is already written.[/green] Nothing to upgrade.")
+        console.print("[green]Every subsystem page is already written.[/green] Nothing to upgrade.")
         return None
 
     cascade_mode = choose_cascade(console, unwritten, deps)
