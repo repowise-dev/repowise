@@ -63,11 +63,18 @@ def _apply_page_upsert(
         # Idempotent no-op: content, prompt hash and model all unchanged, so
         # do not bump the version or spawn a PageVersion snapshot; only refresh
         # the cheap derived fields (metadata enrichment lands here).
+        #
+        # "Cheap derived" means anything describing where a page sits rather
+        # than what it says. Those fields come from the repo's structure, not
+        # from the page's own bytes, so they can legitimately change while the
+        # content hash does not — a renamed page, or one whose siblings moved.
+        # A field left out here is frozen at whatever the first run wrote.
         if (
             existing.content == content
             and existing.source_hash == source_hash
             and existing.model_name == model_name
         ):
+            existing.title = title
             existing.summary = summary
             existing.target_path = target_path
             existing.freshness_status = freshness_status
