@@ -19,7 +19,11 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from ..context_assembler import FilePageContext
-from ..models import STRUCTURALLY_KEYED_PAGE_TYPES, GeneratedPage
+from ..models import (
+    STRUCTURALLY_KEYED_PAGE_TYPES,
+    GeneratedPage,
+    member_structural_key,
+)
 from . import levels as _levels
 from .helpers import (
     _CODE_LANGUAGES,
@@ -638,11 +642,19 @@ class _GenerationRun:
 
         # Place every page in the tree that MCP, the web app and the editor
         # extension all read, instead of each deriving its own from paths.
-        # Skipped on a scoped run: placement depends on the pages that are NOT
-        # in hand (which module a file sits under, who its siblings are), so a
-        # partial answer here would overwrite a correct stored one. Those runs
-        # are placed by the post-persist rebuild, which sees the whole set.
-        if not self.only_page_ids:
+        #
+        # Skipped whenever this run holds only part of the wiki. Placement
+        # depends on the pages that are NOT in hand (which module a file sits
+        # under, who its siblings are), so a partial answer here would
+        # overwrite a correct stored one. Both partial shapes have to be
+        # named: a scoped run sets only_page_ids, and an incremental docs
+        # update stops the ladder after level 2 with file_pages_only, which
+        # leaves no overview, no modules and no layers to resolve against.
+        # Those runs are placed by the post-persist rebuild instead.
+        partial_run = bool(self.only_page_ids) or bool(
+            getattr(self.config, "file_pages_only", False)
+        )
+        if not partial_run:
             try:
                 from ..page_tree import assign_page_tree
 
@@ -720,20 +732,37 @@ class _GenerationRun:
         return all_pages
 
 
+# How each structurally-keyed type derives its identity. Member-keyed types
+# hash the files they cover; a layer is identified by its curated id, which is
+# minted once and does not move.
+_MEMBER_KEYED_PREFIX = {"module_page": "module", "scc_page": "scc"}
+
+
 def _stamp_structural_keys(pages: list[GeneratedPage]) -> None:
     """Record the structural identity of every page that has one.
 
-    Module, layer and SCC pages are identified by their members or their
-    curated id rather than by a file path, and each already carries that
-    identity as its ``target_path``. Copying it into ``structural_key`` splits
-    identity from location: a page can then be moved or re-titled, or given a
-    readable directory as its target, without changing what it is.
+    Identity has to be the thing that actually says which page this is, and
+    for a page that groups files that is the member list. It cannot be the
+    target_path: a module's target_path is a directory only when a curated
+    knowledge graph named one, and otherwise it is a clustering ordinal that
+    shifts as soon as the clustering changes. Keying on the members means the
+    page survives being renumbered, renamed, or moved to a readable target.
 
-    A page keyed on a real file path has no structural identity separate from
-    that path, so it is left unset rather than given a copy of the path.
+    A page keyed on a real file path has no identity separate from that path,
+    so it is left unset rather than given a copy of the path.
     """
     for page in pages:
-        if page.page_type in STRUCTURALLY_KEYED_PAGE_TYPES:
+        if page.page_type not in STRUCTURALLY_KEYED_PAGE_TYPES:
+            continue
+        prefix = _MEMBER_KEYED_PREFIX.get(page.page_type)
+        members = page.metadata.get("file_paths") or []
+        members = [m for m in members if isinstance(m, str)]
+        if prefix and members:
+            page.structural_key = member_structural_key(members, prefix=prefix)
+        else:
+            # A layer, or a member-keyed page whose members are unknown. The
+            # curated id is the best identity available and is stable for a
+            # layer; for the others this is a fallback, not the design.
             page.structural_key = page.target_path
 
 

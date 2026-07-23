@@ -489,6 +489,14 @@ async def execute_job(
 
                 await upsert_pages_from_generated(session, incremental_pages, repo_id)
 
+                # These pages were generated from a changed-file subset, so
+                # they carry the placement a partial set could work out, which
+                # is none. They land after persist_pipeline_result already
+                # rebuilt the tree, so rebuild again or they stay unplaced.
+                from repowise.core.pipeline.page_tree_sync import rebuild_page_tree
+
+                await rebuild_page_tree(session, repo_id)
+
             # Drop swept pages from the vector store *before* the SQL session
             # commits. The vector store is a separate engine/file (pgvector DB,
             # LanceDB dir, or in-memory), so there is no SQLite write-lock

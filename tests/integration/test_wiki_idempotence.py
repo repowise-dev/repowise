@@ -104,25 +104,29 @@ async def _generate(parsed_files, source_map, tmp) -> list[GeneratedPage]:
 def _authority(pages: list[GeneratedPage]) -> set[str]:
     """The swept types this run is entitled to speak for.
 
-    A deterministic template run enumerates every candidate rather than a
-    budgeted slice, so its output for a swept type is ground truth. Mirrors
-    what ``orchestrator`` grants a curated deterministic run.
+    Full authority, which is stricter than what ``orchestrator`` would grant
+    this fixture: it makes the sweep as aggressive as it can be, so an
+    unstable id has the best possible chance of showing up as a stranded row.
+    Deliberately not a copy of the orchestrator's rule, which depends on
+    curated-KG state this fixture does not have.
     """
     return set(_SWEPT_GENERATED_PAGE_TYPES)
 
 
 async def _persist_full_run(sf, repo_id: str, pages: list[GeneratedPage]) -> list[str]:
-    """The page half of a full index: batch upsert, then sweep.
+    """The page half of a full index: upsert, sweep, then rebuild the tree.
 
-    Deliberately the same pair, in the same order, as
-    ``persist_pipeline_result`` — the phases either side of it do not touch
-    wiki_pages.
+    Deliberately the same three steps in the same order as
+    ``persist_pipeline_result``. The rebuild is part of it: leave it out and
+    deleting the production call stays green, which is how it was missed.
     """
     from repowise.core.persistence import upsert_pages_from_generated
+    from repowise.core.pipeline.page_tree_sync import rebuild_page_tree
 
     async with sf() as session:
         await upsert_pages_from_generated(session, pages, repo_id)
         swept = await _sweep_stale_generated_pages(session, repo_id, pages, _authority(pages))
+        await rebuild_page_tree(session, repo_id)
         await session.commit()
     return swept
 
@@ -278,24 +282,32 @@ class TestStructuralKeys:
     identity follows its members.
     """
 
-    async def test_swept_types_carry_a_structural_key(self, two_indexes):
-        placed = [
-            (pid, ptype)
-            for pid, ptype, _ in two_indexes["second_rows"]
-            if ptype in _SWEPT_GENERATED_PAGE_TYPES
-        ]
-        assert placed, "sample repo produced no structurally-keyed pages"
+    async def test_member_keyed_pages_key_on_members_not_on_their_target(self, two_indexes):
+        """The point of the column.
 
-        sf = two_indexes["sf"]
-        async with sf() as session:
-            rows = await session.execute(
-                select(Page.id, Page.page_type, Page.target_path, Page.structural_key).where(
-                    Page.repository_id == two_indexes["repo_id"],
-                    Page.page_type.in_(_SWEPT_GENERATED_PAGE_TYPES),
-                )
-            )
-            for pid, _ptype, target, key in rows.all():
-                assert key == target, pid
+        A module's target_path is a clustering ordinal unless a curated
+        knowledge graph named a directory, and that ordinal is exactly what
+        moves between runs. A structural key equal to the target would record
+        the unstable value and be a copy of the page id besides.
+        """
+        from repowise.core.generation.models import member_structural_key
+
+        checked = 0
+        for page in two_indexes["second_pages"]:
+            if page.page_type not in ("module_page", "scc_page"):
+                continue
+            members = page.metadata.get("file_paths") or []
+            assert members, f"{page.page_id} recorded no members"
+            prefix = "module" if page.page_type == "module_page" else "scc"
+            assert page.structural_key == member_structural_key(members, prefix=prefix)
+            checked += 1
+        assert checked, "sample repo produced no member-keyed pages"
+
+    async def test_a_module_key_is_not_just_its_target_path(self, two_indexes):
+        """Guards the above against being satisfied by a copy."""
+        modules = [p for p in two_indexes["second_pages"] if p.page_type == "module_page"]
+        assert modules
+        assert all(p.structural_key != p.target_path for p in modules)
 
     async def test_file_pages_have_no_structural_key(self, two_indexes):
         """A file page is identified by its path. Nothing structural to record."""
@@ -321,9 +333,42 @@ class TestTreeOnRealOutput:
     that a real generation run actually produces, and that it survives a
     second index unchanged."""
 
-    async def test_the_tree_is_populated(self, two_indexes):
-        placed = [p for p in two_indexes["second_pages"] if p.parent_page_id]
-        assert len(placed) > 1, "generation produced no tree"
+    async def test_the_tree_has_real_depth(self, two_indexes):
+        """A flat wiki where every page hangs off the overview satisfies
+        "has a parent" and is exactly the failure this must catch.
+
+        The bar is one rung below the top, not two: this repo is indexed
+        without a curated knowledge graph, so it has no layer pages and its
+        modules sit directly under the overview. Files under modules is the
+        deepest this fixture can go, and it is the rung that was broken.
+        """
+        depths = [
+            p.section_number.count(".")
+            for p in two_indexes["second_pages"]
+            if p.section_number
+        ]
+        assert depths, "generation produced no tree"
+        assert max(depths) >= 1, f"tree is only {max(depths) + 1} levels deep"
+
+    async def test_most_file_pages_sit_under_a_module(self, two_indexes):
+        """Modules here are keyed by a clustering ordinal, not a directory, so
+        this only passes if placement uses the recorded member list rather
+        than a path prefix. It was zero before members were recorded."""
+        files = [p for p in two_indexes["second_pages"] if p.page_type == "file_page"]
+        under_module = [
+            p for p in files if (p.parent_page_id or "").startswith("module_page:")
+        ]
+        assert len(under_module) >= len(files) // 3, (
+            f"only {len(under_module)} of {len(files)} file pages found a module"
+        )
+
+    async def test_module_pages_have_children(self, two_indexes):
+        modules = {
+            p.page_id for p in two_indexes["second_pages"] if p.page_type == "module_page"
+        }
+        assert modules
+        parented = {p.parent_page_id for p in two_indexes["second_pages"]}
+        assert modules & parented, "no page sits under any module"
 
     async def test_no_page_points_at_a_parent_that_does_not_exist(self, two_indexes):
         """A dangling parent breaks every walk of the tree."""

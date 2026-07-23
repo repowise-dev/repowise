@@ -71,7 +71,7 @@ def _apply_page_upsert(
         # "Cheap derived" means anything describing where a page sits rather
         # than what it says. Those fields come from the repo's structure, not
         # from the page's own bytes, so they can legitimately change while the
-        # content hash does not — a renamed page, or one whose siblings moved.
+        # content hash does not: a renamed page, or one whose siblings moved.
         # A field left out here is frozen at whatever the first run wrote.
         if (
             existing.content == content

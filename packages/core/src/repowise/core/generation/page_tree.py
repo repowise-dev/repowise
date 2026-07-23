@@ -18,10 +18,15 @@ The shape follows what the readers were already doing:
       architecture diagram
       layer pages               (dependency order from the layer spine)
         module pages            (grouped under their dominant layer)
-          file pages            (under the nearest module by path)
-          api contracts, infra pages, symbol spotlights
+          file pages            (under the nearest module, by member or path)
+          api contracts, infra pages
+            symbol spotlights   (under the file they document)
         cycle pages
       anything unplaced
+
+A rung only appears when the pages for it exist. A repo indexed without a
+curated knowledge graph has no layer pages, so its modules sit directly under
+the overview and the tree is two levels shallower.
 
 Everything is ordered by a total sort key, never by dict insertion, because a
 tree that reshuffles between two runs of the same commit is the same defect as
@@ -54,6 +59,7 @@ class TreeNode:
     parent_page_id: str | None = None
     display_order: int = 0
     section_number: str | None = None
+
 
 # Rank of each page type among siblings sharing a parent. Lower sorts first.
 # Onboarding is ranked by its slot rather than this table.
@@ -140,16 +146,21 @@ def assign_page_tree(
 ) -> None:
     """Fill in ``parent_page_id``, ``display_order`` and ``section_number``.
 
-    Mutates the pages in place. Safe to run on a partial set: an incremental
-    run holds only the pages it regenerated, and a page whose parent is not in
-    the set keeps the parent it can resolve or none at all, rather than being
-    re-parented to something arbitrary that happens to be present.
+    Mutates the pages in place. Every parent it assigns is a page in the set:
+    each rule resolves against a different source, so the result is checked
+    rather than trusted. On a partial set that means a page whose real parent
+    was not regenerated gets the nearest ancestor that is present, or none,
+    which is why callers working from a subset rebuild from the store instead.
     """
     by_type: dict[str, list[GeneratedPage]] = {}
     for page in pages:
         by_type.setdefault(page.page_type, []).append(page)
 
-    root = next(iter(by_type.get("repo_overview", [])), None)
+    # Sorted, not "whichever came first": repo_overview is not swept, so a
+    # store can hold a stale one from a renamed repo, and a root that flips
+    # between runs reshuffles the whole tree.
+    overviews = sorted(by_type.get("repo_overview", []), key=lambda p: p.page_id)
+    root = overviews[0] if overviews else None
     root_id = root.page_id if root is not None else None
 
     layer_rank = {lid: i for i, lid in enumerate(layer_order_ids or [])}
@@ -168,16 +179,30 @@ def assign_page_tree(
 
     # --- Modules sit under their dominant layer ----------------------------
     module_paths: list[str] = []
-    for page in by_type.get("module_page", []):
+    # Which module claims each file. A module's target_path is a directory
+    # only when a curated knowledge graph named one; otherwise it is a
+    # clustering ordinal like "community-3", which no file path can ever be a
+    # prefix of. The member list is the only signal that works in both cases,
+    # so it is the primary one and the path prefix is the fallback for pages
+    # generated before members were recorded.
+    module_of_file: dict[str, str] = {}
+    module_pages = by_type.get("module_page", [])
+    for page in module_pages:
         members = page.metadata.get("file_paths") or page.metadata.get("files") or []
         members = [m for m in members if isinstance(m, str)]
-        page.parent_page_id = layer_parent(_dominant_layer(members, layer_of_file))
         module_paths.append(page.target_path)
+        for member in members:
+            # A file claimed by two modules goes to the one whose id sorts
+            # first, so the winner does not depend on iteration order.
+            current = module_of_file.get(member)
+            if current is None or page.page_id < current:
+                module_of_file[member] = page.page_id
     module_paths.sort(key=len, reverse=True)
 
-    module_ids = {p.target_path for p in by_type.get("module_page", [])}
-
     def file_parent(path: str) -> str | None:
+        owner = module_of_file.get(path)
+        if owner:
+            return owner
         mod = _nearest_module(path, module_paths)
         if mod:
             return f"module_page:{mod}"
@@ -189,6 +214,22 @@ def assign_page_tree(
     for page_type in ("file_page", "api_contract", "infra_page"):
         for page in by_type.get(page_type, []):
             page.parent_page_id = file_parent(page.target_path)
+
+    # Now that every file has found a module, a module that recorded no
+    # members can borrow theirs. Pages written before members were recorded
+    # would otherwise report an empty membership and land on the root, which
+    # would keep every wiki indexed before this change permanently flat.
+    claimed: dict[str, list[str]] = {}
+    for page in by_type.get("file_page", []):
+        if page.parent_page_id and page.parent_page_id.startswith("module_page:"):
+            claimed.setdefault(page.parent_page_id, []).append(page.target_path)
+
+    for page in module_pages:
+        members = page.metadata.get("file_paths") or page.metadata.get("files") or []
+        members = [m for m in members if isinstance(m, str)]
+        if not members:
+            members = claimed.get(page.page_id, [])
+        page.parent_page_id = layer_parent(_dominant_layer(members, layer_of_file))
 
     # A spotlight belongs to the file it documents: "path/to/file.py::Symbol".
     # The file's own page may not exist: selection can spotlight a symbol in a
@@ -229,14 +270,13 @@ def assign_page_tree(
         if page.parent_page_id is not None and page.parent_page_id not in known:
             page.parent_page_id = root_id if page.page_id != root_id else None
 
-    _number(pages, root_id, layer_rank, module_ids)
+    _number(pages, root_id, layer_rank)
 
 
 def _number(
-    pages: list[GeneratedPage],
+    pages: list[GeneratedPage] | list[TreeNode],
     root_id: str | None,
     layer_rank: dict[str, int],
-    module_ids: set[str],
 ) -> None:
     """Assign sibling order and dotted section numbers by walking the tree."""
     children: dict[str | None, list[GeneratedPage]] = {}

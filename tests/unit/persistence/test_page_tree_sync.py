@@ -50,8 +50,17 @@ async def wiki(async_session):
     """A small persisted wiki: overview, one layer, one module, two files."""
     repo = await insert_repo(async_session)
     rid = repo.id
-    await _add(async_session, rid, "repo_overview", "demo", layer_order_ids=["layer:service"])
+    # Two layers, spine ordered opposite to the alphabet, so reading the
+    # spine off the stored overview is distinguishable from not reading it.
+    await _add(
+        async_session,
+        rid,
+        "repo_overview",
+        "demo",
+        layer_order_ids=["layer:service", "layer:api"],
+    )
     await _add(async_session, rid, "layer_page", "layer:service")
+    await _add(async_session, rid, "layer_page", "layer:api")
     await _add(
         async_session,
         rid,
@@ -76,8 +85,10 @@ class TestRebuild:
         assert placed["repo_overview:demo"][0] is None
 
     async def test_it_reads_the_layer_spine_off_the_stored_overview(self, async_session, wiki):
+        """`layer:api` sorts first alphabetically; the stored spine puts
+        `layer:service` first, so this fails if the spine is not read."""
         placed = await _placement(async_session, wiki)
-        assert placed["layer_page:layer:service"][2] == "1"
+        assert placed["layer_page:layer:service"][1] < placed["layer_page:layer:api"][1]
 
     async def test_a_second_rebuild_changes_nothing(self, async_session, wiki):
         before = await _placement(async_session, wiki)
@@ -145,7 +156,12 @@ class TestAddRemoveRename:
         assert placed["file_page:src/ingest/a.py"][1] == 1
 
     async def test_a_rename_moves_the_page_and_leaves_no_orphan(self, async_session, wiki):
-        """A rename is a tombstone plus a new page under a different path."""
+        """A rename reaches the tree as a tombstone plus a new page.
+
+        There is no continuity between them: the rebuild reads freshness, not
+        successor_paths, so the old page is simply unplaced and the new one is
+        placed on its own merits. That is what this pins.
+        """
         old = await async_session.get(Page, "file_page:src/ingest/b.py")
         old.freshness_status = "tombstone"
         old.metadata_json = json.dumps({"successor_paths": ["src/web/b.py"]})

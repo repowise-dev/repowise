@@ -141,14 +141,17 @@ class Page(Base):
     # page_type and target_path prefixes, so MCP, the web app and the editor
     # extension all navigate the same tree.
     #
-    # parent_page_id references another page's id but carries no foreign key:
-    # SQLite cannot add one to an existing table, and the generated-page sweep
-    # deletes parents whose structural key moved. Consistency is enforced when
-    # the tree is built and checked by `doctor`, not by the database.
+    # parent_page_id references another page's id but carries no foreign key,
+    # because the generated-page sweep deletes parents whose structural key
+    # moved and the surviving children have to outlive them. Placement drops
+    # any edge that does not land on a real page, so a dangling parent is
+    # prevented where the tree is built rather than by the database.
     parent_page_id: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
     # Rank among siblings sharing a parent. Reading order, deliberately not
     # generation_level, which is a build dependency order and unrelated.
-    display_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    display_order: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
     # Dotted position in the outline, e.g. "2.4.1". Display only: it is
     # recomputed from the tree, so nothing may key on it.
     section_number: Mapped[str | None] = mapped_column(Text, nullable=True)

@@ -231,6 +231,12 @@ async def execute_scoped_generation(
     marked_stale = 0
     async with get_session(session_factory) as session:
         await upsert_pages_from_generated(session, generated_pages, repo_id)
+        # A scoped run holds only the pages it was asked for, so it cannot
+        # work out where they sit. Placement comes from the store, which has
+        # the whole set; without this the pages it touched lose their place.
+        from .page_tree_sync import rebuild_page_tree
+
+        await rebuild_page_tree(session, repo_id)
         # Dependents this run did not regenerate go stale, not wrong.
         marked_stale = await mark_page_ids_stale(session, repo_id, plan.stale_ids)
         # Heal backlinks + related-pages across the whole wiki, LLM-free. The

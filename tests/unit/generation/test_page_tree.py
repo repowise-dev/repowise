@@ -47,7 +47,9 @@ def _wiki() -> list[GeneratedPage]:
     ]
 
 
-LAYER_ORDER = ["layer:service", "layer:ui"]
+# Deliberately the reverse of alphabetical order, so a test that claims the
+# spine beats the alphabet actually discriminates between them.
+LAYER_ORDER = ["layer:ui", "layer:service"]
 
 
 def _by_id(pages):
@@ -118,10 +120,19 @@ class TestShape:
 
 class TestOrdering:
     def test_layers_follow_the_spine_not_the_alphabet(self):
-        """`layer:ui` sorts before `layer:service` alphabetically; the
-        dependency spine must win."""
+        """`layer:service` sorts first alphabetically; the spine puts
+        `layer:ui` first, and the spine must win."""
         pages = _wiki()
         assign_page_tree(pages, LAYER_ORDER)
+        by_id = _by_id(pages)
+        assert (
+            by_id["layer_page:layer:ui"].display_order
+            < by_id["layer_page:layer:service"].display_order
+        )
+
+    def test_without_a_spine_layers_fall_back_to_a_stable_order(self):
+        pages = _wiki()
+        assign_page_tree(pages, [])
         by_id = _by_id(pages)
         assert (
             by_id["layer_page:layer:service"].display_order
@@ -148,6 +159,17 @@ class TestOrdering:
                 groups.setdefault(p.parent_page_id, []).append(p.display_order)
         for orders in groups.values():
             assert sorted(orders) == list(range(1, len(orders) + 1))
+
+    def test_section_numbers_are_the_literal_dotted_path(self):
+        """Pinned literals. Prefix-nesting alone survives an off-by-one in the
+        numbering, and the dotted number is what a reader is told to cite."""
+        pages = _wiki()
+        assign_page_tree(pages, LAYER_ORDER)
+        by_id = _by_id(pages)
+        assert by_id["onboarding:onboarding/project_overview"].section_number == "1"
+        assert by_id["layer_page:layer:ui"].section_number == "4"
+        assert by_id["module_page:src/web"].section_number == "4.1"
+        assert by_id["file_page:src/web/app.tsx"].section_number == "4.1.1"
 
     def test_section_number_reflects_depth(self):
         pages = _wiki()
@@ -187,6 +209,9 @@ class TestPartialSets:
 
     def test_a_lone_file_page_is_not_reparented_to_something_arbitrary(self):
         pages = [_page("file_page", "src/ingest/a.py", layer_id="layer:service")]
+        # A sentinel, so a placement pass that never ran is distinguishable
+        # from one that deliberately assigned nothing.
+        pages[0].parent_page_id = "sentinel:not-a-page"
         assign_page_tree(pages, LAYER_ORDER)
         # No module, no layer page and no overview in the set: nothing to
         # point at, so it points at nothing rather than at a wrong parent.

@@ -141,15 +141,22 @@ class PerTypeGenerationMixin:
                     "most_active_commits_90d": most_active.get("commit_count_90d", 0),
                 }
         page_target = target_path or module_path
+        # The files this page covers. Its own identity and its place in the
+        # tree both derive from them: a module's target_path can be a
+        # clustering ordinal rather than a directory, in which case the member
+        # list is the only thing that says where the page belongs.
+        members = sorted(fc.file_path for fc in file_contexts)
         if self._config.deterministic:
-            return self._deterministic_module_page(
+            page = self._deterministic_module_page(
                 ctx, page_target, f"Module: {module_path}", module_git_summary
             )
+            page.metadata["file_paths"] = members
+            return page
         user_prompt = self._render("module_page.j2", ctx=ctx, module_git_summary=module_git_summary)
         response = await self._call_provider(
             "module_page", user_prompt, str(uuid.uuid4()), target_path=page_target
         )
-        return self._build_generated_page(
+        page = self._build_generated_page(
             "module_page",
             page_target,
             f"Module: {module_path}",
@@ -157,6 +164,8 @@ class PerTypeGenerationMixin:
             compute_source_hash(user_prompt),
             GENERATION_LEVELS["module_page"],
         )
+        page.metadata["file_paths"] = members
+        return page
 
     async def generate_scc_page(
         self,
@@ -165,13 +174,16 @@ class PerTypeGenerationMixin:
         file_contexts: list[FilePageContext],
     ) -> GeneratedPage:
         ctx = self._assembler.assemble_scc_page(scc_id, scc_files, file_contexts)
+        members = sorted(scc_files)
         if self._config.deterministic:
-            return self._deterministic_scc_page(ctx, scc_id, f"Circular Dependency: {scc_id}")
+            page = self._deterministic_scc_page(ctx, scc_id, f"Circular Dependency: {scc_id}")
+            page.metadata["file_paths"] = members
+            return page
         user_prompt = self._render("scc_page.j2", ctx=ctx)
         response = await self._call_provider(
             "scc_page", user_prompt, str(uuid.uuid4()), target_path=scc_id
         )
-        return self._build_generated_page(
+        page = self._build_generated_page(
             "scc_page",
             scc_id,
             f"Circular Dependency: {scc_id}",
@@ -179,6 +191,8 @@ class PerTypeGenerationMixin:
             compute_source_hash(user_prompt),
             GENERATION_LEVELS["scc_page"],
         )
+        page.metadata["file_paths"] = members
+        return page
 
     async def generate_repo_overview(
         self,
