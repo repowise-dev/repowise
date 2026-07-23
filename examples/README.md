@@ -9,6 +9,7 @@ self-contained README under `examples/<name>/`.
 |---------|----------------|
 | [codex/](codex/) | Codex CLI setup: `repowise init --codex`, smoke checks, local plugin install |
 | [health-coverage/](health-coverage/) | Code health, coverage ingest, and impacted-tests (no LLM key) |
+| [opencode/](opencode/) | OpenCode as the LLM provider for wiki generation |
 
 ## Conventions
 
