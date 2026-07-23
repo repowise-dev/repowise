@@ -641,7 +641,6 @@ repowise health --trend                    # last 10 snapshots + active alerts
 repowise coverage add coverage.lcov        # ingest coverage; can repeat
 repowise coverage add coverage.xml --format cobertura
 repowise health --format json | jq ...
-repowise health --safe-only                # confidence ≥ 0.8 only (placeholder)
 ```
 
 `repowise status` queries the same tables for a one-line summary:

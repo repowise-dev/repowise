@@ -561,7 +561,6 @@ Compute per-file code-health scores from 25 deterministic markers (McCabe comple
 | `--trend` | Print the last 10 health snapshots + any active alerts (declining / predicted decline) |
 | `--badge` | Print a shields.io-compatible badge URL/JSON for the repo's health score |
 | `--format` | Output: `table` (default), `json`, `md` |
-| `--safe-only` | Documented no-op placeholder for a future confidence filter; has no effect today |
 | `--repo` | In workspace mode, target a specific repo (defaults to primary) |
 | `--no-workspace` | Force single-repo mode |
 | `--verbose`, `-v` | Show debug logs from the analysis pipeline |

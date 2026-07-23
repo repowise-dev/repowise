@@ -51,12 +51,6 @@ from .trends import _render_trend
     help="Output format.",
 )
 @click.option(
-    "--safe-only",
-    is_flag=True,
-    default=False,
-    help="Phase-3 placeholder — currently a no-op for v1 markers.",
-)
-@click.option(
     "--repo",
     "repo_alias",
     default=None,
@@ -117,7 +111,6 @@ def health_command(
     path: str | None,
     file_filter: str | None,
     fmt: str,
-    safe_only: bool,
     repo_alias: str | None,
     no_workspace: bool,
     refactoring_targets: bool,
