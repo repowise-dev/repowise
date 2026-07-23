@@ -1006,23 +1006,19 @@ def run_update(
         if docs_mode == "deterministic":
             from .deterministic import (
                 load_prior_page_ids,
-                partition_regenerate_by_provenance,
                 persist_deterministic_pages,
                 regenerate_deterministic_pages,
-                regenerate_model_pages,
             )
 
             if emitter is not None:
                 emitter.stage("generate")
             prior_ids = load_prior_page_ids(repo_path)
 
-            # Per-page re-render mode: a page a user upgraded to model prose must
-            # not silently revert to a template. Template pages re-render for
-            # free; model-written pages stay model-written.
-            template_paths, model_paths = partition_regenerate_by_provenance(
-                repo_path, affected.regenerate
-            )
-
+            # Every file page is structural, so the changed files' pages
+            # re-render from templates for free. There is no model bucket to
+            # keep separate: a file page can no longer be model-written, so a
+            # page that predates the single-renderer change re-renders to its
+            # structural form here, which is the shape it now has.
             det_pages = regenerate_deterministic_pages(
                 repo_path=repo_path,
                 parsed_files=parsed_files,
@@ -1030,7 +1026,7 @@ def run_update(
                 graph_builder=graph_builder,
                 repo_structure=repo_structure,
                 git_meta_map=git_meta_map,
-                regenerate_paths=template_paths,
+                regenerate_paths=affected.regenerate,
                 cfg=cfg,
                 concurrency=concurrency,
                 degraded=degraded,
@@ -1038,92 +1034,21 @@ def run_update(
                 prior_page_ids=prior_ids,
             )
 
-            # Model-written pages: re-render with the model when one resolves
-            # (D6 wrote the key into .repowise/.env, so an index-only repo whose
-            # pages were upgraded now has a provider). With no provider, keep the
-            # existing LLM content and mark it stale — never revert to a template.
-            model_pages: list = []
-            stale_model_paths: list[str] = []
-            if model_paths:
-                model_provider = None
-                try:
-                    from repowise.cli.helpers import resolve_provider
-
-                    model_provider = resolve_provider(provider_name, model, repo_path=repo_path)
-                except Exception:
-                    model_provider = None
-
-                if model_provider is not None:
-                    from repowise.cli.providers import build_cost_tracker
-
-                    tracker = build_cost_tracker(
-                        repo_path, repo_path.name, no_cost_tracking=no_cost_tracking
-                    )
-                    model_provider._cost_tracker = tracker
-                    model_pages = regenerate_model_pages(
-                        repo_path=repo_path,
-                        parsed_files=parsed_files,
-                        source_map=source_map,
-                        graph_builder=graph_builder,
-                        repo_structure=repo_structure,
-                        git_meta_map=git_meta_map,
-                        regenerate_paths=model_paths,
-                        cfg=cfg,
-                        concurrency=concurrency,
-                        degraded=degraded,
-                        provider=model_provider,
-                        dead_code_report=dead_code_report,
-                        prior_page_ids=prior_ids,
-                    )
-                    index_only_cost = float(getattr(tracker, "session_cost", 0.0) or 0.0)
-                    # Any requested model page the render did not actually
-                    # produce is kept and marked stale. generate_all catches a
-                    # per-page provider error and filters that page out of its
-                    # result, so a partial batch (page A rendered, page B errored)
-                    # must not leave B silently fresh-but-outdated — that is the
-                    # exact revert-in-disguise Task 3 prevents. Full failure
-                    # (empty result) falls out of the same computation.
-                    rendered_paths = {
-                        pg.page_id.split("file_page:", 1)[1]
-                        for pg in model_pages
-                        if getattr(pg, "page_id", "").startswith("file_page:")
-                    }
-                    stale_model_paths = [p for p in model_paths if p not in rendered_paths]
-                else:
-                    stale_model_paths = list(model_paths)
-                    console.print(
-                        "  [yellow]![/yellow] "
-                        f"{len(model_paths)} model-written page(s) changed but no "
-                        "provider is configured; keeping them and marking stale. "
-                        "Add a key, then run [bold]repowise generate[/bold]."
-                    )
-
-            all_pages = det_pages + model_pages
-            if all_pages or stale_model_paths:
+            if det_pages:
                 state["total_pages"] = persist_deterministic_pages(
                     repo_path=repo_path,
-                    generated_pages=all_pages,
-                    # decay_only are cascade-reached templates; the kept model
-                    # pages are stale until a provider re-writes them.
-                    decay_paths=[*affected.decay_only, *stale_model_paths],
+                    generated_pages=det_pages,
+                    # decay_only are cascade-reached templates the render did not
+                    # touch: marked stale so the view stays honest about which
+                    # pages predate this commit.
+                    decay_paths=affected.decay_only,
                     degraded=degraded,
                 )
-                # Advance the docs commit only when something was actually
-                # re-rendered to HEAD; a run that only kept-and-staled model pages
-                # has not brought the wiki up to HEAD.
-                if all_pages:
-                    state["last_docs_commit"] = head
-                if det_pages:
-                    console.print(
-                        f"  [green]✓[/green] Re-rendered [bold]{len(det_pages)}[/bold] "
-                        "wiki pages from structure"
-                    )
-                if model_pages:
-                    console.print(
-                        f"  [green]✓[/green] Re-wrote [bold]{len(model_pages)}[/bold] "
-                        "upgraded page(s) with the model"
-                    )
-            det_pages = all_pages
+                state["last_docs_commit"] = head
+                console.print(
+                    f"  [green]✓[/green] Re-rendered [bold]{len(det_pages)}[/bold] "
+                    "wiki pages from structure"
+                )
         if emitter is not None:
             emitter.stage("persist")
         try:
