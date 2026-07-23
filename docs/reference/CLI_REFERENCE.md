@@ -2,9 +2,9 @@
 
 Complete reference for all `repowise` commands. For a guided introduction, see the [Quickstart](../start/QUICKSTART.md).
 
-Command list (in `--help` order): `augment`, `init`, `delete`, `generate-claude-md`, `costs`, `update`, `dead-code`, `health`, `risk`, `decision`, `coverage`, `impacted-tests`, `search`, `distill`, `expand`, `saved`, `corrections`, `export`, `hook`, `status`, `doctor`, `watch`, `serve`, `mcp`, `reindex`, `restyle`, `wiki-styles`, `whats-new`, `telemetry`, `login`, `logout`, `whoami`, `workspace`. Two more ship as separate console scripts, not subcommands: `repowise-augment`, `repowise-rewrite` (both hook entry points, not meant to be run by hand).
+Command list (in registration order): `augment`, `init`, `delete`, `generate-claude-md`, `costs`, `update`, `generate`, `dead-code`, `health`, `risk`, `decision`, `coverage`, `impacted-tests`, `search`, `distill`, `expand`, `saved`, `security`, `corrections`, `export`, `hook`, `status`, `doctor`, `watch`, `serve`, `mcp`, `reindex`, `restyle`, `wiki-styles`, `whats-new`, `telemetry`, `login`, `logout`, `whoami`, `workspace`. Two more ship as separate console scripts, not subcommands: `repowise-augment`, `repowise-rewrite` (both hook entry points, not meant to be run by hand).
 
-**Do you need an LLM key?** Most commands are pure index/analysis and never call an LLM. `init` never requires a key: without one it renders the wiki from structure. It calls an LLM only when a provider is resolvable or `--docs llm` is passed. The exceptions: `update` (unless `--index-only` or `--no-docs`), `generate`, `restyle`, `watch` (when it regenerates a page), `health --generate-code`, and `workspace add --docs`. Everything else, `search`, `dead-code`, `health`, `risk`, `impacted-tests`, `decision`, `coverage`, `export`, `mcp`, `reindex`, `doctor`, and so on, works index-only, with no provider configured.
+**Do you need an LLM key?** Most commands are pure index/analysis and never call an LLM. `init` never requires a key: without one it renders the wiki from structure. It calls an LLM only when a provider is resolvable or `--docs llm` is passed. The exceptions: `update` (unless `--index-only` or `--no-docs`), `generate`, `restyle`, `watch` (when it regenerates a page), `health --generate-code`, and `workspace add --docs`. Everything else, `search`, `dead-code`, `health`, `risk`, `impacted-tests`, `decision`, `coverage`, `security`, `export`, `mcp`, `reindex`, `doctor`, and so on, works index-only, with no provider configured.
 
 ## Workspace auto-detect (cross-cutting)
 
@@ -504,6 +504,44 @@ repowise risk main..HEAD -x 'tests/' -x '*.spec.ts'  # omit tests from scoring
 ```
 
 See [`docs/layers/CHANGE_RISK.md`](../layers/CHANGE_RISK.md) for the scoring model.
+
+---
+
+### `repowise security`
+
+Security signal scanning. Working-tree scanning already runs during
+`repowise init` / `repowise update`. The CLI group exists so you can also walk
+**full git history** for leaked secrets and risky patterns that were later
+removed (something the working-tree scan cannot see).
+
+**Subcommands:**
+
+```bash
+repowise security scan --history [OPTIONS]
+```
+
+Without `--history`, `security scan` prints a short hint and exits — it does
+not re-run the working-tree scan.
+
+**`security scan` options:**
+
+| Flag | Description |
+|------|-------------|
+| `--history` | Required for a real scan: walk the full git history (not just the working tree) |
+| `--since <rev>` | Lower git revision bound (exclusive). Defaults to all history |
+| `--to <rev>` | Upper git revision bound (inclusive). Defaults to HEAD / all history |
+| `--path <dir>` | Repo path (defaults to cwd / workspace primary) |
+| `--all-patterns` | History mode: also report code-smell patterns (`eval`, `os.system`, weak hashes, …). Default history mode reports only leaked-secret patterns (`hardcoded_password` / `hardcoded_secret`) to avoid noise |
+| `--output` | `table` (default) or `json` |
+
+```bash
+repowise security scan --history
+repowise security scan --history --since v1.0.0 --to HEAD
+repowise security scan --history --all-patterns --output json
+```
+
+Findings are written to the `security_findings` table (idempotent on re-run)
+and surface in the local server security API / UI.
 
 ---
 
