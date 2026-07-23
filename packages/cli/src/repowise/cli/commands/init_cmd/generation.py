@@ -13,8 +13,6 @@ returns a "declined" flag; the workspace flow prints a compact line and raises
 from __future__ import annotations
 
 import contextlib
-import sys
-from dataclasses import replace as _replace
 from typing import Any
 
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
@@ -26,6 +24,7 @@ from repowise.cli.cost_gate import (
     COST_GATE_USD,
     CostGateDeclined,
     confirm_cost_gate,
+    cost_gate_blocks,
     cost_gate_declined,
     format_cost,
 )
@@ -41,15 +40,17 @@ from repowise.cli.ui import BRAND_STYLE, OWL_SPINNER, MaybeCountColumn, RichProg
 __all__ = [
     "COST_GATE_USD",
     "CostGateDeclined",
+    "concept_page_count",
     "confirm_cost_gate",
+    "cost_gate_blocks",
     "cost_gate_declined",
+    "estimate_generation",
     "format_cost",
     "run_repo_generation",
-    "select_coverage",
 ]
 
 
-def select_coverage(
+def estimate_generation(
     *,
     result: Any,
     gen_config: Any,
@@ -57,70 +58,49 @@ def select_coverage(
     repo_path: Any,
     skip_tests: bool,
     skip_infra: bool,
-    coverage_pct: float | None,
-    yes: bool,
-) -> tuple[float, list[Any], Any, Any]:
-    """Pick a coverage level and estimate its cost.
+) -> tuple[list[Any], Any]:
+    """Build the generation plan and price it. One plan, one estimate.
 
-    Renders the interactive coverage chooser when stdin is a TTY and no
-    explicit ``--coverage`` was passed (and not ``--yes``); otherwise the
-    configured / default percentage drives a single non-interactive estimate.
+    Every structural page type is free, and the concept tree is a total cover of
+    the production files, so there is nothing to ration and no coverage level to
+    pick. The spend is the concept tree plus the repo-wide synthesis pages, and
+    it is a single number.
 
-    Returns ``(chosen_pct, plans, estimate, gen_config)`` where ``gen_config``
-    has the chosen coverage baked in so the page generator honours the pick.
+    Returns ``(plans, estimate)``.
     """
-    from repowise.cli.cost_estimator import (
-        build_generation_plan,
-        compute_coverage_options,
-        estimate_cost,
-    )
-    from repowise.cli.coverage_select import interactive_coverage_select
+    from repowise.cli.cost_estimator import build_generation_plan, estimate_cost
 
     # Curated modules from the in-memory index result, so the plan/cost
     # estimate selects the same module set generation will (the artifact
     # file is not on disk yet during a fresh init).
     kg_modules = getattr(getattr(result, "knowledge_graph_result", None), "modules", None) or None
 
-    if sys.stdin.isatty() and coverage_pct is None and not yes:
-        options = compute_coverage_options(
-            parsed_files=result.parsed_files,
-            graph_builder=result.graph_builder,
-            base_config=gen_config,
-            provider_name=provider.provider_name,
-            model_name=provider.model_name,
-            repo_path=repo_path,
-            skip_tests=skip_tests,
-            skip_infra=skip_infra,
-            kg_modules=kg_modules,
-        )
-        chosen = interactive_coverage_select(console, options, deterministic_tail=True)
-        chosen_pct = chosen.pct
-        plans = chosen.plans
-        est = chosen.estimate
-    else:
-        chosen_pct = coverage_pct if coverage_pct is not None else gen_config.coverage_pct
-        gen_config_for_plan = _replace(
-            gen_config, coverage_pct=chosen_pct, max_pages_pct=chosen_pct
-        )
-        plans = build_generation_plan(
-            result.parsed_files,
-            result.graph_builder,
-            gen_config_for_plan,
-            skip_tests,
-            skip_infra,
-            kg_modules=kg_modules,
-        )
-        est = estimate_cost(
-            plans,
-            provider.provider_name,
-            provider.model_name,
-            repo_path=repo_path,
-        )
+    plans = build_generation_plan(
+        result.parsed_files,
+        result.graph_builder,
+        gen_config,
+        skip_tests,
+        skip_infra,
+        kg_modules=kg_modules,
+    )
+    est = estimate_cost(
+        plans,
+        provider.provider_name,
+        provider.model_name,
+        repo_path=repo_path,
+    )
+    return plans, est
 
-    # Bake the chosen coverage into the gen_config that runs generation, so the
-    # page generator's selection layer honours the user's pick.
-    gen_config = _replace(gen_config, coverage_pct=chosen_pct, max_pages_pct=chosen_pct)
-    return chosen_pct, plans, est, gen_config
+
+def concept_page_count(plans: list[Any]) -> int:
+    """The number of concept pages a model writes, for the cost question.
+
+    ``module_page`` is the concept tree; it dominates the bill and is the count
+    the question names. ``repo_overview``, ``architecture_diagram`` and
+    ``onboarding`` also cost tokens but are few and fixed, so they ride inside
+    the dollar estimate rather than the headline count.
+    """
+    return next((p.count for p in plans if p.page_type == "module_page"), 0)
 
 
 def _enrich_knowledge_graph(

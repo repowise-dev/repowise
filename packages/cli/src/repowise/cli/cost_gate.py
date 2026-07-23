@@ -57,19 +57,21 @@ def confirm_cost_gate(message: str, *, estimated_usd: float | None = None) -> bo
     and the expensive one at the same time.
 
     Declining is not a dead end and the prompt now says so: the caller
-    renders the wiki from templates instead, so No costs the user their
-    model pages, not their wiki.
+    renders the wiki from structure instead, so No costs the user the written
+    prose on the subsystem pages, not their wiki.
 
     Never prompts when stdin is not a terminal. There is nothing to read
-    there, and ``click.confirm`` would raise ``Abort`` and throw away an
-    index that is already built — which is the whole run, minutes of it.
+    there, and ``click.confirm`` would raise ``Abort``. Callers reach this
+    only after :func:`cost_gate_blocks` has already ruled out the no-terminal
+    case (it raises an actionable error there instead), so this branch is a
+    backstop for a direct caller rather than the main path.
     """
     console.line()
     console.rule(style="yellow")
     console.print(
         "  [dim]No builds the same wiki from structure instead: no model, "
-        "no spend. You can upgrade it later with [bold]repowise update "
-        "--full[/bold].[/dim]"
+        "no spend. Add a key and run [bold]repowise generate[/bold] to write "
+        "the subsystem pages later.[/dim]"
     )
     if not sys.stdin.isatty():
         console.print("  [dim]Not a terminal, so nothing to ask: building from structure.[/dim]")
@@ -88,10 +90,37 @@ def cost_gate_declined(est: Any, *, yes: bool, message: str) -> bool:
     """Return ``True`` when the run should skip generation on cost grounds.
 
     Only prompts when the estimate clears :data:`COST_GATE_USD` and ``--yes``
-    was not passed; a declined prompt yields ``True``.
+    was not passed; a declined prompt yields ``True``. Prefer
+    :func:`cost_gate_blocks`, which additionally handles the no-terminal case.
     """
     if est.estimated_cost_usd <= COST_GATE_USD or yes:
         return False
+    return not confirm_cost_gate(message, estimated_usd=est.estimated_cost_usd)
+
+
+def cost_gate_blocks(est: Any, *, yes: bool, message: str) -> bool:
+    """Return ``True`` when the run must not spend, ``False`` to proceed.
+
+    The single cost question, shared by ``init``, ``generate`` and
+    ``update --full``. Its non-interactive contract is the one an agent depends
+    on:
+
+    - ``--yes``, or an estimate at or under :data:`COST_GATE_USD`: never blocks.
+      A cheap run the user configured is not worth an interruption.
+    - Over the gate with no terminal to confirm on and no ``--yes``: raises an
+      actionable error naming ``--yes``, rather than hanging on a prompt nothing
+      will answer or silently spending money no one approved.
+    - Over the gate on a terminal: asks (default yes, flipping past
+      :data:`COST_GATE_HARD_USD`) and blocks when the user declines.
+    """
+    if est.estimated_cost_usd <= COST_GATE_USD or yes:
+        return False
+    if not sys.stdin.isatty():
+        raise click.ClickException(
+            f"This would spend about {format_cost(est)} and there is no terminal "
+            "to confirm on. Re-run with --yes to accept the cost, or with "
+            "--index-only to build the wiki from structure for free."
+        )
     return not confirm_cost_gate(message, estimated_usd=est.estimated_cost_usd)
 
 

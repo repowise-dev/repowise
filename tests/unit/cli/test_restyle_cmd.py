@@ -99,12 +99,12 @@ def test_restyle_refuses_repo_with_no_pages(tmp_path):
     assert "no wiki pages to restyle" in result.output
 
 
-def test_restyle_warns_but_does_not_refuse_on_template_wiki(tmp_path):
-    # Restyling a template wiki is the supported upgrade to model-written
-    # pages, so the guard must let it through after saying what it will cost.
+def test_restyle_warns_but_does_not_refuse_on_stub_wiki(tmp_path):
+    # Restyling a wiki with no written prose writes the subsystem pages in the
+    # chosen style, so the guard must let it through after saying what it costs.
     _write_state(tmp_path, {"docs_mode": "deterministic", "last_sync_commit": "abc"})
     result = CliRunner().invoke(cli, ["restyle", "caveman", str(tmp_path), "--yes"])
-    assert "rendered from templates" in result.output
+    assert "no written prose yet" in result.output
     assert "no wiki pages to restyle" not in result.output
 
 

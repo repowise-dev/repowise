@@ -65,10 +65,11 @@ from repowise.core.generation.styles import DEFAULT_STYLE
 from ._interactive import offer_distill_rewrite_hook, offer_hook_install
 from .generation import (
     CostGateDeclined,
-    cost_gate_declined,
+    concept_page_count,
+    cost_gate_blocks,
+    estimate_generation,
     format_cost,
     run_repo_generation,
-    select_coverage,
 )
 from .persistence import persist_result
 from .reporting import show_workspace_completion
@@ -88,7 +89,6 @@ def _run_workspace_generation(
     test_run: bool,
     reasoning: str = "auto",
     onboarding: bool = True,
-    coverage_pct: float | None = None,
     harvest_decisions: bool = True,
     wiki_style: str = DEFAULT_STYLE,
     language: str = "en",
@@ -110,26 +110,21 @@ def _run_workspace_generation(
         wiki_style=wiki_style,
         language=language,
     )
-    chosen_pct, _plans, est, gen_config = select_coverage(
+    plans, est = estimate_generation(
         result=result,
         gen_config=gen_config,
         provider=provider,
         repo_path=repo_path,
         skip_tests=skip_tests,
         skip_infra=skip_infra,
-        coverage_pct=coverage_pct,
-        yes=yes,
     )
 
     console.print(
-        f"    Coverage: {int(chosen_pct * 100)}% / "
-        f"~{est.estimated_input_tokens + est.estimated_output_tokens:,} tokens "
-        f"({format_cost(est)}, {est.total_pages} pages)"
+        f"    Writing {concept_page_count(plans)} concept pages with "
+        f"{provider.model_name}. {format_cost(est)} ({est.total_pages} pages total)."
     )
 
-    if cost_gate_declined(
-        est, yes=yes, message=f"    Cost for {repo_path.name} exceeds $2.00. Continue?"
-    ):
+    if cost_gate_blocks(est, yes=yes, message=f"    Continue with {repo_path.name} at this cost?"):
         console.print(
             "    [yellow]Skipped.[/yellow] "
             "[dim]Index will be saved without docs; "
@@ -248,7 +243,6 @@ class _WorkspaceCtx:
     yes: bool
     resume: bool
     onboarding: bool
-    coverage_pct: float | None
     harvest_decisions: bool
     wiki_style: str
     language: str
@@ -385,7 +379,6 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
                 test_run=ctx.test_run,
                 reasoning=ctx.resolved_reasoning,
                 onboarding=ctx.onboarding,
-                coverage_pct=ctx.coverage_pct,
                 harvest_decisions=ctx.harvest_decisions,
                 wiki_style=ctx.wiki_style,
                 language=ctx.language,
@@ -545,7 +538,6 @@ def _workspace_init(
     resume: bool = False,
     force: bool = False,
     onboarding: bool = True,
-    coverage_pct: float | None = None,
     harvest_decisions: bool = True,
     wiki_style: str = DEFAULT_STYLE,
     language: str | None = None,
@@ -733,7 +725,6 @@ def _workspace_init(
         yes=yes,
         resume=resume,
         onboarding=onboarding,
-        coverage_pct=coverage_pct,
         harvest_decisions=harvest_decisions,
         wiki_style=wiki_style,
         language=language or "en",

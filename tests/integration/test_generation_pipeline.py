@@ -257,8 +257,8 @@ async def test_embedding_latency_does_not_gate_llm_concurrency():
         embed_concurrency=1,
         file_page_top_percentile=1.0,
         top_symbol_percentile=0.01,
-        # The selection layer drives off coverage_pct; max_pages_pct is
-        # the deprecated alias kept for backwards compatibility.
+        # coverage_pct / max_pages_pct are inert: selection no longer rations by
+        # coverage. Set here only to exercise the config round-trip.
         coverage_pct=1.0,
         max_pages_pct=1.0,
         cache_enabled=False,

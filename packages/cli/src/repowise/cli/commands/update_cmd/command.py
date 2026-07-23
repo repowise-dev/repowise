@@ -253,9 +253,9 @@ def _surface_release_news(*, written_by: str | None) -> None:
     default=False,
     help=(
         "Upgrade an index with a model: backfill the git tier ESSENTIAL -> "
-        "FULL if it was built with `--mode fast`, and write the pages with a "
-        "provider, replacing a template wiki from `--index-only`. Incremental: "
-        "reuses the persisted graph instead of re-parsing and re-resolving it. "
+        "FULL if it was built with `--mode fast`, and write the subsystem pages "
+        "with a provider on a wiki that has none yet. Incremental: reuses the "
+        "persisted graph instead of re-parsing and re-resolving it. "
         "Single-repo only."
     ),
 )

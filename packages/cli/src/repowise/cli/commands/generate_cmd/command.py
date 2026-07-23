@@ -63,39 +63,30 @@ def _build_intent(
     return intent
 
 
-def _resolve_ranked_flags(
-    *, coverage: float | None, top_n: int | None, explicit: bool
-) -> float | None:
-    """Validate --coverage / --top and return the coverage fraction (or None).
+# Page types rendered from structure, always. A model never writes one, so
+# naming one for `generate` is a mistake worth catching rather than a silent
+# no-op: these pages refresh on `repowise update`, not here.
+_STRUCTURAL_PAGE_TYPES = frozenset(
+    {"file_page", "symbol_spotlight", "api_contract", "infra_page", "scc_page", "layer_page"}
+)
 
-    ``--coverage`` accepts a percent from 1 to 100 (``20`` -> 0.20, ``100`` ->
-    everything) or a fraction below 1 (``0.2`` -> 0.20). The boundary is ``>= 1``
-    so ``--coverage 1`` reads as 1 percent (the smallest slice), never as 100
-    percent; use ``100`` or ``--all`` for everything. Ranked selection is its own
-    philosophy, so it may not be combined with an explicit selector or with the
-    other ranked flag. ``--top`` is handled downstream (it needs the file count),
-    so this only validates it here and returns None for the coverage fraction.
+
+def _reject_structural_page_ids(page_ids: tuple[str, ...]) -> None:
+    """Error clearly when an explicit ``--page`` names a structural page.
+
+    A ``file_page`` (or any other structural type) is rendered from the code, so
+    there is nothing for a model to write. Naming one is almost always a
+    misunderstanding, and a silent no-op would hide it, so it is a clear error
+    pointing at the command that does refresh those pages.
     """
-    if coverage is not None and top_n is not None:
-        raise click.ClickException("Use either --coverage or --top, not both.")
-    if (coverage is not None or top_n is not None) and explicit:
+    bad = [pid for pid in page_ids if pid.split(":", 1)[0] in _STRUCTURAL_PAGE_TYPES]
+    if bad:
+        joined = ", ".join(bad)
         raise click.ClickException(
-            "--coverage / --top rank pages by importance and cannot be combined with "
-            "--all / --unwritten / --stale / --path / --page."
+            f"These pages are rendered from structure, not written by a model, so "
+            f"generate has nothing to write for them: {joined}. They refresh on "
+            "`repowise update`. generate writes the concept and overview pages."
         )
-    if top_n is not None and top_n <= 0:
-        raise click.ClickException("--top must be a positive number of pages.")
-    if coverage is None:
-        return None
-    if coverage <= 0:
-        raise click.ClickException(
-            "--coverage must be positive: a percent from 1 to 100, or a fraction below 1."
-        )
-    # A value of 1 or more is a percent (1 -> 1%, 100 -> everything); below 1 it
-    # is a fraction (0.2 -> 20%). This keeps `--coverage 1` a tiny slice, not the
-    # whole wiki.
-    pct = coverage / 100 if coverage >= 1 else coverage
-    return min(pct, 1.0)
 
 
 def _make_gate(dry_run: bool):
@@ -108,11 +99,7 @@ def _make_gate(dry_run: bool):
     def gate_cost(
         cost_plans: Any, provider: Any, repo_path: Path, *, yes: bool, dry_run: bool
     ) -> bool:
-        from repowise.cli.commands.init_cmd.generation import (
-            COST_GATE_USD,
-            cost_gate_declined,
-            format_cost,
-        )
+        from repowise.cli.commands.init_cmd.generation import cost_gate_blocks, format_cost
         from repowise.core.cost_estimator import estimate_cost
 
         est = None
@@ -126,22 +113,17 @@ def _make_gate(dry_run: bool):
         if est is not None:
             pages = sum(p.count for p in cost_plans)
             console.print(
-                f"Estimated: [bold]{pages}[/bold] pages, [bold]{format_cost(est)}[/bold]."
+                f"Writing [bold]{pages}[/bold] pages with "
+                f"[cyan]{provider.model_name}[/cyan]. Estimated [bold]{format_cost(est)}[/bold]."
             )
 
         if dry_run:
             console.print("[dim]Dry run — nothing generated.[/dim]")
             return False
 
-        if est is not None:
-            if est.estimated_cost_usd > COST_GATE_USD and not yes and not sys.stdin.isatty():
-                raise click.ClickException(
-                    f"This would spend about {format_cost(est)} and there is no terminal "
-                    "to confirm on. Re-run with --yes to accept the cost."
-                )
-            if cost_gate_declined(est, yes=yes, message="  Generate at this cost?"):
-                console.print("[yellow]Aborted.[/yellow] Nothing generated.")
-                return False
+        if est is not None and cost_gate_blocks(est, yes=yes, message="  Generate at this cost?"):
+            console.print("[yellow]Aborted.[/yellow] Nothing generated.")
+            return False
         return True
 
     return gate_cost
@@ -170,30 +152,12 @@ def _make_gate(dry_run: bool):
     help="An explicit page id to generate (repeatable).",
 )
 @click.option(
-    "--coverage",
-    "coverage",
-    type=float,
-    default=None,
-    help=(
-        "Write the most important unwritten pages up to this coverage, ranked the "
-        "way `init` ranks coverage. A percent from 1 to 100 (--coverage 20) or a "
-        "fraction below 1 (0.2); use 100 for everything. Leaves the rest as templates."
-    ),
-)
-@click.option(
-    "--top",
-    "top_n",
-    type=int,
-    default=None,
-    help="Write about the N most important unwritten pages (a target, not exact).",
-)
-@click.option(
     "--cascade",
     type=click.Choice(["none", "dependents", "full"]),
     default=None,
     help=(
-        "What to do with the module/overview pages that summarize a regenerated "
-        "file. Default: dependents for an explicit selection, none for --coverage/--top."
+        "What to do with the overview / layer pages that summarize a regenerated "
+        "concept page. Default: dependents."
     ),
 )
 @click.option("--provider", "provider_name", default=None, help="LLM provider name.")
@@ -212,8 +176,6 @@ def generate_command(
     stale: bool,
     path_globs: tuple[str, ...],
     page_ids: tuple[str, ...],
-    coverage: float | None,
-    top_n: int | None,
     cascade: str | None,
     provider_name: str | None,
     model: str | None,
@@ -223,20 +185,21 @@ def generate_command(
     yes: bool,
     verbose: bool,
 ) -> None:
-    """Write wiki pages with a model. Bare `generate` opens an interactive chooser.
+    """Write the concept pages with a model. Bare `generate` writes the stubs.
 
-    Two ways to select: explicit (--all / --unwritten / --stale / --path / --page)
-    or ranked by importance (--coverage / --top). With no flag on a terminal, a
-    chooser shows the wiki's state and a coverage menu, so a big repo is never one
-    keystroke from writing everything.
+    Select with --all (rewrite the prose) / --unwritten (write the concept pages
+    still on a stub) / --stale / --path / --page. With no flag on a terminal,
+    a bare run shows the wiki's state and writes the unwritten concept pages
+    after the single cost question. --page / --path resolve only to pages a model
+    writes; naming a structural (file / symbol / api / infra / cycle / layer)
+    page is an error, since those refresh on `repowise update`.
 
     Examples:
-      repowise generate                 # interactive chooser (coverage menu)
-      repowise generate --coverage 20   # write the most important 20% of templates
-      repowise generate --unwritten     # write every template page
-      repowise generate --all           # rewrite the whole wiki
-      repowise generate --path src/api  # just the pages under src/api
-      repowise generate --page file_page:src/app.py --cascade none
+      repowise generate                 # write the unwritten concept pages
+      repowise generate --unwritten     # same, explicitly
+      repowise generate --all           # rewrite the prose on every concept page
+      repowise generate --path src/api  # just the concept pages under src/api
+      repowise generate --page module_page:src/api --cascade none
     """
     configure_cli_logging(verbose=verbose)
 
@@ -248,20 +211,19 @@ def generate_command(
 
     cfg = load_config(repo_path)
 
+    # An explicit page id must name a page a model writes. Caught up front so a
+    # `--page file_page:...` is a clear error, not a silent no-op deep in resolve.
+    _reject_structural_page_ids(page_ids)
+
     explicit = bool(all_pages or unwritten or stale or path_globs or page_ids)
-    coverage_pct = _resolve_ranked_flags(coverage=coverage, top_n=top_n, explicit=explicit)
-    ranked = coverage_pct is not None or top_n is not None
 
-    # Bare `generate` on a terminal opens the chooser rather than defaulting to
-    # writing every unwritten page. Piped / `--yes` / flagged runs keep the old
-    # non-interactive behaviour.
-    interactive = not explicit and not ranked and not yes and sys.stdin.isatty()
+    # Bare `generate` on a terminal shows the wiki state and writes the unwritten
+    # concept pages. Piped / `--yes` / flagged runs skip straight to that default.
+    interactive = not explicit and not yes and sys.stdin.isatty()
 
-    # Cascade default depends on the selection kind: an explicit pick pulls in
-    # its container pages (dependents); a ranked coverage set is already a
-    # curated, coherent slice, so it defaults to none (the interactive chooser
-    # asks when it would change the outcome).
-    cascade_mode = cascade if cascade is not None else ("none" if ranked else "dependents")
+    # An explicit pick pulls in the pages that summarize it (dependents); the
+    # interactive path asks when it would change the outcome.
+    cascade_mode = cascade if cascade is not None else "dependents"
 
     intent = _build_intent(
         all_pages=all_pages,
@@ -321,8 +283,6 @@ def generate_command(
             yes=yes,
             dry_run=dry_run,
             gate_cost=_make_gate(dry_run),
-            coverage_pct=coverage_pct,
-            top_n=top_n,
             interactive=interactive,
         )
     )

@@ -73,7 +73,13 @@ from repowise.core.generation.styles import DEFAULT_STYLE, list_styles, resolve_
 from repowise.core.reasoning import REASONING_MODES
 
 from ._interactive import offer_distill_rewrite_hook, offer_hook_install
-from .generation import cost_gate_declined, format_cost, run_repo_generation, select_coverage
+from .generation import (
+    concept_page_count,
+    cost_gate_blocks,
+    estimate_generation,
+    format_cost,
+    run_repo_generation,
+)
 from .persistence import (
     build_resume_controller,
     effective_run_mode_for_resume,
@@ -240,7 +246,6 @@ def _run_generation_phase(
     onboarding: bool,
     harvest_decisions: bool,
     wiki_style: str,
-    coverage_pct: float | None,
     yes: bool,
     dry_run: bool,
     skip_tests: bool,
@@ -273,15 +278,13 @@ def _run_generation_phase(
         harvest_decisions=harvest_decisions,
         wiki_style=wiki_style,
     )
-    chosen_pct, _plans, est, gen_config = select_coverage(
+    plans, est = estimate_generation(
         result=result,
         gen_config=gen_config,
         provider=provider,
         repo_path=repo_path,
         skip_tests=skip_tests,
         skip_infra=skip_infra,
-        coverage_pct=coverage_pct,
-        yes=yes,
     )
 
     table = Table(title="Generation Plan", border_style=BRAND)
@@ -309,11 +312,6 @@ def _run_generation_phase(
             f"If you see timeout errors, try [bold]--concurrency 1[/bold]."
         )
 
-    console.print(
-        f"  Coverage: {int(chosen_pct * 100)}% / "
-        f"~{est.estimated_input_tokens + est.estimated_output_tokens:,} tokens "
-        f"({format_cost(est)})"
-    )
     if onboarding:
         console.print(
             "  [cyan]Onboarding collection:[/cyan] "
@@ -330,17 +328,20 @@ def _run_generation_phase(
         console.print("[yellow]Dry run — no pages generated.[/yellow]")
         return True, False
 
-    if cost_gate_declined(est, yes=yes, message="  Write the wiki with the model at this cost?"):
+    # The single cost question. Every structural page is free; the spend is the
+    # concept tree and the repo-wide synthesis pages, stated as one number.
+    concept_n = concept_page_count(plans)
+    console.print(
+        f"Writing [bold]{concept_n}[/bold] concept pages with "
+        f"[cyan]{provider.model_name}[/cyan]. Estimated [bold]{format_cost(est)}[/bold]."
+    )
+    if cost_gate_blocks(est, yes=yes, message="  Continue?"):
         console.print(
             "[yellow]Not writing it with the model.[/yellow] "
             "[dim]Future `repowise update` runs stay index-only, so the "
             "post-commit hook won't start a model run on its own.[/dim]"
         )
         return False, True
-
-    # Persist the tiering knobs so `repowise update` regenerates with the same
-    # coverage settings (save_config later round-trips and preserves these).
-    # save_config_partial skips None, so a no-cap tier1 stays unwritten.
 
     run_repo_generation(
         repo_path=repo_path,
@@ -406,21 +407,30 @@ def _run_generation_phase(
     help="Limit generation to top 10 files by PageRank for quick validation.",
 )
 @click.option(
+    "--prose/--no-prose",
+    "prose",
+    default=None,
+    help=(
+        "Write the subsystem (concept) pages as model prose (needs a key), or "
+        "render the whole wiki from structure with no model and no spend. Every "
+        "other page is structural either way. Default: prose when a key is "
+        "available. Use --mode fast for no wiki at all."
+    ),
+)
+@click.option(
     "--index-only",
     is_flag=True,
     default=False,
-    help="Build the wiki from structure instead of writing it with a model. No key, no spend.",
+    hidden=True,
+    help="Deprecated alias for --no-prose.",
 )
 @click.option(
     "--docs",
     "docs_opt",
     type=click.Choice(["llm", "deterministic"]),
     default=None,
-    help=(
-        "How to produce the wiki: 'llm' writes it with a model (needs a key), "
-        "'deterministic' renders it from structure for free. Same choice as "
-        "--index-only, named for what it does. Use --mode fast for no wiki at all."
-    ),
+    hidden=True,
+    help="Deprecated: use --prose / --no-prose. 'llm' == --prose, 'deterministic' == --no-prose.",
 )
 @click.option(
     "--mode",
@@ -514,18 +524,6 @@ def _run_generation_phase(
         "Architecture Guide, Getting Started, Codebase Map, Key Concepts, "
         "How It Works, Development Guide, Active Landscape). Default: on. "
         "Slots with insufficient signal are skipped automatically."
-    ),
-)
-@click.option(
-    "--coverage",
-    "coverage_pct",
-    type=float,
-    default=None,
-    metavar="PCT",
-    help=(
-        "Documentation coverage as a fraction of repo files (e.g. 0.10, 0.20, "
-        "0.50). Bypasses the interactive coverage chooser. Default when "
-        "interactive: prompt; otherwise 0.20."
     ),
 )
 @click.option(
@@ -627,6 +625,7 @@ def init_command(
     concurrency: int,
     reasoning: str | None,
     test_run: bool,
+    prose: bool | None,
     index_only: bool,
     docs_opt: str | None,
     run_mode: str,
@@ -643,7 +642,6 @@ def init_command(
     no_workspace: bool,
     init_all: bool,
     onboarding: bool,
-    coverage_pct: float | None,
     coverage_report: tuple[str, ...],
     harvest_decisions: bool,
     wiki_style: str | None,
@@ -655,18 +653,30 @@ def init_command(
     """Generate wiki documentation for a codebase.
 
     PATH defaults to the current directory.
-    Use --docs deterministic (or --index-only) to render the wiki from structure
-    with no model and no key; --docs llm writes it with a model.
+    Use --no-prose to render the whole wiki from structure with no model and no
+    key; --prose writes the subsystem pages with a model. Every other page is
+    structural either way.
     Use --mode fast for a quick graph + essential-git index of a very large repo.
     """
-    # ``--docs`` is the same switch as ``--index-only`` named for what it
-    # produces rather than what it skips, since an index-only run has rendered
-    # a full wiki since #975. Kept as two spellings because --index-only is in
-    # every existing script and doc; they must not disagree.
+    # ``--prose / --no-prose`` is the one switch: prose on the concept pages, or
+    # the whole wiki from structure. ``--index-only`` and ``--docs`` are the
+    # previous spellings, kept working for one release as deprecated aliases so a
+    # scripted ``--index-only`` does not break. ``index_only`` stays the internal
+    # variable every downstream branch reads.
+    if index_only or docs_opt is not None:
+        console.print(
+            "[dim]--index-only and --docs are deprecated; use --no-prose "
+            "(structural, no key) or --prose (model-written). They still work "
+            "this release.[/dim]"
+        )
     if docs_opt is not None:
         if index_only and docs_opt == "llm":
             raise click.UsageError("--docs llm contradicts --index-only. Pass one.")
         index_only = docs_opt == "deterministic"
+    if prose is not None:
+        if index_only and prose:
+            raise click.UsageError("--prose contradicts --no-prose / --index-only. Pass one.")
+        index_only = not prose
     # --mode fast is a graph + essential-git index with no LLM work, so it
     # implies index-only on the CLI side; the orchestrator mode below switches
     # the git tier to ESSENTIAL.
@@ -775,7 +785,6 @@ def init_command(
             resume=resume,
             force=force,
             onboarding=onboarding,
-            coverage_pct=coverage_pct,
             harvest_decisions=harvest_decisions,
             # Apply the chosen style uniformly across the workspace's repos
             # (no per-repo interactive prompt in the multi-repo flow).
@@ -1258,7 +1267,6 @@ def init_command(
             onboarding=onboarding,
             harvest_decisions=harvest_decisions,
             wiki_style=wiki_style,
-            coverage_pct=coverage_pct,
             yes=yes,
             dry_run=dry_run,
             skip_tests=skip_tests,

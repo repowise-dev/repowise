@@ -667,11 +667,11 @@ class TestInitSeedFrom:
 
         monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
 
-        # Full doc coverage so the new file is not tier-gated out of a page;
-        # the copied config carries the setting into the delegated update.
+        # Every file gets a structural page now, so no coverage knob is needed
+        # to keep the new file from being tier-gated out.
         r0 = CliRunner().invoke(
             cli,
-            ["init", str(git_work_repo), "--provider", "mock", "--coverage", "1.0", "--yes"],
+            ["init", str(git_work_repo), "--provider", "mock", "--yes"],
             catch_exceptions=False,
         )
         assert r0.exit_code == 0, r0.output

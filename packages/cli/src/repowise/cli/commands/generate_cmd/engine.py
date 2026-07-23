@@ -16,7 +16,7 @@ from typing import Any
 from repowise.cli.helpers import console, load_state
 from repowise.core.generation.cascade import CascadeMode
 from repowise.core.generation.page_selection import PageSelectionIntent
-from repowise.core.generation.scope import ScopePlan, build_ranked_seed, resolve_scope
+from repowise.core.generation.scope import ScopePlan, resolve_scope
 from repowise.core.pipeline.scoped_generation import (
     execute_scoped_generation,
     rehydrate_repo,
@@ -34,18 +34,6 @@ class GenerateOutcome:
     plan: ScopePlan
 
 
-def _coverage_from_top(top_n: int, n_files: int) -> float:
-    """Map ``--top N`` to the coverage fraction that budgets ~N pages.
-
-    ``compute_budget`` uses ``int(n_files * pct)`` for a large repo, so
-    ``pct = N / n_files`` yields a budget of about ``N``. Per-bucket floors and
-    the always-emitted repo-wide/onboarding pages nudge the actual count, which
-    is why the plan report (and the cost gate) show the real number before any
-    spend — ``--top`` is a target, not an exact count.
-    """
-    return min(1.0, max(0.0, top_n / max(1, n_files)))
-
-
 async def run_scoped_generation(
     repo_path: Path,
     provider: Any,
@@ -58,8 +46,6 @@ async def run_scoped_generation(
     yes: bool,
     dry_run: bool,
     gate_cost: Any,
-    coverage_pct: float | None = None,
-    top_n: int | None = None,
     interactive: bool = False,
 ) -> GenerateOutcome | None:
     """Resolve the scope, gate on cost, generate, persist, and heal.
@@ -119,54 +105,26 @@ async def run_scoped_generation(
             "(graph + git reused from index)."
         )
 
-        # Ranked (coverage/top) and interactive runs replace the intent seed
-        # with an importance-ranked page-id set; explicit runs leave it None.
-        ranked_seed: set[str] | None = None
+        # A bare interactive run shows the wiki state and writes the unwritten
+        # pages (the caller's default intent); it only decides the cascade here.
         if interactive:
             from .chooser import run_interactive_chooser
 
             choice = run_interactive_chooser(
                 console,
                 records=rehydrated.records,
-                parsed_files=rehydrated.parsed_files,
-                graph_builder=rehydrated.graph_builder,
-                config=config,
-                kg_ctx=rehydrated.kg_ctx,
-                provider=provider,
-                repo_path=repo_path,
-                repo_name=rehydrated.repo_name,
                 deps=rehydrated.deps,
             )
             if choice is None:
                 return None
-            ranked_seed = choice.ranked_seed
             cascade_mode = choice.cascade_mode
-        elif coverage_pct is not None or top_n is not None:
-            pct = coverage_pct
-            if pct is None:
-                pct = _coverage_from_top(top_n or 0, len(rehydrated.parsed_files))
-            ranked_seed = build_ranked_seed(
-                parsed_files=rehydrated.parsed_files,
-                graph_builder=rehydrated.graph_builder,
-                config=config,
-                kg_ctx=rehydrated.kg_ctx,
-                records=rehydrated.records,
-                repo_name=rehydrated.repo_name,
-                coverage_pct=pct,
-            )
-            if not ranked_seed:
-                console.print(
-                    "[yellow]Everything in that coverage is already written.[/yellow] "
-                    "Nothing to generate."
-                )
-                return None
 
         plan = resolve_scope(
             records=rehydrated.records,
             intent=intent,
             cascade_mode=cascade_mode,
             deps=rehydrated.deps,
-            ranked_seed=ranked_seed,
+            ranked_seed=None,
         )
 
         if plan.unknown_page_ids:

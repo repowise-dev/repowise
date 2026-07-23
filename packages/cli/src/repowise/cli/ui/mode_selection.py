@@ -78,11 +78,11 @@ def interactive_mode_select(console: Console) -> str:
     body.append("       health, decisions + AI-generated wiki, diagrams & API docs.\n\n")
 
     body.append("  [2]", style=BRAND_STYLE)
-    body.append("  Index only  ", style="bold")
+    body.append("  No prose  ", style="bold")
     body.append("(no key, no spend)\n", style="dim")
-    body.append("       Same layers, and a complete wiki rendered from the code's\n")
-    body.append("       structure instead of written by a model. Upgrade it to\n")
-    body.append("       model-written prose later with update --full.\n\n")
+    body.append("       The same complete wiki, rendered from the code's structure.\n")
+    body.append("       The subsystem pages read as stubs rather than written prose;\n")
+    body.append("       add a key and run repowise generate to write them.\n\n")
 
     body.append("  [3]", style=BRAND_STYLE)
     body.append("  Advanced\n", style="bold")
@@ -571,10 +571,10 @@ def print_index_only_intro(console: Console, has_provider: bool = False) -> None
     lines.append("")
     lines.append("  [dim]No LLM calls. No API key. No cost.[/dim]")
     lines.append(
-        "  [dim]Every page says it was derived from structure. Run "
-        "[bold]repowise update --full[/bold][/dim]"
+        "  [dim]The subsystem pages read as stubs. Add a key and run "
+        "[bold]repowise generate[/bold][/dim]"
     )
-    lines.append("  [dim]later to rewrite the wiki with a model.[/dim]")
+    lines.append("  [dim]to write them as prose.[/dim]")
 
     console.print(
         Panel(

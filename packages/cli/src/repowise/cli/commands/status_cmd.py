@@ -296,14 +296,14 @@ def _workspace_status(target: CommandTarget) -> None:
         storage_cell = format_bytes(_index_storage_bytes(repowise_dir))
         docs_mode = resolve_docs_mode(load_state(abs_path))
 
-        # Render the Docs column in plain English so the user instantly knows
-        # both whether a wiki exists and whether a model wrote it. A template
-        # wiki is complete but thinner, and `restyle` upgrades it.
+        # One axis in the Docs column: every wiki is complete, and the only
+        # question is whether the subsystem pages carry written prose or are
+        # still stubs. `repowise generate` writes the stubs.
         if page_count > 0:
             if docs_mode == "deterministic":
-                docs_cell = f"[cyan]{page_count} Template[/cyan]"
+                docs_cell = f"[cyan]{page_count} · stubs[/cyan]"
             else:
-                docs_cell = f"[green]{page_count} LLM[/green]"
+                docs_cell = f"[green]{page_count} · prose[/green]"
         elif docs_mode == "none":
             docs_cell = "[yellow]None[/yellow]"
             no_docs.append(entry.alias)

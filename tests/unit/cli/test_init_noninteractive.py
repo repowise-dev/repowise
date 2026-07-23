@@ -83,6 +83,34 @@ class TestCostGate:
         assert seen["default"] is False
 
 
+class TestCostGateBlocks:
+    """The single cost question shared by init, generate and update --full.
+
+    This is the agent path: a piped run with no --yes must proceed under the
+    gate and raise an actionable error over it, never hang.
+    """
+
+    def test_under_gate_proceeds(self, monkeypatch):
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: False, raising=False)
+        assert cost_gate.cost_gate_blocks(_est(0.10), yes=False, message="m") is False
+
+    def test_yes_proceeds_over_gate(self, monkeypatch):
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: False, raising=False)
+        assert cost_gate.cost_gate_blocks(_est(999.0), yes=True, message="m") is False
+
+    def test_non_tty_over_gate_raises_naming_yes(self, monkeypatch):
+        """No terminal + over the gate + no --yes is an actionable error, not a hang."""
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: False, raising=False)
+        with pytest.raises(click.ClickException) as exc:
+            cost_gate.cost_gate_blocks(_est(50.0), yes=False, message="m")
+        assert "--yes" in str(exc.value)
+
+    def test_tty_over_gate_asks_and_blocks_on_decline(self, monkeypatch):
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: True, raising=False)
+        monkeypatch.setattr(click, "confirm", lambda *_a, **_k: False)
+        assert cost_gate.cost_gate_blocks(_est(50.0), yes=False, message="m") is True
+
+
 class TestHookOfferDegrades:
     def test_eof_on_hook_offer_does_not_raise(self, monkeypatch, tmp_path):
         """A finished run must not fail on an optional trailing question."""
@@ -135,3 +163,42 @@ class TestDocsFlag:
         """An unknown value is rejected by Click rather than reaching the pipeline."""
         result = runner.invoke(cli, ["init", str(tmp_path), "--docs", "magic"])
         assert result.exit_code == 2
+
+
+class TestProseFlag:
+    @pytest.fixture
+    def runner(self) -> CliRunner:
+        return CliRunner()
+
+    @pytest.fixture
+    def keyless_env(self, monkeypatch):
+        for var in (
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "OPENROUTER_API_KEY",
+            "DEEPSEEK_API_KEY",
+            "KIMI_API_KEY",
+            "GOOGLE_API_KEY",
+            "GEMINI_API_KEY",
+            "OLLAMA_BASE_URL",
+            "LITELLM_API_KEY",
+            "REPOWISE_PROVIDER",
+        ):
+            monkeypatch.delenv(var, raising=False)
+
+    def test_no_prose_needs_no_key(self, runner, tmp_path, keyless_env):
+        """`--no-prose` is the current spelling of --index-only: a free wiki."""
+        result = runner.invoke(cli, ["init", str(tmp_path), "--no-prose", "--yes"])
+        assert result.exit_code == 0, result.output
+
+    def test_index_only_prints_deprecation(self, runner, tmp_path, keyless_env):
+        """The deprecated alias still works and says so."""
+        result = runner.invoke(cli, ["init", str(tmp_path), "--index-only", "--yes"])
+        assert result.exit_code == 0, result.output
+        assert "deprecated" in result.output.lower()
+
+    def test_prose_and_no_prose_conflict(self, runner, tmp_path):
+        """--prose contradicting the --index-only alias is a usage error."""
+        result = runner.invoke(cli, ["init", str(tmp_path), "--prose", "--index-only"])
+        assert result.exit_code == 2
+        assert "contradicts" in result.output

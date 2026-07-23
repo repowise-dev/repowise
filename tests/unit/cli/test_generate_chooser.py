@@ -2,14 +2,30 @@
 
 from __future__ import annotations
 
-from repowise.cli.commands.generate_cmd import chooser as chooser_mod
+import click
+import pytest
+
 from repowise.cli.commands.generate_cmd.chooser import (
     choose_cascade,
     print_wiki_state,
     run_interactive_chooser,
 )
+from repowise.cli.commands.generate_cmd.command import _reject_structural_page_ids
 from repowise.core.generation.cascade import build_page_dependencies
 from repowise.core.generation.page_selection import PageRecord
+
+
+def test_reject_structural_page_ids_errors_on_file_page():
+    # A file page is rendered from structure; naming it for `generate` is a clear
+    # error, not a silent no-op.
+    with pytest.raises(click.ClickException) as exc:
+        _reject_structural_page_ids(("module_page:src/api", "file_page:src/app.py"))
+    assert "file_page:src/app.py" in str(exc.value)
+
+
+def test_reject_structural_page_ids_allows_concept_pages():
+    # Model-written page types pass through untouched.
+    _reject_structural_page_ids(("module_page:src/api", "repo_overview:demo"))
 
 
 class _RecordingConsole:
@@ -57,79 +73,35 @@ def test_choose_cascade_prompts_when_modes_diverge(monkeypatch) -> None:
         asked["default"] = default
         return "2"  # pick "dependents"
 
-    monkeypatch.setattr(
-        "repowise.cli.commands.generate_cmd.chooser.Prompt.ask", fake_ask
-    )
+    monkeypatch.setattr("repowise.cli.commands.generate_cmd.chooser.Prompt.ask", fake_ask)
     mode = choose_cascade(_RecordingConsole(), {"file_page:a.py"}, deps, default="none")
     assert mode == "dependents"
     assert asked["choices"] == ["1", "2", "3"]
     assert asked["default"] == "1"  # default maps to "none"
 
 
-class _Provider:
-    provider_name = "openai"
-    model_name = "gpt-x"
-
-
-class _Option:
-    def __init__(self, pct: float) -> None:
-        self.pct = pct
-
-
-def _patch_chooser(monkeypatch, *, chosen_pct: float, seed: set[str]) -> None:
-    monkeypatch.setattr(chooser_mod, "compute_coverage_options", lambda **_: [_Option(0.2)])
-    monkeypatch.setattr(
-        chooser_mod, "interactive_coverage_select", lambda *a, **k: _Option(chosen_pct)
-    )
-    monkeypatch.setattr(chooser_mod, "build_ranked_seed", lambda **_: set(seed))
-
-
 def _run(records, deps):
-    return run_interactive_chooser(
-        _RecordingConsole(),
-        records=records,
-        parsed_files=[],
-        graph_builder=object(),
-        config=object(),
-        kg_ctx=object(),
-        provider=_Provider(),
-        repo_path=object(),
-        repo_name="demo",
-        deps=deps,
-    )
+    return run_interactive_chooser(_RecordingConsole(), records=records, deps=deps)
 
 
-def test_run_interactive_chooser_returns_scope(monkeypatch) -> None:
-    records = [PageRecord("file_page:a.py", "file_page", "a.py", is_template=True)]
+def test_run_interactive_chooser_returns_cascade_when_unwritten() -> None:
+    records = [PageRecord("module_page:src", "module_page", "src", is_template=True)]
     deps = build_page_dependencies(
         module_groups=[], scc_groups=[], layer_page_of={}, repo_wide_ids=()
     )
-    _patch_chooser(monkeypatch, chosen_pct=0.2, seed={"file_page:a.py"})
     choice = _run(records, deps)
     assert choice is not None
-    assert choice.ranked_seed == {"file_page:a.py"}
-    # No containers/repo-wide, so cascade cannot change the outcome -> none.
-    assert choice.cascade_mode == "none"
+    # No containers/repo-wide, so cascade cannot change the outcome; the default
+    # ("dependents") comes back without prompting.
+    assert choice.cascade_mode == "dependents"
 
 
-def test_run_interactive_chooser_bails_when_nothing_unwritten(monkeypatch) -> None:
-    records = [PageRecord("file_page:a.py", "file_page", "a.py", is_template=False)]
+def test_run_interactive_chooser_bails_when_nothing_unwritten() -> None:
+    records = [PageRecord("module_page:src", "module_page", "src", is_template=False)]
     deps = build_page_dependencies(
         module_groups=[], scc_groups=[], layer_page_of={}, repo_wide_ids=()
     )
-    _patch_chooser(monkeypatch, chosen_pct=0.2, seed=set())
-    # Guard fires before the menu: every page is already written.
-    assert _run(records, deps) is None
-
-
-def test_run_interactive_chooser_bails_when_pick_is_all_written(monkeypatch) -> None:
-    records = [PageRecord("file_page:a.py", "file_page", "a.py", is_template=True)]
-    deps = build_page_dependencies(
-        module_groups=[], scc_groups=[], layer_page_of={}, repo_wide_ids=()
-    )
-    # There are unwritten pages, but the chosen coverage resolves to an empty
-    # seed (e.g. a tiny pct on a repo whose important pages are all written).
-    _patch_chooser(monkeypatch, chosen_pct=0.1, seed=set())
+    # Guard fires before the cascade step: every page is already written.
     assert _run(records, deps) is None
 
 

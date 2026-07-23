@@ -206,11 +206,12 @@ def restyle_command(
             "Run `repowise update --full` to generate docs first."
         )
     if docs_mode == "deterministic":
-        # A template wiki is a legitimate starting point, not a dead end:
-        # restyling it is how a user upgrades to model-written pages.
+        # A wiki with no written prose is a fine starting point: restyle writes
+        # the subsystem pages with a model in the chosen style, the same work
+        # `generate --all` does with a style override.
         console.print(
-            "[yellow]This repo's wiki was rendered from templates.[/yellow] "
-            "Restyling rewrites every page with a model, which costs money."
+            "[yellow]This repo's wiki has no written prose yet.[/yellow] "
+            "Restyling writes the subsystem pages with a model, which costs money."
         )
 
     if style == current:
