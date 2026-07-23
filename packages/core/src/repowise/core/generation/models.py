@@ -10,6 +10,7 @@ import graph stays one-directional:
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Literal
@@ -281,6 +282,13 @@ class GeneratedPage:
     # MCP get_context as the default narrative payload (content is gated behind
     # include=["full_doc"]).
     summary: str = ""
+    # Where this page sits in the wiki. Left unset by generators that do not
+    # place their pages; the tree builder fills them in before persistence.
+    # See the matching columns on the Page model for what each one means.
+    parent_page_id: str | None = None
+    display_order: int = 0
+    section_number: str | None = None
+    structural_key: str | None = None
 
     @property
     def total_tokens(self) -> int:
@@ -314,22 +322,43 @@ def compute_page_id(page_type: str, target_path: str) -> str:
     return f"{page_type}:{target_path}"
 
 
+# Page types identified by their members or by a curated id rather than by a
+# file path. Two things key on this and they must not drift apart: generation
+# stamps ``structural_key`` on these pages, and the persist layer sweeps them,
+# because an identity that can move strands the old row as a duplicate on the
+# next index. A new page type of this shape belongs here and nowhere else.
+STRUCTURALLY_KEYED_PAGE_TYPES: tuple[str, ...] = ("module_page", "layer_page", "scc_page")
+
+
+def member_structural_key(members: Iterable[str], *, prefix: str) -> str:
+    """Return a stable identity for a page defined by the files it covers.
+
+    A page that groups files has no name of its own, so anything derived from
+    its position in a list, or from a title someone might rewrite, moves
+    between runs. A moved id means the update path deletes and recreates the
+    page instead of updating it, losing its history, and leaves the old row
+    behind as a duplicate.
+
+    Hashing the sorted member paths ties the identity to the one thing that
+    actually says which page this is. It survives a re-ordering of the
+    members, an unrelated group appearing or disappearing, a change of
+    grouping algorithm, and any amount of re-titling.
+
+    Adding or removing a member deliberately does change the key: the page now
+    covers a different thing, so the old identity should be retired rather
+    than quietly reused.
+    """
+    digest = hashlib.sha256("\n".join(sorted(members)).encode("utf-8")).hexdigest()
+    return f"{prefix}-{digest[:12]}"
+
+
 def scc_page_slug(members: list[str]) -> str:
     """Return the ``target_path`` for a cycle's ``scc_page``, keyed by contents.
 
-    An SCC has no name of its own, so the page id used to be the component's
-    position in the list the graph layer handed over. That position moved
-    whenever the cycle set changed, or (before the graph layer sorted its
-    components) between two runs at the same commit. A moved id means the
-    update path deletes and recreates the page instead of updating it, losing
-    its history.
-
-    Hashing the sorted member paths ties the id to the one thing that actually
-    identifies the cycle. It survives a re-ordering, an unrelated cycle
-    appearing or disappearing, and a change of detection algorithm.
+    The original case for :func:`member_structural_key`: a cycle is identified
+    by its members and nothing else.
     """
-    digest = hashlib.sha256("\n".join(sorted(members)).encode("utf-8")).hexdigest()
-    return f"scc-{digest[:12]}"
+    return member_structural_key(members, prefix="scc")
 
 
 def _parse_datetime(ts: str) -> datetime:

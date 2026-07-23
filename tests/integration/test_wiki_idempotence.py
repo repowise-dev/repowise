@@ -266,3 +266,51 @@ class TestReindexIdempotence:
                 .where(PageVersion.repository_id == two_indexes["repo_id"])
             )
         assert total == 0
+
+
+class TestStructuralKeys:
+    """Every page whose identity is structural must say so on the row.
+
+    The three swept page types are already keyed on structure through their
+    target_path. Recording that in its own column is what lets identity and
+    location stop being the same string: a page can then keep a real directory
+    as its target_path, which is what readers and links need, while its
+    identity follows its members.
+    """
+
+    async def test_swept_types_carry_a_structural_key(self, two_indexes):
+        placed = [
+            (pid, ptype)
+            for pid, ptype, _ in two_indexes["second_rows"]
+            if ptype in _SWEPT_GENERATED_PAGE_TYPES
+        ]
+        assert placed, "sample repo produced no structurally-keyed pages"
+
+        sf = two_indexes["sf"]
+        async with sf() as session:
+            rows = await session.execute(
+                select(Page.id, Page.page_type, Page.target_path, Page.structural_key).where(
+                    Page.repository_id == two_indexes["repo_id"],
+                    Page.page_type.in_(_SWEPT_GENERATED_PAGE_TYPES),
+                )
+            )
+            for pid, _ptype, target, key in rows.all():
+                assert key == target, pid
+
+    async def test_file_pages_have_no_structural_key(self, two_indexes):
+        """A file page is identified by its path. Nothing structural to record."""
+        sf = two_indexes["sf"]
+        async with sf() as session:
+            rows = await session.execute(
+                select(Page.id, Page.structural_key).where(
+                    Page.repository_id == two_indexes["repo_id"],
+                    Page.page_type == "file_page",
+                )
+            )
+            assert [pid for pid, key in rows.all() if key is not None] == []
+
+    async def test_structural_keys_are_stable_across_the_two_indexes(self, two_indexes):
+        """The whole point: the key must not move when nothing moved."""
+        first = {p.page_id: p.structural_key for p in two_indexes["first_pages"]}
+        second = {p.page_id: p.structural_key for p in two_indexes["second_pages"]}
+        assert first == second

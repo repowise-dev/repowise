@@ -30,6 +30,13 @@ export interface PageResponse {
   is_deterministic: boolean;
   /** 2 = in-budget template, 3 = coverage tail; null on model-written pages. */
   doc_tier: number | null;
+  /** Position in the wiki outline, computed once at generation time so every
+   *  reader navigates the same tree. Optional: pages written before the wiki
+   *  carried a tree have no placement, which reads as flat. */
+  parent_page_id?: string | null;
+  display_order?: number;
+  section_number?: string | null;
+  structural_key?: string | null;
 }
 
 export interface PageVersionResponse {

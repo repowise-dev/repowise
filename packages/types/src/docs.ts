@@ -36,6 +36,15 @@ export interface DocPage {
   is_deterministic?: boolean;
   doc_tier?: number | null;
   human_notes: string | null;
+  /**
+   * Position in the wiki outline, computed once at generation time so every
+   * reader navigates the same tree. Optional: pages written before the wiki
+   * carried a tree have no placement, which reads as flat.
+   */
+  parent_page_id?: string | null;
+  display_order?: number;
+  section_number?: string | null;
+  structural_key?: string | null;
   created_at: string;
   updated_at: string;
 }

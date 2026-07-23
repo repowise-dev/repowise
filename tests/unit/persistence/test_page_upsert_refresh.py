@@ -92,6 +92,57 @@ async def test_repeated_upsert_of_an_unchanged_page_is_still_a_no_op(async_sessi
     assert page.title == "Ingestion Pipeline"
 
 
+async def test_hierarchy_fields_are_refreshed_when_only_they_changed(async_session, repo_id):
+    """Where a page sits can change while what it says does not.
+
+    Adding a sibling renumbers this page without touching a byte of its
+    content, so the update arrives on the touch branch. A hierarchy field the
+    branch does not assign would stay at the first run's value and the tree
+    would quietly describe a repo that no longer exists.
+    """
+    await _upsert(
+        async_session,
+        repository_id=repo_id,
+        title="Ingestion Pipeline",
+        parent_page_id="layer_page:layer:service",
+        display_order=3,
+        section_number="2.1",
+        structural_key="grp-aaaaaaaaaaaa",
+    )
+    await async_session.commit()
+    await _upsert(
+        async_session,
+        repository_id=repo_id,
+        title="Ingestion Pipeline",
+        parent_page_id="layer_page:layer:ingest",
+        display_order=5,
+        section_number="3.2.1",
+        structural_key="grp-bbbbbbbbbbbb",
+    )
+    await async_session.commit()
+
+    page = await get_page(async_session, _PAGE_ID)
+    assert page.version == 1, "must have taken the touch branch"
+    assert page.parent_page_id == "layer_page:layer:ingest"
+    assert page.display_order == 5
+    assert page.section_number == "3.2.1"
+    assert page.structural_key == "grp-bbbbbbbbbbbb"
+
+
+async def test_hierarchy_fields_default_for_a_page_that_has_no_place_yet(
+    async_session, repo_id
+):
+    """Every existing page predates these columns, so the unset case is normal."""
+    await _upsert(async_session, repository_id=repo_id, title="Ingestion Pipeline")
+    await async_session.commit()
+
+    page = await get_page(async_session, _PAGE_ID)
+    assert page.parent_page_id is None
+    assert page.section_number is None
+    assert page.structural_key is None
+    assert page.display_order == 0
+
+
 async def test_content_change_still_archives_a_version(async_session, repo_id):
     """The touch branch must not swallow a real edit."""
     await _upsert(async_session, repository_id=repo_id, title="Ingestion Pipeline")

@@ -13,6 +13,8 @@ from typing import Any
 
 import structlog
 
+from repowise.core.generation.models import STRUCTURALLY_KEYED_PAGE_TYPES
+
 logger = structlog.get_logger(__name__)
 
 # Max page ids per UPDATE ... IN (...) so a large cascade cannot exceed
@@ -528,7 +530,11 @@ async def _prune_stale_file_rows(
 # clustering ordinals, layer pages on display names. Those keys shift between
 # runs, so re-runs mint fresh page ids and the previous rows linger as
 # duplicates unless swept against the current run's output.
-_SWEPT_GENERATED_PAGE_TYPES = ("module_page", "layer_page", "scc_page")
+#
+# Same list generation stamps ``structural_key`` from, imported rather than
+# repeated: a type present in one and missing from the other is exactly the
+# bug the sweep exists to prevent.
+_SWEPT_GENERATED_PAGE_TYPES = STRUCTURALLY_KEYED_PAGE_TYPES
 
 
 async def _sweep_stale_generated_pages(

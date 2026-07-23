@@ -34,6 +34,12 @@ class PageResponse(BaseModel):
     is_deterministic: bool = False
     doc_tier: int | None = None
     human_notes: str | None = None
+    # Position in the wiki outline. Older rows carry no placement, which reads
+    # as a flat wiki and is what those rows actually describe.
+    parent_page_id: str | None = None
+    display_order: int = 0
+    section_number: str | None = None
+    structural_key: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -61,6 +67,10 @@ class PageResponse(BaseModel):
             is_deterministic=obj.provider_name == "template",  # type: ignore[attr-defined]
             doc_tier=metadata.get("doc_tier"),
             human_notes=obj.human_notes,  # type: ignore[attr-defined]
+            parent_page_id=obj.parent_page_id,  # type: ignore[attr-defined]
+            display_order=obj.display_order,  # type: ignore[attr-defined]
+            section_number=obj.section_number,  # type: ignore[attr-defined]
+            structural_key=obj.structural_key,  # type: ignore[attr-defined]
             created_at=obj.created_at,  # type: ignore[attr-defined]
             updated_at=obj.updated_at,  # type: ignore[attr-defined]
         )

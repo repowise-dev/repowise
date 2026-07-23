@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from ..context_assembler import FilePageContext
-from ..models import GeneratedPage
+from ..models import STRUCTURALLY_KEYED_PAGE_TYPES, GeneratedPage
 from . import levels as _levels
 from .helpers import (
     _CODE_LANGUAGES,
@@ -634,6 +634,8 @@ class _GenerationRun:
         deterministic run still gets mermaid repair, interlinking, related
         pages and tour links over the pages it did produce.
         """
+        _stamp_structural_keys(all_pages)
+
         # Post-generation: repair mermaid diagrams so illegal node IDs / unquoted
         # labels in LLM output don't break the whole diagram in the renderer.
         try:
@@ -702,6 +704,23 @@ class _GenerationRun:
             model=self.gen._provider.model_name,
         )
         return all_pages
+
+
+def _stamp_structural_keys(pages: list[GeneratedPage]) -> None:
+    """Record the structural identity of every page that has one.
+
+    Module, layer and SCC pages are identified by their members or their
+    curated id rather than by a file path, and each already carries that
+    identity as its ``target_path``. Copying it into ``structural_key`` splits
+    identity from location: a page can then be moved or re-titled, or given a
+    readable directory as its target, without changing what it is.
+
+    A page keyed on a real file path has no structural identity separate from
+    that path, so it is left unset rather than given a copy of the path.
+    """
+    for page in pages:
+        if page.page_type in STRUCTURALLY_KEYED_PAGE_TYPES:
+            page.structural_key = page.target_path
 
 
 def _compute_kg_file_scores(kg_ctx: Any) -> dict[str, float]:
