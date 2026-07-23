@@ -8,6 +8,7 @@ self-contained README under `examples/<name>/`.
 | Example | What it shows |
 |---------|----------------|
 | [codex/](codex/) | Codex CLI setup: `repowise init --codex`, smoke checks, local plugin install |
+| [health-coverage/](health-coverage/) | Code health, coverage ingest, and impacted-tests (no LLM key) |
 
 ## Conventions
 
@@ -22,3 +23,5 @@ self-contained README under `examples/<name>/`.
 - [CLI reference](../docs/reference/CLI_REFERENCE.md)
 - [Codex integration](../docs/agent/CODEX.md)
 - [OpenCode integration](../docs/agent/OPENCODE.md)
+- [Code health](../docs/layers/CODE_HEALTH.md)
+- [Test intelligence](../docs/layers/TEST_INTELLIGENCE.md)

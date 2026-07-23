@@ -25,6 +25,8 @@ repowise impacted-tests main..HEAD          # the tests guarding this branch
 repowise impacted-tests main..HEAD --format list | xargs pytest
 ```
 
+Longer walkthrough: [examples/health-coverage/](../../examples/health-coverage/).
+
 ```
 repowise coverage status
 

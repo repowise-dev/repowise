@@ -35,6 +35,9 @@ repowise health        # KPIs + 20 worst-scoring files + top findings
 repowise update        # re-score only changed files on each subsequent run
 ```
 
+Copy-paste walkthrough (health + coverage + impacted-tests):
+[examples/health-coverage/](../../examples/health-coverage/).
+
 Open `http://localhost:7777/repos/<id>/health` for the dashboard once the
 local server is running (`repowise serve`).
 
