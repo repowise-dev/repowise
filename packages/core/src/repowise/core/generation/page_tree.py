@@ -254,6 +254,23 @@ def assign_page_tree(
         members = [m for m in members if isinstance(m, str)]
         if not members:
             members = claimed.get(page.page_id, [])
+        if not members:
+            # A rollup overview owns no files of its own, so it has no members
+            # to place it and would otherwise land on the root. Borrow the
+            # members of the concept pages nested under its directory, so it
+            # sits under the same layer as the children it summarises.
+            prefix = page.target_path + "/"
+            borrowed: list[str] = []
+            for other in module_pages:
+                if other is page or not other.target_path.startswith(prefix):
+                    continue
+                child_members = (
+                    other.metadata.get("file_paths")
+                    or other.metadata.get("files")
+                    or claimed.get(other.page_id, [])
+                )
+                borrowed.extend(m for m in child_members if isinstance(m, str))
+            members = borrowed
         page.parent_page_id = layer_parent(_dominant_layer(members, layer_of_file))
 
     # A spotlight belongs to the file it documents: "path/to/file.py::Symbol".
