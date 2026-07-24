@@ -340,3 +340,40 @@ class TestConceptReadingOrder:
 
         assert self._ordered(nodes) == ["src/zzz", "src/mmm", "src/aaa"]
         assert [n.section_number for n in nodes if n.page_type == "module_page"]
+
+
+def _wiki_with_rollup() -> list[GeneratedPage]:
+    """Two leaf concept pages under a parent-dir rollup that owns no files.
+
+    A rollup overview is a ``module_page`` whose ``target_path`` is a parent
+    directory; it carries no ``file_paths`` because its children own them.
+    """
+    return [
+        _page("repo_overview", "demo"),
+        _page("layer_page", "layer:service"),
+        _page("layer_page", "layer:ui"),
+        _page("module_page", "src"),
+        _page("module_page", "src/ingest", file_paths=["src/ingest/a.py", "src/ingest/b.py"]),
+        _page("module_page", "src/web", file_paths=["src/web/app.tsx"]),
+        _page("file_page", "src/ingest/a.py", layer_id="layer:service"),
+        _page("file_page", "src/ingest/b.py", layer_id="layer:service"),
+        _page("file_page", "src/web/app.tsx", layer_id="layer:ui"),
+    ]
+
+
+class TestRollupPlacement:
+    def test_rollup_sits_under_its_children_layer_not_root(self):
+        """A file-less rollup borrows its children's layer instead of the root."""
+        pages = _wiki_with_rollup()
+        assign_page_tree(pages, LAYER_ORDER)
+        rollup = _by_id(pages)["module_page:src"]
+        # service wins 2 member files to 1 across the two child modules.
+        assert rollup.parent_page_id == "layer_page:layer:service"
+
+    def test_rollup_does_not_claim_its_children_files(self):
+        """Borrowing members for placement must not re-home the files."""
+        pages = _wiki_with_rollup()
+        assign_page_tree(pages, LAYER_ORDER)
+        by_id = _by_id(pages)
+        assert by_id["file_page:src/ingest/a.py"].parent_page_id == "module_page:src/ingest"
+        assert by_id["file_page:src/web/app.tsx"].parent_page_id == "module_page:src/web"
