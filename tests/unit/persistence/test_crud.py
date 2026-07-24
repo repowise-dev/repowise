@@ -250,6 +250,29 @@ async def test_list_pages_returns_all_for_repo(async_session):
     assert len(pages) == 2
 
 
+async def test_list_pages_excludes_tombstones_when_asked(async_session):
+    repo = await insert_repo(async_session)
+    await upsert_page(
+        async_session, **make_page_kwargs(repo.id, page_id="file_page:a.py", target_path="a.py")
+    )
+    await upsert_page(
+        async_session,
+        **make_page_kwargs(
+            repo.id,
+            page_id="file_page:gone.py",
+            target_path="gone.py",
+            freshness_status="tombstone",
+        ),
+    )
+    await async_session.commit()
+
+    # Default keeps the raw row set for reconciliation callers.
+    assert len(await list_pages(async_session, repo.id)) == 2
+    # A reader-facing caller opts out of the deleted-file row.
+    live = await list_pages(async_session, repo.id, include_tombstones=False)
+    assert [p.id for p in live] == ["file_page:a.py"]
+
+
 async def test_list_pages_filters_by_page_type(async_session):
     repo = await insert_repo(async_session)
     await upsert_page(

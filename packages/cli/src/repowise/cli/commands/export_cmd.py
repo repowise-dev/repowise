@@ -74,7 +74,12 @@ def export_command(
             if repo is None:
                 await engine.dispose()
                 return []
-            pages = await list_pages(session, repo.id, limit=10000)
+            # A reader-facing export drops tombstones so it does not write a
+            # page for a file that no longer exists. --full is the archival
+            # mode, so it keeps them for a complete record.
+            pages = await list_pages(
+                session, repo.id, include_tombstones=full_export, limit=10000
+            )
 
             if full_export and fmt == "json":
                 from sqlalchemy import select
