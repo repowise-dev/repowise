@@ -668,6 +668,8 @@ Export wiki pages to files.
 | `--format` | `markdown` (default), `html`, `json` |
 | `--output / -o` | Output directory (default: `.repowise/export`) |
 | `--full` | Include decisions, dead code, hotspots, provenance metadata (JSON only) |
+| `--verbose`, `-v` | Show debug logs from the pipeline |
+
 
 ```bash
 repowise export
