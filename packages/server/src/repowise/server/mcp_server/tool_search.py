@@ -14,6 +14,7 @@ from repowise.core.persistence.models import (
     Page,
 )
 from repowise.core.registry import mcp_tool_registry as mcp
+from repowise.server.mcp_server._answer_pipeline import _RRF_K, _RRF_SCORE_SCALE
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
     _get_repo,
@@ -32,6 +33,13 @@ from repowise.server.mcp_server.tool_search_symbols import (
 # Minimum relevance score below which results are dropped. Prevents
 # returning semantically unrelated pages when the corpus has no real match.
 _MIN_RELEVANCE_SCORE = 0.03
+
+# Freshness tie-breaker, added (not multiplied) to a hit's fused relevance.
+# The RRF-fused score spaces adjacent ranks ~0.05 apart, so this stays under
+# one rank step: recency orders otherwise-comparable hits without overriding
+# retrieval relevance. Recency itself scales it (0.5 for 90-day activity, 1.0
+# for 30-day).
+_FRESHNESS_TIEBREAK = 0.03
 
 # Pure-identifier pattern: a single bareword that looks like a code symbol
 # (no spaces, no punctuation other than _/.). These are almost always
@@ -257,12 +265,14 @@ async def _non_decision_fallback(ctx, query: str, fetch_limit: int) -> list[dict
     decisions, and let the caller merge the survivors.
     """
     results = []
+    src = "vector"
     with contextlib.suppress(TimeoutError, Exception):
         results = await asyncio.wait_for(
             ctx.vector_store.search(query, limit=fetch_limit * 4),
             timeout=8.0,
         )
     if not results:
+        src = "fts"
         with contextlib.suppress(Exception):
             results = await ctx.fts.search(query, limit=fetch_limit * 4)
 
@@ -279,6 +289,7 @@ async def _non_decision_fallback(ctx, query: str, fetch_limit: int) -> list[dict
                 "page_type": r.page_type,
                 "snippet": r.snippet,
                 "relevance_score": r.score,
+                "sources": [src],
             }
         )
     return out
@@ -403,7 +414,15 @@ async def _load_page_info(
 
 
 def _apply_freshness_boost(item: dict, gm: GitMetadata | None) -> None:
-    """Boost an item's relevance for recently-active files (in place)."""
+    """Nudge a recently-active file up as a bounded tie-breaker (in place).
+
+    Additive, not multiplicative: the fused relevance score is RRF-based, which
+    compresses adjacent ranks to roughly ``_FRESHNESS_TIEBREAK`` apart. A
+    percentage boost on that scale would let a fresh rank-2 hit leapfrog a
+    stale rank-0 hit, overriding retrieval relevance with recency. Sized below
+    one rank step, freshness only orders hits retrieval already ranks close
+    together.
+    """
     if not gm or not item.get("relevance_score"):
         return
     c30 = gm.commit_count_30d or 0
@@ -414,7 +433,7 @@ def _apply_freshness_boost(item: dict, gm: GitMetadata | None) -> None:
         recency = 0.5
     else:
         recency = 0.0
-    item["relevance_score"] = round(item["relevance_score"] * (1 + 0.2 * recency), 4)
+    item["relevance_score"] = round(item["relevance_score"] + _FRESHNESS_TIEBREAK * recency, 4)
 
 
 def _assign_confidence(output: list[dict], score_key: str, target_key: str) -> None:
@@ -434,64 +453,99 @@ async def _wait_for_vector_store(ctx) -> None:
             await asyncio.wait_for(ctx.vector_store_ready.wait(), timeout=30.0)
 
 
-async def _retrieve_with_method(ctx, query: str, fetch_limit: int) -> tuple[list, str]:
-    """Try semantic search, fall back to FTS.
+async def _safe_fts(ctx, query: str, limit: int) -> list:
+    """FTS search, bounded and failure-swallowing (returns [] on error/timeout)."""
+    if ctx.fts is None:
+        return []
+    with contextlib.suppress(Exception):
+        return await asyncio.wait_for(ctx.fts.search(query, limit=limit), timeout=5.0)
+    return []
 
-    Returns ``(results, method)`` where ``method`` is ``"embedding"`` or
-    ``"bm25"`` so callers can surface which retrieval backend produced the
-    list — embedding misses fall through to FTS silently otherwise.
+
+async def _safe_vector(ctx, query: str, limit: int) -> list:
+    """Vector search, bounded and failure-swallowing (returns [] on error/timeout).
+
+    Readiness is awaited by the caller (``_wait_for_vector_store``) before the
+    fused retrieve runs, so this path does not re-wait.
     """
-    results = []
-    method = "embedding"
-    with contextlib.suppress(TimeoutError, Exception):
-        results = await asyncio.wait_for(
-            ctx.vector_store.search(query, limit=fetch_limit),
-            timeout=8.0,
-        )
-    if not results:
-        method = "bm25"
-        with contextlib.suppress(Exception):
-            results = await ctx.fts.search(query, limit=fetch_limit)
-    return results, method
+    if ctx.vector_store is None:
+        return []
+    with contextlib.suppress(Exception):
+        return await asyncio.wait_for(ctx.vector_store.search(query, limit=limit), timeout=8.0)
+    return []
 
 
-def _build_output(
-    results: list, page_type: str | None, search_method: str | None = None
-) -> list[dict]:
-    """Map raw search hits to result dicts, dropping off-type and low-score hits.
+def _fused_entry(r) -> dict:
+    """Seed a fused-result dict from a retriever hit (RRF score added by caller)."""
+    return {
+        "page_id": r.page_id,
+        "title": r.title,
+        "page_type": r.page_type,
+        "snippet": r.snippet,
+        "_rrf": 0.0,
+        "_sources": set(),
+    }
 
-    When ``search_method`` is given it is attached to each item; the federated
-    path attaches it later per-repo so it passes ``None``.
+
+async def _fused_retrieve(ctx, query: str, fetch_limit: int, page_type: str | None) -> list[dict]:
+    """Retrieve by fusing FTS and vector search via Reciprocal Rank Fusion.
+
+    Both retrievers run in parallel; a hit's score is the sum of
+    ``1/(rank + k)`` over the retrievers that surfaced it, scaled into the
+    BM25 range the downstream relevance gates were tuned against. Each hit
+    carries a ``sources`` list (``"fts"``, ``"vector"``, or both) — a page
+    found by both retrievers is a stronger match than one found by one mode.
+
+    This mirrors get_answer's ``hybrid_retrieve`` so the two entry points rank
+    the same corpus identically. The prior path ran vector search and fell
+    back to FTS only when vector returned nothing, so a page FTS ranked highly
+    but vector missed never surfaced here.
+
+    A hit is admitted only when its raw retriever score clears
+    ``_MIN_RELEVANCE_SCORE`` — the fused score is rank-based and would
+    otherwise sit well above the floor for every window hit, letting an
+    off-topic query return its nearest-but-unrelated neighbours. Rank position
+    (for RRF) is the hit's place in the retriever's own list, unchanged by the
+    floor.
     """
-    output = []
-    for r in results:
-        if page_type and r.page_type != page_type:
-            continue
+    fts_results, vec_results = await asyncio.gather(
+        _safe_fts(ctx, query, fetch_limit),
+        _safe_vector(ctx, query, fetch_limit),
+    )
+
+    fused: dict[str, dict] = {}
+    for rank, r in enumerate(vec_results):
         if r.score < _MIN_RELEVANCE_SCORE:
             continue
-        item = {
-            "page_id": r.page_id,
-            "title": r.title,
-            "page_type": r.page_type,
-            "snippet": r.snippet,
-            "relevance_score": r.score,
-        }
-        if search_method is not None:
-            item["search_method"] = search_method
-        output.append(item)
+        entry = fused.setdefault(r.page_id, _fused_entry(r))
+        entry["_rrf"] += 1.0 / (rank + _RRF_K)
+        entry["_sources"].add("vector")
+    for rank, r in enumerate(fts_results):
+        if r.score < _MIN_RELEVANCE_SCORE:
+            continue
+        entry = fused.setdefault(r.page_id, _fused_entry(r))
+        entry["_rrf"] += 1.0 / (rank + _RRF_K)
+        entry["_sources"].add("fts")
+
+    output: list[dict] = []
+    for entry in fused.values():
+        if page_type and entry["page_type"] != page_type:
+            continue
+        entry["relevance_score"] = round(entry.pop("_rrf") * _RRF_SCORE_SCALE, 4)
+        entry["sources"] = sorted(entry.pop("_sources"))
+        output.append(entry)
+    output.sort(key=lambda item: item["relevance_score"], reverse=True)
     return output
 
 
 async def _search_single_repo(
     ctx, query: str, limit: int, page_type: str | None, kind: str | None = None
-) -> tuple[list[dict], str]:
+) -> list[dict]:
     """Run search against a single repo context.
 
-    Returns ``(results, method)`` where ``method`` is ``"embedding"`` or
-    ``"bm25"`` so the caller can surface which retrieval backend produced
-    the list — embedding misses fall through to FTS silently in the existing
-    code, and the agent has no way to distinguish a strong embedding hit
-    from a fallback BM25 hit otherwise.
+    Fuses FTS and vector retrieval via RRF (see ``_fused_retrieve``), so each
+    hit carries a ``sources`` list naming the retrievers that surfaced it
+    rather than a single backend label.
 
     The ``kind`` filter runs here, on the over-fetched list and BEFORE the
     limit cut — filtering after per-repo truncation returned fewer than
@@ -500,8 +554,7 @@ async def _search_single_repo(
     await _wait_for_vector_store(ctx)
 
     fetch_limit = _fetch_limit_for(limit, kind)
-    results, method = await _retrieve_with_method(ctx, query, fetch_limit)
-    output = _build_output(results, page_type)
+    output = await _fused_retrieve(ctx, query, fetch_limit, page_type)
 
     _downweight_decisions(output, query)
     output = await _rescue_all_decision_window(ctx, output, query, fetch_limit)
@@ -524,7 +577,7 @@ async def _search_single_repo(
     output = _dedup_decisions(output)
 
     output = _filter_by_kind(output, kind)
-    return output[:limit], method
+    return output[:limit]
 
 
 async def _federated_search(
@@ -535,11 +588,10 @@ async def _federated_search(
     all_results = []
 
     for ctx in contexts:
-        repo_results, repo_method = await _search_single_repo(ctx, query, limit, page_type, kind)
+        repo_results = await _search_single_repo(ctx, query, limit, page_type, kind)
         for rank, item in enumerate(repo_results):
             item["repo"] = ctx.alias
             item["rrf_score"] = 1.0 / (rank + 60)  # RRF constant k=60
-            item["search_method"] = repo_method
         all_results.extend(repo_results)
 
     # Sort by RRF score and take top N
@@ -680,9 +732,8 @@ async def _structured_search(
             _tag_repo(f, ctx, multi)
             files.extend(f)
         if mode == "hybrid":
-            c, method = await _search_single_repo(ctx, query, limit, page_type, kind)
+            c = await _search_single_repo(ctx, query, limit, page_type, kind)
             for item in c:
-                item.setdefault("search_method", method)
                 item["type"] = "page"
             _tag_repo(c, ctx, multi)
             concepts.extend(c)
@@ -764,9 +815,11 @@ async def search_codebase(
     the indexed symbols (returns symbol_id/file/line bounds — pipe into
     get_symbol), path-shaped queries resolve files (pipe into get_context),
     and conceptual queries ("rate limiting", "where do we handle webhooks")
-    run wiki-semantic search. Concept results carry search_method
-    ("embedding" or "bm25" fallback: verify those); decision records rank
-    below file pages unless the query is why-shaped.
+    run wiki-semantic search. Mixed natural-language + identifier queries run
+    hybrid (symbol hits first, then concept pages). Concept results carry a
+    sources list ("fts", "vector", or both — a hit found by both retrievers
+    is a stronger match); decision records rank below file pages unless the
+    query is why-shaped.
 
     Args:
         query: identifier, path, or natural-language query.
@@ -804,23 +857,15 @@ async def search_codebase(
 
     await _wait_for_vector_store(ctx)
 
-    # Try semantic search, fall back to FTS. Track which backend supplied the
-    # hits so the response can surface it per-result — silent fallback hides
-    # a quality cliff that the agent should weigh into its trust budget.
-    # Always over-fetch (see _fetch_limit_for): post-filters trim hits, and
-    # decision down-weighting needs file pages inside the window to promote.
+    # Fuse FTS + vector via RRF (see _fused_retrieve) so a page either mode
+    # ranks highly surfaces here, matching get_answer's retrieval. Always
+    # over-fetch (see _fetch_limit_for): post-filters trim hits, and decision
+    # down-weighting needs file pages inside the window to promote.
     fetch_limit = _fetch_limit_for(limit, kind)
-    results, search_method = await _retrieve_with_method(ctx, query, fetch_limit)
-    output = _build_output(results, page_type, search_method)
+    output = await _fused_retrieve(ctx, query, fetch_limit, page_type)
 
     _downweight_decisions(output, query)
-    rescued = await _rescue_all_decision_window(ctx, output, query, fetch_limit)
-    if len(rescued) > len(output):
-        # Fallback entries enter after the method was determined; they came
-        # from the same backend.
-        for item in rescued:
-            item.setdefault("search_method", search_method)
-        output = rescued
+    output = await _rescue_all_decision_window(ctx, output, query, fetch_limit)
 
     # Batch-lookup page target paths for the kind filter + git freshness boost
     if output:

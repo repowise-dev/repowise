@@ -204,18 +204,25 @@ class TestDecisionDownweight:
         async def fake_search(query, limit=10):
             return flood[:limit]
 
+        async def empty_fts(query, limit=10):
+            return []
+
         ctx = types.SimpleNamespace(
             vector_store=types.SimpleNamespace(search=fake_search),
-            fts=mcp_mod._fts,
+            # Stub FTS: this test drives ranking through the vector list, and a
+            # real FTS handle on the shared in-memory engine (per-connection
+            # isolation) would shadow the seeded rows for the follow-up session.
+            fts=types.SimpleNamespace(search=empty_fts),
             session_factory=mcp_mod._session_factory,
             vector_store_ready=None,
             path="/tmp/test-repo",
         )
-        results, method = await _search_single_repo(
+        results = await _search_single_repo(
             ctx, "sqlite store", limit=5, page_type=None, kind="implementation"
         )
-        assert method == "embedding"
         assert [r["target_path"] for r in results] == ["src/auth/service.py"]
+        # Fused retrieval tags each hit with the retrievers that surfaced it.
+        assert results[0]["sources"] == ["vector"]
 
 
 class TestNoiseDemotion:
@@ -839,3 +846,69 @@ class TestExactMatchSignal:
 
         result = await search_codebase("authentication flow for the service")
         assert "exact_match" not in result
+
+
+class TestFusion:
+    """search_codebase fuses FTS + vector via RRF, tagging each hit's sources.
+
+    The prior path ran vector search and fell back to FTS only on zero vector
+    results, so a page FTS ranked highly but vector missed never surfaced.
+    """
+
+    @pytest.mark.asyncio
+    async def test_fts_only_and_vector_only_hits_both_fuse(self, setup_mcp):
+        import repowise.server.mcp_server as mcp_mod
+        from repowise.server.mcp_server import search_codebase
+
+        for path in ("src/both.py", "src/vec.py", "src/fts.py"):
+            await _seed_page(f"file_page:{path}", path)
+
+        async def fake_vec(query, limit=10):
+            return [
+                _mk_result("file_page:src/both.py", "Both", "file_page", "src/both.py", 0.9),
+                _mk_result("file_page:src/vec.py", "Vec", "file_page", "src/vec.py", 0.5),
+            ]
+
+        async def fake_fts(query, limit=10):
+            return [
+                _mk_result("file_page:src/both.py", "Both", "file_page", "src/both.py", 4.0),
+                _mk_result("file_page:src/fts.py", "Fts", "file_page", "src/fts.py", 3.0),
+            ]
+
+        mcp_mod._vector_store.search = fake_vec
+        mcp_mod._fts.search = fake_fts
+
+        result = await search_codebase("session cache layer", limit=10)
+        by_path = {r["target_path"]: r for r in result["results"]}
+        # All three surface — including the FTS-only page the old path dropped.
+        assert {"src/both.py", "src/vec.py", "src/fts.py"} <= set(by_path)
+        assert by_path["src/vec.py"]["sources"] == ["vector"]
+        assert by_path["src/fts.py"]["sources"] == ["fts"]
+        assert by_path["src/both.py"]["sources"] == ["fts", "vector"]
+        # A page both retrievers rank #1 fuses to the top.
+        assert result["results"][0]["target_path"] == "src/both.py"
+
+    @pytest.mark.asyncio
+    async def test_vector_miss_falls_through_to_fts(self, setup_mcp):
+        """Vector returning nothing must not blank the result — FTS still feeds."""
+        import repowise.server.mcp_server as mcp_mod
+        from repowise.server.mcp_server import search_codebase
+
+        await _seed_page("file_page:src/fts_rescue.py", "src/fts_rescue.py")
+
+        async def empty_vec(query, limit=10):
+            return []
+
+        async def fake_fts(query, limit=10):
+            return [
+                _mk_result(
+                    "file_page:src/fts_rescue.py", "Rescue", "file_page", "src/fts_rescue.py", 3.5
+                )
+            ]
+
+        mcp_mod._vector_store.search = empty_vec
+        mcp_mod._fts.search = fake_fts
+
+        result = await search_codebase("session cache layer", limit=10)
+        by_path = {r["target_path"]: r for r in result["results"]}
+        assert by_path["src/fts_rescue.py"]["sources"] == ["fts"]

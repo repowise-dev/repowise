@@ -1036,7 +1036,8 @@ async def get_overview(repo: str | None = None, include: list[str] | None = None
                 "prose → wiki search. Force with mode=symbol|path|concept|hybrid.",
             ],
             "reread_triggers": "Only re-read source on bounds: approximate, "
-            "stale_warning in _meta, or search_method: bm25.",
+            "stale_warning in _meta, or a search hit whose sources are [fts] "
+            "only (keyword match, no semantic agreement).",
         }
 
         result["_meta"] = _build_meta(repository=repository)
