@@ -18,6 +18,7 @@ Call `get_dead_code()` to get findings organized by confidence tier. Useful para
 - `kind="zombie_package"` for monorepo packages with no consumers.
 - `directory="src/old/"` to limit scope.
 - `tier="high"` for the highest-confidence band.
+- `group_by="directory"` or `group_by="owner"` to roll up where dead code concentrates and who owns the most of it.
 
 ## Presenting Findings
 
