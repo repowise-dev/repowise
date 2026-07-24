@@ -320,8 +320,9 @@ function DocsReaderBody({
               {page.title}
             </h1>
 
-            {/* One calm metadata line: type + module + layer + freshness +
-                version + model — every metadata fact stated once, here. */}
+            {/* One calm metadata line: type + module + layer + freshness. The
+                generation provenance (version, tokens, model) lives in the
+                right rail so the page opens on its content, not its receipt. */}
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[10px] text-[var(--color-text-tertiary)] mb-6">
               <span className="rounded-full bg-[var(--color-bg-elevated)] px-2 py-0.5 uppercase tracking-wider">
                 {getPageTypeLabel(page.page_type)}
@@ -354,16 +355,6 @@ function DocsReaderBody({
                 <Clock className="h-3 w-3" />
                 {formatRelativeTime(page.updated_at)}
               </span>
-              <span>v{page.version}</span>
-              <span className="font-mono">
-                {formatTokens(page.input_tokens)} in · {formatTokens(page.output_tokens)} out
-              </span>
-              {page.model_name && (
-                <span className="flex items-center gap-1 font-mono">
-                  <Cpu className="h-3 w-3" />
-                  {page.model_name}
-                </span>
-              )}
             </div>
 
             {/* Low-confidence flag */}
@@ -523,6 +514,28 @@ function DocsReaderBody({
                 )}
               </div>
             )}
+            {/* Generation provenance — moved off the title row so the page
+                opens on its content. Model, cost and version answer "how was
+                this made", which is a rail question, not a headline. */}
+            <div>
+              <p className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider mb-2">
+                Generated
+              </p>
+              <div className="space-y-1 text-[10px] text-[var(--color-text-tertiary)]">
+                {page.model_name && (
+                  <div className="flex items-center gap-1.5 font-mono">
+                    <Cpu className="h-3 w-3 shrink-0" />
+                    <span className="truncate" title={page.model_name}>
+                      {page.model_name}
+                    </span>
+                  </div>
+                )}
+                <div className="font-mono">
+                  {formatTokens(page.input_tokens)} in · {formatTokens(page.output_tokens)} out
+                </div>
+                <div>v{page.version}</div>
+              </div>
+            </div>
             {relatedLinks.length > 0 && (
               <div>
                 <p className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider mb-2">

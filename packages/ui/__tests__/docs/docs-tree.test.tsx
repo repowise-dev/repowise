@@ -107,7 +107,7 @@ function indexOfRow(fragment: string): number {
 }
 
 describe("DocsTree", () => {
-  it("renders page nodes from the supplied pages array", () => {
+  it("renders deterministic pages inside the collapsed Auto-documented folder", () => {
     render(
       <DocsTree
         pages={[
@@ -118,6 +118,12 @@ describe("DocsTree", () => {
         onSelectPage={() => {}}
       />,
     );
+    const bucket = screen.getByText("Auto-documented files (2)");
+    expect(bucket).toBeInTheDocument();
+    // Collapsed by default: the files are a deliberate drill-in, not on load.
+    expect(screen.queryByText("foo.ts")).not.toBeInTheDocument();
+    fireEvent.click(bucket);
+    fireEvent.click(screen.getByText("src"));
     expect(screen.getByText("foo.ts")).toBeInTheDocument();
     expect(screen.getByText("bar.ts")).toBeInTheDocument();
   });
@@ -132,6 +138,7 @@ describe("DocsTree", () => {
         onSelectPage={onSelectPage}
       />,
     );
+    fireEvent.click(screen.getByText("Auto-documented files (1)"));
     fireEvent.click(screen.getByText("x.ts"));
     expect(onSelectPage).toHaveBeenCalledWith(target);
   });
@@ -176,17 +183,16 @@ describe("DocsTree", () => {
     expect(rowLabels().some((l) => l.startsWith("3") && l.includes("Alpha API"))).toBe(true);
   });
 
-  it("nests modules under their stored layer and files under their module", () => {
+  it("opens the layer spine by default and keeps files out of the outline", () => {
     render(
       <DocsTree pages={SPINE} selectedPageId={null} onSelectPage={() => {}} />,
     );
-    // The module is not visible until its layer is expanded.
-    expect(screen.queryByText("runtime/engine")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByText("Zebra Runtime"));
-    fireEvent.click(screen.getByText("runtime/engine"));
-    // Named relative to its module, so files with the same basename in
-    // different resolver directories stay distinguishable.
-    expect(screen.getByText("resolvers/dotnet/index.py")).toBeInTheDocument();
+    // Layer is open on load, so its concept title reads as a clean leaf in the
+    // outline — no file rows beside it.
+    expect(screen.getByText("runtime/engine")).toBeInTheDocument();
+    expect(screen.queryByText("resolvers/dotnet/index.py")).not.toBeInTheDocument();
+    // The file lives in the single Auto-documented folder at the bottom.
+    expect(screen.getByText("Auto-documented files (1)")).toBeInTheDocument();
   });
 
   it("hides tombstoned pages, which the tree deliberately leaves unplaced", () => {
@@ -208,7 +214,7 @@ describe("DocsTree", () => {
     expect(screen.queryByText("deleted.py")).not.toBeInTheDocument();
   });
 
-  it("keeps pages the stored tree does not reach, grouped by type", () => {
+  it("keeps unreached concept pages grouped by type, files go to the bottom folder", () => {
     // A store whose tree has not been rebuilt: every parent is null. Nothing
     // may disappear just because it has no recorded place.
     render(
@@ -226,24 +232,37 @@ describe("DocsTree", () => {
         onSelectPage={() => {}}
       />,
     );
+    // The unplaced concept page is grouped by type so it never vanishes.
     expect(screen.getByText("Module (1)")).toBeInTheDocument();
-    expect(screen.getByText("File (1)")).toBeInTheDocument();
-    expect(screen.getByText("a.ts")).toBeInTheDocument();
-    expect(screen.getByText("src")).toBeInTheDocument();
+    // The file page is not a stray group; it lives in the one bottom folder.
+    expect(screen.getByText("Auto-documented files (1)")).toBeInTheDocument();
+    expect(screen.queryByText("File (1)")).not.toBeInTheDocument();
   });
 
-  it("survives a parent cycle instead of dropping the pages in it", () => {
-    const a = makePage({ id: "a", target_path: "a.ts", title: "a.ts", parent_page_id: "b" });
-    const b = makePage({ id: "b", target_path: "b.ts", title: "b.ts", parent_page_id: "a" });
+  it("survives a concept parent cycle instead of dropping the pages in it", () => {
+    const a = makePage({
+      id: "a",
+      page_type: "module_page",
+      target_path: "a",
+      title: "Module: a",
+      parent_page_id: "b",
+    });
+    const b = makePage({
+      id: "b",
+      page_type: "module_page",
+      target_path: "b",
+      title: "Module: b",
+      parent_page_id: "a",
+    });
     render(
       <DocsTree pages={[...SPINE, a, b]} selectedPageId={null} onSelectPage={() => {}} />,
     );
-    expect(screen.getByText("File (2)")).toBeInTheDocument();
+    expect(screen.getByText("Module (2)")).toBeInTheDocument();
   });
 
-  it("collapses a long run of leaves so it cannot bury the spine", () => {
-    // This repo's own overview carries 53 cycle pages and 55 loose file pages
-    // as direct children; listed inline they push the layers out of sight.
+  it("routes structural pages to the bottom folder, never the concept outline", () => {
+    // This repo's own overview carries dozens of cycle and loose file pages as
+    // direct children; listed inline they push the layers out of sight.
     const cycles = Array.from({ length: 20 }, (_, i) =>
       makePage({
         id: `scc_page:${i}`,
@@ -262,17 +281,18 @@ describe("DocsTree", () => {
         onSelectPage={() => {}}
       />,
     );
-    expect(screen.getByText("SCC (20)")).toBeInTheDocument();
-    // Collapsed, and still after the layers it used to bury.
+    // Cycles are deterministic: they never appear in the outline, and they join
+    // every other file page in the one bottom folder (20 cycles + 1 SPINE file).
     expect(screen.queryByText("scc-0")).not.toBeInTheDocument();
-    expect(indexOfRow("Zebra Runtime")).toBeLessThan(indexOfRow("SCC (20)"));
-    // The layers themselves are never bucketed — they have children, so they
-    // are the hierarchy rather than a list.
+    expect(screen.getByText("Auto-documented files (21)")).toBeInTheDocument();
+    // The bottom folder sits after the concept spine.
+    expect(indexOfRow("Zebra Runtime")).toBeLessThan(indexOfRow("Auto-documented files"));
+    // The layers themselves are the spine, always shown.
     expect(screen.getByText("Zebra Runtime")).toBeInTheDocument();
     expect(screen.getByText("Alpha API")).toBeInTheDocument();
   });
 
-  it("leaves a short run of leaves inline", () => {
+  it("routes even a few structural pages to the bottom folder, collapsed", () => {
     const few = Array.from({ length: 3 }, (_, i) =>
       makePage({
         id: `infra_page:${i}`,
@@ -286,13 +306,18 @@ describe("DocsTree", () => {
     render(
       <DocsTree pages={[...SPINE, ...few]} selectedPageId={null} onSelectPage={() => {}} />,
     );
-    expect(screen.queryByText(/^Infra \(/)).not.toBeInTheDocument();
+    // 3 infra pages + 1 SPINE file, all in the single collapsed folder.
+    expect(screen.getByText("Auto-documented files (4)")).toBeInTheDocument();
+    expect(screen.queryByText("infra-0.yml")).not.toBeInTheDocument();
+    // Drill in: bottom folder -> deploy directory -> file.
+    fireEvent.click(screen.getByText("Auto-documented files (4)"));
+    fireEvent.click(screen.getByText("deploy"));
     expect(screen.getByText("infra-0.yml")).toBeInTheDocument();
   });
 
-  it("places file pages under their module, never in a provenance bucket", () => {
-    // Every page renders from one place now: file pages sit under their module
-    // in the tree, with no separate "Auto-documented" group to partition into.
+  it("lifts a concept's file pages to the bottom folder, leaving the concept a clean leaf", () => {
+    // The concept stays a pure title in the outline; its files move wholesale
+    // into the single bottom folder rather than sitting beside it.
     const file = (id: string, path: string) =>
       makePage({
         id,
@@ -308,9 +333,10 @@ describe("DocsTree", () => {
         onSelectPage={() => {}}
       />,
     );
-    expect(screen.queryByText(/Auto-documented/)).not.toBeInTheDocument();
-    fireEvent.click(screen.getByText("Zebra Runtime"));
-    fireEvent.click(screen.getByText("runtime/engine"));
-    expect(screen.getByText("a.py")).toBeInTheDocument();
+    // Concept visible as a leaf in the outline; its files are not beside it.
+    expect(screen.getByText("runtime/engine")).toBeInTheDocument();
+    expect(screen.queryByText("a.py")).not.toBeInTheDocument();
+    // Both files are in the single bottom folder.
+    expect(screen.getByText("Auto-documented files (2)")).toBeInTheDocument();
   });
 });
