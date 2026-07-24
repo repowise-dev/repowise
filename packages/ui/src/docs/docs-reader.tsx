@@ -35,6 +35,23 @@ const RELATED_REASON_LABELS: Record<RelatedReason, string> = {
   "same-module": "same module",
 };
 
+// Remove a leading level-1 heading whose text is exactly the page title. The
+// title is already rendered above the body, so this heading is a duplicate.
+// Only the first heading is considered and only on an exact (case-insensitive)
+// match, so a section that legitimately reuses the title text is never cut.
+function stripLeadingTitleHeading(content: string, title: string): string {
+  const wanted = title.trim().toLowerCase();
+  if (!wanted) return content;
+  const lines = content.split("\n");
+  let i = 0;
+  while (i < lines.length && lines[i]!.trim() === "") i++;
+  const heading = lines[i]?.match(/^#\s+(.+?)\s*$/);
+  if (!heading || heading[1]!.trim().toLowerCase() !== wanted) return content;
+  lines.splice(0, i + 1);
+  while (lines.length > 0 && lines[0]!.trim() === "") lines.shift();
+  return lines.join("\n");
+}
+
 /** Router-aware anchor — host injects Next.js Link / in-app interception. */
 export type ReaderLinkComponent = React.ElementType<{
   href: string;
@@ -178,9 +195,18 @@ function DocsReaderBody({
   const nav = useMemo(() => computeDocNav(page, pages), [page, pages]);
   const wikiLinks = useMemo(() => getWikiLinks(page.metadata), [page.metadata]);
 
+  // The reader renders the page title as the H1 above the body, but generated
+  // content often opens with its own "# <title>" line (the deterministic
+  // templates do), so the same heading shows twice. Drop a leading H1 that
+  // exactly matches the title before anything else reads the content.
+  const bodyContent = useMemo(
+    () => stripLeadingTitleHeading(page.content, page.title),
+    [page.content, page.title],
+  );
+
   const visibleContent = useMemo(
-    () => filterMarkdownByPersona(page.content, persona),
-    [page.content, persona],
+    () => filterMarkdownByPersona(bodyContent, persona),
+    [bodyContent, persona],
   );
 
   // The nearest ancestor that is actually a module. Breadcrumbs now come from
@@ -476,7 +502,7 @@ function DocsReaderBody({
       {sidebarOpen && (
         <div className="hidden lg:block border-l border-[var(--color-border-default)] bg-[var(--color-bg-surface)] shrink-0 w-[260px] overflow-auto">
           <div className="space-y-6 p-4">
-            <TableOfContents content={page.content} />
+            <TableOfContents content={bodyContent} />
             {sources.length > 0 && (
               <div>
                 <div className="flex items-center gap-1.5 mb-2">

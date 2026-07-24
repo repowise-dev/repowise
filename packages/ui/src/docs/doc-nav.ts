@@ -112,6 +112,15 @@ export function computeDocNav(page: DocPage, pages: DocPage[]): DocNavInfo {
     return { breadcrumbs: [{ label: page.title }] };
   }
 
+  // A layer or cycle hanging off the root carries a synthetic target_path
+  // ("layer:ui", "scc-103") rather than a directory trail. Splitting it would
+  // show that raw id as a crumb; use the same clean label the tree does. The
+  // pageId is the current page's own, so the reader renders it as plain text
+  // (it only links crumbs whose pageId differs from the page).
+  if (!page.target_path.includes("/")) {
+    return { breadcrumbs: [{ label: crumbLabel(page), pageId: page.id }] };
+  }
+
   // Index module pages by the directory they represent so an ancestor
   // directory segment can deep-link to its module overview.
   const moduleByPath = new Map<string, DocPage>();

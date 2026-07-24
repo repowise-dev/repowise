@@ -311,6 +311,17 @@ const SPINE_TYPES = new Set([
 
 const isSpinePage = (page: DocPage) => SPINE_TYPES.has(page.page_type);
 
+// Concept content rows (the modules and cycles nested under a layer) all carry
+// the same folder glyph, so a run of them reads as a column of identical icons
+// that says nothing the indentation does not already say. Dropping the icon on
+// just these rows lets the outline read by its shape. Layers keep their icon as
+// the section anchor, onboarding chapters keep theirs, and the deterministic
+// file tree keeps its file/folder glyphs — only this middle rung goes quiet.
+const CONCEPT_CONTENT_TYPES = new Set(["module_page", "scc_page"]);
+
+const hidesTreeIcon = (page?: DocPage): boolean =>
+  page ? CONCEPT_CONTENT_TYPES.has(page.page_type) : false;
+
 // The single bottom folder holding every deterministic page. Namespaced like
 // the other synthetic keys so it can never collide with a real page id.
 const AUTO_ROOT_KEY = "@group:auto-documented";
@@ -531,6 +542,10 @@ function TreeItem({
           {...(node.page && node.page.title !== node.name ? { title: node.page.title } : {})}
           className={cn(
             "flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-xs transition-colors hover:bg-[var(--color-bg-elevated)]",
+            // Top-level sections (layers, the Onboarding folder, the bottom
+            // Auto-documented folder) get air above them so each group reads as
+            // a distinct block rather than one long list.
+            depth === 0 && "mt-2 first:mt-0",
             isSelected
               ? "bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)]"
               : "text-[var(--color-text-secondary)]",
@@ -549,9 +564,11 @@ function TreeItem({
           <SectionNumber depth={depth} section={node.section} />
           {node.path === ONBOARDING_DIR_KEY ? (
             <Compass className="h-3.5 w-3.5 shrink-0 text-[var(--color-accent-primary)]" />
-          ) : node.page ? (
-            // A dir that is itself a page (layer, module, cycle) keeps its page
-            // type's icon — a folder glyph would say less than the type does.
+          ) : hidesTreeIcon(node.page) ? null : node.page ? (
+            // A layer keeps its section icon as the anchor for its group; a
+            // concept content dir (a module with children) drops its folder
+            // glyph so the outline is not a column of identical icons. The
+            // chevron already marks it as expandable.
             <PageIcon
               pageType={node.page.page_type}
               className="h-3.5 w-3.5 shrink-0 text-[var(--color-accent-primary)]"
@@ -564,8 +581,10 @@ function TreeItem({
           <span
             className={cn(
               "truncate font-medium",
+              // A top-level section is the parent of everything indented under
+              // it, so it carries the strongest weight in the tree.
               (node.path === ONBOARDING_DIR_KEY || depth === 0) &&
-                "text-[var(--color-text-primary)]",
+                "font-semibold text-[var(--color-text-primary)]",
             )}
           >
             {node.name}
@@ -610,13 +629,17 @@ function TreeItem({
       style={{ paddingLeft: `${depth * 16 + 8 + 16}px` }}
     >
       <SectionNumber depth={depth} section={node.section} />
-      <PageIcon
-        pageType={node.page?.page_type ?? "file_page"}
-        className={cn(
-          "h-3.5 w-3.5 shrink-0",
-          isSelected ? "text-[var(--color-accent-primary)]" : "text-[var(--color-text-tertiary)]",
-        )}
-      />
+      {!hidesTreeIcon(node.page) && (
+        <PageIcon
+          pageType={node.page?.page_type ?? "file_page"}
+          className={cn(
+            "h-3.5 w-3.5 shrink-0",
+            isSelected
+              ? "text-[var(--color-accent-primary)]"
+              : "text-[var(--color-text-tertiary)]",
+          )}
+        />
+      )}
       <span className="truncate">{node.name}</span>
       {showFreshness && node.page && (
         <FreshnessDot status={node.page.freshness_status as FreshnessStatus} />
