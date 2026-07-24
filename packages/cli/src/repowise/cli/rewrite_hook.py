@@ -119,6 +119,15 @@ FAMILY_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
             r"npm run (?:type-check|typecheck|compile)\b|gradle|mvn\b)"
         ),
     ),
+    (
+        "install_output",
+        re.compile(
+            r"^(pip|pip3|uv (?:pip )?(?:install|sync|add)|poetry (?:install|add|lock)|"
+            r"npm (?:install|ci|i)\b|pnpm (?:install|add|i)\b|yarn (?:install|add)|"
+            r"cargo install|brew install|bundle install|composer install)"
+        ),
+    ),
+    ("infra_plan", re.compile(r"^(?:terraform|tofu) plan\b|^helm (?:diff|upgrade)\b")),
     ("git_status", re.compile(r"^git status\b(?!.*--porcelain)")),
     ("git_log", re.compile(r"^git log\b")),
     ("git_diff", re.compile(r"^git (?:diff|show)\b(?!.*--stat)")),

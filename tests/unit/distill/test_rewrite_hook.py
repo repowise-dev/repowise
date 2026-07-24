@@ -53,6 +53,19 @@ class TestClassify:
             ("mypy packages", "lint_output"),
             ("cargo clippy", "lint_output"),
             ("golangci-lint run", "lint_output"),
+            # install logs
+            ("pip install flask", "install_output"),
+            ("uv pip install requests rich", "install_output"),
+            ("uv sync", "install_output"),
+            ("npm ci", "install_output"),
+            ("npm install", "install_output"),
+            ("poetry install", "install_output"),
+            ("cargo install ripgrep", "install_output"),
+            ("brew install jq", "install_output"),
+            # infra plans
+            ("terraform plan", "infra_plan"),
+            ("tofu plan -out plan.bin", "infra_plan"),
+            ("helm diff upgrade myrel ./chart", "infra_plan"),
             # git
             ("git status", "git_status"),
             ("git log --oneline -20", "git_log"),

@@ -1,0 +1,121 @@
+# Package-install log filter, authored as pure data.
+# Covers pip / uv / poetry / npm / pnpm / yarn / cargo / brew install logs.
+# The dominant noise is "already satisfied / using cached / downloading /
+# resolved / added N packages" progress; the signal is what actually changed,
+# the final summary, and (always, via the engine's invariant) any error line.
+
+[meta]
+# CI floor: median token savings across this file's inline test inputs.
+savings_floor = 60
+
+[filters.install_output]
+description = "Package-install logs: drop resolver/progress noise, keep what changed + summary + errors."
+priority = 30
+min_lines = 8
+
+# Command match: the resolved/normalized command begins with a known installer.
+match_command = "^(pip|pip3|uv (?:pip )?(?:install|sync|add)|poetry (?:install|add|lock)|npm (?:install|ci|i)\\b|pnpm (?:install|add|i)\\b|yarn (?:install|add)|cargo install|brew install|bundle install|composer install)"
+
+# Content sniff for surfaces that only see bytes.
+match_content = "Requirement already satisfied|^Resolved \\d+ packages|Using cached|added \\d+ packages|Audited \\d+ package|^Would make no changes"
+
+strip_lines_matching = [
+  "^Requirement already satisfied",       # pip: the bulk of the noise
+  "^\\s*Using cached ",                    # pip wheel cache chatter
+  "^\\s*Downloading ",                     # pip/poetry download progress
+  "^Resolved \\d+ packages? in ",          # uv resolver timing
+  "^\\s*Audited \\d+ packages? in ",       # uv audit line
+  "^\\s*Checked \\d+ packages? in ",       # uv --dry-run no-op line
+  "^Would make no changes",                # uv --dry-run no-op summary
+  "^Using Python \\d",                     # uv environment banner
+  "^\\s*[-•]\\s+Installing ",              # poetry per-package spinner rows
+  "^\\s*[-•]\\s+Already installed ",       # poetry no-op rows
+  "^(?:add|remove|change|update) \\S+ \\S+\\s*$",  # npm --dry-run per-package plan
+  "^npm warn ",                            # npm deprecation spam (warnings, not errors)
+  "^\\d+ packages? are looking for funding",  # npm funding nag
+  "^\\s*run `npm fund`",                   # npm funding nag continuation
+  "^\\s*$",                                # blank lines
+  "^\\[notice\\] ",                        # pip "a new release is available" nag
+]
+
+# Collapse noisy absolute site-packages paths in surviving lines.
+replace = [
+  { pattern = " in [A-Za-z]:\\\\[^ ]+site-packages", replacement = "" },
+  { pattern = " in /[^ ]+site-packages", replacement = "" },
+]
+
+on_empty = "install: ok (no changes)"
+
+# ---- inline tests (validated in CI, one file, one source of truth) -----------
+
+[[tests.install_output]]
+name = "pip all-satisfied collapses to ok"
+input = """
+Requirement already satisfied: requests in c:\\x\\site-packages (2.33.1)
+Requirement already satisfied: rich in c:\\x\\site-packages (13.9.4)
+Requirement already satisfied: idna<4 in c:\\x\\site-packages (from requests) (3.13)
+Requirement already satisfied: urllib3 in c:\\x\\site-packages (from requests) (2.6.3)
+Requirement already satisfied: certifi in c:\\x\\site-packages (from requests) (2026.4.22)
+Requirement already satisfied: pygments in c:\\x\\site-packages (from rich) (2.20.0)
+Requirement already satisfied: colorama in c:\\x\\site-packages (from pytest) (0.4.6)
+Requirement already satisfied: pluggy in c:\\x\\site-packages (from pytest) (1.6.0)
+
+[notice] A new release of pip is available: 25.1.1 -> 26.1.2
+"""
+expected = "install: ok (no changes)"
+
+[[tests.install_output]]
+name = "pip keeps real install + error line"
+input = """
+Requirement already satisfied: requests in c:\\x\\site-packages (2.33.1)
+Collecting flask
+  Downloading flask-3.1.0-py3-none-any.whl (100 kB)
+Installing collected packages: flask
+ERROR: pip's dependency resolver does not currently take into account all the packages
+Successfully installed flask-3.1.0
+"""
+expected = """Collecting flask
+Installing collected packages: flask
+ERROR: pip's dependency resolver does not currently take into account all the packages
+Successfully installed flask-3.1.0"""
+
+[[tests.install_output]]
+name = "uv dry-run no-op collapses to ok"
+input = """
+Using Python 3.13.5 environment at: .venv
+Checked 3 packages in 98ms
+Would make no changes
+Resolved 3 packages in 12ms
+Audited 3 packages in 0ms
+"""
+expected = "install: ok (no changes)"
+
+[[tests.install_output]]
+name = "npm dry-run drops per-package plan, keeps summary"
+input = """
+add victory-vendor 36.9.2
+add undici-types 6.21.0
+add tailwind-merge 2.6.1
+add recharts 2.15.4
+add lucide-react 0.460.0
+add vitest 3.2.7
+add jsdom 26.1.0
+
+added 1344 packages in 1s
+
+431 packages are looking for funding
+  run `npm fund` for details
+"""
+expected = "added 1344 packages in 1s"
+
+[[tests.install_output]]
+name = "npm keeps summary and vulnerability line"
+input = """
+npm warn deprecated inflight@1.0.6: This module is not supported
+added 210 packages, and audited 211 packages in 14s
+45 packages are looking for funding
+  run `npm fund` for details
+found 3 high severity vulnerabilities
+"""
+expected = """added 210 packages, and audited 211 packages in 14s
+found 3 high severity vulnerabilities"""
