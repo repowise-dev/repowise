@@ -88,6 +88,10 @@ class PerTypeGenerationMixin:
         members: list[str] | None = None,
         section: str = "",
         order: int = 0,
+        scope: str = "",
+        is_rollup: bool = False,
+        child_pages: list[dict] | None = None,
+        owns_files: bool = True,
     ) -> GeneratedPage:
         ctx = self._assembler.assemble_module_page(
             title,
@@ -101,6 +105,9 @@ class PerTypeGenerationMixin:
             external_systems=external_systems,
             community_label=community_label,
             community_cohesion=community_cohesion,
+            scope=scope,
+            is_rollup=is_rollup,
+            child_pages=child_pages,
         )
         module_git_summary = None
         if git_meta_map:
@@ -141,7 +148,15 @@ class PerTypeGenerationMixin:
         # group. Placement resolves file ownership from this list, so the
         # dropped files would be parented somewhere else entirely, and the two
         # records of what the page covers would disagree.
-        covered = sorted(members) if members else sorted(fc.file_path for fc in file_contexts)
+        # A rollup page sits above its child concept pages and owns no files of
+        # its own: its members already belong to the leaves below it, so
+        # claiming them here would parent those files twice and scramble the
+        # tree. It keeps an empty member list, which is exactly what
+        # ``assign_page_tree`` reads as "owns nothing".
+        if owns_files:
+            covered = sorted(members) if members else sorted(fc.file_path for fc in file_contexts)
+        else:
+            covered = []
 
         def _stamp_concept(page: GeneratedPage) -> GeneratedPage:
             """Record where the namer put this page in the reading order.

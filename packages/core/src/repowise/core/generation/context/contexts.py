@@ -95,6 +95,31 @@ class ModulePageContext:
     dependents: list[str]
     pagerank_mean: float
     files: list[str]
+    # One sentence saying what this page covers and what it deliberately does
+    # NOT, computed by the outline planner to keep adjacent pages from
+    # describing each other. Rendered as guidance so the opener situates the
+    # page against its siblings; the page itself does not echo it verbatim.
+    scope: str = ""
+    # A rollup page summarises a subsystem directory whose detail lives on the
+    # child concept pages below it, rather than owning files of its own.
+    is_rollup: bool = False
+    # Child concept pages this rollup sits above: [{"title", "path", "summary"}].
+    child_pages: list[dict] = field(default_factory=list)
+    # Git-derived subsystem health, aggregated over the page's member files.
+    # All degrade to zero/empty when no git metadata is available, so the
+    # template renders nothing rather than a wrong number.
+    hotspot_count: int = 0
+    stable_count: int = 0
+    # Files maintained by effectively one person (bus_factor <= 1): a
+    # single-maintainer risk a reader cannot see from the code alone.
+    single_owner_files: int = 0
+    # Other modules this one changes together with in history but does not
+    # import: [{"path", "count"}]. Coupling the import graph does not show.
+    coupled_modules: list[dict] = field(default_factory=list)
+    # Bug-fix history: total fix commits across members and the file that drew
+    # the most, so the page can name where the defects have clustered.
+    bugfix_total: int = 0
+    most_fixed_file: dict = field(default_factory=dict)
     # The directories the page covers, shallowest first. The title says what
     # the page is about; this says where it lives, which is what a reader
     # needs to go and look. Derived from the members rather than passed in, so

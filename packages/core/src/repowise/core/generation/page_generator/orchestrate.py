@@ -360,12 +360,14 @@ class _GenerationRun:
         title_of: dict[str, str] = {}
         section_of: dict[str, str] = {}
         order_of: dict[str, int] = {}
+        scope_of: dict[str, str] = {}
         position = 0
         for section in outline.sections:
             for page in section.pages:
                 title_of[page.structural_key] = page.title
                 section_of[page.structural_key] = section.title
                 order_of[page.structural_key] = position
+                scope_of[page.structural_key] = page.scope
                 position += 1
 
         from dataclasses import replace as _replace
@@ -387,6 +389,7 @@ class _GenerationRun:
                     display=title,
                     section=section_of.get(mg.structural_key, ""),
                     order=order_of.get(mg.structural_key, 0),
+                    scope=scope_of.get(mg.structural_key, mg.scope),
                 )
             )
         # Generation order is left alone: it is summed PageRank, so the most
