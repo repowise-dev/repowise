@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Changed
+- **One wiki, one renderer per page type.** The old template-vs-model split is gone. Every page except the subsystem layer is rendered from structure, always, with no key and no spend: file, symbol, API, infra, cycle and layer pages. Above them sits a derived, numbered concept tree (the `module_page` type) that is the one model-written layer: model prose when a provider is configured, structural stubs otherwise. `repowise generate` fills or refills that subsystem prose. (#1023, #1024, #1025, #1032)
+- **`--prose` / `--no-prose` is the single wiki-spend switch.** `--prose` writes the subsystem pages as model prose (needs a key); `--no-prose` renders the whole wiki from structure with no model and no cost. `--index-only` and `--docs llm|deterministic` remain as deprecated hidden aliases. The interactive coverage chooser and the `--coverage` / `--top` ranked-generation flags are removed; `init` and `generate` now ask a single cost question. (#1032, #1036)
+- **Hierarchy lives in the data model.** `wiki_pages` carries `parent_page_id`, `display_order`, `section_number` and a stable `structural_key`, so MCP (`get_overview`), the web docs tree and the breadcrumbs all read one stored tree instead of each deriving their own. (#1014, #1022)
+
+### Removed
+- **The template-vs-AI provenance axis.** `is_deterministic` and `doc_tier` are gone from the API responses and every TypeScript type; the Auto / AI / Mixed page badges, the "Auto-documented" partition, and the per-page "Write with AI" affordance are retired. The pages router's `?deterministic=` filter becomes `?has_prose=`, scoped to the model-written page types. (#1037)
+
+---
+
 ## [0.34.0] — 2026-07-20
 
 ### Added
