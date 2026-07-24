@@ -349,6 +349,27 @@ async def _resolve_one_target(
             result_data["hint"] = f"Content moved; call get_context on {successors[0]!r} instead."
         return result_data
 
+    # --- Parent page (position in the concept tree) -----------------------
+    # Every placed page now carries parent_page_id, so a file target can point
+    # up to the subsystem/concept page that documents it, and a concept page
+    # up to its layer. One extra get() on the already-open session; the row is
+    # a full ORM object here, so parent_page_id is already loaded.
+    if page is not None and page.parent_page_id:
+        parent = await session.get(Page, page.parent_page_id)
+        if (
+            parent is not None
+            and parent.repository_id == repo_id
+            and getattr(parent, "freshness_status", "") != "tombstone"
+        ):
+            # Skip a tombstoned parent: pointing an agent up-tree at a page
+            # whose directory was deleted or renamed since indexing is the
+            # same trap the target's own tombstone redirect above avoids.
+            result_data["parent_page"] = {
+                "title": parent.title,
+                "target_path": parent.target_path,
+                "section": parent.section_number,
+            }
+
     want_skeleton = bool(include and "skeleton" in include)
     auto_skeleton = False
 
@@ -487,8 +508,39 @@ async def _resolve_one_target(
         elif target_type == "module":
             docs["title"] = page.title
             docs["summary"] = page.summary or ""
+            if page.section_number:
+                docs["section"] = page.section_number
             if want_full_doc:
                 docs["content_md"] = page.content
+            # Direct sub-concept children in the tree (nested subsystems, api
+            # contracts, symbol spotlights). File children are covered by the
+            # member "files" list below, so listing them here too would just
+            # double the response; this surfaces the tree's real sub-structure
+            # where it exists and is omitted when there is none.
+            res = await session.execute(
+                select(Page)
+                .where(
+                    Page.repository_id == repo_id,
+                    Page.parent_page_id == page.id,
+                    Page.page_type != "file_page",
+                )
+                .order_by(Page.display_order, Page.target_path)
+            )
+            child_pages = res.scalars().all()
+            if child_pages:
+                docs["children"] = filter_dicts_by_key(
+                    [
+                        {
+                            "title": ch.title,
+                            "target_path": ch.target_path,
+                            "page_type": ch.page_type,
+                            "section": ch.section_number,
+                        }
+                        for ch in child_pages
+                    ],
+                    "target_path",
+                    exclude_spec,
+                )
             # Child file pages
             res = await session.execute(
                 select(Page).where(
