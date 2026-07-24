@@ -11,7 +11,7 @@ FastAPI REST API, webhook handlers, MCP server, and background job scheduler for
 | Component | Description |
 |-----------|-------------|
 | **REST API** | FastAPI application with full CRUD for repos, pages (with version history), symbols, jobs, git analytics, dead code, decisions, graph intelligence, blast radius, costs, knowledge map, security findings, providers, chat, CLAUDE.md generation, and multi-repo workspace |
-| **MCP Server** | 16 MCP tools for AI coding assistants (Claude Code, Cursor, Cline) |
+| **MCP Server** | 17 registered MCP tools (11 advertised by default in single-repo mode: ten flagship + `list_repos`) for AI coding assistants (Claude Code, Cursor, Cline) |
 | **Webhooks** | GitHub and GitLab push event handlers — trigger sync jobs automatically on push |
 | **Scheduler** | APScheduler background jobs — polling fallback (auto-syncs diverged repos), stale page detection |
 
@@ -232,7 +232,10 @@ Job progress events (`JobProgressEvent`) carry: `event` type, `file` currently b
 
 ## MCP Server
 
-repowise exposes 10 MCP tools for AI coding assistants. Start the MCP server via:
+repowise registers 17 MCP tools and advertises **11 by default** in single-repo
+mode (the ten flagship tools plus `list_repos`). Workspace mode adds two more;
+four further tools are opt-in. See [`docs/agent/MCP_TOOLS.md`](../../docs/agent/MCP_TOOLS.md).
+Start the MCP server via:
 
 ```bash
 repowise mcp                          # stdio transport (Claude Code, Cursor, Cline)
@@ -243,15 +246,17 @@ repowise mcp --transport sse          # legacy SSE transport on port 7338
 | Tool | What It Answers | When to Call |
 |------|----------------|-------------|
 | `get_overview` | Architecture summary, module map, entry points, community summary | First call when exploring an unfamiliar codebase |
+| `get_answer` | One-call RAG with confidence gating and caching | First call on any code question |
 | `get_context(targets)` | Docs, ownership, history, decisions, freshness for files/modules/symbols | When you need to understand specific code before reading or modifying it |
-| `get_risk(targets)` | Hotspot score, dependents, co-change partners, risk summary | Before modifying files — assess what could break |
-| `get_why(query?)` | Architectural decisions, rationale, constraints | Before making architectural changes — understand existing intent |
-| `search_codebase(query, mode?)` | Hybrid symbol / path / concept search (auto-routes by query shape) | When locating a symbol, a file, or code by topic |
-| `get_dependency_path(from, to)` | Connection path between two files/modules | When you need to understand how two things are connected |
-| `get_dead_code` | Unused/unreachable code sorted by cleanup impact | Before cleanup tasks |
-| `get_answer(question)` | One-call RAG with confidence gating and caching | First call on any code question |
 | `get_symbol(symbol_id)` | Source body, signature, docstring for a qualified symbol | When the question names a specific function or class |
-| `get_execution_flows(top_n?)` | Entry point scoring with BFS call-path traces | Understanding how the codebase executes |
+| `search_codebase(query, mode?)` | Hybrid symbol / path / concept search (auto-routes by query shape) | When locating a symbol, a file, or code by topic |
+| `get_risk(targets)` | Hotspot score, dependents, co-change partners, risk summary | Before modifying files — assess what could break |
+| `get_change_risk(revspec?)` | Whole-change defect-risk score for a commit or `base..head` range | Before merging a commit or PR range |
+| `get_why(query?)` | Architectural decisions, rationale, constraints | Before making architectural changes — understand existing intent |
+| `get_dead_code` | Unused/unreachable code sorted by cleanup impact | Before cleanup tasks |
+| `get_health` | 1–10 code-health scores and marker findings | Before refactoring — find the worst files |
+
+Also on by default: `list_repos`. Opt-in / workspace-only tools are documented in `MCP_TOOLS.md`.
 
 **Claude Code / Cursor / Cline setup** — add to your MCP config:
 
