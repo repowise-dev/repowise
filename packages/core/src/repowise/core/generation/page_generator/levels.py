@@ -196,6 +196,26 @@ def build_level3_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
     return coros
 
 
+def _rollup_child_pages(rollup: Any, groups: list[Any]) -> list[dict]:
+    """The pages a rollup links down to: its *immediate* children only.
+
+    A page is an immediate child when the rollup's key is exactly the parent
+    directory of the page's key. Immediate rather than recursive so a nested
+    overview links to the next level down (a sub-overview or a leaf), not to
+    every descendant leaf — otherwise ``a/b`` and ``a/b/c`` would both list the
+    same leaves under ``a/b/c``. A sub-rollup is a legitimate child and is kept;
+    the rollup itself is excluded. Titles are read after naming, so they match
+    what the tree shows.
+    """
+    children = [
+        g
+        for g in groups
+        if g.key != rollup.key and "/" in g.key and g.key.rsplit("/", 1)[0] == rollup.key
+    ]
+    children.sort(key=lambda g: g.key)
+    return [{"title": g.display, "path": g.key} for g in children]
+
+
 def build_level4_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
     """Level 4 (module_page), allow-set filtered."""
     gen = run.gen
@@ -238,6 +258,14 @@ def build_level4_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
                     members=list(mg.file_paths),
                     section=mg.section,
                     order=mg.order,
+                    scope=getattr(mg, "scope", ""),
+                    is_rollup=getattr(mg, "is_rollup", False),
+                    child_pages=(
+                        _rollup_child_pages(mg, run.sel_module_groups)
+                        if getattr(mg, "is_rollup", False)
+                        else None
+                    ),
+                    owns_files=not getattr(mg, "is_rollup", False),
                 ),
             )
         )

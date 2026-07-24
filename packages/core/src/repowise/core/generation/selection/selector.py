@@ -18,8 +18,13 @@ import structlog
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
 
 from ..concept_tree.grouping import ConceptGroup, group_files
-from ..concept_tree.naming import deterministic_title, disambiguate_titles
-from ..models import scc_page_slug
+from ..concept_tree.naming import (
+    _humanise,
+    deterministic_scope,
+    deterministic_title,
+    disambiguate_titles,
+)
+from ..models import member_structural_key, scc_page_slug
 from .scoring import (
     score_api_contract,
     score_file,
@@ -76,6 +81,14 @@ class ModuleGroup:
     #: re-run that re-sections the wiki renumbers it and mints nothing.
     section: str = ""
     order: int = 0
+    #: One sentence saying what the page covers and what it does not, from the
+    #: outline planner. Threaded to the renderer so the opener can situate the
+    #: page against its siblings. Empty on the deterministic path until named.
+    scope: str = ""
+    #: A rollup page overviews a subsystem directory whose detail lives on the
+    #: child concept pages below it. It carries its members only for context and
+    #: owns none of them, so the leaves keep their files.
+    is_rollup: bool = False
 
 
 @dataclass
@@ -406,11 +419,120 @@ def _build_module_groups(inputs: SelectionInputs) -> ConceptCandidates:
                     label=None,
                     cohesion=None,
                     structural_key=group.structural_key,
+                    # Filled here so the deterministic path carries a scope
+                    # sentence; the naming call overwrites it with a written one
+                    # when a provider is present.
+                    scope=deterministic_scope(group),
                 ),
             )
         )
+    scored.extend(_build_rollup_groups(groups, files, lang_of, inputs.pagerank))
     scored.sort(key=lambda x: (-x[0], x[1].key))
     return ConceptCandidates(scored=scored, groups=groups, layer_labels=layer_labels)
+
+
+# A rollup covering more than this fraction of the whole repository is not a
+# subsystem overview, it is the repository overview under another name — that
+# page already exists, so the rollup is skipped rather than made to compete with
+# it. Applies to the near-root case in a monorepo where everything lives under a
+# single top-level directory ("packages/", "src/").
+_ROLLUP_MAX_MEMBER_FRACTION = 0.5
+
+
+def _build_rollup_groups(
+    groups: list[ConceptGroup],
+    files: list[str],
+    lang_of: dict[str, str],
+    pagerank: dict[str, float],
+) -> list[tuple[float, ModuleGroup]]:
+    """Emit one overview page per parent directory that owns several concept pages.
+
+    The partition splits a large subsystem into path-local leaves, so a
+    directory such as ``.../ingestion`` gets no page of its own — only its
+    children do. A reader asking "what is the ingestion subsystem" then lands on
+    a file, not the subsystem, and a directory-level retrieval query has nothing
+    to match against, because directory-level retrieval matches a page to a
+    directory by exact ``target_path`` equality. This adds a page whose
+    ``target_path`` is exactly that parent directory: an overview that names its
+    child pages and links down to them from its body.
+
+    The rule is purely structural and repo-agnostic: a parent is eligible when at
+    least two leaf concept pages are its *immediate* children and no leaf already
+    claims that directory. With leaves at mixed depths several ancestor levels can
+    each qualify, so two guards keep the set sane: a parent covering more than
+    ``_ROLLUP_MAX_MEMBER_FRACTION`` of the repository is left to the repository
+    overview, and colliding titles are disambiguated the same way leaf titles are.
+
+    A rollup carries its subsystem's files only so the renderer has real material
+    to summarise; it owns none of them (``is_rollup`` → empty ``file_paths``), so
+    the leaves below keep their files and nothing is documented twice. In the nav
+    tree it currently sits alongside its children under their shared layer rather
+    than nesting them; the body still links down via ``child_pages``. True tree
+    nesting is a deferred nicety, not a correctness requirement.
+
+    All paths here are POSIX-normalised upstream (the grouper lowercases
+    separators), so the ``/`` splits below are safe.
+    """
+    total = len(files)
+    leaf_targets = {g.target_path for g in groups}
+    direct_children: dict[str, list[ConceptGroup]] = {}
+    for g in groups:
+        tp = g.target_path
+        if "/" not in tp:
+            continue
+        parent = tp.rsplit("/", 1)[0]
+        direct_children.setdefault(parent, []).append(g)
+
+    # First pass: which parents qualify, and over what members. Titles are
+    # computed in a second pass so they can be disambiguated as a set.
+    candidates: list[tuple[str, list[str]]] = []
+    for parent, children in sorted(direct_children.items()):
+        if len(children) < 2 or parent in leaf_targets:
+            continue
+        members = sorted(f for f in files if f.startswith(parent + "/"))
+        if not members or (total and len(members) > _ROLLUP_MAX_MEMBER_FRACTION * total):
+            continue
+        candidates.append((parent, members))
+
+    # Disambiguate overview titles against each other exactly as leaf titles are,
+    # so two same-named subsystems in different packages ("Components Overview"
+    # under packages/web and packages/vscode) do not render as identical rows.
+    def _base_title(parent: str) -> str:
+        segment = parent.rsplit("/", 1)[-1] if "/" in parent else parent
+        return f"{_humanise(segment)} Overview".strip()
+
+    titles = disambiguate_titles([(_base_title(p), p) for p, _ in candidates])
+
+    rollups: list[tuple[float, ModuleGroup]] = []
+    for (parent, members), title in zip(candidates, titles, strict=True):
+        langs = Counter(lang_of.get(m, "") for m in members)
+        langs.pop("", None)
+        segment = parent.rsplit("/", 1)[-1] if "/" in parent else parent
+        score = sum(pagerank.get(m, 0.0) for m in members)
+        rollups.append(
+            (
+                score,
+                ModuleGroup(
+                    key=parent,
+                    display=title,
+                    language=langs.most_common(1)[0][0] if langs else "unknown",
+                    file_paths=tuple(members),
+                    label=None,
+                    cohesion=None,
+                    # Hashed over the full subsystem with a distinct prefix so a
+                    # rollup can never collide with a leaf whose members are a
+                    # subset of these, and so the sweep tracks it as its own row.
+                    structural_key=member_structural_key(members, prefix="concept-rollup"),
+                    scope=(
+                        f"Overviews the {_humanise(segment)} subsystem as a whole and "
+                        "links to the concept pages documenting its parts; the detail "
+                        "lives on those child pages, not here."
+                    ),
+                    is_rollup=True,
+                ),
+            )
+        )
+    return rollups
 
 
 def _build_api_candidates(inputs: SelectionInputs) -> list[tuple[float, str]]:

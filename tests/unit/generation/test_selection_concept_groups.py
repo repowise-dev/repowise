@@ -21,9 +21,13 @@ import sys
 import textwrap
 from pathlib import Path
 
+from repowise.core.generation.concept_tree.grouping import ConceptGroup
 from repowise.core.generation.models import GenerationConfig
 from repowise.core.generation.selection import SelectionInputs, select_pages
-from repowise.core.generation.selection.selector import _build_module_groups
+from repowise.core.generation.selection.selector import (
+    _build_module_groups,
+    _build_rollup_groups,
+)
 from tests.unit.generation.test_selection_contract import (
     FakeFileInfo,
     FakeParsedFile,
@@ -118,9 +122,9 @@ def test_root_level_files_get_a_usable_target_path():
     assert any("main.py" in g.file_paths for g in groups)
     for g in groups:
         assert g.key, "a group persisted an empty target_path"
-    assert any(g.key == "root" for g in owning), (
-        f"root-anchored group did not get the root target: {[g.key for g in owning]}"
-    )
+    assert any(
+        g.key == "root" for g in owning
+    ), f"root-anchored group did not get the root target: {[g.key for g in owning]}"
 
 
 def test_test_files_never_enter_the_concept_tree():
@@ -224,9 +228,9 @@ def test_root_documentation_and_examples_get_no_concept_page():
 
     assert claimed, "fixture produced no groups"
     for prefix in ("docs/", "docs_src/", "examples/", "samples/"):
-        assert not any(p.startswith(prefix) for p in claimed), (
-            f"{prefix} reached the concept tree: {[p for p in claimed if p.startswith(prefix)]}"
-        )
+        assert not any(
+            p.startswith(prefix) for p in claimed
+        ), f"{prefix} reached the concept tree: {[p for p in claimed if p.startswith(prefix)]}"
     # The fixture is only meaningful if those files were in the input.
     assert any(p.startswith("docs_src/") for p in _support_paths())
 
@@ -293,15 +297,15 @@ def test_ranked_by_summed_pagerank_not_by_path():
     assert len(scored) > 1, "a one-group fixture cannot test ordering"
     # The fixture is only meaningful if path order disagrees with score order,
     # or the assertion below would pass on a sorted-by-path implementation.
-    assert ordered_keys != sorted(ordered_keys), (
-        f"fixture is degenerate: score order equals path order ({ordered_keys})"
-    )
+    assert ordered_keys != sorted(
+        ordered_keys
+    ), f"fixture is degenerate: score order equals path order ({ordered_keys})"
     # ui/c4 carries 1.0 per file against 0.1 elsewhere, so whichever group
     # holds it must come first.
     top_group = scored[0][1]
-    assert any("/ui/c4/" in p for p in top_group.file_paths), (
-        f"expected the ui/c4 mass to rank first, got {top_group.key}"
-    )
+    assert any(
+        "/ui/c4/" in p for p in top_group.file_paths
+    ), f"expected the ui/c4 mass to rank first, got {top_group.key}"
 
 
 def test_display_is_a_name_not_a_bare_path():
@@ -384,3 +388,82 @@ def test_two_groups_never_share_a_title():
     titles = [g.display for g in groups]
     assert len(titles) == len(set(titles)), titles
     assert len({g.key for g in groups}) == len(groups)
+
+
+# ---------------------------------------------------------------------------
+# Parent-directory rollup overview pages
+# ---------------------------------------------------------------------------
+
+
+def _leaf(members: list[str]) -> ConceptGroup:
+    """A concept group whose target_path is its members' shared directory."""
+    tp = members[0].rsplit("/", 1)[0]
+    return ConceptGroup(members=sorted(members), dirs=[tp], target_path=tp)
+
+
+def test_rollup_emitted_for_parent_of_two_leaf_pages():
+    """A parent that owns >=2 leaf pages and is itself no leaf gets an overview.
+
+    Its target_path is exactly that directory, because directory-level retrieval
+    matches a page to a directory by exact target_path equality.
+    """
+    leaves = [
+        _leaf(["p/ingestion/languages/a.py", "p/ingestion/languages/b.py"]),
+        _leaf(["p/ingestion/graph/c.py", "p/ingestion/graph/d.py"]),
+        # Two unrelated subsystems so ingestion stays a minority of the repo and
+        # the near-repo-wide guard does not fire; each owns a single leaf, so
+        # neither earns an overview of its own.
+        _leaf([f"p/other/e{i}.py" for i in range(6)]),
+        _leaf([f"p/extra/g{i}.py" for i in range(6)]),
+    ]
+    files = [m for g in leaves for m in g.members] + ["p/ingestion/loose.py"]
+    lang_of = {f: "python" for f in files}
+
+    rollups = _build_rollup_groups(leaves, files, lang_of, {})
+    keys = {m.key for _, m in rollups}
+
+    # ingestion owns two leaf children; the others own one each, so no overview.
+    assert keys == {"p/ingestion"}
+    (_, roll) = rollups[0]
+    assert roll.is_rollup is True
+    assert roll.structural_key.startswith("concept-rollup")
+    # It carries the subsystem's files for context, including loose ones.
+    assert "p/ingestion/loose.py" in roll.file_paths
+
+
+def test_rollup_target_never_collides_with_a_leaf():
+    """A parent that is already a leaf page is not given a second overview."""
+    leaves = [
+        _leaf(["p/svc/a.py", "p/svc/b.py"]),  # target p/svc — the parent itself
+        _leaf(["p/svc/api/c.py", "p/svc/api/d.py"]),
+        _leaf(["p/svc/db/e.py", "p/svc/db/f.py"]),
+    ]
+    files = [m for g in leaves for m in g.members]
+    rollups = _build_rollup_groups(leaves, files, {f: "python" for f in files}, {})
+    # p/svc is a leaf target, so no rollup claims that page id.
+    assert "p/svc" not in {m.key for _, m in rollups}
+
+
+def test_rollup_titles_are_disambiguated():
+    """Two same-named subsystems in different packages get distinct titles."""
+    leaves = [
+        _leaf(["a/web/components/x/1.py", "a/web/components/x/2.py"]),
+        _leaf(["a/web/components/z/3.py", "a/web/components/z/4.py"]),
+        _leaf(["a/ext/components/y/5.py", "a/ext/components/y/6.py"]),
+        _leaf(["a/ext/components/w/7.py", "a/ext/components/w/8.py"]),
+    ]
+    files = [m for g in leaves for m in g.members]
+    rollups = _build_rollup_groups(leaves, files, {f: "python" for f in files}, {})
+    titles = [m.display for _, m in rollups]
+    assert len(titles) == len(set(titles)), titles
+
+
+def test_rollup_skips_near_repo_wide_parent():
+    """A parent covering most of the repo is the repo overview, not a rollup."""
+    leaves = [
+        _leaf(["mono/a/x.py", "mono/a/y.py"]),
+        _leaf(["mono/b/z.py", "mono/b/w.py"]),
+    ]
+    files = [m for g in leaves for m in g.members]
+    rollups = _build_rollup_groups(leaves, files, {f: "python" for f in files}, {})
+    assert "mono" not in {m.key for _, m in rollups}

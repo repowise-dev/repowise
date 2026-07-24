@@ -11,6 +11,17 @@
 
 **Language:** {{ ctx.language }} | **Files:** {{ ctx.files | length }} | **Public symbols:** {{ ctx.public_symbols }} / {{ ctx.total_symbols }}{% if ctx.community_label %} | **Cluster:** {{ ctx.community_label }}{% if ctx.community_cohesion > 0 %} (cohesion {{ "%.2f"|format(ctx.community_cohesion) }}){% endif %}{% endif %}
 
+{% if ctx.scope %}
+{{ ctx.scope }}
+{% endif %}
+
+{% if ctx.is_rollup and ctx.child_pages %}
+## Parts of this subsystem
+{% for cp in ctx.child_pages %}
+- **{{ cp.title }}** — `{{ cp.path }}`
+{% endfor %}
+{% endif %}
+
 ## Overview
 
 {% set _role = [] -%}
@@ -88,8 +99,35 @@ Highest-PageRank first: the order to read them in.
 {% endfor %}
 {% endif %}
 
+{%- set _health = [] -%}
+{%- if ctx.hotspot_count > 0 -%}{%- set _ = _health.append(ctx.hotspot_count ~ " file" ~ ("s" if ctx.hotspot_count != 1 else "") ~ " flagged as change hotspots") -%}{%- endif -%}
+{%- if ctx.single_owner_files > 0 -%}{%- set _ = _health.append(ctx.single_owner_files ~ " file" ~ ("s" if ctx.single_owner_files != 1 else "") ~ " with a bus factor of one (single-maintainer risk)") -%}{%- endif -%}
+{%- if ctx.bugfix_total > 0 -%}{%- set _ = _health.append(ctx.bugfix_total ~ " bug-fix commit" ~ ("s" if ctx.bugfix_total != 1 else "") ~ " in recent history" ~ (", most in " ~ ctx.most_fixed_file.path if ctx.most_fixed_file else "")) -%}{%- endif -%}
+{%- if ctx.stable_count > 0 -%}{%- set _ = _health.append(ctx.stable_count ~ " file" ~ ("s" if ctx.stable_count != 1 else "") ~ " that have been stable") -%}{%- endif -%}
+{% if _health %}
+## Subsystem health
+{% for h in _health %}
+- {{ h }}
+{% endfor %}
+{% endif %}
+
+{% if ctx.coupled_modules %}
+## Change-coupled with
+Modules that change together with this one in history without importing it.
+{% for cm in ctx.coupled_modules %}
+- `{{ cm.path }}` (co-changed {{ cm.count }}×)
+{% endfor %}
+{% endif %}
+
 {% if module_git_summary %}
 ## Recent activity
 Most active file: `{{ module_git_summary.most_active_file }}` ({{ module_git_summary.most_active_commits_90d }} commits in the last 90 days).
 {% endif %}
-{% include "stub/_footer.j2" %}
+
+## Questions this page answers
+- What does {{ ctx.title }} do, and where does it sit in the system?
+- Which files make up {{ ctx.title }}{% if ctx.directories %} (under {% for d in ctx.directories[:3] %}`{{ d }}`{% if not loop.last %}, {% endif %}{% endfor %}){% endif %}?
+{% if ctx.entry_points %}- What are the entry points into {{ ctx.title }}?
+{% endif %}{% if ctx.dependencies %}- What does {{ ctx.title }} depend on?
+{% endif %}{% if ctx.dependents %}- What relies on {{ ctx.title }}?
+{% endif %}{% include "stub/_footer.j2" %}

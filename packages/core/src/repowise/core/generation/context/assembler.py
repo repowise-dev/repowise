@@ -290,6 +290,9 @@ class ContextAssembler:
         external_systems: list[dict] | None = None,
         community_label: str | None = None,
         community_cohesion: float | None = None,
+        scope: str = "",
+        is_rollup: bool = False,
+        child_pages: list[dict] | None = None,
     ) -> ModulePageContext:
         """Assemble context for the module_page template."""
         total_symbols = sum(len(fc.symbols) for fc in file_contexts)
@@ -380,6 +383,19 @@ class ContextAssembler:
             {parent for f in files if (parent := str(PurePosixPath(f).parent)) != "."}
         )
 
+        # Git-derived subsystem health, aggregated over the member files. These
+        # are what a reader cannot get from the code alone, and they degrade to
+        # nothing when a repository has no git history rather than inventing a
+        # number. Reuses the same per-file fields the repo overview reads.
+        (
+            hotspot_count,
+            stable_count,
+            single_owner_files,
+            coupled_modules,
+            bugfix_total,
+            most_fixed_file,
+        ) = self._module_git_enrichment(files, set(files), git_meta_map)
+
         return ModulePageContext(
             title=title,
             directories=directories,
@@ -400,6 +416,85 @@ class ContextAssembler:
             external_systems=external_systems or [],
             key_files=key_files,
             top_owners=top_owners,
+            scope=scope,
+            is_rollup=is_rollup,
+            child_pages=child_pages or [],
+            hotspot_count=hotspot_count,
+            stable_count=stable_count,
+            single_owner_files=single_owner_files,
+            coupled_modules=coupled_modules,
+            bugfix_total=bugfix_total,
+            most_fixed_file=most_fixed_file,
+        )
+
+    @staticmethod
+    def _module_git_enrichment(
+        files: list[str],
+        member_set: set[str],
+        git_meta_map: dict[str, dict] | None,
+    ) -> tuple[int, int, int, list[dict], int, dict]:
+        """Aggregate the git signals a subsystem page can carry over its members.
+
+        Returns ``(hotspot_count, stable_count, single_owner_files,
+        coupled_modules, bugfix_total, most_fixed_file)``. Everything is zero or
+        empty when there is no git metadata, so a repository indexed without
+        history renders none of it rather than a fabricated health line.
+        """
+        import json as _json
+        from collections import Counter
+
+        if not git_meta_map:
+            return 0, 0, 0, [], 0, {}
+
+        metas = [git_meta_map[f] for f in files if f in git_meta_map]
+        if not metas:
+            return 0, 0, 0, [], 0, {}
+
+        hotspot_count = sum(1 for m in metas if m.get("is_hotspot"))
+        stable_count = sum(1 for m in metas if m.get("is_stable"))
+        # bus_factor is the number of authors covering the bulk of a file's
+        # history; 1 means one person carries it. 0 is "not computed" and does
+        # not count as a risk.
+        single_owner_files = sum(1 for m in metas if 0 < (m.get("bus_factor") or 0) <= 1)
+
+        # Files this subsystem changes together with in history but that live in
+        # another module. History coupling the import graph never shows.
+        coupled: Counter[str] = Counter()
+        for m in metas:
+            raw = m.get("co_change_partners_json") or "[]"
+            try:
+                partners = _json.loads(raw) if isinstance(raw, str) else raw
+            except Exception:
+                partners = []
+            for p in partners:
+                # Co-change entries are dicts keyed by ``file_path`` (see
+                # git_indexer/co_change.py); tolerate a bare string too.
+                partner_path = (p.get("file_path") or p.get("path")) if isinstance(p, dict) else p
+                if (
+                    isinstance(partner_path, str)
+                    and partner_path
+                    and partner_path not in member_set
+                ):
+                    module = partner_path.rsplit("/", 1)[0] if "/" in partner_path else partner_path
+                    coupled[module] += 1
+        coupled_modules = [{"path": path, "count": count} for path, count in coupled.most_common(5)]
+
+        bugfix_total = sum(int(m.get("prior_defect_count") or 0) for m in metas)
+        most = max(metas, key=lambda m: int(m.get("prior_defect_count") or 0))
+        most_fixed_file: dict = {}
+        if int(most.get("prior_defect_count") or 0) > 0:
+            most_fixed_file = {
+                "path": most.get("file_path", ""),
+                "fixes": int(most.get("prior_defect_count") or 0),
+            }
+
+        return (
+            hotspot_count,
+            stable_count,
+            single_owner_files,
+            coupled_modules,
+            bugfix_total,
+            most_fixed_file,
         )
 
     # ------------------------------------------------------------------
