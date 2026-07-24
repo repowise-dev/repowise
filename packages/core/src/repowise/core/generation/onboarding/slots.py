@@ -1,8 +1,8 @@
 """Onboarding slot identifiers and reading order.
 
-The Onboarding collection is a fixed set of eight curated pages. Two slots are
-"promoted" — they reuse the existing `repo_overview` and `architecture_diagram`
-pages, tagged via ``metadata.onboarding_slot``. The other six are new pages
+The Onboarding collection is a fixed set of nine curated slots. Two slots are
+"promoted": they reuse the existing `repo_overview` and `architecture_diagram`
+pages, tagged via ``metadata.onboarding_slot``. The other seven are new pages
 with ``page_type='onboarding'`` and a ``metadata.subkind`` discriminator.
 
 Slot identifiers are used three ways:
@@ -11,7 +11,8 @@ Slot identifiers are used three ways:
   - as the ordering key in the web UI's Onboarding folder.
 
 Keep the order list in lockstep with ``packages/ui/src/lib/page-types.ts``
-``ONBOARDING_ORDER``.
+``ONBOARDING_ORDER``. A slot without enough signal is skipped at generation
+time, so a repo can end up with fewer than nine.
 """
 
 from __future__ import annotations

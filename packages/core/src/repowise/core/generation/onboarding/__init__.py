@@ -1,13 +1,13 @@
 """Onboarding documentation collection.
 
-A curated set of up to eight pages — Project Overview, Architecture Guide,
-Getting Started, Codebase Map, Key Concepts, How It Works, Development Guide,
-Active Landscape — designed to be the first thing a new contributor (or LLM
-agent) reads.
+A curated set of up to nine pages: Project Overview, Architecture Guide,
+Guided Tour, Getting Started, Codebase Map, Key Concepts, How It Works,
+Development Guide, Active Landscape, designed to be the first thing a new
+contributor (or LLM agent) reads.
 
 Two slots ("project_overview", "architecture_guide") are *promoted*: they
 reuse the existing ``repo_overview`` and ``architecture_diagram`` pages,
-tagged via ``metadata.onboarding_slot``. The other six slots are new pages
+tagged via ``metadata.onboarding_slot``. The other seven slots are new pages
 generated at level 8 with ``page_type='onboarding'`` and a
 ``metadata.subkind`` discriminator.
 
