@@ -9,17 +9,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.35.0] — 2026-07-24
+
+This release rebuilds how wikis are generated. Every page now renders from structure with no key and no spend, except a single model-written subsystem layer; a new `repowise generate` command fills that layer on demand, and the web UI can generate AI docs page by page. Stores built before this change are recommended (never forced) to re-index for the newer navigable wiki.
+
+### Added
+- **`repowise generate`, scoped and cost-gated wiki generation.** A new command writes or refills the model-written subsystem pages on demand, gated behind a single cost question, and onboards a provider the same way `init` does when a docs run needs one. It is also exposed over HTTP for the web UI. (#978, #982, #983, #1060)
+- **Keyless, deterministic wikis.** `init` (and `init --index-only` / `--no-prose`) produces a complete, honest wiki with no API key and no spend: file, symbol, API, infra, cycle and layer pages all render from structure. `init --docs` opts into the model-written subsystem prose, and a template wiki renders when no provider is configured. (#972, #975, #976, #999, #1001, #1003)
+- **AI docs from the web reader.** The web UI gained provider-key settings and per-page and bulk AI documentation generation from the reader, with a coverage picker and provenance surfaces, streamed over an authenticated job channel. (#988, #991, #994, #984)
+- **Full git-history secret scanning.** `repowise security scan --history` scans the entire git history for secrets, not just the working tree. (#821)
+- **Hybrid `search_codebase`.** Full-text and vector results are now fused with reciprocal rank fusion, so search blends exact-term and semantic matches instead of picking one. (#1057)
+- **Interactive change-coupling page**, surfaced on the Overview. (#986)
+- **Fix history in the file UI.** The symbols view marks which symbols in a file keep getting fixed, and a file's governing decisions moved into their own tab. (#960, #966, #968, #977)
+- **Dead-code page rebuilt** on a shared table primitive with one confidence scale, a reopen path, and per-finding AI prompts, links and reasons. (#990, #992, #993)
+- **Disable reasoning on Ollama models** for providers that support it. (#1009)
+- **Adaptive TSX grammar fallback** so `.ts` files that contain JSX still parse. (#967)
 
 ### Changed
 - **One wiki, one renderer per page type.** The old template-vs-model split is gone. Every page except the subsystem layer is rendered from structure, always, with no key and no spend: file, symbol, API, infra, cycle and layer pages. Above them sits a derived, numbered concept tree (the `module_page` type) that is the one model-written layer: model prose when a provider is configured, structural stubs otherwise. `repowise generate` fills or refills that subsystem prose. (#1023, #1024, #1025, #1032)
+- **A re-index is recommended after upgrading.** Stores built before the subsystem-page restructure carry per-directory pages and no navigable tree, which no automatic reconcile can rebuild. Such stores are now told (never forced) that a full re-index would give them the newer wiki; ordinary updates keep working and the notice surfaces at most once. (#1035)
 - **`--prose` / `--no-prose` is the single wiki-spend switch.** `--prose` writes the subsystem pages as model prose (needs a key); `--no-prose` renders the whole wiki from structure with no model and no cost. `--index-only` and `--docs llm|deterministic` remain as deprecated hidden aliases. The interactive coverage chooser and the `--coverage` / `--top` ranked-generation flags are removed; `init` and `generate` now ask a single cost question. (#1032, #1036)
 - **Hierarchy lives in the data model.** `wiki_pages` carries `parent_page_id`, `display_order`, `section_number` and a stable `structural_key`, so MCP (`get_overview`), the web docs tree and the breadcrumbs all read one stored tree instead of each deriving their own. (#1014, #1022)
 - **Subsystem pages read like subsystem docs.** The concept tree's `module_page`s open by situating themselves against their siblings, weave in git-derived health and history signals, and close with a "Questions this page answers" section; a parent directory that spans several concept pages gets its own overview page. (#1043)
 - **`get_answer` leads subsystem questions with their concept page.** A question about a subsystem as a whole now surfaces that subsystem's page above its individual file and child pages, instead of returning the parts without the whole. (#1046)
+- **Retrieval demotes decision records and test pages**, and `get_context` reports where a file sits in the concept tree. (#1040, #1056)
+- **Dead-code confidence default is aligned** across the CLI, REST and MCP surfaces, so the same threshold applies everywhere. (#1030)
 
 ### Removed
 - **The template-vs-AI provenance axis.** `is_deterministic` and `doc_tier` are gone from the API responses and every TypeScript type; the Auto / AI / Mixed page badges, the "Auto-documented" partition, and the per-page "Write with AI" affordance are retired. The pages router's `?deterministic=` filter becomes `?has_prose=`, scoped to the model-written page types. (#1037)
+
+### Fixed
+- Idle files recover their time-decayed health on `update` instead of staying stuck. (#728, #1061)
+- The embedder is resolved from the store rather than the environment, so upgrades no longer switch models under you. (#1007)
+- OpenAI temperature is clamped to 1 for GPT-5-and-later reasoning models. (#989)
+- Ollama timeout and connection errors are wrapped so they retry. (#829)
+- Workspace repos resolve correctly in chat tool calls. (#971)
+- Stale `.update.pending` markers are cleaned up, and deferred workspace docs runs are reported honestly. (#1004, #1000)
+- The overview summary self-heals a missing indexed commit, and repository sort timestamps are normalized. (#1005, #1058)
+- Tombstoned pages no longer count in the docs tree or appear in status and export listings, and table-of-contents keys stay unique across repeated headings. (#1049, #1050, #1053)
+- Workspace file counts and top-language queries are scoped to file nodes. (#952)
+
+### Documentation
+- Plugin: added `coverage` and impacted-tests slash commands, and synced the MCP tool surface and hooks with reality. The Codex plugin was brought to parity (code-health skill and skill guidance). (#1029, #1017, #962, #1016)
+- `repowise security` documented in the CLI reference, an examples index added, and the README leads with the numbers and restores the five-layer table. (#1026, #1019, #961)
+
+### Dependencies
+- Consolidated security bumps across the dependency tree; lockfile packages pruned by the refresh were restored. (#1054, #1059)
 
 ---
 
