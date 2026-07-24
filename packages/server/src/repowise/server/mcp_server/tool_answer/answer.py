@@ -76,6 +76,9 @@ from repowise.server.mcp_server._answer_pipeline import (
     expand_via_graph as _expand_via_graph,
 )
 from repowise.server.mcp_server._answer_pipeline import (
+    expand_via_parent_page as _expand_via_parent_page,
+)
+from repowise.server.mcp_server._answer_pipeline import (
     hybrid_retrieve as _hybrid_retrieve,
 )
 from repowise.server.mcp_server._answer_pipeline import hydrate_hits as _hydrate_hits
@@ -807,6 +810,14 @@ async def get_answer(
     with contextlib.suppress(Exception):
         async with get_session(ctx.session_factory) as session:
             hits = await _expand_via_neighbor_rerank(session, repo_id, hits, question, ctx)
+    # Parent-concept surfacing: on a subsystem-shaped question ("overview of X",
+    # "what subsystem does Y belong to", "where would I add a Z"), lead with the
+    # concept/rollup page that documents the whole subsystem instead of the more
+    # specific child pages retrieval ranks above it. Structural + query-shape
+    # only; a no-op on every other question, so file/implementation queries keep
+    # today's ranking. Runs before the cap so the parent can take a top-5 slot.
+    with contextlib.suppress(Exception):
+        hits = await _expand_via_parent_page(hits, question, ctx)
     # Demote retrieval noise (decision records on non-why questions, test file
     # pages on non-test questions) below real pages before the cap, so it can't
     # occupy a top-5 slot and feed synthesis. Stable and non-dropping; runs after
@@ -1429,17 +1440,20 @@ async def get_answer(
         retrieval_quality = "weak"
 
     if hedged:
-        # Hedged answers: drop the retrieval payload. The consumer has been
-        # told to read the source — the symbol-docstring blob that helped
-        # synthesis doesn't help them, and keeping it in the response bloats
-        # every follow-up turn's prompt cache.
+        # Hedged answers: keep the retrieval payload lean but non-empty. The
+        # consumer has been told to read the source, but the ranked hits are
+        # exactly what tells it WHICH source — and a flow endpoint or a surfaced
+        # subsystem page that only lives in this block would otherwise vanish
+        # from the response entirely (it is not in citations, which are drawn
+        # from the prose). Lean form (no per-hit key_symbols dump) keeps the
+        # prompt-cache cost the empty payload was protecting.
         payload = {
             "answer": answer_text,
             "citations": citations,
             "confidence": confidence,
             "retrieval_quality": retrieval_quality,
-            "fallback_targets": fallback_targets[:3],
-            "retrieval": [],
+            "fallback_targets": fallback_targets[:5],
+            "retrieval": _serialize_hits(hits, limit=5, lean_symbols=True),
             "note": (
                 "Synthesis hedged: the LLM could not ground the question in "
                 "the indexed wiki. Read one of fallback_targets to answer."
