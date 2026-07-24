@@ -93,17 +93,17 @@ You do not have to choose up front. Start index-only, then upgrade the wiki with
 at a time, each behind a cost estimate:
 
 ```bash
-repowise generate                  # interactive chooser: wiki state, coverage menu, cost
-repowise generate --coverage 20    # or the most important 20%, ranked like init
+repowise generate                  # write the unwritten subsystem pages, behind one cost estimate
 repowise generate --path src/api   # or just the part you care about
+repowise generate --all            # or rewrite the prose on every subsystem page
 ```
 
-Bare `generate` opens a chooser (a coverage menu with page counts and cost per
-tier) rather than writing everything, so a large repo never spends by accident.
-`generate` reuses the persisted graph instead of re-parsing it, so the upgrade is
-cheap. (`repowise update --full` still does the whole wiki in one shot if you
-prefer.) Semantic search is separate: it needs an embedder, and `repowise
-reindex` is what builds the vector store.
+Bare `generate` prints the wiki's state and writes the unwritten subsystem
+pages behind a single cost estimate. `generate` reuses the persisted graph
+instead of re-parsing it, so the upgrade is cheap. (`repowise update --full`
+still does the whole wiki in one shot if you prefer.) Semantic search is
+separate: it needs an embedder, and `repowise reindex` is what builds the vector
+store.
 
 ---
 
@@ -318,9 +318,9 @@ time, each behind a cost estimate:
 
 ```bash
 export ANTHROPIC_API_KEY="sk-ant-..."
-repowise generate                  # interactive chooser: pick a coverage, see the cost
-repowise generate --coverage 20    # or the most important 20%, ranked like init
+repowise generate                  # write the unwritten subsystem pages, behind one cost estimate
 repowise generate --path src/api   # or just one area first
+repowise generate --all            # or rewrite the prose on every subsystem page
 ```
 
 Then add semantic search with `repowise reindex` once an embedder is configured.

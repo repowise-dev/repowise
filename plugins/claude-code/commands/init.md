@@ -54,7 +54,7 @@ If the user does not answer, or you are running unattended, take option 1.
 
 Skip provider selection entirely. Construct:
 ```
-repowise init --docs deterministic --yes
+repowise init --no-prose --yes
 ```
 
 Jump to Step 5.
@@ -72,12 +72,11 @@ repowise init [PATH]
 Core flags:
   --provider NAME        LLM provider: anthropic, openai, gemini, ollama, litellm
   --model NAME           Model identifier override
-  --index-only           Build the wiki from structure instead of writing it
-                         with a model. No key, no spend.
-  --docs llm|deterministic
-                         How to produce the wiki. Same choice as --index-only,
-                         named for what it does. --docs llm needs a key.
-                         (--docs llm together with --index-only is an error.)
+  --prose / --no-prose   Write the subsystem (concept) pages as model prose
+                         (--prose, needs a key), or render the whole wiki from
+                         structure with no model and no spend (--no-prose).
+                         Every other page is structural either way.
+                         Default: prose when a key is available.
   --mode fast            Quick first pass on very large repos: no wiki at all.
 
 Embeddings:
@@ -161,12 +160,12 @@ Add any exclusions as `-x` flags.
 ## Step 6: Run it
 
 For an unattended or non-interactive run, the canonical command is
-`repowise init --yes`, plus `--docs deterministic` when you want to guarantee no
-spend. `--yes` suppresses every prompt including the cost gate. You do not need
-to guard against prompts beyond that: init treats an unanswerable question as a
-signal to continue with defaults rather than a reason to fail, and the cost gate
-declines by itself when stdin is not a terminal, keeping the finished index and
-landing on the template wiki.
+`repowise init --yes`, plus `--no-prose` when you want to guarantee no spend.
+`--yes` suppresses every prompt including the cost gate. You do not need to guard
+against prompts beyond that: init treats an unanswerable question as a signal to
+continue with defaults rather than a reason to fail, and the cost gate declines
+by itself when stdin is not a terminal, keeping the finished index and landing on
+the structural wiki.
 
 Show the user the exact command you're about to run. Ask for confirmation.
 

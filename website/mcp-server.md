@@ -331,7 +331,7 @@ Hybrid code search. Depending on the query, it searches the indexed **symbols**,
 - `mode` (optional) — `auto` (default) \| `concept` \| `symbol` \| `path` \| `hybrid`
 - `kind` (optional) — `implementation` \| `test` \| `config` \| `doc`
 - `symbol_kind` (optional) — restrict symbol hits by kind (`function`, `class`, `method`, …)
-- `page_type` (optional) — `file_page` \| `module_page` \| `symbol_spotlight` (concept mode)
+- `page_type` (optional) — restrict to one page type. The two you will reach for are `file_page` (the always-on per-file docs) and `module_page` (the subsystem/concept pages).
 
 **Modes:** `auto` routes by shape — an identifier searches indexed symbols (results carry `symbol_id` + line bounds, pipe into `get_symbol`), a path searches file pages (pipe into `get_context`), prose runs wiki-semantic search, and mixed queries run hybrid (symbols first). Force a branch with an explicit `mode`.
 

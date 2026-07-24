@@ -221,19 +221,24 @@ print(f"Deletable lines: {report.deletable_lines:,}")
 
 ## Page Types
 
-repowise generates 9 distinct page types in a strict dependency-aware order:
+repowise generates these page types in a strict dependency-aware order. The
+subsystem-and-overview set (`module_page`, `repo_overview`,
+`architecture_diagram`, `onboarding`) is the one model-written layer: model prose
+when a provider is configured, structural stubs otherwise. Every other type is
+always rendered from structure, with no model and no key.
 
-| Level | Page Type | Description |
-|-------|-----------|-------------|
-| 0 | `api_contract` | OpenAPI specs, Protobuf, GraphQL schemas |
-| 1 | `symbol_spotlight` | High-PageRank symbols (top 10% by centrality) |
-| 2 | `file_page` | One page per source file |
-| 3 | `scc_page` | Circular dependency cluster summary |
-| 4 | `module_page` | Package/directory overview |
-| 5 | `cross_package` | Cross-package relationships (monorepos) |
-| 6 | `repo_overview` | Repository overview and architecture diagram |
-| 7 | `infra_page` | Dockerfile, CI YAML, Makefile documentation |
-| 8 | `index_page` | Symbol index, search index |
+| Level | Page Type | Rendered | Description |
+|-------|-----------|----------|-------------|
+| 0 | `api_contract` | structure | OpenAPI specs, Protobuf, GraphQL schemas |
+| 1 | `symbol_spotlight` | structure | High-PageRank symbols (top 10% by centrality) |
+| 2 | `file_page` | structure | One page per source file |
+| 3 | `scc_page` | structure | Circular dependency cluster summary |
+| 4 | `module_page` | **model or stub** | Subsystem (concept) tree above the file level |
+| 5 | `layer_page` | structure | Architectural layer summary |
+| 6 | `repo_overview` | model or stub | Repository overview |
+| 6 | `architecture_diagram` | model or stub | Repo-level architecture diagram |
+| 7 | `infra_page` | structure | Dockerfile, CI YAML, Makefile documentation |
+| 8 | `onboarding` | model or stub | Curated onboarding collection |
 
 ---
 
