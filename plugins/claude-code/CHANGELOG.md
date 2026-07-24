@@ -2,6 +2,17 @@
 
 All notable changes to the Repowise Claude Code plugin are documented here.
 
+## 0.35.0
+
+### Changed
+- Version bump to track the repowise 0.35.0 release.
+- `init`, `status` and the reader docs follow the one-renderer wiki model:
+  `--prose` / `--no-prose` is the single wiki-spend switch, `init` can start
+  keyless from structure, and any page upgrades to model prose later with
+  `repowise generate`. The deprecated `--index-only` / `--docs` aliases are no
+  longer written into new guidance.
+- MCP tool surface and hooks docs re-synced with the server (#1017).
+
 ## 0.34.1
 
 ### Added
