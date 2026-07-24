@@ -70,6 +70,9 @@ from repowise.server.mcp_server._answer_pipeline import (
     apply_pagerank_bias as _apply_pagerank_bias,
 )
 from repowise.server.mcp_server._answer_pipeline import (
+    demote_noise_hits as _demote_noise_hits,
+)
+from repowise.server.mcp_server._answer_pipeline import (
     expand_via_graph as _expand_via_graph,
 )
 from repowise.server.mcp_server._answer_pipeline import (
@@ -804,6 +807,12 @@ async def get_answer(
     with contextlib.suppress(Exception):
         async with get_session(ctx.session_factory) as session:
             hits = await _expand_via_neighbor_rerank(session, repo_id, hits, question, ctx)
+    # Demote retrieval noise (decision records on non-why questions, test file
+    # pages on non-test questions) below real pages before the cap, so it can't
+    # occupy a top-5 slot and feed synthesis. Stable and non-dropping; runs after
+    # all anchoring/expansion (which inject file/symbol pages, never noise) so it
+    # only reorders what those stages left in place.
+    hits = _demote_noise_hits(hits, question, is_why=_is_why_question(question))
     # Always cap retrieval hits at 5 for the response payload.
     hits = hits[:5]
 

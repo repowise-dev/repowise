@@ -45,6 +45,42 @@ def _mk_result(page_id, title, page_type, target_path, score):
     )
 
 
+async def _seed_page(page_id, target_path, page_type="file_page"):
+    """Insert a Page row into the setup_mcp DB so _load_page_info resolves its
+    target_path. Reuses the seeded repository_id so the row is valid."""
+    from datetime import UTC, datetime
+
+    from sqlalchemy import select
+
+    import repowise.server.mcp_server as mcp_mod
+    from repowise.core.persistence.database import get_session
+    from repowise.core.persistence.models import Page
+
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    async with get_session(mcp_mod._session_factory) as session:
+        rid = (await session.execute(select(Page.repository_id).limit(1))).scalar()
+        session.add(
+            Page(
+                id=page_id,
+                repository_id=rid,
+                page_type=page_type,
+                title="Test Service",
+                content="tests",
+                target_path=target_path,
+                source_hash="seed",
+                model_name="mock",
+                provider_name="mock",
+                generation_level=2,
+                confidence=0.5,
+                freshness_status="fresh",
+                metadata_json="{}",
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        await session.commit()
+
+
 class TestDecisionDownweight:
     """Decision records must not crowd file pages out of the top ranks."""
 
@@ -180,6 +216,146 @@ class TestDecisionDownweight:
         )
         assert method == "embedding"
         assert [r["target_path"] for r in results] == ["src/auth/service.py"]
+
+
+class TestNoiseDemotion:
+    """Test file pages and near-duplicate decisions must not crowd the top ranks."""
+
+    def test_is_test_query(self):
+        from repowise.server.mcp_server.tool_search import _is_test_query
+
+        assert _is_test_query("how is the auth service tested")
+        assert _is_test_query("unit test for the parser")
+        assert _is_test_query("where are the pytest fixtures")
+        assert not _is_test_query("how does the auth service authenticate")
+        assert not _is_test_query("where is the SQLite store")
+
+    def test_is_test_page(self):
+        from repowise.server.mcp_server.tool_search import _is_test_page
+
+        assert _is_test_page({"page_type": "file_page", "target_path": "tests/unit/test_auth.py"})
+        assert _is_test_page({"page_type": "file_page", "target_path": "src/auth/service_test.py"})
+        assert not _is_test_page({"page_type": "file_page", "target_path": "src/auth/service.py"})
+        # Only file pages classify as test pages, never decision/concept pages.
+        assert not _is_test_page({"page_type": "decision_record", "target_path": ""})
+
+    def test_downweight_test_pages_scales_unless_test_query(self):
+        from repowise.server.mcp_server.tool_search import _downweight_test_pages
+
+        rows = [
+            {"page_type": "file_page", "target_path": "tests/test_x.py", "relevance_score": 1.0},
+            {"page_type": "file_page", "target_path": "src/x.py", "relevance_score": 1.0},
+        ]
+        _downweight_test_pages(rows, "how does x work")
+        assert rows[0]["relevance_score"] < 1.0  # test page scaled down
+        assert rows[1]["relevance_score"] == 1.0  # impl page untouched
+
+        rows2 = [
+            {"page_type": "file_page", "target_path": "tests/test_x.py", "relevance_score": 1.0},
+        ]
+        _downweight_test_pages(rows2, "how is x tested")
+        assert rows2[0]["relevance_score"] == 1.0  # test-focused query: no scaling
+
+    def test_sort_demoting_noise_ranks_impl_over_test(self):
+        from repowise.server.mcp_server.tool_search import _sort_demoting_noise
+
+        rows = [
+            {"page_type": "file_page", "target_path": "tests/test_x.py", "relevance_score": 0.9},
+            {"page_type": "file_page", "target_path": "src/x.py", "relevance_score": 0.4},
+        ]
+        _sort_demoting_noise(rows, "how does x work")
+        assert rows[0]["target_path"] == "src/x.py"  # impl promoted over higher-scored test
+        assert rows[1]["target_path"] == "tests/test_x.py"
+
+    def test_dedup_decisions_collapses_near_duplicates(self):
+        from repowise.server.mcp_server.tool_search import _dedup_decisions
+
+        rows = [
+            {
+                "page_type": "decision_record",
+                "title": "CLI incremental update regenerates only affected pages",
+                "page_id": "d1",
+            },
+            {
+                "page_type": "decision_record",
+                "title": "CLI incremental update regenerates only affected pages.",
+                "page_id": "d2",
+            },
+            {
+                "page_type": "decision_record",
+                "title": "CLI  incremental-update regenerates only affected pages",
+                "page_id": "d3",
+            },
+            {"page_type": "file_page", "title": "x", "page_id": "f1"},
+            {"page_type": "decision_record", "title": "Use repo-local SQLite", "page_id": "d4"},
+        ]
+        out = _dedup_decisions(rows)
+        ids = [r["page_id"] for r in out]
+        assert ids == ["d1", "f1", "d4"]  # three near-dups -> one; file + distinct decision kept
+
+    @pytest.mark.asyncio
+    async def test_impl_page_outranks_its_test_page(self, setup_mcp):
+        # Wiring check: demotion runs AFTER target_path is attached, so a
+        # higher-scored test page still falls below the impl file page. Uses the
+        # pre-seeded src/auth/service.py plus a seeded test page so both page_ids
+        # resolve a target_path in _load_page_info.
+        import repowise.server.mcp_server as mcp_mod
+        from repowise.server.mcp_server import search_codebase
+
+        await _seed_page("file_page:tests/unit/test_service.py", "tests/unit/test_service.py")
+
+        async def fake_search(query, limit=10):
+            return [
+                _mk_result(
+                    "file_page:tests/unit/test_service.py",
+                    "Test Service",
+                    "file_page",
+                    "tests/unit/test_service.py",
+                    0.62,
+                ),
+                _mk_result(
+                    "file_page:src/auth/service.py",
+                    "Auth Service",
+                    "file_page",
+                    "src/auth/service.py",
+                    0.41,
+                ),
+            ]
+
+        mcp_mod._vector_store.search = fake_search
+        result = await search_codebase("how does the auth service work")
+        paths = [r["target_path"] for r in result["results"]]
+        assert paths[0] == "src/auth/service.py"
+        assert "tests/unit/test_service.py" in paths  # demoted, not dropped
+
+    @pytest.mark.asyncio
+    async def test_test_query_keeps_test_page_ranking(self, setup_mcp):
+        import repowise.server.mcp_server as mcp_mod
+        from repowise.server.mcp_server import search_codebase
+
+        await _seed_page("file_page:tests/unit/test_service.py", "tests/unit/test_service.py")
+
+        async def fake_search(query, limit=10):
+            return [
+                _mk_result(
+                    "file_page:tests/unit/test_service.py",
+                    "Test Service",
+                    "file_page",
+                    "tests/unit/test_service.py",
+                    0.62,
+                ),
+                _mk_result(
+                    "file_page:src/auth/service.py",
+                    "Auth Service",
+                    "file_page",
+                    "src/auth/service.py",
+                    0.41,
+                ),
+            ]
+
+        mcp_mod._vector_store.search = fake_search
+        result = await search_codebase("how is the auth service tested")
+        assert result["results"][0]["target_path"] == "tests/unit/test_service.py"
 
 
 class TestClassifyHitKind:
@@ -489,12 +665,14 @@ class TestHybridInterleave:
     def test_no_exact_prose_query_leads_with_concepts(self):
         from repowise.server.mcp_server.tool_search import _interleave_hybrid
 
-        symbols = [self._sym("get", "a/registry.py", 43.8),
-                   self._sym("get", "b/store.py", 43.7)]
+        symbols = [self._sym("get", "a/registry.py", 43.8), self._sym("get", "b/store.py", 43.7)]
         concepts = [self._page("mcp/answer.py", 0.47)]
         out = _interleave_hybrid(
             "how does retrieval feed synthesis in get_answer",
-            symbols, concepts, limit=5, exact=False,
+            symbols,
+            concepts,
+            limit=5,
+            exact=False,
         )
         assert out[0]["type"] == "page", "the answer.py page must lead, not fuzzy .get"
         # Nothing dropped - the fuzzy symbols still ride along at the tail.
@@ -505,8 +683,9 @@ class TestHybridInterleave:
 
         symbols = [self._sym("get_answer", "mcp/answer.py", 143.0)]
         concepts = [self._page("mcp/other.py", 0.5)]
-        out = _interleave_hybrid("where is get_answer defined", symbols, concepts,
-                                 limit=5, exact=True)
+        out = _interleave_hybrid(
+            "where is get_answer defined", symbols, concepts, limit=5, exact=True
+        )
         assert out[0]["type"] == "symbol"
 
     def test_symbol_heavy_query_keeps_symbols_first(self):
@@ -515,16 +694,16 @@ class TestHybridInterleave:
         # Not prose-dominant, so default ordering even without an exact match.
         symbols = [self._sym("FooBar", "x.py", 40.0)]
         concepts = [self._page("y.py", 0.3)]
-        out = _interleave_hybrid("compare FooBar BazQux", symbols, concepts,
-                                 limit=5, exact=False)
+        out = _interleave_hybrid("compare FooBar BazQux", symbols, concepts, limit=5, exact=False)
         assert out[0]["type"] == "symbol"
 
     def test_no_concepts_returns_symbols(self):
         from repowise.server.mcp_server.tool_search import _interleave_hybrid
 
         symbols = [self._sym("get", "a.py", 43.0)]
-        out = _interleave_hybrid("how does retrieval feed synthesis in get_answer",
-                                 symbols, [], limit=5, exact=False)
+        out = _interleave_hybrid(
+            "how does retrieval feed synthesis in get_answer", symbols, [], limit=5, exact=False
+        )
         assert out == symbols
 
 
