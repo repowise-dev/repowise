@@ -27,6 +27,7 @@ from repowise.core.persistence.models import (
 )
 from repowise.server.deps import get_db_session, get_fts, verify_api_key
 from repowise.server.job_executor import execute_job
+from repowise.server.routers._sorting import repository_sort_key
 from repowise.server.schemas import RepoCreate, RepoResponse, RepoStatsResponse, RepoUpdate
 
 logger = logging.getLogger(__name__)
@@ -176,8 +177,10 @@ async def list_repos(
         except Exception:
             pass
 
-    # Sort indexed repos by updated_at descending
-    repos.sort(key=lambda r: r.updated_at or r.created_at, reverse=True)
+    # Repository rows are merged across database backends in workspace mode.
+    # Normalize their timestamps before sorting because PostgreSQL returns aware
+    # datetimes while SQLite may return naive UTC values.
+    repos.sort(key=repository_sort_key, reverse=True)
     responses = [RepoResponse.from_orm(r) for r in repos]
 
     # Self-heal the freshness stamp on read: prefer each repo's state.json
