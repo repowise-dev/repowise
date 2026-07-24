@@ -204,11 +204,12 @@ git metadata are rehydrated from SQL, only the per-file parse and the LLM
 generation for the pages you selected run. A provider is required; a missing one
 is an actionable error naming the key-setup path.
 
-`generate` writes the subsystem pages, and only those: the numbered concept tree
-above the file level plus the repo overview. Every structural page (file, symbol,
-API, infra, cycle, layer) is rendered from structure and refreshes on `repowise
-update`, so naming one with `--page` is an actionable error rather than a silent
-LLM re-render.
+`generate` writes the model-written pages, and only those: the numbered concept
+tree above the file level plus the repo overview, the architecture diagram, and
+the onboarding collection. Every structural page (file, symbol, API, infra,
+cycle, layer) is rendered from structure and refreshes on `repowise update`, so
+naming one with `--page` is an actionable error rather than a silent LLM
+re-render.
 
 **Interactive chooser.** Run `repowise generate` with no selection flag on a
 terminal and it prints the wiki's state (written / unwritten / stale on the
