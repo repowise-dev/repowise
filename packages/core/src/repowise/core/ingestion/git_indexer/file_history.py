@@ -74,7 +74,28 @@ def _truncate_body(body: str) -> str:
 
 logger = structlog.get_logger(__name__)
 
-__all__ = ["index_file", "new_meta"]
+__all__ = ["DECAY_REFRESH_KEYS", "index_file", "new_meta"]
+
+# The anchor-dependent window/decay fields — the only git-metadata columns that
+# *recover* as the repo's newest-commit anchor advances (see issue #728). An
+# incremental update recomputes just these for idle (unchanged) files off the
+# repo-wide walk and persists a decay-only partial row, leaving ownership / age
+# / authorship (which need full history and are only correct from the init
+# walk) untouched. ``co_change_partners_json`` / ``change_entropy`` /
+# ``prior_defect_*`` are merged onto the metadata after the per-file pass, so
+# they refresh together with the window churn fields ``index_file`` computes.
+DECAY_REFRESH_KEYS = (
+    "commit_count_90d",
+    "commit_count_30d",
+    "lines_added_90d",
+    "lines_deleted_90d",
+    "merge_commit_count_90d",
+    "temporal_hotspot_score",
+    "prior_defect_count",
+    "prior_defect_raw_count",
+    "change_entropy",
+    "co_change_partners_json",
+)
 
 
 def new_meta(file_path: str) -> dict[str, Any]:

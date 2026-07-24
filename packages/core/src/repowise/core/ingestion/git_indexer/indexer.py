@@ -30,7 +30,7 @@ from ._constants import (
 )
 from .co_change import compute_co_changes, compute_co_changes_and_entropy
 from .enrich import compute_percentiles
-from .file_history import index_file
+from .file_history import DECAY_REFRESH_KEYS, index_file
 from .prior_defects import FixWalk, PriorDefects, collect_fix_commits, compute_prior_defects
 from .records import GitIndexSummary, _CommitRec, _should_skip_index, capture_repo_totals
 from .tiers import GitIndexTier
@@ -348,6 +348,7 @@ class GitIndexer:
         changed_file_paths: list[str],
         all_files: set[str] | None = None,
         co_change_sink: dict[str, list[dict]] | None = None,
+        idle_decay_sink: dict[str, dict] | None = None,
     ) -> list[dict]:
         """Incremental update: re-index only changed files.
 
@@ -368,6 +369,18 @@ class GitIndexer:
         ones). The update path uses it to rebuild the graph's ``co_changes``
         edges for the whole repo so the update-built graph converges with the
         init-built one.
+
+        ``idle_decay_sink``, when provided (with ``all_files`` and a co-change
+        tier), receives a decay-only partial metadata row for every *idle*
+        (unchanged) file with commits in the recent window. Incremental updates
+        otherwise re-score only the changed files, so idle files never get
+        their time-decayed history fields (``temporal_hotspot_score``, the 90d
+        churn/commit windows, ``prior_defect_count``, ``change_entropy``,
+        ``co_change_partners_json``) rewritten as the anchor advances — their
+        scores can only ratchet downward and never recover (issue #728). This
+        recomputes just those fields off the walks already loaded here; the
+        persist path upserts them field-by-field so ownership / age / authorship
+        (correct only from the full init walk) are left intact.
         """
         repo = self._get_repo()
         if repo is None:
@@ -377,15 +390,30 @@ class GitIndexer:
         semaphore = asyncio.Semaphore(20)
         include_blame = self.tier.includes_blame
 
+        # Whether to refresh idle files' decay fields this run. Requires the
+        # repo-wide commit index (rename-tracking mode has none) and the
+        # co-change walk (which supplies idle files' fresh partners/entropy —
+        # skipping it would blank those fields on ESSENTIAL-tier repos).
+        refresh_idle = bool(
+            idle_decay_sink is not None
+            and all_files
+            and not self.follow_renames
+            and self.tier.includes_co_change
+        )
+
         prov_clf = self._provenance_classifier()
         commit_index: dict[str, list[_CommitRec]] = {}
         if not self.follow_renames:
             from ..git_commit_index import load_commit_index
 
+            # Bucket every tracked file (not just the changed ones) when an idle
+            # refresh is due, so idle files carry their own precomputed commits.
+            # The git subprocess is identical either way — only the in-memory
+            # bucketing set widens.
             commit_index = load_commit_index(
                 repo,
                 self.commit_limit,
-                set(changed_file_paths),
+                set(all_files) if refresh_idle else set(changed_file_paths),
                 provenance_classifier=prov_clf,
             )
         as_of_ts = self._resolve_as_of_ts(repo, commit_index)
@@ -437,12 +465,20 @@ class GitIndexer:
             else:
                 results.append(r)
 
-        # Recompute prior-defect counts for the changed files (same dedicated
-        # windowed pass as the full index — the per-file commit list can't carry
-        # this signal accurately on busy repos).
+        # Idle files (window commits, but not in this change set) whose decay
+        # fields we will refresh — computed here so the prior-defect pass below
+        # covers them in its single windowed walk.
+        changed_set = set(changed_file_paths)
+        idle_paths = [fp for fp in commit_index if fp not in changed_set] if refresh_idle else []
+
+        # Recompute prior-defect counts (same dedicated windowed pass as the
+        # full index — the per-file commit list can't carry this signal
+        # accurately on busy repos). Widen the counted set to the idle files
+        # too: the walk is one subprocess regardless, and an idle file whose
+        # only fix aged past the window must drop to 0 (handled below).
         try:
             prior_defects = compute_prior_defects(
-                repo, {m["file_path"] for m in results}, as_of_ts=as_of_ts
+                repo, {m["file_path"] for m in results} | set(idle_paths), as_of_ts=as_of_ts
             )
             for meta in results:
                 fp = meta["file_path"]
@@ -452,6 +488,7 @@ class GitIndexer:
                     meta["prior_defect_raw_count"] = prior_defects.raw_counts[fp]
         except Exception as exc:
             logger.debug("prior_defect_pass_failed", error=str(exc))
+            prior_defects = PriorDefects()
 
         # Co-change partners + change entropy ride a repo-wide walk the
         # per-file pass cannot produce. ``index_file`` resets both fields to
@@ -480,11 +517,74 @@ class GitIndexer:
                         meta["change_entropy"] = change_entropy[fp]
                 if co_change_sink is not None:
                     co_change_sink.update(co_changes)
+
+                # Idle-file decay refresh (#728): recompute only the
+                # anchor-dependent window/decay fields for every idle file with
+                # recent-window commits, reusing the walks already loaded above.
+                # index_file with precomputed commits + blame off does no git
+                # subprocess and no file I/O, so this is pure timestamp
+                # arithmetic; strip to the decay keys so the field-wise upsert
+                # never clobbers full-history columns (ownership, age, authors).
+                if refresh_idle and idle_paths:
+                    idle_decay_sink.update(
+                        await asyncio.to_thread(
+                            self._compute_idle_decay,
+                            repo,
+                            idle_paths,
+                            commit_index,
+                            as_of_ts,
+                            prov_clf,
+                            co_changes,
+                            change_entropy,
+                            prior_defects,
+                        )
+                    )
             except Exception as exc:
                 logger.debug("co_change_pass_failed", error=str(exc))
 
         repo.close()
         return results
+
+    def _compute_idle_decay(
+        self,
+        repo: Any,
+        idle_paths: list[str],
+        commit_index: dict[str, list[_CommitRec]],
+        as_of_ts: float | None,
+        prov_clf: Any,
+        co_changes: dict[str, list[dict]],
+        change_entropy: dict[str, float],
+        prior_defects: PriorDefects,
+    ) -> dict[str, dict]:
+        """Decay-only partial rows for *idle_paths* (see ``index_changed_files``).
+
+        Runs off the event loop. For each idle file, ``index_file`` recomputes
+        the window/decay churn fields from its precomputed commits (blame off →
+        no git subprocess, no file stat), then the repo-wide co-change / entropy
+        / prior-defect signals are overlaid. Only :data:`DECAY_REFRESH_KEYS` are
+        kept so the field-wise upsert leaves full-history columns untouched. A
+        signal absent from a walk resolves to its recovered baseline (``0`` /
+        ``[]``) so, e.g., a file whose only fix aged out drops to zero.
+        """
+        out: dict[str, dict] = {}
+        for fp in idle_paths:
+            meta = index_file(
+                repo,
+                fp,
+                repo_path=self.repo_path,
+                commit_limit=self.commit_limit,
+                follow_renames=self.follow_renames,
+                include_blame=False,
+                precomputed_commits=commit_index.get(fp),
+                as_of_ts=as_of_ts,
+                provenance_classifier=prov_clf,
+            )
+            meta["change_entropy"] = change_entropy.get(fp, 0.0)
+            meta["co_change_partners_json"] = json.dumps(co_changes.get(fp, []))
+            meta["prior_defect_count"] = prior_defects.counts.get(fp, 0)
+            meta["prior_defect_raw_count"] = prior_defects.raw_counts.get(fp, 0)
+            out[fp] = {"file_path": fp, **{k: meta[k] for k in DECAY_REFRESH_KEYS}}
+        return out
 
     def capture_new_commit_rows(self, *, since_ts: int | None = None) -> list[dict]:
         """Build ``git_commits`` rows for commits newer than *since_ts*.
