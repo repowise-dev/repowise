@@ -764,10 +764,9 @@ async def search_codebase(
     the indexed symbols (returns symbol_id/file/line bounds — pipe into
     get_symbol), path-shaped queries resolve files (pipe into get_context),
     and conceptual queries ("rate limiting", "where do we handle webhooks")
-    run wiki-semantic search. Mixed natural-language + identifier queries run
-    hybrid (symbol hits first, then concept pages). Concept results carry
-    search_method ("embedding" or "bm25" fallback: verify those); decision
-    records rank below file pages unless the query is why-shaped.
+    run wiki-semantic search. Concept results carry search_method
+    ("embedding" or "bm25" fallback: verify those); decision records rank
+    below file pages unless the query is why-shaped.
 
     Args:
         query: identifier, path, or natural-language query.
