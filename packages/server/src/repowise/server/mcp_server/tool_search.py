@@ -814,12 +814,10 @@ async def search_codebase(
     mode="auto" (default) routes the query: identifier-shaped queries search
     the indexed symbols (returns symbol_id/file/line bounds — pipe into
     get_symbol), path-shaped queries resolve files (pipe into get_context),
-    and conceptual queries ("rate limiting", "where do we handle webhooks")
-    run wiki-semantic search. Mixed natural-language + identifier queries run
-    hybrid (symbol hits first, then concept pages). Concept results carry a
-    sources list ("fts", "vector", or both — a hit found by both retrievers
-    is a stronger match); decision records rank below file pages unless the
-    query is why-shaped.
+    and conceptual queries run wiki-semantic search. Mixed queries run hybrid,
+    symbol hits first. Concept hits carry a sources list (fts, vector, or
+    both); decision records rank below file pages unless the query is
+    why-shaped. See docs/agent/MCP_TOOLS.md for detail.
 
     Args:
         query: identifier, path, or natural-language query.
