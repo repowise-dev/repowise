@@ -586,3 +586,113 @@ async def test_high_fan_in_callers_signal_truncation(setup_mcp, session):
     assert t["callers_total"] == n_callers  # true total surfaced
     assert t["callers_truncated"] is True
     assert "grep" in t["_callers_note"]
+
+
+# --- Structural retrieval: parent page + concept-page tree position ---------
+
+
+async def _add_tree(session) -> None:
+    """Wire a layer -> concept -> file/sub-concept tree onto the populated db.
+
+    ``layer:core`` (§1) -> ``src/payments`` concept (§1.2) -> a file page (§1.2.1)
+    and a ``src/payments/providers`` sub-concept child (§1.2.3).
+    """
+    from repowise.core.persistence.models import Repository
+
+    rid = (
+        await session.execute(__import__("sqlalchemy").select(Repository))
+    ).scalars().first().id
+
+    def _page(pid, ptype, title, path, *, parent=None, section=None, order=0):
+        return Page(
+            id=pid,
+            repository_id=rid,
+            page_type=ptype,
+            title=title,
+            content=f"# {title}\n\nbody for {title}.",
+            summary=f"{title} summary.",
+            target_path=path,
+            source_hash=f"h-{pid}",
+            model_name="mock",
+            provider_name="mock",
+            generation_level=2,
+            confidence=0.9,
+            freshness_status="fresh",
+            metadata_json="{}",
+            parent_page_id=parent,
+            section_number=section,
+            display_order=order,
+            created_at=_NOW,
+            updated_at=_NOW,
+        )
+
+    session.add_all(
+        [
+            _page("layer_page:layer:core", "layer_page", "Layer: Core", "layer:core", section="1"),
+            _page(
+                "module_page:src/payments",
+                "module_page",
+                "Payments Module",
+                "src/payments",
+                parent="layer_page:layer:core",
+                section="1.2",
+            ),
+            _page(
+                "file_page:src/payments/charge.py",
+                "file_page",
+                "Charge",
+                "src/payments/charge.py",
+                parent="module_page:src/payments",
+                section="1.2.1",
+                order=1,
+            ),
+            _page(
+                "module_page:src/payments/providers",
+                "module_page",
+                "Payment Providers",
+                "src/payments/providers",
+                parent="module_page:src/payments",
+                section="1.2.3",
+                order=2,
+            ),
+        ]
+    )
+    await session.flush()
+
+
+@pytest.mark.asyncio
+async def test_file_target_surfaces_parent_concept_page(setup_mcp, session):
+    """A file target points up to the subsystem page that documents it."""
+    from repowise.server.mcp_server import get_context
+
+    await _add_tree(session)
+    result = await get_context(["src/payments/charge.py"])
+    t = result["targets"]["src/payments/charge.py"]
+    assert t["type"] == "file"
+    parent = t["parent_page"]
+    assert parent["title"] == "Payments Module"
+    assert parent["target_path"] == "src/payments"
+    assert parent["section"] == "1.2"
+
+
+@pytest.mark.asyncio
+async def test_concept_target_returns_section_and_children(setup_mcp, session):
+    """A concept target carries its tree position (section, parent) and its
+    non-file sub-concept children, not just the flat member-file list."""
+    from repowise.server.mcp_server import get_context
+
+    await _add_tree(session)
+    result = await get_context(["src/payments"])
+    t = result["targets"]["src/payments"]
+    assert t["type"] == "module"
+    # Own tree position.
+    assert t["docs"]["section"] == "1.2"
+    assert t["parent_page"]["title"] == "Layer: Core"
+    # Sub-concept child surfaced; the file child stays in "files", not "children".
+    children = t["docs"].get("children", [])
+    assert any(
+        c["target_path"] == "src/payments/providers" and c["page_type"] == "module_page"
+        for c in children
+    )
+    assert all(c["page_type"] != "file_page" for c in children)
+    assert any(f["path"] == "src/payments/charge.py" for f in t["docs"]["files"])
