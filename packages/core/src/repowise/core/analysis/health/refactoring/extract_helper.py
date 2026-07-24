@@ -61,6 +61,11 @@ _ACTIVE_CO_CHANGE = 3
 # same block — matches the duplication merger's one-line window slack.
 _REGION_SLACK = 1
 
+# Cap on the stored snippet. An XL clone block can be hundreds of lines; the
+# snippet is for a glance ("this is the duplicated code"), not the whole thing,
+# so it is clipped and the plan flags that it was.
+_MAX_SNIPPET_LINES = 40
+
 
 def _is_test_path(path: str) -> bool:
     """Conservative test-file check (mirrors the engine's ``_is_test_file``).
@@ -241,10 +246,16 @@ class ExtractHelperDetector(RefactoringDetector):
         impact = self._impact_for_block(anchor_region, impact_lookup)
         is_intra = len(occ_files) == 1
 
+        suggested_site = self._suggested_site(ctx, occ_files)
+        snippet, snippet_start, snippet_truncated = self._snippet_for(ctx, anchor_region)
         plan = {
             "occurrences": [{"file": f, "line_start": s, "line_end": e} for f, s, e in occurrences],
-            "suggested_site": self._suggested_site(ctx, occ_files),
+            "suggested_site": suggested_site,
             "duplicated_lines": duplicated_lines,
+            "snippet": snippet,
+            "snippet_start_line": snippet_start,
+            "snippet_truncated": snippet_truncated,
+            "suggested_name": _suggested_name(suggested_site),
         }
         evidence = {
             "occurrence_count": len(occurrences),
@@ -293,6 +304,34 @@ class ExtractHelperDetector(RefactoringDetector):
                 # so the site is deterministic.
                 module = min(counts, key=lambda m: (-counts[m], m))
         return {"module": module, "directory": _common_directory(occ_files)}
+
+    @staticmethod
+    def _snippet_for(
+        ctx: RefactoringContext, anchor_region: tuple[int, int]
+    ) -> tuple[str | None, int | None, bool]:
+        """The duplicated block's source text, read from the anchor file.
+
+        The block is identical across every site by definition (it *is* the
+        clone), so it is stored once, taken from the anchor region on this file
+        (the file the suggestion is emitted from). Clipped at
+        ``_MAX_SNIPPET_LINES`` with a flag when it overran. Returns
+        ``(None, None, False)`` when no source was threaded (non-clone file, or
+        an unreadable one), leaving the plan on its line ranges alone.
+        """
+        lines = ctx.source_lines
+        if not lines:
+            return None, None, False
+        start, end = anchor_region
+        # Clamp to the file; clone ranges are 1-indexed and inclusive.
+        lo = max(start, 1)
+        hi = min(end, len(lines))
+        if hi < lo:
+            return None, None, False
+        block = lines[lo - 1 : hi]
+        truncated = len(block) > _MAX_SNIPPET_LINES
+        if truncated:
+            block = block[:_MAX_SNIPPET_LINES]
+        return "\n".join(block), lo, truncated
 
     @staticmethod
     def _impact_for_dry_violation(ctx: RefactoringContext) -> list[tuple[int, int, float]]:
@@ -354,6 +393,38 @@ def _merge_ranges_per_file(
         if cur_start is not None:
             out.append((f, cur_start, cur_end))
     return sorted(out)
+
+
+def _suggested_name(suggested_site: dict[str, str | None]) -> str:
+    """A deterministic starting name for the extracted helper.
+
+    Precision-first: without semantics we cannot name the block for what it
+    *does*, so we anchor the name to where the helper will live (the shared
+    module or directory leaf) and suffix ``_helper``. It is an editable
+    starting point (the UI frames it that way), not a claim about behaviour, so
+    it stays deterministic and never guesses intent. Falls back to
+    ``shared_helper`` when the site has no usable label.
+    """
+    label = suggested_site.get("module") or suggested_site.get("directory") or ""
+    leaf = label.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+    # Keep identifier-safe characters only; collapse the rest to single
+    # underscores so a path leaf like ``api-client`` becomes ``api_client``.
+    cleaned: list[str] = []
+    prev_us = False
+    for ch in leaf.lower():
+        if ch.isalnum():
+            cleaned.append(ch)
+            prev_us = False
+        elif not prev_us:
+            cleaned.append("_")
+            prev_us = True
+    slug = "".join(cleaned).strip("_")
+    # A leading digit is not a valid identifier start in most languages.
+    if slug and slug[0].isdigit():
+        slug = f"_{slug}"
+    if not slug:
+        return "shared_helper"
+    return slug if slug.endswith("helper") else f"{slug}_helper"
 
 
 def _common_directory(paths: list[str]) -> str | None:

@@ -7,6 +7,7 @@ import {
   cutEdges,
   cycleMembers,
   extractClassGroups,
+  extractHelperDetail,
   extractHelperOccurrences,
   extractMethodPlan,
   helperSite,
@@ -66,6 +67,35 @@ function FileRef({
     >
       {inner}
     </a>
+  );
+}
+
+/** A read-only source block with a line-number gutter. Scrolls horizontally on
+ *  its own so a long line never widens the page. The gutter counts up from
+ *  `startLine` so the numbers match the file the block came from. */
+function CodeBlock({ code, startLine }: { code: string; startLine: number | null }) {
+  const lines = code.split("\n");
+  const base = startLine ?? 1;
+  const gutterWidth = `${String(base + lines.length - 1).length}ch`;
+  return (
+    <div className="overflow-x-auto rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]">
+      <pre className="py-2 text-2xs leading-relaxed">
+        <code className="block font-mono">
+          {lines.map((ln, i) => (
+            <div key={i} className="flex px-3">
+              <span
+                className="mr-3 shrink-0 select-none text-right tabular-nums text-[var(--color-text-tertiary)]"
+                style={{ minWidth: gutterWidth }}
+                aria-hidden
+              >
+                {base + i}
+              </span>
+              <span className="whitespace-pre text-[var(--color-text-secondary)]">{ln || " "}</span>
+            </div>
+          ))}
+        </code>
+      </pre>
+    </div>
   );
 }
 
@@ -148,12 +178,19 @@ export function PlanDetail({ plan, fileHref, hideIntro = false }: PlanDetailProp
   if (plan.refactoring_type === "extract_helper") {
     const occ = extractHelperOccurrences(plan);
     const site = helperSite(plan);
+    const detail = extractHelperDetail(plan);
+    const dupLines = Number(plan.evidence?.duplicated_lines ?? 0);
+    const helperName = detail.suggestedName ?? "helper";
+    const call = `${helperName}()`;
     return (
       <div className="space-y-3">
         {hideIntro ? null : (
           <p className="text-xs text-[var(--color-text-tertiary)]">
-            The same block appears in {occ.length} place{occ.length === 1 ? "" : "s"}. Extract
-            it once
+            The same {dupLines ? `${dupLines}-line ` : ""}block appears in {occ.length} place
+            {occ.length === 1 ? "" : "s"}. Extract it once into{" "}
+            <code className="rounded bg-[var(--color-bg-elevated)] px-1 py-0.5 text-2xs text-[var(--color-text-primary)]">
+              {call}
+            </code>
             {site ? (
               <>
                 {" "}
@@ -166,18 +203,74 @@ export function PlanDetail({ plan, fileHref, hideIntro = false }: PlanDetailProp
             .
           </p>
         )}
-        <ul className="divide-y divide-[var(--color-border-default)] overflow-hidden rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-surface)]">
-          {occ.map((o, i) => (
-            <li key={i} className="flex items-center justify-between gap-3 px-3.5 py-2.5">
-              <span className="min-w-0 flex-1">
-                <FileRef path={o.file} line={o.line_start} fileHref={fileHref} className="block truncate" />
-              </span>
-              <span className="shrink-0 text-2xs tabular-nums text-[var(--color-text-tertiary)]">
-                lines {o.line_start}–{o.line_end}
-              </span>
-            </li>
-          ))}
-        </ul>
+
+        {/* Collapse at a glance: N duplicate copies → 1 shared helper. */}
+        <div className="flex items-center gap-3 rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-3.5">
+          <div className="min-w-0 flex-1">
+            <div className="text-caption uppercase tracking-wide text-[var(--color-text-tertiary)]">
+              Today
+            </div>
+            <div className="text-xs font-semibold text-[var(--color-text-primary)]">
+              {occ.length} duplicate cop{occ.length === 1 ? "y" : "ies"}
+            </div>
+          </div>
+          <ArrowRight className="h-4 w-4 shrink-0" style={{ color: accent }} aria-hidden />
+          <div className="min-w-0 flex-1 text-right">
+            <div className="text-caption uppercase tracking-wide text-[var(--color-text-tertiary)]">
+              After
+            </div>
+            <code className="text-xs font-semibold text-[var(--color-text-primary)]">{call}</code>
+          </div>
+        </div>
+
+        {/* The duplicated block itself, shown once (identical across sites). */}
+        {detail.snippet ? (
+          <div className="space-y-1.5">
+            <div className="flex items-center gap-1.5 text-caption uppercase tracking-wide text-[var(--color-text-tertiary)]">
+              <Scissors className="h-3.5 w-3.5" style={{ color: accent }} aria-hidden />
+              The duplicated block
+              {detail.snippetTruncated ? (
+                <span className="normal-case tracking-normal text-[var(--color-text-tertiary)]">
+                  (first lines shown)
+                </span>
+              ) : null}
+            </div>
+            <CodeBlock code={detail.snippet} startLine={detail.snippetStartLine} />
+          </div>
+        ) : null}
+
+        {/* Every site, as a jump link, with the call that replaces it. */}
+        <div className="space-y-1.5">
+          <div className="text-caption uppercase tracking-wide text-[var(--color-text-tertiary)]">
+            Replace at {occ.length} site{occ.length === 1 ? "" : "s"}
+          </div>
+          <ul className="divide-y divide-[var(--color-border-default)] overflow-hidden rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-surface)]">
+            {occ.map((o, i) => (
+              <li key={i} className="flex items-center justify-between gap-3 px-3.5 py-2.5">
+                <span className="min-w-0 flex-1">
+                  <FileRef
+                    path={o.file}
+                    line={o.line_start}
+                    fileHref={fileHref}
+                    className="block truncate"
+                  />
+                </span>
+                <span className="flex shrink-0 items-center gap-2">
+                  <span className="text-2xs tabular-nums text-[var(--color-text-tertiary)]">
+                    lines {o.line_start}–{o.line_end}
+                  </span>
+                  <ArrowRight
+                    className="h-3 w-3 text-[var(--color-text-tertiary)]"
+                    aria-hidden
+                  />
+                  <code className="rounded bg-[var(--color-bg-elevated)] px-1.5 py-0.5 text-2xs text-[var(--color-text-secondary)]">
+                    {call}
+                  </code>
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
       </div>
     );
   }

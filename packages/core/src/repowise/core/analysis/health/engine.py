@@ -119,6 +119,21 @@ def _fallback_module(rel_path: str) -> str | None:
     return head or None
 
 
+def _read_source_lines(abs_path: str) -> list[str] | None:
+    """Read a file's source as 1-indexed lines for the Extract Helper snippet.
+
+    Failure-isolated: a read or decode error yields ``None`` (the detector then
+    omits the snippet and keeps its line ranges), never an exception into the
+    health pass. Decodes UTF-8 leniently since the snippet is for display, not
+    re-parsing.
+    """
+    try:
+        text = Path(abs_path).read_bytes().decode("utf-8", errors="replace")
+    except OSError:
+        return None
+    return text.splitlines()
+
+
 class _ImportEdgeView:
     """Thin ``HasEdge`` adapter over a NetworkX DiGraph.
 
@@ -909,6 +924,11 @@ class HealthAnalyzer:
             ),
             function_analyses=self._extract_method_analyses(pf, findings, dataflow_cache),
             blame_index=blame_index,
+            # Source is threaded only for clone-bearing files (the Extract Helper
+            # detector's snippet). Reading it unconditionally would put a
+            # repo-sized read back into the per-file path; gating on clones keeps
+            # it proportional to the small set of files that actually carry one.
+            source_lines=_read_source_lines(pf.file_info.abs_path) if clones else None,
         )
         suggestions = detect_refactorings(
             rctx,
