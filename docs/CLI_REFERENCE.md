@@ -907,6 +907,7 @@ Rebuild the vector search index by re-embedding all wiki pages. No LLM calls, on
 |------|-------------|
 | `--embedder` | `gemini`, `openai`, `openrouter`, `ollama`, `mock`, or `auto` (default: auto) |
 | `--batch-size` | Embedding batch size (default: 32) |
+| `--verbose`, `-v` | Show debug logs from the pipeline |
 
 ```bash
 repowise reindex
