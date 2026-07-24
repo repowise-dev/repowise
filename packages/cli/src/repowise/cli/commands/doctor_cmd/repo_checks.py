@@ -115,6 +115,28 @@ def _run_repo_checks(
         )
     )
 
+    # 4b. Store-format capability: does this store predate a capability the
+    # current build offers? A REINDEX_RECOMMENDED migration never auto-runs, so
+    # doctor is where an un-upgraded store learns a re-index is available. It is
+    # reported OK, not FAIL: the store works degraded, it is not broken, and
+    # failing every pre-upgrade store's doctor run would cry wolf. The row
+    # carries the exact command so the recommendation is actionable here even
+    # when the once-per-store update nag has already been shown and suppressed.
+    if state_ok:
+        try:
+            from repowise.cli.upgrade import assess_store
+
+            verdict = assess_store(repo_path)
+            if verdict.reindex_recommended and verdict.reindex_command:
+                notice = verdict.user_notice or "A re-index adds new capabilities."
+                checks.append(
+                    _check("Store format", True, f"{notice} Run: {verdict.reindex_command}")
+                )
+            else:
+                checks.append(_check("Store format", True, "Current"))
+        except Exception as e:
+            checks.append(_check("Store format", True, f"Could not check: {e}"))
+
     # 5. Provider importable?
     provider_ok = False
     try:

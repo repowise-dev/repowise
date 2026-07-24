@@ -173,6 +173,34 @@ def _surface_release_news(*, written_by: str | None) -> None:
     render_update_advisory(console, get_cli_update_check_cached())
 
 
+def _surface_reindex_recommendation(repo_path, verdict, *, emitter: Any, dry_run: bool) -> None:
+    """Show the once-per-store reindex recommendation for *verdict*, if any.
+
+    Read-only except for the shown-notice ledger, so it is safe to call on the
+    no-op ("already up to date") path as well as the main assessment path. It
+    never runs the verdict's auto actions — those stay behind the single-flight
+    lock in the main path. Interactive-terminal only, so a background post-commit
+    update never burns the one-shot into a log the user never reads; `doctor`
+    reports the recommendation on demand regardless.
+    """
+    from repowise.cli.upgrade import (
+        record_reindex_notice_shown,
+        reindex_notice_already_shown,
+    )
+
+    if not (verdict.reindex_recommended and verdict.reindex_command):
+        return
+    if not (console.is_terminal and emitter is None):
+        return
+    if reindex_notice_already_shown(repo_path, verdict):
+        return
+    console.print(f"[yellow]Reindex recommended:[/yellow] {verdict.reindex_command}")
+    if verdict.user_notice:
+        console.print(f"[dim]{verdict.user_notice}[/dim]")
+    if not dry_run:
+        record_reindex_notice_shown(repo_path, verdict)
+
+
 @click.command("update")
 @click.argument("path", required=False, default=None)
 @click.option("--provider", "provider_name", default=None, help="LLM provider name.")
@@ -707,6 +735,19 @@ def run_update(
             # than waiting for the next content-changing update. This is the
             # quiescent state a stale marker was observed lingering in.
             consume_update_pending(repo_path, head)
+        # Up-to-date code does not mean an up-to-date store: a wiki indexed by an
+        # older release may still benefit from a re-index (concept tree, written
+        # prose). That is the common upgrade path, so surface the once-per-store
+        # recommendation here too rather than only on a content-changing update.
+        # Best-effort; a failure here must never turn a clean no-op into an error.
+        try:
+            from repowise.cli.upgrade import assess_store
+
+            _surface_reindex_recommendation(
+                repo_path, assess_store(repo_path), emitter=emitter, dry_run=dry_run
+            )
+        except Exception as exc:
+            log.debug("reindex_notice_skipped", error=str(exc))
         if emitter is not None:
             emitter.done(
                 ok=True,
@@ -800,10 +841,8 @@ def run_update(
 
         verdict = assess_store(repo_path)
         if not verdict.is_noop:
-            if verdict.reindex_recommended and verdict.reindex_command:
-                console.print(f"[yellow]Reindex recommended:[/yellow] {verdict.reindex_command}")
-                if verdict.user_notice:
-                    console.print(f"[dim]{verdict.user_notice}[/dim]")
+            # Reindex is only ever recommended, never forced (see the helper).
+            _surface_reindex_recommendation(repo_path, verdict, emitter=emitter, dry_run=dry_run)
             if verdict.actions and not dry_run:
                 for action in verdict.actions:
                     console.print(f"[dim]Upgrade: {action.reason}[/dim]")

@@ -26,14 +26,21 @@ from repowise.core.upgrade.registry import Migration, migrations_between
 # --- assess: version-span tiers ------------------------------------------
 
 
-def test_legacy_store_is_compatible_noop():
-    """A store with no version fields (version 0) reaching v1 needs nothing."""
+def test_legacy_store_recommends_reindex():
+    """A store with no version fields (version 0) predates the concept tree.
+
+    The v0->v1 step is a compatible reconcile, but the span also crosses the
+    v1->v2 concept-tree migration, which is REINDEX_RECOMMENDED. The overall
+    tier is the max, so a legacy store is told (never forced) to re-index, and
+    the recommendation carries a command but no auto action.
+    """
     verdict = assess({})
     assert verdict.from_store_version == 0
     assert verdict.to_store_version == STORE_FORMAT_VERSION
-    assert verdict.tier == UpgradeTier.COMPATIBLE
-    assert verdict.is_noop
-    assert not verdict.actions
+    assert verdict.tier == UpgradeTier.REINDEX_RECOMMENDED
+    assert verdict.reindex_recommended
+    assert verdict.reindex_command
+    assert not verdict.actions  # informed, never auto-run
 
 
 def test_current_store_is_noop():
@@ -136,16 +143,30 @@ def test_migrations_between_is_exclusive_inclusive(monkeypatch):
 # --- stamp ----------------------------------------------------------------
 
 
-def test_stamp_writes_version_markers():
+def test_stamp_full_index_writes_terminal_version():
+    """A full-index persist stamps the terminal store-format version."""
+    state: dict[str, object] = {}
+    stamp(state, package_version="9.9.9", full_index=True)
+    assert state["store_format_version"] == STORE_FORMAT_VERSION
+    assert state["written_by_version"] == "9.9.9"
+
+
+def test_stamp_routine_persist_clamps_below_reindex_gate():
+    """A routine (non-full) persist never advances past a REINDEX_RECOMMENDED gate.
+
+    Empty state is version 0; the auto-reachable ceiling is v1 (the compatible
+    baseline), because v2 is reindex-gated. Clamping here is what keeps the
+    reindex recommendation alive across ordinary updates until a real re-index.
+    """
     state: dict[str, object] = {}
     stamp(state, package_version="9.9.9")
-    assert state["store_format_version"] == STORE_FORMAT_VERSION
+    assert state["store_format_version"] == 1
     assert state["written_by_version"] == "9.9.9"
 
 
 def test_stamp_without_package_version_omits_written_by():
     state: dict[str, object] = {}
-    stamp(state, package_version=None)
+    stamp(state, package_version=None, full_index=True)
     assert state["store_format_version"] == STORE_FORMAT_VERSION
     assert "written_by_version" not in state
 

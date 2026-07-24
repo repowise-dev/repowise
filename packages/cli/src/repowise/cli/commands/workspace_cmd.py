@@ -581,7 +581,11 @@ def _run_index_for_repo(
     if generate_docs and provider is not None:
         state["provider"] = provider.provider_name
         state["model"] = provider.model_name
-    save_state(repo_path, state)
+    # `workspace add` freshly full-indexes the repo, so this from-scratch state
+    # is a current-format store, not one predating the concept tree. Stamp the
+    # terminal version rather than clamping to v1 and nagging a repo this run
+    # just built to re-index itself.
+    save_state(repo_path, state, full_index=True)
 
     # Persist provider settings into the added repo's config.yaml so future
     # `repowise update` runs don't have to re-prompt.

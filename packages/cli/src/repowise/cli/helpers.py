@@ -194,19 +194,25 @@ def load_state(repo_path: Path) -> dict[str, Any]:
     return {}
 
 
-def save_state(repo_path: Path, state: dict[str, Any]) -> None:
+def save_state(repo_path: Path, state: dict[str, Any], *, full_index: bool = False) -> None:
     """Write *state* to ``.repowise/state.json``.
 
     Every persist stamps the store-format markers (``store_format_version`` and
     the ``written_by_version`` package version that wrote it) so the upgrade
     layer always has a current record of the store's shape and provenance.
+
+    ``full_index`` marks a persist that follows a full-repo (re)generation, so
+    the store may be stamped to the terminal store-format version. A routine
+    incremental persist leaves it False and the version clamps below any
+    ``REINDEX_RECOMMENDED`` gate, keeping a reindex recommendation alive until
+    an actual re-index clears it.
     """
     ensure_repowise_dir(repo_path)
     try:
         from repowise.cli import __version__ as _pkg_version
         from repowise.core.upgrade import stamp as _stamp_store_version
 
-        _stamp_store_version(state, package_version=_pkg_version)
+        _stamp_store_version(state, package_version=_pkg_version, full_index=full_index)
     except Exception:  # never let stamping block a persist
         pass
     from repowise.core.fsutils import atomic_write_text

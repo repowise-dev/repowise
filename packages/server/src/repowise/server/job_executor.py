@@ -776,7 +776,9 @@ def _persist_initial_index_state(
             _pkg_version: str | None = _dist_version("repowise")
         except Exception:
             _pkg_version = None
-        _stamp_store_version(state, package_version=_pkg_version)
+        # This is the full-index persist (concept tree included), so stamp the
+        # terminal store-format version rather than clamping at the reindex gate.
+        _stamp_store_version(state, package_version=_pkg_version, full_index=True)
     except Exception:
         logger.debug("store_version_stamp_failed", repo_path=str(repo_path), exc_info=True)
 

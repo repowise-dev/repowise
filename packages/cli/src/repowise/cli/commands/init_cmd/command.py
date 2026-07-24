@@ -1451,7 +1451,11 @@ def init_command(
         )
         # Fingerprint after config writes so the first update doesn't false-positive.
         base_state["config_fingerprint"] = config_fingerprint(repo_path)
-        save_state(repo_path, base_state)
+        # Index-only still renders the full concept tree (deterministically, from
+        # templates), so the store has the current capability — stamp the terminal
+        # version rather than clamping it below the reindex gate and falsely
+        # recommending a re-index of a store this run just built.
+        save_state(repo_path, base_state, full_index=True)
 
     # ---- State + config (full mode only) ----
     if not effective_index_only and provider:

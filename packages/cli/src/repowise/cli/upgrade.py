@@ -30,6 +30,36 @@ from .helpers import REPOWISE_DIR, load_config, load_state
 
 log = structlog.get_logger(__name__)
 
+#: state.json key holding the store-format versions whose reindex notice has
+#: already been surfaced, so a routine ``update`` shows it once rather than on
+#: every run. A full re-index clears the recommendation itself (by advancing the
+#: store version past the gate), so this ledger only ever suppresses the nag in
+#: the window between an upgrade and the re-index that resolves it.
+SHOWN_NOTICES_KEY = "shown_upgrade_notices"
+
+
+def reindex_notice_already_shown(repo_path: Path, verdict: UpgradeVerdict) -> bool:
+    """True when this store has already been shown the reindex notice for *verdict*."""
+    state = load_state(repo_path)
+    shown = state.get(SHOWN_NOTICES_KEY)
+    return isinstance(shown, list) and verdict.to_store_version in shown
+
+
+def record_reindex_notice_shown(repo_path: Path, verdict: UpgradeVerdict) -> None:
+    """Record that the reindex notice for *verdict* has been surfaced. Best-effort."""
+    from .helpers import save_state
+
+    try:
+        state = load_state(repo_path)
+        shown = state.get(SHOWN_NOTICES_KEY)
+        shown = list(shown) if isinstance(shown, list) else []
+        if verdict.to_store_version not in shown:
+            shown.append(verdict.to_store_version)
+            state[SHOWN_NOTICES_KEY] = shown
+            save_state(repo_path, state)
+    except Exception as exc:  # a notice-ledger write must never break a command
+        log.debug("reindex_notice_record_failed", error=str(exc))
+
 
 class _CliUpgradeContext:
     """Concrete :class:`UpgradeContext` backed by the CLI provider stack."""
@@ -145,4 +175,9 @@ async def apply_upgrade(repo_path: Path, verdict: UpgradeVerdict) -> None:
         log.info("upgrade_applied", actions=[str(k) for k in ran])
 
 
-__all__ = ["apply_upgrade", "assess_store"]
+__all__ = [
+    "apply_upgrade",
+    "assess_store",
+    "record_reindex_notice_shown",
+    "reindex_notice_already_shown",
+]

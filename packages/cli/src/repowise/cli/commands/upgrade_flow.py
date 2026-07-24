@@ -493,7 +493,10 @@ def upgrade_to_full(
     # as "nothing wrote this wiki" right after a run that did.
     state["provider"] = provider.provider_name
     state["model"] = provider.model_name
-    save_state(repo_path, state)
+    # `update --full` regenerates the whole wiki (concept tree included), so it
+    # brings the store to the terminal store format the same way a full init
+    # does. Stamp it as such rather than clamping at the reindex gate.
+    save_state(repo_path, state, full_index=True)
     if embedder_name and embedder_name != cfg.get("embedder"):
         from repowise.cli.helpers import save_config_partial
 

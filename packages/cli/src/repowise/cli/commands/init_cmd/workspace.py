@@ -439,7 +439,9 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
     kg = getattr(result, "knowledge_graph_result", None)
     if kg is not None:
         state["knowledge_graph"] = build_kg_state(kg)
-    save_state(repo.path, state)
+    # A workspace repo is fully indexed here (concept tree included), so stamp
+    # the terminal store format rather than clamping below the reindex gate.
+    save_state(repo.path, state, full_index=True)
 
     if kg is not None:
         save_knowledge_graph_json(repo.path, kg)
