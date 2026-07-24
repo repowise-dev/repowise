@@ -18,8 +18,10 @@ from repowise.core.analysis.health.refactoring import (
     registered_detectors,
 )
 from repowise.core.analysis.health.refactoring.extract_helper import (
+    _MAX_SNIPPET_LINES,
     _common_directory,
     _merge_ranges_per_file,
+    _suggested_name,
 )
 
 
@@ -64,6 +66,7 @@ def _ctx(
     *,
     findings: list | None = None,
     module_map: dict[str, str] | None = None,
+    source_lines: list[str] | None = None,
 ) -> RefactoringContext:
     return RefactoringContext(
         file_path=file_path,
@@ -74,6 +77,7 @@ def _ctx(
         dependents_count=0,
         clones=clones,
         module_map=module_map or {},
+        source_lines=source_lines,
     )
 
 
@@ -337,6 +341,97 @@ def test_common_directory_helper():
     assert _common_directory(["a/b/x.py", "a/c/y.py"]) == "a"
     assert _common_directory(["a/x.py", "b/y.py"]) is None
     assert _common_directory(["x.py", "a/y.py"]) is None
+
+
+# ---- snippet + suggested name --------------------------------------------
+
+
+def _numbered_source(n: int) -> list[str]:
+    # 1-indexed content so a slice is easy to assert: line k reads "line k".
+    return [f"line {i}" for i in range(1, n + 1)]
+
+
+def test_snippet_sliced_from_anchor_region():
+    pair = _pair("pkg/a.py", "pkg/b.py", 10, 25, 40, 55)
+    s = next(
+        s
+        for s in detect_refactorings(
+            _ctx("pkg/a.py", [pair], source_lines=_numbered_source(80))
+        )
+        if s.refactoring_type == "extract_helper"
+    )
+    assert s.plan["snippet_start_line"] == 10
+    assert s.plan["snippet_truncated"] is False
+    lines = s.plan["snippet"].split("\n")
+    assert lines[0] == "line 10"
+    assert lines[-1] == "line 25"
+    assert len(lines) == 16
+
+
+def test_snippet_none_without_source():
+    pair = _pair("pkg/a.py", "pkg/b.py", 10, 25, 40, 55)
+    s = next(
+        s
+        for s in detect_refactorings(_ctx("pkg/a.py", [pair]))
+        if s.refactoring_type == "extract_helper"
+    )
+    assert s.plan["snippet"] is None
+    assert s.plan["snippet_start_line"] is None
+    assert s.plan["snippet_truncated"] is False
+
+
+def test_snippet_capped_and_flagged():
+    # A 60-line block clips to the cap and flags it.
+    pair = _pair("pkg/a.py", "pkg/b.py", 10, 69, 100, 159)
+    s = next(
+        s
+        for s in detect_refactorings(
+            _ctx("pkg/a.py", [pair], source_lines=_numbered_source(200))
+        )
+        if s.refactoring_type == "extract_helper"
+    )
+    assert s.plan["snippet_truncated"] is True
+    assert len(s.plan["snippet"].split("\n")) == _MAX_SNIPPET_LINES
+
+
+def test_snippet_clamped_to_short_file():
+    # Clone range runs past EOF (a stale-ish range); clamp, never IndexError.
+    pair = _pair("pkg/a.py", "pkg/b.py", 10, 25, 40, 55)
+    s = next(
+        s
+        for s in detect_refactorings(
+            _ctx("pkg/a.py", [pair], source_lines=_numbered_source(18))
+        )
+        if s.refactoring_type == "extract_helper"
+    )
+    lines = s.plan["snippet"].split("\n")
+    assert lines[0] == "line 10"
+    assert lines[-1] == "line 18"
+
+
+def test_suggested_name_from_directory():
+    pair = _pair("pkg/sub/a.py", "pkg/sub/b.py", 10, 25, 40, 55)
+    s = next(
+        s
+        for s in detect_refactorings(_ctx("pkg/sub/a.py", [pair]))
+        if s.refactoring_type == "extract_helper"
+    )
+    # directory site "pkg/sub" -> leaf "sub"
+    assert s.plan["suggested_name"] == "sub_helper"
+
+
+def test_suggested_name_helper_unit():
+    assert _suggested_name({"module": "api", "directory": None}) == "api_helper"
+    # module wins over directory
+    assert _suggested_name({"module": "core", "directory": "pkg/sub"}) == "core_helper"
+    # path leaf, hyphens normalised
+    assert _suggested_name({"module": None, "directory": "web/api-client"}) == "api_client_helper"
+    # leading digit made identifier-safe
+    assert _suggested_name({"module": "3d", "directory": None}) == "_3d_helper"
+    # already ends in helper -> no double suffix
+    assert _suggested_name({"module": "render_helper", "directory": None}) == "render_helper"
+    # no usable label -> stable fallback
+    assert _suggested_name({"module": None, "directory": None}) == "shared_helper"
 
 
 # ---- determinism ---------------------------------------------------------

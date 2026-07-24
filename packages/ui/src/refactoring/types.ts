@@ -103,6 +103,35 @@ export function helperSite(plan: RefactoringPlan): string | null {
   return module ?? dir;
 }
 
+export interface ExtractHelperDetail {
+  /** The duplicated block's source (the anchor site, identical across sites),
+   *  or `null` when the backend could not read it. */
+  snippet: string | null;
+  /** 1-indexed line the snippet starts on, for the gutter. */
+  snippetStartLine: number | null;
+  /** Whether the block was clipped at the size cap. */
+  snippetTruncated: boolean;
+  /** A deterministic starting name for the helper, e.g. `foo_helper`. */
+  suggestedName: string | null;
+}
+
+/** The block-level detail added to an extract-helper plan: the snippet itself,
+ *  a starting name, and whether it was clipped. Read defensively; every field
+ *  degrades to a null/false absence rather than throwing. */
+export function extractHelperDetail(plan: RefactoringPlan): ExtractHelperDetail {
+  const p = (plan.plan ?? {}) as Record<string, unknown>;
+  const snippet = typeof p.snippet === "string" && p.snippet.length > 0 ? p.snippet : null;
+  const start = Number(p.snippet_start_line ?? 0);
+  return {
+    snippet,
+    snippetStartLine: snippet && start > 0 ? start : null,
+    snippetTruncated: p.snippet_truncated === true,
+    suggestedName: typeof p.suggested_name === "string" && p.suggested_name.length > 0
+      ? p.suggested_name
+      : null,
+  };
+}
+
 export interface MoveTarget {
   method: string;
   from_class: string;
@@ -440,7 +469,13 @@ export function planWins(plan: RefactoringPlan): PlanWin[] {
     case "extract_helper": {
       const occ = extractHelperOccurrences(plan).length;
       const lines = Number(plan.evidence?.duplicated_lines ?? 0);
-      if (occ) wins.push({ label: `${occ} duplicate cop${occ === 1 ? "y" : "ies"} collapsed to one` });
+      const name = extractHelperDetail(plan).suggestedName;
+      if (occ)
+        wins.push({
+          label: name
+            ? `${occ} duplicate cop${occ === 1 ? "y" : "ies"} collapsed into ${name}()`
+            : `${occ} duplicate cop${occ === 1 ? "y" : "ies"} collapsed to one`,
+        });
       if (lines) wins.push({ label: `~${lines} duplicated lines removed` });
       break;
     }

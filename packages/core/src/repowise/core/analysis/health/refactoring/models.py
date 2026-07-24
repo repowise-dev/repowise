@@ -23,8 +23,16 @@ For Extract Helper:
 
 - ``plan`` = ``{"occurrences": [{"file": str, "line_start": int,
   "line_end": int}, ...], "suggested_site": {"module": str | None,
-  "directory": str | None}, "duplicated_lines": int}`` — every site of the
-  duplicated block and where the shared helper should live.
+  "directory": str | None}, "duplicated_lines": int, "snippet": str | None,
+  "snippet_start_line": int | None, "snippet_truncated": bool,
+  "suggested_name": str | None}`` lists every site of the duplicated block,
+  where the shared helper should live, and the block itself: the anchor site's
+  source
+  text (identical across sites by definition, so stored once and capped at
+  ``_MAX_SNIPPET_LINES``), the 1-indexed line it starts on, whether the cap
+  clipped it, and a deterministic starting name for the helper. ``snippet`` is
+  ``None`` when the source could not be read (the plan still stands on its line
+  ranges).
 - ``evidence`` = ``{"occurrence_count": int, "duplicated_lines": int,
   "token_count": int, "co_change_count": int, "is_intra_file": bool}`` — the
   size + activity signals that justify extracting a helper.
@@ -147,6 +155,13 @@ class RefactoringContext:
     # index) is the documented "no signal" outcome — the detector degrades to its
     # call/import signals only.
     blame_index: Any = None
+    # This file's source as 1-indexed lines (``source_lines[0]`` is line 1). The
+    # engine reads it only for files that carry clone pairs, so the cost stays
+    # proportional to clone-bearing files rather than the whole repo. The Extract
+    # Helper detector slices the anchor block out of it for the plan's snippet;
+    # every other detector ignores it. ``None`` when the file was not read (no
+    # clones) or the read failed; the detector then omits the snippet.
+    source_lines: list[str] | None = None
 
 
 @dataclass
