@@ -387,7 +387,12 @@ async def test_expanded_hedge_marker_downgrades_through_pipeline(setup_mcp, monk
 
     result = await get_answer("What is the default value of min_count_policy?")
     assert result["confidence"] == "low"
-    assert result["retrieval"] == []
+    # A hedge now hands the agent the ranked candidates to read instead of an
+    # empty block: the whole point of the call is to say WHERE the answer is when
+    # the prose could not ground it. The list stays lean (no per-hit docstring
+    # dump) so the token cost the empty payload was protecting is preserved.
+    assert result["retrieval"], "hedged answer should still surface its ranked hits"
+    assert all("path" in h for h in result["retrieval"])
 
 
 @pytest.mark.asyncio
