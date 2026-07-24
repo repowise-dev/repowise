@@ -52,6 +52,8 @@ defect-validated score from deterministic markers).
 | `/repowise:search` | Search the codebase wiki (fulltext, semantic, or symbol) |
 | `/repowise:reindex` | Rebuild the vector store (re-embed; no LLM calls) |
 | `/repowise:health` | Code-health KPIs, lowest-scoring files, refactoring targets, trends |
+| `/repowise:coverage` | Ingest or inspect coverage reports (lights up untested hotspots + per-test map) |
+| `/repowise:impacted-tests` | Tests whose coverage intersects a change (commit / range / staged) |
 | `/repowise:risk` | Defect-risk score for a change (commit or `base..head` range) |
 | `/repowise:dead-code` | Unreachable files, unused exports, zombie packages by confidence |
 | `/repowise:decision` | List, inspect, add, or confirm architectural decisions |
