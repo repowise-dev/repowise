@@ -101,11 +101,12 @@ compare numbers:
 
 | Surface | High | Medium | Low | Default floor |
 |---------|------|--------|-----|---------------|
-| CLI (`repowise dead-code`) | `>= 0.7` | `0.4` to `0.7` | `< 0.4` | `--min-confidence 0.4` |
+| CLI (`repowise dead-code`) | `>= 0.7` | `0.5` to `0.7` | `< 0.5` | `--min-confidence 0.5` |
 | MCP (`get_dead_code`) | `>= 0.8` | `0.5` to `0.8` | `< 0.5` | `min_confidence=0.5` |
 
-The MCP surface is deliberately stricter: an agent acting on a finding is riskier
-than a human reading a table.
+Both surfaces now share the same default floor (`0.5`). The MCP high/medium
+cutovers stay stricter: an agent acting on a finding is riskier than a human
+reading a table.
 
 ## What is exempt by construction
 
@@ -220,7 +221,7 @@ before deleting anything.
 
 | Flag | Description |
 |------|-------------|
-| `--min-confidence` | Minimum confidence threshold (default `0.4`) |
+| `--min-confidence` | Minimum confidence threshold (default `0.5`) |
 | `--safe-only` | Only findings marked safe to delete |
 | `--kind` | `unreachable_file`, `unused_export`, `unused_internal`, `zombie_package` |
 | `--format` | `table` (default), `json`, `md` |

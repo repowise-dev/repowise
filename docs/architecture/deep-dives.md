@@ -254,7 +254,7 @@ DeadCodeAnalyzer.analyze()
     ├── _detect_unused_exports()       → findings with confidence + safe_to_delete
     ├── _detect_zombie_packages()      → findings at 0.5 confidence, never safe
     │
-    ▼ apply min_confidence filter (default 0.4)
+    ▼ apply min_confidence filter (default 0.5)
     │
     ▼ persist to dead_code_findings table
     │

@@ -18,7 +18,7 @@ from repowise.cli.helpers import (
 
 @click.command("dead-code")
 @click.argument("path", required=False, type=click.Path(exists=True))
-@click.option("--min-confidence", default=0.4, type=float, help="Minimum confidence threshold.")
+@click.option("--min-confidence", default=0.5, type=float, help="Minimum confidence threshold.")
 @click.option(
     "--safe-only",
     is_flag=True,
