@@ -231,6 +231,12 @@ def export_command(
                     "title": page.title,
                     "content": page.content,
                     "target_path": page.target_path,
+                    # Hierarchy columns, so a JSON consumer can rebuild the
+                    # stored tree instead of re-deriving one from path strings.
+                    "parent_page_id": page.parent_page_id,
+                    "display_order": page.display_order,
+                    "section_number": page.section_number,
+                    "structural_key": page.structural_key,
                 }
                 if full_export:
                     entry["confidence"] = page.confidence
