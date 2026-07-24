@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/repowise-dev-repowise-badge.png)](https://mseep.ai/app/repowise-dev-repowise)
+
 <!-- mcp-name: dev.repowise/repowise -->
 
 <div align="center">
