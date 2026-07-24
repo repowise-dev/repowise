@@ -484,6 +484,7 @@ async def list_pages(
     *,
     page_type: str | None = None,
     has_prose: bool | None = None,
+    include_tombstones: bool = True,
     limit: int = 100,
     offset: int = 0,
     sort_by: str = "updated_at",
@@ -498,10 +499,17 @@ async def list_pages(
     model has written, ``has_prose=False`` the ones still stubs, and ``None``
     (default) returns every page of every type. A stub is a model-written type
     still stamped ``provider_name='template'``.
+
+    ``include_tombstones`` defaults to True to preserve the raw row set for
+    callers that reconcile against deleted files. Pass ``False`` for a
+    reader-facing count or listing, where a tombstoned page (its file is gone)
+    should not be shown or counted.
     """
     q = select(Page).where(Page.repository_id == repository_id)
     if page_type is not None:
         q = q.where(Page.page_type == page_type)
+    if not include_tombstones:
+        q = q.where(Page.freshness_status != "tombstone")
     if has_prose is not None:
         from repowise.core.generation.models import MODEL_WRITTEN_PAGE_TYPES
 

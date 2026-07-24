@@ -448,7 +448,9 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool) -> Non
             if repo is None:
                 await engine.dispose()
                 return counts, total_tokens
-            pages = await list_pages(session, repo.id, limit=10000)
+            pages = await list_pages(
+                session, repo.id, include_tombstones=False, limit=10000
+            )
             for p in pages:
                 counts[p.page_type] = counts.get(p.page_type, 0) + 1
                 total_tokens += (p.input_tokens or 0) + (p.output_tokens or 0)
