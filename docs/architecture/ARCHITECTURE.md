@@ -510,8 +510,8 @@ which runs after the static import graph is built. It operates in three tiers:
    from the file's import list
 3. **Global unique match** (confidence 0.50) — target is unique across the whole repo
 
-Call sites are extracted by tree-sitter for all 14 supported languages (Python, TypeScript,
-JavaScript, Go, Rust, Java, C++, C, Kotlin, Ruby, C#, Swift, Scala, PHP) using per-language `.scm` query files. Results are stored
+Call sites are extracted by tree-sitter for all 15 supported languages (Python, TypeScript,
+JavaScript, Go, Rust, Java, C++, C, Kotlin, Ruby, C#, VB.NET, Swift, Scala, PHP) using per-language `.scm` query files. Results are stored
 as `CallSite` dataclasses and become `CALLS` edges in the graph.
 
 **Named binding resolution** (`NamedBinding` dataclass in `ingestion/models.py`) ensures

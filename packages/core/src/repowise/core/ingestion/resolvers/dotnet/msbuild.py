@@ -45,16 +45,22 @@ _DOTNET_SCAN_SKIP_DIRS_CASEFOLDED = frozenset(part.casefold() for part in DOTNET
 
 @dataclass
 class MSBuildProject:
-    """Parsed MSBuild project file."""
+    """Parsed MSBuild project file (.csproj or .vbproj — same XML schema)."""
 
-    path: Path  # absolute path to the .csproj
-    project_dir: Path  # directory containing the .csproj
+    path: Path  # absolute path to the .csproj / .vbproj
+    project_dir: Path  # directory containing the project file
     root_namespace: str | None = None
     assembly_name: str | None = None
     implicit_usings: bool = False
-    project_references: list[Path] = field(default_factory=list)  # absolute paths to referenced .csproj
+    project_references: list[Path] = field(
+        default_factory=list
+    )  # absolute paths to referenced .csproj
     package_references: set[str] = field(default_factory=set)  # NuGet package ids
-    project_usings: set[str] = field(default_factory=set)  # <Using Include="X"/> namespaces
+    # Project-level implicit imports: C#'s <Using Include="X"/> ItemGroup
+    # entries and VB's <Import Include="X"/> ItemGroup entries both land
+    # here — same semantics (a namespace implicitly available to every
+    # file in the project), just a different element name per language.
+    project_usings: set[str] = field(default_factory=set)
 
     @property
     def name(self) -> str:
@@ -109,18 +115,45 @@ def parse_csproj(csproj_path: Path) -> MSBuildProject | None:
             ns = elem.get("Include")
             if ns:
                 project.project_usings.add(ns.strip())
+        elif tag == "Import":
+            # VB's project-level root-import ItemGroup entry
+            # (<Import Include="System.Linq"/>) uses the SAME element name
+            # MSBuild overloads for file-include directives
+            # (<Import Project="...targets"/>). Discriminate on the
+            # attribute, not position: only `Include` means a namespace.
+            ns = elem.get("Include")
+            if ns:
+                project.project_usings.add(ns.strip())
 
     return project
 
 
+def _find_project_files(
+    repo_path: Path, pattern: str, *, prune_nested_git: bool = True
+) -> list[Path]:
+    """Shared glob + skip-dir filter behind ``find_csproj_files``/``find_vbproj_files``."""
+    out: list[Path] = []
+    for proj in iter_glob(repo_path, pattern, prune_nested_git=prune_nested_git):
+        if path_has_dotnet_scan_skip_dir(proj, repo_path):
+            continue
+        out.append(proj)
+    return out
+
+
 def find_csproj_files(repo_path: Path, *, prune_nested_git: bool = True) -> list[Path]:
     """Return all .csproj files under *repo_path*, skipping bin/obj output."""
-    out: list[Path] = []
-    for csproj in iter_glob(repo_path, "*.csproj", prune_nested_git=prune_nested_git):
-        if path_has_dotnet_scan_skip_dir(csproj, repo_path):
-            continue
-        out.append(csproj)
-    return out
+    return _find_project_files(repo_path, "*.csproj", prune_nested_git=prune_nested_git)
+
+
+def find_vbproj_files(repo_path: Path, *, prune_nested_git: bool = True) -> list[Path]:
+    """Return all .vbproj files under *repo_path*, skipping bin/obj output."""
+    return _find_project_files(repo_path, "*.vbproj", prune_nested_git=prune_nested_git)
+
+
+# `parse_csproj` is pure MSBuild-XML-schema parsing (no C#-specific logic) —
+# .vbproj files use the identical schema, so this alias documents that the
+# same function is the correct, intentional call for both project kinds.
+parse_vbproj = parse_csproj
 
 
 def path_has_dotnet_scan_skip_dir(path: Path, repo_root: Path) -> bool:

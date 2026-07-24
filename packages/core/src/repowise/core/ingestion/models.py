@@ -28,6 +28,7 @@ LanguageTag = Literal[
     "cpp",
     "c",
     "csharp",
+    "vbnet",
     "ruby",
     "php",
     "swift",
@@ -281,10 +282,17 @@ class TypeReference:
     type_name: str  # head identifier (e.g. "IBasketService" from "IBasketService<T>")
     line: int  # 1-indexed source line
     origin: Literal[
-        "ctor_param", "method_param", "delegate_param",  # C#
-        "param_type", "field_type", "composite_literal",  # Go
-        "return_type", "type_alias", "generic_constraint",  # TS/JS
-        "extends", "implements",  # TS heritage clauses (file-level type_use)
+        "ctor_param",
+        "method_param",
+        "delegate_param",  # C#
+        "param_type",
+        "field_type",
+        "composite_literal",  # Go
+        "return_type",
+        "type_alias",
+        "generic_constraint",  # TS/JS
+        "extends",
+        "implements",  # TS heritage clauses (file-level type_use)
     ] = "ctor_param"
 
 

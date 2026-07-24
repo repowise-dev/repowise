@@ -46,6 +46,7 @@ dependencies = [
     "tree-sitter-kotlin>=1,<2",
     "tree-sitter-ruby>=0.23,<1",
     "tree-sitter-c-sharp>=0.23,<1",
+    "tree-sitter-vbnet>=0.1,<1 ; sys_platform == 'win32'",
     "tree-sitter-swift>=0.0.1",
     "tree-sitter-scala>=0.23,<1",
     "tree-sitter-php>=0.23,<1",

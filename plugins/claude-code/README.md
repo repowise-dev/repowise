@@ -37,7 +37,7 @@ MCP tools and skills activate automatically.
 
 ### Five intelligence layers
 
-Graph (tree-sitter dependency graph, 16 languages) · Git (hotspots, ownership,
+Graph (tree-sitter dependency graph, 17 languages) · Git (hotspots, ownership,
 co-change, bus factor) · Docs (LLM-generated wiki + semantic search) · Decisions
 (architectural rationale mined from eight sources) · Code Health (1–10
 defect-validated score from deterministic markers).

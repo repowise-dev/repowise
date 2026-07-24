@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <RootNamespace>Acme.Api</RootNamespace>
+    <AssemblyName>Acme.Api</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Domain\Domain.vbproj" />
+    <ProjectReference Include="..\Infrastructure\Infrastructure.vbproj" />
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="8.0.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <Import Include="System" />
+    <Import Include="System.Threading.Tasks" />
+  </ItemGroup>
+</Project>

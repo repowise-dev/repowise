@@ -28,6 +28,7 @@ from .shell import resolve_shell_import
 from .sql import resolve_dbt_import
 from .swift import resolve_swift_import
 from .typescript import resolve_ts_js_import
+from .vbnet import resolve_vbnet_import
 
 ResolverFn = Callable[[str, str, ResolverContext], str | None]
 
@@ -44,6 +45,7 @@ _RESOLVERS: dict[str, ResolverFn] = {
     "luau": resolve_luau_import,
     "ruby": resolve_ruby_import,
     "csharp": resolve_csharp_import,
+    "vbnet": resolve_vbnet_import,
     "swift": resolve_swift_import,
     "scala": resolve_scala_import,
     "php": resolve_php_import,

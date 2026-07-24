@@ -91,6 +91,22 @@ def csharp_visibility(_name: str, modifier_texts: list[str]) -> str:
     return "internal"  # C# default is internal
 
 
+def vbnet_visibility(_name: str, modifier_texts: list[str]) -> str:
+    """VB.NET visibility — Public/Private/Protected/Friend, default public.
+
+    Unlike C# (default internal for top-level, private for members), VB.NET
+    defaults every declaration with no explicit modifier to Public.
+    """
+    combined = " ".join(modifier_texts).lower()
+    if "private" in combined:
+        return "private"
+    if "protected" in combined:
+        return "protected"
+    if "friend" in combined:
+        return "internal"  # VB.NET Friend == C# internal
+    return "public"
+
+
 def swift_visibility(_name: str, modifier_texts: list[str]) -> str:
     """Swift visibility — public/private/fileprivate/internal/open."""
     combined = " ".join(modifier_texts).lower()
@@ -353,6 +369,7 @@ VISIBILITY_FNS: dict[str, Callable[[str, list[str]], str]] = {
     "kotlin": kotlin_visibility,
     "ruby": public_by_default,
     "csharp": csharp_visibility,
+    "vbnet": vbnet_visibility,
     "swift": swift_visibility,
     "scala": scala_visibility,
     "php": php_visibility,

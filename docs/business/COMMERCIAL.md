@@ -41,7 +41,7 @@ scale, in a regulated or security-sensitive environment**:
 
 All of the following ship in `pip install repowise` today, free for internal use.
 
-- **Five intelligence layers** — Graph (tree-sitter AST across 16 languages, two-tier
+- **Five intelligence layers** — Graph (tree-sitter AST across 17 languages, two-tier
   dependency graph, call resolution, heritage extraction, Leiden communities,
   PageRank / betweenness / SCC), Git (hotspots, ownership, co-change pairs, bus
   factor, significant commits, contributor profiles, module health), Documentation
@@ -85,8 +85,8 @@ Repowise treats **11 languages at Full tier** (Python, TypeScript, JavaScript, J
 Kotlin, Go, Rust, C++, **C#**, Scala, and Ruby) with AST parsing, import resolution,
 named bindings, call resolution, heritage extraction, multi-project workspace
 resolvers, framework-aware edges, per-language dynamic-hint extractors, and
-code-health markers. A further 4 languages (C, Swift, PHP, Dart) sit at Good tier,
-and Luau is partial. SQL/dbt, shell, and the config formats are handled by dedicated
+code-health markers. A further 5 languages (C, Swift, PHP, Dart, VB.NET) sit at Good
+tier, and Luau is partial. SQL/dbt, shell, and the config formats are handled by dedicated
 extractors on top of that.
 
 For estates built on a particular stack, the relevant Full-tier capabilities are

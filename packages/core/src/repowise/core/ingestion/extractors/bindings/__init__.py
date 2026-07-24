@@ -34,7 +34,7 @@ from .rust import extract_rust_bindings
 from .scala import extract_scala_bindings
 from .swift import extract_swift_bindings
 from .ts_js import extract_ts_js_bindings
-
+from .vbnet import extract_vbnet_bindings
 
 _DISPATCH: dict[str, Callable[[Node, str], tuple[list[str], list[NamedBinding]]]] = {
     "python": extract_python_bindings,
@@ -48,6 +48,7 @@ _DISPATCH: dict[str, Callable[[Node, str], tuple[list[str], list[NamedBinding]]]
     "kotlin": extract_kotlin_bindings,
     "ruby": extract_ruby_bindings,
     "csharp": extract_csharp_bindings,
+    "vbnet": extract_vbnet_bindings,
     "dart": extract_dart_bindings,
     "swift": extract_swift_bindings,
     "scala": extract_scala_bindings,
@@ -80,4 +81,5 @@ __all__ = [
     "extract_scala_bindings",
     "extract_swift_bindings",
     "extract_ts_js_bindings",
+    "extract_vbnet_bindings",
 ]

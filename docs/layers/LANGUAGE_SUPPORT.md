@@ -1,6 +1,6 @@
 # Language Support
 
-repowise parses **16 languages to a full AST**, resolves imports and call
+repowise parses **17 languages to a full AST**, resolves imports and call
 graphs across them, and scores **11 at the Full tier** with code-health markers.
 Everything else in your repo is still tracked through git history and appears in
 the wiki. This page is the "what works for my language today" reference.
@@ -20,7 +20,7 @@ produce meaningful output.
 | Tier | Languages | What works |
 |------|-----------|------------|
 | **Full** | Python · TypeScript · JavaScript · Java · Kotlin · Go · Rust · C++ · C# · Scala · Ruby | AST parsing, import resolution, named bindings, call resolution, heritage, docstrings, framework-aware edges, dynamic-hint extractors, and **code-health markers** |
-| **Good** | C · Swift · PHP · Dart | Everything above except code-health markers (C, Swift, PHP; Dart *does* get health markers). Dedicated workspace resolvers and framework edges per language |
+| **Good** | C · Swift · PHP · Dart · VB.NET | Everything above except code-health markers (C, Swift, PHP, VB.NET; Dart *does* get health markers). Dedicated workspace resolvers and framework edges per language. VB.NET's heritage (`Inherits`/`Implements`) comes from a regex fallback, not the AST — the v0.1.0 grammar can't parse those clauses |
 | **SQL / dbt** | `.sql` via sqlglot | Tables / views / functions / procedures as symbols with wiki pages; dbt projects get real `ref()` / `source()` lineage |
 | **Shell** | `.sh` `.bash` `.zsh` | Function definitions as symbols, `source` / `.` import edges (incl. `$SCRIPT_DIR` / `dirname` / `$BATS_ROOT` idioms), and function-level code-health complexity (CCN, nesting, cognitive). No class metrics, heritage, bindings, or dead-code flagging |
 | **Config / data** | OpenAPI · Protobuf · GraphQL · Dockerfile · Makefile · YAML · JSON · TOML · Terraform · Markdown | In the file tree and wiki; special handlers extract endpoints / targets where applicable |
@@ -107,6 +107,7 @@ mixins). Dedicated workspace resolvers per language.
 | **Swift** | `.swift` | `import` with SPM `Package.swift` target → directory mapping; intra-module type references; `@main` entry points |
 | **PHP** | `.php` | `use Foo\Bar\Baz` with composer.json PSR-4 longest-prefix resolution; Laravel, TYPO3 edges |
 | **Dart** | `.dart` | `import` / `export` / `part` URIs; `package:` via every `pubspec.yaml`; Flutter route tables and `runApp()` edges; **code-health markers** |
+| **VB.NET** | `.vb` | `Imports` (incl. aliased) resolved via the same shared `.csproj`/`.vbproj`/`.sln`-aware MSBuild project index C# uses, including `RootNamespace` prepending; ASP.NET (attribute + minimal API) and EF Core edges via VB-syntax detectors. **Windows-only** — `tree-sitter-vbnet`'s only published wheel is `win_amd64`; degrades to git-history-only passthrough on Linux/macOS |
 
 ---
 
@@ -255,6 +256,7 @@ where a dialect isn't wired yet. Per-marker mechanics and precision hazards:
 | Ruby | Full (health) | Shipped: complexity/class/assertion markers + perf dialect with block-iteration loops (`.each`/`.map` blocks) and the stratified ActiveRecord N+1 lexicon. Next: dataflow dialect, LCOM4 via `@ivar` grouping |
 | Kotlin / C++ | Full (health) | Perf + dataflow dialects pending; everything else shipped |
 | C# | Full (health) | Dataflow dialect pending; perf shipped |
+| VB.NET | Full | Shipped: AST symbols/imports/calls, shared .NET project index (RootNamespace-aware), ASP.NET + EF Core edges. Next: health markers, AST-based heritage (blocked on upstream grammar parsing `Inherits`/`Implements`) — both required to promote past Good. Windows-only until upstream ships cross-platform wheels |
 | Elixir | Good | Lightweight tier shipped; AST upgrade planned (`tree-sitter-elixir` available) |
 | F# | Good | Lightweight tier shipped; AST upgrade planned (`tree-sitter-f-sharp` available) |
 | SQL / dbt | - | DDL symbols, dbt lineage, app-to-database contracts, health markers shipped. Next: column-level blast radius |

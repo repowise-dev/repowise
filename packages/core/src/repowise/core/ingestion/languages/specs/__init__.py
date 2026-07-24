@@ -54,6 +54,7 @@ from .terraform import SPEC as _TERRAFORM
 from .toml import SPEC as _TOML
 from .typescript import SPEC as _TYPESCRIPT
 from .unknown import SPEC as _UNKNOWN
+from .vbnet import SPEC as _VBNET
 from .xaml import SPEC as _XAML
 from .yaml import SPEC as _YAML
 from .zig import SPEC as _ZIG
@@ -80,6 +81,7 @@ ALL_SPECS: tuple[LanguageSpec, ...] = (
     _KOTLIN,
     _RUBY,
     _CSHARP,
+    _VBNET,
     _PHP,
     _SWIFT,
     _SCALA,

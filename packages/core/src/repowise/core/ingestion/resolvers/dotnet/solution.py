@@ -5,7 +5,7 @@ The .sln format is line-oriented and not XML. Each project is declared as::
     Project("{<type-guid>}") = "Name", "relative\\path\\Name.csproj", "{<proj-guid>}"
 
 Solution folders use a different type GUID and are skipped — repowise only
-cares about real project entries that point to a .csproj on disk.
+cares about real project entries that point to a .csproj or .vbproj on disk.
 """
 
 from __future__ import annotations
@@ -35,12 +35,12 @@ _FOLDER_TYPE_GUID = "2150E333-8FDC-42A3-9474-1A3956D46DE8"
 @dataclass(frozen=True)
 class SolutionEntry:
     name: str
-    csproj: Path  # absolute
+    csproj: Path  # absolute — holds a .vbproj path for VB.NET project entries
     project_guid: str
 
 
 def parse_sln(sln_path: Path) -> list[SolutionEntry]:
-    """Return one SolutionEntry per .csproj declared in *sln_path*."""
+    """Return one SolutionEntry per .csproj/.vbproj declared in *sln_path*."""
     try:
         text = sln_path.read_text(encoding="utf-8-sig", errors="replace")
     except OSError as exc:
@@ -53,7 +53,7 @@ def parse_sln(sln_path: Path) -> list[SolutionEntry]:
         type_guid, name, rel_path, proj_guid = match.groups()
         if type_guid.upper() == _FOLDER_TYPE_GUID:
             continue
-        if not rel_path.lower().endswith(".csproj"):
+        if not rel_path.lower().endswith((".csproj", ".vbproj")):
             continue
         csproj = (sln_dir / rel_path.replace("\\", "/")).resolve()
         out.append(SolutionEntry(name=name, csproj=csproj, project_guid=proj_guid))

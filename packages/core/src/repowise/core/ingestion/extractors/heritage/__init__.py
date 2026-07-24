@@ -34,6 +34,7 @@ from .rust import _extract_rust_heritage
 from .scala import _extract_scala_heritage
 from .swift import _extract_swift_heritage
 from .ts_js import _extract_ts_js_heritage
+from .vbnet import _extract_vbnet_heritage
 
 
 def heritage_node_types_for(lang: str) -> frozenset[str]:
@@ -54,6 +55,7 @@ HERITAGE_EXTRACTORS: dict[str, Callable[..., None]] = {
     "kotlin": _extract_kotlin_heritage,
     "ruby": _extract_ruby_heritage,
     "csharp": _extract_csharp_heritage,
+    "vbnet": _extract_vbnet_heritage,
     "dart": _extract_dart_heritage,
     "swift": _extract_swift_heritage,
     "scala": _extract_scala_heritage,

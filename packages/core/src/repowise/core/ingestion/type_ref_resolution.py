@@ -97,16 +97,22 @@ def _build_defined_name_index(graph: nx.DiGraph) -> dict[str, set[str]]:
 
 
 # ---------------------------------------------------------------------------
-# Strategy: C# / .NET
+# Strategy: C# / VB.NET (shared .NET index)
 # ---------------------------------------------------------------------------
 
-def _resolve_csharp_type_refs(
+
+def _resolve_dotnet_type_refs(
     parsed: ParsedFile,
-    ctx: "ResolverContext",
-    graph: "nx.DiGraph",
+    ctx: ResolverContext,
+    graph: nx.DiGraph,
     defined_names: dict[str, set[str]],
 ) -> int:
-    """Resolve C# ``@param.type`` captures via ``DotNetProjectIndex``.
+    """Resolve C#/VB.NET ``@param.type`` captures via ``DotNetProjectIndex``.
+
+    Shared between both languages — the index and ranking are already
+    language-neutral (it's the same ``DotNetProjectIndex`` D4 built for
+    import resolution), only ``queries/<lang>.scm``'s capture and each
+    language's ``TYPE_HEAD_EXTRACTORS`` entry differ.
 
     Returns the number of edges emitted. Same-file references and
     references to builtin types are dropped silently (the parser
@@ -158,23 +164,71 @@ def _resolve_csharp_type_refs(
 # Strategy: Rust
 # ---------------------------------------------------------------------------
 
-_RUST_BUILTIN_TYPES = frozenset({
-    "bool", "char", "str", "u8", "u16", "u32", "u64", "u128", "usize",
-    "i8", "i16", "i32", "i64", "i128", "isize", "f32", "f64",
-    "String", "Vec", "Option", "Result", "Box", "Arc", "Rc",
-    "HashMap", "HashSet", "BTreeMap", "BTreeSet", "Cow",
-    "Pin", "Future", "Send", "Sync", "Sized", "Copy", "Clone",
-    "Debug", "Display", "Default", "Iterator", "IntoIterator",
-    "From", "Into", "TryFrom", "TryInto", "AsRef", "AsMut",
-    "Fn", "FnMut", "FnOnce", "Drop", "Deref", "DerefMut",
-    "Self", "self",
-})
+_RUST_BUILTIN_TYPES = frozenset(
+    {
+        "bool",
+        "char",
+        "str",
+        "u8",
+        "u16",
+        "u32",
+        "u64",
+        "u128",
+        "usize",
+        "i8",
+        "i16",
+        "i32",
+        "i64",
+        "i128",
+        "isize",
+        "f32",
+        "f64",
+        "String",
+        "Vec",
+        "Option",
+        "Result",
+        "Box",
+        "Arc",
+        "Rc",
+        "HashMap",
+        "HashSet",
+        "BTreeMap",
+        "BTreeSet",
+        "Cow",
+        "Pin",
+        "Future",
+        "Send",
+        "Sync",
+        "Sized",
+        "Copy",
+        "Clone",
+        "Debug",
+        "Display",
+        "Default",
+        "Iterator",
+        "IntoIterator",
+        "From",
+        "Into",
+        "TryFrom",
+        "TryInto",
+        "AsRef",
+        "AsMut",
+        "Fn",
+        "FnMut",
+        "FnOnce",
+        "Drop",
+        "Deref",
+        "DerefMut",
+        "Self",
+        "self",
+    }
+)
 
 
 def _resolve_rust_type_refs(
     parsed: ParsedFile,
-    ctx: "ResolverContext",
-    graph: "nx.DiGraph",
+    ctx: ResolverContext,
+    graph: nx.DiGraph,
     defined_names: dict[str, set[str]],
 ) -> int:
     """Resolve Rust ``@param.type`` captures via stem map + import graph."""
@@ -199,13 +253,12 @@ def _resolve_rust_type_refs(
         if bare in _RUST_BUILTIN_TYPES:
             continue
 
-        target = _find_rust_type_file(
-            bare, from_path, sorted_imports, ctx, graph, defined_names
-        )
+        target = _find_rust_type_file(bare, from_path, sorted_imports, ctx, graph, defined_names)
         if target is None:
             continue
-        _add_or_merge_type_use_edge(graph, src=from_path, dst=target,
-                                    type_name=bare, origin=ref.origin)
+        _add_or_merge_type_use_edge(
+            graph, src=from_path, dst=target, type_name=bare, origin=ref.origin
+        )
         emitted += 1
     return emitted
 
@@ -214,8 +267,8 @@ def _find_rust_type_file(
     type_name: str,
     from_path: str,
     sorted_imports: list[str],
-    ctx: "ResolverContext",
-    graph: "nx.DiGraph",
+    ctx: ResolverContext,
+    graph: nx.DiGraph,
     defined_names: dict[str, set[str]],
 ) -> str | None:
     """Find the file defining *type_name*, preferring imported files."""
@@ -235,10 +288,11 @@ def _find_rust_type_file(
 # Strategy: Go
 # ---------------------------------------------------------------------------
 
+
 def _resolve_go_type_refs(
     parsed: ParsedFile,
-    ctx: "ResolverContext",
-    graph: "nx.DiGraph",
+    ctx: ResolverContext,
+    graph: nx.DiGraph,
     defined_names: dict[str, set[str]],
 ) -> int:
     """Resolve Go ``@param.type`` captures via the Go package index.
@@ -289,8 +343,9 @@ def _resolve_go_type_refs(
         if target is not None and target != from_path:
             if (name, target) not in seen_targets:
                 seen_targets.add((name, target))
-                _add_or_merge_type_use_edge(graph, src=from_path, dst=target,
-                                            type_name=name, origin=ref.origin)
+                _add_or_merge_type_use_edge(
+                    graph, src=from_path, dst=target, type_name=name, origin=ref.origin
+                )
                 emitted += 1
             continue
         # Type not found cross-file — check if it is defined in the same file.
@@ -330,32 +385,76 @@ def _find_go_type_file(
 # grammar caught the inner T), the lookup is guaranteed to find nothing
 # useful. Filter them so we don't waste a per-ref graph walk. Same idea
 # as the TS/Rust builtin filters above.
-_CPP_STL_HEAD_NAMES: frozenset[str] = frozenset({
-    "vector", "array", "deque", "list", "forward_list",
-    "set", "multiset", "map", "multimap",
-    "unordered_set", "unordered_multiset",
-    "unordered_map", "unordered_multimap",
-    "stack", "queue", "priority_queue", "span",
-    "string", "string_view", "wstring", "u16string", "u32string",
-    "pair", "tuple",
-    "optional", "variant", "any", "bitset",
-    "shared_ptr", "unique_ptr", "weak_ptr",
-    "function", "reference_wrapper", "atomic", "atomic_ref",
-    "future", "promise", "shared_future",
-    "thread", "mutex", "lock_guard", "unique_lock", "shared_lock",
-    "condition_variable", "condition_variable_any",
-    "chrono", "duration", "time_point",
-    "initializer_list", "common_type", "decay", "remove_reference",
-    "enable_if", "is_same", "conditional",
-    # Smart casts / trait helpers
-    "make_shared", "make_unique", "make_pair", "make_tuple",
-})
+_CPP_STL_HEAD_NAMES: frozenset[str] = frozenset(
+    {
+        "vector",
+        "array",
+        "deque",
+        "list",
+        "forward_list",
+        "set",
+        "multiset",
+        "map",
+        "multimap",
+        "unordered_set",
+        "unordered_multiset",
+        "unordered_map",
+        "unordered_multimap",
+        "stack",
+        "queue",
+        "priority_queue",
+        "span",
+        "string",
+        "string_view",
+        "wstring",
+        "u16string",
+        "u32string",
+        "pair",
+        "tuple",
+        "optional",
+        "variant",
+        "any",
+        "bitset",
+        "shared_ptr",
+        "unique_ptr",
+        "weak_ptr",
+        "function",
+        "reference_wrapper",
+        "atomic",
+        "atomic_ref",
+        "future",
+        "promise",
+        "shared_future",
+        "thread",
+        "mutex",
+        "lock_guard",
+        "unique_lock",
+        "shared_lock",
+        "condition_variable",
+        "condition_variable_any",
+        "chrono",
+        "duration",
+        "time_point",
+        "initializer_list",
+        "common_type",
+        "decay",
+        "remove_reference",
+        "enable_if",
+        "is_same",
+        "conditional",
+        # Smart casts / trait helpers
+        "make_shared",
+        "make_unique",
+        "make_pair",
+        "make_tuple",
+    }
+)
 
 
 def _resolve_c_type_refs(
     parsed: ParsedFile,
-    ctx: "ResolverContext",
-    graph: "nx.DiGraph",
+    ctx: ResolverContext,
+    graph: nx.DiGraph,
     defined_names: dict[str, set[str]],
 ) -> int:
     """Resolve C / C++ ``@param.type`` captures via ``#include`` + stem map.
@@ -417,7 +516,12 @@ def _resolve_c_type_refs(
         if is_cpp and name in _CPP_STL_HEAD_NAMES:
             continue
         target = _find_c_type_file(
-            name, from_path, sorted_imports, sorted_siblings, ctx, graph,
+            name,
+            from_path,
+            sorted_imports,
+            sorted_siblings,
+            ctx,
+            graph,
             defined_names,
         )
         if target is None or target == from_path:
@@ -425,8 +529,9 @@ def _resolve_c_type_refs(
         if (name, target) in seen_targets:
             continue
         seen_targets.add((name, target))
-        _add_or_merge_type_use_edge(graph, src=from_path, dst=target,
-                                    type_name=name, origin=ref.origin)
+        _add_or_merge_type_use_edge(
+            graph, src=from_path, dst=target, type_name=name, origin=ref.origin
+        )
         emitted += 1
     return emitted
 
@@ -436,8 +541,8 @@ def _find_c_type_file(
     from_path: str,
     sorted_imports: list[str],
     sorted_siblings: list[str],
-    ctx: "ResolverContext",
-    graph: "nx.DiGraph",
+    ctx: ResolverContext,
+    graph: nx.DiGraph,
     defined_names: dict[str, set[str]],
 ) -> str | None:
     """Find the file defining *type_name*, preferring ``#include``d headers.
@@ -468,10 +573,11 @@ def _find_c_type_file(
 # Strategy: TypeScript / JavaScript
 # ---------------------------------------------------------------------------
 
+
 def _resolve_ts_type_refs(
     parsed: ParsedFile,
-    ctx: "ResolverContext",
-    graph: "nx.DiGraph",
+    ctx: ResolverContext,
+    graph: nx.DiGraph,
     defined_names: dict[str, set[str]],
 ) -> int:
     """Resolve TS/JS ``@param.type`` captures via import bindings + stem map.
@@ -537,9 +643,7 @@ def _resolve_ts_type_refs(
             continue
         target = name_to_source.get(name) or namespace_to_source.get(name)
         if target is None:
-            target = _find_ts_type_in_stem_map(
-                name, from_path, ctx, graph, defined_names
-            )
+            target = _find_ts_type_in_stem_map(name, from_path, ctx, graph, defined_names)
         if target is None or target == from_path:
             continue
         if (name, target) in seen:
@@ -565,8 +669,8 @@ def _resolve_ts_type_refs(
 def _find_ts_type_in_stem_map(
     type_name: str,
     from_path: str,
-    ctx: "ResolverContext",
-    graph: "nx.DiGraph",
+    ctx: ResolverContext,
+    graph: nx.DiGraph,
     defined_names: dict[str, set[str]],
 ) -> str | None:
     """Locate ``type_name`` via the global stem map.
@@ -594,10 +698,11 @@ def _find_ts_type_in_stem_map(
 # Strategy: Java / Kotlin (shared JVM workspace)
 # ---------------------------------------------------------------------------
 
+
 def _resolve_jvm_type_refs(
     parsed: ParsedFile,
-    ctx: "ResolverContext",
-    graph: "nx.DiGraph",
+    ctx: ResolverContext,
+    graph: nx.DiGraph,
     defined_names: dict[str, set[str]],
 ) -> int:
     """Resolve Java / Kotlin ``@param.type`` captures via ``JvmWorkspaceIndex``.
@@ -681,15 +786,14 @@ def _find_jvm_type_file(
 # Strategy registry
 # ---------------------------------------------------------------------------
 
-Strategy = Callable[
-    [ParsedFile, "ResolverContext", "nx.DiGraph", dict[str, set[str]]], int
-]
+Strategy = Callable[[ParsedFile, "ResolverContext", "nx.DiGraph", dict[str, set[str]]], int]
 
 # Add new languages here — see module docstring. Keep the entries
 # tightly scoped: each strategy must only touch its own language's
 # index, never share resolver state across languages.
 _STRATEGIES: dict[str, Strategy] = {
-    "csharp": _resolve_csharp_type_refs,
+    "csharp": _resolve_dotnet_type_refs,
+    "vbnet": _resolve_dotnet_type_refs,
     "rust": _resolve_rust_type_refs,
     "go": _resolve_go_type_refs,
     "c": _resolve_c_type_refs,
@@ -703,8 +807,8 @@ _STRATEGIES: dict[str, Strategy] = {
 
 def resolve_type_refs(
     parsed_files: dict[str, ParsedFile],
-    ctx: "ResolverContext",
-    graph: "nx.DiGraph",
+    ctx: ResolverContext,
+    graph: nx.DiGraph,
 ) -> dict[str, int]:
     """Dispatch each parsed file to its language's type-ref strategy.
 
@@ -729,8 +833,9 @@ def resolve_type_refs(
 # Edge writer
 # ---------------------------------------------------------------------------
 
+
 def _add_or_merge_type_use_edge(
-    graph: "nx.DiGraph",
+    graph: nx.DiGraph,
     src: str,
     dst: str,
     type_name: str,

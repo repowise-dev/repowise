@@ -42,10 +42,25 @@ _DI_GENERIC_RE = re.compile(
     r"|Middleware)"
     r"\s*<\s*([\w.]+)\s*(?:,\s*([\w.]+)\s*)?>"
 )
+# VB generic-argument syntax is `(Of T[, T2])` rather than `<T[, T2]>` —
+# kept as a separate pattern (not merged into one alternation) so neither
+# stays legible; call sites chain both iterators together.
+_DI_GENERIC_RE_VB = re.compile(
+    r"\.\s*(?:Add|Map|Use)"
+    r"(?:Scoped|Singleton|Transient|HostedService"
+    r"|DbContext(?:Pool|Factory)?"
+    r"|HttpClient|Options"
+    r"|GrpcService|GrpcClient|Hub|SignalR"
+    r"|Controllers?"
+    r"|Middleware)"
+    r"\s*\(\s*Of\s+([\w.]+)\s*(?:,\s*([\w.]+)\s*)?\)",
+    re.IGNORECASE,
+)
 
 # Configure<TOptions>(...) — options binding, very common in ASP.NET
 # Core. Same shape as DI registration: argument type is the consumer.
 _CONFIGURE_RE = re.compile(r"\.\s*Configure\s*<\s*([\w.]+)\s*>")
+_CONFIGURE_RE_VB = re.compile(r"\.\s*Configure\s*\(\s*Of\s+([\w.]+)\s*\)", re.IGNORECASE)
 
 # eventBus.Subscribe<TIntegrationEvent, THandler>() and the matching
 # UnsubscribeDynamic / SubscribeDynamic forms used by integration
@@ -53,6 +68,10 @@ _CONFIGURE_RE = re.compile(r"\.\s*Configure\s*<\s*([\w.]+)\s*>")
 # microservices that the static graph never sees.
 _EVENT_BUS_SUBSCRIBE_RE = re.compile(
     r"\.\s*(?:Un)?Subscribe(?:Dynamic)?\s*<\s*([\w.]+)\s*(?:,\s*([\w.]+)\s*)?>"
+)
+_EVENT_BUS_SUBSCRIBE_RE_VB = re.compile(
+    r"\.\s*(?:Un)?Subscribe(?:Dynamic)?\s*\(\s*Of\s+([\w.]+)\s*(?:,\s*([\w.]+)\s*)?\)",
+    re.IGNORECASE,
 )
 
 # Activator.CreateInstance(typeof(Foo)) / Activator.CreateInstance("Acme.Foo")
@@ -65,6 +84,19 @@ _TYPE_GETTYPE_RE = re.compile(r"Type\.GetType\s*\(\s*[\"']([\w.]+)[\"']")
 # [assembly: InternalsVisibleTo("Other.Tests")]
 _INTERNALS_VISIBLE_RE = re.compile(
     r"\[\s*assembly\s*:\s*InternalsVisibleTo\s*\(\s*[\"']([^\"']+)[\"']"
+)
+
+# C#'s class/interface/struct/record/enum keywords vs. VB's
+# Class/Interface/Structure/Module/Enum — used to index type declarations
+# so the hint patterns above can resolve a target type to its file
+# regardless of which of the two languages declares it.
+_CS_TYPE_DECL_RE = re.compile(
+    r"\b(?:class|interface|struct|record(?:\s+(?:class|struct))?|enum)\s+([A-Z]\w*)"
+)
+_VB_TYPE_DECL_RE = re.compile(
+    r"^[ \t]*(?:(?:Public|Private|Protected|Friend|MustInherit|NotInheritable|Partial)\s+)*"
+    r"(?:Class|Interface|Structure|Enum|Module)\s+([A-Za-z_]\w*)",
+    re.MULTILINE | re.IGNORECASE,
 )
 
 # ``nameof(TypeName)`` — used heavily for DI key strings (e.g.
@@ -103,25 +135,25 @@ class DotNetDynamicHints(DynamicHintExtractor):
         # positives is the dead-code analyser's job, but missing edges
         # cause real services to be flagged dead with high confidence.
         type_to_files: dict[str, list[str]] = {}
-        cs_files: list[tuple[Path, str]] = []  # (path, text)
+        cs_files: list[tuple[Path, str]] = []  # (path, text) — C# and VB.NET both
         repo_root_resolved = repo_root.resolve()
-        for cs in self._rglob(repo_root, "*.cs"):
+        for src_file in (*self._rglob(repo_root, "*.cs"), *self._rglob(repo_root, "*.vb")):
             try:
-                rel_path = cs.resolve().relative_to(repo_root_resolved)
+                rel_path = src_file.resolve().relative_to(repo_root_resolved)
             except ValueError:
                 continue
             if any(part in _SKIP_DIRS for part in rel_path.parts):
                 continue
             try:
-                text = cs.read_text(encoding="utf-8-sig", errors="ignore")
+                text = src_file.read_text(encoding="utf-8-sig", errors="ignore")
             except OSError:
                 continue
             rel = rel_path.as_posix()
-            cs_files.append((cs, text))
-            for match in re.finditer(
-                r"\b(?:class|interface|struct|record(?:\s+(?:class|struct))?|enum)\s+([A-Z]\w*)",
-                text,
-            ):
+            cs_files.append((src_file, text))
+            type_decl_re = (
+                _VB_TYPE_DECL_RE if src_file.suffix.lower() == ".vb" else _CS_TYPE_DECL_RE
+            )
+            for match in type_decl_re.finditer(text):
                 name = match.group(1)
                 bucket = type_to_files.setdefault(name, [])
                 if rel not in bucket:
@@ -139,8 +171,8 @@ class DotNetDynamicHints(DynamicHintExtractor):
             except ValueError:
                 continue
 
-            # ---- DI: AddScoped<IFoo, Foo>() ----
-            for match in _DI_GENERIC_RE.finditer(text):
+            # ---- DI: AddScoped<IFoo, Foo>() / AddScoped(Of IFoo, Foo)() ----
+            for match in (*_DI_GENERIC_RE.finditer(text), *_DI_GENERIC_RE_VB.finditer(text)):
                 first = match.group(1)
                 second = match.group(2) if match.group(2) else None
                 # When two type args are present, edge: registration site → impl
@@ -174,8 +206,8 @@ class DotNetDynamicHints(DynamicHintExtractor):
                                     )
                                 )
 
-            # ---- Configure<TOptions>(section) ----
-            for match in _CONFIGURE_RE.finditer(text):
+            # ---- Configure<TOptions>(section) / Configure(Of TOptions)(section) ----
+            for match in (*_CONFIGURE_RE.finditer(text), *_CONFIGURE_RE_VB.finditer(text)):
                 for target in _files_for(match.group(1)):
                     if target != rel:
                         edges.append(
@@ -187,12 +219,13 @@ class DotNetDynamicHints(DynamicHintExtractor):
                             )
                         )
 
-            # ---- eventBus.Subscribe<TEvent, THandler>() ----
-            for match in _EVENT_BUS_SUBSCRIBE_RE.finditer(text):
+            # ---- eventBus.Subscribe<TEvent, THandler>() / Subscribe(Of TEvent, THandler)() ----
+            for match in (
+                *_EVENT_BUS_SUBSCRIBE_RE.finditer(text),
+                *_EVENT_BUS_SUBSCRIBE_RE_VB.finditer(text),
+            ):
                 event_targets = _files_for(match.group(1))
-                handler_targets = (
-                    _files_for(match.group(2)) if match.group(2) else []
-                )
+                handler_targets = _files_for(match.group(2)) if match.group(2) else []
                 for tgt in event_targets:
                     if tgt != rel:
                         edges.append(

@@ -74,7 +74,7 @@ ingestion/
     registry.py        #   LanguageRegistry lookup interface + REGISTRY singleton
     specs/             #   one module per language, each exporting `SPEC`
       __init__.py      #     aggregates every SPEC into ordered `ALL_SPECS`
-      python.py  typescript.py  go.py  rust.py  csharp.py  …  (44 tags)
+      python.py  typescript.py  go.py  rust.py  csharp.py  vbnet.py  …  (45 tags)
     python_modules.py  #   dotted-module <-> file index (src / monorepo / PEP 420)
   extractors/          # Per-language AST extraction
     visibility.py      #   symbol visibility (public/private/protected)
@@ -83,11 +83,13 @@ ingestion/
     bindings/          #   import name + alias binding extraction (per-lang)
       __init__.py      #     extract_import_bindings dispatcher
       python.py  ts_js.py  go.py  rust.py  java.py  kotlin.py
-      ruby.py    csharp.py swift.py scala.py php.py cpp.py dart.py
+      ruby.py    csharp.py vbnet.py swift.py scala.py php.py cpp.py dart.py
     heritage/          #   inheritance/interface/trait extraction (per-lang)
       __init__.py      #     extract_heritage + HERITAGE_EXTRACTORS dispatcher
       python.py  ts_js.py  java.py  go.py    rust.py  cpp.py
-      kotlin.py  ruby.py   swift.py csharp.py scala.py php.py dart.py
+      kotlin.py  ruby.py   swift.py csharp.py vbnet.py scala.py php.py dart.py
+                       #   vbnet.py is a regex fallback, not AST — the
+                       #   grammar fails to parse Inherits/Implements
   resolvers/           # Per-language import resolution
     python.py          #   dotted imports via module index: __init__.py
                        #   barrels, src/ + monorepo packages/*/src, namespace pkgs
@@ -97,7 +99,8 @@ ingestion/
     cpp.py             #   compile_commands.json include paths
     kotlin.py          #   package-to-directory mapping (shared JVM index)
     ruby.py            #   require/require_relative resolution
-    csharp.py / dotnet/ #  namespace-based + MSBuild project graph
+    csharp.py / vbnet.py / dotnet/ #  namespace-based + MSBuild project graph,
+                       #   shared between the two .NET languages
     swift.py           #   module import resolution
     scala.py           #   package-to-directory mapping (shared JVM index)
     php.py             #   namespace/PSR-4 resolution

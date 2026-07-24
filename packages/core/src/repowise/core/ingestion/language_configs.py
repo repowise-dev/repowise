@@ -25,6 +25,7 @@ from .extractors.visibility import (
     scala_visibility,
     swift_visibility,
     ts_visibility,
+    vbnet_visibility,
 )
 
 
@@ -260,6 +261,37 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
                 "record_declaration",
                 "namespace_declaration",
                 "file_scoped_namespace_declaration",
+            }
+        ),
+    ),
+    "vbnet": LanguageConfig(
+        symbol_node_types={
+            "class_block": "class",
+            "interface_block": "interface",
+            "structure_block": "struct",
+            "module_block": "module",
+            "enum_block": "enum",
+            "enum_member": "variable",
+            "method_declaration": "method",
+            "constructor_declaration": "function",
+            "property_declaration": "variable",
+            "field_declaration": "variable",
+            "delegate_declaration": "function",
+            "event_declaration": "variable",
+            "namespace_block": "module",
+        },
+        import_node_types=["imports_statement"],
+        export_node_types=[],
+        visibility_fn=vbnet_visibility,
+        parent_extraction="nesting",
+        parent_class_types=frozenset(
+            {
+                "class_block",
+                "interface_block",
+                "structure_block",
+                "module_block",
+                "enum_block",
+                "namespace_block",
             }
         ),
     ),

@@ -260,9 +260,7 @@ def _head_type_identifier(type_node: Node, src: str) -> str | None:
     if head_node is None:
         return None
 
-    if head_node.type == "identifier":
-        text = _node_text(head_node, src)
-    elif head_node.type == "predefined_type":
+    if head_node.type == "identifier" or head_node.type == "predefined_type":
         text = _node_text(head_node, src)
     elif head_node.type == "generic_name":
         name_child = head_node.child_by_field_name("name") or next(
@@ -281,7 +279,7 @@ def _head_type_identifier(type_node: Node, src: str) -> str | None:
         ident = _first_descendant(head_node, "identifier")
         text = _node_text(ident, src) if ident else ""
 
-    if not text or not text[0].isalpha() and text[0] != "_":
+    if not text or (not text[0].isalpha() and text[0] != "_"):
         return None
     if text in _BUILTIN_CSHARP_TYPES:
         return None
@@ -331,10 +329,28 @@ def _classify_param_origin(type_node: Node) -> str:
 # are predeclared identifiers, not keywords, but behave as builtins here.
 _GO_BUILTIN_TYPES: frozenset[str] = frozenset(
     {
-        "string", "bool", "byte", "rune", "error", "any", "comparable",
-        "int", "int8", "int16", "int32", "int64",
-        "uint", "uint8", "uint16", "uint32", "uint64", "uintptr",
-        "float32", "float64", "complex64", "complex128",
+        "string",
+        "bool",
+        "byte",
+        "rune",
+        "error",
+        "any",
+        "comparable",
+        "int",
+        "int8",
+        "int16",
+        "int32",
+        "int64",
+        "uint",
+        "uint8",
+        "uint16",
+        "uint32",
+        "uint64",
+        "uintptr",
+        "float32",
+        "float64",
+        "complex64",
+        "complex128",
     }
 )
 
@@ -422,13 +438,40 @@ def _go_head_type_identifier(type_node: Node, src: str) -> str | None:
 # typedefs that the grammar surfaces as plain ``type_identifier`` nodes.
 _C_BUILTIN_TYPES: frozenset[str] = frozenset(
     {
-        "void", "char", "short", "int", "long", "float", "double",
-        "signed", "unsigned", "bool", "_Bool", "_Complex",
-        "size_t", "ssize_t", "rsize_t", "ptrdiff_t", "intptr_t", "uintptr_t",
-        "int8_t", "int16_t", "int32_t", "int64_t",
-        "uint8_t", "uint16_t", "uint32_t", "uint64_t",
-        "intmax_t", "uintmax_t", "wchar_t", "wint_t", "char16_t", "char32_t",
-        "va_list", "FILE",
+        "void",
+        "char",
+        "short",
+        "int",
+        "long",
+        "float",
+        "double",
+        "signed",
+        "unsigned",
+        "bool",
+        "_Bool",
+        "_Complex",
+        "size_t",
+        "ssize_t",
+        "rsize_t",
+        "ptrdiff_t",
+        "intptr_t",
+        "uintptr_t",
+        "int8_t",
+        "int16_t",
+        "int32_t",
+        "int64_t",
+        "uint8_t",
+        "uint16_t",
+        "uint32_t",
+        "uint64_t",
+        "intmax_t",
+        "uintmax_t",
+        "wchar_t",
+        "wint_t",
+        "char16_t",
+        "char32_t",
+        "va_list",
+        "FILE",
     }
 )
 
@@ -470,8 +513,10 @@ def _c_head_type_identifier(type_node: Node, src: str) -> str | None:
         if kind == "qualified_identifier":
             # ``NS::Type`` — take the rightmost name component.
             name = node.child_by_field_name("name")
-            node = name if name is not None else (
-                node.named_children[-1] if node.named_children else None
+            node = (
+                name
+                if name is not None
+                else (node.named_children[-1] if node.named_children else None)
             )
             continue
         # type_qualifier (const/volatile) wrappers and anything else:
@@ -504,40 +549,114 @@ def _c_head_type_identifier(type_node: Node, src: str) -> str | None:
 _TS_BUILTIN_TYPES: frozenset[str] = frozenset(
     {
         # Primitives + structural
-        "string", "number", "boolean", "bigint", "symbol",
-        "void", "null", "undefined", "never", "unknown", "any",
-        "object", "this", "Object",
+        "string",
+        "number",
+        "boolean",
+        "bigint",
+        "symbol",
+        "void",
+        "null",
+        "undefined",
+        "never",
+        "unknown",
+        "any",
+        "object",
+        "this",
+        "Object",
         # Built-in containers / wrappers. ``Map`` / ``Set`` / ``WeakMap``
         # / ``WeakSet`` are intentionally **not** listed: they're routinely
         # shadowed by user-defined types (Hono ``interface Set<E>`` /
         # ``interface Get<E>`` is the canonical case) and filtering them
         # at extraction time hides the same-file rescue.
-        "Array", "ReadonlyArray", "Promise", "Awaited", "WeakRef",
-        "Date", "RegExp", "Error", "TypeError", "RangeError",
-        "SyntaxError", "ReferenceError", "EvalError",
-        "Function", "CallableFunction", "NewableFunction",
-        "ArrayBuffer", "SharedArrayBuffer", "DataView",
-        "Int8Array", "Uint8Array", "Uint8ClampedArray",
-        "Int16Array", "Uint16Array", "Int32Array", "Uint32Array",
-        "Float32Array", "Float64Array", "BigInt64Array", "BigUint64Array",
-        "Iterable", "AsyncIterable", "Iterator", "AsyncIterator",
-        "IterableIterator", "AsyncIterableIterator",
-        "Generator", "AsyncGenerator", "GeneratorFunction",
-        "Proxy", "Reflect", "JSON", "Math",
+        "Array",
+        "ReadonlyArray",
+        "Promise",
+        "Awaited",
+        "WeakRef",
+        "Date",
+        "RegExp",
+        "Error",
+        "TypeError",
+        "RangeError",
+        "SyntaxError",
+        "ReferenceError",
+        "EvalError",
+        "Function",
+        "CallableFunction",
+        "NewableFunction",
+        "ArrayBuffer",
+        "SharedArrayBuffer",
+        "DataView",
+        "Int8Array",
+        "Uint8Array",
+        "Uint8ClampedArray",
+        "Int16Array",
+        "Uint16Array",
+        "Int32Array",
+        "Uint32Array",
+        "Float32Array",
+        "Float64Array",
+        "BigInt64Array",
+        "BigUint64Array",
+        "Iterable",
+        "AsyncIterable",
+        "Iterator",
+        "AsyncIterator",
+        "IterableIterator",
+        "AsyncIterableIterator",
+        "Generator",
+        "AsyncGenerator",
+        "GeneratorFunction",
+        "Proxy",
+        "Reflect",
+        "JSON",
+        "Math",
         # Utility types
-        "Record", "Partial", "Required", "Readonly",
-        "Pick", "Omit", "Exclude", "Extract", "NonNullable",
-        "Parameters", "ConstructorParameters", "ReturnType",
-        "InstanceType", "ThisType", "ThisParameterType", "OmitThisParameter",
-        "Uppercase", "Lowercase", "Capitalize", "Uncapitalize",
+        "Record",
+        "Partial",
+        "Required",
+        "Readonly",
+        "Pick",
+        "Omit",
+        "Exclude",
+        "Extract",
+        "NonNullable",
+        "Parameters",
+        "ConstructorParameters",
+        "ReturnType",
+        "InstanceType",
+        "ThisType",
+        "ThisParameterType",
+        "OmitThisParameter",
+        "Uppercase",
+        "Lowercase",
+        "Capitalize",
+        "Uncapitalize",
         # Common DOM / Node globals that show up everywhere as parameter
         # types — listing here is a perf optimisation, not correctness.
-        "URL", "URLSearchParams", "Request", "Response", "Headers",
-        "Blob", "File", "FormData", "FileReader",
-        "AbortController", "AbortSignal", "AbortError",
-        "EventTarget", "Event", "CustomEvent", "MessageEvent",
-        "Element", "HTMLElement", "Node", "Document", "Window",
-        "Buffer", "NodeJS",
+        "URL",
+        "URLSearchParams",
+        "Request",
+        "Response",
+        "Headers",
+        "Blob",
+        "File",
+        "FormData",
+        "FileReader",
+        "AbortController",
+        "AbortSignal",
+        "AbortError",
+        "EventTarget",
+        "Event",
+        "CustomEvent",
+        "MessageEvent",
+        "Element",
+        "HTMLElement",
+        "Node",
+        "Document",
+        "Window",
+        "Buffer",
+        "NodeJS",
     }
 )
 
@@ -581,11 +700,23 @@ def _ts_head_type_identifier(type_node: Node, src: str) -> str | None:
             break
         if kind == "predefined_type":
             return None
-        if kind in ("union_type", "intersection_type", "function_type",
-                    "constructor_type", "object_type", "literal_type",
-                    "tuple_type", "conditional_type", "mapped_type",
-                    "index_type_query", "type_query", "lookup_type",
-                    "template_literal_type", "infer_type", "readonly_type"):
+        if kind in (
+            "union_type",
+            "intersection_type",
+            "function_type",
+            "constructor_type",
+            "object_type",
+            "literal_type",
+            "tuple_type",
+            "conditional_type",
+            "mapped_type",
+            "index_type_query",
+            "type_query",
+            "lookup_type",
+            "template_literal_type",
+            "infer_type",
+            "readonly_type",
+        ):
             return None
         if kind == "generic_type":
             # ``Foo<T>`` — descend to the bare name; generic args are
@@ -599,8 +730,7 @@ def _ts_head_type_identifier(type_node: Node, src: str) -> str | None:
         if kind == "nested_type_identifier":
             # ``ns.Foo`` — rightmost name component is the type itself.
             name = node.child_by_field_name("name") or next(
-                (c for c in reversed(node.named_children)
-                 if c.type == "type_identifier"),
+                (c for c in reversed(node.named_children) if c.type == "type_identifier"),
                 None,
             )
             node = name
@@ -654,45 +784,127 @@ def _ts_head_type_identifier(type_node: Node, src: str) -> str | None:
 _JAVA_BUILTIN_TYPES: frozenset[str] = frozenset(
     {
         # Java primitives + builtin type nodes
-        "boolean", "byte", "short", "int", "long", "float", "double",
-        "char", "void", "var",
+        "boolean",
+        "byte",
+        "short",
+        "int",
+        "long",
+        "float",
+        "double",
+        "char",
+        "void",
+        "var",
         # java.lang (auto-imported)
-        "Object", "String", "Class", "Enum", "Record",
-        "Integer", "Long", "Double", "Float", "Boolean", "Character",
-        "Byte", "Short", "Number", "Void",
-        "Thread", "Runnable", "Runtime", "Process", "ProcessBuilder",
-        "Throwable", "Exception", "RuntimeException", "Error",
-        "IllegalArgumentException", "IllegalStateException",
-        "NullPointerException", "UnsupportedOperationException",
-        "IndexOutOfBoundsException", "ClassCastException",
-        "ArithmeticException", "SecurityException", "ClassNotFoundException",
-        "InterruptedException", "CloneNotSupportedException",
-        "StringBuilder", "StringBuffer",
-        "Comparable", "Iterable", "AutoCloseable", "Cloneable",
-        "Override", "Deprecated", "SuppressWarnings",
-        "FunctionalInterface", "SafeVarargs",
-        "Math", "System",
+        "Object",
+        "String",
+        "Class",
+        "Enum",
+        "Record",
+        "Integer",
+        "Long",
+        "Double",
+        "Float",
+        "Boolean",
+        "Character",
+        "Byte",
+        "Short",
+        "Number",
+        "Void",
+        "Thread",
+        "Runnable",
+        "Runtime",
+        "Process",
+        "ProcessBuilder",
+        "Throwable",
+        "Exception",
+        "RuntimeException",
+        "Error",
+        "IllegalArgumentException",
+        "IllegalStateException",
+        "NullPointerException",
+        "UnsupportedOperationException",
+        "IndexOutOfBoundsException",
+        "ClassCastException",
+        "ArithmeticException",
+        "SecurityException",
+        "ClassNotFoundException",
+        "InterruptedException",
+        "CloneNotSupportedException",
+        "StringBuilder",
+        "StringBuffer",
+        "Comparable",
+        "Iterable",
+        "AutoCloseable",
+        "Cloneable",
+        "Override",
+        "Deprecated",
+        "SuppressWarnings",
+        "FunctionalInterface",
+        "SafeVarargs",
+        "Math",
+        "System",
         # java.util ubiquitous containers (almost always external when used
         # as a type position; the actual element type is captured separately
         # by the same query via the type_arguments inner capture).
-        "List", "ArrayList", "LinkedList",
-        "Map", "HashMap", "LinkedHashMap", "TreeMap", "ConcurrentHashMap",
-        "Set", "HashSet", "LinkedHashSet", "TreeSet",
-        "Collection", "Collections", "Iterator", "Optional",
-        "Queue", "Deque", "ArrayDeque", "Stack",
+        "List",
+        "ArrayList",
+        "LinkedList",
+        "Map",
+        "HashMap",
+        "LinkedHashMap",
+        "TreeMap",
+        "ConcurrentHashMap",
+        "Set",
+        "HashSet",
+        "LinkedHashSet",
+        "TreeSet",
+        "Collection",
+        "Collections",
+        "Iterator",
+        "Optional",
+        "Queue",
+        "Deque",
+        "ArrayDeque",
+        "Stack",
         # java.util.function
-        "Function", "BiFunction", "Consumer", "BiConsumer", "Supplier",
-        "Predicate", "BiPredicate", "UnaryOperator", "BinaryOperator",
+        "Function",
+        "BiFunction",
+        "Consumer",
+        "BiConsumer",
+        "Supplier",
+        "Predicate",
+        "BiPredicate",
+        "UnaryOperator",
+        "BinaryOperator",
         # java.util.concurrent ubiquitous
-        "Future", "CompletableFuture", "Executor", "ExecutorService",
-        "CountDownLatch", "Semaphore", "AtomicBoolean", "AtomicInteger",
-        "AtomicLong", "AtomicReference",
+        "Future",
+        "CompletableFuture",
+        "Executor",
+        "ExecutorService",
+        "CountDownLatch",
+        "Semaphore",
+        "AtomicBoolean",
+        "AtomicInteger",
+        "AtomicLong",
+        "AtomicReference",
         # java.time
-        "Instant", "Duration", "LocalDate", "LocalTime", "LocalDateTime",
-        "ZonedDateTime", "OffsetDateTime", "Period", "ZoneId",
+        "Instant",
+        "Duration",
+        "LocalDate",
+        "LocalTime",
+        "LocalDateTime",
+        "ZonedDateTime",
+        "OffsetDateTime",
+        "Period",
+        "ZoneId",
         # java.io
-        "File", "InputStream", "OutputStream", "Reader", "Writer",
-        "IOException", "Serializable",
+        "File",
+        "InputStream",
+        "OutputStream",
+        "Reader",
+        "Writer",
+        "IOException",
+        "Serializable",
     }
 )
 
@@ -719,7 +931,9 @@ def _java_head_type_identifier(type_node: Node, src: str) -> str | None:
             text = _node_text(node, src)
             break
         if kind in (
-            "void_type", "integral_type", "floating_point_type",
+            "void_type",
+            "integral_type",
+            "floating_point_type",
             "boolean_type",
         ):
             return None
@@ -734,8 +948,11 @@ def _java_head_type_identifier(type_node: Node, src: str) -> str | None:
             # ``Foo<T>`` — descend to the bare name; generic args are
             # captured separately by their own type_arguments inner captures.
             inner = next(
-                (c for c in node.named_children
-                 if c.type in ("type_identifier", "scoped_type_identifier")),
+                (
+                    c
+                    for c in node.named_children
+                    if c.type in ("type_identifier", "scoped_type_identifier")
+                ),
                 None,
             )
             node = inner
@@ -748,8 +965,11 @@ def _java_head_type_identifier(type_node: Node, src: str) -> str | None:
         if kind == "annotated_type":
             # ``@NonNull Foo`` — last named child is the type.
             node = next(
-                (c for c in reversed(node.named_children)
-                 if c.type not in ("annotation", "marker_annotation")),
+                (
+                    c
+                    for c in reversed(node.named_children)
+                    if c.type not in ("annotation", "marker_annotation")
+                ),
                 None,
             )
             continue
@@ -775,27 +995,80 @@ def _java_head_type_identifier(type_node: Node, src: str) -> str | None:
 _KOTLIN_BUILTIN_TYPES: frozenset[str] = frozenset(
     {
         # Kotlin primitives (kotlin package, auto-imported)
-        "Boolean", "Byte", "Short", "Int", "Long", "Float", "Double", "Char",
-        "String", "Unit", "Nothing", "Any", "Number",
-        "Array", "IntArray", "LongArray", "ByteArray", "ShortArray",
-        "FloatArray", "DoubleArray", "CharArray", "BooleanArray",
-        "List", "MutableList", "ArrayList",
-        "Map", "MutableMap", "HashMap", "LinkedHashMap",
-        "Set", "MutableSet", "HashSet", "LinkedHashSet",
-        "Collection", "MutableCollection",
-        "Iterable", "MutableIterable", "Iterator", "MutableIterator",
-        "Sequence", "Pair", "Triple", "Result",
-        "Comparable", "Comparator",
-        "Throwable", "Exception", "RuntimeException", "Error",
-        "IllegalArgumentException", "IllegalStateException",
-        "NullPointerException", "UnsupportedOperationException",
-        "IndexOutOfBoundsException", "ClassCastException",
-        "Lazy", "Regex", "Range", "IntRange", "LongRange", "CharRange",
-        "Enum", "Annotation",
+        "Boolean",
+        "Byte",
+        "Short",
+        "Int",
+        "Long",
+        "Float",
+        "Double",
+        "Char",
+        "String",
+        "Unit",
+        "Nothing",
+        "Any",
+        "Number",
+        "Array",
+        "IntArray",
+        "LongArray",
+        "ByteArray",
+        "ShortArray",
+        "FloatArray",
+        "DoubleArray",
+        "CharArray",
+        "BooleanArray",
+        "List",
+        "MutableList",
+        "ArrayList",
+        "Map",
+        "MutableMap",
+        "HashMap",
+        "LinkedHashMap",
+        "Set",
+        "MutableSet",
+        "HashSet",
+        "LinkedHashSet",
+        "Collection",
+        "MutableCollection",
+        "Iterable",
+        "MutableIterable",
+        "Iterator",
+        "MutableIterator",
+        "Sequence",
+        "Pair",
+        "Triple",
+        "Result",
+        "Comparable",
+        "Comparator",
+        "Throwable",
+        "Exception",
+        "RuntimeException",
+        "Error",
+        "IllegalArgumentException",
+        "IllegalStateException",
+        "NullPointerException",
+        "UnsupportedOperationException",
+        "IndexOutOfBoundsException",
+        "ClassCastException",
+        "Lazy",
+        "Regex",
+        "Range",
+        "IntRange",
+        "LongRange",
+        "CharRange",
+        "Enum",
+        "Annotation",
         # kotlin.io / kotlin.text / kotlin.collections ubiquitous
-        "Reader", "Writer", "BufferedReader", "BufferedWriter",
+        "Reader",
+        "Writer",
+        "BufferedReader",
+        "BufferedWriter",
         # Coroutines + JVM common
-        "Object", "Function", "Runnable", "Class", "Void",
+        "Object",
+        "Function",
+        "Runnable",
+        "Class",
+        "Void",
     }
 )
 
@@ -860,10 +1133,93 @@ def _kotlin_head_type_identifier(type_node: Node, src: str) -> str | None:
     return text
 
 
+# Frequently appearing BCL types expressed as ordinary class names in VB
+# (VB's own primitive keywords — Integer, String, Boolean, ... — parse as
+# a distinct `primitive_type` node and are filtered structurally below,
+# never reaching this set).
+_BUILTIN_VBNET_TYPES: frozenset[str] = frozenset(
+    {
+        "Task",
+        "ValueTask",
+        "CancellationToken",
+        "Action",
+        "Func",
+        "Type",
+        "Exception",
+        "DateTime",
+        "DateTimeOffset",
+        "TimeSpan",
+        "Guid",
+        "Uri",
+        "Stream",
+        "Object",
+        "Int16",
+        "Int32",
+        "Int64",
+        "UInt16",
+        "UInt32",
+        "UInt64",
+    }
+)
+
+
+def _vbnet_head_type_identifier(type_node: Node, src: str) -> str | None:
+    """Return the head identifier of a VB.NET type expression, or None.
+
+    Examples:
+        ``IUserRepository``              -> "IUserRepository"
+        ``Acme.Domain.IUserRepository``   -> "IUserRepository"
+        ``List(Of Widget)``               -> "List"
+        ``Integer`` / ``String``          -> None (VB keyword primitive)
+
+    The captured ``@param.type`` node is always the grammar's ``type``
+    wrapper (see queries/vbnet.scm) around one of: ``primitive_type``
+    (VB keyword builtin — filtered), ``namespace_name`` (possibly dotted —
+    take the rightmost segment, unlike C#'s left-to-right default
+    traversal), or ``generic_type`` (unwrap to its own namespace_name
+    head; the ``(Of ...)`` argument list is not recursed into, matching
+    C#'s ``generic_name`` handling).
+    """
+    head_node: Node | None = type_node
+    if head_node is not None and head_node.type == "type" and head_node.child_count == 1:
+        head_node = head_node.children[0]
+
+    if head_node is None:
+        return None
+
+    if head_node.type == "primitive_type":
+        return None
+
+    if head_node.type == "generic_type":
+        head_node = next(
+            (c for c in head_node.children if c.type == "namespace_name"),
+            None,
+        )
+        if head_node is None:
+            return None
+
+    if head_node.type == "namespace_name":
+        idents = [c for c in head_node.children if c.type == "identifier"]
+        text = _node_text(idents[-1], src) if idents else ""
+    elif head_node.type == "identifier":
+        text = _node_text(head_node, src)
+    else:
+        ident = _first_descendant(head_node, "identifier")
+        text = _node_text(ident, src) if ident else ""
+
+    if not text or (not text[0].isalpha() and text[0] != "_"):
+        return None
+    if text in _BUILTIN_VBNET_TYPES:
+        return None
+    if len(text) == 1 and text.isupper():
+        return None
+    return text
+
+
 # Per-language head-identifier extractor for ``@param.type`` captures.
 # Defaults to the C#-shaped extractor; languages with a differently-shaped
 # type grammar register their own here.
-TYPE_HEAD_EXTRACTORS: dict[str, "Callable[[Node, str], str | None]"] = {
+TYPE_HEAD_EXTRACTORS: dict[str, Callable[[Node, str], str | None]] = {
     "go": _go_head_type_identifier,
     "c": _c_head_type_identifier,
     "cpp": _c_head_type_identifier,
@@ -871,6 +1227,7 @@ TYPE_HEAD_EXTRACTORS: dict[str, "Callable[[Node, str], str | None]"] = {
     "javascript": _ts_head_type_identifier,
     "java": _java_head_type_identifier,
     "kotlin": _kotlin_head_type_identifier,
+    "vbnet": _vbnet_head_type_identifier,
 }
 
 

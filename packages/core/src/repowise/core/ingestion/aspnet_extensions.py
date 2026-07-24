@@ -74,6 +74,21 @@ _EXTENSION_DEF_RE = re.compile(
     r"\b"
 )
 
+# VB has no `this`-parameter-modifier extension-method syntax — it marks
+# the method itself with an `<Extension()>` attribute (on the preceding
+# line) and takes its host type as an ordinary first parameter:
+#   <Extension()>
+#   Public Function MapCatalogApi(app As IEndpointRouteBuilder) As ...
+_EXTENSION_DEF_RE_VB = re.compile(
+    r"<\s*Extension\s*(?:\(\s*\))?\s*>\s*[\r\n]+\s*"
+    r"Public\s+(?:Shared\s+)?(?:Function|Sub)\s+"
+    r"(?P<name>(?:Map|Add|Use)\w*)\s*"
+    r"\(\s*\w+\s+As\s+"
+    r"(?P<host>[\w.]+)"
+    r"\b",
+    re.IGNORECASE,
+)
+
 
 _EXTENSION_CALL_RE = re.compile(r"\.\s*(?P<name>(?:Map|Add|Use)[A-Z]\w*)\s*\(")
 
@@ -89,7 +104,7 @@ def build_extension_index(cs_texts: dict[str, str]) -> dict[str, str]:
     index: dict[str, str] = {}
     host_allow = set(_ASPNET_HOST_TYPES)
     for path, text in cs_texts.items():
-        for m in _EXTENSION_DEF_RE.finditer(text):
+        for m in (*_EXTENSION_DEF_RE.finditer(text), *_EXTENSION_DEF_RE_VB.finditer(text)):
             host = m.group("host")
             # Tolerate ``Microsoft.Extensions.DependencyInjection.IServiceCollection``
             host_short = host.rsplit(".", 1)[-1]
@@ -150,9 +165,20 @@ def collect_csharp_texts(parsed_files: dict[str, Any], path_set: set[str]) -> di
     cache-friendly: large solutions otherwise read every .cs file
     twice from disk just for this analysis.
     """
+    return _collect_texts(parsed_files, path_set, "csharp")
+
+
+def collect_vbnet_texts(parsed_files: dict[str, Any], path_set: set[str]) -> dict[str, str]:
+    """Read each VB.NET file's source text once, keyed by repo-relative path."""
+    return _collect_texts(parsed_files, path_set, "vbnet")
+
+
+def _collect_texts(
+    parsed_files: dict[str, Any], path_set: set[str], language: str
+) -> dict[str, str]:
     texts: dict[str, str] = {}
     for path, parsed in parsed_files.items():
-        if parsed.file_info.language != "csharp":
+        if parsed.file_info.language != language:
             continue
         if path not in path_set:
             continue

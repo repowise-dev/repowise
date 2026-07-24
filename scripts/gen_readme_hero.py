@@ -146,7 +146,7 @@ for name, delta, col in findings:
 
 # ============ B: Graph ====================================================
 bx, by, bw, bh = ax + aw + GAP, TOP, 380, 352
-card(bx, by, bw, bh, "DEPENDENCY GRAPH", "16 languages")
+card(bx, by, bw, bh, "DEPENDENCY GRAPH", "17 languages")
 add(f'<rect x="{bx+18}" y="{by+46}" width="{bw-36}" height="240" rx="9" fill="{INSET}"/>')
 add(f'<clipPath id="gclip"><rect x="{bx+18}" y="{by+46}" width="{bw-36}" height="240" rx="9"/></clipPath>')
 add('<g clip-path="url(#gclip)">')

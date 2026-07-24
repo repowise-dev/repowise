@@ -17,6 +17,7 @@ const EXTENSION_MAP: Record<string, string> = {
   rb: "ruby",
   java: "java",
   cs: "csharp",
+  vb: "vbnet",
   cpp: "cpp",
   cc: "cpp",
   cxx: "cpp",
