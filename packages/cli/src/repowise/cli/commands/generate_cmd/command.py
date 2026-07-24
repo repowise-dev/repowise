@@ -1,12 +1,12 @@
-"""``repowise generate`` — write any subset of the wiki with a model.
+"""``repowise generate`` - write the subsystem (concept) pages with a model.
 
-The single, cost-gated entry point for turning template (unwritten) pages into
-LLM prose, or regenerating written ones. Selection comes in two shapes: explicit
-(all / unwritten / stale / path / page, unioned) and ranked by importance
-(coverage / top). A bare ``generate`` on a terminal opens an interactive chooser
-(wiki state + coverage menu) instead of writing everything; piped / ``--yes`` /
-flagged runs default to ``--unwritten``. The cascade mode decides what happens to
-the pages that summarize a regenerated file.
+The single, cost-gated entry point for turning subsystem stubs into LLM prose, or
+regenerating written ones. It writes only the model-written page types (the
+concept tree and the overview); a structural page id is an error. Selection is
+explicit: all / unwritten / stale / path / page, unioned. A bare ``generate`` on
+a terminal prints the wiki state and writes the unwritten subsystem pages; piped
+/ ``--yes`` / flagged runs default to ``--unwritten``. The cascade mode decides
+what happens to the pages that summarize a regenerated concept page.
 """
 
 from __future__ import annotations

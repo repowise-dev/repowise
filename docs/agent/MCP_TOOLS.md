@@ -262,7 +262,7 @@ the **wiki**, instead of forcing a fallback to Grep for identifiers.
 | `mode` | string | No | `auto` (default) \| `concept` \| `symbol` \| `path` \| `hybrid` |
 | `kind` | string | No | `implementation` \| `test` \| `config` \| `doc` |
 | `symbol_kind` | string | No | Restrict symbol hits by kind (`function`, `class`, `method`, ...) |
-| `page_type` | string | No | `file_page` \| `module_page` \| `symbol_spotlight` (concept mode) |
+| `page_type` | string | No | Restrict to one page type. The two you will reach for are `file_page` (the always-on per-file docs) and `module_page` (the subsystem/concept pages). Other stored types (`repo_overview`, `layer_page`, `scc_page`, `api_contract`, `infra_page`, `symbol_spotlight`) also filter. |
 | `repo` | string | No | *(workspace only)* Target repo alias, or `"all"` to search across workspace |
 
 **Modes:**

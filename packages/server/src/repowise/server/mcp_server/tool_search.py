@@ -772,7 +772,10 @@ async def search_codebase(
     Args:
         query: identifier, path, or natural-language query.
         limit: max results (default 5).
-        page_type: file_page | module_page | symbol_spotlight (concept only).
+        page_type: restrict to one page type. Common: file_page (per-file
+            docs, always present) or module_page (subsystem/concept pages).
+            Any stored type filters (repo_overview, layer_page, scc_page,
+            api_contract, infra_page, symbol_spotlight).
         kind: implementation | test | config | doc (concept/symbol modes).
         repo: alias, or "all" for workspace-wide.
         mode: auto | concept | symbol | path | hybrid.

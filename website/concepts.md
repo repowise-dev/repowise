@@ -121,7 +121,7 @@ Generation is the only layer that requires an LLM provider. repowise sends struc
 
 Each page is stored in the database and linked to the file it describes. Pages have a freshness score — if the underlying file changes, the page is marked stale and queued for regeneration.
 
-**Skipping generation:** You can skip this layer entirely with `repowise init --index-only`. You'll still get the full dependency graph, git intelligence, dead code, and decision data — just no narrative docs. You can add generation later by running `repowise init` on an existing index.
+**Skipping the prose:** Run `repowise init --no-prose` and every page is still rendered from structure, with no key and no spend. You get the full dependency graph, git intelligence, dead code, and decision data, and a complete wiki whose subsystem (concept) pages are structural stubs rather than model prose. Fill that prose in later with `repowise generate` (or `repowise init --prose`) on the existing index.
 
 **Cost:** For a 200-file codebase, generation typically uses 150,000–300,000 tokens. The `--dry-run` flag shows you the estimated cost before committing.
 

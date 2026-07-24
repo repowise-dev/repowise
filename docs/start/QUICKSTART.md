@@ -39,15 +39,18 @@ No API key needed. If you want to be explicit that this run must not spend
 anything, spell it out:
 
 ```bash
-repowise init --yes --docs deterministic
+repowise init --yes --no-prose
 ```
 
 This is the step worth doing first, because it costs nothing and answers the
 question "is this useful on my codebase". It parses every file to an AST, builds
 the dependency graph, reads your git history, scores every file for code health,
 and finds dead code. It also renders a complete wiki from that structure: file,
-module, layer and cycle pages, the architecture diagram, the repo overview, API
-and infra pages, and the onboarding collection. No LLM calls, no key, no network.
+symbol, layer and cycle pages, the architecture diagram, the repo overview, API
+and infra pages, and the onboarding collection. Without a key the subsystem
+(concept) pages, the repo overview, the architecture diagram and the onboarding
+collection are structural stubs until you point a model at them. No LLM calls,
+no key, no network.
 
 Those pages are honest about where they came from. Each one ends with a footer
 saying it was derived from structure, and the repo overview covers composition,
@@ -146,10 +149,12 @@ file reads. That is the whole point.
 > the wiki, which step 2 already built, so they answer from pages rendered from
 > structure. `search_codebase` is full-text only until you configure an embedder.
 
-## 4. Optional: upgrade the wiki to model-written prose
+## 4. Optional: write the subsystem pages as model prose
 
-Everything so far was deterministic. When you want richer pages, point `repowise
-generate` at a provider and it rewrites the template pages as prose (and unlocks
+Every file page was already deterministic, and stays that way. The one layer a
+model adds is the subsystem (concept) tree: the numbered pages that describe how
+the codebase fits together above the file level. Without a key they are
+structural stubs; `repowise generate` fills them with prose (and unlocks
 architectural decision mining and chat). You do not have to redo anything: it
 reuses the index you already built, so the graph is not re-parsed.
 
@@ -158,21 +163,21 @@ Set a key, preview the cost, then write:
 ```bash
 export ANTHROPIC_API_KEY="sk-ant-..."        # or OPENAI_API_KEY / GEMINI_API_KEY
 
-repowise generate                  # interactive: pick a coverage, see the cost, confirm
+repowise generate                  # shows the wiki state, then writes the unwritten subsystem pages
 ```
 
-Bare `generate` shows the wiki's state and a coverage menu (page counts and cost
-per tier, 20% recommended), so you choose how much to write rather than getting
-the whole repo by default. On Windows PowerShell: `$env:ANTHROPIC_API_KEY = "sk-ant-..."`
+Bare `generate` prints the wiki's state and writes every unwritten subsystem
+page behind a single cost estimate. On Windows PowerShell:
+`$env:ANTHROPIC_API_KEY = "sk-ant-..."`
 
-You do not have to write the whole wiki at once. Pick a ranked slice, an area, or
-a single page, each run behind its own cost estimate:
+You do not have to write them all at once. Restrict to an area, a single page, or
+refresh what is stale, each run behind its own cost estimate:
 
 ```bash
-repowise generate --coverage 20                     # the most important 20%, ranked like init
-repowise generate --path src/api                    # just one area
-repowise generate --page file_page:src/app.py       # or a single page
-repowise generate --all                             # or rewrite everything
+repowise generate --path src/api                    # just the subsystem pages under one area
+repowise generate --page module_page:src/api        # or a single subsystem page
+repowise generate --stale                            # refresh pages the last update marked stale
+repowise generate --all                              # or rewrite every page, structural ones included
 ```
 
 Semantic search is a separate step: configure an embedder and run `repowise

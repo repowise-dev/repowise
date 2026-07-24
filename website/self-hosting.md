@@ -126,14 +126,14 @@ repowise serve
 
 ## Running in CI
 
-Use `--index-only` for CI pipelines that don't need full LLM documentation — just analysis signals:
+Use `--no-prose` for CI pipelines that don't need model-written prose, just the analysis signals and a structural wiki:
 
 ```yaml
 # GitHub Actions example
 - name: Index codebase
   run: |
     pip install repowise
-    repowise init --index-only --yes
+    repowise init --no-prose --yes
 
 - name: Check dead code
   run: repowise dead-code --safe-only --format json > dead-code-report.json
@@ -243,4 +243,4 @@ alembic upgrade head
 | Node.js | 20+ (for web UI without Docker) |
 | Docker | Any version (alternative to Node.js) |
 | PostgreSQL | 14+ (optional, SQLite is the default) |
-| LLM API key | Anthropic, OpenAI, Gemini, or Ollama (not needed for `--index-only`) |
+| LLM API key | Anthropic, OpenAI, Gemini, or Ollama (not needed for `--no-prose`) |

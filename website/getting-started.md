@@ -35,10 +35,10 @@ repowise --version            # -> repowise, version 0.27.x
 
 ```bash
 cd /path/to/your/repo
-repowise init --index-only -y
+repowise init --no-prose -y
 ```
 
-Builds the dependency graph, git history, code-health score, and dead-code findings in seconds. Also renders every wiki page from structure. Want model-written prose? `repowise init --docs llm --provider gemini|anthropic|openai`.
+Builds the dependency graph, git history, code-health score, and dead-code findings in seconds. Also renders every wiki page from structure. Want the subsystem pages written as model prose? `repowise init --prose --provider gemini|anthropic|openai`.
 
 **3. Connect your agent** — the MCP server is `repowise mcp`, served from the repo dir.
 
@@ -281,14 +281,14 @@ You don't need an LLM API key at all. A bare `repowise init` with no key configu
 repowise init
 ```
 
-`repowise init --docs deterministic` is the explicit spelling of the same thing, and guarantees no spend. Either way you get the full ingestion and analysis pipeline (parsing, graph, git, dead code) plus a complete wiki. It's free, takes under a minute for most repos, and still gives you:
+`repowise init --no-prose` is the explicit spelling of the same thing, and guarantees no spend. Either way you get the full ingestion and analysis pipeline (parsing, graph, git, dead code) plus a complete wiki. It's free, takes under a minute for most repos, and still gives you:
 
 - Dependency graph
 - Hotspot detection
 - Dead code findings
 - Ownership data
 
-You can always run `repowise init --docs llm` (or `repowise generate`) later to upgrade the pages to model-written prose on top of an existing index.
+You can always run `repowise init --prose` (or `repowise generate`) later to write the subsystem pages as model prose on top of an existing index.
 
 ---
 

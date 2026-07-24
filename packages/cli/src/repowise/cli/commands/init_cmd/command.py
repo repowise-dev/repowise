@@ -543,8 +543,8 @@ def _run_generation_phase(
     help=(
         "Test-coverage report(s) to ingest (lcov / Cobertura / Clover). "
         "Repeatable. When omitted, common locations (coverage/lcov.info, "
-        "**/cobertura.xml, ...) are auto-discovered. Distinct from --coverage, "
-        "which controls documentation breadth."
+        "**/cobertura.xml, ...) are auto-discovered. This is test coverage for "
+        "code-health, not a documentation-breadth knob."
     ),
 )
 @click.option(
@@ -871,8 +871,8 @@ def init_command(
             is_interactive = False
             console.print(
                 "\n[yellow]No answer available on stdin[/yellow] "
-                "[dim]— continuing with defaults. Pass --yes to skip the "
-                "questions, or --docs llm/deterministic to choose directly.[/dim]"
+                "[dim]- continuing with defaults. Pass --yes to skip the "
+                "questions, or --prose / --no-prose to choose directly.[/dim]"
             )
 
         # Map the menu onto the two axes (docs on/off, customize yes/no):

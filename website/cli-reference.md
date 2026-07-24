@@ -47,8 +47,8 @@ repowise init [PATH] [OPTIONS]
 | `--provider` | string | auto | LLM provider: `anthropic`, `openai`, `openrouter`, `gemini`, `deepseek`, `kimi`, `ollama`, `litellm`, `codex_cli`, `opencode`, `mock` |
 | `--model` | string | — | Model override (e.g., `claude-sonnet-4-6`, `gpt-4.1`) |
 | `--embedder` | choice | auto | Embedding provider: `gemini`, `openai`, `mock` |
-| `--index-only` | flag | false | Render the wiki from structure instead of writing it with a model. No key, no spend. |
-| `--docs` | choice | — | How to produce the wiki: `llm` or `deterministic`. Same choice as `--index-only`, named for what it does. `--docs llm` needs a key. |
+| `--prose` / `--no-prose` | flag | prose if a key | Write the subsystem (concept) pages as model prose (`--prose`, needs a key), or render the whole wiki from structure with no model and no spend (`--no-prose`). Every other page is structural either way. |
+| `--index-only` / `--docs` | — | — | Deprecated hidden aliases. `--index-only` == `--no-prose`; `--docs llm` == `--prose`, `--docs deterministic` == `--no-prose`. |
 | `--dry-run` | flag | false | Show generation plan and token estimate without running |
 | `--test-run` | flag | false | Limit to top 10 files by PageRank (for validation) |
 | `--skip-tests` | flag | false | Exclude test files |
@@ -85,8 +85,8 @@ repowise init --provider openai --model qwen3 --reasoning off
 # OpenRouter with minimal reasoning effort
 repowise init --provider openrouter --model openai/gpt-5 --reasoning minimal
 
-# Analysis only — free, no API key needed
-repowise init --index-only
+# Analysis plus a structural wiki, free, no API key needed
+repowise init --no-prose
 
 # Skip tests and infra, limit concurrency
 repowise init --skip-tests --skip-infra --concurrency 3
@@ -108,7 +108,7 @@ repowise init --resume
 
 1. **Ingestion** — parses all files with tree-sitter, builds dependency graph
 2. **Analysis** — git churn/ownership, dead code detection, decision mining
-3. **Generation** — LLM writes wiki pages at repo/module/file level, or with `--index-only` / `--docs deterministic` they are rendered from parsed structure
+3. **Generation** — every page is rendered from parsed structure; with a model (the default when a key is available) the subsystem (concept) pages are written as prose instead of stubs. `--no-prose` keeps them structural.
 4. **Persistence** — writes to SQLite, builds vector index, generates managed editor instruction files
 
 ### Provider auto-detection
