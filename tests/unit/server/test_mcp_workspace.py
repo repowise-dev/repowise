@@ -302,6 +302,34 @@ async def test_get_health_resolves_alias_different_from_repo_name(workspace_mcp)
 
 
 # ---------------------------------------------------------------------------
+# generate_refactoring_code — workspace alias routing
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_generate_refactoring_code_resolves_alias_different_from_repo_name(
+    workspace_mcp, monkeypatch
+):
+    """Regression for #880: the alias ``frontend`` maps to a repo named
+    ``web-client``. ``_resolve_repo_context`` already scoped the session to that
+    repo's DB, so re-filtering by the alias inside it raised
+    ``LookupError: Repository not found: frontend``. Passing the ``llm.enabled``
+    gate is required to reach the ``_get_repo`` call being exercised."""
+    monkeypatch.setattr(
+        "repowise.core.analysis.health.refactoring.llm.llm_enrichment_enabled",
+        lambda config: True,
+    )
+
+    from repowise.server.mcp_server import generate_refactoring_code
+
+    # No plan with this id exists, so a correctly-resolved repo returns
+    # ``not_found`` rather than raising ``LookupError`` on alias resolution.
+    result = await generate_refactoring_code(suggestion_id="nope", repo="frontend")
+
+    assert result["error"] == "not_found"
+
+
+# ---------------------------------------------------------------------------
 # get_overview — workspace footer
 # ---------------------------------------------------------------------------
 
