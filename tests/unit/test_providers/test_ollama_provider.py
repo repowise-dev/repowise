@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
@@ -13,6 +13,12 @@ from openai import APIConnectionError, APIError, APIStatusError, APITimeoutError
 
 from repowise.core.providers.llm.base import ProviderError
 from repowise.core.providers.llm.ollama import OllamaProvider
+
+
+def test_supported_reasoning_modes_are_auto_and_off():
+    provider = OllamaProvider(model="test")
+
+    assert provider.supported_reasoning_modes() == ("auto", "off")
 
 
 def test_available_model_options_reads_local_tags(monkeypatch):
@@ -51,7 +57,52 @@ def test_available_model_options_reads_local_tags(monkeypatch):
     llama = options[0]
     assert llama.source == "local"
     assert llama.notes == "llama, 3B"
-    assert llama.reasoning_modes == ("auto",)
+    assert llama.reasoning_modes == ("auto", "off")
+
+
+def _make_mock_chat_response(text: str = "# Doc\nContent.") -> MagicMock:
+    usage = MagicMock()
+    usage.prompt_tokens = 120
+    usage.completion_tokens = 60
+
+    choice = MagicMock()
+    choice.message.content = text
+
+    response = MagicMock()
+    response.choices = [choice]
+    response.usage = usage
+    return response
+
+
+async def test_generate_auto_preserves_existing_request_shape():
+    provider = OllamaProvider(model="test")
+    provider._client.chat.completions.create = AsyncMock(return_value=_make_mock_chat_response())
+
+    await provider.generate("system", "user", reasoning="auto")
+
+    request_kwargs = provider._client.chat.completions.create.await_args.kwargs
+    assert "reasoning_effort" not in request_kwargs
+
+
+async def test_generate_off_disables_reasoning():
+    provider = OllamaProvider(model="test")
+    provider._client.chat.completions.create = AsyncMock(return_value=_make_mock_chat_response())
+
+    await provider.generate("system", "user", reasoning="off")
+
+    request_kwargs = provider._client.chat.completions.create.await_args.kwargs
+    assert request_kwargs["reasoning_effort"] == "none"
+
+
+@pytest.mark.parametrize("reasoning", ["none", "minimal", "low"])
+async def test_generate_rejects_unsupported_reasoning_modes(reasoning):
+    provider = OllamaProvider(model="test")
+    provider._client.chat.completions.create = AsyncMock()
+
+    with pytest.raises(ProviderError, match=f"reasoning='{reasoning}' is not supported"):
+        await provider.generate("system", "user", reasoning=reasoning)
+
+    provider._client.chat.completions.create.assert_not_called()
 
 
 async def _assert_generate_wraps(exc: Exception) -> None:

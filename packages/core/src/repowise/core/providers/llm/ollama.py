@@ -53,6 +53,7 @@ from repowise.core.reasoning import ReasoningMode
 log = structlog.get_logger(__name__)
 
 _DEFAULT_BASE_URL = "http://localhost:11434"
+_OLLAMA_REASONING_MODES: tuple[ReasoningMode, ...] = ("off",)
 
 
 def _normalize_base_url(url: str) -> str:
@@ -63,11 +64,22 @@ def _normalize_base_url(url: str) -> str:
     return url
 
 
+def _ollama_reasoning_kwargs(reasoning: ReasoningMode) -> dict[str, Any]:
+    """Translate a validated repowise reasoning intent to Ollama kwargs."""
+    if reasoning == "off":
+        return {"reasoning_effort": "none"}
+    return {}
+
+
 def _ollama_model_options(
     base_url: str,
     fallback_model: str,
 ) -> tuple[ProviderModelOption, ...]:
-    fallback = fallback_model_option(fallback_model)
+    reasoning_modes = ("auto", *_OLLAMA_REASONING_MODES)
+    fallback = fallback_model_option(
+        fallback_model,
+        reasoning_modes=reasoning_modes,
+    )
     try:
         import httpx
 
@@ -101,7 +113,7 @@ def _ollama_model_options(
             ProviderModelOption(
                 model=model_id,
                 label=model_id,
-                reasoning_modes=("auto",),
+                reasoning_modes=reasoning_modes,
                 recommended=model_id == fallback_model,
                 source="local",
                 notes=notes,
@@ -151,6 +163,9 @@ class OllamaProvider(BaseProvider):
     def model_name(self) -> str:
         return self._model
 
+    def supported_reasoning_modes(self) -> tuple[ReasoningMode, ...]:
+        return ("auto", *_OLLAMA_REASONING_MODES)
+
     def available_model_options(self) -> tuple[ProviderModelOption, ...]:
         return _ollama_model_options(self._base_url, self._model)
 
@@ -164,7 +179,16 @@ class OllamaProvider(BaseProvider):
         reasoning: ReasoningMode = "auto",
         cache_hints: tuple = (),
     ) -> GeneratedResponse:
-        ensure_reasoning_supported("ollama", self._model, reasoning)
+        reasoning_mode = ensure_reasoning_supported(
+            "ollama",
+            self._model,
+            reasoning,
+            _OLLAMA_REASONING_MODES,
+            detail=(
+                "Ollama maps reasoning='off' to reasoning_effort='none' "
+                "through its OpenAI-compatible chat completions API."
+            ),
+        )
         if self._rate_limiter:
             await self._rate_limiter.acquire(estimated_tokens=max_tokens)
 
@@ -182,6 +206,7 @@ class OllamaProvider(BaseProvider):
                 max_tokens=max_tokens,
                 temperature=temperature,
                 request_id=request_id,
+                reasoning=reasoning_mode,
             )
         except RetryError as exc:
             raise ProviderError(
@@ -220,17 +245,20 @@ class OllamaProvider(BaseProvider):
         max_tokens: int,
         temperature: float,
         request_id: str | None,
+        reasoning: ReasoningMode,
     ) -> GeneratedResponse:
         try:
-            response = await self._client.chat.completions.create(
-                model=self._model,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                messages=[
+            request_kwargs: dict[str, Any] = {
+                "model": self._model,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+                "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-            )
+            }
+            request_kwargs.update(_ollama_reasoning_kwargs(reasoning))
+            response = await self._client.chat.completions.create(**request_kwargs)
         except _OpenAIRateLimitError as exc:
             raise RateLimitError(
                 "ollama",
