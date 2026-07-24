@@ -356,7 +356,14 @@ async def _resolve_one_target(
     # a full ORM object here, so parent_page_id is already loaded.
     if page is not None and page.parent_page_id:
         parent = await session.get(Page, page.parent_page_id)
-        if parent is not None and parent.repository_id == repo_id:
+        if (
+            parent is not None
+            and parent.repository_id == repo_id
+            and getattr(parent, "freshness_status", "") != "tombstone"
+        ):
+            # Skip a tombstoned parent: pointing an agent up-tree at a page
+            # whose directory was deleted or renamed since indexing is the
+            # same trap the target's own tombstone redirect above avoids.
             result_data["parent_page"] = {
                 "title": parent.title,
                 "target_path": parent.target_path,
