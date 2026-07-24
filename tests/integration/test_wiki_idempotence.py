@@ -298,7 +298,10 @@ class TestStructuralKeys:
                 continue
             members = page.metadata.get("file_paths") or []
             assert members, f"{page.page_id} recorded no members"
-            prefix = "module" if page.page_type == "module_page" else "scc"
+            # module_page rows are minted by the concept tree, which keys them
+            # on the "concept" prefix (STRUCTURAL_KEY_PREFIX); scc pages keep
+            # their own prefix.
+            prefix = "concept" if page.page_type == "module_page" else "scc"
             assert page.structural_key == member_structural_key(members, prefix=prefix)
             checked += 1
         assert checked, "sample repo produced no member-keyed pages"
