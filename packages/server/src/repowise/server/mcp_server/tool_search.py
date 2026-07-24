@@ -163,24 +163,89 @@ def _downweight_decisions(output: list[dict], query: str) -> None:
             item["relevance_score"] = round(item["relevance_score"] * _DECISION_DOWNWEIGHT, 4)
 
 
-def _sort_demoting_decisions(output: list[dict], query: str) -> None:
-    """Sort by relevance, ranking decision records below every file-backed
-    page on non-why queries.
+# Test file pages compete against the implementation they exercise and win
+# retrieval on any shared vocabulary ("conftest" for a fixtures question,
+# "decision" for a downweight question) — observed live as a test file ranking
+# #1 for a plain implementation query. A test is rarely a better first Read than
+# the code under test, so demote it, unless the query is explicitly about tests.
+_TEST_DOWNWEIGHT = 0.6
 
-    The multiplicative down-weight alone is washed out when decision scores
-    dominate (short dense titles win cosine similarity by a margin > the
-    0.6 factor) — observed live as 5/5 irrelevant decisions for a plain
-    implementation query. For non-why queries a decision record is never a
-    better first Read than a file page, so the demotion is absolute; the
-    down-weighted score still orders decisions among themselves.
+_TEST_QUERY_RE = re.compile(
+    r"\b(test|tests|testing|tested|unit[\s-]?test|integration[\s-]?test|pytest|fixture|mock|spec)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_test_query(query: str) -> bool:
+    """True when the query is explicitly about tests, so test pages rank naturally."""
+    return bool(_TEST_QUERY_RE.search(query))
+
+
+def _is_test_page(item: dict) -> bool:
+    """True when a hit is a file_page documenting a test file."""
+    return item.get("page_type") == "file_page" and (
+        _classify_hit_kind(item.get("target_path") or "", "file_page") == "test"
+    )
+
+
+def _downweight_test_pages(output: list[dict], query: str) -> None:
+    """Scale test file_page relevance in place unless the query is about tests."""
+    if _is_test_query(query):
+        return
+    for item in output:
+        if item.get("relevance_score") and _is_test_page(item):
+            item["relevance_score"] = round(item["relevance_score"] * _TEST_DOWNWEIGHT, 4)
+
+
+def _sort_demoting_noise(output: list[dict], query: str) -> None:
+    """Sort by relevance, ranking retrieval noise below every real page.
+
+    Two classes crowd the top ranks on a plain implementation query and are
+    demoted absolutely for their query class (the relevance score still orders
+    each class among itself):
+
+    - decision records — short dense titles win cosine similarity by a margin
+      wider than the multiplicative down-weight (observed live as 5/5 irrelevant
+      decisions for one query). Rationale questions are get_why's territory, so
+      a why-shaped query ranks them naturally instead.
+    - test file pages — a test is rarely a better first Read than the code it
+      exercises. A query explicitly about tests ranks them naturally instead.
     """
     why = _is_why_shaped(query)
+    test_focused = _is_test_query(query)
 
     def key(item: dict) -> tuple:
-        demoted = (not why) and item.get("page_type") == "decision_record"
-        return (1 if demoted else 0, -(item.get("relevance_score") or 0.0))
+        pt = item.get("page_type")
+        is_decision = (not why) and pt == "decision_record"
+        is_test = (not test_focused) and _is_test_page(item)
+        return (1 if (is_decision or is_test) else 0, -(item.get("relevance_score") or 0.0))
 
     output.sort(key=key)
+
+
+def _norm_decision_title(title: str) -> str:
+    """Normalize a decision title to collapse near-duplicate phrasings."""
+    return re.sub(r"[^a-z0-9]+", " ", (title or "").lower()).strip()
+
+
+def _dedup_decisions(output: list[dict]) -> list[dict]:
+    """Collapse near-duplicate decision records by normalized title (order-preserving).
+
+    Live search returned five near-identical "CLI incremental update regenerates
+    only affected pages" variants filling positions 3-8. Callers dedup AFTER the
+    score sort, so the surviving variant is the highest-scored one; non-decision
+    pages always pass through untouched.
+    """
+    seen: set[str] = set()
+    out: list[dict] = []
+    for item in output:
+        if item.get("page_type") == "decision_record":
+            key = _norm_decision_title(item.get("title", ""))
+            if key and key in seen:
+                continue
+            seen.add(key)
+        out.append(item)
+    return out
 
 
 async def _non_decision_fallback(ctx, query: str, fetch_limit: int) -> list[dict]:
@@ -441,11 +506,11 @@ async def _search_single_repo(
     _downweight_decisions(output, query)
     output = await _rescue_all_decision_window(ctx, output, query, fetch_limit)
 
-    # Attach target_path + deterministic markers and drop excluded hits per
-    # repo (so federated search honours each repo's own exclude_patterns)
-    # before ranking. Runs on the over-fetched list so the kind filter below
-    # has real headroom. Load precedes the sort so the decision demotion sees
-    # the page metadata it keys on.
+    # Attach target_path and drop excluded hits per repo (so federated search
+    # honours each repo's own exclude_patterns) before ranking. Runs on the
+    # over-fetched list so the kind filter below has real headroom. Load
+    # precedes the sort/demotion so they see the page metadata they key on
+    # (test demotion needs target_path to classify a test file page).
     if output:
         async with get_session(ctx.session_factory) as session:
             page_info, tombstoned, _ = await _load_page_info(session, output)
@@ -454,7 +519,9 @@ async def _search_single_repo(
             item["target_path"] = page_info.get(item["page_id"], "")
         output = filter_dicts_by_key(output, "target_path", _get_exclude_spec(ctx.path))
 
-    _sort_demoting_decisions(output, query)
+    _downweight_test_pages(output, query)
+    _sort_demoting_noise(output, query)
+    output = _dedup_decisions(output)
 
     output = _filter_by_kind(output, kind)
     return output[:limit], method
@@ -773,9 +840,12 @@ async def search_codebase(
             gm = git_map.get(target_path) if target_path else None
             _apply_freshness_boost(item, gm)
 
-        # Re-sort by adjusted relevance with decisions hard-demoted on non-why
-        # queries.
-        _sort_demoting_decisions(output, query)
+        # Re-sort by adjusted relevance with retrieval noise (decisions on
+        # non-why queries, test pages on non-test queries) hard-demoted, then
+        # collapse near-duplicate decisions to one.
+        _downweight_test_pages(output, query)
+        _sort_demoting_noise(output, query)
+        output = _dedup_decisions(output)
 
     output = _filter_by_kind(output, kind)
     output = output[:limit]
