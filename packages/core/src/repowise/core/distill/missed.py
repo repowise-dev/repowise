@@ -46,6 +46,11 @@ RATIO_FLOOR: dict[str, float] = {
     "search_results": 0.40,
     "file_listing": 0.60,
     "logs": 0.50,
+    # Data-driven filters (filters_toml/*.toml). Conservative floors well under
+    # their measured medians (install ~99%, infra plan ~80%) so estimates
+    # undersell; the per-file CI floor lives in each .toml's [meta].
+    "install_output": 0.50,
+    "infra_plan": 0.50,
 }
 
 #: Mirrors the engine's net-positive floor (``MIN_SAVED_TOKENS``): events whose

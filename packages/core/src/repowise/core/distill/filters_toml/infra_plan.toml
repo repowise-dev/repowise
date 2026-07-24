@@ -1,0 +1,111 @@
+# Infrastructure plan filter, authored as pure data.
+# Covers `terraform plan` / `tofu plan` and `helm diff`/`helm upgrade --dry-run`.
+# A plan is mostly per-attribute diff noise; the signal is which resources
+# change (the `# ... will be ...` action headers), the `Plan: N to add`
+# summary line, and (always, via the engine's invariant) any error line.
+#
+# This filter exercises two DSL features the install filter does not:
+#   - match_output short-circuit: a no-op plan collapses to one line;
+#   - keep_lines_matching: an allowlist that keeps only the signal rows,
+#     which is the inverse of install_output's strip-list approach.
+
+[meta]
+savings_floor = 60
+
+[filters.infra_plan]
+description = "terraform/tofu/helm plan output: keep the change headers + summary, drop attribute-diff noise."
+priority = 30
+min_lines = 8
+
+match_command = "^(?:terraform|tofu) plan\\b|^helm (?:diff|upgrade)\\b"
+
+match_content = "Terraform will perform the following actions|^Plan: \\d+ to add|No changes\\. Your infrastructure matches"
+
+# No-op plan collapses to a single line. Gated (by the engine) on the whole
+# output being error-free, so a failed refresh can never be hidden behind it.
+match_output = [
+  { pattern = "No changes\\. Your infrastructure matches the configuration", message = "plan: no changes" },
+]
+
+# Allowlist: keep only the rows that carry decisions. Everything unlisted is
+# dropped unless it is an error line, which the engine re-keeps regardless.
+keep_lines_matching = [
+  "^\\s*# \\S+ will be ",            # terraform per-resource action headers
+  "^Plan: \\d+ to add",             # the change summary
+  "^Changes to Outputs:",           # output diffs follow this header
+  "^(?:Apply|Destroy) complete!",   # apply/destroy result
+  "^Note: ",                        # terraform advisory notes
+  "has changed|has been (?:added|removed|changed)",  # helm-diff resource headers
+]
+
+on_empty = "plan: no changes"
+
+# ---- inline tests ------------------------------------------------------------
+
+[[tests.infra_plan]]
+name = "no-op plan collapses to one line"
+input = """
+aws_vpc.main: Refreshing state... [id=vpc-0abc]
+aws_subnet.a: Refreshing state... [id=subnet-1]
+aws_subnet.b: Refreshing state... [id=subnet-2]
+aws_instance.web: Refreshing state... [id=i-0abc]
+
+No changes. Your infrastructure matches the configuration.
+
+Your configuration already matches the real infrastructure, so no changes
+are needed.
+"""
+expected = "plan: no changes"
+
+[[tests.infra_plan]]
+name = "keeps action headers and summary, drops attribute diff"
+input = """
+aws_instance.web: Refreshing state... [id=i-0abc]
+aws_s3_bucket.data: Refreshing state... [id=my-bucket]
+
+Terraform used the selected providers to generate the following execution plan.
+Resource actions are indicated with the following symbols:
+  + create
+  ~ update in-place
+
+Terraform will perform the following actions:
+
+  # aws_instance.web will be created
+  + resource "aws_instance" "web" {
+      + ami           = "ami-0c55b159cbfafe1f0"
+      + instance_type = "t3.micro"
+    }
+
+  # aws_s3_bucket.data will be updated in-place
+  ~ resource "aws_s3_bucket" "data" {
+        id   = "my-bucket"
+      ~ tags = {
+          + "env" = "prod"
+        }
+    }
+
+Plan: 1 to add, 1 to change, 0 to destroy.
+"""
+expected = """  # aws_instance.web will be created
+  # aws_s3_bucket.data will be updated in-place
+Plan: 1 to add, 1 to change, 0 to destroy."""
+
+[[tests.infra_plan]]
+name = "error line survives keep-only allowlist"
+input = """
+aws_instance.web: Refreshing state... [id=i-0abc]
+
+Terraform will perform the following actions:
+
+  # aws_instance.web will be created
+  + resource "aws_instance" "web" {
+      + ami = "ami-123"
+    }
+
+Error: Invalid resource type "aws_instances"
+  on main.tf line 12, in resource "aws_instances" "web":
+Plan: 0 to add, 0 to change, 0 to destroy.
+"""
+expected = """  # aws_instance.web will be created
+Error: Invalid resource type "aws_instances"
+Plan: 0 to add, 0 to change, 0 to destroy."""

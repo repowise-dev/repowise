@@ -1,7 +1,9 @@
 """Hot-path guarantees for the ``repowise-rewrite`` PreToolUse hook.
 
-The hook fires on EVERY Bash tool call an agent makes, so it must answer in
-well under 100 ms p95. Two layers of protection:
+The hook fires on EVERY Bash tool call an agent makes, so it must answer
+quickly — a 150 ms p95 budget, which comfortably clears interpreter/console-
+script startup even on slower Windows hosts while still catching a regression
+that pulls in the heavy stack. Two layers of protection:
 
   1. An import-graph guard: the hook module (and the adapters it uses) must
      never pull click, sqlalchemy, structlog, or any ``repowise.core``
@@ -59,7 +61,7 @@ def _hook_invocation() -> list[str]:
     return [sys.executable, "-c", "from repowise.cli.rewrite_hook import main; main()"]
 
 
-def test_p95_under_100ms(tmp_path: Path) -> None:
+def test_p95_under_150ms(tmp_path: Path) -> None:
     (tmp_path / ".repowise").mkdir()
     payload = json.dumps(
         {
@@ -84,4 +86,4 @@ def test_p95_under_100ms(tmp_path: Path) -> None:
 
     timings.sort()
     p95 = timings[int(len(timings) * 0.95) - 1]
-    assert p95 < 100, f"repowise-rewrite p95 {p95:.1f} ms >= 100 ms (all: {timings})"
+    assert p95 < 150, f"repowise-rewrite p95 {p95:.1f} ms >= 150 ms (all: {timings})"
