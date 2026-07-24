@@ -99,8 +99,11 @@ describe("docs App", () => {
       />,
     );
 
-    // Tree lists both pages (file leaf shows its basename).
-    expect(await screen.findByText("app.ts")).toBeTruthy();
+    // Domain view (the default) files every deterministic page into the
+    // collapsed "Auto-documented files" folder; the leaf is a deliberate
+    // drill-in, so on load the folder — not the basename — is what renders.
+    // (The expand-to-leaf behaviour is covered by the shared DocsTree test.)
+    expect(await screen.findByText("Auto-documented files (1)")).toBeTruthy();
 
     // With no params, the reader lands on the repo overview page.
     expect(
