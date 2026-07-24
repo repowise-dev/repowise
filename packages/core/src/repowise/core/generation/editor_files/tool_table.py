@@ -7,7 +7,7 @@ prose in the template and silently drifted from the live registry.
 
 Row style: one entry per tool, 1-3 sentences, leading with when to call it.
 The load-bearing response fields (symbol_bodies, verified, continuation,
-directive, search_method) stay named — they are what the trust protocol keys
+directive, sources) stay named — they are what the trust protocol keys
 on. Reference detail lives in docs/agent/MCP_TOOLS.md, not here.
 """
 
@@ -45,8 +45,9 @@ TOOL_TABLE_ROWS: dict[str, tuple[str, str]] = {
         "search_codebase(query)",
         "Hybrid search, auto-routed by query shape: identifier → symbol hits (pipe "
         "`symbol_id` into `get_symbol`), path → file pages, prose → wiki-semantic. "
-        "Force with `mode=symbol|path|concept|hybrid`. Verify concept hits carrying "
-        '`search_method: "bm25"`.',
+        "Force with `mode=symbol|path|concept|hybrid`. Concept hits carry a `sources` "
+        "list; a hit whose sources are `[fts]` only is a keyword match with no "
+        "semantic agreement — verify it.",
     ),
     "get_why": (
         "get_why(query, targets?)",
