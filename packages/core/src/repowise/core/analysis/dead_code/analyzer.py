@@ -80,6 +80,10 @@ _LANGUAGE_NON_IMPORTABLE: dict[str, frozenset[str]] = {
 }
 
 
+# Kinds allowed as top-level imports in TS/JS (top-level `export const` literals/objects)
+_TS_JS_IMPORTABLE_KINDS: frozenset[str] = frozenset({"constant", "variable"})
+
+
 def _non_importable_kinds(language: str) -> frozenset[str]:
     """Per-language set of symbol kinds excluded from unused-export passes.
 
@@ -89,8 +93,11 @@ def _non_importable_kinds(language: str) -> frozenset[str]:
     """
     extra = _LANGUAGE_NON_IMPORTABLE.get(language)
     if extra is None:
+        if language in ("typescript", "javascript"):
+            return _UNIVERSAL_NON_IMPORTABLE - _TS_JS_IMPORTABLE_KINDS
         return _UNIVERSAL_NON_IMPORTABLE
     return _UNIVERSAL_NON_IMPORTABLE | extra
+
 
 
 # Preserved for tests / external callers that imported the old name.
