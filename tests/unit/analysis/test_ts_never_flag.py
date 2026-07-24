@@ -112,3 +112,26 @@ class TestEntryPointSymbolNames:
         from repowise.core.analysis.dead_code.analyzer import _ENTRY_POINT_SYMBOL_NAMES
         for name in ("load", "action", "loader", "meta", "metadata", "config", "headers"):
             assert name not in _ENTRY_POINT_SYMBOL_NAMES
+
+
+class TestTsUnusedExportConstants:
+    def test_non_importable_kinds_allows_ts_const_and_var(self):
+        from repowise.core.analysis.dead_code.analyzer import _non_importable_kinds
+        kinds = _non_importable_kinds("typescript")
+        assert "constant" not in kinds
+        assert "variable" not in kinds
+        assert "method" in kinds
+        assert "field" in kinds
+
+    def test_non_importable_kinds_allows_js_const_and_var(self):
+        from repowise.core.analysis.dead_code.analyzer import _non_importable_kinds
+        kinds = _non_importable_kinds("javascript")
+        assert "constant" not in kinds
+        assert "variable" not in kinds
+
+    def test_other_languages_retain_universal_non_importable(self):
+        from repowise.core.analysis.dead_code.analyzer import _non_importable_kinds
+        python_kinds = _non_importable_kinds("python")
+        assert "constant" in python_kinds
+        assert "variable" in python_kinds
+
