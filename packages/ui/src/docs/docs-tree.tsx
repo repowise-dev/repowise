@@ -105,7 +105,11 @@ function buildOnboardingFolder(pages: DocPage[]): TreeNode | null {
   };
 }
 
-function buildTree(pages: DocPage[]): TreeNode[] {
+function buildTree(allPages: DocPage[]): TreeNode[] {
+  // A tombstoned page documents a file that no longer exists. The folder view
+  // mirrors the filesystem, so it drops them too, matching the domain view
+  // (buildStoredTree) rather than listing pages for files that are gone.
+  const pages = allPages.filter((p) => p.freshness_status !== "tombstone");
   const root: TreeNode[] = [];
 
   // ---- Onboarding folder (always at top when any slot is filled) ----
@@ -723,7 +727,12 @@ export function DocsTree({ pages, selectedPageId, onSelectPage, className }: Doc
     });
   };
 
-  const totalPages = pages.length;
+  // Count what the tree actually shows. Both views hide tombstones, so a raw
+  // pages.length overstates the wiki by the number of deleted-file rows.
+  const totalPages = useMemo(
+    () => pages.filter((p) => p.freshness_status !== "tombstone").length,
+    [pages],
+  );
   const activeFilterCount =
     (typeFilter !== "all" ? 1 : 0) + (freshnessFilter !== "all" ? 1 : 0);
 
