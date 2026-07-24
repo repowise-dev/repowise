@@ -414,6 +414,25 @@ def _renderer_inputs(repo_path):
     return cfg.get("language", "en"), style.fingerprint, style.template_dir
 
 
+def _head_commit_ts(repo_path) -> float | None:
+    """Committer timestamp of the repo's HEAD, or None when git is unavailable.
+
+    Anchors the periodic idle-file health re-score gate (#728) to repo time
+    rather than wall clock, so the cadence is deterministic under
+    ``REPOWISE_GIT_WINDOW_ANCHOR`` and correct for historical checkouts.
+    """
+    try:
+        import git
+
+        repo = git.Repo(repo_path, search_parent_directories=True)
+        try:
+            return float(repo.head.commit.committed_date)
+        finally:
+            repo.close()
+    except Exception:
+        return None
+
+
 def _current_renderer_fingerprint(repo_path) -> str:
     """This release's fingerprint for the file-page renderer, or '' on failure.
 
@@ -951,6 +970,13 @@ def run_update(
     if emitter is not None:
         emitter.stage("rebuild_graph")
 
+    # Decay-only rows for idle files whose time-decayed history the anchor
+    # advance recovered (#728). Filled by the git re-index, persisted alongside
+    # the changed files' rows, and kept out of git_meta_map so partial health's
+    # repo-wide aggregates are unaffected. ``head_ts`` anchors the periodic
+    # idle-file health re-score gate.
+    git_decay_map: dict[str, dict] = {}
+    head_ts = _head_commit_ts(repo_path)
     parsed_files, source_map, graph_builder, repo_structure, file_count, git_meta_map = (
         _rebuild_graph_and_git(
             repo_path,
@@ -960,6 +986,7 @@ def run_update(
             git_tier=state.get("git_tier"),
             include_submodules=bool(state.get("include_submodules", False)),
             include_nested_repos=bool(state.get("include_nested_repos", False)),
+            idle_decay_sink=git_decay_map,
         )
     )
 
@@ -1110,6 +1137,9 @@ def run_update(
                 # not the same as having no wiki.
                 template_wiki=docs_mode == "deterministic",
                 pages_rendered=len(det_pages),
+                git_decay_map=git_decay_map,
+                exclude_patterns=exclude_patterns,
+                head_ts=head_ts,
             )
         except Exception as exc:
             if emitter is not None:
@@ -1568,11 +1598,23 @@ def run_update(
             degraded=degraded,
             decay_paths=affected.decay_only,
             parsed_files=parsed_files,
+            git_decay_map=git_decay_map,
         )
     except Exception as exc:
         if emitter is not None:
             emitter.error(str(exc))
         raise
+
+    # Periodic idle-file health re-score (#728): git_metadata is now fresh in the
+    # DB, so re-score every file's findings against the decayed inputs. Reuses
+    # the already-built graph (no second rebuild); gated to ~weekly. Stamped into
+    # ``state`` below via the final save_state.
+    from .persistence import full_rescore_due, run_decay_health_rescore
+
+    if full_rescore_due(state, head_ts) and run_decay_health_rescore(
+        repo_path, graph_builder, parsed_files, exclude_patterns
+    ):
+        state["last_full_rescore_at"] = head_ts
 
     # ---- Editor project files (best-effort) ----
     _refresh_editor_stamp(repo_path, agents_md, degraded)

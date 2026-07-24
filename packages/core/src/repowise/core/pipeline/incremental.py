@@ -203,10 +203,18 @@ async def rebuild_graph_and_git(
     git_tier: str | None = None,
     include_submodules: bool = False,
     include_nested_repos: bool = False,
+    idle_decay_sink: dict[str, dict] | None = None,
     log: LogFn | None = None,
 ) -> tuple[list, dict[str, bytes], Any, Any, int, dict[str, dict]]:
     """Re-traverse + parse the repo, rebuild the graph (+ framework edges), and
     re-index git metadata for the changed files.
+
+    ``idle_decay_sink``, when provided, is filled with a decay-only partial
+    metadata row for every idle (unchanged) file whose time-decayed history
+    fields the anchor advance moved (issue #728). These rows are for the git
+    persist step only — they are deliberately kept out of the returned
+    ``git_meta_map`` so the partial health analysis (whose repo-wide aggregates
+    read every entry) is unaffected.
 
     ``git_tier`` is the persisted ``state.json:git_tier`` value: a fast-mode
     (ESSENTIAL) repo must not pay per-file blame on every update for signals
@@ -264,6 +272,7 @@ async def rebuild_graph_and_git(
             changed_paths,
             all_files=set(source_map.keys()),
             co_change_sink=co_change_full,
+            idle_decay_sink=idle_decay_sink,
         )
         git_meta_map = {m["file_path"]: m for m in updated_meta}
         if co_change_full:
@@ -848,6 +857,7 @@ async def persist_incremental_index(
     file_diffs: list[Any] | None = None,
     knowledge_graph_result: Any | None = None,
     parsed_files: list[Any] | None = None,
+    git_decay_map: dict | None = None,
     log: LogFn | None = None,
     degraded: list[str] | None = None,
 ) -> None:
@@ -918,14 +928,21 @@ async def persist_incremental_index(
             except Exception as exc:
                 _skip("Page tree rebuild", exc)
 
-            if git_meta_map:
+            if git_meta_map or git_decay_map:
                 try:
                     from repowise.core.persistence.crud import (
                         recompute_git_percentiles,
                         upsert_git_metadata_bulk,
                     )
 
-                    await upsert_git_metadata_bulk(session, repo_id, list(git_meta_map.values()))
+                    # Idle files' decay-only rows upsert alongside the changed
+                    # files' full rows; the percentile re-rank then runs over
+                    # every row against the freshly decayed scores (#728).
+                    await upsert_git_metadata_bulk(
+                        session,
+                        repo_id,
+                        [*git_meta_map.values(), *(git_decay_map or {}).values()],
+                    )
                     await recompute_git_percentiles(session, repo_id)
                 except Exception as exc:
                     _skip("Git persist", exc)

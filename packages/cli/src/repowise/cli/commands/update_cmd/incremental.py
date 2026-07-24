@@ -74,9 +74,14 @@ def _rebuild_graph_and_git(
     git_tier: str | None = None,
     include_submodules: bool = False,
     include_nested_repos: bool = False,
+    idle_decay_sink: dict[str, dict] | None = None,
 ) -> tuple[list, dict[str, bytes], Any, Any, int, dict[str, dict]]:
     """Re-traverse + parse the repo, rebuild the graph (+ framework edges), and
     re-index git metadata for the changed files.
+
+    ``idle_decay_sink``, when provided, is filled with decay-only partial rows
+    for idle files whose time-decayed history the anchor advance recovered
+    (issue #728); the caller feeds them straight to the git persist step.
 
     ``git_tier`` is the persisted ``state.json:git_tier`` value: a fast-mode
     (ESSENTIAL) repo must not pay per-file blame on every update for signals
@@ -105,6 +110,7 @@ def _rebuild_graph_and_git(
             git_tier=git_tier,
             include_submodules=include_submodules,
             include_nested_repos=include_nested_repos,
+            idle_decay_sink=idle_decay_sink,
             log=console.print,
         )
     )

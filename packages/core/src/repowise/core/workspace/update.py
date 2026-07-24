@@ -366,6 +366,10 @@ async def _incremental_repo_update(
     cfg = load_repo_config(repo_path)
     merged_excludes = _merged_repo_excludes(repo_path, exclude_patterns)
 
+    # Decay-only rows for idle files the anchor advance recovered (#728);
+    # persisted alongside the changed rows, kept out of git_meta_map so partial
+    # health's repo-wide aggregates are unaffected (mirrors the CLI path).
+    git_decay_map: dict[str, dict] = {}
     (
         parsed_files,
         _source_map,
@@ -381,6 +385,7 @@ async def _incremental_repo_update(
         git_tier=state.get("git_tier"),
         include_submodules=bool(state.get("include_submodules", False)),
         include_nested_repos=bool(state.get("include_nested_repos", False)),
+        idle_decay_sink=git_decay_map,
         log=_log.info,
     )
 
@@ -423,6 +428,7 @@ async def _incremental_repo_update(
         file_diffs=file_diffs,
         knowledge_graph_result=kg,
         parsed_files=parsed_files,
+        git_decay_map=git_decay_map,
         log=_log.info,
     )
 

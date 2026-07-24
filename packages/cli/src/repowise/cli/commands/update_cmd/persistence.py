@@ -8,6 +8,8 @@ state-file updates and console reporting stay here.
 
 from __future__ import annotations
 
+import contextlib
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -143,6 +145,9 @@ def _persist_index_only_update(
     degraded: list[str] | None = None,
     pages_rendered: int = 0,
     template_wiki: bool = False,
+    git_decay_map: dict | None = None,
+    exclude_patterns: list[str] | None = None,
+    head_ts: float | None = None,
 ) -> None:
     """Persist the index-only update (graph + symbols + git + dead-code + health + KG),
     save state, and print the completion line. No LLM regeneration.
@@ -165,6 +170,7 @@ def _persist_index_only_update(
             file_diffs=file_diffs,
             knowledge_graph_result=knowledge_graph_result,
             parsed_files=parsed_files,
+            git_decay_map=git_decay_map,
             log=console.print,
             degraded=degraded,
         )
@@ -173,9 +179,19 @@ def _persist_index_only_update(
 
     from .command import _current_renderer_fingerprint
 
+    # Periodic idle-file health re-score (#728): git_metadata is now fresh in the
+    # DB, so re-score every file's findings against the decayed inputs. Gated to
+    # ~weekly since only the findings (not their cheap git inputs) lag here.
+    last_full_rescore_at = state.get("last_full_rescore_at")
+    if full_rescore_due(state, head_ts) and run_decay_health_rescore(
+        repo_path, graph_builder, parsed_files or [], exclude_patterns or []
+    ):
+        last_full_rescore_at = head_ts
+
     new_state = {
         **state,
         "last_sync_commit": head,
+        "last_full_rescore_at": last_full_rescore_at,
         "config_fingerprint": config_fingerprint(repo_path),
         # Record the renderer this run rendered with. Without this an index-only
         # update that regenerated stale file pages leaves the stored fingerprint
@@ -310,6 +326,7 @@ def _persist_full_update(
     degraded: list[str],
     decay_paths: list[str] | None = None,
     parsed_files: list | None = None,
+    git_decay_map: dict | None = None,
 ) -> int:
     """Persist a full (LLM-regenerating) update in one transaction.
 
@@ -343,6 +360,7 @@ def _persist_full_update(
             degraded=degraded,
             decay_paths=decay_paths,
             parsed_files=parsed_files,
+            git_decay_map=git_decay_map,
         )
     )
 
@@ -364,6 +382,7 @@ async def _persist_full_update_async(
     degraded: list[str],
     decay_paths: list[str] | None = None,
     parsed_files: list | None = None,
+    git_decay_map: dict | None = None,
 ) -> int:
     from repowise.cli.helpers import get_db_url_for_repo
     from repowise.core.persistence import (
@@ -461,14 +480,21 @@ async def _persist_full_update_async(
                     _skip("Knowledge-graph persist", exc)
 
             # Updated git metadata + recomputed percentiles + new commit rows.
-            if git_meta_map:
+            if git_meta_map or git_decay_map:
                 try:
                     from repowise.core.persistence.crud import (
                         recompute_git_percentiles,
                         upsert_git_metadata_bulk,
                     )
 
-                    await upsert_git_metadata_bulk(session, repo_id, list(git_meta_map.values()))
+                    # Changed files' full rows + idle files' decay-only rows
+                    # (#728), then a repo-wide percentile re-rank over the fresh
+                    # scores.
+                    await upsert_git_metadata_bulk(
+                        session,
+                        repo_id,
+                        [*git_meta_map.values(), *(git_decay_map or {}).values()],
+                    )
                     await recompute_git_percentiles(session, repo_id)
                 except Exception as exc:
                     _skip("Git persist", exc)
@@ -711,41 +737,26 @@ def _git_metadata_to_dict(gm: Any) -> dict[str, Any]:
     }
 
 
-def _run_full_health_rescore(
+async def _rescore_health_from_db(
     repo_path: Any,
+    graph_builder: Any,
+    parsed_files: list,
     exclude_patterns: list[str],
-    state: dict,
-    head: str | None,
-    curr_fingerprint: str,
 ) -> None:
-    """Rebuild graph and re-run full health analysis when config changed.
+    """Full-replace health re-score reading git metadata from the DB.
 
-    Uses save_health_metrics / save_health_findings (full replace, not upsert)
-    so rows for newly-excluded files are removed. Loads GitMetadata from the DB
-    (so biomarkers keep accurate churn/ownership/co-change data) and removes
-    excluded rows both from the DB and the analyzer input.
+    Shared by the config-changed rebuild path and the periodic decay re-score
+    (#728): both need *every* file re-scored against the current git_metadata —
+    not just the changed files — but that metadata is already persisted, so the
+    analyzer reads it from the DB (keeping accurate churn / ownership /
+    co-change data) rather than the caller's changed-only map. Excluded rows are
+    dropped from both the DB and the analyzer input; metrics/findings are
+    full-replaced so rows for newly-excluded files disappear.
+
+    The caller supplies an already-built *graph_builder* / *parsed_files* so the
+    graph is rebuilt at most once per update.
     """
-    import time
-
-    start = time.monotonic()
-
     import pathspec
-
-    # Share the rebuild path with the incremental update so both produce the
-    # same graph (same parser, same framework-aware synthetic edges).
-    parsed_files, _source_map, graph_builder, _repo_structure, _file_count = _build_repo_graph(
-        repo_path,
-        exclude_patterns,
-        include_submodules=bool(state.get("include_submodules", False)),
-        include_nested_repos=bool(state.get("include_nested_repos", False)),
-    )
-
-    # Fan-out metric precompute (mirrors _rebuild_graph_and_git) — the
-    # rescore persists graph nodes too, which reads every metric.
-    try:
-        run_async(graph_builder.compute_metrics_parallel())
-    except Exception:
-        pass  # metrics fall back to lazy computation
 
     exclude_spec = (
         pathspec.PathSpec.from_lines("gitwildmatch", exclude_patterns) if exclude_patterns else None
@@ -846,8 +857,45 @@ def _run_full_health_rescore(
                 )
             await persist_graph_nodes(session, repo_id, graph_builder)
 
+    await _rescore()
+
+
+def _run_full_health_rescore(
+    repo_path: Any,
+    exclude_patterns: list[str],
+    state: dict,
+    head: str | None,
+    curr_fingerprint: str,
+) -> None:
+    """Rebuild graph and re-run full health analysis when config changed.
+
+    Rebuilds the graph (config edits can change parsing/excludes), then delegates
+    to :func:`_rescore_health_from_db` for the full-replace re-score. On success
+    advances ``last_sync_commit`` + ``config_fingerprint`` so the config change
+    is not re-detected; on failure leaves the fingerprint so the next update
+    retries.
+    """
+    import time
+
+    start = time.monotonic()
+
+    # Share the rebuild path with the incremental update so both produce the
+    # same graph (same parser, same framework-aware synthetic edges).
+    parsed_files, _source_map, graph_builder, _repo_structure, _file_count = _build_repo_graph(
+        repo_path,
+        exclude_patterns,
+        include_submodules=bool(state.get("include_submodules", False)),
+        include_nested_repos=bool(state.get("include_nested_repos", False)),
+    )
+
+    # Fan-out metric precompute (mirrors _rebuild_graph_and_git) — the
+    # rescore persists graph nodes too, which reads every metric. Best-effort:
+    # metrics fall back to lazy computation.
+    with contextlib.suppress(Exception):
+        run_async(graph_builder.compute_metrics_parallel())
+
     try:
-        run_async(_rescore())
+        run_async(_rescore_health_from_db(repo_path, graph_builder, parsed_files, exclude_patterns))
     except Exception as exc:
         # Return without advancing the fingerprint so the next update retries.
         console.print(f"[yellow]Health re-score failed: {exc}[/yellow]")
@@ -859,3 +907,58 @@ def _run_full_health_rescore(
     )
     elapsed = time.monotonic() - start
     console.print(f"[green]Config-triggered health re-score complete[/green] in {elapsed:.1f}s")
+
+
+# Periodic idle-file health re-score cadence (#728). The cheap git-metadata
+# decay refresh runs every update, but the health *findings* for idle files only
+# recover when the analyzer re-scores them. Those biomarkers have a ~125-180d
+# half-life, so weekly is ample. The interval is anchored to the repo's
+# newest-commit timestamp (not wall clock) so it stays deterministic under
+# REPOWISE_GIT_WINDOW_ANCHOR / historical checkouts; override for tests.
+_FULL_RESCORE_INTERVAL_DAYS = 7.0
+
+
+def _full_rescore_interval_days() -> float:
+    raw = os.environ.get("REPOWISE_FULL_RESCORE_INTERVAL_DAYS", "").strip()
+    if raw:
+        try:
+            return max(0.0, float(raw))
+        except ValueError:
+            pass
+    return _FULL_RESCORE_INTERVAL_DAYS
+
+
+def full_rescore_due(state: dict, head_ts: float | None) -> bool:
+    """Whether a periodic idle-file health re-score is due this update (#728).
+
+    Absent ``head_ts`` (git unavailable) → not due. Absent stamp (never
+    re-scored, or legacy state) → due, to establish the recovered baseline.
+    """
+    if head_ts is None:
+        return False
+    last = state.get("last_full_rescore_at")
+    if not isinstance(last, (int, float)):
+        return True
+    return (head_ts - float(last)) >= _full_rescore_interval_days() * 86400.0
+
+
+def run_decay_health_rescore(
+    repo_path: Any,
+    graph_builder: Any,
+    parsed_files: list,
+    exclude_patterns: list[str],
+) -> bool:
+    """Periodic full health re-score off the already-built graph (#728).
+
+    Reuses the update's ``graph_builder`` / ``parsed_files`` (no second rebuild)
+    and reads the just-refreshed git_metadata from the DB, so idle files' health
+    findings recover in lockstep with their decayed inputs. Best-effort: returns
+    True on success so the caller can stamp ``last_full_rescore_at``; a failure
+    is logged and leaves the stamp so the next update retries.
+    """
+    try:
+        run_async(_rescore_health_from_db(repo_path, graph_builder, parsed_files, exclude_patterns))
+        return True
+    except Exception as exc:
+        console.print(f"[yellow]Idle-file health re-score skipped: {exc}[/yellow]")
+        return False
