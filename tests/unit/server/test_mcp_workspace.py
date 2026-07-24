@@ -301,6 +301,15 @@ async def test_get_health_resolves_alias_different_from_repo_name(workspace_mcp)
     assert result["kpis"]["file_count"] == 0
 
 
+@pytest.mark.asyncio
+async def test_generate_refactoring_code_resolves_alias_different_from_repo_name(workspace_mcp):
+    from repowise.server.mcp_server import generate_refactoring_code
+
+    result = await generate_refactoring_code(suggestion_id="does-not-exist", repo="frontend")
+
+    assert result["error"] is not None
+
+
 # ---------------------------------------------------------------------------
 # generate_refactoring_code — workspace alias routing
 # ---------------------------------------------------------------------------
