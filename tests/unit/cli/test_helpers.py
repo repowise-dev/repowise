@@ -727,3 +727,112 @@ class TestRotateUpdateLog:
         assert len(after) < UPDATE_LOG_MAX_BYTES
         assert b"TAIL_MARKER_ZZZZ" in after
         assert after.startswith(b"... (log truncated) ...")
+
+
+# ---------------------------------------------------------------------------
+# resolve_provider_or_prompt
+# ---------------------------------------------------------------------------
+
+
+class TestResolveProviderOrPrompt:
+    """The shared onboarding wrapper `repowise generate` / `repowise update` use.
+
+    A docs run with no provider/key should, on a real terminal, reuse init's
+    provider + key prompt and persist the choice; a hook / CI / agent run must
+    stay a clean, non-blocking failure and never hang on a prompt it cannot
+    answer (isatty lies under Git Bash / pty wrappers / `docker run -t`).
+    """
+
+    def _no_provider(self):
+        import click
+
+        def _raise(*_args, **_kwargs):
+            raise click.ClickException("No provider configured. Use --provider, ...")
+
+        return _raise
+
+    def test_non_interactive_reraises_clean_error(self, tmp_path, monkeypatch):
+        """interactive=False propagates the original error, prompt never called."""
+        import click
+
+        from repowise.cli import helpers
+
+        monkeypatch.setattr(helpers, "resolve_provider", self._no_provider())
+        called = {"prompt": 0}
+
+        def _prompt(*_a, **_k):
+            called["prompt"] += 1
+
+        monkeypatch.setattr(
+            "repowise.cli.ui.interactive_provider_config_select", _prompt, raising=False
+        )
+
+        with pytest.raises(click.ClickException, match="No provider configured"):
+            helpers.resolve_provider_or_prompt(None, None, tmp_path, interactive=False)
+        assert called["prompt"] == 0
+
+    @pytest.mark.parametrize("exc_name", ["EOFError", "Abort"])
+    def test_unanswerable_prompt_falls_back_to_clean_error(
+        self, tmp_path, monkeypatch, exc_name
+    ):
+        """A tty that lies: the prompt hits EOF/Abort, so we surface the clean
+        actionable error instead of a bare 'Aborted!' — the agent-safe path."""
+        import click
+
+        from repowise.cli import helpers
+
+        monkeypatch.setattr(helpers, "resolve_provider", self._no_provider())
+        exc = EOFError() if exc_name == "EOFError" else click.Abort()
+
+        def _prompt(*_a, **_k):
+            raise exc
+
+        monkeypatch.setattr(
+            "repowise.cli.ui.interactive_provider_config_select", _prompt, raising=False
+        )
+
+        with pytest.raises(click.ClickException, match="No provider configured"):
+            helpers.resolve_provider_or_prompt(None, None, tmp_path, interactive=True)
+
+    def test_prompt_success_persists_and_resolves(self, tmp_path, monkeypatch):
+        """A real answer: persist provider/model to config and return the provider."""
+        from repowise.cli import helpers
+        from repowise.cli.ui.provider_selection import ProviderSelection
+
+        sentinel = object()
+        calls = {"resolve": 0}
+
+        def _resolve(provider_name, model, repo_path=None):
+            calls["resolve"] += 1
+            if calls["resolve"] == 1:
+                import click
+
+                raise click.ClickException("No provider configured. ...")
+            assert provider_name == "mock"
+            assert model == "mock-model-1"
+            return sentinel
+
+        monkeypatch.setattr(helpers, "resolve_provider", _resolve)
+
+        prompt_calls = {"n": 0}
+
+        def _prompt(console, model, reasoning=None, *, repo_path=None):
+            prompt_calls["n"] += 1
+            return ProviderSelection("mock", "mock-model-1", "auto")
+
+        monkeypatch.setattr(
+            "repowise.cli.ui.interactive_provider_config_select", _prompt, raising=False
+        )
+
+        result = helpers.resolve_provider_or_prompt(
+            None, None, tmp_path, reasoning=None, interactive=True
+        )
+
+        assert result is sentinel
+        assert prompt_calls["n"] == 1
+        # provider/model persisted so a later run resolves without re-prompting.
+        from repowise.cli.helpers import load_config
+
+        cfg = load_config(tmp_path)
+        assert cfg.get("provider") == "mock"
+        assert cfg.get("model") == "mock-model-1"

@@ -24,7 +24,7 @@ from repowise.cli.helpers import (
     get_head_commit,
     load_config,
     load_state,
-    resolve_provider,
+    resolve_provider_or_prompt,
     resolve_reasoning,
     resolve_repo_path,
     run_async,
@@ -233,9 +233,20 @@ def generate_command(
         page_ids=page_ids,
     )
 
-    # Provider is required — a model writes these pages. A missing one is an
-    # actionable error (resolve_provider names the key-setup path), not a trace.
-    provider = resolve_provider(provider_name, model, repo_path=repo_path)
+    # Provider is required since a model writes these pages. On a real terminal, a
+    # missing one drops into init's provider + key prompt and persists the choice,
+    # so a first `generate` onboards the same way init does instead of dying.
+    # Onboarding needs a terminal on both ends: a terminal stdout (so the provider
+    # table renders) and a tty stdin (so the answer can be read). The stdin check
+    # keeps a background hook / CI / agent run from hanging even when it inherits a
+    # FORCE_COLOR that makes console.is_terminal report True; those keep the clean
+    # "No provider configured" error. Unlike the bare-run default above, this fires
+    # even with explicit page flags, so a keyless `generate --all` still onboards,
+    # not just a bare `generate`.
+    can_prompt_provider = console.is_terminal and sys.stdin.isatty() and not yes
+    provider = resolve_provider_or_prompt(
+        provider_name, model, repo_path, reasoning=reasoning, interactive=can_prompt_provider
+    )
 
     console.print(
         f"[bold]repowise generate[/bold] — {repo_path}\n"

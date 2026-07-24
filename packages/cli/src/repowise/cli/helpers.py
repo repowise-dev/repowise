@@ -808,14 +808,24 @@ def resolve_provider_or_prompt(
     """
     try:
         return resolve_provider(provider_name, model, repo_path=repo_path)
-    except Exception:
+    except Exception as original_error:
         if not interactive:
             raise
         from repowise.cli.ui import interactive_provider_config_select
 
-        selection = interactive_provider_config_select(
-            console, model, reasoning, repo_path=repo_path
-        )
+        # ``interactive`` rests on ``isatty()``, which lies: under Git Bash,
+        # some pty wrappers, and ``docker run -t`` without -i it claims a
+        # terminal it cannot read from, and agents drive us through exactly
+        # those shapes. Treat the prompt as the probe (as init does): if stdin
+        # cannot answer, click raises EOFError/Abort, so fall back to the clean,
+        # actionable "No provider configured" error instead of a bare "Aborted!".
+        try:
+            selection = interactive_provider_config_select(
+                console, model, reasoning, repo_path=repo_path
+            )
+        except (EOFError, click.Abort):
+            raise original_error from None
+
         # Persist provider/model so future runs resolve without re-prompting.
         # The API key was already persisted to .repowise/.env by the prompt.
         save_config_partial(
