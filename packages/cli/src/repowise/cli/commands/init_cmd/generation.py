@@ -40,6 +40,7 @@ from repowise.cli.ui import BRAND_STYLE, OWL_SPINNER, MaybeCountColumn, RichProg
 __all__ = [
     "COST_GATE_USD",
     "CostGateDeclined",
+    "announce_file_page_cap",
     "concept_page_count",
     "confirm_cost_gate",
     "cost_gate_blocks",
@@ -101,6 +102,33 @@ def concept_page_count(plans: list[Any]) -> int:
     the dollar estimate rather than the headline count.
     """
     return next((p.count for p in plans if p.page_type == "module_page"), 0)
+
+
+def announce_file_page_cap(parsed_files: list[Any], gen_config: Any) -> None:
+    """Say so when the file bucket is being bounded, and how to undo it.
+
+    A cap the user chose needs no explanation, but the one the size policy applies
+    on its own would otherwise show up only as a page count nobody asked for. Both
+    are printed, since a run that emits fewer pages than there are files should say
+    which files it kept and how to ask for all of them.
+    """
+    from repowise.core.generation.selection import auto_file_page_cap, count_documentable_files
+
+    requested = getattr(gen_config, "max_file_pages", None)
+    if requested == 0:
+        return  # explicitly uncapped: nothing is being held back
+    documentable = count_documentable_files(parsed_files)
+    cap = requested if requested else auto_file_page_cap(documentable)
+    if not cap or cap >= documentable:
+        return
+
+    reason = "this repo's size" if requested is None else "your setting"
+    console.print(
+        f"  [dim]File pages: keeping the top [bold]{cap:,}[/bold] of about "
+        f"{documentable:,} by importance ({reason}). File pages cost no model "
+        "tokens, so this bounds wiki size and search noise, not spend. Pass "
+        "[bold]--max-file-pages 0[/bold] for one page per file.[/dim]"
+    )
 
 
 def _enrich_knowledge_graph(
@@ -179,6 +207,9 @@ def run_repo_generation(
     per-repo summary.
     """
     from ._generation_persist import run_generation_with_persistence
+
+    if verbose:
+        announce_file_page_cap(result.parsed_files, gen_config)
 
     embedder_impl: Any = build_embedder(embedder_name_resolved)
     vector_store: Any = build_vector_store(repo_path, embedder_impl)

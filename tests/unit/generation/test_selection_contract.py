@@ -13,7 +13,12 @@ from dataclasses import dataclass, field
 
 from repowise.core.generation.models import GenerationConfig
 from repowise.core.generation.selection import (
+    FILE_PAGE_ASK_THRESHOLD,
+    FILE_PAGE_AUTO_CEILING,
     SelectionInputs,
+    auto_file_page_cap,
+    count_documentable_files,
+    recommended_file_page_cap,
     select_pages,
 )
 
@@ -235,8 +240,8 @@ def test_empty_repo_emits_no_content_pages():
 # ---------------------------------------------------------------------------
 
 
-def test_file_bucket_is_unrationed_by_default():
-    """No cap unless the repo's owner asked for one."""
+def test_file_bucket_is_unset_by_default():
+    """Unset means the size policy decides, not that a cap was chosen."""
     assert GenerationConfig().max_file_pages is None
 
 
@@ -281,3 +286,82 @@ def test_cap_is_deterministic():
     first = select_pages(_inputs(parsed, pagerank, betweenness, community, cfg))
     second = select_pages(_inputs(list(reversed(parsed)), pagerank, betweenness, community, cfg))
     assert first.file_page_paths == second.file_page_paths
+
+
+# ---------------------------------------------------------------------------
+# The size policy: what an unset max_file_pages resolves to
+# ---------------------------------------------------------------------------
+
+
+def test_policy_leaves_normal_repos_alone():
+    """A 2,500-file repo would lose 500 pages and gain nothing measured."""
+    assert auto_file_page_cap(0) is None
+    assert auto_file_page_cap(FILE_PAGE_ASK_THRESHOLD + 500) is None
+    assert auto_file_page_cap(FILE_PAGE_AUTO_CEILING) is None
+
+
+def test_policy_holds_huge_repos_at_the_ceiling():
+    assert auto_file_page_cap(FILE_PAGE_AUTO_CEILING + 1) == FILE_PAGE_AUTO_CEILING
+    assert auto_file_page_cap(15_000) == FILE_PAGE_AUTO_CEILING
+
+
+def test_recommendation_never_contradicts_the_policy():
+    """Whatever the question recommends, the policy must not override it."""
+    for n in (0, 500, 2_000, 2_001, 4_000, 4_500, 4_501, 9_000, 50_000):
+        recommended = recommended_file_page_cap(n)
+        policy = auto_file_page_cap(n)
+        if policy is not None:
+            assert recommended == policy, n
+        elif recommended is not None:
+            assert recommended <= n, n
+
+
+def test_unset_config_applies_the_policy_to_a_huge_repo():
+    parsed, pagerank, betweenness, community = _build_synthetic_repo(FILE_PAGE_AUTO_CEILING + 200)
+    sel = select_pages(_inputs(parsed, pagerank, betweenness, community, GenerationConfig()))
+    assert len(sel.file_page_paths) == FILE_PAGE_AUTO_CEILING
+
+
+def test_unset_config_leaves_a_midsize_repo_whole():
+    """Just under the ceiling: every eligible file still gets a page."""
+    parsed, pagerank, betweenness, community = _build_synthetic_repo(FILE_PAGE_AUTO_CEILING - 100)
+    sel = select_pages(_inputs(parsed, pagerank, betweenness, community, GenerationConfig()))
+    assert len(sel.file_page_paths) == FILE_PAGE_AUTO_CEILING - 100
+
+
+def test_zero_refuses_the_policy():
+    """An explicit 0 means every eligible file, on a repo the policy would cap."""
+    parsed, pagerank, betweenness, community = _build_synthetic_repo(FILE_PAGE_AUTO_CEILING + 200)
+    sel = select_pages(
+        _inputs(parsed, pagerank, betweenness, community, GenerationConfig(max_file_pages=0))
+    )
+    assert len(sel.file_page_paths) == FILE_PAGE_AUTO_CEILING + 200
+
+
+def test_explicit_cap_beats_the_policy_in_both_directions():
+    parsed, pagerank, betweenness, community = _build_synthetic_repo(FILE_PAGE_AUTO_CEILING + 200)
+    tighter = select_pages(
+        _inputs(parsed, pagerank, betweenness, community, GenerationConfig(max_file_pages=100))
+    )
+    assert len(tighter.file_page_paths) == 100
+    looser = select_pages(
+        _inputs(
+            parsed,
+            pagerank,
+            betweenness,
+            community,
+            GenerationConfig(max_file_pages=FILE_PAGE_AUTO_CEILING + 100),
+        )
+    )
+    assert len(looser.file_page_paths) == FILE_PAGE_AUTO_CEILING + 100
+
+
+def test_count_documentable_files_matches_the_floor():
+    """The count a caller reports with is the count selection acts on."""
+    parsed, pagerank, betweenness, community = _build_synthetic_repo(20)
+    for extra in ("tests/test_thing.py", "pkg0/__init__.py"):
+        parsed.append(FakeParsedFile(file_info=FakeFileInfo(path=extra), symbols=[]))
+        pagerank[extra] = 1.0
+        betweenness[extra] = 0.0
+        community[extra] = 0
+    assert count_documentable_files(parsed) == 20

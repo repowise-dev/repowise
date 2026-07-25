@@ -540,6 +540,19 @@ def _run_generation_phase(
     ),
 )
 @click.option(
+    "--max-file-pages",
+    "max_file_pages_opt",
+    type=int,
+    default=None,
+    metavar="N",
+    help=(
+        "Most file pages to emit, highest importance first. Omit to let the size "
+        "policy decide: untouched on a normal repo, held to a ceiling on a very "
+        "large one. Pass 0 for one page per eligible file however many that is. "
+        "Saved to config.yaml so later runs keep it."
+    ),
+)
+@click.option(
     "--coverage-report",
     "coverage_report",
     type=click.Path(exists=True, dir_okay=False),
@@ -655,6 +668,7 @@ def init_command(
     no_workspace: bool,
     init_all: bool,
     onboarding: bool,
+    max_file_pages_opt: int | None,
     coverage_report: tuple[str, ...],
     harvest_decisions: bool,
     wiki_style: str | None,
@@ -846,9 +860,8 @@ def init_command(
     language_choice: str | None = None
 
     # File-page cap picked in the advanced-mode page-volume question; None until
-    # chosen, and None also means "no cap", which is the default for every repo
-    # small enough that the question is never asked. Resolved below:
-    # advanced-mode answer > config.yaml > uncapped.
+    # chosen. Resolved below: --max-file-pages > advanced-mode answer >
+    # config.yaml > unset, and unset leaves the size policy in charge.
     max_file_pages_choice: int | None = None
 
     # The two orthogonal axes the interactive menu resolves: whether docs are
@@ -1003,10 +1016,11 @@ def init_command(
     config = load_config(repo_path)
     # Output language: CLI flag > advanced-mode choice > config.yaml > English.
     language = language_opt or language_choice or config.get("language", "en")
-    # File-page cap: advanced-mode answer > config.yaml > uncapped. There is no
-    # flag; the question is the interactive surface and config.yaml is the one a
-    # script or a hosted caller writes.
-    max_file_pages = resolve_max_file_pages(max_file_pages_choice, config)
+    # File-page cap: flag > advanced-mode answer > config.yaml > unset (policy).
+    max_file_pages = resolve_max_file_pages(
+        max_file_pages_opt if max_file_pages_opt is not None else max_file_pages_choice,
+        config,
+    )
     resolved_reasoning = resolve_reasoning(reasoning, config)
     exclude_patterns: list[str] = list(config.get("exclude_patterns") or []) + list(exclude)
 
@@ -1375,12 +1389,15 @@ def init_command(
     if not onboarding:
         save_config_partial(repo_path, enable_onboarding=False)
 
-    # Persist the file-page cap so `repowise update --full` and `repowise
-    # generate` keep the wiki the size the user asked for instead of growing the
-    # file layer back on the next run. Recorded whether or not a model wrote the
-    # pages, because the cap applies to the template wiki just the same. No cap
-    # stays unrecorded: it is the default.
+    # Persist the file-page decision so `repowise update --full` and `repowise
+    # generate` keep the wiki the size that was asked for instead of re-deciding.
+    # Recorded whether or not a model wrote the pages, since the cap applies to the
+    # template wiki just the same. A refusal (0) is recorded like any other answer:
+    # leaving it unrecorded would hand the next run back to the size policy the
+    # user just declined. Only an unset value stays unwritten.
     if max_file_pages is not None and max_file_pages != config.get("max_file_pages"):
+        # save_config_partial drops None values, and 0 is not None, so an explicit
+        # refusal reaches the file.
         save_config_partial(repo_path, max_file_pages=max_file_pages)
 
     # Persist the wiki style so `repowise update` / `restyle` honor it without

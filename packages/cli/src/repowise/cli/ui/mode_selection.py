@@ -16,26 +16,16 @@ from rich.text import Text
 from repowise.cli.ui.brand import BRAND, BRAND_STYLE, DIM
 from repowise.cli.ui.repo_scanner import RepoScanInfo, estimated_documentable_files
 from repowise.core.generation.languages import SUPPORTED_LANGUAGES
+from repowise.core.generation.selection import (
+    FILE_PAGE_AUTO_CEILING,
+    recommended_file_page_cap,
+)
 from repowise.core.generation.styles import DEFAULT_STYLE, list_styles
 from repowise.core.reasoning import REASONING_MODES
 
 # A repo at or above this many files is "large" — large enough that a quick
 # fast-mode first index (graph + essential git, no LLM docs) is worth offering.
 LARGE_REPO_FILE_THRESHOLD = 5000
-
-# Above this many documentable files, advanced mode asks whether to bound the
-# file-page bucket; at or below it the question is never asked and every eligible
-# file gets a page.
-#
-# The number comes from the size distribution of the 2,309 repositories indexed
-# on repowise.dev (latest ready snapshot each): median 64 files, p75 235, p90
-# 907, p95 2,047, p98 3,290, largest 14,943. 2,000 sits at roughly the 95th
-# percentile, so 19 in 20 repos never see the question, and the ones that do are
-# the ones where the file tail is measured in tens of megabytes.
-#
-# It doubles as the recommended cap, which keeps the choice continuous: a repo
-# just over the line loses almost nothing by taking the recommendation.
-FILE_PAGE_VOLUME_THRESHOLD = 2000
 
 # Bytes a file page occupies with its metadata, measured over 1,961 file pages in
 # a local index (mean 8.8 KB). Used to quote wiki size while asking; an order of
@@ -232,26 +222,34 @@ def _format_mb(pages: int) -> str:
 def prompt_file_page_volume(
     console: Console,
     scan: RepoScanInfo | None,
-    *,
-    threshold: int = FILE_PAGE_VOLUME_THRESHOLD,
 ) -> int | None:
     """Ask a large repo whether to bound the file-page bucket.
 
-    Returns the cap to write to ``GenerationConfig.max_file_pages``: an int to
-    take the top slice by importance, or ``None`` for every eligible file (the
-    unrationed default, and the answer on any repo at or below *threshold*).
+    Returns the value for ``GenerationConfig.max_file_pages``: a positive cap to
+    take the top slice by importance, ``0`` to refuse any cap (one page per
+    eligible file, however many that is), or ``None`` when the repo is small
+    enough that there is nothing to ask and the policy leaves it alone.
 
     One page per source file is what makes small and mid-size repos good, so the
-    question is only asked above *threshold*, and only in advanced mode. It is
-    asked before ingestion, so the page count quoted is the pre-scan estimate.
+    question is only asked on repos where a cap is worth considering, and only in
+    advanced mode. It is asked before ingestion, so the page count is the pre-scan
+    estimate.
+
+    The recommended answer is whatever :func:`recommended_file_page_cap` says for
+    this size, so the question can never recommend a number the volume policy
+    would then override. Above the automatic ceiling, refusing writes an explicit
+    ``0`` rather than an unset value, because "every eligible file" has to mean
+    that even though the policy would otherwise step in.
 
     Never blocks: a terminal that cannot answer takes the recommendation and the
     run carries on, same as the other optional questions in an init flow.
     """
     estimate = estimated_documentable_files(scan)
-    if estimate <= threshold:
+    recommended = recommended_file_page_cap(estimate)
+    if recommended is None:
         return None
 
+    would_be_capped_anyway = estimate > FILE_PAGE_AUTO_CEILING
     console.print()
     console.print(f"  [{BRAND}]Page volume[/]")
     console.print(
@@ -261,10 +259,15 @@ def prompt_file_page_volume(
         "  the tail costs is wiki size, one embedding call each, and search results\n"
         "  that restate what a subsystem page already says.[/dim]"
     )
+    if would_be_capped_anyway:
+        console.print(
+            f"  [dim]A repo this size is held to {FILE_PAGE_AUTO_CEILING:,} file pages "
+            "unless you say otherwise here.[/dim]"
+        )
     console.print()
     console.print(
-        f"  [{BRAND}][1][/] Top [bold]{threshold:,}[/bold] by importance  [dim](recommended) — "
-        f"~{threshold:,} pages, {_format_mb(threshold)}[/dim]"
+        f"  [{BRAND}][1][/] Top [bold]{recommended:,}[/bold] by importance  [dim](recommended) — "
+        f"~{recommended:,} pages, {_format_mb(recommended)}[/dim]"
     )
     console.print(
         f"  [{BRAND}][2][/] Every eligible file  [dim]— ~{estimate:,} pages, "
@@ -279,8 +282,13 @@ def prompt_file_page_volume(
         # pty wrappers, `docker run -t` without -i). Take the recommendation and
         # keep going: an agent or CI job must never hang here.
         console.print("  [dim]No answer available — taking the recommendation.[/dim]")
-        return threshold
-    return threshold if choice == "1" else None
+        return recommended
+    if choice == "1":
+        return recommended
+    # Refusing has to survive the policy on a repo the policy would cap, and
+    # recording 0 rather than nothing is what says the answer was "all of them"
+    # instead of "never asked".
+    return 0 if would_be_capped_anyway else None
 
 
 def _prompt_run_mode(
@@ -490,8 +498,11 @@ def _build_summary_table(
             # Bullet-list when many patterns — comma-joined wraps unreadably.
             summary.add_row("Exclude", "\n".join(f"• {p}" for p in patterns))
 
-    if result.get("max_file_pages"):
-        summary.add_row("File pages", f"top {result['max_file_pages']:,} by importance")
+    cap = result.get("max_file_pages")
+    if cap:
+        summary.add_row("File pages", f"top {cap:,} by importance")
+    elif cap == 0:
+        summary.add_row("File pages", "one per eligible file (uncapped)")
 
     if not generate_docs and result.get("embedder"):
         summary.add_row("Embedder", result["embedder"])

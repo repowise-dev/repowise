@@ -479,22 +479,25 @@ def resolve_max_file_pages(
     chosen: int | None = None,
     config: dict[str, Any] | None = None,
 ) -> int | None:
-    """Resolve the file-page cap: explicit choice, then config.yaml, then none.
+    """Resolve the file-page cap: explicit choice, then config.yaml, then unset.
 
-    ``None`` means unrationed, which is what every repo gets unless its owner
-    asked otherwise (see ``GenerationConfig.max_file_pages``). A non-positive or
-    unparseable ``max_file_pages`` in config.yaml is read as no cap rather than
-    as zero pages: a typo must not silently delete the file layer.
+    Three states reach ``GenerationConfig.max_file_pages`` (see its comment and
+    ``selection/selector.py``): ``None`` leaves the volume policy in charge, ``0``
+    is an explicit refusal to cap, and a positive value is a cap.
+
+    A negative or unparseable ``max_file_pages`` in config.yaml resolves to
+    ``None`` rather than to zero pages, so a typo hands the decision back to the
+    policy instead of silently deleting the file layer.
     """
-    if chosen is not None:
-        return max(1, chosen)
-    raw = (config or {}).get("max_file_pages")
+    raw = chosen if chosen is not None else (config or {}).get("max_file_pages")
     if raw is None:
         return None
     try:
         value = int(raw)
     except (TypeError, ValueError):
         return None
+    if value == 0:
+        return 0  # "all of them", and it survives the policy
     return value if value > 0 else None
 
 

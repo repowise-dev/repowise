@@ -195,6 +195,75 @@ def _is_code_file(parsed: Any) -> bool:
     return not fi.is_api_contract and not _is_infra_file(parsed) and fi.language in _CODE_LANGUAGES
 
 
+# ---------------------------------------------------------------------------
+# File-page volume policy
+#
+# Two numbers, each answering a different question, both derived rather than
+# picked. The basis is the size distribution of the 2,309 repositories indexed on
+# repowise.dev (latest ready snapshot each): median 64 files, p75 235, p90 907,
+# p95 2,047, p98 3,290, p99 4,719, largest 14,943.
+# ---------------------------------------------------------------------------
+
+# Above this many documentable files, an interactive advanced-mode run offers a
+# leaner wiki. It is p95, so 19 repos in 20 are never asked. Nothing is capped
+# automatically at this size: a 2,500-file repo would lose 500 pages and gain
+# nothing anyone measured, which is not a trade to make on someone's behalf.
+FILE_PAGE_ASK_THRESHOLD = 2000
+
+# The ceiling every run holds the file bucket to, asked or not. A file page
+# averages 8.8 KB with its metadata (measured over 1,961 pages in a real index),
+# so this is about 40 MB of file layer: inside the hosted 48 MiB artifact ceiling
+# before compression, with room to spare after it. It sits near p99, so it fires
+# on roughly one repo in a hundred, and those are the repos where the tail is the
+# difference between a wiki that publishes and one that does not.
+#
+# A ceiling rather than a fraction, because bounding bytes is the whole point: a
+# percentage of the repo grows with the repo and bounds nothing. It is also the
+# least aggressive number that solves that problem, which is what makes it
+# defensible to apply without asking. Anything tighter is taste, and taste stays
+# a question.
+FILE_PAGE_AUTO_CEILING = 4500
+
+
+def auto_file_page_cap(documentable_files: int) -> int | None:
+    """The cap a run applies on its own, or ``None`` to leave the bucket alone.
+
+    This is what an unset ``max_file_pages`` resolves to. It only ever engages
+    above :data:`FILE_PAGE_AUTO_CEILING`, and it caps to exactly that, so a repo
+    just over the line loses almost nothing and a 15,000-file monorepo keeps the
+    4,500 file pages its readers are most likely to want.
+    """
+    return FILE_PAGE_AUTO_CEILING if documentable_files > FILE_PAGE_AUTO_CEILING else None
+
+
+def recommended_file_page_cap(documentable_files: int) -> int | None:
+    """The cap to offer as the recommended answer, or ``None`` if none applies.
+
+    Above the automatic ceiling this is that ceiling, so the question can never
+    recommend something the policy would then override. Between the ask
+    threshold and the ceiling it is the threshold itself, which keeps the choice
+    continuous: a repo just over the line loses almost nothing by taking it.
+    """
+    if documentable_files > FILE_PAGE_AUTO_CEILING:
+        return FILE_PAGE_AUTO_CEILING
+    if documentable_files > FILE_PAGE_ASK_THRESHOLD:
+        return FILE_PAGE_ASK_THRESHOLD
+    return None
+
+
+def count_documentable_files(parsed_files: list[Any]) -> int:
+    """How many files would get a ``file_page``, from parsed output.
+
+    The exact predicate file-page selection uses, minus the score floor (which
+    needs graph metrics), so it reads slightly high on files the graph knows
+    nothing about. Exists so a caller can report what the volume policy is about
+    to do before generation starts, in the same terms the policy uses.
+    """
+    return sum(
+        1 for p in parsed_files if _is_code_file(p) and _passes_importance_floor(p.file_info.path)
+    )
+
+
 def _passes_importance_floor(path: str) -> bool:
     """Whether *path* is worth a file page at all.
 
@@ -249,14 +318,23 @@ def _build_file_candidates(
         if s > 0.0:
             scored.append((s, path))
     scored.sort(key=lambda x: (-x[0], x[1]))
-    # Unrationed by default: every file above the floor gets a page. A repo whose
-    # owner asked for a bound gets the strongest ``max_file_pages`` of them, by
-    # the score already computed above rather than by a second ranking. The sort
-    # is total (score, then path), so the cut is deterministic.
+    # Three states, because "how many file pages" has three real answers.
+    #
+    #   unset (None) -> the volume policy decides: untouched below the automatic
+    #                   ceiling, held at it above (see auto_file_page_cap)
+    #   0            -> explicitly unlimited, one page per eligible file, however
+    #                   many that is. This is a refusal, and it is honoured
+    #   N > 0        -> cap at N
+    #
+    # Whatever the cap, it slices the ranking already computed above rather than a
+    # second one, and the sort is total (score, then path), so the cut is
+    # deterministic.
     cap = getattr(inputs.config, "max_file_pages", None)
-    if cap is not None and cap >= 0:
-        return scored[:cap]
-    return scored
+    if cap is None:
+        cap = auto_file_page_cap(len(scored))
+    if not cap:  # None (nothing to do) or 0 (explicitly unlimited)
+        return scored
+    return scored[: max(1, cap)]
 
 
 def _build_symbol_candidates(

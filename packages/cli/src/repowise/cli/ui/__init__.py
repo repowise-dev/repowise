@@ -27,7 +27,6 @@ from repowise.cli.ui.mascot import (
     mini,
 )
 from repowise.cli.ui.mode_selection import (
-    FILE_PAGE_VOLUME_THRESHOLD,
     LARGE_REPO_FILE_THRESHOLD,
     interactive_advanced_config,
     interactive_customize_offer,
@@ -66,7 +65,6 @@ __all__ = [
     "BRAND_STYLE",
     "DIM",
     "ERR",
-    "FILE_PAGE_VOLUME_THRESHOLD",
     "LARGE_REPO_FILE_THRESHOLD",
     "OK",
     "OWL_SPINNER",

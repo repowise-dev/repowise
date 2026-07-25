@@ -21,17 +21,27 @@ from .scoring import (
     score_symbol,
 )
 from .selector import (
+    FILE_PAGE_ASK_THRESHOLD,
+    FILE_PAGE_AUTO_CEILING,
     ModuleGroup,
     Selection,
     SelectionInputs,
+    auto_file_page_cap,
+    count_documentable_files,
+    recommended_file_page_cap,
     select_pages,
     summarize_selection,
 )
 
 __all__ = [
+    "FILE_PAGE_ASK_THRESHOLD",
+    "FILE_PAGE_AUTO_CEILING",
     "ModuleGroup",
     "Selection",
     "SelectionInputs",
+    "auto_file_page_cap",
+    "count_documentable_files",
+    "recommended_file_page_cap",
     "score_api_contract",
     "score_file",
     "score_infra",
