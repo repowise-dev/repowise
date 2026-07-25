@@ -37,13 +37,15 @@ repowise saved                    # tokens & dollars saved so far
 
 Runs the command (shell semantics preserved), captures stdout+stderr, picks a
 filter by command shape (then by content sniff), and prints the compact
-rendering. Nine filters ship:
+rendering. Eleven filters ship:
 
 | Filter | Commands | What it keeps |
 |---|---|---|
 | `test_output` | pytest, jest, vitest, cargo test, go test | failures + assertion details + summary; collapses pass parades |
 | `build_output` | npm/tsc/cargo/go builds | errors and warnings grouped; strips progress/boilerplate |
 | `lint_output` | eslint/biome, ruff/flake8/mypy, clippy, golangci-lint | errors verbatim; warnings grouped by rule id with counts + file:line anchors; fixable totals |
+| `install_output` | pip, uv, poetry, npm/pnpm/yarn install, cargo install, brew, bundle, composer | what actually changed + the final summary; drops resolver and download progress. An all-satisfied run collapses to `install: ok (no changes)` |
+| `infra_plan` | `terraform`/`tofu plan`, `helm diff`/`upgrade` | the `Plan: N to add…` summary and the resources that change; drops unchanged-resource dumps. A no-op collapses to `plan: no changes` |
 | `git_status` | `git status` | porcelain-style compact status |
 | `git_log` | `git log` | recent subjects + counts |
 | `git_diff` | `git diff`/`show` | stat + the most relevant hunks |
@@ -114,15 +116,26 @@ The hook is deliberately conservative. It never rewrites:
 - redirections, compound commands (`>`, `&&`, `;`, backticks, `$()`) and
   almost all pipes. Two safe shapes are carved out: a trailing `2>&1`
   (distill merges stderr into its capture anyway), and, on macOS/Linux only,
-  a single pipe into bare `head`/`tail`, which runs unchanged inside
-  distill's own shell (`pytest -q | head -50` →
-  `repowise distill "pytest -q | head -50"`)
+  a single pipe into a bare stdin filter — `head`, `tail`, `grep`, `egrep`,
+  `fgrep`, `rg` — which runs unchanged inside distill's own shell
+  (`pytest -q | head -50` → `repowise distill "pytest -q | head -50"`).
+  The `grep`/`rg` pattern-file forms (`-f`, `--file`) are excluded: they read
+  a file as configuration rather than filtering stdin
 - watch/follow modes (`--watch`, `tail -f`, …)
 - anything on the trivial-command ignore-list, or already-prefixed commands
 - PowerShell-native constructs: `Verb-Noun` cmdlets, `& "path"` invocations,
   backtick continuations — and, from PowerShell, alias tokens (`ls`, `cat`,
   `find`, …) that don't mean what their unix namesakes mean
 - commands in repos that have not opted into repowise (no `.repowise/` upward)
+
+These decisions are made by tokenizing the command, not by scanning it for
+punctuation, so on macOS/Linux a shell character sitting inside quotes is
+treated as the text it is: `pytest -k "a|b"` is a normal test run, not a
+pipeline, and is rewritten as one. On Windows the blunter rule stands — any
+`|`, `&`, `;`, `<`, `>` or backtick anywhere in the command, quoted or not,
+passes it through untouched — because `cmd.exe` re-parses metacharacters that
+the argv quoting Windows uses does not cover. The conservative answer always
+wins the ambiguity; an unrecognized shape is left alone.
 
 **The allowlist trap.** A rewrite changes the command string, so a Claude Code
 permission rule you already had — say `Bash(git diff:*)` — no longer matches
@@ -353,6 +366,18 @@ the distilled test output — identical conclusion to the raw-output run.
 Fixture-suite medians across the core filters: ≥60% reduction on
 test/build/lint output with zero error-line loss (asserted in CI).
 
+Install and infra-plan logs compress harder, because they are mostly repeated
+boilerplate. Measured on real captures from this repository, one run each:
+
+| Command | Saved |
+|---|---:|
+| `npm ci` (1,344 packages) | **99.5%** |
+| `pip install` (everything already satisfied) | collapses to `install: ok (no changes)` |
+| `terraform plan` | **80.2%** |
+
+Every one of those still round-trips through `repowise expand`, and the error
+line in a failing install survives verbatim.
+
 ---
 
 ## Configuration
@@ -388,7 +413,7 @@ and whether the rewrite hook is installed.
 | A filter eats a critical line | errors-first invariant + fixture tests + `expand` recovery + fallback-to-raw |
 | Silent permission escalation | rewrites default to `ask`; the user sees the modified command. Codex has no ask primitive, so only families explicitly set to `allow` rewrite there |
 | Marker with nothing behind it | content stored *before* the marker renders; store failure ⇒ raw output |
-| Compound-command semantics | pipes/redirects/`&&` are never rewritten |
+| Compound-command semantics | compound commands, substitution and redirects are never rewritten. The one pipe shape that is (a single stage into a bare stdin filter, macOS/Linux only) is passed through as one quoted token and runs verbatim in distill's shell; anything that could break out of that quoting bails |
 | Unindexed or stale repo | filters work index-free; index only improves ranking |
 | Store growth | TTL + size cap, pruned on write; `repowise doctor` reports size |
 

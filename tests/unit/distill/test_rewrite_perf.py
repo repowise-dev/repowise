@@ -20,6 +20,8 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 _HEAVY_PREFIXES = (
     "click",
     "sqlalchemy",
@@ -61,29 +63,65 @@ def _hook_invocation() -> list[str]:
     return [sys.executable, "-c", "from repowise.cli.rewrite_hook import main; main()"]
 
 
-def test_p95_under_150ms(tmp_path: Path) -> None:
-    (tmp_path / ".repowise").mkdir()
-    payload = json.dumps(
+def _payload(command: str, cwd: Path) -> str:
+    return json.dumps(
         {
             "hook_event_name": "PreToolUse",
             "tool_name": "Bash",
-            "tool_input": {"command": "pytest -x"},
-            "cwd": str(tmp_path),
+            "tool_input": {"command": command},
+            "cwd": str(cwd),
         }
     )
-    cmd = _hook_invocation()
 
-    # Warmup: first run pays one-off filesystem cache costs.
-    subprocess.run(cmd, input=payload, capture_output=True, text=True)
 
+def _p95(cmd: list[str], payload: str) -> tuple[float, list[str]]:
+    """Wall-clock p95 over 12 invocations, plus every stdout seen."""
     timings: list[float] = []
+    outputs: list[str] = []
     for _ in range(12):
         start = time.perf_counter()
         result = subprocess.run(cmd, input=payload, capture_output=True, text=True)
         timings.append((time.perf_counter() - start) * 1000)
         assert result.returncode == 0
-        assert "repowise distill --source hook-bash pytest -x" in result.stdout
-
+        outputs.append(result.stdout)
     timings.sort()
-    p95 = timings[int(len(timings) * 0.95) - 1]
-    assert p95 < 150, f"repowise-rewrite p95 {p95:.1f} ms >= 150 ms (all: {timings})"
+    return timings[int(len(timings) * 0.95) - 1], outputs
+
+
+#: Command shapes the hook must answer within budget. The pipeline and
+#: quoted-operator rows are the ones that exercise the shell lexer end to
+#: end: they are the shapes that used to short-circuit on a character scan
+#: and now walk every token.
+_PERF_COMMANDS = (
+    "pytest 2>&1 | grep FAIL",
+    "git log --oneline -50 | rg fix",
+    'git commit -m "fix a|b"',
+    "npm run build --workspace packages/web -- --sourcemap --minify=false",
+)
+
+
+def test_p95_under_150ms(tmp_path: Path) -> None:
+    (tmp_path / ".repowise").mkdir()
+    cmd = _hook_invocation()
+
+    # Warmup: first run pays one-off filesystem cache costs.
+    subprocess.run(cmd, input=_payload("pytest -x", tmp_path), capture_output=True, text=True)
+
+    p95, outputs = _p95(cmd, _payload("pytest -x", tmp_path))
+    assert all("repowise distill --source hook-bash pytest -x" in out for out in outputs)
+    assert p95 < 150, f"repowise-rewrite p95 {p95:.1f} ms >= 150 ms"
+
+
+@pytest.mark.parametrize("command", _PERF_COMMANDS)
+def test_lexer_shapes_stay_under_budget(tmp_path: Path, command: str) -> None:
+    """No command shape may blow the budget, whatever the lexer walks.
+
+    Only the timing is asserted here; whether a given shape rewrites is the
+    decision table's business (and is platform-dependent for pipelines).
+    """
+    (tmp_path / ".repowise").mkdir()
+    cmd = _hook_invocation()
+    subprocess.run(cmd, input=_payload(command, tmp_path), capture_output=True, text=True)
+
+    p95, _ = _p95(cmd, _payload(command, tmp_path))
+    assert p95 < 150, f"{command!r} p95 {p95:.1f} ms >= 150 ms"

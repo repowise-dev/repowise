@@ -8,8 +8,9 @@ uniformly across the main agent and every subagent. This is safe because
 ``classify`` only ever rewrites a closed set of recognized command families
 (test/lint/build/git/search/listing/log) that survive the bailouts below —
 no redirects, compound commands, substitution, or interactive commands,
-and the only pipe shape allowed is a single ``| head``/``| tail`` with no
-quoting to break out of. The rewrite is therefore always ``repowise distill
+and the only pipe shape allowed is a single stage into a bare stdin filter
+(``head``/``tail``/``grep``/``rg``) with no quoting to break out of. The
+rewrite is therefore always ``repowise distill
 <one simple, recognized command>``, never an arbitrary command smuggled
 behind the wrapper, so auto-allowing it is not a permission escalation. Users who want
 to review every rewrite can set ``permission: ask`` in
@@ -29,10 +30,14 @@ Bailouts — commands never rewritten:
 
   - redirections / compound commands (``> < && || ; &``), substitution
     (backticks, ``$(``), multi-line commands: the wrapper would change
-    shell semantics. Two safe tails are carved out: a trailing ``2>&1``
-    (distill merges stderr into its capture anyway) and, on POSIX hosts,
-    a single pipe into bare ``head``/``tail``; the whole pipeline is
-    then quoted so it runs inside distill's own shell, unchanged;
+    shell semantics. ``shell_lexer`` decides this structurally, so an
+    operator that only *looks* like one because it sits inside quotes
+    (``git commit -m "fix a|b"``) is not a bailout. Two safe tails are
+    carved out: a trailing ``2>&1`` (distill merges stderr into its
+    capture anyway) and, on POSIX hosts, a single pipe into a bare stdin
+    filter (``head``/``tail``/``grep``/``egrep``/``fgrep``/``rg``); the
+    whole pipeline is then quoted so it runs inside distill's own shell,
+    unchanged;
   - watch/follow modes (``--watch``, ``tail -f``): long-running,
     interactive by design;
   - the ignore-list of trivial or interactive commands (cd, echo, vim, …);
@@ -50,6 +55,7 @@ import tempfile
 # import at module scope. (No pathlib: it costs double-digit milliseconds
 # of interpreter startup, which this hook pays on every Bash call.)
 from repowise.cli.agent_adapters.base import RewriteResult
+from repowise.cli.shell_lexer import analyze_pipeline
 
 # ---------------------------------------------------------------------------
 # Command normalization — a hot-path mirror of
@@ -191,32 +197,38 @@ IGNORED_FIRST_TOKENS = frozenset(
     }
 )
 
-# Shell syntax that changes meaning if the command is wrapped: pipes,
-# redirections, chaining, backgrounding, substitution, heredocs, newlines.
-# The same characters cover PowerShell's equivalents: `;` separators,
-# backtick line-continuation/escapes, `$(...)` subexpressions, pipelines,
-# and `& "path\to.exe"` call-operator invocations.
-_SHELL_SYNTAX_RE = re.compile(r"[|&;<>`\n]|\$\(")
-
 # A stderr-merge suffix is the one redirection distill preserves for free:
 # it captures both streams and interleaves them, so `cmd 2>&1` and
 # `repowise distill cmd` (with the outer shell applying the now-vacuous
-# 2>&1 to distill's own empty stderr) see the same bytes.
+# 2>&1 to distill's own empty stderr) see the same bytes. Stripped before
+# the lexer runs so `pytest 2>&1 | grep FAIL` still classifies as pytest.
 _STDERR_MERGE_RE = re.compile(r"\s+2>&1(?=\s|$)")
 
-# The only pipe tails safe to run inside distill's shell: bare head/tail
-# with at most a numeric count. Anything else (grep, awk, sort, xargs)
-# passes through untouched.
-_SAFE_PIPE_TAIL_RE = re.compile(r"^(?:head|tail)(?:\s+(?:-n\s*|-c\s*|-)\d+)?\s*$")
-
 # Quoting the pipeline for distill's inner shell is only sound when nothing
-# in it can be re-expanded or break the quoting on the second pass.
+# in it can be re-expanded or break the quoting on the second pass. This
+# applies to the pipeline shape only: a command with no pipe is forwarded as
+# separate argv tokens, which distill re-quotes itself.
 _PIPE_UNSAFE_CHARS = ('"', "'", "$", "\\")
 
-# distill executes via the system shell (cmd.exe on Windows, where head/tail
-# don't exist), so the safe-pipeline rewrite is POSIX-hosts-only. Module
-# constant so tests can pin both platforms' behavior.
+# distill executes via the system shell (cmd.exe on Windows, where
+# head/tail/grep don't exist), so the safe-pipeline rewrite is
+# POSIX-hosts-only. Module constant so tests can pin both platforms.
 _POSIX_HOST = os.name == "posix"
+
+# Windows keeps the blunt character bail, quoted or not. Two reasons, both
+# downstream of this module:
+#
+#   - distill rejoins its argv with ``subprocess.list2cmdline``, which quotes
+#     for the C runtime's argv parser and not for cmd.exe. A token like
+#     ``--grep=a&whoami`` holds no space, so it is emitted unquoted and
+#     cmd.exe reads the ``&`` as a command separator. The lexer knows that
+#     ``&`` was quoted text; the renderer downstream does not.
+#   - PowerShell has no backslash escape, so a Windows path ending in ``\``
+#     does not extend a quoted run the way the POSIX rules here assume.
+#
+# So the lexer's false-bail win is a POSIX win. On Windows it still buys the
+# structural bailouts, just not the widening.
+_WIN_SHELL_METACHAR_RE = re.compile(r"[|&;<>`^\n]|\$\(")
 
 
 def _split_safe_tail(command: str) -> tuple[str, bool] | None:
@@ -224,31 +236,44 @@ def _split_safe_tail(command: str) -> tuple[str, bool] | None:
 
     Returns None when the command carries shell syntax the wrapper can't
     preserve. ``needs_inner_shell`` is True for the safe-pipeline shape
-    (``cmd | head -N``): the caller must pass the whole command to
+    (``cmd | grep FAIL``): the caller must pass the whole command to
     ``repowise distill`` as one quoted token so the pipe executes inside
     distill's own shell rather than binding to the wrapper.
+
+    The structural decisions (chaining, substitution, redirects, how many
+    stages, which tool ends the pipeline) come from ``shell_lexer``; what is
+    left here is the policy the lexer deliberately does not own — the
+    stderr-merge carve-out, the POSIX-host gate, and the quoting rules for
+    the one shape that gets re-quoted.
     """
-    cmd = command.strip()
-    # Classification always ignores stderr merges; `pytest 2>&1 | head`
-    # still classifies as pytest.
-    declawed = _STDERR_MERGE_RE.sub("", cmd)
-    if not _SHELL_SYNTAX_RE.search(declawed):
-        return declawed, False
-    # One pipe into bare head/tail: run the pipeline inside distill.
-    if not _POSIX_HOST:
+    declawed = _STDERR_MERGE_RE.sub("", command.strip())
+    if not _POSIX_HOST and _WIN_SHELL_METACHAR_RE.search(declawed):
         return None
-    if any(ch in cmd for ch in _PIPE_UNSAFE_CHARS):
+    pipeline = analyze_pipeline(declawed)
+    if pipeline is None or pipeline.redirects:
+        # Every redirect other than the stderr merge already stripped above
+        # would change what the wrapper captures.
         return None
-    head_part, sep, tail_part = declawed.partition("|")
-    if not sep or _SHELL_SYNTAX_RE.search(head_part) or _SHELL_SYNTAX_RE.search(tail_part):
+    if pipeline.final_tool is None:
+        return pipeline.producer, False
+    # A pipeline is re-quoted as one token, so anything the inner shell would
+    # re-expand or that could break out of the quoting bails.
+    if not _POSIX_HOST or any(ch in command for ch in _PIPE_UNSAFE_CHARS):
         return None
-    if not _SAFE_PIPE_TAIL_RE.match(tail_part.strip()):
-        return None
-    return head_part.strip(), True
+    return pipeline.producer, True
 
 
 # Watch/follow modes are long-running; wrapping them buffers forever.
 _WATCH_RE = re.compile(r"--watch(?:all)?\b|--looponfail\b|(?:^|\s)-f\b.*\.log\b|--follow\b")
+
+# Every tool in the `logs` family can stream instead of returning, and the
+# flag that does it is bare `-f`/`-F` far more often than it is `--follow`.
+# `_WATCH_RE` only catches the `-f` form when a literal `.log` follows, which
+# misses `journalctl -f`, `docker logs -f web`, and `tail -f /var/log/syslog`.
+# Checking this per-family keeps `-f` meaning what it means elsewhere
+# (`make -f Makefile`, `docker compose -f x.yml` stay rewritable).
+_FOLLOW_FLAG_RE = re.compile(r"(?:^|\s)(?:-[a-z]*[fF]|--follow)(?:[\s=]|$)")
+_STREAMING_FAMILIES = frozenset({"logs"})
 
 # PowerShell cmdlets all follow the Verb-Noun shape (Get-ChildItem,
 # Select-Object, ForEach-Object, …), so a Verb-Noun first token is a safe
@@ -282,6 +307,8 @@ def _classify_head(head_command: str) -> str | None:
         return None
     for family, pattern in FAMILY_PATTERNS:
         if pattern.match(normalized):
+            if family in _STREAMING_FAMILIES and _FOLLOW_FLAG_RE.search(normalized):
+                return None
             return family
     return None
 
@@ -309,9 +336,7 @@ def _find_repo_root(cwd: str) -> str | None:
         # artifact (a tool that indexed with cwd=$TMP), never an opt-in, and
         # it would otherwise capture every temp-dir cwd on the machine.
         # Repos legitimately created UNDER either directory still match.
-        if current not in (home, temp_root) and os.path.isdir(
-            os.path.join(current, ".repowise")
-        ):
+        if current not in (home, temp_root) and os.path.isdir(os.path.join(current, ".repowise")):
             return current
         parent = os.path.dirname(current)
         if parent == current:

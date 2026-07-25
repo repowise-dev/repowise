@@ -141,8 +141,10 @@ distill:
 - `permission: ask` (the default) means the agent's rewritten command is shown
   for approval; `allow` auto-approves rewrites; `off` disables rewrites here.
 - `families` keys are filter names (`test_output`, `build_output`,
-  `lint_output`, `git_status`, `git_log`, `git_diff`, `search_results`,
-  `file_listing`, `logs`) and accept `ask | allow | off | deny`.
+  `lint_output`, `install_output`, `infra_plan`, `git_status`, `git_log`,
+  `git_diff`, `search_results`, `file_listing`, `logs`) and accept
+  `ask | allow | off | deny`. `repowise doctor` validates these against the
+  live filter registry, so it always knows the current set.
 - Declining the `repowise init` opt-in prompt writes
   `commands.enabled: false`, so a rewrite hook installed globally from another
   repo stays inert in this one.

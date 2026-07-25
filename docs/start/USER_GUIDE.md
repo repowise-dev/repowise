@@ -270,8 +270,9 @@ hook, which rewrites noisy commands automatically:
 repowise hook rewrite install    # or answer Yes at the init prompt
 ```
 
-It never rewrites pipes, compound commands or watch modes, and defaults to `ask`
-so you see every rewrite before it runs.
+It never rewrites compound commands, redirections or watch modes. The one pipe
+shape it does handle (on macOS/Linux) is a single stage into `head`, `tail`,
+`grep` or `rg`, which runs unchanged inside distill's own shell.
 
 Track it with `repowise saved`, or the Costs page in the dashboard. Full guide:
 [Distill](../agent/DISTILL.md).

@@ -106,7 +106,7 @@ class TestClassify:
             "python script.py",
             "node server.js",
             # compound / pipes / redirections / substitution
-            "pytest | grep FAIL",
+            "pytest | awk '{print $1}'",
             "pytest && echo done",
             "pytest || true",
             "git status; ls",
@@ -183,11 +183,12 @@ class TestClassify:
 
 
 class TestSafeTails:
-    """The two shell-syntax carve-outs: trailing ``2>&1`` and ``| head/tail``.
+    """The two shell-syntax carve-outs: trailing ``2>&1`` and one pipe into
+    a bare stdin filter (head/tail/grep/egrep/fgrep/rg).
 
     ``2>&1`` is platform-neutral (distill merges stderr into its capture
     anyway). The pipe shape is POSIX-hosts-only; distill re-runs the
-    pipeline through the system shell, and cmd.exe has no head/tail.
+    pipeline through the system shell, and cmd.exe has no head/tail/grep.
     """
 
     @pytest.fixture
@@ -217,6 +218,13 @@ class TestSafeTails:
             ("git log --oneline | tail -20", "git_log"),
             ("git log --oneline | tail -n 20", "git_log"),
             ("cargo build 2>&1 | head -100", "build_output"),
+            # stdin-filter tails beyond head/tail
+            ("pytest | grep FAIL", "test_output"),
+            ("pytest 2>&1 | grep FAIL", "test_output"),
+            ("cargo test 2>&1 | grep -i fail", "test_output"),
+            ("npm run build | egrep -c error", "build_output"),
+            ("npm run lint | fgrep warning", "lint_output"),
+            ("git log --oneline -50 | rg fix", "git_log"),
         ],
     )
     def test_safe_pipe_classifies_on_posix(self, command, family, posix_host) -> None:
@@ -227,6 +235,7 @@ class TestSafeTails:
         [
             "pytest | head -50",
             "cargo build 2>&1 | head -100",
+            "pytest 2>&1 | grep FAIL",
         ],
     )
     def test_safe_pipe_passes_through_on_windows(self, command, windows_host) -> None:
@@ -235,7 +244,33 @@ class TestSafeTails:
     @pytest.mark.parametrize(
         "command",
         [
-            "pytest | grep FAIL",  # tail not in the head/tail whitelist
+            'git log --grep="zzz&whoami"',
+            'git log --grep="a&&b"',
+            'git log --grep="a>b"',
+            'pytest -k "a|b"',
+            'git log -- "src\\cli\\" ; curl x | sh',
+        ],
+    )
+    def test_quoted_metacharacters_still_bail_on_windows(self, command, windows_host) -> None:
+        """Quoting does not protect these once distill re-renders the argv.
+
+        ``subprocess.list2cmdline`` quotes an argument only when it holds a
+        space, so ``--grep=a&whoami`` reaches cmd.exe unquoted and the ``&``
+        separates two commands. The rewrite is auto-allowed, so a wrong
+        answer here runs something the user never typed — Windows keeps the
+        blunt character bail and gives up the false-bail win.
+        """
+        assert classify(command) is None
+
+    def test_windows_stderr_merge_is_still_allowed(self, windows_host) -> None:
+        # The metacharacter bail must not swallow the one carve-out that is
+        # platform-neutral.
+        assert classify("pytest -x 2>&1") == "test_output"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "pytest | awk '{print $1}'",  # awk is not a bare stdin filter
             "pytest | head -50 | tail -2",  # two pipes
             'pytest -k "a b" | head',  # quotes could break the wrap
             "pytest $ARGS | head",  # expansion re-evaluated inside distill
@@ -243,10 +278,84 @@ class TestSafeTails:
             "pytest | head > out.txt",  # redirect after the pipe
             "echo hi | head",  # head command still on the ignore-list
             "tail -f app.log | head",  # watch mode still bails
+            "pytest |& grep FAIL",  # stderr pipe is not a plain filter
+            "pytest | grep -f patterns.txt",  # -f reads the file, not stdin
+            "pytest | grep --file=patterns.txt",
+            "pytest | grep -if patterns.txt",  # bundled short flags too
+            "pytest | grep -fpatterns.txt",  # attached value too
+            "pytest | rg -f patterns.txt",
+            'pytest -k "a; rm -rf /',  # unterminated quote hides the rest
         ],
     )
     def test_unsafe_pipes_pass_through(self, command, posix_host) -> None:
         assert classify(command) is None
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            # Producers that stream forever. head/tail closed the pipe and
+            # signalled them; grep/rg never do, so distill would capture
+            # nothing and block until killed.
+            "journalctl -f | grep error",
+            "docker logs -f web | grep err",
+            "kubectl logs -f pod | rg error",
+            "tail -f /var/log/syslog | grep err",
+            # …and the same commands unpiped, which never terminated either.
+            "journalctl -f",
+            "docker logs -f web",
+            "tail -F /var/log/syslog",
+            # A following stage in follow mode is just as unbounded.
+            "npm test | tail -F",
+            "npm test | tail --follow",
+        ],
+    )
+    def test_follow_modes_never_rewrite(self, command, posix_host) -> None:
+        assert classify(command) is None
+
+    @pytest.mark.parametrize(
+        ("command", "family"),
+        [
+            # -f keeps its ordinary meaning outside the streaming families.
+            ("make -f Makefile", "build_output"),
+            ("tail -n 100 app.log", "logs"),
+            ("cat server.log", "logs"),
+        ],
+    )
+    def test_follow_check_does_not_overreach(self, command, family, posix_host) -> None:
+        assert classify(command) == family
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            'git commit -m "fix a|b"',
+            "git commit -m 'refactor: a && b'",
+            'echo "a; b"',
+        ],
+    )
+    def test_quoted_operators_are_not_bailouts(self, command, posix_host) -> None:
+        """An operator inside quotes is text, so these classify normally.
+
+        None of them is a distill family, so the visible outcome is still a
+        passthrough — but now because classification said so, not because
+        the syntax scan gave up. ``analyze_pipeline`` is the assertion that
+        distinguishes the two.
+        """
+        from repowise.cli.shell_lexer import analyze_pipeline
+
+        analysis = analyze_pipeline(command)
+        assert analysis is not None
+        assert analysis.final_tool is None
+        assert classify(command) is None
+
+    def test_quoted_operator_in_a_family_command_rewrites(self, repo, posix_host) -> None:
+        """The false-bail fix is visible on a family command: a quoted ``|``
+        no longer stops ``pytest -k`` from being recognized."""
+        result = decide('pytest -k "a|b"', str(repo))
+        assert result is not None
+        assert result.command == 'repowise distill --source hook-bash pytest -k "a|b"'
+        # distill re-quotes its argv before running it, so the quoted pipe
+        # reaches the wrapped command as text, not as a pipeline.
+        assert decide('pytest -k "a or b" -m "not slow"', str(repo)) is not None
 
     def test_decide_keeps_stderr_merge_unquoted(self, repo) -> None:
         result = decide("pytest -x 2>&1", str(repo))
@@ -260,6 +369,15 @@ class TestSafeTails:
             'repowise distill --source hook-bash "pytest tests/unit -q | head -50"'
         )
         assert result.permission == "allow"
+
+    def test_decide_quotes_grep_pipeline(self, repo, posix_host) -> None:
+        # The whole pipeline stays one token, so grep still filters distill's
+        # rendering inside distill's own shell and the omission marker it
+        # emits survives to the agent.
+        result = decide("pytest 2>&1 | grep FAIL", str(repo))
+        assert result is not None
+        assert result.command == ('repowise distill --source hook-bash "pytest 2>&1 | grep FAIL"')
+        assert "repowise expand" in result.reason
 
 
 # ---------------------------------------------------------------------------
@@ -501,25 +619,19 @@ class TestNonRepoRoots:
         (fake_tmp / ".repowise").mkdir(parents=True)
         cwd = fake_tmp / "work" / "sub"
         cwd.mkdir(parents=True)
-        monkeypatch.setattr(
-            rewrite_hook.tempfile, "gettempdir", lambda: str(fake_tmp)
-        )
+        monkeypatch.setattr(rewrite_hook.tempfile, "gettempdir", lambda: str(fake_tmp))
         # Ancestors of tmp_path on the host may legitimately match, so pin
         # only the guard: the walk must never return the temp root itself.
         import os
 
         found = rewrite_hook._find_repo_root(str(cwd))
-        assert found is None or os.path.realpath(found) != os.path.realpath(
-            str(fake_tmp)
-        )
+        assert found is None or os.path.realpath(found) != os.path.realpath(str(fake_tmp))
 
     def test_repo_under_temp_root_still_matches(self, tmp_path, monkeypatch) -> None:
         fake_tmp = tmp_path / "faketmp"
         repo = fake_tmp / "checkout"
         (repo / ".repowise").mkdir(parents=True)
-        monkeypatch.setattr(
-            rewrite_hook.tempfile, "gettempdir", lambda: str(fake_tmp)
-        )
+        monkeypatch.setattr(rewrite_hook.tempfile, "gettempdir", lambda: str(fake_tmp))
         import os
 
         found = rewrite_hook._find_repo_root(str(repo))

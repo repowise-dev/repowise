@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import os
+import shlex
 import sys
 from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
 
-from repowise.cli.commands.distill_cmd import distill_command
+from repowise.cli.commands.distill_cmd import _render_command, distill_command
 from repowise.cli.commands.expand_cmd import expand_command
 from repowise.core.distill.markers import parse_marker_refs
 from repowise.core.distill.store import OmissionStore
@@ -55,6 +57,54 @@ def test_distill_failing_git_command_keeps_exit_code(repo_cwd: Path) -> None:
     # error output through, and the nonzero exit code survives.
     result = CliRunner().invoke(distill_command, ["git", "log", "-40"])
     assert result.exit_code != 0
+
+
+@pytest.mark.skipif(os.name != "posix", reason="cmd.exe has no grep")
+def test_distill_runs_a_pipeline_passed_as_one_token(repo_cwd: Path) -> None:
+    """One argv token containing a pipe must execute AS a pipeline.
+
+    This is the execution model the rewrite hook's safe-pipeline shape
+    depends on: the hook quotes the whole pipeline so the pipe binds inside
+    distill's own shell. The producer prints a line only grep can remove, so
+    the assertion fails if the pipe silently did not run.
+    """
+    script = (
+        "for i in range(40): "
+        "print('Requirement already satisfied: pkg%d in /venv/site-packages' % i)\n"
+        "print('ZZZDROPME')\n"
+        "print('Successfully installed flask-3.1.0')"
+    )
+    pipeline = f"{shlex.quote(sys.executable)} -c {shlex.quote(script)} | grep -v ZZZDROPME"
+
+    result = CliRunner().invoke(distill_command, [pipeline])
+
+    assert result.exit_code == 0
+    # Proof the pipe ran: only grep could have dropped this line.
+    assert "ZZZDROPME" not in result.output
+    # Proof distill still distilled what came back out of it.
+    assert "Successfully installed flask-3.1.0" in result.output
+    refs = parse_marker_refs(result.output)
+    assert refs, f"no recoverable marker in:\n{result.output}"
+    assert CliRunner().invoke(expand_command, [refs[0]]).exit_code == 0
+
+
+def test_render_command_quotes_shell_metacharacters() -> None:
+    """argv tokens must not turn into shell syntax when distill rejoins them.
+
+    The rewrite hook leans on this for every non-pipe command it forwards as
+    separate tokens: ``pytest -k "a|b"`` must run as one command, not a
+    pipeline. POSIX ``shlex.join`` gets it right. Windows
+    ``list2cmdline`` quotes for the C runtime's argv parser rather than for
+    cmd.exe, so a metacharacter with no surrounding space rides through
+    unquoted — which is exactly why the hook refuses those commands outright
+    on non-POSIX hosts (see
+    ``test_rewrite_hook.py::test_quoted_metacharacters_still_bail_on_windows``).
+    """
+    rendered = _render_command(("git", "log", "--grep=a&&b"))
+    if os.name == "posix":
+        assert rendered == "git log '--grep=a&&b'"
+    else:
+        assert rendered == "git log --grep=a&&b"
 
 
 def test_distill_and_expand_roundtrip(repo_cwd: Path, fixtures_dir: Path) -> None:

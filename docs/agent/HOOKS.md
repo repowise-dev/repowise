@@ -153,7 +153,9 @@ repowise hook rewrite uninstall
 ```
 
 - Defaults to **`ask`**, so you approve every rewritten command before it runs.
-- Never rewrites pipes, compound commands, or watch modes.
+- Never rewrites compound commands, redirections, or watch modes. The one pipe
+  shape it handles (macOS/Linux) is a single stage into `head`, `tail`, `grep`
+  or `rg`, quoted whole so it runs unchanged inside distill's own shell.
 - Installing also adds `Bash(repowise distill:*)` / `PowerShell(repowise distill:*)`
   to `permissions.allow`, so an already-approved command family doesn't start
   re-prompting just because its string changed.
