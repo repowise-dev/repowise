@@ -222,12 +222,14 @@ def _print_missed_report(start: Path, days: float, pricing_model: str) -> None:
         return
 
     if has_missed:
-        _render_missed_distill_table(missed, days, pricing_model)
+        _render_missed_distill_table(missed, days, pricing_model, start)
     if has_reread:
         _render_reread_table(reread, days, pricing_model)
 
 
-def _render_missed_distill_table(report: dict, days: float, pricing_model: str) -> None:
+def _render_missed_distill_table(
+    report: dict, days: float, pricing_model: str, repo_root: Path | None = None
+) -> None:
     usd, rate = _estimate_usd(report["est_saved_tokens"], pricing_model)
     table = Table(
         title=f"Missed distill savings - last {days:g} days",
@@ -262,7 +264,7 @@ def _render_missed_distill_table(report: dict, days: float, pricing_model: str) 
         f"[dim](at ${rate:.2f}/M input tokens, {pricing_model}; "
         f"tokens are chars/4 estimates)[/dim]"
     )
-    console.print(f"  [dim]{_missed_tip()}[/dim]")
+    console.print(f"  [dim]{_missed_tip(repo_root)}[/dim]")
     console.print()
 
 
@@ -284,18 +286,43 @@ def _rewrite_hook_installed() -> bool:
         return False
 
 
-def _missed_tip() -> str:
+def _distill_opted_out(repo_root: Path | None) -> bool:
+    """True when this repo turned the command path off in its own config."""
+    if repo_root is None:
+        return False
+    try:
+        from repowise.core.repo_config import load_repo_config
+
+        cfg = load_repo_config(repo_root).get("distill")
+        if not isinstance(cfg, dict):
+            return False
+        if cfg.get("enabled") is False:
+            return True
+        commands = cfg.get("commands")
+        return isinstance(commands, dict) and commands.get("enabled") is False
+    except Exception:
+        return False
+
+
+def _missed_tip(repo_root: Path | None = None) -> str:
     """The one next step that is actually true for this machine.
 
     Telling someone to install a hook they already installed hides the real
     reason the rows are still there: the hook only rewrites a single
     recognized command, so chained (``a && b``) and piped commands pass
-    through by design and have to be distilled explicitly.
+    through by design and have to be distilled explicitly. A repo that opted
+    out has a third, different reason again.
     """
     if not _rewrite_hook_installed():
         return (
             "Tip: install the rewrite hook ('repowise hook rewrite install') "
             "to catch these automatically."
+        )
+    if _distill_opted_out(repo_root):
+        return (
+            "Tip: the rewrite hook is installed but this repo opted out "
+            "(distill.commands.enabled: false in .repowise/config.yaml), so nothing "
+            "here was rewritten. Set it back to true to catch these automatically."
         )
     return (
         "Tip: the hook is installed. What is left is mostly commands it will not "

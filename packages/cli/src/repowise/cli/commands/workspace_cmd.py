@@ -405,7 +405,7 @@ def _inherit_distill_verdict(repo_path: Path, primary_cfg: dict) -> None:
 
     ``repowise init`` records ``distill.commands.enabled`` in every repo it
     asks about; a repo added later would otherwise default to enabled (with
-    the ``ask`` posture) the moment ``.repowise/`` exists — even after a
+    the ``allow`` posture) the moment ``.repowise/`` exists — even after a
     workspace-wide decline. No explicit verdict on the primary → leave the
     new repo's config untouched.
     """

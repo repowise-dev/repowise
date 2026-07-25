@@ -252,13 +252,13 @@ class TestSafeTails:
         ],
     )
     def test_quoted_metacharacters_still_bail_on_windows(self, command, windows_host) -> None:
-        """Quoting does not protect these once distill re-renders the argv.
+        """Windows gives up the false-bail win to stay conservative here.
 
-        ``subprocess.list2cmdline`` quotes an argument only when it holds a
-        space, so ``--grep=a&whoami`` reaches cmd.exe unquoted and the ``&``
-        separates two commands. The rewrite is auto-allowed, so a wrong
-        answer here runs something the user never typed — Windows keeps the
-        blunt character bail and gives up the false-bail win.
+        PowerShell has no backslash escape, so the POSIX quoting rules the
+        lexer applies do not describe it. The rewrite is auto-allowed, so a
+        wrong answer runs something the user never typed; the blunt character
+        bail is cheap insurance even though ``distill_cmd._render_command``
+        now escapes what it passes to cmd.exe.
         """
         assert classify(command) is None
 

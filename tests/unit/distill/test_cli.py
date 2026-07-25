@@ -128,6 +128,12 @@ def test_render_command_passes_a_single_token_through() -> None:
         "a(b)c",
         "trailing\\back\\slash\\",
         "--format=%H",
+        "--format=%h%n%s",
+        "a!USERNAME!b",
+        "café中文",
+        "",
+        "^",
+        "a\tb",
     ],
 )
 def test_render_command_roundtrips_argv_through_the_shell(payload: str, tmp_path: Path) -> None:
@@ -155,6 +161,63 @@ def test_render_command_roundtrips_argv_through_the_shell(payload: str, tmp_path
     assert json.loads(proc.stdout.strip().splitlines()[-1]) == [payload]
     # A redirect that reached the shell would have written a file instead.
     assert list(tmp_path.iterdir()) == []
+
+
+def test_render_command_keeps_an_executable_path_with_spaces_intact(tmp_path: Path) -> None:
+    """The program name needs real grouping quotes, not caret-escaped ones.
+
+    cmd.exe resolves the executable before caret processing, so escaping the
+    quotes around ``C:\\Program Files\\...`` splits the path at its first
+    space and the command does not run at all. This is the ``.cmd``-shim case
+    that ``shell=True`` exists to support.
+    """
+    shim_dir = tmp_path / "with space"
+    shim_dir.mkdir()
+    shim = shim_dir / "my shim.cmd"
+    # Echoes a fixed marker rather than %*: a batch file re-parses whatever %*
+    # expands to, which is the shim's own hazard and would not be testing the
+    # renderer. Argument fidelity is covered by the parametrized test above.
+    shim.write_text("@echo SHIM_OK\n", encoding="utf-8")
+
+    proc = subprocess.run(
+        _render_command((str(shim), "arg one", "a&b")),
+        shell=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        cwd=tmp_path,
+        timeout=60,
+    )
+
+    assert proc.returncode == 0, proc.stderr or proc.stdout
+    assert "SHIM_OK" in proc.stdout
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="cmd.exe rendering rules")
+def test_render_command_refuses_a_defined_env_var_expansion(monkeypatch) -> None:
+    """cmd expands %VAR% and re-parses the result, so a metacharacter in the
+    value is command execution. There is no escape for it, so refuse."""
+    monkeypatch.setenv("REPOWISE_TEST_EVIL", "x&echo pwned")
+    with pytest.raises(Exception, match="REPOWISE_TEST_EVIL"):
+        _render_command(("git", "log", "--grep=%REPOWISE_TEST_EVIL%"))
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="cmd.exe rendering rules")
+def test_render_command_allows_an_undefined_percent_pair(monkeypatch) -> None:
+    """`git log --format=%h%n%s` reads as %h% to cmd but expands to nothing."""
+    monkeypatch.delenv("h", raising=False)
+    monkeypatch.delenv("n", raising=False)
+    assert "%h%n%s" in _render_command(("git", "log", "--format=%h%n%s"))
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="cmd.exe rendering rules")
+@pytest.mark.parametrize("payload", ["a\nb", "a\r\nb", "a\rb"])
+def test_render_command_refuses_newlines(payload: str) -> None:
+    """cmd truncates the command line at a newline and drops a bare CR, both
+    silently, so the child would get a quietly different argv."""
+    with pytest.raises(Exception, match="newline"):
+        _render_command(("git", "log", f"--grep={payload}"))
 
 
 def test_distill_and_expand_roundtrip(repo_cwd: Path, fixtures_dir: Path) -> None:

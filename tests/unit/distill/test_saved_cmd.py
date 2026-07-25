@@ -215,6 +215,16 @@ def test_missed_tip_does_not_nag_when_hook_is_already_installed(monkeypatch) -> 
     assert "repowise distill" in tip
 
 
+def test_missed_tip_names_the_opt_out_when_the_repo_declined(monkeypatch, tmp_path: Path) -> None:
+    """An opted-out repo has a different reason again, and doctor says so too."""
+    (tmp_path / ".repowise").mkdir()
+    (tmp_path / ".repowise" / "config.yaml").write_text(
+        "distill:\n  commands:\n    enabled: false\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(saved_cmd, "_rewrite_hook_installed", lambda: True)
+    assert "opted out" in saved_cmd._missed_tip(tmp_path)
+
+
 def test_rewrite_hook_installed_degrades_to_false(monkeypatch) -> None:
     """A broken or absent adapter must not break `saved --missed`."""
     import repowise.cli.agent_adapters.claude_code as cc

@@ -22,7 +22,7 @@ crashes or blocks your agent.
 | **Post-commit auto-sync** | git | `repowise hook install` (or the `repowise init` prompt) | every `git commit` | Runs `repowise update` in the background so the wiki tracks your code |
 | **SessionStart context** | Claude Code | `repowise init` | session `startup` / `resume` / `clear` | Live index-freshness line, core-tool trust rule, and the standing decisions relevant to this session |
 | **PostToolUse enrichment** | Claude Code | `repowise init` | `Grep` / `Glob` / `Read` / `Edit` / `Write` / `Bash` / `PowerShell` / repowise MCP calls | Graph context on searches, git/edit freshness, read-intelligence notices, and edit-time "governed by" decision notices |
-| **Command-rewrite (distill)** | Claude Code | `repowise hook rewrite install` (opt-in) | `Bash` / `PowerShell` | Rewrites noisy commands to `repowise distill <cmd>`, pending your approval |
+| **Command-rewrite (distill)** | Claude Code | `repowise hook rewrite install` (opt-in) | `Bash` / `PowerShell` | Rewrites noisy commands to `repowise distill <cmd>`; auto-allowed by default, set `permission: ask` to approve each one |
 | **Codex context + staleness** | Codex | `repowise init --codex` | SessionStart / UserPromptSubmit / edit / Bash | Reminds Codex to use the MCP tools and flags stale context after edits |
 
 ---
@@ -152,7 +152,11 @@ repowise hook rewrite status
 repowise hook rewrite uninstall
 ```
 
-- Defaults to **`ask`**, so you approve every rewritten command before it runs.
+- Defaults to **`allow`**, so a rewrite runs without a prompt. That is not a
+  permission escalation: a rewrite is always `repowise distill <one recognized
+  command>` from a closed family set, never an arbitrary command smuggled
+  behind the wrapper. Set `permission: ask` under `distill.commands` in
+  `.repowise/config.yaml` to approve each one instead.
 - Never rewrites compound commands, redirections, or watch modes. The one pipe
   shape it handles (macOS/Linux) is a single stage into `head`, `tail`, `grep`
   or `rg`, quoted whole so it runs unchanged inside distill's own shell.

@@ -215,16 +215,16 @@ _PIPE_UNSAFE_CHARS = ('"', "'", "$", "\\")
 # POSIX-hosts-only. Module constant so tests can pin both platforms.
 _POSIX_HOST = os.name == "posix"
 
-# Windows keeps the blunt character bail, quoted or not. Two reasons, both
-# downstream of this module:
+# Windows keeps the blunt character bail, quoted or not. Two reasons:
 #
-#   - distill rejoins its argv with ``subprocess.list2cmdline``, which quotes
-#     for the C runtime's argv parser and not for cmd.exe. A token like
-#     ``--grep=a&whoami`` holds no space, so it is emitted unquoted and
-#     cmd.exe reads the ``&`` as a command separator. The lexer knows that
-#     ``&`` was quoted text; the renderer downstream does not.
 #   - PowerShell has no backslash escape, so a Windows path ending in ``\``
-#     does not extend a quoted run the way the POSIX rules here assume.
+#     does not extend a quoted run the way the POSIX rules here assume, and
+#     the lexer would split the command in a place PowerShell would not.
+#   - Defense in depth on the renderer. ``distill_cmd._render_command`` now
+#     caret-escapes what it hands cmd.exe, but it still has to refuse a
+#     couple of shapes outright (a ``%NAME%`` cmd would expand, an embedded
+#     newline). A rewrite is auto-allowed, so this side stays conservative
+#     rather than depending on the far side getting every case right.
 #
 # So the lexer's false-bail win is a POSIX win. On Windows it still buys the
 # structural bailouts, just not the widening.
