@@ -609,10 +609,10 @@ export function createHostedProvider(config: HostedProviderConfig): HostedProvid
       return items;
     },
     async listHealthFiles(repoId, opts): Promise<HealthFilesResponse> {
-      // Hosted returns a bare (server-sliced) list with its own param names;
-      // the local route returns a windowed envelope. Fetch a wide window and
-      // apply the local windowing semantics client-side. Ceiling: repos with
-      // more than 500 scored files see the worst 500 (server sort: score).
+      // This route used to return a bare (server-sliced) list and now returns
+      // the same windowed envelope the local route does. Accept both, since an
+      // older deployment still answers with the array. Fetch a wide window and
+      // apply the local windowing semantics client-side.
       const filter = opts?.only_hotspots
         ? "hotspots"
         : opts?.only_untested
@@ -620,18 +620,32 @@ export function createHostedProvider(config: HostedProviderConfig): HostedProvid
           : opts?.only_failing
             ? "failing"
             : undefined;
-      const rows = await snapGet<HealthFilesResponse["files"]>(repoId, "/health/files", {
-        limit: 500,
-        sort: opts?.sort,
-        q: opts?.search,
-        filter,
-      });
-      let files = rows ?? [];
-      if (opts?.module) files = files.filter((f) => f.file_path.startsWith(opts.module as string));
+      const res = await snapGet<HealthFilesResponse | HealthFilesResponse["files"]>(
+        repoId,
+        "/health/files",
+        {
+          limit: 2000,
+          sort: opts?.sort,
+          q: opts?.search,
+          filter,
+        },
+      );
+      const envelope = Array.isArray(res) ? null : res;
+      let files: HealthFilesResponse["files"] = Array.isArray(res)
+        ? res
+        : (res?.files ?? []);
+      // The server's total counts what it filtered; a client-side module
+      // filter narrows further, so only trust the server total when we did not
+      // narrow the set ourselves.
+      let total = envelope?.total ?? files.length;
+      if (opts?.module) {
+        files = files.filter((f) => f.file_path.startsWith(opts.module as string));
+        total = files.length;
+      }
       if (opts?.order === "desc") files = [...files].reverse();
       const offset = opts?.offset ?? 0;
       const limit = opts?.limit ?? 50;
-      return { total: files.length, offset, limit, files: files.slice(offset, offset + limit) };
+      return { total, offset, limit, files: files.slice(offset, offset + limit) };
     },
     getHealthFileBreakdown: (repoId, filePath) =>
       snapGet(repoId, "/health/files/breakdown", { file_path: filePath }),

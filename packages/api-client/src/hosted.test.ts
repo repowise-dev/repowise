@@ -246,6 +246,46 @@ describe("request wiring", () => {
     expect(res).toMatchObject({ total: 0, offset: 0, limit: 10, files: [] });
   });
 
+  it("keeps the server's total when the route returns the envelope", async () => {
+    // The bare-array era could only report the page size, so a 3k-file repo
+    // capped at 500 reported 500 files.
+    const row = { file_path: "a.ts", score: 5, nloc: 10 };
+    const { p } = provider([
+      REPOS_ROUTE,
+      ["/health/files", { total: 3013, offset: 0, limit: 2000, files: [row] }],
+    ]);
+    const res = await p.listHealthFiles("repo-1", { limit: 10 });
+    expect(res.total).toBe(3013);
+    expect(res.files).toHaveLength(1);
+  });
+
+  it("still reads an older deployment's bare array", async () => {
+    const rows = [
+      { file_path: "a.ts", score: 5, nloc: 10 },
+      { file_path: "b.ts", score: 6, nloc: 20 },
+    ];
+    const { p } = provider([REPOS_ROUTE, ["/health/files", rows]]);
+    const res = await p.listHealthFiles("repo-1", { limit: 10 });
+    expect(res.total).toBe(2);
+    expect(res.files).toHaveLength(2);
+  });
+
+  it("recounts the total when it narrows the set client-side", async () => {
+    // A module filter is applied here, not by the server, so the server's
+    // total would overstate what the caller actually receives.
+    const row = (file_path: string) => ({ file_path, score: 5, nloc: 10 });
+    const { p } = provider([
+      REPOS_ROUTE,
+      [
+        "/health/files",
+        { total: 3013, offset: 0, limit: 2000, files: [row("src/a.ts"), row("web/b.ts")] },
+      ],
+    ]);
+    const res = await p.listHealthFiles("repo-1", { limit: 10, module: "src/" });
+    expect(res.total).toBe(1);
+    expect(res.files.map((f) => f.file_path)).toEqual(["src/a.ts"]);
+  });
+
   it("surfaces API errors as ApiClientError with the detail", async () => {
     const { impl } = makeFetch([REPOS_ROUTE]);
     const p = createHostedProvider({ baseUrl: "https://api.example.dev", fetch: impl });
