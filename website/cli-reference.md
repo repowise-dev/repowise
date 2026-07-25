@@ -64,6 +64,8 @@ repowise init [PATH] [OPTIONS]
 | `--no-claude-md` | flag | false | Skip generating `.claude/CLAUDE.md` |
 | `--agents` / `--no-agents` | flag | config | Generate or skip managed `AGENTS.md` for Codex |
 | `--codex` / `--no-codex` | flag | prompt/skip | Generate or skip project-local Codex MCP config and hooks |
+| `--distill-hook` / `--no-distill-hook` | flag | prompt/skip | Install or skip the Claude Code command-rewrite hook that routes noisy commands through `repowise distill` |
+| `--editor-setup` / `--no-editor-setup` | flag | true | Register the MCP server and hooks in your global Claude Code / Claude Desktop config. `--no-editor-setup` indexes the repo and leaves everything outside it untouched |
 | `--yes` / `-y` | flag | false | Skip the cost confirmation prompt |
 
 ### Examples

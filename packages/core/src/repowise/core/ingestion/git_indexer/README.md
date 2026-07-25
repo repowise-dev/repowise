@@ -37,6 +37,7 @@ prior-defect window) is measured relative to a single reference "now":
 
 `REPOWISE_SKIP_EDITOR_SETUP=1` is the companion guard that lets `init` index a
 transient worktree without touching the developer's global editor config.
+`init --no-editor-setup` is the same switch as a flag, for one-off runs.
 
 ## Public API
 

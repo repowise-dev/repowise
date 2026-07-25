@@ -19,10 +19,25 @@ from typing import Any, Protocol
 # Intended for headless / CI / benchmark indexing, where indexing many repos —
 # or transient git worktrees — must not mutate the developer's global config or
 # repoint the single global "repowise" MCP entry at a path that will be deleted.
+# `init --no-editor-setup` is the interactive spelling of the same switch.
 _SKIP_EDITOR_SETUP_ENV = "REPOWISE_SKIP_EDITOR_SETUP"
 
 
-def _editor_setup_disabled() -> bool:
+def is_editor_setup_disabled(no_editor_setup: bool = False) -> bool:
+    """Whether global editor registration should be skipped for this run.
+
+    Disabled when ``init --no-editor-setup`` was passed *or* the
+    ``REPOWISE_SKIP_EDITOR_SETUP`` env var is set to anything but an explicit
+    off value. The flag never re-enables what the env var turned off. It is
+    per-run and never persisted to config, so a later ``init`` without it
+    registers normally.
+
+    Named with the ``is_`` prefix to stay distinct from
+    :attr:`EditorSetupOutcome.editor_setup_disabled`, which records the same
+    fact for one finished run.
+    """
+    if no_editor_setup:
+        return True
     return os.environ.get(_SKIP_EDITOR_SETUP_ENV, "").strip().lower() not in (
         "",
         "0",
@@ -42,7 +57,7 @@ class EditorSetupOutcome:
     """
 
     #: repowise registered a Claude Code MCP entry this run (init always does,
-    #: unless setup was skipped for a headless/CI run).
+    #: unless setup was skipped for a headless/CI run or by --no-editor-setup).
     claude_code_connected: bool = False
     #: the git post-commit auto-sync hook is present for this repo.
     autosync_hook_installed: bool = False
@@ -53,7 +68,8 @@ class EditorSetupOutcome:
     interactive: bool = False
     #: no prior index existed before this run (first-time onboarding).
     first_index: bool = True
-    #: REPOWISE_SKIP_EDITOR_SETUP was set (CI/benchmark) — nothing was wired up.
+    #: editor setup was turned off for this run — via --no-editor-setup or the
+    #: REPOWISE_SKIP_EDITOR_SETUP env var (CI/benchmark) — so nothing was wired up.
     editor_setup_disabled: bool = False
 
 
@@ -62,6 +78,7 @@ def detect_editor_setup_outcome(
     *,
     interactive: bool,
     first_index: bool,
+    no_editor_setup: bool = False,
 ) -> EditorSetupOutcome:
     """Read the ground-truth editor-setup state for the completion panel.
 
@@ -69,7 +86,7 @@ def detect_editor_setup_outcome(
     Every probe is a cheap local file read and is defensive: a failure degrades
     to "not set up" rather than crashing ``init``.
     """
-    disabled = _editor_setup_disabled()
+    disabled = is_editor_setup_disabled(no_editor_setup)
 
     autosync = False
     try:
@@ -244,11 +261,12 @@ def register_editor_clients(
     console_obj: Any,
     repo_path: Path,
     *,
+    no_editor_setup: bool = False,
     integrations: tuple[EditorSetupIntegration, ...] | None = None,
 ) -> None:
     """Register editor clients with repowise MCP and hooks where supported."""
 
-    if _editor_setup_disabled():
+    if is_editor_setup_disabled(no_editor_setup):
         return
     for integration in _resolve_integrations(integrations):
         integration.register_client(console_obj, repo_path)

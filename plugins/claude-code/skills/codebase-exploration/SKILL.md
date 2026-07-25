@@ -52,6 +52,9 @@ Otherwise the response is current — act on it.
 ## Error handling
 
 - "No repositories found. Run 'repowise init' first." → suggest `/repowise:init`.
+  Add `--no-editor-setup` if this repo is a scratch clone, a fixture, or a
+  worktree: `init` otherwise repoints the user's single global `repowise` MCP
+  entry at it.
 - `get_answer`/`search_codebase` come back empty → the repo may have a
   template-rendered wiki. Fall back to `get_context` with explicit paths, and note
   that model-written pages (`repowise generate`, or `/repowise:init` with an LLM

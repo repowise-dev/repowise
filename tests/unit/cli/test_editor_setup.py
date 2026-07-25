@@ -69,6 +69,167 @@ def test_register_editor_clients_skipped_when_env_set(monkeypatch) -> None:
     assert registered == [Path("repo")]  # runs when unset
 
 
+def test_register_editor_clients_skipped_by_flag(monkeypatch) -> None:
+    """--no-editor-setup skips registration with the env var unset.
+
+    The flag is the interactive spelling of REPOWISE_SKIP_EDITOR_SETUP: a user
+    who wants "index this repo, don't touch my machine" should not have to know
+    about an env var.
+    """
+    from repowise.cli.editor_setup import register_editor_clients
+
+    registered: list[Path] = []
+
+    class FakeIntegration:
+        def configure_options(self, c: Any, o: Any) -> Any:
+            return o
+
+        def write_project_files(self, c: Any, p: Path, o: Any) -> None:
+            pass
+
+        def register_client(self, c: Any, p: Path) -> None:
+            registered.append(p)
+
+        def refresh_project_files(self, c: Any, p: Path, o: Any) -> None:
+            pass
+
+    integrations = (FakeIntegration(),)
+    monkeypatch.delenv("REPOWISE_SKIP_EDITOR_SETUP", raising=False)
+
+    register_editor_clients(
+        _silent_console(),
+        Path("repo"),
+        no_editor_setup=True,
+        integrations=integrations,
+    )
+    assert registered == []
+
+    # Default (flag off, env unset) still registers.
+    register_editor_clients(_silent_console(), Path("repo"), integrations=integrations)
+    assert registered == [Path("repo")]
+
+
+def test_editor_setup_disabled_resolves_flag_or_env(monkeypatch) -> None:
+    """Either source disables; neither leaves setup on."""
+    from repowise.cli.editor_setup import is_editor_setup_disabled
+
+    monkeypatch.delenv("REPOWISE_SKIP_EDITOR_SETUP", raising=False)
+    assert is_editor_setup_disabled() is False
+    assert is_editor_setup_disabled(True) is True
+
+    monkeypatch.setenv("REPOWISE_SKIP_EDITOR_SETUP", "1")
+    assert is_editor_setup_disabled() is True
+    # The flag never re-enables what the env var turned off.
+    assert is_editor_setup_disabled(False) is True
+
+    # Falsy env spellings leave setup on.
+    for value in ("", "0", "false", "no"):
+        monkeypatch.setenv("REPOWISE_SKIP_EDITOR_SETUP", value)
+        assert is_editor_setup_disabled() is False
+
+
+def _patch_distill_offer(monkeypatch: Any) -> tuple[list[str], list[bool]]:
+    """Stub the rewrite hook's user-level writes; return the two call logs.
+
+    ``install_rewrite_hook`` is stubbed rather than left live so that a
+    regression in the gate fails the assertion instead of installing a real
+    PreToolUse hook in the ~/.claude/settings.json of whoever runs pytest.
+    """
+    from repowise.cli.agent_adapters import claude_code as cc_module
+
+    installs: list[str] = []
+    verdicts: list[bool] = []
+
+    class _Adapter:
+        def detect(self) -> bool:
+            return True
+
+        def install_rewrite_hook(self) -> str:
+            installs.append("installed")
+            return "settings.json"
+
+    monkeypatch.setattr(cc_module, "ClaudeCodeAdapter", _Adapter)
+    monkeypatch.setattr(
+        "repowise.cli.helpers.save_distill_commands_enabled",
+        lambda _path, *, enabled: verdicts.append(enabled),
+    )
+    monkeypatch.delenv("REPOWISE_SKIP_EDITOR_SETUP", raising=False)
+    return installs, verdicts
+
+
+def test_distill_rewrite_install_skipped_by_flag(monkeypatch, tmp_path: Path) -> None:
+    """--no-editor-setup suppresses the install, which is user-level.
+
+    ``--distill-hook`` would otherwise install without prompting. Nothing is
+    recorded: with no hook installed there is nothing for a verdict to gate,
+    and "enabled" is already the posture of any repo with a `.repowise/`.
+    """
+    from repowise.cli.commands.init_cmd._interactive import offer_distill_rewrite_hook
+
+    installs, verdicts = _patch_distill_offer(monkeypatch)
+
+    console = _silent_console()
+    offer_distill_rewrite_hook(console, [tmp_path], True, yes=True, no_editor_setup=True)
+    assert installs == []
+    assert verdicts == []
+    # The user asked for the hook and did not get it; say so.
+    assert "not installed" in console.file.getvalue()
+
+
+def test_distill_optout_recorded_despite_no_editor_setup(monkeypatch, tmp_path: Path) -> None:
+    """--no-editor-setup must not swallow --no-distill-hook's opt-out record.
+
+    The verdict lives in this repo's config.yaml, and it is the only thing that
+    gates a *globally* installed rewrite hook off for this repo. Dropping the
+    write would leave the hook rewriting commands in a repo the user just
+    opted out of.
+    """
+    from repowise.cli.commands.init_cmd._interactive import offer_distill_rewrite_hook
+
+    installs, verdicts = _patch_distill_offer(monkeypatch)
+
+    offer_distill_rewrite_hook(
+        _silent_console(),
+        [tmp_path],
+        False,
+        yes=True,
+        no_editor_setup=True,
+    )
+    assert installs == []
+    assert verdicts == [False]
+
+
+def test_distill_offer_silent_when_undecided_and_setup_off(monkeypatch, tmp_path: Path) -> None:
+    """No flag plus no editor setup means nothing to install and nothing to ask."""
+    from repowise.cli.commands.init_cmd._interactive import offer_distill_rewrite_hook
+
+    installs, verdicts = _patch_distill_offer(monkeypatch)
+
+    offer_distill_rewrite_hook(
+        _silent_console(),
+        [tmp_path],
+        None,
+        no_editor_setup=True,
+    )
+    assert installs == []
+    assert verdicts == []
+
+
+def test_detect_editor_setup_outcome_flag_reports_disconnected(tmp_path: Path, monkeypatch) -> None:
+    """The completion panel reacts to the flag, not just the env var."""
+    from repowise.cli.editor_setup import detect_editor_setup_outcome
+
+    monkeypatch.delenv("REPOWISE_SKIP_EDITOR_SETUP", raising=False)
+    outcome = detect_editor_setup_outcome(
+        tmp_path,
+        interactive=False,
+        first_index=False,
+        no_editor_setup=True,
+    )
+    assert outcome.editor_setup_disabled is True
+    assert outcome.claude_code_connected is False
+
+
 def test_detect_editor_setup_outcome_reads_ground_truth(
     tmp_path: Path,
     monkeypatch: Any,
@@ -293,6 +454,154 @@ def test_refresh_editor_project_files_delegates_to_integrations(tmp_path: Path) 
     )
 
     assert calls == [("refresh", tmp_path, frozenset({"skip"}))]
+
+
+def _write_settings(path: Path, entry: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"mcpServers": {"repowise": entry}}), encoding="utf-8")
+
+
+def test_describe_mcp_registration_change_warns_on_repoint(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    """A second init from another repo replaces the single 'repowise' entry.
+
+    That write is silent and only surfaces later, when the repo or binary it
+    points at is gone. The probe names both sides before the merge happens.
+    """
+    settings = tmp_path / "home" / ".claude" / "settings.json"
+    other_repo = str((tmp_path / "other-repo").resolve()).replace("\\", "/")
+    _write_settings(
+        settings,
+        {"command": "repowise", "args": ["mcp", other_repo, "--transport", "stdio"]},
+    )
+
+    monkeypatch.setattr(claude_config, "_claude_code_settings_path", lambda: settings)
+    monkeypatch.setattr(claude_config, "_claude_desktop_config_path", lambda: None)
+    monkeypatch.setattr(claude_config, "resolve_repowise_command", lambda: "repowise")
+
+    this_repo = tmp_path / "this-repo"
+    this_repo.mkdir()
+    notice = claude_config.describe_mcp_registration_change(this_repo)
+
+    assert notice is not None
+    assert other_repo in notice
+    assert str(this_repo.resolve()).replace("\\", "/") in notice
+    assert "--no-editor-setup" in notice
+
+
+def test_describe_mcp_registration_change_silent_when_unchanged(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    """Re-running init on the same repo is not a clobber and stays quiet."""
+    settings = tmp_path / "home" / ".claude" / "settings.json"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    repo_arg = str(repo.resolve()).replace("\\", "/")
+    _write_settings(
+        settings,
+        {"command": "repowise", "args": ["mcp", repo_arg, "--transport", "stdio"]},
+    )
+
+    monkeypatch.setattr(claude_config, "_claude_code_settings_path", lambda: settings)
+    monkeypatch.setattr(claude_config, "_claude_desktop_config_path", lambda: None)
+    monkeypatch.setattr(claude_config, "resolve_repowise_command", lambda: "repowise")
+
+    assert claude_config.describe_mcp_registration_change(repo) is None
+
+
+def test_describe_mcp_registration_change_silent_on_first_run(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    """No stored entry means nothing is being replaced."""
+    monkeypatch.setattr(
+        claude_config, "_claude_code_settings_path", lambda: tmp_path / "missing.json"
+    )
+    monkeypatch.setattr(claude_config, "_claude_desktop_config_path", lambda: None)
+    monkeypatch.setattr(claude_config, "resolve_repowise_command", lambda: "repowise")
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    assert claude_config.describe_mcp_registration_change(repo) is None
+
+
+def test_describe_mcp_registration_change_warns_on_command_repoint(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    """Same repo, different binary — the release-smoke-test case."""
+    settings = tmp_path / "home" / ".claude" / "settings.json"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    repo_arg = str(repo.resolve()).replace("\\", "/")
+    _write_settings(
+        settings,
+        {
+            "command": "C:/Users/dev/.venv/Scripts/repowise.exe",
+            "args": ["mcp", repo_arg, "--transport", "stdio"],
+        },
+    )
+
+    monkeypatch.setattr(claude_config, "_claude_code_settings_path", lambda: settings)
+    monkeypatch.setattr(claude_config, "_claude_desktop_config_path", lambda: None)
+    monkeypatch.setattr(
+        claude_config, "resolve_repowise_command", lambda: "C:/tmp/throwaway/repowise.exe"
+    )
+
+    notice = claude_config.describe_mcp_registration_change(repo)
+    assert notice is not None
+    assert "C:/Users/dev/.venv/Scripts/repowise.exe" in notice
+    assert "C:/tmp/throwaway/repowise.exe" in notice
+
+
+def test_describe_mcp_registration_change_reports_both_fields(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    """A new repo indexed by a new install moves both fields; name both."""
+    settings = tmp_path / "home" / ".claude" / "settings.json"
+    other = str((tmp_path / "other").resolve()).replace("\\", "/")
+    _write_settings(
+        settings,
+        {"command": "old-repowise", "args": ["mcp", other, "--transport", "stdio"]},
+    )
+
+    monkeypatch.setattr(claude_config, "_claude_code_settings_path", lambda: settings)
+    monkeypatch.setattr(claude_config, "_claude_desktop_config_path", lambda: None)
+    monkeypatch.setattr(claude_config, "resolve_repowise_command", lambda: "new-repowise")
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    notice = claude_config.describe_mcp_registration_change(repo)
+
+    assert notice is not None
+    assert "repo and command" in notice
+    assert "old-repowise" in notice and "new-repowise" in notice
+    assert other in notice
+
+
+def test_describe_mcp_registration_change_handles_truncated_entry(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    """A hand-edited entry with no args must not print 'was: None'."""
+    settings = tmp_path / "home" / ".claude" / "settings.json"
+    _write_settings(settings, {"command": "repowise", "args": ["mcp"]})
+
+    monkeypatch.setattr(claude_config, "_claude_code_settings_path", lambda: settings)
+    monkeypatch.setattr(claude_config, "_claude_desktop_config_path", lambda: None)
+    monkeypatch.setattr(claude_config, "resolve_repowise_command", lambda: "repowise")
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    notice = claude_config.describe_mcp_registration_change(repo)
+
+    assert notice is not None
+    assert "None" not in notice
+    assert "(not set)" in notice
 
 
 def test_codex_project_setup_writes_project_config_hooks_and_agents(

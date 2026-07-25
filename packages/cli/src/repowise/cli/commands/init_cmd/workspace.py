@@ -537,6 +537,7 @@ def _workspace_init(
     agents_md: bool | None,
     codex_setup: bool | None,
     distill_hook: bool | None,
+    editor_setup: bool,
     include_submodules: bool,
     # Generation params (passed through from init_command)
     provider_name: str | None = None,
@@ -770,7 +771,7 @@ def _workspace_init(
     primary_entry = ws_config.get_primary()
     if primary_entry:
         primary_path = (root / primary_entry.path).resolve()
-        register_editor_clients(console, primary_path)
+        register_editor_clients(console, primary_path, no_editor_setup=not editor_setup)
 
     # Step 7: Completion summary
     elapsed = time.monotonic() - start
@@ -802,5 +803,11 @@ def _workspace_init(
     # failed) because ensure_repowise_dir already created `.repowise/` in
     # each, and the hook treats any repo with `.repowise/` and no recorded
     # verdict as enabled — a decline must gate every one of them off.
-    offer_distill_rewrite_hook(console, [r.path for r in selected], distill_hook, yes=yes)
+    offer_distill_rewrite_hook(
+        console,
+        [r.path for r in selected],
+        distill_hook,
+        yes=yes,
+        no_editor_setup=not editor_setup,
+    )
     console.print()

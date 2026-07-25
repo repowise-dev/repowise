@@ -15,6 +15,7 @@ def offer_distill_rewrite_hook(
     flag: bool | None,
     *,
     yes: bool = False,
+    no_editor_setup: bool = False,
 ) -> None:
     """Opt-in install of the distill command-rewrite hook (Claude Code).
 
@@ -33,18 +34,30 @@ def offer_distill_rewrite_hook(
     selected repo for the workspace flow. Recording the verdict everywhere
     matters because the hook treats any repo with ``.repowise/`` and no
     config as enabled (with the ``ask`` posture).
+
+    Installing the hook writes user-level config, so ``--no-editor-setup`` (or
+    the equivalent env var) suppresses both the install and the prompt. An
+    explicit ``--no-distill-hook`` still records its opt-out: that record is
+    repo-local, and it is the only thing that gates an already-installed global
+    hook off *here*, so dropping it would leave the hook rewriting commands in
+    a repo the user just opted out of.
     """
-    import os
+    from repowise.cli.editor_setup import is_editor_setup_disabled
 
     if not repo_paths:
         return
-    if os.environ.get("REPOWISE_SKIP_EDITOR_SETUP", "").strip().lower() not in (
-        "",
-        "0",
-        "false",
-        "no",
-    ):
+
+    if is_editor_setup_disabled(no_editor_setup):
+        if flag:
+            console_obj.print(
+                "  [dim]Rewrite hook not installed: editor setup is off for this "
+                "run. Run 'repowise hook rewrite install' to set it up.[/dim]"
+            )
+        elif flag is False:
+            _record_distill_verdict(console_obj, repo_paths, enabled=False)
+        # `flag is None` decided nothing, so it writes nothing.
         return
+
     # --yes with an undecided flag: skip the interactive prompt entirely.
     if flag is None and yes:
         return
@@ -52,7 +65,6 @@ def offer_distill_rewrite_hook(
         return
 
     from repowise.cli.agent_adapters.claude_code import ClaudeCodeAdapter
-    from repowise.cli.helpers import save_distill_commands_enabled as _save_distill_enabled
 
     adapter = ClaudeCodeAdapter()
     if flag is None:
@@ -90,9 +102,22 @@ def offer_distill_rewrite_hook(
             "  [dim]Skipped. Run 'repowise hook rewrite install' later to set up.[/dim]"
         )
 
+    _record_distill_verdict(console_obj, repo_paths, enabled=bool(flag))
+
+
+def _record_distill_verdict(
+    console_obj: Any,
+    repo_paths: list[Path],
+    *,
+    enabled: bool,
+) -> None:
+    """Persist ``distill.commands.enabled`` for every repo in this run."""
+
+    from repowise.cli.helpers import save_distill_commands_enabled
+
     for repo_path in repo_paths:
         try:
-            _save_distill_enabled(repo_path, enabled=bool(flag))
+            save_distill_commands_enabled(repo_path, enabled=enabled)
         except Exception as exc:  # init must not crash on a config write
             console_obj.print(
                 f"  [yellow]Could not record distill verdict for {repo_path.name}: {exc}[/yellow]"

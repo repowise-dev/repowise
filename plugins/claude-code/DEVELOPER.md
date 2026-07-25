@@ -98,6 +98,11 @@ If you change the bundled hook's command or matcher, keep it in step with the
 installer in
 `packages/cli/src/repowise/cli/editor_integrations/claude_config.py`.
 
+A user who runs `repowise init --no-editor-setup` (or sets
+`REPOWISE_SKIP_EDITOR_SETUP=1`) gets no hooks from the installer at all. The
+plugin's bundled copy still fires, which is the point: the plugin is how you get
+the enrichment without letting `init` write to your global settings.
+
 ## Local development
 
 ```bash

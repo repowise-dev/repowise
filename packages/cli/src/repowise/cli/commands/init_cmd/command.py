@@ -506,6 +506,22 @@ def _run_generation_phase(
     ),
 )
 @click.option(
+    "--editor-setup/--no-editor-setup",
+    "editor_setup",
+    default=True,
+    help=(
+        "Register repowise with your machine-wide editor config: the Claude "
+        "Code / Claude Desktop MCP server entry, the Claude Code hooks, and "
+        "the distill rewrite-hook offer. Default: on. Use --no-editor-setup to "
+        "index a repo without touching anything outside it — there is one "
+        "global 'repowise' MCP key, so a second init would otherwise repoint "
+        "it at this repo. Project-local files are unaffected (see "
+        "--no-claude-md, --no-codex). REPOWISE_SKIP_EDITOR_SETUP=1 does the "
+        "same thing for CI and sandboxes, and wins: with it set, --editor-setup "
+        "does not turn registration back on."
+    ),
+)
+@click.option(
     "--include-submodules",
     is_flag=True,
     default=False,
@@ -664,6 +680,7 @@ def init_command(
     agents_md: bool | None,
     codex_setup: bool | None,
     distill_hook: bool | None,
+    editor_setup: bool,
     include_submodules: bool,
     no_workspace: bool,
     init_all: bool,
@@ -807,6 +824,7 @@ def init_command(
             agents_md=agents_md,
             codex_setup=codex_setup,
             distill_hook=distill_hook,
+            editor_setup=editor_setup,
             include_submodules=include_submodules,
             provider_name=provider_name,
             model=model,
@@ -1426,7 +1444,7 @@ def init_command(
         repo_path,
         options=editor_options,
     )
-    register_editor_clients(console, repo_path)
+    register_editor_clients(console, repo_path, no_editor_setup=not editor_setup)
 
     # Inherit the workspace's distill rewrite-hook verdict NOW, before the
     # config fingerprint below is computed. `repowise update` runs the same
@@ -1531,7 +1549,13 @@ def init_command(
 
     # Opt-in distill command-rewrite hook for Claude Code. The workspace flow
     # runs its own offer across all selected repos inside _workspace_init.
-    offer_distill_rewrite_hook(console, [repo_path], distill_hook, yes=yes)
+    offer_distill_rewrite_hook(
+        console,
+        [repo_path],
+        distill_hook,
+        yes=yes,
+        no_editor_setup=not editor_setup,
+    )
 
     # ---- Completion panel (last, so it reflects what setup actually did) ----
     # Snapshot the editor-setup state now that client registration and the two
@@ -1544,6 +1568,7 @@ def init_command(
         repo_path,
         interactive=(sys.stdin.isatty() and not yes),
         first_index=_first_index,
+        no_editor_setup=not editor_setup,
     )
     show_completion(
         repo_path=repo_path,

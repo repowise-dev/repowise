@@ -96,6 +96,77 @@ def register_with_claude_code(repo_path: Path) -> Path | None:
     return settings_path if merge_mcp_entry(settings_path, entry) else None
 
 
+def _stored_repowise_entry(config_path: Path | None) -> dict | None:
+    """Read the current ``mcpServers.repowise`` entry, or None if absent."""
+    if config_path is None or not config_path.exists():
+        return None
+    try:
+        existing = load_existing_config(config_path)
+    except Exception:
+        # A config we can't parse is one registration will fail on anyway;
+        # the probe stays silent rather than guessing at what it holds.
+        return None
+    servers = existing.get("mcpServers")
+    if not isinstance(servers, dict):
+        return None
+    entry = servers.get("repowise")
+    return entry if isinstance(entry, dict) else None
+
+
+def _entry_repo_target(entry: dict) -> str | None:
+    """The repo path an existing MCP entry points at (``mcp <path> …``)."""
+    args = entry.get("args")
+    if not isinstance(args, list) or len(args) < 2:
+        return None
+    return str(args[1])
+
+
+def describe_mcp_registration_change(repo_path: Path) -> str | None:
+    """Warn when registering would repoint an existing ``repowise`` MCP entry.
+
+    Both Claude configs hold a single ``repowise`` key, so an ``init`` from a
+    second repo *replaces* the entry rather than adding one alongside it. That
+    write is silent, and only surfaces later when the binary or repo it points
+    at is gone and the MCP server stops loading. This is a read-only probe run
+    before registration; it returns a one-line notice when the stored command
+    or repo target differs from what is about to be written, else None.
+    """
+    new_entry = generate_mcp_config(
+        _resolve_mcp_target(repo_path), command=resolve_repowise_command()
+    )["mcpServers"]["repowise"]
+    new_command = new_entry.get("command")
+    new_target = _entry_repo_target(new_entry)
+
+    for config_path in (_claude_code_settings_path(), _claude_desktop_config_path()):
+        stored = _stored_repowise_entry(config_path)
+        if stored is None:
+            continue
+        # Both fields are reported when both move, which is the usual shape of
+        # the mistake: a second repo indexed by a second install. Naming only
+        # one would hide half of what is about to change.
+        changes = [
+            (label, was, now)
+            for label, was, now in (
+                ("repo", _entry_repo_target(stored), new_target),
+                ("command", stored.get("command"), new_command),
+            )
+            if was != now
+        ]
+        if not changes:
+            continue
+        fields = " and ".join(label for label, _was, _now in changes)
+        lines = [f"Replacing the existing repowise MCP {fields} in {config_path}:"]
+        for label, was, now in changes:
+            # A hand-edited entry can be missing either field outright.
+            lines.append(f"    {label} was: {was if was is not None else '(not set)'}")
+            lines.append(f"    {label} now: {now}")
+        lines.append(
+            "  There is one 'repowise' entry per config; pass --no-editor-setup to leave it alone."
+        )
+        return "\n".join(lines)
+    return None
+
+
 def enable_tool_search_in_claude_code() -> Path | None:
     """Set ``env.ENABLE_TOOL_SEARCH=true`` in ~/.claude/settings.json.
 

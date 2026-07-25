@@ -47,11 +47,18 @@ class ClaudeCodeSetup:
 
     def register_client(self, console_obj: Any, repo_path: Path) -> None:
         from repowise.cli.editor_integrations.claude_config import (
+            describe_mcp_registration_change,
             enable_tool_search_in_claude_code,
             install_claude_code_hooks,
             register_with_claude_code,
             register_with_claude_desktop,
         )
+
+        # Read-only probe first: the merge below silently repoints the single
+        # global "repowise" entry, so say so before it happens.
+        clobber = describe_mcp_registration_change(repo_path)
+        if clobber:
+            console_obj.print(f"  [yellow]![/yellow] {clobber}")
 
         desktop = register_with_claude_desktop(repo_path)
         if desktop:

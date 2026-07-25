@@ -36,8 +36,10 @@ def _shape_not_indexed() -> dict[str, Any]:
         "remedy": (
             "The user can build one by running 'repowise init --yes' in the "
             "repo root. No API key is required: without one it renders the "
-            "whole wiki from the code's structure. Indexing is the user's "
-            "decision — suggest it once, do not run it yourself."
+            "whole wiki from the code's structure. Suggest --no-editor-setup "
+            "too if this is a scratch clone, fixture, or worktree, so init "
+            "leaves their global MCP config pointed where it is. Indexing is "
+            "the user's decision — suggest it once, do not run it yourself."
         ),
         "guidance": (
             "Until an index exists, every repowise tool will return this "

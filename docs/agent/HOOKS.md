@@ -60,6 +60,13 @@ repowise entries are migrated in place on the next `init` / `update`. All of the
 route through the `repowise-augment` console script (a standalone entry point
 that does not load the full CLI).
 
+`repowise init --no-editor-setup` skips this whole group, along with the MCP
+server registration that shares the same file. Reach for it when the repo is
+temporary (a scratch clone, a worktree, a benchmark loop) and you do not want
+that machine-wide config to move. `REPOWISE_SKIP_EDITOR_SETUP=1` is the same
+switch for CI. The index itself is identical either way. To register the repo
+afterwards, re-run `repowise init` in it without the flag.
+
 ### SessionStart, live freshness + relevant decisions
 
 The generated `CLAUDE.md` is static between reindexes, so it can't say whether

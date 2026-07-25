@@ -342,6 +342,60 @@ Both can be disabled:
 repowise init --no-claude-md .
 ```
 
+**Project-local files vs. global registration:**
+
+`init` writes in two different places, and the flags split along that line.
+
+*Project-local*, all inside the repo, versionable, one set per repo:
+`.repowise/mcp.json`, `.mcp.json`, `.claude/CLAUDE.md`, `AGENTS.md`,
+`.vscode/mcp.json`, `.vscode/extensions.json`, `.codex/`. Three have an opt-out
+flag (`--no-claude-md`, `--agents`, `--codex`) and the VS Code pair is
+prompt-gated in an interactive run. Only `.repowise/mcp.json` and the root
+`.mcp.json` are written unconditionally.
+
+*Machine-wide*, outside the repo, one shared copy for every repo you index, all
+written by `register_editor_clients()` in `editor_setup.py`:
+
+- the `repowise` MCP entry in `~/.claude/settings.json` and in Claude Desktop's
+  config
+- the Claude Code PostToolUse and SessionStart hooks
+- `env.ENABLE_TOOL_SEARCH` in `~/.claude/settings.json` (skipped for repos on
+  the lean MCP tool profile, and never overwritten if you already set it)
+
+Only the Claude integration implements `register_client`; Codex and VS Code
+read project-local config, so theirs are no-ops.
+
+The distill command-rewrite hook is machine-wide too, but it is offered
+separately (`offer_distill_rewrite_hook`) because it is strictly opt-in.
+
+`--no-editor-setup` turns off that machine-wide group, including the rewrite
+hook offer, and leaves the project-local files alone:
+
+```bash
+# Index the repo, leave everything outside it untouched
+repowise init --no-editor-setup --yes .
+```
+
+Reach for it whenever the checkout or the binary running `init` is temporary:
+a scratch clone, a release smoke test from a throwaway venv, a git worktree, a
+benchmark loop over many repos. Each config holds a **single** `repowise` MCP
+key, so a second `init` replaces the entry rather than adding one beside it,
+and the breakage only shows up later, when the path it now points at is gone
+and the MCP server quietly stops loading. `init` prints a notice when it is
+about to repoint an existing entry, but the flag is how you avoid it.
+
+One exception, so the two flags do not cancel each other out: `--no-editor-setup
+--no-distill-hook` still records the `distill.commands.enabled: false` opt-out in
+this repo's `config.yaml`. That record is repo-local, and it is the only thing
+that gates an already-installed global rewrite hook off here.
+
+`REPOWISE_SKIP_EDITOR_SETUP=1` is the same switch as an env var, which is the
+better fit for CI and sandboxes where no one is passing flags by hand. Either
+source disables setup; the flag never re-enables what the env var turned off.
+Neither is persisted to `config.yaml`: this is a per-run decision about your
+machine, not a property of the repo, so a later `init` without the flag
+registers normally.
+
 ---
 
 ## 8. REST API
