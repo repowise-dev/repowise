@@ -249,6 +249,13 @@ def _build_file_candidates(
         if s > 0.0:
             scored.append((s, path))
     scored.sort(key=lambda x: (-x[0], x[1]))
+    # Unrationed by default: every file above the floor gets a page. A repo whose
+    # owner asked for a bound gets the strongest ``max_file_pages`` of them, by
+    # the score already computed above rather than by a second ranking. The sort
+    # is total (score, then path), so the cut is deterministic.
+    cap = getattr(inputs.config, "max_file_pages", None)
+    if cap is not None and cap >= 0:
+        return scored[:cap]
     return scored
 
 
@@ -585,8 +592,11 @@ def select_pages(inputs: SelectionInputs) -> Selection:
     One path, whatever the caller. Every page type below the concept tree is
     rendered from structure and costs no tokens, and the concept partition is a
     total cover of the production files that would stop being a map of the
-    repository if it were rationed. So there is nothing left to ration: each
-    bucket takes every candidate that clears its floor.
+    repository if it were rationed. So by default there is nothing left to
+    ration: each bucket takes every candidate that clears its floor. The one
+    exception is opt-in and owner-chosen -- ``config.max_file_pages`` bounds the
+    file bucket for repos large enough that its tail costs more in bytes and
+    retrieval noise than it pays back.
 
     That this does not depend on whether an API key is present is the point.
     Selection used to fork on it, which meant a keyed and a keyless index of the

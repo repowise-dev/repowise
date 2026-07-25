@@ -24,6 +24,7 @@ from repowise.cli.helpers import (
     get_head_commit,
     load_config,
     load_state,
+    resolve_max_file_pages,
     resolve_provider_or_prompt,
     resolve_reasoning,
     resolve_repo_path,
@@ -261,6 +262,9 @@ def generate_command(
         reasoning=resolve_reasoning(reasoning, cfg),
         enable_onboarding=bool(cfg.get("enable_onboarding", True)),
         wiki_style=cfg.get("wiki_style", "comprehensive"),
+        # A whole-repo selection, so the file-page cap chosen at init applies
+        # here; without it this run would grow the file layer back.
+        max_file_pages=resolve_max_file_pages(config=cfg),
     )
 
     exclude_patterns = list(cfg.get("exclude_patterns") or [])

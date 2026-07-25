@@ -475,6 +475,29 @@ def resolve_reasoning(
         raise click.ClickException(str(exc)) from exc
 
 
+def resolve_max_file_pages(
+    chosen: int | None = None,
+    config: dict[str, Any] | None = None,
+) -> int | None:
+    """Resolve the file-page cap: explicit choice, then config.yaml, then none.
+
+    ``None`` means unrationed, which is what every repo gets unless its owner
+    asked otherwise (see ``GenerationConfig.max_file_pages``). A non-positive or
+    unparseable ``max_file_pages`` in config.yaml is read as no cap rather than
+    as zero pages: a typo must not silently delete the file layer.
+    """
+    if chosen is not None:
+        return max(1, chosen)
+    raw = (config or {}).get("max_file_pages")
+    if raw is None:
+        return None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
 def save_config(
     repo_path: Path,
     provider: str,

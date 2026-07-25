@@ -27,6 +27,7 @@ from repowise.cli.ui.mascot import (
     mini,
 )
 from repowise.cli.ui.mode_selection import (
+    FILE_PAGE_VOLUME_THRESHOLD,
     LARGE_REPO_FILE_THRESHOLD,
     interactive_advanced_config,
     interactive_customize_offer,
@@ -34,6 +35,7 @@ from repowise.cli.ui.mode_selection import (
     interactive_generate_docs_toggle,
     interactive_mode_select,
     print_index_only_intro,
+    prompt_file_page_volume,
     prompt_wiki_style,
     should_offer_fast_mode,
 )
@@ -64,6 +66,7 @@ __all__ = [
     "BRAND_STYLE",
     "DIM",
     "ERR",
+    "FILE_PAGE_VOLUME_THRESHOLD",
     "LARGE_REPO_FILE_THRESHOLD",
     "OK",
     "OWL_SPINNER",
@@ -94,6 +97,7 @@ __all__ = [
     "print_index_only_intro",
     "print_phase_header",
     "print_scan_summary",
+    "prompt_file_page_volume",
     "prompt_wiki_style",
     "quick_repo_scan",
     "should_offer_fast_mode",

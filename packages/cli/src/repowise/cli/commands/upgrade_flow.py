@@ -36,6 +36,7 @@ from repowise.cli.helpers import (
     get_head_commit,
     load_config,
     load_state,
+    resolve_max_file_pages,
     resolve_provider,
     resolve_reasoning,
     run_async,
@@ -434,6 +435,9 @@ def upgrade_to_full(
         language=cfg.get("language", "en"),
         reasoning=resolve_reasoning(reasoning, cfg),
         enable_onboarding=bool(cfg.get("enable_onboarding", True)),
+        # A whole-repo selection, so the file-page cap chosen at init applies
+        # here; without it this run would grow the file layer back.
+        max_file_pages=resolve_max_file_pages(config=cfg),
     )
 
     exclude_patterns = list(cfg.get("exclude_patterns") or [])

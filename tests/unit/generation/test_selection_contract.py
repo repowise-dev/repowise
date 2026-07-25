@@ -228,3 +228,56 @@ def test_empty_repo_emits_no_content_pages():
     assert sel.file_page_paths == []
     assert sel.symbol_spotlights == []
     assert sel.module_groups == []
+
+
+# ---------------------------------------------------------------------------
+# The one opt-in bound: max_file_pages
+# ---------------------------------------------------------------------------
+
+
+def test_file_bucket_is_unrationed_by_default():
+    """No cap unless the repo's owner asked for one."""
+    assert GenerationConfig().max_file_pages is None
+
+
+def test_cap_takes_the_strongest_file_pages():
+    """The cap slices the ranking the selector already computed."""
+    parsed, pagerank, betweenness, community = _build_synthetic_repo(400)
+    cfg = GenerationConfig(max_file_pages=50)
+
+    sel = select_pages(_inputs(parsed, pagerank, betweenness, community, cfg))
+    uncapped = select_pages(_inputs(parsed, pagerank, betweenness, community, GenerationConfig()))
+
+    assert len(sel.file_page_paths) == 50
+    # Same ranking, just cut short: the kept pages are the uncapped run's first 50.
+    assert sel.file_page_paths == uncapped.file_page_paths[:50]
+
+
+def test_cap_above_the_candidate_count_changes_nothing():
+    """A repo smaller than its cap is untouched by it."""
+    parsed, pagerank, betweenness, community = _build_synthetic_repo(30)
+    capped = select_pages(
+        _inputs(parsed, pagerank, betweenness, community, GenerationConfig(max_file_pages=2000))
+    )
+    assert len(capped.file_page_paths) == 30
+
+
+def test_cap_leaves_the_other_buckets_alone():
+    """Bounding the file layer is not a request to shrink the concept tree."""
+    parsed, pagerank, betweenness, community = _build_synthetic_repo(300)
+    capped = select_pages(
+        _inputs(parsed, pagerank, betweenness, community, GenerationConfig(max_file_pages=25))
+    )
+    uncapped = select_pages(_inputs(parsed, pagerank, betweenness, community, GenerationConfig()))
+    assert capped.counts()["file_page"] == 25
+    assert capped.counts()["module_page"] == uncapped.counts()["module_page"]
+    assert capped.counts()["symbol_spotlight"] == uncapped.counts()["symbol_spotlight"]
+
+
+def test_cap_is_deterministic():
+    """Same inputs, same cut — the sort is total, so the tie-break is the path."""
+    parsed, pagerank, betweenness, community = _build_synthetic_repo(200)
+    cfg = GenerationConfig(max_file_pages=40)
+    first = select_pages(_inputs(parsed, pagerank, betweenness, community, cfg))
+    second = select_pages(_inputs(list(reversed(parsed)), pagerank, betweenness, community, cfg))
+    assert first.file_page_paths == second.file_page_paths

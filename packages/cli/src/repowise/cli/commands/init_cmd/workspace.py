@@ -36,6 +36,7 @@ from repowise.cli.helpers import (
     get_head_commit,
     load_config,
     load_state,
+    resolve_max_file_pages,
     resolve_provider,
     resolve_reasoning,
     run_async,
@@ -109,6 +110,9 @@ def _run_workspace_generation(
         harvest_decisions=harvest_decisions,
         wiki_style=wiki_style,
         language=language,
+        # No question is asked in the workspace flow, so this only picks up a cap
+        # already recorded for this repo (by a single-repo init, or by hand).
+        max_file_pages=resolve_max_file_pages(config=load_config(repo_path)),
     )
     plans, est = estimate_generation(
         result=result,
@@ -202,6 +206,9 @@ def _run_workspace_deterministic_generation(
         language=language,
         enable_onboarding=onboarding,
         wiki_style=wiki_style,
+        # No question is asked in the workspace flow, so this only picks up a cap
+        # already recorded for this repo (by a single-repo init, or by hand).
+        max_file_pages=resolve_max_file_pages(config=load_config(repo_path)),
     )
     generated_pages = run_repo_generation(
         repo_path=repo_path,

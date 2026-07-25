@@ -113,12 +113,21 @@ class GenerationConfig:
     # practice: the selector floors the bucket at one, so a repo with few
     # public symbols still gets a spotlight.
     top_symbol_percentile: float = 0.10
-    # NOTE: read by nothing today. File pages are deliberately not rationed
-    # (see selection/selector.py::select_pages -- the concept partition is a
-    # total cover of the production files). Kept because bounding the file
-    # bucket is a live question on very large repos, but bounding it is a
-    # design decision, not a default change.
-    file_page_top_percentile: float = 0.10
+    # The most ``file_page`` pages a run will emit, highest importance score
+    # first. ``None`` (the default) means unrationed: every file that clears the
+    # importance floor gets a page, which is what makes small and mid-size repos
+    # good and is the behaviour every repo had before this field existed.
+    #
+    # It exists for the other end of the distribution. A 10.8k-file monorepo
+    # produced 8,756 file pages inside a 14,027-page wiki, and a file page
+    # averages ~8.8 KB with its metadata, so that tail alone is ~77 MB of wiki
+    # whose entries mostly restate what their concept page already says. Bounding
+    # it is a choice the owner of the repo makes: `repowise init` asks in advanced
+    # mode above a threshold, and any programmatic caller (the hosted pipeline
+    # included) sets it here. Capping file pages does not reduce model spend --
+    # file pages are rendered from structure and cost no tokens -- it reduces
+    # pages, bytes, embedding calls and retrieval dilution.
+    max_file_pages: int | None = None
     file_page_min_symbols: int = 1
     skip_trivial_files: bool = True
     dedupe_near_clones: bool = True

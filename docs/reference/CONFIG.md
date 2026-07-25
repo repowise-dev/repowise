@@ -48,6 +48,7 @@ follow_renames: false                # Track file renames in git history
 wiki_style: comprehensive            # comprehensive | caveman | reference | tutorial | custom
 language: en                         # Output language for generated pages (en, zh, ru, hi, ...)
 enable_onboarding: true               # Show first-run onboarding prompts
+max_file_pages: 2000                  # Cap the file-page bucket (omit for one page per file)
 exclude_patterns:                    # Gitignore-style patterns
   - vendor/
   - "*.generated.*"
@@ -79,6 +80,7 @@ You can edit this file directly. Changes take effect on the next `init`,
 | `wiki_style` | `comprehensive` | `comprehensive`, `caveman`, `reference`, `tutorial`, `custom` |
 | `language` | `en` | Output language for generated wiki pages: `en`, `ar`, `de`, `es`, `fr`, `hi`, `it`, `ja`, `ko`, `nl`, `pl`, `pt`, `ru`, `tr`, `zh` |
 | `enable_onboarding` | `true` | Show first-run onboarding prompts (CLI and web) |
+| `max_file_pages` | unset | Most file pages a run emits, highest importance first. Unset means one page per eligible file, which is the default on every repo. `repowise init` offers to set it in advanced mode above 2,000 documentable files; `update --full` and `generate` honour it after that |
 | `distill` | see below | Output distillation config |
 | `mcp` | see below | MCP tool surface config |
 | `refactoring` | see below | Refactoring-intelligence config |

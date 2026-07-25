@@ -111,6 +111,8 @@ def test_advanced_config_default_keys_no_fast(monkeypatch: pytest.MonkeyPatch) -
         "exclude": (),
         "commit_limit": 500,
         "follow_renames": False,
+        # No scan, so the repo cannot be shown to be large: no cap, no question.
+        "max_file_pages": None,
         "concurrency": 10,
         "reasoning": "auto",
         "embedder": "mock",
@@ -141,6 +143,8 @@ def test_advanced_config_index_only_omits_generation_keys(
         "exclude": (),
         "commit_limit": 500,
         "follow_renames": False,
+        # Asked in this branch too: an index-only run renders file pages as well.
+        "max_file_pages": None,
         "embedder": "mock",
     }
     # The knobs that only shape a model's writing must not appear.

@@ -131,16 +131,42 @@ def quick_repo_scan(repo_path: Path) -> RepoScanInfo:
     return info
 
 
+_NON_SOURCE_LANGS = frozenset({"JSON", "YAML", "Markdown", "HTML", "CSS"})
+
+
+def source_file_counts(scan: RepoScanInfo) -> dict[str, int]:
+    """Per-language counts for the source languages only.
+
+    Data, markup and stylesheet files are counted by the scan (they are files)
+    but are not what "how much code is here" means, and they get no file page.
+    """
+    return {
+        lang: count for lang, count in scan.language_counts.items() if lang not in _NON_SOURCE_LANGS
+    }
+
+
+def estimated_documentable_files(scan: RepoScanInfo | None) -> int:
+    """Roughly how many files would get a ``file_page``, from the pre-scan.
+
+    An estimate, not the count: the real allow-set comes out of ingestion, which
+    has not run when the interactive questions are asked. It is the source-file
+    count less the test files, because test files and pure re-export modules are
+    the two classes the importance floor drops
+    (``generation.selection.selector._passes_importance_floor``). Used only to
+    decide whether a repo is big enough to be asked about page volume, and to
+    quote an order of magnitude while asking.
+    """
+    if scan is None:
+        return 0
+    src = sum(source_file_counts(scan).values()) or scan.total_files
+    return max(0, src - scan.test_file_count)
+
+
 def print_scan_summary(console: Console, scan: RepoScanInfo) -> None:
     """Print a compact pre-scan summary below the banner."""
     # File count + language count
-    lang_count = len(
-        [
-            name
-            for name, c in scan.language_counts.items()
-            if c > 0 and name not in ("JSON", "YAML", "Markdown", "HTML", "CSS")
-        ]
-    )
+    source_langs = {lang: c for lang, c in source_file_counts(scan).items() if c > 0}
+    lang_count = len(source_langs)
 
     parts = [f"[bold]{scan.total_files:,}[/bold] files"]
     if lang_count:
@@ -151,11 +177,6 @@ def print_scan_summary(console: Console, scan: RepoScanInfo) -> None:
     header_line = " · ".join(parts)
 
     # Top languages (source code only, top 4)
-    source_langs = {
-        lang: count
-        for lang, count in scan.language_counts.items()
-        if lang not in ("JSON", "YAML", "Markdown", "HTML", "CSS")
-    }
     total_source = sum(source_langs.values()) or 1
     top_langs = sorted(source_langs.items(), key=lambda x: -x[1])[:4]
     lang_parts = [f"{lang} {count / total_source:.0%}" for lang, count in top_langs]

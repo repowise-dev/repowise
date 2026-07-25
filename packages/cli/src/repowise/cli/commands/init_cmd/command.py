@@ -36,6 +36,7 @@ from repowise.cli.helpers import (
     get_head_commit,
     load_config,
     load_state,
+    resolve_max_file_pages,
     resolve_provider,
     resolve_reasoning,
     resolve_repo_path,
@@ -154,6 +155,7 @@ def _run_deterministic_generation_phase(
     language: str,
     onboarding: bool,
     wiki_style: str,
+    max_file_pages: int | None,
     embedder_name_resolved: str,
     embedder_was_requested: bool,
     resume: bool,
@@ -220,6 +222,7 @@ def _run_deterministic_generation_phase(
         language=language,
         enable_onboarding=onboarding,
         wiki_style=wiki_style,
+        max_file_pages=max_file_pages,
     )
     run_repo_generation(
         repo_path=repo_path,
@@ -246,6 +249,7 @@ def _run_generation_phase(
     onboarding: bool,
     harvest_decisions: bool,
     wiki_style: str,
+    max_file_pages: int | None,
     yes: bool,
     dry_run: bool,
     skip_tests: bool,
@@ -277,6 +281,7 @@ def _run_generation_phase(
         enable_onboarding=onboarding,
         harvest_decisions=harvest_decisions,
         wiki_style=wiki_style,
+        max_file_pages=max_file_pages,
     )
     plans, est = estimate_generation(
         result=result,
@@ -840,6 +845,12 @@ def init_command(
     # until chosen. Resolved below: flag > this > config.yaml > English.
     language_choice: str | None = None
 
+    # File-page cap picked in the advanced-mode page-volume question; None until
+    # chosen, and None also means "no cap", which is the default for every repo
+    # small enough that the question is never asked. Resolved below:
+    # advanced-mode answer > config.yaml > uncapped.
+    max_file_pages_choice: int | None = None
+
     # The two orthogonal axes the interactive menu resolves: whether docs are
     # generated and whether we entered the advanced-config prompts. Initialized
     # for the non-interactive path (where the menu never runs); the menu
@@ -924,6 +935,9 @@ def init_command(
             exclude = adv["exclude"]
             include_submodules = adv.get("include_submodules", include_submodules)
             run_mode = adv.get("run_mode", run_mode)
+            # Asked in both branches for the same reason the embedder is: an
+            # index-only run renders file pages too.
+            max_file_pages_choice = adv.get("max_file_pages")
             # Asked in both branches: an index-only run renders a wiki too,
             # and those pages embed like any other, so the answer applies
             # either way. Read outside the docs-only block or the index-only
@@ -989,6 +1003,10 @@ def init_command(
     config = load_config(repo_path)
     # Output language: CLI flag > advanced-mode choice > config.yaml > English.
     language = language_opt or language_choice or config.get("language", "en")
+    # File-page cap: advanced-mode answer > config.yaml > uncapped. There is no
+    # flag; the question is the interactive surface and config.yaml is the one a
+    # script or a hosted caller writes.
+    max_file_pages = resolve_max_file_pages(max_file_pages_choice, config)
     resolved_reasoning = resolve_reasoning(reasoning, config)
     exclude_patterns: list[str] = list(config.get("exclude_patterns") or []) + list(exclude)
 
@@ -1269,6 +1287,7 @@ def init_command(
             language=language,
             onboarding=onboarding,
             wiki_style=wiki_style,
+            max_file_pages=max_file_pages,
             embedder_name_resolved=embedder_name_resolved,
             embedder_was_requested=embedder_was_requested,
             resume=resume,
@@ -1285,6 +1304,7 @@ def init_command(
             onboarding=onboarding,
             harvest_decisions=harvest_decisions,
             wiki_style=wiki_style,
+            max_file_pages=max_file_pages,
             yes=yes,
             dry_run=dry_run,
             skip_tests=skip_tests,
@@ -1324,6 +1344,7 @@ def init_command(
                 language=language,
                 onboarding=onboarding,
                 wiki_style=wiki_style,
+                max_file_pages=max_file_pages,
                 # The user has a provider and just declined a bill, not the
                 # embedder they configured, so honour it either way.
                 embedder_was_requested=True,
@@ -1353,6 +1374,14 @@ def init_command(
     # config files tidy — only the override is recorded.
     if not onboarding:
         save_config_partial(repo_path, enable_onboarding=False)
+
+    # Persist the file-page cap so `repowise update --full` and `repowise
+    # generate` keep the wiki the size the user asked for instead of growing the
+    # file layer back on the next run. Recorded whether or not a model wrote the
+    # pages, because the cap applies to the template wiki just the same. No cap
+    # stays unrecorded: it is the default.
+    if max_file_pages is not None and max_file_pages != config.get("max_file_pages"):
+        save_config_partial(repo_path, max_file_pages=max_file_pages)
 
     # Persist the wiki style so `repowise update` / `restyle` honor it without
     # re-passing the flag. Written before any config_fingerprint is computed

@@ -14,7 +14,7 @@ from rich.table import Table
 from rich.text import Text
 
 from repowise.cli.ui.brand import BRAND, BRAND_STYLE, DIM
-from repowise.cli.ui.repo_scanner import RepoScanInfo
+from repowise.cli.ui.repo_scanner import RepoScanInfo, estimated_documentable_files
 from repowise.core.generation.languages import SUPPORTED_LANGUAGES
 from repowise.core.generation.styles import DEFAULT_STYLE, list_styles
 from repowise.core.reasoning import REASONING_MODES
@@ -22,6 +22,25 @@ from repowise.core.reasoning import REASONING_MODES
 # A repo at or above this many files is "large" — large enough that a quick
 # fast-mode first index (graph + essential git, no LLM docs) is worth offering.
 LARGE_REPO_FILE_THRESHOLD = 5000
+
+# Above this many documentable files, advanced mode asks whether to bound the
+# file-page bucket; at or below it the question is never asked and every eligible
+# file gets a page.
+#
+# The number comes from the size distribution of the 2,309 repositories indexed
+# on repowise.dev (latest ready snapshot each): median 64 files, p75 235, p90
+# 907, p95 2,047, p98 3,290, largest 14,943. 2,000 sits at roughly the 95th
+# percentile, so 19 in 20 repos never see the question, and the ones that do are
+# the ones where the file tail is measured in tens of megabytes.
+#
+# It doubles as the recommended cap, which keeps the choice continuous: a repo
+# just over the line loses almost nothing by taking the recommendation.
+FILE_PAGE_VOLUME_THRESHOLD = 2000
+
+# Bytes a file page occupies with its metadata, measured over 1,961 file pages in
+# a local index (mean 8.8 KB). Used to quote wiki size while asking; an order of
+# magnitude is the point, not a byte count.
+_FILE_PAGE_BYTES = 8_800
 
 
 def should_offer_fast_mode(scan: RepoScanInfo | None) -> bool:
@@ -202,6 +221,66 @@ def _prompt_scope(console: Console, scan: RepoScanInfo | None, result: dict[str,
         )
     else:
         result["include_submodules"] = False
+
+
+def _format_mb(pages: int) -> str:
+    """Wiki bytes for *pages* file pages, as a human size."""
+    mb = pages * _FILE_PAGE_BYTES / 1_000_000
+    return f"{mb:.0f} MB" if mb >= 10 else f"{mb:.1f} MB"
+
+
+def prompt_file_page_volume(
+    console: Console,
+    scan: RepoScanInfo | None,
+    *,
+    threshold: int = FILE_PAGE_VOLUME_THRESHOLD,
+) -> int | None:
+    """Ask a large repo whether to bound the file-page bucket.
+
+    Returns the cap to write to ``GenerationConfig.max_file_pages``: an int to
+    take the top slice by importance, or ``None`` for every eligible file (the
+    unrationed default, and the answer on any repo at or below *threshold*).
+
+    One page per source file is what makes small and mid-size repos good, so the
+    question is only asked above *threshold*, and only in advanced mode. It is
+    asked before ingestion, so the page count quoted is the pre-scan estimate.
+
+    Never blocks: a terminal that cannot answer takes the recommendation and the
+    run carries on, same as the other optional questions in an init flow.
+    """
+    estimate = estimated_documentable_files(scan)
+    if estimate <= threshold:
+        return None
+
+    console.print()
+    console.print(f"  [{BRAND}]Page volume[/]")
+    console.print(
+        f"  [dim]About [bold]{estimate:,}[/bold] files here would each get a file page "
+        f"({_format_mb(estimate)} of wiki).\n"
+        "  File pages are rendered from structure, so they cost no model tokens — what\n"
+        "  the tail costs is wiki size, one embedding call each, and search results\n"
+        "  that restate what a subsystem page already says.[/dim]"
+    )
+    console.print()
+    console.print(
+        f"  [{BRAND}][1][/] Top [bold]{threshold:,}[/bold] by importance  [dim](recommended) — "
+        f"~{threshold:,} pages, {_format_mb(threshold)}[/dim]"
+    )
+    console.print(
+        f"  [{BRAND}][2][/] Every eligible file  [dim]— ~{estimate:,} pages, "
+        f"{_format_mb(estimate)}, roughly "
+        f"{max(1, round(estimate / 1000)):,}-{max(2, round(2 * estimate / 1000)):,} min "
+        "longer to render and embed[/dim]"
+    )
+    try:
+        choice = Prompt.ask("  File pages", choices=["1", "2"], default="1", console=console)
+    except (click.Abort, EOFError):
+        # isatty() lied about being answerable (Windows Git Bash `< /dev/null`,
+        # pty wrappers, `docker run -t` without -i). Take the recommendation and
+        # keep going: an agent or CI job must never hang here.
+        console.print("  [dim]No answer available — taking the recommendation.[/dim]")
+        return threshold
+    return threshold if choice == "1" else None
 
 
 def _prompt_run_mode(
@@ -411,6 +490,9 @@ def _build_summary_table(
             # Bullet-list when many patterns — comma-joined wraps unreadably.
             summary.add_row("Exclude", "\n".join(f"• {p}" for p in patterns))
 
+    if result.get("max_file_pages"):
+        summary.add_row("File pages", f"top {result['max_file_pages']:,} by importance")
+
     if not generate_docs and result.get("embedder"):
         summary.add_row("Embedder", result["embedder"])
 
@@ -458,9 +540,9 @@ def interactive_advanced_config(
 
     Returns a dict with keys matching init_command kwargs:
     ``commit_limit``, ``follow_renames``, ``skip_tests``, ``skip_infra``,
-    ``exclude``, ``include_submodules``, ``run_mode``, ``generate_docs`` (always),
-    plus ``concurrency``, ``reasoning``, ``embedder``, ``test_run``,
-    ``onboarding``, ``harvest_decisions``, ``wiki_style``,
+    ``exclude``, ``include_submodules``, ``run_mode``, ``max_file_pages``,
+    ``generate_docs`` (always), plus ``concurrency``, ``reasoning``, ``embedder``,
+    ``test_run``, ``onboarding``, ``harvest_decisions``, ``wiki_style``,
     ``language`` (docs only).
 
     Editor integration prompts are intentionally not asked here so that full and
@@ -482,6 +564,11 @@ def interactive_advanced_config(
     _prompt_run_mode(console, result, allow_fast=allow_fast, is_large=is_large)
     patterns = _prompt_exclude(console, scan, result)
     _prompt_git(console, scan, result)
+    # Asked in both branches: an index-only run renders file pages too (they need
+    # no model), so page volume is a real question either way. Fast mode renders
+    # no wiki at all, so there is nothing to bound.
+    if result.get("run_mode") != "fast":
+        result["max_file_pages"] = prompt_file_page_volume(console, scan)
     if generate_docs:
         _prompt_generation(
             console,

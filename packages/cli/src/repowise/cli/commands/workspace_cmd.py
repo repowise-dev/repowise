@@ -13,6 +13,7 @@ from repowise.cli._setup import configure_cli_logging
 from repowise.cli.helpers import (
     console,
     find_workspace_root,
+    resolve_max_file_pages,
     resolve_reasoning,
     resolve_repo_path,
     run_async,
@@ -692,6 +693,8 @@ def _generate_docs_for_added_repo(
         reasoning=reasoning,
         wiki_style=repo_cfg.get("wiki_style", "comprehensive"),
         language=repo_cfg.get("language", "en"),
+        # Whole-repo selection, so honour the per-repo file-page cap.
+        max_file_pages=resolve_max_file_pages(config=repo_cfg),
     )
     assembler = ContextAssembler(config)
     generator = PageGenerator(
