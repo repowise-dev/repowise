@@ -47,12 +47,12 @@ SYSTEM_PROMPTS: dict[str, str] = {
         "time. A page that walks through files one by one has failed even if every "
         "sentence is true. Synthesise. "
         "\n"
-        "REQUIRED SECTION: end the page with a section '## Questions this page "
-        "answers' listing 3 to 6 questions a developer or agent would ask that this "
-        "page answers, phrased the way they would actually be asked (for example "
-        "'How is the dependency graph built?' or 'Where do I add a new X?'). This "
-        "section is mandatory. "
-        "\n"
+        # The mandatory '## Questions this page answers' section is asked for once,
+        # in module_page.j2, where the rest of the module-page contract lives.
+        # Stating it here as well made the model stutter the heading: it emitted the
+        # heading bare, then again with the questions under it, on 86 of 92 pages
+        # measured across local indexes (gpt-5.4-nano). Pages written before the
+        # instruction was doubled show none of it. One instruction, one heading.
         "Ground every claim in the supplied material: do not invent files, symbols, "
         "or rationale that are not listed. Draw on the whole file set, not one file."
     ),

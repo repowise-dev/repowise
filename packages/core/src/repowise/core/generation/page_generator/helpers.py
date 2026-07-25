@@ -8,6 +8,7 @@ docs and call sites reference them.
 
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -89,6 +90,31 @@ def overview_summary(content: str) -> str:
         end = content.find("\n##", start)
         return content[start : end if end > 0 else start + 1600].strip()[:400]
     return content[:400]
+
+
+_EMPTY_DUPLICATE_HEADING = re.compile(
+    r"^(?P<hashes>\#{2,6})[ \t]*(?P<text>\S.*?)[ \t]*\r?\n"  # a heading …
+    r"(?:[ \t]*\r?\n)*"  # … whose section is empty …
+    r"(?=(?P=hashes)[ \t]*(?P=text)[ \t]*(?:\r?\n|$))",  # … and repeats verbatim
+    re.MULTILINE,
+)
+
+
+def collapse_empty_duplicate_headings(content: str) -> str:
+    """Drop a heading that is immediately repeated with nothing in between.
+
+    Models emit this when a required section is asked for emphatically: the
+    heading lands once bare and once with the body under it, which renders as an
+    empty section followed by the real one. A prompt change makes it rarer but
+    cannot make it impossible, so the heading is deduplicated here as well,
+    where the outcome does not depend on the model. Only the empty copy goes;
+    two headings with content between them are two real sections.
+    """
+    prior = None
+    while prior != content:
+        prior = content
+        content = _EMPTY_DUPLICATE_HEADING.sub("", content)
+    return content
 
 
 def _is_infra_file(parsed: ParsedFile) -> bool:

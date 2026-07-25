@@ -33,7 +33,7 @@ from ..models import (
     compute_source_hash,
 )
 from ..styles import ONBOARDING_PAGE_TYPE, resolve_style
-from .helpers import _extract_summary, _now_iso
+from .helpers import _extract_summary, _now_iso, collapse_empty_duplicate_headings
 from .pertype import PerTypeGenerationMixin
 from .prompts import SUPPORTED_LANGUAGES, SYSTEM_PROMPTS
 from .structural import (
@@ -412,12 +412,15 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
     ) -> GeneratedPage:
         """Wrap a GeneratedResponse in a GeneratedPage."""
         now = _now_iso()
+        # One pass over every model-written page: a heading the model emitted
+        # twice with an empty section between the copies is one heading.
+        content = collapse_empty_duplicate_headings(response.content)
         page = GeneratedPage(
             page_id=compute_page_id(page_type, target_path),
             page_type=page_type,
             title=title,
-            content=response.content,
-            summary=_extract_summary(response.content),
+            content=content,
+            summary=_extract_summary(content),
             source_hash=source_hash,
             model_name=self._provider.model_name,
             provider_name=self._provider.provider_name,
