@@ -68,7 +68,7 @@ Repowise will:
 3. **Ask you to pick a primary repo** (the default for MCP queries)
 4. **Walk you through provider setup** (LLM provider, model, cost estimate)
 5. **Index each repo**, parse files, build graphs, index git history
-6. **Generate documentation** for each repo (unless `--index-only`)
+6. **Generate documentation** for each repo (unless `--no-prose`)
 7. **Run cross-repo analysis**, co-changes, API contracts, package deps
 8. **Register MCP servers** with Claude Desktop and Claude Code
 
@@ -119,7 +119,7 @@ Initialize a workspace in the current directory. Scans for git repos, prompts fo
 
 | Flag | Description |
 |------|-------------|
-| `--index-only` | Parse and analyze without LLM generation (free) |
+| `--no-prose` | Parse and analyze, wiki rendered from structure, no LLM (free) |
 | `-x, --exclude` | Glob patterns to exclude (e.g., `-x "node_modules/"`) |
 | `--yes` | Skip confirmation prompts |
 | `--concurrency N` | Max concurrent file parses (default: auto) |

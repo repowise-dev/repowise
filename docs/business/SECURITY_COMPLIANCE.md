@@ -56,7 +56,7 @@ Repowise splits cleanly into layers that need an LLM and layers that do not.
 
 **Zero-LLM layers.** Graph, git, dead code, code health, change risk, and the
 security pattern scan are pure local computation over tree-sitter and git data.
-`repowise init --index-only` builds all of them with **no outbound LLM calls at
+`repowise init --no-prose` builds all of them with **no outbound LLM calls at
 all**. The health pass in particular is deterministic Python: no model, no
 network.
 
@@ -187,7 +187,7 @@ assembled from the containers above rather than from a single bundle.
 
 **Indexing cost profile, for capacity planning.** Graph, git, dead-code, and
 code-health layers build in minutes with zero LLM calls
-(`repowise init --index-only`). One-time wiki generation scales with repo size
+(`repowise init --no-prose`). One-time wiki generation scales with repo size
 and can run in the background. Incremental updates after each commit complete in
 under 30 seconds.
 
@@ -234,7 +234,7 @@ own product and adds the layer above.
 
 | Question | Answer |
 |---|---|
-| Does our source code leave our infrastructure? | Not in the self-hosted distribution. Code is read from disk and parsed in memory. The only path that can send code-derived content out is the LLM call for documentation, chat, and decision extraction, and that goes to the provider you configured with your key. `--index-only` and offline mode remove it entirely. |
+| Does our source code leave our infrastructure? | Not in the self-hosted distribution. Code is read from disk and parsed in memory. The only path that can send code-derived content out is the LLM call for documentation, chat, and decision extraction, and that goes to the provider you configured with your key. `--no-prose` and offline mode remove it entirely. |
 | Is raw source stored anywhere? | No. Raw source is processed transiently and never persisted. The index holds the graph, embeddings, wiki pages, git metadata, decisions, and health data. |
 | Can the embeddings be reversed back into our code? | They are non-reversible vectors, not encrypted source. They are still derived from your code, so protect the index directory like the repo. |
 | Can we run with no network access at all? | Yes. Ollama plus a local embedding model gives zero external API calls; disable telemetry and the process makes no outbound requests. In air-gapped mode the LLM provider and git server sit inside your boundary. |

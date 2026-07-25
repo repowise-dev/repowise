@@ -22,7 +22,7 @@ looking at.
 ## Two modes, and what changes between them
 
 Repowise can index a repo without generating a wiki (`repowise init
---index-only`, or the fast option in the setup wizard). Everything derived from
+--no-prose`, or the fast option in the setup wizard). Everything derived from
 the AST, the dependency graph, and git history works in both modes. The views
 that read generated pages are the difference:
 

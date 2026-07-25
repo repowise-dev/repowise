@@ -45,7 +45,7 @@ repowise init .
 
 1. **Ingestion**, walks every file, parses AST with tree-sitter, builds a two-tier dependency graph (file + symbol nodes), indexes git history (churn, hotspots, ownership, bus factor)
 2. **Analysis**, detects dead code, extracts architectural decisions from inline markers, READMEs, and git history. Runs Leiden community detection and execution flow tracing.
-3. **Generation**, generates file-level, module-level, and repo-level wiki pages, either by prompting the LLM or, with `--index-only`, by rendering them from the parsed structure
+3. **Generation**, generates file-level, module-level, and repo-level wiki pages, either by prompting the LLM or, with `--no-prose`, by rendering them from the parsed structure
 4. **Persistence**, stores everything in `.repowise/wiki.db`, builds search indexes, generates editor instruction files, registers MCP server and hooks
 
 In workspace mode, adds: repo scanning, per-repo indexing, cross-repo analysis (co-changes, contracts, package deps), workspace CLAUDE.md generation.
@@ -105,7 +105,7 @@ repowise init                                         # interactive
 repowise init --provider anthropic --yes              # automated
 repowise init --provider codex_cli --codex --yes       # use authenticated Codex CLI
 repowise init --provider opencode --yes               # use local OpenCode CLI
-repowise init --index-only                            # free, wiki rendered from structure
+repowise init --no-prose                              # free, wiki rendered from structure
 repowise init --dry-run                               # preview cost
 repowise init --test-run                              # quick test (10 files)
 repowise init --provider openai --model qwen3 --reasoning off
@@ -115,7 +115,7 @@ repowise init -x vendor/ -x "*.gen.go"               # exclude patterns
 repowise init --include-submodules                    # include submodules
 repowise init --no-codex --no-agents                  # skip Codex project files
 repowise init .                                       # workspace mode
-repowise init . --index-only -x "node_modules/"      # workspace, no LLM
+repowise init . --no-prose -x "node_modules/"        # workspace, no LLM
 repowise init . --no-workspace                        # force single-repo, even in a workspace root
 ```
 

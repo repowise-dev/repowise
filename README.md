@@ -111,7 +111,7 @@ queryable from the CLI, the MCP tools, and the local dashboard.
 | **★ Code health** | **25 deterministic markers**, 1 to 10 per file · three signals: defect risk · maintainability · performance · coverage ingestion · concrete refactoring plans (Extract Class / Helper, Move Method, Break Cycle, Split File) · **zero LLM, under 30s** | **★ Defect-validated, with the fix attached** |
 
 **The whole wiki is generated with no LLM, then upgraded to model-written prose on
-demand.** `repowise init --index-only` builds the graph, git, decision and health
+demand.** `repowise init --no-prose` builds the graph, git, decision and health
 layers and renders every wiki page from your code's structure, with no API key and
 no spend. Convert any part of it to LLM-written prose whenever you want, one page,
 one directory, or a ranked coverage slice at a time, and pay only for what you pick,
@@ -337,24 +337,38 @@ pip install repowise          # Windows: python -m pip install repowise
 repowise --version
 ```
 
-**2. Index your repo, with no LLM and no key**
+**2. Index your repo**
 
 ```bash
 cd /path/to/your/repo
-repowise init --index-only -y
+repowise init
 ```
 
-That builds the dependency graph, git history, code-health scores and dead-code
-findings in seconds, and renders a complete wiki from the code's structure: file,
-module, layer and cycle pages, the architecture diagram, the repo overview, API
-and infra pages, and the onboarding collection. Every page carries a footer saying
-it was derived from structure, and the repo overview describes composition, entry
+Bare `init` asks. It scans the repo first, then offers three ways to index it:
+everything (the wiki written by a model), no prose (the same wiki rendered from
+your code's structure, no key and no spend), or advanced, which walks through the
+indexing and generation knobs. Nothing is spent before you see an estimate and
+confirm it.
+
+If you would rather not answer questions, or you are scripting this, name the
+mode and add `-y`:
+
+```bash
+repowise init --no-prose -y    # free, no key, no questions
+repowise init --prose -y       # model-written subsystem pages, cost pre-approved
+```
+
+Either way you get the dependency graph, git history, code-health scores and
+dead-code findings in seconds, plus a complete wiki: file, module, layer and cycle
+pages, the architecture diagram, the repo overview, API and infra pages, and the
+onboarding collection. On the keyless path every page carries a footer saying it
+was derived from structure, and the repo overview describes composition, entry
 points, clusters and dependencies rather than what the project does end to end,
 because no template can derive that. Full-text search works on this index;
 semantic search needs an embedder configured (Ollama is the keyless option).
 
-Want the wiki written by a model? You do not have to decide now. Upgrade the
-index-only wiki whenever you like with `repowise generate`, a page, a directory,
+Went keyless and want the wiki written by a model later? You do not have to decide
+now. Upgrade it whenever you like with `repowise generate`, a page, a directory,
 or the whole thing at a time, each behind a cost estimate:
 
 ```bash
@@ -368,7 +382,7 @@ Bare `repowise generate` prints the wiki's state and writes the unwritten
 subsystem (concept) pages behind a single cost estimate. Every other page was
 already rendered from structure at index time.
 
-Or write the whole wiki as part of the first index with `repowise init --provider
+Or pick the provider for the first index directly with `repowise init --provider
 gemini|anthropic|openai`.
 
 **3. Connect your agent.** The MCP server is `repowise mcp`, served from the repo directory.
@@ -525,8 +539,8 @@ Doing a security review? **[docs/business/SECURITY_COMPLIANCE.md →](docs/busin
 ## CLI
 
 ```bash
-repowise init [PATH]      # index a codebase (one-time; --index-only needs no LLM)
-repowise generate [PATH]  # write wiki pages with a model, on demand (upgrade an index-only wiki)
+repowise init [PATH]      # index a codebase (one-time; asks, or --no-prose -y needs no LLM)
+repowise generate [PATH]  # write wiki pages with a model, on demand (upgrade a keyless wiki)
 repowise serve [PATH]     # MCP server + local dashboard
 repowise update [PATH]    # incremental update (seconds; --workspace for every repo)
 repowise watch            # auto-sync daemon, re-index on file change

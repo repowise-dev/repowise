@@ -82,13 +82,15 @@ The failure mode to avoid is a stale index, because a confidently wrong answer i
 worse than no answer. Every MCP response carries the indexed commit and warns when
 it has diverged from your live `HEAD`, but the real fix is step 3.
 
-**Two modes, one upgrade path.** `--index-only` gives you the graph, git
+**Two modes, one upgrade path.** `--no-prose` gives you the graph, git
 intelligence, code health, change risk and dead code, plus a complete wiki
 rendered from the code's structure, with no LLM, no key and no network. Adding a
 provider rewrites those pages as model-written prose and unlocks decision mining
 and chat.
 
-You do not have to choose up front. Start index-only, then upgrade the wiki with
+You do not have to choose up front, and you do not have to know the flag: bare
+`repowise init` scans the repo and asks, with the keyless mode offered as one of
+the three answers. Start keyless, then upgrade the wiki with
 `repowise generate` when you are ready, a page, a directory, or the whole thing
 at a time, each behind a cost estimate:
 
@@ -137,8 +139,8 @@ Grouped by what you are trying to do. Every flag for every command lives in the
 
 | Command | What it is for |
 |---|---|
-| `repowise init` | First index. Runs keyless by default; asks for a provider only when you want model-written pages, then shows a cost estimate and waits for confirmation. `--index-only` builds the same wiki from structure, with no LLM. |
-| `repowise generate` | Write wiki pages with a model, on demand. The upgrade path for an index-only repo: `--unwritten` (default) writes everything still on a template, `--path`/`--page` writes a subset, all behind a cost estimate. |
+| `repowise init` | First index, and the one command to start with. Bare `init` scans the repo and asks how to index it: everything, no prose, or advanced (every indexing and generation knob). Nothing is spent before an estimate is shown and confirmed. `--no-prose -y` and `--prose -y` skip the questions for scripts and agents. |
+| `repowise generate` | Write wiki pages with a model, on demand. The upgrade path for a keyless repo: `--unwritten` (default) writes everything still on a template, `--path`/`--page` writes a subset, all behind a cost estimate. |
 | `repowise update` | Incremental catch-up after pulling or committing. Seconds, not minutes. |
 | `repowise watch` | File watcher that updates continuously while you work. |
 | `repowise hook install` | Post-commit hook so syncing happens without you. |
@@ -310,8 +312,15 @@ Every view and what it answers: **[Dashboard](DASHBOARD.md)**.
 ```bash
 pip install repowise
 cd /path/to/your-project
-repowise init --index-only -y      # free, no key, seconds
-repowise hook install              # keep it current from here on
+repowise init                 # asks how to index: everything, no prose, or advanced
+repowise hook install         # keep it current from here on
+```
+
+Scripting it, or running it as an agent? Name the mode and skip the questions:
+
+```bash
+repowise init --no-prose -y   # free, no key, seconds
+repowise init --prose -y      # model-written subsystem pages, cost pre-approved
 ```
 
 Write the pages with a model when you want them, all at once or a piece at a
@@ -385,7 +394,7 @@ instead of them interrupting someone.
 ### In CI
 
 ```bash
-repowise init --index-only              # free, no keys in CI
+repowise init --no-prose -y             # free, no keys in CI, no questions
 repowise risk "$BASE_SHA..$HEAD_SHA"    # gate or annotate on risk
 repowise export --format markdown --output ./docs/wiki/   # static hosting
 ```
@@ -451,7 +460,7 @@ validate on 10 files, and `--skip-tests --skip-infra` to cut scope. Lower
 `repowise reindex` rebuilds it from the existing wiki pages, with no LLM calls.
 
 **Doctor reports 0 pages**
-init failed or was interrupted. Even `--index-only` writes pages, so an empty
+init failed or was interrupted. Even `--no-prose` writes pages, so an empty
 wiki means the run did not finish. Try `repowise init --resume`.
 
 **Dashboard shows an empty repo list**

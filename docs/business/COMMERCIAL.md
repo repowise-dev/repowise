@@ -324,7 +324,7 @@ Repowise in the same network boundary — no outbound connectivity is required i
 air-gapped mode.
 
 **Indexing:** the graph, git, dead-code, and code-health layers build in minutes with
-zero LLM calls (`repowise init --index-only`); the documentation layer's one-time
+zero LLM calls (`repowise init --no-prose`); the documentation layer's one-time
 wiki generation scales with repo size and can run in the background. Incremental
 updates after each commit complete in under 30 seconds.
 

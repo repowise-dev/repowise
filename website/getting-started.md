@@ -31,14 +31,16 @@ pip install repowise          # Windows: python -m pip install repowise
 repowise --version            # -> repowise, version 0.27.x
 ```
 
-**2. Index your repo — no LLM, no key**
+**2. Index your repo**
 
 ```bash
 cd /path/to/your/repo
-repowise init --no-prose -y
+repowise init
 ```
 
-Builds the dependency graph, git history, code-health score, and dead-code findings in seconds. Also renders every wiki page from structure. Want the subsystem pages written as model prose? `repowise init --prose --provider gemini|anthropic|openai`.
+Bare `init` scans the repo and asks how to index it: everything (the wiki written by a model), no prose (the same wiki rendered from your code's structure, no key and no spend), or advanced for every knob. Nothing is spent before you see an estimate and confirm it.
+
+Scripting it instead? Name the mode and skip the questions: `repowise init --no-prose -y` for the free path, `repowise init --prose -y` for model-written subsystem pages. Either way you get the dependency graph, git history, code-health score and dead-code findings in seconds, plus every wiki page.
 
 **3. Connect your agent** — the MCP server is `repowise mcp`, served from the repo dir.
 

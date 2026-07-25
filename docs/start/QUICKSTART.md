@@ -32,18 +32,28 @@ repowise --version
 
 ```bash
 cd /path/to/your-repo
-repowise init --yes
+repowise init
 ```
 
-No API key needed. If you want to be explicit that this run must not spend
-anything, spell it out:
+Bare `init` scans the repo and asks how to index it: everything (the wiki written
+by a model), no prose (the same wiki rendered from your code's structure, no key
+and no spend), or advanced, which walks through the indexing and generation knobs.
+Nothing is spent before you see an estimate and confirm it, so it is safe to run
+and read.
+
+If you would rather not answer questions, name the mode and add `--yes`. This is
+the form to use in a script, in CI, or when an agent is setting repowise up:
 
 ```bash
-repowise init --yes --no-prose
+repowise init --yes --no-prose   # free, no key, no questions
+repowise init --yes --prose      # model-written subsystem pages, cost pre-approved
 ```
 
-This is the step worth doing first, because it costs nothing and answers the
-question "is this useful on my codebase". It parses every file to an AST, builds
+Bare `repowise init --yes` needs no API key either: without a resolvable provider
+it renders the whole wiki from structure.
+
+The keyless run is the one worth doing first, because it costs nothing and answers
+the question "is this useful on my codebase". It parses every file to an AST, builds
 the dependency graph, reads your git history, scores every file for code health,
 and finds dead code. It also renders a complete wiki from that structure: file,
 symbol, layer and cycle pages, the architecture diagram, the repo overview, API
