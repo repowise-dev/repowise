@@ -163,6 +163,7 @@ def test_render_command_roundtrips_argv_through_the_shell(payload: str, tmp_path
     assert list(tmp_path.iterdir()) == []
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="cmd.exe program-name resolution")
 def test_render_command_keeps_an_executable_path_with_spaces_intact(tmp_path: Path) -> None:
     """The program name needs real grouping quotes, not caret-escaped ones.
 
