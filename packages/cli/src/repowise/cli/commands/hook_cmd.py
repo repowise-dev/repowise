@@ -102,14 +102,16 @@ def rewrite_group() -> None:
 
     When installed, noisy commands an agent runs (tests, builds, git
     status/log/diff, searches, listings) are rewritten to
-    ``repowise distill <command>`` — pending your approval — so the agent
-    sees a compact, errors-first rendering. Raw output stays recoverable
-    via ``repowise expand <ref>``.
+    ``repowise distill <command>`` so the agent sees a compact, errors-first
+    rendering. Raw output stays recoverable via ``repowise expand <ref>``.
 
-    Claude Code gets the full ask-posture rewrite. Codex hooks cannot show
-    a rewritten command for approval, so there rewrites apply only to
-    command families set to ``permission: allow``; every Codex install also
-    maintains an AGENTS.md awareness section that works without any hook.
+    The default posture is ``allow``: rewrites run without a prompt, and only
+    ever wrap a command already recognized as one of the distill families.
+    Set ``permission: ask`` under ``distill.commands`` in
+    ``.repowise/config.yaml`` to approve each one instead. Codex hooks cannot
+    show a rewritten command for approval at all, so a family set to ``ask``
+    simply passes through there; every Codex install also maintains an
+    AGENTS.md awareness section that works without any hook.
     """
 
 

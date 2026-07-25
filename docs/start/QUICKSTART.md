@@ -248,7 +248,8 @@ repowise saved               # tokens and dollars saved so far
 Distill compresses noisy command output before your agent reads it, 60-90% fewer
 tokens on noisy commands with no error lines dropped. Opt into the rewrite hook
 during `init` (or `repowise hook rewrite install`) to have it applied
-automatically, with each rewrite shown to you for approval.
+automatically. Rewrites run without a prompt and only ever wrap a recognized
+command; set `permission: ask` to review each one.
 See [Distill](../agent/DISTILL.md).
 
 ## More than one repo

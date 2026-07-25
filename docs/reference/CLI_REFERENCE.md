@@ -964,8 +964,9 @@ When `~/.codex` exists, `install` also writes a Codex hook entry to
 `~/.codex/hooks.json` (Codex ≥ 0.137 only, older builds can't apply a
 rewrite) and maintains an "Output Distillation" section in the repo's
 `AGENTS.md` that works without any hook. Codex cannot show a rewritten
-command for approval, so there rewrites fire only for families set to
-`permission: allow`; `status` reports exactly what your build supports. See
+command for approval, so there rewrites fire only for families resolving to
+`permission: allow` (the default) and a family set to `ask` passes through
+unchanged; `status` reports exactly what your build supports. See
 [DISTILL.md](../agent/DISTILL.md#3-the-command-rewrite-hook-claude-code--codex).
 
 ---

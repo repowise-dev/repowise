@@ -74,10 +74,12 @@ MCP clients without a shell can resolve the same refs through
 ### 3. The command-rewrite hook (Claude Code + Codex)
 
 A PreToolUse hook rewrites noisy agent commands —
-`pytest -x` → `repowise distill pytest -x` — **pending your approval**: the
-default posture is `ask`, so Claude Code shows you the modified command before
-running it. `repowise init` offers to install it (default: yes); install
-manually with:
+`pytest -x` → `repowise distill pytest -x`. The default posture is `allow`, so
+the rewrite runs without a prompt; it is a bounded substitution, never a new
+command (see [Safety model](#safety-model-in-one-place)). Set
+`permission: ask` in `.repowise/config.yaml` to review each rewrite instead.
+`repowise init` offers to install the hook (default: yes); install manually
+with:
 
 ```bash
 repowise hook rewrite install      # or opt in during `repowise init`
@@ -97,10 +99,10 @@ two honest caveats its hook protocol imposes:
   on every shell call). `repowise hook rewrite status` reports what your
   build can do.
 - Codex has **no ask-with-mutation** — a rewrite can only be auto-allowed,
-  never shown for approval. So under Codex, rewrites fire **only for command
-  families you set to `permission: allow`** in `.repowise/config.yaml`;
-  `ask` families always pass through unchanged. We never silently mutate a
-  command you didn't opt into.
+  never shown for approval. So under Codex, rewrites fire **only for families
+  resolving to `permission: allow`** in `.repowise/config.yaml`, which the
+  default posture already is; any family you set to `ask` passes through
+  unchanged there rather than being silently escalated.
 
 The hook entry lands in `~/.codex/hooks.json` (one install covers every
 repo); Codex requires new hooks to be reviewed — run `/hooks` inside Codex to
@@ -389,7 +391,7 @@ distill:
   enabled: true                  # master switch for this repo
   commands:
     enabled: true                # the command path (CLI + hook rewrites)
-    permission: ask              # ask | allow | off — hook posture
+    permission: allow            # ask | allow | off — hook posture (default allow)
     families:                    # per-filter overrides
       test_output: allow         # auto-allow rewrites for test runs
       git_diff: deny             # never rewrite git diff here
@@ -411,7 +413,7 @@ and whether the rewrite hook is installed.
 | Risk | Mitigation |
 |---|---|
 | A filter eats a critical line | errors-first invariant + fixture tests + `expand` recovery + fallback-to-raw |
-| Silent permission escalation | rewrites default to `ask`; the user sees the modified command. Codex has no ask primitive, so only families explicitly set to `allow` rewrite there |
+| Silent permission escalation | rewrites default to `allow`, which is not an escalation: a rewrite is always `repowise distill <one recognized command>` drawn from a closed family set, never an arbitrary command smuggled behind the wrapper. Set `permission: ask` to approve each one. Codex has no ask primitive, so only families explicitly set to `allow` rewrite there |
 | Marker with nothing behind it | content stored *before* the marker renders; store failure ⇒ raw output |
 | Compound-command semantics | compound commands, substitution and redirects are never rewritten. The one pipe shape that is (a single stage into a bare stdin filter, macOS/Linux only) is passed through as one quoted token and runs verbatim in distill's shell; anything that could break out of that quoting bails |
 | Unindexed or stale repo | filters work index-free; index only improves ranking |

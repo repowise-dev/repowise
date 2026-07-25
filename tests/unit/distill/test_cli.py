@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
+import subprocess
 import sys
 from pathlib import Path
 
@@ -96,15 +98,63 @@ def test_render_command_quotes_shell_metacharacters() -> None:
     pipeline. POSIX ``shlex.join`` gets it right. Windows
     ``list2cmdline`` quotes for the C runtime's argv parser rather than for
     cmd.exe, so a metacharacter with no surrounding space rides through
-    unquoted — which is exactly why the hook refuses those commands outright
-    on non-POSIX hosts (see
-    ``test_rewrite_hook.py::test_quoted_metacharacters_still_bail_on_windows``).
+    unquoted; ``_render_command`` caret-escapes the rendered line to close
+    that.
     """
     rendered = _render_command(("git", "log", "--grep=a&&b"))
     if os.name == "posix":
         assert rendered == "git log '--grep=a&&b'"
     else:
-        assert rendered == "git log --grep=a&&b"
+        assert rendered == "git log --grep=a^&^&b"
+
+
+def test_render_command_passes_a_single_token_through() -> None:
+    """One token means the user quoted the command themselves; that is intent."""
+    assert _render_command(("pytest -x | head -5",)) == "pytest -x | head -5"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "--grep=a&whoami",
+        "--grep=a|whoami",
+        "--grep=a>rendered_should_not_write.txt",
+        "--grep=a;b",
+        "plain",
+        "has space",
+        'say "hi" now',
+        'a"b&c',
+        "a^b",
+        "a(b)c",
+        "trailing\\back\\slash\\",
+        "--format=%H",
+    ],
+)
+def test_render_command_roundtrips_argv_through_the_shell(payload: str, tmp_path: Path) -> None:
+    """The rendered string must hand the child exactly the token we started with.
+
+    This is the real contract: ``_render_command`` output goes straight to
+    ``subprocess.run(..., shell=True)``, so anything the shell reinterprets
+    is a command the user never typed. Asserting on the rendered string
+    alone did not catch the cmd.exe metacharacter hole, so this one runs the
+    render and reads the child's ``sys.argv`` back.
+    """
+    tokens = (sys.executable, "-c", "import sys,json;print(json.dumps(sys.argv[1:]))", payload)
+    proc = subprocess.run(
+        _render_command(tokens),
+        shell=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        cwd=tmp_path,
+        timeout=60,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(proc.stdout.strip().splitlines()[-1]) == [payload]
+    # A redirect that reached the shell would have written a file instead.
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_distill_and_expand_roundtrip(repo_cwd: Path, fixtures_dir: Path) -> None:

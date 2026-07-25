@@ -69,12 +69,36 @@ def distill_command(source: str, command: tuple[str, ...]) -> None:
     sys.exit(proc.returncode)
 
 
+# cmd.exe consumes these before the child ever sees them. ``^`` escapes each
+# one for exactly one round of parsing, which is all ``cmd /c`` does.
+_CMD_METACHARS = frozenset('"&|<>^()')
+
+
 def _render_command(tokens: tuple[str, ...]) -> str:
-    """Rejoin click's pre-split tokens into one shell command string."""
+    """Rejoin click's pre-split tokens into one shell command string.
+
+    A single token is passed through untouched: the user quoted the whole
+    command themselves, so shell syntax in it is what they asked for.
+
+    Multiple tokens are an argv the shell must not reinterpret.
+    ``list2cmdline`` alone is not enough on Windows — it quotes for the C
+    runtime's argv parser, which only cares about spaces and quotes, so a
+    token like ``--grep=a&whoami`` comes back unquoted and cmd.exe reads the
+    ``&`` as a command separator. Caret-escaping every metacharacter in the
+    rendered line closes that: cmd strips one layer and hands the literal
+    text to the child, and because every ``"`` is escaped too, cmd never
+    enters a quoted state where the carets would stop working.
+
+    Known gap: ``%VAR%`` is expanded in an earlier pass that ``^`` cannot
+    reach, and ``cmd /c`` offers no escape for it. A lone ``%`` (``git log
+    --format=%H``) is untouched, but a token holding a matched ``%NAME%``
+    pair is substituted. That is a substitution, not command execution.
+    """
     if len(tokens) == 1:
         return tokens[0]
     if sys.platform == "win32":
-        return subprocess.list2cmdline(tokens)
+        rendered = subprocess.list2cmdline(tokens)
+        return "".join("^" + ch if ch in _CMD_METACHARS else ch for ch in rendered)
     import shlex
 
     return shlex.join(tokens)

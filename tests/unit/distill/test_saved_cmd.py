@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
+from repowise.cli.commands import saved_cmd
 from repowise.cli.commands.saved_cmd import saved_command
 from repowise.core.distill import tracking
 from repowise.core.distill.store import OmissionStore
@@ -198,3 +199,28 @@ def test_saved_explicit_path_argument(tmp_path: Path) -> None:
     result = CliRunner().invoke(saved_command, [str(repo)])
     assert result.exit_code == 0
     assert "test_output" in result.output
+
+
+def test_missed_tip_offers_install_when_hook_is_absent(monkeypatch) -> None:
+    monkeypatch.setattr(saved_cmd, "_rewrite_hook_installed", lambda: False)
+    assert "repowise hook rewrite install" in saved_cmd._missed_tip()
+
+
+def test_missed_tip_does_not_nag_when_hook_is_already_installed(monkeypatch) -> None:
+    """The old tip claimed installing would catch these rows even when the
+    hook was already installed, which hid the real reason they are there."""
+    monkeypatch.setattr(saved_cmd, "_rewrite_hook_installed", lambda: True)
+    tip = saved_cmd._missed_tip()
+    assert "repowise hook rewrite install" not in tip
+    assert "repowise distill" in tip
+
+
+def test_rewrite_hook_installed_degrades_to_false(monkeypatch) -> None:
+    """A broken or absent adapter must not break `saved --missed`."""
+    import repowise.cli.agent_adapters.claude_code as cc
+
+    def boom(self):
+        raise RuntimeError("no adapter here")
+
+    monkeypatch.setattr(cc.ClaudeCodeAdapter, "rewrite_hook_installed", boom)
+    assert saved_cmd._rewrite_hook_installed() is False

@@ -128,7 +128,7 @@ distill:
   enabled: true                  # master switch for this repo
   commands:
     enabled: true                # the command path (CLI + hook rewrites)
-    permission: ask               # ask | allow | off (rewrite-hook posture)
+    permission: allow             # ask | allow | off (rewrite-hook posture)
     families:                     # per-filter overrides
       test_output: allow          #   auto-allow rewrites for test runs
       git_diff: deny              #   never rewrite git diff here
@@ -138,8 +138,12 @@ distill:
     max_mb: 50                    # size cap; oldest entries pruned first
 ```
 
-- `permission: ask` (the default) means the agent's rewritten command is shown
-  for approval; `allow` auto-approves rewrites; `off` disables rewrites here.
+- `permission: allow` (the default) auto-approves rewrites, uniformly across
+  the main agent and every subagent. This is not a permission escalation: a
+  rewrite is always `repowise distill <one recognized command>` from a closed
+  family set, never an arbitrary command smuggled behind the wrapper. Set
+  `ask` to have each rewritten command shown for approval instead, or `off` to
+  disable rewrites in this repo.
 - `families` keys are filter names (`test_output`, `build_output`,
   `lint_output`, `install_output`, `infra_plan`, `git_status`, `git_log`,
   `git_diff`, `search_results`, `file_listing`, `logs`) and accept

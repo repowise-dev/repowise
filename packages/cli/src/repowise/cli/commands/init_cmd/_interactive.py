@@ -65,8 +65,9 @@ def offer_distill_rewrite_hook(
         )
         scope = f"Applies to all {len(repo_paths)} selected repos. " if len(repo_paths) > 1 else ""
         console_obj.print(
-            f"  [dim]{scope}Each rewrite is shown for approval; raw output stays "
-            "recoverable via `repowise expand`.[/dim]"
+            f"  [dim]{scope}Rewrites run without a prompt and only ever wrap a "
+            "recognized command; set `permission: ask` in .repowise/config.yaml to "
+            "approve each one. Raw output stays recoverable via `repowise expand`.[/dim]"
         )
         try:
             flag = click.confirm("  Install the Claude Code rewrite hook?", default=True)

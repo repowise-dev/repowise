@@ -262,11 +262,46 @@ def _render_missed_distill_table(report: dict, days: float, pricing_model: str) 
         f"[dim](at ${rate:.2f}/M input tokens, {pricing_model}; "
         f"tokens are chars/4 estimates)[/dim]"
     )
-    console.print(
-        "  [dim]Tip: install the rewrite hook ('repowise hook rewrite install') "
-        "to catch these automatically.[/dim]"
-    )
+    console.print(f"  [dim]{_missed_tip()}[/dim]")
     console.print()
+
+
+def _rewrite_hook_installed() -> bool:
+    """True when any agent surface has the rewrite hook wired up.
+
+    Mirrors the doctor check: Claude Code is always considered, Codex only
+    when it is actually present on the machine.
+    """
+    try:
+        from repowise.cli.agent_adapters.claude_code import ClaudeCodeAdapter
+        from repowise.cli.agent_adapters.codex import CodexAdapter
+
+        if ClaudeCodeAdapter().rewrite_hook_installed():
+            return True
+        codex = CodexAdapter()
+        return codex.detect() and codex.rewrite_hook_installed()
+    except Exception:
+        return False
+
+
+def _missed_tip() -> str:
+    """The one next step that is actually true for this machine.
+
+    Telling someone to install a hook they already installed hides the real
+    reason the rows are still there: the hook only rewrites a single
+    recognized command, so chained (``a && b``) and piped commands pass
+    through by design and have to be distilled explicitly.
+    """
+    if not _rewrite_hook_installed():
+        return (
+            "Tip: install the rewrite hook ('repowise hook rewrite install') "
+            "to catch these automatically."
+        )
+    return (
+        "Tip: the hook is installed. What is left is mostly commands it will not "
+        "rewrite - it only wraps a single recognized command, so chained and piped "
+        "ones pass through. Run those through 'repowise distill <cmd>' yourself."
+    )
 
 
 def _render_reread_table(report: dict, days: float, pricing_model: str) -> None:
