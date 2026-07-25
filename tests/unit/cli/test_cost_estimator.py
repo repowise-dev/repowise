@@ -47,7 +47,9 @@ class FakeParsedFile:
 @dataclass
 class FakeConfig:
     top_symbol_percentile: float = 0.10
-    file_page_top_percentile: float = 0.20
+    # None, like the real GenerationConfig: the file-page volume policy decides,
+    # and it leaves a fixture this size alone.
+    max_file_pages: int | None = None
     file_page_min_symbols: int = 1
     max_pages_pct: float = 0.10
 

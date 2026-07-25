@@ -255,7 +255,10 @@ async def test_embedding_latency_does_not_gate_llm_concurrency():
         token_budget=1000,
         max_concurrency=2,
         embed_concurrency=1,
-        file_page_top_percentile=1.0,
+        # 0 is the explicit "every eligible file" answer, which is what this test
+        # wants: the point is concurrency, so no page should be missing because a
+        # size policy trimmed the bucket.
+        max_file_pages=0,
         top_symbol_percentile=0.01,
         # coverage_pct / max_pages_pct are inert: selection no longer rations by
         # coverage. Set here only to exercise the config round-trip.
