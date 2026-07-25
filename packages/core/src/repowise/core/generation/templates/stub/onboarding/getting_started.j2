@@ -33,14 +33,14 @@ Quoted verbatim from the repository's own README.
 {% if ctx.runtime_dependencies %}
 ## Runtime dependencies
 {% for d in ctx.runtime_dependencies[:30] %}
-- `{{ d.name }}`{% if d.version %} {{ d.version }}{% endif %}
+- `{{ d.name }}`{% if d.version is defined and d.version %} {{ d.version }}{% endif %}
 {% endfor %}
 {% endif %}
 
 {% if ctx.dev_dependencies %}
 ## Development dependencies
 {% for d in ctx.dev_dependencies[:30] %}
-- `{{ d.name }}`{% if d.version %} {{ d.version }}{% endif %}
+- `{{ d.name }}`{% if d.version is defined and d.version %} {{ d.version }}{% endif %}
 {% endfor %}
 {% endif %}
 {% include "stub/_footer.j2" %}

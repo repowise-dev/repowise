@@ -122,7 +122,8 @@ def _signals(
         root_language_distribution={"python": 1.0},
         total_files=len(files),
         total_loc=len(files) * 50,
-        entry_points=entry_points or [f.file_info.path for f in files if f.file_info.is_entry_point],
+        entry_points=entry_points
+        or [f.file_info.path for f in files if f.file_info.is_entry_point],
     )
     return OnboardingSignals(
         repo_name="testrepo",
@@ -264,8 +265,18 @@ def test_getting_started_fires_on_manifest() -> None:
     sig = _signals(
         files=[_file("src/a.py")],
         external_systems=(
-            {"name": "fastapi", "ecosystem": "pypi", "category": "framework"},
-            {"name": "pytest", "ecosystem": "pypi", "is_dev": True},
+            # Key names must match what pipeline/orchestrator.py actually emits
+            # off ExternalSystemRecord. This test previously passed "is_dev",
+            # which no producer ever sets, so it asserted against a shape
+            # production never produces and hid the misclassification below.
+            {
+                "name": "fastapi",
+                "ecosystem": "pypi",
+                "category": "framework",
+                "version": "0.110.0",
+                "is_dev_dep": False,
+            },
+            {"name": "pytest", "ecosystem": "pypi", "is_dev_dep": True},
         ),
     )
     ctx = spec.build_context(sig)
@@ -273,6 +284,69 @@ def test_getting_started_fires_on_manifest() -> None:
     assert "pypi" in ctx.package_managers
     assert any(d["name"] == "fastapi" for d in ctx.runtime_dependencies)
     assert any(d["name"] == "pytest" for d in ctx.dev_dependencies)
+    # A dev dependency must not leak into the runtime list.
+    assert not any(d["name"] == "pytest" for d in ctx.runtime_dependencies)
+
+
+def test_getting_started_dependency_entries_always_carry_a_version_key() -> None:
+    """The stub template tests ``d.version`` under StrictUndefined.
+
+    A missing key raises "'dict object' has no attribute 'version'" and loses
+    the whole page, which is what happened in production.
+    """
+    spec = onboarding.get_spec(SLOT_GETTING_STARTED)
+    assert spec is not None
+    sig = _signals(
+        files=[_file("src/a.py")],
+        external_systems=(
+            {"name": "fastapi", "ecosystem": "pypi", "version": "0.110.0"},
+            # No version at all, and an explicit None: both must normalize.
+            {"name": "requests", "ecosystem": "pypi"},
+            {"name": "httpx", "ecosystem": "pypi", "version": None},
+        ),
+    )
+    ctx = spec.build_context(sig)
+    assert ctx is not None
+
+    for dep in [*ctx.runtime_dependencies, *ctx.dev_dependencies]:
+        assert "version" in dep, f"{dep['name']} has no version key"
+        assert isinstance(dep["version"], str), "version must never be None"
+
+    by_name = {d["name"]: d for d in ctx.runtime_dependencies}
+    assert by_name["fastapi"]["version"] == "0.110.0"
+    assert by_name["requests"]["version"] == ""
+    assert by_name["httpx"]["version"] == ""
+
+
+def test_getting_started_stub_renders_under_strict_undefined() -> None:
+    """End-to-end guard on the exact production failure: it must not raise."""
+    templates_dir = Path(onboarding.__file__).resolve().parents[1] / "templates"
+    env = jinja2.Environment(
+        loader=jinja2.FileSystemLoader(str(templates_dir)),
+        undefined=jinja2.StrictUndefined,
+        autoescape=False,
+    )
+
+    spec = onboarding.get_spec(SLOT_GETTING_STARTED)
+    assert spec is not None
+    sig = _signals(
+        files=[_file("src/a.py")],
+        external_systems=(
+            {"name": "fastapi", "ecosystem": "pypi", "version": "0.110.0"},
+            {"name": "requests", "ecosystem": "pypi"},
+            {"name": "pytest", "ecosystem": "pypi", "is_dev_dep": True},
+        ),
+    )
+    ctx = spec.build_context(sig)
+    assert ctx is not None
+
+    rendered = env.get_template("stub/onboarding/getting_started.j2").render(ctx=ctx)
+
+    assert "fastapi" in rendered
+    assert "0.110.0" in rendered
+    assert "pytest" in rendered
+    # A versionless dependency renders its name with no trailing "None".
+    assert "None" not in rendered
 
 
 def test_getting_started_fires_on_readme_install_section() -> None:
@@ -626,12 +700,24 @@ def test_how_it_works_renders_curated_tour_steps() -> None:
         entry_points=["src/main.py"],
     )
     curated_steps = (
-        {"order": 1, "target_path": "README.md", "page_type": "repo_overview",
-         "title": "README.md", "depth": 0, "kind": "overview",
-         "reason": "Start here for the end-to-end picture."},
-        {"order": 2, "target_path": "src/main.py", "page_type": "file_page",
-         "title": "main.py", "depth": 1, "kind": "code",
-         "reason": "An entry point — execution and imports fan out from here."},
+        {
+            "order": 1,
+            "target_path": "README.md",
+            "page_type": "repo_overview",
+            "title": "README.md",
+            "depth": 0,
+            "kind": "overview",
+            "reason": "Start here for the end-to-end picture.",
+        },
+        {
+            "order": 2,
+            "target_path": "src/main.py",
+            "page_type": "file_page",
+            "title": "main.py",
+            "depth": 1,
+            "kind": "code",
+            "reason": "An entry point — execution and imports fan out from here.",
+        },
     )
     sig = dataclasses.replace(sig, kg_tour_steps=curated_steps)
     ctx = spec.build_context(sig)
@@ -656,9 +742,12 @@ def test_how_it_works_renders_legacy_tour_steps() -> None:
         entry_points=["src/main.py"],
     )
     legacy_steps = (
-        {"order": 1, "title": "Start Here",
-         "description": "Begin with the entry point.",
-         "nodeIds": ["file:src/main.py"]},
+        {
+            "order": 1,
+            "title": "Start Here",
+            "description": "Begin with the entry point.",
+            "nodeIds": ["file:src/main.py"],
+        },
     )
     sig = dataclasses.replace(sig, kg_tour_steps=legacy_steps)
     ctx = spec.build_context(sig)
