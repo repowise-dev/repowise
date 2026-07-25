@@ -44,10 +44,10 @@ Otherwise the response is current — act on it.
 ## Error Handling
 
 - If tools report that no repositories were found, suggest running `repowise init`.
-  Add `--no-editor-setup` if this repo is a scratch clone, a fixture, or a worktree.
-  `init` writes a global Claude Code / Claude Desktop MCP entry whether or not those
-  are installed, and there is only one such entry, so it otherwise repoints at this
-  repo. Codex's own config is project-local and is written either way.
+  Add `--no-editor-setup` if this repo is a scratch clone, a fixture, or a worktree:
+  `init` otherwise registers repowise in the user's machine-wide editor config, which
+  holds a single entry and so gets repointed at whichever repo was indexed last. The
+  Codex config this skill relies on is project-local and is written either way.
 - If `get_answer`/`search_codebase` come back empty, the repository may have a
   template-rendered wiki; fall back to `get_context` with specific paths, and note
   that model-written pages (`repowise generate`, or `repowise init` with an LLM
