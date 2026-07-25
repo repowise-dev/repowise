@@ -9,6 +9,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.36.0] — 2026-07-25
+
+A smaller release that settles what 0.35.0 started. Wikis on very large repositories now bound their own file-page volume by default instead of emitting one page per file, `distill` learns a real shell lexer and gains install and infra command families, and a run of contributor fixes lands across serve, the job scheduler and dead code.
+
+### Added
+- **Install and infra command families for `distill`.** `pip`, `uv`, `poetry`, `npm`, `pnpm`, `yarn`, `cargo` and `brew` output, plus `terraform`, `tofu` and `helm` plans, are now compacted by data-driven TOML filters. A new family is a data file rather than a Python module, and the errors-first invariant is enforced mechanically so no filter can drop an error line. (#1067)
+- **A shared shell lexer behind the rewrite hook.** The hook used to scan for shell characters and could not tell a pipe from the same character inside a quoted string, so it refused anything with both a quote and punctuation. A single-pass tokenizer replaces that scan, which makes the bailouts structural and widens the safe final pipeline stage beyond `head` and `tail`. (#1070)
+
+### Changed
+- **File pages are rationed on very large repositories, by default.** A 10.8k-file monorepo produced 8,756 file pages inside a 14,027-page wiki, roughly 77 MB whose tail mostly restates the concept page above it. `max_file_pages` now scales with repo size using two thresholds derived from the size distribution of indexed repositories: an interactive run offers a leaner wiki past 2,000 files, and an automatic ceiling of 4,500 applies to runs that never get asked, such as `--yes`, agent and CI runs. Smaller repos are unaffected. (#1074, #1076)
+- **Symbol spotlight pages take the top decile, not the top fifth.** That bucket restates what a symbol's file page already renders, and at 4,996 pages it buried the pages that say something new. The bucket still floors at one, so small repos keep a spotlight. (#1069)
+- **A tidier docs nav tree.** Repeated folder glyphs are gone from concept rows where indentation already said it, top-level sections carry more weight, and a leading heading that just repeats the page title is stripped in the reader. (#1066)
+- **The health files API reports a repository's real file total** rather than however many rows the current page happened to carry, while still accepting the older bare-array response. (#1080)
+
+### Removed
+- **`--safe-only` on `repowise health`**, which never did anything. The flag remains live and functional on `repowise dead-code`. (#1027)
+
+### Fixed
+- **Command injection when `distill` rejoined argv on Windows.** The rendered command was quoted for the C runtime's argv parser rather than for `cmd.exe`, so a token carrying a metacharacter and no space, such as `--grep=a&whoami`, came back unquoted and the shell read the `&` as a separator. Verified by execution before the fix: `&` and `|` both ran injected commands and `>` created a file. Every `"&|<>^()` is now caret-escaped. (#1071)
+- **The getting-started page crashed on any repo with a dependency.** The context dict never carried the `version` key its template reads, and page rendering runs under `StrictUndefined`, so a missing key raised instead of being falsy. (#1068)
+- **`repowise serve` reclaims its preferred ports on restart.** The pre-flight probe bound without `SO_REUSEADDR`, so a port still in `TIME_WAIT` from the just-exited instance read as busy and the API silently moved to 7338 while the UI kept proxying to 7337. The result was a healthy server rendering as empty panels. The probe now matches the bind semantics uvicorn and Next.js actually use, on POSIX only, since Windows treats the option differently. (#840, #845)
+- **Persisted polling sync jobs never launched.** The fallback path discarded the job returned by `upsert_generation_job` and then referenced an undefined name, and the resulting error was swallowed by an outer handler, so the failure was silent. (#831)
+- **Subsystem pages no longer print "Questions this page answers" twice.** The requirement was stated in both the system prompt and the template, and under the doubled instruction the model emitted the heading twice on 86 of 92 measured pages. (#1073)
+- **Top-level `export const` in TypeScript and JavaScript is evaluated for dead code** instead of being exempted the way class members are. (#1065)
+- **Alias resolution in `generate_refactoring_code`**, which passed a redundant argument inside an already alias-scoped session. (#884)
+
+### Documentation
+- **The docs lead with interactive `init`.** Getting-started paths handed new users `repowise init --index-only -y` and never mentioned that a bare `init` scans the repo and offers a choice before spending anything. Every path now says `--no-prose`, since `--index-only` has been a deprecated hidden alias since #1032. (#1075)
+- **Live badges on the README.** We ask other projects to carry a Repowise badge and had none of our own. Both read live endpoints, so they follow each index rather than freezing at whatever was true when someone pasted them in. (#1079)
+
+---
+
 ## [0.35.0] — 2026-07-24
 
 This release rebuilds how wikis are generated. Every page now renders from structure with no key and no spend, except a single model-written subsystem layer; a new `repowise generate` command fills that layer on demand, and the web UI can generate AI docs page by page. Stores built before this change are recommended (never forced) to re-index for the newer navigable wiki.

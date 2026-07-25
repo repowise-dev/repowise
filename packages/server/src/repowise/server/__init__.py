@@ -7,4 +7,4 @@ Provides:
     - Background job scheduler (APScheduler)
 """
 
-__version__ = "0.35.0"
+__version__ = "0.36.0"
