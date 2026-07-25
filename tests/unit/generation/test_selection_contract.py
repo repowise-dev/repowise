@@ -193,6 +193,28 @@ def test_spotlights_are_bounded_by_the_percentile():
     assert tenth.symbol_spotlights == half.symbol_spotlights[: len(tenth.symbol_spotlights)]
 
 
+def test_default_config_takes_the_top_symbol_decile():
+    """The stock default is the bound large repos actually get.
+
+    A 5.3k-file monorepo produced 4,996 spotlights inside a 14,027-page wiki at
+    the old 0.20. The bucket restates what each symbol's file page already says,
+    so the default keeps the strongest decile.
+    """
+    parsed, pagerank, betweenness, community = _build_synthetic_repo(100)
+    total_symbols = sum(len(p.symbols) for p in parsed)
+
+    sel = select_pages(_inputs(parsed, pagerank, betweenness, community, GenerationConfig()))
+
+    assert len(sel.symbol_spotlights) == int(total_symbols * 0.10)
+
+
+def test_small_repo_still_gets_a_spotlight_at_the_default():
+    """The floor of one keeps a tiny repo from losing the bucket entirely."""
+    parsed, pagerank, betweenness, community = _build_synthetic_repo(1)
+    sel = select_pages(_inputs(parsed, pagerank, betweenness, community, GenerationConfig()))
+    assert len(sel.symbol_spotlights) >= 1
+
+
 def test_module_bucket_is_never_rationed():
     """The concept partition is total, so every group is emitted."""
     parsed, pagerank, betweenness, community = _build_synthetic_repo(300)

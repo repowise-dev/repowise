@@ -286,7 +286,10 @@ def _build_symbol_candidates(
     # slice by PageRank. This used to fall out of the coverage budget's 0.15
     # share; with nothing costing tokens there is no budget to fall out of, so
     # the percentile that always existed on the config now does the bounding.
-    pct = getattr(inputs.config, "top_symbol_percentile", 0.20) or 0.0
+    # Fallback tracks GenerationConfig.top_symbol_percentile; a config object
+    # predating the field must not silently select a wider slice than the
+    # declared default.
+    pct = getattr(inputs.config, "top_symbol_percentile", 0.10) or 0.0
     if pct <= 0:
         return []
     if pct >= 1.0:

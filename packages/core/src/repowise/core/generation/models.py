@@ -105,7 +105,19 @@ class GenerationConfig:
     # ``symbol_spotlight``. A spotlight repeats what its file's page already
     # says, so taking all of them buries the pages that say something new.
     # This bound used to be a side effect of the budget's 0.15 share.
-    top_symbol_percentile: float = 0.20
+    #
+    # Lowered 0.20 -> 0.10 on the evidence of a large monorepo: a 5.3k-file
+    # repo produced 4,996 spotlights inside a 14,027-page wiki. Doubling down
+    # on the strongest decile keeps the pages that say something new and drops
+    # the ones that restate their file's page. Small repos are unaffected in
+    # practice: the selector floors the bucket at one, so a repo with few
+    # public symbols still gets a spotlight.
+    top_symbol_percentile: float = 0.10
+    # NOTE: read by nothing today. File pages are deliberately not rationed
+    # (see selection/selector.py::select_pages -- the concept partition is a
+    # total cover of the production files). Kept because bounding the file
+    # bucket is a live question on very large repos, but bounding it is a
+    # design decision, not a default change.
     file_page_top_percentile: float = 0.10
     file_page_min_symbols: int = 1
     skip_trivial_files: bool = True
