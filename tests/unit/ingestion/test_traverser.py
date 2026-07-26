@@ -22,12 +22,15 @@ class TestCompileGitignore:
         # A malformed line never takes down its neighbours.
         assert not spec.match_file("src/main.py")
 
-    def test_trailing_backslash_is_salvaged(self) -> None:
-        # Git treats `.godot\` as `.godot`; recover that intent instead of
-        # dropping it, so the generated dir stays ignored (the motivating case).
+    def test_trailing_backslash_matches_nothing(self) -> None:
+        # Git parity: git treats a dangling trailing backslash (e.g. `.godot\`)
+        # as an escape of nothing, so the pattern matches nothing — no error, no
+        # fallback to the bare path. Dropping the line reproduces that exactly.
+        # Do NOT re-add a salvage that rewrites `.godot\` -> `.godot`: that would
+        # diverge from git (it would start ignoring `.godot/` that git tracks).
         spec = _compile_gitignore([".godot\\"])
-        assert spec.match_file(".godot")
-        assert spec.match_file(".godot/imported/x.res")
+        assert not spec.match_file(".godot")
+        assert not spec.match_file(".godot/imported/x.res")
         assert not spec.match_file("godot.py")
 
     def test_unrecoverable_line_is_dropped(self) -> None:

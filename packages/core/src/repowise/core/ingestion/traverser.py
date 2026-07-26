@@ -873,23 +873,6 @@ def _compile_gitignore(lines: Iterable[str]) -> pathspec.PathSpec:
         try:
             patterns.append(GitWildMatchPattern(line))
         except GitWildMatchPatternError:
-            # Git tolerates a trailing backslash (e.g. ``.godot\``) and treats it
-            # as the bare path; dropping the line entirely would leave a large
-            # generated directory un-ignored — the opposite of the author's
-            # intent. Strip trailing backslashes and retry so the pattern is
-            # still honoured, and only drop the line if it remains unparseable.
-            salvaged = line.rstrip("\\")
-            if salvaged and salvaged != line:
-                try:
-                    patterns.append(GitWildMatchPattern(salvaged))
-                    log.warning(
-                        "recovered malformed gitignore pattern",
-                        pattern=line,
-                        used=salvaged,
-                    )
-                    continue
-                except GitWildMatchPatternError:
-                    pass
             log.warning("skipping malformed gitignore pattern", pattern=line)
     return pathspec.PathSpec(patterns)
 
