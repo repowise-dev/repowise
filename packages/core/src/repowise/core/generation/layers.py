@@ -25,6 +25,7 @@ from collections import defaultdict
 from collections.abc import Iterable, Mapping
 from pathlib import PurePosixPath
 
+from repowise.core.ids import is_external
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
 from repowise.core.test_paths import is_test_related_path
 
@@ -297,7 +298,7 @@ def layer_order_basis(
     order — no edge supports it.
     """
     for src, dst in import_edges:
-        if src.startswith("external:") or dst.startswith("external:"):
+        if is_external(src) or is_external(dst):
             continue
         ls = file_layers.get(src)
         ld = file_layers.get(dst)
@@ -346,7 +347,7 @@ def compute_layer_order(
     out_deg: dict[str, int] = defaultdict(int)  # edges leaving the layer
     in_deg: dict[str, int] = defaultdict(int)  # edges entering the layer
     for src, dst in import_edges:
-        if src.startswith("external:") or dst.startswith("external:"):
+        if is_external(src) or is_external(dst):
             continue
         ls = file_layers.get(src)
         ld = file_layers.get(dst)

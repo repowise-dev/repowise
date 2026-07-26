@@ -51,6 +51,7 @@ from repowise.core.generation.tour import (
     select_hotspot_stop,
 )
 from repowise.core.generation.well_known_files import well_known_role
+from repowise.core.ids import is_external
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
 
 # Closing-stop anchors (conftest, spec_helper, test_helper, …) and
@@ -120,7 +121,7 @@ def _graph_mode(dominant_lang: str, lang_by_path: dict[str, str], graph_builder:
         for src, dst, data in graph_builder.graph().edges(data=True):
             if (data or {}).get("edge_type") in ("imports", "tested_by") and src in dom_files:
                 edge_count += 1
-                if isinstance(dst, str) and dst.startswith("external:"):
+                if isinstance(dst, str) and is_external(dst):
                     external_targets += 1
                 else:
                     internal_targets += 1
@@ -1072,7 +1073,7 @@ def _import_groups(
                 continue
             # Stdlib/external imports say nothing about where a walk can
             # go — only repo-internal relationships count.
-            if src.startswith("external:") or dst.startswith("external:"):
+            if is_external(src) or is_external(dst):
                 continue
             names = tuple(sorted(data.get("imported_names") or ())) or (dst,)
             keyed[(src, names)].append(dst)

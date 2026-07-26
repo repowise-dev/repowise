@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from repowise.core.ids import ExternalSystemId, render
+from repowise.core.ids import ExternalSystemId, file_path_of, render
 from repowise.core.persistence import (
     ExternalSystem,
     GraphEdge,
@@ -173,11 +173,21 @@ def _load_knowledge_graph(path: str) -> dict | None:
         return None
 
 
+def _file_paths(node_ids: list) -> list[str]:
+    """Curated KG node ids to repo-relative file paths.
+
+    KG ids carry a ``file:`` prefix the dependency graph does not use, and a
+    layer's member list can also hold non-file ids — those resolve to nothing
+    and are dropped rather than passed through as if they were paths.
+    """
+    return [p for p in (file_path_of(str(nid)) for nid in node_ids) if p]
+
+
 def _sub_groups_from_raw(raw_sub_groups: list[dict] | None, node_ids: set[str]) -> list[dict]:
     """Map curated subGroups to plain dicts, dropping ids absent from the graph."""
     groups: list[dict] = []
     for sg in raw_sub_groups or []:
-        mapped = [nid.removeprefix("file:") for nid in sg.get("nodeIds", sg.get("node_ids", []))]
+        mapped = _file_paths(sg.get("nodeIds", sg.get("node_ids", [])))
         matched = [nid for nid in mapped if nid in node_ids]
         if matched:
             groups.append(
@@ -197,7 +207,7 @@ def _layers_from_knowledge_graph(
     layers = []
     for i, layer in enumerate(kg.get("layers", [])):
         raw_ids = layer.get("nodeIds", [])
-        mapped = [nid.removeprefix("file:") for nid in raw_ids]
+        mapped = _file_paths(raw_ids)
         matched = [nid for nid in mapped if nid in node_ids]
         layers.append(
             {
@@ -262,7 +272,7 @@ def _layers_from_directories(nodes: list[GraphNode]) -> list[dict]:
 def _tour_from_knowledge_graph(kg: dict) -> list[ArchTourStep]:
     steps = []
     for entry in kg.get("tour", []):
-        node_ids = [nid.removeprefix("file:") for nid in entry.get("nodeIds", [])]
+        node_ids = _file_paths(entry.get("nodeIds", []))
         target_path = entry.get("target_path")
         if not node_ids and target_path:
             # Curated steps address one file by path, not a nodeIds list.
@@ -288,7 +298,7 @@ def _layers_from_db(db_layers: list, node_ids: set[str]) -> list[dict]:
     layers = []
     for i, row in enumerate(db_layers):
         raw_ids = json.loads(row.node_ids_json) if row.node_ids_json else []
-        mapped = [nid.removeprefix("file:") for nid in raw_ids]
+        mapped = _file_paths(raw_ids)
         matched = [nid for nid in mapped if nid in node_ids]
         raw_sub_groups_json = getattr(row, "sub_groups_json", None)
         raw_sub_groups = json.loads(raw_sub_groups_json) if raw_sub_groups_json else []
@@ -309,7 +319,7 @@ def _tour_from_db(db_steps: list) -> list[ArchTourStep]:
     steps = []
     for row in db_steps:
         node_ids = json.loads(row.node_ids_json) if row.node_ids_json else []
-        node_ids = [nid.removeprefix("file:") for nid in node_ids]
+        node_ids = _file_paths(node_ids)
         target_path = getattr(row, "target_path", None)
         if not node_ids and target_path:
             node_ids = [target_path]

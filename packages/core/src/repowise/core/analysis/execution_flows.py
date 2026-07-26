@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 import networkx as nx
 import structlog
 
+from repowise.core.ids import file_path_of
+
 log = structlog.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -117,7 +119,7 @@ def _is_excluded_node(graph: nx.DiGraph, node_id: str) -> bool:
     """True if the node lives in a test/demo/fixture/script path."""
     data = graph.nodes.get(node_id, {})
     file_path = data.get("file_path") or (
-        node_id.split("::", 1)[0] if "::" in node_id else ""
+        file_path_of(node_id) or ""
     )
     return bool(_EXCLUDE_PATH_PATTERNS.search(file_path))
 

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from repowise.core.ids import is_external
 
 # Patterns in source that indicate dynamic/runtime imports, keyed by suffix.
 _DYNAMIC_IMPORT_MARKERS: dict[str, tuple[str, ...]] = {
@@ -489,7 +490,7 @@ def find_dynamic_edge_files(graph) -> set[str]:
                 if endpoint is None:
                     continue
                 endpoint_str = str(endpoint)
-                if endpoint_str.startswith("external:"):
+                if is_external(endpoint_str):
                     continue
                 node_data = graph.nodes.get(endpoint, {})
                 file_path = node_data.get("file_path")

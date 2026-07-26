@@ -7,6 +7,7 @@ from typing import Any
 
 import structlog
 
+from repowise.core.ids import file_path_of, is_external
 from repowise.core.ingestion.models import ParsedFile, RepoStructure, Symbol
 
 from ..categories import file_category
@@ -44,9 +45,9 @@ def _is_foreign_edge(node: str, path: str) -> bool:
     spellings of "this file" are dropped so a dependency list only ever names
     other files.
     """
-    if node.startswith("external:"):
+    if is_external(node):
         return False
-    return node != path and node.split("::", 1)[0] != path
+    return node != path and file_path_of(node) != path
 
 
 # Maximum imports to include before truncating
@@ -265,7 +266,7 @@ class ContextAssembler:
         path = parsed.file_info.path
         # Callers = files that import the containing file (in-edges)
         if path in graph:
-            callers = [e for e in graph.predecessors(path) if not e.startswith("external:")]
+            callers = [e for e in graph.predecessors(path) if not is_external(e)]
         else:
             callers = []
 
@@ -578,7 +579,7 @@ class ContextAssembler:
         top_files = [
             _TopFile(path=p, score=s)
             for p, s in sorted_pr[:_MAX_TOP_FILES]
-            if not p.startswith("external:")
+            if not is_external(p)
         ]
 
         # SCCs with len > 1 are true circular deps
@@ -661,7 +662,7 @@ class ContextAssembler:
             for p, _ in sorted(pagerank.items(), key=lambda x: (-x[1], str(x[0])))[
                 :max_diagram_nodes
             ]
-            if not str(p).startswith("external:")
+            if not is_external(str(p))
         )
         nodes = sorted(top_nodes)
 
@@ -682,7 +683,7 @@ class ContextAssembler:
         # Community → members mapping (top-10 communities, cap members to 5)
         raw_communities: dict[int, list[str]] = {}
         for path, cid in community.items():
-            if not path.startswith("external:"):
+            if not is_external(path):
                 raw_communities.setdefault(cid, []).append(path)
         comm_sorted = sorted(
             ((cid, sorted(members)) for cid, members in raw_communities.items()),

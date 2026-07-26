@@ -14,6 +14,8 @@ from typing import Any
 
 import structlog
 
+from repowise.core.ids import file_path_of
+
 logger = structlog.get_logger(__name__)
 
 
@@ -185,7 +187,7 @@ async def _enrich_layers(
         batch_context = []
         for layer in batch:
             node_ids = layer.get("nodeIds", [])
-            file_paths = [nid.removeprefix("file:") for nid in node_ids if nid.startswith("file:")]
+            file_paths = [p for p in (file_path_of(nid) for nid in node_ids) if p]
             top_files = sorted(file_paths, key=lambda p: pagerank.get(p, 0.0), reverse=True)[:20]
 
             batch_context.append({
@@ -286,7 +288,7 @@ async def _generate_tour(
     layer_summaries = []
     for layer in layers:
         node_ids = layer.get("nodeIds", [])
-        file_paths = [nid.removeprefix("file:") for nid in node_ids if nid.startswith("file:")]
+        file_paths = [p for p in (file_path_of(nid) for nid in node_ids) if p]
         top_in_layer = sorted(file_paths, key=lambda p: pagerank.get(p, 0.0), reverse=True)[:5]
         layer_summaries.append({
             "name": layer["name"],
@@ -395,7 +397,7 @@ def build_deterministic_tour(
 
     for layer in sorted_layers[:10]:
         node_ids = layer.get("nodeIds", [])
-        file_paths = [nid.removeprefix("file:") for nid in node_ids if nid.startswith("file:")]
+        file_paths = [p for p in (file_path_of(nid) for nid in node_ids) if p]
         top_file = max(
             (f for f in file_paths if f not in used_files),
             key=lambda p: pagerank.get(p, 0.0),
@@ -435,7 +437,7 @@ def _backfill_summaries(kg_result: Any, generated_pages: list[Any]) -> None:
         # *after* this backfill so it never blocks a real page summary.
         if not str(node.get("id", "")).startswith("file:"):
             continue
-        path = node.get("filePath", node["id"].removeprefix("file:"))
+        path = node.get("filePath") or file_path_of(node["id"]) or node["id"]
         if path in page_summaries and not node.get("summary"):
             node["summary"] = page_summaries[path]
 

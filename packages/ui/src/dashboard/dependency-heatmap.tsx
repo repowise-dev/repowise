@@ -4,6 +4,7 @@ import { useMemo, useState, useCallback, Fragment } from "react";
 import { Grid3X3 } from "lucide-react";
 import { EmptyState } from "../shared/empty-state";
 import type { ModuleGraph } from "@repowise-dev/types/graph";
+import { stripPrefix } from "@repowise-dev/types";
 
 interface DependencyHeatmapProps {
   moduleGraph: ModuleGraph;
@@ -18,8 +19,9 @@ function heatColor(count: number, max: number): string {
 }
 
 function displayLabel(moduleId: string): string {
-  let label = moduleId;
-  if (label.startsWith("external:")) label = label.slice(9);
+  // stripPrefix rather than a hardcoded slice length: "external:".length was
+  // spelled as 9 here, which is right until a prefix is renamed.
+  const label = stripPrefix(moduleId);
   const last = label.split("/").pop() ?? label;
   return last.length > 14 ? last.slice(0, 13) + "…" : last;
 }

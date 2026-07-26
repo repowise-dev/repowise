@@ -14,6 +14,8 @@ from pathlib import Path
 
 import structlog
 
+from repowise.core.ids import file_path_of
+
 logger = structlog.get_logger(__name__)
 
 
@@ -222,7 +224,7 @@ class KnowledgeGraphContext:
         for node_id in layer_node_ids:
             for e in self._edges_by_source.get(node_id, []):
                 if e.get("type") == "imports" and e["target"] not in layer_node_ids:
-                    target_path = e["target"].removeprefix("file:")
+                    target_path = file_path_of(e["target"]) or e["target"]
                     target_layer = self._file_to_layer.get(target_path, {})
                     if target_layer:
                         name = target_layer.get("name", "Unknown")
@@ -230,7 +232,7 @@ class KnowledgeGraphContext:
 
             for e in self._edges_by_target.get(node_id, []):
                 if e.get("type") == "imports" and e["source"] not in layer_node_ids:
-                    source_path = e["source"].removeprefix("file:")
+                    source_path = file_path_of(e["source"]) or e["source"]
                     source_layer = self._file_to_layer.get(source_path, {})
                     if source_layer:
                         name = source_layer.get("name", "Unknown")

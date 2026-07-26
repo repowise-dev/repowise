@@ -37,6 +37,7 @@ from typing import Any
 
 import structlog
 
+from repowise.core.ids import file_path_of
 from repowise.core.sessions import ClaudeCodeAdapter, Event
 
 logger = structlog.get_logger(__name__)
@@ -117,7 +118,7 @@ def _norm_rel(path: Any) -> str | None:
     p = path.strip().replace("\\", "/")
     if not p:
         return None
-    p = p.split("::", 1)[0]  # symbol id -> file
+    p = file_path_of(p) or p  # symbol id -> file
     # Trailing line range on a bare path (``a/b.py:10-40`` or ``a/b.py:10``).
     head, sep, tail = p.rpartition(":")
     if sep and head and all(c.isdigit() or c == "-" for c in tail):

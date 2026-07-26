@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from repowise.core.ids import is_external
+
 from ...analysis.knowledge_graph import _slugify
 from .. import onboarding as _onboarding
 from ..context_assembler import FilePageContext
@@ -113,7 +115,7 @@ async def _prefetch_dependency_summaries(run: _GenerationRun) -> None:
         if path_ not in run.graph:
             continue
         for dep in run.graph.successors(path_):
-            if dep.startswith("external:"):
+            if is_external(dep):
                 continue
             if dep in run.completed_page_summaries:
                 continue

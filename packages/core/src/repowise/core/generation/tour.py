@@ -37,6 +37,7 @@ from typing import Any
 
 from repowise.core.generation.entry_points import is_glue_leaf
 from repowise.core.generation.layers import ADJACENT_LAYERS, infer_layer, is_support_path
+from repowise.core.ids import is_external
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
 
 # Filenames that conventionally mark an executable / wiring entry point.
@@ -255,7 +256,7 @@ def build_tour(
     adjacency: dict[str, list[str]] = defaultdict(list)
     fan_in: dict[str, int] = defaultdict(int)
     for src, dst in import_edges:
-        if src.startswith("external:") or dst.startswith("external:"):
+        if is_external(src) or is_external(dst):
             continue
         adjacency[src].append(dst)
         fan_in[dst] += 1
