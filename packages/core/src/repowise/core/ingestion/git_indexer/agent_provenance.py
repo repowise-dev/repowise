@@ -66,6 +66,7 @@ import json
 import re
 from collections import Counter
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 import structlog
@@ -77,6 +78,7 @@ __all__ = [
     "AgentProvenanceClassifier",
     "AgentTraceIndex",
     "_agent_from_git_ai_note",
+    "agent_from_identity",
     "classifier_from_repo_config",
 ]
 
@@ -658,6 +660,38 @@ class AgentProvenanceClassifier:
             if hit:
                 return AgentProvenance(hit[0], 3, "coauthor_trailer", "high")
         return _HUMAN
+
+
+@lru_cache(maxsize=1)
+def _default_classifier() -> AgentProvenanceClassifier:
+    """Shared registry-only classifier for identity lookups (no repo config)."""
+    return AgentProvenanceClassifier()
+
+
+def agent_from_identity(name: str | None, email: str | None) -> str | None:
+    """The agent behind an author identity, or ``None`` for a human.
+
+    Identity only — deliberately ignores commit-message trailers, which mark a
+    commit a *human* authored with agent assistance. Callers asking "is this
+    contributor a person?" (the stats page's people sections) need the identity
+    answer: a human using Claude Code is still a human, while a commit authored
+    by ``cursoragent@cursor.com`` is not.
+
+    Also matches an agent's plain display name, since a locally-configured
+    ``user.name`` of "Claude" carries no vendor e-mail to recognise.
+    """
+    hit = _default_classifier()._identity_match(email or "")
+    if hit:
+        return hit[0]
+    slug = (name or "").strip().lower()
+    if not slug:
+        return None
+    for token, agent in _AGENT_ALIASES:
+        # Whole-token match only: "Aiden" must not read as "aider", and a
+        # surname like "Coplin" must not read as "copilot".
+        if re.fullmatch(rf"{re.escape(token)}([-_ ]?(code|cli|agent|ai|bot))?", slug):
+            return agent
+    return None
 
 
 def classifier_from_repo_config(repo_path: object) -> AgentProvenanceClassifier:

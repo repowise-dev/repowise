@@ -265,6 +265,28 @@ async def upsert_git_commits_bulk(
     )
 
 
+async def get_commits_missing_offset(
+    session: AsyncSession, repository_id: str, *, limit: int = 20_000
+) -> list[str]:
+    """Shas whose ``committed_offset_minutes`` was never captured.
+
+    Indexes written before the offset existed have it NULL on every row, which
+    would leave the punch card mixing author-local and UTC hours. The update
+    path backfills them (see ``pipeline.incremental.reconcile_commit_offsets``);
+    this is the "what still needs filling" half. Bounded so one update can't
+    balloon on a very deep window — the next update picks up the remainder.
+    """
+    rows = await session.execute(
+        select(GitCommit.sha)
+        .where(
+            GitCommit.repository_id == repository_id,
+            GitCommit.committed_offset_minutes.is_(None),
+        )
+        .limit(limit)
+    )
+    return [sha for (sha,) in rows]
+
+
 async def delete_git_commits(session: AsyncSession, repository_id: str) -> None:
     """Remove all per-commit rows for a repository (used before a clean reindex)."""
     await session.execute(delete(GitCommit).where(GitCommit.repository_id == repository_id))

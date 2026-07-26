@@ -583,6 +583,9 @@ async def persist_incremental_commits(session: Any, repo_id: str, repo_path: Any
         await upsert_git_commits_bulk(session, repo_id, rows)
 
     await reconcile_commit_experience(session, repo_id, indexer)
+    # Fills the commit-offset column on indexes written before it existed, so a
+    # new capture never needs a re-index to become useful.
+    await reconcile_commit_offsets(session, repo_id, indexer)
 
     # Refresh the repo-level whole-history totals so age / commit / contributor
     # counts keep growing between full re-indexes (#730). Cheap git calls, and
@@ -595,6 +598,9 @@ async def persist_incremental_commits(session: Any, repo_id: str, repo_path: Any
         first_commit_at=totals.first_commit_at,
         total_contributor_count=totals.total_contributor_count,
         first_commit_author=totals.first_commit_author,
+        first_commit_subject=totals.first_commit_subject,
+        total_lines_added=totals.total_lines_added,
+        total_lines_deleted=totals.total_lines_deleted,
     )
 
     await persist_incremental_fix_events(session, repo_id, indexer)
@@ -652,6 +658,45 @@ async def reconcile_commit_experience(session: Any, repo_id: str, indexer: Any) 
             logger.info("commit_experience_reconciled", repo_id=repo_id, count=len(updates))
     except Exception as exc:
         logger.debug("commit_experience_reconcile_failed", error=str(exc))
+
+
+async def reconcile_commit_offsets(session: Any, repo_id: str, indexer: Any) -> None:
+    """Backfill ``committed_offset_minutes`` on commits indexed before it existed.
+
+    The offset is captured on the commit walk, so a full re-index gets it for
+    free — but an update only writes rows for *new* commits, which would leave a
+    repo indexed earlier with author-local hours on recent commits and UTC on
+    everything older. A punch card mixing the two is worse than one that is
+    honestly all-UTC, so the gap is closed here rather than waiting for a
+    re-index nobody should have to run for a new column.
+
+    One ``git log`` and one bulk update, both skipped entirely once the column
+    is filled — the common case is a single cheap SELECT that returns nothing.
+    Failure-isolated like the other update-time reconciles; an unfilled offset
+    just means those rows keep falling back to UTC.
+    """
+    from repowise.core.persistence.crud import (
+        get_commits_missing_offset,
+        upsert_git_commits_bulk,
+    )
+
+    try:
+        pending = await get_commits_missing_offset(session, repo_id)
+        if not pending:
+            return
+
+        offsets = await asyncio.to_thread(indexer.capture_commit_offsets, pending)
+        if not offsets:
+            return
+
+        await upsert_git_commits_bulk(
+            session,
+            repo_id,
+            [{"sha": sha, "committed_offset_minutes": minutes} for sha, minutes in offsets.items()],
+        )
+        logger.info("commit_offsets_backfilled", repo_id=repo_id, count=len(offsets))
+    except Exception as exc:
+        logger.debug("commit_offset_reconcile_failed", error=str(exc))
 
 
 def _committed_ts(committed_at: Any) -> float:

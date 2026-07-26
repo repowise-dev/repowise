@@ -1,9 +1,9 @@
 import Link from "next/link";
-import { BarChart3, ArrowRight, Bot } from "lucide-react";
+import { BarChart3, ArrowRight, Clock } from "lucide-react";
 import type { StatsHighlights } from "@repowise-dev/types/stats";
 import { Card } from "@repowise-dev/ui/ui/card";
 import { formatLOC, formatNumber, formatAgeDays } from "@repowise-dev/ui/lib/format";
-import { NLOC_HINT, AGENT_PCT_HINT } from "@repowise-dev/ui/stats";
+import { NLOC_HINT } from "@repowise-dev/ui/stats";
 
 interface StatsTeaserCardProps {
   repoId: string;
@@ -13,14 +13,14 @@ interface StatsTeaserCardProps {
 /** Compact overview teaser that headlines the "size class" + a couple of
  *  marquee figures and links into the full Stats page. */
 export function StatsTeaserCard({ repoId, data }: StatsTeaserCardProps) {
-  const { scale, activity } = data;
+  const { scale, origin, rhythm } = data;
 
   const figures: { label: string; value: string; hint?: string }[] = [
     { label: "Lines of code", value: formatLOC(scale.total_nloc), hint: NLOC_HINT },
-    { label: "Commits", value: formatNumber(activity.total_commits) },
+    { label: "Commits", value: formatNumber(origin.total_commits) },
     {
       label: "Age",
-      value: activity.age_days != null ? formatAgeDays(activity.age_days) : "—",
+      value: origin.age_days != null ? formatAgeDays(origin.age_days) : "—",
     },
   ];
 
@@ -60,13 +60,10 @@ export function StatsTeaserCard({ repoId, data }: StatsTeaserCardProps) {
           ))}
         </div>
 
-        {activity.total_commits > 0 && (
-          <p
-            title={AGENT_PCT_HINT}
-            className="mt-3 flex cursor-help items-center gap-1.5 text-xs text-[var(--color-text-secondary)]"
-          >
-            <Bot className="h-3.5 w-3.5 text-[var(--color-info)]" />
-            {activity.agent_pct}% of commits carry a verifiable agent signature
+        {rhythm.longest_streak && (
+          <p className="mt-3 flex items-center gap-1.5 text-xs text-[var(--color-text-secondary)]">
+            <Clock className="h-3.5 w-3.5 text-[var(--color-accent-primary)]" />
+            Longest streak: {formatNumber(rhythm.longest_streak.days)} consecutive days
           </p>
         )}
       </Link>

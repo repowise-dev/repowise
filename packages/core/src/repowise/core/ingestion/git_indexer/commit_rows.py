@@ -109,6 +109,10 @@ def build_commit_rows(parsed_commits: list[dict]) -> list[dict]:
                 "author_name": c.get("author_name", "") or "",
                 "author_email": c.get("author_email", "") or "",
                 "committed_at": _committed_at(c.get("ts", 0) or 0),
+                # Minutes east of UTC at the moment of the commit. ``committed_at``
+                # is a UTC instant, so this is the only way back to the author's
+                # local wall-clock for time-of-day analysis. None on older rows.
+                "committed_offset_minutes": c.get("tz_offset_minutes"),
                 "subject": subject,
                 "lines_added": feats.la,
                 "lines_deleted": feats.ld,

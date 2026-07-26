@@ -51,6 +51,7 @@ from .mode import _resolve_index_only_mode
 from .persistence import (
     _persist_index_only_update,
     _run_full_health_rescore,
+    heal_commit_offsets,
     stamp_head_commit,
 )
 from .reporting import (
@@ -748,6 +749,9 @@ def run_update(
         # current here while the DB head_commit is still the last full index.
         if not dry_run:
             stamp_head_commit(repo_path, head)
+            # A capture added after this repo was indexed would otherwise wait
+            # for the next commit to land, which on a quiet repo is never.
+            heal_commit_offsets(repo_path)
             _refresh_editor_stamp(repo_path, agents_md)
             # The index is current, so any pending marker a bailed update left
             # is by definition caught-up (or older); drop it here too rather
@@ -903,6 +907,9 @@ def run_update(
         # Keep the DB freshness stamp in lockstep with state.json: the server's
         # /repos endpoint reads head_commit from the row, not the state file.
         stamp_head_commit(repo_path, head)
+        # This path skips the git phase, so its offset backfill never runs.
+        if not dry_run:
+            heal_commit_offsets(repo_path)
         _refresh_editor_stamp(repo_path, agents_md)
         # We hold the lock and have advanced to head; drop any stale pending
         # marker a bailed update left behind.

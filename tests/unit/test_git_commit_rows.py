@@ -8,10 +8,16 @@ just-in-time change-risk, ordering, truncation).
 from __future__ import annotations
 
 import time
+from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
 from repowise.core.ingestion.git_commit_index import load_commit_index
 from repowise.core.ingestion.git_indexer.commit_rows import build_commit_rows
+
+
+def _iso_from_ts(ts: int) -> str:
+    """Render a git ``%cI`` value (strict ISO-8601 with a numeric offset)."""
+    return datetime.fromtimestamp(int(ts), UTC).isoformat()
 
 
 def _build_log(commits: list[dict]) -> str:
@@ -30,6 +36,8 @@ def _build_log(commits: list[dict]) -> str:
             + c.get("ce", c["ae"])
             + "\x1f"
             + str(c["ct"])
+            + "\x1f"
+            + _iso_from_ts(c["ct"])
             + "\x1f"
             + c.get("parents", "")
             + "\x1f"
@@ -87,12 +95,30 @@ def test_commit_sink_since_ts_drops_old_commits() -> None:
     the incremental capture path's freshness guarantee."""
     raw = _build_log(
         [
-            {"sha": "new", "an": "A", "ae": "a@x", "ct": 3000, "subj": "new",
-             "files": [(1, 0, "src/a.py")]},
-            {"sha": "mid", "an": "A", "ae": "a@x", "ct": 2000, "subj": "mid",
-             "files": [(1, 0, "src/a.py")]},
-            {"sha": "old", "an": "A", "ae": "a@x", "ct": 1000, "subj": "old",
-             "files": [(1, 0, "src/a.py")]},
+            {
+                "sha": "new",
+                "an": "A",
+                "ae": "a@x",
+                "ct": 3000,
+                "subj": "new",
+                "files": [(1, 0, "src/a.py")],
+            },
+            {
+                "sha": "mid",
+                "an": "A",
+                "ae": "a@x",
+                "ct": 2000,
+                "subj": "mid",
+                "files": [(1, 0, "src/a.py")],
+            },
+            {
+                "sha": "old",
+                "an": "A",
+                "ae": "a@x",
+                "ct": 1000,
+                "subj": "old",
+                "files": [(1, 0, "src/a.py")],
+            },
         ]
     )
     repo = MagicMock()

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
 from repowise.core.ingestion.git_commit_index import (
@@ -354,7 +355,11 @@ def _log_record(
     sha, an, ae, subj, body="", files=((1, 0, "src/a.py"),), ts=None, parents=""
 ) -> str:
     ts = ts or int(time.time())
-    lines = [f"\x00{sha}\x1f{an}\x1f{ae}\x1f{an}\x1f{ae}\x1f{ts}\x1f{parents}\x1f{subj}\x1f{body}"]
+    iso = datetime.fromtimestamp(int(ts), UTC).isoformat()
+    lines = [
+        f"\x00{sha}\x1f{an}\x1f{ae}\x1f{an}\x1f{ae}\x1f{ts}\x1f{iso}"
+        f"\x1f{parents}\x1f{subj}\x1f{body}"
+    ]
     for a, d, p in files:
         lines.append(f"{a}\t{d}\t{p}")
     return "\n".join(lines)

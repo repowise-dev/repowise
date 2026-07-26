@@ -1,16 +1,19 @@
 import * as React from "react";
 import {
+  Boxes,
   FileText,
-  Flame,
   GitCommitHorizontal,
   Hourglass,
   Network,
+  Repeat,
+  Ruler,
+  ScrollText,
+  Spline,
   Workflow,
-  Boxes,
   Zap,
 } from "lucide-react";
-import type { StatsSuperlatives } from "@repowise-dev/types/stats";
-import { formatDate, formatNumber, formatRelativeTimeOrNull, truncatePath } from "../lib/format";
+import type { StatsRecords } from "@repowise-dev/types/stats";
+import { formatNumber, formatRelativeTimeOrNull, truncatePath } from "../lib/format";
 
 interface AwardRow {
   key: string;
@@ -20,7 +23,7 @@ interface AwardRow {
   detail: string;
 }
 
-function buildAwards(s: StatsSuperlatives): AwardRow[] {
+function buildAwards(s: StatsRecords): AwardRow[] {
   const rows: AwardRow[] = [];
   if (s.largest_file) {
     rows.push({
@@ -29,6 +32,15 @@ function buildAwards(s: StatsSuperlatives): AwardRow[] {
       title: "Largest file",
       primary: truncatePath(s.largest_file.path, 42),
       detail: `${formatNumber(s.largest_file.nloc)} lines`,
+    });
+  }
+  if (s.gnarliest_file) {
+    rows.push({
+      key: "gnarliest",
+      icon: Spline,
+      title: "Gnarliest file",
+      primary: truncatePath(s.gnarliest_file.path, 42),
+      detail: `cyclomatic complexity ${formatNumber(s.gnarliest_file.max_ccn)}`,
     });
   }
   if (s.most_complex_symbol) {
@@ -85,15 +97,13 @@ function buildAwards(s: StatsSuperlatives): AwardRow[] {
       )} files — in one commit`,
     });
   }
-  if (s.longest_streak) {
+  if (s.widest_commit) {
     rows.push({
-      key: "streak",
-      icon: Flame,
-      title: "Longest streak",
-      primary: `${formatNumber(s.longest_streak.days)} consecutive days`,
-      detail: `commits every day, ${formatDate(s.longest_streak.start)} – ${formatDate(
-        s.longest_streak.end,
-      )}`,
+      key: "widest-commit",
+      icon: Ruler,
+      title: "Widest commit",
+      primary: s.widest_commit.subject || s.widest_commit.sha.slice(0, 10),
+      detail: `touched ${formatNumber(s.widest_commit.files_changed)} files at once`,
     });
   }
   if (s.strongest_coupling) {
@@ -105,20 +115,47 @@ function buildAwards(s: StatsSuperlatives): AwardRow[] {
         s.strongest_coupling.b,
         26,
       )}`,
-      detail: `changed together ${formatNumber(s.strongest_coupling.count)}×`,
+      detail: `changed together ${formatNumber(Math.round(s.strongest_coupling.count))}×`,
+    });
+  }
+  // Import cycles have no other surface in the app — Architecture visualises the
+  // graph but never detects or counts circular imports.
+  if (s.largest_cycle && s.largest_cycle.files > 1) {
+    rows.push({
+      key: "cycle",
+      icon: Repeat,
+      title: "Largest import cycle",
+      primary: `${formatNumber(s.largest_cycle.files)} files in a loop`,
+      detail: `${formatNumber(s.largest_cycle.cycle_count)} circular cluster${
+        s.largest_cycle.cycle_count === 1 ? "" : "s"
+      } in total`,
+    });
+  }
+  if (s.symbol_shape && s.symbol_shape.total > 0) {
+    const shape = s.symbol_shape;
+    rows.push({
+      key: "documented",
+      icon: ScrollText,
+      title: "Documented symbols",
+      primary: `${Math.round(shape.documented_pct)}% carry a docstring`,
+      detail: `${formatNumber(shape.documented_count)} of ${formatNumber(shape.total)} symbols · ${Math.round(
+        shape.async_pct,
+      )}% async`,
     });
   }
   return rows;
 }
 
-interface SuperlativesGridProps {
-  superlatives: StatsSuperlatives;
-}
-
-/** A grid of "award" cards — the biggest / oldest / most-tangled records in
- *  the repo. Renders only the awards that have data. */
-export function SuperlativesGrid({ superlatives }: SuperlativesGridProps) {
-  const awards = buildAwards(superlatives);
+/**
+ * The repo's records — biggest, oldest, gnarliest, most tangled.
+ *
+ * Several of these are the only headline treatment their signal gets anywhere:
+ * cyclomatic complexity is otherwise a sortable column on Code Health, and
+ * import cycles have no UI at all. Renders only awards that have data, so a
+ * young repo shows a short grid rather than a wall of dashes.
+ */
+export function RecordsGrid({ records }: { records: StatsRecords }) {
+  const awards = buildAwards(records);
   if (awards.length === 0) return null;
 
   return (
@@ -140,7 +177,10 @@ export function SuperlativesGrid({ superlatives }: SuperlativesGridProps) {
             >
               {a.primary}
             </p>
-            <p className="mt-0.5 truncate text-xs text-[var(--color-text-secondary)]" title={a.detail}>
+            <p
+              className="mt-0.5 truncate text-xs text-[var(--color-text-secondary)]"
+              title={a.detail}
+            >
               {a.detail}
             </p>
           </div>

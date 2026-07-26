@@ -865,6 +865,9 @@ async def persist_git(result: Any, session: Any, repo_id: str) -> None:
             first_commit_at=totals.first_commit_at,
             total_contributor_count=totals.total_contributor_count,
             first_commit_author=totals.first_commit_author,
+            first_commit_subject=totals.first_commit_subject,
+            total_lines_added=totals.total_lines_added,
+            total_lines_deleted=totals.total_lines_deleted,
         )
 
 

@@ -5,6 +5,7 @@
  */
 
 import type { Hotspot } from "./git.js";
+import type { DefectAccuracy } from "./health.js";
 
 export interface OverviewRepoMeta {
   id: string;
@@ -56,6 +57,10 @@ export interface OverviewHealthHistoryPoint {
 
 export interface OverviewHealth {
   average_health: number | null;
+  /** Backtested precision of the defect ranking — the "can you trust this
+   *  score?" panel on the health card. Optional so an older server payload
+   *  simply omits the panel. */
+  defect_accuracy?: DefectAccuracy | null;
   hotspot_health: number | null;
   worst_performer_path: string | null;
   worst_performer_score: number | null;

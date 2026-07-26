@@ -310,6 +310,39 @@ async def overview_summary(
         if s in severity_breakdown:
             severity_breakdown[s] += 1
 
+    # "Can you trust this score?" — the backtested precision of the defect
+    # ranking, shown on the health card. Sourced here rather than from the stats
+    # payload: this is a health number, and having the overview reach across
+    # into another page's payload for it is what broke when that payload changed.
+    defect_accuracy = None
+    try:
+        from repowise.core.analysis.health.defect_accuracy import compute_defect_accuracy
+
+        metrics = await crud.get_health_metrics(session, repo_id)
+        defect_accuracy = compute_defect_accuracy(
+            [
+                {
+                    "file_path": m.file_path,
+                    "score": m.score,
+                    "nloc": m.nloc,
+                    "has_test_file": m.has_test_file,
+                    "module": m.module,
+                }
+                for m in metrics
+            ],
+            [
+                {
+                    "file_path": f.file_path,
+                    "biomarker_type": f.biomarker_type,
+                    "severity": f.severity,
+                }
+                for f in findings
+            ],
+        )
+    except Exception:
+        # Best-effort: the card omits the panel rather than failing the page.
+        defect_accuracy = None
+
     # --- Attention items + onboarding targets -----------------------------
     decision_health = await crud.get_decision_health_summary(session, repo_id)
     knowledge = await compute_knowledge_map(session, repo_id)
@@ -437,6 +470,7 @@ async def overview_summary(
             "worst_performance_path": health_summary.get("worst_performance_path"),
             "worst_performance_score": health_summary.get("worst_performance_score"),
             "severity_breakdown": severity_breakdown,
+            "defect_accuracy": defect_accuracy,
             "last_indexed_at": last_indexed_at,
             "snapshot_count": len(snapshots),
             "history": [

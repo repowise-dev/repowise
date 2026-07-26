@@ -7,7 +7,6 @@ function makeScale(overrides: Partial<StatsScale> = {}): StatsScale {
   return {
     file_count: 1_234_567,
     symbol_count: 98_432,
-    entry_point_count: 12,
     module_count: 80,
     total_nloc: 4_200_000,
     language_count: 3,
@@ -22,30 +21,29 @@ function makeScale(overrides: Partial<StatsScale> = {}): StatsScale {
 }
 
 describe("SizeClassHero", () => {
-  it("renders large file and symbol counts compactly", () => {
+  it("names the size class and its blurb", () => {
+    render(<SizeClassHero scale={makeScale()} repoName="acme" />);
+
+    expect(screen.getByRole("heading", { name: "Metropolis" })).toBeInTheDocument();
+    expect(screen.getByText("A large codebase.")).toBeInTheDocument();
+    expect(screen.getByText("acme")).toBeInTheDocument();
+  });
+
+  it("renders no figures of its own", () => {
+    // The headline counts moved to StatRibbon. Rendering them here too put a
+    // boxed number directly above the hairline row carrying the same number,
+    // so the hero is now identity-only and this guards against them creeping
+    // back in.
     render(<SizeClassHero scale={makeScale()} />);
 
-    expect(screen.getByText("1.2M")).toBeInTheDocument();
-    expect(screen.getByText("98.4K")).toBeInTheDocument();
-    expect(screen.queryByText("1,234,567")).not.toBeInTheDocument();
-    expect(screen.queryByText("98,432")).not.toBeInTheDocument();
+    expect(screen.queryByText("1.2M")).not.toBeInTheDocument();
+    expect(screen.queryByText("98.4K")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Lines of code/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Symbols/i)).not.toBeInTheDocument();
   });
 
-  it("renders small counts verbatim", () => {
-    render(<SizeClassHero scale={makeScale({ file_count: 999, symbol_count: 42 })} />);
-
-    expect(screen.getByText("999")).toBeInTheDocument();
-    expect(screen.getByText("42")).toBeInTheDocument();
-    expect(screen.getByText("3")).toBeInTheDocument();
-  });
-
-  it("never clips a figure to an ellipsis", () => {
-    render(<SizeClassHero scale={makeScale({ total_nloc: 485_300 })} />);
-
-    const value = screen.getByText("485.3K");
-    expect(value).toHaveClass("whitespace-nowrap");
-    expect(value).not.toHaveClass("truncate");
-    // The tile must not be allowed to shrink below its figure.
-    expect(value.parentElement).not.toHaveClass("min-w-0");
+  it("omits the eyebrow when no repo name is given", () => {
+    const { container } = render(<SizeClassHero scale={makeScale()} />);
+    expect(container.querySelector(".tracking-\\[0\\.2em\\]")).toBeNull();
   });
 });

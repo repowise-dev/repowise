@@ -154,7 +154,7 @@ export default async function OverviewPage({ params }: Props) {
                   repoId={id}
                   averageDelta={stats.deltas.average_health}
                   hotspotDelta={stats.deltas.hotspot_health}
-                  defectAccuracy={statsHighlights?.quality.defect_accuracy ?? null}
+                  defectAccuracy={health.defect_accuracy ?? null}
                 />
                 <ContributorsStripCard repoId={id} />
                 {/* The two short tiles sit two-up here rather than stacked in

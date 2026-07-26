@@ -260,6 +260,7 @@ def load_commit_index(
                     "author_name": header["author_name"],
                     "author_email": header["author_email"],
                     "ts": header["ts"],
+                    "tz_offset_minutes": header.get("tz_offset_minutes"),
                     "subject": header["subject"],
                     "changes": commit_changes,
                     "agent_name": prov.agent,

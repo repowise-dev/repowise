@@ -129,6 +129,53 @@ def stamp_head_commit(repo_path: Any, head: str | None) -> None:
     run_async(reconcile_repo_head_commit(Path(repo_path), head))
 
 
+def heal_commit_offsets(repo_path: Any) -> None:
+    """Fill ``git_commits.committed_offset_minutes`` on a quiet repo.
+
+    The commit walk captures this offset, so any update that ingests commits
+    backfills it on the way past. A repo whose HEAD hasn't moved never gets
+    there — it takes the "already up to date" fast path — which would strand an
+    index written before the column existed with a UTC-only punch card until
+    someone re-indexed. Nobody should have to re-index for a new column, so the
+    fast path calls this too.
+
+    Cheap enough to run unconditionally: one indexed SELECT that returns nothing
+    once the column is filled, and no git at all in that case. Best-effort — a
+    failure here must never turn a clean no-op into an error.
+    """
+    root = Path(repo_path)
+    if not (root / ".repowise" / "wiki.db").is_file():
+        return
+
+    async def _run() -> None:
+        from repowise.core.ingestion.git_indexer import GitIndexer
+        from repowise.core.persistence import (
+            create_engine,
+            create_session_factory,
+            get_session,
+            init_db,
+        )
+        from repowise.core.persistence.crud import get_repository_by_path
+        from repowise.core.persistence.database import resolve_db_url
+        from repowise.core.pipeline.incremental import reconcile_commit_offsets
+
+        engine = create_engine(resolve_db_url(root))
+        try:
+            # Migrates first: on the fast path this may be the run that adds the
+            # column the backfill is about to fill.
+            await init_db(engine)
+            async with get_session(create_session_factory(engine)) as session:
+                repo = await get_repository_by_path(session, str(root))
+                if repo is None:
+                    return
+                await reconcile_commit_offsets(session, repo.id, GitIndexer(root))
+        finally:
+            await engine.dispose()
+
+    with contextlib.suppress(Exception):
+        run_async(_run())
+
+
 def _persist_index_only_update(
     repo_path: Any,
     graph_builder: Any,

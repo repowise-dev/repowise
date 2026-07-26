@@ -136,6 +136,9 @@ async def update_repo_git_totals(
     first_commit_at: datetime | None = None,
     total_contributor_count: int | None = None,
     first_commit_author: str | None = None,
+    first_commit_subject: str | None = None,
+    total_lines_added: int | None = None,
+    total_lines_deleted: int | None = None,
 ) -> None:
     """Store a repo's whole-history git totals, captured at index time (#730).
 
@@ -150,6 +153,9 @@ async def update_repo_git_totals(
         "first_commit_at": first_commit_at,
         "total_contributor_count": total_contributor_count,
         "first_commit_author": first_commit_author,
+        "first_commit_subject": first_commit_subject,
+        "total_lines_added": total_lines_added,
+        "total_lines_deleted": total_lines_deleted,
     }
     if all(v is None for v in updates.values()):
         return

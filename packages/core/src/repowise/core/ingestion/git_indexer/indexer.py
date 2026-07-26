@@ -14,7 +14,7 @@ import json
 import os
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -32,12 +32,23 @@ from .co_change import compute_co_changes, compute_co_changes_and_entropy
 from .enrich import compute_percentiles
 from .file_history import DECAY_REFRESH_KEYS, index_file
 from .prior_defects import FixWalk, PriorDefects, collect_fix_commits, compute_prior_defects
-from .records import GitIndexSummary, _CommitRec, _should_skip_index, capture_repo_totals
+from .records import (
+    GitIndexSummary,
+    _CommitRec,
+    _should_skip_index,
+    _tz_offset_minutes,
+    capture_repo_totals,
+)
 from .tiers import GitIndexTier
 
 logger = structlog.get_logger(__name__)
 
 __all__ = ["GitIndexer"]
+
+# Shas per ``git log --no-walk`` call when backfilling commit offsets. Each sha
+# is a 40-char argv entry, and Windows caps a command line near 32k characters —
+# 200 leaves generous headroom while keeping the subprocess count low.
+_OFFSET_LOOKUP_CHUNK = 200
 
 
 class GitIndexer:
@@ -653,6 +664,49 @@ class GitIndexer:
         # An empty result on a repo that has rows is far more likely to be a
         # broken call than a genuinely empty history.
         return shas or None
+
+    def capture_commit_offsets(self, shas: Sequence[str]) -> dict[str, int]:
+        """Map each requested sha to its commit's UTC offset in minutes.
+
+        Backfill support for :attr:`GitCommit.committed_offset_minutes`, which
+        older indexes predate.
+
+        Looks the shas up directly (``--no-walk``) rather than walking HEAD and
+        filtering: the persisted commit table can hold more rows than the
+        indexer's current ``commit_limit`` (the window has moved, and co-change
+        walks deeper), so a bounded walk silently leaves the oldest rows unfilled
+        — which is exactly the half-filled state this backfill exists to avoid.
+        Requests are chunked because every sha is an argv entry and Windows caps
+        a command line at ~32k characters.
+
+        Returns ``{}`` on total git failure; a failed chunk drops only its own
+        shas. An unfilled offset degrades that row to UTC, which is what it
+        already was.
+        """
+        if not shas:
+            return {}
+        repo = self._get_repo()
+        if repo is None:
+            return {}
+
+        offsets: dict[str, int] = {}
+        try:
+            for start in range(0, len(shas), _OFFSET_LOOKUP_CHUNK):
+                chunk = list(shas[start : start + _OFFSET_LOOKUP_CHUNK])
+                try:
+                    out = repo.git.log("--no-walk", "--format=%H %cI", *chunk)
+                except Exception as exc:
+                    logger.debug("commit_offsets_chunk_failed", error=str(exc))
+                    continue
+                for line in out.split("\n"):
+                    sha, _, iso = line.strip().partition(" ")
+                    minutes = _tz_offset_minutes(iso)
+                    if sha and minutes is not None:
+                        offsets[sha] = minutes
+        finally:
+            with contextlib.suppress(Exception):
+                repo.close()
+        return offsets
 
     def capture_new_fix_events(
         self, *, known_shas: set[str] | None = None

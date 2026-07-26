@@ -1,1157 +1,379 @@
 {
   "repo": {
-    "id": "d8ea204a-6325-438c-a805-fbdb029ffd11",
-    "name": "flask",
-    "default_branch": "main",
-    "head_commit": "36e4a824f340fdee7ed50937ba8e7f6bc7d17f81"
+    "id": "repo-1",
+    "name": "demo"
   },
   "scale": {
-    "file_count": 108,
-    "symbol_count": 1060,
-    "entry_point_count": 5,
-    "module_count": 24,
-    "total_nloc": 14043,
-    "language_count": 8,
+    "file_count": 3146,
+    "symbol_count": 24430,
+    "module_count": 11,
+    "total_nloc": 419590,
+    "language_count": 12,
     "languages": [
       {
         "language": "python",
-        "file_count": 83
+        "file_count": 1803
       },
       {
-        "language": "yaml",
-        "file_count": 8
+        "language": "typescript",
+        "file_count": 1001
       },
       {
         "language": "markdown",
-        "file_count": 6
-      },
-      {
-        "language": "toml",
-        "file_count": 5
+        "file_count": 144
       },
       {
         "language": "json",
-        "file_count": 2
-      },
-      {
-        "language": "sql",
-        "file_count": 2
-      },
-      {
-        "language": "shell",
-        "file_count": 1
-      },
-      {
-        "language": "makefile",
-        "file_count": 1
+        "file_count": 85
       }
     ],
     "size_class": {
-      "name": "Village",
-      "blurb": "A tidy village — a few neighborhoods, easy to walk.",
-      "nloc": 14043
+      "name": "Metropolis",
+      "blurb": "A sprawling metropolis with serious infrastructure.",
+      "nloc": 419590
     }
   },
-  "activity": {
-    "total_commits": 2000,
-    "agent_commits": 0,
-    "agent_pct": 0,
-    "fix_commits": 204,
-    "fix_pct": 10.2,
-    "contributor_count": 568,
-    "first_commit_at": "2015-06-06T04:25:41+00:00",
-    "first_commit_author": "Armin Ronacher",
-    "last_commit_at": "2026-05-31T14:42:46+00:00",
-    "age_days": 4012,
-    "busiest_month": {
-      "month": "2017-05",
-      "total": 100,
-      "agent": 0
-    },
-    "monthly": [
-      {
-        "month": "2015-06",
-        "total": 22,
-        "agent": 0
-      },
-      {
-        "month": "2015-07",
-        "total": 12,
-        "agent": 0
-      },
-      {
-        "month": "2015-08",
-        "total": 3,
-        "agent": 0
-      },
-      {
-        "month": "2015-09",
-        "total": 2,
-        "agent": 0
-      },
-      {
-        "month": "2015-10",
-        "total": 10,
-        "agent": 0
-      },
-      {
-        "month": "2015-11",
-        "total": 8,
-        "agent": 0
-      },
-      {
-        "month": "2015-12",
-        "total": 10,
-        "agent": 0
-      },
-      {
-        "month": "2016-01",
-        "total": 6,
-        "agent": 0
-      },
-      {
-        "month": "2016-02",
-        "total": 6,
-        "agent": 0
-      },
-      {
-        "month": "2016-03",
-        "total": 7,
-        "agent": 0
-      },
-      {
-        "month": "2016-04",
-        "total": 18,
-        "agent": 0
-      },
-      {
-        "month": "2016-05",
-        "total": 33,
-        "agent": 0
-      },
-      {
-        "month": "2016-06",
-        "total": 71,
-        "agent": 0
-      },
-      {
-        "month": "2016-07",
-        "total": 9,
-        "agent": 0
-      },
-      {
-        "month": "2016-08",
-        "total": 33,
-        "agent": 0
-      },
-      {
-        "month": "2016-09",
-        "total": 22,
-        "agent": 0
-      },
-      {
-        "month": "2016-10",
-        "total": 10,
-        "agent": 0
-      },
-      {
-        "month": "2016-11",
-        "total": 13,
-        "agent": 0
-      },
-      {
-        "month": "2016-12",
-        "total": 21,
-        "agent": 0
-      },
-      {
-        "month": "2017-01",
-        "total": 10,
-        "agent": 0
-      },
-      {
-        "month": "2017-02",
-        "total": 10,
-        "agent": 0
-      },
-      {
-        "month": "2017-03",
-        "total": 27,
-        "agent": 0
-      },
-      {
-        "month": "2017-04",
-        "total": 29,
-        "agent": 0
-      },
-      {
-        "month": "2017-05",
-        "total": 100,
-        "agent": 0
-      },
-      {
-        "month": "2017-06",
-        "total": 54,
-        "agent": 0
-      },
-      {
-        "month": "2017-07",
-        "total": 11,
-        "agent": 0
-      },
-      {
-        "month": "2017-08",
-        "total": 9,
-        "agent": 0
-      },
-      {
-        "month": "2017-09",
-        "total": 4,
-        "agent": 0
-      },
-      {
-        "month": "2017-10",
-        "total": 9,
-        "agent": 0
-      },
-      {
-        "month": "2017-11",
-        "total": 8,
-        "agent": 0
-      },
-      {
-        "month": "2017-12",
-        "total": 16,
-        "agent": 0
-      },
-      {
-        "month": "2018-01",
-        "total": 25,
-        "agent": 0
-      },
-      {
-        "month": "2018-02",
-        "total": 14,
-        "agent": 0
-      },
-      {
-        "month": "2018-03",
-        "total": 4,
-        "agent": 0
-      },
-      {
-        "month": "2018-04",
-        "total": 77,
-        "agent": 0
-      },
-      {
-        "month": "2018-05",
-        "total": 27,
-        "agent": 0
-      },
-      {
-        "month": "2018-06",
-        "total": 11,
-        "agent": 0
-      },
-      {
-        "month": "2018-07",
-        "total": 4,
-        "agent": 0
-      },
-      {
-        "month": "2018-08",
-        "total": 1,
-        "agent": 0
-      },
-      {
-        "month": "2018-09",
-        "total": 12,
-        "agent": 0
-      },
-      {
-        "month": "2018-10",
-        "total": 6,
-        "agent": 0
-      },
-      {
-        "month": "2018-11",
-        "total": 7,
-        "agent": 0
-      },
-      {
-        "month": "2018-12",
-        "total": 2,
-        "agent": 0
-      },
-      {
-        "month": "2019-01",
-        "total": 36,
-        "agent": 0
-      },
-      {
-        "month": "2019-02",
-        "total": 2,
-        "agent": 0
-      },
-      {
-        "month": "2019-03",
-        "total": 1,
-        "agent": 0
-      },
-      {
-        "month": "2019-04",
-        "total": 2,
-        "agent": 0
-      },
-      {
-        "month": "2019-05",
-        "total": 73,
-        "agent": 0
-      },
-      {
-        "month": "2019-06",
-        "total": 26,
-        "agent": 0
-      },
-      {
-        "month": "2019-07",
-        "total": 19,
-        "agent": 0
-      },
-      {
-        "month": "2019-08",
-        "total": 8,
-        "agent": 0
-      },
-      {
-        "month": "2019-09",
-        "total": 5,
-        "agent": 0
-      },
-      {
-        "month": "2019-10",
-        "total": 10,
-        "agent": 0
-      },
-      {
-        "month": "2019-11",
-        "total": 11,
-        "agent": 0
-      },
-      {
-        "month": "2020-02",
-        "total": 22,
-        "agent": 0
-      },
-      {
-        "month": "2020-03",
-        "total": 8,
-        "agent": 0
-      },
-      {
-        "month": "2020-04",
-        "total": 22,
-        "agent": 0
-      },
-      {
-        "month": "2020-05",
-        "total": 8,
-        "agent": 0
-      },
-      {
-        "month": "2020-06",
-        "total": 19,
-        "agent": 0
-      },
-      {
-        "month": "2020-07",
-        "total": 33,
-        "agent": 0
-      },
-      {
-        "month": "2020-08",
-        "total": 12,
-        "agent": 0
-      },
-      {
-        "month": "2020-09",
-        "total": 6,
-        "agent": 0
-      },
-      {
-        "month": "2020-10",
-        "total": 10,
-        "agent": 0
-      },
-      {
-        "month": "2020-11",
-        "total": 21,
-        "agent": 0
-      },
-      {
-        "month": "2020-12",
-        "total": 2,
-        "agent": 0
-      },
-      {
-        "month": "2021-01",
-        "total": 16,
-        "agent": 0
-      },
-      {
-        "month": "2021-02",
-        "total": 26,
-        "agent": 0
-      },
-      {
-        "month": "2021-03",
-        "total": 14,
-        "agent": 0
-      },
-      {
-        "month": "2021-04",
-        "total": 34,
-        "agent": 0
-      },
-      {
-        "month": "2021-05",
-        "total": 67,
-        "agent": 0
-      },
-      {
-        "month": "2021-06",
-        "total": 15,
-        "agent": 0
-      },
-      {
-        "month": "2021-07",
-        "total": 12,
-        "agent": 0
-      },
-      {
-        "month": "2021-08",
-        "total": 21,
-        "agent": 0
-      },
-      {
-        "month": "2021-09",
-        "total": 10,
-        "agent": 0
-      },
-      {
-        "month": "2021-10",
-        "total": 14,
-        "agent": 0
-      },
-      {
-        "month": "2021-11",
-        "total": 24,
-        "agent": 0
-      },
-      {
-        "month": "2021-12",
-        "total": 14,
-        "agent": 0
-      },
-      {
-        "month": "2022-01",
-        "total": 7,
-        "agent": 0
-      },
-      {
-        "month": "2022-02",
-        "total": 14,
-        "agent": 0
-      },
-      {
-        "month": "2022-03",
-        "total": 23,
-        "agent": 0
-      },
-      {
-        "month": "2022-04",
-        "total": 16,
-        "agent": 0
-      },
-      {
-        "month": "2022-05",
-        "total": 24,
-        "agent": 0
-      },
-      {
-        "month": "2022-06",
-        "total": 32,
-        "agent": 0
-      },
-      {
-        "month": "2022-07",
-        "total": 33,
-        "agent": 0
-      },
-      {
-        "month": "2022-08",
-        "total": 32,
-        "agent": 0
-      },
-      {
-        "month": "2022-09",
-        "total": 6,
-        "agent": 0
-      },
-      {
-        "month": "2022-10",
-        "total": 4,
-        "agent": 0
-      },
-      {
-        "month": "2022-11",
-        "total": 5,
-        "agent": 0
-      },
-      {
-        "month": "2022-12",
-        "total": 14,
-        "agent": 0
-      },
-      {
-        "month": "2023-01",
-        "total": 13,
-        "agent": 0
-      },
-      {
-        "month": "2023-02",
-        "total": 22,
-        "agent": 0
-      },
-      {
-        "month": "2023-03",
-        "total": 8,
-        "agent": 0
-      },
-      {
-        "month": "2023-04",
-        "total": 34,
-        "agent": 0
-      },
-      {
-        "month": "2023-05",
-        "total": 24,
-        "agent": 0
-      },
-      {
-        "month": "2023-06",
-        "total": 21,
-        "agent": 0
-      },
-      {
-        "month": "2023-07",
-        "total": 6,
-        "agent": 0
-      },
-      {
-        "month": "2023-08",
-        "total": 24,
-        "agent": 0
-      },
-      {
-        "month": "2023-09",
-        "total": 7,
-        "agent": 0
-      },
-      {
-        "month": "2023-10",
-        "total": 5,
-        "agent": 0
-      },
-      {
-        "month": "2023-11",
-        "total": 14,
-        "agent": 0
-      },
-      {
-        "month": "2023-12",
-        "total": 6,
-        "agent": 0
-      },
-      {
-        "month": "2024-01",
-        "total": 11,
-        "agent": 0
-      },
-      {
-        "month": "2024-02",
-        "total": 8,
-        "agent": 0
-      },
-      {
-        "month": "2024-04",
-        "total": 14,
-        "agent": 0
-      },
-      {
-        "month": "2024-05",
-        "total": 11,
-        "agent": 0
-      },
-      {
-        "month": "2024-06",
-        "total": 4,
-        "agent": 0
-      },
-      {
-        "month": "2024-07",
-        "total": 5,
-        "agent": 0
-      },
-      {
-        "month": "2024-08",
-        "total": 10,
-        "agent": 0
-      },
-      {
-        "month": "2024-09",
-        "total": 4,
-        "agent": 0
-      },
-      {
-        "month": "2024-10",
-        "total": 13,
-        "agent": 0
-      },
-      {
-        "month": "2024-11",
-        "total": 22,
-        "agent": 0
-      },
-      {
-        "month": "2025-01",
-        "total": 4,
-        "agent": 0
-      },
-      {
-        "month": "2025-03",
-        "total": 11,
-        "agent": 0
-      },
-      {
-        "month": "2025-05",
-        "total": 8,
-        "agent": 0
-      },
-      {
-        "month": "2025-06",
-        "total": 7,
-        "agent": 0
-      },
-      {
-        "month": "2025-08",
-        "total": 13,
-        "agent": 0
-      },
-      {
-        "month": "2025-09",
-        "total": 3,
-        "agent": 0
-      },
-      {
-        "month": "2025-10",
-        "total": 1,
-        "agent": 0
-      },
-      {
-        "month": "2025-11",
-        "total": 4,
-        "agent": 0
-      },
-      {
-        "month": "2026-01",
-        "total": 12,
-        "agent": 0
-      },
-      {
-        "month": "2026-02",
-        "total": 11,
-        "agent": 0
-      },
-      {
-        "month": "2026-03",
-        "total": 4,
-        "agent": 0
-      },
-      {
-        "month": "2026-04",
-        "total": 4,
-        "agent": 0
-      },
-      {
-        "month": "2026-05",
-        "total": 6,
-        "agent": 0
-      }
-    ],
-    "agent_names": [],
+  "origin": {
+    "first_commit_at": "2026-03-23T16:14:58+00:00",
+    "first_commit_author": "RaghavChamadiya",
+    "first_commit_subject": "Initial commit: CodeWiki project",
+    "last_commit_at": "2026-07-25T18:00:21+00:00",
+    "age_days": 124,
+    "total_commits": 854,
+    "contributor_count": 51
+  },
+  "churn": {
+    "lines_added": 740846,
+    "lines_deleted": 160171,
+    "net": 580675,
+    "deleted_per_hundred": 21.6
+  },
+  "rhythm": {
     "punch_card": {
       "matrix": [
         [
+          2,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
           1,
-          1,
-          1,
-          1,
-          1,
-          1,
-          1,
+          9,
+          5,
           6,
-          6,
+          5,
+          8,
           12,
-          12,
-          12,
-          12,
-          12,
-          12,
-          12,
-          12,
-          12,
-          12,
-          6,
-          6,
-          6,
+          10,
+          4,
+          4,
+          11,
+          5,
+          0,
+          3,
+          4
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          4,
           1,
-          1
+          3,
+          8,
+          13,
+          16,
+          4,
+          5,
+          5,
+          6,
+          5,
+          3,
+          6,
+          2
         ],
         [
           1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
           1,
           1,
-          1,
-          1,
-          1,
-          1,
+          4,
+          8,
+          7,
+          17,
+          12,
+          13,
+          11,
+          11,
+          7,
+          2,
+          16,
+          8,
+          4,
+          4
+        ],
+        [
+          3,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          3,
+          9,
+          4,
+          0,
+          9,
+          16,
+          19,
+          15,
+          4,
+          9,
+          12,
           6,
-          6,
-          12,
-          12,
-          12,
-          12,
-          12,
-          12,
-          12,
-          12,
-          12,
-          12,
-          6,
-          6,
-          6,
           1,
-          1
+          7
         ],
         [
           1,
-          1,
-          1,
-          1,
-          1,
-          1,
-          1,
+          2,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          3,
           6,
+          16,
+          10,
+          11,
+          25,
+          13,
+          13,
+          13,
+          7,
           6,
-          12,
-          12,
-          12,
-          12,
-          12,
-          12,
-          12,
-          12,
-          12,
-          12,
-          6,
-          6,
-          6,
+          8,
+          10,
+          4,
+          7
+        ],
+        [
+          4,
+          3,
+          0,
+          0,
+          0,
+          0,
+          0,
+          2,
+          3,
           1,
-          1
+          9,
+          15,
+          7,
+          10,
+          18,
+          18,
+          16,
+          18,
+          15,
+          17,
+          7,
+          4,
+          4,
+          4
         ],
         [
           1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
           1,
           1,
-          1,
-          1,
-          1,
-          1,
-          6,
-          6,
-          12,
-          12,
-          12,
-          12,
-          12,
-          12,
-          12,
-          12,
-          12,
-          12,
-          6,
-          6,
-          6,
-          1,
-          1
-        ],
-        [
-          1,
-          1,
-          1,
-          1,
-          1,
-          1,
-          1,
-          6,
-          6,
-          12,
-          12,
-          12,
-          12,
-          12,
-          12,
-          12,
-          12,
-          12,
-          12,
-          6,
-          6,
-          6,
-          1,
-          1
-        ],
-        [
-          1,
-          1,
-          1,
-          1,
-          1,
-          1,
-          1,
-          1,
-          1,
-          1,
-          1,
+          9,
+          9,
+          8,
+          5,
+          21,
+          22,
+          10,
+          13,
+          2,
           4,
-          4,
-          4,
-          4,
-          4,
-          4,
+          0,
           1,
-          1,
-          1,
-          1,
-          1,
-          1,
-          1
-        ],
-        [
-          1,
-          1,
-          1,
-          1,
-          1,
-          1,
-          1,
-          1,
-          1,
-          1,
-          1,
-          4,
-          4,
-          4,
-          4,
-          4,
-          4,
-          1,
-          1,
-          1,
-          1,
-          1,
-          1,
-          1
+          2
         ]
       ],
       "peak": {
-        "weekday": 2,
+        "weekday": 4,
         "hour": 14,
-        "count": 12
+        "count": 25
       },
-      "busiest_weekday": 2,
-      "peak_hour": 14,
-      "total": 879
+      "busiest_weekday": 5,
+      "peak_hour": 15,
+      "total": 853,
+      "timezone_mode": "author_local"
     },
     "velocity": {
-      "recent_90d": 412,
-      "prior_90d": 318,
-      "pct_change": 29.6
+      "recent_90d": 742,
+      "prior_90d": 111,
+      "pct_change": 568.5
     },
-    "change_risk_mix": {
-      "low": 1240,
-      "moderate": 560,
-      "high": 200
-    }
+    "busiest_month": {
+      "month": "2026-07",
+      "total": 351
+    },
+    "busiest_day": {
+      "date": "2026-07-24",
+      "commits": 37
+    },
+    "longest_streak": {
+      "days": 25,
+      "start": "2026-05-23",
+      "end": "2026-06-16"
+    },
+    "active_days": 95,
+    "code_half_life_days": 28
   },
   "people": {
-    "owner_count": 12,
-    "top_owners": [
+    "owner_count": 28,
+    "single_owner_files": 2820,
+    "silo_count": 9,
+    "truck_factor": 1,
+    "contributor_count": 51,
+    "chronotypes": [
       {
-        "name": "David Lord",
-        "file_count": 58,
-        "pct": 0.6904761904761905
+        "name": "Raghav Chamadiya",
+        "commits": 626,
+        "peak_hour": 15,
+        "label": "daylight",
+        "night_pct": 9.6,
+        "early_pct": 0.8
       },
       {
-        "name": "Markus Unterwaditzer",
-        "file_count": 5,
-        "pct": 0.05952380952380952
+        "name": "Swati Ahuja",
+        "commits": 90,
+        "peak_hour": 15,
+        "label": "daylight",
+        "night_pct": 10.0,
+        "early_pct": 0.0
       },
       {
-        "name": "pgjones",
-        "file_count": 4,
-        "pct": 0.047619047619047616
-      },
-      {
-        "name": "David Baumgold",
-        "file_count": 4,
-        "pct": 0.047619047619047616
-      },
-      {
-        "name": "Armin Ronacher",
-        "file_count": 4,
-        "pct": 0.047619047619047616
-      },
-      {
-        "name": "Jannis Leidel",
-        "file_count": 3,
-        "pct": 0.03571428571428571
-      },
-      {
-        "name": "emisargent",
-        "file_count": 1,
-        "pct": 0.011904761904761904
-      },
-      {
-        "name": "Hendrik Makait",
-        "file_count": 1,
-        "pct": 0.011904761904761904
+        "name": "joptimus",
+        "commits": 25,
+        "peak_hour": 13,
+        "label": "daylight",
+        "night_pct": 0.0,
+        "early_pct": 0.0
       }
     ],
-    "single_owner_files": 28,
-    "silo_count": 4,
-    "truck_factor": 3
-  },
-  "quality": {
-    "average_health": 6.94,
-    "maintainability_average": 7.71,
-    "performance_average": 9.96,
-    "worst_performer_path": "src/flask/app.py",
-    "worst_performer_score": 1.07,
-    "open_findings": 209,
-    "severity_breakdown": {
-      "critical": 8,
-      "high": 32,
-      "medium": 84,
-      "low": 85
-    },
-    "defect_accuracy": {
-      "k": 20,
-      "hits": 5,
-      "precision": 0.25,
-      "base_rate": 0.0556,
-      "lift": 4.5,
-      "window_days": 180,
-      "scored_files": 108,
-      "defect_files": 6,
-      "concentration_file_fraction": 0.2,
-      "concentration_defect_share": 0.8333,
-      "precision_table": [
-        {
-          "k": 10,
-          "hits": 3
-        },
-        {
-          "k": 20,
-          "hits": 5
-        },
-        {
-          "k": 30,
-          "hits": 5
-        }
-      ],
-      "flagged_files": [
-        {
-          "file_path": "src/flask/app.py",
-          "score": 1.07,
-          "recent_fixes": 1
-        },
-        {
-          "file_path": "src/flask/sansio/app.py",
-          "score": 1.35,
-          "recent_fixes": 1
-        },
-        {
-          "file_path": "src/flask/cli.py",
-          "score": 2.05,
-          "recent_fixes": 0
-        },
-        {
-          "file_path": "src/flask/sansio/blueprints.py",
-          "score": 3.53,
-          "recent_fixes": 0
-        },
-        {
-          "file_path": "src/flask/config.py",
-          "score": 5.15,
-          "recent_fixes": 0
-        },
-        {
-          "file_path": "src/flask/testing.py",
-          "score": 5.5,
-          "recent_fixes": 0
-        },
-        {
-          "file_path": "src/flask/ctx.py",
-          "score": 6.51,
-          "recent_fixes": 0
-        },
-        {
-          "file_path": "src/flask/templating.py",
-          "score": 7.15,
-          "recent_fixes": 0
-        },
-        {
-          "file_path": "src/flask/sansio/scaffold.py",
-          "score": 7.16,
-          "recent_fixes": 0
-        },
-        {
-          "file_path": "tests/test_basic.py",
-          "score": 7.49,
-          "recent_fixes": 1
-        },
-        {
-          "file_path": "src/flask/debughelpers.py",
-          "score": 7.53,
-          "recent_fixes": 0
-        },
-        {
-          "file_path": "src/flask/helpers.py",
-          "score": 8.09,
-          "recent_fixes": 0
-        },
-        {
-          "file_path": "tests/test_blueprints.py",
-          "score": 8.14,
-          "recent_fixes": 1
-        },
-        {
-          "file_path": "tests/test_cli.py",
-          "score": 8.19,
-          "recent_fixes": 1
-        },
-        {
-          "file_path": "src/flask/wrappers.py",
-          "score": 8.59,
-          "recent_fixes": 0
-        },
-        {
-          "file_path": "src/flask/blueprints.py",
-          "score": 8.64,
-          "recent_fixes": 0
-        },
-        {
-          "file_path": "tests/test_templating.py",
-          "score": 8.74,
-          "recent_fixes": 0
-        },
-        {
-          "file_path": "tests/test_appctx.py",
-          "score": 8.94,
-          "recent_fixes": 0
-        },
-        {
-          "file_path": "tests/test_reqctx.py",
-          "score": 8.94,
-          "recent_fixes": 0
-        },
-        {
-          "file_path": "tests/test_testing.py",
-          "score": 8.94,
-          "recent_fixes": 0
-        }
-      ]
-    },
-    "distribution": {
-      "total_files": 108,
-      "total_nloc": 14046,
-      "bands": {
-        "healthy": {
-          "files": 97,
-          "nloc": 7562,
-          "pct": 53.8
-        },
-        "warning": {
-          "files": 7,
-          "nloc": 3192,
-          "pct": 22.7
-        },
-        "alert": {
-          "files": 4,
-          "nloc": 3292,
-          "pct": 23.4
-        }
+    "arrivals": [
+      {
+        "name": "Raghav Chamadiya",
+        "first_commit_at": "2026-03-23T09:14:58+00:00"
+      },
+      {
+        "name": "Swati Ahuja",
+        "first_commit_at": "2026-03-29T07:34:55+00:00"
+      },
+      {
+        "name": "Adam Franke",
+        "first_commit_at": "2026-04-03T07:20:45+00:00"
+      },
+      {
+        "name": "Lakshay Sachdeva",
+        "first_commit_at": "2026-04-03T12:53:35+00:00"
+      },
+      {
+        "name": "Gabriel Mitelman Tkacz",
+        "first_commit_at": "2026-04-04T09:56:16+00:00"
       }
-    },
-    "doc_coverage_pct": 0,
-    "page_count": 0,
-    "test_coverage_pct": 62,
-    "dead_code": {
-      "total_findings": 28,
-      "deletable_lines": 169
-    }
+    ]
   },
-  "knowledge": {
-    "decision_count": 32,
-    "active_decision_count": 0
-  },
-  "superlatives": {
+  "records": {
     "largest_file": {
-      "path": "tests/test_basic.py",
-      "nloc": 1440
+      "path": "packages/api-client/src/__fixtures__/hosted/health-overview.json",
+      "nloc": 1707
+    },
+    "gnarliest_file": {
+      "path": "packages/server/src/repowise/server/mcp_server/tool_answer/answer.py",
+      "max_ccn": 166
     },
     "most_complex_symbol": {
-      "name": "register",
-      "file_path": "src/flask/sansio/blueprints.py",
-      "complexity": 22
+      "name": "get_answer",
+      "file_path": "packages/server/src/repowise/server/mcp_server/tool_answer/answer.py",
+      "complexity": 166
     },
     "most_changed_file": {
-      "path": "src/flask/app.py",
-      "commit_count": 134
+      "path": "uv.lock",
+      "commit_count": 65
     },
     "oldest_file": {
-      "path": "tests/test_apps/blueprintapp/apps/__init__.py",
-      "first_commit_at": "2014-09-11T20:09:50+00:00"
+      "path": "package-lock.json",
+      "first_commit_at": "2026-03-23T09:14:58+00:00"
+    },
+    "most_central_file": {
+      "path": "packages/core/src/repowise/core/persistence/models.py",
+      "pagerank": 0.0098,
+      "import_count": 188
     },
     "strongest_coupling": {
-      "a": "CHANGES.rst",
-      "b": "src/flask/sansio/app.py",
-      "count": 3
+      "a": "packages/cli/src/repowise/cli/__init__.py",
+      "b": "pyproject.toml",
+      "count": 42.51
+    },
+    "largest_cycle": {
+      "files": 151,
+      "cycle_count": 18
+    },
+    "symbol_shape": {
+      "total": 24412,
+      "async_count": 2882,
+      "async_pct": 11.8,
+      "documented_count": 6461,
+      "documented_pct": 26.5
+    },
+    "biggest_commit": {
+      "sha": "a901cc985cbd47634a45dc50ddab2d80f2c36cc4",
+      "subject": "feat: v0.3.0 \u2014 workspaces, auto-sync hooks, graph intelligence (#76)",
+      "lines_changed": 27519,
+      "files_changed": 187
+    },
+    "widest_commit": {
+      "sha": "aadd8f5e022208cc0901bd34d03bd6287aee43a6",
+      "subject": "release: v0.5.0 \u2014 frontend monorepo restructure, build hardening, jobs reliability (#132)",
+      "files_changed": 278,
+      "lines_changed": 20715
     }
-  },
-  "graph": {
-    "cycle_clusters": 7,
-    "files_in_cycles": 63,
-    "largest_cycle": 21,
-    "community_count": 48
-  },
-  "build": {
-    "page_count": 486,
-    "total_tokens": 5231044,
-    "cost_usd": 0.92,
-    "llm_operations": 640
   }
 }

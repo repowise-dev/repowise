@@ -63,6 +63,13 @@ class Repository(Base):
     # first-commit date). Both NULL until the first index writes them.
     total_contributor_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     first_commit_author: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # The root commit's subject line, and lifetime churn across the whole
+    # history. Both share the #730 reasoning: the bounded ``git_commits`` sample
+    # cannot answer either without understating a long-lived repo. Churn is NULL
+    # when the history was too deep to walk (see ``_lifetime_churn``).
+    first_commit_subject: Mapped[str | None] = mapped_column(Text, nullable=True)
+    total_lines_added: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_lines_deleted: Mapped[int | None] = mapped_column(Integer, nullable=True)
     settings_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
@@ -555,6 +562,12 @@ class GitCommit(Base):
     author_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     author_email: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     committed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Minutes east of UTC when the commit was made. ``committed_at`` is stored as
+    # a UTC instant, which loses the author's local wall-clock — so time-of-day
+    # analysis (stats punch card, per-author peak hour) needs this to avoid
+    # reporting a 10pm commit in Mumbai as a mid-afternoon one. NULL on rows
+    # written before the offset was captured.
+    committed_offset_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     subject: Mapped[str] = mapped_column(Text, nullable=False, default="")
 
     # Kamei change features (diff size + diffusion of THIS change)

@@ -16,7 +16,8 @@ function makePunchCard(): StatsPunchCard {
     peak: { weekday: 2, hour: 14, count: 6 },
     busiest_weekday: 2,
     peak_hour: 14,
-    total: 10,
+    timezone_mode: "author_local" as const,
+  total: 10,
   };
 }
 

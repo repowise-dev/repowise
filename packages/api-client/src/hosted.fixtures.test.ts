@@ -123,9 +123,22 @@ describe("hosted fixtures satisfy the OSS contracts", () => {
     expect(summary.health).toBeDefined();
     expect(summary.sync).toBeDefined();
 
+    // Assert every top-level section, not just two. `getStatsHighlights` is a
+    // bare passthrough with no field mapping, so this fixture is the only thing
+    // standing between a hosted payload drifting from the contract and the
+    // Stats page rendering `undefined` sections at runtime.
     const stats: StatsHighlights = await p.getStatsHighlights("repo-1");
-    expect(stats.scale).toBeDefined();
-    expect(stats.people).toBeDefined();
+    expect(stats.scale.size_class.name).toBeTruthy();
+    expect(stats.origin).toBeDefined();
+    expect(stats.rhythm.punch_card.matrix).toHaveLength(7);
+    expect(stats.rhythm.punch_card.matrix[0]).toHaveLength(24);
+    expect(["author_local", "utc"]).toContain(stats.rhythm.punch_card.timezone_mode);
+    expect(stats.people.arrivals).toBeInstanceOf(Array);
+    expect(stats.people.chronotypes).toBeInstanceOf(Array);
+    expect(stats.records).toBeDefined();
+    // `churn` is legitimately null when the history was too deep to walk, so
+    // the key must exist while the value may not.
+    expect(stats).toHaveProperty("churn");
   });
 
   it("files index and file detail", async () => {

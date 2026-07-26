@@ -6,8 +6,12 @@ export {
   type StatCalloutProps,
   type CalloutTone,
 } from "./stat-callout";
-export { SuperlativesGrid } from "./superlatives-grid";
-export { ActivityTrendChart } from "./activity-trend-chart";
+export { OriginBlock } from "./origin-block";
+export { ChurnLedger } from "./churn-ledger";
+export { StatRibbon, type RibbonStat } from "./stat-ribbon";
+export { RecordsGrid } from "./records-grid";
+export { ChronotypeList } from "./chronotype-list";
+export { ArrivalsTimeline } from "./arrivals-timeline";
 export { PunchCard } from "./punch-card";
 export {
   WEEKEND_PRESETS,
