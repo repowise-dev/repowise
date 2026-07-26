@@ -6,16 +6,14 @@
 
 <p align="center">
   <a href="https://www.repowise.dev"><img src="https://img.shields.io/badge/LIVE_DEMO-repowise.dev-F59520?style=for-the-badge&labelColor=0A0A0A" alt="Live demo: repowise.dev" /></a>
-  <a href="https://github.com/repowise-dev/repowise"><img src="https://img.shields.io/badge/Star_this_repo-1E293B?style=for-the-badge&logo=github&logoColor=white&labelColor=0A0A0A" alt="Star repowise on GitHub" /></a>
 </p>
 
 <p align="center">
   <a href="https://repowise.dev/repo/repowise-dev/repowise"><img src="https://api.repowise.dev/badge/wiki/repowise-dev/repowise.svg?style=for-the-badge" alt="repowise: explore code" /></a>
   <a href="https://repowise.dev/repo/repowise-dev/repowise/code-health"><img src="https://api.repowise.dev/badge/health/repowise-dev/repowise.svg?style=for-the-badge" alt="Code health" /></a>
+  <a href="https://github.com/repowise-dev/repowise/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/repowise-dev/repowise/ci.yml?branch=main&style=for-the-badge&label=CI&labelColor=0A0A0A" alt="CI status" /></a>
   <a href="https://pypi.org/project/repowise/"><img src="https://img.shields.io/pypi/v/repowise?style=for-the-badge&color=1E293B&labelColor=0A0A0A&logo=pypi&logoColor=white" alt="PyPI version" /></a>
   <a href="https://www.gnu.org/licenses/agpl-3.0"><img src="https://img.shields.io/badge/License-AGPL--v3-059669?style=for-the-badge&labelColor=0A0A0A" alt="License: AGPL v3" /></a>
-  <a href="https://pypi.org/project/repowise/"><img src="https://img.shields.io/badge/Python-3.11%2B-1E293B?style=for-the-badge&labelColor=0A0A0A&logo=python&logoColor=white" alt="Python 3.11+" /></a>
-  <a href="https://modelcontextprotocol.io"><img src="https://img.shields.io/badge/MCP-compatible-1E293B?style=for-the-badge&labelColor=0A0A0A" alt="MCP compatible" /></a>
   <a href="https://github.com/repowise-dev/repowise/stargazers"><img src="https://img.shields.io/github/stars/repowise-dev/repowise?style=for-the-badge&logo=github&color=1E293B&labelColor=0A0A0A&logoColor=white" alt="GitHub stars" /></a>
 </p>
 
@@ -573,6 +571,13 @@ uv sync --all-packages
 uv run repowise --version
 uv run pytest tests/unit/
 ```
+
+New here? You do not have to read 3,000 files to start. We keep a public index of this
+repo built by repowise itself, re-indexed on every push:
+[**explore repowise with repowise →**](https://repowise.dev/repo/repowise-dev/repowise)
+(architecture, hotspots, ownership, decisions, and a ranked
+[refactoring backlog](https://repowise.dev/repo/repowise-dev/repowise/refactoring) you
+are welcome to pick from).
 
 Full guide, including how to add languages and LLM providers:
 [CONTRIBUTING.md](.github/CONTRIBUTING.md) · architecture:

@@ -34,6 +34,79 @@ uv run repowise --version
 uv run pytest tests/unit/
 ```
 
+## Getting oriented
+
+This is a ~3,000 file codebase, and reading it front to back is not the plan. Repowise
+exists to make that unnecessary, so use it on itself.
+
+### Without installing anything
+
+We keep a public, always-fresh index of this repository at
+**[repowise.dev/repo/repowise-dev/repowise](https://repowise.dev/repo/repowise-dev/repowise)**.
+It re-indexes on every push. Pick the tab that matches your question:
+
+| Your question | Where to look |
+|---|---|
+| What are the moving parts? | [Overview](https://repowise.dev/repo/repowise-dev/repowise/overview) and [Architecture](https://repowise.dev/repo/repowise-dev/repowise/architecture) |
+| Where does this symbol live? | [Files](https://repowise.dev/repo/repowise-dev/repowise/files) |
+| Which files are dangerous to touch? | [Code Health](https://repowise.dev/repo/repowise-dev/repowise/code-health), and the hotspot table on the landing page |
+| Who knows this area? | [People & History](https://repowise.dev/repo/repowise-dev/repowise/owners) |
+| Why is it built this way? | [Decisions](https://repowise.dev/repo/repowise-dev/repowise/decisions) |
+| What changed recently, and how risky was it? | [Commits](https://repowise.dev/repo/repowise-dev/repowise/commits) |
+
+### Locally, with your agent
+
+Better still, index this repo with the tool you are contributing to. It is free, needs
+no API key, and takes a couple of minutes:
+
+```bash
+uv run repowise init --no-prose -y   # graph, git history, health, decisions. No LLM, no spend.
+uv run repowise serve                # dashboard + MCP server on localhost
+```
+
+Then point your coding agent at the MCP server (see the
+[Quickstart](../README.md#quickstart-under-5-minutes-no-api-key) for Claude Code, Codex
+and others) and ask it questions directly:
+
+```
+get_context for packages/core/src/repowise/core/pipeline/orchestrator.py
+get_why "why is doc generation split from ingestion?"
+```
+
+If something about this experience is bad, that is a bug worth reporting. Contributors
+are the only people who use repowise on repowise with fresh eyes.
+
+### Then read
+
+- [docs/architecture/](../docs/architecture/README.md) for the written architecture
+- [docs/layers/INTELLIGENCE_LAYERS.md](../docs/layers/INTELLIGENCE_LAYERS.md) for what
+  each of the five layers computes and where its code lives
+- [docs/reference/CLI_REFERENCE.md](../docs/reference/CLI_REFERENCE.md) for every
+  command and flag
+
+## Looking for something to work on
+
+- **[Good first issues](https://github.com/repowise-dev/repowise/labels/good%20first%20issue)** on the tracker.
+- **[The refactoring backlog](https://repowise.dev/repo/repowise-dev/repowise/refactoring).**
+  Repowise ranks its own concrete refactoring plans (Extract Class, Split File, Break
+  Cycle, and so on) with the blast radius attached. Each card has a copy-to-agent
+  button. Picking one off that list is a genuinely useful contribution, and it is the
+  fastest way to learn how the health layer thinks.
+- **Language support.** Adding a language is one `.scm` query file and one config entry.
+  See [docs/layers/LANGUAGE_SUPPORT.md](../docs/layers/LANGUAGE_SUPPORT.md).
+
+Before you start, check the file you are about to edit:
+
+```bash
+uv run repowise health --file <path>   # score, markers, findings
+uv run repowise risk HEAD              # or ask get_risk from your agent
+```
+
+Some files in this repo are bug magnets: high churn, a long run of prior fixes, often a
+bus factor of one. The
+[hotspot table](https://repowise.dev/repo/repowise-dev/repowise/code-health) names the
+current ones. Changes there are welcome, but expect closer review and bring tests.
+
 ## Development Workflow
 
 1. **Fork** the repository
@@ -48,7 +121,17 @@ uv run pytest tests/unit/
    npm run lint
    npm run type-check
    ```
-5. **Push** to your fork and open a **Pull Request** against `main`
+5. **Check your own change** with the tool you are contributing to:
+   ```bash
+   uv run repowise risk main..HEAD        # 0-10 defect score, plus will_break,
+                                          # missing_cochanges and missing_tests
+   uv run repowise impacted-tests --staged  # the tests your diff actually exercises
+   uv run repowise health --file <path>   # did the file you touched get worse?
+   ```
+   None of this is a gate, and none of it calls an LLM. It is the same signal the
+   reviewer will be looking at, and running it yourself catches the boring problems
+   (a forgotten companion file, an untested hotspot) before anyone else has to.
+6. **Push** to your fork and open a **Pull Request** against `main`
 
 ## Branch Naming
 
