@@ -17,6 +17,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from rich.markup import escape
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
 # The cost-gate helpers moved to ``repowise.cli.cost_gate`` so ``init`` and
@@ -312,8 +313,11 @@ def run_repo_generation(
     result.preserved_page_ids = preserved_page_ids
 
     failed_page_ids: list[str] = []
+    generation_reported = False
 
     def _record_generation_failures(page_ids: list[str]) -> None:
+        nonlocal generation_reported
+        generation_reported = True
         failed_page_ids[:] = page_ids
 
     with Progress(*columns, console=console) as gen_progress:
@@ -354,6 +358,25 @@ def run_repo_generation(
             )
         )
 
+    # Tests and integrations can replace the async generation boundary, so the
+    # completion callback is not guaranteed to run. Preserve the checkpoint
+    # lookup as a fallback, but never let stale job data override a callback
+    # that explicitly reported zero failures for the current run.
+    if not generation_reported:
+        jobs_dir = Path(repo_path) / ".repowise" / "jobs"
+        if jobs_dir.exists():
+            with contextlib.suppress(Exception):
+                from repowise.core.generation import JobSystem
+
+                js = JobSystem(jobs_dir)
+                job_id = getattr(result, "job_id", None)
+                if job_id:
+                    failed_page_ids[:] = js.get_checkpoint(job_id).failed_page_ids
+                else:
+                    jobs = js.list_jobs()
+                    if jobs:
+                        failed_page_ids[:] = jobs[0].failed_page_ids
+
     result.generated_pages = generated_pages
     result.failed_page_ids = failed_page_ids
 
@@ -365,7 +388,7 @@ def run_repo_generation(
         )
         console.print("  [bold yellow]Failed pages by type:[/bold yellow]")
         for page_type, count in sorted(type_counts.items(), key=lambda x: -x[1]):
-            console.print(f"    • {page_type}: {count}")
+            console.print(f"    • {escape(page_type)}: {count}")
         console.print(
             "\n  [yellow]The wiki is incomplete due to provider failures.[/yellow]\n"
             "  [dim]Run [bold]repowise init --resume[/bold] to generate missing pages "

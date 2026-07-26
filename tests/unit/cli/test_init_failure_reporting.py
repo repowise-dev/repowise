@@ -115,6 +115,65 @@ def test_run_repo_generation_reports_failures(tmp_path, monkeypatch):
     assert "repowise init --resume" in output
 
 
+def test_run_repo_generation_does_not_fallback_after_zero_failure_callback(
+    tmp_path, monkeypatch
+):
+    """A current-run callback reporting success wins over stale checkpoints."""
+    jobs_dir = tmp_path / ".repowise" / "jobs"
+    jobs_dir.mkdir(parents=True, exist_ok=True)
+
+    js = JobSystem(jobs_dir)
+    stale_job_id = js.create_job(
+        str(tmp_path), SimpleNamespace(max_concurrency=1), "mock", "mock-model"
+    )
+    js.fail_page(stale_job_id, "file_page:stale.ts", "Old failure")
+
+    def fake_generation(**kwargs):
+        kwargs["on_generation_complete"]([])
+        return [_page("file_page:lib/c.ts")]
+
+    monkeypatch.setattr(
+        "repowise.cli.commands.init_cmd._generation_persist.run_generation_with_persistence",
+        fake_generation,
+    )
+    monkeypatch.setattr(
+        "repowise.cli.commands.init_cmd.generation.run_async", lambda value: value
+    )
+    monkeypatch.setattr(
+        "repowise.cli.commands.init_cmd.generation._enrich_knowledge_graph",
+        lambda **kw: None,
+    )
+    monkeypatch.setattr(
+        "repowise.cli.commands.init_cmd.generation.flush_cost_tracker",
+        lambda tracker: None,
+    )
+    monkeypatch.setattr(
+        "repowise.cli.commands.init_cmd.generation.console.print", lambda *a, **kw: None
+    )
+
+    result = SimpleNamespace(
+        repo_name="test_repo",
+        parsed_files=[],
+        source_map={},
+        graph_builder=MagicMock(),
+        repo_structure=MagicMock(),
+        git_meta_map={},
+    )
+
+    run_repo_generation(
+        repo_path=tmp_path,
+        result=result,
+        provider=SimpleNamespace(provider_name="mock", model_name="mock-model"),
+        gen_config=SimpleNamespace(max_concurrency=1, deterministic=False),
+        concurrency=1,
+        embedder_name_resolved="mock",
+        resume=False,
+        verbose=False,
+    )
+
+    assert result.failed_page_ids == []
+
+
 def test_recorded_cost_includes_the_knowledge_graph_enrichment(tmp_path, monkeypatch):
     """Layer naming and the guided tour are real model calls billed through the
     same tracker as the pages, so the figure the completion panel prints has to

@@ -285,7 +285,7 @@ def test_run_repo_generation_prints_partial_failure_warning_after_progress(monke
     monkeypatch.setattr(generation_cmd, "build_vector_store", lambda *_args: object())
 
     async def fake_generation(*, on_generation_complete, **_kwargs):
-        on_generation_complete(["module_page:api", "file_page:src/main.py"])
+        on_generation_complete(["module_page:api", "[red]spoof[/red]:src/main.py"])
         return []
 
     monkeypatch.setattr(
@@ -319,7 +319,7 @@ def test_run_repo_generation_prints_partial_failure_warning_after_progress(monke
     text = output.getvalue()
     assert "Generated 0 pages" in text
     assert "2 failed" in text
-    assert "file_page: 1" in text
+    assert "[red]spoof[/red]: 1" in text
     assert "module_page: 1" in text
     assert "The wiki is incomplete" in text
     assert "repowise init --resume" in text
