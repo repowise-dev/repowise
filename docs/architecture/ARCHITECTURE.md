@@ -659,8 +659,15 @@ The `JobSystem` persists checkpoint state after every completed page:
 - `completed_page_ids` — list of already-generated page IDs
 - `failed_page_ids` — pages that failed (retried on resume)
 
-On `repowise init --resume`, the job is loaded from the database, completed pages
-are skipped, and generation continues from the last checkpoint.
+On `repowise init --resume`, the set of already-written pages is read from the
+vector store rather than from the checkpoint, because the store is the one
+record that survives a killed process. This needs a job system and a store; with
+neither, a resumed run falls back to regenerating everything. Those page ids are
+skipped before their
+coroutine is built, so a resumed run spends nothing on them, and the match is on
+page id alone: a run resumed under a different provider still keeps what the
+previous one wrote. Persistence is told which ids were skipped so the stale-page
+sweep does not mistake "deliberately kept" for "no longer produced".
 
 `repowise init` is fully idempotent. Running it twice produces the same result.
 Running it after a partial previous run completes only the remaining pages.

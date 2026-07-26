@@ -198,7 +198,9 @@ def run_repo_generation(
     generation wrapper, enriches the KG, and flushes buffered cost rows in one
     transaction (kept out of the contended generation window, issue #326).
 
-    Mutates ``result`` in place with ``generated_pages`` and ``vector_store``
+    Mutates ``result`` in place with ``generated_pages``, ``preserved_page_ids``
+    (the pages a resumed run skipped, which persistence must not sweep) and
+    ``vector_store``
     (the latter is shared so the Phase-2C decision dedup matches + embeds
     decisions into the same store the pages land in). Returns the pages.
 
@@ -242,6 +244,18 @@ def run_repo_generation(
     if not deterministic:
         columns.append(TextColumn("[green]${task.fields[cost]:.3f}[/green]"))
 
+    # Filled by a resumed run with the pages it skipped because they already
+    # exist. Persistence needs them: they are absent from ``generated_pages``,
+    # and the stale sweep reads absence as "delete me" (issue #1089).
+    #
+    # Attached to the result BEFORE generation runs, not after. The workspace
+    # flow catches a generation failure and persists anyway, so an assignment
+    # that trails the run would hand the sweep an empty set on exactly the
+    # broken runs this exists to protect. Same object, so what the run fills in
+    # is what persistence reads however the block exits.
+    preserved_page_ids: set[str] = set()
+    result.preserved_page_ids = preserved_page_ids
+
     with Progress(*columns, console=console) as gen_progress:
         gen_callback = RichProgressCallback(gen_progress, console)
         generated_pages = run_async(
@@ -259,6 +273,7 @@ def run_repo_generation(
                 concurrency=concurrency,
                 progress=gen_callback,
                 resume=resume,
+                preserved_page_ids=preserved_page_ids,
                 cost_tracker=cost_tracker,
                 generation_config=gen_config,
                 # In-memory curated modules: on a fresh init the

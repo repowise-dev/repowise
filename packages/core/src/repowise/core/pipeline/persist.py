@@ -542,6 +542,7 @@ async def _sweep_stale_generated_pages(
     repo_id: str,
     generated_pages: list[Any] | None,
     authoritative_page_types: set[str] | None = None,
+    preserved_page_ids: set[str] | None = None,
 ) -> list[str]:
     """Delete structurally-keyed generated pages this run did not produce.
 
@@ -557,6 +558,14 @@ async def _sweep_stale_generated_pages(
     claim its history). Returns the swept page ids so the caller can drop them
     from FTS after the session closes (the FTS store must not be touched
     in-session).
+
+    ``preserved_page_ids`` are ids a ``--resume`` run skipped *because they
+    already exist* (see ``_GenerationRun._emit``). They are absent from
+    ``generated_pages`` by design, which is exactly what "stale" means to the
+    rest of this function, so without this argument a resume that regenerated
+    the missing half of a page type deleted the half it had just protected
+    (issue #1089). A preserved id is as current as a produced one: the id did
+    not drift, which is the only thing this sweep exists to catch.
     """
     from sqlalchemy import delete, select
 
@@ -566,13 +575,24 @@ async def _sweep_stale_generated_pages(
     for page in generated_pages or []:
         produced.setdefault(page.page_type, set()).add(page.page_id)
     authoritative = authoritative_page_types or set()
+    preserved = preserved_page_ids or set()
 
     swept: list[str] = []
     for page_type in _SWEPT_GENERATED_PAGE_TYPES:
         current = produced.get(page_type)
         if not current and page_type not in authoritative:
             continue
-        current = current or set()
+        # Preserved ids join the current set rather than being subtracted from
+        # the stale one: an authoritative type sweeps even when the run emitted
+        # none of it, and that branch must still keep what a resume stood on.
+        # (Defensive today — no caller sets both — but the two are independent
+        # inputs and the failure mode if they ever meet is a deleted wiki.)
+        # Filtered by type because ``preserved`` spans every page type while
+        # this loop compares against one. Ids happen to be ``type:target`` so
+        # a cross-type match is impossible, but the sweep is the wrong place to
+        # depend on an id format nothing here enforces.
+        prefix = f"{page_type}:"
+        current = (current or set()) | {p for p in preserved if p.startswith(prefix)}
         existing = (
             (
                 await session.execute(
@@ -1162,6 +1182,7 @@ async def persist_pipeline_result(
         repo_id,
         result.generated_pages,
         getattr(result, "authoritative_page_types", None),
+        getattr(result, "preserved_page_ids", None),
     )
 
     # Placement depends on the whole page set, so it is computed here rather

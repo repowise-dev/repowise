@@ -147,6 +147,20 @@ class PipelineResult:
     on incremental no-KG paths, which preserves degradation honesty (a fallback
     run never wipes curated pages it could not reproduce)."""
 
+    preserved_page_ids: set[str] = field(default_factory=set)
+    """Page ids a ``--resume`` run skipped because a prior run already wrote
+    them. They are absent from ``generated_pages`` by design, so the stale-page
+    sweep would read them as gone and delete the very pages the resume existed
+    to keep (issue #1089). Empty on every non-resume run.
+
+    Filled here for symmetry, but the live route is the other one: ``--resume``
+    only exists on ``init``, which calls ``run_pipeline(generate_docs=False)``
+    and generates separately, so the init flows set this on the result
+    themselves the same way they set ``generated_pages``. No caller currently
+    reaches the assignment below (it needs ``resume`` and ``generate_docs``
+    together), so treat this field's value on a ``run_pipeline`` result as
+    untested until one does."""
+
 
 # ---------------------------------------------------------------------------
 # Pipeline
@@ -602,6 +616,8 @@ async def run_pipeline(
     # PipelineResult.authoritative_page_types). Stays empty unless generation
     # runs below, because a run that generated nothing decided nothing.
     authoritative_page_types: set[str] = set()
+    # Filled by generation when resuming; see PipelineResult.preserved_page_ids.
+    preserved_page_ids: set[str] = set()
     # DETERMINISTIC supplies its own null provider so a caller with no key can
     # still get a wiki. Scoped to this phase rather than assigned over
     # ``llm_client``: the analysis phase above shares that client, and its
@@ -715,6 +731,7 @@ async def run_pipeline(
                 decision_report=gen_decision_report,
                 external_systems=external_systems,
                 on_page_ready=on_page_ready,
+                preserved_page_ids=preserved_page_ids,
                 # In-memory KG — the artifact file is written after generation,
                 # so it cannot carry layers/tour/modules on a fresh init.
                 kg_modules=(
@@ -856,6 +873,7 @@ async def run_pipeline(
             resume_controller.index_persisted if resume_controller is not None else False
         ),
         authoritative_page_types=authoritative_page_types,
+        preserved_page_ids=preserved_page_ids,
     )
 
 

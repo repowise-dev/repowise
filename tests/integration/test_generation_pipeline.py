@@ -290,6 +290,56 @@ async def test_embedding_latency_does_not_gate_llm_concurrency():
     assert vector_store.max_active_embeds == 1
 
 
+async def test_resume_reports_the_pages_it_skipped(tmp_path):
+    """The preserved-id set survives every hand-off down to the generator.
+
+    Issue #1089: persistence deletes structurally-keyed pages a run did not
+    produce, and a resumed run does not produce the pages it skipped. It now
+    reports them instead, but only if the set actually reaches ``_emit`` —
+    ``run_generation`` -> ``generate_all`` -> ``run_generate_all`` is three
+    keyword hand-offs, two of them through ``**kwargs``, where a dropped or
+    misspelled argument fails silently and takes the fix with it.
+    """
+    from repowise.core.pipeline.phases.generation import run_generation
+
+    parsed_files, source_map, repo_structure = _make_concurrency_fixture()
+    builder = GraphBuilder()
+    for parsed in parsed_files:
+        builder.add_file(parsed)
+    builder.build()
+
+    already_written = "file_page:pkg/module_0.py"
+
+    class _StoreWithPriorRun(_SlowVectorStore):
+        async def list_page_ids(self) -> set[str]:
+            return {already_written}
+
+    preserved: set[str] = set()
+    pages = await run_generation(
+        repo_path=tmp_path,
+        parsed_files=parsed_files,
+        source_map=source_map,
+        graph_builder=builder,
+        repo_structure=repo_structure,
+        git_meta_map={},
+        llm_client=MockProvider(),
+        embedder=None,
+        vector_store=_StoreWithPriorRun(delay=0),
+        concurrency=2,
+        progress=None,
+        resume=True,
+        generation_config=GenerationConfig(max_file_pages=0, cache_enabled=False),
+        preserved_page_ids=preserved,
+    )
+
+    # Reported as kept, and genuinely not regenerated.
+    assert already_written in preserved
+    assert already_written not in {page.page_id for page in pages}
+    # The rest of the wiki was still produced, so this is a skip and not a
+    # collapsed run that would look identical from the assertion above.
+    assert "file_page:pkg/module_1.py" in {page.page_id for page in pages}
+
+
 # ---------------------------------------------------------------------------
 # Test class
 # ---------------------------------------------------------------------------

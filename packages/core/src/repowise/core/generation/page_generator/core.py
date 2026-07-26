@@ -219,6 +219,7 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         kg_modules: list[dict] | None = None,
         kg_data: dict | None = None,
         only_page_ids: set[str] | None = None,
+        preserved_page_ids: set[str] | None = None,
     ) -> list[GeneratedPage]:
         """Generate all wiki pages for a repository.
 
@@ -233,6 +234,12 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         one. This is the scoped-generation primitive behind ``repowise
         generate`` and the fix for callers that used to regenerate ten
         repo-wide pages as a side effect of asking for one file page.
+
+        ``preserved_page_ids`` is an out-parameter: a ``resume`` run adds to it
+        every page id it skipped because a prior run already produced it. The
+        caller hands the set to persistence, which must not sweep those ids as
+        stale. Harmless to pass on a non-resume run (nothing is skipped for that
+        reason, so nothing is added); None when the caller has no use for it.
         """
         from .orchestrate import run_generate_all
 
@@ -257,6 +264,7 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
             kg_modules=kg_modules,
             kg_data=kg_data,
             only_page_ids=only_page_ids,
+            preserved_page_ids=preserved_page_ids,
         )
 
     # ------------------------------------------------------------------

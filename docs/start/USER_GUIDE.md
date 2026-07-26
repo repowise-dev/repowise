@@ -456,6 +456,13 @@ validate on 10 files, and `--skip-tests --skip-infra` to cut scope. Lower
 **init was interrupted**
 `repowise init --resume` picks up from the last checkpoint.
 
+**init finished but some pages are missing**
+A provider outage or rate limit can fail individual pages while the run itself
+completes. `repowise init --resume` writes only the pages that are absent and
+skips every page you already have, with no model call for them. It matches on
+the page, not on which model wrote it, so switching provider after an outage
+still keeps the pages the old one produced.
+
 **Vector store looks corrupted**
 `repowise reindex` rebuilds it from the existing wiki pages, with no LLM calls.
 

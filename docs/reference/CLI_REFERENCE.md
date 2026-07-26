@@ -85,7 +85,7 @@ All three reach the indexing knobs; the LLM-only knobs appear only when model-wr
 | `--harvest-decisions` / `--no-harvest-decisions` | Harvest architectural decisions during page generation (verified against source before storage). Default: on. |
 | `--wiki-style` | Documentation voice/density: `comprehensive` (default), `caveman` (token-condensed, AI-first), `reference` (API-manual), `tutorial` (beginner-friendly). Interactive full runs prompt when omitted. Saved to config so `update` keeps the style. See [WIKI_STYLES.md](../layers/WIKI_STYLES.md). |
 | `--language` | Output language for generated wiki pages: `en` (default), `ar`, `de`, `es`, `fr`, `hi`, `it`, `ja`, `ko`, `nl`, `pl`, `pt`, `ru`, `tr`, `zh`. Code, file paths, and symbol names stay untranslated. Saved to config so `update` keeps the language. Also asked in advanced interactive mode. To switch an existing wiki's language, set the flag and re-run `init --force`. |
-| `--resume` | Resume from the last checkpoint if interrupted |
+| `--resume` | Continue a previous run instead of redoing it: completed phases (indexing, analysis) are skipped, the earlier run's git tier is kept, and generation writes only the pages this repo does not have yet. Use it after an interrupted run, and after one that finished with failed pages (a provider outage, rate limiting) — pages already written are skipped with no model call, so nothing is paid for twice. Matching is per page, not per model, so switching provider still keeps what the old one wrote. |
 | `--force` | Regenerate all pages even if they exist |
 | `--commit-limit` | Max commits to analyze per file (default: 500, capped at 10000) |
 | `--follow-renames` | Track file renames in git history |

@@ -11,6 +11,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import structlog
+
 from repowise.cli._repo_session import open_repo_db
 from repowise.cli.helpers import (
     config_fingerprint,
@@ -22,6 +24,8 @@ from repowise.cli.helpers import (
 )
 from repowise.cli.state_persistence import build_kg_state, save_knowledge_graph_json
 from repowise.core.docs_mode import docs_mode_state_fields
+
+logger = structlog.get_logger(__name__)
 
 
 async def build_resume_controller(repo_path: Path, *, resume: bool) -> tuple[Any, Any]:
@@ -37,6 +41,52 @@ async def build_resume_controller(repo_path: Path, *, resume: bool) -> tuple[Any
 
     engine, sf, repo_id = await open_repo_db(repo_path)
     return ResumeController(sf, repo_id, resume=resume), engine
+
+
+# Chunk size for the preserved-page FTS backfill — keeps the IN (...) below
+# under SQLite's host-parameter limit and bounds how much page content is held
+# in memory at once.
+_FTS_BACKFILL_CHUNK = 200
+
+
+async def _index_preserved_pages(sf: Any, fts: Any, preserved_page_ids: set[str] | None) -> None:
+    """Full-text index the pages a resumed run kept rather than regenerated.
+
+    ``page_fts`` is a standalone FTS5 table with no triggers: a row appears
+    only when something calls :meth:`FullTextSearch.index`. The incremental
+    flush during generation writes SQL and nothing else, so a run killed before
+    its final persist leaves pages that exist in ``wiki_pages`` and are absent
+    from search. Those are exactly the pages a resume preserves, which would
+    make "your pages were kept" true in the database and false in every search
+    that goes looking for them.
+
+    Reads title + content back from SQL because a preserved page was never in
+    this run's memory. ``index`` is delete-then-insert, so re-indexing a page
+    that already had a row is a no-op in effect. Best-effort: search being
+    stale must never fail a run whose pages are already committed.
+    """
+    if fts is None or not preserved_page_ids:
+        return
+
+    from sqlalchemy import select
+
+    from repowise.core.persistence import get_session
+    from repowise.core.persistence.models import Page
+
+    ids = sorted(preserved_page_ids)
+    try:
+        for i in range(0, len(ids), _FTS_BACKFILL_CHUNK):
+            batch = ids[i : i + _FTS_BACKFILL_CHUNK]
+            async with get_session(sf) as session:
+                rows = (
+                    await session.execute(
+                        select(Page.id, Page.title, Page.content).where(Page.id.in_(batch))
+                    )
+                ).all()
+            for page_id, title, content in rows:
+                await fts.index(page_id, title or "", content or "")
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("persist.preserved_fts_backfill_failed", error=str(exc))
 
 
 async def persist_result(result: Any, repo_path: Path) -> None:
@@ -101,12 +151,15 @@ async def persist_result(result: Any, repo_path: Path) -> None:
             # forever. A type is swept when the run produced pages of it OR
             # declared authority over it (curated runs are authoritative for
             # module/layer pages even when every module page was skipped as
-            # 1:1 with a layer); types that are neither stay protected.
+            # 1:1 with a layer); types that are neither stay protected. Pages a
+            # resumed run skipped count as reproduced — they are absent from
+            # ``generated_pages`` precisely because they already exist.
             swept_page_ids = await sweep_stale_generated_pages(
                 session,
                 repo.id,
                 result.generated_pages,
                 getattr(result, "authoritative_page_types", None),
+                getattr(result, "preserved_page_ids", None),
             )
         else:
             swept_page_ids = await persist_pipeline_result(result, session, repo.id)
@@ -147,6 +200,7 @@ async def persist_result(result: Any, repo_path: Path) -> None:
     if fts is not None and result.generated_pages:
         for page in result.generated_pages:
             await fts.index(page.page_id, page.title, page.content)
+    await _index_preserved_pages(sf, fts, getattr(result, "preserved_page_ids", None))
 
     # Stamp the analysis (+ generation) phases in the resume ledger now that
     # they're persisted, so a future resume can skip them too.

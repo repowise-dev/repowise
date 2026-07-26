@@ -214,3 +214,104 @@ async def test_incremental_no_authority_sweeps_nothing(async_session):
     assert swept == []
     swept = await _sweep_stale_generated_pages(async_session, repo.id, None, None)
     assert swept == []
+
+
+async def test_resumed_pages_are_not_swept(async_session):
+    """Regression for issue #1089.
+
+    A resumed run regenerates the pages a provider outage lost and skips the
+    ones the interrupted run already wrote, so the skipped ones never appear in
+    ``generated_pages``. Read as "not reproduced" they were deleted, which
+    turned the command that repairs a broken wiki into the one that finished
+    breaking it. A preserved id is as current as a produced one.
+    """
+    repo = await insert_repo(async_session)
+    # Three module pages survived the first run; the resumed run rewrites only
+    # the fourth, which the outage had killed.
+    for ordinal in (1, 2, 3):
+        async_session.add(_page_row(repo.id, "module_page", f"community-{ordinal}"))
+    async_session.add(_page_row(repo.id, "layer_page", "layer:Core"))
+    await async_session.flush()
+
+    swept = await _sweep_stale_generated_pages(
+        async_session,
+        repo.id,
+        [_generated("module_page", "community-4")],
+        set(),
+        {f"module_page:community-{i}" for i in (1, 2, 3)} | {"layer_page:layer:Core"},
+    )
+    await async_session.commit()
+
+    assert swept == []
+    remaining = (
+        (await async_session.execute(select(Page.id).where(Page.repository_id == repo.id)))
+        .scalars()
+        .all()
+    )
+    assert set(remaining) == {
+        "module_page:community-1",
+        "module_page:community-2",
+        "module_page:community-3",
+        "layer_page:layer:Core",
+    }
+
+
+async def test_preserved_ids_do_not_shield_genuinely_stale_rows(async_session):
+    """Preserving is per id, not per type.
+
+    A resumed run that kept two module pages and dropped a third (its cluster
+    ordinal drifted) must still retire the third. Otherwise the fix would trade
+    one bug for the duplicate-stranding the sweep exists to prevent.
+    """
+    repo = await insert_repo(async_session)
+    async_session.add(_page_row(repo.id, "module_page", "community-1"))
+    async_session.add(_page_row(repo.id, "module_page", "community-2"))
+    async_session.add(_page_row(repo.id, "module_page", "community-155"))
+    await async_session.flush()
+
+    swept = await _sweep_stale_generated_pages(
+        async_session,
+        repo.id,
+        [_generated("module_page", "community-9")],
+        set(),
+        {"module_page:community-1", "module_page:community-2"},
+    )
+    await async_session.commit()
+
+    assert swept == ["module_page:community-155"]
+    remaining = (
+        (await async_session.execute(select(Page.id).where(Page.repository_id == repo.id)))
+        .scalars()
+        .all()
+    )
+    assert set(remaining) == {"module_page:community-1", "module_page:community-2"}
+
+
+async def test_authoritative_empty_type_still_keeps_preserved_pages(async_session):
+    """Authority plus resume: retire the unclaimed, keep what the resume stood on.
+
+    An authoritative type sweeps even when the run emitted none of it, which is
+    the one path that could still delete every layer page on a resume. The
+    preserved set has to win there too.
+    """
+    repo = await insert_repo(async_session)
+    async_session.add(_page_row(repo.id, "layer_page", "layer:Core"))
+    async_session.add(_page_row(repo.id, "layer_page", "layer:Gone"))
+    await async_session.flush()
+
+    swept = await _sweep_stale_generated_pages(
+        async_session,
+        repo.id,
+        [],
+        {"layer_page"},
+        {"layer_page:layer:Core"},
+    )
+    await async_session.commit()
+
+    assert swept == ["layer_page:layer:Gone"]
+    remaining = (
+        (await async_session.execute(select(Page.id).where(Page.repository_id == repo.id)))
+        .scalars()
+        .all()
+    )
+    assert set(remaining) == {"layer_page:layer:Core"}

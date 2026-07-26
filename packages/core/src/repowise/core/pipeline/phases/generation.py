@@ -43,6 +43,7 @@ async def run_generation(
     kg_modules: list[dict] | None = None,
     kg_data: dict | None = None,
     only_page_ids: set[str] | None = None,
+    preserved_page_ids: set[str] | None = None,
 ) -> list[Any]:
     """Run LLM-powered page generation.
 
@@ -55,6 +56,10 @@ async def run_generation(
 
     ``only_page_ids`` scopes the run to an explicit set of page ids (the
     ``repowise generate`` path). None means the full selection, as before.
+
+    ``preserved_page_ids`` is an out-parameter filled by a ``resume`` run with
+    the ids it skipped because a prior run already wrote them. Persistence
+    needs it to keep those pages out of the stale sweep.
     """
     from repowise.core.generation import (
         ContextAssembler,
@@ -147,6 +152,7 @@ async def run_generation(
         kg_modules=kg_modules,
         kg_data=kg_data,
         only_page_ids=only_page_ids,
+        preserved_page_ids=preserved_page_ids,
     )
 
     # Onboarding summary — count generated slots and surface which ones

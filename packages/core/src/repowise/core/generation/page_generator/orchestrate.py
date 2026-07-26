@@ -67,6 +67,7 @@ class _GenerationRun:
         kg_modules: list[dict] | None = None,
         kg_data: dict | None = None,
         only_page_ids: set[str] | None = None,
+        preserved_page_ids: set[str] | None = None,
     ) -> None:
         self.gen = gen
         self.config = gen._config
@@ -77,6 +78,13 @@ class _GenerationRun:
         # parsed and its graph built, so a requested repo-wide page is rendered
         # from the complete view. See ``_emit`` for the single choke point.
         self.only_page_ids = only_page_ids
+        # Resume: the ids this run skipped because a prior run already wrote
+        # them. Written into the caller's set so persistence can tell "this
+        # page was deliberately kept" from "this page is gone", which is the
+        # difference between a correct sweep and deleting the half of the
+        # wiki the resumed run was there to protect. None when the caller does
+        # not care (every non-resume path).
+        self.preserved_page_ids = preserved_page_ids
         self.parsed_files = parsed_files
         self.source_map = source_map
         self.graph_builder = graph_builder
@@ -198,6 +206,12 @@ class _GenerationRun:
         allocates its coroutine.
         """
         if page_id in self.completed_ids:
+            # Recorded only here, never for an ``only_page_ids`` miss: a scoped
+            # run legitimately says nothing about the pages it was not asked
+            # for, while a resume skip is a positive statement that the page
+            # already exists and must survive this run's sweep.
+            if self.preserved_page_ids is not None:
+                self.preserved_page_ids.add(page_id)
             return False
         return self.only_page_ids is None or page_id in self.only_page_ids
 
