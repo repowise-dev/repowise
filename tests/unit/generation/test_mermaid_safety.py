@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from repowise.core.generation.mermaid_safety import sanitize_mermaid, sanitize_pages
+from repowise.core.generation.mermaid_safety import sanitize_mermaid, sanitize_pages, strip_leading_preamble
 
 
 def _block(body: str) -> str:
@@ -81,3 +81,35 @@ def test_sanitize_pages_mutates_and_counts():
     assert n == 1
     assert "pkg/x.py" not in changed.content
     assert unchanged.content == "# clean\n\nno diagram here"
+
+
+
+
+def test_strip_leading_preamble_removes_narration():
+    md = (
+        "I'll examine the actual source file.\n\n"
+        "I'm using the repository's Beads workflow.\n\n"
+        "# foo.py\n\n## Overview\n"
+    )
+    assert strip_leading_preamble(md) == "# foo.py\n\n## Overview\n"
+
+
+def test_strip_leading_preamble_noop_when_starts_with_heading():
+    md = "# foo.py\n\n## Overview\n"
+    assert strip_leading_preamble(md) == md
+
+
+def test_strip_leading_preamble_noop_without_heading():
+    md = "Just some prose with no markdown heading at all.\n"
+    assert strip_leading_preamble(md) == md
+
+
+def test_sanitize_pages_strips_preamble():
+    class _P:
+        def __init__(self, content):
+            self.content = content
+
+    page = _P("Narration first.\n\n# Title\n\nbody\n")
+    n = sanitize_pages([page])
+    assert n == 1
+    assert page.content.startswith("# Title")
