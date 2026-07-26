@@ -101,6 +101,12 @@ jobs:
       - name: Test api-client
         run: npm run test --workspace @repowise-dev/api-client
 
+      - name: Test types
+        run: npm run test --workspace @repowise-dev/types
+
+      - name: Test ui
+        run: npm run test --workspace @repowise-dev/ui
+
   # ---------------------------------------------------------------------------
   # VS Code extension — type check, bundle-size gate, and Electron smoke test
   # ---------------------------------------------------------------------------
