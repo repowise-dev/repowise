@@ -33,6 +33,7 @@ from ..models import (
     compute_page_id,
     compute_source_hash,
 )
+from ..structural_labels import resolve_structural_labels, structural_page_title
 from ..styles import ONBOARDING_PAGE_TYPE, resolve_style
 from .helpers import _extract_summary, _now_iso, collapse_empty_duplicate_headings
 from .pertype import PerTypeGenerationMixin
@@ -293,7 +294,7 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         page = self._structural_page(
             page_type="file_page",
             target_path=parsed.file_info.path,
-            title=f"File: {parsed.file_info.path}",
+            title=structural_page_title(self._language, "file_page", parsed.file_info.path),
             template="file_page.j2",
             subject_hash=parsed.content_hash or "",
             ctx=ctx,
@@ -488,6 +489,7 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         carry a style directive.
         """
         template = self._jinja_env.get_template(template_name)
+        kwargs.setdefault("labels", resolve_structural_labels(self._language))
         body = template.render(**kwargs)
         if not style_prefix:
             return body

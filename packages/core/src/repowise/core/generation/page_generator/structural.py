@@ -38,6 +38,7 @@ from ..models import (
     compute_page_id,
     compute_source_hash,
 )
+from ..structural_labels import resolve_structural_labels
 from .helpers import _extract_summary, _now_iso
 
 log = structlog.get_logger(__name__)
@@ -358,7 +359,12 @@ class StructuralRenderMixin:
         page is meant to be; a stub is the same material with the prose
         missing, and a reader has to be told which one they are looking at.
         """
-        content = self._render(template, style_prefix=False, **render_kwargs)
+        content = self._render(
+            template,
+            style_prefix=False,
+            labels=resolve_structural_labels(self._language),
+            **render_kwargs,
+        )
         now = _now_iso()
         return GeneratedPage(
             page_id=compute_page_id(page_type, target_path),

@@ -11,6 +11,7 @@ import pytest
 from repowise.core.generation.context_assembler import ContextAssembler, FilePageContext
 from repowise.core.generation.kg_context import KGFileContext
 from repowise.core.generation.models import GenerationConfig
+from repowise.core.generation.structural_labels import resolve_structural_labels
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -329,6 +330,7 @@ class TestFilePageTemplate:
         env.filters["oneline"] = oneline
         env.filters["as_markdown"] = as_markdown
         env.filters["signature"] = signature
+        env.globals.setdefault("labels", resolve_structural_labels(None))
         return env
 
     def test_file_page_renders_kg_layer(self, jinja_env):

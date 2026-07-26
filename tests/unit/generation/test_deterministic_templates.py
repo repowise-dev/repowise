@@ -1,17 +1,24 @@
 """Render tests for deterministic templates the sample repo cannot reach.
 
 ``tests/integration/test_deterministic_generation.py`` covers the page types
-the fixture repo actually produces. Four templates are unreachable there: the
-layer page needs a knowledge graph, and three onboarding slots gate themselves
-off on a fixture with no git history and no dependency manifest. Rendering
-them here keeps a Jinja typo from shipping unnoticed.
+the fixture repo actually produces. Three onboarding slots are unreachable
+there because they gate themselves off on a fixture with no git history and no
+dependency manifest. Rendering them here keeps a Jinja typo from shipping
+unnoticed.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from repowise.core.generation.context_assembler import ApiContractContext, ContextAssembler
+from repowise.core.generation.context_assembler import (
+    ApiContractContext,
+    ContextAssembler,
+    FilePageContext,
+    InfraPageContext,
+    SccPageContext,
+    SymbolSpotlightContext,
+)
 from repowise.core.generation.models import GenerationConfig
 from repowise.core.generation.onboarding.subkinds.active_landscape import (
     ActiveLandscapeContext,
@@ -38,6 +45,107 @@ from repowise.core.providers.llm.template import TemplateProvider
 def generator() -> PageGenerator:
     config = GenerationConfig(deterministic=True)
     return PageGenerator(TemplateProvider(), ContextAssembler(config), config)
+
+
+@pytest.fixture
+def german_generator() -> PageGenerator:
+    config = GenerationConfig(deterministic=True, language="de")
+    return PageGenerator(TemplateProvider(), ContextAssembler(config), config)
+
+
+def test_structural_pages_render_german_labels(german_generator):
+    """All deterministic structural templates use the configured language."""
+    file_page = german_generator._structural_page(
+        page_type="file_page",
+        target_path="src/service.py",
+        title="File: src/service.py",
+        template="file_page.j2",
+        ctx=FilePageContext(
+            file_path="src/service.py",
+            language="Python",
+            docstring=None,
+            symbols=[
+                {"name": "parse_file", "kind": "function", "signature": "def parse_file()", "visibility": "public"},
+                {"name": "format_file", "kind": "function", "signature": "def format_file()", "visibility": "public"},
+            ],
+            imports=[],
+            exports=[],
+            file_source_snippet="",
+            pagerank_score=0,
+            betweenness_score=0,
+            community_id=0,
+            dependents=["src/consumer.py", "src/worker.py"],
+            dependencies=["src/config.py", "src/parser.py"],
+            is_api_contract=False,
+            is_entry_point=False,
+            is_test=False,
+            parse_errors=[],
+            estimated_tokens=0,
+        ),
+    )
+    symbol_page = german_generator._structural_symbol_spotlight(
+        ctx=SymbolSpotlightContext(
+            symbol_name="parse_file",
+            qualified_name="service.parse_file",
+            kind="function",
+            signature="def parse_file()",
+            docstring=None,
+            file_path="src/service.py",
+            decorators=[],
+            is_async=False,
+            complexity_estimate=0,
+            callers=["src/consumer.py", "src/worker.py"],
+        ),
+        target_path="src/service.py::parse_file",
+        title="Symbol: service.parse_file",
+    )
+    infra_page = german_generator._structural_infra_page(
+        InfraPageContext("Dockerfile", "dockerfile", "FROM python", ["runtime", "build"]),
+        "Dockerfile",
+        "Infrastructure: Dockerfile",
+    )
+    scc_page = german_generator._structural_scc_page(
+        SccPageContext(
+            "cycle:service",
+            ["src/service.py", "src/consumer.py"],
+            "",
+            2,
+            cross_imports=[
+                {"from": "src/service.py", "to": "src/consumer.py"},
+                {"from": "src/consumer.py", "to": "src/service.py"},
+            ],
+        ),
+        "cycle:service",
+        "Circular Dependency: cycle:service",
+    )
+    api_page = german_generator._structural_api_contract(
+        ApiContractContext(
+            "src/api.py",
+            "Python",
+            "def list_items(): pass",
+            ["list_items", "create_item"],
+            ["Item", "CreateItem"],
+        ),
+        "src/api.py",
+        "API Contract: src/api.py",
+    )
+
+    assert "## Überblick" in file_page.content
+    assert "## Öffentliche API" in file_page.content
+    assert "## Wo es verwendet wird" in symbol_page.content
+    assert "## Deklarierte Ziele" in infra_page.content
+    assert "## Dateien im Zyklus" in scc_page.content
+    assert "## Operationen" in api_page.content
+    assert "Aus dem Code selbst erstellt" in file_page.content
+    assert "Built from the code itself" not in file_page.content
+    assert "`src/service.py`" in file_page.content
+    assert "def parse_file()" in symbol_page.content
+    assert "Sie stellt 2 öffentliche Symbole und hängt von 2 weiteren Dateien." in file_page.content
+    assert "Importiert von 2 Dateien in diesem Repository." in file_page.content
+    assert "2 Dateien importieren das Modul, das es definiert." in symbol_page.content
+    assert "Sie deklariert 2 benannte Ziele, unten aufgeführt." in infra_page.content
+    assert "| Datei | Importe im Zyklus | Importiert von | Gesamt |" in scc_page.content
+    assert "Es deklariert 2 aufrufbare Operationen und 2 Typen." in api_page.content
 
 
 def _onboarding_spec(slot: str, template: str):
