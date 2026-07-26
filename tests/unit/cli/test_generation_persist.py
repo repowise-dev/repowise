@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 import pytest
 
 from repowise.cli.commands.init_cmd._generation_persist import run_generation_with_persistence
+from repowise.core.generation import GenerationConfig, JobSystem
 from repowise.core.generation.models import GeneratedPage
 from repowise.core.persistence import (
     create_engine,
@@ -20,6 +21,7 @@ from repowise.core.persistence import (
     init_db,
     upsert_repository,
 )
+from repowise.core.pipeline.phases.generation import run_generation
 
 
 def _page(page_id: str, content: str = "body") -> GeneratedPage:
@@ -136,3 +138,46 @@ async def test_sink_failure_never_breaks_generation(repo_dir, monkeypatch):
     # The valid page still persisted despite the bad one.
     stored = await _read_db_page_ids(repo_dir)
     assert "delta" in stored
+
+
+async def test_generation_completion_callback_reports_only_current_run_failures(
+    repo_dir, monkeypatch
+):
+    """The completion callback excludes failures persisted by an older job."""
+    jobs = JobSystem(repo_dir / ".repowise" / "jobs")
+    stale_job = jobs.create_job(str(repo_dir), GenerationConfig(), "test", "test")
+    jobs.start_job(stale_job, 1)
+    jobs.fail_page(stale_job, "stale-page", "old failure")
+    jobs.complete_job(stale_job)
+
+    class ControlledGenerator:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        async def generate_all(self, *_args, job_system, **_kwargs):
+            current_job = job_system.create_job(str(repo_dir), GenerationConfig(), "test", "test")
+            job_system.start_job(current_job, 1)
+            job_system.fail_page(current_job, "current-page", "controlled failure")
+            job_system.complete_job(current_job)
+            return []
+
+    monkeypatch.setattr("repowise.core.generation.PageGenerator", ControlledGenerator)
+
+    reported_failures: list[list[str]] = []
+    pages = await run_generation(
+        repo_path=repo_dir,
+        parsed_files=[],
+        source_map={},
+        graph_builder=object(),
+        repo_structure=object(),
+        git_meta_map={},
+        llm_client=object(),
+        embedder=None,
+        vector_store=None,
+        concurrency=1,
+        progress=None,
+        on_generation_complete=reported_failures.append,
+    )
+
+    assert pages == []
+    assert reported_failures == [["current-page"]]
