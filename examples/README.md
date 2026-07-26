@@ -10,6 +10,7 @@ self-contained README under `examples/<name>/`.
 | [codex/](codex/) | Codex CLI setup: `repowise init --codex`, smoke checks, local plugin install |
 | [health-coverage/](health-coverage/) | Code health, coverage ingest, and impacted-tests (no LLM key) |
 | [opencode/](opencode/) | OpenCode as the LLM provider for wiki generation |
+| [security-scan/](security-scan/) | Working-tree security signals + OSS `security scan --history` (no LLM key) |
 
 ## Conventions
 
@@ -26,3 +27,4 @@ self-contained README under `examples/<name>/`.
 - [OpenCode integration](../docs/agent/OPENCODE.md)
 - [Code health](../docs/layers/CODE_HEALTH.md)
 - [Test intelligence](../docs/layers/TEST_INTELLIGENCE.md)
+- [CLI: security](../docs/reference/CLI_REFERENCE.md)
