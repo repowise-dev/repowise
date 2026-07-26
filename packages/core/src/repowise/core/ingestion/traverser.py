@@ -18,13 +18,14 @@ from __future__ import annotations
 import configparser
 import os
 import threading
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 
 import pathspec
 import structlog
+from pathspec.patterns.gitwildmatch import GitWildMatchPattern, GitWildMatchPatternError
 
 from .languages.registry import REGISTRY as _LANG_REGISTRY
 from .models import (
@@ -278,7 +279,7 @@ class FileTraverser:
             "gitwildmatch", _BLOCKED_FILENAME_PATTERNS
         )
         patterns = extra_exclude_patterns or []
-        self._extra_exclude = pathspec.PathSpec.from_lines("gitwildmatch", patterns)
+        self._extra_exclude = _compile_gitignore(patterns)
         # Per-directory ignore cache: absolute dir path -> PathSpec built from
         # that directory's nested .gitignore + .repowiseIgnore.
         # Pre-seed root: its .gitignore is matched full-path via self._gitignore
@@ -409,7 +410,7 @@ class FileTraverser:
                     lines.extend(
                         ignore_file.read_text(encoding="utf-8", errors="ignore").splitlines()
                     )
-            self._dir_ignore_cache[key] = pathspec.PathSpec.from_lines("gitwildmatch", lines)
+            self._dir_ignore_cache[key] = _compile_gitignore(lines)
         return self._dir_ignore_cache[key]
 
     def _should_skip_dir(
@@ -854,6 +855,28 @@ def _parse_gitmodules(repo_root: Path) -> frozenset[str]:
         return frozenset()
 
 
+def _compile_gitignore(lines: Iterable[str]) -> pathspec.PathSpec:
+    """Build a gitwildmatch ``PathSpec``, tolerating malformed patterns.
+
+    Git itself accepts ignore lines that ``pathspec`` rejects — e.g. a trailing
+    backslash like ``.godot\\`` (a real pattern found in Godot ``.gitignore``
+    files). ``PathSpec.from_lines`` raises ``GitWildMatchPatternError`` on the
+    first such line, which would abort ingestion of the entire repository over
+    one stray line that ``git status`` handles without complaint. Compile each
+    line independently and skip (with a warning) only the offending ones, so the
+    rest of the ignore file still applies.
+    """
+    patterns: list[GitWildMatchPattern] = []
+    for line in lines:
+        if not line:
+            continue
+        try:
+            patterns.append(GitWildMatchPattern(line))
+        except GitWildMatchPatternError:
+            log.warning("skipping malformed gitignore pattern", pattern=line)
+    return pathspec.PathSpec(patterns)
+
+
 def _load_gitignore_spec(repo_root: Path) -> pathspec.PathSpec:
     """Root ignore spec: ``.gitignore`` merged with ``.git/info/exclude``.
 
@@ -869,7 +892,7 @@ def _load_gitignore_spec(repo_root: Path) -> pathspec.PathSpec:
     ):
         if ignore_file.exists():
             lines.extend(ignore_file.read_text(encoding="utf-8", errors="ignore").splitlines())
-    return pathspec.PathSpec.from_lines("gitwildmatch", lines)
+    return _compile_gitignore(lines)
 
 
 def _load_extra_ignore_spec(repo_root: Path, filename: str) -> pathspec.PathSpec:
@@ -877,4 +900,4 @@ def _load_extra_ignore_spec(repo_root: Path, filename: str) -> pathspec.PathSpec
     lines: list[str] = []
     if ignore_file.exists():
         lines = ignore_file.read_text(encoding="utf-8", errors="ignore").splitlines()
-    return pathspec.PathSpec.from_lines("gitwildmatch", lines)
+    return _compile_gitignore(lines)
