@@ -59,9 +59,9 @@ All of the following ship in `pip install repowise` today, free for internal use
   extraction (HTTP / gRPC / topics) with provider↔consumer matching, package
   dependency mapping, federated MCP queries (`repo="all"`), workspace dashboard and
   `CLAUDE.md`.
-- **Proactive agent hooks** — PreToolUse graph enrichment on every `Grep`/`Glob`;
-  PostToolUse stale-wiki detection after `git commit`. No LLM calls, pure local
-  SQLite.
+- **Proactive agent hooks** — SessionStart freshness/trust context, plus
+  PostToolUse enrichment after agent tool use (Bash / Grep / Glob / Read /
+  Edit / Write / Repowise MCP). No LLM calls, pure local SQLite.
 - **Auto-sync** — post-commit hook, file watcher, GitHub webhook, GitLab webhook,
   polling fallback. Typical incremental update touches 3–10 pages in under 30 s.
 - **Local dashboard** — Chat, Docs, Graph, C4, Search, Symbols, Coverage, Risk,
@@ -126,12 +126,13 @@ the items that matter most to you can be prioritized.
 | Local dashboard (incl. local security pattern scan) | ✅ | ✅ |
 | Auto-sync (hooks, watcher, webhooks) | ✅ | ✅ |
 | Auto-generated CLAUDE.md | ✅ | ✅ |
+| Local full-history secret scan (`repowise security scan --history`) | ✅ | ✅ |
 | Graph-aware enhanced security scanning | — | ✅ *(GA on hosted)* |
 | Language-specific security rulesets | — | ✅ *(dev)* |
 | CVE-aware dependency analysis (KEV / EPSS / priority-scored) | — | ✅ *(GA on hosted)* |
 | Usage-aware CVE triage (imports × dead code) | — | ✅ *(GA on hosted)* |
 | Function-level reachability triage | — | ✅ *(GA on hosted — per-language coverage)* |
-| Secret detection across full git history | — | ✅ *(GA on hosted)* |
+| Hosted secret detection (fingerprint store, incremental re-scans) | — | ✅ *(GA on hosted)* |
 | SBOM generation (CycloneDX) + VEX export + diffs | — | ✅ *(GA on hosted)* |
 | Compliance reporting (PCI-DSS / SOC 2) | — | ✅ *(GA on hosted — Teams)* |
 | Audit trail (in-product + JSON / CSV export + webhook stream) | — | ✅ *(GA on hosted — security surface)* |
@@ -214,11 +215,13 @@ the items that matter most to you can be prioritized.
   SIEM-lite stream that forwards audit events to any HTTPS endpoint as signed
   webhooks. Coverage beyond the security surface (decisions, overrides) is in
   development; native Splunk / Datadog / Elastic connectors on the roadmap.
-- **Secret-in-code detection** *(available on the hosted platform, Pro+)* —
-  scanning across full git history (not just `HEAD`), with live-at-`HEAD`
-  flagging and incremental re-scans. Only a fingerprint and a redacted preview
-  are ever stored — never the secret value. Graph integration (which services /
-  modules referenced a leaked secret) is on the roadmap.
+- **Secret-in-code detection** — **OSS / self-hosted:** `repowise security scan
+  --history` walks full git history with the same local pattern registry used
+  during `init` / `update` (working-tree scanning), and persists findings
+  locally. **Hosted platform (Pro+):** fingerprint + redacted-preview storage,
+  live-at-`HEAD` flagging, and incremental re-scans — never the secret value.
+  Graph integration (which services / modules referenced a leaked secret) is on
+  the roadmap.
 
 ### 5.2 Workflow Integrations *(rolling out)*
 

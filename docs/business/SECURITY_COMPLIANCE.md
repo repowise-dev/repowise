@@ -143,7 +143,7 @@ off switches.
 | Where the index lives | `.repowise/` on your machine | Postgres + LanceDB/pgvector in your network | Repowise-operated infrastructure |
 | Who calls the LLM | you, with your key | you, with your key | the platform, or your key |
 | Outbound from your network | anonymous telemetry (disableable), your LLM provider | same, plus configured integrations | n/a, you are sending code to the platform |
-| Commercial security features (CVE triage, SBOM/VEX, secret history scan, compliance reports, audit trail) | not included | per [COMMERCIAL.md §5](COMMERCIAL.md#5-commercial-capabilities--in-detail) | GA today |
+| Commercial security features (CVE triage, SBOM/VEX, hosted secret detection, compliance reports, audit trail) | not included (local pattern + full-history scan via `repowise security scan --history` is OSS) | per [COMMERCIAL.md §5](COMMERCIAL.md#5-commercial-capabilities--in-detail) | GA today |
 
 The honest framing: **several commercial security capabilities are GA on the
 hosted platform first.** If your requirement is on-prem *and* CVE-aware
