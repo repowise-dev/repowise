@@ -104,6 +104,7 @@ def test_claude_plugin_commands_have_frontmatter() -> None:
         "reindex",
         "risk",
         "search",
+        "security",
         "status",
         "update",
     }
