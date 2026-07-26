@@ -74,6 +74,7 @@ export default function ArchitecturePage({
     parseAsStringLiteral(VIEWS).withDefault("map"),
   );
   const [viewModeParam] = useQueryState("viewMode");
+  const [, setFocus] = useQueryState("focus");
 
   // The curated layers view now lives at /knowledge-graph. `?view=layers`
   // redirects there so shared links keep working.
@@ -98,6 +99,17 @@ export default function ArchitecturePage({
     [setView],
   );
 
+  const handleTabChange = useCallback(
+    (id: string) => {
+      const next = id as ArchView;
+      void setView(next);
+      if (next !== "coupling") {
+        void setFocus(null);
+      }
+    },
+    [setView, setFocus],
+  );
+
   // The active canonical tab. Map/Explore are the only graph-canvas tabs;
   // everything else resolves to its own panel.
   const activeTab: (typeof CANONICAL_VIEWS)[number]["id"] =
@@ -115,7 +127,7 @@ export default function ArchitecturePage({
         <ViewTabs
           tabs={CANONICAL_VIEWS.map((v) => ({ id: v.id, label: v.label }))}
           value={activeTab}
-          onValueChange={(id) => void setView(id as ArchView)}
+          onValueChange={handleTabChange}
         />
       </div>
 

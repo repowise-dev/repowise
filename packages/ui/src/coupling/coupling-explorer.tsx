@@ -78,7 +78,10 @@ export function CouplingExplorer({
   onFocusChange,
 }: CouplingExplorerProps) {
   const defaultPin = useMemo(
-    () => (initialFocus !== undefined ? initialFocus : topHub(data.edges)),
+    () =>
+      initialFocus !== undefined && initialFocus !== ""
+        ? initialFocus
+        : topHub(data.edges),
     // Only seed once from the initial data/prop; user actions drive it after.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
@@ -88,6 +91,11 @@ export function CouplingExplorer({
   const [query, setQuery] = useState("");
   const [promptEdge, setPromptEdge] = useState<CouplingEdge | null>(null);
 
+  const changePin = (path: string | null) => {
+    setPinned(path);
+    onFocusChange?.(path);
+  };
+  
   // Drop a stale pin if a background revalidation returns an edge set that no
   // longer contains it, so the guidance never claims to trace a vanished file.
   const nodePaths = useMemo(
@@ -95,16 +103,14 @@ export function CouplingExplorer({
     [data.nodes],
   );
   useEffect(() => {
-    if (pinned && !nodePaths.has(pinned)) setPinned(null);
+    if (pinned && !nodePaths.has(pinned)) changePin(null);
+    // Intentionally keyed on pin + payload only; changePin always closes over
+    // the latest onFocusChange.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pinned, nodePaths]);
-
+  
   // Transient hover peeks over the sticky pin: what the ring and table light up.
   const focus = hover ?? pinned;
-
-  const changePin = (path: string | null) => {
-    setPinned(path);
-    onFocusChange?.(path);
-  };
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();

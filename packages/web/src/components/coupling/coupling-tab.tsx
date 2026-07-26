@@ -47,8 +47,8 @@ export function CouplingTab({ repoId }: { repoId: string }) {
           data={data}
           repoLinkPrefix={`/repos/${repoId}`}
           LinkComponent={Link}
-          // Absent `?focus=` → let the explorer open on the most-coupled hub.
-          initialFocus={focus ?? undefined}
+          // Absent / bare `?focus=` → let the explorer open on the most-coupled hub.
+          initialFocus={focus || undefined}
           onFocusChange={(path) => void setFocus(path)}
         />
       )}
