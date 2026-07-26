@@ -31,6 +31,36 @@ Reindex recommended: repowise init --force
 
 It is a recommendation, not a requirement. Nothing is wiped until you choose to run it. You can keep using the current index and reindex when convenient.
 
+## Behaviour changes worth knowing about
+
+### `health-rules.json` globs now match like `.gitignore`
+
+Per-path rules in `.repowise/health-rules.json` used to be matched with
+`fnmatch`, where `*` crossed directory separators. They now use the same
+gitignore matching as `exclude_patterns`, `.gitignore` and the file traverser,
+so one glob means one thing wherever you write it.
+
+**What changes for you:** a single `*` stops at a path segment. A rule written
+as `src/legacy/*` used to silence the whole subtree and now covers one level,
+which means biomarkers you had turned off can start firing again.
+
+**The fix is one character:**
+
+```diff
+- {"path": "src/legacy/*",  "disabled_biomarkers": ["complex_method"]}
++ {"path": "src/legacy/**", "disabled_biomarkers": ["complex_method"]}
+```
+
+You do not have to hunt for them. Any affected pattern logs a warning naming
+the pattern when the file is loaded:
+
+```
+health_rules_glob_narrowed pattern=src/legacy/* hint='*' no longer crosses '/' …
+```
+
+Patterns without a `/`, patterns already using `**`, and directory prefixes
+like `vendor/` are unaffected.
+
 ## Checking your version
 
 - CLI: `repowise --version`, or `repowise doctor` for an update check with the right upgrade command for your install method.

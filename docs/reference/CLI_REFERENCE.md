@@ -802,21 +802,30 @@ repowise costs --repo backend            # one workspace repo
 
 ### `repowise export [PATH]`
 
-Export wiki pages to files.
+Export wiki pages to files, or the architecture model as Structurizr DSL.
 
 **Options:**
 
 | Flag | Description |
 |------|-------------|
-| `--format` | `markdown` (default), `html`, `json` |
-| `--output / -o` | Output directory (default: `.repowise/export`) |
+| `--format` | `markdown` (default), `html`, `json`, `structurizr` |
+| `--output / -o` | Output directory (default: `.repowise/export`). For `structurizr`, a path ending in `.dsl` names the file itself |
 | `--full` | Include decisions, dead code, hotspots, provenance metadata (JSON only) |
+| `--standalone` | `structurizr` only: emit a complete workspace with default views instead of a model fragment |
+| `--components` | `structurizr` only: include the component level (one box per directory) |
+| `--no-externals` | `structurizr` only: leave third-party dependencies out |
 
 ```bash
 repowise export
 repowise export --format json --full
 repowise export --format html -o ./wiki/
+repowise export --format structurizr                       # repowise-model.dsl
+repowise export --format structurizr --standalone -o arch/ # renders on its own
 ```
+
+The `structurizr` format writes one file describing the architecture rather
+than a directory of pages. See
+[Structurizr DSL export](../architecture/structurizr-export.md).
 
 ---
 

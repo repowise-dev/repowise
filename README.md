@@ -550,6 +550,7 @@ repowise risk main..HEAD  # score a branch or PR range for defect risk
 repowise impacted-tests   # only the tests a diff actually exercises
 repowise dead-code        # unreachable-code report
 repowise decision list    # architectural decisions
+repowise export --format structurizr  # the architecture as Structurizr DSL, no LLM
 repowise distill pytest   # compact, errors-first, reversible command output
 repowise saved            # tokens and dollars saved by distillation
 repowise workspace add    # multi-repo workspace management

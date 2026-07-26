@@ -104,6 +104,7 @@ How repowise is built, for contributors and the curious.
 | [architecture/graph-algorithms.md](architecture/graph-algorithms.md) | Every graph algorithm, the intuition plus the math |
 | [architecture/language-support.md](architecture/language-support.md) | The language pipeline and how the tiers work |
 | [architecture/chat.md](architecture/chat.md) | Codebase chat: agent loop, streaming, artifact panel |
+| [architecture/structurizr-export.md](architecture/structurizr-export.md) | Export the architecture as Structurizr DSL and render it anywhere |
 | [architecture/editor-files.md](architecture/editor-files.md) | How `CLAUDE.md` and `AGENTS.md` get generated |
 | [architecture/deep-dives.md](architecture/deep-dives.md) | Systems not covered elsewhere |
 | [architecture/pluggable-storage.md](architecture/pluggable-storage.md) | The capability seams: storage, graph, vector, CLI, MCP |
