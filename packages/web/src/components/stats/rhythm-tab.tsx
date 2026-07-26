@@ -38,7 +38,12 @@ export function RhythmTab({ data }: { data: StatsHighlights }) {
 
   return (
     <div className="flex flex-col gap-8">
-      <PunchCard data={rhythm.punch_card} weekendDays={weekendDays} />
+      <PunchCard
+        data={rhythm.punch_card}
+        weekendDays={weekendDays}
+        firstCommitAt={data.origin.first_commit_at}
+        lastCommitAt={data.origin.last_commit_at}
+      />
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <StatCallout

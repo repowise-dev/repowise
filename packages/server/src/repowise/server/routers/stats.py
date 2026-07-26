@@ -278,13 +278,23 @@ def _longest_streak(commit_days: set[Any]) -> dict[str, Any] | None:
 
 
 def _chronotypes(
-    per_author_hours: dict[str, list[int]], names: dict[str, str]
+    per_author_hours: dict[str, list[int]],
+    per_author_weekdays: dict[str, list[int]],
+    names: dict[str, str],
 ) -> list[dict[str, Any]]:
     """Each frequent contributor's peak commit hour, with a habit label.
 
     Only meaningful once commits carry their author's UTC offset — the caller
     skips this entirely in UTC mode rather than award "night owl" to whoever
     happens to live furthest east.
+
+    Both marginal histograms ship alongside the label, because the UI names
+    people from them and weekday naming has to happen there: which days count
+    as the weekend is a reader preference, so a "weekend warrior" decided here
+    would be wrong for every team that rests Friday. The joint weekday-by-hour
+    distribution is deliberately not sent. It is 168 numbers per person to
+    sharpen a single label, and the two marginals answer the same question
+    closely enough.
     """
     out: list[dict[str, Any]] = []
     for key, hours in per_author_hours.items():
@@ -312,6 +322,8 @@ def _chronotypes(
                 "label": label,
                 "night_pct": round(night / total * 100.0, 1),
                 "early_pct": round(early / total * 100.0, 1),
+                "hour_commits": hours,
+                "weekday_commits": per_author_weekdays.get(key, [0] * 7),
             }
         )
     return sorted(out, key=lambda a: -a["commits"])[:8]
@@ -440,6 +452,7 @@ async def _commit_pass(session: AsyncSession, repo_id: str, repo: Any) -> dict[s
     commit_days: set[Any] = set()
     day_counts: dict[Any, int] = {}
     per_author_hours: dict[str, list[int]] = {}
+    per_author_weekdays: dict[str, list[int]] = {}
     for moment, offset, key in stamps:
         local = moment + timedelta(minutes=offset or 0) if local_mode else moment
         punch[local.weekday()][local.hour] += 1
@@ -448,6 +461,7 @@ async def _commit_pass(session: AsyncSession, repo_id: str, repo: Any) -> dict[s
         day_counts[day] = day_counts.get(day, 0) + 1
         if local_mode and key and key in human_keys:
             per_author_hours.setdefault(key, [0] * 24)[local.hour] += 1
+            per_author_weekdays.setdefault(key, [0] * 7)[local.weekday()] += 1
 
     busiest_day = None
     if day_counts:
@@ -506,7 +520,9 @@ async def _commit_pass(session: AsyncSession, repo_id: str, repo: Any) -> dict[s
             "longest_streak": _longest_streak(commit_days),
             "active_days": len(commit_days),
         },
-        "chronotypes": _chronotypes(per_author_hours, display_name) if local_mode else [],
+        "chronotypes": (
+            _chronotypes(per_author_hours, per_author_weekdays, display_name) if local_mode else []
+        ),
         "arrivals": arrivals,
         "biggest_commit": biggest_commit,
         "widest_commit": widest_commit,

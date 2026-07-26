@@ -114,6 +114,12 @@ export interface StatsChronotype {
   label: "night_owl" | "early_bird" | "daylight";
   night_pct: number;
   early_pct: number;
+  /** This person's own 24-hour commit histogram. */
+  hour_commits: number[];
+  /** This person's own weekday histogram, 0=Monday. Named client-side because
+   *  which days count as the weekend is the reader's preference, not the
+   *  server's. Older payloads omit both arrays; naming degrades to null. */
+  weekday_commits: number[];
 }
 
 export interface StatsArrival {

@@ -46,11 +46,46 @@ describe("weekendShare", () => {
 describe("PunchCard", () => {
   it("defaults the weekend share to Sat/Sun", () => {
     render(<PunchCard data={makePunchCard()} />);
-    expect(screen.getByText("20% on weekends")).toBeInTheDocument();
+    expect(screen.getByText("20%")).toBeInTheDocument();
   });
 
   it("honours a Friday/Saturday weekend", () => {
     render(<PunchCard data={makePunchCard()} weekendDays={weekendDaysFor("fri-sat")} />);
-    expect(screen.getByText("30% on weekends")).toBeInTheDocument();
+    expect(screen.getByText("30%")).toBeInTheDocument();
+  });
+
+  it("puts the total in the header, so the chart's scale is never in doubt", () => {
+    render(<PunchCard data={makePunchCard()} />);
+    expect(screen.getByText("10")).toBeInTheDocument();
+  });
+
+  it("names the hottest single slot, which the lattice alone cannot show", () => {
+    render(<PunchCard data={makePunchCard()} />);
+    expect(screen.getByText("Hottest slot")).toBeInTheDocument();
+    expect(screen.getByText(/Wed 2 PM/)).toBeInTheDocument();
+  });
+
+  it("reports the stretch nobody has ever committed in", () => {
+    render(<PunchCard data={makePunchCard()} />);
+    // The fixture only ever commits at 10, 11, 12 and 14, so the longest silent
+    // run wraps midnight: 15:00 through 09:59.
+    expect(screen.getByText("Quietest stretch")).toBeInTheDocument();
+    expect(screen.getByText(/3 PM/)).toBeInTheDocument();
+  });
+
+  it("withholds a name below the naming floor rather than guess", () => {
+    render(<PunchCard data={makePunchCard()} />);
+    expect(screen.queryByText("Ships like a")).not.toBeInTheDocument();
+  });
+
+  it("names the repo once there is enough history to mean it", () => {
+    const data = makePunchCard();
+    // 40 commits, all on Saturday afternoon: unambiguously weekend-led.
+    data.matrix[5]![14] = 40;
+    data.total = 50;
+    data.peak = { weekday: 5, hour: 14, count: 40 };
+    render(<PunchCard data={data} />);
+    expect(screen.getByText("Ships like a")).toBeInTheDocument();
+    expect(screen.getByText("Weekend Project")).toBeInTheDocument();
   });
 });

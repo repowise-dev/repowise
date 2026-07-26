@@ -14,6 +14,12 @@ export { ChronotypeList } from "./chronotype-list";
 export { ArrivalsTimeline } from "./arrivals-timeline";
 export { PunchCard } from "./punch-card";
 export {
+  repoArchetype,
+  contributorArchetype,
+  NAME_MIN_COMMITS,
+  type Archetype,
+} from "./archetype";
+export {
   WEEKEND_PRESETS,
   DEFAULT_WEEKEND_PRESET,
   weekendDaysFor,

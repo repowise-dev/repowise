@@ -1,8 +1,11 @@
+"use client";
+
 import Link from "next/link";
 import { AlertTriangle, Users } from "lucide-react";
 import type { StatsHighlights } from "@repowise-dev/types/stats";
 import { ArrivalsTimeline, ChronotypeList, StatCallout } from "@repowise-dev/ui/stats";
 import { formatNumber } from "@repowise-dev/ui/lib/format";
+import { useWeekendDays } from "@/lib/hooks/use-weekend";
 
 /**
  * Tab 3 — the human shape of the repo.
@@ -16,6 +19,9 @@ import { formatNumber } from "@repowise-dev/ui/lib/format";
 export function PeopleTab({ data, repoId }: { data: StatsHighlights; repoId: string }) {
   const { people } = data;
   const utcMode = data.rhythm.punch_card.timezone_mode === "utc";
+  // Same preset the punch card reads, so a person's "weekend warrior" and the
+  // repo's weekend share can never disagree about which days those are.
+  const weekendDays = useWeekendDays();
 
   return (
     <div className="flex flex-col gap-8">
@@ -53,7 +59,7 @@ export function PeopleTab({ data, repoId }: { data: StatsHighlights; repoId: str
       </div>
 
       {people.chronotypes.length > 0 ? (
-        <ChronotypeList people={people.chronotypes} />
+        <ChronotypeList people={people.chronotypes} weekendDays={weekendDays} />
       ) : (
         utcMode && (
           <p className="rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-4 text-sm text-[var(--color-text-secondary)]">
@@ -62,7 +68,7 @@ export function PeopleTab({ data, repoId }: { data: StatsHighlights; repoId: str
             <code className="rounded bg-[var(--color-bg-muted)] px-1.5 py-0.5 font-mono text-xs">
               repowise update
             </code>{" "}
-            to backfill it — no re-index required.
+            to backfill it, no re-index required.
           </p>
         )
       )}

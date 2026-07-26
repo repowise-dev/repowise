@@ -16,6 +16,7 @@ from httpx import AsyncClient
 from repowise.core.persistence.crud import get_repository, upsert_git_commits_bulk
 from repowise.core.persistence.database import get_session
 from repowise.server.routers.stats import (
+    _chronotypes,
     _commit_pass,
     _commit_velocity,
     _people,
@@ -69,6 +70,38 @@ def test_punch_card_summary_empty() -> None:
     assert out["peak"] is None
     assert out["busiest_weekday"] is None
     assert out["total"] == 0
+
+
+def test_chronotypes_ship_both_marginals() -> None:
+    """The UI names people from these arrays, so they must survive the trip.
+
+    Weekday counts in particular cannot be derived client-side from anything
+    else in the payload, and without them a contributor can never be read as
+    working weekends.
+    """
+    hours = [0] * 24
+    hours[23] = 30
+    weekdays = [0] * 7
+    weekdays[5] = 20
+    weekdays[2] = 10
+
+    out = _chronotypes({"a@b.com": hours}, {"a@b.com": weekdays}, {"a@b.com": "Someone"})
+
+    assert len(out) == 1
+    assert out[0]["hour_commits"] == hours
+    assert out[0]["weekday_commits"] == weekdays
+    assert out[0]["commits"] == 30
+    assert out[0]["label"] == "night_owl"
+
+
+def test_chronotypes_default_weekdays_when_missing() -> None:
+    """A person present in one map but not the other must not blow up the page."""
+    hours = [0] * 24
+    hours[14] = 40
+
+    out = _chronotypes({"a@b.com": hours}, {}, {})
+
+    assert out[0]["weekday_commits"] == [0] * 7
 
 
 def test_commit_velocity_rising_and_no_prior() -> None:
