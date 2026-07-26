@@ -16,6 +16,7 @@ import pytest
 from repowise.core.generation.context_assembler import ContextAssembler
 from repowise.core.generation.models import GenerationConfig
 from repowise.core.generation.page_generator import PageGenerator
+from repowise.core.generation.structural_labels import resolve_structural_labels
 from repowise.core.generation.styles import (
     DEFAULT_STYLE,
     ONBOARDING_PAGE_TYPE,
@@ -158,6 +159,7 @@ async def test_comprehensive_prompt_is_unchanged_vs_no_style(
 
     config = GenerationConfig(wiki_style="comprehensive")
     gen = PageGenerator(MockProvider(), ContextAssembler(config), config)
+    gen._jinja_env.globals["labels"] = resolve_structural_labels("en")
     ctx = gen._assembler.assemble_file_page(
         sample_parsed_file,
         sample_graph,
@@ -177,6 +179,7 @@ async def test_active_style_prepends_directive_to_prompt(
 
     config = GenerationConfig(wiki_style="caveman")
     gen = PageGenerator(MockProvider(), ContextAssembler(config), config)
+    gen._jinja_env.globals["labels"] = resolve_structural_labels("en")
     ctx = gen._assembler.assemble_file_page(
         sample_parsed_file,
         sample_graph,
@@ -397,6 +400,7 @@ async def test_custom_style_reaches_rendered_prompt(
     _write_custom_style(tmp_path, "terse", "user_directive: TERSE_MARKER be brief.\n")
     config = GenerationConfig(wiki_style="terse")
     gen = PageGenerator(MockProvider(), ContextAssembler(config), config, repo_path=tmp_path)
+    gen._jinja_env.globals["labels"] = resolve_structural_labels("en")
     assert gen._style.name == "terse"
     ctx = gen._assembler.assemble_file_page(
         sample_parsed_file,
