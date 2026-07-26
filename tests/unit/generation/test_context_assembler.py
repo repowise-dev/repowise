@@ -137,10 +137,12 @@ def test_assemble_file_page_filters_dependency_edges_by_semantics(
         "framework_entrypoint.py",
         "historical_dependency.py",
         "historical_dependent.py",
+        "external_file.py",
     )
     graph.add_nodes_from((node, {"node_type": "file"}) for node in file_nodes)
     graph.add_node(f"{path}::Calculator", node_type="symbol")
     graph.add_node("external:third-party", node_type="external")
+    graph.nodes["external_file.py"]["language"] = "external"
 
     graph.add_edge(path, "imported.py", edge_type="imports")
     graph.add_edge("importer.py", path, edge_type="imports")
@@ -150,6 +152,7 @@ def test_assemble_file_page_filters_dependency_edges_by_semantics(
     graph.add_edge(path, "historical_dependency.py", edge_type="co_changes")
     graph.add_edge("historical_dependent.py", path, edge_type="co_changes")
     graph.add_edge(path, "external:third-party", edge_type="imports")
+    graph.add_edge(path, "external_file.py", edge_type="imports")
 
     ctx = ContextAssembler(sample_config).assemble_file_page(
         sample_parsed_file,
