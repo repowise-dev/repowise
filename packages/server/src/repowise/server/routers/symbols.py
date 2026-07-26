@@ -18,6 +18,7 @@ from repowise.core.persistence.models import (
     GraphNode,
     WikiSymbol,
 )
+from repowise.core.persistence.sql import LIKE_ESCAPE, escape_like
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.schemas import Paginated, SymbolImportanceComponents, SymbolResponse
 from repowise.server.services.symbol_ranking import (
@@ -219,7 +220,7 @@ async def search_symbols(
 
     base = select(WikiSymbol).where(WikiSymbol.repository_id == repo_id)
     if q:
-        base = base.where(WikiSymbol.name.ilike(f"%{q}%"))
+        base = base.where(WikiSymbol.name.ilike(f"%{escape_like(q)}%", escape=LIKE_ESCAPE))
     if kind:
         base = base.where(WikiSymbol.kind == kind)
     if language:
@@ -510,7 +511,7 @@ async def lookup_by_name(
         select(WikiSymbol)
         .where(
             WikiSymbol.repository_id == repo_id,
-            WikiSymbol.name.ilike(f"%{name}%"),
+            WikiSymbol.name.ilike(f"%{escape_like(name)}%", escape=LIKE_ESCAPE),
         )
         .limit(10)
     )

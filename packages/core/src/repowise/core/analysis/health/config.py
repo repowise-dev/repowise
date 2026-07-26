@@ -6,8 +6,11 @@ detector list. Decisions deliberately kept narrow in v1:
 
 - Repo-wide ``disabled_biomarkers``: detectors that never fire.
 - Per-path ``rules``: a list of glob → ``disabled_biomarkers`` entries.
-  First matching glob wins. Patterns use ``fnmatch`` semantics over the
-  repo-relative POSIX path (``src/legacy/**.py``).
+  **Every** matching glob applies — the disabled sets union, so a path
+  matched by three rules is silenced for the union of their biomarkers
+  (severity remaps merge the same way, last matching rule winning per
+  biomarker). Patterns use ``fnmatch`` semantics over the repo-relative
+  POSIX path (``src/legacy/**.py``).
 - Repo-wide and per-path ``severity_overrides``: remap a biomarker's
   severity (typically a *demotion*, e.g. ``complex_method`` → ``low``) so a
   team can soften a signal it considers advisory without disabling it

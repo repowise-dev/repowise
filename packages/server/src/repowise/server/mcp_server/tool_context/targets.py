@@ -28,7 +28,9 @@ from repowise.core.persistence.models import (
     WikiSymbol,
 )
 from repowise.server.mcp_server._helpers import (
+    LIKE_ESCAPE,
     _decision_body,
+    escape_like,
     filter_dicts_by_key,
     filter_path_list,
     is_excluded,
@@ -47,7 +49,6 @@ from repowise.server.mcp_server.tool_context.kg import (
 )
 from repowise.server.mcp_server.tool_risk.assessment import fix_annotation
 
-
 # Skeleton-by-default threshold for file targets. Measured on this repo: a
 # 1,400-line file's default card costs ~2.5k tokens for 16 bare signatures,
 # while the smart skeleton costs ~1.7k and carries every signature plus
@@ -55,15 +56,6 @@ from repowise.server.mcp_server.tool_risk.assessment import fix_annotation
 # Small files skeletonize poorly (pct_of_full approaches a plain Read), so
 # the card remains the default below this line count.
 _SKELETON_AUTO_MIN_LINES = 80
-
-
-def _escape_like(value: str) -> str:
-    """Escape LIKE metacharacters (``%``, ``_``) and the escape char itself.
-
-    Paired with ``escape="\\"`` on every ``.like()`` so a target containing
-    ``_`` or ``%`` is matched literally instead of as a wildcard.
-    """
-    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def _synthesize_structural_summary(file_path: str, classes: list[str], functions: list[str]) -> str:
@@ -171,7 +163,7 @@ async def _resolve_one_target(
             )
             is_known_file = file_meta_res.scalar_one_or_none() is not None
             if not is_known_file:
-                esc = _escape_like(clean_target)
+                esc = escape_like(clean_target)
                 res = await session.execute(
                     select(Page).where(
                         Page.repository_id == repo_id,
@@ -208,7 +200,7 @@ async def _resolve_one_target(
                     select(WikiSymbol)
                     .where(
                         WikiSymbol.repository_id == repo_id,
-                        WikiSymbol.name.ilike(f"%{target}%"),
+                        WikiSymbol.name.ilike(f"%{escape_like(target)}%", escape="\\"),
                     )
                     .limit(10)
                 )
@@ -302,7 +294,7 @@ async def _resolve_one_target(
                 select(GitMetadata.file_path)
                 .where(
                     GitMetadata.repository_id == repo_id,
-                    GitMetadata.file_path.like(f"{dir_prefix}%"),
+                    GitMetadata.file_path.like(f"{escape_like(dir_prefix)}%", escape=LIKE_ESCAPE),
                 )
                 .limit(5)
             )
@@ -546,7 +538,7 @@ async def _resolve_one_target(
                 select(Page).where(
                     Page.repository_id == repo_id,
                     Page.page_type == "file_page",
-                    Page.target_path.like(f"{page.target_path}/%"),
+                    Page.target_path.like(f"{escape_like(page.target_path)}/%", escape=LIKE_ESCAPE),
                 )
             )
             file_pages = res.scalars().all()

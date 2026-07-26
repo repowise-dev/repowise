@@ -28,11 +28,6 @@ async def with_repo(
     return repo
 
 
-def _escape_like(s: str) -> str:
-    """Escape special characters for SQL LIKE patterns."""
-    return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-
-
 async def _get_documented_paths(session: AsyncSession, repo_id: str) -> set[str]:
     """Return the set of node_ids (file paths) that have a wiki page."""
     result = await session.execute(select(Page.target_path).where(Page.repository_id == repo_id))

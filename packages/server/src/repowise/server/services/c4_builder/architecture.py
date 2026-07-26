@@ -156,10 +156,20 @@ def _percentile_ranks(values: list[float]) -> dict[int, float]:
 
 
 def _load_knowledge_graph(path: str) -> dict | None:
+    """Read the curated knowledge-graph artifact, or ``None`` if unusable.
+
+    The file is user-visible and hand-editable, so a trailing comma in it
+    must not become a 500 on the architecture view — returning ``None``
+    drops through to the community/directory rungs of the layer cascade.
+    """
     if not path or not os.path.isfile(path):
         return None
-    with open(path) as f:
-        return json.load(f)
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+        logger.warning("kg_file_unreadable path=%s", path, exc_info=True)
+        return None
 
 
 def _sub_groups_from_raw(raw_sub_groups: list[dict] | None, node_ids: set[str]) -> list[dict]:
@@ -218,11 +228,13 @@ def _layers_from_communities(
         if cid in meta:
             with contextlib.suppress(json.JSONDecodeError, TypeError):
                 cm = json.loads(meta[cid])
+        # The writer stores only ``label`` and ``cohesion`` in this blob;
+        # there is no description to read back.
         layers.append(
             {
                 "id": f"layer:community-{cid}",
-                "name": cm.get("name", f"Community {cid}"),
-                "description": cm.get("description", ""),
+                "name": cm.get("label") or f"Community {cid}",
+                "description": "",
                 "node_ids": groups[cid],
             }
         )

@@ -15,6 +15,10 @@ from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTR
 from repowise.core.persistence.models import (
     Repository,
 )
+
+# Re-exported: MCP tools import their helpers from here, but the definition
+# lives in core because the CRUD layer needs the same escaping.
+from repowise.core.persistence.sql import LIKE_ESCAPE, escape_like  # noqa: F401
 from repowise.server.mcp_server import _state
 
 # ---------------------------------------------------------------------------

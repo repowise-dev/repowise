@@ -8,9 +8,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi import APIRouter, Depends, Query
 from repowise.core.persistence import crud
 from repowise.core.persistence.models import GraphEdge, GraphNode
+from repowise.core.persistence.sql import LIKE_ESCAPE, escape_like
 from repowise.server.deps import get_db_session
 from repowise.server.mcp_server._graph_utils import _node_id_is_excluded
-from repowise.server.routers.graph._common import _escape_like, with_repo
+from repowise.server.routers.graph._common import with_repo
 from repowise.server.schemas import GraphExportResponse, NodeSearchResult
 from repowise.server.services.graph_views import edge_response
 from repowise.server.services.node_signals import (
@@ -93,7 +94,7 @@ async def search_nodes(
         select(GraphNode)
         .where(
             GraphNode.repository_id == repo_id,
-            GraphNode.node_id.ilike(f"%{_escape_like(q)}%"),
+            GraphNode.node_id.ilike(f"%{escape_like(q)}%", escape=LIKE_ESCAPE),
         )
         .order_by(GraphNode.symbol_count.desc(), GraphNode.pagerank.desc())
         .limit(limit)

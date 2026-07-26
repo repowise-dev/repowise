@@ -20,6 +20,7 @@ from ..models import (
     _new_uuid,
     _now_utc,
 )
+from ..sql import LIKE_ESCAPE, escape_like
 from ._shared import _BATCH_SIZE, _batch_upsert_keyed
 
 # ---------------------------------------------------------------------------
@@ -402,7 +403,7 @@ async def get_git_commit(session: AsyncSession, repository_id: str, sha: str) ->
     result = await session.execute(
         select(GitCommit).where(
             GitCommit.repository_id == repository_id,
-            GitCommit.sha.like(f"{sha}%"),
+            GitCommit.sha.like(f"{escape_like(sha)}%", escape=LIKE_ESCAPE),
         )
     )
     return result.scalars().first()

@@ -29,6 +29,7 @@ from repowise.core.test_paths import is_test_path, is_test_related_path
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
     _get_repo,
+    escape_like,
     is_excluded,
 )
 
@@ -145,10 +146,11 @@ def _candidate_filter(qtokens: set[str], qnorm: str):
         # Case-insensitive equality — WikiSymbol.name keeps original casing and
         # SQLite "=" is case-sensitive, so a lowercased qnorm would never match.
         clauses.append(func.lower(WikiSymbol.name) == qnorm)
-        clauses.append(WikiSymbol.qualified_name.ilike(f"%{qnorm}%"))
+        clauses.append(WikiSymbol.qualified_name.ilike(f"%{escape_like(qnorm)}%", escape="\\"))
     for tok in qtokens:
-        clauses.append(WikiSymbol.name.ilike(f"%{tok}%"))
-        clauses.append(WikiSymbol.qualified_name.ilike(f"%{tok}%"))
+        esc = escape_like(tok)
+        clauses.append(WikiSymbol.name.ilike(f"%{esc}%", escape="\\"))
+        clauses.append(WikiSymbol.qualified_name.ilike(f"%{esc}%", escape="\\"))
     return or_(*clauses) if clauses else None
 
 
@@ -278,7 +280,7 @@ async def search_paths_single(ctx: Any, query: str, limit: int) -> list[dict]:
             select(Page.id, Page.title, Page.target_path, Page.freshness_status).where(
                 Page.repository_id == repository.id,
                 Page.page_type == "file_page",
-                Page.target_path.ilike(f"%{qnorm}%"),
+                Page.target_path.ilike(f"%{escape_like(qnorm)}%", escape="\\"),
             )
         )
         rows = res.all()

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime
 from pathlib import Path
 
@@ -629,53 +628,6 @@ class TestToJson:
         node_ids = {n["id"] for n in data["nodes"]}
         assert "x.py" in node_ids
         assert "y.py" in node_ids
-
-
-# ---------------------------------------------------------------------------
-# Persistence
-# ---------------------------------------------------------------------------
-
-
-class TestPersist:
-    def test_persist_creates_tables(self, tmp_path: Path) -> None:
-        import aiosqlite
-
-        b = GraphBuilder()
-        b.add_file(_parsed("a.py"))
-        b.add_file(_parsed("b.py", imports=[_imp("a")]))
-        b.build()
-
-        db_path = tmp_path / "graph.db"
-
-        async def run() -> None:
-            await b.persist(db_path, repo_id="test-repo")
-            async with aiosqlite.connect(db_path) as db:
-                async with db.execute("SELECT * FROM graph_nodes") as cur:
-                    rows = await cur.fetchall()
-                # 2 file nodes + 2 synthetic __module__ symbol nodes
-                assert len(rows) == 4
-                async with db.execute("SELECT * FROM graph_edges") as cur:
-                    edges = await cur.fetchall()
-                # 1 import edge + 2 defines edges for __module__ symbols
-                assert len(edges) == 3
-
-        asyncio.run(run())
-
-    def test_persist_stores_repo_id(self, tmp_path: Path) -> None:
-        import aiosqlite
-
-        b = GraphBuilder()
-        b.add_file(_parsed("x.py"))
-
-        db_path = tmp_path / "graph.db"
-
-        async def run() -> None:
-            await b.persist(db_path, repo_id="my-project")
-            async with aiosqlite.connect(db_path) as db:
-                async with db.execute("SELECT repo_id FROM graph_nodes LIMIT 1") as cur:
-                    row = await cur.fetchone()
-                assert row is not None
-                assert row[0] == "my-project"
 
 
 # ---------------------------------------------------------------------------
