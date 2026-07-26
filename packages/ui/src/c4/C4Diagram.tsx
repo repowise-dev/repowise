@@ -73,6 +73,12 @@ export interface C4DiagramProps {
    */
   fetchMermaid?: (() => Promise<string>) | undefined;
 
+  /**
+   * Host-provided Structurizr DSL fetcher. When supplied, the export menu
+   * offers "Structurizr DSL". Omit to hide.
+   */
+  fetchStructurizr?: (() => Promise<string>) | undefined;
+
   onLevelChange: (level: C4Level) => void;
   onDrillInto: (containerId: string) => void;
   onDrillOut: () => void;
@@ -98,6 +104,7 @@ function C4DiagramInner({
   docsPathSet,
   renderInspector,
   fetchMermaid,
+  fetchStructurizr,
   onLevelChange,
   onDrillInto,
   onDrillOut,
@@ -188,6 +195,7 @@ function C4DiagramInner({
             title={exportTitle(systemName, level, activeContainerPath)}
             disabled={nodes.length === 0}
             {...(fetchMermaid ? { fetchMermaid } : {})}
+            {...(fetchStructurizr ? { fetchStructurizr } : {})}
           />
         </div>
       </div>

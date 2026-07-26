@@ -1,7 +1,8 @@
 "use client";
 
 /**
- * Toolbar dropdown to export the current C4 view as SVG, PNG, or Mermaid.
+ * Toolbar dropdown to export the current C4 view as SVG, PNG, Mermaid,
+ * Structurizr DSL, or JSON.
  *
  * SVG/PNG are built locally from the React Flow layout (svg-exporter +
  * png-exporter). Mermaid is fetched from the host because the backend has
@@ -26,6 +27,14 @@ export interface C4ExportMenuProps {
   title?: string;
   /** Host-provided fetcher for the Mermaid source. Hidden if omitted. */
   fetchMermaid?: () => Promise<string>;
+  /**
+   * Host-provided fetcher for the Structurizr DSL. Hidden if omitted.
+   *
+   * The file the host returns carries its own header comment explaining that
+   * it is a model fragment and how to include it, so someone who downloads it
+   * without reading any docs still knows what they have.
+   */
+  fetchStructurizr?: () => Promise<string>;
   /** Disabled when the diagram is empty / still loading. */
   disabled?: boolean;
   /** Architecture view data for JSON export. JSON option hidden if omitted. */
@@ -44,6 +53,7 @@ export function C4ExportMenu({
   fileNameStem,
   title,
   fetchMermaid,
+  fetchStructurizr,
   disabled,
   architectureView,
   activeFilters,
@@ -102,6 +112,22 @@ export function C4ExportMenu({
     triggerDownload(new Blob([json], { type: "application/json;charset=utf-8" }), `${fileNameStem}-architecture.json`);
     setOpen(false);
   }, [architectureView, activeFilters, activePersona, fileNameStem]);
+
+  const onStructurizr = useCallback(async () => {
+    if (!fetchStructurizr) return;
+    setStatus("working");
+    try {
+      const text = await fetchStructurizr();
+      triggerDownload(
+        new Blob([text], { type: "text/plain;charset=utf-8" }),
+        "repowise-model.dsl",
+      );
+      setStatus("idle");
+      setOpen(false);
+    } catch {
+      setStatus("error");
+    }
+  }, [fetchStructurizr]);
 
   const onMermaidDownload = useCallback(async () => {
     if (!fetchMermaid) return;
@@ -173,6 +199,16 @@ export function C4ExportMenu({
                 icon={<FileType2 size={12} />}
                 label="Download Mermaid (.mmd)"
                 onClick={onMermaidDownload}
+              />
+            </>
+          )}
+          {fetchStructurizr && (
+            <>
+              <Divider />
+              <MenuItem
+                icon={<FileType2 size={12} />}
+                label="Structurizr DSL"
+                onClick={onStructurizr}
               />
             </>
           )}
