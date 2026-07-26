@@ -313,6 +313,7 @@ class TestFilePageTemplate:
             oneline,
             signature,
         )
+        from repowise.core.generation.structural_labels import resolve_structural_labels
 
         template_dir = (
             Path(__file__).resolve().parents[3]
