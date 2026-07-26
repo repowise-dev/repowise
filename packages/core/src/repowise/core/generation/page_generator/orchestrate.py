@@ -196,6 +196,7 @@ class _GenerationRun:
             self.gen._provider.provider_name,
             self.gen._provider.model_name,
         )
+        self.gen._last_job_id = self.job_id
 
     def _emit(self, page_id: str) -> bool:
         """Whether this run should generate ``page_id``.

@@ -143,22 +143,25 @@ async def test_sink_failure_never_breaks_generation(repo_dir, monkeypatch):
 async def test_generation_completion_callback_reports_only_current_run_failures(
     repo_dir, monkeypatch
 ):
-    """The completion callback excludes failures persisted by an older job."""
-    jobs = JobSystem(repo_dir / ".repowise" / "jobs")
-    stale_job = jobs.create_job(str(repo_dir), GenerationConfig(), "test", "test")
-    jobs.start_job(stale_job, 1)
-    jobs.fail_page(stale_job, "stale-page", "old failure")
-    jobs.complete_job(stale_job)
+    """The callback follows this generator's checkpoint amid another new job."""
 
     class ControlledGenerator:
         def __init__(self, *_args, **_kwargs) -> None:
-            pass
+            self.last_job_id: str | None = None
 
         async def generate_all(self, *_args, job_system, **_kwargs):
             current_job = job_system.create_job(str(repo_dir), GenerationConfig(), "test", "test")
             job_system.start_job(current_job, 1)
             job_system.fail_page(current_job, "current-page", "controlled failure")
             job_system.complete_job(current_job)
+            self.last_job_id = current_job
+
+            # Simulate another run creating a checkpoint after this one. A
+            # list-diff approach cannot distinguish the two new jobs.
+            other_job = job_system.create_job(str(repo_dir), GenerationConfig(), "test", "test")
+            job_system.start_job(other_job, 1)
+            job_system.fail_page(other_job, "other-page", "other run failure")
+            job_system.complete_job(other_job)
             return []
 
     monkeypatch.setattr("repowise.core.generation.PageGenerator", ControlledGenerator)
@@ -181,3 +184,87 @@ async def test_generation_completion_callback_reports_only_current_run_failures(
 
     assert pages == []
     assert reported_failures == [["current-page"]]
+
+
+async def test_generation_ignores_completion_callback_exception(repo_dir, monkeypatch):
+    """A completion reporting failure cannot stop otherwise successful generation."""
+
+    class ControlledGenerator:
+        def __init__(self, *_args, **_kwargs) -> None:
+            self.last_job_id = None
+
+        async def generate_all(self, *_args, job_system, **_kwargs):
+            self.last_job_id = job_system.create_job(
+                str(repo_dir), GenerationConfig(), "test", "test"
+            )
+            job_system.start_job(self.last_job_id, 0)
+            job_system.complete_job(self.last_job_id)
+            return []
+
+    monkeypatch.setattr("repowise.core.generation.PageGenerator", ControlledGenerator)
+
+    callback_called = False
+
+    def failing_callback(_failed_page_ids: list[str]) -> None:
+        nonlocal callback_called
+        callback_called = True
+        raise RuntimeError("reporting unavailable")
+
+    pages = await run_generation(
+        repo_path=repo_dir,
+        parsed_files=[],
+        source_map={},
+        graph_builder=object(),
+        repo_structure=object(),
+        git_meta_map={},
+        llm_client=object(),
+        embedder=None,
+        vector_store=None,
+        concurrency=1,
+        progress=None,
+        on_generation_complete=failing_callback,
+    )
+
+    assert pages == []
+    assert callback_called
+
+
+async def test_generation_ignores_failed_completion_checkpoint_read(repo_dir, monkeypatch):
+    """A failed read of this run's checkpoint cannot stop generation."""
+
+    class ControlledGenerator:
+        def __init__(self, *_args, **_kwargs) -> None:
+            self.last_job_id = None
+
+        async def generate_all(self, *_args, job_system, **_kwargs):
+            self.last_job_id = job_system.create_job(
+                str(repo_dir), GenerationConfig(), "test", "test"
+            )
+            job_system.start_job(self.last_job_id, 0)
+            job_system.complete_job(self.last_job_id)
+            return []
+
+    def fail_get_checkpoint(self, _job_id):
+        raise OSError("checkpoint unavailable")
+
+    monkeypatch.setattr("repowise.core.generation.PageGenerator", ControlledGenerator)
+    monkeypatch.setattr(JobSystem, "get_checkpoint", fail_get_checkpoint)
+
+    reported_failures: list[list[str]] = []
+    pages = await run_generation(
+        repo_path=repo_dir,
+        parsed_files=[],
+        source_map={},
+        graph_builder=object(),
+        repo_structure=object(),
+        git_meta_map={},
+        llm_client=object(),
+        embedder=None,
+        vector_store=None,
+        concurrency=1,
+        progress=None,
+        on_generation_complete=reported_failures.append,
+    )
+
+    assert pages == []
+    assert reported_failures == []
