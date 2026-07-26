@@ -226,6 +226,7 @@ async def test_generate_invokes_opencode_with_stdin(monkeypatch, tmp_path):
     assert captured["kwargs"]["stdin"] == asyncio.subprocess.PIPE
     env = captured["kwargs"].get("env", {})
     assert "OPENCODE_CONFIG_CONTENT" in env
+    assert env.get("OPENCODE_DISABLE_PROJECT_CONFIG") == "true"
     config = json.loads(env["OPENCODE_CONFIG_CONTENT"])
     assert config["permission"]["edit"] == "deny"
     assert config["permission"]["bash"] == "deny"
