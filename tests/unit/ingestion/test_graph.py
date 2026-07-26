@@ -979,3 +979,36 @@ class TestDynamicEdgeExcludeFilter:
         gb._graph.add_node("src/main.py")
         gb.add_dynamic_edges([self._edge("src/utils.py")])
         assert "src/utils.py" in gb._graph
+
+
+class TestInlineTestHintDoesNotMarkFileAsTest:
+    """A ``:test`` hint records that a file *contains* tests, not that it is one.
+
+    Rust keeps unit tests inside the production file, so the old propagation
+    marked every ``src/lib.rs`` with an inline ``mod tests`` as a test file and
+    dropped it from dead-code analysis, the knowledge graph and key-concept
+    selection (#1103).
+    """
+
+    def _test_edge(self, source: str):
+        from repowise.core.ingestion.dynamic_hints import DynamicEdge
+
+        return DynamicEdge(
+            source=source,
+            target=source,
+            edge_type="dynamic_uses",
+            hint_source="rust:test",
+            weight=1.0,
+        )
+
+    def test_production_file_with_inline_tests_keeps_its_flag(self):
+        gb = GraphBuilder("/tmp/fake")
+        gb._graph.add_node("src/lib.rs", is_test=False)
+        gb.add_dynamic_edges([self._test_edge("src/lib.rs")])
+        assert gb._graph.nodes["src/lib.rs"]["is_test"] is False
+
+    def test_the_hint_is_still_recorded_on_the_edge(self):
+        gb = GraphBuilder("/tmp/fake")
+        gb._graph.add_node("src/lib.rs", is_test=False)
+        gb.add_dynamic_edges([self._test_edge("src/lib.rs")])
+        assert gb._graph.edges["src/lib.rs", "src/lib.rs"]["hint_source"] == "rust:test"
