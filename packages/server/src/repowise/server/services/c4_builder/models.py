@@ -114,6 +114,31 @@ class C4L3:
     relations: list[Relation]
 
 
+@dataclass(frozen=True)
+class C4Model:
+    """Every C4 level at once, built from one pass over the graph.
+
+    The dashboard views (``C4L1``/``C4L2``/``C4L3``) each answer one question
+    about one level. Anything that has to walk the whole model — an export,
+    say — would otherwise call ``build_l3`` per container and re-read the
+    graph each time. This carries all of it, and nothing below it touches a
+    session, so an emitter is a pure function of this value.
+
+    ``components_by_container`` is empty when components were not requested.
+    ``component_relations`` roll edges up to component granularity across
+    every container, so a cross-container edge names the real component on
+    both ends rather than collapsing into its container.
+    """
+
+    system: System
+    people: list[Person]
+    containers: list[Container]
+    components_by_container: dict[str, list[Component]]
+    external_systems: list[ExternalSystemView]
+    container_relations: list[Relation]
+    component_relations: list[Relation]
+
+
 # ---------------------------------------------------------------------------
 # Architecture view (unified model)
 # ---------------------------------------------------------------------------

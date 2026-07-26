@@ -28,12 +28,13 @@ from repowise.core.persistence.crud import get_kg_project_meta
 from repowise.core.persistence.models import DeadCodeFinding, GitMetadata
 
 from .actors import derive_actors
-from .components import detect_components
+from .components import detect_components, detect_components_for_all
 from .containers import container_id, detect_containers
 from .models import (
     C4L1,
     C4L2,
     C4L3,
+    C4Model,
     Component,
     Container,
     ExternalSystemView,
@@ -41,13 +42,14 @@ from .models import (
     Relation,
     System,
 )
-from .relations import aggregate_relations, external_node_to_system_id
+from .relations import aggregate_relations, external_node_to_system_id, load_edges
 from .signals import count_box_signals
 
 __all__ = [
     "C4L1",
     "C4L2",
     "C4L3",
+    "C4Model",
     "Component",
     "Container",
     "ExternalSystemView",
@@ -58,6 +60,7 @@ __all__ = [
     "build_l1",
     "build_l2",
     "build_l3",
+    "build_model",
     "container_id",
     "load_repo",
 ]
@@ -244,6 +247,79 @@ async def build_l3(session: AsyncSession, repo_id: str, container_id_value: str)
         components=components,
         external_systems=externals,
         relations=relations,
+    )
+
+
+async def build_model(
+    session: AsyncSession, repo_id: str, *, include_components: bool = True
+) -> C4Model:
+    """Build every C4 level in one pass, for callers that need the whole model.
+
+    ``build_l3`` re-reads the graph per container, which is correct for a
+    dashboard showing one at a time and quadratic-feeling for anything walking
+    all of them. Here the file table and the edge table are each read once and
+    sliced in Python.
+
+    Set ``include_components=False`` to stop after containers — the component
+    level is the expensive half and an export may not want it.
+    """
+    repo = await load_repo(session, repo_id)
+    system = _system_for(repo, repo_id)
+    containers = await detect_containers(session, repo_id, root_name=repo.name if repo else None)
+    externals_all, _ = await _external_views(session, repo_id)
+
+    entry_points = await _curated_entry_points(session, repo_id)
+    people = [
+        Person(id=a.id, name=a.name, description=a.description, kind=a.kind)
+        for a in derive_actors(entry_points)
+    ]
+
+    file_to_container = await _file_to_container_map(session, repo_id, containers)
+    file_to_external = await external_node_to_system_id(session, repo_id)
+    containers = await _annotate_container_signals(
+        session, repo_id, containers, file_to_container
+    )
+
+    edges = await load_edges(session, repo_id)
+    container_relations = await aggregate_relations(
+        session,
+        repo_id,
+        file_to_box=file_to_container,
+        file_to_external=file_to_external,
+        edges=edges,
+    )
+
+    components_by_container: dict[str, list[Component]] = {}
+    component_relations: list[Relation] = []
+    if include_components:
+        detected = await detect_components_for_all(session, repo_id, containers)
+        file_to_component: dict[str, str] = {}
+        for cid, (components, file_index) in detected.items():
+            components_by_container[cid] = components
+            file_to_component.update(file_index)
+        component_relations = await aggregate_relations(
+            session,
+            repo_id,
+            file_to_box=file_to_component,
+            file_to_external=file_to_external,
+            edges=edges,
+        )
+
+    # An external nobody depends on is noise in every view that shows it.
+    used = {r.target_id for r in container_relations if _is_external_box(r.target_id)}
+    used |= {r.source_id for r in container_relations if _is_external_box(r.source_id)}
+    used |= {r.target_id for r in component_relations if _is_external_box(r.target_id)}
+    used |= {r.source_id for r in component_relations if _is_external_box(r.source_id)}
+    externals = [e for e in externals_all if e.id in used]
+
+    return C4Model(
+        system=system,
+        people=people,
+        containers=containers,
+        components_by_container=components_by_container,
+        external_systems=externals,
+        container_relations=container_relations,
+        component_relations=component_relations,
     )
 
 

@@ -33,7 +33,7 @@ from repowise.core.ids import ComponentId, render
 from repowise.core.persistence import GraphNode
 
 from .containers import container_id
-from .models import Component
+from .models import Component, Container
 
 # Source-root directories that carry no architectural meaning — skipped so a
 # component reflects the real feature directory beneath them. Deliberately only
@@ -101,7 +101,60 @@ async def detect_components(
     file_nodes = await _files_in(
         session, repository_id, container_path, sibling_roots=sibling_roots
     )
+    return _bucket_into_components(file_nodes, container_path, root_label)
 
+
+async def detect_components_for_all(
+    session: AsyncSession,
+    repository_id: str,
+    containers: Iterable[Container],
+    *,
+    root_label: str = ROOT_BUCKET_LABEL,
+) -> dict[str, tuple[list[Component], dict[str, str]]]:
+    """Same as :func:`detect_components`, for every container, in one query.
+
+    :func:`detect_components` re-reads the file table per call and throws away
+    everything outside its container, which is right for the dashboard (one
+    container at a time) and wasteful for anything walking the whole model.
+    This reads once and slices in Python; the ownership rules are shared, so
+    the two agree by construction.
+
+    Returns ``{container_id: (components, file_index)}``.
+    """
+    containers = list(containers)
+    all_files = await _files_in(session, repository_id, "")
+    by_path: dict[str, list[GraphNode]] = defaultdict(list)
+    for node in all_files:
+        by_path[node.node_id].append(node)
+
+    roots = [c.path for c in containers if c.path]
+    out: dict[str, tuple[list[Component], dict[str, str]]] = {}
+    for container in containers:
+        sibling_prefixes = tuple(
+            r + "/" for r in roots if r and r != container.path
+        )
+        owned = [
+            n
+            for n in all_files
+            if _owned_by(n.node_id, container.path, sibling_prefixes)
+        ]
+        out[container.id] = _bucket_into_components(owned, container.path, root_label)
+    return out
+
+
+def _owned_by(node_id: str, container_path: str, sibling_prefixes: tuple[str, ...]) -> bool:
+    """Whether *node_id* belongs to a container — the rule :func:`_files_in` applies."""
+    if container_path and not (
+        node_id == container_path or node_id.startswith(container_path + "/")
+    ):
+        return False
+    return not node_id.startswith(sibling_prefixes) if sibling_prefixes else True
+
+
+def _bucket_into_components(
+    file_nodes: list[GraphNode], container_path: str, root_label: str
+) -> tuple[list[Component], dict[str, str]]:
+    """Group a container's files into components. Pure — no session."""
     bucket: dict[str, list[GraphNode]] = defaultdict(list)
     meta: dict[str, tuple[str, str]] = {}  # comp_id -> (name, path)
     file_owner: dict[str, str] = {}
@@ -166,4 +219,9 @@ async def _files_in(
     return nodes
 
 
-__all__ = ["ROOT_BUCKET_LABEL", "component_id", "detect_components"]
+__all__ = [
+    "ROOT_BUCKET_LABEL",
+    "component_id",
+    "detect_components",
+    "detect_components_for_all",
+]

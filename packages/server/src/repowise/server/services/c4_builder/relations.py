@@ -30,12 +30,30 @@ from .labels import coupling_strength, relation_label
 from .models import Relation
 
 
+async def load_edges(
+    session: AsyncSession, repository_id: str
+) -> list[tuple[str, str, str | None]]:
+    """Read every graph edge once, as ``(source, target, type)`` rows.
+
+    Split out so a caller rolling the same edges up several ways — by
+    container and by component, say — pays for one read instead of one per
+    aggregation.
+    """
+    result = await session.execute(
+        select(GraphEdge.source_node_id, GraphEdge.target_node_id, GraphEdge.edge_type).where(
+            GraphEdge.repository_id == repository_id
+        )
+    )
+    return list(result.all())
+
+
 async def aggregate_relations(
     session: AsyncSession,
     repository_id: str,
     file_to_box: dict[str, str],
     *,
     file_to_external: dict[str, str] | None = None,
+    edges: list[tuple[str, str, str | None]] | None = None,
 ) -> list[Relation]:
     """Roll file→file edges up to box→box edges.
 
@@ -47,17 +65,17 @@ async def aggregate_relations(
         Map of ``external:*`` node_id → external-system id (e.g., ``ext:react``).
         When provided, edges whose target is an external node are also
         emitted (as box → external).
+    edges:
+        Pre-loaded rows from :func:`load_edges`. Omit to read them here.
     """
     file_to_external = file_to_external or {}
-    result = await session.execute(
-        select(GraphEdge.source_node_id, GraphEdge.target_node_id, GraphEdge.edge_type)
-        .where(GraphEdge.repository_id == repository_id)
-    )
+    if edges is None:
+        edges = await load_edges(session, repository_id)
 
     counts: dict[tuple[str, str], int] = defaultdict(int)
     types: dict[tuple[str, str], set[str]] = defaultdict(set)
 
-    for src, tgt, etype in result.all():
+    for src, tgt, etype in edges:
         src_box = file_to_box.get(src)
         if src_box is None:
             continue
