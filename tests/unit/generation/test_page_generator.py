@@ -218,6 +218,27 @@ async def test_invalid_provider_output_raises_and_is_not_cached(sample_config):
     assert provider.call_count == 2
 
 
+def test_generated_page_retains_completion_stop_metadata(sample_config):
+    generator = PageGenerator(MockProvider(), ContextAssembler(sample_config), sample_config)
+    page = generator._build_generated_page(
+        "module_page",
+        "pkg",
+        "Package",
+        GeneratedResponse(
+            content="## Overview\n\nA package.",
+            input_tokens=10,
+            output_tokens=20,
+            stop_reason="end_turn",
+            provider_stop_reason="stop",
+        ),
+        "source-hash",
+        4,
+    )
+
+    assert page.metadata["stop_reason"] == "end_turn"
+    assert page.metadata["provider_stop_reason"] == "stop"
+
+
 async def test_prior_page_reuse_bypasses_fresh_output_validation(sample_config):
     provider = MockProvider()
     prompt = "Document this module."
