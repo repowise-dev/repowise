@@ -347,9 +347,18 @@ async def get_perf_coverage(session: AsyncSession, repository_id: str) -> PerfCo
     return coverage_for_metrics(metrics, lang_by_path)
 
 
-async def get_health_summary(session: AsyncSession, repository_id: str) -> dict:
-    """Aggregate KPIs over the per-file metrics table."""
-    metrics = await get_health_metrics(session, repository_id)
+async def get_health_summary(
+    session: AsyncSession, repository_id: str, *, metrics: list | None = None
+) -> dict:
+    """Aggregate KPIs over the per-file metrics table.
+
+    *metrics* lets a caller that has already loaded the per-file rows hand them
+    over instead of paying for a second full read. Callers doing more than one
+    thing with them — the overview payload computes both these KPIs and the
+    defect-accuracy stat — would otherwise pull the whole table twice.
+    """
+    if metrics is None:
+        metrics = await get_health_metrics(session, repository_id)
     if not metrics:
         return {
             "file_count": 0,

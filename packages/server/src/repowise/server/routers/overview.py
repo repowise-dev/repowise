@@ -278,7 +278,11 @@ async def overview_summary(
     )
 
     # --- Health KPIs + deltas vs previous snapshot ------------------------
-    health_summary = await crud.get_health_summary(session, repo_id)
+    # Loaded once and handed to both consumers below: the KPI rollup and the
+    # defect-accuracy stat both want every per-file row, and letting each fetch
+    # its own pulled the whole table twice per page load.
+    health_metrics = await crud.get_health_metrics(session, repo_id)
+    health_summary = await crud.get_health_summary(session, repo_id, metrics=health_metrics)
     snapshots = await crud.list_health_snapshots(session, repo_id)
     hotspot_health: float | None = None
     last_indexed_at: str | None = None
@@ -318,7 +322,6 @@ async def overview_summary(
     try:
         from repowise.core.analysis.health.defect_accuracy import compute_defect_accuracy
 
-        metrics = await crud.get_health_metrics(session, repo_id)
         defect_accuracy = compute_defect_accuracy(
             [
                 {
@@ -328,7 +331,7 @@ async def overview_summary(
                     "has_test_file": m.has_test_file,
                     "module": m.module,
                 }
-                for m in metrics
+                for m in health_metrics
             ],
             [
                 {
