@@ -815,9 +815,9 @@ def test_test_files_are_recognised_including_root_level_suites(rel_path):
     measured on this repository, 122 test files survived into the production
     set and five concept pages were nothing but tests.
     """
-    from repowise.core.ingestion.traverser import _is_test_file
+    from repowise.core.test_paths import is_test_related_path
 
-    assert _is_test_file(rel_path, Path(rel_path).name)
+    assert is_test_related_path(rel_path)
 
 
 @pytest.mark.parametrize(
@@ -831,6 +831,6 @@ def test_test_files_are_recognised_including_root_level_suites(rel_path):
 )
 def test_production_paths_that_merely_contain_the_word_are_not_tests(rel_path):
     """Segment match, not substring: ``contest`` and ``latest`` are not tests."""
-    from repowise.core.ingestion.traverser import _is_test_file
+    from repowise.core.test_paths import is_test_related_path
 
-    assert not _is_test_file(rel_path, Path(rel_path).name)
+    assert not is_test_related_path(rel_path)

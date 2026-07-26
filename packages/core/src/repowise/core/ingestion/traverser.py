@@ -21,11 +21,12 @@ import threading
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 import pathspec
 import structlog
 
+from ..test_paths import is_test_related_path
 from .languages.registry import REGISTRY as _LANG_REGISTRY
 from .models import (
     EXTENSION_TO_LANGUAGE,
@@ -197,27 +198,9 @@ _ENTRY_POINT_NAME_SUFFIXES: tuple[str, ...] = tuple(
     sorted(p[1:] for p in _LANG_REGISTRY.entry_point_names() if p.startswith("*"))
 )
 
-# Test-file conventions, from the same registry each language declares them
-# on. ``spec_`` is carried over from the rule these replaced: the registry
-# has the ``_spec`` suffix and the ``spec_helper`` stem but no prefix, and
-# dropping it would unclassify RSpec-style ``spec_foo.rb``.
-_TEST_STEM_PREFIXES: tuple[str, ...] = tuple(
-    sorted({*_LANG_REGISTRY.test_stem_prefixes(), "spec_"})
-)
-_TEST_STEM_SUFFIXES: tuple[str, ...] = _LANG_REGISTRY.test_stem_suffixes()
-_TEST_INFIXES: tuple[str, ...] = _LANG_REGISTRY.test_infixes()
-_TEST_FIXTURE_STEMS: frozenset[str] = _LANG_REGISTRY.test_fixture_stems()
-# Directory names that mark everything beneath them as test material.
-# ``__tests__`` is the JavaScript convention and is the reason this set is
-# not simply the registry's per-language tokens.
-_TEST_DIR_SEGMENTS: frozenset[str] = frozenset(
-    {"test", "tests", "__tests__", "__test__"}
-    | {
-        token
-        for tokens in _LANG_REGISTRY.test_dir_tokens_by_language().values()
-        for token in tokens
-    }
-)
+# Test-file conventions live in ``core.test_paths`` - the same code answers the
+# question at query time, so the flag stored here and the fallback the MCP
+# tools use can never disagree (#1103).
 
 # Default file-size limit
 _DEFAULT_MAX_FILE_SIZE_BYTES: int = 500 * 1024  # 500 KB
@@ -531,7 +514,7 @@ class FileTraverser:
             size_bytes=size_bytes,
             git_hash="",
             last_modified=datetime.fromtimestamp(stat.st_mtime),
-            is_test=_is_test_file(rel_str, filename),
+            is_test=is_test_related_path(rel_str, language),
             is_config=_is_config_file(language),
             is_api_contract=_is_api_contract(abs_path, language),
             is_entry_point=(
@@ -669,32 +652,6 @@ def _is_generated(abs_path: Path) -> bool:
         return any(marker.upper() in header_upper for marker in _GENERATED_MARKERS)
     except OSError:
         return False
-
-
-def _is_test_file(rel_path: str, filename: str) -> bool:
-    """Whether *rel_path* is test material, by directory or by filename.
-
-    Conventions come from the language registry, which is where each
-    language already declares them, rather than from a second hard-coded
-    list. The two rules this replaced knew only ``test_x`` / ``x_test`` and a
-    slash-delimited ``/tests/`` substring, so both halves of the JavaScript
-    convention (``__tests__/`` directories and ``x.test.ts`` filenames) and
-    every root-level suite (``tests/conftest.py``) read as production code to
-    everything downstream of this flag.
-    """
-    name = filename.lower()
-    stem = PurePosixPath(name).stem
-    if (
-        stem in _TEST_FIXTURE_STEMS
-        or stem.startswith(_TEST_STEM_PREFIXES)
-        or stem.endswith(_TEST_STEM_SUFFIXES)
-        or any(infix in name for infix in _TEST_INFIXES)
-    ):
-        return True
-    # Directory segments, including the first: a repository-root ``tests/``
-    # is the usual layout, not the exception.
-    segments = rel_path.lower().replace("\\", "/").split("/")[:-1]
-    return any(seg in _TEST_DIR_SEGMENTS for seg in segments)
 
 
 def _is_config_file(language: LanguageTag) -> bool:
