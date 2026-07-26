@@ -106,12 +106,33 @@ def _write_header(writer: Writer, model: C4Model, *, standalone: bool) -> None:
     writer.comment()
 
 
+def _write_tour(writer: Writer, model: C4Model) -> None:
+    """The curated reading order, as a comment.
+
+    Structurizr has no concept of a guided tour and there is no honest way to
+    force one into a view, but the order is one of the few things in this file
+    a person could not have derived themselves — so it goes at the top where
+    it is read, rather than being dropped.
+    """
+    if not model.tour:
+        return
+    writer.comment("Suggested reading order:")
+    for step in model.tour:
+        location = f" — {step.target_path}" if step.target_path else ""
+        writer.comment(f"  {step.order}. {step.title}{location}")
+        detail = step.reason or step.description
+        if detail:
+            writer.comment(f"     {' '.join(detail.split())}")
+    writer.comment()
+
+
 def to_dsl(
     model: C4Model,
     *,
     standalone: bool = False,
     include_components: bool = False,
     include_externals: bool = True,
+    include_metadata: bool = True,
 ) -> str:
     """Render *model* as Structurizr DSL.
 
@@ -119,9 +140,15 @@ def to_dsl(
     model a component is a grouping somebody chose; ours is a directory, and
     the architects most likely to want this export are exactly the readers who
     would notice the difference.
+
+    ``include_metadata`` carries the health, ownership and layer tags. On by
+    default because it is the part no other tool ships; turn it off for a
+    plain C4 model.
     """
     writer = Writer()
     _write_header(writer, model, standalone=standalone)
+    if include_metadata:
+        _write_tour(writer, model)
 
     externals = list(model.external_systems) if include_externals else []
     references = _reference_map(model, include_components=include_components)
@@ -156,6 +183,7 @@ def to_dsl(
                     references[container.id],
                     components,
                     {c.id: references[c.id] for c in components},
+                    model.box_signals if include_metadata else None,
                 )
 
         if externals:

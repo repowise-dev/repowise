@@ -64,12 +64,45 @@ def write_views(
                         writer.line("include *")
                     writer.line("autolayout lr")
 
+        _write_layer_views(writer, model, references)
+
         writer.blank()
         with writer.block("styles"):
             with writer.block('element "External"'):
                 writer.line("background #999999")
                 writer.line("color #ffffff")
+            # The health colours. Tag styles are applied in declaration order,
+            # so Hotspot before Dead means a dead hotspot reads as dead — the
+            # more actionable of the two.
+            with writer.block('element "Hotspot"'):
+                writer.line("background #b5432f")
+                writer.line("color #ffffff")
+            with writer.block('element "Dead"'):
+                writer.line("background #6b6b6b")
+                writer.line("color #ffffff")
             with writer.block('relationship "Tight"'):
                 writer.line("thickness 4")
             with writer.block('relationship "Loose"'):
                 writer.line("style dashed")
+
+
+def _write_layer_views(writer: Writer, model: C4Model, references: dict[str, str]) -> None:
+    """One container view per curated layer, filtered by its tag.
+
+    This is the grouping that is ours rather than C4's, and a filtered view is
+    the only way it survives into someone else's toolchain.
+    """
+    layers = sorted({layer for signals in model.box_signals.values() for layer in signals.layers})
+    if not layers:
+        return
+    system_ref = references[model.system.id]
+    for layer in layers:
+        writer.blank()
+        key = f"layer_{_slug(layer)}"
+        with writer.block(f"container {system_ref} {quote(key)}"):
+            writer.line(f'include "element.tag==Layer: {layer}"')
+            writer.line("autolayout lr")
+
+
+def _slug(text: str) -> str:
+    return "".join(char if char.isalnum() else "_" for char in text).strip("_") or "layer"

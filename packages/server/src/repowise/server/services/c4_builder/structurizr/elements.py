@@ -13,7 +13,8 @@ existing styles will already key on.
 
 from __future__ import annotations
 
-from ..models import Component, Container, ExternalSystemView, Person
+from ..models import BoxSignals, Component, Container, ExternalSystemView, Person
+from .metadata import properties_for, tags_for, write_metadata
 from .writer import Writer, quote
 
 
@@ -61,12 +62,15 @@ def write_container(
     identifier: str,
     components: list[Component],
     component_identifiers: dict[str, str],
+    signals: dict[str, BoxSignals] | None = None,
 ) -> None:
     """One ``container`` block, with its components nested inside it.
 
-    An empty container is written as a one-line element rather than an empty
-    block — the shape a person would write by hand.
+    A container with nothing to nest and nothing to say is written as a
+    one-line element rather than an empty block — the shape a person would
+    write by hand.
     """
+    signals = signals or {}
     header = (
         f"{identifier} = container {quote(container.name)} "
         f"{quote(container_description(container))}"
@@ -75,14 +79,38 @@ def write_container(
         header += f" {quote(container.language)}"
 
     nested = [c for c in components if c.id in component_identifiers]
-    if not nested:
+    own_metadata = _has_metadata(signals.get(container.id))
+    if not nested and not own_metadata:
         writer.line(header)
         return
 
     with writer.block(header):
+        write_metadata(writer, signals.get(container.id))
         for component in nested:
-            comp_header = (
-                f"{component_identifiers[component.id]} = component {quote(component.name)} "
-                f"{quote(component_description(component))}"
+            write_component(
+                writer,
+                component,
+                component_identifiers[component.id],
+                signals.get(component.id),
             )
-            writer.line(comp_header)
+
+
+def write_component(
+    writer: Writer,
+    component: Component,
+    identifier: str,
+    signals: BoxSignals | None = None,
+) -> None:
+    header = (
+        f"{identifier} = component {quote(component.name)} "
+        f"{quote(component_description(component))}"
+    )
+    if not _has_metadata(signals):
+        writer.line(header)
+        return
+    with writer.block(header):
+        write_metadata(writer, signals)
+
+
+def _has_metadata(signals: BoxSignals | None) -> bool:
+    return bool(signals is not None and (tags_for(signals) or properties_for(signals)))

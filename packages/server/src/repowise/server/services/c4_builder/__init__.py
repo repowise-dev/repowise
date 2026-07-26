@@ -22,9 +22,13 @@ from dataclasses import replace
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.ids import ExternalSystemId, SystemId, parse, render
+from repowise.core.ids import ExternalSystemId, SystemId, file_path_of, parse, render
 from repowise.core.persistence import ExternalSystem, Repository
-from repowise.core.persistence.crud import get_kg_project_meta
+from repowise.core.persistence.crud import (
+    get_kg_layers,
+    get_kg_project_meta,
+    get_kg_tour_steps,
+)
 from repowise.core.persistence.models import DeadCodeFinding, GitMetadata
 
 from .actors import derive_actors
@@ -41,9 +45,10 @@ from .models import (
     Person,
     Relation,
     System,
+    TourStep,
 )
 from .relations import aggregate_relations, external_node_to_system_id, load_edges
-from .signals import count_box_signals
+from .signals import build_box_signals, count_box_signals
 
 __all__ = [
     "C4L1",
@@ -291,9 +296,9 @@ async def build_model(
 
     components_by_container: dict[str, list[Component]] = {}
     component_relations: list[Relation] = []
+    file_to_component: dict[str, str] = {}
     if include_components:
         detected = await detect_components_for_all(session, repo_id, containers)
-        file_to_component: dict[str, str] = {}
         for cid, (components, file_index) in detected.items():
             components_by_container[cid] = components
             file_to_component.update(file_index)
@@ -312,6 +317,13 @@ async def build_model(
     used |= {r.source_id for r in component_relations if _is_external_box(r.source_id)}
     externals = [e for e in externals_all if e.id in used]
 
+    # Every per-file signal is read once here and rolled up to both levels, so
+    # the metadata costs a fixed number of queries rather than one per box.
+    per_file = await _per_file_signals(session, repo_id)
+    box_signals = build_box_signals(file_to_container, **per_file)
+    if file_to_component:
+        box_signals.update(build_box_signals(file_to_component, **per_file))
+
     return C4Model(
         system=system,
         people=people,
@@ -320,7 +332,84 @@ async def build_model(
         external_systems=externals,
         container_relations=container_relations,
         component_relations=component_relations,
+        box_signals=box_signals,
+        tour=await _tour_steps(session, repo_id),
     )
+
+
+async def _per_file_signals(session: AsyncSession, repo_id: str) -> dict[str, dict]:
+    """Read the per-file health, ownership and layer sources, once each."""
+    git_rows = (
+        await session.execute(
+            select(
+                GitMetadata.file_path,
+                GitMetadata.is_hotspot,
+                GitMetadata.primary_owner_name,
+                GitMetadata.bus_factor,
+            ).where(GitMetadata.repository_id == repo_id)
+        )
+    ).all()
+    hotspot_paths = [row[0] for row in git_rows if row[1]]
+    file_owners = {row[0]: row[2] for row in git_rows if row[2]}
+    # A real bus factor is at least 1 — the indexer seeds the column with 0 and
+    # only overwrites it for files that have commit history, so 0 means "not
+    # known". Emitting it would read as "nobody owns this", which is a much
+    # louder claim than the gap it actually is.
+    file_bus_factors = {row[0]: row[3] for row in git_rows if row[3]}
+
+    dead_paths = [
+        row[0]
+        for row in (
+            await session.execute(
+                select(DeadCodeFinding.file_path).where(
+                    DeadCodeFinding.repository_id == repo_id,
+                    DeadCodeFinding.status == "open",
+                    DeadCodeFinding.kind == "unreachable_file",
+                )
+            )
+        ).all()
+    ]
+
+    # Layer membership is curated per file; a box inherits the layers of the
+    # files it holds. Layer node ids carry the KG "file:" prefix, the graph
+    # does not, so they are converted rather than compared raw.
+    file_layers: dict[str, str] = {}
+    for layer in await get_kg_layers(session, repo_id):
+        try:
+            node_ids = json.loads(layer.node_ids_json or "[]")
+        except (ValueError, TypeError):
+            continue
+        for node_id in node_ids:
+            path = file_path_of(str(node_id))
+            if path:
+                file_layers.setdefault(path, layer.name)
+
+    return {
+        "hotspot_paths": hotspot_paths,
+        "dead_paths": dead_paths,
+        "file_layers": file_layers,
+        "file_owners": file_owners,
+        "file_bus_factors": file_bus_factors,
+    }
+
+
+async def _tour_steps(session: AsyncSession, repo_id: str) -> list[TourStep]:
+    """The curated reading order, if this repo has one."""
+    layer_names = {
+        layer.layer_id: layer.name for layer in await get_kg_layers(session, repo_id)
+    }
+    steps = await get_kg_tour_steps(session, repo_id)
+    return [
+        TourStep(
+            order=step.step_order,
+            title=step.title,
+            description=step.description or "",
+            reason=step.reason or "",
+            target_path=step.target_path,
+            layer_name=layer_names.get(step.layer_id or ""),
+        )
+        for step in sorted(steps, key=lambda s: s.step_order)
+    ]
 
 
 # ---------------------------------------------------------------------------

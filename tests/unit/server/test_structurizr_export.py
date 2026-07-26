@@ -13,6 +13,7 @@ import re
 import pytest
 
 from repowise.server.services.c4_builder.models import (
+    BoxSignals,
     C4Model,
     Component,
     Container,
@@ -20,6 +21,7 @@ from repowise.server.services.c4_builder.models import (
     Person,
     Relation,
     System,
+    TourStep,
 )
 from repowise.server.services.c4_builder.structurizr import to_dsl
 from repowise.server.services.c4_builder.structurizr.identifiers import (
@@ -340,3 +342,120 @@ def test_the_system_identifier_does_not_depend_on_the_local_repo_id() -> None:
     theirs = to_dsl(_model(system=System(id="sys:bbbbbbbb", name="repowise")))
     assert mine == theirs
     assert "aaaaaaaa" not in mine
+
+
+# ---------------------------------------------------------------------------
+# Health, ownership and layer metadata
+# ---------------------------------------------------------------------------
+
+
+def _signals_model(**overrides) -> C4Model:
+    base = _model()
+    signals = {
+        "pkg:packages/core": BoxSignals(
+            hotspot_count=3,
+            dead_count=1,
+            layers=("Domain", "Ingestion"),
+            primary_owner="Ada Lovelace",
+            primary_owner_pct=62.5,
+            min_bus_factor=1,
+        ),
+        "pkg:packages/web": BoxSignals(),
+        "cmp:packages/core/ingestion": BoxSignals(
+            hotspot_count=2, layers=("Ingestion",)
+        ),
+    }
+    defaults = {"box_signals": signals}
+    defaults.update(overrides)
+    return C4Model(**{**vars(base), **defaults})
+
+
+def test_health_rides_along_as_tags() -> None:
+    dsl = to_dsl(_signals_model())
+    assert '"Hotspot"' in dsl
+    assert '"Dead"' in dsl
+
+
+def test_layer_membership_becomes_a_tag() -> None:
+    """The layer grouping is ours; a tag is how it survives into their tool."""
+    dsl = to_dsl(_signals_model())
+    assert '"Layer: Domain"' in dsl
+    assert '"Layer: Ingestion"' in dsl
+
+
+def test_properties_are_namespaced_so_they_cannot_collide() -> None:
+    dsl = to_dsl(_signals_model())
+    for key in ("repowise.hotspots", "repowise.owner", "repowise.minBusFactor"):
+        assert f'"{key}"' in dsl
+    assert '"Ada Lovelace"' in dsl
+
+
+def test_unknown_ownership_is_omitted_not_zeroed() -> None:
+    """An emitted 0 bus factor reads as "nobody owns this", a different claim."""
+    dsl = to_dsl(_signals_model())
+    web_block = dsl.split('container "web"')[1]
+    assert "repowise.owner" not in web_block
+    assert "repowise.minBusFactor" not in web_block
+
+
+def test_counts_are_emitted_even_when_zero() -> None:
+    """We counted; zero is an answer, unlike a missing owner."""
+    dsl = to_dsl(_signals_model())
+    assert '"repowise.hotspots" "0"' in dsl
+
+
+def test_metadata_can_be_turned_off_for_a_plain_c4_model() -> None:
+    dsl = to_dsl(_signals_model(), include_metadata=False)
+    assert "repowise." not in dsl
+    assert "Layer: " not in dsl
+    assert "Hotspot" not in dsl
+
+
+def test_a_box_with_nothing_to_say_stays_a_one_liner() -> None:
+    plain = C4Model(**{**vars(_model()), "box_signals": {}})
+    dsl = to_dsl(plain)
+    assert 'container "core" "120 files, 800 symbols" "python"\n' in dsl
+
+
+def test_the_tour_rides_along_as_a_comment() -> None:
+    """It cannot be a view, but it is one of the few things we know and C4 does not."""
+    model = C4Model(
+        **{
+            **vars(_model()),
+            "tour": [
+                TourStep(
+                    order=1,
+                    title="Start at the CLI",
+                    reason="Every run enters here",
+                    target_path="packages/cli/main.py",
+                ),
+                TourStep(order=2, title="Then the parser", description="Where files\nbecome symbols"),
+            ],
+        }
+    )
+    dsl = to_dsl(model)
+    assert "Suggested reading order:" in dsl
+    assert "1. Start at the CLI — packages/cli/main.py" in dsl
+    assert "Every run enters here" in dsl
+    # A description with a newline must not break out of the comment.
+    for line in dsl.splitlines():
+        if "become symbols" in line:
+            assert line.strip().startswith("#")
+
+
+def test_layer_views_are_emitted_for_a_standalone_workspace() -> None:
+    dsl = to_dsl(_signals_model(), standalone=True)
+    assert 'include "element.tag==Layer: Domain"' in dsl
+    assert 'element "Hotspot"' in dsl
+
+
+def test_metadata_does_not_break_brace_balance() -> None:
+    for standalone in (False, True):
+        for components in (False, True):
+            dsl = to_dsl(
+                _signals_model(), standalone=standalone, include_components=components
+            )
+            body = "\n".join(
+                line for line in dsl.splitlines() if not line.strip().startswith("#")
+            )
+            assert body.count("{") == body.count("}"), (standalone, components)

@@ -115,6 +115,46 @@ class C4L3:
 
 
 @dataclass(frozen=True)
+class BoxSignals:
+    """What we know about a container or component beyond its shape.
+
+    C4 has no vocabulary for any of this — which is the point. Carried
+    per-box so an exporter can attach it without going back to the database,
+    and every field is optional because health data is sparse: ``None`` means
+    "not known", which must not be rendered as a real score of zero.
+    """
+
+    hotspot_count: int = 0
+    dead_count: int = 0
+    #: Names of the curated layers this box's files belong to. A box can span
+    #: several, so this is a list rather than one label.
+    layers: tuple[str, ...] = ()
+    #: The person owning the most files in this box, and their share of them.
+    primary_owner: str | None = None
+    primary_owner_pct: float | None = None
+    #: Lowest bus factor among the box's files — the worst case, not the mean,
+    #: because one unowned file is the risk a reader cares about.
+    min_bus_factor: int | None = None
+
+
+@dataclass(frozen=True)
+class TourStep:
+    """One step of the curated reading order.
+
+    Structurizr has no concept of a guided tour, so this rides along as a
+    comment. Kept as data rather than a formatted string so the emitter
+    decides how it reads.
+    """
+
+    order: int
+    title: str
+    description: str = ""
+    reason: str = ""
+    target_path: str | None = None
+    layer_name: str | None = None
+
+
+@dataclass(frozen=True)
 class C4Model:
     """Every C4 level at once, built from one pass over the graph.
 
@@ -137,6 +177,12 @@ class C4Model:
     external_systems: list[ExternalSystemView]
     container_relations: list[Relation]
     component_relations: list[Relation]
+    #: Health, ownership and layer membership, keyed by container/component id.
+    #: Empty when the repo has none of it — an export must degrade to plain C4
+    #: rather than emitting placeholders.
+    box_signals: dict[str, BoxSignals] = field(default_factory=dict)
+    #: The curated reading order, in step order. Empty when there is no tour.
+    tour: list[TourStep] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
