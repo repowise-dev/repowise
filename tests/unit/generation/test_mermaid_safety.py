@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from repowise.core.generation.mermaid_safety import sanitize_mermaid, sanitize_pages
 
 
@@ -81,3 +83,55 @@ def test_sanitize_pages_mutates_and_counts():
     assert n == 1
     assert "pkg/x.py" not in changed.content
     assert unchanged.content == "# clean\n\nno diagram here"
+
+
+# ---------------------------------------------------------------------------
+# Label preservation, nesting, and stable slugs
+# ---------------------------------------------------------------------------
+
+
+def test_a_path_inside_a_label_survives_the_id_pass() -> None:
+    """The label is prose. Slugging it produced a legal but unreadable diagram."""
+    out = sanitize_mermaid(_block("graph TD\n  A[src/main.py] --> B[app.run]"))
+    assert '"src/main.py"' in out
+    assert "src_main_py" not in out
+
+
+def test_an_already_quoted_label_is_left_alone_by_the_id_pass() -> None:
+    out = sanitize_mermaid(_block('graph TD\n  A["pkg/foo.py handles auth"] --> B'))
+    assert '"pkg/foo.py handles auth"' in out
+
+
+def test_a_bare_path_used_as_a_node_id_is_still_slugged() -> None:
+    """The point of the pass: an unquoted path id breaks the whole diagram."""
+    out = sanitize_mermaid(_block("graph TD\n  pkg/foo.py --> pkg/bar.py"))
+    assert "pkg/foo.py -->" not in out
+    assert "pkg_foo_py" in out
+    assert "pkg_bar_py" in out
+
+
+def test_a_label_containing_its_own_bracket_ends_where_it_really_ends() -> None:
+    out = sanitize_mermaid(_block("graph TD\n  A[run(x[0])] --> B"))
+    # The whole label is captured and quoted, not cut at the inner bracket.
+    assert '"run(x[0])"' in out
+    assert out.count("-->") == 1
+
+
+def test_colliding_slugs_do_not_depend_on_document_order() -> None:
+    """A counter would renumber everything after an unrelated insertion."""
+    first = sanitize_mermaid(_block("graph TD\n  a/b.py --> a.b.py"))
+    second = sanitize_mermaid(_block("graph TD\n  a.b.py --> a/b.py"))
+    ids_first = set(re.findall(r"a_b_py\w*", first))
+    ids_second = set(re.findall(r"a_b_py\w*", second))
+    assert ids_first == ids_second
+    assert len(ids_first) == 2
+
+
+def test_output_is_stable_across_runs() -> None:
+    body = _block("graph TD\n  src/a.py --> src/b.py\n  C[run() -> None] --> src/a.py")
+    assert sanitize_mermaid(body) == sanitize_mermaid(body)
+
+
+def test_a_non_graph_diagram_is_still_left_untouched() -> None:
+    body = _block("sequenceDiagram\n  A->>B: calls src/main.py")
+    assert sanitize_mermaid(body) == body

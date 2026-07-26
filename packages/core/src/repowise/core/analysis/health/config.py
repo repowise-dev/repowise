@@ -9,8 +9,11 @@ detector list. Decisions deliberately kept narrow in v1:
   **Every** matching glob applies — the disabled sets union, so a path
   matched by three rules is silenced for the union of their biomarkers
   (severity remaps merge the same way, last matching rule winning per
-  biomarker). Patterns use ``fnmatch`` semantics over the repo-relative
-  POSIX path (``src/legacy/**.py``).
+  biomarker). Patterns use **gitignore semantics** over the repo-relative
+  POSIX path (``src/legacy/**``), the same matching as ``exclude_patterns``
+  and ``.gitignore``, so one glob means one thing everywhere. Note that a
+  single ``*`` stops at a path segment: write ``src/legacy/**`` rather than
+  ``src/legacy/*`` to cover a whole subtree.
 - Repo-wide and per-path ``severity_overrides``: remap a biomarker's
   severity (typically a *demotion*, e.g. ``complex_method`` → ``low``) so a
   team can soften a signal it considers advisory without disabling it
@@ -38,10 +41,11 @@ Schema (validated on load, errors logged but never raised):
 
 from __future__ import annotations
 
-import fnmatch
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import structlog
 
@@ -98,13 +102,45 @@ def _coerce_severity_map(raw: object) -> dict[str, Severity]:
     return out
 
 
+#: A ``*`` that is not part of ``**``. Under the old ``fnmatch`` matching this
+#: crossed directory separators, so ``src/*`` also matched ``src/a/b.py``.
+#: Under gitignore matching it stops at one segment, which narrows any such
+#: rule — worth telling the user about rather than silently changing what
+#: their file means.
+_LONE_STAR = re.compile(r"(?<!\*)\*(?!\*)")
+
+
+def _compile_glob(pattern: str) -> Any:
+    """Compile one path glob to a matcher, using gitignore semantics.
+
+    One engine for every glob a user writes — the same one the exclusion
+    rules and the traverser already use — so a pattern means the same thing
+    wherever it appears.
+    """
+    import pathspec
+
+    return pathspec.PathSpec.from_lines("gitwildmatch", [pattern])
+
+
 @dataclass
 class HealthRule:
-    """One per-path override entry."""
+    """One per-path override entry.
+
+    ``matcher`` is compiled once at load and reused for every file, so a big
+    repo does not recompile the same pattern thousands of times.
+    """
 
     path_glob: str
     disabled_biomarkers: list[str] = field(default_factory=list)
     severity_overrides: dict[str, Severity] = field(default_factory=dict)
+    matcher: Any = None
+
+    def __post_init__(self) -> None:
+        if self.matcher is None:
+            self.matcher = _compile_glob(self.path_glob)
+
+    def matches(self, path: str) -> bool:
+        return bool(self.matcher.match_file(path))
 
 
 @dataclass
@@ -229,6 +265,19 @@ class HealthConfig:
             disabled_for = [
                 str(b) for b in (entry.get("disabled_biomarkers") or []) if isinstance(b, str)
             ]
+            # A rule written against the old matching may now cover less than
+            # its author meant, which would quietly un-silence biomarkers they
+            # had turned off. Say so instead of letting them discover it in a
+            # health report.
+            if "/" in glob and _LONE_STAR.search(glob):
+                log.warning(
+                    "health_rules_glob_narrowed",
+                    pattern=glob,
+                    hint=(
+                        "'*' no longer crosses '/' — use '**' to match a whole "
+                        "subtree, e.g. 'src/legacy/**'"
+                    ),
+                )
             rules.append(
                 HealthRule(
                     path_glob=glob,
@@ -265,7 +314,7 @@ class HealthConfig:
             norm = path.replace("\\", "/")
             disabled: set[str] = set()
             for rule in self.rules:
-                if fnmatch.fnmatchcase(norm, rule.path_glob):
+                if rule.matches(norm):
                     disabled.update(rule.disabled_biomarkers)
             if disabled:
                 out[path] = disabled
@@ -287,7 +336,7 @@ class HealthConfig:
             norm = path.replace("\\", "/")
             overrides: dict[str, Severity] = {}
             for rule in rules_with_sev:
-                if fnmatch.fnmatchcase(norm, rule.path_glob):
+                if rule.matches(norm):
                     overrides.update(rule.severity_overrides)
             if overrides:
                 out[path] = overrides

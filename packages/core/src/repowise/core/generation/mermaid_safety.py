@@ -20,6 +20,7 @@ Pure string work, no LLM call — cheap enough to run on every page.
 
 from __future__ import annotations
 
+import hashlib
 import re
 
 import structlog
@@ -76,28 +77,107 @@ def _slug(raw: str) -> str:
     return s
 
 
+def _split_on_quotes(text: str) -> list[tuple[str, bool]]:
+    """Split *text* into ``(segment, is_quoted)`` runs on double quotes.
+
+    The scanner's "string mode": once a label has been quoted, its contents
+    are prose, and a path inside it must not be treated as a node ID. An
+    unterminated quote makes the rest of the line a string, which is what the
+    mermaid parser does too.
+    """
+    segments: list[tuple[str, bool]] = []
+    buffer: list[str] = []
+    quoted = False
+    for char in text:
+        if char == '"':
+            buffer.append(char)
+            if quoted:
+                segments.append(("".join(buffer), True))
+                buffer = []
+                quoted = False
+            else:
+                # The quote opens a string: flush what came before it, minus
+                # the quote itself, then start the quoted run with it.
+                opening = "".join(buffer[:-1])
+                if opening:
+                    segments.append((opening, False))
+                buffer = [char]
+                quoted = True
+            continue
+        buffer.append(char)
+    if buffer:
+        segments.append(("".join(buffer), quoted))
+    return segments
+
+
+def _disambiguator(raw: str) -> str:
+    """A short suffix derived from the id, for slugs that collide.
+
+    Deliberately not a counter: numbering by order of appearance means adding
+    one unrelated node renames every colliding node after it, so a
+    regenerated diagram churns for no reason.
+    """
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:6]
+
+
 def _build_id_map(body: str) -> dict[str, str]:
-    """Map every illegal (path/dotted) node ID in *body* to a unique slug."""
+    """Map every illegal (path/dotted) node ID in *body* to a unique slug.
+
+    Only unquoted text is considered — a path inside a label is prose, and
+    rewriting it there is what used to turn a readable ``A["src/main.py"]``
+    into ``A["src_main_py"]``.
+    """
     raw_ids: list[str] = []
     seen: set[str] = set()
-    for m in _PATHY_TOKEN_RE.finditer(body):
-        raw = m.group(1)
-        if raw not in seen:
-            seen.add(raw)
-            raw_ids.append(raw)
+    for line in body.split("\n"):
+        for segment, is_quoted in _split_on_quotes(line):
+            if is_quoted:
+                continue
+            for match in _PATHY_TOKEN_RE.finditer(segment):
+                raw = match.group(1)
+                if raw not in seen:
+                    seen.add(raw)
+                    raw_ids.append(raw)
+
+    by_slug: dict[str, list[str]] = {}
+    for raw in raw_ids:
+        by_slug.setdefault(_slug(raw), []).append(raw)
 
     id_map: dict[str, str] = {}
-    used: set[str] = set()
-    for raw in raw_ids:
-        slug = _slug(raw)
-        base = slug
-        i = 2
-        while slug in used:
-            slug = f"{base}_{i}"
-            i += 1
-        used.add(slug)
-        id_map[raw] = slug
+    for slug, owners in by_slug.items():
+        if len(owners) == 1:
+            id_map[owners[0]] = slug
+            continue
+        # Every owner is suffixed, not just the ones after the first: which id
+        # keeps the bare slug would otherwise depend on document order.
+        for raw in owners:
+            id_map[raw] = f"{slug}_{_disambiguator(raw)}"
     return id_map
+
+
+def _find_closer(text: str, start: int, opener: str, closer: str) -> int:
+    """Index of the closer matching the opener at *start*, or -1.
+
+    Counts nesting rather than taking the first closer, so a label that
+    contains the same bracket — ``A[run(x[0])]`` — ends where it really ends
+    instead of in the middle.
+    """
+    depth = 1
+    i = start + len(opener)
+    n = len(text)
+    while i < n:
+        if text.startswith(closer, i):
+            depth -= 1
+            if depth == 0:
+                return i
+            i += len(closer)
+            continue
+        if text.startswith(opener, i):
+            depth += 1
+            i += len(opener)
+            continue
+        i += 1
+    return -1
 
 
 def _quote_labels(body: str) -> str:
@@ -111,7 +191,7 @@ def _quote_labels(body: str) -> str:
             matched = False
             for opener, closer in _SHAPE_PAIRS:
                 if text.startswith(opener, i):
-                    end = text.find(closer, i + len(opener))
+                    end = _find_closer(text, i, opener, closer)
                     if end == -1:
                         continue
                     label = text[i + len(opener) : end]
@@ -141,19 +221,44 @@ def _quote_labels(body: str) -> str:
     return "\n".join(_process(line) for line in body.split("\n"))
 
 
-def _rewrite_graph_block(body: str) -> str:
-    """Slug illegal node IDs and quote risky labels in a graph/flowchart body."""
-    id_map = _build_id_map(body)
-    rewritten = body
-    for raw, slug in id_map.items():
-        # Replace the raw token only when it is a standalone node ID, i.e. not
-        # part of a longer path/word. Guards keep ``foo`` inside ``foobar/x``
-        # from matching.
-        pattern = re.compile(
-            r"(?<![" + _RAW_ID_CHARS + r"])" + re.escape(raw) + r"(?![" + _RAW_ID_CHARS + r"])"
+def _rewrite_ids(body: str, id_map: dict[str, str]) -> str:
+    """Replace illegal node IDs with their slugs, outside quoted labels only."""
+    if not id_map:
+        return body
+    patterns = [
+        (
+            re.compile(
+                r"(?<![" + _RAW_ID_CHARS + r"])"
+                + re.escape(raw)
+                + r"(?![" + _RAW_ID_CHARS + r"])"
+            ),
+            slug,
         )
-        rewritten = pattern.sub(slug, rewritten)
-    return _quote_labels(rewritten)
+        for raw, slug in id_map.items()
+    ]
+
+    out_lines: list[str] = []
+    for line in body.split("\n"):
+        pieces: list[str] = []
+        for segment, is_quoted in _split_on_quotes(line):
+            if not is_quoted:
+                for pattern, slug in patterns:
+                    segment = pattern.sub(slug, segment)
+            pieces.append(segment)
+        out_lines.append("".join(pieces))
+    return "\n".join(out_lines)
+
+
+def _rewrite_graph_block(body: str) -> str:
+    """Quote risky labels, then slug illegal node IDs outside those labels.
+
+    Order matters. Rewriting IDs first meant a path inside a label was still
+    bare text, so it was slugged too and ``A[src/main.py]`` came out as
+    ``A[src_main_py]`` — a legal diagram with an unreadable label. Quoting
+    first turns the label into a string the ID pass then skips.
+    """
+    quoted = _quote_labels(body)
+    return _rewrite_ids(quoted, _build_id_map(quoted))
 
 
 def sanitize_mermaid(markdown: str) -> str:

@@ -234,3 +234,86 @@ def test_refactoring_block_coexists_with_health_rules(tmp_path: Path):
     cfg = HealthConfig.load(tmp_path)
     assert cfg.disabled_biomarkers == ["dry_violation"]
     assert cfg.disabled_refactorings == ["extract_class"]
+
+
+# ---------------------------------------------------------------------------
+# Glob semantics
+# ---------------------------------------------------------------------------
+
+
+class TestGitignoreGlobSemantics:
+    """Health rules match the way exclude_patterns and .gitignore do.
+
+    This changed: patterns used to be matched with fnmatch, where ``*``
+    crossed directory separators.
+    """
+
+    def test_a_double_star_covers_a_whole_subtree(self) -> None:
+        config = HealthConfig.from_dict(
+            {"rules": [{"path": "src/legacy/**", "disabled_biomarkers": ["complex_method"]}]}
+        )
+        disabled = config.per_file_disabled(
+            ["src/legacy/a.py", "src/legacy/deep/b.py", "src/fresh/c.py"]
+        )
+        assert disabled["src/legacy/a.py"] == {"complex_method"}
+        assert disabled["src/legacy/deep/b.py"] == {"complex_method"}
+        assert "src/fresh/c.py" not in disabled
+
+    def test_a_single_star_stops_at_a_path_segment(self) -> None:
+        """The behaviour change: 'src/*' no longer swallows the whole tree."""
+        config = HealthConfig.from_dict(
+            {"rules": [{"path": "src/*.py", "disabled_biomarkers": ["complex_method"]}]}
+        )
+        disabled = config.per_file_disabled(["src/a.py", "src/deep/b.py"])
+        assert disabled["src/a.py"] == {"complex_method"}
+        assert "src/deep/b.py" not in disabled
+
+    def test_a_bare_extension_glob_matches_at_any_depth(self) -> None:
+        config = HealthConfig.from_dict(
+            {"rules": [{"path": "*.generated.ts", "disabled_biomarkers": ["large_method"]}]}
+        )
+        disabled = config.per_file_disabled(["a.generated.ts", "src/deep/b.generated.ts"])
+        assert set(disabled) == {"a.generated.ts", "src/deep/b.generated.ts"}
+
+    def test_a_directory_prefix_matches_everything_under_it(self) -> None:
+        config = HealthConfig.from_dict(
+            {"rules": [{"path": "vendor/", "disabled_biomarkers": ["dry_violation"]}]}
+        )
+        disabled = config.per_file_disabled(["vendor/lib/a.js", "app/b.js"])
+        assert disabled["vendor/lib/a.js"] == {"dry_violation"}
+        assert "app/b.js" not in disabled
+
+    def test_a_narrowed_pattern_is_warned_about_on_load(self, capsys) -> None:
+        """Silently covering less than before would un-silence biomarkers."""
+        HealthConfig.from_dict(
+            {"rules": [{"path": "src/legacy/*", "disabled_biomarkers": ["complex_method"]}]}
+        )
+        logged = capsys.readouterr().out
+        assert "health_rules_glob_narrowed" in logged
+        # The message has to say what to write instead, not just that something
+        # changed.
+        assert "**" in logged
+
+    def test_an_unaffected_pattern_is_not_warned_about(self, capsys) -> None:
+        HealthConfig.from_dict(
+            {
+                "rules": [
+                    {"path": "src/legacy/**", "disabled_biomarkers": ["a"]},
+                    {"path": "*.generated.ts", "disabled_biomarkers": ["b"]},
+                    {"path": "vendor/", "disabled_biomarkers": ["c"]},
+                ]
+            }
+        )
+        assert "health_rules_glob_narrowed" not in capsys.readouterr().out
+
+    def test_severity_overrides_use_the_same_matching(self) -> None:
+        config = HealthConfig.from_dict(
+            {
+                "rules": [
+                    {"path": "src/legacy/**", "severity_overrides": {"complex_method": "low"}}
+                ]
+            }
+        )
+        overrides = config.per_file_severity_overrides(["src/legacy/deep/a.py", "src/new.py"])
+        assert "src/legacy/deep/a.py" in overrides
+        assert "src/new.py" not in overrides
