@@ -30,6 +30,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ....test_paths import is_test_related_path
 from .models import RefactoringContext, RefactoringSuggestion
 from .registry import RefactoringDetector, effort_bucket, register
 
@@ -52,45 +53,24 @@ _MAX_TARGET_DISTANCE = 0.7
 _MIN_DISTANCE_MARGIN = 0.25
 
 
-def _is_test_path(path: str) -> bool:
-    """Conservative test-file check (segment-aware).
-
-    A test method that exercises the class under test calls into it heavily —
-    that reads as feature envy but is never a move target, so test files are
-    excluded on both ends (the method's file and the proposed destination).
-    Catches both a ``test/`` / ``tests/`` directory anywhere in the path
-    (including the first segment, e.g. Django's ``tests/app/tests.py``) and
-    the usual per-file naming conventions."""
-    p = path.lower().replace("\\", "/")
-    segments = p.split("/")
-    if any(seg in ("test", "tests", "__tests__") for seg in segments[:-1]):
-        return True
-    base = segments[-1]
-    return (
-        base in ("tests.py", "test.py", "conftest.py")
-        or base.startswith("test_")
-        or base.endswith(
-            (
-                "_test.py",
-                "_test.go",
-                ".test.ts",
-                ".test.tsx",
-                ".test.js",
-                ".test.mts",
-                ".test.cts",
-                ".spec.ts",
-                ".spec.js",
-                ".spec.mts",
-                ".spec.cts",
-            )
-        )
-    )
-
-
 def _node(graph: Any, node_id: str) -> dict | None:
     if node_id not in graph:
         return None
     return graph.nodes[node_id]
+
+
+def _file_is_test(graph: Any, path: str) -> bool:
+    """Whether *path* is test material, preferring the flag ingestion stored.
+
+    A move target is a different file, so its language is not ``ctx.language``
+    and a path-only check cannot resolve the cases that need one (Ruby's
+    ``spec/``). The graph node carries the decision made at ingestion, with the
+    language in hand; the path rules are the fallback when the file has no node.
+    """
+    node = _node(graph, path)
+    if node is not None and "is_test" in node:
+        return bool(node["is_test"])
+    return is_test_related_path(path)
 
 
 def _owning_class_id(graph: Any, callee_id: str) -> str | None:
@@ -119,7 +99,7 @@ class MoveMethodDetector(RefactoringDetector):
 
     def detect(self, ctx: RefactoringContext) -> list[RefactoringSuggestion]:
         graph = ctx.graph
-        if graph is None or _is_test_path(ctx.file_path):
+        if graph is None or is_test_related_path(ctx.file_path, ctx.language):
             return []
 
         if ctx.file_methods is not None:
@@ -241,7 +221,7 @@ class MoveMethodDetector(RefactoringDetector):
         target_node = _node(graph, target_id) or {}
         target_class = target_node.get("name") or target_id.rsplit("::", 1)[-1]
         target_file = target_node.get("file_path")
-        if target_file and _is_test_path(target_file):
+        if target_file and _file_is_test(graph, target_file):
             return None  # never propose moving production code into a test class
 
         callers = self._caller_count(graph, method_id)

@@ -20,7 +20,6 @@ Two kinds of test live here:
 from __future__ import annotations
 
 from repowise.core.analysis.kg_curation import _CODE_SUFFIXES
-from repowise.core.generation import layers
 from repowise.core.generation.tour import _ENTRY_FILENAME_STEMS, _NON_CODE_LANGUAGES
 from repowise.core.ingestion.languages.registry import REGISTRY
 
@@ -49,20 +48,20 @@ class TestParityGoldens:
         ) == _ENTRY_FILENAME_STEMS
 
     def test_test_stem_prefixes_match_historical_set(self) -> None:
-        assert set(layers._TEST_FILE_STEM_PREFIXES) == {"test_"}
+        assert set(REGISTRY.test_stem_prefixes()) == {"test_"}
 
     def test_test_stem_suffixes_match_historical_set(self) -> None:
         # "_unittest" (C/C++ GoogleTest convention) was a conscious
         # addition to the historical {"_test", "_spec"} union.
-        assert set(layers._TEST_FILE_STEM_SUFFIXES) == {"_test", "_spec", "_unittest"}
+        assert set(REGISTRY.test_stem_suffixes()) == {"_test", "_spec", "_unittest"}
 
     def test_test_infixes_match_historical_set(self) -> None:
-        assert set(layers._TEST_FILE_INFIXES) == {".test.", ".spec."}
+        assert set(REGISTRY.test_infixes()) == {".test.", ".spec."}
 
     def test_test_fixture_stems_match_historical_set(self) -> None:
         assert frozenset(
             {"conftest", "spec_helper", "test_helper"}
-        ) == layers._TEST_FIXTURE_STEMS
+        ) == REGISTRY.test_fixture_stems()
 
     def test_suite_anchor_stems(self) -> None:
         # ruby (rspec/minitest helpers) and elixir (ExUnit's

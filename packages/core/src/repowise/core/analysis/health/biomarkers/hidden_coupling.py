@@ -23,9 +23,9 @@ empty short-circuit is explicit so backfill behavior is testable.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Any
 
+from ....test_paths import is_test_related_path
 from ..models import Severity
 from .base import BiomarkerResult, FileContext
 
@@ -41,41 +41,6 @@ _MAX_FINDINGS_PER_FILE = 3
 # any ratio by chance. Until the raw co-change count clears this floor (well
 # above ``_MIN_COMMITS``), severity is capped at MEDIUM: a hint, not a verdict.
 _MIN_CO_CHANGE_FOR_HIGH = 8
-
-# Same conventions used by engine._has_paired_test_file. Keeping them
-# inline (rather than importing) avoids a circular dependency between
-# the engine and the biomarker package.
-_TEST_BASENAME_PATTERNS: tuple[str, ...] = (
-    "test_",  # prefix
-)
-_TEST_SUFFIXES: tuple[str, ...] = (
-    "_test.py",
-    ".test.ts",
-    ".test.tsx",
-    ".test.js",
-    ".test.mts",
-    ".test.cts",
-    ".spec.ts",
-    ".spec.js",
-    ".spec.mts",
-    ".spec.cts",
-    "_test.go",
-)
-_TEST_DIR_FRAGMENTS: tuple[str, ...] = (
-    "/test/",
-    "/tests/",
-    "/__tests__/",
-)
-
-
-def _is_test_path(path: str) -> bool:
-    p = path.replace("\\", "/").lower()
-    if any(frag in f"/{p}" for frag in _TEST_DIR_FRAGMENTS):
-        return True
-    base = Path(p).name
-    if base.startswith(_TEST_BASENAME_PATTERNS):
-        return True
-    return any(p.endswith(suf) for suf in _TEST_SUFFIXES)
 
 
 def _parse_partners(meta: dict[str, Any]) -> dict[str, int]:
@@ -135,7 +100,7 @@ class HiddenCouplingDetector:
         if total_self < _MIN_COMMITS:
             return []
 
-        self_is_test = _is_test_path(ctx.file_path)
+        self_is_test = is_test_related_path(ctx.file_path, ctx.language)
         graph = ctx.graph_view
         counts = ctx.repo_commit_counts or {}
 
@@ -152,8 +117,11 @@ class HiddenCouplingDetector:
             correlation = co_count / denom
             if correlation < _MIN_CORRELATION:
                 continue
-            # Skip test ↔ production pairings — expected to co-change.
-            if self_is_test ^ _is_test_path(partner_path):
+            # Skip test ↔ production pairings — expected to co-change. The
+            # partner is a bare path from the co-change record and ``graph_view``
+            # exposes only ``has_edge``, so there is no node to read its stored
+            # flag from and no language to pass; the path rules are all we have.
+            if self_is_test ^ is_test_related_path(partner_path):
                 continue
             # Skip when an explicit import edge already documents the
             # coupling.

@@ -51,6 +51,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from typing import Any
 
+from ....test_paths import is_test_related_path
 from .models import RefactoringContext, RefactoringSuggestion
 from .registry import RefactoringDetector, effort_bucket, register
 
@@ -109,34 +110,6 @@ _SPINE_MIN_CALLERS = 3
 _HIGH_CONFIDENCE_MODULARITY = 0.45
 
 
-def _is_test_path(path: str) -> bool:
-    """Conservative test-file check (mirrors the other detectors)."""
-    p = path.lower().replace("\\", "/")
-    segments = p.split("/")
-    if any(seg in ("test", "tests", "__tests__") for seg in segments[:-1]):
-        return True
-    base = segments[-1]
-    return (
-        base in ("tests.py", "test.py", "conftest.py")
-        or base.startswith("test_")
-        or base.endswith(
-            (
-                "_test.py",
-                "_test.go",
-                ".test.ts",
-                ".test.tsx",
-                ".test.js",
-                ".test.mts",
-                ".test.cts",
-                ".spec.ts",
-                ".spec.js",
-                ".spec.mts",
-                ".spec.cts",
-            )
-        )
-    )
-
-
 def _is_generated_path(path: str) -> bool:
     """Generated / vendored / append-only code: a migration or a barrel
     re-export file must stay self-contained, so it is never a split target."""
@@ -155,8 +128,8 @@ def _is_generated_path(path: str) -> bool:
     )
 
 
-def _is_skippable_path(path: str) -> bool:
-    return _is_test_path(path) or _is_generated_path(path)
+def _is_skippable_path(path: str, language: str | None = None) -> bool:
+    return is_test_related_path(path, language) or _is_generated_path(path)
 
 
 def _node_span(data: dict) -> int:
@@ -288,7 +261,7 @@ class SplitFileDetector(RefactoringDetector):
 
     def detect(self, ctx: RefactoringContext) -> list[RefactoringSuggestion]:
         graph = ctx.graph
-        if graph is None or _is_skippable_path(ctx.file_path):
+        if graph is None or _is_skippable_path(ctx.file_path, ctx.language):
             return []
         if ctx.nloc < _MIN_FILE_NLOC:
             return []

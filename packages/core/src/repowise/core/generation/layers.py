@@ -26,6 +26,7 @@ from collections.abc import Iterable, Mapping
 from pathlib import PurePosixPath
 
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
+from repowise.core.test_paths import is_test_related_path
 
 # ---------------------------------------------------------------------------
 # Directory → layer hint table. Each canonical layer maps to the
@@ -56,89 +57,11 @@ _LAYER_HINTS: tuple[tuple[str, frozenset[str]], ...] = (
 # and pinned after the runtime layers instead.
 ADJACENT_LAYERS: frozenset[str] = frozenset({"Test"})
 
-# Test-dir tokens that also name non-test directories in the wild ("spec(s)" =
-# specifications, OpenAPI specs, language specs, …). These assign the Test
-# layer only when the *file* corroborates; otherwise the scan continues
-# outward to the next matching segment.
-_AMBIGUOUS_TEST_DIR_TOKENS: frozenset[str] = frozenset({"spec", "specs"})
-
-# Filename shapes that mark a test on their own (pytest, Go, Jest/Vitest,
-# RSpec/minitest fixtures, …). Derived from the language registry — each
-# language declares its own conventions on its spec; the union applies
-# globally here (parity with the historical hard-coded tuples is pinned by
-# tests/unit/ingestion/test_language_capabilities.py).
-_TEST_FILE_STEM_PREFIXES = _LANG_REGISTRY.test_stem_prefixes()
-_TEST_FILE_STEM_SUFFIXES = _LANG_REGISTRY.test_stem_suffixes()
-_TEST_FILE_INFIXES = _LANG_REGISTRY.test_infixes()
-_TEST_FIXTURE_STEMS = _LANG_REGISTRY.test_fixture_stems()
-
-# Case-sensitive camel-boundary suffix patterns (FooTest.java, BarSpec.scala),
-# keyed by extension so each language's convention applies only to its own
-# files (polyglot fairness). The lowercase-boundary lookbehind keeps
-# `latest.java`, `contest.cs`, and bare `Test.java` out — conventions match
-# with their own case sensitivity.
-_TEST_CAMEL_RES = _LANG_REGISTRY.camel_test_res_by_extension()
-
-# Multi-segment test roots (src/it/java) and case-sensitive test-project dir
-# suffixes (.NET sibling Foo.Tests/ projects). Both are unambiguous — like
-# tests/ and __tests__/, they mark any file beneath them.
-# A ``*``-segment form ("src/*Test") matches a Gradle source-set directory:
-# the literal segment(s) match lowercased, the ``*<Suffix>`` segment matches
-# the original-case dir name by proper suffix (src/jvmTest, src/commonTest,
-# src/integrationTest, …).
-_TEST_DIR_PATHS: tuple[tuple[str, ...], ...] = tuple(
-    tuple(p.split("/")) for p in _LANG_REGISTRY.test_dir_paths() if "*" not in p
-)
-_TEST_DIR_WILDCARDS: tuple[tuple[str, str], ...] = tuple(
-    (p.split("/")[0], p.split("/")[1].lstrip("*"))
-    for p in _LANG_REGISTRY.test_dir_paths()
-    if "*" in p
-)
-_TEST_DIR_SUFFIXES = _LANG_REGISTRY.test_dir_suffixes()
-# Per-language unambiguous test-dir tokens: ruby's spec/ needs no filename
-# corroboration — a Ruby file under spec/ is RSpec material whatever its
-# name (support helpers, vendored fixtures).
-_LANG_TEST_DIR_TOKENS = _LANG_REGISTRY.test_dir_tokens_by_language()
-
-
-def _is_test_file_name(filename: str) -> bool:
-    """Whether *filename* alone marks a test (test_x.py, x_test.go, x.spec.ts, …)."""
-    name = filename.lower()
-    stem = PurePosixPath(name).stem
-    if (
-        stem in _TEST_FIXTURE_STEMS
-        or stem.startswith(_TEST_FILE_STEM_PREFIXES)
-        or stem.endswith(_TEST_FILE_STEM_SUFFIXES)
-        or any(m in name for m in _TEST_FILE_INFIXES)
-    ):
-        return True
-    camel_re = _TEST_CAMEL_RES.get(PurePosixPath(filename).suffix.lower())
-    return camel_re is not None and camel_re.search(PurePosixPath(filename).stem) is not None
-
-
-def _is_test_dir_path(segments: list[str], original_segments: list[str]) -> bool:
-    """Whether the directory path itself is an unambiguous test root.
-
-    *segments* are lowercased dir names, *original_segments* preserve case
-    for the case-sensitive project-dir suffix rule (``Foo.Tests/``).
-    """
-    for needle in _TEST_DIR_PATHS:
-        span = len(needle)
-        if span <= len(segments) and any(
-            tuple(segments[i : i + span]) == needle
-            for i in range(len(segments) - span + 1)
-        ):
-            return True
-    for prefix_seg, camel_sfx in _TEST_DIR_WILDCARDS:
-        for i in range(len(segments) - 1):
-            nxt = original_segments[i + 1]
-            if (
-                segments[i] == prefix_seg
-                and nxt.endswith(camel_sfx)
-                and len(nxt) > len(camel_sfx)
-            ):
-                return True
-    return any(seg.endswith(_TEST_DIR_SUFFIXES) for seg in original_segments)
+# Every test convention this module used to carry - registry-derived filename
+# shapes, camel-boundary suffixes, multi-segment roots, the ambiguous `spec/`
+# rule - now lives in ``core.test_paths``, which answers the same question for
+# ingestion and for the MCP tools (#1103). ``_TEST_DIR_TOKENS`` above stays
+# because it is also this table's Test entry.
 
 
 # Per-language layer hints (they fire only for files of the
@@ -309,27 +232,12 @@ def infer_layer(path: str, language: str | None = None) -> str:
     """
     original_parts = list(PurePosixPath(path).parts)
     parts = [s.lower() for s in original_parts]
-    # Original case is preserved for the case-sensitive rules (camel-suffix
-    # filenames, .NET ``Foo.Tests/`` project dirs).
-    filename = original_parts[-1] if original_parts else ""
     segments = parts[:-1]  # drop filename
 
-    if _is_test_file_name(filename):
-        return "Test"
-
-    lang_test_tokens = _LANG_TEST_DIR_TOKENS.get((language or "").lower(), frozenset())
-    for seg in segments:
-        if seg not in _TEST_DIR_TOKENS:
-            continue
-        if (
-            seg in _AMBIGUOUS_TEST_DIR_TOKENS
-            and seg not in lang_test_tokens
-            and not _is_test_file_name(filename)
-        ):
-            continue  # "spec(s)/" without a test-shaped file: not a test root
-        return "Test"
-
-    if _is_test_dir_path(segments, original_parts[:-1]):
+    # Checked before the hint table below, and deliberately: that table scans
+    # deepest-segment-outward, so ``tests/utils/foo.py`` would answer "Utility".
+    # A test is a test wherever in the path the marker sits.
+    if is_test_related_path(path, language):
         return "Test"
 
     # Repo-root dot-directories (.github, .agents, .claude, .vscode, …) hold

@@ -12,7 +12,6 @@ from __future__ import annotations
 import contextlib
 import inspect
 import io
-import re
 import sys
 from collections import Counter
 from dataclasses import dataclass, field
@@ -22,6 +21,7 @@ import networkx as nx
 import structlog
 
 from repowise.core.analysis.kg_curation import GENERIC_ORG_SEGMENTS, dominant_segments
+from repowise.core.test_paths import is_test_related_path
 
 log = structlog.get_logger(__name__)
 
@@ -386,15 +386,18 @@ def _dominant_language(
 # Test / production separation
 # ---------------------------------------------------------------------------
 
-_TEST_PATH_RE = re.compile(
-    r"(test[s_/]|_test\.|\.test\.|\.spec\.|__tests__|conftest|fixture[s]?[/.])",
-    re.IGNORECASE,
-)
+def _is_test_node(node_id: str, data: dict) -> bool:
+    """Whether a graph file node is test material.
 
-
-def _is_test_file(path: str) -> bool:
-    """True if *path* looks like a test, fixture, or spec file."""
-    return bool(_TEST_PATH_RE.search(path))
+    Reads the flag ingestion stored on the node, which was decided with the
+    file's language in hand. The path rules are the fallback for a node that
+    predates the flag. The regex this replaced matched ``test[s_/]`` unanchored,
+    so ``src/latest/api.py`` and ``protest/main.py`` were pulled out of
+    community assignment as tests (#1103).
+    """
+    if "is_test" in data:
+        return bool(data["is_test"])
+    return is_test_related_path(node_id, data.get("language"))
 
 
 def _assign_tests_to_communities(
@@ -456,8 +459,9 @@ def detect_file_communities(
     # separately then assigned to the community of their most-imported
     # production file, preventing test directories from dominating labels
     # and mixing unrelated production modules.
-    prod_nodes = [n for n in file_nodes if not _is_test_file(n)]
-    test_nodes = [n for n in file_nodes if _is_test_file(n)]
+    is_test = {n: _is_test_node(n, graph.nodes[n]) for n in file_nodes}
+    prod_nodes = [n for n in file_nodes if not is_test[n]]
+    test_nodes = [n for n in file_nodes if is_test[n]]
 
     # Build undirected subgraph from production files + relevant edges
     undirected = nx.Graph()

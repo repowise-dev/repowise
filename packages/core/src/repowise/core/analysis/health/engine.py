@@ -85,27 +85,6 @@ def _log_duplication_diagnostics(report: DuplicationReport) -> None:
         log.debug("health_duplication_limits", **diag)
 
 
-def _is_test_file(rel_path: str) -> bool:
-    p = rel_path.lower()
-    return (
-        "/test/" in p
-        or "/tests/" in p
-        or "/__tests__/" in p
-        or p.startswith("test_")
-        or p.endswith("_test.py")
-        or p.endswith(".test.ts")
-        or p.endswith(".test.tsx")
-        or p.endswith(".test.js")
-        or p.endswith(".test.mts")
-        or p.endswith(".test.cts")
-        or p.endswith(".spec.ts")
-        or p.endswith(".spec.js")
-        or p.endswith(".spec.mts")
-        or p.endswith(".spec.cts")
-        or p.endswith("_test.go")
-    )
-
-
 def _fallback_module(rel_path: str) -> str | None:
     """Top-level directory as a stand-in module label when no community map.
 
@@ -846,8 +825,13 @@ class HealthAnalyzer:
             file_path=file_path,
             language=pf.file_info.language,
             nloc=nloc,
+            # ``pf.file_info.is_test`` is the decision ingestion already made
+            # for this file, with its language in hand — read it rather than
+            # re-derive from the path string (#1103). The coverage check stays
+            # because it also sniffs framework imports out of the source, which
+            # a path cannot tell you.
             has_test_file=_has_paired_test_file(file_path, path_basenames)
-            or _is_test_file(file_path)
+            or pf.file_info.is_test
             or _coverage_is_test_file(file_path)
             or fcx.has_inline_tests,
             module=module,
