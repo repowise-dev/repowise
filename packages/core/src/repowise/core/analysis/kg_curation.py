@@ -1863,7 +1863,8 @@ def build_portable_kg(kg: KnowledgeGraphResult) -> tuple[dict, KGValidation]:
     data = kg.to_dict()
     validation = validate_kg(kg)
     data["meta"] = {
-        "schema_version": data.get("version", "1.0.0"),
+        # The integer the loader gates on, not the "1.0.0" display label.
+        "schema_version": data.get("schema_version", 1),
         "generator": "repowise-kg-curation",
         "fingerprint": getattr(kg, "fingerprint", ""),
         "file_count": validation.metrics.get("file_count", 0),

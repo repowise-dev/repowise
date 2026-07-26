@@ -538,6 +538,22 @@ async def run_pipeline(
                         "info",
                         f"  ↳ KG unchanged (fingerprint {new_fingerprint[:8]}…), reusing",
                     )
+            else:
+                # The fingerprint said the file was reusable but the reader
+                # refused it — unreadable, or written by an older schema. The
+                # rebuild below is correct either way, but it used to happen
+                # in total silence, so a user whose hand-edited file was
+                # rejected got no signal at all.
+                logger.info(
+                    "knowledge_graph.reuse_failed",
+                    reason="artifact_unreadable_or_outdated",
+                    path=str(kg_json_path),
+                )
+                if progress:
+                    progress.on_message(
+                        "info",
+                        "  ↳ knowledge-graph.json could not be reused, rebuilding it",
+                    )
 
         tech_stack_dicts = [
             {"name": t.name, "version": t.version, "category": t.category} for t in tech_items
