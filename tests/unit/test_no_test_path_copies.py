@@ -9,6 +9,12 @@ from, so a reviewer noticing the thirteenth is not a plan.
 The remaining entries in ``_KNOWN`` are the ones still to be converted. The list
 only ever shrinks: deleting a copy means deleting its line here, and adding one
 means this test tells you to use the shared module instead.
+
+Ceiling: this matches on names, so a predicate called something the lists below
+do not know stays invisible. It catches the shapes that actually recurred in this
+codebase, which is what the twelve copies were named. The corpus in
+``test_test_paths.py`` is what catches a *wrong* answer; this only catches a
+second implementation of the question.
 """
 
 from __future__ import annotations
@@ -77,8 +83,13 @@ def _offenders() -> dict[str, list[str]]:
         except (SyntaxError, UnicodeDecodeError):  # not ours to police
             continue
         hits: list[str] = []
-        for node in tree.body:  # module level only
-            if isinstance(node, ast.FunctionDef) and node.name in _PREDICATE_NAMES:
+        # Whole tree, not just module level: a copy tucked inside a class body or
+        # nested in a function is still a copy.
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+                and node.name in _PREDICATE_NAMES
+            ):
                 hits.append(node.name)
             elif isinstance(node, ast.Assign):
                 hits.extend(

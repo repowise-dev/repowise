@@ -35,8 +35,6 @@ from repowise.core.test_paths import is_test_related_path
 # from the deepest segment outward (the closest directory wins).
 # ---------------------------------------------------------------------------
 
-_TEST_DIR_TOKENS = frozenset({"__tests__", "test", "tests", "spec", "specs", "e2e"})
-
 _LAYER_HINTS: tuple[tuple[str, frozenset[str]], ...] = (
     ("CLI", frozenset({"cli", "commands", "cmd", "cli_commands"})),
     ("API", frozenset({"routes", "api", "controllers", "endpoints", "handlers", "routers"})),
@@ -46,7 +44,6 @@ _LAYER_HINTS: tuple[tuple[str, frozenset[str]], ...] = (
     ("Middleware", frozenset({"middleware", "plugins", "interceptors", "guards"})),
     ("Utility", frozenset({"utils", "helpers", "common", "shared", "tools", "util"})),
     ("Config", frozenset({"config", "constants", "env", "settings", "conf"})),
-    ("Test", _TEST_DIR_TOKENS),
     ("Types", frozenset({"types", "interfaces", "schemas", "contracts", "dtos", "typings"})),
 )
 
@@ -60,8 +57,8 @@ ADJACENT_LAYERS: frozenset[str] = frozenset({"Test"})
 # Every test convention this module used to carry - registry-derived filename
 # shapes, camel-boundary suffixes, multi-segment roots, the ambiguous `spec/`
 # rule - now lives in ``core.test_paths``, which answers the same question for
-# ingestion and for the MCP tools (#1103). ``_TEST_DIR_TOKENS`` above stays
-# because it is also this table's Test entry.
+# ingestion and for the MCP tools (#1103). The table above no longer carries a
+# Test row: the check runs ahead of it, so the row was unreachable.
 
 
 # Per-language layer hints (they fire only for files of the
@@ -266,8 +263,6 @@ def infer_layer(path: str, language: str | None = None) -> str:
     for i in range(len(segments) - 1, -1, -1):
         seg = segments[i]
         for layer_name, tokens in _LAYER_HINTS:
-            if layer_name == "Test":
-                continue  # handled above
             if seg in tokens:
                 return layer_name
         if token_hints and seg in token_hints:

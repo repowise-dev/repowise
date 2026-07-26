@@ -86,14 +86,14 @@ def _is_generated_path(path: str) -> bool:
     )
 
 
-def _is_skippable_occurrence(path: str) -> bool:
+def _is_skippable_occurrence(path: str, language: str | None = None) -> bool:
     """Duplication among test fixtures is common and low value, and a migration
     must stay self-contained, so both are dropped before a suggestion is formed.
 
     Test support counts as test material here: sharing a helper out of
     ``conftest.py`` is the same bad advice as sharing one out of a test.
     """
-    return is_test_related_path(path) or _is_generated_path(path)
+    return is_test_related_path(path, language) or _is_generated_path(path)
 
 
 class _Block:
@@ -202,7 +202,11 @@ class ExtractHelperDetector(RefactoringDetector):
         # then coalesce the overlapping windows the clone detector emits for one
         # physical block into a single site per region (without merging, the
         # same import/parse block reads as "5 sites" when it is really one).
-        kept = [o for o in block.occurrences if not _is_skippable_occurrence(o[0])]
+        # Clones are detected within a language, so every occurrence in a block
+        # shares ``ctx.language`` — which the ambiguous ``spec/`` rule needs.
+        kept = [
+            o for o in block.occurrences if not _is_skippable_occurrence(o[0], ctx.language)
+        ]
         occurrences = _merge_ranges_per_file(kept)
         if len(occurrences) < 2:
             return None
