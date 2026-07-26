@@ -110,6 +110,23 @@ def _coerce_severity_map(raw: object) -> dict[str, Severity]:
 _LONE_STAR = re.compile(r"(?<!\*)\*(?!\*)")
 
 
+def glob_narrowed_by_gitignore_semantics(pattern: str) -> bool:
+    """True if *pattern* covers less than it did under the old matching.
+
+    Split out from the logging call so the rule itself is testable.
+
+    Two things make a pattern safe:
+
+    * **No path separator.** ``*.generated.ts`` matches at any depth under
+      both engines.
+    * **A ``**`` earlier in the pattern.** Once ``**`` has taken care of the
+      directories, a later single ``*`` cannot narrow the match — which is
+      what makes the common ``**/*.spec.ts`` idiom fine.
+    """
+    head = pattern.split("**", 1)[0]
+    return "/" in pattern and bool(_LONE_STAR.search(head))
+
+
 def _compile_glob(pattern: str) -> Any:
     """Compile one path glob to a matcher, using gitignore semantics.
 
@@ -269,7 +286,7 @@ class HealthConfig:
             # its author meant, which would quietly un-silence biomarkers they
             # had turned off. Say so instead of letting them discover it in a
             # health report.
-            if "/" in glob and _LONE_STAR.search(glob):
+            if glob_narrowed_by_gitignore_semantics(glob):
                 log.warning(
                     "health_rules_glob_narrowed",
                     pattern=glob,

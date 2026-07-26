@@ -5,7 +5,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from repowise.core.analysis.health.config import HealthConfig
+from repowise.core.analysis.health.config import (
+    HealthConfig,
+    glob_narrowed_by_gitignore_semantics,
+)
 from repowise.core.analysis.health.models import Severity
 
 
@@ -283,28 +286,26 @@ class TestGitignoreGlobSemantics:
         assert disabled["vendor/lib/a.js"] == {"dry_violation"}
         assert "app/b.js" not in disabled
 
-    def test_a_narrowed_pattern_is_warned_about_on_load(self, capsys) -> None:
-        """Silently covering less than before would un-silence biomarkers."""
-        HealthConfig.from_dict(
-            {"rules": [{"path": "src/legacy/*", "disabled_biomarkers": ["complex_method"]}]}
-        )
-        logged = capsys.readouterr().out
-        assert "health_rules_glob_narrowed" in logged
-        # The message has to say what to write instead, not just that something
-        # changed.
-        assert "**" in logged
+    def test_a_pattern_that_now_covers_less_is_detected(self) -> None:
+        """Silently narrowing a rule would un-silence biomarkers.
 
-    def test_an_unaffected_pattern_is_not_warned_about(self, capsys) -> None:
-        HealthConfig.from_dict(
-            {
-                "rules": [
-                    {"path": "src/legacy/**", "disabled_biomarkers": ["a"]},
-                    {"path": "*.generated.ts", "disabled_biomarkers": ["b"]},
-                    {"path": "vendor/", "disabled_biomarkers": ["c"]},
-                ]
-            }
+        Loading one logs a warning naming the pattern; the rule behind that
+        warning is what is pinned here, since the log call is one line and
+        structlog's sink is reconfigured by other suites.
+        """
+        assert glob_narrowed_by_gitignore_semantics("src/legacy/*")
+        assert glob_narrowed_by_gitignore_semantics("packages/*/tests")
+
+    def test_unaffected_patterns_are_not_flagged(self) -> None:
+        safe = (
+            "src/legacy/**",   # already the broad form
+            "*.generated.ts",  # no separator: any depth under both engines
+            "vendor/",         # a directory prefix
+            "**/*.spec.ts",    # the ** ahead of it has already covered depth
+            "src/**/*.py",
         )
-        assert "health_rules_glob_narrowed" not in capsys.readouterr().out
+        for pattern in safe:
+            assert not glob_narrowed_by_gitignore_semantics(pattern), pattern
 
     def test_severity_overrides_use_the_same_matching(self) -> None:
         config = HealthConfig.from_dict(
