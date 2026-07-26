@@ -84,9 +84,16 @@ def _write_header(writer: Writer, model: C4Model, *, standalone: bool) -> None:
     writer.comment("Regenerating overwrites this file — do not hand-edit it.")
     if not standalone:
         writer.comment("It holds the model only; your views, styles and docs stay in")
-        writer.comment("your own workspace.dsl, which this is meant to be included from:")
+        writer.comment("your own workspace.dsl. Include it from inside the workspace")
+        writer.comment("block — the parser rejects an include that sits outside one:")
         writer.comment()
-        writer.comment(f"    !include {DEFAULT_FILENAME}")
+        writer.comment('    workspace "your name" {')
+        writer.comment(f"        !include {DEFAULT_FILENAME}")
+        writer.comment()
+        writer.comment("        views {")
+        writer.comment("            ...")
+        writer.comment("        }")
+        writer.comment("    }")
     writer.comment()
 
 
@@ -149,13 +156,19 @@ def to_dsl(
 
         relations = list(model.container_relations)
         if include_components:
-            relations = list(model.component_relations)
-            # Container-level edges to externals survive the component roll-up
-            # only when a component is not the more precise source, so both
-            # sets are offered and the dedup below keeps the precise one.
-            seen = {(r.source_id, r.target_id) for r in relations}
-            relations += [
-                r for r in model.container_relations if (r.source_id, r.target_id) not in seen
+            # Structurizr derives a container→container relationship from any
+            # component→component one that crosses a boundary, so emitting our
+            # container-level edges as well is a duplicate the parser rejects.
+            # Only containers that produced no components need theirs kept.
+            componentless = {
+                container.id
+                for container in model.containers
+                if not model.components_by_container.get(container.id)
+            }
+            relations = list(model.component_relations) + [
+                r
+                for r in model.container_relations
+                if r.source_id in componentless or r.target_id in componentless
             ]
         writer.blank()
         writer.comment("Relationships")

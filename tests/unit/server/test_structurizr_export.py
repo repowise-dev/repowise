@@ -170,8 +170,11 @@ def test_fragment_is_a_bare_model_block() -> None:
     dsl = to_dsl(_model())
     assert dsl.startswith("#")
     assert "\nmodel {\n" in dsl
-    assert "workspace " not in dsl
-    assert "views {" not in dsl
+    # No workspace or views block of its own — only the illustration in the
+    # header comment, which is not code.
+    code = [line for line in dsl.splitlines() if not line.strip().startswith("#")]
+    assert not any("workspace " in line for line in code)
+    assert not any("views {" in line for line in code)
 
 
 def test_fragment_explains_how_to_use_itself() -> None:
@@ -179,6 +182,9 @@ def test_fragment_explains_how_to_use_itself() -> None:
     dsl = to_dsl(_model())
     assert "!include repowise-model.dsl" in dsl
     assert "do not hand-edit" in dsl
+    # The include only parses inside the workspace block, so the snippet has
+    # to show that rather than the bare line.
+    assert 'workspace "your name" {' in dsl
 
 
 def test_there_is_no_timestamp_in_the_output() -> None:
