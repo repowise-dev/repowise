@@ -696,10 +696,14 @@ async def _persist_full_update_async(
                 from datetime import UTC as _UTC
                 from datetime import datetime
 
+                from repowise.core.generation.models import count_stub_fallbacks
                 from repowise.core.persistence.crud import upsert_generation_job
 
                 now = datetime.now(_UTC)
                 page_count = len(generated_pages)
+                # See init_cmd/persistence.py: a stub the provider failure put
+                # up has a row but no prose, so it is not a completed page.
+                stub_fallbacks = count_stub_fallbacks(generated_pages)
                 job = await upsert_generation_job(
                     session,
                     repository_id=repo_id,
@@ -707,7 +711,8 @@ async def _persist_full_update_async(
                     total_pages=page_count,
                     config={"mode": "incremental", "source": "cli_update"},
                 )
-                job.completed_pages = page_count
+                job.completed_pages = page_count - stub_fallbacks
+                job.failed_pages = stub_fallbacks
                 job.started_at = now
                 job.finished_at = now
             except Exception as exc:

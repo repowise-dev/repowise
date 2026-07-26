@@ -295,9 +295,13 @@ async def _run_upgrade(
         try:
             from datetime import UTC, datetime
 
+            from repowise.core.generation.models import count_stub_fallbacks
             from repowise.core.persistence.crud import upsert_generation_job
 
             now = datetime.now(UTC)
+            # See init_cmd/persistence.py: a stub the provider failure put up
+            # has a row but no prose, so it is not a completed page.
+            stub_fallbacks = count_stub_fallbacks(generated_pages)
             job = await upsert_generation_job(
                 session,
                 repository_id=repo_id,
@@ -305,7 +309,8 @@ async def _run_upgrade(
                 total_pages=len(generated_pages),
                 config={"mode": "upgrade", "source": "cli_update_full"},
             )
-            job.completed_pages = len(generated_pages)
+            job.completed_pages = len(generated_pages) - stub_fallbacks
+            job.failed_pages = stub_fallbacks
             job.started_at = now
             job.finished_at = now
         except Exception:

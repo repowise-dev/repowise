@@ -24,6 +24,7 @@ from repowise.cli.helpers import (
 )
 from repowise.cli.state_persistence import build_kg_state, save_knowledge_graph_json
 from repowise.core.docs_mode import docs_mode_state_fields
+from repowise.core.generation.models import count_stub_fallbacks
 
 logger = structlog.get_logger(__name__)
 
@@ -167,7 +168,13 @@ async def persist_result(result: Any, repo_path: Path) -> None:
         # Record a completed GenerationJob so the web UI can show
         # "last synced" / "last re-indexed" timestamps.
         now = datetime.now(UTC)
-        page_count = len(result.generated_pages) if result.generated_pages else 0
+        _pages = result.generated_pages or []
+        page_count = len(_pages)
+        # A page that fell back to its stub has a row, so it counts towards the
+        # total, but the model never wrote it. Counting it as completed is what
+        # would let a run that lost half its pages report a clean sweep to the
+        # web UI, which reads this row rather than the job checkpoint.
+        stub_fallbacks = count_stub_fallbacks(_pages)
         job = await upsert_generation_job(
             session,
             repository_id=repo.id,
@@ -175,7 +182,8 @@ async def persist_result(result: Any, repo_path: Path) -> None:
             total_pages=page_count,
             config={"mode": "full_resync", "source": "cli_init"},
         )
-        job.completed_pages = page_count
+        job.completed_pages = page_count - stub_fallbacks
+        job.failed_pages = stub_fallbacks
         job.started_at = now
         job.finished_at = now
 

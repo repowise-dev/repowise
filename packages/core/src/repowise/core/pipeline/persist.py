@@ -13,7 +13,10 @@ from typing import Any
 
 import structlog
 
-from repowise.core.generation.models import STRUCTURALLY_KEYED_PAGE_TYPES
+from repowise.core.generation.models import (
+    STRUCTURALLY_KEYED_PAGE_TYPES,
+    STUB_FALLBACK_ERROR,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -658,6 +661,13 @@ async def sweep_superseded_generated_pages(
     for page in generated_pages or []:
         page_type = page.page_type
         if page_type not in _SWEPT_GENERATED_PAGE_TYPES:
+            continue
+        # A stub standing in for a failed provider call is the "failed to
+        # generate" case this function's contract already carves out: it claims
+        # no files, so a prior row covering them is not superseded. Counting its
+        # members would retire the very page whose regeneration just failed, and
+        # take its version history with it.
+        if STUB_FALLBACK_ERROR in (getattr(page, "metadata", None) or {}):
             continue
         produced_ids.setdefault(page_type, set()).add(page.page_id)
         metadata = getattr(page, "metadata", None) or {}

@@ -21,6 +21,7 @@ import structlog
 from ..context_assembler import FilePageContext
 from ..models import (
     STRUCTURALLY_KEYED_PAGE_TYPES,
+    STUB_FALLBACK_ERROR,
     GeneratedPage,
     compute_page_id,
     member_structural_key,
@@ -573,6 +574,18 @@ class _GenerationRun:
                     result = await coro
 
                 if isinstance(result, GeneratedPage):
+                    # A page whose provider call raised comes back as its
+                    # structural stub rather than being dropped (issue #1089),
+                    # so the row exists and `repowise generate` can refill it.
+                    # It is still a failure: the job checkpoint has to say so,
+                    # or a run that lost half its pages reports a clean sweep.
+                    stub_error = result.metadata.get(STUB_FALLBACK_ERROR)
+                    if (
+                        stub_error is not None
+                        and self.job_system is not None
+                        and self.job_id is not None
+                    ):
+                        self.job_system.fail_page(self.job_id, page_id, stub_error)
                     # Summary capture is cheap (string ops) — keep inline so
                     # the next page's context assembly sees it immediately.
                     self.completed_page_summaries[result.target_path] = overview_summary(
@@ -594,9 +607,20 @@ class _GenerationRun:
                     # re-embedding it re-bills the embedder for every unchanged
                     # page on every update. Ephemeral stores start empty each
                     # run and still need it.
-                    if self.vector_store is not None and not (
-                        result.metadata.get("reused_from_prior_run")
-                        and getattr(self.vector_store, "persists_across_runs", False)
+                    #
+                    # A stub standing in for a failed page is held back. Not to
+                    # save the embedding call: ``_seed_resume`` reads the store
+                    # back as the list of pages already done, so embedding the
+                    # stub is what would tell the next ``--resume`` there is
+                    # nothing left to write here. The page is still persisted
+                    # and full-text indexed; only the resume ledger is spared.
+                    if (
+                        self.vector_store is not None
+                        and stub_error is None
+                        and not (
+                            result.metadata.get("reused_from_prior_run")
+                            and getattr(self.vector_store, "persists_across_runs", False)
+                        )
                     ):
                         embed_items.append(_embed_item(result))
                 return result
@@ -643,7 +667,10 @@ class _GenerationRun:
         pages = [r for r in results if isinstance(r, GeneratedPage)]
         if self.job_system is not None and self.job_id is not None:
             for r in pages:
-                self.job_system.complete_page(self.job_id, r.page_id)
+                # Already recorded as failed above. A page cannot be both, and
+                # "completed" is the half a reader would believe.
+                if r.metadata.get(STUB_FALLBACK_ERROR) is None:
+                    self.job_system.complete_page(self.job_id, r.page_id)
         return pages
 
     # ------------------------------------------------------------------

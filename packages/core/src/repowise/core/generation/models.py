@@ -360,6 +360,30 @@ MODEL_WRITTEN_PAGE_TYPES: frozenset[str] = frozenset(
     {"module_page", "repo_overview", "architecture_diagram", "onboarding"}
 )
 
+# Metadata key holding the provider error a page fell back to its stub over.
+# Present only on a stub the run substituted for a model page whose provider
+# call raised, which is not the same thing as a stub a deterministic run meant
+# to write. The distinction is what lets the level runner record the page as
+# failed while still handing back a row.
+STUB_FALLBACK_ERROR = "stub_fallback_error"
+
+
+def is_stub_fallback(page: Any) -> bool:
+    """True when *page* is a stub standing in for a failed provider call."""
+    return STUB_FALLBACK_ERROR in (getattr(page, "metadata", None) or {})
+
+
+def count_stub_fallbacks(pages: Iterable[Any]) -> int:
+    """How many of *pages* the model never actually wrote.
+
+    Every writer of a ``GenerationJob`` row needs this same split, because a
+    stub is in ``generated_pages`` like any other page: counting the list is
+    what would let a run that lost half its pages report a clean sweep. Four
+    call sites deriving it separately is four chances for one of them to drift
+    back into counting a failure as a success, which is the bug itself.
+    """
+    return sum(1 for page in pages if is_stub_fallback(page))
+
 
 def member_structural_key(members: Iterable[str], *, prefix: str) -> str:
     """Return a stable identity for a page defined by the files it covers.

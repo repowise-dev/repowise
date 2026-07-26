@@ -26,10 +26,36 @@ from ._shared import _parse_dt
 # ---------------------------------------------------------------------------
 
 
+def _would_bury_prose(existing: Page | None, metadata: dict | None) -> bool:
+    """True when writing this page would replace real prose with a failure stub.
+
+    The generator substitutes a structural stub for a model page whose provider
+    call failed (issue #1089) so the page has a row to be found by. That is the
+    right answer when nothing was there. It is the wrong one on top of a page a
+    model already wrote: one 529 during ``update`` would otherwise cost the user
+    the page and file the good version behind a snapshot nobody knows to look
+    for.
+
+    Narrow on purpose. A stub landing on a row that is *itself* a stub is not
+    prose loss, so it falls through to the normal idempotent path and keeps
+    refreshing the fields that say where the page sits.
+
+    Imported lazily to keep persistence independent of generation at module
+    load, the same reason :func:`load_prior_pages` defers ``PriorPage``.
+    """
+    if existing is None or not metadata:
+        return False
+    from repowise.core.generation.models import STUB_FALLBACK_ERROR
+    from repowise.core.providers.llm.template import TEMPLATE_PROVIDER_NAME
+
+    return STUB_FALLBACK_ERROR in metadata and existing.provider_name != TEMPLATE_PROVIDER_NAME
+
+
 def _apply_page_upsert(
     session: AsyncSession,
     existing: Page | None,
     *,
+    keep_existing_prose: bool = False,
     page_id: str,
     repository_id: str,
     page_type: str,
@@ -64,6 +90,22 @@ def _apply_page_upsert(
     for :func:`upsert_pages_from_generated`).
     """
     if existing is not None:
+        # The page keeps the prose it already has (see
+        # :func:`_would_bury_prose`), but it still moved: placement is decided
+        # after generation, by a pass that mutates the page objects, and this
+        # write is where it lands. Refreshing those fields and nothing else
+        # keeps the tree correct without touching what the page says. The
+        # failure marker deliberately does not go to ``metadata_json`` — this
+        # row has prose, so recording it as a stub would be a lie the stub
+        # counters and ``generate`` would both read.
+        if keep_existing_prose:
+            existing.title = title
+            existing.target_path = target_path
+            existing.parent_page_id = parent_page_id
+            existing.display_order = display_order
+            existing.section_number = section_number
+            existing.structural_key = structural_key
+            return existing
         # Idempotent no-op: content, prompt hash and model all unchanged, so
         # do not bump the version or spawn a PageVersion snapshot; only refresh
         # the cheap derived fields (metadata enrichment lands here).
@@ -204,6 +246,7 @@ async def upsert_page(
     page = _apply_page_upsert(
         session,
         existing,
+        keep_existing_prose=_would_bury_prose(existing, metadata),
         page_id=page_id,
         repository_id=repository_id,
         page_type=page_type,
@@ -355,6 +398,9 @@ async def upsert_pages_from_generated(
             _apply_page_upsert(
                 session,
                 existing_by_id.get(gp.page_id),
+                keep_existing_prose=_would_bury_prose(
+                    existing_by_id.get(gp.page_id), gp.metadata
+                ),
                 page_id=gp.page_id,
                 repository_id=repository_id,
                 page_type=gp.page_type,

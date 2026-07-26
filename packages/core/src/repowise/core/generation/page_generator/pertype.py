@@ -19,9 +19,39 @@ from repowise.core.ingestion.models import ParsedFile, RepoStructure
 from .. import onboarding as _onboarding
 from ..architecture_mermaid import embed_mermaid
 from ..context_assembler import FilePageContext, LayerPageContext
-from ..models import GENERATION_LEVELS, GeneratedPage, compute_source_hash
+from ..models import (
+    GENERATION_LEVELS,
+    STUB_FALLBACK_ERROR,
+    GeneratedPage,
+    compute_source_hash,
+)
 
 log = structlog.get_logger(__name__)
+
+
+def _stub_fallback(page: GeneratedPage, page_type: str, exc: Exception) -> GeneratedPage:
+    """Mark *page* as the stub standing in for a model page the provider lost.
+
+    Dropping the page instead is what made a provider outage unrecoverable
+    (issue #1089): scope resolution runs over persisted page records, so a page
+    no run ever wrote is invisible to ``generate`` and to ``update`` alike, and
+    nothing can ask for it again. The stub is already the shape these four page
+    types take before a model writes them, so substituting it costs one render
+    and leaves a row that ``repowise generate`` refills like any other stub.
+
+    The error is stamped rather than only logged because the level runner reads
+    it back: this page still has to count as a failure in the job checkpoint,
+    and must not reach the vector store that ``--resume`` treats as its record
+    of what is already done.
+    """
+    page.metadata[STUB_FALLBACK_ERROR] = str(exc)[:500]
+    log.warning(
+        "page_generation.stub_fallback",
+        page_type=page_type,
+        target_path=page.target_path,
+        error=str(exc),
+    )
+    return page
 
 
 class PerTypeGenerationMixin:
@@ -182,9 +212,13 @@ class PerTypeGenerationMixin:
             page = self._stub_module_page(ctx, page_target, title, module_git_summary)
             return _stamp_concept(page)
         user_prompt = self._render("module_page.j2", ctx=ctx, module_git_summary=module_git_summary)
-        response = await self._call_provider(
-            "module_page", user_prompt, str(uuid.uuid4()), target_path=page_target
-        )
+        try:
+            response = await self._call_provider(
+                "module_page", user_prompt, str(uuid.uuid4()), target_path=page_target
+            )
+        except Exception as exc:
+            stub = self._stub_module_page(ctx, page_target, title, module_git_summary)
+            return _stamp_concept(_stub_fallback(stub, "module_page", exc))
         page = self._build_generated_page(
             "module_page",
             page_target,
@@ -252,9 +286,15 @@ class PerTypeGenerationMixin:
                 ctx, repo_name, f"Repository Overview: {repo_name}", repo_git_summary
             )
         user_prompt = self._render("repo_overview.j2", ctx=ctx, repo_git_summary=repo_git_summary)
-        response = await self._call_provider(
-            "repo_overview", user_prompt, str(uuid.uuid4()), target_path=repo_name
-        )
+        try:
+            response = await self._call_provider(
+                "repo_overview", user_prompt, str(uuid.uuid4()), target_path=repo_name
+            )
+        except Exception as exc:
+            stub = self._stub_repo_overview(
+                ctx, repo_name, f"Repository Overview: {repo_name}", repo_git_summary
+            )
+            return _stub_fallback(stub, "repo_overview", exc)
         return self._build_generated_page(
             "repo_overview",
             repo_name,
@@ -281,9 +321,18 @@ class PerTypeGenerationMixin:
                 ctx, repo_name, f"Architecture Diagram: {repo_name}", overview_mermaid
             )
         user_prompt = self._render("architecture_diagram.j2", ctx=ctx)
-        response = await self._call_provider(
-            "architecture_diagram", user_prompt, str(uuid.uuid4()), target_path=repo_name
-        )
+        try:
+            response = await self._call_provider(
+                "architecture_diagram", user_prompt, str(uuid.uuid4()), target_path=repo_name
+            )
+        except Exception as exc:
+            # The stub embeds the same KG-derived map the model path overwrites
+            # the model's diagram with, so the fallback keeps the diagram and
+            # loses only the prose around it.
+            stub = self._stub_architecture_diagram(
+                ctx, repo_name, f"Architecture Diagram: {repo_name}", overview_mermaid
+            )
+            return _stub_fallback(stub, "architecture_diagram", exc)
         # Swap the LLM's free-form diagram for the deterministic KG-derived map
         # (idempotent, applies to fresh and reused content). Falls back to the
         # LLM's own mermaid when the KG can't produce one.
@@ -339,9 +388,15 @@ class PerTypeGenerationMixin:
         # Fold the onboarding generation version into the reuse hash so a
         # builder/template upgrade forces a one-time regen of cached pages.
         salt = _onboarding.ONBOARDING_GENERATION_VERSION
-        response = await self._call_provider(
-            "onboarding", user_prompt, str(uuid.uuid4()), target_path=target, source_salt=salt
-        )
+        try:
+            response = await self._call_provider(
+                "onboarding", user_prompt, str(uuid.uuid4()), target_path=target, source_salt=salt
+            )
+        except Exception as exc:
+            # ``_stub_onboarding_page`` stamps the subkind metadata itself, so
+            # the fallback is interchangeable with the deterministic path.
+            stub = self._stub_onboarding_page(spec, ctx, target)
+            return _stub_fallback(stub, "onboarding", exc)
         # Grounding post-check: strip ungrounded path/symbol citations from the
         # output. Runs on fresh AND reused content (``response.content`` carries
         # the prior page's bytes on a cache hit), so an existing user's cached

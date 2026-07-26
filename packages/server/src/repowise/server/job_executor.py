@@ -544,7 +544,13 @@ async def execute_job(
         elapsed = time.monotonic() - start
         total_input = sum(p.input_tokens for p in all_pages)
         total_output = sum(p.output_tokens for p in all_pages)
+        from repowise.core.generation.models import count_stub_fallbacks
+
         pages_generated = len(all_pages)
+        # A stub the generator put up for a failed provider call has a row but
+        # no prose. The hosted UI reads this job row, so counting it as
+        # completed is what would let an outage look like a clean run.
+        stub_fallbacks = count_stub_fallbacks(all_pages)
 
         async with get_session(session_factory) as session:
             job = await get_generation_job(session, job_id)
@@ -567,7 +573,10 @@ async def execute_job(
                 session,
                 job_id,
                 "completed",
-                completed_pages=pages_generated if pages_generated else result.file_count,
+                completed_pages=(
+                    pages_generated - stub_fallbacks if pages_generated else result.file_count
+                ),
+                failed_pages=stub_fallbacks,
                 total_pages=pages_generated if pages_generated else result.file_count,
             )
 
@@ -1035,7 +1044,10 @@ async def _run_generate_job(
     elapsed = time.monotonic() - start
     total_input = sum(getattr(p, "input_tokens", 0) for p in generated_pages)
     total_output = sum(getattr(p, "output_tokens", 0) for p in generated_pages)
+    from repowise.core.generation.models import count_stub_fallbacks
+
     pages_generated = len(generated_pages)
+    stub_fallbacks = count_stub_fallbacks(generated_pages)
 
     async with get_session(session_factory) as session:
         job = await get_generation_job(session, job_id)
@@ -1058,7 +1070,8 @@ async def _run_generate_job(
             session,
             job_id,
             "completed",
-            completed_pages=pages_generated,
+            completed_pages=pages_generated - stub_fallbacks,
+            failed_pages=stub_fallbacks,
             total_pages=pages_generated,
         )
         total_pages, remaining_templates = await _repo_page_counts(session, repo_id)
