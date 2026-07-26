@@ -233,6 +233,28 @@ def test_test_file_occurrences_dropped():
     ] == []
 
 
+def test_test_support_occurrences_dropped():
+    # Extracting a shared helper out of conftest.py is the same bad advice as
+    # extracting one out of a test, so support counts as test material (#1103).
+    pair = _pair("pkg/a.py", "tests/conftest.py", 10, 25, 40, 55)
+    assert [
+        s
+        for s in detect_refactorings(_ctx("pkg/a.py", [pair]))
+        if s.refactoring_type == "extract_helper"
+    ] == []
+
+
+def test_production_path_containing_the_word_test_is_kept():
+    # `src/latest/` is production: an unanchored match would drop this
+    # occurrence and collapse a real two-site clone to one.
+    pair = _pair("pkg/a.py", "src/latest/api.py", 10, 25, 40, 55)
+    assert [
+        s
+        for s in detect_refactorings(_ctx("pkg/a.py", [pair]))
+        if s.refactoring_type == "extract_helper"
+    ] != []
+
+
 def test_test_file_dropped_but_real_sites_kept():
     clones = [
         _pair("pkg/a.py", "pkg/b.py", 10, 25, 40, 55),

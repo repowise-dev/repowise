@@ -68,6 +68,16 @@ def test_infer_layer_colocated_test_files_are_test():
     assert infer_layer("rack-protection/spec/spec_helper.rb") == "Test"
 
 
+def test_infer_layer_bare_suite_module_is_test():
+    # Django's per-app suite: a module named exactly tests.py, outside any test
+    # directory. No prefix/suffix/infix rule catches it, so it read as
+    # production code until the conventions were consolidated (#1103).
+    assert infer_layer("myapp/tests.py") == "Test"
+    assert infer_layer("myapp/test.py") == "Test"
+    # ...but a capitalised Test.java is a class named Test, which may not be one.
+    assert infer_layer("src/main/java/Test.java") != "Test"
+
+
 def test_infer_layer_ambiguous_spec_dir_needs_language_corroboration():
     # Ruby declares spec/ as an unambiguous test-dir token: a Ruby file under
     # spec/ is RSpec material whatever its name, so config.ru is Test only when
