@@ -136,3 +136,48 @@ async def test_l1_endpoint_on_empty_repo(client: AsyncClient) -> None:
     body = resp.json()
     assert body["external_systems"] == []
     assert body["system"]["name"] == "test-repo"
+
+
+async def test_structurizr_endpoint_returns_a_model_fragment(
+    client: AsyncClient, app
+) -> None:
+    repo_id = await _seed_two_containers(client, app)
+    resp = await client.get(f"/api/graph/{repo_id}/c4/structurizr")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/plain")
+    assert 'filename="repowise-model.dsl"' in resp.headers["content-disposition"]
+    body = resp.text
+    assert body.startswith("#")
+    assert "\nmodel {\n" in body
+    assert "container " in body
+
+
+async def test_structurizr_endpoint_standalone_returns_a_workspace(
+    client: AsyncClient, app
+) -> None:
+    repo_id = await _seed_two_containers(client, app)
+    resp = await client.get(
+        f"/api/graph/{repo_id}/c4/structurizr",
+        params={"standalone": "true", "components": "true"},
+    )
+    assert resp.status_code == 200
+    assert 'filename="workspace.dsl"' in resp.headers["content-disposition"]
+    assert "workspace " in resp.text
+    assert "views {" in resp.text
+    assert "component " in resp.text
+
+
+async def test_structurizr_endpoint_can_drop_externals(client: AsyncClient, app) -> None:
+    repo_id = await _seed_two_containers(client, app)
+    resp = await client.get(
+        f"/api/graph/{repo_id}/c4/structurizr", params={"externals": "false"}
+    )
+    assert resp.status_code == 200
+    assert "FastAPI" not in resp.text
+
+
+async def test_structurizr_endpoint_on_an_empty_repo(client: AsyncClient) -> None:
+    repo = await create_test_repo(client)
+    resp = await client.get(f"/api/graph/{repo['id']}/c4/structurizr")
+    assert resp.status_code == 200
+    assert "softwareSystem" in resp.text

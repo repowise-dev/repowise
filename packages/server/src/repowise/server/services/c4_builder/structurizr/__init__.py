@@ -29,7 +29,7 @@ from .relationships import write_relationships
 from .views import write_views
 from .writer import Writer, quote
 
-__all__ = ["to_dsl"]
+__all__ = ["system_identifier", "to_dsl"]
 
 #: Name of the file we tell users to include. Referenced in the header
 #: comment so the file explains itself when it arrives without the terminal
@@ -70,6 +70,15 @@ def _reference_map(model: C4Model, *, include_components: bool) -> dict[str, str
     references = identifiers_for(raw_ids)
     references[model.system.id] = references.pop(system_key)
     return references
+
+
+def system_identifier(model: C4Model, *, include_components: bool = False) -> str:
+    """The identifier the emitted system is declared under.
+
+    Exposed so callers can print a view snippet the user can paste verbatim
+    instead of one with a placeholder to fill in.
+    """
+    return _reference_map(model, include_components=include_components)[model.system.id]
 
 
 def _write_header(writer: Writer, model: C4Model, *, standalone: bool) -> None:

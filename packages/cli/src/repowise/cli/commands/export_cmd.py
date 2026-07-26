@@ -22,16 +22,18 @@ from repowise.cli.helpers import (
 @click.option(
     "--format",
     "fmt",
-    type=click.Choice(["markdown", "html", "json"]),
+    type=click.Choice(["markdown", "html", "json", "structurizr"]),
     default="markdown",
-    help="Output format.",
+    help="Output format. 'structurizr' writes one Structurizr DSL file "
+    "describing the architecture rather than a directory of wiki pages.",
 )
 @click.option(
     "--output",
     "-o",
     "output_dir",
     default=None,
-    help="Output directory (default: .repowise/export).",
+    help="Output directory (default: .repowise/export). For --format structurizr, "
+    "a path ending in .dsl names the file itself.",
 )
 @click.option(
     "--full",
@@ -40,15 +42,53 @@ from repowise.cli.helpers import (
     default=False,
     help="Include decisions, dead code, git metadata, and provenance in JSON export.",
 )
+@click.option(
+    "--standalone",
+    is_flag=True,
+    default=False,
+    help="structurizr only: emit a complete workspace with default views instead "
+    "of a model fragment to include from your own workspace.dsl.",
+)
+@click.option(
+    "--components",
+    "include_components",
+    is_flag=True,
+    default=False,
+    help="structurizr only: include the component level (one box per directory).",
+)
+@click.option(
+    "--no-externals",
+    "include_externals",
+    flag_value=False,
+    default=True,
+    help="structurizr only: leave third-party dependencies out of the model.",
+)
 def export_command(
     path: str | None,
     fmt: str,
     output_dir: str | None,
     full_export: bool = False,
+    standalone: bool = False,
+    include_components: bool = False,
+    include_externals: bool = True,
 ) -> None:
-    """Export wiki pages to files."""
+    """Export wiki pages, or the architecture model, to files."""
     repo_path = resolve_repo_path(path)
     ensure_repowise_dir(repo_path)
+
+    if fmt == "structurizr":
+        from repowise.cli.commands.export_structurizr import export_structurizr
+
+        code = export_structurizr(
+            repo_path,
+            output=output_dir,
+            standalone=standalone,
+            include_components=include_components,
+            include_externals=include_externals,
+        )
+        if code:
+            raise SystemExit(code)
+        return
 
     out = repo_path / ".repowise" / "export" if output_dir is None else Path(output_dir).resolve()
     out.mkdir(parents=True, exist_ok=True)

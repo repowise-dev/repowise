@@ -51,6 +51,10 @@ from repowise.server.services.c4_builder.serialize import (
     build_architecture_view_response,
     external_system_response,
 )
+from repowise.server.services.c4_builder.structurizr import (
+    DEFAULT_FILENAME as STRUCTURIZR_FILENAME,
+)
+from repowise.server.services.c4_builder.structurizr import to_dsl
 
 router = APIRouter(
     prefix="/api/graph",
@@ -136,6 +140,44 @@ async def get_c4_mermaid(
     repo = await c4_builder.load_repo(session, repo_id)
     system_name = repo.name if repo is not None else repo_id
     return PlainTextResponse(to_mermaid_l3(view_l3, system_name=system_name))
+
+
+@router.get(
+    "/{repo_id}/c4/structurizr",
+    response_class=PlainTextResponse,
+    responses={200: {"content": {"text/plain": {}}}},
+)
+async def get_c4_structurizr(
+    repo_id: str,
+    standalone: bool = Query(
+        False, description="Emit a complete runnable workspace instead of a model fragment"
+    ),
+    components: bool = Query(False, description="Include the component (L3) level"),
+    externals: bool = Query(True, description="Include third-party dependencies"),
+    session: AsyncSession = Depends(get_db_session),
+) -> PlainTextResponse:
+    """Structurizr DSL for this repository — open it in Structurizr Lite.
+
+    By default this is the contents of a ``model`` block, meant to be included
+    from the caller's own ``workspace.dsl`` so their views and styles survive
+    regeneration. ``standalone=true`` returns a workspace that renders on its
+    own.
+
+    Built on demand from the persisted graph, like the other C4 endpoints —
+    nothing is written at index time.
+    """
+    model = await c4_builder.build_model(session, repo_id, include_components=components)
+    dsl = to_dsl(
+        model,
+        standalone=standalone,
+        include_components=components,
+        include_externals=externals,
+    )
+    filename = "workspace.dsl" if standalone else STRUCTURIZR_FILENAME
+    return PlainTextResponse(
+        dsl,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 # ---------------------------------------------------------------------------
