@@ -145,4 +145,3 @@ git diff origin/main --check
 git add tests/unit/generation/test_deterministic_templates.py
 git commit -m "test(generation): cover structural language fallback"
 ```
-
