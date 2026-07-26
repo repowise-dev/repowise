@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from repowise.core.ids import ExternalSystemId, render
 from repowise.core.persistence import (
     ExternalSystem,
     GraphEdge,
@@ -104,7 +105,7 @@ async def _external_views(
         row = by_name[name]
         views.append(
             ExternalSystemView(
-                id=f"ext:{name}",
+                id=render(ExternalSystemId(name)),
                 name=name,
                 display_name=row.display_name or name,
                 category=row.category,

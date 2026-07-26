@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from repowise.core.ids import PersonId, render
+
 # Actor kind -> (display name, what it does to the system). Order here is the
 # stable render order when several kinds are present.
 _ACTOR_META: dict[str, tuple[str, str]] = {
@@ -106,7 +108,7 @@ def derive_actors(entry_points: list[str]) -> list[Actor]:
         name, description = _ACTOR_META[kind]
         actors.append(
             Actor(
-                id=f"person:{kind}",
+                id=render(PersonId(kind)),
                 kind=kind,
                 name=name,
                 description=description,

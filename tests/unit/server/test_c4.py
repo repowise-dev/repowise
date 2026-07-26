@@ -7,6 +7,7 @@ from pathlib import Path
 
 from httpx import AsyncClient
 
+from repowise.core.ids import ComponentId, parse
 from repowise.core.persistence import (
     batch_upsert_graph_edges,
     batch_upsert_graph_nodes,
@@ -109,7 +110,12 @@ async def test_l3_endpoint_returns_components_for_container(client: AsyncClient,
     # bucket, never the leaky "_root" token.
     comp_names = {c["name"] for c in body["components"]}
     assert comp_names == {"(root)"}
-    assert "_root" not in {c["id"] for c in body["components"]}
+    comp_ids = {c["id"] for c in body["components"]}
+    assert "_root" not in comp_ids
+    # The root bucket must not smuggle the symbol separator into a ``cmp:`` id:
+    # ``cmp:packages/core::root`` parses back as a symbol called ``root``.
+    assert all("::" not in cid for cid in comp_ids)
+    assert all(parse(cid) == ComponentId("packages/core", is_root_bucket=True) for cid in comp_ids)
     # Only fastapi (used from packages/core), react is filtered out
     assert {e["name"] for e in body["external_systems"]} == {"fastapi"}
 

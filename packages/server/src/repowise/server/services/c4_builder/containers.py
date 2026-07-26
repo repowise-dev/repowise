@@ -23,6 +23,7 @@ from collections.abc import Iterable
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.ids import ContainerId, render
 from repowise.core.persistence import ExternalSystem, GraphNode
 
 from .models import Container
@@ -109,7 +110,7 @@ async def detect_containers(
 
 def container_id(path: str) -> str:
     """Stable id for a container path. Edge sources/targets use this form."""
-    return f"pkg:{path}" if path else "pkg:."
+    return render(ContainerId(path or "."))
 
 
 async def _container_roots_from_manifests(

@@ -29,6 +29,7 @@ from collections.abc import Iterable
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.ids import ComponentId, render
 from repowise.core.persistence import GraphNode
 
 from .containers import container_id
@@ -40,15 +41,14 @@ from .models import Component
 # to surface as their own component if indexed).
 _PASS_THROUGH_DIRS = frozenset({"src", "lib", "app", "source"})
 
-# Display label + id sentinel for the bucket of files that sit at the container
-# root. Chosen so neither ever serializes the old "_root" token.
+# Display label for the bucket of files that sit at the container root.
+# Chosen so it never serializes the old "_root" token.
 ROOT_BUCKET_LABEL = "(root)"
-_ROOT_BUCKET_SUFFIX = "::root"
 
 
-def component_id(component_path: str) -> str:
+def component_id(component_path: str, *, is_root_bucket: bool = False) -> str:
     """Stable id for a component, keyed on its repo-relative directory."""
-    return f"cmp:{component_path or '.'}"
+    return render(ComponentId(component_path or ".", is_root_bucket=is_root_bucket))
 
 
 def _relative(file_path: str, container_path: str) -> str:
@@ -74,7 +74,7 @@ def _component_for(
 
     if i >= len(dirs):
         base = container_path or "."
-        return f"cmp:{base}{_ROOT_BUCKET_SUFFIX}", root_label, container_path or "."
+        return component_id(base, is_root_bucket=True), root_label, base
 
     name = dirs[i]
     rel_dir = "/".join(dirs[: i + 1])

@@ -23,6 +23,7 @@ from collections import defaultdict
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.ids import ExternalSystemId, render
 from repowise.core.persistence import ExternalSystem, GraphEdge, GraphNode
 
 from .labels import coupling_strength, relation_label
@@ -104,4 +105,4 @@ async def external_node_to_system_id(
         .join(ExternalSystem, GraphNode.external_system_id == ExternalSystem.id)
         .where(GraphNode.repository_id == repository_id)
     )
-    return {node_id: f"ext:{name}" for node_id, name in result.all()}
+    return {node_id: render(ExternalSystemId(name)) for node_id, name in result.all()}

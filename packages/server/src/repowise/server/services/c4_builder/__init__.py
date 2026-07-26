@@ -22,6 +22,7 @@ from dataclasses import replace
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.ids import ExternalSystemId, SystemId, parse, render
 from repowise.core.persistence import ExternalSystem, Repository
 from repowise.core.persistence.crud import get_kg_project_meta
 from repowise.core.persistence.models import DeadCodeFinding, GitMetadata
@@ -92,7 +93,7 @@ async def _external_views(
     name_to_id: dict[str, str] = {}
     for name in sorted(by_name):
         row = by_name[name]
-        view_id = f"ext:{name}"
+        view_id = render(ExternalSystemId(name))
         views.append(
             ExternalSystemView(
                 id=view_id,
@@ -108,10 +109,15 @@ async def _external_views(
     return views, name_to_id
 
 
+def _is_external_box(box_id: str) -> bool:
+    """True if a relation endpoint is an external-system box rather than ours."""
+    return isinstance(parse(box_id), ExternalSystemId)
+
+
 def _system_for(repo: Repository | None, repo_id: str) -> System:
     if repo is None:
-        return System(id=f"sys:{repo_id}", name=repo_id)
-    return System(id=f"sys:{repo.id}", name=repo.name, description="")
+        return System(id=render(SystemId(repo_id)), name=repo_id)
+    return System(id=render(SystemId(repo.id)), name=repo.name, description="")
 
 
 # ---------------------------------------------------------------------------
@@ -170,7 +176,7 @@ async def build_l2(session: AsyncSession, repo_id: str) -> C4L2:
     )
 
     # Only surface externals actually depended on by at least one container.
-    used_external_ids = {r.target_id for r in relations if r.target_id.startswith("ext:")}
+    used_external_ids = {r.target_id for r in relations if _is_external_box(r.target_id)}
     pruned_externals = [e for e in externals if e.id in used_external_ids]
     return C4L2(containers=containers, external_systems=pruned_externals, relations=relations)
 
@@ -229,8 +235,8 @@ async def build_l3(session: AsyncSession, repo_id: str, container_id_value: str)
     ]
 
     externals_all, _ = await _external_views(session, repo_id)
-    used_external_ids = {r.target_id for r in relations if r.target_id.startswith("ext:")}
-    used_external_ids |= {r.source_id for r in relations if r.source_id.startswith("ext:")}
+    used_external_ids = {r.target_id for r in relations if _is_external_box(r.target_id)}
+    used_external_ids |= {r.source_id for r in relations if _is_external_box(r.source_id)}
     externals = [e for e in externals_all if e.id in used_external_ids]
 
     return C4L3(
