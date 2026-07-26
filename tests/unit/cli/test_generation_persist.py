@@ -143,7 +143,12 @@ async def test_sink_failure_never_breaks_generation(repo_dir, monkeypatch):
 async def test_generation_completion_callback_reports_only_current_run_failures(
     repo_dir, monkeypatch
 ):
-    """The callback follows this generator's checkpoint amid another new job."""
+    """The callback excludes stale and concurrent jobs from this run's result."""
+    jobs = JobSystem(repo_dir / ".repowise" / "jobs")
+    stale_job = jobs.create_job(str(repo_dir), GenerationConfig(), "test", "test")
+    jobs.start_job(stale_job, 1)
+    jobs.fail_page(stale_job, "stale-page", "old failure")
+    jobs.complete_job(stale_job)
 
     class ControlledGenerator:
         def __init__(self, *_args, **_kwargs) -> None:
