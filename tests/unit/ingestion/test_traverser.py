@@ -15,12 +15,26 @@ from repowise.core.ingestion.traverser import (
 
 
 class TestCompileGitignore:
-    def test_skips_malformed_line_keeps_valid(self) -> None:
+    def test_malformed_line_is_not_fatal_and_keeps_valid(self) -> None:
         spec = _compile_gitignore([".godot\\", "build/", "*.log", "", "# note"])
         assert spec.match_file("build/x")
         assert spec.match_file("a.log")
-        # The malformed line is dropped, not fatal.
+        # A malformed line never takes down its neighbours.
         assert not spec.match_file("src/main.py")
+
+    def test_trailing_backslash_is_salvaged(self) -> None:
+        # Git treats `.godot\` as `.godot`; recover that intent instead of
+        # dropping it, so the generated dir stays ignored (the motivating case).
+        spec = _compile_gitignore([".godot\\"])
+        assert spec.match_file(".godot")
+        assert spec.match_file(".godot/imported/x.res")
+        assert not spec.match_file("godot.py")
+
+    def test_unrecoverable_line_is_dropped(self) -> None:
+        # A lone backslash is unparseable and empty once stripped -> drop it,
+        # do not raise, and keep the valid neighbour.
+        spec = _compile_gitignore(["\\", "keep-me/"])
+        assert spec.match_file("keep-me/x")
 
     def test_all_valid_lines_preserved(self) -> None:
         spec = _compile_gitignore(["dist/", "*.tmp"])
