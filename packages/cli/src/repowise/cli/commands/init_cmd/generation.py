@@ -311,6 +311,11 @@ def run_repo_generation(
     preserved_page_ids: set[str] = set()
     result.preserved_page_ids = preserved_page_ids
 
+    failed_page_ids: list[str] = []
+
+    def _record_generation_failures(page_ids: list[str]) -> None:
+        failed_page_ids[:] = page_ids
+
     with Progress(*columns, console=console) as gen_progress:
         gen_callback = RichProgressCallback(gen_progress, console)
         generated_pages = run_async(
@@ -330,6 +335,7 @@ def run_repo_generation(
                 resume=resume,
                 preserved_page_ids=preserved_page_ids,
                 cost_tracker=cost_tracker,
+                on_generation_complete=_record_generation_failures,
                 generation_config=gen_config,
                 # In-memory curated modules: on a fresh init the
                 # knowledge-graph.json artifact is only written during
@@ -347,21 +353,6 @@ def run_repo_generation(
                 ),
             )
         )
-
-    jobs_dir = Path(repo_path) / ".repowise" / "jobs"
-    failed_page_ids: list[str] = []
-    if jobs_dir.exists():
-        with contextlib.suppress(Exception):
-            from repowise.core.generation import JobSystem
-
-            js = JobSystem(jobs_dir)
-            job_id = getattr(result, "job_id", None)
-            if job_id:
-                failed_page_ids = js.get_checkpoint(job_id).failed_page_ids
-            else:
-                jobs = js.list_jobs()
-                if jobs:
-                    failed_page_ids = jobs[0].failed_page_ids
 
     result.generated_pages = generated_pages
     result.failed_page_ids = failed_page_ids

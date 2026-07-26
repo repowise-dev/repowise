@@ -7,10 +7,15 @@ subsequent run loads them back as ``prior_pages`` for reuse.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
+from io import StringIO
+from types import SimpleNamespace
 
 import pytest
+from rich.console import Console
 
+from repowise.cli.commands.init_cmd import generation as generation_cmd
 from repowise.cli.commands.init_cmd._generation_persist import run_generation_with_persistence
 from repowise.core.generation import GenerationConfig, JobSystem
 from repowise.core.generation.models import GeneratedPage
@@ -84,9 +89,7 @@ async def test_pages_flushed_incrementally(repo_dir, monkeypatch):
             on_page_ready(p)
         return emitted
 
-    monkeypatch.setattr(
-        "repowise.core.pipeline.run_generation", fake_run_generation, raising=True
-    )
+    monkeypatch.setattr("repowise.core.pipeline.run_generation", fake_run_generation, raising=True)
 
     pages = await run_generation_with_persistence(
         repo_path=repo_dir,
@@ -129,9 +132,7 @@ async def test_sink_failure_never_breaks_generation(repo_dir, monkeypatch):
         on_page_ready(_page("delta"))
         return [_page("delta")]
 
-    monkeypatch.setattr(
-        "repowise.core.pipeline.run_generation", fake_run_generation, raising=True
-    )
+    monkeypatch.setattr("repowise.core.pipeline.run_generation", fake_run_generation, raising=True)
 
     pages = await run_generation_with_persistence(repo_path=repo_dir, repo_name=repo_dir.name)
     assert {p.page_id for p in pages} == {"delta"}
@@ -273,3 +274,52 @@ async def test_generation_ignores_failed_completion_checkpoint_read(repo_dir, mo
 
     assert pages == []
     assert reported_failures == []
+
+
+def test_run_repo_generation_prints_partial_failure_warning_after_progress(monkeypatch, tmp_path):
+    output = StringIO()
+    monkeypatch.setattr(
+        generation_cmd, "console", Console(file=output, force_terminal=False, width=200)
+    )
+    monkeypatch.setattr(generation_cmd, "build_embedder", lambda _name: object())
+    monkeypatch.setattr(generation_cmd, "build_vector_store", lambda *_args: object())
+
+    async def fake_generation(*, on_generation_complete, **_kwargs):
+        on_generation_complete(["module_page:api", "file_page:src/main.py"])
+        return []
+
+    monkeypatch.setattr(
+        "repowise.cli.commands.init_cmd._generation_persist.run_generation_with_persistence",
+        fake_generation,
+    )
+    monkeypatch.setattr(generation_cmd, "run_async", lambda coroutine: asyncio.run(coroutine))
+
+    result = SimpleNamespace(
+        parsed_files=[],
+        repo_name="example",
+        source_map={},
+        graph_builder=object(),
+        repo_structure=object(),
+        git_meta_map={},
+        knowledge_graph_result=None,
+    )
+    config = SimpleNamespace(deterministic=True)
+
+    generation_cmd.run_repo_generation(
+        repo_path=tmp_path,
+        result=result,
+        provider=SimpleNamespace(),
+        gen_config=config,
+        concurrency=1,
+        embedder_name_resolved="test",
+        resume=False,
+        verbose=True,
+    )
+
+    text = output.getvalue()
+    assert "Generated 0 pages" in text
+    assert "2 failed" in text
+    assert "file_page: 1" in text
+    assert "module_page: 1" in text
+    assert "The wiki is incomplete" in text
+    assert "repowise init --resume" in text
