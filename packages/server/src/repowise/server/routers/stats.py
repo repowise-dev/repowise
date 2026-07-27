@@ -39,6 +39,7 @@ from repowise.core.persistence.models import (
     HealthFileMetric,
     WikiSymbol,
 )
+from repowise.core.test_paths import is_test_related_path
 from repowise.server.deps import get_db_session, verify_api_key
 
 router = APIRouter(
@@ -147,13 +148,6 @@ def _as_utc(dt: datetime | None) -> datetime | None:
     if dt is None:
         return None
     return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
-
-
-# Test-path convention shared with analysis (communities / execution_flows):
-# catches conftest, fixtures, and spec files the `is_test` flag misses.
-_TEST_PATH_RE = re.compile(
-    r"(test[s_/]|_test\.|\.test\.|\.spec\.|__tests__|conftest|fixture[s]?[/.])"
-)
 
 
 # ---------------------------------------------------------------------------
@@ -677,10 +671,19 @@ async def _records(
 
     # Most imported file — highest fan-in among non-test file nodes, the
     # legible version of "most central". External and test nodes are excluded
-    # so the award names real project source; the `is_test` flag misses
-    # conftest/fixture files, so the top candidates are re-checked against the
-    # test-path convention used across analysis. Falls back to the PageRank
-    # pick when graph metrics were not materialized for this repo.
+    # so the award names real project source, and the top candidates are then
+    # re-checked against the shared test-path rules.
+    #
+    # The re-check is not redundant with the SQL filter. `is_test` is *stored*,
+    # stamped when the file was last traversed, so an index written before the
+    # current rules can carry a stale answer — and the file this award is most
+    # likely to hand to is `tests/conftest.py`, which tops fan-in in any repo
+    # that shares fixtures widely (713 imports in this one, more than double the
+    # runner-up). The rules themselves now come from one place rather than the
+    # unanchored regex this used to hold, which read `src/latest/api.py` and
+    # `protest/main.py` as tests and passed the award to the runner-up (#1103).
+    #
+    # Falls back to the PageRank pick when graph metrics were not materialized.
     candidates = (
         await session.execute(
             select(GraphMetric.node_id, GraphMetric.in_degree, GraphMetric.pagerank)
@@ -700,7 +703,7 @@ async def _records(
             .limit(10)
         )
     ).all()
-    imported = next((c for c in candidates if not _TEST_PATH_RE.search(c[0])), None)
+    imported = next((c for c in candidates if not is_test_related_path(c[0])), None)
     if imported is not None and (imported[1] or 0) > 0:
         out["most_central_file"] = {
             "path": imported[0],

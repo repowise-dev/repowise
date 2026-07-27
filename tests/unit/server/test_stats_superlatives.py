@@ -2,7 +2,8 @@
 
 ``biggest_commit`` must skip the repo's very first commit (every initial
 import would win otherwise) and ``longest_streak`` counts consecutive UTC
-days with at least one commit.
+days with at least one commit. ``most_central_file`` names the most-imported
+file that is not a test.
 """
 
 from __future__ import annotations
@@ -14,7 +15,8 @@ from httpx import AsyncClient
 
 from repowise.core.persistence.crud import get_repository, upsert_git_commits_bulk
 from repowise.core.persistence.database import get_session
-from repowise.server.routers.stats import _commit_pass
+from repowise.core.persistence.models import GraphMetric, GraphNode
+from repowise.server.routers.stats import _commit_pass, _records
 from tests.unit.server.conftest import create_test_repo
 
 _DAY = 86400
@@ -70,3 +72,50 @@ async def test_biggest_commit_skips_initial_and_streak_counts_days(
     streak = activity["rhythm"]["longest_streak"]
     assert streak is not None
     assert streak["days"] == 4
+
+
+@pytest.mark.asyncio
+async def test_most_central_file_skips_tests_without_false_positives(
+    client: AsyncClient, app
+) -> None:
+    """The award goes to the top real source file (#1103).
+
+    Two ways to get this wrong, one on each side. The unanchored regex this
+    used to re-check with read ``src/latest/api.py`` as a test and handed the
+    award to the runner-up. Trusting ``is_test`` alone would hand it to
+    ``tests/conftest.py``, which tops fan-in in any repo sharing fixtures
+    widely and whose stored flag is only as fresh as its last traversal.
+    """
+    repo = await create_test_repo(client)
+    nodes = [
+        # Stale flag: stamped before conftest counted as test material.
+        ("tests/conftest.py", False, 700),
+        ("src/latest/api.py", False, 90),  # not a test, whatever the name reads like
+        ("src/util.py", False, 40),
+    ]
+    async with get_session(app.state.session_factory) as session:
+        for path, is_test, in_degree in nodes:
+            session.add(
+                GraphNode(
+                    repository_id=repo["id"],
+                    node_id=path,
+                    node_type="file",
+                    is_test=is_test,
+                    pagerank=0.1,
+                )
+            )
+            session.add(
+                GraphMetric(
+                    repository_id=repo["id"],
+                    node_id=path,
+                    in_degree=in_degree,
+                    pagerank=0.1,
+                )
+            )
+        await session.commit()
+
+    async with get_session(app.state.session_factory) as session:
+        out = await _records(session, repo["id"], metrics=[], all_meta=[])
+
+    assert out["most_central_file"]["path"] == "src/latest/api.py"
+    assert out["most_central_file"]["import_count"] == 90

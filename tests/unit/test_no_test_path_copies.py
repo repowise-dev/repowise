@@ -54,13 +54,7 @@ _PREDICATE_CONSTANTS = (
 # Note what is deliberately *not* listed: `communities._is_test_node` and
 # `move_method._file_is_test` read the flag off a graph node and fall back to the
 # shared module. That is the pattern to copy, not a copy to remove.
-_KNOWN: frozenset[str] = frozenset(
-    {
-        # The stats router, converted next. It re-derives from a regex weaker
-        # than the shared rules.
-        "packages/server/src/repowise/server/routers/stats.py",
-    }
-)
+_KNOWN: frozenset[str] = frozenset()
 
 _PACKAGES = pathlib.Path(__file__).resolve().parents[2] / "packages"
 
