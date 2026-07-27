@@ -73,6 +73,24 @@ _SUPPORT_DIR_TOKENS: frozenset[str] = frozenset(
     {"fixtures", "factories", "support", "helpers", "mocks", "__mocks__"}
 )
 
+# Scaffolding directories whose names mean test material *wherever* they sit,
+# because nothing else is ever called this. Bare ``fixtures`` deliberately stays
+# out of this set and above: it is an ordinary English word that names real
+# product directories (a sports app's fixtures list), and on this repo plus its
+# two siblings 230 of 231 ``fixtures/`` files already sit inside a test tree, so
+# the tree requirement costs nothing and the widening would buy nothing.
+# ``__fixtures__`` is the same convention with the JS dunder wrapper that
+# ``__tests__``/``__mocks__`` use, and carries no other meaning. ``testdata`` is
+# the Go convention the toolchain itself reserves - ``go build`` ignores any
+# directory of that name - which is why it needs no Go file to corroborate it:
+# the golden files inside are JSON and YAML, and asking the file's own language
+# would never fire on them.
+#
+# Support rather than test, deliberately: golden data is what a test reads, not
+# a test. So the union counts it (#1103's reporter asked for exactly that) while
+# search, which uses ``is_test_path``, still surfaces the golden file by name.
+_SUPPORT_DIR_TOKENS_ANYWHERE: frozenset[str] = frozenset({"__fixtures__", "testdata"})
+
 
 @dataclass(frozen=True, slots=True)
 class _Conventions:
@@ -225,6 +243,13 @@ def _classify(path: str, language: str | None) -> str:
         return "support"
 
     named_test = _is_test_name(filename)
+
+    # A scaffolding directory that needs no test tree around it settles the
+    # question before the tree rules run. A test-shaped filename still wins, so
+    # ``testdata/build_test.go`` stays a test.
+    if not named_test and any(seg in _SUPPORT_DIR_TOKENS_ANYWHERE for seg in segments):
+        return "support"
+
     if not named_test and not _is_test_dir(segments, original_segments, filename, language):
         return ""
 

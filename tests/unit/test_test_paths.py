@@ -76,6 +76,22 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     ("src/manifest/loader.py", None, ""),
     ("src/helpers/fmt.py", None, ""),
     ("src/fixtures/data.py", None, ""),
+    # #1103 finding 6: golden data and the dunder fixture dir, which the
+    # scaffolding tokens missed because those only count inside a test tree.
+    # Support rather than test - a golden file is what a test reads - so the
+    # union counts them while search still surfaces them by name.
+    ("testdata/golden.json", None, "support"),
+    ("pkg/parser/testdata/valid/input.go", None, "support"),
+    ("src/__fixtures__/x.ts", None, "support"),
+    # a test-shaped filename still wins over the directory
+    ("testdata/build_test.go", None, "test"),
+    # and the same finding's third path stays production code on purpose: bare
+    # `fixtures` is an ordinary word that names real product directories, so it
+    # still needs a test tree around it
+    ("fixtures/data.yml", None, ""),
+    ("app/fixtures/premier_league.py", None, ""),
+    ("src/testdata_loader.py", None, ""),
+    ("tests/testdata/golden.json", None, "support"),
 )
 
 
