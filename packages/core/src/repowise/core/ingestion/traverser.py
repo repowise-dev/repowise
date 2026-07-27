@@ -117,8 +117,8 @@ _BLOCKED_DIRS: frozenset[str] = frozenset(
         # test files can be indexed safely. Their content is needed to
         # answer questions about test helpers and fixtures. Files under
         # these directories are still tagged is_test=True via
-        # _is_test_file() so downstream consumers can filter them when
-        # appropriate.
+        # is_test_related_path() so downstream consumers can filter them
+        # when appropriate.
         #
         # The following ARE still blocked because they typically hold
         # binary fixtures, generated artifacts, or browser-driven test
