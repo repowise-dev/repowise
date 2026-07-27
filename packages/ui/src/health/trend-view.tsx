@@ -113,7 +113,7 @@ export function TrendView({
 
       {singleSnapshot ? (
         <p className="max-w-[62ch] text-sm text-[var(--color-text-secondary)]">
-          One snapshot so far. The trend lines appear once a second one lands — sync the
+          One snapshot so far. The trend lines appear once a second one lands. Sync the
           repo, or wait for the next automatic index, and this fills in.
         </p>
       ) : (

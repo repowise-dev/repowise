@@ -15,10 +15,11 @@ import {
   DIMENSION_LABEL,
   type BiomarkerDimension,
 } from "../health/biomarker-glossary";
-import { SEVERITY_CHIP, SEVERITY_LABEL, scoreBadgeClass, type Severity } from "../health/tokens";
+import { scoreBadgeClass, type Severity } from "../health/tokens";
 import { FileTrendChart } from "../health/file-trend-chart";
 import { FileSignalsPanel } from "../health/file-signals-panel";
 import type { FileDetailHealth, FunctionBlameRow } from "@repowise-dev/types/files";
+import { SeverityMark } from "../health/severity-mark";
 
 export type FindingStatus = "open" | "acknowledged" | "resolved" | "false_positive";
 
@@ -192,11 +193,7 @@ export function FileHealthTab({
                   className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-3 space-y-1"
                 >
                   <div className="flex items-center gap-2 flex-wrap">
-                    <span
-                      className={`inline-block rounded px-1.5 py-px text-[10px] uppercase font-semibold ${SEVERITY_CHIP[f.severity as Severity]}`}
-                    >
-                      {SEVERITY_LABEL[f.severity as Severity]}
-                    </span>
+                    <SeverityMark severity={f.severity as Severity} />
                     <span className="text-xs font-semibold text-[var(--color-text-primary)]">
                       {biomarkerLabel(f.biomarker_type)}
                     </span>

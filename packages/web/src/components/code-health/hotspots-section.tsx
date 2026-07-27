@@ -68,7 +68,7 @@ export function HotspotsSection({ repoId }: { repoId: string }) {
   return (
     <OverviewSection
       title="Hotspots"
-      description="Ranked by change frequency and prior bug fixes, mined from full git history. The danger is not churn on its own — it is a file that changes constantly and only one person understands."
+      description="Ranked by change frequency and prior bug fixes, mined from full git history. The danger is not churn on its own. It is a file that changes constantly and only one person understands."
       action={
         <SectionLink href={`/repos/${repoId}/commits`} LinkComponent={Link}>
           Commit history

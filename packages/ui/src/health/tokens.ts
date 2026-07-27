@@ -25,6 +25,13 @@ export const SEVERITY_LABEL: Record<Severity, string> = {
   low: "Low",
 };
 
+/**
+ * @deprecated Use `SeverityMark`. This paints a tinted ground, a border and
+ * coloured text for one token that repeats several times per row, and in a
+ * findings list the grounds tile into stripes that outweigh the marker names
+ * beside them. Kept exported because `@repowise-dev/ui` is consumed outside
+ * this repo; nothing in here should reach for it.
+ */
 export const SEVERITY_CHIP: Record<Severity, string> = {
   critical:
     "bg-[var(--color-error)]/15 text-[var(--color-error)] border border-[var(--color-error)]/30",

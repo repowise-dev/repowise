@@ -3,7 +3,8 @@
 import { useState } from "react";
 import { ArrowLeftRight, ChevronDown, ChevronRight } from "lucide-react";
 import type { BiomarkerDetailsRecord } from "./biomarker-details";
-import { SEVERITY_CHIP, SEVERITY_LABEL, type Severity } from "./tokens";
+import { type Severity } from "./tokens";
+import { SeverityMark } from "./severity-mark";
 
 export interface HiddenCouplingFinding {
   id: string;
@@ -141,11 +142,7 @@ export function HiddenCouplingList({
         {rows.map((row) => (
           <li key={row.key} className="p-3 space-y-1.5">
             <div className="flex items-center gap-2 flex-wrap">
-              <span
-                className={`inline-block rounded px-1.5 py-px text-[10px] uppercase font-semibold ${SEVERITY_CHIP[row.worst_severity]}`}
-              >
-                {SEVERITY_LABEL[row.worst_severity]}
-              </span>
+              <SeverityMark severity={row.worst_severity} />
               <span className="ml-auto inline-flex items-center gap-3 text-xs tabular-nums text-[var(--color-text-tertiary)]">
                 <span title="Correlation = co-change count / min(commits A, commits B)">
                   {Math.round(row.correlation * 100)}%

@@ -71,7 +71,14 @@ describe("HealthFileDrawer finding grouping", () => {
   });
 });
 
-describe("HealthFileDrawer metric cards", () => {
+describe("HealthFileDrawer metrics", () => {
+  /** Read one cell of the metric list by its label, so these assertions do not
+   *  move every time another field joins the grid. */
+  function cellValue(label: string): string {
+    const dt = screen.getByText(label);
+    return dt.parentElement?.querySelector("dd")?.textContent?.trim() ?? "";
+  }
+
   it("says 'not measured' instead of 0 when structural counters are absent", () => {
     render(
       <HealthFileDrawer
@@ -80,7 +87,9 @@ describe("HealthFileDrawer metric cards", () => {
         metric={metric({ max_ccn: null, max_nesting: null, nloc: null })}
       />,
     );
-    expect(screen.getAllByText("not measured")).toHaveLength(3);
+    expect(cellValue("Max CCN")).toBe("not measured");
+    expect(cellValue("Nesting")).toBe("not measured");
+    expect(cellValue("NLOC")).toBe("not measured");
   });
 
   it("still renders real zero values as numbers", () => {
@@ -91,8 +100,54 @@ describe("HealthFileDrawer metric cards", () => {
         metric={metric({ max_ccn: 0, max_nesting: 0, nloc: 12 })}
       />,
     );
-    expect(screen.queryByText("not measured")).not.toBeInTheDocument();
-    expect(screen.getByText("12")).toBeInTheDocument();
+    expect(cellValue("Max CCN")).toBe("0");
+    expect(cellValue("Nesting")).toBe("0");
+    expect(cellValue("NLOC")).toBe("12");
+  });
+
+  it("applies the same rule to the pillar scores and the percentages", () => {
+    render(<HealthFileDrawer open onClose={() => {}} metric={metric()} />);
+    // An unscored pillar is not a zero-risk pillar, and no coverage data is not
+    // 0% coverage.
+    expect(cellValue("Maintainability")).toBe("not measured");
+    expect(cellValue("Performance")).toBe("not measured");
+    expect(cellValue("Coverage")).toBe("not measured");
+    expect(cellValue("Duplication")).toBe("not measured");
+  });
+
+  it("leads with the file's own score and band", () => {
+    render(<HealthFileDrawer open onClose={() => {}} metric={metric({ score: 1.0 })} />);
+    expect(screen.getByText("1.0")).toBeInTheDocument();
+    expect(screen.getByText("Critical")).toBeInTheDocument();
+  });
+
+  it("offers one link to the full page", () => {
+    render(
+      <HealthFileDrawer
+        open
+        onClose={() => {}}
+        metric={metric()}
+        permalinkHref="/repos/r1/files/a.py?tab=health"
+      />,
+    );
+    const links = screen.getAllByRole("link", { name: /open full page/i });
+    expect(links).toHaveLength(1);
+    expect(links[0]).toHaveAttribute("href", "/repos/r1/files/a.py?tab=health");
+  });
+
+  it("falls back to the file view when there is no permalink", () => {
+    render(
+      <HealthFileDrawer
+        open
+        onClose={() => {}}
+        metric={metric()}
+        fileViewHref="/repos/r1/files/a.py"
+      />,
+    );
+    expect(screen.getByRole("link", { name: /open full page/i })).toHaveAttribute(
+      "href",
+      "/repos/r1/files/a.py",
+    );
   });
 });
 

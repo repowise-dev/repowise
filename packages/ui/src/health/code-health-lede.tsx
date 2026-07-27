@@ -84,7 +84,7 @@ export function CodeHealthLede({
       label: "Hotspot health",
       value: hotspot == null ? "" : hotspot.toFixed(1),
       valueColor: hotspot == null ? undefined : scoreTextColor(hotspot),
-      hint: "The score averaged over the repo's churn hotspots only — how healthy is the code you touch most?",
+      hint: "The score averaged over the repo's churn hotspots only. How healthy is the code you touch most?",
     },
     { label: "Open findings", value: formatNumber(summary.open_findings) },
   ];
@@ -138,9 +138,9 @@ export function CodeHealthLede({
               {accuracy.hits} of the {accuracy.k} files
             </strong>{" "}
             it scores worst were touched by a fix in the last{" "}
-            {windowLabel(accuracy.window_days)} — {Math.round(accuracy.precision * 100)}%,
-            against a {Math.round(accuracy.base_rate * 100)}% base rate across the
-            repo
+            {windowLabel(accuracy.window_days)}. That is{" "}
+            {Math.round(accuracy.precision * 100)}% against a{" "}
+            {Math.round(accuracy.base_rate * 100)}% base rate across the repo
             {accuracy.lift != null && (
               <>
                 , so{" "}
@@ -181,6 +181,6 @@ function describeGap(hotspot: number, average: number): string {
   const gap = hotspot - average;
   if (Math.abs(gap) < 0.25) return "in line with the codebase overall.";
   return gap < 0
-    ? `${Math.abs(gap).toFixed(1)} below the codebase overall — the weak spot is the code in motion.`
+    ? `${Math.abs(gap).toFixed(1)} below the codebase overall. The weak spot is the code in motion.`
     : `${gap.toFixed(1)} above the codebase overall, so the busiest files are holding up.`;
 }

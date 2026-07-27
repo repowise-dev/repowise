@@ -4,7 +4,8 @@ import {
   biomarkerLabel,
   type BiomarkerCategory,
 } from "./biomarker-glossary";
-import { SEVERITY_CHIP, SEVERITY_LABEL, scoreBadgeClass, type Severity } from "./tokens";
+import { scoreBadgeClass, type Severity } from "./tokens";
+import { SeverityMark } from "./severity-mark";
 
 export interface ScoreBreakdownCategoryFinding {
   id: string;
@@ -81,9 +82,12 @@ export function ScoreBreakdown({
               100,
           );
           return (
+            // Hairline-separated, not a card each. Every category already has a
+            // label, a figure and a proportion bar; a border around that is a
+            // fourth way of saying "this is a group".
             <div
               key={c.category}
-              className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-3"
+              className="border-t border-[var(--color-border-default)] px-1 pt-3 first:border-t-0 first:pt-0"
             >
               <div className="flex items-center justify-between gap-2 text-xs">
                 <span className="font-medium text-[var(--color-text-primary)]">
@@ -120,11 +124,7 @@ export function ScoreBreakdown({
                       key={f.id}
                       className="flex flex-wrap items-baseline gap-x-2 text-xs"
                     >
-                      <span
-                        className={`inline-block rounded px-1.5 py-px text-[10px] uppercase font-semibold ${SEVERITY_CHIP[f.severity]}`}
-                      >
-                        {SEVERITY_LABEL[f.severity]}
-                      </span>
+                      <SeverityMark severity={f.severity} />
                       <span className="font-medium text-[var(--color-text-primary)]">
                         {biomarkerLabel(f.biomarker_type)}
                       </span>

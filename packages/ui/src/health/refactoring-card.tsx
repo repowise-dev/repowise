@@ -5,7 +5,8 @@ import { ArrowUpRight, ChevronDown, ChevronRight, Sparkles } from "lucide-react"
 import { InfoTip } from "../shared/info-tip";
 import { biomarkerInfo, biomarkerLabel } from "./biomarker-glossary";
 import type { BiomarkerDetailsRecord } from "./biomarker-details";
-import { SEVERITY_CHIP, SEVERITY_LABEL, type Severity } from "./tokens";
+import { type Severity } from "./tokens";
+import { SeverityMark } from "./severity-mark";
 
 export type EffortBucket = "S" | "M" | "L" | "XL";
 
@@ -89,11 +90,7 @@ export function RefactoringCard({
     >
       <div className="p-4 space-y-2">
         <div className="flex items-center gap-2 flex-wrap">
-          <span
-            className={`inline-block rounded px-2 py-0.5 text-[10px] uppercase font-semibold ${SEVERITY_CHIP[target.primary_severity]}`}
-          >
-            {SEVERITY_LABEL[target.primary_severity]}
-          </span>
+          <SeverityMark severity={target.primary_severity} />
           <span className="inline-flex items-center gap-1 text-xs font-semibold text-[var(--color-text-primary)]">
             {biomarkerLabel(target.primary_biomarker)}
             {biomarkerInfo(target.primary_biomarker).description ? (
@@ -183,11 +180,7 @@ export function RefactoringCard({
               {target.all_findings.map((f) => (
                 <li key={f.id} className="px-4 py-2 space-y-1">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <span
-                      className={`inline-block rounded px-1.5 py-px text-[10px] uppercase font-semibold ${SEVERITY_CHIP[f.severity]}`}
-                    >
-                      {SEVERITY_LABEL[f.severity]}
-                    </span>
+                    <SeverityMark severity={f.severity} />
                     <span className="text-xs font-medium text-[var(--color-text-primary)]">
                       {biomarkerLabel(f.biomarker_type)}
                     </span>

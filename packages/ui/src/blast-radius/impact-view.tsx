@@ -119,7 +119,7 @@ export function ImpactView({
         <CardHeader className="pb-3">
           <CardTitle className="text-sm">Impact Analyzer</CardTitle>
           <p className="text-xs text-[var(--color-text-tertiary)]">
-            Estimate the blast radius of a proposed change — direct and transitive risks,
+            Estimate the blast radius of a proposed change: direct and transitive risks,
             reviewer suggestions, and test gaps.
           </p>
         </CardHeader>
