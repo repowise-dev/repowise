@@ -1,29 +1,78 @@
 import { apiGet, apiPatch, apiPost } from "./client";
 import type {
   PageResponse,
+  PageSummary,
   PageVersionResponse,
   JobLaunchResponse,
   GenerateCascade,
 } from "./types";
 
+/**
+ * How much of each page a listing should carry.
+ *
+ * `full` is every field and stays the default, so no existing caller changes
+ * meaning. `summary` drops `content` and `metadata` — 95% of the bytes on a
+ * large wiki, and read by nothing that renders a list — in exchange for a
+ * `content_chars` count.
+ */
+export type PageFields = "full" | "summary";
+
+interface ListPagesOpts {
+  page_type?: string;
+  sort_by?: string;
+  order?: string;
+  limit?: number;
+  offset?: number;
+}
+
 export async function listPages(
   repoId: string,
-  opts?: { page_type?: string; sort_by?: string; order?: string; limit?: number; offset?: number },
-): Promise<PageResponse[]> {
-  return apiGet<PageResponse[]>("/api/pages", { repo_id: repoId, ...opts });
+  opts: ListPagesOpts & { fields: "summary" },
+): Promise<PageSummary[]>;
+export async function listPages(
+  repoId: string,
+  opts?: ListPagesOpts & { fields?: "full" },
+): Promise<PageResponse[]>;
+export async function listPages(
+  repoId: string,
+  opts?: ListPagesOpts & { fields?: PageFields },
+): Promise<PageSummary[]> {
+  return apiGet<PageSummary[]>("/api/pages", { repo_id: repoId, ...opts });
+}
+
+interface ListAllPagesOpts {
+  page_type?: string;
+  sort_by?: string;
+  order?: string;
 }
 
 /** Fetch all pages for a repo, auto-paginating through the 500-item backend limit. */
 export async function listAllPages(
   repoId: string,
-  opts?: { page_type?: string; sort_by?: string; order?: string },
-): Promise<PageResponse[]> {
+  opts: ListAllPagesOpts & { fields: "summary" },
+): Promise<PageSummary[]>;
+export async function listAllPages(
+  repoId: string,
+  opts?: ListAllPagesOpts & { fields?: "full" },
+): Promise<PageResponse[]>;
+export async function listAllPages(
+  repoId: string,
+  opts?: ListAllPagesOpts & { fields?: PageFields },
+): Promise<PageSummary[]> {
   const PAGE_SIZE = 500;
-  const all: PageResponse[] = [];
+  const all: PageSummary[] = [];
   let offset = 0;
 
   while (true) {
-    const batch = await listPages(repoId, { ...opts, limit: PAGE_SIZE, offset });
+    // Kept sequential on purpose. Four concurrent multi-megabyte listings is
+    // the request shape behind a past memory incident; the fix for a slow
+    // listing is `fields: "summary"`, not more of it at once.
+    const batch = await listPages(repoId, {
+      ...opts,
+      limit: PAGE_SIZE,
+      offset,
+      fields: opts?.fields ?? "full",
+    } as ListPagesOpts & { fields: "summary" });
     all.push(...batch);
     if (batch.length < PAGE_SIZE) break;
     offset += PAGE_SIZE;

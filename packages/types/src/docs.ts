@@ -9,12 +9,19 @@
 
 export type FreshnessStatus = "fresh" | "stale" | "outdated" | (string & {});
 
-export interface DocPage {
+/**
+ * A page without its body or its metadata blob.
+ *
+ * This is what a *list* of pages should be. On a large wiki the two omitted
+ * fields are 95% of a full listing, and nothing that renders a list — the docs
+ * tree, breadcrumbs, the command palette, the path index — reads either one.
+ * Anything that shows a page's body takes `DocPage` instead and fetches it.
+ */
+export interface DocPageSummary {
   id: string;
   repository_id: string;
   page_type: string;
   title: string;
-  content: string;
   target_path: string;
   source_hash: string;
   model_name: string;
@@ -26,7 +33,13 @@ export interface DocPage {
   version: number;
   confidence: number;
   freshness_status: FreshnessStatus;
-  metadata: Record<string, unknown>;
+  /**
+   * Length of the omitted `content`, so a list can still rank pages by how
+   * much was written without carrying the writing. Optional: a backend older
+   * than this field simply doesn't send it, and callers fall back rather than
+   * ranking on `undefined`.
+   */
+  content_chars?: number;
   human_notes: string | null;
   /**
    * Position in the wiki outline, computed once at generation time so every
@@ -39,6 +52,11 @@ export interface DocPage {
   structural_key?: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface DocPage extends DocPageSummary {
+  content: string;
+  metadata: Record<string, unknown>;
 }
 
 export interface DocPageVersion {

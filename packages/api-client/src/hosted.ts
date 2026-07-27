@@ -48,9 +48,11 @@ import type {
   ModuleHealthSummary,
   Paginated,
   PageResponse,
+  PageSummary,
   RepoResponse,
   SearchResultResponse,
 } from "./types";
+import type { PageFields } from "./pages";
 
 // ---------------------------------------------------------------------------
 // Config + hosted-only response types
@@ -249,12 +251,14 @@ export function mapHostedPage(raw: Record<string, unknown>, repoId: string): Pag
   const str = (k: string): string => (typeof raw[k] === "string" ? (raw[k] as string) : "");
   const num = (k: string, fallback = 0): number =>
     typeof raw[k] === "number" ? (raw[k] as number) : fallback;
+  const content = str("content");
   return {
     id: str("id") || str("page_id"),
     repository_id: repoId,
     page_type: str("page_type"),
     title: str("title"),
-    content: str("content"),
+    content,
+    content_chars: content.length,
     target_path: str("target_path"),
     source_hash: str("source_hash"),
     model_name: str("model_name"),
@@ -271,6 +275,12 @@ export function mapHostedPage(raw: Record<string, unknown>, repoId: string): Pag
     created_at: str("created_at"),
     updated_at: str("updated_at") || str("created_at"),
   };
+}
+
+/** Drop a page's two heavy fields, keeping the rest byte-identical. */
+export function toPageSummary(page: PageResponse): PageSummary {
+  const { content: _content, metadata: _metadata, ...summary } = page;
+  return summary;
 }
 
 /** A dead_code.json finding into the local finding shape (artifact rows lack
@@ -383,7 +393,14 @@ export interface HostedProvider {
     repoId: string,
     opts?: { page_type?: string; limit?: number; offset?: number },
   ): Promise<PageResponse[]>;
-  listAllPages(repoId: string, opts?: { page_type?: string }): Promise<PageResponse[]>;
+  listAllPages(
+    repoId: string,
+    opts: { page_type?: string; fields: "summary" },
+  ): Promise<PageSummary[]>;
+  listAllPages(
+    repoId: string,
+    opts?: { page_type?: string; fields?: "full" },
+  ): Promise<PageResponse[]>;
   getPageById(pageId: string, repoId?: string): Promise<PageResponse>;
 
   // Decisions / risk / dead code
@@ -550,6 +567,32 @@ export function createHostedProvider(config: HostedProviderConfig): HostedProvid
     const mapped = (docs.pages ?? []).map((p) => mapHostedPage(p, repoId));
     pagesBySnapshot.set(sid, mapped);
     return mapped;
+  }
+
+  // Declared out here (rather than inline in the returned object) so it can
+  // carry the same overloads the interface does — an object-literal method
+  // can't.
+  async function listAllPages(
+    repoId: string,
+    opts: { page_type?: string; fields: "summary" },
+  ): Promise<PageSummary[]>;
+  async function listAllPages(
+    repoId: string,
+    opts?: { page_type?: string; fields?: "full" },
+  ): Promise<PageResponse[]>;
+  async function listAllPages(
+    repoId: string,
+    opts?: { page_type?: string; fields?: PageFields },
+  ): Promise<PageSummary[]> {
+    const pages = await loadPages(repoId);
+    const scoped = opts?.page_type
+      ? pages.filter((p) => p.page_type === opts.page_type)
+      : pages;
+    // Hosted serves its whole docs artifact in one cached call, so `summary`
+    // saves it no round trip. It still honours the contract: callers get rows
+    // with no `content`/`metadata`, so a component typed against the summary
+    // shape can't quietly read a body a leaner backend wouldn't have sent.
+    return opts?.fields === "summary" ? scoped.map(toPageSummary) : scoped;
   }
 
   return {
@@ -741,10 +784,7 @@ export function createHostedProvider(config: HostedProviderConfig): HostedProvid
       }
       return pages;
     },
-    async listAllPages(repoId, opts): Promise<PageResponse[]> {
-      const pages = await loadPages(repoId);
-      return opts?.page_type ? pages.filter((p) => p.page_type === opts.page_type) : pages;
-    },
+    listAllPages,
     async getPageById(pageId, repoId): Promise<PageResponse> {
       const pools = repoId
         ? [await loadPages(repoId)]

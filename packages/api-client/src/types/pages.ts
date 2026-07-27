@@ -2,12 +2,16 @@
 // Pages
 // ---------------------------------------------------------------------------
 
-export interface PageResponse {
+/**
+ * What `GET /api/pages?fields=summary` returns: every page field except the
+ * two heavy ones. On a large wiki `content` and `metadata` are 95% of a full
+ * listing's bytes, and nothing that draws a list of pages reads either.
+ */
+export interface PageSummary {
   id: string;
   repository_id: string;
   page_type: string;
   title: string;
-  content: string;
   target_path: string;
   source_hash: string;
   model_name: string;
@@ -19,7 +23,11 @@ export interface PageResponse {
   version: number;
   confidence: number;
   freshness_status: string;
-  metadata: Record<string, unknown>;
+  /** Length of the omitted `content`, so a list can rank pages by how much was
+   *  written without carrying the writing. Optional: a backend predating the
+   *  field just omits it, and callers fall back rather than ranking on
+   *  `undefined`. */
+  content_chars?: number;
   human_notes: string | null;
   created_at: string;
   updated_at: string;
@@ -30,6 +38,11 @@ export interface PageResponse {
   display_order?: number;
   section_number?: string | null;
   structural_key?: string | null;
+}
+
+export interface PageResponse extends PageSummary {
+  content: string;
+  metadata: Record<string, unknown>;
 }
 
 export interface PageVersionResponse {
