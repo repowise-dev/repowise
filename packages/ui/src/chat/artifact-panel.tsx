@@ -116,7 +116,7 @@ function ArtifactRenderer({ artifact }: { artifact: Artifact | ChatArtifact }) {
         ((data as Record<string, unknown>).content as string) ??
         "";
       return content ? (
-        <ChatMarkdown content={content} />
+        <ChatMarkdown content={content} density="compact" />
       ) : (
         <GenericJsonRenderer data={data as Record<string, unknown>} />
       );

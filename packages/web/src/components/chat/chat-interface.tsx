@@ -15,11 +15,21 @@ import { ConversationHistory } from "./conversation-history";
 interface ChatInterfaceProps {
   repoId: string;
   repoName?: string;
+  /** Branch shown in the empty-state status line. */
+  defaultBranch?: string;
+  /** HEAD SHA shown in the empty-state status line, abbreviated to 7. */
+  headCommit?: string;
   /** Question to send immediately on mount (quick-ask deep links, `?q=`). */
   initialQuestion?: string;
 }
 
-export function ChatInterface({ repoId, repoName, initialQuestion }: ChatInterfaceProps) {
+export function ChatInterface({
+  repoId,
+  repoName,
+  defaultBranch,
+  headCommit,
+  initialQuestion,
+}: ChatInterfaceProps) {
   const {
     messages,
     conversationId,
@@ -89,14 +99,22 @@ export function ChatInterface({ repoId, repoName, initialQuestion }: ChatInterfa
       buildCitationHref={(s) => pageHref(repoId, s.pageId)}
       modelSelectorSlot={<ModelSelector repoId={repoId} />}
       statusSlot={
-        stats ? (
-          <span>
-            {stats.file_count.toLocaleString()} files ·{" "}
-            {Math.round(stats.doc_coverage_pct)}% documented
-            {stats.symbol_count > 0 &&
-              ` · ${stats.symbol_count.toLocaleString()} symbols indexed`}
-          </span>
-        ) : undefined
+        // Orientation, in one line: what was indexed, and which commit it was
+        // indexed from. The branch and SHA used to sit in a second page header
+        // that duplicated the breadcrumb; they belong with the other figures.
+        <span>
+          {[
+            stats ? `${stats.file_count.toLocaleString()} files` : null,
+            stats ? `${Math.round(stats.doc_coverage_pct)}% documented` : null,
+            stats && stats.symbol_count > 0
+              ? `${stats.symbol_count.toLocaleString()} symbols indexed`
+              : null,
+            defaultBranch,
+            headCommit ? headCommit.slice(0, 7) : null,
+          ]
+            .filter(Boolean)
+            .join(" · ")}
+        </span>
       }
       sendDisabled={!anyConfigured}
       sendDisabledReason={

@@ -128,8 +128,8 @@ export function GraphDocPanel({
 
         {page && !isLoading && (
           <div className="px-4 py-4">
-            <article className="prose-chat text-xs">
-              <ChatMarkdown content={page.content} />
+            <article>
+              <ChatMarkdown content={page.content} density="compact" />
             </article>
           </div>
         )}

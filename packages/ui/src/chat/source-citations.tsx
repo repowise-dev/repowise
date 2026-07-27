@@ -165,31 +165,39 @@ export function SourceCitations({
   if (sources.length === 0) return null;
 
   return (
-    <div className="mt-2 pt-2 border-t border-[var(--color-border-default)]/50">
-      <p className="text-[10px] text-[var(--color-text-tertiary)] uppercase tracking-wider font-medium mb-1.5">
+    <div className="mt-5 pt-4 border-t border-[var(--color-border-default)]">
+      <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)] mb-2.5">
         Sources
       </p>
-      <div className="flex flex-wrap gap-1.5">
-        {sources.map((source, idx) => (
-          <a
-            key={source.id}
-            href={buildHref ? buildHref(source) : defaultBuildHref(source, prefix)}
-            className="group inline-flex items-center gap-1.5 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2 py-1 text-[10px] text-[var(--color-text-secondary)] hover:border-[var(--color-accent-primary)] hover:text-[var(--color-accent-primary)] hover:bg-[var(--color-accent-muted)] transition-all"
-          >
-            <span className="flex items-center justify-center h-3.5 w-3.5 rounded-sm bg-[var(--color-bg-overlay)] text-[10px] font-bold text-[var(--color-text-tertiary)] group-hover:bg-[var(--color-accent-primary)] group-hover:text-white shrink-0 transition-colors">
-              {idx + 1}
-            </span>
-            <SourceIcon pageType={source.pageType} className="h-3 w-3 shrink-0 opacity-60" />
-            <span className="truncate max-w-[160px] font-medium">{source.title}</span>
-            {source.confidence != null && (
-              <span className="text-[10px] text-[var(--color-text-tertiary)] tabular-nums">
-                {(source.confidence * 100).toFixed(0)}%
-              </span>
-            )}
-            <ArrowUpRight className="h-2.5 w-2.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
-          </a>
+      {/* Links, not chips. Each one goes somewhere, so the accent is earned on
+          hover; a border and a ground on every entry turned a list of eight
+          into a wall of boxes that outweighed the answer above it. The counter
+          badge went with them — numbering is only worth its weight when the
+          prose cites [1], and a reply does not. */}
+      <ul className="flex flex-col gap-1.5">
+        {sources.map((source) => (
+          <li key={source.id}>
+            <a
+              href={buildHref ? buildHref(source) : defaultBuildHref(source, prefix)}
+              className="group inline-flex items-baseline gap-2 text-[13px] text-[var(--color-text-secondary)] hover:text-[var(--color-accent-primary)] transition-colors"
+            >
+              <SourceIcon
+                pageType={source.pageType}
+                className="h-3.5 w-3.5 shrink-0 self-center text-[var(--color-text-tertiary)] group-hover:text-[var(--color-accent-primary)] transition-colors"
+              />
+              {/* No truncation: a cut title reports a layout decision to the
+                  reader as missing content. Long ones wrap. */}
+              <span className="font-medium">{source.title}</span>
+              {source.confidence != null && (
+                <span className="font-mono text-[11px] text-[var(--color-text-tertiary)] tabular-nums">
+                  {(source.confidence * 100).toFixed(0)}%
+                </span>
+              )}
+              <ArrowUpRight className="h-3 w-3 shrink-0 self-center opacity-0 group-hover:opacity-100 transition-opacity" />
+            </a>
+          </li>
         ))}
-      </div>
+      </ul>
     </div>
   );
 }

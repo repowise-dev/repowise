@@ -1,6 +1,29 @@
 "use client";
 
-import { lazy, Suspense } from "react";
+/**
+ * Markdown for chat replies, and for the narrow doc panel on the graph.
+ *
+ * Chat is a *reading* surface, not a chrome surface: an answer is read top to
+ * bottom the way a wiki page is, so it runs the reading scale from the design
+ * language (16px body, a real heading ladder) rather than the 12/14 chrome
+ * sizes it used to. Headings previously landed at 16/14/14 against 14px body,
+ * which is the "bolded body" failure — a heading that differs from the text
+ * around it by weight alone.
+ *
+ * The face stays sans. Serif is bounded to the named wiki reading surfaces so
+ * the mark keeps meaning "this is a document"; a reply is prose, not a document.
+ *
+ * `density="compact"` keeps the old chrome scale for consumers that render the
+ * same markdown inside a narrow panel, where 16px body would not fit the column
+ * it is given. One component, one prop — not a second renderer.
+ *
+ * Inline code is deliberately *not* accent-coloured. Nothing here resolves to a
+ * page, so an accent path would be decoration on something that does not
+ * respond — the exact anti-pattern rule 9 was written for, and the one the wiki
+ * renderer already fixed.
+ */
+
+import { lazy, Suspense, useMemo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Components } from "react-markdown";
@@ -12,132 +35,206 @@ const MermaidDiagram = lazy(() =>
   import("../wiki/mermaid-diagram").then((m) => ({ default: m.MermaidDiagram })),
 );
 
-const components: Components = {
-  h1: ({ children }) => (
-    <h1 className="text-base font-semibold text-[var(--color-text-primary)] mt-4 mb-2">
-      {children}
-    </h1>
-  ),
-  h2: ({ children }) => (
-    <h2 className="text-sm font-semibold text-[var(--color-text-primary)] mt-3 mb-1.5">
-      {children}
-    </h2>
-  ),
-  h3: ({ children }) => (
-    <h3 className="text-sm font-medium text-[var(--color-text-primary)] mt-2 mb-1">
-      {children}
-    </h3>
-  ),
-  p: ({ children }) => (
-    <p className="text-sm text-[var(--color-text-secondary)] leading-relaxed mb-2">
-      {children}
-    </p>
-  ),
-  ul: ({ children }) => (
-    <ul className="list-disc ml-4 text-sm text-[var(--color-text-secondary)] space-y-0.5 mb-2">
-      {children}
-    </ul>
-  ),
-  ol: ({ children }) => (
-    <ol className="list-decimal ml-4 text-sm text-[var(--color-text-secondary)] space-y-0.5 mb-2">
-      {children}
-    </ol>
-  ),
-  li: ({ children }) => <li className="leading-relaxed">{children}</li>,
-  code: ({ className, children, ...props }) => {
-    const isBlock = className?.includes("language-");
-    if (isBlock) {
-      const isMermaid = className?.includes("language-mermaid");
-      if (isMermaid) {
-        const chart = String(children ?? "").replace(/\n$/, "");
-        return (
-          <Suspense
-            fallback={
-              <pre className="my-2 rounded-md bg-[var(--color-bg-inset)] border border-[var(--color-border-default)] p-3 overflow-x-auto">
-                <code className="text-xs font-mono text-[var(--color-text-primary)]">
-                  {chart}
-                </code>
-              </pre>
-            }
-          >
-            <MermaidDiagram chart={chart} />
-          </Suspense>
-        );
-      }
-      return (
-        <pre className="my-2 rounded-md bg-[var(--color-bg-inset)] border border-[var(--color-border-default)] p-3 overflow-x-auto">
-          <code
-            className="text-xs font-mono text-[var(--color-text-primary)]"
-            {...props}
-          >
-            {children}
-          </code>
-        </pre>
-      );
-    }
-    return (
-      <code
-        className="rounded px-1.5 py-0.5 bg-[var(--color-bg-elevated)] text-[var(--color-accent-primary)] text-xs font-mono"
-        {...props}
+const MICRO_LABEL =
+  "font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]";
+
+export type ChatMarkdownDensity = "reading" | "compact";
+
+interface Scale {
+  h1: string;
+  h2: string;
+  h3: string;
+  body: string;
+  list: string;
+  block: string;
+  code: string;
+  gap: string;
+  listIndent: string;
+  rule: string;
+}
+
+const SCALES: Record<ChatMarkdownDensity, Scale> = {
+  reading: {
+    h1: "text-2xl mt-8 mb-3",
+    h2: "text-xl mt-7 mb-2.5",
+    h3: "text-lg mt-6 mb-2",
+    body: "text-base",
+    list: "text-[15.5px] space-y-1.5",
+    block: "my-4",
+    code: "text-sm",
+    gap: "mb-4",
+    listIndent: "ml-5",
+    rule: "my-6",
+  },
+  compact: {
+    h1: "text-base mt-4 mb-2",
+    h2: "text-sm mt-3 mb-1.5",
+    h3: "text-sm mt-2 mb-1",
+    body: "text-xs",
+    list: "text-xs space-y-1",
+    block: "my-2",
+    code: "text-[11px]",
+    gap: "mb-2",
+    listIndent: "ml-4",
+    rule: "my-3",
+  },
+};
+
+function buildComponents(s: Scale): Components {
+  return {
+    h1: ({ children }) => (
+      <h1
+        className={`${s.h1} font-semibold text-[var(--color-text-primary)]`}
       >
         {children}
-      </code>
-    );
-  },
-  pre: ({ children }) => <>{children}</>,
-  blockquote: ({ children }) => (
-    <blockquote className="border-l-2 border-[var(--color-accent-primary)] pl-3 my-2 text-sm text-[var(--color-text-secondary)] italic">
-      {children}
-    </blockquote>
-  ),
-  a: ({ href, children }) => (
-    <a
-      href={href}
-      className="text-[var(--color-accent-primary)] hover:underline"
-      target="_blank"
-      rel="noopener noreferrer"
-    >
-      {children}
-    </a>
-  ),
-  table: ({ children }) => (
-    <div className="overflow-x-auto my-2">
-      <table className="text-xs w-full border-collapse">{children}</table>
-    </div>
-  ),
-  thead: ({ children }) => (
-    <thead className="bg-[var(--color-bg-surface)] border-b border-[var(--color-border-default)]">
-      {children}
-    </thead>
-  ),
-  th: ({ children }) => (
-    <th className="text-left px-3 py-2.5 text-[11px] font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
-      {children}
-    </th>
-  ),
-  tr: ({ children }) => (
-    <tr className="border-t border-[var(--color-table-divider)] transition-colors hover:bg-[var(--color-bg-elevated)]">
-      {children}
-    </tr>
-  ),
-  td: ({ children }) => (
-    <td className="px-3 py-2.5 text-[var(--color-text-secondary)]">
-      {children}
-    </td>
-  ),
-  strong: ({ children }) => (
-    <strong className="font-medium text-[var(--color-text-primary)]">
-      {children}
-    </strong>
-  ),
-  hr: () => <hr className="my-3 border-[var(--color-border-default)]" />,
-};
+      </h1>
+    ),
+    h2: ({ children }) => (
+      <h2
+        className={`${s.h2} font-semibold text-[var(--color-text-primary)]`}
+      >
+        {children}
+      </h2>
+    ),
+    h3: ({ children }) => (
+      <h3
+        className={`${s.h3} font-semibold text-[var(--color-text-primary)]`}
+      >
+        {children}
+      </h3>
+    ),
+    p: ({ children }) => (
+      <p
+        className={`${s.body} ${s.gap} text-[var(--color-text-primary)] leading-relaxed`}
+      >
+        {children}
+      </p>
+    ),
+    ul: ({ children }) => (
+      <ul
+        className={`list-disc ${s.listIndent} ${s.list} ${s.gap} text-[var(--color-text-primary)]`}
+      >
+        {children}
+      </ul>
+    ),
+    ol: ({ children }) => (
+      <ol
+        className={`list-decimal ${s.listIndent} ${s.list} ${s.gap} text-[var(--color-text-primary)]`}
+      >
+        {children}
+      </ol>
+    ),
+    li: ({ children }) => <li className="leading-relaxed">{children}</li>,
+    code: ({ className, children, ...props }) => {
+      const isBlock = className?.includes("language-");
+      if (isBlock) {
+        const isMermaid = className?.includes("language-mermaid");
+        const fence = `${s.block} rounded-lg bg-[var(--color-bg-inset)] border border-[var(--color-border-default)] p-4 overflow-x-auto`;
+        if (isMermaid) {
+          const chart = String(children ?? "").replace(/\n$/, "");
+          return (
+            <Suspense
+              fallback={
+                <pre className={fence}>
+                  <code
+                    className={`${s.code} font-mono text-[var(--color-text-primary)]`}
+                  >
+                    {chart}
+                  </code>
+                </pre>
+              }
+            >
+              <MermaidDiagram chart={chart} />
+            </Suspense>
+          );
+        }
+        return (
+          <pre className={fence}>
+            <code
+              className={`${s.code} font-mono text-[var(--color-text-primary)]`}
+              {...props}
+            >
+              {children}
+            </code>
+          </pre>
+        );
+      }
+      // 0.85em, relative: Geist Mono runs wider and taller than Geist at the
+      // same nominal size, so 1em mono inside 16px sans reads oversized.
+      return (
+        <code
+          className="rounded px-1 py-0.5 bg-[var(--color-bg-inset)] text-[var(--color-text-primary)] text-[0.85em] font-mono"
+          {...props}
+        >
+          {children}
+        </code>
+      );
+    },
+    pre: ({ children }) => <>{children}</>,
+    blockquote: ({ children }) => (
+      <blockquote
+        className={`${s.block} ${s.body} border-l-2 border-[var(--color-border-default)] pl-4 text-[var(--color-text-secondary)]`}
+      >
+        {children}
+      </blockquote>
+    ),
+    a: ({ href, children }) => (
+      <a
+        href={href}
+        className="text-[var(--color-accent-primary)] hover:underline"
+        target="_blank"
+        rel="noopener noreferrer"
+      >
+        {children}
+      </a>
+    ),
+    table: ({ children }) => (
+      <div className={`${s.block} overflow-x-auto`}>
+        <table className={`${s.code} w-full border-collapse`}>{children}</table>
+      </div>
+    ),
+    thead: ({ children }) => (
+      <thead className="border-b border-[var(--color-border-default)]">
+        {children}
+      </thead>
+    ),
+    th: ({ children }) => (
+      <th className={`text-left px-3 py-2 font-normal ${MICRO_LABEL}`}>
+        {children}
+      </th>
+    ),
+    tr: ({ children }) => (
+      <tr className="border-t border-[var(--color-border-default)]">
+        {children}
+      </tr>
+    ),
+    td: ({ children }) => (
+      <td className="px-3 py-2 text-[var(--color-text-primary)] tabular-nums">
+        {children}
+      </td>
+    ),
+    strong: ({ children }) => (
+      <strong className="font-semibold text-[var(--color-text-primary)]">
+        {children}
+      </strong>
+    ),
+    hr: () => (
+      <hr className={`${s.rule} border-t border-[var(--color-border-default)]`} />
+    ),
+  };
+}
 
 interface ChatMarkdownProps {
   content: string;
+  /** `compact` keeps the old chrome scale for narrow panels. */
+  density?: ChatMarkdownDensity;
 }
 
-export function ChatMarkdown({ content }: ChatMarkdownProps) {
+export function ChatMarkdown({ content, density = "reading" }: ChatMarkdownProps) {
+  const components = useMemo(
+    () => buildComponents(SCALES[density]),
+    [density],
+  );
   return (
     <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
       {content}

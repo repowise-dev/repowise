@@ -81,8 +81,11 @@ export function ModelSelector({
           "border border-[var(--color-border-default)]",
         )}
       >
-        <span className="truncate max-w-[200px]">
-          {isLoading ? "..." : label}
+        {/* The model name is the longest string in a crowded row. Below `sm`
+            it drops to the provider alone rather than squeezing the row —
+            labels go before controls do. */}
+        <span className="truncate max-w-[120px] sm:max-w-[200px]">
+          {isLoading ? "…" : label}
         </span>
         <ChevronDown className="h-3 w-3 shrink-0" />
       </button>
