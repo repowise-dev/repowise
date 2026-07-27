@@ -24,7 +24,12 @@ from typing import Any
 import structlog
 
 from repowise.core.pipeline.modes import OrchestratorMode
-from repowise.core.pipeline.progress import ProgressCallback
+from repowise.core.pipeline.progress import (
+    STAGE_ANALYSIS,
+    STAGE_INGESTION,
+    ProgressCallback,
+    emit_stage,
+)
 from repowise.core.registry import HookProgressCallback
 
 from .phases._common import _phase_done
@@ -272,8 +277,7 @@ async def run_pipeline(
         llm_client._cost_tracker = cost_tracker
 
     # ---- Phase 1: Ingestion ------------------------------------------------
-    if progress:
-        progress.on_message("info", "Phase 1: Ingestion")
+    emit_stage(progress, STAGE_INGESTION)
 
     # Launch git indexing as a background task immediately — it is independent
     # of parsing and graph-build, so the two stages can run concurrently.
@@ -442,8 +446,7 @@ async def run_pipeline(
             progress.on_message("warning", f"Test run: limiting to {len(parsed_files)} files")
 
     # ---- Phase 2: Analysis --------------------------------------------------
-    if progress:
-        progress.on_message("info", "Phase 2: Analysis")
+    emit_stage(progress, STAGE_ANALYSIS)
 
     # Resume fast-path: when a prior run already completed (and persisted) the
     # ANALYSIS phase, skip recomputing dead code / health / decisions — the

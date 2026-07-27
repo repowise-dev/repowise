@@ -9,11 +9,30 @@ Phase names (stable strings used across all implementations):
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 import structlog
 
 logger = structlog.get_logger(__name__)
+
+# Top-level stages of a pipeline run, in order. These are the ones a user
+# counts ("Phase 2 of 4"); the phase names above are the sub-steps inside them.
+STAGE_INGESTION = "ingestion"
+STAGE_ANALYSIS = "analysis"
+
+
+def emit_stage(progress: Any, stage: str) -> None:
+    """Announce a top-level stage, for callbacks that render stage headers.
+
+    Optional, like ``on_phase_done``: the pipeline runs headlessly as well as
+    under a CLI, so the header itself belongs to whoever is drawing the screen
+    (which is also the only party that knows how many stages follow this one).
+    """
+    if progress is None:
+        return
+    fn = getattr(progress, "on_stage", None)
+    if fn is not None:
+        fn(stage)
 
 
 @runtime_checkable
@@ -40,6 +59,13 @@ class ProgressCallback(Protocol):
         """Emit a free-form message. *level* is 'info', 'warning', or 'error'."""
         ...
 
+    def on_stage(self, stage: str) -> None:
+        """Called when a top-level stage begins. Optional — reach it via
+        :func:`emit_stage`, which no-ops for callbacks that do not render
+        stage headers.
+        """
+        ...
+
 
 class LoggingProgressCallback:
     """Emits progress as structured log messages. Suitable for headless workers (Modal)."""
@@ -55,3 +81,6 @@ class LoggingProgressCallback:
 
     def on_message(self, level: str, text: str) -> None:
         getattr(logger, level, logger.info)(text)
+
+    def on_stage(self, stage: str) -> None:
+        logger.info("stage_start", stage=stage)
