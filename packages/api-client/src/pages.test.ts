@@ -25,22 +25,28 @@ describe("listAllPages", () => {
   });
 
   it("passes fields=summary through on every page of the listing", async () => {
-    // 500 rows means there may be more, so it pages again; the second batch
-    // is short and ends the loop.
-    const batch = Array.from({ length: 500 }, (_, i) => ({ id: `p${i}` }));
+    // A full batch means there may be more, so it pages again; the second
+    // batch is short and ends the loop.
+    const batch = Array.from({ length: 2000 }, (_, i) => ({ id: `p${i}` }));
     apiGet.mockResolvedValueOnce(batch).mockResolvedValueOnce([{ id: "last" }]);
 
     const all = await listAllPages("r1", { fields: "summary" });
 
-    expect(all).toHaveLength(501);
+    expect(all).toHaveLength(2001);
     expect(apiGet.mock.calls).toHaveLength(2);
     for (const call of apiGet.mock.calls) {
       expect(call[1]).toMatchObject({ fields: "summary" });
     }
     // Sequential, not fanned out: offsets follow one another.
     expect(apiGet.mock.calls.map((c) => (c[1] as { offset: number }).offset)).toEqual([
-      0, 500,
+      0, 2000,
     ]);
+  });
+
+  it("keeps full listings on the smaller batch, where a row is ~15x heavier", async () => {
+    apiGet.mockResolvedValue([]);
+    await listAllPages("r1");
+    expect(apiGet.mock.calls[0]![1]).toMatchObject({ limit: 500, fields: "full" });
   });
 });
 

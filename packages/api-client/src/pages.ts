@@ -59,19 +59,24 @@ export async function listAllPages(
   repoId: string,
   opts?: ListAllPagesOpts & { fields?: PageFields },
 ): Promise<PageSummary[]> {
-  const PAGE_SIZE = 500;
+  // Batch size follows the shape, because the two differ by ~15x per row. 500
+  // full rows is ~6 MB; 500 summary rows is ~0.4 MB, so the same number of
+  // trips would be spent almost entirely on latency. Both stay under a couple
+  // of megabytes per response.
+  const fields = opts?.fields ?? "full";
+  const PAGE_SIZE = fields === "summary" ? 2000 : 500;
   const all: PageSummary[] = [];
   let offset = 0;
 
   while (true) {
-    // Kept sequential on purpose. Four concurrent multi-megabyte listings is
+    // Kept sequential on purpose. Several concurrent multi-megabyte listings is
     // the request shape behind a past memory incident; the fix for a slow
-    // listing is `fields: "summary"`, not more of it at once.
+    // listing is a smaller payload, not more of it at once.
     const batch = await listPages(repoId, {
       ...opts,
       limit: PAGE_SIZE,
       offset,
-      fields: opts?.fields ?? "full",
+      fields,
     } as ListPagesOpts & { fields: "summary" });
     all.push(...batch);
     if (batch.length < PAGE_SIZE) break;
