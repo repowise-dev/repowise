@@ -11,6 +11,8 @@ export interface OverviewSectionProps {
   /** Drop the top hairline — for the first section under a header that already
    *  closes with one. */
   flush?: boolean;
+  /** Anchor target, for deep links that jump to one section of a page. */
+  id?: string;
   className?: string;
   children: React.ReactNode;
 }
@@ -33,12 +35,16 @@ export function OverviewSection({
   description,
   action,
   flush = false,
+  id,
   className,
   children,
 }: OverviewSectionProps) {
   return (
     <section
+      {...(id ? { id } : {})}
+      // Deep-linked sections must not land under a sticky header.
       className={cn(
+        id && "scroll-mt-24",
         "flex flex-col gap-3",
         !flush && "border-t border-[var(--color-border-default)] pt-6 sm:pt-8",
         className,

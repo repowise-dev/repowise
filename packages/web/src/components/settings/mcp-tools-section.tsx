@@ -1,15 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-  CardDescription,
-} from "@repowise-dev/ui/ui/card";
-import { Badge } from "@repowise-dev/ui/ui/badge";
-import { Button } from "@repowise-dev/ui/ui/button";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { OverviewSection } from "@repowise-dev/ui/overview";
 import { Switch } from "@repowise-dev/ui/ui/switch";
 import {
   Select,
@@ -18,8 +10,15 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@repowise-dev/ui/ui/select";
+import {
+  SaveIndicator,
+  SettingsRow,
+  SettingsRows,
+  type SaveState,
+} from "@repowise-dev/ui/settings";
 import { listRepos } from "@/lib/api/repos";
 import { getMcpToolSurface, updateMcpTools } from "@/lib/api/mcp-tools";
+import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
 import type { McpToolSurface } from "@/lib/api/types";
 
 interface RepoOption {
@@ -31,17 +30,39 @@ function enabledNames(surface: McpToolSurface): Set<string> {
   return new Set(surface.tools.filter((t) => t.enabled).map((t) => t.name));
 }
 
+/** Selection as +/- deltas off the default set, so it survives a release that
+ *  changes which tools are on by default. */
+function toDeltas(surface: McpToolSurface, enabled: Set<string>): string[] {
+  const defaults = new Set(
+    surface.tools.filter((t) => t.default).map((t) => t.name),
+  );
+  const added = [...enabled].filter((n) => !defaults.has(n)).sort();
+  const removed = [...defaults].filter((n) => !enabled.has(n)).sort();
+  return [...added.map((n) => `+${n}`), ...removed.map((n) => `-${n}`)];
+}
+
+/**
+ * Which tools the MCP server exposes.
+ *
+ * This was the page's only explicit Save button, on a surface where every other
+ * control wrote on change. Nothing said which half you were in, so a toggle
+ * that silently did nothing until you found the button read as broken. It
+ * autosaves now, like everything else, and reports through the one shared
+ * indicator.
+ */
 export function McpToolsSection() {
   const [repos, setRepos] = useState<RepoOption[]>([]);
   const [repoId, setRepoId] = useState<string | null>(null);
   const [surface, setSurface] = useState<McpToolSurface | null>(null);
   const [enabled, setEnabled] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
+  const [saveState, setSaveState] = useState<SaveState>("idle");
   const [error, setError] = useState<string | null>(null);
-  const [saved, setSaved] = useState(false);
 
-  // Load the repo list once and pick a default (the primary, else the first).
+  const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Guards against an older in-flight save landing after a newer one.
+  const saveSeq = useRef(0);
+
   useEffect(() => {
     listRepos()
       .then((rows) => {
@@ -53,10 +74,17 @@ export function McpToolsSection() {
         if (opts.length === 0) setLoading(false);
       })
       .catch((e) => {
-        setError(String(e));
+        setError(toFriendlyMessage(e, "Could not list repositories"));
         setLoading(false);
       });
   }, []);
+
+  useEffect(
+    () => () => {
+      if (savedTimer.current) clearTimeout(savedTimer.current);
+    },
+    [],
+  );
 
   const loadSurface = useCallback((id: string) => {
     setLoading(true);
@@ -66,7 +94,7 @@ export function McpToolsSection() {
         setSurface(s);
         setEnabled(enabledNames(s));
       })
-      .catch((e) => setError(String(e)))
+      .catch((e) => setError(toFriendlyMessage(e, "Could not load tools")))
       .finally(() => setLoading(false));
   }, []);
 
@@ -74,74 +102,75 @@ export function McpToolsSection() {
     if (repoId) loadSurface(repoId);
   }, [repoId, loadSurface]);
 
-  function toggle(name: string, on: boolean) {
-    setSaved(false);
-    setEnabled((prev) => {
-      const next = new Set(prev);
-      if (on) next.add(name);
-      else next.delete(name);
-      return next;
-    });
-  }
-
-  const dirty = useMemo(() => {
-    if (!surface) return false;
-    const server = enabledNames(surface);
-    if (server.size !== enabled.size) return true;
-    for (const n of enabled) if (!server.has(n)) return true;
-    return false;
-  }, [surface, enabled]);
-
-  async function save() {
+  async function toggle(name: string, on: boolean) {
     if (!surface || !repoId) return;
-    setSaving(true);
+
+    const next = new Set(enabled);
+    if (on) next.add(name);
+    else next.delete(name);
+    setEnabled(next);
+
+    const seq = ++saveSeq.current;
+    setSaveState("saving");
     setError(null);
-    // Store the selection as +/- deltas off the default surface so it stays
-    // correct if the default set changes in a future release.
-    const defaults = new Set(
-      surface.tools.filter((t) => t.default).map((t) => t.name),
-    );
-    const added = [...enabled].filter((n) => !defaults.has(n)).sort();
-    const removed = [...defaults].filter((n) => !enabled.has(n)).sort();
-    const tools = [...added.map((n) => `+${n}`), ...removed.map((n) => `-${n}`)];
     try {
+      const deltas = toDeltas(surface, next);
       const updated = await updateMcpTools({
         repo_id: repoId,
-        tools: tools.length ? tools : null,
+        tools: deltas.length ? deltas : null,
       });
+      if (seq !== saveSeq.current) return;
       setSurface(updated);
       setEnabled(enabledNames(updated));
-      setSaved(true);
+      setSaveState("saved");
+      if (savedTimer.current) clearTimeout(savedTimer.current);
+      savedTimer.current = setTimeout(() => setSaveState("idle"), 2000);
     } catch (e) {
-      setError(String(e));
-    } finally {
-      setSaving(false);
+      if (seq !== saveSeq.current) return;
+      // Put the switch back where the server still has it.
+      setEnabled(enabledNames(surface));
+      setError(toFriendlyMessage(e, "Could not save"));
+      setSaveState("error");
     }
   }
 
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="text-base">MCP tool surface</CardTitle>
-        <CardDescription>
-          Choose which tools the MCP server exposes for a repo. Changes are saved
-          to its <code className="font-mono">.repowise/config.yaml</code> and take
-          effect the next time you start <code className="font-mono">repowise mcp</code>{" "}
-          for that repo.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        {repos.length === 0 && !loading && (
-          <p className="text-sm text-[var(--color-text-tertiary)]">
-            No indexed repos found. Add and index a repository first.
-          </p>
-        )}
+  const summary = useMemo(() => {
+    if (!surface) return null;
+    const available = surface.tools.filter(
+      (t) => !(t.requires_workspace && !surface.is_workspace),
+    );
+    const on = available.filter((t) => enabled.has(t.name)).length;
+    const mode = surface.is_workspace
+      ? "Workspace mode, so workspace-only tools are available."
+      : "Single-repo mode, so workspace-only tools are unavailable here.";
+    return `${on} of ${available.length} tools exposed. ${mode}`;
+  }, [surface, enabled]);
 
-        {repos.length > 1 && (
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-[var(--color-text-secondary)]">Repo</span>
+  return (
+    <OverviewSection
+      title="Tool surface"
+      // Rule 4: the figure is the point. "9 of 15 exposed" answers the question
+      // the list is there to answer, before you read fifteen rows.
+      description={
+        summary ??
+        "Which tools the MCP server offers an agent. Saved to the repo's .repowise/config.yaml and applied the next time you start repowise mcp for it."
+      }
+      action={<SaveIndicator state={saveState} error={error} />}
+    >
+      {repos.length === 0 && !loading && (
+        <p className="text-sm text-[var(--color-text-tertiary)]">
+          Index a repository and its tool surface shows up here.
+        </p>
+      )}
+
+      {repos.length > 1 && (
+        <SettingsRows>
+          <SettingsRow
+            label="Repository"
+            hint="The surface is stored per repo."
+          >
             <Select value={repoId ?? undefined} onValueChange={setRepoId}>
-              <SelectTrigger className="w-56">
+              <SelectTrigger className="w-full sm:w-64">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -152,74 +181,53 @@ export function McpToolsSection() {
                 ))}
               </SelectContent>
             </Select>
-          </div>
-        )}
+          </SettingsRow>
+        </SettingsRows>
+      )}
 
-        {surface && !loading && (
-          <>
-            <p className="text-xs text-[var(--color-text-tertiary)]">
-              {surface.is_workspace
-                ? "Workspace mode — workspace-only tools are available."
-                : "Single-repo mode — workspace-only tools are unavailable here."}
-            </p>
-
-            <div className="divide-y divide-[var(--color-border-default)] rounded border border-[var(--color-border-default)]">
-              {surface.tools.map((tool) => {
-                const locked = tool.requires_workspace && !surface.is_workspace;
-                return (
-                  <div
-                    key={tool.name}
-                    className="flex items-start gap-3 px-3 py-2.5"
-                  >
-                    <Switch
-                      checked={enabled.has(tool.name)}
-                      disabled={locked || saving}
-                      onCheckedChange={(v) => toggle(tool.name, v)}
-                      className="mt-0.5"
-                    />
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
-                        <code className="font-mono text-sm">{tool.name}</code>
-                        {tool.requires_workspace && (
-                          <Badge variant="outline" className="text-[10px]">
-                            workspace
-                          </Badge>
-                        )}
-                        {!tool.default && !tool.requires_workspace && (
-                          <Badge variant="outline" className="text-[10px]">
-                            opt-in
-                          </Badge>
-                        )}
-                      </div>
-                      {tool.description && (
-                        <p className="text-xs text-[var(--color-text-tertiary)] mt-0.5">
-                          {tool.description}
-                        </p>
-                      )}
-                    </div>
+      {surface && !loading && (
+        <ul className="border-t border-[var(--color-border-default)]">
+          {surface.tools.map((tool) => {
+            const locked = tool.requires_workspace && !surface.is_workspace;
+            return (
+              <li
+                key={tool.name}
+                className="flex items-start gap-3 border-b border-[var(--color-border-default)] py-3"
+              >
+                <Switch
+                  checked={enabled.has(tool.name)}
+                  disabled={locked}
+                  onCheckedChange={(v) => void toggle(tool.name, v)}
+                  aria-label={tool.name}
+                  className="mt-0.5"
+                />
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-baseline gap-x-2">
+                    <code className="font-mono text-sm text-[var(--color-text-primary)]">
+                      {tool.name}
+                    </code>
+                    {/* Rule 10: only mark what needs attention. Every non-default
+                        tool carried an "opt-in" badge and every workspace tool a
+                        "workspace" badge, which badged most rows and so said
+                        nothing. The switch already reports opt-in state; only
+                        the unavailable case needs a word. */}
+                    {locked && (
+                      <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+                        workspace only
+                      </span>
+                    )}
                   </div>
-                );
-              })}
-            </div>
-
-            <div className="flex items-center gap-3">
-              <Button onClick={save} disabled={!dirty || saving} size="sm">
-                {saving ? "Saving…" : "Save"}
-              </Button>
-              {saved && !dirty && (
-                <span className="text-sm text-[var(--color-fresh)]">Saved</span>
-              )}
-              {dirty && (
-                <span className="text-xs text-[var(--color-text-tertiary)]">
-                  Unsaved changes
-                </span>
-              )}
-            </div>
-          </>
-        )}
-
-        {error && <p className="text-sm text-[var(--color-error)]">{error}</p>}
-      </CardContent>
-    </Card>
+                  {tool.description && (
+                    <p className="mt-0.5 text-xs leading-relaxed text-[var(--color-text-tertiary)]">
+                      {tool.description}
+                    </p>
+                  )}
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </OverviewSection>
   );
 }

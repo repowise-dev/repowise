@@ -19,7 +19,9 @@ const STATUS_BADGE: Record<CoordinatorHealth["status"], string> = {
 
 function StatRow({ label, value, help }: { label: string; value: string; help?: string }) {
   return (
-    <div className="flex items-center justify-between py-1.5 border-b border-[var(--color-border)] last:border-0">
+    // `--color-border` is defined in no stylesheet; the hairline this row
+    // claimed to have has never rendered. The token is `--color-border-default`.
+    <div className="flex items-center justify-between py-1.5 border-b border-[var(--color-border-default)] last:border-0">
       <span
         className={`text-xs text-[var(--color-text-secondary)] ${help ? "cursor-help underline decoration-dotted decoration-[var(--color-border-default)] underline-offset-2" : ""}`}
         title={help}

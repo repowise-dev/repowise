@@ -1,18 +1,15 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { Settings } from "lucide-react";
-import { WebhookSection } from "@/components/settings/webhook-section";
-import { ProviderSettingsPanel } from "@/components/settings/provider-settings-panel";
+import { OverviewSection } from "@repowise-dev/ui/overview";
+import { PageShell } from "@repowise-dev/ui/shared/page-shell";
 import { RefactoringSettingsSection } from "@/components/repos/refactoring-settings-section";
+import { ProviderSettingsPanel } from "@/components/settings/provider-settings-panel";
 import { getRepo } from "@/lib/api/repos";
 import { getCoordinatorHealth } from "@/lib/api/health";
 import { RepoSettingsFormWrapper as RepoSettingsForm } from "@/components/repos/repo-settings-form-wrapper";
 import { CoordinatorHealthPanel } from "@/components/repos/coordinator-health-panel";
 import { DeleteRepoButton } from "@/components/repos/delete-repo-button";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@repowise-dev/ui/ui/card";
-import { Separator } from "@repowise-dev/ui/ui/separator";
-import { PageShell } from "@repowise-dev/ui/shared/page-shell";
 import { OperationsPanel } from "@/components/repos/operations-panel";
 
 interface Props {
@@ -29,6 +26,18 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   }
 }
 
+/**
+ * Per-repository settings.
+ *
+ * Was seven `Card`s and two `Separator`s. Sections carry the grouping now, and
+ * the page shares its frame and its vocabulary with global settings.
+ *
+ * `WebhookSection` used to render here in full *and* on the global page, while
+ * this page separately linked out to global settings for connection and MCP —
+ * pointing elsewhere for two things and copying a third. Webhooks are a server
+ * address, not a repo preference, so they live in one place and this page links
+ * to them with everything else.
+ */
 export default async function RepoSettingsPage({ params }: Props) {
   const { id } = await params;
 
@@ -43,76 +52,70 @@ export default async function RepoSettingsPage({ params }: Props) {
 
   return (
     <PageShell
-      className="max-w-2xl"
-      icon={<Settings className="h-5 w-5 text-[var(--color-accent-primary)]" />}
-      title="Repository Settings"
-      description={`Manage ${repo.name}`}
+      title="Settings"
+      description={`Indexing, model keys and health for ${repo.name}. Server, webhook and editor configuration are shared across repositories.`}
+      className="max-w-3xl"
     >
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-sm font-medium">General</CardTitle>
-          <CardDescription>Name, branch, and path configuration</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <RepoSettingsForm repo={repo} />
-        </CardContent>
-      </Card>
+      <OverviewSection
+        title="General"
+        description="Where this repository lives and which branch is indexed."
+        flush
+      >
+        <RepoSettingsForm repo={repo} />
+      </OverviewSection>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-sm font-medium">Sync & Indexing</CardTitle>
-          <CardDescription>Trigger incremental sync or full re-indexing</CardDescription>
-        </CardHeader>
-        <CardContent className="pt-0">
-          <OperationsPanel repoId={id} repoName={repo.name} />
-        </CardContent>
-      </Card>
+      <OverviewSection
+        title="Sync and indexing"
+        description="Pull recent commits into the existing index, or rebuild it from scratch."
+      >
+        <OperationsPanel repoId={id} repoName={repo.name} />
+      </OverviewSection>
 
-      <Card id="provider">
-        <CardHeader>
-          <CardTitle className="text-sm font-medium">AI provider</CardTitle>
-          <CardDescription>
-            Add a model key to write documentation with AI. Keys are stored with this
-            repository and used by generation from the UI or the CLI.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="pt-0">
-          <ProviderSettingsPanel repoId={id} />
-        </CardContent>
-      </Card>
+      <OverviewSection
+        id="provider"
+        title="AI provider"
+        description="A model key lets this repository's documentation be written with AI. Keys are stored with the repository and used by generation from the UI or the CLI."
+      >
+        <ProviderSettingsPanel repoId={id} />
+      </OverviewSection>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-sm font-medium">Refactoring code generation</CardTitle>
-          <CardDescription>
-            Opt in to turning refactoring plans into reviewable diffs with your configured model
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="pt-0">
-          <RefactoringSettingsSection repoId={id} />
-        </CardContent>
-      </Card>
+      <OverviewSection
+        title="Refactoring code generation"
+        description="Opt in to turning refactoring plans into reviewable diffs with your configured model."
+      >
+        <RefactoringSettingsSection repoId={id} />
+      </OverviewSection>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-sm font-medium">System Health</CardTitle>
-          <CardDescription>
-            Per-population drift: wiki pages vs page vectors, and decision records vs decision
-            vectors
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="pt-0">
-          <CoordinatorHealthPanel repoId={id} initial={coordinatorHealth} />
-        </CardContent>
-      </Card>
+      <OverviewSection
+        title="Index health"
+        description="Per-population drift: wiki pages against page vectors, and decision records against decision vectors. A gap means search is answering from a stale set."
+      >
+        <CoordinatorHealthPanel repoId={id} initial={coordinatorHealth} />
+      </OverviewSection>
 
-      <Separator />
+      {/* Not a tinted card. A destructive action earns emphasis on the verb and
+          the sentence, not on a coloured ground the eye reads before either. */}
+      <section className="flex flex-col gap-3 border-t border-[var(--color-border-default)] pt-6 sm:pt-8">
+        <h2 className="text-base font-semibold tracking-tight text-[var(--color-error)]">
+          Delete this repository
+        </h2>
+        <p className="max-w-[62ch] text-xs leading-relaxed text-[var(--color-text-tertiary)] [text-wrap:pretty]">
+          Removes the index and everything generated from it — pages, symbols,
+          decisions and history. Your source files are untouched. This cannot be
+          undone.
+        </p>
+        <div>
+          <DeleteRepoButton
+            repoId={id}
+            repoName={repo.name}
+            variant="button"
+            redirectTo="/"
+          />
+        </div>
+      </section>
 
-      {/* Shared with global settings — interpolates the real server URL. */}
-      <WebhookSection />
-
-      <p className="text-xs text-[var(--color-text-tertiary)]">
-        Server connection and MCP configuration live in{" "}
+      <p className="border-t border-[var(--color-border-default)] pt-6 text-xs text-[var(--color-text-tertiary)]">
+        Server connection, webhooks, model defaults and MCP configuration are in{" "}
         <Link
           href="/settings"
           className="text-[var(--color-accent-primary)] hover:underline"
@@ -121,23 +124,6 @@ export default async function RepoSettingsPage({ params }: Props) {
         </Link>
         .
       </p>
-
-      <Separator />
-
-      <Card className="border-[var(--color-error)]/40 bg-[var(--color-error)]/5">
-        <CardHeader>
-          <CardTitle className="text-sm font-medium text-[var(--color-error)]">
-            Danger Zone
-          </CardTitle>
-          <CardDescription>
-            Permanently delete this repository and all its generated pages, symbols, and history.
-            This cannot be undone.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <DeleteRepoButton repoId={id} repoName={repo.name} variant="button" redirectTo="/" />
-        </CardContent>
-      </Card>
     </PageShell>
   );
 }
