@@ -419,8 +419,9 @@ def test_mock_width_with_a_real_pin_proposes_a_re_embed(
     _write_config(tmp_path, embedder="openai")
     monkeypatch.delenv("REPOWISE_EMBEDDER", raising=False)
     _patch_stored_dim(monkeypatch, 8)
+    from repowise.core.providers.embedding.base import EmbedderResult
     monkeypatch.setattr(
-        "repowise.cli.providers.embedders.build_embedder", lambda _n: _WideEmbedder()
+        "repowise.cli.providers.embedders.build_embedder", lambda _n: EmbedderResult(embedder=_WideEmbedder())
     )
 
     assert _vector_dims(tmp_path) == (8, 1536)

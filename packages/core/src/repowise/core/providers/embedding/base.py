@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import math
-import struct
+from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
 
@@ -28,7 +28,7 @@ def parse_numeric_env(value: Any, name: str, is_int: bool = False) -> float | in
     except (ValueError, TypeError):
         raise EmbedderConfigError(
             f"Invalid {name}: {value!r} (must be a positive {'integer' if is_int else 'number'})"
-        )
+        ) from None
     if math.isnan(parsed) or math.isinf(parsed) or parsed <= 0:
         raise EmbedderConfigError(
             f"Invalid {name}: {value!r} (must be a positive {'integer' if is_int else 'number'})"
@@ -93,7 +93,6 @@ class MockEmbedder:
             results.append([x / norm for x in raw])
         return results
 
-from dataclasses import dataclass
 
 @dataclass
 class EmbedderResult:

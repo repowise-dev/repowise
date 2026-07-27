@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Any
 
-from repowise.core.providers.embedding.base import EmbedderConfigError, parse_numeric_env
+from repowise.core.providers.embedding.base import (
+    EmbedderConfigError,
+    EmbedderResult,
+    parse_numeric_env,
+)
 
 
 def _embedder_kwargs(embedder_name: str) -> dict[str, Any]:
@@ -116,7 +121,6 @@ def resolve_embedder_for_repo(repo_path: Any) -> str:
     an explicitly set ``REPOWISE_EMBEDDER`` wins (it is the documented escape
     hatch after a manual re-embed), then the pin, then env detection.
     """
-    from pathlib import Path
 
     from repowise.cli.helpers import load_config
 
@@ -130,14 +134,14 @@ def resolve_embedder_for_repo(repo_path: Any) -> str:
     return str(pinned) if pinned else resolve_embedder(None)
 
 
-def build_embedder(embedder_name_resolved: str) -> 'EmbedderResult':
+def build_embedder(embedder_name_resolved: str) -> EmbedderResult:
     """Construct the configured embedder, falling back to MockEmbedder.
 
     Shared by the generation flows and the decision semantic-dedup wiring so
     the same backend selection logic isn't duplicated. Real providers fall
     back to the deterministic mock when their SDK/credentials are unavailable.
     """
-    from repowise.core.providers.embedding.base import MockEmbedder, EmbedderResult
+    from repowise.core.providers.embedding.base import MockEmbedder
     from repowise.core.providers.embedding.registry import get_embedder
 
     if embedder_name_resolved == "mock":

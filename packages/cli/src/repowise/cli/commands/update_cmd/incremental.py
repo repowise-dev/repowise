@@ -28,8 +28,8 @@ def _build_update_vector_store(repo_path: Any, cfg: dict) -> Any | None:
     embedder_name_resolved = resolve_embedder(cfg.get("embedder"))
     res = build_embedder(embedder_name_resolved)
     if res.error:
-        raise res.error
-        
+        console.print(f"[yellow]Embedding skipped due to config error: {res.error}[/yellow]")
+        return None
     try:
         return build_vector_store(repo_path, res.embedder)
     except Exception:

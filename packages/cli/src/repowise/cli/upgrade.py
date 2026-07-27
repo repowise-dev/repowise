@@ -134,7 +134,10 @@ def _vector_dims(repo_path: Path) -> tuple[int | None, int | None]:
     if stored != MockEmbedder.dimensions:
         return None, None
     try:
-        embedder = build_embedder(resolve_embedder_for_repo(repo_path))
+        res = build_embedder(resolve_embedder_for_repo(repo_path))
+        if res.error:
+            return None, None
+        embedder = res.embedder
     except Exception:
         return None, None
     if isinstance(embedder, MockEmbedder):

@@ -62,7 +62,8 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
 
     res = build_embedder(embedder_name)
     if res.error:
-        raise res.error
+        console.print(f"[red]Embedder configuration error: {res.error}[/red]")
+        raise click.Abort()
     embedder_impl = res.embedder
     if isinstance(embedder_impl, MockEmbedder) and requested_embedder != "mock":
         console.print(

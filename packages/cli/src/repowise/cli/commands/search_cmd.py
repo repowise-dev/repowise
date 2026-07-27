@@ -170,9 +170,10 @@ def _search_semantic(repo_path, query: str, limit: int) -> None:
                     return results
             except Exception:
                 pass
-                
+
             if config_error:
-                raise config_error
+                console.print(f"[red]Embedder configuration error: {config_error}[/red]")
+                raise click.Abort()
 
         # Fallback to FTS
         from repowise.core.persistence import FullTextSearch, create_engine
@@ -297,9 +298,10 @@ def _collect_semantic(repo_path, query: str, limit: int):
                     return results
             except Exception:
                 pass
-                
+
             if config_error:
-                raise config_error
+                console.print(f"[red]Embedder configuration error: {config_error}[/red]")
+                raise click.Abort()
 
         url = get_db_url_for_repo(repo_path)
         engine = create_engine(url)

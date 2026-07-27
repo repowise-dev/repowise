@@ -78,8 +78,9 @@ def _embedder_kwargs(name: str) -> dict[str, Any]:
     if model:
         kwargs["model"] = model
     if name == "gemini":
+        from repowise.core.providers.embedding.base import parse_numeric_env
         dims = os.environ.get("REPOWISE_EMBEDDING_DIMS")
-        kwargs["output_dimensionality"] = int(dims) if dims else 768
+        kwargs["output_dimensionality"] = int(parse_numeric_env(dims, "REPOWISE_EMBEDDING_DIMS", is_int=True)) if dims else 768
     return kwargs
 
 

@@ -165,3 +165,27 @@ def test_dimensions_invalid_raises_error(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setenv("OLLAMA_EMBEDDING_DIMS", "-5")
     with pytest.raises(EmbedderConfigError, match="Invalid OLLAMA_EMBEDDING_DIMS: '-5'"):
         OllamaEmbedder(model="embeddinggemma")
+
+
+def test_timeout_zero_raises_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    from repowise.core.providers.embedding.base import EmbedderConfigError
+
+    monkeypatch.setenv("OLLAMA_EMBEDDING_TIMEOUT", "0")
+    with pytest.raises(EmbedderConfigError, match="Invalid OLLAMA_EMBEDDING_TIMEOUT: '0'"):
+        OllamaEmbedder(model="embeddinggemma")
+
+
+def test_dimensions_inf_raises_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    from repowise.core.providers.embedding.base import EmbedderConfigError
+
+    monkeypatch.setenv("OLLAMA_EMBEDDING_DIMS", "inf")
+    with pytest.raises(EmbedderConfigError, match="Invalid OLLAMA_EMBEDDING_DIMS: 'inf'"):
+        OllamaEmbedder(model="embeddinggemma")
+
+
+def test_dimensions_nan_raises_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    from repowise.core.providers.embedding.base import EmbedderConfigError
+
+    monkeypatch.setenv("OLLAMA_EMBEDDING_DIMS", "nan")
+    with pytest.raises(EmbedderConfigError, match="Invalid OLLAMA_EMBEDDING_DIMS: 'nan'"):
+        OllamaEmbedder(model="embeddinggemma")

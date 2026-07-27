@@ -69,29 +69,31 @@ class OllamaEmbedder:
         self._base_url = _normalize_base_url(
             base_url or os.environ.get("OLLAMA_BASE_URL") or _DEFAULT_BASE_URL
         )
-        from repowise.core.providers.embedding.base import parse_numeric_env
+        from repowise.core.providers.embedding.base import EmbedderConfigError, parse_numeric_env
 
-        env_dimensions = os.environ.get("OLLAMA_EMBEDDING_DIMS") or os.environ.get(
-            "REPOWISE_EMBEDDING_DIMS"
-        )
+        env_dims_name = "OLLAMA_EMBEDDING_DIMS" if os.environ.get("OLLAMA_EMBEDDING_DIMS") else "REPOWISE_EMBEDDING_DIMS"
+        env_dimensions = os.environ.get(env_dims_name)
+        
         if dimensions is not None:
+            if dimensions <= 0:
+                raise EmbedderConfigError(f"Invalid dimensions: {dimensions!r} (must be a positive integer)")
             self._requested_dimensions = dimensions
         elif env_dimensions:
-            env_name = "OLLAMA_EMBEDDING_DIMS" if "OLLAMA_EMBEDDING_DIMS" in os.environ else "REPOWISE_EMBEDDING_DIMS"
-            self._requested_dimensions = parse_numeric_env(env_dimensions, env_name, is_int=True)
+            self._requested_dimensions = parse_numeric_env(env_dimensions, env_dims_name, is_int=True)
         else:
             self._requested_dimensions = None
 
         self._dimensions = self._requested_dimensions or _infer_dimensions(self._model)
 
-        env_timeout = os.environ.get("OLLAMA_EMBEDDING_TIMEOUT") or os.environ.get(
-            "REPOWISE_EMBEDDING_TIMEOUT"
-        )
+        env_timeout_name = "OLLAMA_EMBEDDING_TIMEOUT" if os.environ.get("OLLAMA_EMBEDDING_TIMEOUT") else "REPOWISE_EMBEDDING_TIMEOUT"
+        env_timeout = os.environ.get(env_timeout_name)
+
         if timeout is not None:
+            if timeout <= 0:
+                raise EmbedderConfigError(f"Invalid timeout: {timeout!r} (must be a positive number)")
             self._timeout = timeout
         elif env_timeout:
-            env_name = "OLLAMA_EMBEDDING_TIMEOUT" if "OLLAMA_EMBEDDING_TIMEOUT" in os.environ else "REPOWISE_EMBEDDING_TIMEOUT"
-            self._timeout = parse_numeric_env(env_timeout, env_name)
+            self._timeout = parse_numeric_env(env_timeout, env_timeout_name)
         else:
             self._timeout = _DEFAULT_TIMEOUT
 
