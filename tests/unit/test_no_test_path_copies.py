@@ -57,6 +57,12 @@ _PREDICATE_CONSTANTS = (
     "_TEST_DIR_SEGMENTS",
     "_TEST_FILE_RE",
     "_TEST_FILE_PATTERNS",
+    # Both held unanchored substrings and both were measurably wrong:
+    # `protest/`, `latest/` and `contest/` all counted as tests, while
+    # `myapp/tests.py` and `Foo.Tests/` did not. Neither name was on this list,
+    # which is why they stayed green through the whole consolidation.
+    "_TEST_PATTERNS",
+    "_TEST_ROOTS",
 )
 
 # Copies that still exist, with the reason each is still here. Shrink, never

@@ -12,6 +12,7 @@ from rich.panel import Panel
 
 from repowise.core.fs_walk import PRUNED_DIRS, walk_repo
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
+from repowise.core.test_paths import is_test_related_path
 
 
 @dataclass
@@ -28,7 +29,6 @@ class RepoScanInfo:
     """(dir_name, file_count) for dirs with >50 files — used for exclude suggestions."""
 
 
-_TEST_PATTERNS = {"test_", "_test.", ".test.", "tests/", "test/", "__tests__/", "spec/"}
 _INFRA_NAMES = {"dockerfile", "makefile", "jenkinsfile", "terraform", ".tf", ".sh", ".bash"}
 # Derived from the centralised LanguageRegistry, supplemented with
 # display-only languages (HTML, CSS) not tracked by the pipeline.
@@ -86,9 +86,12 @@ def quick_repo_scan(repo_path: Path) -> RepoScanInfo:
             if lang:
                 info.language_counts[lang] = info.language_counts.get(lang, 0) + 1
 
-            # Test file detection
-            full_rel = os.path.join(rel_dir, lower).replace("\\", "/")
-            if any(p in full_rel for p in _TEST_PATTERNS):
+            # Test file detection. Original case, not `lower`: the shared rules
+            # read `Foo.Tests/` and `FooTest.java` case-sensitively on purpose.
+            # No language is known this early — the scan runs before ingestion —
+            # so `spec/` falls to the unambiguous reading.
+            full_rel = os.path.join(rel_dir, fname).replace("\\", "/")
+            if is_test_related_path(full_rel):
                 info.test_file_count += 1
 
             # Infra file detection

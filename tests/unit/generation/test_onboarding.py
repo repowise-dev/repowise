@@ -38,6 +38,7 @@ from repowise.core.ingestion.models import (
     RepoStructure,
     Symbol,
 )
+from repowise.core.test_paths import is_test_related_path
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -58,7 +59,9 @@ def _file(
         size_bytes=512,
         git_hash="abc",
         last_modified=datetime(2026, 1, 1, tzinfo=UTC),
-        is_test=False,
+        # Stamped the way ingestion stamps it, so subkinds that read the flag
+        # see what they would see in a real run.
+        is_test=is_test_related_path(path, language),
         is_config=False,
         is_api_contract=False,
         is_entry_point=is_entry_point,

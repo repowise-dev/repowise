@@ -26,12 +26,6 @@ _MIN_SUFFIX_GROUP = 3
 _TOP_SUFFIX_GROUPS = 6
 _MIN_TEST_MIRROR_RATIO = 0.5
 
-# Recognised test-tree roots — anything else with "test" in the name still
-# counts but is treated as a weaker mirror signal.
-_TEST_ROOTS: tuple[str, ...] = (
-    "tests/", "test/", "__tests__/", "spec/", "specs/",
-)
-
 
 @dataclass
 class SuffixPattern:
@@ -78,7 +72,7 @@ def _find_suffix_patterns(signals: OnboardingSignals) -> list[SuffixPattern]:
         path = pf.file_info.path
         # Skip test files — patterns inside tests/ are the mirror signal,
         # not the suffix signal.
-        if any(seg in path for seg in _TEST_ROOTS):
+        if pf.file_info.is_test:
             continue
         tokens = _split_basename(PurePosixPath(path).name)
         if len(tokens) < 2:
@@ -104,21 +98,42 @@ def _find_suffix_patterns(signals: OnboardingSignals) -> list[SuffixPattern]:
     return groups[:_TOP_SUFFIX_GROUPS]
 
 
+def _test_tree_roots(signals: OnboardingSignals) -> list[str]:
+    """Top-level directories that are test trees, in this repo's own spelling.
+
+    "Which directory is the test root" is a different question from "is this
+    path a test", so it is derived rather than read off a hardcoded list: group
+    the ingested files by first path segment and keep the segments where every
+    ingested file underneath is test material. That all-or-nothing rule is what
+    separates a real root from a directory that merely contains one — `tests/`
+    qualifies, `src/` in a `src/test/java` layout does not, and a repo naming
+    its tree `spec/` or `Foo.Tests/` is found without the list knowing about it.
+    """
+    total: dict[str, int] = defaultdict(int)
+    tests: dict[str, int] = defaultdict(int)
+    for pf in signals.parsed_files:
+        parts = PurePosixPath(pf.file_info.path).parts
+        if len(parts) < 2:  # a repo-root file is not a tree
+            continue
+        total[parts[0]] += 1
+        if pf.file_info.is_test:
+            tests[parts[0]] += 1
+    return sorted(f"{seg}/" for seg, count in tests.items() if count == total[seg])
+
+
 def _find_test_mirror(signals: OnboardingSignals) -> TestMirror | None:
     """Detect a "tests mirror source layout" convention.
 
-    For every file under a known test root, strip the root and try to
-    locate a non-test file that shares the remaining path stem. A mirror
-    is reported when ≥ 50% of test files match.
+    For every file under a test root, strip the root and try to locate a
+    non-test file that shares the remaining path stem. A mirror is reported
+    when ≥ 50% of test files match.
     """
     source_paths: set[str] = {
-        pf.file_info.path
-        for pf in signals.parsed_files
-        if not any(seg in pf.file_info.path for seg in _TEST_ROOTS)
+        pf.file_info.path for pf in signals.parsed_files if not pf.file_info.is_test
     }
 
     best: TestMirror | None = None
-    for root in _TEST_ROOTS:
+    for root in _test_tree_roots(signals):
         test_files = [pf.file_info.path for pf in signals.parsed_files if pf.file_info.path.startswith(root)]
         if len(test_files) < _MIN_SUFFIX_GROUP:
             continue
