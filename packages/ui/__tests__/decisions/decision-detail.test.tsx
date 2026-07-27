@@ -126,8 +126,25 @@ describe("DecisionDetail", () => {
         adapter={makeAdapter()}
       />,
     );
-    expect(screen.getByText("Created: —")).toBeInTheDocument();
+    // The meta ribbon is a <dl>: the label is the term, the value the
+    // definition, so they are no longer one "Created: —" string.
+    const term = screen.getByText("Recorded");
+    expect(term.nextElementSibling).toHaveTextContent("—");
     expect(screen.queryByText(/Invalid Date/i)).not.toBeInTheDocument();
+  });
+
+  it("reports staleness as a percentage, like the decisions table does", () => {
+    // It used to render "Staleness: 0.42" here and "42%" in the table — the
+    // same number in two units on two surfaces.
+    renderView(
+      <DecisionDetail
+        decision={makeDecision({ staleness_score: 0.42 })}
+        adapter={makeAdapter()}
+      />,
+    );
+    expect(screen.getByText("Staleness").nextElementSibling).toHaveTextContent(
+      "42%",
+    );
   });
 
   it("explains what Confirm/Dismiss do next to the buttons", () => {

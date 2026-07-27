@@ -4,7 +4,7 @@ import { memo } from "react";
 import { cn } from "../lib/cn";
 import { BrandMark } from "../shared/brand-mark";
 import { ToolCallGroup } from "./tool-call-group";
-import { ChatMarkdown } from "./chat-markdown";
+import { Markdown } from "../shared/markdown";
 import { SourceCitations, type SourceReference } from "./source-citations";
 import type { ChatUIMessage } from "@repowise-dev/types/chat";
 
@@ -77,7 +77,7 @@ function ChatMessageImpl({
             />
           )}
 
-          {message.text && <ChatMarkdown content={message.text} />}
+          {message.text && <Markdown content={message.text} />}
 
           {!message.isStreaming && message.toolCalls.length > 0 && (
             <SourceCitations

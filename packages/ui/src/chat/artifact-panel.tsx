@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { cn } from "../lib/cn";
 import { AdaptivePanel } from "../shared/adaptive-panel";
-import { ChatMarkdown } from "./chat-markdown";
+import { Markdown } from "../shared/markdown";
 import {
   ContextRenderer,
   DeadCodeRenderer,
@@ -116,7 +116,7 @@ function ArtifactRenderer({ artifact }: { artifact: Artifact | ChatArtifact }) {
         ((data as Record<string, unknown>).content as string) ??
         "";
       return content ? (
-        <ChatMarkdown content={content} density="compact" />
+        <Markdown content={content} density="compact" />
       ) : (
         <GenericJsonRenderer data={data as Record<string, unknown>} />
       );

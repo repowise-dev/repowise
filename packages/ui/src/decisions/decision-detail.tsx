@@ -12,8 +12,6 @@
  */
 
 import * as React from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 import useSWR from "swr";
 import { toast } from "sonner";
 import {
@@ -29,6 +27,7 @@ import type {
 } from "@repowise-dev/types/decisions";
 
 import { Badge } from "../ui/badge";
+import { Markdown } from "../shared/markdown";
 import { ConfirmDialog } from "../ui/confirm-dialog";
 import { stripMarkdown } from "../lib/format";
 import { AiPromptButton } from "../health/ai-prompt-button";
@@ -47,6 +46,16 @@ import type {
   DecisionLinkComponent,
 } from "./decision-detail-adapter";
 import { toFriendlyMessage } from "../lib/errors";
+
+const SOURCE_LABEL: Record<string, string> = {
+  inline_marker: "Inline marker",
+  git_archaeology: "Git history",
+  readme_mining: "Docs",
+  cli: "Manual",
+};
+
+const MICRO_LABEL =
+  "font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]";
 
 const STATUS_VARIANT: Record<
   string,
@@ -251,20 +260,46 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
           </PrevNextLink>
         </div>
       </div>
-      {/* Header */}
-      <div className="space-y-2">
-        <div className="flex flex-wrap items-center gap-3">
-          <h1 className="text-xl font-semibold text-[var(--color-text-primary)]">
+      {/* Header. The title is the subject, so it gets the size; status and
+          trust are marks beside it, and the verbs sit in one row underneath
+          rather than crowding the heading line. */}
+      <div className="space-y-4">
+        <div className="space-y-2.5">
+          <h1 className="text-[26px] font-semibold leading-tight text-[var(--color-text-primary)]">
             {stripMarkdown(decision.title)}
           </h1>
-          <Badge variant={STATUS_VARIANT[status] ?? "outline"}>{status}</Badge>
-          {decision.verification && (
-            <VerificationBadge verification={decision.verification} />
-          )}
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge variant={STATUS_VARIANT[status] ?? "outline"}>{status}</Badge>
+            {decision.verification && (
+              <VerificationBadge verification={decision.verification} />
+            )}
+          </div>
+        </div>
+
+        {/* One mono ribbon, tabular, instead of four sans sentences. Staleness
+            is a percentage here and a percentage in the table; it used to be
+            "0.42" on one surface and "42%" on the other. */}
+        <dl className="flex flex-wrap gap-x-8 gap-y-2">
+          <MetaItem label="Source" value={SOURCE_LABEL[decision.source] ?? decision.source} />
+          <MetaItem label="Confidence" value={`${Math.round(decision.confidence * 100)}%`} />
+          <MetaItem
+            label="Staleness"
+            value={
+              decision.staleness_score > 0
+                ? `${Math.round(decision.staleness_score * 100)}%`
+                : "—"
+            }
+            {...(decision.staleness_score > 0.5
+              ? { valueClassName: "text-[var(--color-error)]" }
+              : {})}
+          />
+          <MetaItem label="Recorded" value={formatDateOrDash(decision.created_at)} />
+        </dl>
+
+        <div className="flex flex-wrap items-center gap-2">
           <AiPromptButton
             label={status === "proposed" ? "Verify & confirm with AI" : "Verify with AI"}
             onClick={() => setPromptMode("verify")}
-            className="ml-auto"
           />
           {status === "active" && (
             <AiPromptButton
@@ -279,17 +314,12 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
           >
             <FileSearch className="h-3.5 w-3.5" />
             Evidence
+            {(decision.evidence_count ?? 0) > 0 && (
+              <span className="tabular-nums text-[var(--color-text-tertiary)]">
+                {decision.evidence_count}
+              </span>
+            )}
           </button>
-        </div>
-        <div className="flex gap-4 text-sm text-[var(--color-text-tertiary)]">
-          <span>Source: {decision.source}</span>
-          <span>Confidence: {Math.round(decision.confidence * 100)}%</span>
-          {decision.staleness_score > 0 && (
-            <span className={decision.staleness_score > 0.5 ? "text-[var(--color-error)]" : ""}>
-              Staleness: {decision.staleness_score.toFixed(2)}
-            </span>
-          )}
-          <span>Created: {formatDateOrDash(decision.created_at)}</span>
         </div>
       </div>
 
@@ -310,8 +340,8 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
         />
       )}
 
-      {/* Content sections */}
-      <div className="space-y-4">
+      {/* Content sections. This is the part someone came to read. */}
+      <div className="space-y-7 border-t border-[var(--color-border-default)] pt-7">
         {decision.context && <Section title="Context" text={decision.context} />}
         {decision.decision && <Section title="Decision" text={decision.decision} />}
         {decision.rationale && <Section title="Rationale" text={decision.rationale} />}
@@ -323,8 +353,10 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
         )}
       </div>
 
-      {/* Governance linkage — writable editor + evidence card */}
-      <div className="grid gap-4 sm:grid-cols-2">
+      {/* Governance linkage. Was two bordered cards side by side; a hairline
+          and vertical rhythm group them at a fraction of the ink, and neither
+          is a discrete object you act on repeatedly. */}
+      <div className="space-y-7 border-t border-[var(--color-border-default)] pt-7">
         <ModuleLinkEditor
           modules={linkedModules}
           files={linkedFiles}
@@ -334,11 +366,9 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
         />
 
         {/* The full evidence rows live in the drawer (Evidence button); this
-            card answers "what happened to the governed code since?". */}
-        <div className="rounded-lg border border-[var(--color-border-default)] p-4">
-          <h3 className="mb-2 text-sm font-medium text-[var(--color-text-secondary)]">
-            Since this decision
-          </h3>
+            block answers "what happened to the governed code since?". */}
+        <div>
+          <h2 className={MICRO_LABEL + " mb-2"}>Since this decision</h2>
           <div className="space-y-2 text-sm">
             {decision.last_code_change && (
               <p className="text-xs text-[var(--color-text-tertiary)]">
@@ -386,11 +416,12 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
 
       {/* Tags */}
       {decision.tags.length > 0 && (
-        <div className="flex flex-wrap gap-1.5">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+          <span className={MICRO_LABEL}>Tags</span>
           {decision.tags.map((tag) => (
             <span
               key={tag}
-              className="inline-block rounded-full bg-[var(--color-bg-elevated)] px-2.5 py-0.5 text-xs font-medium text-[var(--color-text-secondary)]"
+              className="font-mono text-xs text-[var(--color-text-secondary)]"
             >
               {tag}
             </span>
@@ -406,7 +437,10 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
               <button
                 onClick={() => handleStatusChange("active")}
                 disabled={loading}
-                className="rounded-md bg-[var(--color-success)] px-3 py-1.5 text-sm font-medium text-[var(--color-text-inverse)] hover:opacity-90 disabled:opacity-50"
+                // Accent, not a filled green: green/amber/red are reserved for
+                // health readouts where they carry a band. This is the page's
+                // one primary action, which is what the accent is for.
+                className="rounded-md bg-[var(--color-accent-primary)] px-3 py-1.5 text-sm font-medium text-[var(--color-text-on-accent)] hover:opacity-90 disabled:opacity-50"
               >
                 Confirm
               </button>
@@ -505,6 +539,29 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
   );
 }
 
+function MetaItem({
+  label,
+  value,
+  valueClassName,
+}: {
+  label: string;
+  value: string;
+  valueClassName?: string;
+}) {
+  return (
+    <div>
+      <dt className={MICRO_LABEL}>{label}</dt>
+      <dd
+        className={`mt-0.5 font-mono text-xs tabular-nums text-[var(--color-text-secondary)] ${
+          valueClassName ?? ""
+        }`}
+      >
+        {value}
+      </dd>
+    </div>
+  );
+}
+
 /** Older/hosted backends can omit decision timestamps — render "—" instead of
  *  "Invalid Date" for a missing or unparseable value. */
 function formatDateOrDash(iso: string | null | undefined): string {
@@ -545,10 +602,12 @@ function PrevNextLink({
 function Section({ title, text }: { title: string; text: string }) {
   return (
     <div>
-      <h3 className="mb-1 text-sm font-medium text-[var(--color-text-secondary)]">{title}</h3>
-      <div className="text-sm text-[var(--color-text-primary)] leading-relaxed prose prose-sm prose-invert max-w-none [&>p]:mb-2 [&>p:last-child]:mb-0">
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
-      </div>
+      <h2 className={MICRO_LABEL + " mb-2"}>{title}</h2>
+      {/* Not `prose`: Tailwind Typography is banned on our markdown. It printed
+          literal backticks through `code::before`, and `prose-invert` is a
+          static class that cannot follow the theme, so this block was locked to
+          dark styling in light mode. `Markdown` is themed through our tokens. */}
+      <Markdown content={text} />
     </div>
   );
 }
@@ -556,8 +615,8 @@ function Section({ title, text }: { title: string; text: string }) {
 function ListSection({ title, items }: { title: string; items: string[] }) {
   return (
     <div>
-      <h3 className="mb-1 text-sm font-medium text-[var(--color-text-secondary)]">{title}</h3>
-      <ul className="list-disc space-y-0.5 pl-5 text-sm text-[var(--color-text-primary)]">
+      <h2 className={MICRO_LABEL + " mb-2"}>{title}</h2>
+      <ul className="list-disc space-y-1.5 pl-5 text-[15.5px] leading-relaxed text-[var(--color-text-primary)]">
         {items.map((item, i) => (
           <li key={i}>{item}</li>
         ))}

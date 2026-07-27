@@ -31,7 +31,7 @@ import type {
   RiskReportArtifactData,
   SearchResultsArtifactData,
 } from "@repowise-dev/types/chat";
-import { ChatMarkdown } from "./chat-markdown";
+import { Markdown } from "../shared/markdown";
 import { MermaidDiagram } from "../wiki/mermaid-diagram";
 import { getPageTypeLabel } from "../lib/page-types";
 
@@ -159,7 +159,7 @@ export function ContextRenderer({ data }: { data: ContextArtifactData }) {
               {target}
             </h3>
             {md ? (
-              <ChatMarkdown content={md} />
+              <Markdown content={md} />
             ) : (
               <p className="text-xs text-[var(--color-text-tertiary)]">
                 No documentation available.
