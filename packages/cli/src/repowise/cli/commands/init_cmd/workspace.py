@@ -49,6 +49,7 @@ from repowise.cli.state_persistence import build_kg_state, save_knowledge_graph_
 from repowise.cli.ui import (
     BRAND,
     BRAND_STYLE,
+    ERR,
     OWL_SPINNER,
     MaybeCountColumn,
     RichProgressCallback,
@@ -125,9 +126,12 @@ def _run_workspace_generation(
         skip_infra=skip_infra,
     )
 
+    # Same decision and same stakes as the single-repo flow, so the count and
+    # the price carry the same emphasis; in a per-repo loop this line can go by
+    # a dozen times, which makes plain text easier to miss, not harder.
     console.print(
-        f"    Writing {concept_page_count(plans)} concept pages with "
-        f"{provider.model_name}. {format_cost(est)}."
+        f"    Writing [bold]{concept_page_count(plans):,}[/bold] subsystem pages with "
+        f"[cyan]{provider.model_name}[/cyan]. Estimated [bold]{format_cost(est)}[/bold]."
     )
     structural = structural_page_summary(plans)
     if structural:
@@ -293,7 +297,7 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
     from repowise.core.pipeline.modes import OrchestratorMode
 
     console.print(
-        f"  [{BRAND}][{idx}/{total}][/] Indexing [bold]{repo.alias}[/bold] ({repo.path.name})..."
+        f"  [{BRAND}][{idx}/{total}][/] Indexing [bold]{repo.alias}[/bold] ({repo.path.name})…"
     )
     ensure_repowise_dir(repo.path)
 
@@ -332,10 +336,10 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
             )
         repo_phase_timings: dict[str, float] = callback.timings
         console.print(
-            f"    [green]✓[/green] {result.file_count} files, {result.symbol_count:,} symbols"
+            f"    [green]✓[/green] {result.file_count:,} files, {result.symbol_count:,} symbols"
         )
     except Exception as exc:
-        console.print(f"    [red]✗ Failed: {exc}[/red]\n")
+        console.print(f"    [{ERR}]✗ Failed: {exc}[/]\n")
         return _RepoOutcome(error=str(exc))
 
     provider = ctx.provider
@@ -418,7 +422,7 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
             )
             _render_from_templates()
         except Exception as gen_exc:
-            console.print(f"    [yellow]Generation failed: {gen_exc}[/yellow]\n")
+            console.print(f"    [{ERR}]✗ Generation failed: {gen_exc}[/]\n")
             skip_reason = f"generation error: {gen_exc}"
             result.generated_pages = []
     else:
@@ -589,7 +593,9 @@ def _workspace_init(
     # this way routinely. "Every repo the scan found" is also what --all
     # means, so the fallback matches the flag a human would have passed.
     select_all = init_all or yes or not sys.stdin.isatty()
-    selected = list(scan.repos) if select_all else interactive_repo_select(console, scan.repos)
+    selected = (
+        list(scan.repos) if select_all else interactive_repo_select(console, scan.repos, root)
+    )
 
     if not selected:
         console.print("[yellow]No repositories selected. Aborting.[/yellow]")
@@ -621,7 +627,10 @@ def _workspace_init(
     )
 
     if is_interactive:
-        mode = interactive_mode_select(console)
+        mode = interactive_mode_select(
+            console,
+            title=f"How much should repowise write for these {len(selected)} repos?",
+        )
         if mode == "index_only":
             index_only = True
         elif mode == "advanced":

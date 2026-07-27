@@ -124,11 +124,12 @@ def _uses_lean_tool_surface(repo_path: Path) -> bool:
 def _prompt_claude_md_enabled(console_obj: Any) -> bool:
     """Ask whether the Claude project instruction file should be generated."""
 
-    from repowise.cli.ui import BRAND
-
+    # The inline ``Name:`` form its four sibling prompts use. A brand-coloured
+    # section header, borrowed from advanced config, oversold a single yes/no.
     console_obj.print()
-    console_obj.print(f"  [{BRAND}]Editor Integration[/]")
-    console_obj.print()
+    console_obj.print(
+        "[bold]Claude Code:[/bold] Write a project instruction file describing this codebase?"
+    )
     return click.confirm(
         "  Generate .claude/CLAUDE.md?",
         default=True,

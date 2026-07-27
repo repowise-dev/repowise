@@ -33,6 +33,11 @@ class CodexSetup:
 
         console_obj.print()
         console_obj.print("[bold]Codex:[/bold] Generate project-local .codex config and hooks?")
+        # Its two neighbours default to yes; say why this one does not, rather
+        # than silently inverting Enter-through in the middle of three prompts.
+        console_obj.print(
+            "  [dim]Off by default: only useful if you drive this repo with the Codex CLI.[/dim]"
+        )
         enabled = click.confirm(
             "  Write .codex/config.toml and .codex/hooks.json?",
             default=False,
@@ -133,7 +138,7 @@ def maybe_generate_agents_md(
     ):
         return
     try:
-        with console_obj.status("  Generating AGENTS.md...", spinner=OWL_SPINNER):
+        with console_obj.status("  Generating AGENTS.md…", spinner=OWL_SPINNER):
             run_async(_write_agents_md_async(repo_path))
         console_obj.print("  [green]✓[/green] AGENTS.md updated")
     except Exception as exc:

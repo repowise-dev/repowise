@@ -72,7 +72,7 @@ def offer_distill_rewrite_hook(
             return
         console_obj.print()
         console_obj.print(
-            "[bold]Distill:[/bold] rewrite noisy agent commands (tests, builds, "
+            "[bold]Distill:[/bold] Rewrite noisy agent commands (tests, builds, "
             "git, searches) to `repowise distill ...` for compact output?"
         )
         scope = f"Applies to all {len(repo_paths)} selected repos. " if len(repo_paths) > 1 else ""
