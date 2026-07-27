@@ -23,6 +23,19 @@ logger = structlog.get_logger(__name__)
 # Large repos with tens of thousands of files can take arbitrarily long.
 DECISION_EXTRACTION_TIMEOUT_SECS = 300
 
+# Where a decision came from, in report order, spelled the way a reader who has
+# never seen the extractor would say it ("ADR" alone is unexplained jargon).
+_DECISION_SOURCE_LABELS: tuple[tuple[str, str], ...] = (
+    ("inline_marker", "from inline markers"),
+    ("adr", "from ADR files"),
+    ("changelog", "from changelogs"),
+    ("pr", "from pull requests"),
+    ("git_archaeology", "from git history"),
+    ("comment", "from comments"),
+    ("readme_mining", "from docs"),
+    ("session", "from agent sessions"),
+)
+
 
 async def _run_dead_code_analysis(
     graph_builder: Any,
@@ -313,19 +326,20 @@ async def _run_decision_extraction(
                 progress.on_message("warning", f"Session decision mining skipped: {exc}")
 
         if progress:
+            # Only the sources that actually found something. On a typical
+            # first index most of these are zero, and the line read as
+            # "0 ADR · 0 changelog · 0 PR ·" with the real numbers buried.
             bs = report.by_source
-            total_decisions = report.total_found
+            found = [
+                f"{bs[source]} {label}"
+                for source, label in _DECISION_SOURCE_LABELS
+                if bs.get(source)
+            ]
+            summary = ", ".join(found) if found else ""
             progress.on_message(
                 "info",
-                f"→ {total_decisions} decisions: "
-                f"{bs.get('inline_marker', 0)} inline · "
-                f"{bs.get('adr', 0)} ADR · "
-                f"{bs.get('changelog', 0)} changelog · "
-                f"{bs.get('pr', 0)} PR · "
-                f"{bs.get('git_archaeology', 0)} git · "
-                f"{bs.get('comment', 0)} comments · "
-                f"{bs.get('readme_mining', 0)} docs · "
-                f"{bs.get('session', 0)} session",
+                f"→ {report.total_found} architectural decisions found"
+                + (f": {summary}" if summary else ""),
             )
 
         _phase_done(progress, "decisions")
