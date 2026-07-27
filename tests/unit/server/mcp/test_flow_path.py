@@ -214,3 +214,22 @@ async def test_cross_language_anchor_dropped(session, repo_id):
     paths = {h.get("target_path") for h in combined}
     assert sym_py in paths  # in-language endpoint injected
     assert sym_ts not in paths  # off-language same-name match dropped
+
+
+def test_plumbing_covers_test_material_by_the_shared_rules():
+    """Tests bridge unrelated files, so none of them make a flow endpoint.
+
+    The substring list this replaced anchored on ``/tests/``, so a repo whose
+    suite sits at the root had its whole test tree treated as ordinary source
+    and eligible for injection (#1103).
+    """
+    from repowise.server.mcp_server._flow_path import _is_plumbing
+
+    assert _is_plumbing("tests/unit/server/test_flow_path.py")  # root-level suite
+    assert _is_plumbing("myapp/tests.py")
+    assert _is_plumbing("Foo.Tests/Bar.cs")
+    assert _is_plumbing("packages/core/tests/conftest.py")  # support bridges too
+    assert _is_plumbing("pkg/server/__init__.py")  # re-export glue, unchanged
+    # Production code that merely spells "test" is a legitimate endpoint.
+    assert not _is_plumbing("src/analysis/missing_test_signal.py")
+    assert not _is_plumbing("src/latest/api.py")

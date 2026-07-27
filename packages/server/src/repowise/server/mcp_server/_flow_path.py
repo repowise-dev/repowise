@@ -39,6 +39,7 @@ from typing import Any
 from sqlalchemy import select
 
 from repowise.core.persistence.models import GraphEdge, Page, WikiSymbol
+from repowise.core.test_paths import is_test_related_path
 from repowise.server.mcp_server.tool_answer.retrieval import _question_terms
 
 # Edge kinds that form the file-level dependency graph. ``imports`` is
@@ -107,14 +108,15 @@ def _is_plumbing(path: str) -> bool:
     graph (a test imports both ends of the codebase), so they make good BFS
     coincidences and bad injected answers. Kept out of anchors and injection;
     they may still be traversed as interior nodes.
+
+    Test material means the union, fixtures included: a factory module bridges
+    the graph exactly the way a test does. The rules come from
+    :mod:`repowise.core.test_paths` rather than the substring list this used to
+    carry, which anchored on ``/tests/`` and so missed a repo's root-level
+    ``tests/`` tree entirely (#1103).
     """
-    norm = path.replace("\\", "/").lower()
-    base = norm.rsplit("/", 1)[-1]
-    if base == "__init__.py":
-        return True
-    if base.startswith("test_") or base.endswith("_test.py") or base.endswith(".test.ts"):
-        return True
-    return "/tests/" in norm or "/test/" in norm or "/__tests__/" in norm
+    base = path.replace("\\", "/").rsplit("/", 1)[-1]
+    return base.lower() == "__init__.py" or is_test_related_path(path)
 
 
 def _token_matches_stem(token: str, stem: str) -> bool:
