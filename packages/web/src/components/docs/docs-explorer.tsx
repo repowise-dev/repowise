@@ -255,7 +255,9 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
       ) : (
         <DocsTree
           pages={pages}
-          selectedPageId={selectedPage?.id ?? null}
+          // The id, not the fetched page: the row should highlight on click,
+          // not once its body has come back.
+          selectedPageId={selectedPageId}
           onSelectPage={(p) => {
             handleSelectPage(p);
             if (typeof window !== "undefined" && !window.matchMedia("(min-width: 768px)").matches) {
