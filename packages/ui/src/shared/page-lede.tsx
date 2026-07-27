@@ -17,6 +17,13 @@ export interface PageLedeProps {
   /** Trailing unit, quiet and small: "out of 10", "of 5,485 files". */
   unit?: string | undefined;
   band?: PageLedeBand | undefined;
+  /**
+   * An already-styled marker to sit on the figure's baseline, for callers whose
+   * band has its own component. Use instead of `band`, not as well: a
+   * `PriorityBadge` inside the chip would be two pieces of chrome around one
+   * word.
+   */
+  badge?: React.ReactNode;
   /** The sentence that makes the figure mean something. Load-bearing. */
   children: React.ReactNode;
   /** Optional jump into the page that owns the subject. */
@@ -42,6 +49,7 @@ export function PageLede({
   valueColor,
   unit,
   band,
+  badge,
   children,
   action,
 }: PageLedeProps) {
@@ -78,6 +86,7 @@ export function PageLede({
             {band.label}
           </span>
         )}
+        {badge}
       </div>
 
       <div className="mt-3.5 max-w-[54ch] text-[13px] leading-relaxed text-[var(--color-text-secondary)] [text-wrap:pretty]">

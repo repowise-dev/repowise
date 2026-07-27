@@ -22,7 +22,16 @@ import { getCommit } from "@/lib/api/git";
  * also what makes the deep link work — entity links from Overview and the file
  * pages land here with the sheet already open, and it survives a refresh.
  */
-export function CommitDetailSheet({ repoId }: { repoId: string }) {
+export function CommitDetailSheet({
+  repoId,
+  reviewCut,
+}: {
+  repoId: string;
+  /** `CommitStats.high_cut` — the raw score at this repo's review line. The
+   *  page already has it, and without it the card can only state a commit's
+   *  score with nothing to measure it against. */
+  reviewCut?: number | null | undefined;
+}) {
   const [selectedSha, setSelectedSha] = useQueryState("commit");
   const [promptOpen, setPromptOpen] = useState(false);
 
@@ -56,7 +65,7 @@ export function CommitDetailSheet({ repoId }: { repoId: string }) {
                     onClick={() => setPromptOpen(true)}
                   />
                 </div>
-                <CommitDetailCard commit={detail} />
+                <CommitDetailCard commit={detail} reviewCut={reviewCut} />
               </>
             )}
           </div>

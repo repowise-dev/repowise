@@ -1,69 +1,83 @@
-"use client";
-
-import { useParams, useRouter } from "next/navigation";
-import useSWR from "swr";
+import type { Metadata } from "next";
 import Link from "next/link";
-import { ArrowLeft, Users } from "lucide-react";
+import { Users } from "lucide-react";
+import { PageShell } from "@repowise-dev/ui/shared/page-shell";
+import { OwnerAvatar } from "@repowise-dev/ui/owners/owner-avatar";
 import { OwnerProfileView } from "@repowise-dev/ui/owners/owner-profile";
-import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
-import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 import { EmptyState } from "@repowise-dev/ui/shared/empty-state";
+import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
+import { formatDate, formatRelativeTimeOrNull } from "@repowise-dev/ui/lib/format";
 import { getOwnerProfile } from "@/lib/api/owners";
-import type { OwnerProfileResponse } from "@/lib/api/types";
 
-export default function OwnerProfilePage() {
-  const { id, owner } = useParams<{ id: string; owner: string }>();
-  const router = useRouter();
+export const metadata: Metadata = { title: "Contributor" };
+
+/**
+ * A server component, where this was a client component behind one SWR wave.
+ * The profile is a single fetch and nothing on the page is interactive, so the
+ * whole thing arrives in the initial HTML instead of after a skeleton.
+ *
+ * Drill-ins are hrefs rather than `router.push` handlers, which is what lets
+ * the page render on the server at all, and gives every file and contributor a
+ * URL that survives a middle-click.
+ */
+export default async function OwnerProfilePage({
+  params,
+}: {
+  params: Promise<{ id: string; owner: string }>;
+}) {
+  const { id, owner } = await params;
+  const base = `/repos/${id}`;
   const ownerKey = decodeURIComponent(owner);
 
-  const { data, isLoading, error } = useSWR<OwnerProfileResponse>(
-    `owner:${id}:${ownerKey}`,
-    () => getOwnerProfile(id, ownerKey),
-    { revalidateOnFocus: false },
-  );
+  const profile = await getOwnerProfile(id, ownerKey).catch(() => null);
 
-  return (
-    <div className="p-4 sm:p-6 space-y-4 max-w-[1600px]">
-      <div className="flex items-center justify-between">
-        <Link
-          href={`/repos/${id}/owners`}
-          className="inline-flex items-center gap-1 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
-        >
-          <ArrowLeft className="h-3 w-3" /> All contributors
-        </Link>
-      </div>
-
-      {isLoading && (
-        <div className="space-y-4">
-          <Skeleton className="h-32 w-full" />
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            {Array.from({ length: 4 }).map((_, i) => (
-              <Skeleton key={i} className="h-24" />
-            ))}
-          </div>
-          <Skeleton className="h-96 w-full" />
-        </div>
-      )}
-
-      {error && (
+  if (!profile) {
+    return (
+      <PageShell
+        icon={<Users className="h-5 w-5 text-[var(--color-accent-primary)]" />}
+        title="Contributor"
+      >
         <EmptyState
           icon={<Users className="h-6 w-6" />}
-          title="Contributor not found"
-          description="The requested profile doesn't exist in this repository's git history yet."
+          title="No profile for this contributor"
+          description="Nobody by this name or address appears in the indexed git history. They may have committed under a different address, or the history may not have been synced yet."
         />
-      )}
+      </PageShell>
+    );
+  }
 
-      {data && (
-        <OwnerProfileView
-          owner={data}
-          onSelectFile={(path) => router.push(fileEntityPath(`/repos/${id}`, path))}
-          onSelectModule={(mod) => router.push(`/repos/${id}/modules/${encodeURIComponent(mod)}`)}
-          onSelectCoAuthor={(c) => {
-            const k = c.email ?? `name:${c.name}`;
-            router.push(`/repos/${id}/owners/${encodeURIComponent(k)}`);
-          }}
-        />
-      )}
-    </div>
+  const displayName = profile.name || profile.email || "unknown";
+  const lastTouched = formatRelativeTimeOrNull(profile.last_commit_at);
+
+  // Tenure as a sentence rather than a "new to this repo" badge. That badge
+  // fired on anyone who joined after the repo's first 90 days, which on a young
+  // repo is most people, and a marker that common marks nothing. A span of
+  // dates says the same thing without dressing it as a verdict.
+  const tenure = [
+    profile.first_commit_at
+      ? `Committing here since ${formatDate(profile.first_commit_at)}`
+      : null,
+    lastTouched ? `last touched ${lastTouched}` : null,
+  ]
+    .filter(Boolean)
+    .join(", ");
+
+  return (
+    <PageShell
+      icon={<OwnerAvatar name={profile.name} email={profile.email} size="md" />}
+      title={displayName}
+      {...(tenure ? { description: tenure } : {})}
+    >
+      <OwnerProfileView
+        owner={profile}
+        base={base}
+        hrefForFile={(path) => fileEntityPath(base, path)}
+        hrefForModule={(mod) => `${base}/modules/${encodeURIComponent(mod)}`}
+        hrefForCoAuthor={(c) =>
+          `${base}/owners/${encodeURIComponent(c.email ?? `name:${c.name}`)}`
+        }
+        LinkComponent={Link}
+      />
+    </PageShell>
   );
 }

@@ -41,7 +41,7 @@ export function CommitRiskScatter({
   className,
 }: {
   commits: Commit[];
-  onSelect?: (sha: string) => void;
+  onSelect?: ((sha: string) => void) | undefined;
   className?: string;
 }) {
   const [hover, setHover] = React.useState<string | null>(null);
