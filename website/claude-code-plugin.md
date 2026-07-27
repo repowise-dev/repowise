@@ -117,6 +117,15 @@ Defect-risk score for a commit or `base..head` range (`repowise risk`).
 
 ---
 
+### `/repowise:security`
+
+Full-history secret scan (`repowise security scan --history`). Working-tree
+scanning already runs during init/update; without `--history` the CLI only
+prints a hint. Default history mode is secrets-only; `--all-patterns` also
+reports code-smell patterns.
+
+---
+
 ### `/repowise:coverage`
 
 Ingest or inspect coverage reports (`repowise coverage add` / `status`).
