@@ -194,6 +194,21 @@ async def test_repo_output_limit_reaches_provider_request(sample_config):
     assert provider.calls[0]["max_tokens"] == 2345
 
 
+async def test_repo_temperature_reaches_provider_request(sample_config):
+    """Exercise the public config-to-provider path without a network call."""
+    provider = MockProvider()
+    config = GenerationConfig.from_repo_config(
+        {"temperature": "0.15"},
+        token_budget=sample_config.token_budget,
+        cache_enabled=False,
+    )
+    generator = PageGenerator(provider, ContextAssembler(config), config)
+
+    await generator._call_provider("module_page", "Document this module.", "request-id")
+
+    assert provider.calls[0]["temperature"] == 0.15
+
+
 async def test_invalid_provider_output_raises_and_is_not_cached(sample_config):
     provider = MockProvider(
         responses=[

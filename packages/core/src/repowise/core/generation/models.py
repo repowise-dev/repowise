@@ -10,6 +10,7 @@ import graph stays one-directional:
 from __future__ import annotations
 
 import hashlib
+import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -53,6 +54,21 @@ GENERATION_LEVELS: dict[str, int] = {
 
 FreshnessStatus = Literal["fresh", "stale", "expired", "unknown"]
 DEFAULT_MAX_TOKENS = 16384
+DEFAULT_TEMPERATURE = 0.3
+
+
+def normalize_temperature(value: object) -> float:
+    """Return a finite, non-negative sampling temperature."""
+
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise ValueError("temperature must be a finite, non-negative number")
+    try:
+        temperature = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("temperature must be a finite, non-negative number") from exc
+    if not math.isfinite(temperature) or temperature < 0:
+        raise ValueError("temperature must be a finite, non-negative number")
+    return temperature
 
 
 # ---------------------------------------------------------------------------
@@ -80,7 +96,7 @@ class GenerationConfig:
     """
 
     max_tokens: int = DEFAULT_MAX_TOKENS
-    temperature: float = 0.3
+    temperature: float = DEFAULT_TEMPERATURE
     token_budget: int = 48000
     max_concurrency: int = 12
     embed_concurrency: int | None = None
@@ -212,11 +228,11 @@ class GenerationConfig:
         config: Mapping[str, Any],
         **overrides: Any,
     ) -> GenerationConfig:
-        """Build a generation config with the repo's documentation output limit.
+        """Build a generation config from persisted documentation settings.
 
-        ``max_tokens`` is the persisted user-facing setting. Keeping its parsing
-        here gives CLI, server, and core entry points one owner for translating
-        repo configuration into the provider request budget.
+        Keeping persisted sampling and output settings here gives CLI, server,
+        and core entry points one owner for translating repository configuration
+        into provider request parameters.
         """
         raw_max_tokens = config.get("max_tokens", DEFAULT_MAX_TOKENS)
         if isinstance(raw_max_tokens, bool):
@@ -230,7 +246,13 @@ class GenerationConfig:
         if max_tokens <= 0:
             raise ValueError("max_tokens must be a positive integer")
 
-        values = {"max_tokens": max_tokens, **overrides}
+        temperature = normalize_temperature(config.get("temperature", DEFAULT_TEMPERATURE))
+
+        values = {
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            **overrides,
+        }
         return cls(**values)
 
     def __post_init__(self) -> None:
@@ -240,6 +262,7 @@ class GenerationConfig:
             or self.max_tokens <= 0
         ):
             raise ValueError("max_tokens must be a positive integer")
+        object.__setattr__(self, "temperature", normalize_temperature(self.temperature))
         if self.embed_concurrency is None:
             object.__setattr__(self, "embed_concurrency", self.max_concurrency)
         object.__setattr__(self, "reasoning", normalize_reasoning(self.reasoning))
