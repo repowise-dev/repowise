@@ -296,6 +296,27 @@ class TestGitignoreGlobSemantics:
         assert glob_narrowed_by_gitignore_semantics("src/legacy/*")
         assert glob_narrowed_by_gitignore_semantics("packages/*/tests")
 
+    def test_a_malformed_glob_does_not_take_down_the_config(self) -> None:
+        """The loader is documented as never raising, and this file is hand-written.
+
+        git accepts ignore lines pathspec rejects — a trailing backslash is a
+        real pattern found in the wild — so one stray rule must not lose the
+        rest of somebody's config.
+        """
+        config = HealthConfig.from_dict(
+            {
+                "rules": [
+                    {"path": ".godot\\", "disabled_biomarkers": ["complex_method"]},
+                    {"path": "src/legacy/**", "disabled_biomarkers": ["dry_violation"]},
+                ]
+            }
+        )
+        assert len(config.rules) == 2
+        disabled = config.per_file_disabled(["src/legacy/a.py", ".godot/x.py"])
+        # The good rule still applies; the broken one matches nothing.
+        assert disabled["src/legacy/a.py"] == {"dry_violation"}
+        assert ".godot/x.py" not in disabled
+
     def test_unaffected_patterns_are_not_flagged(self) -> None:
         safe = (
             "src/legacy/**",   # already the broad form

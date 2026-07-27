@@ -133,10 +133,23 @@ def _compile_glob(pattern: str) -> Any:
     One engine for every glob a user writes — the same one the exclusion
     rules and the traverser already use — so a pattern means the same thing
     wherever it appears.
+
+    An unparseable pattern yields a matcher that matches nothing, rather than
+    raising. ``git`` itself accepts lines ``pathspec`` rejects (a trailing
+    backslash, say), and this file is hand-written: one stray rule must not
+    take down the whole config, which is documented as never raising.
     """
     import pathspec
+    from pathspec.patterns.gitwildmatch import (
+        GitWildMatchPattern,
+        GitWildMatchPatternError,
+    )
 
-    return pathspec.PathSpec.from_lines("gitwildmatch", [pattern])
+    try:
+        return pathspec.PathSpec([GitWildMatchPattern(pattern)])
+    except GitWildMatchPatternError:
+        log.warning("health_rules_bad_glob", pattern=pattern)
+        return pathspec.PathSpec([])
 
 
 @dataclass
