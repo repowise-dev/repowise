@@ -205,6 +205,9 @@ def test_show_completion_panel_with_failures(monkeypatch):
         repo_structure=SimpleNamespace(root_language_distribution={"Python": 1.0}),
         generated_pages=[_page("file_page:a")],
         failed_page_ids=["file_page:b", "module_page:m1"],
+        # The full-mode panel reports the index it built, same as index-only.
+        file_count=3,
+        symbol_count=42,
     )
     provider = SimpleNamespace(provider_name="mock", model_name="mock-model")
 
@@ -236,7 +239,9 @@ def test_run_repo_generation_uses_exact_job_id_when_provided(tmp_path, monkeypat
     target_job_id = js.create_job(str(tmp_path), config_mock, "mock", "mock-model")
     js.fail_page(target_job_id, "file_page:target_failure.ts", "Target error")
 
-    monkeypatch.setattr("repowise.cli.commands.init_cmd.generation.console.print", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        "repowise.cli.commands.init_cmd.generation.console.print", lambda *a, **kw: None
+    )
     monkeypatch.setattr(
         "repowise.cli.commands.init_cmd.generation.run_async",
         lambda coro: [_page("file_page:lib/c.ts")],
@@ -274,4 +279,3 @@ def test_run_repo_generation_uses_exact_job_id_when_provided(tmp_path, monkeypat
     )
 
     assert getattr(result, "failed_page_ids", None) == ["file_page:target_failure.ts"]
-

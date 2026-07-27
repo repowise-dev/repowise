@@ -79,6 +79,7 @@ from .generation import (
     cost_gate_declined,
     estimate_generation,
     format_cost,
+    page_type_label,
     run_repo_generation,
     structural_page_summary,
 )
@@ -265,6 +266,7 @@ def _run_generation_phase(
     user declined the cost gate (generation skipped, index still saved). Mutates
     ``result`` in place with the generated pages, vector store, and enriched KG.
     """
+    from repowise.core.cost_estimator import STRUCTURAL_PAGE_TYPES
     from repowise.core.generation import GenerationConfig
 
     print_phase_header(
@@ -294,14 +296,28 @@ def _run_generation_phase(
         skip_infra=skip_infra,
     )
 
+    # "Written by" replaces the old Level column (an internal generation-tier
+    # integer nobody could act on) and answers the question the price below
+    # raises: most of this total is free.
     table = Table(title="Generation Plan", border_style=BRAND)
-    table.add_column("Page Type", style="cyan")
+    table.add_column("Pages", style="cyan")
     table.add_column("Count", justify="right")
-    table.add_column("Level", justify="right")
+    table.add_column("Written by")
+    model_pages = 0
     for plan in est.plans:
-        table.add_row(plan.page_type, str(plan.count), str(plan.level))
+        from_model = plan.page_type not in STRUCTURAL_PAGE_TYPES
+        model_pages += plan.count if from_model else 0
+        table.add_row(
+            page_type_label(plan.page_type),
+            f"{plan.count:,}",
+            "model" if from_model else "[dim]structure[/dim]",
+        )
     table.add_section()
-    table.add_row("[bold]Total[/bold]", f"[bold]{est.total_pages}[/bold]", "")
+    table.add_row(
+        "[bold]Total[/bold]",
+        f"[bold]{est.total_pages:,}[/bold]",
+        f"[bold]{model_pages:,} by model, {est.total_pages - model_pages:,} from structure[/bold]",
+    )
     console.print(table)
 
     # Language breakdown
@@ -320,19 +336,18 @@ def _run_generation_phase(
         )
 
     if onboarding:
+        # Eight proper nouns in a wrapped dim block sat directly above the
+        # price and competed with it; none of them is actionable here.
         console.print(
-            "  [cyan]Onboarding collection:[/cyan] "
-            "[dim]up to 8 curated pages — Project Overview, Architecture Guide, "
-            "Getting Started, Codebase Map, Key Concepts, How It Works, "
-            "Development Guide, Active Landscape "
-            "(slots without enough signal are skipped).[/dim]"
+            "  [dim]Plus up to 8 curated onboarding pages (overview, architecture, "
+            "getting started, and so on). Slots without enough signal are skipped.[/dim]"
         )
     else:
         console.print("  [dim]Onboarding collection: disabled (--no-onboarding).[/dim]")
     console.print()
 
     if dry_run:
-        console.print("[yellow]Dry run — no pages generated.[/yellow]")
+        console.print("  Dry run: no pages generated.")
         return True, False
 
     # The single cost question. Every structural page is free; the spend is the
@@ -346,18 +361,19 @@ def _run_generation_phase(
     # already exists and re-running with --yes costs nothing.
     concept_n = concept_page_count(plans)
     console.print(
-        f"Writing [bold]{concept_n}[/bold] concept pages with "
+        f"  Writing [bold]{concept_n:,}[/bold] subsystem pages with "
         f"[cyan]{provider.model_name}[/cyan]. Estimated [bold]{format_cost(est)}[/bold]."
     )
     structural = structural_page_summary(plans)
     if structural:
-        console.print(f"[dim]{structural}[/dim]")
+        console.print(f"  [dim]{structural}[/dim]")
     if cost_gate_declined(est, yes=yes, message="  Continue?"):
+        console.print("  Skipping the model. [dim]Building the wiki from structure instead.[/dim]")
         console.print(
-            "[yellow]Not writing it with the model.[/yellow] "
-            "[dim]Re-run with --yes to accept the cost, or run `repowise generate` "
-            "later to write the subsystem pages. Future `repowise update` runs stay "
-            "index-only, so the post-commit hook won't start a model run on its own.[/dim]"
+            "  [dim]Run [bold]repowise generate[/bold] any time to write the subsystem "
+            "pages, or re-run init with [bold]--yes[/bold] to accept the cost now.\n"
+            "  Post-commit updates stay index-only, so no hook will start a model run "
+            "on its own.[/dim]"
         )
         return False, True
 
@@ -1121,9 +1137,7 @@ def init_command(
             print_index_only_intro(console, has_provider=has_provider)
         else:
             console.print(f"[bold]repowise index-only[/bold] — {repo_path}")
-            console.print(
-                "[yellow]Building the wiki from structure[/yellow] [dim]— no model, no spend.[/dim]"
-            )
+            console.print("Building the wiki from structure [dim]— no model, no spend.[/dim]")
             if decision_provider:
                 console.print(
                     f"Decision extraction provider: [cyan]{decision_provider.provider_name}[/cyan]"
@@ -1210,16 +1224,22 @@ def init_command(
 
     orchestrator_mode = OrchestratorMode.FAST if run_mode == "fast" else OrchestratorMode.STANDARD
 
-    with Progress(
+    index_columns: list[Any] = [
         SpinnerColumn(spinner_name=OWL_SPINNER, style=BRAND_STYLE),
         TextColumn("[progress.description]{task.description}"),
         BarColumn(),
         MaybeCountColumn(),
         TimeElapsedColumn(),
-        TextColumn("[green]${task.fields[cost]:.3f}[/green]"),
-        console=console,
-    ) as progress_bar:
-        rich_callback = RichProgressCallback(progress_bar, console)
+    ]
+    # Only when a model can actually be called. On a --no-prose run the column
+    # would sit at $0.000 for the whole multi-minute index, which reads as an
+    # unanswered question rather than an answer (same call generation.py makes
+    # for the generation bar).
+    if llm_client is not None:
+        index_columns.append(TextColumn("[green]${task.fields[cost]:.3f}[/green]"))
+
+    with Progress(*index_columns, console=console) as progress_bar:
+        rich_callback = RichProgressCallback(progress_bar, console, total_phases=total_phases)
         # Wrap the Rich callback so we can record per-phase wall-clock
         # durations without changing the pipeline API. Timings get
         # persisted to state.json below.

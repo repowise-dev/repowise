@@ -13,6 +13,22 @@ from repowise.cli.ui.brand import BRAND
 from repowise.cli.ui.mascot import EYES_HAPPY, mini
 
 
+def build_metrics_table(metrics: list[tuple[str, str]], *, label_width: int = 20) -> Table:
+    """Two-column ``label / value`` table, the shape every summary panel uses.
+
+    Rich owns the gutter, which is what the analysis panel's hand-padded row
+    labels could not do: ``Decisions`` is one character longer than the 9-column
+    gutter ``Graph`` / ``Git`` / ``Dead`` were padded to, so its value started a
+    column right of the others.
+    """
+    table = Table(box=None, padding=(0, 2), show_header=False)
+    table.add_column("Metric", style="dim", min_width=label_width)
+    table.add_column("Value", style="bold")
+    for label, value in metrics:
+        table.add_row(label, value)
+    return table
+
+
 def build_analysis_summary_panel(
     *,
     file_count: int,
@@ -29,34 +45,44 @@ def build_analysis_summary_panel(
     lang_summary: str = "",
 ) -> Panel:
     """Compact analysis-complete interstitial shown before generation."""
-    lines: list[str] = []
-    lines.append(
+    header = Text.from_markup(
         f"  [bold]{file_count:,}[/bold] files · "
         f"[bold]{symbol_count:,}[/bold] symbols"
         + (f" · [bold]{community_count}[/bold] communities" if community_count else "")
     )
+    parts: list[Any] = [header]
     if lang_summary:
-        lines.append(f"  [dim]{lang_summary}[/dim]")
-    lines.append("")
-    lines.append(
-        f"  Graph    [bold]{graph_nodes:,}[/bold] nodes · [bold]{graph_edges:,}[/bold] edges"
-    )
+        parts.append(Text(f"  {lang_summary}", style="dim"))
+    parts.append(Text(""))
+
+    metrics: list[tuple[str, str]] = [
+        ("Graph", f"[bold]{graph_nodes:,}[/bold] nodes · [bold]{graph_edges:,}[/bold] edges")
+    ]
     if git_files:
-        lines.append(
-            f"  Git      [bold]{git_files:,}[/bold] files indexed"
-            + (f" · [bold]{hotspot_count}[/bold] hotspots" if hotspot_count else "")
+        metrics.append(
+            (
+                "Git",
+                f"[bold]{git_files:,}[/bold] files indexed"
+                + (f" · [bold]{hotspot_count}[/bold] hotspots" if hotspot_count else ""),
+            )
         )
     if dead_unreachable or dead_unused:
-        lines.append(
-            f"  Dead     [bold]{dead_unreachable}[/bold] unreachable · "
-            f"[bold]{dead_unused}[/bold] unused exports"
-            + (f" · ~{dead_lines:,} lines" if dead_lines else "")
+        # "Dead" was an adjective with the noun dropped for column width; the
+        # table has no fixed width to protect.
+        metrics.append(
+            (
+                "Dead code",
+                f"[bold]{dead_unreachable}[/bold] unreachable · "
+                f"[bold]{dead_unused}[/bold] unused exports"
+                + (f" · ~{dead_lines:,} lines" if dead_lines else ""),
+            )
         )
     if decision_count:
-        lines.append(f"  Decisions [bold]{decision_count}[/bold] extracted")
+        metrics.append(("Decisions", f"[bold]{decision_count}[/bold] extracted"))
+    parts.append(build_metrics_table(metrics, label_width=11))
 
     return Panel(
-        "\n".join(lines),
+        Group(*parts),
         title="[bold]Analysis Complete[/bold]",
         border_style=BRAND,
         padding=(1, 1),
@@ -87,14 +113,7 @@ def build_completion_panel(
     The mascot prefix lives here (not at call sites) so every completion
     panel gets it consistently.
     """
-    table = Table(box=None, padding=(0, 2), show_header=False)
-    table.add_column("Metric", style="dim", min_width=20)
-    table.add_column("Value", style="bold")
-
-    for label, value in metrics:
-        table.add_row(label, value)
-
-    parts: list[Any] = [table]
+    parts: list[Any] = [build_metrics_table(metrics)]
 
     if next_steps:
         parts.append(Text(""))

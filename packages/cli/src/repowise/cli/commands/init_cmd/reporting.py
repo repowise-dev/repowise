@@ -169,29 +169,40 @@ def show_completion(
     else:
         _lang_summary_final = str(len(result.languages))
 
+    # What the run found, in both modes. A full run — the recommended path —
+    # used to report none of this in its closing panel: file count, symbols,
+    # languages and graph size appeared once in the "Analysis Complete"
+    # interstitial, minutes and one cost prompt earlier.
+    _index_rows: list[tuple[str, str]] = [
+        ("Files indexed", f"{result.file_count:,}"),
+        ("Symbols", f"{result.symbol_count:,}"),
+        ("Languages", _lang_summary_final),
+    ]
+    _structure_rows: list[tuple[str, str]] = [
+        (
+            "Graph",
+            f"{_graph_final.number_of_nodes():,} nodes · {_graph_final.number_of_edges():,} edges",
+        ),
+        ("Dead code", f"{_dc_unreachable} unreachable · {_dc_unused} unused exports"),
+        ("Decisions", str(_n_decisions)),
+    ]
+    if result.git_summary:
+        _structure_rows.append(
+            (
+                "Git history",
+                f"{result.git_summary.files_indexed:,} files · {_hotspot_count_final} hotspots",
+            )
+        )
+
     if effective_index_only:
         _template_pages = len(result.generated_pages or [])
         metrics: list[tuple[str, str]] = [
-            ("Files indexed", str(result.file_count)),
-            ("Symbols", f"{result.symbol_count:,}"),
-            ("Languages", _lang_summary_final),
-            ("Wiki pages", f"{_template_pages} rendered from structure"),
+            *_index_rows,
+            ("Wiki pages", f"{_template_pages:,} rendered from structure"),
             ("Elapsed", format_elapsed(elapsed)),
             ("", ""),
-            (
-                "Graph",
-                f"{_graph_final.number_of_nodes()} nodes · {_graph_final.number_of_edges()} edges",
-            ),
-            ("Dead code", f"{_dc_unreachable} unreachable · {_dc_unused} unused exports"),
-            ("Decisions", str(_n_decisions)),
+            *_structure_rows,
         ]
-        if result.git_summary:
-            metrics.append(
-                (
-                    "Git history",
-                    f"{result.git_summary.files_indexed} files · {_hotspot_count_final} hotspots",
-                )
-            )
 
         next_steps = build_contextual_next_steps(
             index_only=True,
@@ -239,22 +250,24 @@ def show_completion(
             _pages_label = f"{len(_pages)} ({len(_failed_ids)} failed)"
         elif _det:
             _pages_label = f"{len(_pages)} ({_ai} model-written · {_det} from structure)"
+        # The ledger has the real figure; before this the panel reported
+        # millions of tokens and no dollars, on a run the user had just
+        # approved a dollar estimate for.
+        _cost_usd = getattr(result, "llm_cost_usd", None)
+        _spend_row = (
+            ("Cost", f"${_cost_usd:.2f}  [dim]({total_tokens:,} tokens)[/dim]")
+            if _cost_usd is not None
+            else ("Total tokens", f"{total_tokens:,}")
+        )
         metrics = [
+            *_index_rows,
             ("Pages generated", _pages_label),
-            ("Total tokens", f"{total_tokens:,}"),
+            _spend_row,
             ("Provider", f"{provider.provider_name} / {provider.model_name}"),
             ("Elapsed", format_elapsed(elapsed)),
             ("", ""),
-            ("Dead code", f"{_dc_unreachable} unreachable · {_dc_unused} unused exports"),
-            ("Decisions", str(_n_decisions)),
+            *_structure_rows,
         ]
-        if result.git_summary:
-            metrics.append(
-                (
-                    "Git history",
-                    f"{result.git_summary.files_indexed} files · {_hotspot_count_final} hotspots",
-                )
-            )
 
         next_steps = build_contextual_next_steps(
             index_only=False,
@@ -296,13 +309,13 @@ def show_workspace_completion(
     """Render the workspace completion panel + per-repo docs status."""
     metrics: list[tuple[str, str]] = [
         ("Repositories", f"{len(selected) - len(errors)} indexed"),
-        ("Total files", str(total_files)),
+        ("Total files", f"{total_files:,}"),
         ("Total symbols", f"{total_symbols:,}"),
         ("Primary repo", primary_alias),
         ("Elapsed", format_elapsed(elapsed)),
     ]
     if not index_only and provider is not None:
-        metrics.insert(3, ("Pages generated", str(total_pages)))
+        metrics.insert(3, ("Pages generated", f"{total_pages:,}"))
         metrics.insert(4, ("Provider", f"{provider.provider_name} / {provider.model_name}"))
     if errors:
         metrics.append(("Errors", f"{len(errors)} repos failed"))

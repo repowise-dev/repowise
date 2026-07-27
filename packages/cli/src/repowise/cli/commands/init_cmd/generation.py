@@ -49,6 +49,7 @@ __all__ = [
     "cost_gate_declined",
     "estimate_generation",
     "format_cost",
+    "page_type_label",
     "run_repo_generation",
 ]
 
@@ -106,17 +107,36 @@ def concept_page_count(plans: list[Any]) -> int:
     return next((p.count for p in plans if p.page_type == "module_page"), 0)
 
 
-# Short, plain names for the structural page types, in the order they read best.
-# Only the free types are listed: the paid ones are already named by the cost
-# question itself.
-_STRUCTURAL_LABELS = (
-    ("file_page", "file"),
-    ("api_contract", "API"),
-    ("symbol_spotlight", "symbol"),
-    ("scc_page", "cycle"),
-    ("layer_page", "layer"),
-    ("infra_page", "infra"),
+# Every page type, in the order it reads best, with the two plain-English forms
+# the init screen needs: a row label for the generation plan table, and a short
+# noun for the one-line structural summary under it. One table so the plan, the
+# summary and the cost question can never call the same page three things —
+# ``module_page`` in the table, "concept pages" in the price, "subsystem pages"
+# in the mode panel was the old state.
+_PAGE_TYPE_LABELS: tuple[tuple[str, str, str], ...] = (
+    ("module_page", "Subsystem pages", "subsystem"),
+    ("repo_overview", "Repo overview", "overview"),
+    ("architecture_diagram", "Architecture diagram", "diagram"),
+    ("onboarding", "Onboarding pages", "onboarding"),
+    ("file_page", "File pages", "file"),
+    ("api_contract", "API contract pages", "API"),
+    ("symbol_spotlight", "Symbol spotlights", "symbol"),
+    ("scc_page", "Dependency cycle pages", "cycle"),
+    ("layer_page", "Layer pages", "layer"),
+    ("infra_page", "Infrastructure pages", "infra"),
 )
+
+_ROW_LABELS: dict[str, str] = {pt: row for pt, row, _ in _PAGE_TYPE_LABELS}
+
+
+def page_type_label(page_type: str) -> str:
+    """Plain-English row label for a page type id.
+
+    Falls back to a readable form of the id itself, so a page type added to the
+    generator but not to the table above degrades to ``"Scc page"`` rather than
+    to a silent hole.
+    """
+    return _ROW_LABELS.get(page_type) or page_type.replace("_", " ").capitalize()
 
 
 def structural_page_summary(plans: list[Any]) -> str:
@@ -133,7 +153,7 @@ def structural_page_summary(plans: list[Any]) -> str:
     total = sum(counts.values())
     if not total:
         return ""
-    parts = [f"{counts[t]} {label}" for t, label in _STRUCTURAL_LABELS if counts.get(t)]
+    parts = [f"{counts[pt]} {short}" for pt, _, short in _PAGE_TYPE_LABELS if counts.get(pt)]
     return f"{total} more pages rendered from the code itself, no model, no cost: " + ", ".join(
         parts
     )
@@ -345,6 +365,10 @@ def run_repo_generation(
 
     result.generated_pages = generated_pages
     result.failed_page_ids = failed_page_ids
+    # What the run actually spent, for the completion panel. The user was shown
+    # an estimate before the run and a live cost column during it; reporting
+    # only tokens at the end left the one number they were promised unanswered.
+    result.llm_cost_usd = cost_tracker.session_cost if cost_tracker is not None else 0.0
 
     if failed_page_ids:
         type_counts = Counter(pid.split(":")[0] for pid in failed_page_ids)
