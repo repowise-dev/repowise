@@ -14,9 +14,14 @@ from repowise.core.generation.cost_tracker import (
 
 
 def test_nano_models_priced_at_nano_rate_not_fallback() -> None:
-    for model in ("gpt-5-nano", "gpt-5.4-nano"):
+    # Each generation is priced from its own published rate; what matters is
+    # that neither lands on the Sonnet-tier fallback.
+    for model, expected in (
+        ("gpt-5-nano", {"input": 0.05, "output": 0.40}),
+        ("gpt-5.4-nano", {"input": 0.20, "output": 1.25}),
+    ):
         pricing = get_model_pricing(model)
-        assert pricing == {"input": 0.05, "output": 0.40}
+        assert pricing == expected
         assert pricing != _FALLBACK_PRICING
 
 
@@ -30,7 +35,7 @@ def test_dated_opus_variant_prices_at_opus_tier_not_sonnet_fallback() -> None:
     # an Opus user's savings are undercounted ~5x.
     for model in ("claude-opus-4-8-20260514", "claude-opus-4-9", "claude-opus-5"):
         pricing = get_model_pricing(model)
-        assert pricing == {"input": 15.0, "output": 75.0}
+        assert pricing == {"input": 5.0, "output": 25.0}
         assert pricing != _FALLBACK_PRICING
 
 
@@ -39,11 +44,11 @@ def test_family_prefix_covers_sonnet_and_haiku_variants() -> None:
     # matcher actually resolved it rather than the value alone.
     assert _family_pricing("claude-sonnet-4-9") == {"input": 3.0, "output": 15.0}
     assert _family_pricing("totally-made-up-model-9000") is None
-    assert get_model_pricing("claude-haiku-5") == {"input": 0.8, "output": 4.0}
+    assert get_model_pricing("claude-haiku-5") == {"input": 1.0, "output": 5.0}
 
 
 def test_gpt5_variants_resolve_by_tier_qualifier() -> None:
-    assert get_model_pricing("gpt-5.5-nano") == {"input": 0.05, "output": 0.40}
-    assert get_model_pricing("gpt-5.5-mini") == {"input": 0.25, "output": 2.0}
+    assert get_model_pricing("gpt-5.5-nano") == {"input": 0.20, "output": 1.25}
+    assert get_model_pricing("gpt-5.5-mini") == {"input": 0.75, "output": 4.50}
     # A plain future gpt-5 variant gets the base GPT-5 tier, not the fallback.
-    assert get_model_pricing("gpt-5.5") == {"input": 1.25, "output": 10.0}
+    assert get_model_pricing("gpt-5.5") == {"input": 2.50, "output": 15.0}

@@ -122,11 +122,14 @@ def _family_pricing(model: str) -> dict[str, float] | None:
         if model.startswith(prefix):
             return pricing
     if model.startswith("gpt-5"):
+        # Current-generation tier rates, matching cost_estimator/pricing.py. The
+        # older gpt-5-nano / gpt-5-mini keep their own cheaper exact entries,
+        # which win before this runs.
         if "nano" in model:
-            return {"input": 0.05, "output": 0.40}
+            return {"input": 0.20, "output": 1.25}
         if "mini" in model:
-            return {"input": 0.25, "output": 2.0}
-        return {"input": 1.25, "output": 10.0}
+            return {"input": 0.75, "output": 4.50}
+        return {"input": 2.50, "output": 15.0}
     return None
 
 
