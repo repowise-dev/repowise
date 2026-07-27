@@ -338,26 +338,37 @@
 .dark {
   /* Neutral graphite base — a true dark gray (near-zero hue) so nothing reads
      blue, green, or plum. The surface ramp climbs root -> surface -> elevated
-     -> overlay with wide steps so the sidebar, breadcrumb bar, cards, tables,
-     and modals all read as distinct layers off the same tokens. Light mode is
-     unchanged. */
-  --color-bg-root: #1a1a1b;
-  --color-bg-surface: #232325;
-  --color-bg-elevated: #2b2c2e;
-  --color-bg-overlay: #343539;
-  --color-bg-inset: #141415;
+     -> overlay so the sidebar, breadcrumb bar, cards, tables and modals all
+     read as distinct layers off the same tokens. Light mode is unchanged.
 
-  /* Neutral hairlines so card / sidebar / table edges read on the gray base. */
-  --color-border-default: rgba(255, 255, 255, 0.1);
-  --color-border-hover: rgba(255, 255, 255, 0.18);
+     The whole ramp sits lower than it used to (root was #1a1a1b, surface
+     #232325). Two reasons. Reading surfaces are the base plane, and on the
+     docs page the old values made the reading column the *darkest* of the
+     three panels, recessed between two lighter ones — a trench, which is the
+     opposite of how a reading UI should stack. And near-black gives the accent
+     and the semantic colours somewhere to go: the same #f59520 that looked
+     muddy on graphite carries on this ground. */
+  --color-bg-root: #0e0e0f;
+  --color-bg-surface: #141416;
+  --color-bg-elevated: #1c1c1f;
+  --color-bg-overlay: #26262a;
+  --color-bg-inset: #0a0a0b;
+
+  /* Neutral hairlines so card / sidebar / table edges read on the gray base.
+     Lighter than before: the same alpha reads considerably louder against
+     near-black, and at 0.10 every border on the page started shouting. */
+  --color-border-default: rgba(255, 255, 255, 0.07);
+  --color-border-hover: rgba(255, 255, 255, 0.15);
   --color-border-active: rgba(245, 149, 32, 0.55);
 
-  /* Neutral gray text (no plum / blue cast) to match the graphite chrome. */
-  --color-text-primary: #ececed;
-  --color-text-secondary: #a2a2a6;
-  --color-text-tertiary: #717176;
-  --color-text-inverse: #1a1a1b;
-  --color-text-on-accent: #1a1a1b;
+  /* Neutral gray text (no plum / blue cast) to match the graphite chrome.
+     Secondary carries body copy and is lifted the most — on the old ground it
+     was grey-on-grey and read flat at any length. */
+  --color-text-primary: #f2f2f3;
+  --color-text-secondary: #b4b4b9;
+  --color-text-tertiary: #7c7c82;
+  --color-text-inverse: #0e0e0f;
+  --color-text-on-accent: #0e0e0f;
 
   --color-accent-primary: #f59520;
   --color-accent-fill: #f59520;
@@ -405,10 +416,13 @@
   --color-diagram-cluster-border: #a98fc4;
   --color-diagram-grid: rgba(222, 210, 235, 0.05);
 
-  /* Zoom canvas — dark: elevated graphite cards on the near-black canvas. */
-  --color-zoom-card-fill: #2b2c2e; /* leaf card (bg-elevated) */
-  --color-zoom-card-fill-2: #232325; /* container card (bg-surface) */
-  --color-zoom-card-text: #ececed;
+  /* Zoom canvas — dark: elevated graphite cards on the near-black canvas.
+     These are literals rather than var() references because the canvas
+     renderer reads them into WebGL, but they have to move with the surface
+     ramp or the cards float above a ground that has dropped beneath them. */
+  --color-zoom-card-fill: #1c1c1f; /* leaf card (bg-elevated) */
+  --color-zoom-card-fill-2: #141416; /* container card (bg-surface) */
+  --color-zoom-card-text: #f2f2f3;
   --color-zoom-card-border: rgba(255, 255, 255, 0.10);
   --color-zoom-card-border-hover: rgba(255, 255, 255, 0.20);
   --color-zoom-card-shadow: rgba(0, 0, 0, 0.45);
@@ -453,8 +467,9 @@
   --shadow-xl: 0 16px 48px rgba(0, 0, 0, 0.6), inset 0 0 0 1px rgba(255, 255, 255, 0.07);
   --shadow-button: 0 1px 2px rgba(0, 0, 0, 0.4);
 
-  /* Dark soft wash — neutral graphite with a faint lift at the end */
-  --gradient-warm-wash: linear-gradient(160deg, #1c1c1e 0%, #232325 55%, #2c2c2f 100%);
+  /* Dark soft wash — neutral graphite with a faint lift at the end. Tracks the
+     surface ramp: the wash reads as a lit panel only if it starts at the base. */
+  --gradient-warm-wash: linear-gradient(160deg, #101012 0%, #16161a 55%, #1f1f23 100%);
 }
 
 /* -------------------------------------------------------------------- */
