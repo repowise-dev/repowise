@@ -1,4 +1,5 @@
 export * from "./code-evolution-chart";
+export * from "./commits-lede";
 export * from "./commit-table";
 export * from "./commit-detail-card";
 export * from "./risk-driver-breakdown";

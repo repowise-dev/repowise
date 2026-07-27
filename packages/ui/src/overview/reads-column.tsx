@@ -46,7 +46,7 @@ export function ReadsColumn({
   LinkComponent,
 }: {
   items: ReadItem[];
-  LinkComponent?: React.ElementType;
+  LinkComponent?: React.ElementType | undefined;
 }) {
   const A = LinkComponent ?? "a";
   if (items.length === 0) return null;

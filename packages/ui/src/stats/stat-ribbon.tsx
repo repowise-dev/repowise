@@ -27,7 +27,7 @@ export function StatRibbon({
 }: {
   stats: RibbonStat[];
   /** Router link for `href` entries; defaults to a plain anchor. */
-  LinkComponent?: React.ElementType;
+  LinkComponent?: React.ElementType | undefined;
 }) {
   const shown = stats.filter((s) => s.value);
   if (shown.length === 0) return null;

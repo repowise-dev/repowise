@@ -68,7 +68,7 @@ export function SectionLink({
 }: {
   href: string;
   children: React.ReactNode;
-  LinkComponent?: React.ElementType;
+  LinkComponent?: React.ElementType | undefined;
 }) {
   const A = LinkComponent ?? "a";
   return (

@@ -1,30 +1,20 @@
 "use client";
 
-import { useMemo } from "react";
+import * as React from "react";
 import { Users, Search } from "lucide-react";
 import type { OwnerListEntry } from "@repowise-dev/types/owners";
 import { Input } from "../ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
 import { Skeleton } from "../ui/skeleton";
 import { EmptyState } from "../shared/empty-state";
 import { ResultsFooter } from "../shared/results-footer";
-import { OwnerCard } from "./owner-card";
+import { PageLede } from "../shared/page-lede";
+import { OverviewSection, SectionLink } from "../overview/section";
+import { ReadsColumn, type ReadItem } from "../overview/reads-column";
+import { StatRibbon, type RibbonStat } from "../stats/stat-ribbon";
+import { OwnerTable, type OwnerSortKey } from "./owner-table";
 import { OwnershipDistributionBar } from "./ownership-distribution-bar";
 
-export type OwnerSortKey =
-  | "files_owned"
-  | "hotspots_owned"
-  | "commit_count_90d"
-  | "dead_code_lines_owned"
-  | "bus_factor_risk_files";
-
-const SORT_LABELS: Record<OwnerSortKey, string> = {
-  files_owned: "Files owned",
-  hotspots_owned: "Hotspots owned",
-  commit_count_90d: "Recent commits",
-  dead_code_lines_owned: "Dead-code burden",
-  bus_factor_risk_files: "Bus-factor risk",
-};
+export type { OwnerSortKey };
 
 export interface OwnerDirectoryFilters {
   q: string;
@@ -33,9 +23,9 @@ export interface OwnerDirectoryFilters {
 
 export interface OwnerDirectoryProps {
   owners: OwnerListEntry[];
-  /** Optional full owner set for the distribution bar (e.g. fetched via
-   *  listAllOwners when the contributor count is small). Falls back to
-   *  `owners` when omitted. */
+  /** Optional full owner set for the distribution bar and the lede (e.g.
+   *  fetched via listAllOwners when the contributor count is small). Falls
+   *  back to `owners` when omitted. */
   distributionOwners?: OwnerListEntry[];
   isLoading: boolean;
   isValidating: boolean;
@@ -45,8 +35,32 @@ export interface OwnerDirectoryProps {
   onFiltersChange: (next: OwnerDirectoryFilters) => void;
   onLoadMore: () => void;
   onSelect: (owner: OwnerListEntry) => void;
+  /** Preferred over `onSelect`: gives every row a real URL. */
+  hrefFor?: (owner: OwnerListEntry) => string;
+  /** Base path for the section jump links, e.g. `/repos/42`. */
+  base?: string;
+  LinkComponent?: React.ElementType | undefined;
 }
 
+const INACTIVE_DAYS = 90;
+
+function daysSince(iso: string | null): number | null {
+  if (!iso) return null;
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return null;
+  return (Date.now() - t) / 86_400_000;
+}
+
+/**
+ * Who knows what, as a lede plus one table.
+ *
+ * This page used to open on four bordered counters — one of them "Bus-factor
+ * risk: 12" in red — above a 3-up grid of contributor cards. The counters told
+ * a reader to worry without saying what about, and the grid could not answer
+ * the question people actually arrive with, which is how two contributors
+ * compare: that needs the figures in a column, which a card grid makes
+ * impossible. Both are now one figure with a sentence, and one aligned table.
+ */
 export function OwnerDirectory({
   owners,
   distributionOwners,
@@ -58,110 +72,241 @@ export function OwnerDirectory({
   onFiltersChange,
   onLoadMore,
   onSelect,
+  hrefFor,
+  base,
+  LinkComponent,
 }: OwnerDirectoryProps) {
-  const barOwners = distributionOwners ?? owners;
-  // Spotlight metrics — drives the strip above the directory grid.
-  const headline = useMemo(() => {
-    const totalFiles = owners.reduce((s, o) => s + o.files_owned, 0);
-    const siloOwners = owners.filter((o) => o.silo_modules > 0).length;
-    const busRiskOwners = owners.filter((o) => o.bus_factor_risk_files > 0).length;
-    const totalDeadLines = owners.reduce((s, o) => s + o.dead_code_lines_owned, 0);
-    return { totalFiles, siloOwners, busRiskOwners, totalDeadLines };
-  }, [owners]);
+  // The lede is a claim about the whole repo, so it is computed off the full
+  // set when the caller has one. Computed off the loaded page instead, "68% of
+  // files" would silently mean "68% of the 30 rows currently rendered" and
+  // would change as you scrolled — a figure that moves while the data does not
+  // is a wrong figure, not a live one.
+  const source = distributionOwners ?? owners;
+  const complete = distributionOwners != null || (!hasMore && filters.q === "");
+
+  const summary = React.useMemo(() => {
+    const sorted = [...source].sort((a, b) => b.files_owned - a.files_owned);
+    const totalFiles = sorted.reduce((s, o) => s + o.files_owned, 0);
+    const top3 = sorted.slice(0, 3).reduce((s, o) => s + o.files_owned, 0);
+    const soleFiles = sorted.reduce((s, o) => s + o.bus_factor_risk_files, 0);
+    const soleFilesInactive = sorted.reduce((s, o) => {
+      const d = daysSince(o.last_commit_at);
+      return d != null && d > INACTIVE_DAYS ? s + o.bus_factor_risk_files : s;
+    }, 0);
+    const siloOwners = sorted.filter((o) => o.silo_modules > 0).length;
+    const siloModules = sorted.reduce((s, o) => s + o.silo_modules, 0);
+    const deadLines = sorted.reduce((s, o) => s + o.dead_code_lines_owned, 0);
+    const deadOwners = sorted.filter((o) => o.dead_code_lines_owned > 0).length;
+    const active = sorted.filter((o) => o.commit_count_90d > 0).length;
+    return {
+      topName: sorted[0]?.name ?? null,
+      topFiles: sorted[0]?.files_owned ?? 0,
+      totalFiles,
+      top3Pct: totalFiles > 0 ? Math.round((top3 / totalFiles) * 100) : 0,
+      soleFiles,
+      soleFilesInactive,
+      siloOwners,
+      siloModules,
+      deadLines,
+      deadOwners,
+      active,
+    };
+  }, [source]);
+
+  // Built rather than declared: a repo with no dead code and no silos should
+  // get a shorter column, not four rows of zeroes. An empty state that says
+  // "0" is claiming a measurement; omitting the row says there is nothing to
+  // report, which is what is true.
+  const reads: ReadItem[] = [];
+  if (summary.soleFiles > 0) {
+    reads.push({
+      key: "sole",
+      label: "Sole-owned files",
+      value: summary.soleFiles.toLocaleString(),
+      ...(summary.totalFiles > 0
+        ? { unit: `of ${summary.totalFiles.toLocaleString()}` }
+        : {}),
+      why:
+        summary.soleFilesInactive > 0
+          ? `One author, no second reader. ${summary.soleFilesInactive.toLocaleString()} belong to someone who has not committed in ${INACTIVE_DAYS} days.`
+          : "One author and no second reader, though all of them belong to someone still active.",
+      href: base ? `${base}/ownership` : "#",
+    });
+  }
+  if (summary.siloModules > 0) {
+    reads.push({
+      key: "silo",
+      label: "Silo modules",
+      value: summary.siloModules.toLocaleString(),
+      unit: `${summary.siloOwners} ${summary.siloOwners === 1 ? "person" : "people"}`,
+      why: "A single person owns more than 80% of the module.",
+      href: base ? `${base}/modules` : "#",
+    });
+  }
+  reads.push({
+    key: "active",
+    label: "Active this quarter",
+    value: summary.active.toLocaleString(),
+    unit: `of ${total.toLocaleString()}`,
+    why: `Committed in the last ${INACTIVE_DAYS} days. The rest are history, not staffing.`,
+    href: base ? `${base}/commits` : "#",
+  });
+  if (summary.deadLines > 0) {
+    reads.push({
+      key: "dead",
+      label: "Dead lines owned",
+      value: summary.deadLines.toLocaleString(),
+      unit: `${summary.deadOwners} ${summary.deadOwners === 1 ? "person" : "people"}`,
+      why: "Unreachable code still attributed to whoever wrote it.",
+      href: base ? `${base}/dead-code` : "#",
+    });
+  }
+
+  // StatRibbon drops empty-valued entries itself, so an unmeasured figure
+  // leaves no gap in the row.
+  const ribbon: RibbonStat[] = [
+    {
+      label: "Contributors",
+      value: total.toLocaleString(),
+      hint: "Distinct commit authors in the indexed history",
+    },
+    {
+      label: "Files attributed",
+      value: summary.totalFiles > 0 ? summary.totalFiles.toLocaleString() : "",
+    },
+    { label: "Active 90d", value: summary.active.toLocaleString() },
+    {
+      label: "Sole-owned",
+      value: summary.soleFiles > 0 ? summary.soleFiles.toLocaleString() : "",
+    },
+    {
+      label: "Silo modules",
+      value: summary.siloModules > 0 ? summary.siloModules.toLocaleString() : "",
+    },
+  ];
 
   return (
-    <div className="space-y-5">
-      {barOwners.length > 0 && (
-        <OwnershipDistributionBar
-          owners={barOwners}
-          totalContributors={total}
-          onSelect={onSelect}
-        />
+    <div className="flex flex-col gap-6 sm:gap-8">
+      {summary.totalFiles > 0 && (
+        <section className="grid grid-cols-1 items-start gap-6 lg:grid-cols-[minmax(0,1fr)_300px] lg:gap-10">
+          <PageLede
+            label="Knowledge concentration"
+            value={`${summary.top3Pct}%`}
+            band={{ label: summary.top3Pct >= 60 ? "Concentrated" : "Spread" }}
+            {...(complete ? {} : { unit: "of the contributors loaded so far" })}
+          >
+            <p>
+              The top three of {total.toLocaleString()} contributors own{" "}
+              <strong className="font-semibold text-[var(--color-text-primary)]">
+                {summary.top3Pct}%
+              </strong>{" "}
+              of the {summary.totalFiles.toLocaleString()} attributed files
+              {summary.topName
+                ? `, with ${summary.topName} on ${summary.topFiles.toLocaleString()} of them`
+                : ""}
+              . Ownership is attributed by who wrote the surviving lines, not by who
+              committed last, so a formatting sweep does not hand someone a file they
+              have never read.
+              {summary.soleFiles > 0 && (
+                <>
+                  {" "}
+                  <strong className="font-semibold text-[var(--color-text-primary)]">
+                    {summary.soleFiles.toLocaleString()}
+                  </strong>{" "}
+                  of those files have a single author and no second reader, which is
+                  where the knowledge actually walks out.
+                </>
+              )}
+            </p>
+          </PageLede>
+          {reads.length > 0 && <ReadsColumn items={reads} LinkComponent={LinkComponent} />}
+        </section>
       )}
 
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <Headline label="Contributors" value={total} />
-        <Headline label="Silo owners" value={headline.siloOwners} tone="warn" />
-        <Headline label="Bus-factor risk" value={headline.busRiskOwners} tone="danger" />
-        <Headline label="Dead lines owned" value={headline.totalDeadLines} />
-      </div>
+      <StatRibbon stats={ribbon} LinkComponent={LinkComponent} />
 
-      <div className="flex flex-wrap items-center gap-2">
-        <div className="relative flex-1 min-w-[220px]">
+      {source.length > 0 && (
+        <OverviewSection
+          title="How ownership is spread"
+          description="Share of attributed files per contributor, largest first, with the long tail collapsed into one segment."
+          {...(base
+            ? {
+                action: (
+                  <SectionLink href={`${base}/ownership`} LinkComponent={LinkComponent}>
+                    Ownership map
+                  </SectionLink>
+                ),
+              }
+            : {})}
+        >
+          <OwnershipDistributionBar
+            owners={source}
+            totalContributors={total}
+            {...(hrefFor ? { hrefFor } : { onSelect })}
+            {...(LinkComponent ? { LinkComponent } : {})}
+          />
+        </OverviewSection>
+      )}
+
+      <OverviewSection
+        title="Everyone"
+        description="A dot marks someone holding files nobody else has touched, so a clean column means nothing to chase."
+        action={
+          <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+            {total.toLocaleString()} {total === 1 ? "contributor" : "contributors"}
+          </span>
+        }
+      >
+        <div className="relative max-w-sm">
           <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-[var(--color-text-tertiary)]" />
           <Input
             value={filters.q}
             onChange={(e) => onFiltersChange({ ...filters, q: e.target.value })}
             placeholder="Filter by name or email…"
+            aria-label="Filter contributors by name or email"
             className="pl-8"
           />
         </div>
-        <Select
-          value={filters.sort}
-          onValueChange={(v) => onFiltersChange({ ...filters, sort: v as OwnerSortKey })}
-        >
-          <SelectTrigger className="w-[200px]">
-            <SelectValue placeholder="Sort by" />
-          </SelectTrigger>
-          <SelectContent>
-            {Object.entries(SORT_LABELS).map(([k, label]) => (
-              <SelectItem key={k} value={k}>
-                {label}
-              </SelectItem>
+
+        {isLoading && owners.length === 0 ? (
+          // Row-height skeletons, not tiles: a skeleton whose shape misses the
+          // real layout reflows when content lands, which reads as slower than
+          // showing nothing.
+          <div className="flex flex-col gap-px">
+            {Array.from({ length: 8 }).map((_, i) => (
+              <Skeleton key={i} className="h-[54px] w-full" />
             ))}
-          </SelectContent>
-        </Select>
-      </div>
+          </div>
+        ) : owners.length === 0 ? (
+          <EmptyState
+            icon={<Users className="h-6 w-6" />}
+            title="No contributors match"
+            description={
+              filters.q
+                ? "Nothing matches that filter. Clear it to see everyone."
+                : "Contributors land with the first git index."
+            }
+          />
+        ) : (
+          <OwnerTable
+            owners={owners}
+            sort={filters.sort}
+            onSortChange={(sort) => onFiltersChange({ ...filters, sort })}
+            hrefFor={hrefFor}
+            onSelect={hrefFor ? undefined : onSelect}
+            LinkComponent={LinkComponent}
+          />
+        )}
 
-      {isLoading && owners.length === 0 ? (
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-          {Array.from({ length: 6 }).map((_, i) => (
-            <Skeleton key={i} className="h-32 w-full" />
-          ))}
-        </div>
-      ) : owners.length === 0 ? (
-        <EmptyState
-          icon={<Users className="h-6 w-6" />}
-          title="No contributors match"
-          description="Adjust the filter or wait for the initial git index to finish."
+        <ResultsFooter
+          shown={owners.length}
+          total={total}
+          hasMore={hasMore}
+          loading={isValidating && !isLoading}
+          onLoadMore={onLoadMore}
+          noun="contributor"
         />
-      ) : (
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-          {owners.map((o) => (
-            <OwnerCard key={o.key} owner={o} onSelect={onSelect} />
-          ))}
-        </div>
-      )}
-
-      <ResultsFooter
-        shown={owners.length}
-        total={total}
-        hasMore={hasMore}
-        loading={isValidating && !isLoading}
-        onLoadMore={onLoadMore}
-        noun="contributor"
-      />
-    </div>
-  );
-}
-
-function Headline({
-  label,
-  value,
-  tone,
-}: {
-  label: string;
-  value: number;
-  tone?: "warn" | "danger";
-}) {
-  const color =
-    tone === "danger" ? "text-[var(--color-error)]" : tone === "warn" ? "text-[var(--color-warning)]" : "text-[var(--color-text-primary)]";
-  return (
-    <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] p-3">
-      <div className="text-[10px] font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
-        {label}
-      </div>
-      <div className={`mt-1 text-2xl font-bold tabular-nums ${color}`}>{value}</div>
+      </OverviewSection>
     </div>
   );
 }

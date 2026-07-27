@@ -1,26 +1,10 @@
 import * as React from "react";
+import { githubAvatarUrl, githubOwnerFromRemote } from "../lib/github";
 
-/**
- * Parses the owner (GitHub user or org) out of a git remote URL.
- *
- * Handles the three forms a remote actually takes: HTTPS, SSH scp-style, and
- * `ssh://`. Returns null for anything that is not GitHub, which is the signal
- * to render initials instead of reaching for an avatar that does not exist.
- */
-export function githubOwnerFromRemote(remote: string | null | undefined): string | null {
-  if (!remote) return null;
-  const trimmed = remote.trim().replace(/\.git$/, "");
-  const patterns = [
-    /^https?:\/\/(?:[^@]+@)?github\.com\/([^/]+)\/[^/]+$/i,
-    /^git@github\.com:([^/]+)\/[^/]+$/i,
-    /^ssh:\/\/git@github\.com\/([^/]+)\/[^/]+$/i,
-  ];
-  for (const re of patterns) {
-    const m = trimmed.match(re);
-    if (m?.[1]) return m[1];
-  }
-  return null;
-}
+// Re-exported because `overview/index.ts` and the existing tests import it
+// from here. The implementation moved to `lib/github` so the owner avatar can
+// share it instead of growing a second copy of the same parsing.
+export { githubOwnerFromRemote };
 
 export interface RepoAvatarProps {
   /** Repo name, for the initials fallback. */
@@ -65,7 +49,7 @@ export function RepoAvatar({ name, remoteUrl, size = 40, className }: RepoAvatar
       </span>
       {owner && (
         <img
-          src={`https://avatars.githubusercontent.com/${encodeURIComponent(owner)}?size=${size * 2}`}
+          src={githubAvatarUrl(owner, size * 2)}
           alt=""
           width={size}
           height={size}

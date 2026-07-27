@@ -1,4 +1,5 @@
 import * as React from "react";
+import { LedeLink, PageLede } from "../shared/page-lede";
 
 export interface HealthLedeProps {
   /** Defect-risk headline, 1–10. Null until the first health run. */
@@ -48,8 +49,6 @@ export function HealthLede({
   href,
   LinkComponent,
 }: HealthLedeProps) {
-  const A = LinkComponent ?? "a";
-
   if (score == null) {
     return (
       <div className="flex flex-col gap-2">
@@ -84,32 +83,19 @@ export function HealthLede({
         }`;
 
   return (
-    <div className="flex flex-col">
-      <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
-        Code health
-      </p>
-
-      <div className="mt-2.5 flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <span
-          className="text-[44px] font-semibold leading-none tracking-tight tabular-nums sm:text-5xl"
-          style={{ color: band.color }}
-        >
-          {score.toFixed(1)}
-        </span>
-        <span className="text-xs text-[var(--color-text-tertiary)]">out of 10</span>
-        <span
-          className="rounded-full border px-2.5 py-0.5 text-[11px] font-medium"
-          style={{
-            color: band.color,
-            borderColor: `color-mix(in srgb, ${band.color} 40%, transparent)`,
-            background: `color-mix(in srgb, ${band.color} 9%, transparent)`,
-          }}
-        >
-          {band.label}
-        </span>
-      </div>
-
-      <p className="mt-3.5 max-w-[54ch] text-[13px] leading-relaxed text-[var(--color-text-secondary)] [text-wrap:pretty]">
+    <PageLede
+      label="Code health"
+      value={score.toFixed(1)}
+      valueColor={band.color}
+      unit="out of 10"
+      band={band}
+      action={
+        <LedeLink href={href} LinkComponent={LinkComponent}>
+          Full health report
+        </LedeLink>
+      }
+    >
+      <p>
         This codebase scores{" "}
         <strong className="font-semibold text-[var(--color-text-primary)]">
           {score.toFixed(1)} out of 10
@@ -132,13 +118,6 @@ export function HealthLede({
           </>
         )}
       </p>
-
-      <A
-        href={href}
-        className="mt-4 inline-flex w-fit items-center gap-1 text-sm font-medium text-[var(--color-accent-primary)] hover:underline"
-      >
-        Full health report <span aria-hidden>→</span>
-      </A>
-    </div>
+    </PageLede>
   );
 }

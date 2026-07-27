@@ -40,7 +40,8 @@ export function ResultsFooter({
   return (
     <div
       className={cn(
-        "flex items-center justify-between gap-3 border-t border-[var(--color-border)] px-3 py-2 text-xs text-[var(--color-text-secondary)]",
+        // --color-border does not exist; this hairline has never painted.
+        "flex items-center justify-between gap-3 border-t border-[var(--color-border-default)] px-3 py-2 text-xs text-[var(--color-text-secondary)]",
         className,
       )}
     >

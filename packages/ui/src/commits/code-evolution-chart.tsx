@@ -38,19 +38,33 @@ interface CategoryMeta {
   blurb: string;
 }
 
-// Drawn bottom-to-top in this order; "feature" anchors the base so the growth
-// band reads as the foundation the rest of the work sits on. Colours route
-// through semantic design tokens (theme-aware, no raw hex) and are picked so
-// the mapping reads intuitively: green = new capability, red = fixes, etc.
+// Drawn bottom-to-top in STACK_ORDER; "feature" anchors the base so the growth
+// band reads as the foundation the rest of the work sits on.
+//
+// Two hues, then neutrals. This used to paint Feature in --color-success and
+// Fix in --color-error, which reads intuitively for about a second and then
+// costs more than it gives: those two tokens carry a health band on every
+// other surface in the app, so a reader arriving from Code Health has been
+// trained that green means good and red means bad. Here they mean "new
+// capability" and "bug fix", and a quarter of commits being fixes is not
+// thereby bad. Seven hues on the largest graphic on the page also set the
+// ceiling for everything under it, leaving the review-priority pills in the
+// table competing with the chart instead of leading.
+//
+// Fix keeps the accent because it is the series this chart exists to show;
+// Feature takes the plum secondary, a pairing globals.css already sanctions
+// (--color-savings-distill / --color-savings-mcp are exactly these two). The
+// rest are context, so they recede — which is also the honest encoding, since
+// the categories were never equally interesting.
 const CATEGORY_META: Record<CommitCategory, CategoryMeta> = {
-  feature: { label: "Feature", color: "var(--color-success)", blurb: "new capability" },
-  fix: { label: "Fix", color: "var(--color-error)", blurb: "bug / regression" },
-  refactor: { label: "Refactor", color: "var(--color-accent-primary)", blurb: "reshape / perf" },
-  docs: { label: "Docs", color: "var(--color-info)", blurb: "documentation" },
-  test: { label: "Test", color: "var(--color-amber)", blurb: "tests / coverage" },
-  deps: { label: "Deps", color: "var(--color-caution)", blurb: "dependency bumps" },
-  chore: { label: "Chore", color: "var(--color-text-tertiary)", blurb: "tooling / CI / release" },
-  other: { label: "Other", color: "var(--color-border-active)", blurb: "unclassified" },
+  feature: { label: "Feature", color: "var(--color-accent-secondary)", blurb: "new capability" },
+  fix: { label: "Fix", color: "var(--color-ramp-1)", blurb: "bug / regression" },
+  refactor: { label: "Refactor", color: "var(--color-ramp-3)", blurb: "reshape / perf" },
+  docs: { label: "Docs", color: "var(--color-neutral-1)", blurb: "documentation" },
+  test: { label: "Test", color: "var(--color-ramp-5)", blurb: "tests / coverage" },
+  deps: { label: "Deps", color: "var(--color-neutral-2)", blurb: "dependency bumps" },
+  chore: { label: "Chore", color: "var(--color-neutral-3)", blurb: "tooling / CI / release" },
+  other: { label: "Other", color: "var(--color-bg-inset)", blurb: "unclassified" },
 };
 
 const STACK_ORDER: CommitCategory[] = [

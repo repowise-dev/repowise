@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import useSWR from "swr";
 import useSWRInfinite from "swr/infinite";
@@ -73,10 +74,9 @@ export default function OwnersDirectoryPage() {
 
   return (
     <PageShell
-      maxWidth="wide"
       icon={<Users className="h-5 w-5 text-[var(--color-accent-primary)]" />}
       title="Contributors"
-      description="Who is doing what — ownership, hotspots, dead-code burden, and bus-factor risk per person. Click any card to open the full profile."
+      description="Who knows what, mined from full git history. Ownership follows whoever wrote the surviving lines, not whoever committed last."
     >
       <OwnerDirectory
         owners={items}
@@ -88,6 +88,9 @@ export default function OwnersDirectoryPage() {
         filters={filters}
         onFiltersChange={setFilters}
         onLoadMore={() => setSize(size + 1)}
+        base={`/repos/${id}`}
+        hrefFor={(o) => `/repos/${id}/owners/${encodeURIComponent(o.key)}`}
+        LinkComponent={Link}
         onSelect={(o) =>
           router.push(`/repos/${id}/owners/${encodeURIComponent(o.key)}`)
         }

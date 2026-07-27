@@ -94,6 +94,26 @@
   --color-accent-muted: rgba(245, 149, 32, 0.12);
   --color-accent-secondary: #58436c;
 
+  /* Accent ramp — the one sanctioned way to colour a proportion: ordered
+     shares of a whole (a stacked bar, a histogram, an area chart), stepped
+     from the accent toward the page ground. Sequential, so position in the
+     ramp means magnitude; NOT for unrelated categories, which want either the
+     accent/secondary pair or plain neutrals.
+
+     Defined per theme rather than as one set of color-mix percentages,
+     because the mix that recedes gracefully into near-black disappears
+     entirely into cream. Light also starts a step down from full #f59520,
+     which is louder than it needs to be on a warm paper ground. */
+  --color-ramp-1: #e08a12;
+  --color-ramp-2: color-mix(in srgb, var(--color-accent-fill) 76%, var(--color-bg-inset));
+  --color-ramp-3: color-mix(in srgb, var(--color-accent-fill) 56%, var(--color-bg-inset));
+  --color-ramp-4: color-mix(in srgb, var(--color-accent-fill) 40%, var(--color-bg-inset));
+  --color-ramp-5: color-mix(in srgb, var(--color-accent-fill) 26%, var(--color-bg-inset));
+  /* Supporting cast beside an accent series. Same idea, no hue. */
+  --color-neutral-1: color-mix(in srgb, var(--color-text-tertiary) 62%, var(--color-bg-inset));
+  --color-neutral-2: color-mix(in srgb, var(--color-text-tertiary) 40%, var(--color-bg-inset));
+  --color-neutral-3: color-mix(in srgb, var(--color-text-tertiary) 22%, var(--color-bg-inset));
+
   /* Confidence system */
   --color-confidence-fresh: #1d8155;
   --color-confidence-stale: #9a6614;
@@ -376,6 +396,17 @@
   --color-accent-hover: #f7a94d;
   --color-accent-muted: rgba(245, 149, 32, 0.16);
   --color-accent-secondary: #a98fc4;
+
+  /* Accent ramp — see the light block. Steeper here: mixing toward #0a0a0b
+     loses luminance fast, so the same percentages would bottom out invisible. */
+  --color-ramp-1: #f59520;
+  --color-ramp-2: color-mix(in srgb, var(--color-accent-fill) 64%, var(--color-bg-inset));
+  --color-ramp-3: color-mix(in srgb, var(--color-accent-fill) 42%, var(--color-bg-inset));
+  --color-ramp-4: color-mix(in srgb, var(--color-accent-fill) 27%, var(--color-bg-inset));
+  --color-ramp-5: color-mix(in srgb, var(--color-accent-fill) 16%, var(--color-bg-inset));
+  --color-neutral-1: color-mix(in srgb, var(--color-text-tertiary) 70%, var(--color-bg-inset));
+  --color-neutral-2: color-mix(in srgb, var(--color-text-tertiary) 45%, var(--color-bg-inset));
+  --color-neutral-3: color-mix(in srgb, var(--color-text-tertiary) 26%, var(--color-bg-inset));
 
   --color-confidence-fresh: #34d399;
   --color-confidence-stale: #f2a03d;
