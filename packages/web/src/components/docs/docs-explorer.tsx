@@ -56,7 +56,9 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
   } = useSWR(
     selectedPageId ? `page:${selectedPageId}` : null,
     () => getPageById(selectedPageId!),
-    { revalidateOnFocus: false },
+    // No retry: the one expected failure is a ?page= id that no longer exists,
+    // and retrying a 404 just delays the empty state.
+    { revalidateOnFocus: false, shouldRetryOnError: false },
   );
   const [treePanelOpen, setTreePanelOpen] = useState(() => {
     if (typeof window === "undefined") return true;
@@ -110,9 +112,11 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
   const pageParam = searchParams.get("page");
   useEffect(() => {
     if (pageParam) {
-      // Only follow the param to a page that exists, so a stale link doesn't
-      // strand the reader on a 404 instead of the wiki it asked for.
-      if (pages.some((p) => p.id === pageParam)) setSelectedPageId(pageParam);
+      // Set straight from the URL without waiting for the list: a page id is
+      // enough to fetch it, so the reading column and the tree load side by
+      // side rather than one behind the other. An id that turns out not to
+      // exist resolves to the reader's empty state, same as before.
+      setSelectedPageId(pageParam);
       return;
     }
     // No ?page= in the URL — open the repo overview by default (falling back
@@ -263,14 +267,11 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
     </div>
   );
 
+  // The reader no longer waits on the page list — it has an id from the URL
+  // and fetches its own page — so the only thing that blocks on the list is
+  // knowing whether there is any documentation at all.
   let body: React.ReactNode;
-  if (isLoading) {
-    body = (
-      <div className="flex-1 flex items-center justify-center">
-        <Skeleton className="h-8 w-48 rounded" />
-      </div>
-    );
-  } else if (pages.length === 0) {
+  if (!isLoading && pages.length === 0) {
     body = (
       <div className="flex flex-col items-center justify-center h-full gap-4 text-center px-8">
         <div className="rounded-full bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] p-4">
@@ -293,7 +294,9 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
           page={selectedPage}
           pages={pages}
           repoId={repoId}
-          isLoading={pageLoading}
+          // Reading-column skeleton while its own page is in flight, and while
+          // the list is still deciding which page to open on.
+          isLoading={pageLoading || (!selectedPageId && isLoading)}
           onSelectPage={handleSelectPage}
           persona={persona}
           sidebarOpen={sidebarOpen}
