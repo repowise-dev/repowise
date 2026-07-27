@@ -145,9 +145,10 @@ def test_semantic_search_reads_through_the_repo_resolver(
 
     seen: list[str] = []
 
+    from repowise.core.providers.embedding.base import EmbedderResult
     def _record(name: str):
         seen.append(name)
-        return MockEmbedder()
+        return EmbedderResult(embedder=MockEmbedder())
 
     monkeypatch.setattr("repowise.cli.providers.embedders.build_embedder", _record)
     monkeypatch.setattr(search_cmd, "_display_results", lambda *a, **k: None)
@@ -249,8 +250,9 @@ async def test_reindex_persists_its_resolved_embedder(
     )
     # _reindex imports build_embedder from this module inside the function, so
     # the module attribute is the one that takes effect.
+    from repowise.core.providers.embedding.base import EmbedderResult
     monkeypatch.setattr(
-        "repowise.cli.providers.embedders.build_embedder", lambda _n: _WideEmbedder()
+        "repowise.cli.providers.embedders.build_embedder", lambda _n: EmbedderResult(embedder=_WideEmbedder())
     )
 
     await reindex_cmd._reindex(tmp_path, "openai", batch_size=8)
@@ -298,8 +300,9 @@ async def test_reindex_does_not_pin_an_embedder_that_wrote_nothing(
     monkeypatch.setattr(
         "sqlalchemy.ext.asyncio.async_sessionmaker", lambda *a, **k: lambda: _Session()
     )
+    from repowise.core.providers.embedding.base import EmbedderResult
     monkeypatch.setattr(
-        "repowise.cli.providers.embedders.build_embedder", lambda _n: _WideEmbedder()
+        "repowise.cli.providers.embedders.build_embedder", lambda _n: EmbedderResult(embedder=_WideEmbedder())
     )
 
     await reindex_cmd._reindex(tmp_path, "openai", batch_size=8)
