@@ -348,10 +348,11 @@ repowise init --no-claude-md .
 
 *Project-local*, all inside the repo, versionable, one set per repo:
 `.repowise/mcp.json`, `.mcp.json`, `.claude/CLAUDE.md`, `AGENTS.md`,
-`.vscode/mcp.json`, `.vscode/extensions.json`, `.codex/`. Three have an opt-out
-flag (`--no-claude-md`, `--agents`, `--codex`) and the VS Code pair is
-prompt-gated in an interactive run. Only `.repowise/mcp.json` and the root
-`.mcp.json` are written unconditionally.
+`.vscode/mcp.json`, `.vscode/extensions.json`, `.codex/`. The internal
+`.repowise/mcp.json` is always written. `--no-project-files` skips every other
+entry and persists the per-file choices so `update` does not recreate them.
+`--project-files` restores them; narrower flags such as `--no-claude-md`,
+`--agents`, and `--codex` can override individual choices.
 
 *Machine-wide*, outside the repo, one shared copy for every repo you index, all
 written by `register_editor_clients()` in `editor_setup.py`:
@@ -374,6 +375,13 @@ hook offer, and leaves the project-local files alone:
 ```bash
 # Index the repo, leave everything outside it untouched
 repowise init --no-editor-setup --yes .
+```
+
+To leave the index under `.repowise/` but avoid adding editor files to the
+working tree, combine it with the project-file switch:
+
+```bash
+repowise init --no-editor-setup --no-project-files --yes .
 ```
 
 Reach for it whenever the checkout or the binary running `init` is temporary:

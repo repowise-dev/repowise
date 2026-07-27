@@ -543,6 +543,16 @@ def _run_generation_phase(
     ),
 )
 @click.option(
+    "--project-files/--no-project-files",
+    "project_files",
+    default=None,
+    help=(
+        "Generate or skip editor files outside .repowise, including .mcp.json, "
+        "CLAUDE.md, AGENTS.md, .vscode, and .codex config. The explicit choice "
+        "is saved so update preserves it; omit the flag to use saved preferences."
+    ),
+)
+@click.option(
     "--include-submodules",
     is_flag=True,
     default=False,
@@ -702,6 +712,7 @@ def init_command(
     codex_setup: bool | None,
     distill_hook: bool | None,
     editor_setup: bool,
+    project_files: bool | None,
     include_submodules: bool,
     no_workspace: bool,
     init_all: bool,
@@ -846,6 +857,7 @@ def init_command(
             codex_setup=codex_setup,
             distill_hook=distill_hook,
             editor_setup=editor_setup,
+            project_files=project_files,
             include_submodules=include_submodules,
             provider_name=provider_name,
             model=model,
@@ -1041,9 +1053,11 @@ def init_command(
         ),
         project_file_overrides=get_default_project_file_overrides(
             agents_md=agents_md,
+            project_files=project_files,
         ),
         integration_overrides=get_default_integration_overrides(
             codex_setup=codex_setup,
+            project_files=project_files,
         ),
         # Prompt for CLAUDE.md / AGENTS.md / Codex setup whenever the user is
         # engaging interactively — either generating docs or customizing an

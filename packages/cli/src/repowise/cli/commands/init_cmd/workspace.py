@@ -547,6 +547,7 @@ def _workspace_init(
     codex_setup: bool | None,
     distill_hook: bool | None,
     editor_setup: bool,
+    project_files: bool | None,
     include_submodules: bool,
     # Generation params (passed through from init_command)
     provider_name: str | None = None,
@@ -732,9 +733,11 @@ def _workspace_init(
         ),
         project_file_overrides=get_default_project_file_overrides(
             agents_md=agents_md,
+            project_files=project_files,
         ),
         integration_overrides=get_default_integration_overrides(
             codex_setup=codex_setup,
+            project_files=project_files,
         ),
     )
 

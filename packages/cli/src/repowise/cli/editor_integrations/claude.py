@@ -14,6 +14,7 @@ from repowise.cli.helpers import get_db_url_for_repo, load_config, run_async
 class ClaudeCodeSetup:
     """Claude Code/Desktop setup integration preserving existing init behavior."""
 
+    root_mcp_project_file_id = "root_mcp"
     project_file_id = "claude_md"
 
     def configure_options(
@@ -24,6 +25,7 @@ class ClaudeCodeSetup:
         if (
             not options.prompt_for_project_files
             or self.project_file_id in options.disabled_project_files
+            or self.project_file_id in options.project_file_overrides
         ):
             return options
         if _prompt_claude_md_enabled(console_obj):
@@ -36,13 +38,28 @@ class ClaudeCodeSetup:
         repo_path: Path,
         options: EditorSetupOptions,
     ) -> None:
+        from repowise.cli.editor_files import set_editor_file_enabled, should_generate_editor_file
         from repowise.cli.mcp_config import save_root_mcp_config
 
-        save_root_mcp_config(repo_path)
+        root_mcp_override = options.project_file_overrides.get(self.root_mcp_project_file_id)
+        if (
+            self.root_mcp_project_file_id not in options.disabled_project_files
+            and should_generate_editor_file(
+                repo_path,
+                self.root_mcp_project_file_id,
+                override=root_mcp_override,
+            )
+        ):
+            save_root_mcp_config(repo_path)
+
+        claude_md_override = options.project_file_overrides.get(self.project_file_id)
+        claude_md_disabled = self.project_file_id in options.disabled_project_files
+        if claude_md_override is not None:
+            set_editor_file_enabled(repo_path, self.project_file_id, claude_md_override)
         maybe_generate_claude_md(
             console_obj,
             repo_path,
-            no_claude_md=self.project_file_id in options.disabled_project_files,
+            no_claude_md=claude_md_disabled or claude_md_override is False,
         )
 
     def register_client(self, console_obj: Any, repo_path: Path) -> None:

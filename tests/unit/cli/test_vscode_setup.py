@@ -210,6 +210,19 @@ def test_vscode_setup_refresh_skips_when_disabled(tmp_path: Path) -> None:
     assert not (tmp_path / ".vscode").exists()
 
 
+def test_vscode_setup_refresh_respects_persisted_opt_out(tmp_path: Path) -> None:
+    config_path = tmp_path / ".repowise" / "config.yaml"
+    config_path.parent.mkdir()
+    config_path.write_text(
+        "editor_files:\n  vscode_mcp: false\n",
+        encoding="utf-8",
+    )
+
+    VSCodeSetup().refresh_project_files(_silent_console(), tmp_path, EditorSetupOptions())
+
+    assert not (tmp_path / ".vscode").exists()
+
+
 def test_vscode_setup_warns_and_preserves_jsonc_file(tmp_path: Path) -> None:
     config_path = tmp_path / ".vscode" / "mcp.json"
     config_path.parent.mkdir(parents=True)

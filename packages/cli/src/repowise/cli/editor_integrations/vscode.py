@@ -29,6 +29,7 @@ class VSCodeSetup:
         if (
             not options.prompt_for_project_files
             or self.project_file_id in options.disabled_project_files
+            or self.project_file_id in options.project_file_overrides
         ):
             return options
         if _prompt_vscode_enabled(console_obj):
@@ -41,7 +42,7 @@ class VSCodeSetup:
         repo_path: Path,
         options: EditorSetupOptions,
     ) -> None:
-        if self.project_file_id in options.disabled_project_files:
+        if not self._project_files_enabled(repo_path, options):
             return
         _write_vscode_files(console_obj, repo_path)
 
@@ -56,9 +57,24 @@ class VSCodeSetup:
         repo_path: Path,
         options: EditorSetupOptions,
     ) -> None:
-        if self.project_file_id in options.disabled_project_files:
+        if not self._project_files_enabled(repo_path, options):
             return
         _write_vscode_files(console_obj, repo_path)
+
+    def _project_files_enabled(
+        self,
+        repo_path: Path,
+        options: EditorSetupOptions,
+    ) -> bool:
+        if self.project_file_id in options.disabled_project_files:
+            return False
+        from repowise.cli.editor_files import should_generate_editor_file
+
+        return should_generate_editor_file(
+            repo_path,
+            self.project_file_id,
+            override=options.project_file_overrides.get(self.project_file_id),
+        )
 
 
 def _prompt_vscode_enabled(console_obj: Any) -> bool:
