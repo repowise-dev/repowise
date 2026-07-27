@@ -1,0 +1,217 @@
+"""CLI coverage for ``repowise decision`` subcommands."""
+
+from __future__ import annotations
+
+import asyncio
+from pathlib import Path
+
+import pytest
+from click.testing import CliRunner
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+from repowise.cli.main import cli
+from repowise.core.persistence.database import init_db
+from repowise.core.persistence.models import DecisionRecord, Repository
+
+_REPO_ID = "decision-cli-repo"
+
+
+def _seed_wiki_db(repo_root: Path, decisions: list[dict]) -> None:
+    """Create ``.repowise/wiki.db`` with a repository row and decision records."""
+
+    async def _build() -> None:
+        db_path = repo_root / ".repowise" / "wiki.db"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        engine = create_async_engine(f"sqlite+aiosqlite:///{db_path.as_posix()}")
+        await init_db(engine)
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        async with factory() as session:
+            session.add(Repository(id=_REPO_ID, name=repo_root.name, local_path=str(repo_root)))
+            for spec in decisions:
+                session.add(
+                    DecisionRecord(
+                        id=spec["id"],
+                        repository_id=_REPO_ID,
+                        title=spec["title"],
+                        decision=spec.get("decision", "use X"),
+                        rationale=spec.get("rationale", "because Y"),
+                        context=spec.get("context", "forced by Z"),
+                        status=spec.get("status", "active"),
+                        source=spec.get("source", "cli"),
+                        confidence=spec.get("confidence", 0.9),
+                        staleness_score=spec.get("staleness", 0.0),
+                        evidence_file=spec["id"],
+                    )
+                )
+            await session.commit()
+        await engine.dispose()
+
+    asyncio.run(_build())
+
+
+@pytest.fixture
+def indexed_repo(tmp_path: Path) -> Path:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".repowise").mkdir()
+    return repo
+
+
+def test_decision_help_lists_subcommands() -> None:
+    result = CliRunner().invoke(cli, ["decision", "--help"])
+
+    assert result.exit_code == 0, result.output
+    for name in ("add", "list", "show", "confirm", "dismiss", "deprecate", "health"):
+        assert name in result.output
+
+
+def test_decision_list_help_lists_filters() -> None:
+    result = CliRunner().invoke(cli, ["decision", "list", "--help"])
+
+    assert result.exit_code == 0, result.output
+    assert "--status" in result.output
+    assert "--source" in result.output
+    assert "--proposed" in result.output
+    assert "--stale-only" in result.output
+
+
+def test_decision_list_empty_repo_prints_none_found(indexed_repo: Path) -> None:
+    result = CliRunner().invoke(cli, ["decision", "list", str(indexed_repo)])
+
+    assert result.exit_code == 0, result.output
+    assert "No decisions found." in result.output
+
+
+def test_decision_list_and_show_seeded_records(indexed_repo: Path) -> None:
+    _seed_wiki_db(
+        indexed_repo,
+        [
+            {
+                "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "title": "Prefer SQLite locally",
+                "status": "active",
+                "source": "cli",
+            },
+            {
+                "id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "title": "Propose Redis sessions",
+                "status": "proposed",
+                "source": "git_archaeology",
+            },
+        ],
+    )
+
+    listed = CliRunner().invoke(cli, ["decision", "list", str(indexed_repo)])
+    assert listed.exit_code == 0, listed.output
+    assert "aaaaaaaa" in listed.output
+    assert "bbbbbbbb" in listed.output
+    assert "Prefer" in listed.output and "SQLite" in listed.output
+    assert "Propose" in listed.output and "Redis" in listed.output
+    assert "active" in listed.output
+    assert "proposed" in listed.output
+
+    proposed = CliRunner().invoke(cli, ["decision", "list", "--proposed", str(indexed_repo)])
+    assert proposed.exit_code == 0, proposed.output
+    assert "bbbbbbbb" in proposed.output
+    assert "Propose" in proposed.output
+    assert "aaaaaaaa" not in proposed.output
+    assert "Prefer" not in proposed.output
+
+    shown = CliRunner().invoke(cli, ["decision", "show", "aaaaaaaa", str(indexed_repo)])
+    assert shown.exit_code == 0, shown.output
+    assert "Prefer SQLite locally" in shown.output
+    assert "Status: active" in shown.output
+    assert "use X" in shown.output
+
+
+def test_decision_confirm_promotes_proposed(indexed_repo: Path) -> None:
+    _seed_wiki_db(
+        indexed_repo,
+        [
+            {
+                "id": "cccccccccccccccccccccccccccccccc",
+                "title": "Needs confirmation",
+                "status": "proposed",
+            }
+        ],
+    )
+
+    result = CliRunner().invoke(cli, ["decision", "confirm", "cccccccc", str(indexed_repo)])
+    assert result.exit_code == 0, result.output
+    assert "confirmed (active)" in result.output
+
+    shown = CliRunner().invoke(cli, ["decision", "show", "cccccccc", str(indexed_repo)])
+    assert shown.exit_code == 0, shown.output
+    assert "Status: active" in shown.output
+
+
+def test_decision_dismiss_and_deprecate(indexed_repo: Path) -> None:
+    _seed_wiki_db(
+        indexed_repo,
+        [
+            {
+                "id": "dddddddddddddddddddddddddddddddd",
+                "title": "Dismiss me",
+                "status": "proposed",
+            },
+            {
+                "id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                "title": "Deprecate me",
+                "status": "active",
+            },
+        ],
+    )
+
+    dismissed = CliRunner().invoke(
+        cli, ["decision", "dismiss", "dddddddd", str(indexed_repo)], input="y\n"
+    )
+    assert dismissed.exit_code == 0, dismissed.output
+    assert "dismissed" in dismissed.output
+
+    deprecated = CliRunner().invoke(cli, ["decision", "deprecate", "eeeeeeee", str(indexed_repo)])
+    assert deprecated.exit_code == 0, deprecated.output
+    assert "deprecated" in deprecated.output
+
+
+def test_decision_ambiguous_prefix_errors(indexed_repo: Path) -> None:
+    _seed_wiki_db(
+        indexed_repo,
+        [
+            {"id": "ffff1111111111111111111111111111", "title": "One"},
+            {"id": "ffff2222222222222222222222222222", "title": "Two"},
+        ],
+    )
+
+    result = CliRunner().invoke(cli, ["decision", "show", "ffff", str(indexed_repo)])
+    assert result.exit_code != 0
+    assert "ambiguous" in result.output.lower()
+
+
+def test_decision_health_prints_summary(indexed_repo: Path) -> None:
+    _seed_wiki_db(
+        indexed_repo,
+        [
+            {
+                "id": "gggggggggggggggggggggggggggggggg",
+                "title": "Active one",
+                "status": "active",
+            },
+            {
+                "id": "hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh",
+                "title": "Proposed one",
+                "status": "proposed",
+            },
+            {
+                "id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+                "title": "Stale one",
+                "status": "active",
+                "staleness": 0.8,
+            },
+        ],
+    )
+
+    result = CliRunner().invoke(cli, ["decision", "health", str(indexed_repo)])
+    assert result.exit_code == 0, result.output
+    assert "Decision Health" in result.output
+    assert "Active decisions" in result.output
+    assert "Proposed (needs review)" in result.output
