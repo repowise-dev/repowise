@@ -67,7 +67,7 @@ class ScalaDynamicHints(DynamicHintExtractor):
             if _RUNTIME_MIRROR_RE.search(text) or _REFLECT_RUNTIME_RE.search(text):
                 edges.append(DynamicEdge(
                     source=rel,
-                    target=f"external:scala_reflect",
+                    target="external:scala_reflect",
                     edge_type="dynamic_uses",
                     hint_source=f"{self.name}:runtime_mirror",
                 ))

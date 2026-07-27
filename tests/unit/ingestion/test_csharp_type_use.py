@@ -19,11 +19,9 @@ from repowise.core.ingestion.parser import ASTParser
 from repowise.core.ingestion.resolvers.context import ResolverContext
 from repowise.core.ingestion.resolvers.dotnet.index import build_index
 from repowise.core.ingestion.resolvers.dotnet.namespace_map import (
-    build_namespace_map,
     declared_type_names,
 )
 from repowise.core.ingestion.type_ref_resolution import resolve_type_refs
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

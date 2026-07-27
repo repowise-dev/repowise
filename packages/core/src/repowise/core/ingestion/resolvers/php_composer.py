@@ -50,7 +50,7 @@ def read_composer_psr4(repo_path: Path | None) -> dict[str, list[str]]:
     return result
 
 
-def get_or_build_psr4_map(ctx: "ResolverContext") -> dict[str, list[str]]:
+def get_or_build_psr4_map(ctx: ResolverContext) -> dict[str, list[str]]:
     cached = getattr(ctx, "_php_psr4_map", None)
     if cached is not None:
         return cached
@@ -59,7 +59,7 @@ def get_or_build_psr4_map(ctx: "ResolverContext") -> dict[str, list[str]]:
     return psr4
 
 
-def resolve_via_psr4(module_path: str, ctx: "ResolverContext") -> str | None:
+def resolve_via_psr4(module_path: str, ctx: ResolverContext) -> str | None:
     """Try PSR-4 prefix matching from composer.json. Returns repo-relative
     path or None.
 

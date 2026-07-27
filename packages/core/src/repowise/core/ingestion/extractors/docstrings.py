@@ -14,7 +14,6 @@ from .helpers import (
     node_text,
 )
 
-
 # C# XML doc comments use a small set of tags. We extract <summary> as the
 # primary docstring text and drop the structural markup. The fragments are
 # rarely strict XML (e.g. unclosed <see cref="..."/> in legacy code), so a

@@ -81,7 +81,7 @@ def _head_type(raw: str) -> str:
 
 
 def resolve_csharp_member_reads(
-    graph: "nx.DiGraph",
+    graph: nx.DiGraph,
     cs_texts: dict[str, str],
     type_to_file: dict[str, str],
 ) -> int:
@@ -140,7 +140,7 @@ def resolve_csharp_member_reads(
     return count
 
 
-def _add_reads_edge(graph: "nx.DiGraph", source: str, target: str) -> bool:
+def _add_reads_edge(graph: nx.DiGraph, source: str, target: str) -> bool:
     """Add a ``reads`` edge if no edge already connects source → target.
 
     A stronger pre-existing edge (``imports``, ``calls``, ``type_use``,

@@ -6,9 +6,9 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+from repowise.core.ingestion import wire_tsconfig_resolver
 from repowise.core.ingestion.graph import GraphBuilder
 from repowise.core.ingestion.models import FileInfo, Import, ParsedFile
-from repowise.core.ingestion import wire_tsconfig_resolver
 
 
 def test_tsconfig_alias_cli_rebuild(tmp_path: Path) -> None:

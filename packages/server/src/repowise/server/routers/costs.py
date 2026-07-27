@@ -52,7 +52,7 @@ def _parse_since(since: str | None) -> datetime | None:
 async def get_cost_summary(
     repo_id: str,
     since: str | None = Query(None, description="ISO date filter, e.g. 2025-01-01"),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> CostSummaryResponse:
     """Return aggregate cost totals for a repository."""
     since_dt = _parse_since(since)
@@ -84,7 +84,7 @@ async def list_costs(
     repo_id: str,
     since: str | None = Query(None, description="ISO date filter, e.g. 2025-01-01"),
     by: str = Query("day", description="Grouping dimension: operation | model | day"),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> list[CostGroupResponse]:
     """Return grouped cost totals for a repository."""
     since_dt = _parse_since(since)
@@ -132,7 +132,7 @@ async def list_costs(
 async def get_distill_savings(
     repo_id: str,
     since: str | None = Query(None, description="ISO date filter, e.g. 2025-01-01"),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> DistillSavingsResponse:
     """Savings rollup from the repo's omission store sidecar.
 

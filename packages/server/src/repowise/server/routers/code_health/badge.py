@@ -84,7 +84,7 @@ async def _badge_average_health(session: AsyncSession, repo_id: str) -> float | 
 @router.get("/api/repos/{repo_id}/health/badge.json")
 async def health_badge_json(
     repo_id: str,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     """Shields.io endpoint-badge payload (color + ``N.N/10`` score, no letter).
 
@@ -104,7 +104,7 @@ async def health_badge_json(
 @router.get("/api/repos/{repo_id}/health/badge.svg")
 async def health_badge_svg(
     repo_id: str,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> Response:
     """Self-rendered flat SVG health badge (no external service round-trip)."""
     avg = await _badge_average_health(session, repo_id)

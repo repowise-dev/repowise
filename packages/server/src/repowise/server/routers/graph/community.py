@@ -38,7 +38,7 @@ async def architecture_graph(
     min_members: int = Query(
         2, ge=1, description="Drop communities smaller than this from the view."
     ),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
     _repo: object = Depends(with_repo),
 ) -> ArchitectureGraphResponse:
     """High-level architecture view: one node per detected community."""
@@ -53,7 +53,7 @@ async def community_slice(
     repo_id: str,
     community_id: int,
     member_limit: int = Query(SLICE_MEMBER_CAP, ge=1, le=600),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
     _repo: object = Depends(with_repo),
 ) -> CommunitySliceResponse:
     """Return a single community's sub-graph for the constellation blossom."""
@@ -66,7 +66,7 @@ async def community_slice(
 async def list_communities(
     repo_id: str,
     limit: int = Query(20, ge=1, le=100),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
     _repo: object = Depends(with_repo),
 ) -> list[CommunitySummaryItem]:
     """Return top communities by member count with labels and cohesion scores."""
@@ -106,7 +106,7 @@ async def get_community_detail(
     community_id: int,
     include_members: bool = Query(True),
     member_limit: int = Query(30, ge=1, le=200),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
     _repo: object = Depends(with_repo),
 ) -> CommunityDetailResponse:
     """Return detailed info for a single community."""

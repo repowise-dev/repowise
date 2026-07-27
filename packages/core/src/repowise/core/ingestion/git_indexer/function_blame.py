@@ -180,7 +180,7 @@ def _parse_porcelain(
         # Header lines are space-separated; only the very first header of a
         # block starts with a 40-char hex sha. Other headers start with
         # alphabetic keywords (author, committer, summary, previous, filename).
-        head, _, rest = line.partition(" ")
+        head, _, _rest = line.partition(" ")
         if len(head) == 40 and all(c in "0123456789abcdef" for c in head):
             parts = line.split(" ")
             current_sha = parts[0]
@@ -225,7 +225,7 @@ def build_blame_index(
         # ``--line-porcelain`` repeats headers on every line which makes the
         # parser robust to out-of-order line emission from --incremental.
         raw = repo.git.blame("--line-porcelain", "HEAD", "--", file_path)
-    except Exception as exc:  # noqa: BLE001 — blame is best-effort
+    except Exception as exc:
         logger.debug(
             "blame_index_failed",
             path=file_path,

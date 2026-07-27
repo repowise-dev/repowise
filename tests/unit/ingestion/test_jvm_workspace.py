@@ -8,7 +8,6 @@ import networkx as nx
 
 from repowise.core.ingestion.resolvers.context import ResolverContext
 from repowise.core.ingestion.resolvers.jvm_workspace import (
-    JvmWorkspaceIndex,
     build_jvm_workspace_index,
 )
 
@@ -153,7 +152,7 @@ class TestJvmWorkspaceIndex:
         index = build_jvm_workspace_index(ctx)
 
         assert len(index.autoconfig_imports) == 1
-        key = list(index.autoconfig_imports.keys())[0]
+        key = next(iter(index.autoconfig_imports.keys()))
         fqns = index.autoconfig_imports[key]
         assert "com.example.MyAutoConfig" in fqns
         assert "com.example.OtherConfig" in fqns

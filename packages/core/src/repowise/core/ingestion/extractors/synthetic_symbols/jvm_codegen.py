@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     from tree_sitter import Node
 
 
-def _has_marker_annotation(node: "Node", marker: str, src: str) -> bool:
+def _has_marker_annotation(node: Node, marker: str, src: str) -> bool:
     """Walk the modifiers block looking for an annotation by bare name.
 
     Handles ``@Mapper``, ``@AutoValue``, and ``@Value.Immutable`` —
@@ -48,7 +48,7 @@ def _has_marker_annotation(node: "Node", marker: str, src: str) -> bool:
 
 
 def jvm_codegen_synthetic_symbols(
-    root: "Node", src: str, file_info: FileInfo
+    root: Node, src: str, file_info: FileInfo
 ) -> list[Symbol]:
     """Emit ``XMapperImpl`` / ``AutoValue_X`` / ``ImmutableX`` symbol stubs."""
     # Cheap reject path — no annotations means no generated names.

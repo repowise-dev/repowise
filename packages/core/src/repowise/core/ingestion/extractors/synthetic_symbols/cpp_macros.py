@@ -78,7 +78,7 @@ def _line_of(src: str, offset: int) -> int:
 
 
 def cpp_macro_synthetic_symbols(
-    root: "Node", src: str, file_info: FileInfo
+    root: Node, src: str, file_info: FileInfo
 ) -> list[Symbol]:
     """Emit synthetic symbols for static-init registration macros."""
     # Cheap reject — vast majority of C/C++ TUs don't use any of these.

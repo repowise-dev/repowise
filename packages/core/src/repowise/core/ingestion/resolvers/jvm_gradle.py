@@ -163,10 +163,7 @@ def _module_dir(repo_path: Path, module_name: str, overrides: dict[str, str]) ->
 
 def _is_test_source_set(name: str) -> bool:
     lower = name.lower()
-    for marker in _TEST_SOURCESET_MARKERS:
-        if marker in lower:
-            return True
-    return False
+    return any(marker in lower for marker in _TEST_SOURCESET_MARKERS)
 
 
 def _detect_source_sets_from_dirs(module_dir: Path) -> list[SourceSet]:
@@ -379,7 +376,7 @@ def build_jvm_gradle_index(
     return index
 
 
-def get_or_build_jvm_gradle_index(ctx: "ResolverContext") -> JvmGradleIndex:
+def get_or_build_jvm_gradle_index(ctx: ResolverContext) -> JvmGradleIndex:
     """Return the cached JvmGradleIndex, building it on first access."""
     cached = getattr(ctx, "_jvm_gradle_index", None)
     if cached is not None:
@@ -389,7 +386,7 @@ def get_or_build_jvm_gradle_index(ctx: "ResolverContext") -> JvmGradleIndex:
     return index
 
 
-def resolve_via_jvm_gradle_index(module_path: str, ctx: "ResolverContext") -> str | None:
+def resolve_via_jvm_gradle_index(module_path: str, ctx: ResolverContext) -> str | None:
     """Resolve an FQN to a single file via the Gradle index."""
     index = get_or_build_jvm_gradle_index(ctx)
     matches = index.lookup_class(module_path)
@@ -423,12 +420,12 @@ def build_kotlin_index(repo_path: Path | None) -> KotlinProjectIndex:
     return KotlinProjectIndex(_inner=build_jvm_gradle_index(repo_path))
 
 
-def get_or_build_kotlin_index(ctx: "ResolverContext") -> KotlinProjectIndex:
+def get_or_build_kotlin_index(ctx: ResolverContext) -> KotlinProjectIndex:
     """Back-compat: return a KotlinProjectIndex wrapping the JVM Gradle index."""
     jvm_index = get_or_build_jvm_gradle_index(ctx)
     return KotlinProjectIndex(_inner=jvm_index)
 
 
-def resolve_via_kotlin_index(module_path: str, ctx: "ResolverContext") -> str | None:
+def resolve_via_kotlin_index(module_path: str, ctx: ResolverContext) -> str | None:
     """Back-compat: resolve via the JVM Gradle index."""
     return resolve_via_jvm_gradle_index(module_path, ctx)

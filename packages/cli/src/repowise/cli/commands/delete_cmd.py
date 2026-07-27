@@ -114,11 +114,10 @@ def delete_command(repo_id: str | None, force: bool, path: str | None) -> None:
             f"[yellow]{pcount} pages[/yellow] will be removed."
         )
 
-        if not force:
-            if not click.confirm("Are you sure?", default=False):
-                console.print("Cancelled.")
-                await engine.dispose()
-                return
+        if not force and not click.confirm("Are you sure?", default=False):
+            console.print("Cancelled.")
+            await engine.dispose()
+            return
 
         # Collect page IDs, clean FTS, delete repo
         async with get_session(sf) as session:

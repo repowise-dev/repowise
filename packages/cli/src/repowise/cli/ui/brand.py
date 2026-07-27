@@ -91,10 +91,7 @@ def format_bytes(num_bytes: int) -> str:
     if num_bytes == 0:
         return "0 B"
     units = ("B", "KB", "MB", "GB", "TB")
-    exponent = min(int(math.floor(math.log(num_bytes, 1024))), len(units) - 1)
+    exponent = min(math.floor(math.log(num_bytes, 1024)), len(units) - 1)
     value = num_bytes / (1024**exponent)
-    if value >= 10 or exponent == 0:
-        formatted = f"{value:.0f}"
-    else:
-        formatted = f"{value:.1f}"
+    formatted = f"{value:.0f}" if value >= 10 or exponent == 0 else f"{value:.1f}"
     return f"{formatted} {units[exponent]}"

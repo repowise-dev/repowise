@@ -10,14 +10,12 @@ from unittest.mock import MagicMock
 import pytest
 
 from repowise.core.analysis.knowledge_graph import (
-    KnowledgeGraphResult,
     _classify_complexity,
     _classify_file_type,
     _slugify,
     build_knowledge_graph_skeleton,
     compute_kg_fingerprint,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

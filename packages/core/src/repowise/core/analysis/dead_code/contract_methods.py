@@ -26,7 +26,6 @@ overrides without static callers, etc.
 
 from __future__ import annotations
 
-
 # Method names reserved by COM / IUnknown / IDispatch. Case-sensitive —
 # Windows COM uses PascalCase universally.
 _COM_CONTRACT_METHOD_NAMES: frozenset[str] = frozenset({
@@ -138,7 +137,7 @@ _CPP_CONTRACT_METHOD_NAMES: frozenset[str] = frozenset({
     "operator()",
     "operator->",
     "operator->*",
-    "operator*",                 # also dereference; deduped by set
+    # also dereference; deduped by set
     # ---- Allocation operators (overloaded new/delete) ---------------
     "operator new",
     "operator new[]",

@@ -43,7 +43,7 @@ def _pascal_from_field(field_name: str) -> str | None:
     return first.upper() + rest
 
 
-def _attribute_names(attr_list_node: "Node", src: str) -> set[str]:
+def _attribute_names(attr_list_node: Node, src: str) -> set[str]:
     names: set[str] = set()
     for child in attr_list_node.children:
         if child.type != "attribute":
@@ -56,14 +56,14 @@ def _attribute_names(attr_list_node: "Node", src: str) -> set[str]:
     return names
 
 
-def _has_attribute(node: "Node", attr_name: str, src: str) -> bool:
+def _has_attribute(node: Node, attr_name: str, src: str) -> bool:
     for child in node.children:
         if child.type == "attribute_list" and attr_name in _attribute_names(child, src):
             return True
     return False
 
 
-def _first_field_name(field_node: "Node", src: str) -> str | None:
+def _first_field_name(field_node: Node, src: str) -> str | None:
     for child in field_node.children:
         if child.type == "variable_declaration":
             for sub in child.children:
@@ -74,7 +74,7 @@ def _first_field_name(field_node: "Node", src: str) -> str | None:
     return None
 
 
-def _first_method_name(method_node: "Node", src: str) -> str | None:
+def _first_method_name(method_node: Node, src: str) -> str | None:
     for child in method_node.children:
         if child.type == "identifier":
             return node_text(child, src).strip()
@@ -82,7 +82,7 @@ def _first_method_name(method_node: "Node", src: str) -> str | None:
 
 
 def _maybe_observable_property(
-    field_node: "Node", src: str, file_info: FileInfo
+    field_node: Node, src: str, file_info: FileInfo
 ) -> Symbol | None:
     if not _has_attribute(field_node, _OBSERVABLE_PROPERTY, src):
         return None
@@ -105,7 +105,7 @@ def _maybe_observable_property(
 
 
 def _maybe_relay_command(
-    method_node: "Node", src: str, file_info: FileInfo
+    method_node: Node, src: str, file_info: FileInfo
 ) -> Symbol | None:
     if not _has_attribute(method_node, _RELAY_COMMAND, src):
         return None
@@ -126,7 +126,7 @@ def _maybe_relay_command(
 
 
 def csharp_synthetic_symbols(
-    root: "Node", src: str, file_info: FileInfo
+    root: Node, src: str, file_info: FileInfo
 ) -> list[Symbol]:
     """Emit synthetic symbols for CommunityToolkit MVVM attributes."""
     out: list[Symbol] = []

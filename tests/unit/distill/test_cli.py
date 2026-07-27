@@ -303,7 +303,7 @@ def test_distill_does_not_eat_the_wrapped_commands_source_flag(repo_cwd: Path) -
     """--source after the command belongs to the command, not to distill."""
     result = CliRunner().invoke(
         distill_command,
-        _py("import sys; print(sys.argv[1:])") + ["--source", "mine"],
+        [*_py("import sys; print(sys.argv[1:])"), "--source", "mine"],
     )
     assert result.exit_code == 0
     assert "['--source', 'mine']" in result.output

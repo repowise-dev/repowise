@@ -20,7 +20,6 @@ from repowise.core.analysis.dead_code.go_reachability import (
     is_go_file_reachable,
 )
 
-
 # ---------------------------------------------------------------------------
 # Graph helper (mirrors tests/unit/test_dead_code.py)
 # ---------------------------------------------------------------------------

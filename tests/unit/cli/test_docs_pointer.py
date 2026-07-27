@@ -161,7 +161,7 @@ def test_stale_prose_is_reachable_after_intervening_index_only_updates(tmp_path:
     assert c2 != c1
 
     # Clear lock because atexit doesn't run in CliRunner
-    from repowise.cli.commands.update_cmd.command import release_update_lock, clear_update_queued
+    from repowise.cli.commands.update_cmd.command import clear_update_queued, release_update_lock
     release_update_lock(repo)
     clear_update_queued(repo)
 

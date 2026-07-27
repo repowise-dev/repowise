@@ -157,7 +157,7 @@ def build_scala_index(
     return index
 
 
-def get_or_build_scala_index(ctx: "ResolverContext") -> ScalaProjectIndex:
+def get_or_build_scala_index(ctx: ResolverContext) -> ScalaProjectIndex:
     cached = getattr(ctx, "_scala_index", None)
     if cached is not None:
         return cached
@@ -166,7 +166,7 @@ def get_or_build_scala_index(ctx: "ResolverContext") -> ScalaProjectIndex:
     return index
 
 
-def resolve_via_scala_index(module_path: str, ctx: "ResolverContext") -> str | None:
+def resolve_via_scala_index(module_path: str, ctx: ResolverContext) -> str | None:
     index = get_or_build_scala_index(ctx)
     matches = index.lookup_class(module_path)
     if matches:

@@ -34,7 +34,7 @@ async def list_dead_code(
     status: str = Query("open"),
     safe_only: bool = Query(False),
     limit: int = Query(100, ge=1, le=500),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> list[DeadCodeFindingResponse]:
     """List dead code findings for a repository."""
     findings = await crud.get_dead_code_findings(
@@ -57,7 +57,7 @@ async def list_dead_code(
 async def analyze_dead_code(
     repo_id: str,
     request: Request,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     """Trigger a fresh dead code analysis.
 
@@ -103,7 +103,7 @@ async def analyze_dead_code(
 )
 async def dead_code_summary(
     repo_id: str,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> DeadCodeSummaryResponse:
     """Get aggregate dead code statistics for a repository."""
     summary = await crud.get_dead_code_summary(session, repo_id)
@@ -114,7 +114,7 @@ async def dead_code_summary(
 async def resolve_finding(
     finding_id: str,
     body: DeadCodePatchRequest,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> DeadCodeFindingResponse:
     """Update the status of a dead code finding."""
     valid_statuses = {"acknowledged", "resolved", "false_positive", "open"}

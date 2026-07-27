@@ -50,7 +50,7 @@ async def list_pages(
         "of a listing's bytes, and read by nothing that renders a list of "
         "pages — and adds 'content_chars' in their place.",
     ),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> list[PageResponse] | list[PageSummaryResponse]:
     """List wiki pages for a repository."""
     if fields not in ("full", "summary"):
@@ -84,7 +84,7 @@ async def get_page_by_query(
         "reach a page outside the default store in workspace mode, where the "
         "session is routed by this value.",
     ),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> PageResponse:
     """Get a single wiki page by ID passed as query parameter.
 
@@ -106,7 +106,7 @@ async def get_page_by_query(
 async def get_page_versions_by_query(
     page_id: str = Query(..., description="Page ID"),
     limit: int = Query(50, ge=1, le=200),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> list[PageVersionResponse]:
     """Get version history for a wiki page (page_id as query param)."""
     versions = await crud.get_page_versions(session, page_id, limit=limit)
@@ -123,7 +123,7 @@ class PageNotesUpdate(BaseModel):
 async def update_page_notes(
     body: PageNotesUpdate,
     page_id: str = Query(..., description="Page ID"),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> PageResponse:
     """Set or clear the human-curated note pinned above a page's generated
     content. Notes survive regeneration, so this never touches versions."""
@@ -149,7 +149,7 @@ async def regenerate_page_by_query(
         "none",
         description="What to do with the pages that summarize this one: none / dependents / full.",
     ),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     """Force-regenerate a single wiki page (page_id as query param).
 
@@ -205,7 +205,7 @@ async def regenerate_page_by_query(
 @router.get("/{page_id:path}", response_model=PageResponse)
 async def get_page(
     page_id: str,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> PageResponse:
     """Get a single wiki page by ID in path (e.g. ``file_page:src/main.py``).
 

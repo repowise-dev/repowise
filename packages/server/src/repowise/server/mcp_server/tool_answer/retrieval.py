@@ -204,10 +204,7 @@ def _apply_domain_penalty(hits: list[dict], question: str) -> None:
     domain = _detect_question_domain(question)
     if domain is None or not hits:
         return
-    if domain == "backend":
-        bad_prefixes = _UI_PATH_PREFIXES
-    else:
-        bad_prefixes = _BACKEND_PATH_PREFIXES
+    bad_prefixes = _UI_PATH_PREFIXES if domain == "backend" else _BACKEND_PATH_PREFIXES
     touched = False
     for h in hits:
         tp = h.get("target_path") or ""

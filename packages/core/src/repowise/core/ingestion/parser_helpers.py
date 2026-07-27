@@ -260,9 +260,7 @@ def _head_type_identifier(type_node: Node, src: str) -> str | None:
     if head_node is None:
         return None
 
-    if head_node.type == "identifier":
-        text = _node_text(head_node, src)
-    elif head_node.type == "predefined_type":
+    if head_node.type == "identifier" or head_node.type == "predefined_type":
         text = _node_text(head_node, src)
     elif head_node.type == "generic_name":
         name_child = head_node.child_by_field_name("name") or next(
@@ -281,7 +279,7 @@ def _head_type_identifier(type_node: Node, src: str) -> str | None:
         ident = _first_descendant(head_node, "identifier")
         text = _node_text(ident, src) if ident else ""
 
-    if not text or not text[0].isalpha() and text[0] != "_":
+    if not text or (not text[0].isalpha() and text[0] != "_"):
         return None
     if text in _BUILTIN_CSHARP_TYPES:
         return None
@@ -863,7 +861,7 @@ def _kotlin_head_type_identifier(type_node: Node, src: str) -> str | None:
 # Per-language head-identifier extractor for ``@param.type`` captures.
 # Defaults to the C#-shaped extractor; languages with a differently-shaped
 # type grammar register their own here.
-TYPE_HEAD_EXTRACTORS: dict[str, "Callable[[Node, str], str | None]"] = {
+TYPE_HEAD_EXTRACTORS: dict[str, Callable[[Node, str], str | None]] = {
     "go": _go_head_type_identifier,
     "c": _c_head_type_identifier,
     "cpp": _c_head_type_identifier,

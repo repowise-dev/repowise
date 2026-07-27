@@ -5,11 +5,9 @@ a genuine per-iteration I/O boundary; every NEGATIVE is a shape the loop-body
 scoping / constant-loop skip / execution-sink gate must NOT flag.
 """
 
-import os
 import subprocess
 import time
 
-import httpx
 import requests
 from sqlalchemy import select
 
@@ -37,7 +35,7 @@ async def await_http_in_loop(client, urls):
 
 def string_concat_in_loop(rows):
     out = ""
-    for r in rows:
+    for _r in rows:
         out += "line\n"  # POSITIVE: string concat
     return out
 

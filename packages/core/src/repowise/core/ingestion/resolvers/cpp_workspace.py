@@ -32,7 +32,6 @@ degrade gracefully.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
@@ -338,10 +337,7 @@ def _register_target(index: CppWorkspaceIndex, t: CppTarget) -> None:
     # explicit ``target_include_directories`` call (catches the leveldb
     # layout where ``include/leveldb/*.h`` lives under the project root
     # with no explicit declaration).
-    if t.root_dir:
-        impl_inc = (PurePosixPath(t.root_dir) / "include").as_posix()
-    else:
-        impl_inc = "include"
+    impl_inc = (PurePosixPath(t.root_dir) / "include").as_posix() if t.root_dir else "include"
     if not any(d == impl_inc for d in search_roots):
         search_roots.append(impl_inc)
     index.target_include_search_dirs[t.id] = tuple(dict.fromkeys(search_roots))
@@ -359,7 +355,7 @@ def _register_target(index: CppWorkspaceIndex, t: CppTarget) -> None:
                 index.public_header_includes.setdefault(rel, hdr)
 
 
-def build_cpp_workspace_index(ctx: "ResolverContext") -> CppWorkspaceIndex:
+def build_cpp_workspace_index(ctx: ResolverContext) -> CppWorkspaceIndex:
     index = CppWorkspaceIndex()
     if ctx.repo_path is None:
         return index
@@ -434,7 +430,7 @@ def build_cpp_workspace_index(ctx: "ResolverContext") -> CppWorkspaceIndex:
 _INDEX_KEY = "_cpp_workspace_index"
 
 
-def get_or_build_cpp_index(ctx: "ResolverContext") -> CppWorkspaceIndex:
+def get_or_build_cpp_index(ctx: ResolverContext) -> CppWorkspaceIndex:
     cached = getattr(ctx, _INDEX_KEY, None)
     if cached is not None:
         return cached

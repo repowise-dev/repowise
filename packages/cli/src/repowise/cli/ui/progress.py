@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 
 from rich.console import Console
@@ -129,7 +130,5 @@ class RichProgressCallback:
     def set_cost(self, total_cost: float) -> None:
         """Update the live cost display on all active progress tasks."""
         for task_id in self._tasks.values():
-            try:
+            with contextlib.suppress(Exception):
                 self._progress.update(task_id, cost=total_cost)
-            except Exception:
-                pass

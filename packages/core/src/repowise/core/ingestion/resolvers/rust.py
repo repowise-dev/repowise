@@ -14,7 +14,7 @@ def _get_frozen_path_set(ctx: ResolverContext) -> frozenset[str]:
     if cached is not None:
         return cached
     frozen = frozenset(ctx.path_set)
-    setattr(ctx, "_rust_frozen_path_set", frozen)
+    ctx._rust_frozen_path_set = frozen
     return frozen
 
 
@@ -25,7 +25,7 @@ def _get_frozen_parsed_keys(ctx: ResolverContext) -> frozenset[str]:
         return cached
     parsed_files = ctx.parsed_files or {}
     frozen = frozenset(parsed_files.keys())
-    setattr(ctx, "_rust_frozen_parsed_keys", frozen)
+    ctx._rust_frozen_parsed_keys = frozen
     return frozen
 
 

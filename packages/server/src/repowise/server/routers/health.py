@@ -85,8 +85,8 @@ _repo_health_router = APIRouter(prefix="/api/repos", tags=["health"])
 @_repo_health_router.get("/{repo_id}/health/coordinator", response_model=CoordinatorHealthResponse)
 async def coordinator_health(
     repo_id: str,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
-    vector_store=Depends(get_vector_store),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
+    vector_store=Depends(get_vector_store),
 ) -> CoordinatorHealthResponse:
     """Return coordinator drift health for a repository."""
     coord = AtomicStorageCoordinator(session, graph_builder=None, vector_store=vector_store)

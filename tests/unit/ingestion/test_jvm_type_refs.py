@@ -10,7 +10,6 @@ from datetime import datetime
 from pathlib import Path
 
 import networkx as nx
-import pytest
 
 from repowise.core.ingestion.models import FileInfo, ParsedFile
 from repowise.core.ingestion.parser import parse_file
@@ -97,8 +96,8 @@ class TestJavaTypeRefs:
         resolve_type_refs(parsed, ctx, ctx.graph)
         edges = _type_use_edges(ctx.graph)
         assert any(
-            "src/main/java/com/foo/A.java" == u
-            and "src/main/java/com/foo/Bar.java" == v
+            u == "src/main/java/com/foo/A.java"
+            and v == "src/main/java/com/foo/Bar.java"
             and "Bar" in names
             for u, v, names in edges
         ), edges

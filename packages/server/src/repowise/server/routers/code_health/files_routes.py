@@ -48,7 +48,7 @@ async def list_health_files(
     only_hotspots: bool = Query(False),
     only_untested: bool = Query(False),
     only_failing: bool = Query(False, description="score < 7"),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     if sort not in _SORT_FIELDS:
         sort = "score"
@@ -120,7 +120,7 @@ async def list_health_files(
 async def file_score_breakdown(
     repo_id: str,
     file_path: str = Query(..., description="File path to break down"),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     repo = await crud.get_repository(session, repo_id)
     if repo is None:

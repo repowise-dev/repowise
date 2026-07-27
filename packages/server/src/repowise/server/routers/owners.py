@@ -9,9 +9,9 @@ from __future__ import annotations
 
 from urllib.parse import unquote
 
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from fastapi import APIRouter, Depends, HTTPException, Query
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.schemas import (
     OwnerCoAuthor,
@@ -164,7 +164,7 @@ async def list_owners(
     ),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> Paginated[OwnerListEntry]:
     """Directory of contributors with rollup stats — engineering-leader view."""
 
@@ -206,7 +206,7 @@ async def list_owners(
 async def get_owner(
     repo_id: str,
     owner_key: str,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> OwnerProfileResponse:
     """Full profile for one contributor.
 

@@ -705,7 +705,6 @@ class TestRotateUpdateLog:
 
     def test_truncates_when_over_cap(self, tmp_path):
         from repowise.cli.helpers import (
-            UPDATE_LOG_KEEP_TAIL_BYTES,
             UPDATE_LOG_MAX_BYTES,
             ensure_repowise_dir,
             rotate_update_log_if_needed,

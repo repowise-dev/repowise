@@ -14,7 +14,7 @@ import inspect
 import io
 import sys
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import PurePosixPath
 
 import networkx as nx
@@ -231,10 +231,9 @@ def _collect_path_segments(
                 and lower not in extra_generic
                 and len(lower) > 1
                 and not lower.startswith(".")
-            ):
-                if lower not in seen:
-                    counter[lower] += 1
-                    seen.add(lower)
+            ) and lower not in seen:
+                counter[lower] += 1
+                seen.add(lower)
     return counter
 
 
@@ -330,7 +329,7 @@ def _heuristic_label(
 
 
 def _deduplicate_labels(
-    communities_info: dict[int, "CommunityInfo"],
+    communities_info: dict[int, CommunityInfo],
     extra_generic: frozenset[str] = frozenset(),
 ) -> None:
     """Add sub-labels to disambiguate communities that share the same label.

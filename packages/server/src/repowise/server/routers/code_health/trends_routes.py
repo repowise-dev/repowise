@@ -19,7 +19,7 @@ from .serializers import _file_trend_to_dict
 async def file_health_trend(
     repo_id: str,
     file_path: str = Query(..., description="File path to chart over time"),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     """A single file's score-over-time series from the snapshot history.
 
@@ -36,7 +36,7 @@ async def file_health_trend(
 async def health_trend(
     repo_id: str,
     limit: int = Query(20, ge=1, le=50),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     repo = await crud.get_repository(session, repo_id)
     if repo is None:

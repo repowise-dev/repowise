@@ -9,10 +9,9 @@ in the same file (e.g. lint hooks, graphify hooks).
 
 from __future__ import annotations
 
-import os
+import contextlib
 import re
 import stat
-import sys
 from pathlib import Path
 
 _HOOK_MARKER = "# repowise-hook-start"
@@ -208,13 +207,11 @@ def install(repo_path: Path) -> str:
             content, replaced = _replace_marker_block(content, _HOOK_SCRIPT)
             if replaced:
                 hook_path.write_text(content, encoding="utf-8")
-                try:
+                with contextlib.suppress(OSError):
                     hook_path.chmod(
                         hook_path.stat().st_mode
                         | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH
                     )
-                except OSError:
-                    pass
                 return "upgraded"
             return "already installed"
         # Append to existing hook
@@ -226,10 +223,8 @@ def install(repo_path: Path) -> str:
         hook_path.write_text("#!/bin/sh\n" + _HOOK_SCRIPT, encoding="utf-8")
 
     # Make executable (no-op on Windows but harmless)
-    try:
+    with contextlib.suppress(OSError):
         hook_path.chmod(hook_path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
-    except OSError:
-        pass
 
     return "installed"
 

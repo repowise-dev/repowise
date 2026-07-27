@@ -17,7 +17,6 @@ from repowise.core.persistence.models import (
     KnowledgeGraphTourStep,
     Page,
     Repository,
-    WikiSymbol,
 )
 from repowise.core.persistence.search import FullTextSearch
 from repowise.core.persistence.vector_store import InMemoryVectorStore

@@ -105,7 +105,7 @@ def _scan_repo_files(repo_path: Path, *, prune_nested_git: bool = True) -> _Repo
     return scan
 
 
-def _get_repo_scan(ctx: "ResolverContext") -> _RepoFileScan:
+def _get_repo_scan(ctx: ResolverContext) -> _RepoFileScan:
     """Memoized accessor — one walk per resolver context."""
     cached = getattr(ctx, "_ts_repo_file_scan", None)
     if cached is not None:
@@ -262,10 +262,7 @@ def build_workspace_info(repo_path: Path | None) -> dict[str, dict[str, Any]]:
 
     result: dict[str, dict[str, Any]] = {}
     for pattern in patterns:
-        if pattern == ".":
-            ws_dirs = [repo_path]
-        else:
-            ws_dirs = repo_path.glob(pattern)
+        ws_dirs = [repo_path] if pattern == "." else repo_path.glob(pattern)
         for ws_dir in ws_dirs:
             if not ws_dir.is_dir():
                 continue
@@ -294,7 +291,7 @@ def build_workspace_info(repo_path: Path | None) -> dict[str, dict[str, Any]]:
     return result
 
 
-def get_or_build_workspace_info(ctx: "ResolverContext") -> dict[str, dict[str, Any]]:
+def get_or_build_workspace_info(ctx: ResolverContext) -> dict[str, dict[str, Any]]:
     cached = getattr(ctx, "_ts_workspace_info", None)
     if cached is not None:
         return cached
@@ -336,7 +333,7 @@ def _probe_path(base: str, path_set: set[str]) -> str | None:
     return None
 
 
-def resolve_via_workspaces(module_path: str, ctx: "ResolverContext") -> str | None:
+def resolve_via_workspaces(module_path: str, ctx: ResolverContext) -> str | None:
     """Resolve a bare specifier (``@scope/pkg`` or ``@scope/pkg/sub/file``)
     against the workspace map. Honours each workspace's ``exports``
     subpath map (Node.js spec) before falling back to a ``<pkg>/<subpath>``
@@ -463,7 +460,7 @@ def _expand_exports_wildcard(
     return matches
 
 
-def build_ts_workspace_index(ctx: "ResolverContext") -> TsWorkspaceIndex:
+def build_ts_workspace_index(ctx: ResolverContext) -> TsWorkspaceIndex:
     """Build the workspace index for *ctx*.
 
     Idempotent — safe to call multiple times. Reads the workspace
@@ -489,7 +486,7 @@ def build_ts_workspace_index(ctx: "ResolverContext") -> TsWorkspaceIndex:
     return TsWorkspaceIndex(packages=packages, exports_entry_paths=entries)
 
 
-def get_or_build_ts_index(ctx: "ResolverContext") -> TsWorkspaceIndex:
+def get_or_build_ts_index(ctx: ResolverContext) -> TsWorkspaceIndex:
     """Memoized accessor — builds the index once per resolver context."""
     cached = getattr(ctx, "_ts_workspace_index", None)
     if cached is not None:
@@ -521,7 +518,7 @@ _VITEST_INCLUDE_RE = _re.compile(
 _VITEST_STRING_RE = _re.compile(r"""['"]([^'"]+)['"]""")
 
 
-def find_mdx_import_targets(ctx: "ResolverContext") -> set[str]:
+def find_mdx_import_targets(ctx: ResolverContext) -> set[str]:
     """Return repo-relative paths reached only via ``import`` in MDX/MD files.
 
     React-component libraries published as documentation (``.mdx`` files
@@ -609,7 +606,7 @@ def _vitest_glob_to_regex(glob: str) -> _re.Pattern[str]:
     return _re.compile("".join(out))
 
 
-def find_vitest_include_targets(ctx: "ResolverContext") -> set[str]:
+def find_vitest_include_targets(ctx: ResolverContext) -> set[str]:
     """Return repo-relative source files matching vitest ``include`` globs.
 
     Belt-and-suspenders alongside the ``*.test.*`` never-flag pattern —
@@ -696,7 +693,7 @@ def _iter_script_tokens(script: str) -> list[str]:
     return [tok.strip("'\"") for tok in cleaned.split() if tok.strip("'\"")]
 
 
-def find_npm_script_entry_targets(ctx: "ResolverContext") -> set[str]:
+def find_npm_script_entry_targets(ctx: ResolverContext) -> set[str]:
     """Return repo-relative source files referenced by ``package.json`` scripts.
 
     Hono's ``benchmarks/{jsx,routers,query-param}/**`` and zod's

@@ -2,7 +2,12 @@
 
 from .bindings import extract_import_bindings
 from .docstrings import extract_module_docstring, extract_symbol_docstring
-from .helpers import extract_go_receiver_type, node_text, refine_go_type_kind, refine_kotlin_class_kind
+from .helpers import (
+    extract_go_receiver_type,
+    node_text,
+    refine_go_type_kind,
+    refine_kotlin_class_kind,
+)
 from .heritage import HERITAGE_EXTRACTORS, extract_heritage
 from .signatures import build_signature
 from .visibility import VISIBILITY_FNS

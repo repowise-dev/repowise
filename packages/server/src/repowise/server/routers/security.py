@@ -27,7 +27,7 @@ async def list_security_findings(
         description="If true, only full-history findings; if false, only working-tree findings; omit for both.",
     ),
     limit: int = Query(100, ge=1, le=500),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> list[SecurityFindingResponse]:
     """List security findings for a repository, with optional filters."""
     stmt = select(SecurityFinding).where(SecurityFinding.repository_id == repo_id)

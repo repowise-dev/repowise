@@ -27,7 +27,6 @@ import pytest
 from repowise.core.analysis.dead_code import DeadCodeAnalyzer, DeadCodeKind
 from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
 
-
 CPP_SAMPLE = Path(__file__).parent.parent / "fixtures" / "cpp_sample"
 
 

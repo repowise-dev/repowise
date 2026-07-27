@@ -10,8 +10,8 @@ from httpx import AsyncClient
 from repowise.core.persistence import (
     batch_upsert_graph_edges,
     batch_upsert_graph_nodes,
+    crud,
 )
-from repowise.core.persistence import crud
 
 
 async def create_test_repo(client: AsyncClient) -> dict:

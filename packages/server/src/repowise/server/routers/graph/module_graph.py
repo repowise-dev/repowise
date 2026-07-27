@@ -25,7 +25,7 @@ router = APIRouter()
 @router.get("/{repo_id}/modules", response_model=ModuleGraphResponse)
 async def module_graph(
     repo_id: str,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
     _repo: object = Depends(with_repo),
 ) -> ModuleGraphResponse:
     """Collapsed directory-level graph: one node per top-level path segment."""

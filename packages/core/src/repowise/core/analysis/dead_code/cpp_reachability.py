@@ -227,7 +227,4 @@ def is_cpp_file_reachable(
         # of the same TU.
         return True
 
-    if has_conditional_pair:
-        return True
-
-    return False
+    return bool(has_conditional_pair)

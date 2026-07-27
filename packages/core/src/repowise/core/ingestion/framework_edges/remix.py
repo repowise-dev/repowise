@@ -38,9 +38,7 @@ def _is_convention_route(path: str) -> bool:
         path.endswith(ext) for ext in (".ts", ".tsx", ".js", ".jsx")
     ):
         return True
-    if _ASTRO_PAGE_RE.search(path):
-        return True
-    return False
+    return bool(_ASTRO_PAGE_RE.search(path))
 
 
 class _ConventionRouteHandler:

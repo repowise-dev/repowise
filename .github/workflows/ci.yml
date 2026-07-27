@@ -37,6 +37,9 @@ jobs:
       - name: Install dependencies
         run: uv sync --all-packages --python ${{ matrix.python-version }}
 
+      - name: Run Ruff linter
+        run: uv run ruff check .
+
       - name: Run provider tests (no API keys required)
         run: uv run pytest tests/providers/ -v --tb=short
 

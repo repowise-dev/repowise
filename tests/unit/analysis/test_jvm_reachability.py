@@ -30,7 +30,6 @@ from repowise.core.analysis.dead_code.jvm_reachability import (
     is_jvm_file_reachable,
 )
 
-
 # ---------------------------------------------------------------------------
 # Graph helper
 # ---------------------------------------------------------------------------

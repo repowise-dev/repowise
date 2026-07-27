@@ -79,7 +79,7 @@ _TEST_SCOPES = frozenset({"test", "provided", "system"})
 
 def parse(manifest_path: Path, repo_root: Path) -> list[ExternalSystemRecord]:
     try:
-        tree = ET.parse(manifest_path)  # noqa: S314
+        tree = ET.parse(manifest_path)
     except Exception:
         return []
 

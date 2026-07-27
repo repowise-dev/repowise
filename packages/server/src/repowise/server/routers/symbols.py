@@ -207,7 +207,7 @@ async def search_symbols(
     sort: SortKey = Query("importance", description="Sort key"),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> Paginated[SymbolResponse]:
     """Search symbols by name/kind/language with importance-aware ranking.
 
@@ -351,7 +351,7 @@ async def search_symbols(
 async def symbol_detail(
     repo_id: str = Query(..., description="Repository ID"),
     symbol_id: str = Query(..., description="Symbol ID ({path}::{name})"),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     """Everything the symbol entity page renders, in one call.
 
@@ -489,7 +489,7 @@ def _symbol_fix_count(git_meta: object | None, symbol_id: str) -> int | None:
 async def lookup_by_name(
     name: str,
     repo_id: str = Query(..., description="Repository ID"),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> list[SymbolResponse]:
     """Look up symbols by exact or fuzzy name match.
 
@@ -521,7 +521,7 @@ async def lookup_by_name(
 @router.get("/{symbol_db_id}", response_model=SymbolResponse)
 async def get_symbol(
     symbol_db_id: str,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> SymbolResponse:
     """Get a single symbol by its database ID."""
 

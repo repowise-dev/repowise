@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from repowise.core.generation.kg_context import KGFileContext, KnowledgeGraphContext
+from repowise.core.generation.kg_context import KnowledgeGraphContext
 
 
 @pytest.fixture
@@ -184,7 +184,7 @@ class TestInterLayerEdges:
     def test_deps_out(self, sample_kg_json):
         ctx = KnowledgeGraphContext(sample_kg_json)
         cli_layer = next(l for l in ctx.get_layers() if l["name"] == "CLI")
-        deps_out, deps_in = ctx.get_inter_layer_edges(cli_layer)
+        deps_out, _deps_in = ctx.get_inter_layer_edges(cli_layer)
         assert len(deps_out) == 1
         assert deps_out[0]["target_layer"] == "Core"
         assert deps_out[0]["edge_count"] == 1
@@ -192,7 +192,7 @@ class TestInterLayerEdges:
     def test_deps_in(self, sample_kg_json):
         ctx = KnowledgeGraphContext(sample_kg_json)
         core_layer = next(l for l in ctx.get_layers() if l["name"] == "Core")
-        deps_out, deps_in = ctx.get_inter_layer_edges(core_layer)
+        _deps_out, deps_in = ctx.get_inter_layer_edges(core_layer)
         assert len(deps_in) == 1
         assert deps_in[0]["source_layer"] == "CLI"
 

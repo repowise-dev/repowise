@@ -15,7 +15,7 @@ import logging
 import re
 from collections import defaultdict
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -757,7 +757,7 @@ async def run_contract_extraction(
 
     store = ContractStore(
         version=1,
-        generated_at=datetime.now(timezone.utc).isoformat(),
+        generated_at=datetime.now(UTC).isoformat(),
         contracts=all_contracts,
         contract_links=links,
     )

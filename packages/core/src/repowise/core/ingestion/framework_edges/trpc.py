@@ -64,8 +64,8 @@ class _TrpcHandler:
             if parsed.file_info.language not in ("typescript", "javascript"):
                 continue
             text = read_text(parsed)
-            if not text or "@trpc/" not in text and "publicProcedure" not in text \
-                    and "protectedProcedure" not in text:
+            if not text or ("@trpc/" not in text and "publicProcedure" not in text \
+                    and "protectedProcedure" not in text):
                 continue
             var_to_file = _build_ts_var_to_file(parsed, path, ctx, path_set)
             if not var_to_file:

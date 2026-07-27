@@ -62,7 +62,6 @@ def _file_diff(fix_sha: str, tmp_path, path: str):
 
 class TestBuildFixEvents:
     def test_one_row_per_fix_commit_and_file(self, tmp_path) -> None:
-        import git as gitpython
 
         repo = _repo(tmp_path)
         _write(repo, tmp_path, "a.py", "x = 1\n", "feat: add a")
@@ -84,7 +83,6 @@ class TestBuildFixEvents:
         assert by_path["a.py"]["changed_loc"] == 2
 
     def test_non_code_fixes_keep_their_row_but_are_never_blamed(self, tmp_path) -> None:
-        import git as gitpython
 
         repo = _repo(tmp_path)
         _write(repo, tmp_path, "README.md", "hello\n", "docs: add readme")
@@ -98,7 +96,6 @@ class TestBuildFixEvents:
         assert rows[0]["inducing_shas_json"] == "[]"
 
     def test_rows_are_ordered_deterministically(self, tmp_path) -> None:
-        import git as gitpython
 
         repo = _repo(tmp_path)
         for name in ("c.py", "b.py", "a.py"):

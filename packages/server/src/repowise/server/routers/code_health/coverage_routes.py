@@ -37,7 +37,7 @@ async def health_coverage(
     repo_id: str,
     file_path: str | None = Query(None),
     limit: int = Query(500, ge=1, le=5000),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     """Coverage summary + per-file rows.
 

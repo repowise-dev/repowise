@@ -67,10 +67,7 @@ def resolve_go_import(module_path: str, importer_path: str, ctx: ResolverContext
     for module_dir, mod_path in ctx.go_modules:
         if module_path == mod_path or module_path.startswith(mod_path + "/"):
             suffix = module_path[len(mod_path) :].lstrip("/")
-            if module_dir and suffix:
-                rel_dir = f"{module_dir}/{suffix}"
-            else:
-                rel_dir = module_dir or suffix
+            rel_dir = f"{module_dir}/{suffix}" if module_dir and suffix else module_dir or suffix
             for p in ctx.sorted_paths:
                 if p.endswith(".go"):
                     p_dir = str(Path(p).parent.as_posix())

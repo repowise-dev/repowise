@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from fastapi import APIRouter, Depends
 from repowise.core.analysis.pr_blast import PRBlastRadiusAnalyzer
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.schemas import BlastRadiusRequest, BlastRadiusResponse
@@ -20,7 +20,7 @@ router = APIRouter(
 async def analyze_blast_radius(
     repo_id: str,
     body: BlastRadiusRequest,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> BlastRadiusResponse:
     """Compute blast radius for a proposed PR given its changed files.
 

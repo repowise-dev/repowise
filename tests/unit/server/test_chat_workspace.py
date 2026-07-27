@@ -28,16 +28,15 @@ from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
-from fastapi import FastAPI
-from fastapi.responses import JSONResponse
 from repowise.core.persistence.database import init_db
 from repowise.core.persistence.models import Repository
 from repowise.server.routers import chat
-
 
 _NOW = datetime(2026, 4, 12, 10, 0, 0, tzinfo=UTC)
 

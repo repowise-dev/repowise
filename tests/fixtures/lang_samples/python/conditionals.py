@@ -11,6 +11,6 @@ def six_ops(a, b, c, d, e, f, g):
 
 
 def two_ops(a, b, c):
-    if a and b or c:
+    if (a and b) or c:
         return 1
     return 0

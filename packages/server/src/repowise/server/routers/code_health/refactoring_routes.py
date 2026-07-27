@@ -42,7 +42,7 @@ async def refactoring_targets(
     sort: str = Query(
         "impact_per_effort", pattern="^(impact_per_effort|total_impact|score|finding_count)$"
     ),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     """Refactoring candidates ranked by impact / effort."""
     repo = await crud.get_repository(session, repo_id)

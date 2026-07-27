@@ -10,7 +10,6 @@ from repowise.core.analysis.knowledge_graph import (
     should_skip_kg_rebuild,
 )
 
-
 # ---------------------------------------------------------------------------
 # KnowledgeGraphResult.from_file
 # ---------------------------------------------------------------------------
@@ -70,6 +69,7 @@ class TestKGResultFromFile:
 class TestFingerprintDeterminism:
     def _make_graph_builder(self, nodes, edges, communities):
         from unittest.mock import MagicMock
+
         import networkx as nx
 
         g = nx.DiGraph()

@@ -18,7 +18,7 @@ async def dependency_path(
     repo_id: str,
     source: str = Query(..., alias="from", description="Source node ID"),
     target: str = Query(..., alias="to", description="Target node ID"),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
     _repo: object = Depends(with_repo),
 ) -> dict:
     """Find the shortest dependency path between two nodes.

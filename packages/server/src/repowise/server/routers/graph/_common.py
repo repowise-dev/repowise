@@ -13,7 +13,7 @@ from repowise.server.deps import get_db_session
 
 async def with_repo(
     repo_id: str,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> Repository:
     """Resolve the repository or raise 404.
 
