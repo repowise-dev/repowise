@@ -68,8 +68,18 @@ def _render_representative_structural_pages(generator: PageGenerator):
             language="Python",
             docstring=None,
             symbols=[
-                {"name": "parse_file", "kind": "function", "signature": "def parse_file()", "visibility": "public"},
-                {"name": "format_file", "kind": "function", "signature": "def format_file()", "visibility": "public"},
+                {
+                    "name": "parse_file",
+                    "kind": "function",
+                    "signature": "def parse_file()",
+                    "visibility": "public",
+                },
+                {
+                    "name": "format_file",
+                    "kind": "function",
+                    "signature": "def format_file()",
+                    "visibility": "public",
+                },
             ],
             imports=[],
             exports=[],
@@ -242,14 +252,16 @@ async def test_structural_file_page_unknown_language_renders_complete_english_fa
 
     assert page.title == "File: src/empty.py"
     assert "## Overview\n" in page.content
-    assert "_No public symbols were extracted from this file._" in page.content
-    assert "_No internal dependencies resolved._" in page.content
-    assert "_No internal callers were resolved for this file._" in page.content
+    assert "## Public API" not in page.content
+    assert "## Depends on" not in page.content
+    assert "## Used by" not in page.content
     assert (
         "*Built from the code itself: parsed symbols, the import graph, git history and\n"
         "the knowledge graph. Every statement here is checked against the source rather\n"
         "than written about it.*"
     ) in page.content
+
+
 def _onboarding_spec(slot: str, template: str):
     from repowise.core.generation.onboarding.registry import SubkindSpec
 
