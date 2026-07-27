@@ -1,9 +1,17 @@
-"""Tests for the docs count in /api/repos/{id}/overview-summary.
+"""Tests for the docs counts in /api/repos/{id}/overview-summary.
 
-The Overview's Docs tile reports the total generated page count. The
-template-vs-AI split it used to carry was retired with the provenance axis: the
-file layer is structural for every repo, so a per-page "who wrote this" count
-said nothing.
+Two counts: every generated page, and the subset carrying model-written prose.
+
+The old `doc_auto_page_count` split was retired with the provenance axis
+(#1037) and is not coming back. Its problem was the denominator: it labelled
+every `provider_name == "template"` page "auto", which swept in the whole file
+layer — pages no model was ever going to write — so the split really said
+"file pages vs everything else" while claiming to say "who wrote this".
+
+`doc_prose_page_count` asks a narrower and answerable question — did a model
+write this page — using the provider alone, with no page-type carve-out. That
+keeps the label honest whatever the generator does next, and total minus prose
+is exactly "pages built from the index".
 """
 
 from __future__ import annotations
@@ -20,11 +28,11 @@ from tests.unit.server.conftest import create_test_repo
 _NOW = datetime(2026, 1, 1, tzinfo=UTC)
 
 
-def _page(repo_id: str, path: str, provider: str) -> Page:
+def _page(repo_id: str, path: str, provider: str, page_type: str = "file_page") -> Page:
     return Page(
-        id=f"file_page:{path}",
+        id=f"{page_type}:{path}",
         repository_id=repo_id,
-        page_type="file_page",
+        page_type=page_type,
         title=path,
         content=f"# {path}",
         summary="",
@@ -69,3 +77,51 @@ async def test_docs_count_is_zero_without_pages(client: AsyncClient) -> None:
     stats = resp.json()["stats"]
 
     assert stats["doc_page_count"] == 0
+    assert stats["doc_prose_page_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_prose_count_follows_the_provider_not_the_page_type(
+    client: AsyncClient, app
+) -> None:
+    """A model-written page counts as prose whatever type it is.
+
+    Scoping the count to "page types a model usually writes" looks more
+    principled and is wrong in practice: file and symbol pages *do* get
+    generated with a real provider on some runs, and excluding them would file
+    model-written pages under "built from the index" — the exact mislabel this
+    count exists to avoid.
+    """
+    repo = await create_test_repo(client)
+
+    async with get_session(app.state.session_factory) as session:
+        session.add(_page(repo["id"], "a.py", "openai"))
+        session.add(_page(repo["id"], "b.py", "template"))
+        session.add(_page(repo["id"], "core", "anthropic", page_type="module_page"))
+
+    resp = await client.get(f"/api/repos/{repo['id']}/overview-summary")
+    stats = resp.json()["stats"]
+
+    assert stats["doc_page_count"] == 3
+    assert stats["doc_prose_page_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_stubbed_pages_are_not_prose(client: AsyncClient, app) -> None:
+    """A page the template stub produced carries no prose.
+
+    Covers the fallback case too: when a provider call fails the page keeps
+    `provider_name = "template"`, and counting it as prose would report a
+    generation outage as documentation the repo does not have.
+    """
+    repo = await create_test_repo(client)
+
+    async with get_session(app.state.session_factory) as session:
+        session.add(_page(repo["id"], "core", "template", page_type="module_page"))
+        session.add(_page(repo["id"], "api", "anthropic", page_type="module_page"))
+
+    resp = await client.get(f"/api/repos/{repo['id']}/overview-summary")
+    stats = resp.json()["stats"]
+
+    assert stats["doc_page_count"] == 2
+    assert stats["doc_prose_page_count"] == 1

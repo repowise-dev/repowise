@@ -21,6 +21,9 @@ interface Props {
   modelName?: string;
   lastSyncAt?: string | null;
   lastResyncAt?: string | null;
+  /** Button arrangement — see `QuickActionsProps.variant`. Overview passes
+   *  `header` so sync is the one primary action. */
+  variant?: "row" | "header";
 }
 
 /** Human label for an action key, for toast copy. */
@@ -35,6 +38,7 @@ export function QuickActionsWrapper({
   modelName = "",
   lastSyncAt,
   lastResyncAt,
+  variant,
 }: Props) {
   const router = useRouter();
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
@@ -143,6 +147,7 @@ export function QuickActionsWrapper({
       pageCount={pageCount}
       modelName={modelName}
       activeJobSlot={activeSlot}
+      variant={variant}
     />
   );
 }

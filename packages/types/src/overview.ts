@@ -22,6 +22,10 @@ export interface OverviewRepoMeta {
   /** Whether the repo is publicly browsable. Hosted-only; drives the
    *  public/private connect copy. Defaults to public when absent. */
   is_public?: boolean;
+  /** Git remote, from the stored repo URL or `.git/config`'s origin. Used
+   *  only to resolve a repo avatar, so a null (no remote, or a host we do not
+   *  recognise) simply falls back to initials. */
+  remote_url?: string | null;
 }
 
 export interface OverviewStatDeltas {
@@ -40,6 +44,15 @@ export interface OverviewStats {
    * backend deploy — treat absent as unknown rather than rendering NaN.
    */
   doc_page_count?: number;
+  /**
+   * Of `doc_page_count`, how many carry model-written prose rather than being
+   * assembled deterministically from the index. The two are different products
+   * — deterministic pages are free and always current, prose pages cost a model
+   * call and can go stale — so the Overview reports them separately instead of
+   * behind one total. Optional: a server predating the field omits it, and the
+   * UI then shows the flat total rather than inventing a split.
+   */
+  doc_prose_page_count?: number;
   doc_coverage_pct: number;
   freshness_score: number;
   dead_export_count: number;

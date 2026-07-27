@@ -9,6 +9,7 @@ decisions slice, savings headline, and health KPIs.
 
 from __future__ import annotations
 
+import configparser
 import contextlib
 import json
 import sqlite3
@@ -48,6 +49,68 @@ def _index_storage_bytes(repowise_dir: Path) -> int:
             with contextlib.suppress(OSError):
                 total += path.stat().st_size
     return total
+
+
+def _remote_url(stored_url: str | None, local_path: str | None) -> str | None:
+    """Best-effort git remote for a repo.
+
+    ``repositories.url`` is client-supplied and empty for most CLI-registered
+    repos, so fall back to reading ``origin`` out of ``.git/config``. Parsed
+    rather than shelled out to: this runs on a page load, and ``git remote
+    get-url`` would cost a process spawn per request for a string sitting in a
+    file we can read.
+
+    Used only to resolve a repo avatar, so every failure path returns ``None``
+    and the UI falls back to initials.
+    """
+    if stored_url:
+        return stored_url
+    if not local_path:
+        return None
+
+    git_path = Path(local_path) / ".git"
+    # Worktrees and submodules use a `.git` FILE holding `gitdir: <path>`; the
+    # config lives in the main checkout, so follow the pointer before reading.
+    if git_path.is_file():
+        try:
+            pointer = git_path.read_text(encoding="utf-8").strip()
+        except OSError:
+            return None
+        if not pointer.startswith("gitdir:"):
+            return None
+        resolved = Path(pointer.split(":", 1)[1].strip())
+        if not resolved.is_absolute():
+            resolved = (Path(local_path) / resolved).resolve()
+        # A worktree's gitdir is `<main>/.git/worktrees/<name>`; config is two
+        # levels up. Fall back to the pointed-at dir for the submodule case.
+        git_path = resolved.parent.parent if resolved.parent.name == "worktrees" else resolved
+
+    config_path = git_path / "config"
+    if not config_path.is_file():
+        return None
+
+    # Both flags are load-bearing, not defensive boilerplate:
+    #
+    # strict=False — git tolerates duplicate keys and writes them routinely. A
+    # remote with two `fetch` refspecs is normal, and VS Code writes
+    # `vscode-merge-base` twice under a branch section. Strict parsing raises
+    # DuplicateOptionError on both, which would mean this project's own
+    # checkout never resolves a remote.
+    #
+    # interpolation=None — ConfigParser expands `%` at get() time, so a
+    # perfectly valid remote like `https://user%40company.com@dev.azure.com/...`
+    # raises InterpolationSyntaxError. Left on, that exception escapes the
+    # endpoint and turns the whole Overview into a 404 in order to render an
+    # avatar.
+    parser = configparser.ConfigParser(strict=False, interpolation=None)
+    try:
+        parser.read(config_path, encoding="utf-8")
+        for section in ('remote "origin"', 'remote "upstream"'):
+            if parser.has_option(section, "url"):
+                return parser.get(section, "url").strip() or None
+    except (OSError, configparser.Error):
+        return None
+    return None
 
 
 def _decision_slim(d: Any) -> dict:
@@ -213,6 +276,30 @@ async def overview_summary(
     doc_coverage_pct = avg_confidence * 100
     total_pages = (
         await session.scalar(select(func.count(Page.id)).where(Page.repository_id == repo_id)) or 0
+    )
+    # Pages a model actually wrote, as opposed to the ones assembled from the
+    # index alone. The discriminator is the provider: "template" is the stub
+    # writer, so anything else means a real generation call produced the prose.
+    #
+    # Deliberately NOT additionally scoped to MODEL_WRITTEN_PAGE_TYPES. That
+    # narrower query looks more principled and is a lie in practice: file and
+    # symbol pages do get generated with a real provider on some runs, so
+    # scoping by type puts model-written pages in the "assembled from the index"
+    # bucket. Asking the question the honest way — did a model write this page —
+    # needs no page-type carve-out, and the answer stays true whatever the
+    # generator does next.
+    #
+    # Note a stubbed page (a provider call that failed and fell back) counts as
+    # not-prose, which is correct: it has no prose.
+    prose_pages = (
+        await session.scalar(
+            select(func.count(Page.id)).where(
+                Page.repository_id == repo_id,
+                Page.provider_name.is_not(None),
+                Page.provider_name != "template",
+            )
+        )
+        or 0
     )
     fresh_pages = (
         await session.scalar(
@@ -446,12 +533,14 @@ async def overview_summary(
             "default_branch": repo.default_branch,
             "head_commit": indexed_commit,
             "updated_at": repo.updated_at.isoformat() if repo.updated_at else None,
+            "remote_url": _remote_url(repo.url, repo.local_path),
         },
         "stats": {
             "file_count": file_count,
             "symbol_count": symbol_count,
             "entry_point_count": entry_point_count,
             "doc_page_count": total_pages,
+            "doc_prose_page_count": prose_pages,
             "doc_coverage_pct": doc_coverage_pct,
             "freshness_score": freshness_score,
             "dead_export_count": dead_export_count,

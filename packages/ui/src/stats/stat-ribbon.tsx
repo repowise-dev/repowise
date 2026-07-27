@@ -4,6 +4,10 @@ export interface RibbonStat {
   label: string;
   value: string;
   hint?: string;
+  /** Optional jump to the page that owns this figure. Added because the
+   *  Overview replaced a strip of *linked* KPI tiles with this component, and
+   *  without it Files and Symbols lost their only entry point from that page. */
+  href?: string;
 }
 
 /**
@@ -17,9 +21,17 @@ export interface RibbonStat {
  * Rendered as a `<dl>` because that is what it is — labelled values, not a
  * layout grid.
  */
-export function StatRibbon({ stats }: { stats: RibbonStat[] }) {
+export function StatRibbon({
+  stats,
+  LinkComponent,
+}: {
+  stats: RibbonStat[];
+  /** Router link for `href` entries; defaults to a plain anchor. */
+  LinkComponent?: React.ElementType;
+}) {
   const shown = stats.filter((s) => s.value);
   if (shown.length === 0) return null;
+  const A = LinkComponent ?? "a";
 
   return (
     <dl className="grid grid-cols-2 border-y border-[var(--color-border-default)] sm:grid-cols-3 lg:grid-cols-5">
@@ -28,7 +40,7 @@ export function StatRibbon({ stats }: { stats: RibbonStat[] }) {
           key={s.label}
           title={s.hint}
           className={[
-            "px-4 py-3.5",
+            s.href ? "" : "px-4 py-3.5",
             s.hint ? "cursor-help" : "",
             // Hairlines between cells only — the outer edges come from the
             // wrapper's border-y, so cells never double up on the boundary.
@@ -44,12 +56,31 @@ export function StatRibbon({ stats }: { stats: RibbonStat[] }) {
             .filter(Boolean)
             .join(" ")}
         >
-          <dt className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
-            {s.label}
-          </dt>
-          <dd className="mt-1 text-xl font-semibold tabular-nums text-[var(--color-text-primary)]">
-            {s.value}
-          </dd>
+          {s.href ? (
+            // The link wraps the whole cell rather than the value, so the
+            // padding is part of the hit target instead of a dead margin
+            // around it.
+            <A
+              href={s.href}
+              className="group block px-4 py-3.5 no-underline transition-colors hover:bg-[var(--color-bg-elevated)]"
+            >
+              <dt className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+                {s.label}
+              </dt>
+              <dd className="mt-1 text-xl font-semibold tabular-nums text-[var(--color-text-primary)] group-hover:text-[var(--color-accent-primary)]">
+                {s.value}
+              </dd>
+            </A>
+          ) : (
+            <>
+              <dt className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+                {s.label}
+              </dt>
+              <dd className="mt-1 text-xl font-semibold tabular-nums text-[var(--color-text-primary)]">
+                {s.value}
+              </dd>
+            </>
+          )}
         </div>
       ))}
     </dl>

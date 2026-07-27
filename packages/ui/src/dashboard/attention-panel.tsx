@@ -18,24 +18,13 @@ import { AiPromptButton } from "../health/ai-prompt-button";
 import { AiPromptModal } from "../health/ai-prompt-modal";
 import { buildWorkQueueAiPrompt } from "../health/ai-prompt-builder";
 
-export type AttentionItemType =
-  | "stale_decision"
-  | "knowledge_silo"
-  | "ungoverned_hotspot"
-  | "dead_code"
-  | "proposed_decision";
-
-export interface AttentionItem {
-  id: string;
-  type: AttentionItemType;
-  title: string;
-  description: string;
-  severity: "high" | "medium" | "low";
-  /** What the item points at — a decision id, file path, owner, … Used to
-   *  deep-link straight to the offending entity. */
-  target_id?: string;
-  href?: string;
-}
+// Re-exported so existing importers of this module keep working; the
+// definitions live in a plain module because server components need them too
+// and a `"use client"` file cannot hand a callable function to the server.
+export { getDefaultHref } from "./attention-href";
+export type { AttentionItem, AttentionItemType } from "./attention-href";
+import { getDefaultHref } from "./attention-href";
+import type { AttentionItem, AttentionItemType } from "./attention-href";
 
 const ICON_MAP = {
   stale_decision: AlertTriangle,
@@ -107,31 +96,6 @@ function diversifyByType(items: AttentionItem[], count: number): AttentionItem[]
     cursor++;
   }
   return out;
-}
-
-function getDefaultHref(item: AttentionItem, prefix: string): string {
-  const target = item.target_id;
-  switch (item.type) {
-    case "stale_decision":
-    case "proposed_decision":
-      // Deep-link to the specific decision when we know which one.
-      return target
-        ? `${prefix}/decisions/${encodeURIComponent(target)}`
-        : `${prefix}/decisions`;
-    case "knowledge_silo":
-      // The silo target is the owning module/path — surface it on the owners
-      // view so the offending area is preselected.
-      return target
-        ? `${prefix}/owners?path=${encodeURIComponent(target)}`
-        : `${prefix}/owners`;
-    case "ungoverned_hotspot":
-      // Target is the hotspot's file path → open its file entity page.
-      return target ? fileEntityPath(prefix, target) : `${prefix}/code-health?tab=hotspots`;
-    case "dead_code":
-      return `${prefix}/code-health?tab=dead-code`;
-    default:
-      return prefix;
-  }
 }
 
 export function AttentionPanel({
