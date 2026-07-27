@@ -57,11 +57,10 @@ repowise init [PATH] [OPTIONS]
 |--------|---------|-------------|
 | `--provider` | `anthropic` | LLM provider: `anthropic`, `openai`, `ollama`, `litellm` |
 | `--model` | provider default | Model identifier (e.g., `claude-opus-4-6`, `gpt-4o`) |
-| `--concurrency` | `5` | Max simultaneous LLM calls |
+| `--concurrency` | `10` | Max simultaneous LLM calls |
 | `--skip-tests` | off | Skip test files during generation |
 | `--resume` | off | Resume an interrupted init job from last checkpoint |
 | `--dry-run` | off | Show generation plan and cost estimate without calling the LLM |
-| `--no-batch` | off | Disable Anthropic batch API (faster wall-clock time, higher cost) |
 
 ```bash
 # Current directory, Anthropic (default)
@@ -80,9 +79,9 @@ repowise init --dry-run
 repowise init --resume
 ```
 
-**Batch API:** When using the Anthropic provider, `repowise init` uses the Message Batches API by default, which reduces cost by ~50%. Pass `--no-batch` to use streaming instead (returns results immediately, costs more).
-
 **Prompt caching:** The Anthropic provider caches the shared system prompt and repository context across all generation calls. On large repos, this typically cuts cost by 60–90%.
+
+See [`docs/reference/CLI_REFERENCE.md`](../../docs/reference/CLI_REFERENCE.md) for the full current `init` flag set (`--prose` / `--no-prose`, `--index-only`, etc.).
 
 ---
 

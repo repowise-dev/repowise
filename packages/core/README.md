@@ -64,7 +64,7 @@ AST parsing uses [tree-sitter](https://tree-sitter.github.io/) with one `.scm` q
 
 | Provider | Name | Notes |
 |----------|------|-------|
-| Anthropic | `anthropic` | Prompt caching and Message Batches API (50% cost reduction on init) |
+| Anthropic | `anthropic` | Prompt caching on shared system/repo context (large-init cost reduction) |
 | OpenAI | `openai` | Any OpenAI-compatible endpoint |
 | Ollama | `ollama` | Fully offline, no API key required |
 | LiteLLM | `litellm` | 100+ providers through one interface (optional dependency) |

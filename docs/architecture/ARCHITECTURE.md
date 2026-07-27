@@ -15,7 +15,7 @@ For per-package detail (installation, full API reference, all CLI flags, file ma
 | Package | README | What it covers |
 |---------|--------|----------------|
 | `packages/core` | [`packages/core/README.md`](../../packages/core/README.md) | Ingestion, generation, persistence, providers — all key classes with code examples |
-| `packages/cli` | [`packages/cli/README.md`](../../packages/cli/README.md) | All 10 CLI commands with every flag documented |
+| `packages/cli` | [`packages/cli/README.md`](../../packages/cli/README.md) | CLI entrypoints and flags; full surface in [`CLI_REFERENCE.md`](../reference/CLI_REFERENCE.md) |
 | `packages/server` | [`packages/server/README.md`](../../packages/server/README.md) | All REST API endpoints, 11 MCP tools, webhook setup, scheduler jobs |
 | `packages/web` | [`packages/web/README.md`](../../packages/web/README.md) | Every frontend file with purpose — API client, hooks, components, pages |
 
@@ -354,25 +354,18 @@ reduces the refill rate. This is transparent to all callers.
 Default limits are configured per provider in `.repowise/config.yaml` and can be
 adjusted for users with higher API tiers.
 
-### 4.2 Batch Mode (Init Only)
-
-For `repowise init`, the Anthropic provider supports the Message Batches API:
-instead of firing concurrent streaming requests, all file-page generation requests
-for a given level are submitted as a single batch, which is ~50% cheaper and
-processes asynchronously (typically within 1 hour).
-
-Batch mode is enabled by default for `repowise init` when using the Anthropic
-provider. Pass `--no-batch` to use streaming instead (faster wall-clock time,
-higher cost).
-
-### 4.3 Prompt Caching
+### 4.2 Prompt Caching
 
 For Anthropic: the `ContextAssembler` marks the system prompt + shared repository
 context with cache-control breakpoints. Across the hundreds of file-page generation
 calls during a large init, this shared prefix is only billed once. Cost reduction
 on large repos is typically 60–90%.
 
-### 4.4 Adding a Provider
+> **Note:** An older Anthropic Message Batches / `--no-batch` init path is no
+> longer part of the product. Init uses concurrent streaming requests under the
+> rate limiter; there is no `batch_mode` config key and no `--no-batch` flag.
+
+### 4.3 Adding a Provider
 
 Implement `LLMProvider`, add an entry to `LANGUAGE_CONFIGS` in `providers/registry.py`,
 and add a section to `.repowise/config.yaml`. See [Section 12](#12-adding-a-new-llm-provider).
@@ -1629,7 +1622,6 @@ model: claude-sonnet-4-5    # passed through to the provider
 embedding_provider: anthropic
 embedding_model: voyage-3
 
-batch_mode: auto             # auto | always | never
 prompt_caching: true
 
 anthropic:
