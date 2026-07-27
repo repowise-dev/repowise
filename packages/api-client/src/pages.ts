@@ -86,9 +86,21 @@ export async function listAllPages(
   return all;
 }
 
-/** Get page by its ID using the query-param endpoint (avoids path conflicts) */
-export async function getPageById(pageId: string): Promise<PageResponse> {
-  return apiGet<PageResponse>("/api/pages/lookup", { page_id: pageId });
+/**
+ * Get page by its ID using the query-param endpoint (avoids path conflicts).
+ *
+ * Pass `repoId` whenever the caller knows it: a workspace server keeps a
+ * separate store per repo and routes on that value, so without it the lookup
+ * only ever reaches the default store.
+ */
+export async function getPageById(
+  pageId: string,
+  repoId?: string,
+): Promise<PageResponse> {
+  return apiGet<PageResponse>("/api/pages/lookup", {
+    page_id: pageId,
+    ...(repoId ? { repo_id: repoId } : {}),
+  });
 }
 
 /** Get page versions by ID */

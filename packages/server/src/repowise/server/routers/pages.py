@@ -78,12 +78,23 @@ async def list_pages(
 @router.get("/lookup", response_model=PageResponse)
 async def get_page_by_query(
     page_id: str = Query(..., description="Page ID (e.g. file_page:src/main.py)"),
+    repo_id: str | None = Query(
+        None,
+        description="Repository the page belongs to. Optional, but required to "
+        "reach a page outside the default store in workspace mode, where the "
+        "session is routed by this value.",
+    ),
     session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> PageResponse:
     """Get a single wiki page by ID passed as query parameter.
 
     Use this endpoint when the page_id contains characters that are
     difficult to encode in a URL path.
+
+    ``repo_id`` is what routes the session to the right database. Without it a
+    workspace server looks the page up in whichever store is the default, and a
+    page id that exists in another repo comes back as a 404 — so any caller
+    that knows the repo should say so.
     """
     page = await crud.get_page(session, page_id)
     if page is None:

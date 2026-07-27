@@ -55,7 +55,7 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
     mutate: mutateSelectedPage,
   } = useSWR(
     selectedPageId ? `page:${selectedPageId}` : null,
-    () => getPageById(selectedPageId!),
+    () => getPageById(selectedPageId!, repoId),
     // No retry: the one expected failure is a ?page= id that no longer exists,
     // and retrying a 404 just delays the empty state.
     { revalidateOnFocus: false, shouldRetryOnError: false },
@@ -154,7 +154,7 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
     presentable && presentMode ? `present:${repoId}` : null,
     async () => {
       const source = await loadPresentPages(pages, (id) =>
-        getPageById(id) as Promise<DocPage>,
+        getPageById(id, repoId) as Promise<DocPage>,
       );
       return source.length > 0 ? buildPresentModel(source) : null;
     },

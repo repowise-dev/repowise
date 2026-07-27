@@ -13,7 +13,7 @@ interface GraphDocPanelWrapperProps {
 
 export function GraphDocPanel({ repoId, nodeId, onClose }: GraphDocPanelWrapperProps) {
   const pageId = `file_page:${nodeId}`;
-  const { page, isLoading, error } = usePage(pageId);
+  const { page, isLoading, error } = usePage(pageId, repoId);
 
   return (
     <GraphDocPanelShell
