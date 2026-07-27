@@ -361,9 +361,7 @@ def _signals_model(**overrides) -> C4Model:
             min_bus_factor=1,
         ),
         "pkg:packages/web": BoxSignals(),
-        "cmp:packages/core/ingestion": BoxSignals(
-            hotspot_count=2, layers=("Ingestion",)
-        ),
+        "cmp:packages/core/ingestion": BoxSignals(hotspot_count=2, layers=("Ingestion",)),
     }
     defaults = {"box_signals": signals}
     defaults.update(overrides)
@@ -429,7 +427,9 @@ def test_the_tour_rides_along_as_a_comment() -> None:
                     reason="Every run enters here",
                     target_path="packages/cli/main.py",
                 ),
-                TourStep(order=2, title="Then the parser", description="Where files\nbecome symbols"),
+                TourStep(
+                    order=2, title="Then the parser", description="Where files\nbecome symbols"
+                ),
             ],
         }
     )
@@ -452,10 +452,72 @@ def test_layer_views_are_emitted_for_a_standalone_workspace() -> None:
 def test_metadata_does_not_break_brace_balance() -> None:
     for standalone in (False, True):
         for components in (False, True):
-            dsl = to_dsl(
-                _signals_model(), standalone=standalone, include_components=components
-            )
-            body = "\n".join(
-                line for line in dsl.splitlines() if not line.strip().startswith("#")
-            )
+            dsl = to_dsl(_signals_model(), standalone=standalone, include_components=components)
+            body = "\n".join(line for line in dsl.splitlines() if not line.strip().startswith("#"))
             assert body.count("{") == body.count("}"), (standalone, components)
+
+
+def test_two_packages_presenting_as_the_same_name_do_not_collide() -> None:
+    """Structurizr rejects two top-level elements sharing a name.
+
+    Real case: `react`, `@xyflow/react` and `@radix-ui/react-dialog` all
+    present as "React" in the index's display names, so the emitted file was
+    rejected outright by the parser.
+    """
+
+    def _ext(node_id: str, name: str, display: str) -> ExternalSystemView:
+        return ExternalSystemView(
+            id=node_id,
+            name=name,
+            display_name=display,
+            category="library",
+            ecosystem="npm",
+        )
+
+    dsl = to_dsl(
+        _model(
+            external_systems=[
+                _ext("ext:react", "react", "React"),
+                _ext("ext:@xyflow/react", "@xyflow/react", "React"),
+                _ext("ext:vite", "vite", "Vite"),
+            ],
+            container_relations=[],
+            component_relations=[],
+        )
+    )
+    declared = [
+        line.split("softwareSystem ", 1)[1].split('"')[1]
+        for line in dsl.splitlines()
+        if "= softwareSystem " in line
+    ]
+    assert len(declared) == len(set(declared)), declared
+    # The unique one keeps its pretty name; the colliding pair falls back to
+    # the package name, which is unique by construction.
+    assert "Vite" in declared
+    assert "react" in declared
+    assert "@xyflow/react" in declared
+
+
+def test_an_external_sharing_the_repo_name_is_disambiguated() -> None:
+    dsl = to_dsl(
+        _model(
+            system=System(id="sys:abc", name="react"),
+            external_systems=[
+                ExternalSystemView(
+                    id="ext:react",
+                    name="react",
+                    display_name="react",
+                    category="library",
+                    ecosystem="npm",
+                )
+            ],
+            container_relations=[],
+            component_relations=[],
+        )
+    )
+    declared = [
+        line.split("softwareSystem ", 1)[1].split('"')[1]
+        for line in dsl.splitlines()
+        if "= softwareSystem " in line
+    ]
+    assert len(declared) == len(set(declared)), declared

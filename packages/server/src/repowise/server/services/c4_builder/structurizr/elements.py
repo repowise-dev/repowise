@@ -43,13 +43,23 @@ def external_description(external: ExternalSystemView) -> str:
     return " · ".join(p for p in parts if p)
 
 
-def write_person(writer: Writer, person: Person, identifier: str) -> None:
-    writer.line(f"{identifier} = person {quote(person.name)} {quote(person.description)}")
+def write_person(writer: Writer, person: Person, identifier: str, name: str | None = None) -> None:
+    writer.line(f"{identifier} = person {quote(name or person.name)} {quote(person.description)}")
 
 
-def write_external(writer: Writer, external: ExternalSystemView, identifier: str) -> None:
+def write_external(
+    writer: Writer,
+    external: ExternalSystemView,
+    identifier: str,
+    name: str | None = None,
+) -> None:
+    """One external dependency.
+
+    *name* is resolved by the caller, which is the only place that can see
+    whether two packages present under the same display name.
+    """
     header = (
-        f"{identifier} = softwareSystem {quote(external.display_name or external.name)} "
+        f"{identifier} = softwareSystem {quote(name or external.display_name or external.name)} "
         f"{quote(external_description(external))}"
     )
     with writer.block(header):

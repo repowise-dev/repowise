@@ -72,6 +72,42 @@ def _reference_map(model: C4Model, *, include_components: bool) -> dict[str, str
     return references
 
 
+def _display_names(model: C4Model, externals: list) -> dict[str, str]:
+    """Names for the top-level elements, made unique.
+
+    Structurizr rejects two top-level elements sharing a name, and display
+    names are not unique: ``react``, ``@xyflow/react`` and
+    ``@radix-ui/react-dialog`` can all present as "React". The package name
+    behind them always is unique — it is what the builder deduplicates on —
+    so a colliding group falls back to it.
+
+    Every member of a colliding group falls back, not just the ones after the
+    first, so which package keeps the pretty name cannot depend on ordering.
+    """
+    counts: dict[str, int] = {}
+    for external in externals:
+        label = external.display_name or external.name
+        counts[label] = counts.get(label, 0) + 1
+
+    names: dict[str, str] = {model.system.id: model.system.name}
+    for person in model.people:
+        names[person.id] = person.name
+    for external in externals:
+        label = external.display_name or external.name
+        names[external.id] = external.name if counts[label] > 1 else label
+
+    # The repository's own name is a top-level element too, so an external
+    # sharing it would collide just as loudly.
+    taken: dict[str, int] = {}
+    for label in names.values():
+        taken[label] = taken.get(label, 0) + 1
+    if taken.get(model.system.name, 0) > 1:
+        for external in externals:
+            if names[external.id] == model.system.name:
+                names[external.id] = f"{external.name} ({external.ecosystem or 'external'})"
+    return names
+
+
 def system_identifier(model: C4Model, *, include_components: bool = False) -> str:
     """The identifier the emitted system is declared under.
 
@@ -152,17 +188,20 @@ def to_dsl(
 
     externals = list(model.external_systems) if include_externals else []
     references = _reference_map(model, include_components=include_components)
+    names = _display_names(model, externals)
     if not include_externals:
         for external in model.external_systems:
             references.pop(external.id, None)
 
     def write_model_body() -> None:
         for person in sorted(model.people, key=lambda p: p.name):
-            write_person(writer, person, references[person.id])
+            write_person(writer, person, references[person.id], names[person.id])
         if model.people:
             writer.blank()
 
-        system_header = f"{references[model.system.id]} = softwareSystem {quote(model.system.name)}"
+        system_header = (
+            f"{references[model.system.id]} = softwareSystem {quote(names[model.system.id])}"
+        )
         if model.system.description:
             system_header += f" {quote(model.system.description)}"
         with writer.block(system_header):
@@ -189,7 +228,7 @@ def to_dsl(
         if externals:
             writer.blank()
             for external in sorted(externals, key=lambda e: e.name):
-                write_external(writer, external, references[external.id])
+                write_external(writer, external, references[external.id], names[external.id])
 
         relations = list(model.container_relations)
         if include_components:
