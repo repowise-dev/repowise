@@ -15,6 +15,7 @@ import * as React from "react";
 import useSWR from "swr";
 import { toast } from "sonner";
 import {
+  AlertTriangle,
   ChevronLeft,
   ChevronRight,
   FileSearch,
@@ -26,10 +27,9 @@ import type {
   DecisionStatus,
 } from "@repowise-dev/types/decisions";
 
-import { Badge } from "../ui/badge";
 import { Markdown } from "../shared/markdown";
 import { ConfirmDialog } from "../ui/confirm-dialog";
-import { stripMarkdown } from "../lib/format";
+import { formatDate, stripMarkdown } from "../lib/format";
 import { AiPromptButton } from "../health/ai-prompt-button";
 import { AiPromptModal } from "../health/ai-prompt-modal";
 import {
@@ -39,6 +39,7 @@ import {
 
 import { ModuleLinkEditor } from "./module-link-editor";
 import { VerificationBadge } from "./verification-badge";
+import { DecisionStatusMark } from "./decision-status-mark";
 import { DecisionEvidenceDrawer } from "./decision-evidence-drawer";
 import { DecisionLineage } from "./decision-lineage";
 import type {
@@ -48,24 +49,19 @@ import type {
 import { toFriendlyMessage } from "../lib/errors";
 
 const SOURCE_LABEL: Record<string, string> = {
-  inline_marker: "Inline marker",
+  inline_marker: "Marker",
   git_archaeology: "Git history",
   readme_mining: "Docs",
   cli: "Manual",
+  comment: "Comment",
+  pr: "Pull request",
+  adr: "ADR",
+  changelog: "Changelog",
+  session: "Session",
 };
 
 const MICRO_LABEL =
   "font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]";
-
-const STATUS_VARIANT: Record<
-  string,
-  "default" | "fresh" | "stale" | "outdated" | "outline" | "accent"
-> = {
-  active: "fresh",
-  proposed: "accent",
-  deprecated: "outdated",
-  superseded: "outline",
-};
 
 const CONFIRM_COPY: Record<
   string,
@@ -269,7 +265,7 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
             {stripMarkdown(decision.title)}
           </h1>
           <div className="flex flex-wrap items-center gap-2">
-            <Badge variant={STATUS_VARIANT[status] ?? "outline"}>{status}</Badge>
+            <DecisionStatusMark status={status} />
             {decision.verification && (
               <VerificationBadge verification={decision.verification} />
             )}
@@ -323,11 +319,18 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
         </div>
       </div>
 
-      {/* Stale warning */}
+      {/* Stale warning. A line, not a filled panel: a tinted ground plus a
+          border plus coloured text says the same thing three times, and it
+          outweighed the record it was warning about. Same argument as the
+          status marks. */}
       {decision.staleness_score > 0.5 && (
-        <div className="rounded-md border border-[var(--color-warning)]/30 bg-[var(--color-warning)]/10 px-4 py-3 text-sm text-[var(--color-warning)]">
-          This decision may be stale — affected files have changed significantly since it was recorded.
-        </div>
+        <p className="flex items-start gap-2 text-sm text-[var(--color-warning)]">
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
+          <span>
+            Affected files have changed significantly since this was recorded,
+            so it may no longer describe the code.
+          </span>
+        </p>
       )}
 
       {/* Evolution / lineage chain */}
@@ -563,11 +566,17 @@ function MetaItem({
 }
 
 /** Older/hosted backends can omit decision timestamps — render "—" instead of
- *  "Invalid Date" for a missing or unparseable value. */
+ *  "Invalid Date" for a missing or unparseable value.
+ *
+ *  Uses `formatDate`, which pins the locale, rather than
+ *  `toLocaleDateString()`. The latter formats against the *runtime's* locale,
+ *  so the server rendered "23/06/2026" and the browser "23/6/2026" — a
+ *  hydration mismatch that made React throw away and re-render the tree on
+ *  every visit to a decision. */
 function formatDateOrDash(iso: string | null | undefined): string {
   if (!iso) return "—";
   const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? "—" : d.toLocaleDateString();
+  return Number.isNaN(d.getTime()) ? "—" : formatDate(d);
 }
 
 function PrevNextLink({

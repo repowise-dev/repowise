@@ -1,7 +1,6 @@
 "use client";
 
 import * as React from "react";
-import { Badge } from "../ui/badge";
 import { ApiError } from "../shared/api-error";
 import { EmptyState } from "../shared/empty-state";
 import {
@@ -9,6 +8,7 @@ import {
   type ResponsiveColumn,
 } from "../shared/responsive-table";
 import { VerificationBadge } from "./verification-badge";
+import { DecisionStatusMark } from "./decision-status-mark";
 import { stripMarkdown } from "../lib/format";
 import type {
   DecisionRecord,
@@ -17,18 +17,19 @@ import type {
   DecisionScope,
 } from "@repowise-dev/types/decisions";
 
-const STATUS_VARIANT: Record<string, "default" | "fresh" | "stale" | "outdated" | "outline" | "accent"> = {
-  active: "fresh",
-  proposed: "accent",
-  deprecated: "outdated",
-  superseded: "outline",
-};
-
+// The engine emits more sources than the four the type union names — a live
+// index carries comment / pr / adr / changelog / session as well. Unmapped
+// values used to fall through raw, so one column mixed "Docs" with "pr".
 const SOURCE_LABEL: Record<string, string> = {
-  inline_marker: "Inline",
-  git_archaeology: "Git",
+  inline_marker: "Marker",
+  git_archaeology: "Git history",
   readme_mining: "Docs",
   cli: "Manual",
+  comment: "Comment",
+  pr: "Pull request",
+  adr: "ADR",
+  changelog: "Changelog",
+  session: "Session",
 };
 
 const SCOPE_LABEL: Record<string, string> = {
@@ -138,7 +139,7 @@ export function DecisionsTable({
       key: "status",
       header: "Status",
       priority: 1,
-      render: (d) => <Badge variant={STATUS_VARIANT[d.status] ?? "outline"}>{d.status}</Badge>,
+      render: (d) => <DecisionStatusMark status={d.status} />,
     },
     {
       key: "source",
@@ -153,7 +154,9 @@ export function DecisionsTable({
       priority: 3,
       render: (d) =>
         d.scope ? (
-          <Badge variant="outline">{SCOPE_LABEL[d.scope] ?? d.scope}</Badge>
+          <span className="text-[var(--color-text-secondary)]">
+            {SCOPE_LABEL[d.scope] ?? d.scope}
+          </span>
         ) : (
           <span className="text-[var(--color-text-tertiary)]">—</span>
         ),
@@ -183,18 +186,18 @@ export function DecisionsTable({
       header: "Tags",
       priority: 3,
       render: (d) => (
-        <div className="flex flex-wrap gap-1">
+        <div className="flex flex-wrap gap-x-2 gap-y-0.5">
           {d.tags.slice(0, 3).map((tag) => (
             <span
               key={tag}
-              className="inline-block rounded bg-[var(--color-bg-elevated)] px-1.5 py-0.5 text-xs text-[var(--color-text-tertiary)]"
+              className="font-mono text-[11px] text-[var(--color-text-tertiary)]"
             >
               {tag}
             </span>
           ))}
           {d.tags.length > 3 && (
             <span
-              className="inline-block rounded bg-[var(--color-bg-elevated)] px-1.5 py-0.5 text-xs text-[var(--color-text-tertiary)]"
+              className="font-mono text-[11px] tabular-nums text-[var(--color-text-tertiary)]"
               title={d.tags.slice(3).join(", ")}
             >
               +{d.tags.length - 3}

@@ -62,8 +62,11 @@ describe("summarizeGovernance", () => {
     expect(conflicts).toHaveLength(1);
   });
 
-  it("falls back to the id when an edge points outside the node payload", () => {
-    // 321 of 387 edge endpoints referenced decisions the graph never carried.
+  it("leaves a title undefined when an edge points outside the node payload", () => {
+    // 321 of 387 edge endpoints referenced decisions the graph never carried,
+    // and on a live index *every* conflict endpoint did. The first cut fell
+    // back to the id, which rendered a 32-character hash where a sentence
+    // belongs; the caller resolves or drops it instead.
     const { conflicts } = summarizeGovernance(
       graph({
         decision_edges: [
@@ -71,7 +74,20 @@ describe("summarizeGovernance", () => {
         ],
       }),
     );
-    expect(conflicts[0]?.bTitle).toBe("ghost");
+    expect(conflicts[0]?.aTitle).toBe("Use SWR");
+    expect(conflicts[0]?.bTitle).toBeUndefined();
+  });
+
+  it("accepts caller-supplied titles for ids the graph does not carry", () => {
+    const { conflicts } = summarizeGovernance(
+      graph({
+        decision_edges: [
+          { src: "a", dst: "ghost", kind: "conflicts_with", confidence: 0.7, evidence: "" },
+        ],
+      }),
+      { titles: new Map([["ghost", "Recorded elsewhere"]]) },
+    );
+    expect(conflicts[0]?.bTitle).toBe("Recorded elsewhere");
   });
 
   it("ranks files by how many distinct decisions govern them", () => {
@@ -115,6 +131,18 @@ describe("DecisionConflicts", () => {
   it("renders nothing when there are none", () => {
     const { container } = render(
       <DecisionConflicts conflicts={[]} decisionHref={(id) => `/d/${id}`} />,
+    );
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it("drops a pair it cannot name rather than printing a hash", () => {
+    const { container } = render(
+      <DecisionConflicts
+        conflicts={[
+          { aId: "a", aTitle: "Use SWR", bId: "e71b45c7eaaa4798a745f59ae80118fc" },
+        ]}
+        decisionHref={(id) => `/d/${id}`}
+      />,
     );
     expect(container).toBeEmptyDOMElement();
   });

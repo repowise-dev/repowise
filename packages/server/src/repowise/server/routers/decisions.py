@@ -11,6 +11,7 @@ from repowise.core.persistence.models import DecisionEvidence
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.schemas import (
     DecisionCodeEdge,
+    DecisionCountsResponse,
     DecisionCreate,
     DecisionEvidenceResponse,
     DecisionGraphEdge,
@@ -41,6 +42,11 @@ async def list_decisions(
     include_proposed: bool = Query(True),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
+    sort: str = Query(
+        "priority",
+        pattern="^(priority|recent)$",
+        description="priority: confirmed rules first, then likeliest proposals. recent: newest first.",
+    ),
     session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> list[DecisionRecordResponse]:
     """List architectural decision records for a repository.
@@ -48,6 +54,10 @@ async def list_decisions(
     Each row carries an ``evidence_preview`` (the top-ranked evidence row's
     verbatim quote) plus the total ``evidence_count``, so the table can show
     provenance without N+1 calls to the per-decision /evidence endpoint.
+
+    Defaults to ``sort=priority``. Newest-first buried every confirmed
+    decision under the unreviewed proposals the indexer had just mined, so
+    page one was entirely machine guesses.
     """
     decisions = await crud.list_decisions(
         session,
@@ -59,6 +69,7 @@ async def list_decisions(
         include_proposed=include_proposed,
         limit=limit,
         offset=offset,
+        sort=sort,
     )
     items = [DecisionRecordResponse.from_orm(d) for d in decisions]
 
@@ -111,6 +122,41 @@ async def decision_health(
         ],
         "ungoverned_hotspots": summary["ungoverned_hotspots"],
     }
+
+
+@router.get(
+    "/api/repos/{repo_id}/decisions/counts",
+    response_model=DecisionCountsResponse,
+)
+async def decision_counts(
+    repo_id: str,
+    source: str | None = Query(None, description="Filter by source"),
+    tag: str | None = Query(None, description="Filter by tag"),
+    module: str | None = Query(None, description="Filter by module path"),
+    include_proposed: bool = Query(True),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+) -> DecisionCountsResponse:
+    """Counts by status, as a grouped COUNT rather than a page of rows.
+
+    Declared above ``/{decision_id}`` on purpose: FastAPI matches in
+    declaration order, so a literal sub-path below it would be swallowed by
+    the parameterised route and "counts" would be looked up as a decision id.
+    """
+    counts = await crud.count_decisions_by_status(
+        session,
+        repo_id,
+        source=source,
+        tag=tag,
+        module=module,
+        include_proposed=include_proposed,
+    )
+    return DecisionCountsResponse(
+        total=counts["total"],
+        active=counts["active"],
+        proposed=counts["proposed"],
+        superseded=counts["superseded"],
+        deprecated=counts["deprecated"],
+    )
 
 
 @router.get(

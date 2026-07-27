@@ -97,6 +97,21 @@ class DecisionRecordResponse(BaseModel):
         )
 
 
+class DecisionCountsResponse(BaseModel):
+    """Counts by status for a repository, from a grouped COUNT.
+
+    Exists so a caller can state a total it actually measured. The list
+    endpoint caps at 500 rows, so counting the page reported "97 of 100" on a
+    repository holding several hundred records.
+    """
+
+    total: int
+    active: int
+    proposed: int
+    superseded: int
+    deprecated: int
+
+
 class DecisionCreate(BaseModel):
     title: str
     context: str = ""

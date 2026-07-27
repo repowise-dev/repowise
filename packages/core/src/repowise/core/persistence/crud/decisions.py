@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import Any
 
 import structlog
-from sqlalchemy import delete, or_, select
+from sqlalchemy import case, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.decision_provenance import compute_confidence, rank_for_source
@@ -169,11 +169,22 @@ async def list_decisions(
     include_proposed: bool = True,
     limit: int = 100,
     offset: int = 0,
+    sort: str = "priority",
 ) -> list[DecisionRecord]:
     """Return decision records with optional filters.
 
     Dismissed records are tombstones and only show up when explicitly asked
     for via ``status="dismissed"``.
+
+    ``sort`` controls ordering:
+
+    * ``"priority"`` (default) — what a reader needs first. Confirmed rules
+      lead, then the proposals most likely to be real (highest confidence),
+      then the records that have been retired. Newest breaks every tie.
+      Ordering by ``created_at`` alone buried all eleven active decisions on
+      this repo under 468 unreviewed proposals, so page one of the table was
+      entirely machine guesses.
+    * ``"recent"`` — the previous behaviour, newest first.
     """
     q = select(DecisionRecord).where(DecisionRecord.repository_id == repository_id)
     if status is not None:
@@ -191,9 +202,68 @@ async def list_decisions(
     if module is not None:
         # Match exact module path in JSON array
         q = q.where(DecisionRecord.affected_modules_json.contains(f'"{module}"'))
-    q = q.order_by(DecisionRecord.created_at.desc()).limit(limit).offset(offset)
+    q = q.order_by(*_decision_order(sort)).limit(limit).offset(offset)
     result = await session.execute(q)
     return list(result.scalars().all())
+
+
+# Lower sorts first. Active is a rule the team stands behind; proposed is a
+# candidate; superseded and deprecated are history.
+_STATUS_RANK = {"active": 0, "proposed": 1, "superseded": 2, "deprecated": 3}
+
+
+def _decision_order(sort: str) -> tuple[Any, ...]:
+    """ORDER BY terms for :func:`list_decisions`."""
+    if sort == "recent":
+        return (DecisionRecord.created_at.desc(),)
+    rank = case(_STATUS_RANK, value=DecisionRecord.status, else_=4)
+    return (
+        rank,
+        DecisionRecord.confidence.desc(),
+        DecisionRecord.created_at.desc(),
+    )
+
+
+async def count_decisions_by_status(
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    source: str | None = None,
+    tag: str | None = None,
+    module: str | None = None,
+    include_proposed: bool = True,
+) -> dict[str, int]:
+    """Return ``{status: count}`` for a repository, plus a ``"total"`` key.
+
+    A grouped ``COUNT`` rather than a page of rows. The list endpoint caps at
+    500, so a caller that counted what it fetched reported "97 of 100" on a
+    repository holding several hundred records — a count nobody measured.
+    ``get_decision_health_summary`` still loads every row to tally them; this
+    is the aggregate version for callers that only need the numbers.
+
+    Statuses absent from the table are zero-filled, so the shape is stable.
+    """
+    q = select(DecisionRecord.status, func.count(DecisionRecord.id)).where(
+        DecisionRecord.repository_id == repository_id
+    )
+    q = q.where(DecisionRecord.status != "dismissed")
+    if not include_proposed:
+        q = q.where(DecisionRecord.status != "proposed")
+    if source is not None:
+        q = q.where(DecisionRecord.source == source)
+    if tag is not None:
+        q = q.where(DecisionRecord.tags_json.contains(f'"{tag}"'))
+    if module is not None:
+        q = q.where(DecisionRecord.affected_modules_json.contains(f'"{module}"'))
+    q = q.group_by(DecisionRecord.status)
+
+    counts = {status: 0 for status in _STATUS_RANK}
+    total = 0
+    for status, n in await session.execute(q):
+        counts[status] = n
+        total += n
+    counts["total"] = total
+    return counts
 
 
 async def update_decision_metadata(

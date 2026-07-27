@@ -176,3 +176,12 @@ export interface DecisionGraph {
   decision_edges: DecisionGraphEdge[];
   code_edges: DecisionCodeEdge[];
 }
+
+/** Counts by status, from a grouped COUNT on the server. */
+export interface DecisionCounts {
+  total: number;
+  active: number;
+  proposed: number;
+  superseded: number;
+  deprecated: number;
+}

@@ -33,9 +33,10 @@ import type {
 
 export interface DecisionConflict {
   aId: string;
-  aTitle: string;
+  /** Undefined when the id resolves to nothing the caller could name. */
+  aTitle?: string | undefined;
   bId: string;
-  bTitle: string;
+  bTitle?: string | undefined;
   /** Why the pair was flagged. Auto-detected pairs carry a similarity note. */
   evidence?: string | undefined;
 }
@@ -58,7 +59,15 @@ export interface DecisionGovernanceSummary {
  */
 export function summarizeGovernance(
   graph: DecisionGraph | undefined,
-  options: { topFiles?: number } = {},
+  options: {
+    topFiles?: number;
+    /**
+     * Extra id -> title pairs. Conflict endpoints routinely fall outside the
+     * node payload — on a live index only 66 of 387 endpoints were in it — so
+     * the caller supplies whatever else it has loaded and resolves the rest.
+     */
+    titles?: ReadonlyMap<string, string> | undefined;
+  } = {},
 ): DecisionGovernanceSummary {
   const empty: DecisionGovernanceSummary = {
     conflicts: [],
@@ -70,6 +79,7 @@ export function summarizeGovernance(
   const titleById = new Map<string, string>(
     (graph.nodes ?? []).map((n: DecisionGraphNode) => [n.id, n.title]),
   );
+  for (const [id, title] of options.titles ?? []) titleById.set(id, title);
 
   const seen = new Set<string>();
   const conflicts: DecisionConflict[] = [];
@@ -81,9 +91,9 @@ export function summarizeGovernance(
     seen.add(key);
     conflicts.push({
       aId: e.src,
-      aTitle: titleById.get(e.src) ?? e.src,
+      aTitle: titleById.get(e.src),
       bId: e.dst,
-      bTitle: titleById.get(e.dst) ?? e.dst,
+      bTitle: titleById.get(e.dst),
       evidence: e.evidence ?? undefined,
     });
   }
@@ -129,12 +139,17 @@ export function DecisionConflicts({
   decisionHref,
   LinkComponent = "a",
 }: DecisionConflictsProps) {
-  if (conflicts.length === 0) return null;
+  // A conflict we cannot name is not worth a row. Printing the id renders a
+  // 32-character hash where a sentence should be, which tells the reader
+  // nothing and cannot be acted on — the fallback that shipped in the first
+  // cut of this component.
+  const named = conflicts.filter((c) => c.aTitle && c.bTitle);
+  if (named.length === 0) return null;
   const Link = LinkComponent;
 
   return (
     <ul className="border-t border-[var(--color-border-default)]">
-      {conflicts.map((c) => (
+      {named.map((c) => (
         <li
           key={`${c.aId}|${c.bId}`}
           className="border-b border-[var(--color-border-default)] py-3"

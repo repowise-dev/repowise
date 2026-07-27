@@ -54,6 +54,7 @@ from .code_quality import (
     SecurityFindingResponse,
 )
 from .decisions import (
+    DecisionCountsResponse,
     DecisionCodeEdge,
     DecisionCreate,
     DecisionEvidenceResponse,
@@ -264,6 +265,7 @@ __all__ = [
     "DeadCodePatchRequest",
     "DeadCodeSummaryResponse",
     "DecisionCodeEdge",
+    "DecisionCountsResponse",
     "DecisionCreate",
     "DecisionEvidenceResponse",
     "DecisionGraphEdge",
