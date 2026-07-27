@@ -320,6 +320,34 @@ describe("docs", () => {
     expect(calls.filter((c) => c.url.includes("/docs"))).toHaveLength(1);
   });
 
+  it("serves summaries with the heavy fields actually removed", async () => {
+    const { p } = provider([
+      REPOS_ROUTE,
+      [
+        "/docs",
+        {
+          ...DOCS_BODY,
+          pages: [
+            {
+              id: "overview",
+              page_type: "overview",
+              title: "Overview",
+              content: "a body",
+              metadata: { layer_order: ["ui"] },
+            },
+          ],
+        },
+      ],
+    ]);
+
+    const [summary] = await p.listAllPages("repo-1", { fields: "summary" });
+
+    expect(summary).not.toHaveProperty("content");
+    expect(summary).not.toHaveProperty("metadata");
+    expect(summary!.title).toBe("Overview");
+    expect(summary!.content_chars).toBe("a body".length);
+  });
+
   it("listPages filters by page_type and slices", async () => {
     const { p } = provider([REPOS_ROUTE, ["/docs", DOCS_BODY]]);
     const filtered = await p.listPages("repo-1", { page_type: "file_page" });

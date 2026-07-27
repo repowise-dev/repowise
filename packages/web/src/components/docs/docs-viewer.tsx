@@ -16,8 +16,8 @@ import { VersionHistoryWrapper } from "@/components/wiki/version-history";
 import { SecurityPanelWrapper } from "@/components/wiki/security-panel";
 import { useGraphMetrics, useCallersCallees } from "@/lib/hooks/use-graph";
 import type { ReaderPersona } from "@repowise-dev/ui/docs/reader-persona";
-import type { DocPage } from "@repowise-dev/types/docs";
-import type { PageResponse } from "@/lib/api/types";
+import type { DocPage, DocPageSummary } from "@repowise-dev/types/docs";
+import type { PageResponse, PageSummary } from "@/lib/api/types";
 
 function PercentileBar({ value, label }: { value: number; label: string }) {
   const pct = 100 - value;
@@ -241,12 +241,13 @@ function AtAGlance({ repoId, targetPath }: { repoId: string; targetPath: string 
 
 interface DocsViewerProps {
   page: PageResponse | null;
-  /** Full page list — powers hierarchical breadcrumbs and prev/next. */
-  pages?: PageResponse[];
+  /** Full page list — powers hierarchical breadcrumbs and prev/next. Rows
+   *  carry no bodies; the page being read is fetched on its own. */
+  pages?: PageSummary[];
   repoId: string;
   isLoading?: boolean;
   /** Select another page in-place (breadcrumb / prev-next / wiki links). */
-  onSelectPage?: (page: PageResponse) => void;
+  onSelectPage?: (page: DocPageSummary) => void;
   persona: ReaderPersona;
   sidebarOpen: boolean;
   /** Called once an inline page upgrade completes so the host refreshes. */
@@ -296,10 +297,10 @@ export function DocsViewer({
   return (
     <DocsReader
       page={page as unknown as DocPage | null}
-      pages={pages as unknown as DocPage[]}
+      pages={pages}
       repoId={repoId}
       isLoading={isLoading}
-      onSelectPage={onSelectPage as ((p: DocPage) => void) | undefined}
+      onSelectPage={onSelectPage}
       onNavigatePageId={onNavigatePageId}
       persona={persona}
       sidebarOpen={sidebarOpen}

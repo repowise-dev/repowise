@@ -28,6 +28,10 @@ export interface PageSummary {
    *  field just omits it, and callers fall back rather than ranking on
    *  `undefined`. */
   content_chars?: number;
+  /** Present only when this row was fetched in full — a caller is free to
+   *  hydrate a few rows of an otherwise summary listing. */
+  content?: string;
+  metadata?: Record<string, unknown>;
   human_notes: string | null;
   created_at: string;
   updated_at: string;

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useCallback, useEffect, useMemo } from "react";
+import useSWR from "swr";
 import { useSearchParams, useRouter } from "next/navigation";
 import { BookOpen, PanelLeftClose, PanelLeft, Search } from "lucide-react";
 import { cn } from "@/lib/utils/cn";
@@ -12,6 +13,7 @@ import {
   PresentOverlay,
   buildPresentModel,
   canPresent,
+  loadPresentPages,
   type PresentMode,
 } from "@repowise-dev/ui/present";
 import {
@@ -31,10 +33,11 @@ import { PageGenerateButton } from "./page-generate-button";
 import { BulkGenerateButton } from "./bulk-generate-button";
 import { isModelWrittenType, isStubPage } from "@repowise-dev/ui/lib/page-types";
 import { search as searchPages } from "@/lib/api/search";
+import { getPageById, listAllPages } from "@/lib/api/pages";
 import { downloadTextFile } from "@/lib/utils/download";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
-import type { DocPage } from "@repowise-dev/types/docs";
-import type { PageResponse } from "@/lib/api/types";
+import type { DocPage, DocPageSummary } from "@repowise-dev/types/docs";
+import type { PageSummary } from "@/lib/api/types";
 
 interface DocsExplorerProps {
   repoId: string;
@@ -42,7 +45,19 @@ interface DocsExplorerProps {
 
 export function DocsExplorer({ repoId }: DocsExplorerProps) {
   const { pages, isLoading, mutate } = usePages(repoId);
-  const [selectedPage, setSelectedPage] = useState<PageResponse | null>(null);
+  // The list carries no bodies, so the reader's page is fetched on its own.
+  // Only the id is state; the page itself is whatever that id resolves to,
+  // which keeps it correct after a regeneration without a second copy to sync.
+  const [selectedPageId, setSelectedPageId] = useState<string | null>(null);
+  const {
+    data: selectedPage = null,
+    isLoading: pageLoading,
+    mutate: mutateSelectedPage,
+  } = useSWR(
+    selectedPageId ? `page:${selectedPageId}` : null,
+    () => getPageById(selectedPageId!),
+    { revalidateOnFocus: false },
+  );
   const [treePanelOpen, setTreePanelOpen] = useState(() => {
     if (typeof window === "undefined") return true;
     return window.matchMedia("(min-width: 768px)").matches;
@@ -85,7 +100,7 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
   // The docs header offers one bulk "write the subsystem pages" action, shown
   // only while concept pages are still stubs. A structural page is never a stub.
   const hasStubs = useMemo(
-    () => (pages as DocPage[]).some((p) => isStubPage(p)),
+    () => pages.some((p) => isStubPage(p)),
     [pages],
   );
 
@@ -94,32 +109,28 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
   // link or breadcrumb navigates via <Link href="?page=...">.
   const pageParam = searchParams.get("page");
   useEffect(() => {
-    if (pages.length === 0) return;
     if (pageParam) {
-      if (selectedPage?.id === pageParam) return;
-      const match = pages.find((p) => p.id === pageParam);
-      if (match) setSelectedPage(match);
+      // Only follow the param to a page that exists, so a stale link doesn't
+      // strand the reader on a 404 instead of the wiki it asked for.
+      if (pages.some((p) => p.id === pageParam)) setSelectedPageId(pageParam);
       return;
     }
     // No ?page= in the URL — open the repo overview by default (falling back
     // to the first page) so the viewer never lands on an empty state.
-    if (selectedPage) return;
+    if (selectedPageId || pages.length === 0) return;
     const overview = pages.find((p) => p.page_type === "repo_overview");
-    setSelectedPage(overview ?? pages[0]);
-  }, [pages, pageParam, selectedPage]);
+    setSelectedPageId((overview ?? pages[0])?.id ?? null);
+  }, [pages, pageParam, selectedPageId]);
 
-  // After a page is (re)generated, pull the fresh page list and re-point the
-  // viewer at the updated object so its content and provenance flip in place.
+  // After a page is (re)generated, pull the fresh list (freshness and stub
+  // state live there) and refetch the page on screen so its content and
+  // provenance flip in place.
   const handleGenerated = useCallback(async () => {
-    const fresh = await mutate();
-    setSelectedPage((prev) => {
-      if (!prev || !fresh) return prev;
-      return fresh.find((p) => p.id === prev.id) ?? prev;
-    });
-  }, [mutate]);
+    await Promise.all([mutate(), mutateSelectedPage()]);
+  }, [mutate, mutateSelectedPage]);
 
-  const handleSelectPage = useCallback((page: PageResponse) => {
-    setSelectedPage(page);
+  const handleSelectPage = useCallback((page: DocPageSummary) => {
+    setSelectedPageId(page.id);
     // Update URL without full navigation
     const params = new URLSearchParams(searchParams.toString());
     params.set("page", page.id);
@@ -129,17 +140,22 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
   // Present mode — an on-the-fly slide deck + guided walkthrough over the same
   // loaded pages. Open state lives in ?present=deck|walkthrough so a specific
   // mode is shareable. The model is derived, never generated or fetched.
-  const presentable = useMemo(
-    () => canPresent(pages as unknown as DocPage[]),
-    [pages],
-  );
-  const presentModel = useMemo(
-    () => (presentable ? buildPresentModel(pages as unknown as DocPage[]) : null),
-    [pages, presentable],
-  );
+  const presentable = useMemo(() => canPresent(pages), [pages]);
   const presentParam = searchParams.get("present");
   const presentMode: PresentMode | null =
     presentParam === "walkthrough" ? "walkthrough" : presentParam === "deck" ? "deck" : null;
+  // A deck draws on a couple of dozen pages out of thousands, so their bodies
+  // are fetched when Present is opened rather than carried by the page list.
+  const { data: presentModel = null } = useSWR(
+    presentable && presentMode ? `present:${repoId}` : null,
+    async () => {
+      const source = await loadPresentPages(pages, (id) =>
+        getPageById(id) as Promise<DocPage>,
+      );
+      return source.length > 0 ? buildPresentModel(source) : null;
+    },
+    { revalidateOnFocus: false },
+  );
   const setPresent = useCallback(
     (mode: PresentMode | null, pageId?: string) => {
       const params = new URLSearchParams(searchParams.toString());
@@ -153,31 +169,46 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
   );
   const openInReaderFromPresent = useCallback(
     (pageId: string) => {
-      const match = pages.find((p) => p.id === pageId);
-      if (match) setSelectedPage(match);
+      setSelectedPageId(pageId);
       setPresent(null, pageId);
     },
-    [pages, setPresent],
+    [setPresent],
   );
 
-  // Server-backed search for the ⌘K palette: hit the semantic/full-text
-  // endpoint, then map results back to the loaded page objects so selection
-  // behaves identically to a client-side hit. Unknown ids (rare) are dropped.
+  // Server-backed search for the ⌘K palette. The palette matches titles and
+  // paths itself; bodies are matched here, because the loaded list carries
+  // none. Both search modes run: full-text is the literal body match the
+  // palette used to do client-side, semantic finds pages that mean the same
+  // thing without sharing a word. Results map back to the loaded rows so
+  // selection behaves identically to a local hit; unknown ids are dropped.
   const searchFn = useCallback(
     async (q: string) => {
-      const results = await searchPages(q, { repo_id: repoId, limit: 30 });
+      const [fulltext, semantic] = await Promise.all([
+        searchPages(q, { repo_id: repoId, limit: 20, search_type: "fulltext" }),
+        searchPages(q, { repo_id: repoId, limit: 20, search_type: "semantic" }),
+      ]);
       const byId = new Map(pages.map((p) => [p.id, p]));
-      return results
-        .map((r) => byId.get(r.page_id))
-        .filter((p): p is PageResponse => p !== undefined) as unknown as DocPage[];
+      const seen = new Set<string>();
+      const hits: { page: PageSummary; snippet?: string }[] = [];
+      for (const r of [...fulltext, ...semantic]) {
+        const page = byId.get(r.page_id);
+        if (!page || seen.has(page.id)) continue;
+        seen.add(page.id);
+        hits.push({ page, ...(r.snippet ? { snippet: r.snippet } : {}) });
+      }
+      return hits;
     },
     [repoId, pages],
   );
 
-  const handleExportAll = useCallback(() => {
+  // Every page's markdown in one file. The bodies aren't loaded — that is the
+  // point of the summary listing — so this is the one place that still asks
+  // for the whole wiki, at the moment someone asks for the whole wiki.
+  const handleExportAll = useCallback(async () => {
     setIsExporting(true);
     try {
-      const sorted = [...pages].sort((a, b) =>
+      const full = await listAllPages(repoId);
+      const sorted = [...full].sort((a, b) =>
         a.target_path.localeCompare(b.target_path),
       );
       const content = sorted
@@ -187,7 +218,7 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
     } finally {
       setIsExporting(false);
     }
-  }, [pages]);
+  }, [repoId]);
 
   // The tree panel, rendered at every state so it keeps the full height of the
   // window rather than starting below a chrome bar. Its skeleton lives here
@@ -222,10 +253,7 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
           pages={pages}
           selectedPageId={selectedPage?.id ?? null}
           onSelectPage={(p) => {
-            // DocsTree yields its DocPage type; the elements are the real
-            // PageResponse objects we passed in (they carry the extra
-            // provenance fields), so this narrowing is safe.
-            handleSelectPage(p as unknown as PageResponse);
+            handleSelectPage(p);
             if (typeof window !== "undefined" && !window.matchMedia("(min-width: 768px)").matches) {
               setTreePanelOpen(false);
             }
@@ -265,6 +293,7 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
           page={selectedPage}
           pages={pages}
           repoId={repoId}
+          isLoading={pageLoading}
           onSelectPage={handleSelectPage}
           persona={persona}
           sidebarOpen={sidebarOpen}
@@ -359,10 +388,10 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
 
       {/* ⌘K full-text command palette over loaded pages */}
       <DocsCommandPalette
-        pages={pages as unknown as DocPage[]}
+        pages={pages}
         open={searchOpen}
         onOpenChange={setSearchOpen}
-        onSelect={(p) => handleSelectPage(p as unknown as PageResponse)}
+        onSelect={handleSelectPage}
         searchFn={searchFn}
       />
     </div>

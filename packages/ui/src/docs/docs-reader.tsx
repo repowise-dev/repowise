@@ -6,7 +6,6 @@ import {
   ArrowRight,
   ArrowLeft,
   ChevronRight,
-  Loader2,
   Layers,
 } from "lucide-react";
 import type { DocPage, DocPageSummary } from "@repowise-dev/types/docs";
@@ -25,6 +24,7 @@ import {
   type RelatedReason,
 } from "../wiki/wiki-links-types";
 import { Breadcrumb } from "../shared/breadcrumb";
+import { Skeleton } from "../ui/skeleton";
 
 /** Related entries shown before the "+ N more" line. Five, not eight: the list
  *  is a suggestion of where to go next, and past about five it reads as a dump
@@ -124,13 +124,7 @@ export function DocsReader({
     scrollRef.current?.scrollTo(0, 0);
   }, [page?.id]);
 
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center h-full">
-        <Loader2 className="h-5 w-5 animate-spin text-[var(--color-accent-primary)]" />
-      </div>
-    );
-  }
+  if (isLoading) return <ReaderSkeleton />;
 
   if (!page) {
     return (
@@ -165,6 +159,44 @@ export function DocsReader({
       versionHistorySlot={versionHistorySlot}
       upgradeSlot={upgradeSlot}
     />
+  );
+}
+
+/**
+ * The reading column while its page is being fetched.
+ *
+ * Same wrapper, same 720px column, same rhythm: breadcrumb, title, provenance
+ * line, prose. A centred spinner used to sit here, which collapsed the layout
+ * to nothing and reflowed the whole column when the page landed.
+ */
+function ReaderSkeleton() {
+  return (
+    <div className="flex h-full" aria-busy="true">
+      <div className="flex flex-col flex-1 min-w-0">
+        <div className="flex-1 overflow-y-auto">
+          <div className="mx-auto w-full max-w-[720px] px-4 py-8 sm:px-6">
+            <Skeleton className="mb-3 h-3 w-52 rounded" />
+            <Skeleton className="mb-2 h-9 w-2/3 rounded" />
+            <Skeleton className="mb-5 h-3 w-44 rounded" />
+            {/* Literal widths, not interpolated ones — Tailwind only ships the
+                classes it can see in the source. */}
+            <div className="flex flex-col gap-3">
+              {[
+                "w-full",
+                "w-11/12",
+                "w-5/6",
+                "w-full",
+                "w-3/4",
+                "w-full",
+                "w-2/3",
+              ].map((w, i) => (
+                <Skeleton key={i} className={`h-4 rounded ${w}`} />
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
