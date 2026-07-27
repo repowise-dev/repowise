@@ -106,6 +106,39 @@ def concept_page_count(plans: list[Any]) -> int:
     return next((p.count for p in plans if p.page_type == "module_page"), 0)
 
 
+# Short, plain names for the structural page types, in the order they read best.
+# Only the free types are listed: the paid ones are already named by the cost
+# question itself.
+_STRUCTURAL_LABELS = (
+    ("file_page", "file"),
+    ("api_contract", "API"),
+    ("symbol_spotlight", "symbol"),
+    ("scc_page", "cycle"),
+    ("layer_page", "layer"),
+    ("infra_page", "infra"),
+)
+
+
+def structural_page_summary(plans: list[Any]) -> str:
+    """Return e.g. ``"3622 pages rendered from structure, free: 2947 file, ..."``.
+
+    The headline cost question names only the pages a model writes, which leaves
+    the much larger total looking unexplained — and hides that repowise renders
+    file, API and symbol pages from the code itself with no provider call. This
+    is the one line that says so. Empty string when there are none.
+    """
+    from repowise.core.cost_estimator import STRUCTURAL_PAGE_TYPES
+
+    counts = {p.page_type: p.count for p in plans if p.page_type in STRUCTURAL_PAGE_TYPES}
+    total = sum(counts.values())
+    if not total:
+        return ""
+    parts = [f"{counts[t]} {label}" for t, label in _STRUCTURAL_LABELS if counts.get(t)]
+    return f"{total} more pages rendered from the code itself, no model, no cost: " + ", ".join(
+        parts
+    )
+
+
 def announce_file_page_cap(parsed_files: list[Any], gen_config: Any) -> None:
     """Say so when the file bucket is being bounded, and how to undo it.
 

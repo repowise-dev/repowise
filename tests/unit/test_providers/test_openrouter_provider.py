@@ -27,7 +27,7 @@ def test_provider_name():
 
 def test_default_model():
     p = OpenRouterProvider(api_key="sk-or-test")
-    assert p.model_name == "anthropic/claude-sonnet-4.6"
+    assert p.model_name == "google/gemini-3.5-flash-lite"
 
 
 def test_api_key_from_env(monkeypatch):

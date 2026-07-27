@@ -23,13 +23,13 @@ const PROVIDERS = ["gemini", "openai", "anthropic", "deepseek", "kimi", "opencod
 const EMBEDDERS = ["mock", "gemini", "openai", "openrouter", "ollama"] as const;
 
 const MODEL_PLACEHOLDERS: Record<string, string> = {
-  gemini: "gemini-3.1-flash-lite-preview",
+  gemini: "gemini-3.5-flash-lite",
   openai: "gpt-5.4-nano",
-  anthropic: "claude-sonnet-4-6",
+  anthropic: "claude-haiku-4-5",
   deepseek: "deepseek-v4-flash",
   kimi: "kimi-for-coding",
   opencode: "opencode/default",
-  ollama: "llama3.2",
+  ollama: "qwen3.5:4b",
   litellm: "groq/llama-3.1-70b-versatile",
   mock: "mock",
 };

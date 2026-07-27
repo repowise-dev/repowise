@@ -48,7 +48,7 @@ def test_provider_name():
 
 def test_model_name_default():
     p = GeminiProvider(api_key="k")
-    assert p.model_name == "gemini-3.1-flash-lite-preview"
+    assert p.model_name == "gemini-3.5-flash-lite"
 
 
 def test_model_name_custom():
@@ -82,7 +82,7 @@ def test_available_model_options_lists_generate_content_models(monkeypatch):
             {
                 "models": [
                     {
-                        "name": "models/gemini-3.1-flash-lite-preview",
+                        "name": "models/gemini-3.5-flash-lite",
                         "displayName": "Gemini Flash Lite",
                         "supportedGenerationMethods": ["generateContent"],
                         "thinking": True,
@@ -102,9 +102,9 @@ def test_available_model_options_lists_generate_content_models(monkeypatch):
     assert calls[0]["url"] == "https://generativelanguage.googleapis.com/v1beta/models"
     assert calls[0]["headers"] == {"x-goog-api-key": "k"}
     models = [option.model for option in options]
-    assert "gemini-3.1-flash-lite-preview" in models
+    assert "gemini-3.5-flash-lite" in models
     assert "gemini-embed" not in models
-    option = next(option for option in options if option.model == "gemini-3.1-flash-lite-preview")
+    option = next(option for option in options if option.model == "gemini-3.5-flash-lite")
     assert option.label == "Gemini Flash Lite"
     assert option.reasoning_modes == ("auto", "minimal", "low", "medium", "high")
     assert GeminiProvider(api_key="k").supported_reasoning_modes() == (
@@ -199,7 +199,7 @@ async def test_generate_passes_max_tokens():
 
 async def test_generate_forwards_thinking_level():
     gemini_module._GEMINI_THINKING_MODELS_BY_BASE[gemini_module._gemini_cache_key(None)] = {
-        "gemini-3.1-flash-lite-preview"
+        "gemini-3.5-flash-lite"
     }
     provider = GeminiProvider(api_key="fake-key")
     mock_response = _make_mock_response()

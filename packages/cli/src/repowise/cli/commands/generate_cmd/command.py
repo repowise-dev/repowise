@@ -33,6 +33,7 @@ from repowise.cli.helpers import (
 )
 from repowise.cli.providers import resolve_embedder
 from repowise.cli.ui import load_dotenv
+from repowise.core.cost_estimator import STRUCTURAL_PAGE_TYPES
 from repowise.core.docs_mode import docs_mode_state_fields, resolve_docs_mode
 from repowise.core.generation.page_selection import PageSelectionIntent
 
@@ -64,14 +65,6 @@ def _build_intent(
     return intent
 
 
-# Page types rendered from structure, always. A model never writes one, so
-# naming one for `generate` is a mistake worth catching rather than a silent
-# no-op: these pages refresh on `repowise update`, not here.
-_STRUCTURAL_PAGE_TYPES = frozenset(
-    {"file_page", "symbol_spotlight", "api_contract", "infra_page", "scc_page", "layer_page"}
-)
-
-
 def _reject_structural_page_ids(page_ids: tuple[str, ...]) -> None:
     """Error clearly when an explicit ``--page`` names a structural page.
 
@@ -80,7 +73,7 @@ def _reject_structural_page_ids(page_ids: tuple[str, ...]) -> None:
     misunderstanding, and a silent no-op would hide it, so it is a clear error
     pointing at the command that does refresh those pages.
     """
-    bad = [pid for pid in page_ids if pid.split(":", 1)[0] in _STRUCTURAL_PAGE_TYPES]
+    bad = [pid for pid in page_ids if pid.split(":", 1)[0] in STRUCTURAL_PAGE_TYPES]
     if bad:
         joined = ", ".join(bad)
         raise click.ClickException(

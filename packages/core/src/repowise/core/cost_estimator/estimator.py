@@ -13,7 +13,7 @@ from .types import CostEstimate, CostRange, PageTypePlan
 # zero tokens however many are produced. Checked before telemetry, because a
 # repo indexed before this change carries historical LLM averages for these
 # types that would otherwise price free pages as if a model still wrote them.
-_FREE_PAGE_TYPES = frozenset(
+STRUCTURAL_PAGE_TYPES = frozenset(
     {"file_page", "symbol_spotlight", "api_contract", "infra_page", "scc_page", "layer_page"}
 )
 
@@ -29,7 +29,7 @@ def _tokens_per_page(
     available (they reflect this repo's actual prompt sizes) and fall back to
     heuristics for fresh repos and unknown page types.
     """
-    if page_type in _FREE_PAGE_TYPES:
+    if page_type in STRUCTURAL_PAGE_TYPES:
         return (0.0, 0.0)
     if page_type in telemetry:
         return telemetry[page_type]

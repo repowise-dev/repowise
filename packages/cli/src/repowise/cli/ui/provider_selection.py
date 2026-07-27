@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -21,15 +22,15 @@ from repowise.core.reasoning import ReasoningMode, normalize_reasoning
 # ---------------------------------------------------------------------------
 
 _PROVIDER_DEFAULTS: dict[str, str] = {
-    "gemini": "gemini-3.1-flash-lite-preview",
+    "gemini": "gemini-3.5-flash-lite",
     "openai": "gpt-5.4-nano",
-    "anthropic": "claude-sonnet-4-6",
+    "anthropic": "claude-haiku-4-5",
     "deepseek": "deepseek-v4-flash",
     "kimi": "kimi-for-coding",
     "codex_cli": "codex_cli/default",
     "opencode": "opencode/default",
-    "ollama": "llama3.2",
-    "openrouter": "anthropic/claude-sonnet-4.6",
+    "ollama": "qwen3.5:4b",
+    "openrouter": "google/gemini-3.5-flash-lite",
     "litellm": "groq/llama-3.1-70b-versatile",
 }
 
@@ -43,6 +44,10 @@ _PROVIDER_ENV: dict[str, str] = {
     "opencode": "__OPENCODE_CLI__",
     "ollama": "OLLAMA_BASE_URL",
     "openrouter": "OPENROUTER_API_KEY",
+    # The picker iterates this map, so a provider missing here never renders a
+    # row no matter what `_PROVIDER_DEFAULTS` says. litellm was in the defaults
+    # only, which made it unreachable from init.
+    "litellm": "LITELLM_API_KEY",
 }
 
 _PROVIDER_SIGNUP: dict[str, str] = {
@@ -55,6 +60,7 @@ _PROVIDER_SIGNUP: dict[str, str] = {
     "opencode": "https://opencode.ai",
     "ollama": "https://ollama.com/download",
     "openrouter": "https://openrouter.ai/keys",
+    "litellm": "https://docs.litellm.ai/docs/providers",
 }
 
 
@@ -537,25 +543,49 @@ def interactive_provider_select(
     return selection.provider_name, selection.model
 
 
+# Checked before the flagship tokens: a cheap-tier marker wins even when the
+# family name is a flagship one, so `gpt-5.4-nano` is not mistaken for `gpt-5`.
+_BUDGET_MODEL_TOKENS = (
+    "nano",
+    "mini",
+    "lite",
+    "haiku",
+    "small",
+    "tiny",
+    "flash",
+    r"\d+b",  # 8b, 3b, 270m-style parameter-count tags
+)
+
 _FLAGSHIP_MODEL_TOKENS = (
     "opus",
     "gpt-4o",
     "gpt-5",
-    "-pro",
-    "sonnet-4-7",
-    "sonnet-4-6",
+    "pro",
+    "sonnet",
     "ultra",
     "o1",
     "o3",
+    "o4",
 )
+
+
+def _matches_token(model: str, tokens: tuple[str, ...]) -> bool:
+    """True if any token appears in ``model`` as a whole dash/dot-delimited word.
+
+    Substring matching is wrong here: ``gemini`` contains ``mini`` and
+    ``gpt-5.4-nano`` contains ``gpt-5``.
+    """
+    return any(re.search(rf"(?<![a-z0-9]){tok}(?![a-z])", model) for tok in tokens)
 
 
 def _is_flagship_model(model: str) -> bool:
     """Heuristic: True if the model name suggests a flagship-tier model."""
     if not model:
         return False
-    m = model.lower()
-    return any(tok in m for tok in _FLAGSHIP_MODEL_TOKENS)
+    m = model.lower().rsplit("/", 1)[-1]
+    if _matches_token(m, _BUDGET_MODEL_TOKENS):
+        return False
+    return _matches_token(m, _FLAGSHIP_MODEL_TOKENS)
 
 
 def _prompt_api_key(

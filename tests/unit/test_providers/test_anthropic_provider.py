@@ -28,7 +28,7 @@ def test_provider_name():
 
 def test_default_model():
     p = AnthropicProvider(api_key="sk-ant-test")
-    assert p.model_name == "claude-sonnet-4-6"
+    assert p.model_name == "claude-haiku-4-5"
 
 
 def test_api_key_from_env(monkeypatch):
@@ -87,7 +87,10 @@ def test_available_model_options_uses_models_endpoint(monkeypatch):
     sonnet = next(option for option in options if option.model == "claude-sonnet-4-6")
     assert sonnet.label == "Claude Sonnet 4.6"
     assert sonnet.reasoning_modes == ("auto",)
-    assert sonnet.recommended is True
+    assert sonnet.recommended is False
+    # The default model is the one flagged as recommended.
+    haiku = next(option for option in options if option.model == "claude-haiku-4-5")
+    assert haiku.recommended is True
 
 
 # ---------------------------------------------------------------------------

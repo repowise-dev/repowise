@@ -80,6 +80,7 @@ from .generation import (
     estimate_generation,
     format_cost,
     run_repo_generation,
+    structural_page_summary,
 )
 from .persistence import (
     build_resume_controller,
@@ -348,6 +349,9 @@ def _run_generation_phase(
         f"Writing [bold]{concept_n}[/bold] concept pages with "
         f"[cyan]{provider.model_name}[/cyan]. Estimated [bold]{format_cost(est)}[/bold]."
     )
+    structural = structural_page_summary(plans)
+    if structural:
+        console.print(f"[dim]{structural}[/dim]")
     if cost_gate_declined(est, yes=yes, message="  Continue?"):
         console.print(
             "[yellow]Not writing it with the model.[/yellow] "

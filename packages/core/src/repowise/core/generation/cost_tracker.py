@@ -20,14 +20,17 @@ log = structlog.get_logger(__name__)
 # ---------------------------------------------------------------------------
 
 _PRICING: dict[str, dict[str, float]] = {
-    # Anthropic — Opus tier $15/$75, Sonnet $3/$15, Haiku $0.8/$4 per 1M.
-    # 4-7/4-8 added for savings pricing: these are the models the session
-    # detector surfaces from current Claude Code transcripts.
-    "claude-opus-4-8": {"input": 15.0, "output": 75.0},
-    "claude-opus-4-7": {"input": 15.0, "output": 75.0},
-    "claude-opus-4-6": {"input": 15.0, "output": 75.0},
+    # Anthropic — Opus tier $5/$25, Sonnet $3/$15, Haiku $1/$5 per 1M. The 5 and
+    # 4-x entries are the models the session detector surfaces from current
+    # Claude Code transcripts. Opus used to be listed at $15/$75 here, which is
+    # the Opus 3 rate and overstated every Opus session by 3x.
+    "claude-opus-5": {"input": 5.0, "output": 25.0},
+    "claude-opus-4-8": {"input": 5.0, "output": 25.0},
+    "claude-opus-4-7": {"input": 5.0, "output": 25.0},
+    "claude-opus-4-6": {"input": 5.0, "output": 25.0},
+    "claude-sonnet-5": {"input": 3.0, "output": 15.0},
     "claude-sonnet-4-6": {"input": 3.0, "output": 15.0},
-    "claude-haiku-4-5": {"input": 0.8, "output": 4.0},
+    "claude-haiku-4-5": {"input": 1.0, "output": 5.0},
     "claude-3-5-sonnet-20241022": {"input": 3.0, "output": 15.0},
     # OpenAI — GPT-5 family (the models Codex sessions report). Rates per 1M
     # input/output; verify against current OpenAI pricing before relying on
@@ -39,7 +42,7 @@ _PRICING: dict[str, dict[str, float]] = {
     # through to ``_FALLBACK_PRICING`` (Sonnet $3/$15) and overstates a nano
     # indexing run ~40x.
     "gpt-5-nano": {"input": 0.05, "output": 0.40},
-    "gpt-5.4-nano": {"input": 0.05, "output": 0.40},
+    "gpt-5.4-nano": {"input": 0.20, "output": 1.25},
     "gpt-4o": {"input": 2.5, "output": 10.0},
     "gpt-4o-mini": {"input": 0.15, "output": 0.6},
     # Google Gemini
@@ -52,6 +55,7 @@ _PRICING: dict[str, dict[str, float]] = {
     # Gemini preview / experimental models
     "gemini-3.1-flash-lite-preview": {"input": 0.075, "output": 0.30},
     "gemini-3-flash-preview": {"input": 0.075, "output": 0.30},
+    "gemini-3.5-flash-lite": {"input": 0.25, "output": 1.50},
     # DeepSeek
     "deepseek-v4-flash": {"input": 0.14, "output": 0.28},
     "deepseek-v4-pro": {"input": 1.74, "output": 3.48},
@@ -87,6 +91,9 @@ def is_local_model(model: str) -> bool:
         model == "mock"
         or model.startswith(_LOCAL_MODEL_PREFIXES)
         or model.startswith(("codex_cli/", "opencode/"))
+        # Bare Ollama tags carry no prefix — the default is plain `qwen3.5:4b`,
+        # and a `family:size` tag is not a shape any hosted vendor uses.
+        or (":" in model and "/" not in model)
     )
 
 
@@ -98,9 +105,9 @@ def is_local_model(model: str) -> bool:
 #: the Sonnet fallback rate, which would undercount the agent savings it earned
 #: by ~5x. Ordered longest/most-specific prefix first.
 _CLAUDE_FAMILY_PRICING: tuple[tuple[str, dict[str, float]], ...] = (
-    ("claude-opus", {"input": 15.0, "output": 75.0}),
+    ("claude-opus", {"input": 5.0, "output": 25.0}),
     ("claude-sonnet", {"input": 3.0, "output": 15.0}),
-    ("claude-haiku", {"input": 0.8, "output": 4.0}),
+    ("claude-haiku", {"input": 1.0, "output": 5.0}),
 )
 
 
@@ -123,13 +130,27 @@ def _family_pricing(model: str) -> dict[str, float] | None:
     return None
 
 
+def _routed_model_leaf(model: str) -> str:
+    """Strip a router's vendor segment: ``google/gemini-3.5-flash-lite`` -> the id.
+
+    OpenRouter and LiteLLM address every model as ``vendor/model``, which matched
+    nothing below and billed those runs at the flat Sonnet fallback — around 12x
+    over for a flash-lite default. ``is_local_model`` is checked first, so the
+    passthrough prefixes it owns (``ollama/``, ``codex_cli/`` …) never reach here.
+    """
+    return model.rsplit("/", 1)[-1]
+
+
 def _get_pricing(model: str) -> dict[str, float]:
     """Return pricing for *model*, falling back and warning if unknown."""
     if is_local_model(model):
         return {"input": 0.0, "output": 0.0}
     if model in _PRICING:
         return _PRICING[model]
-    family = _family_pricing(model)
+    leaf = _routed_model_leaf(model)
+    if leaf in _PRICING:
+        return _PRICING[leaf]
+    family = _family_pricing(model) or _family_pricing(leaf)
     if family is not None:
         return family
     if model not in _warned_models:

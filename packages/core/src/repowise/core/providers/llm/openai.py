@@ -219,7 +219,7 @@ class OpenAIProvider(BaseProvider):
 
     Args:
         api_key:   OpenAI API key. Falls back to OPENAI_API_KEY env var.
-        model:     Model identifier. Defaults to gpt-4o.
+        model:     Model identifier. Defaults to gpt-5.4-nano.
         base_url:  Optional custom base URL for OpenAI-compatible endpoints.
         rate_limiter: Optional RateLimiter instance.
     """

@@ -24,6 +24,81 @@ CacheSegment = Literal["system", "user_prefix"]
 ModelOptionSource = Literal["api", "local", "fallback"]
 
 
+# ---------------------------------------------------------------------------
+# Temperature compatibility
+#
+# Reasoning-era models reject any explicit ``temperature`` with a 400 rather
+# than clamping it. The set grows with every model release and a router like
+# OpenRouter can serve any vendor's, so a static list alone goes stale and
+# breaks a run. Two layers instead: skip the parameter for families already
+# known to reject it, and learn the rest at runtime from the first rejection
+# so only one page pays for it.
+# ---------------------------------------------------------------------------
+
+_FIXED_TEMPERATURE_PREFIXES = (
+    # OpenAI reasoning era
+    "gpt-5",
+    "o1",
+    "o3",
+    "o4",
+    # Anthropic dropped the sampling parameters with Opus 4.7
+    "claude-opus-4-7",
+    "claude-opus-4-8",
+    "claude-opus-5",
+    "claude-sonnet-5",
+    "claude-fable-5",
+    "claude-mythos-5",
+)
+
+_TEMPERATURE_REJECTION_MARKERS = (
+    "temperature",
+    "unsupported_value",
+    "unsupported parameter",
+    "sampling parameter",
+)
+
+#: Models observed rejecting ``temperature`` this process. Populated by
+#: :func:`remember_temperature_rejection`; never persisted, since it is a
+#: latency optimization and a stale entry would silently drop the setting.
+_LEARNED_FIXED_TEMPERATURE: set[str] = set()
+
+
+def model_leaf(model: str) -> str:
+    """Strip a routing prefix (``google/gemini-3.5-flash-lite``) and lowercase."""
+    return model.lower().rsplit("/", 1)[-1].removeprefix("anthropic.")
+
+
+def accepts_temperature(model: str) -> bool:
+    """False when *model* is known or has been observed to reject temperature."""
+    leaf = model_leaf(model)
+    if leaf in _LEARNED_FIXED_TEMPERATURE:
+        return False
+    return not leaf.startswith(_FIXED_TEMPERATURE_PREFIXES)
+
+
+def temperature_kwargs(model: str, temperature: float) -> dict[str, float]:
+    """Return ``{"temperature": ...}``, or ``{}`` when *model* would reject it."""
+    return {"temperature": temperature} if accepts_temperature(model) else {}
+
+
+def is_temperature_rejection(exc: Exception) -> bool:
+    """True when *exc* looks like a 400 specifically about ``temperature``.
+
+    Deliberately generous: a false positive costs one retry without the
+    parameter, while a false negative fails the whole generation run.
+    """
+    status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
+    if status is not None and status != 400:
+        return False
+    message = str(exc).lower()
+    return any(marker in message for marker in _TEMPERATURE_REJECTION_MARKERS)
+
+
+def remember_temperature_rejection(model: str) -> None:
+    """Record that *model* rejects temperature, so later calls skip it."""
+    _LEARNED_FIXED_TEMPERATURE.add(model_leaf(model))
+
+
 def normalize_stop_reason(reason: object) -> tuple[str | None, str | None]:
     """Return ``(normalized, provider-native)`` completion stop reasons.
 

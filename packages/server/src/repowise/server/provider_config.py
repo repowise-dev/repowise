@@ -38,10 +38,10 @@ PROVIDER_CATALOG: list[dict[str, Any]] = [
     {
         "id": "gemini",
         "name": "Google Gemini",
-        "default_model": "gemini-3.1-flash-lite-preview",
+        "default_model": "gemini-3.5-flash-lite",
         "models": [
-            "gemini-3.1-flash-lite-preview",
-            "gemini-3-flash-preview",
+            "gemini-3.5-flash-lite",
+            "gemini-3.1-flash-lite",
             "gemini-3.1-pro-preview",
         ],
         "env_keys": ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
@@ -50,8 +50,8 @@ PROVIDER_CATALOG: list[dict[str, Any]] = [
     {
         "id": "anthropic",
         "name": "Anthropic",
-        "default_model": "claude-sonnet-4-6",
-        "models": ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"],
+        "default_model": "claude-haiku-4-5",
+        "models": ["claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-6"],
         "env_keys": ["ANTHROPIC_API_KEY"],
         "requires_key": True,
     },
@@ -66,12 +66,12 @@ PROVIDER_CATALOG: list[dict[str, Any]] = [
     {
         "id": "openrouter",
         "name": "OpenRouter",
-        "default_model": "anthropic/claude-sonnet-4.6",
+        "default_model": "google/gemini-3.5-flash-lite",
         "models": [
-            "anthropic/claude-sonnet-4.6",
-            "google/gemini-3.1-flash-lite-preview",
-            "meta-llama/llama-4-maverick",
-            "openai/gpt-4o",
+            "google/gemini-3.5-flash-lite",
+            "openai/gpt-5.4-nano",
+            "anthropic/claude-haiku-4-5",
+            "anthropic/claude-sonnet-5",
         ],
         "env_keys": ["OPENROUTER_API_KEY"],
         "requires_key": True,
@@ -100,8 +100,8 @@ PROVIDER_CATALOG: list[dict[str, Any]] = [
     {
         "id": "ollama",
         "name": "Ollama (Local)",
-        "default_model": "llama3.2",
-        "models": ["llama3.2", "codellama", "deepseek-coder-v2", "qwen2.5-coder"],
+        "default_model": "qwen3.5:4b",
+        "models": ["qwen3.5:4b", "qwen3.5:2b", "llama3.2", "qwen2.5-coder"],
         "env_keys": [],
         "requires_key": False,
     },

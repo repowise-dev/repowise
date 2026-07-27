@@ -13,12 +13,13 @@ Public API kept stable for existing callers:
 """
 
 from .approx import approximate_generation_plan
-from .estimator import estimate_cost
+from .estimator import STRUCTURAL_PAGE_TYPES, estimate_cost
 from .plans import build_generation_plan
 from .pricing import _lookup_cost
 from .types import CostEstimate, CostRange, PageTypePlan
 
 __all__ = [
+    "STRUCTURAL_PAGE_TYPES",
     "CostEstimate",
     "CostRange",
     "PageTypePlan",

@@ -9,7 +9,7 @@ No API key required for local deployments. This makes repowise usable in:
     - Cost-sensitive projects
 
 Popular models (pull with `ollama pull <model>`):
-    - llama3.2          — good general-purpose, 3B/11B variants
+    - qwen3.5:4b        — good general-purpose small model (default)
     - codellama         — code-focused, good for doc generation
     - deepseek-coder-v2 — strong on code understanding
     - qwen2.5-coder     — excellent multilingual code model
@@ -134,7 +134,7 @@ class OllamaProvider(BaseProvider):
     Uses Ollama's OpenAI-compatible endpoint. No API key required.
 
     Args:
-        model:        Ollama model name (e.g., 'llama3.2', 'codellama').
+        model:        Ollama model name (e.g., 'qwen3.5:4b', 'llama3.2').
                       Must be pulled first: `ollama pull <model>`
         base_url:     Ollama server URL. Defaults to http://localhost:11434.
                       The /v1 suffix is appended automatically if missing.
@@ -149,7 +149,7 @@ class OllamaProvider(BaseProvider):
 
     def __init__(
         self,
-        model: str = "llama3.2",
+        model: str = "qwen3.5:4b",
         base_url: str | None = None,
         rate_limiter: RateLimiter | None = None,
     ) -> None:

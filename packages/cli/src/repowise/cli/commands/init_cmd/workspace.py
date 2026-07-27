@@ -71,6 +71,7 @@ from .generation import (
     estimate_generation,
     format_cost,
     run_repo_generation,
+    structural_page_summary,
 )
 from .persistence import persist_result
 from .reporting import show_workspace_completion
@@ -126,8 +127,11 @@ def _run_workspace_generation(
 
     console.print(
         f"    Writing {concept_page_count(plans)} concept pages with "
-        f"{provider.model_name}. {format_cost(est)} ({est.total_pages} pages total)."
+        f"{provider.model_name}. {format_cost(est)}."
     )
+    structural = structural_page_summary(plans)
+    if structural:
+        console.print(f"    [dim]{structural}[/dim]")
 
     # Declines rather than raises when it cannot ask (see the note in init's
     # _run_generation_phase): a raise would land in the caller's generic error

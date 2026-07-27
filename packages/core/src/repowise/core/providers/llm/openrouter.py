@@ -6,9 +6,9 @@ through a single API key via an OpenAI-compatible endpoint.
 No additional pip install required — uses the ``openai`` package.
 
 Popular models:
-    - anthropic/claude-sonnet-4.6  — Anthropic Claude Sonnet
-    - google/gemini-3.1-flash-lite-preview      — Google Gemini Flash
-    - meta-llama/llama-4-maverick  — Meta Llama open model
+    - google/gemini-3.5-flash-lite  — fast + cheap (default)
+    - openai/gpt-5.4-nano           — OpenAI budget tier
+    - anthropic/claude-haiku-4-5    — Anthropic budget tier
 """
 
 from __future__ import annotations
@@ -35,11 +35,14 @@ from repowise.core.providers.llm.base import (
     RateLimitError,
     ensure_reasoning_supported,
     fallback_model_option,
+    is_temperature_rejection,
     normalize_stop_reason,
     parse_retry_after,
     provider_retry_stop,
     provider_retry_wait,
     provider_should_retry,
+    remember_temperature_rejection,
+    temperature_kwargs,
 )
 from repowise.core.rate_limiter import RateLimiter
 from repowise.core.reasoning import ReasoningMode, normalize_reasoning
@@ -189,7 +192,7 @@ class OpenRouterProvider(BaseProvider):
 
     Args:
         api_key:      OpenRouter API key. Falls back to OPENROUTER_API_KEY env var.
-        model:        Model identifier (vendor/model format). Defaults to anthropic/claude-sonnet-4.6.
+        model:        Model identifier (vendor/model format). Defaults to google/gemini-3.5-flash-lite.
         base_url:     Override the OpenRouter API URL (rarely needed).
         rate_limiter: Optional RateLimiter instance.
         http_referer: Optional site URL for OpenRouter rankings/leaderboards.
@@ -202,7 +205,7 @@ class OpenRouterProvider(BaseProvider):
     def __init__(
         self,
         api_key: str | None = None,
-        model: str = "anthropic/claude-sonnet-4.6",
+        model: str = "google/gemini-3.5-flash-lite",
         base_url: str = "https://openrouter.ai/api/v1",
         rate_limiter: RateLimiter | None = None,
         http_referer: str | None = None,
@@ -327,18 +330,30 @@ class OpenRouterProvider(BaseProvider):
         request_id: str | None,
         reasoning: ReasoningMode,
     ) -> GeneratedResponse:
+        kwargs: dict[str, Any] = {
+            "model": self._model,
+            "max_tokens": max_tokens,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            **temperature_kwargs(self._model, temperature),
+        }
+        kwargs.update(_openrouter_reasoning_kwargs(reasoning))
         try:
-            kwargs: dict[str, Any] = {
-                "model": self._model,
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-            }
-            kwargs.update(_openrouter_reasoning_kwargs(reasoning))
-            response = await self._client.chat.completions.create(**kwargs)
+            try:
+                response = await self._client.chat.completions.create(**kwargs)
+            except _OpenAIAPIStatusError as exc:
+                # OpenRouter fronts every vendor, so the set of models that
+                # reject `temperature` is not knowable ahead of time. Drop the
+                # parameter and retry once; the model is remembered so the rest
+                # of the run skips it.
+                if "temperature" not in kwargs or not is_temperature_rejection(exc):
+                    raise
+                remember_temperature_rejection(self._model)
+                log.debug("openrouter.temperature.unsupported", model=self._model)
+                kwargs.pop("temperature")
+                response = await self._client.chat.completions.create(**kwargs)
         except _OpenAIRateLimitError as exc:
             raise RateLimitError(
                 "openrouter",
@@ -398,9 +413,9 @@ class OpenRouterProvider(BaseProvider):
         kwargs: dict[str, Any] = {
             "model": self._model,
             "max_tokens": max_tokens,
-            "temperature": temperature,
             "messages": full_messages,
             "stream": True,
+            **temperature_kwargs(self._model, temperature),
         }
         if tools:
             kwargs["tools"] = tools

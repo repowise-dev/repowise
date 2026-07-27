@@ -4,7 +4,7 @@ Uses the same google-genai SDK as GeminiEmbedder for consistency.
 Runs the synchronous SDK call in a thread pool to avoid blocking asyncio.
 
 Recommended models:
-    - gemini-3.1-flash-lite-preview  — fast + cheap (default)
+    - gemini-3.5-flash-lite  — fast + cheap (default)
     - gemini-3-flash-preview         — higher quality
 """
 
@@ -201,7 +201,7 @@ class GeminiProvider(BaseProvider):
     """Native Gemini provider using the google-genai SDK.
 
     Args:
-        model:        Gemini model name. Defaults to gemini-3.1-flash-lite-preview.
+        model:        Gemini model name. Defaults to gemini-3.5-flash-lite.
         api_key:      Google API key. Falls back to GEMINI_API_KEY or GOOGLE_API_KEY env var.
         base_url:     Optional custom base URL (e.g., for proxy/self-hosted endpoints).
         rate_limiter: Optional RateLimiter instance.
@@ -210,7 +210,7 @@ class GeminiProvider(BaseProvider):
 
     def __init__(
         self,
-        model: str = "gemini-3.1-flash-lite-preview",
+        model: str = "gemini-3.5-flash-lite",
         api_key: str | None = None,
         base_url: str | None = None,
         rate_limiter: RateLimiter | None = None,

@@ -48,7 +48,7 @@ OWL_COMPACT = [
     '  " " ',
 ]
 
-EYES_THINKING = ["◐", "◓", "◑", "◒"]  # eye-roll cycle (spinner frames)
+EYES_THINKING = ["◐", "◓", "◑", "◒"]  # eye-roll cycle (kept for callers that want it)
 EYES_IDLE = "◉"
 EYES_SLEEPY = "─"  # interrupt message
 EYES_HAPPY = "^"  # completion panels
@@ -60,7 +60,13 @@ def mini(eyes: str = EYES_IDLE) -> str:
     return "{" + eyes + " " + eyes + "}"
 
 
-THINKING_FRAMES = [mini(e) for e in EYES_THINKING]
+# The spinner is a slow blink, not a spin. A continuous eye-roll at 5fps reads
+# as a cheap loading GIF and draws the eye away from the progress bar next to
+# it; holding the eyes open and closing them once per cycle reads as alive
+# without competing for attention. Motion lives in the last three frames.
+_BLINK_CYCLE = [EYES_IDLE] * 7 + ["◒", EYES_SLEEPY, "◒"]
+
+THINKING_FRAMES = [mini(e) for e in _BLINK_CYCLE]
 
 # ---------------------------------------------------------------------------
 # Spinner registration — ``rich._spinners.SPINNERS`` is private API (a plain
@@ -72,7 +78,7 @@ THINKING_FRAMES = [mini(e) for e in EYES_THINKING]
 try:
     from rich._spinners import SPINNERS
 
-    SPINNERS["owl"] = {"interval": 200, "frames": THINKING_FRAMES}
+    SPINNERS["owl"] = {"interval": 180, "frames": THINKING_FRAMES}
     OWL_SPINNER = "owl"
 except Exception:  # pragma: no cover — depends on rich internals
     OWL_SPINNER = "dots"
