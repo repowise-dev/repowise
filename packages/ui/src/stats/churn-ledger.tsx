@@ -40,7 +40,7 @@ export function ChurnLedger({ data }: { data: StatsChurn }) {
         )} were later deleted`}
       >
         <div
-          className="relative shrink-0 bg-[var(--color-success-muted,rgba(47,125,82,0.12))]"
+          className="relative shrink-0 bg-[var(--color-success-muted)]"
           style={{ width: `${standingPct}%` }}
         >
           <span className="absolute inset-0 flex items-center truncate px-3 font-mono text-[11px] uppercase tracking-[0.06em] text-[var(--color-success)]">
@@ -53,7 +53,7 @@ export function ChurnLedger({ data }: { data: StatsChurn }) {
             // Hatching rather than a flat fill: the deleted share is a texture
             // over the same track, not a separate quantity beside it.
             background:
-              "repeating-linear-gradient(-45deg, var(--color-error-muted, rgba(163,58,50,0.14)) 0 6px, transparent 6px 12px)",
+              "repeating-linear-gradient(-45deg, var(--color-error-muted) 0 6px, transparent 6px 12px)",
           }}
         >
           <span className="absolute inset-0 flex items-center truncate px-3 font-mono text-[11px] uppercase tracking-[0.06em] text-[var(--color-error)]">

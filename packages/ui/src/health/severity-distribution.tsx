@@ -32,7 +32,7 @@ export function SeverityDistribution({
   return (
     <div className="space-y-1.5">
       <div
-        className={`flex w-full ${h} overflow-hidden rounded-full bg-[var(--color-bg-muted)]`}
+        className={`flex w-full ${h} overflow-hidden rounded-full bg-[var(--color-bg-inset)]`}
         title={ORDER.map((s) => `${SEVERITY_LABEL[s]} ${breakdown[s]}`).join(" · ")}
       >
         {ORDER.map((s) => {

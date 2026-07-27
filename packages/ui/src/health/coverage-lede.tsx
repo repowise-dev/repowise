@@ -169,7 +169,7 @@ function BandSplit({
 }) {
   return (
     <div className="space-y-1.5">
-      <div className="flex h-1.5 w-full overflow-hidden rounded-full bg-[var(--color-bg-muted)]">
+      <div className="flex h-1.5 w-full overflow-hidden rounded-full bg-[var(--color-bg-inset)]">
         {split.map((b) => (
           <div
             key={b.key}

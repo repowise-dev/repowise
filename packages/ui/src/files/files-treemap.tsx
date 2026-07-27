@@ -255,7 +255,7 @@ export function FilesTreemap({
                   fill={fill(c)}
                   opacity={c.isFolder ? 0.55 : 0.85}
                   rx={3}
-                  stroke={c.isFolder ? "var(--color-border-strong)" : "none"}
+                  stroke={c.isFolder ? "var(--color-border-hover)" : "none"}
                   strokeWidth={c.isFolder ? 1 : 0}
                   className="transition-opacity hover:opacity-100"
                 />

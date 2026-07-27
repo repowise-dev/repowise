@@ -222,7 +222,7 @@ export function PunchCard({
                                 ? "var(--color-accent-primary)"
                                 : count > 0
                                   ? "var(--color-text-primary)"
-                                  : "var(--color-bg-muted)",
+                                  : "var(--color-bg-inset)",
                               opacity: isHover
                                 ? 1
                                 : count > 0

@@ -111,7 +111,7 @@ export function ModuleCoverageList({ modules, onSelectModule }: ModuleCoverageLi
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Filter modules…"
-          className="w-full rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] py-1.5 pl-7 pr-2 text-xs focus:border-[var(--color-border-strong)] focus:outline-none"
+          className="w-full rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] py-1.5 pl-7 pr-2 text-xs focus:border-[var(--color-border-hover)] focus:outline-none"
         />
       </div>
 
@@ -144,7 +144,7 @@ export function ModuleCoverageList({ modules, onSelectModule }: ModuleCoverageLi
               </button>
 
               {expanded ? (
-                <div className="divide-y divide-[var(--color-table-divider)] border-t border-[var(--color-table-divider)] bg-[var(--color-bg-muted)]/30">
+                <div className="divide-y divide-[var(--color-table-divider)] border-t border-[var(--color-table-divider)] bg-[var(--color-bg-inset)]/30">
                   {g.children.map((c) => {
                     const cPct = c.total_lines > 0 ? c.line_coverage_pct : null;
                     return (

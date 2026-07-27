@@ -309,7 +309,7 @@ export function CouplingGraph({
                   d={`M ${x0} ${y0} A ${radius + 12} ${radius + 12} 0 ${large} 1 ${x1} ${y1}`}
                   fill="none"
                   stroke="currentColor"
-                  className="text-[var(--color-border-strong)]"
+                  className="text-[var(--color-border-hover)]"
                   strokeOpacity={0.5}
                   strokeWidth={1.5}
                   strokeLinecap="round"

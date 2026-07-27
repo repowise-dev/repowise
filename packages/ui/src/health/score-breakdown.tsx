@@ -102,7 +102,7 @@ export function ScoreBreakdown({
                   {c.capped ? <span className="ml-1 text-[var(--color-warning)]" title="Raw deductions exceeded the cap; only the cap was subtracted.">(capped)</span> : null}
                 </span>
               </div>
-              <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-[var(--color-bg-muted)]">
+              <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-[var(--color-bg-inset)]">
                 <div
                   className={
                     cap != null

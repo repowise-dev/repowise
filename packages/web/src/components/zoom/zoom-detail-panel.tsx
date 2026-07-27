@@ -76,7 +76,7 @@ export function ZoomDetailPanel({ node, repoId, onClose, onZoom }: ZoomDetailPan
           type="button"
           onClick={onClose}
           aria-label="Close details"
-          className="shrink-0 rounded p-1 text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
+          className="shrink-0 rounded p-1 text-[var(--color-text-muted)] hover:bg-[var(--color-bg-wash-hover)] hover:text-[var(--color-text-primary)]"
         >
           <X className="h-4 w-4" />
         </button>
@@ -129,7 +129,7 @@ export function ZoomDetailPanel({ node, repoId, onClose, onZoom }: ZoomDetailPan
           {isFile && node.path && (
             <Link
               href={fileHref(repoId, node.path)}
-              className="flex w-full items-center justify-center gap-1.5 rounded-md border border-[var(--color-border-default)] px-3 py-1.5 text-xs font-medium text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)]"
+              className="flex w-full items-center justify-center gap-1.5 rounded-md border border-[var(--color-border-default)] px-3 py-1.5 text-xs font-medium text-[var(--color-text-primary)] hover:bg-[var(--color-bg-wash-hover)]"
             >
               <FileCode className="h-3.5 w-3.5" />
               Open file page

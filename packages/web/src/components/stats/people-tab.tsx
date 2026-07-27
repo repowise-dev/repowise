@@ -65,7 +65,7 @@ export function PeopleTab({ data, repoId }: { data: StatsHighlights; repoId: str
           <p className="rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-4 text-sm text-[var(--color-text-secondary)]">
             Commit-hour habits need each commit&apos;s local timezone, which this index was built
             before repowise captured. Run{" "}
-            <code className="rounded bg-[var(--color-bg-muted)] px-1.5 py-0.5 font-mono text-xs">
+            <code className="rounded bg-[var(--color-bg-inset)] px-1.5 py-0.5 font-mono text-xs">
               repowise update
             </code>{" "}
             to backfill it, no re-index required.

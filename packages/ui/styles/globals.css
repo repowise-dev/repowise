@@ -236,6 +236,14 @@
      plum-alpha on paper, lavender-alpha on dark (same idiom as canvas-dot). */
   --color-bg-wash: rgba(36, 27, 44, 0.05);
   --color-bg-wash-hover: rgba(36, 27, 44, 0.1);
+  /* Faint grounds for a success/error quantity — a filled bar segment, not a
+     status pill (rule 9 killed those). Referenced lazily off the themed
+     --color-success / --color-error, like --color-table-divider, so one
+     definition covers both themes. The churn ledger used to inline these as
+     hardcoded rgba fallbacks behind undefined token names, which meant a
+     paper-theme green sitting on the dark ramp. */
+  --color-success-muted: color-mix(in srgb, var(--color-success) 12%, transparent);
+  --color-error-muted: color-mix(in srgb, var(--color-error) 14%, transparent);
   --color-border-subtle: var(--color-border-default);
   /* Faint hairline for table row dividers — half the weight of a normal
      border so rows whisper while the header rule still reads. References the

@@ -228,7 +228,7 @@ export function FileHealthTab({
                           className={`rounded border px-1.5 py-0.5 text-[10px] transition-colors ${
                             status === opt.value
                               ? "border-[var(--color-accent-primary)] text-[var(--color-accent-primary)]"
-                              : "border-[var(--color-border-default)] text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] hover:border-[var(--color-border-strong)]"
+                              : "border-[var(--color-border-default)] text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] hover:border-[var(--color-border-hover)]"
                           }`}
                         >
                           {opt.label}

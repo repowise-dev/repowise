@@ -59,7 +59,7 @@ export function SyncButton({
     "inline-flex items-center gap-1.5 rounded-md text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed";
   const variantClass =
     variant === "primary"
-      ? "bg-[var(--color-accent-primary)] text-[var(--color-bg-base)] hover:bg-[var(--color-accent-primary)]/90 px-3 py-1.5"
+      ? "bg-[var(--color-accent-primary)] text-[var(--color-text-on-accent)] hover:bg-[var(--color-accent-primary)]/90 px-3 py-1.5"
       : "border border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] px-2.5 py-1";
 
   return (

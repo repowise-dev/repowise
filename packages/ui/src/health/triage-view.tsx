@@ -225,7 +225,7 @@ export function TriageView({
                 onChange={(e) => setMapQuery(e.target.value)}
                 placeholder="Find a file in the map…"
                 aria-label="Find a file in the map"
-                className="w-full rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] py-1.5 pl-7 pr-2 text-xs focus:border-[var(--color-border-strong)] focus:outline-none"
+                className="w-full rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] py-1.5 pl-7 pr-2 text-xs focus:border-[var(--color-border-hover)] focus:outline-none"
               />
             </div>
 

@@ -407,7 +407,7 @@ export function FindingsView({ adapter }: { adapter: CodeHealthAdapter }) {
                     setOffset(0);
                   }}
                   placeholder="Filter path…"
-                  className="text-xs pl-7 pr-2 py-1.5 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] w-56 focus:outline-none focus:border-[var(--color-border-strong)]"
+                  className="text-xs pl-7 pr-2 py-1.5 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] w-56 focus:outline-none focus:border-[var(--color-border-hover)]"
                 />
               </div>
               <FilterChip active={onlyHotspots} onClick={() => { setOnlyHotspots((v) => !v); setOffset(0); }}>

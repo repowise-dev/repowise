@@ -27,7 +27,7 @@ export function ZoomBreadcrumb({ chain, onCrumb }: ZoomBreadcrumbProps) {
       <button
         type="button"
         onClick={() => onCrumb(root.id)}
-        className="flex shrink-0 items-center gap-1 rounded px-1.5 py-1 hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
+        className="flex shrink-0 items-center gap-1 rounded px-1.5 py-1 hover:bg-[var(--color-bg-wash-hover)] hover:text-[var(--color-text-primary)]"
         title={root.name}
       >
         <Home className="h-3.5 w-3.5" />
@@ -46,7 +46,7 @@ export function ZoomBreadcrumb({ chain, onCrumb }: ZoomBreadcrumbProps) {
               <button
                 type="button"
                 onClick={() => onCrumb(node.id)}
-                className="max-w-[12rem] truncate rounded px-1.5 py-1 hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
+                className="max-w-[12rem] truncate rounded px-1.5 py-1 hover:bg-[var(--color-bg-wash-hover)] hover:text-[var(--color-text-primary)]"
                 title={node.path || node.name}
               >
                 {node.name}

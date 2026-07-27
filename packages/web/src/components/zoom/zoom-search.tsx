@@ -115,7 +115,7 @@ export function ZoomSearch({ nodes, onPick }: ZoomSearchProps) {
                 }}
                 onMouseEnter={() => setActive(i)}
                 className={`flex w-full flex-col items-start px-2.5 py-1.5 text-left ${
-                  i === active ? "bg-[var(--color-bg-hover)]" : ""
+                  i === active ? "bg-[var(--color-bg-wash-hover)]" : ""
                 }`}
               >
                 <span className="font-medium text-[var(--color-text-primary)]">{node.name}</span>

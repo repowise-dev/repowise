@@ -297,7 +297,7 @@ export function RefactoringBoard({
                 <button
                   type="button"
                   onClick={() => setVisibleCount((n) => n + PAGE_SIZE)}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--color-border-default)] px-4 py-2 text-sm font-medium text-[var(--color-text-secondary)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text-primary)]"
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--color-border-default)] px-4 py-2 text-sm font-medium text-[var(--color-text-secondary)] transition-colors hover:border-[var(--color-border-hover)] hover:text-[var(--color-text-primary)]"
                 >
                   Show {Math.min(PAGE_SIZE, processed.length - visibleCount)} more
                   <span className="text-[var(--color-text-tertiary)]">
@@ -340,7 +340,7 @@ function FilterChip({
       className={`rounded-full border px-2.5 py-0.5 text-xs font-medium transition-colors ${
         active
           ? "border-[var(--color-accent-primary)] bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)]"
-          : "border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:border-[var(--color-border-strong)] hover:text-[var(--color-text-primary)]"
+          : "border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:border-[var(--color-border-hover)] hover:text-[var(--color-text-primary)]"
       }`}
     >
       {label}

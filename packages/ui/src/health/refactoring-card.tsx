@@ -228,7 +228,7 @@ function StatusButton({
       className={`text-[10px] rounded px-1.5 py-0.5 border transition-colors ${
         isActive
           ? "bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)] border-[var(--color-accent-primary)]/50"
-          : "border-[var(--color-border-default)] text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] hover:border-[var(--color-border-strong)]"
+          : "border-[var(--color-border-default)] text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] hover:border-[var(--color-border-hover)]"
       }`}
     >
       {label}

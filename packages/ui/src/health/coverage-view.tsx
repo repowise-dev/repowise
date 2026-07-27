@@ -399,7 +399,7 @@ function CoverageBody({
             }}
             placeholder="Filter path…"
             aria-label="Filter files by path"
-            className="w-48 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2 py-1.5 text-xs focus:border-[var(--color-border-strong)] focus:outline-none sm:w-56"
+            className="w-48 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2 py-1.5 text-xs focus:border-[var(--color-border-hover)] focus:outline-none sm:w-56"
           />
         }
       >
@@ -460,7 +460,7 @@ function NoCoverageState() {
         actually costs something, and rolls the numbers up per directory. Nothing is
         inferred: we read the lines your tests really executed.
       </p>
-      <pre className="w-fit overflow-x-auto rounded-md bg-[var(--color-bg-muted)] px-3 py-2 font-mono text-xs text-[var(--color-text-primary)]">
+      <pre className="w-fit overflow-x-auto rounded-md bg-[var(--color-bg-inset)] px-3 py-2 font-mono text-xs text-[var(--color-text-primary)]">
         pytest --cov --cov-report=lcov{"\n"}
         repowise coverage add coverage.lcov
       </pre>

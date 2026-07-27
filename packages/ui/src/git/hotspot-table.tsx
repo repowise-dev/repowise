@@ -482,7 +482,7 @@ export function HotspotTable({
                     </td>
                   </tr>
                   {expandable && isExpanded && (
-                    <tr className="border-b border-[var(--color-table-divider)] bg-[var(--color-bg-subtle)] last:border-0">
+                    <tr className="border-b border-[var(--color-table-divider)] bg-[var(--color-bg-wash)] last:border-0">
                       <td className="px-1" />
                       <td colSpan={hasFixData ? 10 : 9} className="px-3 py-3">
                         {renderExpandedRow!(h)}
