@@ -9,7 +9,7 @@ import {
   Loader2,
   Layers,
 } from "lucide-react";
-import type { DocPage } from "@repowise-dev/types/docs";
+import type { DocPage, DocPageSummary } from "@repowise-dev/types/docs";
 import { cn } from "../lib/cn";
 import { formatRelativeTime, formatTokens } from "../lib/format";
 import { getPageTypeLabel } from "../lib/page-types";
@@ -66,11 +66,11 @@ export type ReaderLinkComponent = React.ElementType<{
 interface DocsReaderProps {
   page: DocPage | null;
   /** Full page list — powers hierarchical breadcrumbs and prev/next. */
-  pages?: DocPage[];
+  pages?: DocPageSummary[];
   repoId: string;
   isLoading?: boolean;
   /** Select another page in-place (breadcrumb / prev-next / wiki links). */
-  onSelectPage?: (page: DocPage) => void;
+  onSelectPage?: (page: DocPageSummary) => void;
   /** Navigate by page id (resolved wiki links / backlinks fall through here). */
   onNavigatePageId?: (pageId: string) => void;
   persona: ReaderPersona;
@@ -183,7 +183,7 @@ function DocsReaderBody({
   upgradeSlot,
 }: {
   page: DocPage;
-  pages: DocPage[];
+  pages: DocPageSummary[];
   repoId: string;
   sidebarOpen: boolean;
   scrollRef: React.RefObject<HTMLDivElement | null>;

@@ -3,7 +3,7 @@
 // guarded so missing page types (e.g. no architecture diagram, index-only repos)
 // degrade to a shorter deck instead of erroring.
 
-import type { DocPage } from "@repowise-dev/types/docs";
+import type { DocPage, DocPageSummary } from "@repowise-dev/types/docs";
 import { filterMarkdownByPersona } from "../docs/reader-persona";
 import {
   splitOnH2,
@@ -15,13 +15,13 @@ import {
 import type { PresentModel, PresentSlide, PresentStep } from "./types";
 
 // Curation caps keep the deck tight and premium on large repos.
-const MAX_LAYER_SLIDES = 5;
-const MAX_MODULE_SLIDES = 5;
+export const MAX_LAYER_SLIDES = 5;
+export const MAX_MODULE_SLIDES = 5;
 const MAX_TOUR_STOPS = 8;
 const DECK_BODY_CHARS = 520;
 const STEP_BODY_CHARS = 1100;
 
-interface TourStop {
+export interface TourStop {
   order?: number | undefined;
   title?: string | undefined;
   target_path?: string | undefined;
@@ -29,7 +29,7 @@ interface TourStop {
   kind?: string | undefined;
 }
 
-function readTour(overview: DocPage | undefined): TourStop[] {
+export function readTour(overview: DocPage | undefined): TourStop[] {
   const raw = overview?.metadata?.["guided_tour"];
   if (!Array.isArray(raw)) return [];
   return raw
@@ -44,7 +44,7 @@ function readTour(overview: DocPage | undefined): TourStop[] {
     }));
 }
 
-function readLayerOrder(overview: DocPage | undefined): string[] {
+export function readLayerOrder(overview: DocPage | undefined): string[] {
   const raw = overview?.metadata?.["layer_order_ids"] ?? overview?.metadata?.["layer_order"];
   return Array.isArray(raw) ? raw.filter((x): x is string => typeof x === "string") : [];
 }
@@ -92,9 +92,29 @@ function estimateMinutes(markdown: string): number {
   return Math.min(12, Math.max(2, 2 + Math.ceil(words / 200)));
 }
 
-/** True when there is enough generated content to present. */
-export function canPresent(pages: DocPage[]): boolean {
+/** True when there is enough generated content to present. Reads only the page
+ *  type, so it answers from a summary listing without fetching any bodies. */
+export function canPresent(pages: readonly DocPageSummary[]): boolean {
   return pages.some((p) => p.page_type === "repo_overview");
+}
+
+/** Rank layer pages the way the deck orders them, longest-standing first. */
+export function orderedLayers<T extends DocPageSummary>(
+  pages: readonly T[],
+  overview: DocPage | undefined,
+): T[] {
+  const layerOrder = readLayerOrder(overview);
+  const rankOf = (name: string | undefined) => {
+    if (!name) return Number.MAX_SAFE_INTEGER;
+    const idx = layerOrder.indexOf(name);
+    return idx === -1 ? Number.MAX_SAFE_INTEGER : idx;
+  };
+  return pages
+    .filter((p) => p.page_type === "layer_page")
+    // Rank on the layer page's target_path, which is the stable ``layer:<slug>``
+    // id. layer_name is display text the LLM rewrites between generations, so
+    // ranking on it silently drops every layer to MAX_SAFE_INTEGER.
+    .sort((a, b) => rankOf(a.target_path) - rankOf(b.target_path));
 }
 
 export function buildPresentModel(
@@ -137,19 +157,7 @@ export function buildPresentModel(
   }
 
   // 3 — Layers, ordered by the overview's layer_order when resolvable
-  const layerOrder = readLayerOrder(overview);
-  const rankOf = (name: string | undefined) => {
-    if (!name) return Number.MAX_SAFE_INTEGER;
-    const idx = layerOrder.indexOf(name);
-    return idx === -1 ? Number.MAX_SAFE_INTEGER : idx;
-  };
-  const layerPages = pages
-    .filter((p) => p.page_type === "layer_page")
-    // Rank on the layer page's target_path, which is the stable ``layer:<slug>``
-    // id. layer_name is display text the LLM rewrites between generations, so
-    // ranking on it silently drops every layer to MAX_SAFE_INTEGER.
-    .sort((a, b) => rankOf(a.target_path) - rankOf(b.target_path))
-    .slice(0, MAX_LAYER_SLIDES);
+  const layerPages = orderedLayers(pages, overview).slice(0, MAX_LAYER_SLIDES);
   for (const p of layerPages) {
     // Layer pages generated with the deterministic architecture diagram embed
     // it as a mermaid block; pair prose with diagram in a split slide. Older

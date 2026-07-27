@@ -11,11 +11,15 @@
 // (`doc-nav.ts`, framework-neutral) needs the same labels and must not pull in
 // React to get them.
 
-import type { DocPage } from "@repowise-dev/types/docs";
+import type { DocPageSummary } from "@repowise-dev/types/docs";
 
 export const RAW_GRAPH_ID = /^(?:community|scc)[-_\s]?\d+$/i;
 
-export function sccDisplayLabel(page: DocPage): string {
+export function sccDisplayLabel(page: DocPageSummary): string {
+  // The label is parsed out of the body, so a row fetched without one has
+  // nothing to derive from and keeps its title. Callers that render cycle
+  // pages in a list fetch those rows in full for this reason.
+  if (!page.content) return page.title;
   // Cycle members appear back-ticked in the generated description; prefer
   // the "Files Involved" section when present so prose mentions don't leak in.
   const involved = page.content.split(/^##\s+Files Involved\s*$/im)[1];
@@ -47,7 +51,10 @@ const PATH_NAMED_TYPES = new Set(["file_page", "api_contract", "infra_page"]);
  * off. A file under its module is named relative to it, so three files called
  * index.py in different resolver directories stay distinguishable.
  */
-export function treeLabel(page: DocPage, parent: DocPage | undefined): string {
+export function treeLabel(
+  page: DocPageSummary,
+  parent: DocPageSummary | undefined,
+): string {
   const path = page.target_path;
   if (page.page_type === "symbol_spotlight" && path.includes("::")) {
     // "path/to/file.py::Symbol" — the file is the parent row, so the symbol is
@@ -62,7 +69,7 @@ export function treeLabel(page: DocPage, parent: DocPage | undefined): string {
   return path.split("/").pop() || path;
 }
 
-export function displayLabel(page: DocPage): string {
+export function displayLabel(page: DocPageSummary): string {
   const metaLabel = page.metadata?.["derived_label"];
   if (typeof metaLabel === "string" && metaLabel) return metaLabel;
 

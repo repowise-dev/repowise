@@ -40,6 +40,14 @@ export interface DocPageSummary {
    * ranking on `undefined`.
    */
   content_chars?: number;
+  /**
+   * Present only when this row was fetched in full. A list is free to hydrate
+   * a few of its rows — the docs page does exactly that for cycle pages, whose
+   * label is parsed out of the body — so readers must handle its absence
+   * rather than assume a body is there.
+   */
+  content?: string;
+  metadata?: Record<string, unknown>;
   human_notes: string | null;
   /**
    * Position in the wiki outline, computed once at generation time so every

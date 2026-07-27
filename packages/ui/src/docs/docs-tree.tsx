@@ -24,7 +24,7 @@ import {
 import { RAW_GRAPH_ID, displayLabel, treeLabel } from "./page-labels";
 import { cn } from "../lib/cn";
 import { statusBadgeClasses, type FreshnessStatus } from "../lib/confidence";
-import type { DocPage } from "@repowise-dev/types/docs";
+import type { DocPageSummary } from "@repowise-dev/types/docs";
 
 // Synthetic path used as the Onboarding folder's tree key. Distinct from any
 // real target_path (which never starts with "@") so directory lookups don't
@@ -42,16 +42,16 @@ interface TreeNode {
   name: string;
   path: string;
   isDir: boolean;
-  page?: DocPage;
+  page?: DocPageSummary;
   children: TreeNode[];
   /** Dotted outline number from the stored tree ("2.4.1"), when the page has one. */
   section?: string;
 }
 
 interface DocsTreeProps {
-  pages: DocPage[];
+  pages: DocPageSummary[];
   selectedPageId: string | null;
-  onSelectPage: (page: DocPage) => void;
+  onSelectPage: (page: DocPageSummary) => void;
   className?: string;
 }
 
@@ -68,11 +68,11 @@ function PageIcon({ pageType, className }: { pageType: string; className?: strin
 // Build tree from flat page list
 // ---------------------------------------------------------------------------
 
-function buildOnboardingFolder(pages: DocPage[]): TreeNode | null {
+function buildOnboardingFolder(pages: DocPageSummary[]): TreeNode | null {
   // Bucket every page by its onboarding slot. Both promoted pages
   // (repo_overview / architecture_diagram, tagged via metadata) and dedicated
   // `page_type === "onboarding"` pages flow into the same bucket.
-  const bySlot = new Map<OnboardingSlot, DocPage>();
+  const bySlot = new Map<OnboardingSlot, DocPageSummary>();
   for (const page of pages) {
     const slot = getOnboardingSlot(page);
     if (slot && !bySlot.has(slot)) {
@@ -106,7 +106,7 @@ function buildOnboardingFolder(pages: DocPage[]): TreeNode | null {
   };
 }
 
-function buildTree(allPages: DocPage[]): TreeNode[] {
+function buildTree(allPages: DocPageSummary[]): TreeNode[] {
   // A tombstoned page documents a file that no longer exists. The folder view
   // mirrors the filesystem, so it drops them too, matching the domain view
   // (buildStoredTree) rather than listing pages for files that are gone.
@@ -129,8 +129,8 @@ function buildTree(allPages: DocPage[]): TreeNode[] {
 
   // ---- Remaining special pages (overview/architecture only when *not*
   // already promoted into the Onboarding folder) and path-based pages ----
-  const specialPages: DocPage[] = [];
-  const pathPages: DocPage[] = [];
+  const specialPages: DocPageSummary[] = [];
+  const pathPages: DocPageSummary[] = [];
 
   for (const page of pages) {
     if (onboardingPageIds.has(page.id)) continue;
@@ -310,7 +310,7 @@ const SPINE_TYPES = new Set([
   "onboarding",
 ]);
 
-const isSpinePage = (page: DocPage) => SPINE_TYPES.has(page.page_type);
+const isSpinePage = (page: DocPageSummary) => SPINE_TYPES.has(page.page_type);
 
 // The whole concept spine goes without icons.
 //
@@ -334,21 +334,21 @@ const CONCEPT_CONTENT_TYPES = new Set([
   "repo_overview",
 ]);
 
-const hidesTreeIcon = (page?: DocPage): boolean =>
+const hidesTreeIcon = (page?: DocPageSummary): boolean =>
   page ? CONCEPT_CONTENT_TYPES.has(page.page_type) : false;
 
 // The single bottom folder holding every deterministic page. Namespaced like
 // the other synthetic keys so it can never collide with a real page id.
 const AUTO_ROOT_KEY = "@group:auto-documented";
 
-function compareSiblings(a: DocPage, b: DocPage): number {
+function compareSiblings(a: DocPageSummary, b: DocPageSummary): number {
   return (
     (a.display_order ?? 0) - (b.display_order ?? 0) ||
     (a.target_path || a.title).localeCompare(b.target_path || b.title)
   );
 }
 
-function buildStoredTree(pages: DocPage[]): TreeNode[] {
+function buildStoredTree(pages: DocPageSummary[]): TreeNode[] {
   // A tombstoned page documents a file that no longer exists. It keeps its row
   // and its content, but the tree deliberately has no place for it, so it must
   // be excluded here rather than treated as an unplaced page.
@@ -361,7 +361,7 @@ function buildStoredTree(pages: DocPage[]): TreeNode[] {
   const deterministicPages = visible.filter((p) => !isSpinePage(p));
 
   const byId = new Map(spinePages.map((p) => [p.id, p]));
-  const childrenOf = new Map<string, DocPage[]>();
+  const childrenOf = new Map<string, DocPageSummary[]>();
   const claimed = new Set<string>();
   for (const page of spinePages) {
     const parentId = page.parent_page_id;
@@ -382,7 +382,7 @@ function buildStoredTree(pages: DocPage[]): TreeNode[] {
   // Reached, not just claimed: a parent cycle would otherwise silently swallow
   // every page in it. Anything the walk misses lands in the tail instead.
   const reached = new Set<string>();
-  function toNode(page: DocPage, parent: DocPage | undefined): TreeNode {
+  function toNode(page: DocPageSummary, parent: DocPageSummary | undefined): TreeNode {
     reached.add(page.id);
     const children = (childrenOf.get(page.id) ?? [])
       .filter((c) => !reached.has(c.id))
@@ -420,7 +420,7 @@ function buildStoredTree(pages: DocPage[]): TreeNode[] {
   // an unplaced page is still a page. On a store whose tree has not been built
   // yet this grouping IS the outline, a fair rendering of a wiki that genuinely
   // has no recorded hierarchy.
-  const strayByType = new Map<string, DocPage[]>();
+  const strayByType = new Map<string, DocPageSummary[]>();
   for (const page of spinePages) {
     if (reached.has(page.id)) continue;
     const bucket = strayByType.get(page.page_type);
@@ -470,7 +470,7 @@ type TypeFilter = "all" | typeof ALL_PAGE_TYPES[number];
 type FreshnessFilter = "all" | "fresh" | "stale" | "outdated";
 
 function matchesFilters(
-  page: DocPage | undefined,
+  page: DocPageSummary | undefined,
   search: string,
   typeFilter: TypeFilter,
   freshnessFilter: FreshnessFilter,
@@ -536,7 +536,7 @@ function TreeItem({
   selectedPageId: string | null;
   expandedDirs: Set<string>;
   toggleDir: (path: string) => void;
-  onSelectPage: (page: DocPage) => void;
+  onSelectPage: (page: DocPageSummary) => void;
   /** Open every dir while a search is active so matches are never hidden. */
   forceExpand?: boolean;
   /** Per-row freshness dots are opt-in — off by default to keep rows quiet. */
@@ -695,7 +695,7 @@ function FreshnessDot({ status }: { status: FreshnessStatus }) {
  * Structural pages (files, symbols, contracts) are templates by design and are
  * never marked.
  */
-function StubDot({ page }: { page: DocPage }) {
+function StubDot({ page }: { page: DocPageSummary }) {
   if (!isStubPage(page)) return null;
   return (
     <span
@@ -711,7 +711,7 @@ function RowMarkers({
   page,
   showFreshness,
 }: {
-  page: DocPage | undefined;
+  page: DocPageSummary | undefined;
   showFreshness: boolean;
 }) {
   if (!page) return null;

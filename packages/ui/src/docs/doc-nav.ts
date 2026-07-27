@@ -14,7 +14,7 @@
 // The host app turns the returned ``pageId`` values into hrefs (route shape
 // differs between the CLI web app and hosted frontend).
 
-import type { DocPage } from "@repowise-dev/types/docs";
+import type { DocPageSummary } from "@repowise-dev/types/docs";
 import { treeLabel } from "./page-labels";
 
 export interface DocNavSegment {
@@ -48,8 +48,8 @@ function parentDir(path: string): string {
 }
 
 /** Ancestors of ``page``, outermost first, excluding the root and the page. */
-function ancestors(page: DocPage, byId: Map<string, DocPage>): DocPage[] {
-  const chain: DocPage[] = [];
+function ancestors(page: DocPageSummary, byId: Map<string, DocPageSummary>): DocPageSummary[] {
+  const chain: DocPageSummary[] = [];
   const seen = new Set<string>([page.id]);
   let current = byId.get(page.parent_page_id ?? "");
   while (current && !seen.has(current.id)) {
@@ -63,7 +63,7 @@ function ancestors(page: DocPage, byId: Map<string, DocPage>): DocPage[] {
 }
 
 /** The label a page carries in a trail — the same one the docs tree shows. */
-function crumbLabel(page: DocPage): string {
+function crumbLabel(page: DocPageSummary): string {
   return treeLabel(page, undefined);
 }
 
@@ -75,7 +75,7 @@ function crumbLabel(page: DocPage): string {
  * layer it sits in — rather than through directory names that may have no page
  * behind them.
  */
-export function computeDocNav(page: DocPage, pages: DocPage[]): DocNavInfo {
+export function computeDocNav(page: DocPageSummary, pages: DocPageSummary[]): DocNavInfo {
   const byId = new Map(pages.map((p) => [p.id, p]));
   const chain = page.parent_page_id ? ancestors(page, byId) : [];
 
@@ -123,7 +123,7 @@ export function computeDocNav(page: DocPage, pages: DocPage[]): DocNavInfo {
 
   // Index module pages by the directory they represent so an ancestor
   // directory segment can deep-link to its module overview.
-  const moduleByPath = new Map<string, DocPage>();
+  const moduleByPath = new Map<string, DocPageSummary>();
   for (const p of pages) {
     if (p.page_type === "module_page" && p.target_path) {
       moduleByPath.set(p.target_path, p);
@@ -162,8 +162,8 @@ export function computeDocNav(page: DocPage, pages: DocPage[]): DocNavInfo {
 }
 
 function siblingLinks(
-  siblings: DocPage[],
-  page: DocPage,
+  siblings: DocPageSummary[],
+  page: DocPageSummary,
 ): { prev?: DocSiblingLink; next?: DocSiblingLink } {
   const idx = siblings.findIndex((p) => p.id === page.id);
   if (idx === -1) return {};

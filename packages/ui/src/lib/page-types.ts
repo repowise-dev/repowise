@@ -11,7 +11,7 @@ import {
   Compass,
   Layers,
 } from "lucide-react";
-import type { DocPage } from "@repowise-dev/types/docs";
+import type { DocPageSummary } from "@repowise-dev/types/docs";
 
 export interface PageTypeConfig {
   label: string;
@@ -121,7 +121,7 @@ function isOnboardingSlot(value: unknown): value is OnboardingSlot {
  * - New onboarding pages (page_type === "onboarding") carry the slot in
  *   `metadata.subkind` (and also `metadata.onboarding_slot` as a mirror).
  */
-export function getOnboardingSlot(page: DocPage): OnboardingSlot | null {
+export function getOnboardingSlot(page: DocPageSummary): OnboardingSlot | null {
   const meta = page.metadata ?? {};
   const fromSlot = meta["onboarding_slot"];
   if (isOnboardingSlot(fromSlot)) return fromSlot;

@@ -4,6 +4,7 @@
 // renders <PresentOverlay>.
 
 export { buildPresentModel, canPresent } from "./build-present-model";
+export { loadPresentPages } from "./load-present-pages";
 export { PresentOverlay, type PresentMode } from "./present-overlay";
 export { PresentButton } from "./present-button";
 export type { PresentModel, PresentSlide, PresentStep, PresentSlideKind } from "./types";

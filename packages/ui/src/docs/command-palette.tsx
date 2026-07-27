@@ -5,26 +5,35 @@ import { Search, CornerDownLeft } from "lucide-react";
 import { cn } from "../lib/cn";
 import { getPageTypeIcon, getPageTypeLabel } from "../lib/page-types";
 import { useDebounce } from "../hooks/use-debounce";
-import type { DocPage } from "@repowise-dev/types/docs";
+import type { DocPageSummary } from "@repowise-dev/types/docs";
+
+/** One server-side hit: the loaded page it maps to, plus its context line. */
+export interface PaletteSearchHit {
+  page: DocPageSummary;
+  snippet?: string;
+}
 
 interface CommandPaletteProps {
-  pages: DocPage[];
-  onSelect: (page: DocPage) => void;
+  pages: DocPageSummary[];
+  onSelect: (page: DocPageSummary) => void;
   /** Controlled open state. Omit for self-managed (⌘K only). */
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
   /**
    * Optional server-backed search (semantic / full-text). When provided, its
    * results are merged in *after* strong local title/path matches, so the
-   * palette stays instant while also surfacing meaning-based hits that the
-   * client-side substring filter can't find. Should resolve to `DocPage`s
-   * (the caller maps the search endpoint's hits back to loaded pages).
+   * palette stays instant while also surfacing hits the client-side substring
+   * filter can't find. The caller maps the search endpoint's results back to
+   * loaded pages and passes the endpoint's snippet through.
+   *
+   * This is how body matching works when the page list carries no bodies,
+   * which is the normal case on a large wiki.
    */
-  searchFn?: (query: string) => Promise<DocPage[]>;
+  searchFn?: (query: string) => Promise<PaletteSearchHit[]>;
 }
 
 interface Hit {
-  page: DocPage;
+  page: DocPageSummary;
   /** Lower is better. */
   rank: number;
   /** Short context snippet when the match was in the body. */
@@ -33,12 +42,15 @@ interface Hit {
 
 // Title hit ranks above path hit ranks above body hit. A leading match
 // (startsWith) beats a contained match within the same tier.
-function score(page: DocPage, q: string): Hit | null {
+function score(page: DocPageSummary, q: string): Hit | null {
   const title = page.title.toLowerCase();
   const path = (page.target_path || "").toLowerCase();
   if (title.startsWith(q)) return { page, rank: 0 };
   if (title.includes(q)) return { page, rank: 1 };
   if (path.includes(q)) return { page, rank: 2 };
+  // Body matching only when this row was loaded with its body. A summary
+  // listing has none, and `searchFn` covers the body for those callers.
+  if (!page.content) return null;
   const body = page.content.toLowerCase();
   const at = body.includes(q) ? body.indexOf(q) : -1;
   if (at !== -1) {
@@ -50,9 +62,12 @@ function score(page: DocPage, q: string): Hit | null {
 }
 
 /**
- * ⌘K / Ctrl-K full-text command palette over the already-loaded page list.
- * Searches title, path, and body — no extra request, since the page content
- * is in the list response. (Semantic search is a separate backend feature.)
+ * ⌘K / Ctrl-K command palette over the loaded page list.
+ *
+ * Title and path are matched here, so typing stays instant. Bodies are matched
+ * by `searchFn` against the server: a large wiki's page list is loaded without
+ * bodies, because carrying them costs tens of megabytes before anything
+ * renders.
  */
 export function DocsCommandPalette({
   pages,
@@ -116,7 +131,7 @@ export function DocsCommandPalette({
 
   // Server-backed (semantic / full-text) results, fetched only when a
   // searchFn is supplied. Failures fall back silently to the client layer.
-  const [serverPages, setServerPages] = useState<DocPage[]>([]);
+  const [serverPages, setServerPages] = useState<PaletteSearchHit[]>([]);
   useEffect(() => {
     const q = debounced.trim();
     if (!searchFn || q.length < 2) {
@@ -149,10 +164,10 @@ export function DocsCommandPalette({
         seen.add(h.page.id);
       }
     }
-    for (const p of serverPages) {
-      if (!seen.has(p.id)) {
-        merged.push({ page: p, rank: 3 });
-        seen.add(p.id);
+    for (const { page, snippet } of serverPages) {
+      if (!seen.has(page.id)) {
+        merged.push({ page, rank: 3, ...(snippet ? { snippet } : {}) });
+        seen.add(page.id);
       }
     }
     for (const h of clientHits) {
@@ -170,7 +185,7 @@ export function DocsCommandPalette({
 
   if (!open) return null;
 
-  function choose(page: DocPage) {
+  function choose(page: DocPageSummary) {
     onSelect(page);
     setOpen(false);
   }
