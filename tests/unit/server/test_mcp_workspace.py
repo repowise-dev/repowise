@@ -302,7 +302,7 @@ async def test_get_health_resolves_alias_different_from_repo_name(workspace_mcp)
 
 
 @pytest.mark.asyncio
-async def test_generate_refactoring_code_resolves_alias_different_from_repo_name(workspace_mcp):
+async def test_generate_refactoring_code_returns_error_for_unknown_suggestion(workspace_mcp):
     from repowise.server.mcp_server import generate_refactoring_code
 
     result = await generate_refactoring_code(suggestion_id="does-not-exist", repo="frontend")

@@ -27,7 +27,7 @@ COST_GATE_USD = 2.00
 COST_GATE_HARD_USD = 25.00
 
 
-class CostGateDeclined(Exception):  # noqa: N818 — a control-flow signal, not an error
+class CostGateDeclined(Exception):
     """Raised when the user answers No at the LLM-cost confirmation prompt.
 
     Carries no payload — the caller just needs to know that generation was

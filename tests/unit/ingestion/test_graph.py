@@ -908,7 +908,7 @@ class TestRustImports:
 # ---------------------------------------------------------------------------
 
 
-class TestGoImports:
+class TestGoModImports:
     def test_go_mod_resolves_local_import(self, tmp_path: Path) -> None:
         """go.mod module path enables resolving internal package imports."""
         (tmp_path / "go.mod").write_text("module github.com/org/myapp\n\ngo 1.21\n")

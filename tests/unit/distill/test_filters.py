@@ -119,7 +119,7 @@ def test_cargo_failures_section_survives(load_fixture) -> None:
 
 def test_jest_failure_blocks_survive(load_fixture) -> None:
     _raw, distilled = _distill(load_fixture, "jest_fail.txt", "test_output", "npm test")
-    assert "● ChatInterface › renders streaming tokens incrementally" in distilled  # noqa: RUF001
+    assert "● ChatInterface › renders streaming tokens incrementally" in distilled
     assert "chat-interface.test.tsx:47:20" in distilled
     assert "Tests:       2 failed, 117 passed, 119 total" in distilled
     assert "✓ renders without crashing" not in distilled
@@ -178,7 +178,7 @@ def test_lint_bench_median_savings_at_least_60pct(load_fixture) -> None:
 def test_ruff_full_groups_by_rule_and_keeps_summary(load_fixture) -> None:
     raw, distilled = _distill(load_fixture, "ruff_check_full.txt", "lint_output", "ruff check")
     # Rule groups carry counts and file:line anchors.
-    assert re.search(r"D\d{3} ×\d+", distilled)  # noqa: RUF001
+    assert re.search(r"D\d{3} ×\d+", distilled)
     assert re.search(r"coordinator\.py:\d+", distilled)
     # The tool's own totals and fixable summary survive verbatim.
     assert re.search(r"^Found \d+ errors\.$", distilled, re.MULTILINE)
@@ -188,7 +188,7 @@ def test_ruff_full_groups_by_rule_and_keeps_summary(load_fixture) -> None:
 
 def test_ruff_concise_groups_by_rule(load_fixture) -> None:
     raw, distilled = _distill(load_fixture, "ruff_check_concise.txt", "lint_output", "ruff check")
-    assert re.search(r"[A-Z]+\d+ ×\d+, \d+ fixable", distilled)  # noqa: RUF001
+    assert re.search(r"[A-Z]+\d+ ×\d+, \d+ fixable", distilled)
     assert _pct(raw, distilled) >= 70.0
 
 
@@ -198,9 +198,9 @@ def test_eslint_errors_verbatim_warnings_grouped(load_fixture) -> None:
     assert 'React Hook "useEffect" is called conditionally' in distilled
     # Identical repeated error rows collapse to one annotated copy.
     assert distilled.count("no-html-link-for-pages") < raw.count("no-html-link-for-pages")
-    assert "(×5)" in distilled  # noqa: RUF001
+    assert "(×5)" in distilled
     # Warnings are grouped by rule.
-    assert re.search(r"@next/next/no-img-element ×\d+", distilled)  # noqa: RUF001
+    assert re.search(r"@next/next/no-img-element ×\d+", distilled)
     # The problems summary survives.
     assert "✖ 19 problems (9 errors, 10 warnings)" in distilled
 
@@ -211,7 +211,7 @@ def test_clippy_error_block_survives_warnings_group(load_fixture) -> None:
     assert "error[E0308]: mismatched types" in distilled
     assert "expected `usize`, found `Option<usize>`" in distilled
     # Warning blocks collapse into clippy rule groups.
-    assert re.search(r"clippy::redundant_clone ×\d+", distilled)  # noqa: RUF001
+    assert re.search(r"clippy::redundant_clone ×\d+", distilled)
     assert "error: could not compile `gitscan`" in distilled
     assert _pct(raw, distilled) >= 60.0
 
@@ -222,7 +222,7 @@ def test_golangci_errcheck_lines_survive(load_fixture) -> None:
     for line in raw.splitlines():
         if "Error return value" in line:
             assert line in distilled
-    assert re.search(r"wsl ×8", distilled)  # noqa: RUF001
+    assert re.search(r"wsl ×8", distilled)
 
 
 def test_mypy_all_signal_output_keeps_every_error(load_fixture) -> None:

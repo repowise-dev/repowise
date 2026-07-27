@@ -24,7 +24,7 @@ ERROR_LINE_RE = re.compile(
     r"|error\[E\d+\]"
     r"|--- FAIL"
     r"|\bFAIL\b"
-    r"|^\s*[✗✕×✘]"  # jest/vitest failed-test glyphs  # noqa: RUF001
+    r"|^\s*[✗✕×✘]"  # jest/vitest failed-test glyphs
     r")"
 )
 

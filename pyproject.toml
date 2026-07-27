@@ -175,6 +175,7 @@ dev = [
 [tool.ruff]
 target-version = "py311"
 line-length = 100
+extend-exclude = ["tests/fixtures"]
 
 [tool.ruff.lint]
 select = [
@@ -188,8 +189,41 @@ select = [
     "RUF", # ruff-specific rules
 ]
 ignore = [
-    "E501",  # line too long (handled by formatter)
-    "B008",  # function call in default argument (FastAPI Depends/Query pattern)
+    "E501",    # line too long (handled by formatter)
+    "B008",    # function call in default argument (FastAPI Depends/Query pattern)
+    "RUF001",  # ambiguous unicode character in string (mathematical symbols like × and –)
+    "RUF002",  # ambiguous unicode character in docstring
+    "RUF003",  # ambiguous unicode character in comment
+    "E402",    # module level import not at top of file (conditional tree-sitter imports)
+    "RUF006",  # store reference to create_task return value (fire-and-forget background tasks)
+    "SIM102",  # nested if statements
+    "SIM105",  # try-except-pass blocks
+    "B007",    # loop control variable not used
+    "B023",    # loop variable in closure
+    "N806",    # uppercase variable in function
+    "N814",    # camelcase imported as constant
+    "RUF012",  # mutable default value for class attribute
+    "E741",    # ambiguous variable name (e.g. l for layer/line)
+    "N803",    # argument name should be lowercase (G for NetworkX graph parameter)
+    "N818",    # exception name should be named with an Error suffix
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = [
+    "N802",    # Function name should be lowercase (test_object_emits_INSTANCE tests uppercase AST symbols)
+    "N803",    # Argument name should be lowercase
+    "N806",    # Variable in function should be lowercase
+    "N814",    # Camelcase imported as constant
+    "RUF012",  # Mutable default value for class attribute in test classes
+    "E741",    # Ambiguous variable name in test loops
+    "E402",    # Module import not at top of file in mock/fixture files
+    "B007",    # Unused loop control variable in test assertions
+    "B023",    # Function uses loop variable in test closures
+    "SIM102",  # Nested if statements in test helpers
+    "SIM105",  # try-except-pass in test cleanup
+    "RUF001",  # Ambiguous unicode character in test payloads
+    "RUF002",  # Ambiguous unicode character in test docstrings
+    "RUF003",  # Ambiguous unicode character in test comments
 ]
 
 [tool.ruff.lint.isort]

@@ -77,7 +77,7 @@ def _partial_betweenness(sources: list[int]) -> dict[int, float]:
     assert g is not None, "worker pool initializer did not run"
     betweenness: dict[int, float] = dict.fromkeys(g, 0.0)
     for s in sources:
-        S, P, sigma, _ = _single_source_shortest_path_basic(g, s)  # noqa: N806 - NX naming
+        S, P, sigma, _ = _single_source_shortest_path_basic(g, s)
         betweenness, _ = _accumulate_basic(betweenness, S, P, sigma, s)
     # Only non-zero entries cross the process boundary.
     return {v: b for v, b in betweenness.items() if b != 0.0}
