@@ -14,6 +14,7 @@ from repowise.core.persistence.models import (
     Page,
 )
 from repowise.core.registry import mcp_tool_registry as mcp
+from repowise.core.test_paths import is_test_path, is_test_related_path
 from repowise.server.mcp_server._answer_pipeline import _RRF_K, _RRF_SCORE_SCALE
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
@@ -190,10 +191,14 @@ def _is_test_query(query: str) -> bool:
 
 
 def _is_test_page(item: dict) -> bool:
-    """True when a hit is a file_page documenting a test file."""
-    return item.get("page_type") == "file_page" and (
-        _classify_hit_kind(item.get("target_path") or "", "file_page") == "test"
-    )
+    """True when a hit is a file_page documenting a test file.
+
+    Tests only, deliberately not test support: a ``conftest.py`` or a fixture
+    module is often exactly what the person searching wanted, so it keeps its
+    rank. The ``kind`` filter counts both (see :func:`_classify_hit_kind`) —
+    asking for tests and asking to rank tests lower are different questions.
+    """
+    return item.get("page_type") == "file_page" and is_test_path(item.get("target_path") or "")
 
 
 def _downweight_test_pages(output: list[dict], query: str) -> None:
@@ -328,7 +333,8 @@ def _fetch_limit_for(limit: int, kind: str | None) -> int:
 # Path-prefix heuristics for the ``kind`` filter. We classify a hit's
 # target_path against these prefixes; if none match, the hit falls into
 # ``other`` and is dropped only when the caller asked for a specific kind.
-_TEST_PATH_TOKENS = ("/test/", "/tests/", "/__tests__/", "test_", "_test.", ".spec.", ".test.")
+# Tests are not in this list: they come from ``repowise.core.test_paths``, the
+# same rules that stamped the file's ``is_test`` flag at ingestion.
 _CONFIG_PATH_TOKENS = (
     "pyproject.toml",
     "package.json",
@@ -357,16 +363,26 @@ def _classify_hit_kind(target_path: str, page_type: str) -> str:
     them fall through to the path heuristics classified every decision
     record as "implementation", so ``kind="implementation"`` returned
     decision pages instead of filtering them out.
+
+    ``test`` is the union of tests and test support here: someone asking for
+    ``kind="implementation"`` does not want a ``conftest.py`` back, and someone
+    asking for ``kind="test"`` does.
+
+    Config wins over test, which the token list this replaced never had to
+    decide: ``.github/workflows/tests.yml`` is a workflow whatever it is named,
+    and dropping it from ``kind="config"`` would be the more surprising answer.
     """
     tp = (target_path or "").lower()
     if page_type in ("module_page", "symbol_spotlight") or tp.endswith(".md"):
         return "doc"
     if not tp or page_type not in ("file_page",):
         return "doc"
-    if any(tok in tp for tok in _TEST_PATH_TOKENS):
-        return "test"
     if any(tok in tp for tok in _CONFIG_PATH_TOKENS):
         return "config"
+    # Original case, not ``tp``: the camel (FooTest.java) and .NET project-dir
+    # (Foo.Tests/) rules are deliberately case-sensitive.
+    if is_test_related_path(target_path):
+        return "test"
     return "implementation"
 
 

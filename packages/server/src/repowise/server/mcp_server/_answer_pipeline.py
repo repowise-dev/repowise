@@ -44,6 +44,7 @@ from sqlalchemy import select
 
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GraphEdge, GraphNode, Page
+from repowise.core.test_paths import is_test_path
 
 # How many candidates each retriever fetches before merging. Both modes
 # tend to put the right answer in their top ~10, so 15 gives RRF room to
@@ -189,18 +190,12 @@ def _hit_dict_from_result(result: Any) -> dict:
 
 # Retrieval noise that should not occupy get_answer's top-5 on a plain question.
 # Mirrors search_codebase's demotion (tool_search._sort_demoting_noise) on the
-# answer pipeline's hit shape. Kept local so the answer pipeline does not import
-# the search tool; the token lists are intentionally the same.
-_TEST_PATH_TOKENS = ("/test/", "/tests/", "/__tests__/", "test_", "_test.", ".spec.", ".test.")
+# answer pipeline's hit shape. Both now read the same test-path rules, so the
+# two tools can no longer demote different sets of files.
 _TEST_QUERY_RE = re.compile(
     r"\b(test|tests|testing|tested|unit[\s-]?test|integration[\s-]?test|pytest|fixture|mock|spec)\b",
     re.IGNORECASE,
 )
-
-
-def _is_test_path(target_path: str) -> bool:
-    tp = (target_path or "").lower()
-    return any(tok in tp for tok in _TEST_PATH_TOKENS)
 
 
 def demote_noise_hits(hits: list[dict], question: str, *, is_why: bool) -> list[dict]:
@@ -213,6 +208,10 @@ def demote_noise_hits(hits: list[dict], question: str, *, is_why: bool) -> list[
     then, folded into the prelude); test file pages demote unless the question is
     explicitly about tests. Stable: real hits keep their order, and noise keeps
     its relative order at the tail (never dropped — an agent may still want it).
+
+    Tests demote, test support does not: "where are the shared fixtures" is a
+    plain question whose answer is a ``conftest.py``, and demoting it would push
+    the answer out of the window that feeds synthesis.
     """
     if not hits:
         return hits
@@ -221,9 +220,7 @@ def demote_noise_hits(hits: list[dict], question: str, *, is_why: bool) -> list[
     def _is_noise(h: dict) -> bool:
         pt = h.get("page_type")
         return (pt == "decision_record" and not is_why) or (
-            pt == "file_page"
-            and not test_focused
-            and _is_test_path(h.get("target_path", ""))
+            pt == "file_page" and not test_focused and is_test_path(h.get("target_path") or "")
         )
 
     real = [h for h in hits if not _is_noise(h)]

@@ -25,24 +25,17 @@ from sqlalchemy import case, func, or_, select
 
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GraphNode, Page, WikiSymbol
+from repowise.core.test_paths import is_test_path, is_test_related_path
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
     _get_repo,
     is_excluded,
 )
 
-# Path tokens that mark a symbol's file as a test (mirrors tool_search's set).
-_TEST_PATH_TOKENS = ("/test/", "/tests/", "/__tests__/", "test_", "_test.", ".spec.", ".test.")
-
 # Candidate ceiling: scoring/sorting happens in Python, so the SQL pre-filter
 # caps how many rows we pull. Generous enough that the true top-`limit` is
 # always inside the window, bounded so a pathological LIKE can't load the table.
 _MAX_CANDIDATES = 400
-
-
-def _is_test_path(path: str | None) -> bool:
-    tp = (path or "").lower()
-    return any(tok in tp for tok in _TEST_PATH_TOKENS)
 
 
 def _tokens(text: str | None) -> set[str]:
@@ -114,7 +107,12 @@ def _score_symbol(
         if gnode.is_entry_point:
             score += 3.0
 
-    if (gnode is not None and gnode.is_test) or _is_test_path(row.file_path):
+    # Tests only, not test support: a fixture or a conftest helper is often what
+    # the query was after, so it keeps its score. The flag is read first for the
+    # same reason everywhere else does, but note it decides nothing here today —
+    # it is stamped on file nodes and these are symbol nodes, so the path rules
+    # are what answer in practice.
+    if (gnode is not None and gnode.is_test) or is_test_path(row.file_path or "", row.language):
         score -= 5.0
     return score
 
@@ -238,7 +236,11 @@ async def search_symbols_single(
         if is_excluded(row.file_path, spec) or row.file_path in tombstoned:
             continue
         g = gmap.get(row.symbol_id)
-        is_test = (g is not None and g.is_test) or _is_test_path(row.file_path)
+        # The union here, unlike the ranking penalty above: ``kind`` splits the
+        # repo in two, and a fixture belongs on the test side of that line.
+        is_test = (g is not None and g.is_test) or is_test_related_path(
+            row.file_path or "", row.language
+        )
         if not _symbol_kind_for_request_kind(kind, is_test):
             continue
         scored.append((_score_symbol(row, g, qtokens, qnorm), row))

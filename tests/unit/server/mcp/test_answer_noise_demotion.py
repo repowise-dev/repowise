@@ -53,6 +53,35 @@ def test_test_page_kept_on_test_question():
     assert out[0]["target_path"] == "tests/unit/test_incremental.py"  # test-focused: no demotion
 
 
+def test_fixtures_and_test_lookalikes_keep_their_rank():
+    """Only tests demote, and only real ones (#1103).
+
+    The question is often about the fixtures themselves, and the substring
+    tokens this ran on also demoted production files spelling "test_".
+    """
+    # Leading segments on purpose: the token list this replaced anchored on
+    # "/tests/", so a root-level `tests/` path would pass it for the wrong
+    # reason and the assertion would prove nothing.
+    hits = [
+        _hit("file_page", "packages/core/tests/conftest.py"),
+        _hit("file_page", "packages/core/tests/factories/user.py"),
+        _hit("file_page", "src/analysis/missing_test_signal.py"),
+        _hit("file_page", "src/latest/api.py"),
+    ]
+    out = demote_noise_hits(list(hits), "where do the shared fixtures live", is_why=False)
+    assert [h["target_path"] for h in out] == [h["target_path"] for h in hits]
+
+
+def test_layouts_the_token_list_missed_now_demote():
+    hits = [
+        _hit("file_page", "myapp/tests.py"),
+        _hit("file_page", "Foo.Tests/Bar.cs"),
+        _hit("file_page", "src/pipeline/incremental.py"),
+    ]
+    out = demote_noise_hits(hits, "how does incremental update work", is_why=False)
+    assert out[0]["target_path"] == "src/pipeline/incremental.py"
+
+
 def test_stable_order_preserved_among_real_hits():
     hits = [
         _hit("file_page", "src/a.py"),

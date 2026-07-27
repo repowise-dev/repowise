@@ -25,6 +25,9 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     ("conftest.py", None, "support"),  # #1103: four said test, five said not
     ("tests/conftest.py", None, "support"),
     ("tests/factories/user.py", None, "support"),
+    # a package marker carries no test itself, but it is not production code
+    # either, and the tree it sits in settles it
+    ("tests/unit/__init__.py", None, "test"),
     ("tests/fixtures/repo/vitest.config.mts", None, "support"),
     # django: a per-app suite module, which no prefix/suffix rule catches
     ("myapp/tests.py", None, "test"),
@@ -65,6 +68,11 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     ("lib/contest.py", None, ""),
     ("src/testing/helpers.py", None, ""),
     ("src/testing_utils.py", None, ""),
+    # the same word mid-stem, which is how the MCP tools' `test_` substring
+    # token demoted this repo's own source in search results
+    ("src/analysis/missing_test_signal.py", None, ""),
+    ("src/ingestion/pytest_hints.py", None, ""),
+    ("alembic/versions/0036_test_coverage.py", None, ""),
     ("src/manifest/loader.py", None, ""),
     ("src/helpers/fmt.py", None, ""),
     ("src/fixtures/data.py", None, ""),

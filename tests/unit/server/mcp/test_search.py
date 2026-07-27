@@ -246,6 +246,32 @@ class TestNoiseDemotion:
         # Only file pages classify as test pages, never decision/concept pages.
         assert not _is_test_page({"page_type": "decision_record", "target_path": ""})
 
+    def test_is_test_page_keeps_support_and_lookalikes_ranked(self):
+        """Demotion is tests only, and only real tests (#1103).
+
+        The substring token list this used to run on demoted every production
+        file whose path merely contained "test_", and demoted the fixtures a
+        "where are the shared fixtures" query is asking for.
+        """
+        from repowise.server.mcp_server.tool_search import _is_test_page
+
+        def page(path: str) -> dict:
+            return {"page_type": "file_page", "target_path": path}
+
+        # Test support keeps its rank: it is often the answer. Leading segments
+        # on purpose — the token list this replaced anchored on "/tests/", so a
+        # root-level path would pass for the wrong reason.
+        assert not _is_test_page(page("packages/core/tests/conftest.py"))
+        assert not _is_test_page(page("packages/core/tests/factories/user.py"))
+        # Production code that merely spells "test".
+        assert not _is_test_page(page("src/analysis/missing_test_signal.py"))
+        assert not _is_test_page(page("src/latest/api.py"))
+        # Real tests the token list missed.
+        assert _is_test_page(page("myapp/tests.py"))
+        assert _is_test_page(page("src/test/java/Foo.java"))
+        assert _is_test_page(page("Foo.Tests/Bar.cs"))
+        assert _is_test_page(page("e2e/login.ts"))
+
     def test_downweight_test_pages_scales_unless_test_query(self):
         from repowise.server.mcp_server.tool_search import _downweight_test_pages
 
@@ -390,6 +416,26 @@ class TestClassifyHitKind:
         assert _classify_hit_kind("pyproject.toml", "file_page") == "config"
         assert _classify_hit_kind("docs/guide.md", "file_page") == "doc"
 
+    def test_kind_test_covers_support_unlike_the_demotion(self):
+        """``kind`` splits the repo in two, so a fixture lands on the test side.
+
+        Deliberately a different answer from ``_is_test_page``: nobody asking
+        for ``kind="implementation"`` wants a conftest back, but a fixture page
+        should still rank normally on an ordinary query.
+        """
+        from repowise.server.mcp_server.tool_search import _classify_hit_kind, _is_test_page
+
+        for path in ("packages/core/tests/conftest.py", "packages/core/tests/factories/user.py"):
+            assert _classify_hit_kind(path, "file_page") == "test"
+            assert not _is_test_page({"page_type": "file_page", "target_path": path})
+        # Config beats test: a workflow named for tests is still a workflow.
+        assert _classify_hit_kind(".github/workflows/tests.yml", "file_page") == "config"
+        # Case-sensitive rules survive: the classifier must not see a lowercased
+        # path, or FooTest.java and Foo.Tests/ stop matching.
+        assert _classify_hit_kind("Foo.Tests/Bar.cs", "file_page") == "test"
+        assert _classify_hit_kind("src/FooTest.java", "file_page") == "test"
+        assert _classify_hit_kind("src/latest/api.py", "file_page") == "implementation"
+
     def test_module_page_is_doc(self):
         from repowise.server.mcp_server.tool_search import _classify_hit_kind
 
@@ -475,6 +521,42 @@ class TestDecisionDemotionAndRescue:
         mcp_mod._vector_store.search = fake_search
         result = await search_codebase("why did we choose SQLite?")
         assert result["results"][0]["page_type"] == "decision_record"
+
+
+class TestSymbolTestPenalty:
+    """The -5 a symbol takes for living in a test file (#1103)."""
+
+    @staticmethod
+    def _score(path: str, language: str = "python") -> float:
+        from repowise.core.persistence.models import WikiSymbol
+        from repowise.server.mcp_server.tool_search_symbols import _score_symbol
+
+        row = WikiSymbol(
+            name="build_index",
+            qualified_name="build_index",
+            file_path=path,
+            language=language,
+        )
+        # No graph node: symbol nodes never carry `is_test`, so the path rules
+        # are what decide here in practice.
+        return _score_symbol(row, None, {"build", "index"}, "build_index")
+
+    def test_tests_are_penalised_and_support_is_not(self):
+        base = self._score("src/indexing/build.py")
+        assert self._score("packages/core/tests/test_build.py") == base - 5.0
+        assert self._score("myapp/tests.py") == base - 5.0
+        # A fixture factory is often what the query was after.
+        assert self._score("packages/core/tests/conftest.py") == base
+        assert self._score("packages/core/tests/factories/user.py") == base
+        # Production code that merely spells "test".
+        assert self._score("src/analysis/missing_test_signal.py") == base
+
+    def test_language_decides_the_ambiguous_spec_dir(self):
+        base = self._score("src/indexing/build.py")
+        # RSpec for Ruby, a specifications folder for anything else — the same
+        # call the traverser made when it stamped the file's flag.
+        assert self._score("spec/models/user.rb", language="ruby") == base - 5.0
+        assert self._score("spec/openapi/users.py", language="python") == base
 
 
 class TestSymbolSearch:

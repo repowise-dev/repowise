@@ -56,11 +56,8 @@ _PREDICATE_CONSTANTS = (
 # shared module. That is the pattern to copy, not a copy to remove.
 _KNOWN: frozenset[str] = frozenset(
     {
-        # The MCP tools and the stats router, converted next. Each re-derives
-        # from a substring token list weaker than the shared rules.
-        "packages/server/src/repowise/server/mcp_server/tool_search.py",
-        "packages/server/src/repowise/server/mcp_server/tool_search_symbols.py",
-        "packages/server/src/repowise/server/mcp_server/_answer_pipeline.py",
+        # The stats router, converted next. It re-derives from a regex weaker
+        # than the shared rules.
         "packages/server/src/repowise/server/routers/stats.py",
     }
 )
