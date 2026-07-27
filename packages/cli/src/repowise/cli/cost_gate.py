@@ -123,7 +123,7 @@ def cost_gate_blocks(est: Any, *, yes: bool, message: str) -> bool:
         raise click.ClickException(
             f"This would spend about {format_cost(est)} and there is no terminal "
             "to confirm on. Re-run with --yes to accept the cost, or with "
-            "--index-only to build the wiki from structure for free."
+            "--no-prose to build the wiki from structure for free."
         )
     return not confirm_cost_gate(message, estimated_usd=est.estimated_cost_usd)
 
@@ -136,6 +136,9 @@ def format_cost(est: Any) -> str:
             f"(median ${est.estimated_cost_usd:.2f})"
         )
         if est.is_calibrated:
-            cost_str += " [calibrated]"
+            # Not "[calibrated]": the result is interpolated into Rich markup,
+            # which parses square brackets as a style tag and renders an
+            # unknown one as nothing at all.
+            cost_str += " (calibrated on this repo's history)"
         return cost_str
     return f"${est.estimated_cost_usd:.2f} USD"

@@ -165,6 +165,16 @@ def estimated_documentable_files(scan: RepoScanInfo | None) -> int:
     return max(0, src - scan.test_file_count)
 
 
+def estimated_wiki_render_minutes(documentable: int) -> tuple[int, int]:
+    """Rough low/high minutes to render and embed *documentable* file pages.
+
+    Calibrated at roughly 1-2 minutes per thousand pages. Shared by the pre-scan
+    summary and the page-volume question so the two screens cannot quote
+    different numbers for the same work.
+    """
+    return max(1, round(documentable / 1000)), max(2, round(2 * documentable / 1000))
+
+
 def print_scan_summary(console: Console, scan: RepoScanInfo) -> None:
     """Print a compact pre-scan summary below the banner."""
     # File count + language count
@@ -194,8 +204,14 @@ def print_scan_summary(console: Console, scan: RepoScanInfo) -> None:
     src_files = sum(source_langs.values()) or scan.total_files
     ingest_min = max(1, round(src_files / 500))
     ingest_max = max(2, round(src_files / 250))
+    # Both halves are numbers now. The model step is deliberately absent: its
+    # duration follows the concept-page count, which ingestion has not produced
+    # yet, and the generation plan states it exactly (with a price) a screen
+    # later. A second guess here would only be a worse version of that one.
+    render_min, render_max = estimated_wiki_render_minutes(estimated_documentable_files(scan))
     eta_line = (
-        f"~{ingest_min}-{ingest_max} min ingestion · LLM generation depends on model + page count"
+        f"~{ingest_min}-{ingest_max} min to index · "
+        f"~{render_min}-{render_max} min more to render and embed the wiki"
     )
 
     body = f"  {header_line}\n  [dim]{lang_line}[/dim]\n  [dim]{eta_line}[/dim]"

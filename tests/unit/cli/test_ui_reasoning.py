@@ -79,7 +79,9 @@ def test_interactive_advanced_config_can_skip_reasoning_prompt(
 def test_interactive_provider_config_select_uses_model_reasoning_options(
     monkeypatch: Any,
 ) -> None:
-    monkeypatch.setattr(provider_selection, "_detect_provider_status", lambda: {"gemini": "GEMINI_API_KEY"})
+    monkeypatch.setattr(
+        provider_selection, "_detect_provider_status", lambda: {"gemini": "GEMINI_API_KEY"}
+    )
     monkeypatch.setattr(provider_selection, "_detect_codex_cli_status", lambda: (False, False))
     monkeypatch.setattr(
         provider_selection,
@@ -111,7 +113,7 @@ def test_interactive_provider_config_select_uses_model_reasoning_options(
         type: Any = None,
         **_kwargs: object,
     ) -> Any:
-        if text.strip() == "Reasoning":
+        if text.strip() == "Reasoning effort":
             assert tuple(type.choices) == ("auto", "low", "high")
             return "high"
         return default

@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import os
 import re
+import socket
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse
 
 import click
 from rich.console import Console
@@ -64,6 +67,23 @@ _PROVIDER_SIGNUP: dict[str, str] = {
 }
 
 
+# Short dim suffix on the provider name, saying what this provider is or how it
+# authenticates. The Status column answers "can I pick this right now"; anything
+# provider-specific belongs here so one column keeps one meaning.
+_PROVIDER_NOTES: dict[str, str] = {
+    "gemini": "recommended",
+    "codex_cli": "uses your Codex CLI login",
+    "opencode": "uses your opencode CLI setup",
+    "ollama": "runs on your machine, no key",
+    "litellm": "proxy in front of another provider",
+}
+
+_OLLAMA_DEFAULT_BASE_URL = "http://localhost:11434"
+# Enough for a loopback connect; the table renders before any prompt, so a slow
+# or firewalled endpoint must not hold the whole screen.
+_OLLAMA_PROBE_TIMEOUT_S = 0.3
+
+
 @dataclass(frozen=True)
 class ProviderSelection:
     """Interactive provider/model/reasoning selection result."""
@@ -88,8 +108,37 @@ def _detect_opencode_status() -> bool:
     return shutil.which("opencode") is not None
 
 
+def ollama_base_url() -> str:
+    """Where the picker expects to find Ollama."""
+    return os.environ.get("OLLAMA_BASE_URL") or _OLLAMA_DEFAULT_BASE_URL
+
+
+def _detect_ollama_status() -> bool:
+    """Return ``True`` if something is listening at the Ollama endpoint.
+
+    Ollama takes no API key, so "is the env var set" was never the question:
+    a user with it running locally and no ``OLLAMA_BASE_URL`` was shown as
+    unavailable and then asked to paste a key that does not exist. A TCP
+    connect is the cheapest honest answer.
+    """
+    parsed = urlparse(ollama_base_url())
+    port = parsed.port or (443 if parsed.scheme == "https" else 11434)
+    try:
+        with socket.create_connection(
+            (parsed.hostname or "localhost", port), timeout=_OLLAMA_PROBE_TIMEOUT_S
+        ):
+            return True
+    except OSError:
+        return False
+
+
 def _detect_provider_status() -> dict[str, str]:
-    """Return {provider: env_var_name} for providers whose key is set."""
+    """Return {provider: what makes it ready} for providers that can be used now.
+
+    The value is the env var carrying the key for the hosted providers, and a
+    short description of the out-of-band credential for the local ones. Only
+    truthiness is load-bearing; the value is for debugging.
+    """
     status: dict[str, str] = {}
     for prov, env_var in _PROVIDER_ENV.items():
         if prov == "gemini":
@@ -102,9 +151,66 @@ def _detect_provider_status() -> dict[str, str]:
         elif prov == "opencode":
             if _detect_opencode_status():
                 status[prov] = "opencode CLI"
+        elif prov == "ollama":
+            if _detect_ollama_status():
+                status[prov] = ollama_base_url()
         elif os.environ.get(env_var):
             status[prov] = env_var
     return status
+
+
+def _codex_cli_setup_lines() -> list[str]:
+    installed, _ = _detect_codex_cli_status()
+    problem = (
+        "Codex CLI is not on PATH." if not installed else "Codex CLI is on PATH but not logged in."
+    )
+    return [
+        "  [bold]codex_cli[/bold] uses the Codex CLI's own session. No API key here.",
+        f"  Install: [{BRAND}]npm install -g @openai/codex[/]",
+        f"  Log in:  [{BRAND}]codex login[/]",
+        "",
+        f"  [{WARN}]{problem}[/] Set it up and retry, or select another provider.",
+    ]
+
+
+def _opencode_setup_lines() -> list[str]:
+    return [
+        "  [bold]opencode[/bold] is a local AI coding CLI that manages its own "
+        "models and authentication. No API key here.",
+        f"  Install: [{BRAND}]curl -fsSL https://opencode.ai/install | bash[/]",
+        f"  Set up:  [{BRAND}]opencode[/]  (first run configures your provider)",
+        f"  Models:  [{BRAND}]opencode models[/]",
+        "",
+        f"  To pick a specific model: [{BRAND}]repowise init --provider opencode "
+        "--model opencode/deepseek/deepseek-v4-pro[/]",
+        "",
+        f"  [{WARN}]opencode CLI not found on PATH.[/] Install it and retry, "
+        "or select another provider.",
+    ]
+
+
+def _ollama_setup_lines() -> list[str]:
+    base_url = ollama_base_url()
+    return [
+        "  [bold]ollama[/bold] runs models on your machine. No key needed.",
+        "",
+        f"  [{WARN}]Nothing is listening at {base_url}.[/] Start it with "
+        f"[{BRAND}]ollama serve[/], pull a model with [{BRAND}]ollama pull qwen3.5:4b[/], "
+        "then retry.",
+        "  [dim]Set OLLAMA_BASE_URL if it listens somewhere else.[/dim]",
+    ]
+
+
+# Providers with no API key to paste: they authenticate out of band or run
+# locally, so readiness is a probe and the remedy is a command, never a prompt.
+# ``registry.KEYLESS_PROVIDERS`` is the resolution-side version of this idea; it
+# also holds litellm and mock, which do take a key here and are not offered
+# interactively, so the picker keeps its own narrower list.
+_LOCAL_PROVIDER_SETUP: dict[str, Callable[[], list[str]]] = {
+    "codex_cli": _codex_cli_setup_lines,
+    "opencode": _opencode_setup_lines,
+    "ollama": _ollama_setup_lines,
+}
 
 
 def _interactive_provider_name(
@@ -133,35 +239,21 @@ def _interactive_provider_name(
     table.add_column("Status", min_width=16)
     table.add_column("Default Model", style="dim")
 
+    # One axis, two states. The remedy is provider-specific and lives in the
+    # dim note beside the name, so the Status column can be read at a glance
+    # instead of decoded from three phrasings and two colours.
     for idx, prov in enumerate(providers, 1):
-        if prov == "codex_cli":
-            codex_installed, codex_logged_in = _detect_codex_cli_status()
-            if codex_logged_in:
-                status_text = f"[{OK}]✓ codex CLI logged in[/]"
-            elif codex_installed:
-                status_text = "[yellow]✗ codex login required[/yellow]"
-            else:
-                status_text = "[dim]✗ codex CLI not found[/dim]"
-        elif prov == "opencode":
-            if _detect_opencode_status():
-                status_text = f"[{OK}]✓ opencode CLI available[/]"
-            else:
-                status_text = "[dim]✗ opencode CLI not found[/dim]"
-        else:
-            status_text = f"[{OK}]✓ API key set[/]" if prov in detected else "[dim]✗ no key[/dim]"
-        default_model = _PROVIDER_DEFAULTS.get(prov, "")
-        # Mark gemini as recommended
-        label = prov
-        if prov == "gemini":
-            label = f"{prov} [dim](recommended)[/dim]"
-        elif prov == "codex_cli":
-            label = f"{prov} [dim](uses Codex CLI auth)[/dim]"
-        elif prov == "opencode":
-            label = f"{prov} [dim](uses opencode CLI auth)[/dim]"
-        table.add_row(f"[{idx}]", label, status_text, default_model)
+        ready = prov in detected
+        status_text = f"[{OK}]✓ ready[/]" if ready else "[dim]✗ not set up[/dim]"
+        note = _PROVIDER_NOTES.get(prov, "")
+        label = f"{prov} [dim]({note})[/dim]" if note else prov
+        table.add_row(f"[{idx}]", label, status_text, _PROVIDER_DEFAULTS.get(prov, ""))
 
     console.print()
     console.print(table)
+    console.print(
+        "  [dim]mock is flag-only (writes placeholder pages): repowise init --provider mock[/dim]"
+    )
     console.print()
 
     # --- selection ---
@@ -183,48 +275,13 @@ def _interactive_provider_name(
 
     # --- inline API key entry if missing ---
     if chosen not in detected:
-        if chosen == "codex_cli":
-            codex_installed, codex_logged_in = _detect_codex_cli_status()
+        setup_lines = _LOCAL_PROVIDER_SETUP.get(chosen)
+        if setup_lines is not None:
+            # Nothing to paste: these authenticate out of band or run locally,
+            # so the fix is a command, not a key prompt.
             console.print()
-            console.print(
-                "  [bold]codex_cli[/bold] requires the Codex CLI on PATH "
-                "and an authenticated Codex session."
-            )
-            console.print(f"  Install CLI: [{BRAND}]npm install -g @openai/codex[/]")
-            console.print(f"  Authenticate: [{BRAND}]codex login[/]")
-            console.print()
-            if not codex_installed:
-                console.print(
-                    f"  [{WARN}]Codex CLI not detected. Please install and retry, "
-                    "or select another provider.[/]"
-                )
-            elif not codex_logged_in:
-                console.print(
-                    f"  [{WARN}]Codex CLI is not logged in. Run 'codex login' and retry, "
-                    "or select another provider.[/]"
-                )
-            return _interactive_provider_name(console, model_flag, repo_path=repo_path)
-        if chosen == "opencode":
-            console.print()
-            console.print(
-                "  [bold]opencode[/bold] is a local AI coding CLI that manages its own "
-                "models and authentication."
-            )
-            console.print()
-            console.print(f"  Install:   [{BRAND}]curl -fsSL https://opencode.ai/install | bash[/]")
-            console.print(f"  Setup:     [{BRAND}]opencode[/]  (first run sets up your provider)")
-            console.print(f"  Models:    [{BRAND}]opencode models[/]  (list available models)")
-            console.print(f"  More info: [{BRAND}]https://opencode.ai[/]")
-            console.print()
-            console.print(
-                f"  To use a specific model: [{BRAND}]repowise init --provider opencode "
-                "--model opencode/deepseek/deepseek-v4-pro[/]"
-            )
-            console.print()
-            console.print(
-                f"  [{WARN}]opencode CLI not detected. Install it and retry, "
-                "or select another provider.[/]"
-            )
+            for line in setup_lines():
+                console.print(line)
             return _interactive_provider_name(console, model_flag, repo_path=repo_path)
         env_var = _PROVIDER_ENV[chosen]
         signup_url = _PROVIDER_SIGNUP.get(chosen, "")
@@ -326,9 +383,8 @@ def _select_model_option(
     repo_path: Path | None,
 ) -> ProviderModelOption:
     console.print(
-        "  [dim]↳ Smaller is fine — repowise is calibrated for "
-        "flash-lite / nano / haiku / 8B-class ollama. Bigger models "
-        "don't improve doc quality.[/]"
+        f"  [dim]Smaller is fine. repowise is tuned for the {provider_name} budget tier; "
+        "bigger models do not produce better docs.[/dim]"
     )
 
     display_options = _initial_model_options(options)
@@ -352,7 +408,10 @@ def _select_model_option(
         table.add_column("#", style=BRAND_STYLE, width=4)
         table.add_column("Model", style="bold", min_width=22)
         table.add_column("Reasoning", style="dim")
-        table.add_column("Source", style="dim")
+        # No Source column: its values were internal enums (``fallback``,
+        # ``manual``) a first-time user cannot act on, and the one case that
+        # matters — a built-in list because the provider's list was
+        # unreachable — is already stated in full above the table.
         table.add_column("Notes", style="dim")
 
         default_idx = "1"
@@ -369,18 +428,11 @@ def _select_model_option(
                 f"[{idx}]",
                 label,
                 _format_reasoning_modes(option.reasoning_modes),
-                option.source,
                 option.notes,
             )
 
         custom_idx = str(len(display_options) + 1)
-        table.add_row(
-            f"[{custom_idx}]",
-            "Custom model",
-            "auto",
-            "manual",
-            "type an exact model id",
-        )
+        table.add_row(f"[{custom_idx}]", "Custom model", "auto", "type an exact model id")
 
         search_idx = None
         if searchable:
@@ -388,7 +440,6 @@ def _select_model_option(
             table.add_row(
                 f"[{search_idx}]",
                 f"Search all {len(options):,} models",
-                "",
                 "",
                 "filter the full list by name",
             )
@@ -405,10 +456,11 @@ def _select_model_option(
             console=console,
         )
         if search_idx and choice == search_idx:
-            query = click.prompt(
+            query = Prompt.ask(
                 "  Search (e.g. 'mini' or 'nano')",
                 default="",
                 show_default=False,
+                console=console,
             ).strip()
             if not query:
                 continue
@@ -427,7 +479,7 @@ def _select_model_option(
             display_options = matches
             continue
         if choice == custom_idx:
-            model = click.prompt("  Model", default=default_model)
+            model = Prompt.ask("  Model", default=default_model, console=console)
             return ProviderModelOption(
                 model=model,
                 label=model,
@@ -443,6 +495,7 @@ def _select_model_option(
 
 
 def _select_reasoning_mode(
+    console: Console,
     selected: ProviderModelOption,
     reasoning_flag: str | None,
 ) -> ReasoningMode:
@@ -466,8 +519,14 @@ def _select_reasoning_mode(
     if choices == ("auto",):
         return "auto"
 
+    # The one knob on this screen that multiplies token spend, so it gets the
+    # same one-line explanation every other prompt in the flow has.
+    console.print(
+        "  [dim]How hard the model thinks per page. Higher costs more tokens; "
+        "auto lets repowise pick per page type.[/dim]"
+    )
     return click.prompt(
-        "  Reasoning",
+        "  Reasoning effort",
         default="auto",
         type=click.Choice(choices),
     )
@@ -520,7 +579,7 @@ def interactive_provider_config_select(
             "nano produce equivalent docs at ~10x lower cost on most repos.[/]"
         )
 
-    reasoning = _select_reasoning_mode(selected, reasoning_flag)
+    reasoning = _select_reasoning_mode(console, selected, reasoning_flag)
     return ProviderSelection(chosen, selected.model, reasoning)
 
 
@@ -615,7 +674,8 @@ def _prompt_api_key(
     # Offer to save for future runs
     if repo_path is not None:
         save = click.confirm(
-            "  Save key to .repowise/.env for future runs? (auto-gitignored)",
+            "  Save this key to .repowise/.env so future runs find it? "
+            "(the file is git-ignored, so it will not be committed)",
             default=True,
         )
         if save:

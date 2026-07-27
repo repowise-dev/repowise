@@ -14,7 +14,11 @@ from rich.table import Table
 from rich.text import Text
 
 from repowise.cli.ui.brand import BRAND, BRAND_STYLE, DIM
-from repowise.cli.ui.repo_scanner import RepoScanInfo, estimated_documentable_files
+from repowise.cli.ui.repo_scanner import (
+    RepoScanInfo,
+    estimated_documentable_files,
+    estimated_wiki_render_minutes,
+)
 from repowise.core.generation.languages import SUPPORTED_LANGUAGES
 from repowise.core.generation.selection import (
     FILE_PAGE_AUTO_CEILING,
@@ -74,34 +78,45 @@ def interactive_fast_mode_offer(
     return click.confirm("  Use fast mode?", default=default_fast)
 
 
-def interactive_mode_select(console: Console) -> str:
+def interactive_mode_select(console: Console, *, title: str | None = None) -> str:
     """Let the user choose full / index-only / advanced.
+
+    All three options index identically; what differs is how much of the wiki a
+    model writes, so the panel asks that rather than "how would you like to
+    index". *title* overrides the question for callers indexing more than one
+    repo (the workspace flow shows this same panel for a whole workspace).
 
     Returns ``"full"``, ``"index_only"``, or ``"advanced"``.
     """
     body = Text()
     body.append("  [1]", style=BRAND_STYLE)
     body.append("  Everything  ", style="bold")
-    body.append("(recommended)\n", style="dim")
-    body.append("       All five layers: dependency graph, git history, code\n")
-    body.append("       health, decisions + AI-generated wiki, diagrams & API docs.\n\n")
+    body.append("(recommended, needs an API key)\n", style="dim")
+    body.append("       Everything repowise can build: dependency graph, git history,\n")
+    body.append("       code health, architectural decisions, a model-written wiki,\n")
+    body.append("       architecture diagrams and API docs.\n")
+    body.append(
+        "       Costs a few cents to a few dollars; you see the estimate\n"
+        "       before anything runs.\n\n",
+        style="dim",
+    )
 
     body.append("  [2]", style=BRAND_STYLE)
     body.append("  No prose  ", style="bold")
     body.append("(no key, no spend)\n", style="dim")
-    body.append("       The same complete wiki, rendered from the code's structure.\n")
-    body.append("       The subsystem pages read as stubs rather than written prose;\n")
-    body.append("       add a key and run repowise generate to write them.\n\n")
+    body.append("       Every page type still gets built, straight from the code.\n")
+    body.append("       Only the subsystem pages come out as outlines instead of prose;\n")
+    body.append("       add a key later and run repowise generate to fill them in.\n\n")
 
     body.append("  [3]", style=BRAND_STYLE)
     body.append("  Advanced\n", style="bold")
     body.append("       Full control — turn AI docs on or off, then tune indexing\n")
-    body.append("       and generation (commit limit, exclude patterns, concurrency …)")
+    body.append("       and generation (commit limit, exclude patterns, concurrency, ...)")
 
     console.print(
         Panel(
             body,
-            title="[bold]How would you like to index this repo?[/bold]",
+            title=f"[bold]{title or 'How much should repowise write?'}[/bold]",
             border_style=BRAND,
             padding=(1, 2),
         )
@@ -185,11 +200,22 @@ def prompt_language(console: Console) -> str:
     )
 
 
+def _section(console: Console, title: str, blurb: str) -> None:
+    """Open an advanced-config section: blank line, brand heading, dim blurb.
+
+    Every section in this screen opens the same way, so the shape lives here
+    rather than in seven near-identical call sites. Titles are sentence case and
+    the blurb is required, which is what keeps a section from shipping as a bare
+    heading followed by a prompt the user has no context for.
+    """
+    console.print()
+    console.print(f"  [{BRAND}]{title}[/]")
+    console.print(f"  [dim]{blurb}[/dim]")
+
+
 def _prompt_scope(console: Console, scan: RepoScanInfo | None, result: dict[str, Any]) -> None:
     """Scope section: which file classes to include."""
-    console.print()
-    console.print(f"  [{BRAND}]Scope[/]")
-    console.print("  [dim]Choose what to include in the analysis[/dim]")
+    _section(console, "Scope", "Choose what to include in the analysis")
     console.print()
 
     test_hint = f" ({scan.test_file_count:,} found)" if scan and scan.test_file_count else ""
@@ -250,14 +276,14 @@ def prompt_file_page_volume(
         return None
 
     would_be_capped_anyway = estimate > FILE_PAGE_AUTO_CEILING
-    console.print()
-    console.print(f"  [{BRAND}]Page volume[/]")
-    console.print(
-        f"  [dim]About [bold]{estimate:,}[/bold] files here would each get a file page "
+    _section(
+        console,
+        "Page volume",
+        f"About [bold]{estimate:,}[/bold] files here would each get a file page "
         f"({_format_mb(estimate)} of wiki).\n"
         "  File pages are rendered from structure, so they cost no model tokens — what\n"
         "  the tail costs is wiki size, one embedding call each, and search results\n"
-        "  that restate what a subsystem page already says.[/dim]"
+        "  that restate what a subsystem page already says.",
     )
     if would_be_capped_anyway:
         console.print(
@@ -269,10 +295,10 @@ def prompt_file_page_volume(
         f"  [{BRAND}][1][/] Top [bold]{recommended:,}[/bold] by importance  [dim](recommended) — "
         f"~{recommended:,} pages, {_format_mb(recommended)}[/dim]"
     )
+    render_min, render_max = estimated_wiki_render_minutes(estimate)
     console.print(
         f"  [{BRAND}][2][/] Every eligible file  [dim]— ~{estimate:,} pages, "
-        f"{_format_mb(estimate)}, roughly "
-        f"{max(1, round(estimate / 1000)):,}-{max(2, round(2 * estimate / 1000)):,} min "
+        f"{_format_mb(estimate)}, roughly {render_min:,}-{render_max:,} min "
         "longer to render and embed[/dim]"
     )
     try:
@@ -303,10 +329,10 @@ def _prompt_run_mode(
     # by default on large repos; off otherwise. Only offered for single-repo
     # init (allow_fast); the workspace path leaves this untouched.
     if allow_fast:
-        console.print()
-        console.print(f"  [{BRAND}]Run mode[/]")
-        console.print(
-            "  [dim]standard = full depth · fast = quick graph + essential git, no LLM docs[/dim]"
+        _section(
+            console,
+            "Run mode",
+            "standard = full depth · fast = quick graph + essential git, no LLM docs",
         )
         result["run_mode"] = click.prompt(
             "  Run mode",
@@ -321,8 +347,12 @@ def _prompt_exclude(
     console: Console, scan: RepoScanInfo | None, result: dict[str, Any]
 ) -> list[str]:
     """Exclude-patterns section. Returns the parsed pattern list."""
+    _section(
+        console,
+        "Exclude patterns",
+        "Keep whole directories or globs out of the index entirely",
+    )
     console.print()
-    console.print(f"  [{BRAND}]Exclude Patterns[/]")
 
     # Show suggestions from large dirs
     if scan and scan.large_dirs:
@@ -354,12 +384,10 @@ def _prompt_exclude(
 
 def _prompt_git(console: Console, scan: RepoScanInfo | None, result: dict[str, Any]) -> None:
     """Git-analysis section: commit limit + rename following."""
-    console.print()
-    console.print(f"  [{BRAND}]Git Analysis[/]")
     commit_hint = ""
     if scan and scan.total_commits:
-        commit_hint = f" [dim](repo has ~{scan.total_commits:,} total commits)[/dim]"
-    console.print(f"  [dim]Controls how deeply git history is analyzed[/dim]{commit_hint}")
+        commit_hint = f" (repo has ~{scan.total_commits:,} total commits)"
+    _section(console, "Git analysis", f"Controls how deeply git history is analyzed{commit_hint}")
     console.print()
 
     # Smart default based on repo size
@@ -402,9 +430,7 @@ def _prompt_generation(
     prompt is skipped so the flag wins. *language* works the same way for the
     ``--language`` flag.
     """
-    console.print()
-    console.print(f"  [{BRAND}]Generation[/]")
-    console.print("  [dim]LLM page generation settings[/dim]")
+    _section(console, "Generation", "LLM page generation settings")
     console.print()
 
     # Smart concurrency default
@@ -622,11 +648,11 @@ def _prompt_index_only_search(console: Console, result: dict[str, Any]) -> None:
     picked up automatically from an API key in the environment, and this mode
     promises no spend. Choosing one here counts as asking for it.
     """
-    console.print()
-    console.print(f"  [{BRAND}]Search[/]")
-    console.print(
-        "  [dim]Full-text search always works. Semantic search needs an embedder;\n"
-        "  ollama is the keyless one, and the hosted ones charge per page.[/dim]"
+    _section(
+        console,
+        "Search",
+        "Full-text search always works. Semantic search needs an embedder;\n"
+        "  ollama is the keyless one, and the hosted ones charge per page.",
     )
     console.print()
     result["embedder"] = click.prompt(
@@ -651,33 +677,34 @@ def _resolve_embedder_from_env() -> str:
 
 def print_index_only_intro(console: Console, has_provider: bool = False) -> None:
     """Show what index-only mode will do before starting."""
+    # Bullets, not checkmarks: every green ✓ elsewhere in a run means "already
+    # done", and this panel is a forecast.
     lines = [
-        "  [green]✓[/] Parse all source files (AST)",
-        "  [green]✓[/] Build dependency graph (PageRank, communities)",
-        "  [green]✓[/] Index git history (hotspots, ownership, co-changes)",
-        "  [green]✓[/] Detect dead code",
-        "  [green]✓[/] Extract architectural decisions",
-        "  [green]✓[/] Render the wiki from structure: file, module, layer and",
+        "  [dim]•[/dim] Parse all source files (AST)",
+        "  [dim]•[/dim] Build dependency graph (PageRank, communities)",
+        "  [dim]•[/dim] Index git history (hotspots, ownership, co-changes)",
+        "  [dim]•[/dim] Detect dead code",
+        "  [dim]•[/dim] Extract architectural decisions",
+        "  [dim]•[/dim] Render the wiki from structure: file, module, layer and",
         "    cycle pages, the architecture diagram, the repo overview, API and",
         "    infra pages, and the onboarding collection",
-        "  [green]✓[/] Set up MCP server for AI assistants",
+        "  [dim]•[/dim] Set up MCP server for AI assistants",
     ]
     if has_provider:
         lines.append(
-            "  [green]✓[/] [dim]Decision extraction enhanced (provider key detected)[/dim]"
+            "  [dim]•[/dim] [dim]Decision extraction enhanced (provider key detected)[/dim]"
         )
     lines.append("")
     lines.append("  [dim]No LLM calls. No API key. No cost.[/dim]")
     lines.append(
         "  [dim]The subsystem pages read as stubs. Add a key and run "
-        "[bold]repowise generate[/bold][/dim]"
+        "[bold]repowise generate[/bold] to write them as prose.[/dim]"
     )
-    lines.append("  [dim]to write them as prose.[/dim]")
 
     console.print(
         Panel(
             "\n".join(lines),
-            title="[bold]Index Only[/bold]",
+            title="[bold]Index only: what this will do[/bold]",
             border_style=BRAND,
             padding=(1, 1),
         )

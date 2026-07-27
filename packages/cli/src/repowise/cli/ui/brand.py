@@ -46,7 +46,7 @@ def print_banner(console: Console, repo_name: str | None = None) -> None:
         console.print(f" [dim]codebase intelligence · v{__version__}[/dim]", highlight=False)
     else:
         console.print(
-            f" [dim]codebase intelligence for developers and AI  ·  v{__version__}[/dim]",
+            f" [dim]codebase intelligence for developers and AI · v{__version__}[/dim]",
             highlight=False,
         )
     if repo_name:
