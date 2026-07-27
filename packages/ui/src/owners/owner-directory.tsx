@@ -97,8 +97,14 @@ export function OwnerDirectory({
     const siloModules = sorted.reduce((s, o) => s + o.silo_modules, 0);
     const deadLines = sorted.reduce((s, o) => s + o.dead_code_lines_owned, 0);
     const deadOwners = sorted.filter((o) => o.dead_code_lines_owned > 0).length;
+    const deadFiles = sorted.reduce((s, o) => s + o.dead_code_files_owned, 0);
     const active = sorted.filter((o) => o.commit_count_90d > 0).length;
+    const hotspots = sorted.reduce((s, o) => s + o.hotspots_owned, 0);
+    const commits90d = sorted.reduce((s, o) => s + o.commit_count_90d, 0);
     return {
+      deadFiles,
+      hotspots,
+      commits90d,
       topName: sorted[0]?.name ?? null,
       topFiles: sorted[0]?.files_owned ?? 0,
       totalFiles,
@@ -162,8 +168,11 @@ export function OwnerDirectory({
     });
   }
 
-  // StatRibbon drops empty-valued entries itself, so an unmeasured figure
-  // leaves no gap in the row.
+  // Deliberately disjoint from `reads` above. The first cut of this row
+  // restated Active, Sole-owned and Silo modules from the column immediately
+  // beside it, so three of five cells were the same figure twice on one
+  // screen. StatRibbon drops empty-valued entries itself, so an unmeasured
+  // figure leaves no gap.
   const ribbon: RibbonStat[] = [
     {
       label: "Contributors",
@@ -174,14 +183,19 @@ export function OwnerDirectory({
       label: "Files attributed",
       value: summary.totalFiles > 0 ? summary.totalFiles.toLocaleString() : "",
     },
-    { label: "Active 90d", value: summary.active.toLocaleString() },
     {
-      label: "Sole-owned",
-      value: summary.soleFiles > 0 ? summary.soleFiles.toLocaleString() : "",
+      label: "Hotspots owned",
+      value: summary.hotspots > 0 ? summary.hotspots.toLocaleString() : "",
+      hint: "Owned files that are also high-churn",
     },
     {
-      label: "Silo modules",
-      value: summary.siloModules > 0 ? summary.siloModules.toLocaleString() : "",
+      label: "Commits 90d",
+      value: summary.commits90d > 0 ? summary.commits90d.toLocaleString() : "",
+    },
+    {
+      label: "Dead-code files",
+      value: summary.deadFiles > 0 ? summary.deadFiles.toLocaleString() : "",
+      hint: "Files carrying unreachable code, counted separately from the line total",
     },
   ];
 
@@ -223,7 +237,13 @@ export function OwnerDirectory({
         </section>
       )}
 
-      <StatRibbon stats={ribbon} LinkComponent={LinkComponent} />
+      {/* Same guard as the lede. Before an index lands, every figure here is
+          zero and StatRibbon's empty-value filter leaves a single "Contributors
+          0" cell stranded in a five-column row. Nothing measured, nothing
+          drawn. */}
+      {summary.totalFiles > 0 && (
+        <StatRibbon stats={ribbon} LinkComponent={LinkComponent} />
+      )}
 
       {source.length > 0 && (
         <OverviewSection
@@ -250,7 +270,7 @@ export function OwnerDirectory({
 
       <OverviewSection
         title="Everyone"
-        description="A dot marks someone holding files nobody else has touched, so a clean column means nothing to chase."
+        description="A dot marks sole-owned files held by someone who has stopped committing, so a clean column means nothing to chase."
         action={
           <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
             {total.toLocaleString()} {total === 1 ? "contributor" : "contributors"}

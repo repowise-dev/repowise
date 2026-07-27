@@ -2,7 +2,6 @@ import * as React from "react";
 import type { CommitStats } from "@repowise-dev/types/git";
 import { PageLede } from "../shared/page-lede";
 import { ReadsColumn, type ReadItem } from "../overview/reads-column";
-import { StatRibbon, type RibbonStat } from "../stats/stat-ribbon";
 
 export interface CommitsLedeProps {
   stats: CommitStats;
@@ -64,8 +63,12 @@ export function CommitsLede({ stats, base, LinkComponent }: CommitsLedeProps) {
     key: "entropy",
     label: "Change diffusion",
     value: stats.avg_entropy.toFixed(2),
-    unit: "avg",
-    why: "How far the average commit scatters. 0 is one file, 1 is spread evenly across everything it touched.",
+    unit: "bits",
+    // Shannon entropy of the per-file churn distribution, in bits, and
+    // deliberately not normalised (see _entropy in change_risk/features.py).
+    // It has no 1.0 ceiling: k equally-changed files score log2(k), so this
+    // repo's 2.08 is roughly four files' worth of spread.
+    why: "Shannon entropy of a commit's churn across its files. Zero is a single file, and every extra bit is a doubling of how widely the change spread.",
     href: `${base}/coupling`,
   });
   if (stats.high_cut != null) {
@@ -79,21 +82,12 @@ export function CommitsLede({ stats, base, LinkComponent }: CommitsLedeProps) {
     });
   }
 
-  const ribbon: RibbonStat[] = [
-    {
-      label: "Commits scored",
-      value: total.toLocaleString(),
-      hint: "Full indexed history, not a recent window",
-    },
-    { label: "Needs review", value: stats.high_priority_count.toLocaleString() },
-    { label: "Fix commits", value: stats.fix_commit_count.toLocaleString() },
-    {
-      label: "Agent-written",
-      value: stats.agent_commit_count > 0 ? stats.agent_commit_count.toLocaleString() : "",
-    },
-    { label: "Avg diffusion", value: stats.avg_entropy.toFixed(2) },
-  ];
-
+  // No StatRibbon here, deliberately. `CommitStats` carries six measured
+  // figures and the lede plus this column already spend all six, so a ribbon
+  // under them could only restate what is directly above it — which is the
+  // box soup this redesign exists to remove, wearing hairlines instead of
+  // borders. The contributor page keeps its ribbon because that payload has
+  // figures left over.
   return (
     <div className="flex flex-col gap-6 sm:gap-8">
       <section className="grid grid-cols-1 items-start gap-6 lg:grid-cols-[minmax(0,1fr)_300px] lg:gap-10">
@@ -111,7 +105,7 @@ export function CommitsLede({ stats, base, LinkComponent }: CommitsLedeProps) {
             codebase&apos;s own history rather than a global curve, so a quiet repo
             still fills its top band
             {stats.high_cut != null
-              ? ` — here it starts at ${stats.high_cut.toFixed(1)} out of 10`
+              ? `, and here it starts at ${stats.high_cut.toFixed(1)} out of 10`
               : ""}
             . What pushes a commit up is size and spread together: a large change
             confined to one area scores below a smaller one scattered across a
@@ -120,8 +114,6 @@ export function CommitsLede({ stats, base, LinkComponent }: CommitsLedeProps) {
         </PageLede>
         <ReadsColumn items={reads} LinkComponent={LinkComponent} />
       </section>
-
-      <StatRibbon stats={ribbon} LinkComponent={LinkComponent} />
     </div>
   );
 }

@@ -211,20 +211,19 @@ export function CodeEvolutionChart({
 
   if (evolution.buckets.length === 0) return null;
 
+  // No card and no heading of its own. The section that renders this already
+  // supplies both, so the bordered box was a box inside a section and "Code
+  // Evolution" was a second title for a chart the section had just named.
+  // What survives is the narrative line, which says something the section
+  // title cannot: what this particular repo's arc actually looks like.
   return (
-    <div
-      className={cn(
-        "rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-4 sm:p-5",
-        className,
-      )}
-    >
-      <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+    <div className={cn("flex flex-col gap-3", className)}>
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
-            <GitBranch className="h-4 w-4 text-[var(--color-accent-primary)]" />
-            <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">
-              Code Evolution
-            </h3>
+            <p className="text-[13px] font-medium text-[var(--color-text-primary)]">
+              {narrative ?? "How this repo's commit mix shifts over time."}
+            </p>
             <TooltipProvider delayDuration={150}>
               <UiTooltip>
                 <TooltipTrigger asChild>
@@ -244,10 +243,6 @@ export function CodeEvolutionChart({
               </UiTooltip>
             </TooltipProvider>
           </div>
-          <p className="mt-1 text-xs text-[var(--color-text-secondary)]">
-            {narrative ??
-              "How this repo's commit mix shifts over time."}
-          </p>
         </div>
 
         <div className="flex items-center rounded-lg border border-[var(--color-border-default)] p-0.5 text-xs">

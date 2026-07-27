@@ -36,8 +36,8 @@ export function CommitDistribution({
           Score distribution
         </h3>
         <p className="max-w-[62ch] text-xs leading-relaxed text-[var(--color-text-tertiary)]">
-          Every scored commit, binned on the raw 0–10 score rather than the
-          percentile — percentile ranks are uniform by construction, so that axis
+          Every scored commit, binned on the raw 0 to 10 score rather than the
+          percentile. Percentile ranks are uniform by construction, so that axis
           has no shape to draw. The dashed lines are the tercile cuts behind each
           row&apos;s priority pill.
         </p>

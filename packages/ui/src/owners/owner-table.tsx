@@ -157,8 +157,13 @@ export function OwnerTable({
                 <Num value={o.hotspots_owned} />
                 <Num
                   value={o.bus_factor_risk_files}
-                  marker={o.bus_factor_risk_files > 0}
-                  markerTitle="Files only this person has touched"
+                  // Sole ownership alone marks nearly every row on a real
+                  // repo, and a badge every row carries says nothing. The
+                  // signal is sole ownership held by someone who has stopped
+                  // committing: that is knowledge with no second reader and
+                  // nobody left to ask.
+                  marker={o.bus_factor_risk_files > 0 && o.commit_count_90d === 0}
+                  markerTitle="Sole-owned files held by someone inactive for 90 days"
                 />
                 <Num value={o.dead_code_lines_owned} />
                 <Num value={o.commit_count_90d} />

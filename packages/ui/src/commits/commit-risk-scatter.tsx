@@ -29,6 +29,12 @@ const PRIORITY_LABEL: Record<ReviewPriority, string> = {
 
 const PRIORITY_ORDER: ReviewPriority[] = ["low", "moderate", "high"];
 
+/** Two decimals, so an SVG coordinate serialises identically on both sides
+ *  of hydration. Well past sub-pixel on a 480-unit viewBox. */
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
 export function CommitRiskScatter({
   commits,
   onSelect,
@@ -52,6 +58,8 @@ export function CommitRiskScatter({
       churn: (c.lines_added || 0) + (c.lines_deleted || 0),
       entropy: c.entropy || 0,
     }));
+    // Keep SVG coordinates short enough that the server and the client agree
+    // on their string form. See the note at the call site.
     const xMaxLogRaw = Math.max(
       1,
       ...sized.map((s) => Math.log10(1 + s.churn)),
@@ -61,7 +69,7 @@ export function CommitRiskScatter({
       points: sized.map((s) => ({
         ...s,
         // Bigger dot = more files touched, sqrt so area (not radius) scales.
-        r: 3 + Math.min(9, Math.sqrt(s.commit.files_changed || 0)),
+        r: round2(3 + Math.min(9, Math.sqrt(s.commit.files_changed || 0))),
         _x: Math.log10(1 + s.churn) / xMaxLogRaw,
         _y: s.entropy / yMaxRaw,
       })),
@@ -162,8 +170,14 @@ export function CommitRiskScatter({
           </text>
 
           {ordered.map((p) => {
-            const cx = padding.left + p._x * innerW;
-            const cy = padding.top + innerH - p._y * innerH;
+            // Rounded, not raw. A full-precision float round-trips through
+            // React's server renderer as a slightly different string than the
+            // client produces for the same number (…0089482 vs …00894822),
+            // which is a hydration mismatch on every dot once this chart is
+            // rendered from a server component. Two decimals is well past
+            // sub-pixel on a 480-unit viewBox.
+            const cx = round2(padding.left + p._x * innerW);
+            const cy = round2(padding.top + innerH - p._y * innerH);
             const isHover = hover === p.commit.sha;
             return (
               <circle
