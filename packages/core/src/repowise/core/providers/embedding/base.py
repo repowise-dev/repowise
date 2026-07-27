@@ -92,3 +92,12 @@ class MockEmbedder:
                 norm = 1.0
             results.append([x / norm for x in raw])
         return results
+
+from dataclasses import dataclass
+
+@dataclass
+class EmbedderResult:
+    """Envelope for embedder construction to safely transport initialisation errors
+    through broad exception catchers at the call sites."""
+    embedder: Embedder | None = None
+    error: EmbedderConfigError | None = None

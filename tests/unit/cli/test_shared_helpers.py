@@ -73,15 +73,17 @@ def test_build_embedder_falls_back_to_mock() -> None:
     """Unknown / unavailable backends degrade to the deterministic mock."""
     from repowise.core.providers.embedding.base import MockEmbedder
 
-    assert isinstance(providers.build_embedder("definitely-not-a-backend"), MockEmbedder)
-    assert isinstance(providers.build_embedder("mock"), MockEmbedder)
+    res = providers.build_embedder("definitely-not-a-backend")
+    assert isinstance(res.embedder, MockEmbedder)
+    res = providers.build_embedder("mock")
+    assert isinstance(res.embedder, MockEmbedder)
 
 
 def test_build_embedder_supports_ollama(monkeypatch: pytest.MonkeyPatch) -> None:
     from repowise.core.providers.embedding.ollama import OllamaEmbedder
 
     monkeypatch.setenv("OLLAMA_EMBEDDING_MODEL", "qwen3-embedding:0.6b")
-    embedder = providers.build_embedder("ollama")
+    embedder = providers.build_embedder("ollama").embedder
     assert isinstance(embedder, OllamaEmbedder)
     assert embedder._model == "qwen3-embedding:0.6b"
 
@@ -91,7 +93,7 @@ def test_build_embedder_ollama_timeout_from_env(monkeypatch: pytest.MonkeyPatch)
 
     monkeypatch.setenv("OLLAMA_EMBEDDING_MODEL", "qwen3-embedding:0.6b")
     monkeypatch.setenv("OLLAMA_EMBEDDING_TIMEOUT", "300")
-    embedder = providers.build_embedder("ollama")
+    embedder = providers.build_embedder("ollama").embedder
     assert isinstance(embedder, OllamaEmbedder)
     assert embedder._timeout == 300.0
 
@@ -101,8 +103,10 @@ def test_build_embedder_ollama_timeout_invalid(monkeypatch: pytest.MonkeyPatch) 
 
     monkeypatch.setenv("OLLAMA_EMBEDDING_MODEL", "qwen3-embedding:0.6b")
     monkeypatch.setenv("OLLAMA_EMBEDDING_TIMEOUT", "invalid")
-    with pytest.raises(EmbedderConfigError, match="Invalid OLLAMA_EMBEDDING_TIMEOUT: 'invalid'"):
-        providers.build_embedder("ollama")
+    res = providers.build_embedder("ollama")
+    assert res.error is not None
+    assert isinstance(res.error, EmbedderConfigError)
+    assert "Invalid OLLAMA_EMBEDDING_TIMEOUT: 'invalid'" in str(res.error)
 
 
 def test_build_embedder_ollama_dimensions_invalid(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -110,8 +114,10 @@ def test_build_embedder_ollama_dimensions_invalid(monkeypatch: pytest.MonkeyPatc
 
     monkeypatch.setenv("OLLAMA_EMBEDDING_MODEL", "qwen3-embedding:0.6b")
     monkeypatch.setenv("OLLAMA_EMBEDDING_DIMS", "-5")
-    with pytest.raises(EmbedderConfigError, match="Invalid OLLAMA_EMBEDDING_DIMS: '-5'"):
-        providers.build_embedder("ollama")
+    res = providers.build_embedder("ollama")
+    assert res.error is not None
+    assert isinstance(res.error, EmbedderConfigError)
+    assert "Invalid OLLAMA_EMBEDDING_DIMS: '-5'" in str(res.error)
 
 
 def test_build_vector_store_returns_a_store(tmp_path) -> None:

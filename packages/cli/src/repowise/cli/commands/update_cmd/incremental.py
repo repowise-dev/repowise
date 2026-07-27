@@ -23,11 +23,15 @@ def _build_update_vector_store(repo_path: Any, cfg: dict) -> Any | None:
     in-memory store is a degraded fallback that only sees this run's vectors).
     Returns ``None`` on any failure — the decision upsert still works without it.
     """
-    try:
-        from repowise.cli.providers import build_embedder, build_vector_store, resolve_embedder
+    from repowise.cli.providers import build_embedder, build_vector_store, resolve_embedder
 
-        embedder = build_embedder(resolve_embedder(cfg.get("embedder")))
-        return build_vector_store(repo_path, embedder)
+    embedder_name_resolved = resolve_embedder(cfg.get("embedder"))
+    res = build_embedder(embedder_name_resolved)
+    if res.error:
+        raise res.error
+        
+    try:
+        return build_vector_store(repo_path, res.embedder)
     except Exception:
         return None
 

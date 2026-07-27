@@ -102,8 +102,14 @@ def _build_embedder():
         return OllamaEmbedder()
     if name == "gemini":
         from repowise.core.providers.embedding.gemini import GeminiEmbedder
+        from repowise.core.providers.embedding.base import parse_numeric_env
 
-        dims = int(os.environ.get("REPOWISE_EMBEDDING_DIMS", "768"))
+        dims_env = os.environ.get("REPOWISE_EMBEDDING_DIMS")
+        if dims_env:
+            dims = int(parse_numeric_env(dims_env, "REPOWISE_EMBEDDING_DIMS", is_int=True))
+        else:
+            dims = 768
+
         # Honour the indexed embedding model so serve doesn't silently rebuild
         # the embedder with a different default than init used (issue #426).
         model = os.environ.get("REPOWISE_EMBEDDING_MODEL")

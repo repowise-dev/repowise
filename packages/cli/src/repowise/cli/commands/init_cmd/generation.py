@@ -215,7 +215,10 @@ def run_repo_generation(
     if verbose:
         announce_file_page_cap(result.parsed_files, gen_config)
 
-    embedder_impl: Any = build_embedder(embedder_name_resolved)
+    res = build_embedder(embedder_name_resolved)
+    if res.error:
+        raise res.error
+    embedder_impl: Any = res.embedder
     vector_store: Any = build_vector_store(repo_path, embedder_impl)
     result.vector_store = vector_store
 

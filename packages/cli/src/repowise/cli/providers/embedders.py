@@ -130,23 +130,25 @@ def resolve_embedder_for_repo(repo_path: Any) -> str:
     return str(pinned) if pinned else resolve_embedder(None)
 
 
-def build_embedder(embedder_name_resolved: str) -> Any:
+def build_embedder(embedder_name_resolved: str) -> 'EmbedderResult':
     """Construct the configured embedder, falling back to MockEmbedder.
 
     Shared by the generation flows and the decision semantic-dedup wiring so
     the same backend selection logic isn't duplicated. Real providers fall
     back to the deterministic mock when their SDK/credentials are unavailable.
     """
-    from repowise.core.providers.embedding.base import MockEmbedder
+    from repowise.core.providers.embedding.base import MockEmbedder, EmbedderResult
     from repowise.core.providers.embedding.registry import get_embedder
 
     if embedder_name_resolved == "mock":
-        return MockEmbedder()
+        return EmbedderResult(embedder=MockEmbedder())
     try:
         kwargs = _embedder_kwargs(embedder_name_resolved)
-    except EmbedderConfigError:
-        raise
+    except EmbedderConfigError as e:
+        return EmbedderResult(error=e)
     try:
-        return get_embedder(embedder_name_resolved, **kwargs)
+        return EmbedderResult(embedder=get_embedder(embedder_name_resolved, **kwargs))
+    except EmbedderConfigError as e:
+        return EmbedderResult(error=e)
     except Exception:
-        return MockEmbedder()
+        return EmbedderResult(embedder=MockEmbedder())
