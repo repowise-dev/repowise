@@ -44,10 +44,10 @@ async function loadPages(
 /**
  * Every page in a repo, without the bodies.
  *
- * A full listing of this repo's 5,485 pages is ~67 MB and eleven round trips,
- * of which `content` and `metadata` are 95% — and the tree renders neither.
- * The reader fetches the one page it is showing; Present and Export fetch what
- * they need when they are used.
+ * A full listing of this repo's 5,485 pages measured 38.6 MB over twelve
+ * sequential round trips, of which `content` and `metadata` are 95% — and the
+ * tree renders neither. The reader fetches the one page it is showing;
+ * Present and Export fetch what they need when they are used.
  */
 export function usePages(repoId: string | null, opts?: { page_type?: string }) {
   const { data, error, isLoading, mutate } = useSWR<PageSummary[]>(

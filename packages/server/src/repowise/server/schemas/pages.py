@@ -44,7 +44,7 @@ def _summary_fields(obj: object) -> dict:
 class PageSummaryResponse(BaseModel):
     """A page row without its two heavy fields.
 
-    On a 5,485-page wiki a full listing is ~67 MB, of which ``content`` and
+    On a 5,485-page wiki a full listing measured 38.6 MB, of which ``content`` and
     ``metadata`` are 95%. Nothing that draws a list of pages — the docs tree,
     breadcrumbs, the command palette — reads either one, so ``GET /api/pages``
     can serve this instead when the caller asks for ``fields=summary``.
